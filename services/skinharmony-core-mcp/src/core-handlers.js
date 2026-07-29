@@ -345,13 +345,21 @@ export function createCoreHandlers(config, options = {}) {
       : body;
   }
 
-  async function coreRequest(path, tenantId, { method = "GET", body, additionalHeaders = {} } = {}) {
+  async function coreRequest(path, tenantId, {
+    method = "GET",
+    body,
+    additionalHeaders = {},
+    useTenantGateway = false,
+  } = {}) {
     const sanitizedBody = sanitizeCoreBody(body);
     const headers = { accept: "application/json" };
     if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
-    headers.authorization = `Bearer ${coreKey(tenantId)}`;
+    const selectedKey = useTenantGateway && config.tenantGatewayKey
+      ? config.tenantGatewayKey
+      : coreKey(tenantId);
+    headers.authorization = `Bearer ${selectedKey}`;
     Object.assign(headers, additionalHeaders);
-    if (config.tenantGatewayKey && coreKey(tenantId) === config.tenantGatewayKey) {
+    if (config.tenantGatewayKey && selectedKey === config.tenantGatewayKey) {
       // The gateway key has a synthetic tenant. Core therefore needs the
       // requested tenant alongside the signed context even for body-less GET
       // requests. The header is not trusted by itself: Core accepts it only
@@ -395,7 +403,9 @@ export function createCoreHandlers(config, options = {}) {
     const approvalDigest = approvalEnvelope
       ? providerSetupLinkBindingApprovalDigest(approvalEnvelope, identity.tenantId)
       : "";
-    const signingKey = providerSetup ? config.ownerContextSigningSecret : coreKey(identity.tenantId);
+    const signingKey = providerSetup
+      ? config.ownerContextSigningSecret
+      : (config.tenantGatewayKey || coreKey(identity.tenantId));
     const context = {
       assertion_version: OWNER_CONTEXT_ASSERTION_VERSION,
       audience: "nira_core_bridge",
@@ -1284,6 +1294,7 @@ export function createCoreHandlers(config, options = {}) {
       });
       return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           ...requestBody,
           owner_context: ownerContext(identity, ownerRequestBinding("core_action_evaluator", requestBody)),
