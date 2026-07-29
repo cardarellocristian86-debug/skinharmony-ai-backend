@@ -208,6 +208,7 @@ test("MCP publishes bounded non-executing Deep V2 tools without caller-supplied 
     assert.equal(definition.annotations.readOnlyHint, false);
     assert.equal(definition.annotations.destructiveHint, false);
     assert.equal(definition.annotations.openWorldHint, true);
+    assert.equal(definition._meta["skinharmony/externalSideEffect"], false);
     assert.equal("request_attestation" in definition.inputSchema.properties, false);
     assert.equal("evidence_pack_hash" in definition.inputSchema.properties, false);
   }
