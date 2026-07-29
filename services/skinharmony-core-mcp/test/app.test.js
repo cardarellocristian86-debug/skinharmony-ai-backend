@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, requiresGenericWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, requiresGenericWorkPreflight, shouldAttachProviderOnboarding, toolFailure, TOOLS } from "../src/app.js";
 import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
 
 const config = {
@@ -153,7 +153,7 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(preflight);
   assert(preflight.outputSchema?.properties?.core_runtime);
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
-  assert.equal(preflight._meta["openai/outputTemplate"], "ui://skinharmony/openai-provider-setup.html");
+  assert.equal(preflight._meta["openai/outputTemplate"], undefined);
   const nativeProviderTools = [
     "tenant_provider_openai_status",
     "tenant_provider_openai_setup_panel",
@@ -908,6 +908,14 @@ test("publishes the fixed secure OpenAI setup panel", async () => serve(async (b
   assert.equal(panel._meta["openai/outputTemplate"], resource.uri);
 }));
 
+
+test("keeps optional OpenAI onboarding out of normal Nyra and Core work", () => {
+  for (const toolName of ["work_preflight", "core_health", "core_capability_read", "core_gate_action"]) {
+    assert.equal(shouldAttachProviderOnboarding(toolName), false, toolName);
+  }
+  assert.equal(shouldAttachProviderOnboarding("tenant_provider_openai_setup_panel"), true);
+  assert.equal(shouldAttachProviderOnboarding("tenant_provider_openai_setup_link"), true);
+});
 
 test("attaches the fixed setup panel when the tenant key is missing", () => {
   const result = attachProviderOnboarding({ structuredContent: { ok: true } }, { structuredContent: { provider: { configured: false } } });
