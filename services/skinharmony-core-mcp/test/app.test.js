@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, requiresGenericWorkPreflight, TOOLS } from "../src/app.js";
+import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, requiresGenericWorkPreflight, shouldAttachProviderOnboarding, toolFailure, TOOLS } from "../src/app.js";
 import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
 
 const config = {
@@ -35,6 +35,53 @@ test("publishes only a verifiable build identity", () => {
   assert.deepEqual(buildIdentity({ RENDER_GIT_COMMIT: commit }), { commit_sha: commit, commit_verifiable: true });
   assert.equal(buildIdentity({ RENDER_GIT_COMMIT: "not-a-commit" }), null);
   assert.equal(buildIdentity({}), null);
+});
+
+test("classifies dynamic capability client errors as non-retryable", () => {
+  const cases = [
+    ["dynamic_capability_arguments_invalid", 422],
+    ["dynamic_capability_query_required", 422],
+    ["dynamic_capability_candidates_empty", 422],
+    ["dynamic_capability_id_invalid", 422],
+    ["dynamic_capability_reserved_argument", 422],
+    ["dynamic_capability_arguments_too_large", 413],
+    ["dynamic_capability_arguments_too_deep", 413],
+    ["dynamic_capability_catalog_revision_mismatch", 409],
+    ["dynamic_capability_unavailable", 404],
+    ["dynamic_capability_read_only_required", 409],
+    ["dynamic_capability_mutation_required", 409],
+    ["dynamic_capability_not_authorized", 403],
+    ["owner_confirmation_required", 403],
+    ["idempotency_key_required", 422],
+  ];
+  for (const [code, status] of cases) {
+    const error = Object.assign(new Error(code), {
+      violations: [{ path: "$.secret", message: "must remain private" }],
+    });
+    const result = toolFailure(error);
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent.error.code, code);
+    assert.equal(result.structuredContent.error.status, status);
+    assert.equal(result.structuredContent.error.retryable, false);
+    assert.equal(JSON.stringify(result).includes("must remain private"), false);
+  }
+  const invalid = toolFailure(new Error("dynamic_capability_arguments_invalid"));
+  assert.equal(invalid.structuredContent.error.message, "The capability arguments failed schema validation.");
+});
+
+test("keeps only genuine transient failures retryable", () => {
+  const upstream = toolFailure(new Error("core_request_failed:503:core_unavailable"));
+  assert.equal(upstream.structuredContent.error.status, 503);
+  assert.equal(upstream.structuredContent.error.retryable, true);
+  assert.equal(upstream.structuredContent.error.message, "The governed backend is temporarily unavailable.");
+
+  const explicit = toolFailure(Object.assign(new Error("provider_timeout"), { status: 500, retryable: true }));
+  assert.equal(explicit.structuredContent.error.retryable, true);
+
+  const unexpected = toolFailure(new Error("unexpected internal failure"));
+  assert.equal(unexpected.structuredContent.error.status, 500);
+  assert.equal(unexpected.structuredContent.error.retryable, false);
+  assert.equal(unexpected.structuredContent.error.message, "The governed request failed.");
 });
 
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
@@ -106,7 +153,7 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(preflight);
   assert(preflight.outputSchema?.properties?.core_runtime);
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
-  assert.equal(preflight._meta["openai/outputTemplate"], "ui://skinharmony/openai-provider-setup.html");
+  assert.equal(preflight._meta["openai/outputTemplate"], undefined);
   const nativeProviderTools = [
     "tenant_provider_openai_status",
     "tenant_provider_openai_setup_panel",
@@ -216,7 +263,9 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /never include secrets/i);
   assert.match(body.result.instructions, /installed as a ChatGPT connector/);
   assert.match(body.result.instructions, /Never ask for or accept an API key in chat/);
-  assert.match(body.result.instructions, /protected one-time Core page/);
+  assert.match(body.result.instructions, /Nyra and Universal Core operate without an OpenAI API key/);
+  assert.match(body.result.instructions, /Do not call provider status or open setup panels unless the user explicitly asks/);
+  assert.doesNotMatch(body.result.instructions, /protected one-time Core page/);
   assert.match(body.result.instructions, /HOW TO BUILD AN AGENT/);
   assert.match(body.result.instructions, /AUTOMATIC/);
   assert.match(body.result.instructions, /NOT AUTOMATIC/);
@@ -861,6 +910,14 @@ test("publishes the fixed secure OpenAI setup panel", async () => serve(async (b
   assert.equal(panel._meta["openai/outputTemplate"], resource.uri);
 }));
 
+
+test("keeps optional OpenAI onboarding out of normal Nyra and Core work", () => {
+  for (const toolName of ["work_preflight", "core_health", "core_capability_read", "core_gate_action"]) {
+    assert.equal(shouldAttachProviderOnboarding(toolName), false, toolName);
+  }
+  assert.equal(shouldAttachProviderOnboarding("tenant_provider_openai_setup_panel"), true);
+  assert.equal(shouldAttachProviderOnboarding("tenant_provider_openai_setup_link"), true);
+});
 
 test("attaches the fixed setup panel when the tenant key is missing", () => {
   const result = attachProviderOnboarding({ structuredContent: { ok: true } }, { structuredContent: { provider: { configured: false } } });

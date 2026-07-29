@@ -8,7 +8,7 @@ import { validateToolArguments } from "./schema-validation.js";
 import { compactMcpTools } from "./dynamic-capability-router.js";
 
 const SERVER_VERSION = "0.15.0-stable-dynamic-capabilities";
-const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work and summarizes; Universal Core enforces tenant isolation, budget, audit, cancellation and final governance. PROVIDER ONBOARDING: ChatGPT/Codex subscriptions are separate from OpenAI API credits. At the start of every connected conversation call tenant_provider_openai_status. If OpenAI is not configured, open tenant_provider_openai_setup_panel and offer only Collega API key or Non ora. Never ask for or accept an API key in chat or a tool argument: it is entered only on the protected one-time Core page and stored encrypted per tenant. LIVE MULTI-AGENT TEST: this dedicated provider flow is governed natively and does not use work_preflight or the generic shared-memory bootstrap. Treat configured=true plus execution_available=true (also reported as bounded_execution_ready=true) as ready even though the global execution_enabled flag remains false by design. Missing canonical shared-memory files and owner_confirmation_satisfied=false from a separate generic preflight do not deny this fixed flow. If a configured tenant owner explicitly asks to test real multi-agent work, explain that it makes at most three billable sequential calls, then call tenant_provider_openai_multi_agent_smoke_run directly with owner_confirmed=true. It returns a run id immediately and runs only Researcher → Reviewer → Nyra Synthesizer, with a fixed low budget, learning frozen, no browser, no tools, no external actions and no retries. Use tenant_provider_openai_multi_agent_run_read to poll status or read the owner-only result, and tenant_provider_openai_multi_agent_run_cancel to stop it; cancellation propagates immediately to the active call and every remaining stage. Never call work_preflight before provider status, setup, bounded start, read or cancel. All generic-agent and queue workflows remain manual_dry_run unless this dedicated bounded tool is explicitly used. RESEARCH: for current external evidence outside this fixed run, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest reviewed evidence; never treat browsing as part of the three-agent run. HOW TO BUILD AN AGENT: define a narrow role, bounded input, owner-confirmed action, audit and cancellation. AUTOMATIC: generic flows use preflight and shared memory; the provider test uses tenant isolation, a request-bound owner proof, audit, cancellation and the fixed handoff sequence. NOT AUTOMATIC: deploying, browsing, external actions, or generic-agent execution. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
+const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work and summarizes; Universal Core enforces tenant isolation, budget, audit, cancellation and final governance. OPTIONAL OPENAI PROVIDER: Nyra and Universal Core operate without an OpenAI API key. Do not call provider status or open setup panels unless the user explicitly asks to connect OpenAI or run the optional bounded provider workflow. ChatGPT/Codex subscriptions remain separate from OpenAI API credits. Never ask for or accept an API key in chat or a tool argument. LIVE MULTI-AGENT TEST: this dedicated provider flow is governed natively and does not use work_preflight or the generic shared-memory bootstrap. Treat configured=true plus execution_available=true (also reported as bounded_execution_ready=true) as ready even though the global execution_enabled flag remains false by design. Missing canonical shared-memory files and owner_confirmation_satisfied=false from a separate generic preflight do not deny this fixed flow. If a configured tenant owner explicitly asks to test real multi-agent work, explain that it makes at most three billable sequential calls, then call tenant_provider_openai_multi_agent_smoke_run directly with owner_confirmed=true. It returns a run id immediately and runs only Researcher → Reviewer → Nyra Synthesizer, with a fixed low budget, learning frozen, no browser, no tools, no external actions and no retries. Use tenant_provider_openai_multi_agent_run_read to poll status or read the owner-only result, and tenant_provider_openai_multi_agent_run_cancel to stop it; cancellation propagates immediately to the active call and every remaining stage. Never call work_preflight before provider status, setup, bounded start, read or cancel. All generic-agent and queue workflows remain manual_dry_run unless this dedicated bounded tool is explicitly used. RESEARCH: for current external evidence outside this fixed run, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest reviewed evidence; never treat browsing as part of the three-agent run. HOW TO BUILD AN AGENT: define a narrow role, bounded input, owner-confirmed action, audit and cancellation. AUTOMATIC: generic flows use preflight and shared memory; the provider test uses tenant isolation, a request-bound owner proof, audit, cancellation and the fixed handoff sequence. NOT AUTOMATIC: deploying, browsing, external actions, or generic-agent execution. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
 
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "work_preflight",
@@ -30,6 +30,14 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
 
 export function requiresGenericWorkPreflight(toolName) {
   return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(String(toolName || ""));
+}
+const PROVIDER_ONBOARDING_UI_TOOLS = new Set([
+  "tenant_provider_openai_setup_panel",
+  "tenant_provider_openai_setup_link",
+]);
+
+export function shouldAttachProviderOnboarding(toolName) {
+  return PROVIDER_ONBOARDING_UI_TOOLS.has(String(toolName || ""));
 }
 const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "work_preflight",
@@ -209,17 +217,45 @@ function challenge(
   return `Bearer resource_metadata="${metadata}", error="${error}", error_description="${safeDescription}"${scope ? `, scope="${scope}"` : ""}`;
 }
 
+const TOOL_FAILURE_STATUS_BY_CODE = Object.freeze({
+  dynamic_capability_arguments_invalid: 422,
+  dynamic_capability_query_required: 422,
+  dynamic_capability_candidates_empty: 422,
+  dynamic_capability_id_invalid: 422,
+  dynamic_capability_reserved_argument: 422,
+  dynamic_capability_arguments_too_large: 413,
+  dynamic_capability_arguments_too_deep: 413,
+  dynamic_capability_catalog_revision_mismatch: 409,
+  dynamic_capability_unavailable: 404,
+  dynamic_capability_read_only_required: 409,
+  dynamic_capability_mutation_required: 409,
+  dynamic_capability_not_authorized: 403,
+  owner_confirmation_required: 403,
+  idempotency_key_required: 422,
+});
+
 function toolFailure(error) {
   const raw = String(error?.code || error?.message || "tool_execution_failed");
   const core = raw.match(/^core_request_failed:(\d{3}):([a-zA-Z0-9_-]+)$/);
-  const status = Number(error?.status || (core ? core[1] : 500));
+  const mappedStatus = TOOL_FAILURE_STATUS_BY_CODE[raw];
+  const status = Number(error?.status ?? (core ? core[1] : mappedStatus ?? 500));
   const code = core?.[2] || (/^[a-zA-Z0-9_-]{3,80}$/.test(raw) ? raw : "tool_execution_failed");
-  const retryable = error?.retryable === true || status === 429 || status >= 500;
+  const retryable = error?.retryable === true ||
+    status === 429 ||
+    [502, 503, 504].includes(status) ||
+    (Boolean(core) && status >= 500);
+  const message = code === "dynamic_capability_arguments_invalid"
+    ? "The capability arguments failed schema validation."
+    : retryable
+      ? "The governed backend is temporarily unavailable."
+      : status >= 500
+        ? "The governed request failed."
+        : "The governed request was rejected.";
   const payload = {
     ok: false,
     error: {
       code,
-      message: retryable ? "The governed backend is temporarily unavailable." : "The governed request was rejected.",
+      message,
       retryable,
       ...(Number.isFinite(status) ? { status } : {}),
     },
@@ -506,7 +542,11 @@ export function createApp(config, options = {}) {
           : null;
         activeToolCall = { ...activeToolCall, hookContext, preflight };
         const rawResult = await handlers[tool.name](args, callIdentity);
-        const result = attachAgentPresence(attachProviderOnboarding(attachWorkPreflight(rawResult, preflight), hookContext?.providerStatus), agentPresence);
+        const preflightResult = attachWorkPreflight(rawResult, preflight);
+        const providerResult = shouldAttachProviderOnboarding(tool.name)
+          ? attachProviderOnboarding(preflightResult, hookContext?.providerStatus)
+          : preflightResult;
+        const result = attachAgentPresence(providerResult, agentPresence);
         if (typeof afterToolCall === "function") {
           afterToolCallAttempted = true;
           try {
