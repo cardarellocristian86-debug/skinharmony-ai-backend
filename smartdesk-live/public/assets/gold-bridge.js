@@ -1,7 +1,9 @@
 (function () {
   const SCRIPT_ID = "skinharmony-gold-bridge-style";
   const PANEL_ID = "skinharmony-gold-priority-bridge";
-  const ROUTES = new Set(["/", "/dashboard", "/ai-gold"]);
+  // AI Gold owns its own overview read model. Keeping this dashboard bridge
+  // off that route prevents duplicate fan-out on every Gold page entry.
+  const ROUTES = new Set(["/", "/dashboard"]);
   const SETTINGS_PANEL_ID = "skinharmony-admin-tools-bridge";
   const ENTERPRISE_HOME_PANEL_ID = "skinharmony-enterprise-home-bridge";
   const ENTERPRISE_SETTINGS_PANEL_ID = "skinharmony-enterprise-settings-bridge";
@@ -2239,9 +2241,7 @@
     ];
     settingsRenderTimers = [
       window.setTimeout(renderEnterprisePanels, 180),
-      window.setTimeout(renderEnterprisePanels, 520),
-      window.setTimeout(renderSettingsTools, 180),
-      window.setTimeout(renderSettingsTools, 900)
+      window.setTimeout(renderSettingsTools, 180)
     ];
   }
 

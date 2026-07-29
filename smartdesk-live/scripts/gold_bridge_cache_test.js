@@ -21,6 +21,8 @@ assert.doesNotMatch(source, /fetchJson\("\/api\/ai-gold\/customer-intelligence"\
 assert.match(source, /data-gold-refresh/);
 assert.match(source, /scheduleRender\(\{ fromMutation: true \}\)/);
 assert.doesNotMatch(source, /window\.setTimeout\(renderGoldBridge, 900\)/);
+assert.doesNotMatch(source, /window\.setTimeout\(renderEnterprisePanels, 520\)/);
+assert.doesNotMatch(source, /window\.setTimeout\(renderSettingsTools, 900\)/);
 assert.match(source, /if \(goldRenderInFlight\) return goldRenderInFlight/);
 
 console.log(JSON.stringify({ ok: true, runner: "gold_bridge_cache_test" }));

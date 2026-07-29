@@ -11,12 +11,13 @@ const bridge = fs.readFileSync(path.join(assets, "gold-bridge.js"), "utf8");
 const chat = fs.readFileSync(path.join(assets, "nyra-gold-chat-layer.js"), "utf8");
 
 assert.match(bridge, /const ROUTES = new Set\(\["\/", "\/dashboard"\]\)/);
-assert.match(bridge, /const GOLD_OVERVIEW_CACHE_TTL_MS = 120000/);
-assert.match(bridge, /tenant && center && subject \? `\$\{tenant\}:\$\{center\}:\$\{subject\}` : ""/);
-const reader = bridge.slice(bridge.indexOf("async function readGoldOverview"), bridge.indexOf("async function renderGoldBridge"));
+assert.match(bridge, /const GOLD_OVERVIEW_TTL_MS = 2 \* 60 \* 1000/);
+assert.match(bridge, /tenantKey: String\(state\?\.centerId \|\| state\?\.tenantId \|\| ""\)/);
+assert.match(bridge, /goldOverviewCache\.tenantKey === tenantKey && goldOverviewCache\.eventSeq === eventSeq/);
+const reader = bridge.slice(bridge.indexOf("async function buildGoldOverview"), bridge.indexOf("async function refreshUiLanguage"));
 assert.match(reader, /fetchJson\("\/api\/ai-gold\/capabilities"\)[\s\S]*fetchJson\("\/api\/ai-gold\/decision-context"\)/);
 assert.doesNotMatch(reader, /customer-intelligence/);
-assert.match(bridge, /One debounced render replaces the historical 180ms \+ 900ms duplicate/);
+assert.match(bridge, /One debounced[\s\S]*getGoldOverview single-flights the network read/);
 
 const sendStart = chat.indexOf("function sendMessage(raw)");
 const sendEnd = chat.indexOf("function loadSession()", sendStart);
