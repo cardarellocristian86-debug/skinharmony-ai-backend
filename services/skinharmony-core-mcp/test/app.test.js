@@ -263,7 +263,9 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /never include secrets/i);
   assert.match(body.result.instructions, /installed as a ChatGPT connector/);
   assert.match(body.result.instructions, /Never ask for or accept an API key in chat/);
-  assert.match(body.result.instructions, /protected one-time Core page/);
+  assert.match(body.result.instructions, /Nyra and Universal Core operate without an OpenAI API key/);
+  assert.match(body.result.instructions, /Do not call provider status or open setup panels unless the user explicitly asks/);
+  assert.doesNotMatch(body.result.instructions, /protected one-time Core page/);
   assert.match(body.result.instructions, /HOW TO BUILD AN AGENT/);
   assert.match(body.result.instructions, /AUTOMATIC/);
   assert.match(body.result.instructions, /NOT AUTOMATIC/);
