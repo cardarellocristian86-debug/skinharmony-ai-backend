@@ -200,9 +200,24 @@ const nyraDeepV2Claim = object({
   id: identifier,
   kind: { type: "string", enum: ["fact", "inference", "hypothesis"] },
   text: text(2_000),
+  facts: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: text(2_000) },
+  claim_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  semantic_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  content_tag: { type: "string", pattern: "^[a-z][a-z0-9_]{1,159}$" },
+  capability_spec_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
   source_ids: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: identifier },
   confidence: probability,
-}, ["id", "kind", "text", "source_ids"]);
+}, [
+  "id",
+  "kind",
+  "text",
+  "facts",
+  "claim_hash",
+  "semantic_hash",
+  "content_tag",
+  "capability_spec_hash",
+  "source_ids",
+]);
 const nyraDeepV2EvidencePack = object({
   research_question: text(2_000),
   sources: { type: "array", minItems: 1, maxItems: 20, items: nyraDeepV2Source },

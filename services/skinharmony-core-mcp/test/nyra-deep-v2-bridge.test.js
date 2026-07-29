@@ -213,6 +213,21 @@ test("MCP publishes bounded non-executing Deep V2 tools without caller-supplied 
     assert.equal("evidence_pack_hash" in definition.inputSchema.properties, false);
   }
   const evaluate = TOOLS.find((candidate) => candidate.name === "nyra_v2_evaluate");
+  const prepare = TOOLS.find((candidate) => candidate.name === "nyra_v2_evidence_prepare");
+  const claimSchema = prepare.inputSchema.properties.evidence_pack.properties.claims.items;
+  for (const field of [
+    "facts",
+    "claim_hash",
+    "semantic_hash",
+    "content_tag",
+    "capability_spec_hash",
+  ]) {
+    assert.equal(claimSchema.required.includes(field), true);
+  }
+  assert.equal(claimSchema.properties.claim_hash.pattern, "^[a-f0-9]{64}$");
+  assert.equal(claimSchema.properties.semantic_hash.pattern, "^[a-f0-9]{64}$");
+  assert.equal(claimSchema.properties.content_tag.pattern, "^[a-z][a-z0-9_]{1,159}$");
+  assert.equal(claimSchema.properties.capability_spec_hash.pattern, "^[a-f0-9]{64}$");
   assert.equal("evidence_pack" in evaluate.inputSchema.properties, false);
   assert.equal(evaluate.inputSchema.properties.evidence_refs.minItems, 1);
 });
