@@ -73,6 +73,8 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
   const ownerSubject = "google-oauth2|owner";
   const ownerFixture = auth0Fixture({
     sub: ownerSubject,
+    iat: Math.floor(Date.now() / 1000),
+    auth_time: Math.floor(Date.now() / 1000),
     scope: "core:read",
     azp: "dynamic-chatgpt-client",
     "https://skinharmony.it/tenant_id": "codexai",
@@ -81,6 +83,7 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
     ...ownerFixture.config,
     codexKeys: [],
     supportedScopes: ["core:read", "core:govern", "workspace:write"],
+    oauthOwnerTenantBindings: { [ownerSubject]: "codexai" },
     godModeEnabled: true,
     godModeEmergencyStop: false,
     godModeTenantIds: ["owner-private", "codexai"],
@@ -93,6 +96,16 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
   assert.equal(ownerIdentity.godMode, true);
   assert.equal(ownerIdentity.providerSetupOwner, true);
   assert.equal(ownerIdentity.clientId, "dynamic-chatgpt-client");
+  const elevatedOwnerIdentity = createAuthenticator(ownerConfig, { jwksCache: ownerFixture.cache });
+  const verifiedOwner = await elevatedOwnerIdentity(`Bearer ${ownerFixture.token}`);
+  const confirmedOwner = elevatedOwnerIdentity.elevateOAuthOwner(verifiedOwner, {
+    confirmed: true,
+    confirmationReference: "verified root dynamic action",
+    requestBinding: "core_capability_invoke",
+  });
+  assert.equal(confirmedOwner.role, "owner_root");
+  assert.equal(confirmedOwner.godMode, true);
+  assert.equal(confirmedOwner.oauthOwnerElevated, true);
 
   const otherFixture = auth0Fixture({
     sub: "google-oauth2|another-user",
