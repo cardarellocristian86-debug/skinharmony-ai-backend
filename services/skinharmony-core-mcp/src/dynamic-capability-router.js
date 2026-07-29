@@ -11,17 +11,12 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "core_semantic_select",
   "core_capability_read",
   "core_capability_invoke",
-  "tenant_provider_openai_status",
-  "tenant_provider_openai_setup_panel",
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_multi_agent_smoke_run",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
 ]);
 
 const DIRECT_ONLY = new Set(COMPACT_MCP_TOOL_NAMES);
 const FORBIDDEN_DYNAMIC_TOOLS = new Set([
   "core_gate_action",
+  "tenant_provider_openai_status",
   "tenant_provider_openai_setup_link",
   "tenant_provider_openai_setup_panel",
   "tenant_provider_openai_multi_agent_smoke_run",

@@ -67,7 +67,8 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   const compact = compactMcpTools(TOOLS, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 13);
+  assert.equal(compact.length, 7);
+  assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
   assert(Buffer.byteLength(JSON.stringify({ tools: compact })) < 64 * 1024);
 });
 
