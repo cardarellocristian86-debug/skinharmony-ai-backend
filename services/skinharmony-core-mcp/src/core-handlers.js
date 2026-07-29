@@ -1352,6 +1352,20 @@ export function createCoreHandlers(config, options = {}) {
       method: "POST",
       body: { cases: args.cases, tenant_id: identity.tenantId },
     })),
+    work_continuity_create: async (args, identity) => textResult(await coreRequest("/v1/work-continuity/works", identity.tenantId, { method: "POST", body: args })),
+    work_continuity_read: async (args, identity) => textResult(await coreRequest(`/v1/work-continuity/works/${encodeURIComponent(args.work_id)}`, identity.tenantId)),
+    work_continuity_event: async (args, identity) => {
+      const { work_id, ...body } = args;
+      return textResult(await coreRequest(`/v1/work-continuity/works/${encodeURIComponent(work_id)}/events`, identity.tenantId, { method: "POST", body }));
+    },
+    work_continuity_checkpoint: async (args, identity) => {
+      const { work_id, ...body } = args;
+      return textResult(await coreRequest(`/v1/work-continuity/works/${encodeURIComponent(work_id)}/checkpoints`, identity.tenantId, { method: "POST", body }));
+    },
+    work_continuity_resume: async (args, identity) => {
+      const { work_id, ...body } = args;
+      return textResult(await coreRequest(`/v1/work-continuity/works/${encodeURIComponent(work_id)}/resume`, identity.tenantId, { method: "POST", body }));
+    },
     core_gate_action: async (args, identity) => {
       const confirmed = hasExplicitVerifiedOwnerConfirmation(identity);
       const confirmationReference = verifiedConfirmationReference(identity);
