@@ -271,5 +271,5 @@ jobs:
         with:
           name: nyra-deep-branch-v2-verification-${{ github.run_id }}
           path: ${{ runner.temp }}/nyra-deep-branch-v2/reports
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 14
