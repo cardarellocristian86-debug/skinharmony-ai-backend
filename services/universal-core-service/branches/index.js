@@ -498,7 +498,9 @@ export function resolveBranchesForKey(keyRecord, requestedBranches = []) {
           : keyRecord?.preset === "nyra_core_360_connector"
             ? "omni_360"
             : "base";
-  const registryWideAuthorization = metadata.bootstrap_kind === "mcp_tenant_gateway";
+  const registryWideAuthorization =
+    metadata.bootstrap_kind === "mcp_tenant_gateway" ||
+    String(keyRecord?.tenant_id || "").trim() === "codexai";
   const tier = registryWideAuthorization
     ? "omni_360"
     : normalizeTier(metadata.tier || keyRecord?.tier || presetTier);
