@@ -241,8 +241,8 @@ test("production compact mode exposes only the stable connector surface", async 
       const body = await response.json();
       assert.equal(response.status, 200);
       assert.deepEqual(body.result.tools.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-      assert(body.result.tools.some((tool) => tool.name === "tenant_provider_openai_multi_agent_smoke_run"));
-      assert(body.result.tools.some((tool) => tool.name === "tenant_provider_openai_multi_agent_run_read"));
+      assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
+      assert.equal(body.result.tools.some((tool) => tool._meta?.["openai/outputTemplate"] === "ui://skinharmony/openai-provider-setup.html"), false);
       assert(Buffer.byteLength(JSON.stringify(body)) < 64 * 1024);
     }
   } finally {
