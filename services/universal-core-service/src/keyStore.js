@@ -34,7 +34,8 @@ const PROVIDER_SETUP_LINK_SERVICE_KIND = "provider_setup_link_service";
 const PROVIDER_SETUP_LINK_SERVICE_TENANT = "__provider_setup_service__";
 const MCP_TENANT_GATEWAY_KIND = "mcp_tenant_gateway";
 const MCP_TENANT_GATEWAY_TENANT = "__mcp_tenant_gateway__";
-const MCP_TENANT_GATEWAY_SCOPES = Object.freeze([...DEFAULT_AUTOMATION_SCOPES]);
+const LEGACY_MCP_TENANT_GATEWAY_SCOPES = Object.freeze([...DEFAULT_AUTOMATION_SCOPES]);
+const MCP_TENANT_GATEWAY_SCOPES = Object.freeze([...DEFAULT_AUTOMATION_SCOPES, SCOPES.OWNER_ASSERTION]);
 const PROVIDER_SETUP_LINK_SCOPES = Object.freeze([SCOPES.WRITE_PROVIDER_SETUP_LINK]);
 
 function isDedicatedProviderSetupLinkRecord(record, tenantId, keyHash) {
@@ -74,6 +75,18 @@ export function isMcpTenantGatewayRecord(record) {
     Array.isArray(record.allowed_scopes) &&
     record.allowed_scopes.length === MCP_TENANT_GATEWAY_SCOPES.length &&
     MCP_TENANT_GATEWAY_SCOPES.every((scope) => record.allowed_scopes.includes(scope)) &&
+    record.metadata?.bootstrap_kind === MCP_TENANT_GATEWAY_KIND,
+  );
+}
+
+function isLegacyMcpTenantGatewayRecord(record) {
+  return Boolean(
+    record && record.tenant_id === MCP_TENANT_GATEWAY_TENANT &&
+    record.key_type === "connector" && record.status === "active" &&
+    record.expires_at === null && record.preset === null && record.brand_scope === "" &&
+    Array.isArray(record.allowed_scopes) &&
+    record.allowed_scopes.length === LEGACY_MCP_TENANT_GATEWAY_SCOPES.length &&
+    LEGACY_MCP_TENANT_GATEWAY_SCOPES.every((scope) => record.allowed_scopes.includes(scope)) &&
     record.metadata?.bootstrap_kind === MCP_TENANT_GATEWAY_KIND,
   );
 }
@@ -270,6 +283,16 @@ export function createKeyStore(storageRoot, audit) {
     const records = listAll();
     const existing = records.find((record) => record.key_hash === keyHash);
     if (existing) {
+      if (isLegacyMcpTenantGatewayRecord(existing)) {
+        existing.allowed_scopes = [...MCP_TENANT_GATEWAY_SCOPES];
+        saveAll(records);
+        audit?.append("core_mcp_tenant_gateway_key_owner_assertion_aligned", {
+          key_id: existing.key_id,
+          key_type: existing.key_type,
+          scopes: existing.allowed_scopes,
+        });
+        return { created: false, migrated: true, record: publicRecord(existing) };
+      }
       if (!isMcpTenantGatewayRecord(existing)) throw new Error("mcp_tenant_gateway_key_conflict");
       return { created: false, record: publicRecord(existing) };
     }
