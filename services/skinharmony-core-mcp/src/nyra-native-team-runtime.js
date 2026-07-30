@@ -32,6 +32,17 @@ function idempotencyKey(value) {
   return identifier(value, "idempotency_key");
 }
 
+function selectedBlueprints(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > NYRA_NATIVE_TEAM_BLUEPRINTS.length) {
+    throw new Error("nyra_native_team_blueprints_invalid");
+  }
+  const requested = [...new Set(value.map((item) => identifier(item, "blueprint_id")))].sort();
+  const catalog = new Map(NYRA_NATIVE_TEAM_BLUEPRINTS.map((item) => [item.blueprint_id, item]));
+  const blueprints = requested.map((id) => catalog.get(id));
+  if (blueprints.some((item) => !item)) throw new Error("nyra_native_team_blueprint_unknown");
+  return blueprints;
+}
+
 const blueprint = ({ id, role, label, description, capabilities }) => Object.freeze({
   blueprint_id: id,
   blueprint_version: NYRA_NATIVE_TEAM_VERSION,
@@ -281,6 +292,103 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
     return result.rows[0] || null;
   }
 
+  // This private-by-default runtime surface is deliberately not exposed as an
+  // MCP tool. It lets Nyra's Work Autopilot materialize only the specialists
+  // selected for one existing Work, while keeping the owner-gated package
+  // enablement and every zero-privilege property intact.
+  async function materializeForWork(identity, input = {}) {
+    const tenantId = tenant(identity?.tenantId);
+    const workId = uuid(input.work_id, "work_id");
+    const projectId = identifier(input.project_id, "project_id");
+    const actor = identifier(input.agent_id || identity?.subject || "nyra_autopilot", "agent_id");
+    const key = idempotencyKey(input.idempotency_key);
+    const blueprints = selectedBlueprints(input.blueprint_ids || NYRA_NATIVE_TEAM_BLUEPRINTS.map((item) => item.blueprint_id));
+    const context = { tenantId, workId, projectId, actor };
+    return transaction(async (client) => {
+      const work = await client.query(`SELECT project_id,status FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, workId]);
+      if (!work.rows[0]) throw new Error("continuity_work_not_found");
+      if (work.rows[0].project_id !== projectId) throw new Error("nyra_native_team_project_mismatch");
+      const activePackage = await packageFor(client, tenantId);
+      if (activePackage?.status !== "enabled") throw new Error("nyra_native_team_not_enabled");
+      const request = {
+        project_id: projectId,
+        work_id: workId,
+        blueprint_digest: BLUEPRINT_DIGEST,
+        blueprint_ids: blueprints.map((item) => item.blueprint_id),
+      };
+      const legacyBootstrapRequest = {
+        project_id: projectId,
+        work_id: workId,
+        blueprint_digest: BLUEPRINT_DIGEST,
+      };
+      const existing = await client.query(`SELECT request_digest,result FROM core_nyra_native_team_idempotency
+        WHERE tenant_id=$1 AND work_id=$2 AND idempotency_key=$3`, [tenantId, workId, key]);
+      if (existing.rows[0]) {
+        const matchesCurrent = existing.rows[0].request_digest === digest(request);
+        const matchesLegacyBootstrap = input.receipt_event_type === "native_team_bootstrapped" &&
+          existing.rows[0].request_digest === digest(legacyBootstrapRequest);
+        if (!matchesCurrent && !matchesLegacyBootstrap) throw new Error("idempotency_key_conflict");
+        return { ...existing.rows[0].result, idempotent_replay: true };
+      }
+      const prior = await client.query(`SELECT agent_instance_id,blueprint_id,blueprint_version,role,parent_kind,parent_agent_id,
+        status,execution_provider,execution_mode,model_invocation_allowed,external_action_allowed,core_gate_required,
+        capability_allowlist,tool_allowlist,memory_scope,learning_mode,created_at
+        FROM core_nyra_agent_instances WHERE tenant_id=$1 AND work_id=$2 ORDER BY blueprint_id FOR UPDATE`, [tenantId, workId]);
+      const existingByBlueprint = new Map(prior.rows.map((row) => [row.blueprint_id, row]));
+      const instances = [];
+      const createdBlueprintIds = [];
+      for (const spec of blueprints) {
+        const priorInstance = existingByBlueprint.get(spec.blueprint_id);
+        if (priorInstance) {
+          instances.push(publicInstance(priorInstance));
+          continue;
+        }
+        const instanceId = crypto.randomUUID();
+        const inserted = await client.query(`INSERT INTO core_nyra_agent_instances
+          (tenant_id,project_id,work_id,agent_instance_id,blueprint_id,blueprint_version,blueprint_digest,role,parent_kind,parent_agent_id,
+           status,execution_provider,execution_mode,model_invocation_allowed,external_action_allowed,core_gate_required,
+           capability_allowlist,tool_allowlist,memory_scope,learning_mode,created_by)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'nyra',$9,'ready',$10,'disabled',false,false,true,$11::jsonb,$12::jsonb,$13,'frozen',$14)
+          RETURNING agent_instance_id,blueprint_id,blueprint_version,role,parent_kind,parent_agent_id,status,execution_provider,
+            execution_mode,model_invocation_allowed,external_action_allowed,core_gate_required,capability_allowlist,tool_allowlist,memory_scope,learning_mode,created_at`, [
+          tenantId, projectId, workId, instanceId, spec.blueprint_id, spec.blueprint_version, BLUEPRINT_DIGEST,
+          spec.role, NYRA_NATIVE_TEAM_PARENT_ID, spec.execution_provider, JSON.stringify(spec.capability_allowlist),
+          JSON.stringify(spec.tool_allowlist), spec.memory_scope, actor,
+        ]);
+        instances.push(publicInstance(inserted.rows[0]));
+        createdBlueprintIds.push(spec.blueprint_id);
+      }
+      const receipt = await appendReceipt(client, context, input.receipt_event_type || "native_team_materialized", {
+        project_id: projectId,
+        package_id: NYRA_NATIVE_TEAM_PACKAGE_ID,
+        package_version: NYRA_NATIVE_TEAM_VERSION,
+        blueprint_digest: BLUEPRINT_DIGEST,
+        selected_blueprint_ids: blueprints.map((item) => item.blueprint_id),
+        created_blueprint_ids: createdBlueprintIds,
+        execution_mode: "disabled",
+        model_invocation_allowed: false,
+        external_action_allowed: false,
+      });
+      const result = {
+        tenant_id: tenantId,
+        project_id: projectId,
+        work_id: workId,
+        parent: { kind: "nyra", agent_id: NYRA_NATIVE_TEAM_PARENT_ID },
+        package: NYRA_NATIVE_TEAM_PACKAGE_ID,
+        blueprint_digest: BLUEPRINT_DIGEST,
+        instances,
+        created_blueprint_ids: createdBlueprintIds,
+        receipt,
+        execution_authorized: false,
+      };
+      await client.query(`INSERT INTO core_nyra_native_team_idempotency
+        (tenant_id,work_id,idempotency_key,request_digest,result) VALUES ($1,$2,$3,$4,$5::jsonb)`,
+      [tenantId, workId, key, digest(request), JSON.stringify(result)]);
+      return result;
+    });
+  }
+
   return {
     schemaSql: CREATE_SCHEMA_SQL,
     blueprintCatalog: nyraNativeTeamBlueprintCatalog,
@@ -328,66 +436,14 @@ export function createNyraNativeTeamRuntime(config = {}, options = {}) {
     },
 
     async bootstrap(identity, input = {}) {
-      const tenantId = tenant(identity?.tenantId);
-      const workId = uuid(input.work_id, "work_id");
-      const projectId = identifier(input.project_id, "project_id");
-      const actor = identifier(input.agent_id || identity?.subject || "connected_ai", "agent_id");
-      const key = idempotencyKey(input.idempotency_key);
-      const context = { tenantId, workId, projectId, actor };
-      return transaction(async (client) => {
-        const work = await client.query(`SELECT project_id,status FROM core_continuity_works
-          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, workId]);
-        if (!work.rows[0]) throw new Error("continuity_work_not_found");
-        if (work.rows[0].project_id !== projectId) throw new Error("nyra_native_team_project_mismatch");
-        const activePackage = await packageFor(client, tenantId);
-        if (activePackage?.status !== "enabled") throw new Error("nyra_native_team_not_enabled");
-        const request = { project_id: projectId, work_id: workId, blueprint_digest: BLUEPRINT_DIGEST };
-        const existing = await client.query(`SELECT request_digest,result FROM core_nyra_native_team_idempotency
-          WHERE tenant_id=$1 AND work_id=$2 AND idempotency_key=$3`, [tenantId, workId, key]);
-        if (existing.rows[0]) {
-          if (existing.rows[0].request_digest !== digest(request)) throw new Error("idempotency_key_conflict");
-          return { ...existing.rows[0].result, idempotent_replay: true };
-        }
-        const prior = await client.query(`SELECT agent_instance_id,blueprint_id,blueprint_version,role,parent_kind,parent_agent_id,
-          status,execution_provider,execution_mode,model_invocation_allowed,external_action_allowed,core_gate_required,
-          capability_allowlist,tool_allowlist,memory_scope,learning_mode,created_at
-          FROM core_nyra_agent_instances WHERE tenant_id=$1 AND work_id=$2 ORDER BY blueprint_id`, [tenantId, workId]);
-        if (prior.rows.length) throw new Error("nyra_native_team_already_bootstrapped");
-        const instances = [];
-        for (const spec of NYRA_NATIVE_TEAM_BLUEPRINTS) {
-          const instanceId = crypto.randomUUID();
-          const inserted = await client.query(`INSERT INTO core_nyra_agent_instances
-            (tenant_id,project_id,work_id,agent_instance_id,blueprint_id,blueprint_version,blueprint_digest,role,parent_kind,parent_agent_id,
-             status,execution_provider,execution_mode,model_invocation_allowed,external_action_allowed,core_gate_required,
-             capability_allowlist,tool_allowlist,memory_scope,learning_mode,created_by)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'nyra',$9,'ready',$10,'disabled',false,false,true,$11::jsonb,$12::jsonb,$13,'frozen',$14)
-            RETURNING agent_instance_id,blueprint_id,blueprint_version,role,parent_kind,parent_agent_id,status,execution_provider,
-              execution_mode,model_invocation_allowed,external_action_allowed,core_gate_required,capability_allowlist,tool_allowlist,memory_scope,learning_mode,created_at`, [
-            tenantId, projectId, workId, instanceId, spec.blueprint_id, spec.blueprint_version, BLUEPRINT_DIGEST,
-            spec.role, NYRA_NATIVE_TEAM_PARENT_ID, spec.execution_provider, JSON.stringify(spec.capability_allowlist),
-            JSON.stringify(spec.tool_allowlist), spec.memory_scope, actor,
-          ]);
-          instances.push(publicInstance(inserted.rows[0]));
-        }
-        const receipt = await appendReceipt(client, context, "native_team_bootstrapped", {
-          project_id: projectId,
-          package_id: NYRA_NATIVE_TEAM_PACKAGE_ID,
-          package_version: NYRA_NATIVE_TEAM_VERSION,
-          blueprint_digest: BLUEPRINT_DIGEST,
-          instance_count: instances.length,
-          execution_mode: "disabled",
-          model_invocation_allowed: false,
-          external_action_allowed: false,
-        });
-        const result = { tenant_id: tenantId, project_id: projectId, work_id: workId,
-          parent: { kind: "nyra", agent_id: NYRA_NATIVE_TEAM_PARENT_ID }, package: NYRA_NATIVE_TEAM_PACKAGE_ID,
-          blueprint_digest: BLUEPRINT_DIGEST, instances, receipt, execution_authorized: false };
-        await client.query(`INSERT INTO core_nyra_native_team_idempotency
-          (tenant_id,work_id,idempotency_key,request_digest,result) VALUES ($1,$2,$3,$4,$5::jsonb)`,
-        [tenantId, workId, key, digest(request), JSON.stringify(result)]);
-        return result;
+      return materializeForWork(identity, {
+        ...input,
+        blueprint_ids: NYRA_NATIVE_TEAM_BLUEPRINTS.map((item) => item.blueprint_id),
+        receipt_event_type: "native_team_bootstrapped",
       });
     },
+
+    materializeForWork,
 
     async read(identity, input = {}) {
       const tenantId = tenant(identity?.tenantId);

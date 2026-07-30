@@ -86,6 +86,8 @@ test("keeps host-native continuity opt-in independent from legacy environment va
   });
   assert.equal(enabled.workContinuityAutoCaptureEnabled, true);
   assert.equal(enabled.hostNativeAgentProtocolEnabled, true);
+  assert.equal(enabled.mandatoryAgentPresenceEnabled, false);
+  assert.equal(loadConfig({ MANDATORY_AGENT_PRESENCE_ENABLED: "true" }).mandatoryAgentPresenceEnabled, true);
   assert.equal(Object.hasOwn(enabled, "openaiApiKey"), false);
 });
 
