@@ -278,13 +278,26 @@ test("action evaluator rejects a caller boolean and accepts only a scoped reques
     allowed_scopes: ["read:decision", "owner:assertion"],
   });
   const signedBody = { ...base, owner_confirmed: true };
+  const ownerContext = signedOwnerContext(
+    ownerScoped.json.key,
+    "codexai",
+    signedBody,
+    "core_action_evaluator",
+  );
   const authorized = await request("POST", "/v1/action-evaluator", {
     ...signedBody,
-    owner_context: signedOwnerContext(ownerScoped.json.key, "codexai", signedBody, "core_action_evaluator"),
+    owner_context: ownerContext,
   }, ownerScoped.json.key);
   assert.equal(authorized.status, 200);
   assert.equal(authorized.json.authorization.allowed, true);
   assert.equal(authorized.json.authorization.scope, "reversible_owner_confirmed_core_connector_key_rotation");
+
+  const exactReplay = await request("POST", "/v1/action-evaluator", {
+    ...signedBody,
+    owner_context: ownerContext,
+  }, ownerScoped.json.key);
+  assert.equal(exactReplay.status, 409);
+  assert.equal(exactReplay.json.error, "owner_confirmation_replayed");
 
   const changed = { ...signedBody, target_scope: "write:snapshot" };
   const replay = await request("POST", "/v1/action-evaluator", {
@@ -515,6 +528,13 @@ test("MCP default tenant correction rejects automation and requires an exact exp
   assert.equal(authorized.status, 200);
   assert.equal(authorized.json.authorization.allowed, true);
   assert.equal(authorized.json.authorization.scope, "reversible_owner_confirmed_mcp_default_tenant_correction");
+
+  const exactReplay = await request("POST", "/v1/action-evaluator", {
+    ...signedBody,
+    owner_context: ownerContext,
+  }, ownerScoped.json.key);
+  assert.equal(exactReplay.status, 409);
+  assert.equal(exactReplay.json.error, "owner_confirmation_replayed");
 
   const replay = await request("POST", "/v1/action-evaluator", {
     ...signedBody,

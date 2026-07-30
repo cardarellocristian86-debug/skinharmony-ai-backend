@@ -20,6 +20,8 @@ test("Nyra exposes an horizontal Core-governed neural branch contract", () => {
   assert.equal(contract.realtime_research.primary_provider, "host_chatgpt_or_codex_web");
   assert.equal(contract.realtime_research.mcp_entrypoint, "nyra_research_plan");
   assert.equal(contract.realtime_research.automatic_global_promotion, false);
+  assert.equal(contract.realtime_research.server_model_execution, "retired");
+  assert.equal(contract.realtime_research.server_model_execution_environment_toggle, false);
   assert.equal(contract.authority.may_open_branches, false);
   assert.equal(contract.authority.may_begin_work_without_preflight, false);
   assert.equal(contract.authority.may_promote_unreviewed_research, false);

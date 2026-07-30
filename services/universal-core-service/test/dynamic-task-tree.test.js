@@ -102,6 +102,79 @@ test("DTT contract is deterministic, bounded and non-executing", () => {
   assert.equal(first.limits.max_parallel, 2);
 });
 
+test("DTT derives max depth from the real parent and dependency chain", () => {
+  const falsifiedDepthNodes = [
+    { node_id: "n0", kind: "analysis", task: "root", depth: 0 },
+    { node_id: "n1", kind: "analysis", task: "parent edge", parent_node_id: "n0", depth: 0 },
+    { node_id: "n2", kind: "analysis", task: "dependency edge", dependencies: ["n1"], depth: 0 },
+    { node_id: "n3", kind: "analysis", task: "too deep", parent_node_id: "n2", depth: 0 },
+  ];
+  assert.throws(() => buildDynamicTaskTreeContract({
+    tenant_id: "tenant-a",
+    objective: "Reject a forged shallow chain",
+    limits: { max_depth: 2 },
+    nodes: falsifiedDepthNodes,
+  }), /max_depth_exceeded/);
+
+  const derived = buildDynamicTaskTreeContract({
+    tenant_id: "tenant-a",
+    objective: "Derive the canonical depth",
+    limits: { max_depth: 3 },
+    nodes: falsifiedDepthNodes,
+  });
+  assert.deepEqual(derived.nodes.map((node) => node.depth), [0, 1, 2, 3]);
+  const honestlyDeclared = buildDynamicTaskTreeContract({
+    tenant_id: "tenant-a",
+    objective: "Derive the canonical depth",
+    limits: { max_depth: 3 },
+    nodes: falsifiedDepthNodes.map((node, depth) => ({ ...node, depth })),
+  });
+  assert.equal(derived.tree_id, honestlyDeclared.tree_id);
+  assert.equal(derived.execution.authorized, false);
+});
+
+test("DTT fails closed when roots or work items exceed max parallel", () => {
+  assert.throws(() => buildDynamicTaskTreeContract({
+    tenant_id: "tenant-a",
+    objective: "Reject excessive root concurrency",
+    limits: { max_parallel: 2 },
+    nodes: ["root-a", "root-b", "root-c"].map((node_id) => ({
+      node_id, kind: "analysis", task: node_id, depth: 0,
+    })),
+  }), /max_parallel_exceeded/);
+
+  assert.throws(() => buildDynamicTaskTreeContract({
+    tenant_id: "tenant-a",
+    objective: "Reject excessive work item concurrency",
+    limits: { max_parallel: 2 },
+    nodes: [
+      { node_id: "root", kind: "analysis", task: "root", depth: 0 },
+      ...["work-a", "work-b", "work-c"].map((node_id) => ({
+        node_id,
+        kind: "analysis",
+        task: node_id,
+        parent_node_id: "root",
+        dependencies: ["root"],
+        depth: 0,
+      })),
+    ],
+  }), /max_parallel_exceeded/);
+
+  const bounded = buildDynamicTaskTreeContract({
+    tenant_id: "tenant-a",
+    objective: "Keep bounded work advisory",
+    limits: { max_parallel: 2 },
+    nodes: [
+      { node_id: "root", kind: "analysis", task: "root", depth: 0 },
+      ...["work-a", "work-b"].map((node_id) => ({
+        node_id, kind: "analysis", task: node_id, dependencies: ["root"], depth: 0,
+      })),
+    ],
+  });
+  assert.equal(bounded.execution.authorized, false);
+  assert.equal(bounded.execution.mode, "proposal_only");
+});
+
 test("DTT rejects cycles, missing dependencies, fanout and aggregate budgets", () => {
   assert.throws(() => buildDynamicTaskTreeContract({
     tenant_id: "tenant-a",

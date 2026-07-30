@@ -3,9 +3,14 @@ services:
     name: skinharmony-core-mcp
     env: node
     plan: starter
+    repo: https://github.com/cardarellocristian86-debug/skinharmony-ai-backend
+    branch: main
     buildCommand: npm ci
     startCommand: npm run core:mcp
     healthCheckPath: /healthz
+    # A merge/push to the linked main branch deploys only after repository CI
+    # checks pass. This trigger does not replace Core or host authorization.
+    autoDeployTrigger: checksPass
     envVars:
       - key: NODE_ENV
         value: production
@@ -15,16 +20,6 @@ services:
         sync: false
       - key: AUTH0_AUDIENCE
         value: https://skinharmony-core-mcp.onrender.com/mcp
-      - key: AUTH0_BROWSER_CLIENT_ID
-        sync: false
-      - key: AUTH0_BROWSER_AUDIENCE
-        sync: false
-      - key: AUTH0_BROWSER_CLIENT_SECRET
-        sync: false
-      - key: AUTH0_BROWSER_CALLBACK_URL
-        value: https://skinharmony-core-mcp.onrender.com/connect/openai/callback
-      - key: AUTH0_BROWSER_STATE_SECRET
-        generateValue: true
       - key: AUTH0_OWNER_TENANT_BINDINGS_JSON
         sync: false
       # Server-side subject memberships for shared tenant collaboration.
@@ -42,6 +37,13 @@ services:
         value: codexai
       - key: MCP_SUPPORTED_SCOPES
         value: core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate
+      # This is a manually provisioned service bearer for the native Codex /
+      # ChatGPT host connection. It is not an OpenAI API key and is never
+      # returned by MCP tools, Core, Nyra or the continuity memory.
+      - key: CODEX_BEARER_KEYS
+        sync: false
+      - key: CODEX_BEARER_SCOPES
+        value: core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate
       - key: NYRA_GOD_MODE_ENABLED
         value: "true"
       - key: NYRA_GOD_MODE_TENANT_IDS
@@ -56,11 +58,15 @@ services:
         sync: false
       - key: UNIVERSAL_CORE_KEY
         sync: false
-      - key: CORE_PROVIDER_SETUP_LINK_KEY
-        generateValue: true
-      - key: CORE_PROVIDER_SETUP_LINK_SERVICE_KEY
+      # Presence signatures and fingerprints must never reuse a Core bearer or
+      # another host-native secret.
+      - key: AGENT_SIGNATURE_SECRET
         generateValue: true
       - key: CORE_MCP_TENANT_GATEWAY_KEY
+        generateValue: true
+      # Dedicated MCP→Core tenant-context signature. Keep it distinct from
+      # the gateway bearer, owner confirmation and agent identity secrets.
+      - key: CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET
         generateValue: true
       - key: MCP_SELF_SERVICE_TENANTS_ENABLED
         value: "true"
@@ -74,8 +80,9 @@ services:
         generateValue: true
       - key: DTT_AGENT_IDENTITY_SIGNING_SECRET
         generateValue: true
-      # Dedicated MCP-to-Core Deep V2 request signature. This is not an
-      # OpenAI key and must match the value configured on Universal Core.
+      # Dedicated MCP→Core Deep V2 request signature. Universal Core consumes
+      # the same generated value through an internal Render reference. It is
+      # an internal continuity signature, not a model-provider credential.
       - key: CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
         generateValue: true
       - key: SUITE_CONTROL_PLANE_URL
@@ -106,13 +113,9 @@ services:
         sync: false
       - key: RESEARCH_RETENTION_DAYS
         value: "365"
-      - key: NYRA_OPENAI_RESEARCH_ENABLED
-        value: "false"
-      - key: NYRA_OPENAI_RESEARCH_MODEL
-        value: gpt-5.6
-      - key: NYRA_OPENAI_RESEARCH_TIMEOUT_MS
-        value: "90000"
-      - key: NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR
-        value: "10"
-      - key: OPENAI_API_KEY
-        sync: false
+      # The code defaults both continuity features to false. The production
+      # Blueprint opts in explicitly; neither flag enables a model provider.
+      - key: WORK_CONTINUITY_AUTO_CAPTURE_ENABLED
+        value: "true"
+      - key: HOST_NATIVE_AGENT_PROTOCOL_ENABLED
+        value: "true"

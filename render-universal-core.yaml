@@ -3,13 +3,18 @@ services:
     name: skinharmony-universal-core
     env: node
     plan: starter
-    # The first bounded provider runner keeps active cancellation state only
-    # in this Core process. Pin it explicitly until a shared worker lease is
-    # introduced; the attached persistent disk is likewise single-instance.
+    repo: https://github.com/cardarellocristian86-debug/skinharmony-ai-backend
+    branch: main
+    # The bounded provider runner and host-native governance store keep
+    # restart-safe state on this service's disk. Pin the service explicitly
+    # until both lifecycles use a distributed worker lease.
     numInstances: 1
     buildCommand: npm ci && bash scripts/build-rust-extractor-render.sh
     startCommand: npm run core:service
     healthCheckPath: /healthz
+    # A merge/push to the linked main branch deploys only after repository CI
+    # checks pass. This trigger does not replace Core or host authorization.
+    autoDeployTrigger: checksPass
     envVars:
       - key: NODE_ENV
         value: production
@@ -19,23 +24,16 @@ services:
         value: /var/data/universal-core-service
       - key: CORE_SERVICE_ADMIN_KEY
         sync: false
-      - key: CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY
-        fromService:
-          type: web
-          name: skinharmony-core-mcp
-          envVarKey: CORE_PROVIDER_SETUP_LINK_KEY
-      - key: CORE_PROVIDER_SETUP_LINK_SERVICE_KEY
-        fromService:
-          type: web
-          name: skinharmony-core-mcp
-          envVarKey: CORE_PROVIDER_SETUP_LINK_SERVICE_KEY
       - key: CORE_MCP_TENANT_GATEWAY_KEY
         fromService:
           type: web
           name: skinharmony-core-mcp
           envVarKey: CORE_MCP_TENANT_GATEWAY_KEY
-      - key: CORE_PROVIDER_SETUP_LINK_TENANT_ID
-        value: codexai
+      - key: CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET
       # Reference the MCP-generated signing secret internally. It signs the
       # short-lived, owner-confirmed binding envelope; it is not an OpenAI key.
       - key: CORE_OWNER_CONTEXT_SIGNING_SECRET
@@ -54,8 +52,9 @@ services:
           name: skinharmony-core-mcp
           envVarKey: CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
       # Use the same managed PostgreSQL connection as the MCP so DTT state,
-      # identity receipts, verifier assignments and artifact trust are
-      # transactional and shared across restarts.
+      # verifier assignments and artifact trust are transactional and shared
+      # across restarts. Host-native governance uses its separate atomic file
+      # store on the persistent disk and no model-provider key.
       - key: GOVERNED_AGENT_DATABASE_URL
         fromService:
           type: web
@@ -63,10 +62,98 @@ services:
           envVarKey: DATABASE_URL
       - key: CORE_EVIDENCE_SIGNING_SECRET
         sync: false
+      # Core host-native routes remain fail-closed in code. Production opts in
+      # explicitly and uses a dedicated signing secret that is not shared with
+      # OAuth, evidence, provider or MCP credentials.
+      - key: CORE_HOST_NATIVE_GOVERNANCE_ENABLED
+        value: "true"
+      - key: CORE_HOST_NATIVE_SIGNING_SECRET
+        generateValue: true
+      # Exact, non-secret tenant/repository/service bindings used by Core's
+      # server-side live readback. Private GitHub repositories additionally
+      # require the server-only credential registry documented in the service
+      # README; this public repository is intentionally read anonymously.
+      - key: CORE_HOST_NATIVE_RENDER_ORIGIN_REGISTRY_JSON
+        value: '{"schema_version":"host_native_render_origin_registry_v1","bindings":[{"tenant_id":"codexai","repository":"cardarellocristian86-debug/skinharmony-ai-backend","service_id":"skinharmony-universal-core","environment":"production","origin":"https://skinharmony-universal-core.onrender.com"},{"tenant_id":"codexai","repository":"cardarellocristian86-debug/skinharmony-ai-backend","service_id":"skinharmony-core-mcp","environment":"production","origin":"https://skinharmony-core-mcp.onrender.com"}]}'
+      # Server-owned CI policy. The caller may repeat these names only as an
+      # equality claim; Core selects the binding and verifies the exact GitHub
+      # Actions app, workflow run, event, branch and commit itself.
+      - key: CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON
+        value: '{"schema_version":"host_native_required_checks_registry_v1","bindings":[{"tenant_id":"codexai","repository":"cardarellocristian86-debug/skinharmony-ai-backend","base_branch":"main","required_checks":["core-mcp","deployment-parity","universal-core"],"check_app":{"id":15368,"slug":"github-actions","owner":"github"},"workflow":{"id":312527659,"name":"Nyra Core Intelligence","path":".github/workflows/nyra-core-intelligence.yml","sha256":"5b58401aaf4e0060988e1437729eda1fadcac5440afce0b6ba3984410ee5ba01","candidate_sha256":null},"allowed_events":["pull_request","push"]}]}'
       - key: CORE_RUNTIME_V2_MODE
         value: active
       - key: LEXICAL_SEMANTIC_MODE
         value: active
+      - key: CORE_DTT_ENABLED
+        value: "true"
+      - key: CORE_DTT_MODE
+        value: active
+      - key: CORE_DTT_TENANT_ALLOWLIST
+        value: codexai
+      - key: CORE_RESEARCH_DISTILLATION_ENABLED
+        value: "true"
+      - key: CORE_RESEARCH_DISTILLATION_MODE
+        value: shadow
+      - key: CORE_RESEARCH_TENANT_ALLOWLIST
+        value: codexai
+      - key: CORE_RESEARCH_MAX_DOCUMENTS
+        value: "10"
+      - key: CORE_RESEARCH_MAX_BYTES
+        value: "2000000"
+      - key: CORE_RESEARCH_TIMEOUT_MS
+        value: "30000"
+      - key: CORE_RESEARCH_CACHE_TTL_SECONDS
+        value: "3600"
+      - key: CORE_DISTILLATION_REQUIRES_REVIEW
+        value: "true"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ENABLED
+        value: "true"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_MODE
+        value: shadow
+      - key: CORE_NYRA_DEEP_BRANCH_V2_URL
+        value: https://skinharmony-nyra-core.onrender.com
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ALLOWED_ORIGIN
+        value: https://skinharmony-nyra-core.onrender.com
+      - key: CORE_NYRA_DEEP_BRANCH_V2_SERVICE_KEY
+        fromService:
+          type: web
+          name: skinharmony-nyra-core
+          envVarKey: NYRA_DEEP_BRANCH_V2_CORE_SHARED_SECRET
+      - key: CORE_NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST
+        value: codexai
+      - key: CORE_NYRA_DEEP_BRANCH_V2_BRANCHES
+        value: context_intelligence,work_intake,research_evidence,decision_reasoning,planning_prioritization,risk_governance,delegated_authority,decision_provenance,relational_supervision,agent_orchestration,ai_orchestration,execution_planning,parallel_coordination,quality_verification,learning_memory,adaptive_learning,communication_explanation,software_intelligence,suite_domain,smartdesk_domain,analyzer_domain
+      # Public, non-secret bindings pin Core preview requests to the verified
+      # 21-branch / 299-shard runtime artifact. Artifact changes must update
+      # these values in the same reviewed release.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_EXPECTED_CATALOG_FINGERPRINT
+        value: c7b0b87765cac28c1fc5bd1ecf8fee5ddef97806c5da80f1a37e4bbab5d8c503
+      - key: CORE_NYRA_DEEP_BRANCH_V2_EXPECTED_ROOT_BINDING_HASH
+        value: 7231267d7ed3bee804289b21baf7246c558efd9e4f29439121ebc89458e836ec
+      - key: CORE_NYRA_DEEP_BRANCH_V2_TIMEOUT_MS
+        value: "2500"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_CIRCUIT_FAILURE_THRESHOLD
+        value: "3"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_CIRCUIT_COOLDOWN_MS
+        value: "30000"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_LEDGER_SECRET
+        generateValue: true
+      - key: CORE_NYRA_DEEP_BRANCH_V2_SOURCE_FETCH_TIMEOUT_MS
+        value: "5000"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_SOURCE_MAX_BYTES
+        value: "250000"
+      # Private/public Ed25519 material is populated only after the exact-state
+      # signed evaluation. Operational evaluation remains disabled until then.
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_PRIVATE_KEY
+        sync: false
+      - key: CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_KEY_ID
+        value: universal-core-nyra-v2
+      - key: CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_ENABLED
+        value: "false"
+      - key: CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_MODE
+        value: shadow
+      - key: CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_TENANT_ALLOWLIST
+        value: codexai
       - key: NYRA_DEEP_RUNTIME_ENABLED
         value: "true"
       - key: NYRA_DEEP_RUNTIME_MODE

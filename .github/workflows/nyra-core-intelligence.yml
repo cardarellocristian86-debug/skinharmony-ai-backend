@@ -1,11 +1,69 @@
 name: Nyra Core Intelligence
 
 on:
-  pull_request:
+  push:
+    branches:
+      - main
     paths:
+      - "package.json"
+      - "package-lock.json"
+      - ".codex/config.toml"
+      - "AGENTS.md"
       - "render-core-mcp.yaml"
+      - "render-nyra.yaml"
+      - "render-universal-core.yaml"
+      - "architecture/nyra-deep-branch-v2-*"
+      - "personal-control-center/data/nyra-deep-branch-v2.*"
+      - "personal-control-center/data/nyra-deep-branch-v2.shards/**"
+      - "personal-control-center/lib/nyra-deep-branch-v2*.js"
+      - "personal-control-center/lib/nyra-horizontal-runtime.js"
+      - "personal-control-center/public/**"
+      - "personal-control-center/server.js"
+      - "personal-control-center/test/nyra-*"
+      - "personal-control-center/README.md"
+      - "research/NYRA_DEEP_BRANCH_V2_RESEARCH.md"
+      - "scripts/build-rust-extractor-render.sh"
+      - "scripts/*nyra-deep-branch-v2.mjs"
+      - "scripts/lib/nyra-deep-branch-v2-shards.mjs"
+      - "skinharmony-rust-extractor-governor/**"
+      - "services/shared/**"
       - "services/skinharmony-core-mcp/**"
       - "services/universal-core-service/**"
+      - "universal-core/**"
+      - "verification/nyra-deep-branch-v2-verification-spec.json"
+      - "docs/architecture/governed-continuity-fabric-v1.md"
+      - ".github/workflows/nyra-deep-branch-v2.yml"
+      - ".github/workflows/nyra-core-intelligence.yml"
+  pull_request:
+    paths:
+      - "package.json"
+      - "package-lock.json"
+      - ".codex/config.toml"
+      - "AGENTS.md"
+      - "render-core-mcp.yaml"
+      - "render-nyra.yaml"
+      - "render-universal-core.yaml"
+      - "architecture/nyra-deep-branch-v2-*"
+      - "personal-control-center/data/nyra-deep-branch-v2.*"
+      - "personal-control-center/data/nyra-deep-branch-v2.shards/**"
+      - "personal-control-center/lib/nyra-deep-branch-v2*.js"
+      - "personal-control-center/lib/nyra-horizontal-runtime.js"
+      - "personal-control-center/public/**"
+      - "personal-control-center/server.js"
+      - "personal-control-center/test/nyra-*"
+      - "personal-control-center/README.md"
+      - "research/NYRA_DEEP_BRANCH_V2_RESEARCH.md"
+      - "scripts/build-rust-extractor-render.sh"
+      - "scripts/*nyra-deep-branch-v2.mjs"
+      - "scripts/lib/nyra-deep-branch-v2-shards.mjs"
+      - "skinharmony-rust-extractor-governor/**"
+      - "services/shared/**"
+      - "services/skinharmony-core-mcp/**"
+      - "services/universal-core-service/**"
+      - "universal-core/**"
+      - "verification/nyra-deep-branch-v2-verification-spec.json"
+      - "docs/architecture/governed-continuity-fabric-v1.md"
+      - ".github/workflows/nyra-deep-branch-v2.yml"
       - ".github/workflows/nyra-core-intelligence.yml"
   workflow_dispatch:
 
@@ -53,6 +111,16 @@ jobs:
       - name: Build governed Rust extractor
         working-directory: .
         run: bash scripts/build-rust-extractor-render.sh
+      - name: Test governed Rust extractor workspace
+        working-directory: .
+        run: |
+          export PATH="$HOME/.cargo/bin:$GITHUB_WORKSPACE/.render-rust/cargo/bin:$PATH"
+          cargo test --locked --workspace --manifest-path skinharmony-rust-extractor-governor/Cargo.toml
+      - name: Test Universal Core native runtime workspace
+        working-directory: .
+        run: |
+          export PATH="$HOME/.cargo/bin:$GITHUB_WORKSPACE/.render-rust/cargo/bin:$PATH"
+          cargo test --locked --workspace --manifest-path services/universal-core-service/native/core-runtime/Cargo.toml
       - run: npm ci
       - run: npm test
 
@@ -66,7 +134,716 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: services/skinharmony-core-mcp/package-lock.json
       - name: Install Universal Core dependencies for integration tests
         run: npm ci --prefix ../universal-core-service
-      - run: npm install --ignore-scripts
+      - run: npm ci
       - run: npm test
+
+  deployment-parity:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: continuity_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d continuity_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Validate Render continuity feature flags
+        shell: ruby {0}
+        run: |
+          require "digest"
+          require "json"
+          require "yaml"
+
+          load_blueprint = lambda do |path|
+            document = YAML.safe_load(File.read(path))
+            services = document.fetch("services")
+            abort("#{path}: services must be an array") unless services.is_a?(Array)
+            services
+          end
+
+          # Exactly one Blueprint may own the production Core service. A
+          # second declaration makes Render's last sync win and invalidates
+          # host-native provenance/readback guarantees.
+          core_blueprint_paths = Dir.glob([
+            "render*.yaml", "render*.yml", "**/render*.yaml", "**/render*.yml",
+          ]).uniq
+          duplicate_core_blueprints = core_blueprint_paths.filter_map do |path|
+            next if path == "render-universal-core.yaml"
+            document = YAML.safe_load(File.read(path))
+            services = document.is_a?(Hash) ? Array(document["services"]) : []
+            path if services.any? { |service| service.is_a?(Hash) && service["name"] == "skinharmony-universal-core" }
+          end
+          abort("duplicate production Universal Core Blueprint: #{duplicate_core_blueprints.join(', ')}") unless
+            duplicate_core_blueprints.empty?
+
+          mcp = load_blueprint.call("render-core-mcp.yaml")
+            .find { |service| service["name"] == "skinharmony-core-mcp" }
+          core = load_blueprint.call("render-universal-core.yaml")
+            .find { |service| service["name"] == "skinharmony-universal-core" }
+          abort("MCP Render service missing") unless mcp
+          abort("Universal Core Render service missing") unless core
+          [mcp, core].each do |service|
+            abort("#{service["name"]}: checksPass auto-deploy required") unless service["autoDeployTrigger"] == "checksPass"
+            abort("#{service["name"]}: health check must remain /healthz") unless service["healthCheckPath"] == "/healthz"
+            abort("#{service["name"]}: exact GitHub repository required") unless
+              service["repo"] == "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend"
+            abort("#{service["name"]}: release branch must remain main") unless
+              service["branch"] == "main"
+          end
+
+          mcp_env = Array(mcp["envVars"]).to_h { |entry| [entry["key"], entry] }
+          %w[
+            WORK_CONTINUITY_AUTO_CAPTURE_ENABLED
+            HOST_NATIVE_AGENT_PROTOCOL_ENABLED
+          ].each do |key|
+            abort("#{key} must be explicitly enabled by the MCP Blueprint") unless mcp_env.dig(key, "value") == "true"
+          end
+          abort("Owner confirmation freshness must remain bounded to delegation bootstrap") unless
+            mcp_env.dig("AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS", "value") == "300"
+          abort("Native Codex bearer must remain a manually provisioned service secret") unless
+            mcp_env["CODEX_BEARER_KEYS"] == {
+              "key" => "CODEX_BEARER_KEYS",
+              "sync" => false,
+            }
+          abort("Native Codex bearer must retain the complete governed MCP scope set") unless
+            mcp_env.dig("CODEX_BEARER_SCOPES", "value") ==
+              "core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate"
+          good_mode_contract = {
+            "NYRA_GOD_MODE_ENABLED" => "true",
+            "NYRA_GOD_MODE_TENANT_IDS" => "owner-private,codexai",
+            "NYRA_GOD_MODE_CODEX_ENABLED" => "true",
+            "NYRA_GOD_MODE_EMERGENCY_STOP" => "false",
+          }
+          good_mode_contract.each do |key, expected|
+            abort("#{key} must retain the governed Codex Good Mode contract") unless
+              mcp_env.dig(key, "value") == expected
+          end
+
+          core_env = Array(core["envVars"]).to_h { |entry| [entry["key"], entry] }
+          shared_security_keys = %w[
+            CORE_MCP_TENANT_GATEWAY_KEY
+            CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET
+            CORE_OWNER_CONTEXT_SIGNING_SECRET
+            DTT_AGENT_IDENTITY_SIGNING_SECRET
+          ]
+          shared_security_keys.each do |key|
+            abort("#{key}: MCP must contain exactly one generated producer") unless
+              Array(mcp["envVars"]).count { |entry| entry["key"] == key } == 1 &&
+              mcp_env[key] == {
+                "key" => key,
+                "generateValue" => true,
+              }
+            abort("#{key}: Core must contain exactly one fromService verifier binding") unless
+              Array(core["envVars"]).count { |entry| entry["key"] == key } == 1 &&
+              core_env[key] == {
+                "key" => key,
+                "fromService" => {
+                  "type" => "web",
+                  "name" => "skinharmony-core-mcp",
+                  "envVarKey" => key,
+                },
+              }
+          end
+          abort("AGENT_SIGNATURE_SECRET: MCP must contain exactly one independent generated producer") unless
+            Array(mcp["envVars"]).count { |entry| entry["key"] == "AGENT_SIGNATURE_SECRET" } == 1 &&
+            mcp_env["AGENT_SIGNATURE_SECRET"] == {
+              "key" => "AGENT_SIGNATURE_SECRET",
+              "generateValue" => true,
+            }
+          abort("AGENT_SIGNATURE_SECRET must remain MCP-local and must not be a Core verifier binding") if
+            Array(core["envVars"]).any? { |entry| entry["key"] == "AGENT_SIGNATURE_SECRET" }
+          abort("Core host-native governance must be explicitly enabled") unless
+            core_env.dig("CORE_HOST_NATIVE_GOVERNANCE_ENABLED", "value") == "true"
+          abort("Core host-native signing secret must be generated independently") unless
+            core_env["CORE_HOST_NATIVE_SIGNING_SECRET"] == {
+              "key" => "CORE_HOST_NATIVE_SIGNING_SECRET",
+              "generateValue" => true,
+            }
+          render_registry_entry = core_env["CORE_HOST_NATIVE_RENDER_ORIGIN_REGISTRY_JSON"]
+          abort("Core Render resolver registry must be an explicit non-secret value") unless
+            render_registry_entry.is_a?(Hash) &&
+            render_registry_entry.keys.sort == %w[key value] &&
+            render_registry_entry["key"] == "CORE_HOST_NATIVE_RENDER_ORIGIN_REGISTRY_JSON"
+          render_registry = JSON.parse(render_registry_entry.fetch("value"))
+          expected_render_registry = {
+            "schema_version" => "host_native_render_origin_registry_v1",
+            "bindings" => [
+              {
+                "tenant_id" => "codexai",
+                "repository" => "cardarellocristian86-debug/skinharmony-ai-backend",
+                "service_id" => "skinharmony-universal-core",
+                "environment" => "production",
+                "origin" => "https://skinharmony-universal-core.onrender.com",
+              },
+              {
+                "tenant_id" => "codexai",
+                "repository" => "cardarellocristian86-debug/skinharmony-ai-backend",
+                "service_id" => "skinharmony-core-mcp",
+                "environment" => "production",
+                "origin" => "https://skinharmony-core-mcp.onrender.com",
+              },
+            ],
+          }
+          abort("Core Render resolver registry is not bound to the exact production services") unless
+            render_registry == expected_render_registry
+          forbidden_registry_keys = %w[token secret password credential authorization api_key]
+          registry_keys = lambda do |value|
+            case value
+            when Hash
+              value.flat_map { |key, nested| [key.to_s.downcase, *registry_keys.call(nested)] }
+            when Array
+              value.flat_map { |nested| registry_keys.call(nested) }
+            else
+              []
+            end
+          end
+          leaked_registry_keys = registry_keys.call(render_registry) & forbidden_registry_keys
+          abort("Core Render resolver registry contains a secret-bearing field") unless
+            leaked_registry_keys.empty?
+          required_checks_registry_entry =
+            core_env["CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON"]
+          abort("Core required-checks registry must be an explicit non-secret value") unless
+            required_checks_registry_entry.is_a?(Hash) &&
+            required_checks_registry_entry.keys.sort == %w[key value] &&
+            required_checks_registry_entry["key"] ==
+              "CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON"
+          required_checks_registry =
+            JSON.parse(required_checks_registry_entry.fetch("value"))
+          workflow_path = ".github/workflows/nyra-core-intelligence.yml"
+          workflow_file_sha256 = Digest::SHA256.file(workflow_path).hexdigest
+          core_resolver_source =
+            File.read("services/universal-core-service/src/hostNativeResolverRegistry.js")
+          workflow_constant_pattern =
+            /export\s+const\s+HOST_NATIVE_GITHUB_WORKFLOW\s*=\s*Object\.freeze\(\s*\{(?<body>.*?)\}\s*\);/m
+          workflow_constant_bodies = []
+          core_resolver_source.to_enum(:scan, workflow_constant_pattern).each do
+            workflow_constant_bodies << Regexp.last_match[:body]
+          end
+          abort("Resolver must define exactly one HOST_NATIVE_GITHUB_WORKFLOW object") unless
+            workflow_constant_bodies.length == 1
+          workflow_constant_body = workflow_constant_bodies.first
+          extract_workflow_literal = lambda do |field|
+            field_pattern =
+              /(?:\A|,|\n)\s*#{Regexp.escape(field)}\s*:\s*(?<literal>null|"(?:\\.|[^"\\])*")\s*(?=,|\n|\z)/
+            literals = []
+            workflow_constant_body.to_enum(:scan, field_pattern).each do
+              literals << Regexp.last_match[:literal]
+            end
+            abort("Resolver workflow #{field} must appear exactly once") unless
+              literals.length == 1
+            literals.first
+          end
+          resolver_workflow_sha256 =
+            JSON.parse(extract_workflow_literal.call("sha256"))
+          resolver_candidate_literal =
+            extract_workflow_literal.call("candidate_sha256")
+          resolver_workflow_candidate_sha256 =
+            if resolver_candidate_literal == "null"
+              nil
+            else
+              JSON.parse(resolver_candidate_literal)
+            end
+          abort("Resolver workflow sha256 must be lowercase SHA-256") unless
+            resolver_workflow_sha256.match?(/\A[a-f0-9]{64}\z/)
+          if resolver_workflow_candidate_sha256
+            abort("Resolver workflow candidate_sha256 must be lowercase SHA-256") unless
+              resolver_workflow_candidate_sha256.match?(/\A[a-f0-9]{64}\z/)
+            abort("Resolver workflow candidate_sha256 must differ from current sha256") if
+              resolver_workflow_candidate_sha256 == resolver_workflow_sha256
+          end
+          abort("Resolver workflow sha256 does not match the checked-out workflow file") unless
+            resolver_workflow_sha256 == workflow_file_sha256
+          expected_required_checks_registry = {
+            "schema_version" => "host_native_required_checks_registry_v1",
+            "bindings" => [
+              {
+                "tenant_id" => "codexai",
+                "repository" =>
+                  "cardarellocristian86-debug/skinharmony-ai-backend",
+                "base_branch" => "main",
+                "required_checks" => [
+                  "core-mcp",
+                  "deployment-parity",
+                  "universal-core",
+                ],
+                "check_app" => {
+                  "id" => 15_368,
+                  "slug" => "github-actions",
+                  "owner" => "github",
+                },
+                "workflow" => {
+                  "id" => 312_527_659,
+                  "name" => "Nyra Core Intelligence",
+                  "path" => workflow_path,
+                  # Never hardcode this workflow's digest inside the workflow:
+                  # doing so would make the digest depend on itself.
+                  "sha256" => workflow_file_sha256,
+                  "candidate_sha256" =>
+                    resolver_workflow_candidate_sha256,
+                },
+                "allowed_events" => ["pull_request", "push"],
+              },
+            ],
+          }
+          abort("Core required-checks registry is not bound to exact CI provenance") unless
+            required_checks_registry == expected_required_checks_registry
+          render_workflow =
+            required_checks_registry.dig("bindings", 0, "workflow")
+          abort("Render workflow sha256 must equal resolver and checked-out file") unless
+            render_workflow["sha256"] == resolver_workflow_sha256 &&
+            resolver_workflow_sha256 == workflow_file_sha256
+          abort("Render workflow candidate_sha256 must exactly equal resolver") unless
+            render_workflow.key?("candidate_sha256") &&
+            render_workflow["candidate_sha256"] ==
+              resolver_workflow_candidate_sha256
+          leaked_required_checks_keys =
+            registry_keys.call(required_checks_registry) & forbidden_registry_keys
+          abort("Core required-checks registry contains a secret-bearing field") unless
+            leaked_required_checks_keys.empty?
+          github_registry_entry = core_env["CORE_HOST_NATIVE_GITHUB_CREDENTIAL_REGISTRY_JSON"]
+          if github_registry_entry
+            abort("GitHub credential registry must be injected as a server-only Render secret") unless
+              github_registry_entry == {
+                "key" => "CORE_HOST_NATIVE_GITHUB_CREDENTIAL_REGISTRY_JSON",
+                "sync" => false,
+              }
+          end
+          abort("Core signing secret must not be configured on the MCP service") if
+            mcp_env.key?("CORE_HOST_NATIVE_SIGNING_SECRET")
+          abort("Continuity requires a separately provisioned MCP PostgreSQL binding") unless
+            mcp_env["DATABASE_URL"] == { "key" => "DATABASE_URL", "sync" => false }
+          abort("Host-native Core file state requires a single instance") unless
+            core["numInstances"] == 1
+          abort("Host-native Core file state requires the /var/data persistent disk") unless
+            core.dig("disk", "mountPath") == "/var/data"
+          abort("Core storage root must stay on its persistent disk") unless
+            core_env.dig("CORE_SERVICE_STORAGE_ROOT", "value")&.start_with?("/var/data/")
+          governed_db = core_env["GOVERNED_AGENT_DATABASE_URL"]
+          abort("Core governed-agent DB must reuse the MCP continuity database") unless
+            governed_db == {
+              "key" => "GOVERNED_AGENT_DATABASE_URL",
+              "fromService" => {
+                "type" => "web",
+                "name" => "skinharmony-core-mcp",
+                "envVarKey" => "DATABASE_URL",
+              },
+            }
+
+          mcp_config_source = File.read("services/skinharmony-core-mcp/src/config.js")
+          mcp_server_source = File.read("services/skinharmony-core-mcp/src/server.js")
+          mcp_app_source = File.read("services/skinharmony-core-mcp/src/app.js")
+          agent_presence_source =
+            File.read("services/skinharmony-core-mcp/src/agent-presence.js")
+          core_app_source = File.read("services/universal-core-service/src/app.js")
+          core_key_store_source =
+            File.read("services/universal-core-service/src/keyStore.js")
+          agent_signature_offset =
+            mcp_config_source.index("AGENT_SIGNATURE_SECRET")
+          agent_signature_window =
+            agent_signature_offset &&
+            mcp_config_source.byteslice(agent_signature_offset, 1_000)
+          abort("AGENT_SIGNATURE_SECRET: MCP config binding missing") unless
+            agent_signature_window
+          abort("AGENT_SIGNATURE_SECRET: MCP minimum 32-byte contract missing") unless
+            agent_signature_window.match?(
+              /Buffer\.byteLength\(\s*agentSignatureSecretCandidate\s*,\s*"utf8"\s*\)\s*>=\s*32/,
+            )
+          abort("AGENT_SIGNATURE_SECRET: normalized MCP property missing") unless
+            mcp_config_source.match?(/^\s+agentSignatureSecret,\s*$/)
+          abort("Agent presence must source its signing key only from the dedicated secret") unless
+            agent_presence_source.match?(
+              /const\s+configured\s*=\s*String\(\s*config\.agentSignatureSecret\s*\|\|\s*""\s*\)\.trim\(\);/,
+            )
+          abort("Agent presence runtime reuse blocker missing") unless
+            agent_presence_source.include?("agent_signature_key_reused") &&
+            agent_presence_source.include?("config.universalCoreKey") &&
+            agent_presence_source.include?("config.ownerContextSigningSecret")
+          %w[
+            CORE_MCP_KEY
+            UNIVERSAL_CORE_KEY
+            UNIVERSAL_CORE_KEYS_JSON
+            CORE_MCP_TENANT_GATEWAY_KEY
+            CORE_OWNER_CONTEXT_SIGNING_SECRET
+            CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET
+            DTT_AGENT_IDENTITY_SIGNING_SECRET
+          ].each do |peer_key|
+            abort("AGENT_SIGNATURE_SECRET: reuse guard missing #{peer_key}") unless
+              mcp_config_source.include?(peer_key)
+          end
+          abort("AGENT_SIGNATURE_SECRET: config reuse verdict missing") unless
+            mcp_config_source.include?("agentSignatureSecretReused")
+          abort("AGENT_SIGNATURE_SECRET: production readiness reuse blocker missing") unless
+            mcp_app_source.include?("host_native_agent_signature_reused") &&
+            mcp_app_source.include?("hostNativeAgentSignatureIndependent")
+          mcp_secret_contracts = {
+            "CORE_MCP_TENANT_GATEWAY_KEY" => [
+              "tenantGatewayKeyCandidate",
+              "tenantGatewayKey",
+            ],
+            "CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET" => [
+              "tenantContextSigningSecretCandidate",
+              "tenantContextSigningSecret",
+            ],
+            "CORE_OWNER_CONTEXT_SIGNING_SECRET" => [
+              "ownerContextSigningSecretCandidate",
+              "ownerContextSigningSecret",
+            ],
+            "DTT_AGENT_IDENTITY_SIGNING_SECRET" => [
+              "dttAgentIdentitySigningSecretCandidate",
+              "dttAgentIdentitySigningSecret",
+            ],
+          }
+          mcp_secret_contracts.each do |env_key, contract|
+            candidate, property = contract
+            offset = mcp_config_source.index(env_key)
+            abort("#{env_key}: MCP config binding missing") unless offset
+            validation_window = mcp_config_source.byteslice(offset, 1_000)
+            minimum_pattern =
+              /(?:Buffer\.byteLength\(\s*#{Regexp.escape(candidate)}\s*,\s*"utf8"\s*\)|#{Regexp.escape(candidate)}\.length)\s*>=\s*32/
+            abort("#{env_key}: MCP minimum 32-byte contract missing") unless
+              validation_window.match?(minimum_pattern)
+            abort("#{env_key}: MCP normalized property missing") unless
+              mcp_config_source.match?(/^\s+#{Regexp.escape(property)},\s*$/)
+            abort("#{env_key}: Universal Core verifier binding missing") unless
+              core_app_source.include?(env_key)
+          end
+          core_minimum_contracts = {
+            "CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET" =>
+              "tenantContextSigningSecretCandidate",
+            "CORE_OWNER_CONTEXT_SIGNING_SECRET" =>
+              "ownerContextSigningSecretCandidate",
+            "DTT_AGENT_IDENTITY_SIGNING_SECRET" =>
+              "dttAgentIdentitySecretCandidate",
+          }
+          core_minimum_contracts.each do |env_key, candidate|
+            offset = core_app_source.index(env_key)
+            abort("#{env_key}: Universal Core runtime binding missing") unless offset
+            validation_window = core_app_source.byteslice(offset, 1_000)
+            minimum_pattern =
+              /(?:Buffer\.byteLength\(\s*#{Regexp.escape(candidate)}\s*,\s*"utf8"\s*\)|#{Regexp.escape(candidate)}\.length)\s*>=\s*32/
+            abort("#{env_key}: Universal Core minimum 32-byte contract missing") unless
+              validation_window.match?(minimum_pattern)
+          end
+          gateway_key_store_offset =
+            core_key_store_source.index("function ensureMcpTenantGatewayKey")
+          gateway_key_store_window =
+            gateway_key_store_offset &&
+            core_key_store_source.byteslice(gateway_key_store_offset, 1_200)
+          abort("CORE_MCP_TENANT_GATEWAY_KEY: Core minimum 32-byte contract missing") unless
+            gateway_key_store_window&.match?(
+              /Buffer\.byteLength\(\s*secret\s*,\s*"utf8"\s*\)\s*<\s*32/,
+            )
+          workflow_rotation_test_source =
+            File.read(
+              "services/universal-core-service/test/host-native-external-readback.test.js",
+            )
+          %w[
+            stage-A-candidate-policy
+            stage-B-live-policy
+            post-promote-policy
+            candidate-current-rollback
+          ].each do |rotation_marker|
+            abort("Workflow two-phase rotation regression missing #{rotation_marker}") unless
+              workflow_rotation_test_source.include?(rotation_marker)
+          end
+          %w[
+            WORK_CONTINUITY_AUTO_CAPTURE_ENABLED
+            HOST_NATIVE_AGENT_PROTOCOL_ENABLED
+          ].each do |key|
+            abort("#{key} is present in Blueprint but not implemented") unless mcp_config_source.include?(key)
+          end
+          %w[
+            CORE_HOST_NATIVE_GOVERNANCE_ENABLED
+            CORE_HOST_NATIVE_SIGNING_SECRET
+          ].each do |key|
+            abort("#{key} is present in Blueprint but not implemented") unless core_app_source.include?(key)
+          end
+          abort("Required-checks registry is present in Blueprint but not implemented") unless
+            core_resolver_source.include?("CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON")
+          abort("Core host-native route integration missing") unless
+            core_app_source.include?("/v1/host-native/work-plans")
+          abort("Core host-native persistent store integration missing") unless
+            core_app_source.include?("host-native-governance")
+          abort("MCP continuity automation import missing") unless
+            mcp_server_source.include?('import { createWorkContinuityAutomation } from "./work-continuity-automation.js"')
+          abort("MCP continuity automation factory wiring missing") unless
+            mcp_server_source.include?("createWorkContinuityAutomation({ runtime: workContinuityRuntime })")
+          abort("MCP afterToolCall automation invocation missing") unless
+            mcp_server_source.include?("await workContinuityAutomation(event)")
+      - name: Validate Codex native-agent policy
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          config = tomllib.loads(Path(".codex/config.toml").read_text())
+          assert config.get("sandbox_mode") == "workspace-write"
+          assert config.get("approval_policy") == "on-request"
+          assert config.get("approvals_reviewer") == "auto_review"
+          assert config.get("features", {}).get("multi_agent") is True
+          agents = config.get("agents", {})
+          assert agents.get("enabled") is True
+          assert agents.get("max_concurrent_threads_per_session") == 3
+          assert "OPENAI_API_KEY" not in Path("AGENTS.md").read_text()
+          PY
+      - name: Validate caller-free closure contract
+        run: |
+          node --input-type=module <<'NODE'
+          import {
+            WORK_CONTINUITY_TOOLS,
+          } from "./services/skinharmony-core-mcp/src/work-continuity-tools.js";
+
+          const finalize = WORK_CONTINUITY_TOOLS.find(
+            (tool) => tool.name === "work_continuity_closure_finalize",
+          );
+          if (!finalize) {
+            throw new Error("work_continuity_closure_finalize_missing");
+          }
+          const actualProperties = Object.keys(finalize.inputSchema.properties).sort();
+          const expectedProperties = [
+            "action_ticket_id",
+            "agent_id",
+            "client_type",
+            "idempotency_key",
+            "plan_id",
+            "session_id",
+            "work_id",
+          ].sort();
+          if (JSON.stringify(actualProperties) !== JSON.stringify(expectedProperties)) {
+            throw new Error(`closure_finalize_caller_fields_changed:${actualProperties.join(",")}`);
+          }
+          const expectedRequired = [
+            "action_ticket_id",
+            "idempotency_key",
+            "plan_id",
+            "work_id",
+          ].sort();
+          const actualRequired = [...finalize.inputSchema.required].sort();
+          if (JSON.stringify(actualRequired) !== JSON.stringify(expectedRequired)) {
+            throw new Error(`closure_finalize_required_fields_changed:${actualRequired.join(",")}`);
+          }
+          if (finalize.inputSchema.additionalProperties !== false) {
+            throw new Error("closure_finalize_must_reject_unknown_fields");
+          }
+          NODE
+      - name: Enforce host-native zero-provider boundary
+        shell: ruby {0}
+        run: |
+          dedicated_files = [
+            "services/skinharmony-core-mcp/src/host-native-health-contract.js",
+            "services/skinharmony-core-mcp/src/host-native-tools.js",
+            "services/skinharmony-core-mcp/src/work-continuity-automation.js",
+            "services/skinharmony-core-mcp/src/work-continuity-runtime.js",
+            "services/skinharmony-core-mcp/src/work-continuity-tools.js",
+            "services/universal-core-service/src/boundedInternalCoordination.js",
+            "services/universal-core-service/src/hostNativeGovernance.js",
+            "services/universal-core-service/src/hostNativeExternalReadback.js",
+            "services/universal-core-service/src/hostNativeResolverRegistry.js",
+          ]
+          missing = dedicated_files.reject { |path| File.file?(path) }
+          abort("host-native implementation file missing: #{missing.join(", ")}") unless missing.empty?
+
+          forbidden = {
+            # Lower-case field names are allowed only so the native boundary
+            # can reject them. The process-level provider credential is not.
+            "OPENAI_API_KEY" => /OPENAI_API_KEY/,
+            "OpenAI provider route" => %r{/providers/openai}i,
+            "tenant provider tool" => /tenant_provider_openai/i,
+            "Responses API" => %r{/v1/responses}i,
+          }
+
+          violations = []
+          dedicated_files.each do |path|
+            File.readlines(path).each_with_index do |line, index|
+              forbidden.each do |label, pattern|
+                violations << "#{path}:#{index + 1}: #{label}" if line.match?(pattern)
+              end
+            end
+          end
+
+          [
+            "services/skinharmony-core-mcp/src/server.js",
+            "services/skinharmony-core-mcp/src/core-handlers.js",
+          ].each do |integration_path|
+            integration_lines = File.readlines(integration_path)
+            native_indices = integration_lines.each_index.select do |index|
+              integration_lines[index].match?(/host_native_|work_continuity_(?:native|intent|atlas|incident|delegation|closure)/i)
+            end
+            native_indices.flat_map { |index| ((index - 8)..(index + 8)).to_a }
+              .select { |index| index >= 0 && index < integration_lines.length }
+              .uniq
+              .each do |index|
+                forbidden.each do |label, pattern|
+                  if integration_lines[index].match?(pattern)
+                    violations << "#{integration_path}:#{index + 1}: #{label} in host-native integration block"
+                  end
+                end
+              end
+          end
+
+          abort("host-native provider tripwire failed:\n#{violations.uniq.join("\n")}") unless violations.empty?
+      - name: Enforce native-only Nyra and MCP model boundary
+        shell: ruby {0}
+        run: |
+          native_only_sources = [
+            "services/skinharmony-core-mcp/src/config.js",
+            "services/skinharmony-core-mcp/src/research-cortex.js",
+            "personal-control-center/server.js",
+          ]
+          missing = native_only_sources.reject { |path| File.file?(path) }
+          abort("native-only source missing: #{missing.join(', ')}") unless missing.empty?
+
+          forbidden = {
+            "server-side OpenAI credential" => /OPENAI_API_KEY/,
+            "Responses API" => %r{https://api\.openai\.com/v1/responses}i,
+            "server research execute tool" => /nyra_research_execute/,
+          }
+          violations = native_only_sources.flat_map do |path|
+            File.readlines(path).each_with_index.filter_map do |line, index|
+              match = forbidden.find { |_label, pattern| line.match?(pattern) }
+              "#{path}:#{index + 1}: #{match[0]}" if match
+            end
+          end
+          retired_files = [
+            "services/universal-core-service/src/tenantOpenAiMultiAgentRunner.js",
+            "services/universal-core-service/test/tenant-openai-multi-agent-runner.test.js",
+            "services/universal-core-service/test/tenant-openai-multi-agent-api.test.js",
+          ]
+          revived = retired_files.select { |path| File.exist?(path) }
+          failures = violations + revived.map { |path| "retired file restored: #{path}" }
+          abort("native-only provider boundary failed:\n#{failures.join("\n")}") unless failures.empty?
+      # Root postinstall builds both Render Rust artifacts once.
+      - name: Install root deployment dependencies and artifacts
+        run: npm ci
+      - name: Verify exact Nyra Deep V2 runtime artifacts
+        run: npm run nyra:deep-v2:runtime:verify
+      - name: Test shared service contracts
+        run: node --test services/shared/test/*.test.js
+      - name: Behaviorally prove host-native zero-provider execution
+        env:
+          # A configured provider credential must never activate the native path.
+          OPENAI_API_KEY: ci-poison-provider-key-must-never-be-used
+        run: |
+          node --input-type=module <<'NODE'
+          let outboundFetchCalls = 0;
+          const originalFetch = globalThis.fetch;
+          globalThis.fetch = async (...args) => {
+            outboundFetchCalls += 1;
+            throw new Error(`host_native_unexpected_fetch:${String(args[0] || "")}`);
+          };
+
+          try {
+            const [
+              { buildIntentAnchor, buildNativeAgentPlan },
+              { buildHostNativeWorkPlan },
+            ] = await Promise.all([
+              import("./services/skinharmony-core-mcp/src/work-continuity-runtime.js"),
+              import("./services/universal-core-service/src/hostNativeGovernance.js"),
+            ]);
+
+            const requiredChecks = [
+              "core-mcp",
+              "deployment-parity",
+              "universal-core",
+            ];
+            const mcpPlan = buildNativeAgentPlan({
+              host_type: "codex_native",
+              required_checks: requiredChecks,
+              tasks: [
+                {
+                  task_id: "builder",
+                  kind: "builder",
+                  instruction: "Implement the bounded host-native change.",
+                },
+                {
+                  task_id: "verifier",
+                  kind: "verifier",
+                  instruction: "Independently verify the bounded change.",
+                  dependencies: ["builder"],
+                },
+              ],
+              max_parallel: 2,
+            });
+            const anchor = buildIntentAnchor({
+              project_id: "continuity-ci",
+              session_id: "zero-provider-spy",
+              initial_message: "Plan and preserve this bounded host-native work.",
+              idea: "Native ChatGPT and Codex agents only.",
+              objective: "Prove planning and continuity do not invoke a provider.",
+              acceptance_criteria: ["zero outbound fetch calls"],
+              constraints: ["no provider execution"],
+              host_type: "codex_native",
+            });
+            const corePlan = buildHostNativeWorkPlan({
+              tenant_id: "codexai",
+              work_id: "continuity-ci",
+              intent_anchor_digest: anchor.intent_digest,
+              repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+              objective: "Plan and verify the bounded host-native CI work.",
+              required_checks: requiredChecks,
+              agents: [
+                {
+                  agent_id: "builder",
+                  role: "builder",
+                  task: "Implement the bounded host-native change.",
+                  depends_on: [],
+                  capabilities: ["workspace_write"],
+                },
+                {
+                  agent_id: "verifier",
+                  role: "verifier",
+                  task: "Independently verify the bounded change.",
+                  depends_on: ["builder"],
+                  capabilities: ["workspace_read"],
+                },
+              ],
+              max_parallel: 2,
+            });
+
+            if (
+              mcpPlan.provider_execution !== false ||
+              mcpPlan.provider_api_key_required !== false ||
+              corePlan.provider_execution !== false ||
+              corePlan.provider_api_key_required !== false ||
+              corePlan.server_model_calls !== 0
+            ) {
+              throw new Error("host_native_zero_provider_contract_failed");
+            }
+            if (outboundFetchCalls !== 0) {
+              throw new Error(`host_native_outbound_fetch_detected:${outboundFetchCalls}`);
+            }
+
+            // Full suites below also execute the durable contract tests in:
+            // - services/skinharmony-core-mcp/test/work-continuity-fabric-v2.test.js
+            // - services/universal-core-service/test/host-native-governance.test.js
+          } finally {
+            globalThis.fetch = originalFetch;
+          }
+          NODE
+      - name: Exercise PostgreSQL 16 continuity fabric
+        env:
+          WORK_CONTINUITY_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/continuity_ci
+        run: >-
+          node --test
+          services/skinharmony-core-mcp/test/work-continuity-postgres16.test.js
+      - name: Test Universal Core from root install
+        run: npm run core:service:test
+      - name: Test Core MCP from root install
+        run: npm run core:mcp:test

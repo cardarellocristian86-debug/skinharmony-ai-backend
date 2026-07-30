@@ -45,11 +45,10 @@ test("configures independent memory storage and bounded retention", () => {
   assert.equal(config.memoryRetentionDays, 3650);
   assert.equal(config.personalMemoryRetentionDays, 120);
   assert.equal(config.researchCortexRoot, "/memory");
-  assert.equal(config.openaiResearchEnabled, false);
-  assert.equal(config.openaiResearchModel, "gpt-5.6");
+  assert.equal(Object.hasOwn(config, "openaiResearchEnabled"), false);
 });
 
-test("keeps the OpenAI research fallback opt-in and bounded", () => {
+test("does not create a server-side provider configuration from legacy environment values", () => {
   const config = loadConfig({
     OPENAI_API_KEY: "configured-but-never-returned",
     NYRA_OPENAI_RESEARCH_ENABLED: "true",
@@ -58,10 +57,8 @@ test("keeps the OpenAI research fallback opt-in and bounded", () => {
     NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR: "999",
     RESEARCH_RETENTION_DAYS: "99999",
   });
-  assert.equal(config.openaiResearchEnabled, true);
-  assert.equal(config.openaiApiKey, "configured-but-never-returned");
-  assert.equal(config.openaiResearchTimeoutMs, 300000);
-  assert.equal(config.openaiResearchMaxCallsPerHour, 100);
+  assert.equal(Object.hasOwn(config, "openaiResearchEnabled"), false);
+  assert.equal(Object.hasOwn(config, "openaiApiKey"), false);
   assert.equal(config.researchRetentionDays, 3650);
 });
 
@@ -70,6 +67,77 @@ test("requires the decision ledger by default only in production", () => {
   assert.equal(loadConfig({}).decisionLedgerRequired, false);
   assert.equal(loadConfig(production).decisionLedgerRequired, true);
   assert.equal(loadConfig({ ...production, CORE_DECISION_LEDGER_REQUIRED: "false" }).decisionLedgerRequired, false);
+  assert.equal(loadConfig({}).environment, "development");
+  assert.equal(loadConfig({}).production, false);
+  const failClosedProduction = loadConfig({ NODE_ENV: "production" });
+  assert.equal(failClosedProduction.environment, "production");
+  assert.equal(failClosedProduction.production, true);
+  assert.deepEqual(failClosedProduction.codexKeys, []);
+});
+
+test("keeps host-native continuity opt-in independent from legacy environment values", () => {
+  const disabled = loadConfig({ OPENAI_API_KEY: "optional-provider-key" });
+  assert.equal(disabled.workContinuityAutoCaptureEnabled, false);
+  assert.equal(disabled.hostNativeAgentProtocolEnabled, false);
+
+  const enabled = loadConfig({
+    WORK_CONTINUITY_AUTO_CAPTURE_ENABLED: "true",
+    HOST_NATIVE_AGENT_PROTOCOL_ENABLED: "true",
+  });
+  assert.equal(enabled.workContinuityAutoCaptureEnabled, true);
+  assert.equal(enabled.hostNativeAgentProtocolEnabled, true);
+  assert.equal(Object.hasOwn(enabled, "openaiApiKey"), false);
+});
+
+test("accepts a strong independent agent-presence signing secret by UTF-8 byte length", () => {
+  const signatureSecret = "é".repeat(16);
+  const independent = loadConfig({
+    AGENT_SIGNATURE_SECRET: signatureSecret,
+    UNIVERSAL_CORE_KEY: "u".repeat(32),
+    CORE_MCP_TENANT_GATEWAY_KEY: "g".repeat(32),
+    CORE_OWNER_CONTEXT_SIGNING_SECRET: "o".repeat(32),
+    CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET: "t".repeat(32),
+    DTT_AGENT_IDENTITY_SIGNING_SECRET: "d".repeat(32),
+    CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET: "n".repeat(32),
+  });
+  assert.equal(independent.agentSignatureSecret, signatureSecret);
+  assert.equal(independent.agentSignatureSecretReused, false);
+});
+
+test("filters missing or short AGENT_SIGNATURE_SECRET as unconfigured", () => {
+  assert.equal(loadConfig({}).agentSignatureSecret, "");
+  assert.equal(
+    loadConfig({ AGENT_SIGNATURE_SECRET: "é".repeat(15) })
+      .agentSignatureSecret,
+    "",
+  );
+});
+
+test("flags AGENT_SIGNATURE_SECRET reuse with a Core bearer or another host-native secret", () => {
+  const signatureSecret = "r".repeat(32);
+  for (const reusedEnvironment of [
+    { CORE_MCP_KEY: signatureSecret },
+    { UNIVERSAL_CORE_KEY: signatureSecret },
+    {
+      UNIVERSAL_CORE_KEYS_JSON: JSON.stringify({
+        codexai: signatureSecret,
+      }),
+    },
+    { CORE_MCP_TENANT_GATEWAY_KEY: signatureSecret },
+    { CORE_OWNER_CONTEXT_SIGNING_SECRET: signatureSecret },
+    { CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET: signatureSecret },
+    { DTT_AGENT_IDENTITY_SIGNING_SECRET: signatureSecret },
+    {
+      CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET:
+        signatureSecret,
+    },
+  ]) {
+    const reused = loadConfig({
+      AGENT_SIGNATURE_SECRET: signatureSecret,
+      ...reusedEnvironment,
+    });
+    assert.equal(reused.agentSignatureSecretReused, true);
+  }
 });
 
 test("maps CORE_MCP_KEY only to the configured ChatGPT tenant", () => {
@@ -103,65 +171,19 @@ test("keeps an explicit tenant mapping over CORE_MCP_KEY", () => {
   assert.equal(config.universalCoreKeys.codexai, "explicit-key");
 });
 
-test("maps the generated provider setup-link key only to the configured ChatGPT tenant", () => {
+test("ignores retired provider setup-link configuration", () => {
   const config = loadConfig({
     MCP_CHATGPT_TENANT_ID: "codexai",
     CORE_MCP_KEY: "normal-core-key",
     CORE_PROVIDER_SETUP_LINK_KEY: "scoped-provider-link-key",
+    CORE_PROVIDER_SETUP_LINK_SERVICE_KEY: "service-provider-link-key",
+    UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON: JSON.stringify({ codexai: "explicit-scoped-key" }),
   });
 
   assert.deepEqual(config.universalCoreKeys, { codexai: "normal-core-key" });
-  assert.deepEqual(config.universalCoreProviderSetupLinkKeys, { codexai: "scoped-provider-link-key" });
-  assert.equal(config.providerSetupLinkSourceConfigured, true);
-});
-
-test("accepts a tenant-neutral provider setup-link service key", () => {
-  const config = loadConfig({
-    CORE_PROVIDER_SETUP_LINK_SERVICE_KEY: "service-provider-link-key",
-  });
-
-  assert.equal(config.providerSetupLinkServiceKey, "service-provider-link-key");
-  assert.equal(config.providerSetupLinkSourceConfigured, true);
-  assert.deepEqual(config.universalCoreProviderSetupLinkKeys, {});
-});
-
-test("requires a tenant binding for the dedicated provider setup-link key", () => {
-  assert.throws(
-    () => loadConfig({ CORE_PROVIDER_SETUP_LINK_KEY: "scoped-provider-link-key" }),
-    /MCP_CHATGPT_TENANT_ID/,
-  );
-});
-
-test("keeps an explicit provider setup-link mapping over the generated single-tenant key", () => {
-  const config = loadConfig({
-    MCP_CHATGPT_TENANT_ID: "codexai",
-    CORE_PROVIDER_SETUP_LINK_KEY: "generated-key",
-    UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON: JSON.stringify({ codexai: "explicit-scoped-key", "tenant-b": "tenant-b-scoped-key" }),
-  });
-
-  assert.deepEqual(config.universalCoreProviderSetupLinkKeys, {
-    codexai: "explicit-scoped-key",
-    "tenant-b": "tenant-b-scoped-key",
-  });
-});
-
-test("rejects invalid provider setup-link key maps", () => {
-  assert.throws(
-    () => loadConfig({ UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON: JSON.stringify({ "../tenant": "key" }) }),
-    /invalid tenant id/,
-  );
-  assert.throws(
-    () => loadConfig({ UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON: JSON.stringify({ codexai: "" }) }),
-    /empty key/,
-  );
-});
-
-test("reports no owner portal source when its dedicated tenant binding is absent", () => {
-  const config = loadConfig({
-    UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON: JSON.stringify({ "tenant-b": "tenant-b-scoped-key" }),
-  });
-
-  assert.equal(config.providerSetupLinkSourceConfigured, false);
+  assert.equal(Object.hasOwn(config, "universalCoreProviderSetupLinkKeys"), false);
+  assert.equal(Object.hasOwn(config, "providerSetupLinkServiceKey"), false);
+  assert.equal(Object.hasOwn(config, "providerSetupLinkSourceConfigured"), false);
 });
 
 test("loads the separate owner-context signing secret without exposing it through status flags", () => {
@@ -172,6 +194,27 @@ test("loads the separate owner-context signing secret without exposing it throug
 
   assert.equal(config.ownerContextSigningSecret, signingSecret);
   assert.equal(loadConfig({ CORE_OWNER_CONTEXT_SIGNING_SECRET: "too-short" }).ownerContextSigningSecret, "");
+});
+
+test("loads independent strong tenant-gateway context material by UTF-8 byte length", () => {
+  const ownerSigningSecret = "o".repeat(32);
+  const tenantSigningSecret = "é".repeat(16);
+  const tenantGatewayKey = "g".repeat(32);
+  const config = loadConfig({
+    CORE_OWNER_CONTEXT_SIGNING_SECRET: ownerSigningSecret,
+    CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET: tenantSigningSecret,
+    CORE_MCP_TENANT_GATEWAY_KEY: tenantGatewayKey,
+  });
+
+  assert.equal(config.ownerContextSigningSecret, ownerSigningSecret);
+  assert.equal(config.tenantContextSigningSecret, tenantSigningSecret);
+  assert.equal(config.tenantGatewayKey, tenantGatewayKey);
+  assert.equal(loadConfig({
+    CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET: "é".repeat(15),
+  }).tenantContextSigningSecret, "");
+  assert.equal(loadConfig({
+    CORE_MCP_TENANT_GATEWAY_KEY: "é".repeat(15),
+  }).tenantGatewayKey, "");
 });
 
 test("loads Deep V2 MCP signing material only when it is strong enough", () => {
@@ -194,7 +237,7 @@ test("requires a full immutable build identity for the strict provider binding",
   assert.throws(() => loadConfig({ RENDER_GIT_COMMIT: "a".repeat(7) }), /full 40-character commit SHA/);
 });
 
-test("keeps browser OAuth audience separate from the MCP resource audience", () => {
+test("ignores retired browser-provider portal configuration", () => {
   const config = loadConfig({
     NODE_ENV: "production",
     MCP_PUBLIC_URL: "https://mcp.example.test",
@@ -206,29 +249,9 @@ test("keeps browser OAuth audience separate from the MCP resource audience", () 
     CODEX_BEARER_KEYS: "local-test-key",
   });
   assert.equal(config.auth0Audience, "https://mcp.example.test/mcp");
-  assert.equal(config.auth0BrowserAudience, "https://mcp.example.test/browser");
-});
-
-test("requires a dedicated browser audience when the owner portal is configured", () => {
-  assert.throws(() => loadConfig({
-    AUTH0_ISSUER: "https://tenant.auth0.com",
-    AUTH0_AUDIENCE: "https://mcp.example.test/mcp",
-    AUTH0_BROWSER_CLIENT_ID: "browser-client",
-    AUTH0_BROWSER_STATE_SECRET: "state-secret",
-  }), /AUTH0_BROWSER_AUDIENCE/);
-});
-
-test("requires a strong browser portal state and session secret in production", () => {
-  assert.throws(() => loadConfig({
-    NODE_ENV: "production",
-    MCP_PUBLIC_URL: "https://mcp.example.test",
-    AUTH0_ISSUER: "https://tenant.auth0.com",
-    AUTH0_AUDIENCE: "https://mcp.example.test/mcp",
-    AUTH0_BROWSER_CLIENT_ID: "browser-client",
-    AUTH0_BROWSER_AUDIENCE: "https://mcp.example.test/browser",
-    AUTH0_BROWSER_STATE_SECRET: "too-short",
-    CODEX_BEARER_KEYS: "local-test-key",
-  }), /at least 32 bytes/);
+  assert.equal(Object.hasOwn(config, "auth0BrowserAudience"), false);
+  assert.equal(Object.hasOwn(config, "auth0BrowserClientId"), false);
+  assert.equal(Object.hasOwn(config, "auth0BrowserCallbackUrl"), false);
 });
 
 test("loads OAuth owner tenant bindings only from server-side configuration", () => {
@@ -237,7 +260,7 @@ test("loads OAuth owner tenant bindings only from server-side configuration", ()
     AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "600",
   });
   assert.deepEqual(config.oauthOwnerTenantBindings, { "oauth-owner-fixture": "codexai" });
-  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 43_200);
+  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 600);
   assert.throws(() => loadConfig({ AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "../other" }) }), /invalid tenant id/);
 });
 
@@ -272,7 +295,7 @@ test("loads only bounded server-side OAuth tenant memberships", () => {
 
 test("keeps OAuth owner confirmation usable during a bounded ChatGPT work session", () => {
   const config = loadConfig({});
-  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 43_200);
+  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 300);
 });
 
 test("maps Suite Control Plane keys only to their configured tenants", () => {

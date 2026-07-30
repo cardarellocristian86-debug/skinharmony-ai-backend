@@ -1,0 +1,1529 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  coreJoinIdempotencyKey,
+  createWorkContinuityRuntime,
+  digest,
+} from "../src/work-continuity-runtime.js";
+import {
+  HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  buildHostReleaseIntentV1,
+  createHostNativeGovernance,
+  createInMemoryHostNativeGovernanceStore,
+  hostNativeDigest,
+} from "../../universal-core-service/src/hostNativeGovernance.js";
+
+function key(...parts) {
+  return parts.join("\u0000");
+}
+
+class ContinuityPool {
+  constructor(clock) {
+    this.clock = clock;
+    this.works = new Map();
+    this.bindings = new Map();
+    this.anchors = new Map();
+    this.events = new Map();
+    this.idempotency = new Map();
+    this.plans = new Map();
+    this.nativeAgents = new Map();
+    this.evaluations = new Map();
+    this.releaseJoins = new Map();
+    this.incidents = new Map();
+    this.capsules = new Map();
+  }
+
+  async query(sql, parameters = []) {
+    const q = sql.replace(/\s+/g, " ").trim();
+    if (q.includes("CREATE TABLE IF NOT EXISTS core_continuity_works")) return { rows: [], rowCount: 0 };
+    if (q.startsWith("SELECT pg_advisory_xact_lock")) return { rows: [], rowCount: 0 };
+
+    if (q.startsWith("SELECT work_id,create_request_digest FROM core_continuity_session_bindings")) {
+      const row = this.bindings.get(key(parameters[0], parameters[1], parameters[2]));
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT a.intent_digest,w.status,w.current_version,w.next_action")) {
+      const anchor = this.anchors.get(key(parameters[0], parameters[1]));
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      const row = anchor && work ? {
+        intent_digest: anchor.intent_digest,
+        status: work.status,
+        current_version: work.current_version,
+        next_action: work.next_action,
+      } : null;
+      return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT w.*,c.capsule_id,c.capsule,c.capsule_digest,c.supervisor_approved")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      const capsule = this.capsules.get(key(parameters[0], parameters[1]));
+      const row = work ? { ...work, ...(capsule || {}) } : null;
+      return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT intent_digest FROM core_continuity_intent_anchors")) {
+      const row = this.anchors.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [{ intent_digest: row.intent_digest }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT project_id,session_id,anchor,intent_digest,created_by,created_at")) {
+      const row = this.anchors.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_works")) {
+      const [
+        tenantId, projectId, workId, sessionId, parentWorkId, idea, objective,
+        repositoryHash, policyHash, liveStateHash, nextAction, createdBy,
+      ] = parameters;
+      const timestamp = this.clock().toISOString();
+      this.works.set(key(tenantId, workId), {
+        tenant_id: tenantId,
+        project_id: projectId,
+        work_id: workId,
+        session_id: sessionId,
+        parent_work_id: parentWorkId,
+        idea,
+        objective,
+        status: "active",
+        current_version: 1,
+        repository_hash: repositoryHash,
+        policy_hash: policyHash,
+        live_state_hash: liveStateHash,
+        next_action: nextAction,
+        created_by: createdBy,
+        created_at: timestamp,
+        updated_at: timestamp,
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_architecture_versions")) {
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_intent_anchors")) {
+      const [tenantId, workId, projectId, sessionId, anchor, intentDigest,
+        createRequestDigest, createdBy] = parameters;
+      this.anchors.set(key(tenantId, workId), {
+        project_id: projectId,
+        session_id: sessionId,
+        anchor: JSON.parse(anchor),
+        intent_digest: intentDigest,
+        create_request_digest: createRequestDigest,
+        created_by: createdBy,
+        created_at: this.clock().toISOString(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_session_bindings")) {
+      const [tenantId, projectId, sessionId, workId, createRequestDigest] = parameters;
+      this.bindings.set(key(tenantId, projectId, sessionId), {
+        work_id: workId,
+        create_request_digest: createRequestDigest,
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (q.startsWith("SELECT sequence_number,event_hash FROM core_continuity_events")) {
+      const rows = this.events.get(key(parameters[0], parameters[1])) || [];
+      return { rows: rows.length ? [{ ...rows.at(-1) }] : [], rowCount: rows.length ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_events")) {
+      const [tenantId, workId, eventId, sequenceNumber, eventType, payload,
+        previousEventHash, eventHash, createdBy] = parameters;
+      const eventKey = key(tenantId, workId);
+      const rows = this.events.get(eventKey) || [];
+      rows.push({
+        event_id: eventId,
+        sequence_number: sequenceNumber,
+        event_type: eventType,
+        payload: JSON.parse(payload),
+        previous_event_hash: previousEventHash,
+        event_hash: eventHash,
+        created_by: createdBy,
+      });
+      this.events.set(eventKey, rows);
+      return { rows: [], rowCount: 1 };
+    }
+
+    if (q.startsWith("SELECT w.work_id,w.project_id,w.session_id,w.status,w.current_version")) {
+      const tenantId = parameters[0];
+      const limit = Number(parameters.at(-1));
+      const rows = [...this.works.values()]
+        .filter((work) => work.tenant_id === tenantId)
+        .sort((left, right) =>
+          String(right.updated_at).localeCompare(String(left.updated_at)) ||
+          right.work_id.localeCompare(left.work_id))
+        .slice(0, limit)
+        .map((work) => {
+          const plans = [...this.plans.values()]
+            .filter((plan) => plan.tenant_id === tenantId && plan.work_id === work.work_id)
+            .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)));
+          const plan = plans[0];
+          return {
+            ...work,
+            latest_plan_id: plan?.plan_id || null,
+            latest_plan_status: plan?.status || null,
+            latest_plan_created_at: plan?.created_at || null,
+            latest_incident_fingerprint: null,
+            latest_incident_status: null,
+            latest_incident_updated_at: null,
+            atlas_revision: null,
+            atlas_source_hash: null,
+            atlas_updated_at: null,
+          };
+        });
+      return { rows, rowCount: rows.length };
+    }
+
+    if (q.startsWith("SELECT request_digest,result FROM core_continuity_idempotency")) {
+      const row = this.idempotency.get(key(parameters[0], parameters[1], parameters[2]));
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_idempotency")) {
+      const [tenantId, workId, idempotencyKey, operation, requestDigest, result] = parameters;
+      this.idempotency.set(key(tenantId, workId, idempotencyKey), {
+        operation,
+        request_digest: requestDigest,
+        result: JSON.parse(result),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT work_id FROM core_continuity_works")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: work ? [{ work_id: work.work_id }] : [], rowCount: work ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT project_id FROM core_continuity_works")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      return {
+        rows: work ? [{ project_id: work.project_id }] : [],
+        rowCount: work ? 1 : 0,
+      };
+    }
+    if (q.startsWith("SELECT w.work_id,a.anchor,a.intent_digest")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      const anchor = this.anchors.get(key(parameters[0], parameters[1]));
+      const row = work && anchor ? {
+        work_id: work.work_id,
+        anchor: anchor.anchor,
+        intent_digest: anchor.intent_digest,
+      } : null;
+      return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_native_plans")) {
+      const [tenantId, workId, planId, plan, planDigest, createdBy] = parameters;
+      this.plans.set(key(tenantId, planId), {
+        tenant_id: tenantId,
+        work_id: workId,
+        plan_id: planId,
+        plan: JSON.parse(plan),
+        plan_digest: planDigest,
+        status: "planned",
+        created_by: createdBy,
+        created_at: this.clock().toISOString(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_native_receipts")) {
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT plan,status FROM core_continuity_native_plans")) {
+      const row = this.plans.get(key(parameters[0], parameters[2]));
+      if (!row || row.work_id !== parameters[1]) return { rows: [], rowCount: 0 };
+      return { rows: [{ plan: row.plan, status: row.status }], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT plan_id,plan,status FROM core_continuity_native_plans")) {
+      const rows = [...this.plans.values()]
+        .filter((row) =>
+          row.tenant_id === parameters[0] &&
+          row.work_id === parameters[1] &&
+          ["planned", "verified"].includes(row.status))
+        .sort((left, right) => String(left.created_at).localeCompare(String(right.created_at)))
+        .map((row) => ({ plan_id: row.plan_id, plan: row.plan, status: row.status }));
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT plan FROM core_continuity_native_plans")) {
+      const rows = [...this.plans.values()]
+        .filter((row) =>
+          row.tenant_id === parameters[0] &&
+          row.work_id === parameters[1])
+        .sort((left, right) =>
+          String(right.created_at).localeCompare(String(left.created_at)));
+      return {
+        rows: rows.length ? [{ plan: rows[0].plan }] : [],
+        rowCount: rows.length ? 1 : 0,
+      };
+    }
+    if (q.startsWith("UPDATE core_continuity_native_plans SET status='superseded'")) {
+      const selected = new Set(parameters[2]);
+      for (const row of this.plans.values()) {
+        if (
+          row.tenant_id === parameters[0] &&
+          row.work_id === parameters[1] &&
+          selected.has(row.plan_id)
+        ) {
+          row.status = "superseded";
+          row.closed_at = this.clock().toISOString();
+        }
+      }
+      return { rows: [], rowCount: selected.size };
+    }
+    if (q.startsWith("UPDATE core_continuity_native_agents SET status='superseded'")) {
+      const selected = new Set(parameters[2]);
+      let count = 0;
+      for (const row of this.nativeAgents.values()) {
+        if (
+          row.tenant_id === parameters[0] &&
+          row.work_id === parameters[1] &&
+          selected.has(row.plan_id) &&
+          row.status === "bound"
+        ) {
+          row.status = "superseded";
+          count += 1;
+        }
+      }
+      return { rows: [], rowCount: count };
+    }
+    if (q.startsWith("UPDATE core_continuity_native_agents SET status='expired'")) {
+      const rows = [...this.nativeAgents.values()].filter((candidate) =>
+        candidate.tenant_id === parameters[0] &&
+        candidate.work_id === parameters[1] &&
+        candidate.plan_id === parameters[2] &&
+        candidate.status === "bound" &&
+        candidate.lease_expires_at &&
+        Date.parse(candidate.lease_expires_at) <= this.clock().getTime());
+      for (const row of rows) {
+        row.status = "expired";
+        row.reported_at = this.clock().toISOString();
+      }
+      return {
+        rows: rows.map((row) => ({ task_id: row.task_id, agent_id: row.agent_id })),
+        rowCount: rows.length,
+      };
+    }
+    if (q.startsWith("UPDATE core_continuity_native_plans SET status='blocked'")) {
+      const plan = this.plans.get(key(parameters[0], parameters[2]));
+      if (plan?.work_id === parameters[1] && plan.status === "planned") {
+        plan.status = "blocked";
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (q.startsWith("UPDATE core_continuity_works SET status='blocked'")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      if (work && work.status !== "completed") {
+        work.status = "blocked";
+        work.next_action = parameters[2];
+        work.updated_at = this.clock().toISOString();
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (q.startsWith("SELECT task_id,status FROM core_continuity_native_agents")) {
+      const rows = [...this.nativeAgents.values()]
+        .filter((candidate) =>
+          candidate.tenant_id === parameters[0] &&
+          candidate.work_id === parameters[1] &&
+          candidate.plan_id === parameters[2])
+        .sort((left, right) => left.task_id.localeCompare(right.task_id))
+        .map((row) => ({ task_id: row.task_id, status: row.status }));
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT task_id,agent_id,host_type,host_task_id,task_digest,")) {
+      const [tenantId, planId, taskId, agentId, hostTaskId] = parameters;
+      const row = [...this.nativeAgents.values()].find((candidate) =>
+        candidate.tenant_id === tenantId &&
+        candidate.plan_id === planId &&
+        (candidate.task_id === taskId ||
+          candidate.agent_id === agentId ||
+          candidate.host_task_id === hostTaskId));
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_native_agents")) {
+      const [tenantId, workId, planId, taskId, agentId, hostType, hostTaskId,
+        taskKind, taskDigest, coordinatorFingerprint, assignmentCapabilityDigest,
+        boundBy, leaseExpiresAt] = parameters;
+      this.nativeAgents.set(key(tenantId, planId, taskId), {
+        tenant_id: tenantId,
+        work_id: workId,
+        plan_id: planId,
+        task_id: taskId,
+        agent_id: agentId,
+        host_type: hostType,
+        host_task_id: hostTaskId,
+        task_kind: taskKind,
+        task_digest: taskDigest,
+        coordinator_session_fingerprint: coordinatorFingerprint,
+        assignment_capability_digest: assignmentCapabilityDigest,
+        native_session_fingerprint: null,
+        native_presence_signature: null,
+        status: "bound",
+        report: null,
+        report_digest: null,
+        bound_by: boundBy,
+        lease_expires_at: leaseExpiresAt,
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT a.task_id,a.task_kind,a.task_digest,a.status,a.report_digest,")) {
+      const [tenantId, workId, planId, agentId] = parameters;
+      const row = [...this.nativeAgents.values()].find((candidate) =>
+        candidate.tenant_id === tenantId &&
+        candidate.work_id === workId &&
+        candidate.plan_id === planId &&
+        candidate.agent_id === agentId);
+      const plan = this.plans.get(key(tenantId, planId));
+      return {
+        rows: row && plan ? [{
+          ...row,
+          plan: plan.plan,
+          plan_status: plan.status,
+        }] : [],
+        rowCount: row && plan ? 1 : 0,
+      };
+    }
+    if (q.startsWith("UPDATE core_continuity_native_agents SET status=")) {
+      const [
+        tenantId, workId, planId, agentId, status, report, reportDigest,
+        nativeSessionFingerprint, nativePresenceSignature,
+      ] = parameters;
+      const row = [...this.nativeAgents.values()].find((candidate) =>
+        candidate.tenant_id === tenantId &&
+        candidate.work_id === workId &&
+        candidate.plan_id === planId &&
+        candidate.agent_id === agentId);
+      row.status = status;
+      row.report = JSON.parse(report);
+      row.report_digest = reportDigest;
+      row.native_session_fingerprint = nativeSessionFingerprint;
+      row.native_presence_signature = nativePresenceSignature;
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT task_id FROM core_continuity_native_agents")) {
+      const [tenantId, planId, nativeSessionFingerprint, agentId] = parameters;
+      const row = [...this.nativeAgents.values()].find((candidate) =>
+        candidate.tenant_id === tenantId &&
+        candidate.plan_id === planId &&
+        candidate.native_session_fingerprint === nativeSessionFingerprint &&
+        candidate.agent_id !== agentId);
+      return { rows: row ? [{ task_id: row.task_id }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT task_id,agent_id,task_kind,status,report,report_digest")) {
+      const rows = [...this.nativeAgents.values()]
+        .filter((row) =>
+          row.tenant_id === parameters[0] &&
+          row.work_id === parameters[1] &&
+          row.plan_id === parameters[2])
+        .sort((left, right) => left.task_id.localeCompare(right.task_id))
+        .map((row) => ({ ...row }));
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT p.plan,p.plan_digest,p.status, e.evaluation_id")) {
+      const plan = this.plans.get(key(parameters[0], parameters[2]));
+      const joins = [...this.releaseJoins.values()]
+        .filter((candidate) =>
+          candidate.tenant_id === parameters[0] &&
+          candidate.work_id === parameters[1] &&
+          candidate.plan_id === parameters[2])
+        .sort((left, right) =>
+          String(right.created_at).localeCompare(String(left.created_at)));
+      const join = joins[0];
+      const evaluations =
+        this.evaluations.get(key(parameters[0], parameters[1], parameters[2])) || [];
+      const evaluation = evaluations.find((candidate) =>
+        candidate.evaluation_id === join?.evaluation_id);
+      if (!plan || !join || !evaluation) return { rows: [], rowCount: 0 };
+      return {
+        rows: [{
+          plan: plan.plan,
+          plan_digest: plan.plan_digest,
+          status: plan.status,
+          evaluation_id: evaluation.evaluation_id,
+          evaluation: evaluation.evaluation,
+          evaluation_digest: evaluation.evaluation_digest,
+          verdict_id: join.verdict_id,
+          release_intent: join.release_intent,
+          release_intent_digest: join.release_intent_digest,
+          core_join_record: join.core_join_record,
+          core_join_record_digest: join.core_join_record_digest,
+        }],
+        rowCount: 1,
+      };
+    }
+    if (
+      q.startsWith("SELECT p.plan,p.plan_digest,p.status,a.intent_digest,e.evaluation")
+    ) {
+      const plan = this.plans.get(key(parameters[0], parameters[2]));
+      const anchor = this.anchors.get(key(parameters[0], parameters[1]));
+      const evaluations =
+        this.evaluations.get(key(parameters[0], parameters[1], parameters[2])) || [];
+      const evaluation = evaluations.find((candidate) =>
+        candidate.evaluation_id === parameters[3]);
+      if (!plan || plan.work_id !== parameters[1] || !anchor || !evaluation) {
+        return { rows: [], rowCount: 0 };
+      }
+      return {
+        rows: [{
+          plan: plan.plan,
+          plan_digest: plan.plan_digest,
+          status: plan.status,
+          intent_digest: anchor.intent_digest,
+          evaluation: evaluation.evaluation,
+          evaluation_digest: evaluation.evaluation_digest,
+        }],
+        rowCount: 1,
+      };
+    }
+    if (q.startsWith("SELECT p.plan,p.plan_digest,p.status,a.intent_digest")) {
+      const plan = this.plans.get(key(parameters[0], parameters[2]));
+      const anchor = this.anchors.get(key(parameters[0], parameters[1]));
+      if (!plan || plan.work_id !== parameters[1] || !anchor) {
+        return { rows: [], rowCount: 0 };
+      }
+      return {
+        rows: [{
+          plan: plan.plan,
+          plan_digest: plan.plan_digest,
+          status: plan.status,
+          intent_digest: anchor.intent_digest,
+        }],
+        rowCount: 1,
+      };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_closure_evaluations")) {
+      const [tenantId, workId, planId, evaluationId, evaluation, evaluationDigest, evaluatedBy] = parameters;
+      const evaluationKey = key(tenantId, workId, planId);
+      const rows = this.evaluations.get(evaluationKey) || [];
+      rows.push({
+        evaluation_id: evaluationId,
+        evaluation: JSON.parse(evaluation),
+        evaluation_digest: evaluationDigest,
+        evaluated_by: evaluatedBy,
+        created_at: this.clock().toISOString(),
+      });
+      this.evaluations.set(evaluationKey, rows);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_native_plans SET status='verified'")) {
+      this.plans.get(key(parameters[0], parameters[2])).status = "verified";
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT verdict_id,release_intent_digest,")) {
+      const row = this.releaseJoins.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_release_joins")) {
+      const [
+        tenantId, workId, planId, evaluationId, verdictId, releaseIntent,
+        releaseIntentDigest, coreJoinRecord, coreJoinRecordDigest, createdBy,
+      ] = parameters;
+      this.releaseJoins.set(key(tenantId, evaluationId), {
+        tenant_id: tenantId,
+        work_id: workId,
+        plan_id: planId,
+        evaluation_id: evaluationId,
+        verdict_id: verdictId,
+        release_intent: JSON.parse(releaseIntent),
+        release_intent_digest: releaseIntentDigest,
+        core_join_record: JSON.parse(coreJoinRecord),
+        core_join_record_digest: coreJoinRecordDigest,
+        created_by: createdBy,
+        created_at: this.clock().toISOString(),
+      });
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_works SET status='release_ready'")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      work.status = "release_ready";
+      work.next_action =
+        "Obtain a fresh Core release verdict, execute through host policy, then verify live readback.";
+      work.updated_at = this.clock().toISOString();
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_works SET session_id=")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      work.session_id = parameters[2];
+      work.status = "active";
+      work.updated_at = this.clock().toISOString();
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_works SET next_action=")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      work.next_action = parameters[2];
+      work.updated_at = this.clock().toISOString();
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT evaluation,evaluation_digest FROM core_continuity_closure_evaluations")) {
+      const rows = this.evaluations.get(key(parameters[0], parameters[1], parameters[2])) || [];
+      return {
+        rows: rows.length ? [{
+          evaluation: rows.at(-1).evaluation,
+          evaluation_digest: rows.at(-1).evaluation_digest,
+        }] : [],
+        rowCount: rows.length ? 1 : 0,
+      };
+    }
+    if (q.startsWith("UPDATE core_continuity_native_plans SET status='closed'")) {
+      const plan = this.plans.get(key(parameters[0], parameters[2]));
+      plan.status = "closed";
+      plan.closed_at = this.clock().toISOString();
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_works SET status='completed'")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      work.status = "completed";
+      work.next_action = "";
+      work.live_state_hash = parameters[2];
+      work.updated_at = this.clock().toISOString();
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT runbook_digest,status,created_by FROM core_continuity_incident_runbooks")) {
+      const row = this.incidents.get(key(parameters[0], parameters[1], parameters[2]));
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_incident_runbooks")) {
+      const [tenantId, projectId, fingerprint, scope, runbook, runbookDigest,
+        createdBy] = parameters;
+      this.incidents.set(key(tenantId, projectId, fingerprint), {
+        tenant_id: tenantId,
+        project_id: projectId,
+        fingerprint,
+        scope: JSON.parse(scope),
+        runbook: JSON.parse(runbook),
+        runbook_digest: runbookDigest,
+        status: "candidate",
+        created_by: createdBy,
+      });
+      return { rows: [], rowCount: 1 };
+    }
+
+    throw new Error(`fake_pool_query_not_implemented:${q.slice(0, 180)}`);
+  }
+
+  async end() {}
+}
+
+const initialInput = {
+  project_id: "skinharmony",
+  session_id: "chat-session-1",
+  initial_message: "Continue until verified; token=do-not-store",
+  idea: "Persistent governed work",
+  objective: "Resume without repository rescans",
+  acceptance_criteria: ["Exact resume"],
+  constraints: ["No raw credentials"],
+  architecture: { components: [{ id: "core" }] },
+  next_action: "Plan native agents",
+  host_type: "codex_native",
+};
+
+function corePlanFor(work, request) {
+  const payload = {
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    intent_anchor_digest: work.intent_digest,
+    repository: request.repository,
+    objective: initialInput.objective,
+    required_checks: request.required_checks,
+    builder_agent_id: request.tasks.find((task) => task.kind === "builder")?.task_id,
+    verifier_agent_ids: request.tasks
+      .filter((task) => task.kind === "verifier")
+      .map((task) => task.task_id)
+      .sort(),
+    agents: request.tasks.map((task) => ({
+      agent_id: task.task_id,
+      role: task.kind,
+      task: task.instruction,
+      depends_on: task.dependencies || [],
+      capabilities: [],
+    })),
+    maximum_parallel_agents: request.max_parallel || 1,
+  };
+  const planDigest = digest(payload);
+  return {
+    schema_version: "host_native_work_plan_v1",
+    plan_id: `hnp_${planDigest.slice(0, 40)}`,
+    plan_digest: planDigest,
+    ...payload,
+    execution_adapter: "host_native",
+    provider_execution: false,
+    provider_api_key_required: false,
+    server_model_calls: 0,
+    host_materialization_required: true,
+    materialization_status: "planned_not_spawned",
+    host_policy_override: false,
+    host_policy_must_allow: true,
+    child_can_issue_action_ticket: false,
+    join_authority: "universal_core",
+    release_mode: "external_ticket_required",
+  };
+}
+
+test("ensure survives runtime restart, is strict by default and isolates tenants", async () => {
+  let instant = new Date("2026-07-29T12:00:00.000Z");
+  const clock = () => new Date(instant);
+  const pool = new ContinuityPool(clock);
+  const firstRuntime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const tenantA = { tenantId: "tenant-a", subject: "codex" };
+
+  const created = await firstRuntime.ensure(tenantA, initialInput);
+  const replay = await firstRuntime.ensure(tenantA, initialInput);
+  assert.equal(created.project_id, initialInput.project_id);
+  assert.equal(replay.project_id, initialInput.project_id);
+  assert.equal(replay.work_id, created.work_id);
+  assert.equal(replay.idempotent_replay, true);
+  await assert.rejects(firstRuntime.ensure(tenantA, {
+    ...initialInput,
+    objective: "Silently replace the original objective",
+  }), /continuity_session_intent_conflict/);
+
+  const restartedRuntime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const resumed = await restartedRuntime.ensure(tenantA, {
+    ...initialInput,
+    resume_existing: true,
+  });
+  assert.equal(resumed.project_id, initialInput.project_id);
+  assert.equal(resumed.work_id, created.work_id);
+  assert.equal(resumed.resumed_existing, true);
+  await assert.rejects(restartedRuntime.ensure(tenantA, {
+    ...initialInput,
+    objective: "Replace the immutable objective during explicit resume",
+    resume_existing: true,
+  }), /continuity_resume_intent_mismatch/);
+  const trustedFollowup = await restartedRuntime.ensure(tenantA, {
+    ...initialInput,
+    initial_message: "Short internal follow-up tool command",
+    idea: "Short follow-up",
+    objective: "Short follow-up",
+    resume_existing: true,
+  }, { trustedSessionFollowup: true });
+  assert.equal(trustedFollowup.project_id, initialInput.project_id);
+  assert.equal(trustedFollowup.work_id, created.work_id);
+  assert.equal(trustedFollowup.intent_digest, created.intent_digest);
+
+  instant = new Date("2026-07-29T12:01:00.000Z");
+  const tenantBWork = await restartedRuntime.ensure({
+    tenantId: "tenant-b",
+    subject: "codex",
+  }, initialInput);
+  assert.notEqual(tenantBWork.work_id, created.work_id);
+
+  const anchor = await restartedRuntime.readIntent(tenantA, { work_id: created.work_id });
+  assert.match(anchor.anchor.initial_message, /\[REDACTED\]/);
+  assert.doesNotMatch(JSON.stringify(anchor), /do-not-store/);
+
+  const catalog = await restartedRuntime.listWorks(tenantA, { limit: 10 });
+  assert.deepEqual(catalog.works.map((work) => work.work_id), [created.work_id]);
+  assert.equal(catalog.raw_prompt_fields_returned, false);
+  assert.equal("idea" in catalog.works[0], false);
+  assert.equal("objective" in catalog.works[0], false);
+  assert.equal("anchor" in catalog.works[0], false);
+});
+
+test("native plan replay is deterministic and receipts preserve host policy boundaries", async () => {
+  const instant = new Date("2026-07-29T13:00:00.000Z");
+  const clock = () => new Date(instant);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "a".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, initialInput);
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Implement." },
+      {
+        task_id: "verify",
+        kind: "verifier",
+        instruction: "Verify independently.",
+        dependencies: ["build"],
+      },
+    ],
+    max_parallel: 2,
+    idempotency_key: "native-plan-stable",
+  };
+  const corePlan = corePlanFor(work, request);
+  const planned = await runtime.planNativeAgents(identity, request, { corePlan });
+  const replay = await runtime.planNativeAgents(identity, request, { corePlan });
+  assert.equal(replay.plan.plan_id, planned.plan.plan_id);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(planned.receipt.host_type, "codex_native");
+  assert.equal(planned.receipt.coordinator_session_fingerprint, "a".repeat(64));
+  assert.equal(planned.receipt.host_policy_override, false);
+  assert.equal(planned.receipt.host_policy_must_allow, true);
+  assert.equal(planned.receipt.provider_execution, false);
+  const changedRequest = {
+    ...request,
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Changed instruction." },
+      request.tasks[1],
+    ],
+  };
+  await assert.rejects(runtime.planNativeAgents(
+    identity,
+    changedRequest,
+    { corePlan: corePlanFor(work, changedRequest) },
+  ), /idempotency_key_conflict/);
+  await assert.rejects(runtime.planNativeAgents(identity, {
+    ...request,
+    idempotency_key: "native-plan-no-core",
+  }), /core_host_native_work_plan/);
+});
+
+test("native agent leases enforce Core max_parallel and expire stale host bindings", async () => {
+  let instant = new Date("2026-07-29T13:10:00.000Z");
+  const clock = () => new Date(instant);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: "d".repeat(32),
+  }, { pool, now: clock });
+  const legacyFallbackOnlyRuntime = createWorkContinuityRuntime({
+    agentSignatureSecret: "a".repeat(32),
+    ownerContextSigningSecret: "o".repeat(32),
+  }, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "b".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "parallel-session",
+  });
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Implement." },
+      { task_id: "research", kind: "researcher", instruction: "Inspect evidence." },
+      {
+        task_id: "verify",
+        kind: "verifier",
+        instruction: "Verify independently.",
+        dependencies: ["build", "research"],
+      },
+    ],
+    max_parallel: 1,
+    idempotency_key: "parallel-plan",
+  };
+  const planned = await runtime.planNativeAgents(identity, request, {
+    corePlan: corePlanFor(work, request),
+  });
+  await assert.rejects(
+    legacyFallbackOnlyRuntime.bindNativeAgent(identity, {
+      work_id: work.work_id,
+      plan_id: planned.plan.plan_id,
+      task_id: "build",
+      native_agent_id: "legacy-fallback-builder",
+      host_type: "codex_native",
+      host_task_id: "/root/legacy-fallback-build",
+    }),
+    /native_agent_assignment_signing_unavailable/,
+  );
+  const bind = (taskId, agentId) => runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    task_id: taskId,
+    native_agent_id: agentId,
+    host_type: "codex_native",
+    host_task_id: `/root/${taskId}`,
+  });
+  const builderBinding = await bind("build", "codex-builder");
+  await assert.rejects(bind("research", "codex-researcher"), /native_agent_parallel_limit_reached/);
+
+  instant = new Date("2026-07-29T14:11:00.000Z");
+  const expiredBuilderIdentity = {
+    ...identity,
+    agentPresence: {
+      agent_id: "codex-builder",
+      client_type: "codex",
+      session_fingerprint: "1".repeat(64),
+      host_transport_session_fingerprint: "1".repeat(64),
+      signature: `ags_${"1".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  await assert.rejects(runtime.reportNativeAgent(expiredBuilderIdentity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    native_agent_id: "codex-builder",
+    host_task_id: "/root/build",
+    assignment_capability: builderBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "Late result.",
+      commit_sha: "e".repeat(40),
+      tests: [{ name: "late", passed: true }],
+      evidence_refs: ["late:result"],
+    },
+  }), /native_agent_binding_expired_replan_required/);
+  const expiredBuilder = pool.nativeAgents.get(
+    key("tenant-a", planned.plan.plan_id, "build"),
+  );
+  assert.equal(expiredBuilder.status, "expired");
+  assert.equal(pool.plans.get(key("tenant-a", planned.plan.plan_id)).status, "blocked");
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "blocked");
+  assert.match(
+    pool.works.get(key("tenant-a", work.work_id)).next_action,
+    /fresh bounded plan/,
+  );
+  assert.equal(
+    (pool.events.get(key("tenant-a", work.work_id)) || []).at(-1).event_type,
+    "native_agent_lease_expired",
+  );
+  await assert.rejects(
+    bind("research", "codex-researcher"),
+    /native_agent_plan_not_open/,
+  );
+});
+
+test("operational failures create one exact indexed blocker without raw error text", async () => {
+  const instant = new Date("2026-07-29T14:20:00.000Z");
+  const clock = () => new Date(instant);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "f".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "operational-incident-session",
+  });
+  const input = {
+    work_id: work.work_id,
+    operation: "work_continuity_closure_finalize",
+    error_code: "trusted_readback_checks_not_ready",
+    evidence_digest: "8".repeat(64),
+    next_action: "Correct the exact CI failure and obtain independent review.",
+  };
+
+  const first = await runtime.recordOperationalIncident(identity, input);
+  const replay = await runtime.recordOperationalIncident(identity, input);
+
+  assert.equal(first.status, "candidate");
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.fingerprint, first.fingerprint);
+  assert.equal(pool.incidents.size, 1);
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "blocked");
+  const serialized = JSON.stringify([...pool.incidents.values()]);
+  assert.doesNotMatch(serialized, /token|password|raw error/i);
+  assert.match(serialized, /TRUSTED_READBACK_CHECKS_NOT_READY/);
+});
+
+test("cross-chat resume preserves same-session plans and supersedes stale coordinator bindings", async () => {
+  const instant = new Date("2026-07-29T13:20:00.000Z");
+  const clock = () => new Date(instant);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "c".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "cross-chat-source",
+  });
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Implement." },
+      {
+        task_id: "verify",
+        kind: "verifier",
+        instruction: "Verify.",
+        dependencies: ["build"],
+      },
+    ],
+    idempotency_key: "cross-chat-plan",
+  };
+  const planned = await runtime.planNativeAgents(identity, request, {
+    corePlan: corePlanFor(work, request),
+  });
+  const stateHashes = {
+    repository_hash: "1".repeat(64),
+    policy_hash: "2".repeat(64),
+    live_state_hash: "3".repeat(64),
+  };
+  const capsule = {
+    snapshot: { components: [{ id: "core" }] },
+    next_action: "Continue with a fresh native coordinator when needed.",
+    state_hashes: stateHashes,
+  };
+  pool.capsules.set(key("tenant-a", work.work_id), {
+    capsule_id: "11111111-1111-4111-8111-111111111111",
+    capsule,
+    capsule_digest: digest(capsule),
+    supervisor_approved: true,
+  });
+  const authorization = { allowed: true, decision_id: "core-resume-1" };
+  const sameSession = await runtime.resume(identity, {
+    work_id: work.work_id,
+    session_id: "cross-chat-same-host",
+    current_state_hashes: stateHashes,
+    idempotency_key: "resume-same-host",
+  }, authorization);
+  assert.equal(sameSession.native_replan_required, false);
+  assert.equal(pool.plans.get(key("tenant-a", planned.plan.plan_id)).status, "planned");
+
+  const newIdentity = {
+    ...identity,
+    agentPresence: {
+      ...identity.agentPresence,
+      session_fingerprint: "d".repeat(64),
+    },
+  };
+  const newSession = await runtime.resume(newIdentity, {
+    work_id: work.work_id,
+    session_id: "cross-chat-new-host",
+    current_state_hashes: stateHashes,
+    idempotency_key: "resume-new-host",
+  }, { allowed: true, decision_id: "core-resume-2" });
+  assert.equal(newSession.native_replan_required, true);
+  assert.deepEqual(newSession.superseded_plan_ids, [planned.plan.plan_id]);
+  assert.equal(pool.plans.get(key("tenant-a", planned.plan.plan_id)).status, "superseded");
+  await assert.rejects(runtime.bindNativeAgent(newIdentity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    task_id: "build",
+    native_agent_id: "new-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/new-build",
+  }), /native_agent_plan_not_open/);
+});
+
+test("local closure becomes release-ready and external completion needs exact Core ticket bindings", async () => {
+  const instant = new Date("2026-07-29T13:30:00.000Z");
+  const clock = () => new Date(instant);
+  const pool = new ContinuityPool(clock);
+  const closureAttestationSecret =
+    "continuity-closure-attestation-test-secret-0123456789";
+  const runtime = createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: closureAttestationSecret,
+  }, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "d".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "closure-session",
+  });
+  const planRequest = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    base_branch: "main",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Implement." },
+      {
+        task_id: "verify",
+        kind: "verifier",
+        instruction: "Verify independently.",
+        dependencies: ["build"],
+      },
+    ],
+    idempotency_key: "closure-plan",
+  };
+  const requiredChecksPolicy = {
+    schema_version: "host_native_required_checks_policy_v1",
+    tenant_id: "tenant-a",
+    repository: "owner/repo",
+    base_branch: "main",
+    required_checks: ["core-mcp"],
+    check_app: { id: 15_368, slug: "github-actions", owner: "github" },
+    workflow: {
+      id: 312_527_659,
+      name: "Nyra Core Intelligence",
+      path: ".github/workflows/nyra-core-intelligence.yml",
+      sha256: "7".repeat(64),
+    },
+    allowed_events: ["pull_request", "push"],
+  };
+  const requiredChecksPolicyResolver = async (request) => {
+    assert.deepEqual(request, {
+      tenant_id: "tenant-a",
+      repository: "owner/repo",
+      base_branch: "main",
+    });
+    return requiredChecksPolicy;
+  };
+  const realCore = createHostNativeGovernance({
+    store: createInMemoryHostNativeGovernanceStore(),
+    signingSecret: "core-contract-test-signing-secret-0123456789abcdef",
+    closureAttestationSigningSecret: closureAttestationSecret,
+    requiredChecksPolicyResolver,
+    now: () => clock().getTime(),
+  });
+  const corePlanRequest = {
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    intent_anchor_digest: work.intent_digest,
+    repository: planRequest.repository,
+    objective: initialInput.objective,
+    required_checks: planRequest.required_checks,
+    agents: planRequest.tasks.map((task) => ({
+      agent_id: task.task_id,
+      role: task.kind,
+      task: task.instruction,
+      depends_on: task.dependencies || [],
+      capabilities: [],
+    })),
+    max_parallel: 1,
+  };
+  await assert.rejects(
+    realCore.buildWorkPlan(corePlanRequest),
+    /base_branch_invalid/,
+  );
+  const governedCorePlan = await realCore.buildWorkPlan({
+    ...corePlanRequest,
+    base_branch: planRequest.base_branch,
+  });
+  const planned = await runtime.planNativeAgents(identity, planRequest, {
+    corePlan: governedCorePlan,
+  });
+  assert.equal(planned.plan.core_authority.base_branch, "main");
+  assert.equal(
+    planned.plan.core_authority.required_checks_policy_digest,
+    governedCorePlan.required_checks_policy_digest,
+  );
+  const planId = planned.plan.plan_id;
+  const builderBinding = await runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    task_id: "build",
+    native_agent_id: "codex-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/build",
+  });
+  await assert.rejects(runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    task_id: "verify",
+    native_agent_id: "codex-verifier",
+    host_type: "codex_native",
+    host_task_id: "/root/verify",
+  }), /native_agent_dependency_not_ready/);
+  const builderIdentity = {
+    ...identity,
+    agentPresence: {
+      agent_id: "codex-builder",
+      client_type: "codex",
+      session_fingerprint: "1".repeat(64),
+      host_transport_session_fingerprint: "1".repeat(64),
+      signature: `ags_${"1".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  await assert.rejects(runtime.reportNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    native_agent_id: "codex-builder",
+    host_task_id: "/root/build",
+    assignment_capability: builderBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "Coordinator must not impersonate the builder.",
+      commit_sha: "e".repeat(40),
+      tests: [{ name: "node --test", passed: true }],
+      evidence_refs: ["commit:pending"],
+    },
+  }), /native_agent_reporter_presence_required/);
+  await runtime.reportNativeAgent(builderIdentity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    native_agent_id: "codex-builder",
+    host_task_id: "/root/build",
+    assignment_capability: builderBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "Implementation completed.",
+      commit_sha: "e".repeat(40),
+      tests: [{ name: "node --test", passed: true }],
+      evidence_refs: ["commit:pending"],
+    },
+  });
+  const verifierBinding = await runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    task_id: "verify",
+    native_agent_id: "codex-verifier",
+    host_type: "codex_native",
+    host_task_id: "/root/verify",
+  });
+  const reusedVerifierIdentity = {
+    ...builderIdentity,
+    agentPresence: {
+      ...builderIdentity.agentPresence,
+      agent_id: "codex-verifier",
+      signature: `ags_${"2".repeat(32)}`,
+    },
+  };
+  const verifierReportInput = {
+    work_id: work.work_id,
+    plan_id: planId,
+    native_agent_id: "codex-verifier",
+    host_task_id: "/root/verify",
+    assignment_capability: verifierBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "Independent verification passed.",
+      commit_sha: "e".repeat(40),
+      verdict: "approved",
+      verifies_task_ids: ["build"],
+      evidence_refs: ["review:independent"],
+      acceptance_evidence: planned.plan.acceptance_contract.criteria.map((criterion) => ({
+        criterion_digest: criterion.criterion_digest,
+        passed: true,
+        evidence_refs: [`evidence:${criterion.criterion_id}`],
+      })),
+    },
+  };
+  await assert.rejects(
+    runtime.reportNativeAgent(reusedVerifierIdentity, verifierReportInput),
+    /native_agent_reporter_reuse_denied/,
+  );
+  const verifierIdentity = {
+    ...identity,
+    agentPresence: {
+      agent_id: "codex-verifier",
+      client_type: "codex",
+      session_fingerprint: "2".repeat(64),
+      host_transport_session_fingerprint: "2".repeat(64),
+      signature: `ags_${"3".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  await runtime.reportNativeAgent(verifierIdentity, verifierReportInput);
+  await assert.rejects(runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    release: {
+      base_branch: "develop",
+      delivery_branch: "develop",
+      base_commit: "a".repeat(40),
+      head_commit: "e".repeat(40),
+      tree_sha: "b".repeat(40),
+      diff_digest: "c".repeat(64),
+      changed_files: ["services/skinharmony-core-mcp/src/server.js"],
+      delivery: {
+        method: "github_protected_push_auto_deploy",
+        services: [{
+          service_id: "srv-core-mcp",
+          environment: "production",
+          expected_previous_commit: "a".repeat(40),
+          target_commit: null,
+          target_resolution: "post_merge_readback",
+          health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        }],
+      },
+      rollback: {
+        mode: "forward_revert",
+        target_commit: "a".repeat(40),
+        health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        ready: true,
+      },
+    },
+    idempotency_key: "closure-wrong-base-branch",
+  }), /continuity_release_base_branch_policy_mismatch/);
+  const evaluation = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    release: {
+      base_branch: "main",
+      delivery_branch: "main",
+      base_commit: "a".repeat(40),
+      head_commit: "e".repeat(40),
+      tree_sha: "b".repeat(40),
+      diff_digest: "c".repeat(64),
+      changed_files: ["services/skinharmony-core-mcp/src/server.js"],
+      delivery: {
+        method: "github_protected_push_auto_deploy",
+        services: [{
+          service_id: "srv-core-mcp",
+          environment: "production",
+          expected_previous_commit: "a".repeat(40),
+          target_commit: null,
+          target_resolution: "post_merge_readback",
+          health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        }],
+      },
+      rollback: {
+        mode: "forward_revert",
+        target_commit: "a".repeat(40),
+        health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        ready: true,
+      },
+    },
+    idempotency_key: "closure-evaluation",
+  });
+  assert.equal(evaluation.closed, true);
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "active");
+  assert.equal(pool.plans.get(key("tenant-a", planId)).status, "planned");
+  assert.equal(evaluation.core_join_required, true);
+  const {
+    work_id: _releaseWorkId,
+    intent_anchor_digest: _releaseIntentDigest,
+    repository: _releaseRepository,
+    verification: _releaseVerification,
+    ...releaseInput
+  } = evaluation.core_join_material.release_intent_request;
+  const exactReplay = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    release: releaseInput,
+    idempotency_key: "closure-evaluation",
+  });
+  assert.equal(exactReplay.idempotent_replay, true);
+  assert.equal(
+    exactReplay.core_join_material.material_digest,
+    evaluation.core_join_material.material_digest,
+  );
+  assert.equal(
+    coreJoinIdempotencyKey(exactReplay.core_join_material),
+    coreJoinIdempotencyKey(evaluation.core_join_material),
+  );
+  const correctedRelease = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    release: {
+      ...releaseInput,
+      diff_digest: "9".repeat(64),
+    },
+    idempotency_key: "closure-evaluation-corrected-release",
+  });
+  assert.equal(correctedRelease.evaluation_digest, evaluation.evaluation_digest);
+  assert.notEqual(
+    correctedRelease.core_join_material.material_digest,
+    evaluation.core_join_material.material_digest,
+  );
+  assert.notEqual(
+    coreJoinIdempotencyKey(correctedRelease.core_join_material),
+    coreJoinIdempotencyKey(evaluation.core_join_material),
+  );
+  await assert.rejects(runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    release: {
+      ...releaseInput,
+      builder_report: { agent_id: "caller-injected-builder" },
+    },
+    idempotency_key: "closure-caller-evidence-injection",
+  }), /continuity_release_fields_invalid/);
+
+  const releaseIntent = buildHostReleaseIntentV1({
+    tenant_id: "tenant-a",
+    ...evaluation.core_join_material.release_intent_request,
+  });
+  const coreJoinRecord = await realCore.issueCoreJoinVerdict({
+    tenant_id: "tenant-a",
+    ...evaluation.core_join_material.core_join_request,
+    release_intent: releaseIntent,
+    idempotency_key: "real-core-hnj-contract",
+  });
+  const verdict = coreJoinRecord.verdict;
+  const verdictId = verdict.verdict_id;
+  const expectedCoreClaim = {
+    tenant_id: "tenant-a",
+    ...evaluation.core_join_material.core_join_request,
+    release_intent_digest: releaseIntent.release_intent_digest,
+    base_branch: releaseIntent.base_branch,
+    required_checks_policy_digest:
+      planned.plan.core_authority.required_checks_policy_digest,
+  };
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(expectedCoreClaim).map((field) => [
+      field,
+      verdict[field],
+    ])),
+    expectedCoreClaim,
+  );
+  assert.equal(
+    verdict.claim_digest,
+    hostNativeDigest({
+      schema_version: "host_native_core_join_claim_v1",
+      ...expectedCoreClaim,
+    }),
+  );
+  await assert.rejects(runtime.bindCoreJoinVerdict(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    evaluation_id: evaluation.evaluation_id,
+  }, {
+    releaseIntent,
+    coreJoinRecord: {
+      ...coreJoinRecord,
+      verdict: { ...verdict, work_id: "caller-swapped-work" },
+    },
+  }), /continuity_core_join_claim_payload_mismatch/);
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "active");
+  assert.equal(pool.releaseJoins.size, 0);
+  const joined = await runtime.bindCoreJoinVerdict(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    evaluation_id: evaluation.evaluation_id,
+  }, { releaseIntent, coreJoinRecord });
+  assert.equal(joined.release_ready, true);
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "release_ready");
+  assert.equal(pool.plans.get(key("tenant-a", planId)).status, "verified");
+  assert.equal(pool.releaseJoins.size, 1);
+
+  const ticketId = "hnt_12345678-abcd";
+  const liveCommit = "9".repeat(40);
+  const baseFinalize = {
+    work_id: work.work_id,
+    plan_id: planId,
+    action_ticket_id: ticketId,
+    idempotency_key: "closure-finalize",
+  };
+  const readbackDigest = "3".repeat(64);
+  const unsignedAuthorization = {
+    schema_version: "host_native_finalize_authorization_v1",
+    trusted: true,
+    allowed: true,
+    decision: "ALLOW_FINALIZE",
+    decision_id: ticketId,
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    repository: "owner/repo",
+    target_commit: liveCommit,
+    action_ticket_id: ticketId,
+    action_ticket_digest: "1".repeat(64),
+    release_manifest_digest: "2".repeat(64),
+    release_intent_digest: releaseIntent.release_intent_digest,
+    core_join_verdict_id: verdictId,
+    core_join_verdict_digest: digest(verdict),
+    core_join_resolution_digest: "4".repeat(64),
+    changed_files: ["services/skinharmony-core-mcp/src/server.js"],
+    predecessor: null,
+    predecessor_chain_digest: null,
+    evidence_digest: evaluation.evaluation_digest,
+    host_kind: "codex_native",
+    host_session_fingerprint: "d".repeat(64),
+    host_result_digest: "5".repeat(64),
+    host_readback_digest: "6".repeat(64),
+    external_readback_digest: readbackDigest,
+    readback_digest: readbackDigest,
+    result_commit_verified: true,
+    github_readback: {
+      checks_commit: "e".repeat(40),
+      checks_passed: true,
+      required_checks: ["core-mcp"],
+      rollback_commit_available: true,
+    },
+    live_services: [{
+      service_id: "srv-core-mcp",
+      environment: "production",
+      origin: "https://srv-core-mcp.onrender.com",
+      deployment_id: `srv-core-mcp:${liveCommit}`,
+      live_commit: liveCommit,
+      version: "0.16.0",
+      health_status: "healthy",
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      rollback_commit: "a".repeat(40),
+      rollback_status: "commit_available_manifest_bound",
+      readback_digest: "7".repeat(64),
+    }],
+    outcome_source: "verified_completion",
+    readback_source: "core_server_external_readback_v1",
+    issued_at: "2026-07-29T13:29:00.000Z",
+    expires_at: "2026-07-29T13:38:00.000Z",
+    host_policy_override: false,
+    host_policy_must_allow: true,
+    external_execution_allowed: false,
+    host_execution_required: true,
+    provider_execution: false,
+  };
+  const authorization = {
+    ...unsignedAuthorization,
+    authorization_digest: digest(unsignedAuthorization),
+    signature: `hnf_${"8".repeat(64)}`,
+  };
+
+  await assert.rejects(runtime.finalizeClosure(identity, {
+    ...baseFinalize,
+    live_verification: {
+      commit_sha: liveCommit,
+      health_ok: true,
+      rollback_ready: true,
+    },
+  }, authorization), /continuity_finalize_fields_invalid/);
+
+  const forgedAuthorizationUnsigned = {
+    ...unsignedAuthorization,
+    evidence_digest: "f".repeat(64),
+  };
+  const forgedAuthorization = {
+    ...forgedAuthorizationUnsigned,
+    authorization_digest: digest(forgedAuthorizationUnsigned),
+    signature: `hnf_${"9".repeat(64)}`,
+  };
+  await assert.rejects(
+    runtime.finalizeClosure(identity, baseFinalize, forgedAuthorization),
+    /continuity_external_release_authorization_mismatch/,
+  );
+
+  const expiredAuthorizationUnsigned = {
+    ...unsignedAuthorization,
+    issued_at: "2026-07-29T13:10:00.000Z",
+    expires_at: "2026-07-29T13:20:00.000Z",
+  };
+  const expiredAuthorization = {
+    ...expiredAuthorizationUnsigned,
+    authorization_digest: digest(expiredAuthorizationUnsigned),
+    signature: `hnf_${"a".repeat(64)}`,
+  };
+  await assert.rejects(
+    runtime.finalizeClosure(identity, baseFinalize, expiredAuthorization),
+    /continuity_trusted_core_closure_receipt_required/,
+  );
+
+  const finalized = await runtime.finalizeClosure(identity, baseFinalize, authorization);
+  assert.equal(finalized.completed, true);
+  assert.equal(finalized.external_release, true);
+  assert.equal(finalized.final_receipt.host_policy_override, false);
+  assert.equal(finalized.final_receipt.host_policy_must_allow, true);
+  assert.equal(finalized.final_receipt.action_ticket_id, ticketId);
+  assert.equal(finalized.final_receipt.authorization_digest, authorization.authorization_digest);
+  assert.equal(finalized.target_commit, liveCommit);
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "completed");
+  assert.equal(pool.plans.get(key("tenant-a", planId)).status, "closed");
+});
+
+test("continuity runtime exposes no parallel delegation authority", () => {
+  const pool = new ContinuityPool();
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  assert.equal(runtime.issueDelegation, undefined);
+  assert.equal(runtime.consumeDelegation, undefined);
+  assert.equal(runtime.revokeDelegation, undefined);
+  assert.doesNotMatch(runtime.schemaSql, /core_continuity_delegations/);
+});
