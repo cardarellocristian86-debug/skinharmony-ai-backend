@@ -158,9 +158,20 @@ function assertRevision(expected, actual) {
 
 function targetArguments(tool, wrapperArgs) {
   const args = { ...(wrapperArgs.arguments || {}) };
-  if (tool.annotations?.readOnlyHint !== true) {
+  const ownerConfirmationRequired =
+    tool._meta?.["skinharmony/ownerConfirmationRequired"] === true;
+  if (tool.annotations?.readOnlyHint !== true && ownerConfirmationRequired) {
+    const properties = tool.inputSchema?.properties || {};
+    if (!Object.prototype.hasOwnProperty.call(properties, "owner_confirmed")) {
+      throw new Error("dynamic_capability_owner_schema_invalid");
+    }
     args.owner_confirmed = wrapperArgs.owner_confirmed === true;
-    if (wrapperArgs.confirmation_reference) args.confirmation_reference = wrapperArgs.confirmation_reference;
+    if (
+      wrapperArgs.confirmation_reference &&
+      Object.prototype.hasOwnProperty.call(properties, "confirmation_reference")
+    ) {
+      args.confirmation_reference = wrapperArgs.confirmation_reference;
+    }
   }
   assertBoundedSafeArguments(args);
   const errors = validateToolArguments(tool.inputSchema, args);

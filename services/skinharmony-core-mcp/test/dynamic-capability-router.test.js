@@ -62,6 +62,31 @@ function writeTool(name = "workspace_dynamic_write") {
   };
 }
 
+function boundedCollaborationTool(name = "tenant_work_dynamic_join") {
+  return {
+    name,
+    title: "Bounded tenant collaboration",
+    description: "Coordinates tenant work without transferring owner authority.",
+    scopes: ["core:govern"],
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    _meta: { "skinharmony/ownerConfirmationRequired": false },
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        work_id: { type: "string", minLength: 1 },
+        idempotency_key: { type: "string", minLength: 1 },
+      },
+      required: ["work_id", "idempotency_key"],
+    },
+  };
+}
+
 test("publishes a fixed compact MCP surface below the connector import budget", () => {
   const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({})]));
   const compact = compactMcpTools(TOOLS, handlers);
@@ -180,6 +205,43 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
     /owner_confirmation_required/,
   );
   assert.equal(writes, 1);
+});
+
+test("bounded collaboration mutations keep wrapper confirmation out of target arguments", async () => {
+  const tool = boundedCollaborationTool();
+  let received;
+  const handlers = {
+    [tool.name]: async (args) => {
+      received = args;
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({
+      structuredContent: { authorization: { allowed: true } },
+    }),
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+
+  await router.core_capability_invoke({
+    capability_id: tool.name,
+    catalog_revision: revision,
+    idempotency_key: "bounded-wrapper-1",
+    owner_confirmed: true,
+    confirmation_reference: "owner-approved-wrapper",
+    arguments: {
+      work_id: "work-a",
+      idempotency_key: "bounded-target-1",
+    },
+  }, identity);
+
+  assert.deepEqual(received, {
+    work_id: "work-a",
+    idempotency_key: "bounded-target-1",
+  });
 });
 
 test("semantic selection builds candidates from the server catalog and never authorizes execution", async () => {

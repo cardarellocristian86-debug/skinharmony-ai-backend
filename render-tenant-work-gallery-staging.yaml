@@ -102,6 +102,8 @@ services:
         value: https://skinharmony-core-mcp-twg-staging.onrender.com
       - key: CODEX_BEARER_KEYS
         generateValue: true
+      - key: AGENT_SIGNATURE_SECRET
+        generateValue: true
       - key: CODEX_BEARER_SCOPES
         value: core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate
       - key: MCP_DEFAULT_TENANT_ID
