@@ -154,7 +154,16 @@ export function createDecisionLedger(config, options = {}) {
       identity.kind || "connected_ai", identity.issuer || null, safeText(args.model, 160) || null, identity.clientId || null,
       safeText(toolName, 120), summary, hash({ toolName, args: stable(args), tenantId })]);
     const context = { tenantId, workId, traceId, toolName, agentId: args.agent_id || identity.subject || "connected_ai" };
-    await append(context, "work_received", { reason_summary: summary, metadata: { input_redacted: true } });
+    await append(context, "work_received", {
+      reason_summary: summary,
+      metadata: {
+        input_redacted: true,
+        ...(identity.tenantSupportDelegationBound === true ? {
+          support_delegation_id: safeText(identity.tenantSupportDelegationId, 120),
+          support_delegation_expires_at: safeText(identity.tenantSupportDelegationExpiresAt, 40),
+        } : {}),
+      },
+    });
     return context;
   }
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TOOLS } from "../src/tool-definitions.js";
+import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import {
   COMPACT_MCP_TOOL_NAMES,
   compactMcpTools,
@@ -284,6 +285,109 @@ test("dedicated Core routes replace the generic gate only with a verified Core m
     /dynamic_capability_dedicated_core_gate_unverified/,
   );
   assert.equal(genericGateCalls, 0);
+});
+
+test("OAuth-owner continuity bootstrap capabilities use only their server-owned Core gate", async () => {
+  const bootstrapTools = WORK_CONTINUITY_TOOLS.filter((tool) => [
+    "work_continuity_create",
+    "work_continuity_start_or_resume",
+  ].includes(tool.name));
+  assert.deepEqual(bootstrapTools.map((tool) => tool.name), [
+    "work_continuity_create",
+    "work_continuity_start_or_resume",
+  ]);
+  for (const tool of bootstrapTools) {
+    assert.equal(tool._meta["skinharmony/dedicatedCoreGate"], true);
+    assert.equal(tool._meta["skinharmony/serverOwnedGovernance"], true);
+  }
+  assert.equal(WORK_CONTINUITY_TOOLS
+    .filter((tool) => !bootstrapTools.includes(tool))
+    .some((tool) => tool._meta?.["skinharmony/serverOwnedGovernance"] === true), false);
+  assert.equal(WORK_CONTINUITY_TOOLS
+    .filter((tool) => !bootstrapTools.includes(tool))
+    .some((tool) => tool._meta?.["skinharmony/dedicatedCoreGate"] === true), false);
+
+  for (const tool of bootstrapTools) {
+    let genericGateCalls = 0;
+    let includeMarker = true;
+    const handlers = {
+      [tool.name]: async (args, caller) => {
+        assert.equal(caller.kind, "oauth");
+        assert.equal(caller.oauthOwnerElevated, true);
+        assert.equal(caller.ownerConfirmed, true);
+        assert.equal(args.owner_confirmed, true);
+        assert.equal(args.confirmation_reference, "owner-approved-work-bootstrap");
+        return {
+          structuredContent: {
+            ok: true,
+            ...(includeMarker ? {
+              dedicated_core_gate: {
+                authorized: true,
+                authority: "universal_core",
+                server_owned: true,
+              },
+            } : {}),
+          },
+        };
+      },
+    };
+    const router = createDynamicCapabilityHandlers({
+      tools: [tool],
+      handlers,
+      semanticSelect: async () => ({}),
+      gateAction: async () => {
+        genericGateCalls += 1;
+        return { structuredContent: { authorization: { allowed: true } } };
+      },
+    });
+    const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+    const argumentsByTool = tool.name === "work_continuity_create"
+      ? {
+        project_id: "client-project",
+        session_id: "owner-session",
+        idea: "Create the client work",
+        objective: "Track the work",
+        architecture: {},
+        next_action: "Start the approved work",
+      }
+      : {
+        project_id: "client-project",
+        session_id: "owner-session",
+        initial_message: "Create the client work",
+        idea: "Create the client work",
+        objective: "Track the work",
+        architecture: {},
+        next_action: "Start the approved work",
+      };
+    const args = {
+      capability_id: tool.name,
+      catalog_revision: revision,
+      idempotency_key: `bootstrap-${tool.name}`,
+      owner_confirmed: true,
+      confirmation_reference: "owner-approved-work-bootstrap",
+      arguments: argumentsByTool,
+    };
+    const oauthOwner = {
+      ...identity,
+      kind: "oauth",
+      subject: "auth0|client-owner",
+      oauthOwnerBound: true,
+      oauthOwnerElevated: true,
+      ownerConfirmed: true,
+      confirmationReference: "owner-approved-work-bootstrap",
+    };
+
+    const result = await router.core_capability_invoke(args, oauthOwner);
+    assert.equal(genericGateCalls, 0);
+    assert.equal(result.structuredContent.dynamic_capability.gate_source, "universal_core_dedicated_route");
+
+    includeMarker = false;
+    await assert.rejects(
+      router.core_capability_invoke({ ...args, idempotency_key: `missing-marker-${tool.name}` }, oauthOwner),
+      /dynamic_capability_dedicated_core_gate_unverified/,
+    );
+    assert.equal(genericGateCalls, 0);
+  }
 });
 
 test("semantic selection builds candidates from the server catalog and never authorizes execution", async () => {

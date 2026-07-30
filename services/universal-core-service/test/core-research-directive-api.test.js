@@ -46,6 +46,19 @@ test("work preflight issues a tenant-bound non-executing Core research directive
         relevant_memories: [],
         pending_handoffs: [],
       },
+      gallery_context: {
+        schema_version: "tenant_work_gallery_v1",
+        tenant_id: "directive-a",
+        available: true,
+        state: "ready",
+        work_count: 1,
+        works: [{
+          work_id: "11111111-1111-4111-8111-111111111111",
+          project_id: "gallery",
+          status: "active",
+          current_version: 3,
+        }],
+      },
     };
     const result = await call(base, "POST", "/v1/work/preflight", body, tenantA.json.key);
     assert.equal(result.status, 200);
@@ -54,6 +67,9 @@ test("work preflight issues a tenant-bound non-executing Core research directive
     assert.equal(directive.issued_by, "universal_core");
     assert.equal(directive.authority.research_execution_authorized, false);
     assert.equal(directive.authority.consolidation_authorized, false);
+    assert.equal(result.json.work_preflight.operational_surface, "tenant_work_gallery");
+    assert.equal(result.json.work_preflight.tenant_work_gallery.tenant_isolated, true);
+    assert.equal(result.json.work_preflight.tenant_work_gallery.work_count, 1);
 
     const crossTenantBody = {
       ...body,
@@ -62,6 +78,14 @@ test("work preflight issues a tenant-bound non-executing Core research directive
     const denied = await call(base, "POST", "/v1/work/preflight", crossTenantBody, tenantB.json.key);
     assert.equal(denied.status, 403);
     assert.equal(denied.json.error, "memory_context_tenant_mismatch");
+
+    const galleryDenied = await call(base, "POST", "/v1/work/preflight", {
+      ...body,
+      memory_context: { ...body.memory_context, tenant_id: "directive-b" },
+      gallery_context: { ...body.gallery_context, tenant_id: "directive-a" },
+    }, tenantB.json.key);
+    assert.equal(galleryDenied.status, 403);
+    assert.equal(galleryDenied.json.error, "gallery_context_tenant_mismatch");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;
