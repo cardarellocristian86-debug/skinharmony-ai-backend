@@ -15,9 +15,11 @@ import {
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
+import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
 import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
 import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
 import { NYRA_NATIVE_TEAM_TOOLS } from "./nyra-native-team-tools.js";
+import { NYRA_AUTOPILOT_TOOLS } from "./nyra-autopilot-tools.js";
 import { HOST_NATIVE_TOOLS } from "./host-native-tools.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
@@ -37,6 +39,7 @@ TOOLS.push(...WORK_CONTINUITY_TOOLS.filter((tool) =>
   config.hostNativeAgentProtocolEnabled === true ||
   !hostNativeContinuityTools.has(tool.name)));
 TOOLS.push(...NYRA_NATIVE_TEAM_TOOLS);
+TOOLS.push(...NYRA_AUTOPILOT_TOOLS);
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...HOST_NATIVE_TOOLS);
 
 const primaryDatabasePool = config.databaseUrl
@@ -60,6 +63,10 @@ const workContinuityRuntime = createWorkContinuityRuntime(config, {
 });
 const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
   pool: primaryDatabasePool,
+});
+const nyraAutopilotRuntime = createNyraAutopilotRuntime(config, {
+  pool: primaryDatabasePool,
+  teamRuntime: nyraNativeTeamRuntime,
 });
 const startupReadiness = {
   continuityInitialized: false,
@@ -338,6 +345,28 @@ function continuityMethod(method) {
   });
 }
 
+async function reconcileNyraAutopilot(identity, work, triggerType) {
+  if (!nyraAutopilotRuntime || !work?.work_id) return null;
+  try {
+    return await nyraAutopilotRuntime.reconcile(identity, {
+      work_id: work.work_id,
+      project_id: work.project_id,
+      trigger_type: triggerType,
+    });
+  } catch (error) {
+    // Work Continuity is authoritative: a temporary Autopilot outage must
+    // never make the already-persisted Work look as if it failed. The owner
+    // recovery tool can reconcile this same Work later.
+    return {
+      work_id: work.work_id,
+      status: "deferred",
+      retryable: true,
+      code: String(error?.message || "nyra_autopilot_unavailable").slice(0, 160),
+      execution_authorized: false,
+    };
+  }
+}
+
 const baseHandlers = {
   ...coreHandlers,
   work_preflight: async (args, identity) => {
@@ -358,6 +387,7 @@ const baseHandlers = {
     work_continuity_create: async (args, identity) => {
       await requireOwnerGovernance(identity, "work.continuity.create", args.project_id);
       const payload = { ok: true, result: await workContinuityRuntime.create(identity, args) };
+      payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_created");
       payload.dedicated_core_gate = {
         authorized: true,
         authority: "universal_core",
@@ -369,6 +399,7 @@ const baseHandlers = {
     work_continuity_record_change: async (args, identity) => {
       await requireOwnerGovernance(identity, "work.continuity.record_change", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.recordChange(identity, args) };
+      payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_changed");
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_checkpoint: async (args, identity) => {
@@ -395,6 +426,7 @@ const baseHandlers = {
       const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
         gate.structuredContent?.result?.authorization || {};
       const payload = { ok: true, result: await workContinuityRuntime.resume(identity, args, authorization) };
+      payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_verify_memory: async (args, identity) => {
@@ -607,6 +639,47 @@ const baseHandlers = {
         result: await nyraNativeTeamRuntime.bootstrap(identity, args),
         execution_authorized: false,
       });
+    },
+  } : {}),
+  ...(nyraAutopilotRuntime ? {
+    nyra_autopilot_status: async (_args, identity) => continuityTextResult({
+      ok: true,
+      result: await nyraAutopilotRuntime.status(identity),
+    }),
+    nyra_autopilot_work_read: async (args, identity) => continuityTextResult({
+      ok: true,
+      result: await nyraAutopilotRuntime.readWork(identity, args),
+    }),
+    nyra_autopilot_enable: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.autopilot.enable", "nyra_autopilot");
+      return continuityTextResult({
+        ok: true,
+        result: await nyraAutopilotRuntime.enable(identity, args),
+        execution_authorized: false,
+      });
+    },
+    nyra_autopilot_reconcile: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.autopilot.reconcile", args.work_id);
+      return continuityTextResult({
+        ok: true,
+        result: await nyraAutopilotRuntime.reconcile(identity, {
+          ...args,
+          trigger_type: "reconcile",
+        }),
+        execution_authorized: false,
+      });
+    },
+    nyra_work_assignment_inbox: async (args, identity) => {
+      requireTenantWorkIdentity(identity);
+      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.inbox(identity, args) });
+    },
+    nyra_work_assignment_claim: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "nyra.assignment.claim", args.work_id);
+      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.claim(identity, args) });
+    },
+    nyra_work_assignment_submit: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "nyra.assignment.submit", args.work_id);
+      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.submit(identity, args) });
     },
   } : {}),
 };
