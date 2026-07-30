@@ -25,7 +25,7 @@ jobs:
           canary_ref="agent/tenant-work-gallery-on-continuity"
           test "$(grep -c "branch: $canary_ref" render-tenant-work-gallery-staging.yaml)" -eq 2
           grep -F "CANARY_REF: $canary_ref" .github/workflows/tenant-work-gallery-canary-rollback.yml
-          grep -F 'EXPECTED_SHA: ${{ github.sha }}' .github/workflows/tenant-work-gallery-canary-rollback.yml
+          grep -Eq '^[[:space:]]*EXPECTED_SHA: \$\{\{ github\.sha \}\}$' .github/workflows/tenant-work-gallery-canary-rollback.yml
           grep -F 'ROLLBACK_SHA: 569a8135a58e4ff0ad1b1ccf538fa0f6a5b6a9c1' .github/workflows/tenant-work-gallery-canary-rollback.yml
           grep -F "skinharmony-core-mcp-twg-staging" render-tenant-work-gallery-staging.yaml
           grep -F "skinharmony-universal-core-twg-staging" render-tenant-work-gallery-staging.yaml
