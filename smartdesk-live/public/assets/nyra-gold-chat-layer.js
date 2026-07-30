@@ -9,6 +9,7 @@
     open: false,
     sending: false,
     session: null,
+    sessionPromise: null,
     messages: [],
     composer: ""
   };
@@ -301,22 +302,32 @@
       });
   }
 
-  function loadSession() {
+  function loadSession(options) {
     if (!isLoggedIn()) {
+      state.session = null;
       render();
       return;
     }
-    fetchJson("/api/auth/session")
+    if (state.session && !(options && options.force)) {
+      render();
+      return;
+    }
+    if (state.sessionPromise) return state.sessionPromise;
+    state.sessionPromise = fetchJson("/api/auth/session")
       .then(function (session) {
         state.session = session || {};
       })
       .catch(function () {
         state.session = {};
       })
-      .finally(render);
+      .finally(function () {
+        state.sessionPromise = null;
+        render();
+      });
+    return state.sessionPromise;
   }
 
-  window.addEventListener("storage", loadSession);
+  window.addEventListener("storage", function () { loadSession({ force: true }); });
   window.addEventListener("popstate", function () { setTimeout(render, 50); });
   document.addEventListener("click", function (event) {
     var target = event.target && event.target.closest ? event.target.closest("button, a, [role='button']") : null;

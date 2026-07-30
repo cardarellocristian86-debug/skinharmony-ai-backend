@@ -76,8 +76,8 @@ test("semantic candidates with vertical identifiers are recognized fail-closed",
 test("the current connector capability registry is exhaustively classified", () => {
   assert.deepEqual(capabilityExposureRegistryValidation(TOOLS), {
     ok: true,
-    classified_count: 128,
-    capability_count: 128,
+    classified_count: 132,
+    capability_count: 132,
     duplicate_ids: [],
     incomplete_ids: [],
   });

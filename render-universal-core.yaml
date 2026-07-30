@@ -48,6 +48,11 @@ services:
           type: web
           name: skinharmony-core-mcp
           envVarKey: DTT_AGENT_IDENTITY_SIGNING_SECRET
+      - key: CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
       # Use the same managed PostgreSQL connection as the MCP so DTT state,
       # identity receipts, verifier assignments and artifact trust are
       # transactional and shared across restarts.

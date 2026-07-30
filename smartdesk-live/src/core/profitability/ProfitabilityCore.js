@@ -24,6 +24,31 @@ function normalizeText(value = "") {
   return String(value || "").trim().toLowerCase();
 }
 
+const NON_REVENUE_APPOINTMENT_STATUSES = new Set([
+  "cancelled",
+  "canceled",
+  "no_show",
+  "no-show",
+  "noshow",
+  "deleted",
+  "void",
+  "voided",
+  "annullato",
+  "annullata",
+  "mancato",
+  "non_presentato"
+]);
+
+function isNonRevenueAppointmentStatus(appointment = {}) {
+  const status = normalizeText(appointment.status || appointment.appointmentStatus || "");
+  return NON_REVENUE_APPOINTMENT_STATUSES.has(status);
+}
+
+function shouldIncludeAppointmentInProfitability(appointment = {}, linkedPayments = []) {
+  return !isNonRevenueAppointmentStatus(appointment)
+    || (Array.isArray(linkedPayments) && linkedPayments.some((payment) => positive(payment.amountCents) > 0));
+}
+
 function toDateOnly(value = "") {
   return String(value || "").slice(0, 10);
 }
@@ -96,6 +121,24 @@ function serviceGrossPriceCents(appointment = {}, service = {}, serviceCount = 1
   return positive(service.priceCents || service.price || appointment.priceCents || 0);
 }
 
+function retailPaymentTotalCents(payment = {}) {
+  return (Array.isArray(payment.productSales) ? payment.productSales : [])
+    .reduce((sum, line) =>
+      sum + positive(line.salePriceCents || line.priceCents) * Math.max(0, Number(line.quantity || 0)), 0
+    );
+}
+
+function servicePaymentRevenueCents(linkedPayments = []) {
+  return (Array.isArray(linkedPayments) ? linkedPayments : []).reduce((sum, payment) => {
+    const retailTotal = retailPaymentTotalCents(payment);
+    const paymentAmount = positive(payment.amountCents);
+    if (paymentAmount > 0) return sum + Math.max(0, paymentAmount - retailTotal);
+    const explicitServiceTotal = (Array.isArray(payment.serviceLines) ? payment.serviceLines : [])
+      .reduce((lineSum, line) => lineSum + positive(line.salePriceCents || line.amountCents || line.priceCents), 0);
+    return sum + explicitServiceTotal;
+  }, 0);
+}
+
 function appointmentDiscountCents(appointment = {}) {
   return positive(
     appointment.discountCents
@@ -111,9 +154,10 @@ function allocateRevenue(appointment = {}, services = [], linkedPayments = []) {
     grossRevenueCents: serviceGrossPriceCents(appointment, row.service, services.length)
   }));
   const grossTotal = grossRows.reduce((sum, row) => sum + positive(row.grossRevenueCents), 0);
-  const paidTotal = linkedPayments.reduce((sum, payment) => sum + positive(payment.amountCents), 0);
+  const hasLinkedPayments = Array.isArray(linkedPayments) && linkedPayments.length > 0;
+  const paidTotal = servicePaymentRevenueCents(linkedPayments);
   const discount = appointmentDiscountCents(appointment);
-  const targetNet = paidTotal > 0 ? paidTotal : Math.max(0, grossTotal - discount);
+  const targetNet = hasLinkedPayments ? paidTotal : Math.max(0, grossTotal - discount);
   const denominator = grossTotal || grossRows.length || 1;
   let allocated = 0;
   return grossRows.map((row, index) => {
@@ -125,7 +169,7 @@ function allocateRevenue(appointment = {}, services = [], linkedPayments = []) {
       ...row,
       revenueCents,
       discountAllocatedCents: Math.max(0, positive(row.grossRevenueCents) - revenueCents),
-      revenueSource: paidTotal > 0 ? "linked_payments" : discount > 0 ? "service_price_minus_discount" : "service_price"
+      revenueSource: hasLinkedPayments ? "linked_payments" : discount > 0 ? "service_price_minus_discount" : "service_price"
     };
   });
 }
@@ -224,9 +268,10 @@ function computeProductBreakdown({ service = {}, appointment = {}, inventoryById
       usageUnits,
       unitCostCents: costPerUse || unitCost,
       costCents: cost,
-      revenueAllocatedCents: links.length ? Math.round(serviceRevenueCents / links.length) : 0,
+      revenueAllocatedCents: 0,
       source,
-      usageSource: link.usageSource || "standard_service"
+      usageSource: link.usageSource || "standard_service",
+      economicRole: "service_consumption"
     });
   });
   const materialCostCents = rows.reduce((sum, row) => sum + positive(row.costCents), 0);
@@ -236,6 +281,73 @@ function computeProductBreakdown({ service = {}, appointment = {}, inventoryById
     productBreakdown: rows,
     sourceFlags,
     confidence: hasMissing ? CONFIDENCE.INCOMPLETE : rows.some((row) => row.usageSource === "appointment_override") ? CONFIDENCE.REAL : CONFIDENCE.STANDARD
+  };
+}
+
+function computeRetailBreakdown(linkedPayments = [], inventoryById = new Map()) {
+  const rows = [];
+  const sourceFlags = [];
+  (Array.isArray(linkedPayments) ? linkedPayments : []).forEach((payment) => {
+    const paymentLines = (Array.isArray(payment.productSales) ? payment.productSales : []).map((line) => {
+      const productId = String(line.itemId || line.productId || "");
+      const product = inventoryById.get(productId) || {};
+      const quantity = Math.max(0, Number(line.quantity || 0));
+      const salePriceCents = positive(line.salePriceCents || line.priceCents || 0);
+      const unitCostCents = positive(
+        line.unitCostCents
+        || line.costCents
+        || product.unitCostCents
+        || product.costCents
+        || product.purchaseCostCents
+        || 0
+      );
+      if (!unitCostCents && quantity > 0) sourceFlags.push(`retail_missing_cost:${productId || "unknown"}`);
+      return {
+        productId,
+        name: product.name || line.name || "Prodotto retail",
+        quantity,
+        unitCostCents,
+        costCents: Math.round(unitCostCents * quantity),
+        rawRevenueCents: Math.round(salePriceCents * quantity),
+        paymentId: String(payment.id || ""),
+        source: unitCostCents ? "inventory_unit_cost_x_quantity" : "missing_cost",
+        economicRole: "retail_sale"
+      };
+    });
+    const rawRetailRevenueCents = paymentLines.reduce((sum, row) => sum + positive(row.rawRevenueCents), 0);
+    const paymentAmountCents = positive(payment.amountCents);
+    const retailRevenueCapCents = paymentAmountCents > 0
+      ? Math.min(rawRetailRevenueCents, paymentAmountCents)
+      : rawRetailRevenueCents;
+    if (paymentAmountCents > 0 && rawRetailRevenueCents > paymentAmountCents) {
+      sourceFlags.push(`retail_revenue_exceeds_payment:${String(payment.id || "unknown")}`);
+    }
+    let allocatedRevenueCents = 0;
+    paymentLines.forEach((row, index) => {
+      const isLast = index === paymentLines.length - 1;
+      const proportionalRevenueCents = rawRetailRevenueCents > 0
+        ? Math.round(retailRevenueCapCents * positive(row.rawRevenueCents) / rawRetailRevenueCents)
+        : 0;
+      const revenueCents = isLast
+        ? Math.max(0, retailRevenueCapCents - allocatedRevenueCents)
+        : Math.max(0, Math.min(proportionalRevenueCents, retailRevenueCapCents - allocatedRevenueCents));
+      allocatedRevenueCents += revenueCents;
+      const { rawRevenueCents, ...publicRow } = row;
+      rows.push({
+        ...publicRow,
+        revenueCents,
+        revenueSource: retailRevenueCapCents < rawRetailRevenueCents
+          ? "product_sales_capped_to_payment"
+          : "product_sales"
+      });
+    });
+  });
+  return {
+    rows,
+    revenueCents: rows.reduce((sum, row) => sum + positive(row.revenueCents), 0),
+    costCents: rows.reduce((sum, row) => sum + positive(row.costCents), 0),
+    sourceFlags,
+    confidence: sourceFlags.length ? CONFIDENCE.INCOMPLETE : rows.length ? CONFIDENCE.REAL : CONFIDENCE.STANDARD
   };
 }
 
@@ -418,14 +530,19 @@ function addAggregate(map, key, seed, delta) {
 function finalizeRows(rows = []) {
   return rows.map((item) => {
     const marginPercent = item.revenueCents > 0 ? Math.round((item.profitCents / item.revenueCents) * 100) : 0;
+    const costOnly = item.economicRole === "service_consumption";
     return {
       ...item,
       averageRevenueCents: item.executions ? Math.round(Number(item.revenueCents || 0) / item.executions) : Number(item.averageRevenueCents || 0),
       averageCostCents: item.executions ? Math.round(Number(item.costCents || 0) / item.executions) : Number(item.averageCostCents || 0),
-      marginPercent,
-      status: statusFromMargin(item.profitCents, item.revenueCents)
+      marginPercent: costOnly ? null : marginPercent,
+      status: costOnly ? "COST_ONLY" : statusFromMargin(item.profitCents, item.revenueCents)
     };
-  }).sort((a, b) => a.marginPercent - b.marginPercent);
+  }).sort((a, b) =>
+    String(a.economicRole || "").localeCompare(String(b.economicRole || ""))
+    || Number(a.marginPercent ?? 0) - Number(b.marginPercent ?? 0)
+    || String(a.name || "").localeCompare(String(b.name || ""))
+  );
 }
 
 
@@ -469,12 +586,20 @@ function computeOperatingCostMinuteProfile({ staff = [], inventory = [], resourc
   if (technologiesMissingCost.length) missing.push({ key: "technologies_cost", label: "rata/costo tecnologie", count: technologiesMissingCost.length });
   if (inventoryMissingCost.length) missing.push({ key: "inventory_cost", label: "costo prodotti", count: inventoryMissingCost.length });
   const fixedCostKeys = ["rent", "utilitiesPower", "utilitiesWaterGas", "accountant", "insurance", "software", "marketing", "cleaningLaundry", "bankPosFees", "taxesContributionsReserve", "otherFixedCosts"];
-  const manualFixedMonthlyCents = fixedCostKeys.reduce((sum, key) => sum + positive(Math.round(Number(fixedCostProfile?.[key] || 0) * 100)), 0);
+  const generalFixedMonthlyCents = fixedCostKeys.reduce((sum, key) => sum + positive(Math.round(Number(fixedCostProfile?.[key] || 0) * 100)), 0);
+  const ownerIncludedInStaff = fixedCostProfile?.ownerIncludedInStaff === true;
+  const ownerPayrollMonthlyCents = ownerIncludedInStaff
+    ? 0
+    : positive(Math.round(Number(fixedCostProfile?.payrollOwner || 0) * 100));
+  const manualFixedMonthlyCents = generalFixedMonthlyCents + ownerPayrollMonthlyCents;
   return {
     source: "profitability_core_existing_data",
     staffMonthlyCents,
     staffHourlyDeclaredCents,
     technologyMonthlyCents,
+    generalFixedMonthlyCents,
+    ownerPayrollMonthlyCents,
+    ownerIncludedInStaff,
     manualFixedMonthlyCents,
     existingMonthlyCents: staffMonthlyCents + technologyMonthlyCents,
     totalMonthlyBaselineCents: staffMonthlyCents + technologyMonthlyCents + manualFixedMonthlyCents,
@@ -490,7 +615,8 @@ function computeOperatingCostMinuteProfile({ staff = [], inventory = [], resourc
     notes: [
       "Prodotti: costo e consumo restano nel magazzino e nei link servizio.",
       "Tecnologie: rata/costo mensile e costo uso restano nelle risorse/tecnologie.",
-      "Operatori: usare costo orario o stipendio lordo mensile; netto resta contesto."
+      "Operatori: usare costo orario o stipendio lordo mensile; netto resta contesto.",
+      "Il margine diretto per servizio e il payroll mensile sono viste alternative: non sommarli due volte nel conto economico."
     ]
   };
 }
@@ -516,16 +642,57 @@ function computeCenterProfitabilitySnapshot({
   const appointmentBreakdowns = [];
 
   (Array.isArray(appointments) ? appointments : []).forEach((appointment) => {
-    const breakdown = computeAppointmentProfitability({
-      appointment,
-      servicesById,
-      staffById,
-      inventoryById,
-      resourcesById,
-      linkedPayments: paymentsByAppointmentId.get(String(appointment.id || "")) || []
+    const linkedPayments = paymentsByAppointmentId.get(String(appointment.id || "")) || [];
+    if (!shouldIncludeAppointmentInProfitability(appointment, linkedPayments)) return;
+    const nonRevenueStatus = isNonRevenueAppointmentStatus(appointment);
+    const nonServicePaymentRevenueCents = nonRevenueStatus
+      ? servicePaymentRevenueCents(linkedPayments)
+      : 0;
+    const serviceBreakdown = nonRevenueStatus
+      ? buildProfitabilityBreakdown({
+          revenueCents: nonServicePaymentRevenueCents,
+          laborCostCents: 0,
+          materialCostCents: 0,
+          technologyCostCents: 0,
+          confidence: CONFIDENCE.REAL,
+          sourceFlags: nonServicePaymentRevenueCents > 0
+            ? ["paid_non_revenue_appointment_fee"]
+            : ["non_revenue_appointment_retail_only"],
+          serviceBreakdown: [],
+          productBreakdown: [],
+          technologyBreakdown: []
+        })
+      : computeAppointmentProfitability({
+          appointment,
+          servicesById,
+          staffById,
+          inventoryById,
+          resourcesById,
+          linkedPayments
+        });
+    const retail = computeRetailBreakdown(linkedPayments, inventoryById);
+    const breakdown = buildProfitabilityBreakdown({
+      revenueCents: serviceBreakdown.revenueCents + retail.revenueCents,
+      laborCostCents: serviceBreakdown.laborCostCents,
+      materialCostCents: serviceBreakdown.materialCostCents + retail.costCents,
+      technologyCostCents: serviceBreakdown.technologyCostCents,
+      confidence: mergeConfidence([serviceBreakdown.confidence, retail.confidence]),
+      sourceFlags: [
+        ...(serviceBreakdown.sourceFlags || []),
+        ...(retail.rows.length ? ["retail_payment_lines"] : []),
+        ...retail.sourceFlags
+      ],
+      serviceBreakdown: serviceBreakdown.serviceBreakdown,
+      productBreakdown: serviceBreakdown.productBreakdown,
+      technologyBreakdown: serviceBreakdown.technologyBreakdown
     });
+    breakdown.retailRevenueCents = retail.revenueCents;
+    breakdown.retailCostCents = retail.costCents;
+    breakdown.retailBreakdown = retail.rows;
+    breakdown.nonServiceRevenueCents = nonServicePaymentRevenueCents;
+    breakdown.serviceExecutionCount = nonRevenueStatus ? 0 : 1;
     appointmentBreakdowns.push({ appointmentId: appointment.id || "", ...breakdown });
-    breakdown.serviceBreakdown.forEach((service) => {
+    serviceBreakdown.serviceBreakdown.forEach((service) => {
       const seed = {
         id: service.serviceId || "unknown",
         name: service.name || "Servizio non configurato",
@@ -536,7 +703,7 @@ function computeCenterProfitabilitySnapshot({
         laborCostCents: 0,
         materialCostCents: 0,
         technologyCostCents: 0,
-        confidence: breakdown.confidence,
+        confidence: serviceBreakdown.confidence,
         sourceFlags: []
       };
       const current = addAggregate(serviceMap, seed.id, seed, {
@@ -548,28 +715,58 @@ function computeCenterProfitabilitySnapshot({
         materialCostCents: service.materialCostCents,
         technologyCostCents: service.technologyCostCents
       });
-      current.confidence = mergeConfidence([current.confidence, breakdown.confidence]);
-      current.sourceFlags = Array.from(new Set([...(current.sourceFlags || []), ...(breakdown.sourceFlags || [])]));
+      current.confidence = mergeConfidence([current.confidence, serviceBreakdown.confidence]);
+      current.sourceFlags = Array.from(new Set([...(current.sourceFlags || []), ...(serviceBreakdown.sourceFlags || [])]));
     });
-    breakdown.productBreakdown.forEach((product) => {
+    serviceBreakdown.productBreakdown.forEach((product) => {
+      const productId = product.productId || "unknown";
+      const economicRole = "service_consumption";
       const seed = {
-        id: product.productId || "unknown",
-        name: product.name || "Prodotto",
+        id: `${productId}:${economicRole}`,
+        productId,
+        economicRole,
+        name: `${product.name || "Prodotto"} · consumo cabina`,
         totalUses: 0,
         costConsumedCents: 0,
+        costCents: 0,
         revenueCents: 0,
         profitCents: 0,
         marginPercent: 0,
         status: "HEALTHY"
       };
-      addAggregate(productMap, seed.id, seed, {
+      addAggregate(productMap, `${productId}:${economicRole}`, seed, {
         totalUses: product.usageUnits,
         costConsumedCents: product.costCents,
+        costCents: product.costCents,
         revenueCents: product.revenueAllocatedCents,
         profitCents: product.revenueAllocatedCents - product.costCents
       });
     });
-    breakdown.technologyBreakdown.forEach((technology) => {
+    retail.rows.forEach((product) => {
+      const productId = product.productId || "unknown";
+      const economicRole = "retail_sale";
+      const seed = {
+        id: `${productId}:${economicRole}`,
+        productId,
+        economicRole,
+        name: `${product.name || "Prodotto retail"} · vendita retail`,
+        totalUses: 0,
+        costConsumedCents: 0,
+        costCents: 0,
+        revenueCents: 0,
+        profitCents: 0,
+        marginPercent: 0,
+        status: "HEALTHY"
+      };
+      addAggregate(productMap, `${productId}:${economicRole}`, seed, {
+        totalUses: product.quantity,
+        costConsumedCents: product.costCents,
+        costCents: product.costCents,
+        revenueCents: product.revenueCents,
+        profitCents: product.revenueCents - product.costCents
+      });
+    });
+    serviceBreakdown.technologyBreakdown.forEach((technology) => {
       const resource = resourcesById.get(String(technology.technologyId || "")) || {};
       const seed = {
         id: technology.technologyId || "unknown",
@@ -600,7 +797,7 @@ function computeCenterProfitabilitySnapshot({
       deltaRevenueCents: 0,
       signal: "stable"
     }, {
-      executions: 1,
+      executions: nonRevenueStatus ? 0 : 1,
       revenueCents: breakdown.revenueCents,
       costCents: breakdown.directCostCents,
       profitCents: breakdown.grossMarginCents
@@ -611,12 +808,14 @@ function computeCenterProfitabilitySnapshot({
   const productRows = finalizeRows(Array.from(productMap.values()));
   const technologyRows = finalizeRows(Array.from(technologyMap.values()));
   const operatingCostMinuteProfile = computeOperatingCostMinuteProfile({ staff, inventory, resources, fixedCostProfile });
-  const totals = serviceRows.reduce((summary, item) => ({
-    executions: summary.executions + Number(item.executions || 0),
+  const totals = appointmentBreakdowns.reduce((summary, item) => ({
+    executions: summary.executions + Number(item.serviceExecutionCount || 0),
     revenueCents: summary.revenueCents + Number(item.revenueCents || 0),
-    costCents: summary.costCents + Number(item.costCents || 0),
-    profitCents: summary.profitCents + Number(item.profitCents || 0)
-  }), { executions: 0, revenueCents: 0, costCents: 0, profitCents: 0 });
+    costCents: summary.costCents + Number(item.directCostCents || 0),
+    profitCents: summary.profitCents + Number(item.grossMarginCents || 0),
+    retailRevenueCents: summary.retailRevenueCents + Number(item.retailRevenueCents || 0),
+    retailCostCents: summary.retailCostCents + Number(item.retailCostCents || 0)
+  }), { executions: 0, revenueCents: 0, costCents: 0, profitCents: 0, retailRevenueCents: 0, retailCostCents: 0 });
   const monthlyTrend = Array.from(monthlyMap.values())
     .sort((a, b) => String(a.month).localeCompare(String(b.month)))
     .map((item, index, rows) => {
@@ -663,5 +862,6 @@ module.exports = {
   computeCenterProfitabilitySnapshot,
   computeOperatingCostMinuteProfile,
   buildProfitabilityBreakdown,
-  inferProfitabilityConfidence
+  inferProfitabilityConfidence,
+  shouldIncludeAppointmentInProfitability
 };

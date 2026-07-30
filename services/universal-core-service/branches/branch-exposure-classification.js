@@ -157,6 +157,7 @@ export const BRANCH_EXPOSURE_CLASSIFICATION = Object.freeze({
   research_evidence_intelligence: horizontal(),
   planning_priority_intelligence: horizontal(),
   execution_coordination_intelligence: horizontal(),
+  tenant_work_coordination: horizontal(),
   quality_verification_intelligence: horizontal(),
   adaptive_learning_intelligence: horizontal(),
   ai_evaluation_intelligence: horizontal(),

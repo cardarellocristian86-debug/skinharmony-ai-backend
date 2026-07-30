@@ -1276,6 +1276,7 @@ const MANDATORY_NYRA_WORK_BRANCHES = Object.freeze([
   "risk_governance",
   "execution_planning",
   "parallel_coordination",
+  "tenant_work_coordination",
   "quality_verification",
   "learning_memory",
   "adaptive_learning",

@@ -11,7 +11,11 @@
     "test:external-ai-gold": "node scripts/external_ai_gold_bridge_test.js",
     "test:semantic-selection": "node scripts/universal_core_bridge_semantic_selection_test.js",
     "test:cockpit-360-e2e": "node scripts/cockpit_360_e2e_test.js",
-    "test:persistence-p0": "node scripts/persistence_p0_test.js"
+    "test:persistence-p0": "node scripts/persistence_p0_test.js",
+    "test:gold-18m": "node scripts/gold_18m_tenant_admin_test.js && node scripts/gold_18m_live_safety_test.js",
+    "test:gold-overview": "node scripts/gold_overview_read_model_test.js",
+    "test:gold-bridge-cache": "node scripts/gold_bridge_cache_test.js",
+    "test:gold-conversation-demand": "node scripts/gold_conversation_demand_test.js"
   },
   "dependencies": {
     "express": "^5.2.1",

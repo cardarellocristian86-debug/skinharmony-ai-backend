@@ -24,6 +24,25 @@ function isExactOrderedList(value, expected) {
     value.every((item, index) => String(item) === expected[index]);
 }
 
+function isAllowedDraftPullRequestBase(value) {
+  const branch = String(value || "");
+  return branch === "main" || (
+    /^codex\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/i.test(branch) &&
+    !branch.includes("..") &&
+    !branch.endsWith(".lock")
+  );
+}
+
+const BOUNDED_TENANT_WORK_TARGETS = new Map([
+  ["tenant_work.gallery_join", "tenant_work_gallery_join"],
+  ["tenant_work.gallery_heartbeat", "tenant_work_gallery_heartbeat"],
+  ["tenant_work.branch_open", "tenant_work_branch_open"],
+  ["tenant_work.lease_acquire", "tenant_work_lease_acquire"],
+  ["tenant_work.lease_renew", "tenant_work_lease_renew"],
+  ["tenant_work.lease_release", "tenant_work_lease_release"],
+  ["tenant_work.message_post", "tenant_work_message_post"],
+]);
+
 function isBoundedInternalCoordinationWrite(body = {}) {
   const allowedActionTypes = new Set([
     "agent.heartbeat",
@@ -31,8 +50,11 @@ function isBoundedInternalCoordinationWrite(body = {}) {
     "task.update",
     "message.acknowledge",
   ]);
+  const actionType = String(body.action_type || "").toLowerCase();
+  const exactTenantWorkTarget =
+    BOUNDED_TENANT_WORK_TARGETS.get(actionType) === String(body.target || "");
   return body.operation_class === "bounded_internal_coordination_write" &&
-    allowedActionTypes.has(String(body.action_type || "").toLowerCase()) &&
+    (allowedActionTypes.has(actionType) || exactTenantWorkTarget) &&
     body.external_side_effect === false &&
     body.contains_customer_data === false &&
     body.contains_secret === false &&
@@ -607,7 +629,8 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     body.audit_ready === true &&
     exactCommit &&
     /^agent\/[a-z0-9._/-]+$/i.test(String(body.target_branch || "")) &&
-    String(body.base_branch || "") === "main" &&
+    isAllowedDraftPullRequestBase(body.base_branch) &&
+    String(body.confirmation_base_branch || "") === String(body.base_branch || "") &&
     body.draft === true &&
     body.merge === false &&
     body.deploy === false &&

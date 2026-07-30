@@ -46,6 +46,15 @@ const FORBIDDEN_ARGUMENT_KEYS = new Set([
 ]);
 const CAPABILITY_ID = /^[a-z][a-z0-9_]{1,95}$/;
 const CATALOG_VERSION = "core_dynamic_capabilities_v1";
+const TENANT_ID = /^[a-z0-9][a-z0-9_-]{1,119}$/i;
+const TENANT_BOUNDED_COLLABORATION_ROLES = new Set([
+  "member",
+  "reviewer",
+  "operator",
+  "tenant_owner",
+  "tenant_admin",
+  "owner_root",
+]);
 
 function stableCanonical(value) {
   if (Array.isArray(value)) return value.map(stableCanonical);
@@ -74,6 +83,8 @@ function capabilityGroup(name) {
     ["suite_", "suite"],
     ["memory_", "memory"],
     ["workspace_", "workspace"],
+    ["work_continuity_", "workspace"],
+    ["tenant_work_", "workspace"],
     ["task_", "workspace"],
     ["agent_", "workspace"],
     ["message_", "workspace"],
@@ -127,6 +138,8 @@ function summary(tool) {
     open_world: tool.annotations?.openWorldHint === true,
     required_scopes: [...(tool.scopes || [])],
     owner_confirmation_required: tool._meta?.["skinharmony/ownerConfirmationRequired"] === true,
+    tenant_bounded_collaboration:
+      tool._meta?.["skinharmony/tenantBoundedCollaboration"] === true,
     schema_hash: sha256(tool.inputSchema || {}),
     ...exposure,
   };
@@ -170,19 +183,72 @@ function assertRevision(expected, actual) {
   }
 }
 
-function targetArguments(tool, wrapperArgs) {
+function assertTenantBoundedCollaborationIdentity(identity = {}) {
+  const tenantId = String(identity.tenantId || "");
+  const kind = String(identity.kind || "");
+  const subject = String(identity.subject || "").trim();
+  const role = String(identity.role || "");
+  const presence = identity.agentPresence || {};
+  if (
+    !TENANT_ID.test(tenantId) ||
+    !["oauth", "codex"].includes(kind) ||
+    !subject ||
+    !TENANT_BOUNDED_COLLABORATION_ROLES.has(role) ||
+    !String(presence.agent_id || "").trim() ||
+    !String(presence.session_id || "").trim() ||
+    !String(presence.signature || "").startsWith("ags_")
+  ) {
+    throw new Error("tenant_collaboration_identity_required");
+  }
+}
+
+function targetArguments(tool, wrapperArgs, identity = {}) {
   const args = { ...(wrapperArgs.arguments || {}) };
-  if (tool.annotations?.readOnlyHint !== true) {
+  const properties = tool.inputSchema?.properties || {};
+  const readOnly = tool.annotations?.readOnlyHint === true;
+  const ownerConfirmationRequired =
+    tool._meta?.["skinharmony/ownerConfirmationRequired"] === true;
+  const tenantBoundedCollaboration =
+    tool._meta?.["skinharmony/tenantBoundedCollaboration"] === true;
+  const boundedActionType = String(
+    tool._meta?.["skinharmony/boundedActionType"] || "",
+  );
+
+  if (!readOnly && ownerConfirmationRequired) {
+    if (!properties.owner_confirmed) throw new Error("dynamic_capability_owner_contract_invalid");
     args.owner_confirmed = wrapperArgs.owner_confirmed === true;
-    if (wrapperArgs.confirmation_reference) args.confirmation_reference = wrapperArgs.confirmation_reference;
-    if (
-      tool.inputSchema?.properties?.idempotency_key &&
-      !args.idempotency_key &&
-      wrapperArgs.idempotency_key
-    ) {
-      args.idempotency_key = wrapperArgs.idempotency_key;
+    if (wrapperArgs.confirmation_reference && properties.confirmation_reference) {
+      args.confirmation_reference = wrapperArgs.confirmation_reference;
     }
   }
+  if (properties.idempotency_key && !args.idempotency_key && wrapperArgs.idempotency_key) {
+    args.idempotency_key = wrapperArgs.idempotency_key;
+  }
+  for (const field of ["agent_id", "client_type", "session_id"]) {
+    if (properties[field] && identity.agentPresence?.[field]) {
+      args[field] = identity.agentPresence[field];
+    }
+  }
+
+  if (tenantBoundedCollaboration) {
+    if (
+      readOnly ||
+      ownerConfirmationRequired ||
+      properties.owner_confirmed ||
+      properties.confirmation_reference ||
+      !boundedActionType.startsWith("tenant_work.") ||
+      tool.annotations?.idempotentHint !== true ||
+      tool.annotations?.destructiveHint === true ||
+      tool.annotations?.openWorldHint === true ||
+      !properties.idempotency_key
+    ) {
+      throw new Error("tenant_collaboration_contract_invalid");
+    }
+    assertTenantBoundedCollaborationIdentity(identity);
+  } else if (boundedActionType) {
+    throw new Error("tenant_collaboration_contract_invalid");
+  }
+
   assertBoundedSafeArguments(args);
   const errors = validateToolArguments(tool.inputSchema, args);
   if (errors.length) {
@@ -317,7 +383,7 @@ export function createDynamicCapabilityHandlers({
       const tool = exactCapability(tools, handlers, args.capability_id, identity);
       if (tool.annotations?.readOnlyHint !== true) throw new Error("dynamic_capability_read_only_required");
       requireScopes(identity, tool.scopes || []);
-      const callArgs = targetArguments(tool, args);
+      const callArgs = targetArguments(tool, args, identity);
       const result = await handlers[tool.name](callArgs, identity);
       return {
         ...result,
@@ -338,11 +404,15 @@ export function createDynamicCapabilityHandlers({
       const tool = exactCapability(tools, handlers, args.capability_id, identity);
       if (tool.annotations?.readOnlyHint === true) throw new Error("dynamic_capability_mutation_required");
       requireScopes(identity, tool.scopes || []);
-      if (args.owner_confirmed !== true || identity.ownerConfirmed !== true) {
+      const tenantBoundedCollaboration =
+        tool._meta?.["skinharmony/tenantBoundedCollaboration"] === true;
+      if (tenantBoundedCollaboration) {
+        assertTenantBoundedCollaborationIdentity(identity);
+      } else if (args.owner_confirmed !== true || identity.ownerConfirmed !== true) {
         throw new Error("owner_confirmation_required");
       }
       if (!String(args.idempotency_key || "").trim()) throw new Error("idempotency_key_required");
-      const callArgs = targetArguments(tool, args);
+      const callArgs = targetArguments(tool, args, identity);
       if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
       const gate = await gateAction({
         tool,
@@ -362,6 +432,7 @@ export function createDynamicCapabilityHandlers({
             catalog_revision: state.revision,
             access_mode: "invoke",
             gate_allowed: true,
+            tenant_bounded_collaboration: tenantBoundedCollaboration,
             idempotency_key: args.idempotency_key,
           },
         },

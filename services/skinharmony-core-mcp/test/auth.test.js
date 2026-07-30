@@ -73,6 +73,8 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
   const ownerSubject = "google-oauth2|owner";
   const ownerFixture = auth0Fixture({
     sub: ownerSubject,
+    iat: Math.floor(Date.now() / 1000),
+    auth_time: Math.floor(Date.now() / 1000),
     scope: "core:read",
     azp: "dynamic-chatgpt-client",
     "https://skinharmony.it/tenant_id": "codexai",
@@ -81,6 +83,7 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
     ...ownerFixture.config,
     codexKeys: [],
     supportedScopes: ["core:read", "core:govern", "workspace:write"],
+    oauthOwnerTenantBindings: { [ownerSubject]: "codexai" },
     godModeEnabled: true,
     godModeEmergencyStop: false,
     godModeTenantIds: ["owner-private", "codexai"],
@@ -93,6 +96,16 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
   assert.equal(ownerIdentity.godMode, true);
   assert.equal(ownerIdentity.providerSetupOwner, true);
   assert.equal(ownerIdentity.clientId, "dynamic-chatgpt-client");
+  const elevatedOwnerIdentity = createAuthenticator(ownerConfig, { jwksCache: ownerFixture.cache });
+  const verifiedOwner = await elevatedOwnerIdentity(`Bearer ${ownerFixture.token}`);
+  const confirmedOwner = elevatedOwnerIdentity.elevateOAuthOwner(verifiedOwner, {
+    confirmed: true,
+    confirmationReference: "verified root dynamic action",
+    requestBinding: "core_capability_invoke",
+  });
+  assert.equal(confirmedOwner.role, "owner_root");
+  assert.equal(confirmedOwner.godMode, true);
+  assert.equal(confirmedOwner.oauthOwnerElevated, true);
 
   const otherFixture = auth0Fixture({
     sub: "google-oauth2|another-user",
@@ -205,6 +218,106 @@ test("keeps an unbound tenant claim inside the self-service tenant", async () =>
   assert.equal(identity.selfServiceTenant, true);
   assert.equal(identity.role, "member");
   assert.equal(identity.providerSetupOwner, undefined);
+});
+
+test("binds multiple OAuth subjects to one shared tenant with bounded member roles", async () => {
+  const memberA = auth0Fixture({
+    sub: "google-oauth2|member-a",
+    scope: "core:read",
+    "https://skinharmony.it/tenant_id": "spoofed-a",
+    "https://skinharmony.it/role": "owner_root",
+  });
+  const memberB = auth0Fixture({
+    sub: "google-oauth2|member-b",
+    scope: "core:read",
+    "https://skinharmony.it/tenant_id": "spoofed-b",
+    "https://skinharmony.it/role": "tenant_owner",
+  });
+  const memberships = {
+    "google-oauth2|member-a": { tenantId: "codexai", role: "reviewer" },
+    "google-oauth2|member-b": { tenantId: "codexai", role: "operator" },
+  };
+  const config = {
+    ...memberA.config,
+    codexKeys: [],
+    selfServiceTenantsEnabled: true,
+    oauthTenantMemberships: memberships,
+    godModeEnabled: false,
+  };
+  const identityA = await createAuthenticator(config, { jwksCache: memberA.cache })(`Bearer ${memberA.token}`);
+  const identityB = await createAuthenticator(
+    { ...config, ...memberB.config },
+    { jwksCache: memberB.cache },
+  )(`Bearer ${memberB.token}`);
+
+  assert.equal(identityA.tenantId, "codexai");
+  assert.equal(identityB.tenantId, "codexai");
+  assert.equal(identityA.role, "reviewer");
+  assert.equal(identityB.role, "operator");
+  assert.equal(identityA.oauthTenantMemberBound, true);
+  assert.equal(identityB.oauthTenantMemberBound, true);
+  assert.equal(identityA.oauthOwnerBound, undefined);
+  assert.equal(identityB.oauthOwnerBound, undefined);
+  assert.equal(identityA.providerSetupOwner, undefined);
+  assert.equal(identityB.providerSetupOwner, undefined);
+  assert.equal(identityA.selfServiceTenant, undefined);
+  assert.equal(identityB.selfServiceTenant, undefined);
+});
+
+test("a tenant membership cannot elevate to owner or provider setup", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fixture = auth0Fixture({
+    sub: "google-oauth2|operator",
+    iat: now,
+    auth_time: now,
+    "https://skinharmony.it/tenant_id": "codexai",
+    "https://skinharmony.it/role": "owner_root",
+  });
+  const auth = createAuthenticator({
+    ...fixture.config,
+    codexKeys: [],
+    supportedScopes: ["core:read", "core:govern", "workspace:write"],
+    oauthTenantMemberships: {
+      "google-oauth2|operator": { tenantId: "codexai", role: "operator" },
+    },
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeTenantIds: ["codexai"],
+    godModeSubjects: ["google-oauth2|operator"],
+    godModeCodexEnabled: false,
+    oauthOwnerConfirmationMaxAgeSeconds: 300,
+  }, { jwksCache: fixture.cache });
+  const identity = await auth(`Bearer ${fixture.token}`);
+
+  assert.equal(identity.role, "operator");
+  assert.equal(identity.godMode, undefined);
+  assert.equal(identity.providerSetupOwner, undefined);
+  assert.throws(
+    () => auth.elevateOAuthOwner(identity, {
+      confirmed: true,
+      confirmationReference: "attempted owner elevation",
+      requestBinding: "provider-setup",
+    }),
+    /owner_binding_required/,
+  );
+});
+
+test("an explicit owner binding takes precedence over an overlapping membership", async () => {
+  const fixture = auth0Fixture({ sub: "google-oauth2|owner-member", scope: "core:read" });
+  const identity = await createAuthenticator({
+    ...fixture.config,
+    codexKeys: [],
+    oauthOwnerTenantBindings: { "google-oauth2|owner-member": "owner-tenant" },
+    oauthTenantMemberships: {
+      "google-oauth2|owner-member": { tenantId: "other-tenant", role: "operator" },
+    },
+    godModeEnabled: false,
+  }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
+
+  assert.equal(identity.tenantId, "owner-tenant");
+  assert.equal(identity.role, "member");
+  assert.equal(identity.oauthOwnerBound, true);
+  assert.equal(identity.oauthTenantMemberBound, undefined);
 });
 
 test("accepts the browser audience only when the browser authenticator explicitly selects it", async () => {

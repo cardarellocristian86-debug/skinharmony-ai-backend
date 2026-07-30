@@ -22,6 +22,7 @@ import {
   deterministicBranchRegistry,
   resolveBranchesForKey,
 } from "../branches/index.js";
+import { branchTenantWorkCoordination } from "../branches/branch-tenant-work-coordination.js";
 import { multiAgentRegistry, planMultiAgentRun } from "../src/multiAgentArchitecture.js";
 
 test("multi-agent planner uses deterministic routing first and bounds specialist credit use", () => {
@@ -128,6 +129,18 @@ test("Nyra network respects limits and exposes only explicit product branches", 
   assert.equal(agentic.exposure_class, "chatgpt_horizontal");
   assert.equal(agentic.subbranch_count, 20);
   assert.equal(agentic.capability_facets.facet_count, 4);
+  const tenantCoordination = deterministicBranchRegistry().tenant_work_coordination;
+  assert(tenantCoordination);
+  assert.equal(tenantCoordination.production_status, "advisory");
+  assert(tenantCoordination.subbranches.includes("gallery_intake"));
+  assert(tenantCoordination.subbranches.includes("surface_overlap_detection"));
+  assert(tenantCoordination.subbranches.includes("verified_memory_promotion"));
+  assert(tenantCoordination.subbranches.length <= MAX_SUBBRANCHES_PER_BRANCH);
+  assert(branchTenantWorkCoordination.guardrails.blocked_actions.includes("permanent_agent_ownership"));
+  const nyraTenantCoordination = nyraBranchCatalog("generic").branches.find((item) => item.id === "tenant_work_coordination");
+  assert(nyraTenantCoordination);
+  assert(nyraTenantCoordination.core_branch_bindings.includes("tenant_work_coordination"));
+  assert(nyraTenantCoordination.subbranches.includes("stale_session_recovery"));
 });
 
 test("Nyra validation fails closed when a branch has no complete exposure metadata", () => {

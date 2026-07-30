@@ -24,6 +24,14 @@ test("does not expose client-selectable product packs on horizontal Core tools",
   }
 });
 
+test("aligns Nyra branch request limits with Universal Core", () => {
+  for (const name of ["work_preflight", "nyra_interpret_request"]) {
+    const definition = TOOLS.find((tool) => tool.name === name);
+    assert(definition, `missing tool definition ${name}`);
+    assert.equal(definition.inputSchema.properties.nyra_branches.maxItems, 64);
+  }
+});
+
 test("reports a completed read-only preflight as executable", () => {
   const result = attachWorkPreflight(
     { structuredContent: { documents: [] }, content: [] },

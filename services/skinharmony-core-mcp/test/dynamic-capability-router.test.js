@@ -12,8 +12,25 @@ import {
 const identity = {
   tenantId: "tenant-a",
   kind: "codex",
+  subject: "codex|owner",
+  role: "owner_root",
   scopes: ["core:read", "core:govern"],
   ownerConfirmed: true,
+};
+
+const boundedMemberIdentity = {
+  tenantId: "tenant-a",
+  kind: "oauth",
+  subject: "oauth|member-a",
+  role: "member",
+  scopes: ["core:read", "core:govern"],
+  ownerConfirmed: false,
+  agentPresence: {
+    agent_id: "member-agent-a",
+    client_type: "chatgpt",
+    session_id: "member-session-a",
+    signature: "ags_verified_member_a",
+  },
 };
 
 const horizontalExposure = Object.freeze({
@@ -70,6 +87,39 @@ function writeTool(name = "workspace_dynamic_write") {
         idempotency_key: { type: "string", minLength: 8 },
       },
       required: ["value", "owner_confirmed"],
+    },
+  };
+}
+
+function boundedGalleryTool(name = "tenant_work_gallery_join") {
+  return {
+    name,
+    title: "Join tenant work",
+    description: "Joins shared tenant work through a bounded Core action.",
+    scopes: ["core:govern"],
+    exposure: horizontalExposure,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    _meta: {
+      "skinharmony/ownerConfirmationRequired": false,
+      "skinharmony/tenantBoundedCollaboration": true,
+      "skinharmony/boundedActionType": "tenant_work.gallery_join",
+    },
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        work_id: { type: "string", minLength: 1 },
+        agent_id: { type: "string", minLength: 1 },
+        client_type: { type: "string", minLength: 1 },
+        session_id: { type: "string", minLength: 1 },
+        idempotency_key: { type: "string", minLength: 8 },
+      },
+      required: ["work_id", "agent_id", "client_type", "session_id", "idempotency_key"],
     },
   };
 }
@@ -204,6 +254,103 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
     /owner_confirmation_required/,
   );
   assert.equal(writes, 1);
+});
+
+test("bounded Gallery mutations accept a verified tenant member and overwrite spoofed presence", async () => {
+  const tool = boundedGalleryTool();
+  let receivedArguments;
+  let receivedGate;
+  const handlers = {
+    [tool.name]: async (arguments_) => {
+      receivedArguments = arguments_;
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async (input) => {
+      receivedGate = input;
+      return { structuredContent: { authorization: { allowed: true } } };
+    },
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const result = await router.core_capability_invoke({
+    capability_id: tool.name,
+    catalog_revision: revision,
+    idempotency_key: "gallery-join-01",
+    arguments: {
+      work_id: "work-a",
+      agent_id: "spoofed-agent",
+      client_type: "other",
+      session_id: "spoofed-session",
+    },
+  }, boundedMemberIdentity);
+
+  assert.deepEqual(receivedArguments, {
+    work_id: "work-a",
+    agent_id: "member-agent-a",
+    client_type: "chatgpt",
+    session_id: "member-session-a",
+    idempotency_key: "gallery-join-01",
+  });
+  assert.equal(receivedGate.tool.name, tool.name);
+  assert.equal(receivedGate.identity, boundedMemberIdentity);
+  assert.equal(result.structuredContent.dynamic_capability.tenant_bounded_collaboration, true);
+  assert.equal(result.structuredContent.dynamic_capability.gate_allowed, true);
+});
+
+test("bounded Gallery mutations fail closed for unverified identity, bad role, and unsafe payloads", async () => {
+  const tool = boundedGalleryTool();
+  let writes = 0;
+  const handlers = {
+    [tool.name]: async () => {
+      writes += 1;
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({
+      structuredContent: { authorization: { allowed: true } },
+    }),
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const request = {
+    capability_id: tool.name,
+    catalog_revision: revision,
+    idempotency_key: "gallery-join-02",
+    arguments: { work_id: "work-a" },
+  };
+
+  for (const caller of [
+    { ...boundedMemberIdentity, agentPresence: undefined },
+    { ...boundedMemberIdentity, role: "unbound" },
+    {
+      ...boundedMemberIdentity,
+      agentPresence: {
+        ...boundedMemberIdentity.agentPresence,
+        signature: "caller-declared",
+      },
+    },
+    { ...boundedMemberIdentity, tenantId: "" },
+  ]) {
+    await assert.rejects(
+      router.core_capability_invoke(request, caller),
+      /tenant_collaboration_identity_required/,
+    );
+  }
+  await assert.rejects(
+    router.core_capability_invoke({
+      ...request,
+      arguments: { work_id: "work-a", nested: { tenant_id: "tenant-b" } },
+    }, boundedMemberIdentity),
+    /dynamic_capability_reserved_argument/,
+  );
+  assert.equal(writes, 0);
 });
 
 test("semantic selection builds candidates from the server catalog and never authorizes execution", async () => {

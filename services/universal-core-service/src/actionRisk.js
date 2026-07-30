@@ -266,9 +266,21 @@ export function classifyActionRisk(body = {}) {
     "task.update",
     "message.acknowledge",
   ]);
+  const boundedTenantWorkTargets = new Map([
+    ["tenant_work.gallery_join", "tenant_work_gallery_join"],
+    ["tenant_work.gallery_heartbeat", "tenant_work_gallery_heartbeat"],
+    ["tenant_work.branch_open", "tenant_work_branch_open"],
+    ["tenant_work.lease_acquire", "tenant_work_lease_acquire"],
+    ["tenant_work.lease_renew", "tenant_work_lease_renew"],
+    ["tenant_work.lease_release", "tenant_work_lease_release"],
+    ["tenant_work.message_post", "tenant_work_message_post"],
+  ]);
+  const boundedActionType = String(body.action_type || "").toLowerCase();
+  const exactTenantWorkTarget =
+    boundedTenantWorkTargets.get(boundedActionType) === String(body.target || "");
   if (
     body.operation_class === "bounded_internal_coordination_write" &&
-    boundedInternalActionTypes.has(String(body.action_type || "").toLowerCase()) &&
+    (boundedInternalActionTypes.has(boundedActionType) || exactTenantWorkTarget) &&
     body.external_side_effect === false &&
     body.contains_customer_data === false &&
     body.contains_secret === false &&

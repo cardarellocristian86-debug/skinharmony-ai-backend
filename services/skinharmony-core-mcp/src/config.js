@@ -55,6 +55,30 @@ function parseOauthOwnerTenantBindings(value, name) {
   return result;
 }
 
+const OAUTH_TENANT_MEMBERSHIP_ROLES = new Set(["member", "reviewer", "operator"]);
+
+function parseOauthTenantMemberships(value, name) {
+  const parsed = jsonObject(value, name);
+  const result = {};
+  for (const [subjectValue, membershipValue] of Object.entries(parsed)) {
+    const subject = String(subjectValue || "").trim();
+    if (!subject || subject.length > 240) throw new Error(`${name} contains an invalid subject`);
+    if (!membershipValue || Array.isArray(membershipValue) || typeof membershipValue !== "object") {
+      throw new Error(`${name} membership must contain tenant_id and role`);
+    }
+    const tenantId = String(membershipValue.tenant_id || "").trim();
+    const role = String(membershipValue.role || "").trim().toLowerCase();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(tenantId)) {
+      throw new Error(`${name} contains an invalid tenant id`);
+    }
+    if (!OAUTH_TENANT_MEMBERSHIP_ROLES.has(role)) {
+      throw new Error(`${name} contains an invalid membership role`);
+    }
+    result[subject] = { tenantId, role };
+  }
+  return result;
+}
+
 function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object || {}, key);
 }
@@ -154,6 +178,13 @@ export function loadConfig(env = process.env) {
   const dttAgentIdentitySigningSecret = dttAgentIdentitySigningSecretCandidate.length >= 32
     ? dttAgentIdentitySigningSecretCandidate
     : "";
+  const nyraDeepV2McpRequestSigningSecretCandidate = String(
+    env.CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET || "",
+  ).trim();
+  const nyraDeepV2McpRequestSigningSecret =
+    nyraDeepV2McpRequestSigningSecretCandidate.length >= 32
+      ? nyraDeepV2McpRequestSigningSecretCandidate
+      : "";
   const ownerContextSigningSecretCandidate = String(env.CORE_OWNER_CONTEXT_SIGNING_SECRET || "").trim();
   // Keep this independent from Core bearer credentials. A short value is not
   // a usable signature key and therefore deliberately behaves as missing.
@@ -188,6 +219,13 @@ export function loadConfig(env = process.env) {
   // Subject-to-tenant ownership is server-side only. Never accept this
   // binding from a token claim, URL, body or tool argument.
   const oauthOwnerTenantBindings = parseOauthOwnerTenantBindings(env.AUTH0_OWNER_TENANT_BINDINGS_JSON, "AUTH0_OWNER_TENANT_BINDINGS_JSON");
+  // Ordinary tenant collaboration is configured independently from ownership.
+  // These roles are intentionally bounded and can never grant owner elevation
+  // or provider setup.
+  const oauthTenantMemberships = parseOauthTenantMemberships(
+    env.AUTH0_TENANT_MEMBERSHIPS_JSON,
+    "AUTH0_TENANT_MEMBERSHIPS_JSON",
+  );
   // Enabled by the production Blueprint. Keep the code default fail-closed so
   // an existing installation does not silently change tenant routing on update.
   const selfServiceTenantsEnabled = flag(env.MCP_SELF_SERVICE_TENANTS_ENABLED, false);
@@ -244,11 +282,13 @@ export function loadConfig(env = process.env) {
     suiteControlPlaneCacheTtlMs: integer(env.SUITE_CONTROL_PLANE_CACHE_TTL_MS, 5_000, 0, 60_000),
     agentSignatureSecret,
     dttAgentIdentitySigningSecret,
+    nyraDeepV2McpRequestSigningSecret,
     ownerContextSigningSecret,
     runtimeBuildCommit,
     defaultTenantId,
     tenantClaim,
     oauthOwnerTenantBindings,
+    oauthTenantMemberships,
     oauthOwnerConfirmationMaxAgeSeconds,
     selfServiceTenantsEnabled,
     tenantOwnerRoleClaim: String(env.MCP_TENANT_OWNER_ROLE_CLAIM || "https://skinharmony.it/role").trim(),
