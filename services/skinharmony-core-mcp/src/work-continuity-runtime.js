@@ -1070,7 +1070,7 @@ export function buildImpactMap(architecture = {}, change = {}) {
   };
 }
 
-const CREATE_SCHEMA_SQL = `
+export const WORK_CONTINUITY_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS core_continuity_works (
   tenant_id varchar(64) NOT NULL, project_id varchar(64) NOT NULL, work_id uuid NOT NULL,
   session_id varchar(64) NOT NULL, parent_work_id uuid, idea text NOT NULL, objective text NOT NULL,
@@ -1354,7 +1354,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     config.dttAgentIdentitySigningSecret || "",
   ).trim();
   let ready;
-  const initialize = () => ready ||= pool.query(CREATE_SCHEMA_SQL);
+  const initialize = () => ready ||= pool.query(WORK_CONTINUITY_SCHEMA_SQL);
 
   function actorFor(identity, input = {}) {
     return safeText(
@@ -4042,6 +4042,6 @@ export function createWorkContinuityRuntime(config, options = {}) {
     postMessage,
     inbox,
     close: () => pool.end(),
-    schemaSql: CREATE_SCHEMA_SQL,
+    schemaSql: WORK_CONTINUITY_SCHEMA_SQL,
   };
 }

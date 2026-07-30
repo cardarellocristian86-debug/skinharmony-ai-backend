@@ -14,8 +14,10 @@ import {
   coreJoinIdempotencyKey,
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
+import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
 import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
 import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
+import { NYRA_NATIVE_TEAM_TOOLS } from "./nyra-native-team-tools.js";
 import { HOST_NATIVE_TOOLS } from "./host-native-tools.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
@@ -34,6 +36,7 @@ const hostNativeContinuityTools = new Set([
 TOOLS.push(...WORK_CONTINUITY_TOOLS.filter((tool) =>
   config.hostNativeAgentProtocolEnabled === true ||
   !hostNativeContinuityTools.has(tool.name)));
+TOOLS.push(...NYRA_NATIVE_TEAM_TOOLS);
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...HOST_NATIVE_TOOLS);
 
 const primaryDatabasePool = config.databaseUrl
@@ -53,6 +56,9 @@ const decisionLedger = createDecisionLedger(config, {
   pool: primaryDatabasePool,
 });
 const workContinuityRuntime = createWorkContinuityRuntime(config, {
+  pool: primaryDatabasePool,
+});
+const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
   pool: primaryDatabasePool,
 });
 const startupReadiness = {
@@ -574,6 +580,34 @@ const baseHandlers = {
     work_continuity_incident_record: continuityMethod("recordIncident"),
     work_continuity_incident_verify: continuityMethod("verifyIncident"),
     work_continuity_incident_resolve: continuityMethod("resolveIncident"),
+  } : {}),
+  ...(nyraNativeTeamRuntime ? {
+    nyra_native_team_blueprints: async (_args, identity) => continuityTextResult({
+      ok: true,
+      tenant_id: identity.tenantId,
+      result: nyraNativeTeamRuntime.blueprintCatalog(),
+    }),
+    nyra_native_team_status: async (args, identity) => {
+      const status = await nyraNativeTeamRuntime.status(identity);
+      const team = args.work_id ? await nyraNativeTeamRuntime.read(identity, args) : null;
+      return continuityTextResult({ ok: true, tenant_id: identity.tenantId, status, ...(team ? { team } : {}) });
+    },
+    nyra_native_team_enable: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.native_team.enable", "nyra_native_team");
+      return continuityTextResult({
+        ok: true,
+        result: await nyraNativeTeamRuntime.enable(identity, args),
+        execution_authorized: false,
+      });
+    },
+    nyra_native_team_bootstrap: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.native_team.bootstrap", args.work_id);
+      return continuityTextResult({
+        ok: true,
+        result: await nyraNativeTeamRuntime.bootstrap(identity, args),
+        execution_authorized: false,
+      });
+    },
   } : {}),
 };
 
