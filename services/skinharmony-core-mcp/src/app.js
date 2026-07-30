@@ -899,8 +899,8 @@ export function createApp(config, options = {}) {
       }
       return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
     } catch (error) {
-      if (["agent_presence_session_required", "agent_presence_conflict"].includes(error.code)) {
-        return res.status(error.code === "agent_presence_conflict" ? 409 : 400).json({
+      if (["agent_presence_session_required", "agent_presence_conflict", "agent_presence_registration_required", "agent_presence_registration_failed"].includes(error.code)) {
+        return res.status(error.code === "agent_presence_conflict" ? 409 : error.code === "agent_presence_registration_failed" ? 503 : 400).json({
           jsonrpc: "2.0",
           id,
           error: { code: -32602, message: error.code },
