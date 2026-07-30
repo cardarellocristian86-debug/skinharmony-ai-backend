@@ -270,12 +270,24 @@ test("loads only bounded server-side OAuth tenant memberships", () => {
       "oauth|member-a": { tenant_id: "codexai", role: "member" },
       "oauth|member-b": { tenant_id: "codexai", role: "reviewer" },
       "oauth|member-c": { tenant_id: "codexai", role: "operator" },
+      "oauth|support": {
+        tenant_id: "client-a",
+        role: "support_delegate",
+        delegation_id: "support-case-42",
+        expires_at: "2030-01-01T00:00:00.000Z",
+      },
     }),
   });
   assert.deepEqual(config.oauthTenantMemberships, {
     "oauth|member-a": { tenantId: "codexai", role: "member" },
     "oauth|member-b": { tenantId: "codexai", role: "reviewer" },
     "oauth|member-c": { tenantId: "codexai", role: "operator" },
+    "oauth|support": {
+      tenantId: "client-a",
+      role: "support_delegate",
+      delegationId: "support-case-42",
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    },
   });
   assert.throws(
     () => loadConfig({ AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({ "oauth|bad": { tenant_id: "../other", role: "member" } }) }),
@@ -290,6 +302,12 @@ test("loads only bounded server-side OAuth tenant memberships", () => {
   assert.throws(
     () => loadConfig({ AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({ "oauth|bad": "codexai" }) }),
     /must contain tenant_id and role/,
+  );
+  assert.throws(
+    () => loadConfig({ AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({
+      "oauth|support": { tenant_id: "client-a", role: "support_delegate" },
+    }) }),
+    /requires a valid delegation_id/,
   );
 });
 

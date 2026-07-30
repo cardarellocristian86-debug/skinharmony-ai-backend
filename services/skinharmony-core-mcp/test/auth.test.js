@@ -318,6 +318,54 @@ test("a tenant membership cannot elevate to owner", async () => {
   );
 });
 
+test("binds support access to one tenant, one delegation id and an expiry", async () => {
+  const fixture = auth0Fixture({
+    sub: "google-oauth2|support",
+    scope: "core:read",
+    "https://skinharmony.it/tenant_id": "attacker-selected-tenant",
+  });
+  const baseConfig = {
+    ...fixture.config,
+    codexKeys: [],
+    selfServiceTenantsEnabled: true,
+    oauthTenantMemberships: {
+      "google-oauth2|support": {
+        tenantId: "client-a",
+        role: "support_delegate",
+        delegationId: "support-case-42",
+        expiresAt: "2030-01-01T00:00:00.000Z",
+      },
+    },
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeTenantIds: ["client-a"],
+    godModeSubjects: ["google-oauth2|support"],
+    godModeCodexEnabled: false,
+  };
+  const identity = await createAuthenticator(baseConfig, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
+  assert.equal(identity.tenantId, "client-a");
+  assert.equal(identity.tenantMembershipRole, "support_delegate");
+  assert.equal(identity.tenantSupportDelegationBound, true);
+  assert.equal(identity.tenantSupportDelegationId, "support-case-42");
+  assert.equal(identity.oauthOwnerBound, undefined);
+  assert.equal(identity.godMode, undefined);
+
+  await assert.rejects(
+    createAuthenticator({
+      ...baseConfig,
+      oauthTenantMemberships: {
+        "google-oauth2|support": {
+          tenantId: "client-a",
+          role: "support_delegate",
+          delegationId: "expired-case",
+          expiresAt: "2020-01-01T00:00:00.000Z",
+        },
+      },
+    }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`),
+    /tenant_support_delegation_expired/,
+  );
+});
+
 test("an explicit owner binding takes precedence over an overlapping membership", async () => {
   const fixture = auth0Fixture({ sub: "google-oauth2|owner-member", scope: "core:read" });
   const identity = await createAuthenticator({

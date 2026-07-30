@@ -40,7 +40,7 @@ function parseOauthOwnerTenantBindings(value, name) {
   return result;
 }
 
-const OAUTH_TENANT_MEMBERSHIP_ROLES = new Set(["member", "reviewer", "operator"]);
+const OAUTH_TENANT_MEMBERSHIP_ROLES = new Set(["member", "reviewer", "operator", "support_delegate"]);
 
 function parseOauthTenantMemberships(value, name) {
   const parsed = jsonObject(value, name);
@@ -58,6 +58,18 @@ function parseOauthTenantMemberships(value, name) {
     }
     if (!OAUTH_TENANT_MEMBERSHIP_ROLES.has(role)) {
       throw new Error(`${name} contains an invalid membership role`);
+    }
+    if (role === "support_delegate") {
+      const delegationId = String(membershipValue.delegation_id || "").trim();
+      const expiresAt = String(membershipValue.expires_at || "").trim();
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{1,119}$/.test(delegationId)) {
+        throw new Error(`${name} support delegation requires a valid delegation_id`);
+      }
+      if (!Number.isFinite(Date.parse(expiresAt))) {
+        throw new Error(`${name} support delegation requires a valid expires_at`);
+      }
+      result[subject] = { tenantId, role, delegationId, expiresAt };
+      continue;
     }
     result[subject] = { tenantId, role };
   }

@@ -660,7 +660,7 @@ test("ensure survives runtime restart, is strict by default and isolates tenants
   const firstRuntime = createWorkContinuityRuntime({}, { pool, now: clock });
   const tenantA = { tenantId: "tenant-a", subject: "codex" };
 
-  const created = await firstRuntime.ensure(tenantA, initialInput);
+  const created = await firstRuntime.ensure(tenantA, initialInput, { creationAuthorized: true });
   const replay = await firstRuntime.ensure(tenantA, initialInput);
   assert.equal(created.project_id, initialInput.project_id);
   assert.equal(replay.project_id, initialInput.project_id);
@@ -699,7 +699,7 @@ test("ensure survives runtime restart, is strict by default and isolates tenants
   const tenantBWork = await restartedRuntime.ensure({
     tenantId: "tenant-b",
     subject: "codex",
-  }, initialInput);
+  }, initialInput, { creationAuthorized: true });
   assert.notEqual(tenantBWork.work_id, created.work_id);
 
   const anchor = await restartedRuntime.readIntent(tenantA, { work_id: created.work_id });
@@ -712,6 +712,41 @@ test("ensure survives runtime restart, is strict by default and isolates tenants
   assert.equal("idea" in catalog.works[0], false);
   assert.equal("objective" in catalog.works[0], false);
   assert.equal("anchor" in catalog.works[0], false);
+});
+
+test("first Work Identity fails closed without owner creation authorization", async () => {
+  const pool = new ContinuityPool(() => new Date("2026-07-30T12:00:00.000Z"));
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const owner = { tenantId: "tenant-a", subject: "owner-subject" };
+  const baseline = {
+    ...initialInput,
+    session_id: "owner-bound-session",
+  };
+  const created = await runtime.ensure(owner, baseline, { creationAuthorized: true });
+  assert.equal(pool.works.size, 1);
+
+  for (const [role, identity] of [
+    ["member", { tenantId: "tenant-a", subject: "member-subject", tenantMembershipRole: "member" }],
+    ["self_service", { tenantId: "tenant-a", subject: "self-service-subject", selfServiceTenant: true }],
+    ["support_delegate", { tenantId: "tenant-a", subject: "support-subject", tenantMembershipRole: "support_delegate" }],
+  ]) {
+    await assert.rejects(
+      runtime.ensure(identity, {
+        ...baseline,
+        session_id: `unbound-${role}-session`,
+      }, { creationAuthorized: false }),
+      /continuity_creation_owner_confirmation_required/,
+    );
+  }
+  assert.equal(pool.works.size, 1);
+
+  const resumed = await runtime.ensure(owner, {
+    ...baseline,
+    resume_existing: true,
+  }, { creationAuthorized: false });
+  assert.equal(resumed.work_id, created.work_id);
+  assert.equal(resumed.resumed_existing, true);
+  assert.equal(pool.works.size, 1);
 });
 
 test("native plan replay is deterministic and receipts preserve host policy boundaries", async () => {
@@ -728,7 +763,7 @@ test("native plan replay is deterministic and receipts preserve host policy boun
       session_fingerprint: "a".repeat(64),
     },
   };
-  const work = await runtime.ensure(identity, initialInput);
+  const work = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
   const request = {
     work_id: work.work_id,
     repository: "owner/repo",
@@ -797,7 +832,7 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
   const work = await runtime.ensure(identity, {
     ...initialInput,
     session_id: "parallel-session",
-  });
+  }, { creationAuthorized: true });
   const request = {
     work_id: work.work_id,
     repository: "owner/repo",
@@ -904,7 +939,7 @@ test("operational failures create one exact indexed blocker without raw error te
   const work = await runtime.ensure(identity, {
     ...initialInput,
     session_id: "operational-incident-session",
-  });
+  }, { creationAuthorized: true });
   const input = {
     work_id: work.work_id,
     operation: "work_continuity_closure_finalize",
@@ -943,7 +978,7 @@ test("cross-chat resume preserves same-session plans and supersedes stale coordi
   const work = await runtime.ensure(identity, {
     ...initialInput,
     session_id: "cross-chat-source",
-  });
+  }, { creationAuthorized: true });
   const request = {
     work_id: work.work_id,
     repository: "owner/repo",
@@ -1036,7 +1071,7 @@ test("local closure becomes release-ready and external completion needs exact Co
   const work = await runtime.ensure(identity, {
     ...initialInput,
     session_id: "closure-session",
-  });
+  }, { creationAuthorized: true });
   const planRequest = {
     work_id: work.work_id,
     repository: "owner/repo",

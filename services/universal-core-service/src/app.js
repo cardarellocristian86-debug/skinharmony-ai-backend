@@ -939,6 +939,62 @@ function normalizeTenantMemoryContext(raw, tenantId) {
   };
 }
 
+function normalizeTenantWorkGalleryContext(raw, tenantId) {
+  if (raw === undefined || raw === null) {
+    return {
+      ok: true,
+      value: {
+        schema_version: "tenant_work_gallery_v1",
+        tenant_id: tenantId,
+        available: false,
+        state: "runtime_unavailable",
+        work_count: 0,
+        works: [],
+      },
+    };
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, error: "gallery_context_invalid" };
+  }
+  if (String(raw.tenant_id || "") !== tenantId) {
+    return { ok: false, error: "gallery_context_tenant_mismatch" };
+  }
+  const works = Array.isArray(raw.works) ? raw.works.slice(0, 20).map((work) => {
+    if (!work || typeof work !== "object" || Array.isArray(work)) return null;
+    return {
+      work_id: sanitizeMemoryText(work.work_id, 64),
+      project_id: sanitizeMemoryText(work.project_id, 64),
+      status: sanitizeMemoryText(work.status, 40),
+      current_version: Number.isInteger(Number(work.current_version))
+        ? Math.max(0, Number(work.current_version))
+        : 0,
+      next_action: sanitizeMemoryText(work.next_action, 500),
+      updated_at: sanitizeMemoryText(work.updated_at, 40),
+      active_participants: Math.max(0, Number(work.active_participants || 0)),
+      active_leases: Math.max(0, Number(work.active_leases || 0)),
+      active_branches: Math.max(0, Number(work.active_branches || 0)),
+    };
+  }).filter((work) => work?.work_id) : [];
+  return {
+    ok: true,
+    value: {
+      schema_version: "tenant_work_gallery_v1",
+      tenant_id: tenantId,
+      available: raw.available === true,
+      state: ["ready", "membership_required", "runtime_unavailable"].includes(String(raw.state || ""))
+        ? String(raw.state)
+        : "runtime_unavailable",
+      generated_at: sanitizeMemoryText(raw.generated_at, 40) || null,
+      work_count: works.length,
+      filters: {
+        project_id: raw.filters?.project_id ? sanitizeMemoryText(raw.filters.project_id, 64) : null,
+        status: raw.filters?.status ? sanitizeMemoryText(raw.filters.status, 40) : null,
+      },
+      works,
+    },
+  };
+}
+
 function normalizeSignal(input = {}) {
   const score = Number(input.normalized_score ?? input.score ?? input.value ?? 50);
   return {
@@ -1633,7 +1689,13 @@ const MANDATORY_NYRA_WORK_BRANCHES = Object.freeze([
   "adaptive_learning",
 ]);
 
-function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, branchContext = null, nyraNetwork = null } = {}) {
+function composeMandatoryWorkPreflight(req, {
+  domainPack,
+  memoryContext = null,
+  galleryContext = null,
+  branchContext = null,
+  nyraNetwork = null,
+} = {}) {
   const body = req.body || {};
   const operationType = body.operation_type
     || body.action_type
@@ -1678,6 +1740,7 @@ function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, 
     toolName: body.source_tool || body.tool_name || "",
     availableCapabilities: body.available_capabilities || body.available_tools || body.connected_capabilities || [],
     memoryContext,
+    galleryContext,
     branchContext: resolvedBranchContext,
     nyraNetwork: resolvedNyraNetwork,
     domainPack: publicDomainPack(domainPack),
@@ -6052,6 +6115,8 @@ export function createUniversalCoreService(options = {}) {
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
     if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const galleryContext = normalizeTenantWorkGalleryContext(req.body?.gallery_context, req.tenantId);
+    if (!galleryContext.ok) return publicError(res, 403, galleryContext.error);
     const requestText = String(req.body?.request || req.body?.message || req.body?.text || req.body?.task || req.body?.action_label || "").trim();
     if (!requestText) return publicError(res, 400, "work_preflight_request_required");
     if (requestText.length > 20_000) return publicError(res, 413, "work_preflight_request_too_long");
@@ -6064,6 +6129,7 @@ export function createUniversalCoreService(options = {}) {
     const preflight = composeMandatoryWorkPreflight(req, {
       domainPack: domainPackAccess.pack,
       memoryContext: memoryContext.value,
+      galleryContext: galleryContext.value,
     });
     audit.append("core_work_preflight_completed", {
       tenant_id: req.tenantId,

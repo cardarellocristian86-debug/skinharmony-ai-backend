@@ -98,6 +98,16 @@ const collaborationHandlers = (config.agentWorkspaceRoot || config.collaboration
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
+  tenantWorkGallery: workContinuityRuntime ? {
+    load: async (identity, input = {}) => {
+      requireTenantWorkCapability(identity, "read");
+      return workContinuityRuntime.gallery(identity, {
+        project_id: input.project_id,
+        status: "active",
+        limit: 20,
+      });
+    },
+  } : null,
 });
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
@@ -255,43 +265,55 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       "Use a bounded Core authorization for every external release action.",
       "Verify expected live commit and health before final closure when deployment is in scope.",
     ];
-  const continuity = await workContinuityRuntime.ensure(identity, {
-    ...(args.work_id ? { work_id: args.work_id } : {}),
-    ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
-    project_id: continuityProjectId(args),
-    session_id: sessionId,
-    initial_message: initialMessage,
-    idea: String(args.idea || initialMessage).slice(0, 8_000),
-    objective: String(args.objective || initialMessage).slice(0, 8_000),
-    acceptance_criteria: acceptanceCriteria,
-    constraints: [
-      ...(Array.isArray(args.constraints) ? args.constraints : []),
-      "Use ChatGPT/Codex host-native agents; do not require a provider API key.",
-      "Nyra supervises; Universal Core remains final policy authority.",
-      "Host sandbox, approval and auto-review policy cannot be bypassed.",
-    ],
-    architecture: {
-      schema_version: "governed_continuity_bootstrap_v1",
+  let continuity;
+  try {
+    continuity = await workContinuityRuntime.ensure(identity, {
+      ...(args.work_id ? { work_id: args.work_id } : {}),
+      ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
       project_id: continuityProjectId(args),
-      source_tool: toolName,
+      session_id: sessionId,
+      initial_message: initialMessage,
+      idea: String(args.idea || initialMessage).slice(0, 8_000),
+      objective: String(args.objective || initialMessage).slice(0, 8_000),
+      acceptance_criteria: acceptanceCriteria,
+      constraints: [
+        ...(Array.isArray(args.constraints) ? args.constraints : []),
+        "Use ChatGPT/Codex host-native agents; do not require a provider API key.",
+        "Nyra supervises; Universal Core remains final policy authority.",
+        "Host sandbox, approval and auto-review policy cannot be bypassed.",
+      ],
+      architecture: {
+        schema_version: "governed_continuity_bootstrap_v1",
+        project_id: continuityProjectId(args),
+        source_tool: toolName,
+        host_type: host,
+        provider_execution: false,
+        provider_api_key_required: false,
+        host_policy_override: false,
+        compact_mcp_surface_size: 13,
+      },
+      next_action: `Continue ${toolName} through Nyra supervision and the Universal Core gate.`,
       host_type: host,
-      provider_execution: false,
-      provider_api_key_required: false,
-      host_policy_override: false,
-      compact_mcp_surface_size: 13,
-    },
-    next_action: `Continue ${toolName} through Nyra supervision and the Universal Core gate.`,
-    host_type: host,
-    client_type: identity.agentPresence?.client_type || args.client_type,
-    agent_id: identity.agentPresence?.agent_id || args.agent_id || "connected_ai",
-    resume_existing: resumeExisting,
-  }, {
-    // Generic follow-up tool calls belong to the already anchored request and
-    // must not reinterpret each tool's short command as a replacement intent.
-    // The explicit start/resume capability does not receive this trust bit and
-    // must present an intent digest equal to the immutable anchor.
-    trustedSessionFollowup: resumeExisting,
-  });
+      client_type: identity.agentPresence?.client_type || args.client_type,
+      agent_id: identity.agentPresence?.agent_id || args.agent_id || "connected_ai",
+      resume_existing: resumeExisting,
+    }, {
+      // Generic preflight may resume an anchored work, but it never creates
+      // one. Bootstrap is an explicit, fresh owner-governed action.
+      trustedSessionFollowup: resumeExisting,
+      creationAuthorized: false,
+    });
+  } catch (error) {
+    if (error?.code !== "continuity_creation_owner_confirmation_required") throw error;
+    continuity = {
+      tenant_id: identity.tenantId,
+      project_id: continuityProjectId(args),
+      work_id: null,
+      state: "owner_bootstrap_required",
+      owner_governance_required: true,
+      next_action: "Use work_continuity_create with a fresh, request-bound owner confirmation.",
+    };
+  }
   attachContinuity(preflightResult, continuity);
   return continuity;
 }
@@ -330,6 +352,12 @@ const baseHandlers = {
     work_continuity_create: async (args, identity) => {
       await requireOwnerGovernance(identity, "work.continuity.create", args.project_id);
       const payload = { ok: true, result: await workContinuityRuntime.create(identity, args) };
+      payload.dedicated_core_gate = {
+        authorized: true,
+        authority: "universal_core",
+        route: "/v1/action-evaluator",
+        server_owned: true,
+      };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_record_change: async (args, identity) => {
@@ -413,7 +441,20 @@ const baseHandlers = {
       const payload = { ok: true, result: await workContinuityRuntime.inbox(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
-    work_continuity_start_or_resume: continuityMethod("ensure"),
+    work_continuity_start_or_resume: async (args, identity) => {
+      requireTenantWorkCapability(identity, "read");
+      await requireOwnerGovernance(identity, "work.continuity.start_or_resume", args.project_id);
+      return continuityTextResult({
+        ok: true,
+        result: await workContinuityRuntime.ensure(identity, args, { creationAuthorized: true }),
+        dedicated_core_gate: {
+          authorized: true,
+          authority: "universal_core",
+          route: "/v1/action-evaluator",
+          server_owned: true,
+        },
+      });
+    },
     work_continuity_intent_read: continuityMethod("readIntent"),
     work_continuity_work_catalog: continuityMethod("listWorks"),
     work_continuity_native_plan: async (args, identity) => {

@@ -62,6 +62,8 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "core_capability_invoke",
   "host_native_delegation_issue",
   "host_native_delegation_revoke",
+  "work_continuity_create",
+  "work_continuity_start_or_resume",
 ]);
 
 function inferClientType(identity) {
@@ -416,6 +418,9 @@ function attachWorkPreflight(result, preflight) {
     tool_routing: resolvedPayload.tool_routing?.preferred_route
       ? { preferred_route: resolvedPayload.tool_routing.preferred_route }
       : resolvedPayload.tool_routing,
+    operational_surface: resolvedPayload.operational_surface,
+    gallery_version: resolvedPayload.gallery_version,
+    tenant_work_gallery: resolvedPayload.tenant_work_gallery,
     shared_memory_bootstrap: resolvedPayload.shared_memory_bootstrap
       ? {
         loaded: resolvedPayload.shared_memory_bootstrap.loaded === true,
@@ -438,6 +443,8 @@ function attachWorkPreflight(result, preflight) {
       state: payload.state,
       preferred_route: payload.tool_routing?.preferred_route?.id,
       execution_allowed: executionAllowed,
+      operational_surface: payload.operational_surface,
+      gallery_state: payload.tenant_work_gallery?.state,
       shared_memory_bootstrap_loaded: payload.shared_memory_bootstrap?.loaded === true,
       work_id: payload.continuity?.work_id,
     },
@@ -837,12 +844,11 @@ export function createApp(config, options = {}) {
         if (serverIssuedSessionId) res.set("Mcp-Session-Id", serverIssuedSessionId);
         const args = { ...rawArgs, ...presenceInput };
         // A request flag is never an identity assertion. Generic Core writes
-        // still require verified owner-root confirmation.
-        const explicitDynamicCapabilityConfirmation = tool.name === "core_capability_invoke" &&
-          identity.oauthOwnerElevated === true &&
-          args.owner_confirmed === true;
-        const explicitHostNativeOwnerConfirmation =
-          ["host_native_delegation_issue", "host_native_delegation_revoke"].includes(tool.name) &&
+        // still require verified owner-root confirmation; the two explicit
+        // continuity bootstrap tools additionally accept a fresh, server-bound
+        // OAuth tenant-owner elevation.
+        const explicitOAuthOwnerConfirmation =
+          OAUTH_OWNER_ELEVATION_TOOLS.has(tool.name) &&
           identity.oauthOwnerElevated === true &&
           args.owner_confirmed === true;
         const codexGoodModeHostNativeDelegation =
@@ -851,8 +857,7 @@ export function createApp(config, options = {}) {
         const explicitOwnerConfirmation = (
           codexGoodModeHostNativeDelegation ||
           identity.godMode === true ||
-          explicitDynamicCapabilityConfirmation ||
-          explicitHostNativeOwnerConfirmation
+          explicitOAuthOwnerConfirmation
         ) &&
           (codexGoodModeHostNativeDelegation || args.owner_confirmed === true);
         const callIdentity = {

@@ -66,6 +66,12 @@ function tool(name, title, description, inputSchema, readOnly, options = {}) {
         ...(options.delegationAware === true
           ? { "skinharmony/delegationAware": true }
           : {}),
+        ...(options.dedicatedCoreGate === true
+          ? { "skinharmony/dedicatedCoreGate": true }
+          : {}),
+        ...(options.serverOwnedGovernance === true
+          ? { "skinharmony/serverOwnedGovernance": true }
+          : {}),
       },
     } : {}),
   };
@@ -78,7 +84,10 @@ export const WORK_CONTINUITY_TOOLS = [
       project_id: identifier, work_id: uuid, session_id: identifier, parent_work_id: uuid,
       idea: text(8_000), objective: text(8_000), architecture: { type: "object", additionalProperties: true },
       repository_hash: hash, policy_hash: hash, live_state_hash: hash, next_action: text(4_000),
-    }, ["project_id", "session_id", "idea", "objective", "architecture", "next_action"]), false),
+    }, ["project_id", "session_id", "idea", "objective", "architecture", "next_action"]), false, {
+      dedicatedCoreGate: true,
+      serverOwnedGovernance: true,
+    }),
   tool("work_continuity_record_change", "Version architecture and impact map",
     "Persist a new architecture version and calculate affected functions, components, links, dependencies, depth and regressions.",
     object({
@@ -182,7 +191,7 @@ export const WORK_CONTINUITY_TOOLS = [
       limit: { type: "integer", minimum: 1, maximum: 200 },
     }, ["work_id", "session_id", "agent_id"]), true),
   tool("work_continuity_start_or_resume", "Anchor or resume governed work",
-    "Persist the first redacted host-supplied request as one immutable tenant-scoped Intent Anchor, or resume its existing Work Identity without overwriting it.",
+    "Create or resume a tenant-scoped Work Identity through a fresh, request-bound owner confirmation; the immutable Intent Anchor is never overwritten.",
     object({
       work_id: uuid, parent_work_id: uuid, project_id: identifier, session_id: identifier,
       initial_message: text(20_000), idea: text(8_000), objective: text(8_000),
@@ -192,7 +201,10 @@ export const WORK_CONTINUITY_TOOLS = [
       host_type: nativeHost, resume_existing: { type: "boolean" },
       repository_hash: hash, policy_hash: hash, live_state_hash: hash,
     }, ["project_id", "session_id", "initial_message", "idea", "objective", "architecture", "next_action"]),
-    false, { ownerConfirmationRequired: false }),
+    false, {
+      dedicatedCoreGate: true,
+      serverOwnedGovernance: true,
+    }),
   tool("work_continuity_intent_read", "Read immutable Intent Anchor",
     "Read the redacted immutable Intent Anchor and digest for one tenant-scoped work identity.",
     object({ work_id: uuid }, ["work_id"]), true),

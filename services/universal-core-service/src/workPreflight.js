@@ -250,6 +250,7 @@ export function buildWorkPreflight({
   toolName = "",
   availableCapabilities = [],
   memoryContext = null,
+  galleryContext = null,
   branchContext,
   nyraNetwork,
   domainPack,
@@ -267,6 +268,16 @@ export function buildWorkPreflight({
   const operationKey = cleanText(toolName || operationType, 100).toLowerCase();
   const readOnlyOperation = READ_ONLY_OPERATIONS.has(operationKey);
   const executionAllowedByPreflight = memoryReady && readOnlyOperation;
+  const gallery = galleryContext && typeof galleryContext === "object"
+    ? galleryContext
+    : {
+      schema_version: "tenant_work_gallery_v1",
+      tenant_id: String(tenantId || ""),
+      available: false,
+      state: "runtime_unavailable",
+      work_count: 0,
+      works: [],
+    };
   const coreResearch = buildCoreResearchDirective({
     tenantId,
     requestText: normalizedRequest,
@@ -295,7 +306,21 @@ export function buildWorkPreflight({
       operation_type: cleanText(operationType, 100) || "advisory_work",
       source_tool: cleanText(toolName, 100) || null,
     },
+    operational_surface: "tenant_work_gallery",
+    gallery_version: gallery.schema_version || "tenant_work_gallery_v1",
+    tenant_work_gallery: {
+      schema_version: gallery.schema_version || "tenant_work_gallery_v1",
+      tenant_id: String(tenantId || ""),
+      available: gallery.available === true,
+      state: cleanText(gallery.state, 80) || "runtime_unavailable",
+      generated_at: gallery.generated_at || null,
+      tenant_isolated: true,
+      work_count: Number(gallery.work_count || 0),
+      filters: gallery.filters || {},
+      works: Array.isArray(gallery.works) ? gallery.works : [],
+    },
     mandatory_sequence: [
+      "open_tenant_work_gallery",
       "recall_tenant_memory",
       "nyra_interpret_request",
       "core_open_and_join_branches",

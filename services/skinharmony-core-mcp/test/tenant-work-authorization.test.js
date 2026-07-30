@@ -26,19 +26,44 @@ test("membership roles map to bounded capabilities without owner authority", () 
     oauthTenantMemberBound: true,
     tenantMembershipRole: "operator",
   }).includes("owner"), false);
+  assert.deepEqual(tenantWorkCapabilities({
+    kind: "oauth",
+    oauthTenantMemberBound: true,
+    tenantMembershipRole: "support_delegate",
+    tenantSupportDelegationBound: true,
+    tenantSupportDelegationId: "support-case-42",
+    tenantSupportDelegationExpiresAt: "2030-01-01T00:00:00.000Z",
+  }), ["read", "coordinate", "review_candidate"]);
 });
 
 test("unmapped OAuth and invalid membership roles fail closed", () => {
   for (const identity of [
     { kind: "oauth", role: "member" },
     { kind: "oauth", oauthTenantMemberBound: true, tenantMembershipRole: "owner" },
-    { kind: "oauth", selfServiceTenant: true },
+    {
+      kind: "oauth",
+      oauthTenantMemberBound: true,
+      tenantMembershipRole: "support_delegate",
+      tenantSupportDelegationBound: true,
+      tenantSupportDelegationId: "expired-case",
+      tenantSupportDelegationExpiresAt: "2020-01-01T00:00:00.000Z",
+    },
   ]) {
     assert.throws(
       () => requireTenantWorkCapability(identity, "coordinate"),
       /tenant_work_membership_required/,
     );
   }
+});
+
+test("a self-service tenant can operate only its own Gallery without owner elevation", () => {
+  const capabilities = tenantWorkCapabilities({
+    kind: "oauth",
+    tenantId: "chatgpt_personal",
+    selfServiceTenant: true,
+  });
+  assert.deepEqual(capabilities, ["read", "coordinate", "review_candidate", "operate"]);
+  assert.equal(capabilities.includes("owner"), false);
 });
 
 test("Codex and explicit tenant owners can coordinate without transferring ownership", () => {

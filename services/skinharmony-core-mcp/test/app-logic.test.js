@@ -50,11 +50,17 @@ test("reports a completed read-only preflight as executable", () => {
         preflight_id: "preflight-read",
         state: "ready_read_only",
         tool_routing: { preferred_route: { id: "tenant_shared_workspace" } },
+        operational_surface: "tenant_work_gallery",
+        gallery_version: "tenant_work_gallery_v1",
+        tenant_work_gallery: { state: "ready", work_count: 1 },
         governance: { execution_allowed_by_preflight: true },
       },
     },
   );
   assert.equal(result.structuredContent.work_preflight.state, "completed_read_only");
+  assert.equal(result.structuredContent.work_preflight.operational_surface, "tenant_work_gallery");
+  assert.equal(result.structuredContent.work_preflight.tenant_work_gallery.state, "ready");
+  assert.equal(JSON.parse(result.content.at(-1).text).mandatory_work_preflight.gallery_state, "ready");
   assert.equal(JSON.parse(result.content.at(-1).text).mandatory_work_preflight.execution_allowed, true);
 });
 

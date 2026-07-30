@@ -13,6 +13,64 @@ import {
 import { TOOLS as BASE_TOOLS } from "../src/tool-definitions.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 
+const WORK_ID = "11111111-1111-4111-8111-111111111111";
+
+function galleryMessagePool({ participantSubject, recipientSubject, messages = [] } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/SELECT request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
+      if (/SELECT session_id,agent_id,branch_id,status,expires_at,actor_subject/.test(sql)) {
+        if (params[3] !== participantSubject) return { rows: [] };
+        return {
+          rows: [{
+            session_id: params[2],
+            agent_id: "gallery-agent",
+            branch_id: null,
+            status: "active",
+            expires_at: "2030-01-01T00:00:00.000Z",
+            actor_subject: participantSubject,
+          }],
+        };
+      }
+      if (/SELECT session_id,actor_subject FROM core_continuity_participants/.test(sql)) {
+        return { rows: recipientSubject ? [{ session_id: params[2], actor_subject: recipientSubject }] : [] };
+      }
+      if (/SELECT message_id,branch_id,from_session_id,to_session_id/.test(sql) && /FROM core_continuity_messages/.test(sql)) {
+        assert.match(sql, /\(to_session_id=\$3 AND to_actor_subject=\$4\)/);
+        const [, , sessionId, actorSubject] = params;
+        return {
+          rows: messages.filter((message) => (
+            !message.to_session_id || (
+              message.to_session_id === sessionId &&
+              message.to_actor_subject === actorSubject
+            )
+          )),
+        };
+      }
+      if (/INSERT INTO core_continuity_messages/.test(sql)) {
+        return {
+          rows: [{
+            message_id: params[2],
+            branch_id: params[3],
+            from_session_id: params[4],
+            to_session_id: params[5],
+            message_type: params[7],
+            subject: params[8],
+            payload: JSON.parse(params[9]),
+            created_at: "2030-01-01T00:00:00.000Z",
+          }],
+        };
+      }
+      if (/SELECT sequence_number,event_hash FROM core_continuity_events/.test(sql)) return { rows: [] };
+      return { rows: [] };
+    },
+    async end() {},
+  };
+}
+
 test("continuity digests are deterministic across object key order", () => {
   assert.deepEqual(stable({ b: 2, a: { d: 4, c: 3 } }), { a: { c: 3, d: 4 }, b: 2 });
   assert.equal(digest({ b: 2, a: 1 }), digest({ a: 1, b: 2 }));
@@ -60,6 +118,7 @@ test("continuity capabilities expose correct read/write and confirmation boundar
   const names = [
     "work_continuity_create", "work_continuity_record_change", "work_continuity_checkpoint",
     "work_continuity_read", "work_continuity_resume", "work_continuity_verify_memory",
+    "work_continuity_start_or_resume",
   ];
   const tools = Object.fromEntries(WORK_CONTINUITY_TOOLS.filter((item) => names.includes(item.name)).map((item) => [item.name, item]));
   assert.deepEqual(Object.keys(tools).sort(), names.sort());
@@ -70,6 +129,7 @@ test("continuity capabilities expose correct read/write and confirmation boundar
   }
   const resumeHashes = tools.work_continuity_resume.inputSchema.properties.current_state_hashes;
   assert.deepEqual(resumeHashes.required.sort(), ["live_state_hash", "policy_hash", "repository_hash"]);
+  assert.equal(tools.work_continuity_start_or_resume.inputSchema.properties.owner_confirmed.type, "boolean");
 });
 
 test("canonical Work Continuity tools register exactly once", () => {
@@ -118,12 +178,60 @@ test("work gallery schema is tenant/work scoped and uses temporary leases", () =
   ]) assert.match(runtime.schemaSql, new RegExp(table));
   assert.match(runtime.schemaSql, /PRIMARY KEY \(tenant_id, work_id, session_id\)/);
   assert.match(runtime.schemaSql, /expires_at timestamptz NOT NULL/);
+  assert.match(runtime.schemaSql, /to_actor_subject varchar\(200\)/);
+  assert.match(runtime.schemaSql, /ADD COLUMN IF NOT EXISTS to_actor_subject/);
   assert.match(runtime.schemaSql, /WHERE status='active'/);
   assert.doesNotMatch(runtime.schemaSql, /owner_id/);
   for (const event of [
     "participant_joined", "lease_acquired", "lease_renewed", "lease_released",
     "lease_expired", "message_posted",
   ]) assert.ok(WORK_EVENT_TYPES.has(event));
+});
+
+test("direct Gallery messages bind the active recipient subject", async () => {
+  const pool = galleryMessagePool({
+    participantSubject: "oauth|sender",
+    recipientSubject: "oauth|original-recipient",
+  });
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  await runtime.postMessage({ tenantId: "tenant-a", subject: "oauth|sender" }, {
+    work_id: WORK_ID,
+    session_id: "sender-session",
+    agent_id: "sender-agent",
+    to_session_id: "shared-recipient-session",
+    message_type: "update",
+    subject: "Private update",
+    payload: { state: "ready" },
+    idempotency_key: "subject-bound-message",
+  });
+  const recipientLookup = pool.calls.find((call) => /SELECT session_id,actor_subject FROM core_continuity_participants/.test(call.sql));
+  assert.match(recipientLookup.sql, /status='active' AND expires_at>now\(\)/);
+  const insert = pool.calls.find((call) => /INSERT INTO core_continuity_messages/.test(call.sql));
+  assert.match(insert.sql, /to_actor_subject/);
+  assert.equal(insert.params[5], "shared-recipient-session");
+  assert.equal(insert.params[6], "oauth|original-recipient");
+});
+
+test("Gallery inbox excludes legacy and prior-subject direct messages after session reuse", async () => {
+  const pool = galleryMessagePool({
+    participantSubject: "oauth|replacement-recipient",
+    messages: [
+      { message_id: "broadcast", to_session_id: null, to_actor_subject: null },
+      { message_id: "old-subject", to_session_id: "reused-session", to_actor_subject: "oauth|original-recipient" },
+      { message_id: "legacy", to_session_id: "reused-session", to_actor_subject: null },
+      { message_id: "replacement", to_session_id: "reused-session", to_actor_subject: "oauth|replacement-recipient" },
+    ],
+  });
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const result = await runtime.inbox({ tenantId: "tenant-a", subject: "oauth|replacement-recipient" }, {
+    work_id: WORK_ID,
+    session_id: "reused-session",
+  });
+  assert.deepEqual(result.messages.map((message) => message.message_id), ["broadcast", "replacement"]);
+  const inboxQuery = pool.calls.find((call) => /FROM core_continuity_messages/.test(call.sql));
+  assert.equal(inboxQuery.params[2], "reused-session");
+  assert.equal(inboxQuery.params[3], "oauth|replacement-recipient");
+  assert.doesNotMatch(inboxQuery.sql, /to_actor_subject\s+IS\s+NULL/);
 });
 
 test("work gallery tools preserve read/write and bounded tenant-collaboration boundaries", () => {

@@ -111,6 +111,31 @@ function compactBootstrap(bootstrap) {
   };
 }
 
+function compactGalleryBootstrap(gallery, tenantId) {
+  const source = gallery && typeof gallery === "object" && !Array.isArray(gallery) ? gallery : {};
+  const works = Array.isArray(source.works) ? source.works.slice(0, 20).map((work) => ({
+    work_id: work.work_id,
+    project_id: work.project_id,
+    status: work.status,
+    current_version: Number(work.current_version || 0),
+    next_action: work.next_action,
+    updated_at: work.updated_at,
+    active_participants: Number(work.active_participants || 0),
+    active_leases: Number(work.active_leases || 0),
+    active_branches: Number(work.active_branches || 0),
+  })) : [];
+  return {
+    schema_version: source.schema_version || "tenant_work_gallery_v1",
+    tenant_id: tenantId,
+    available: source.available === true,
+    state: source.state || (source.available === true ? "ready" : "runtime_unavailable"),
+    generated_at: source.generated_at,
+    work_count: Number.isInteger(source.work_count) ? source.work_count : works.length,
+    filters: source.filters && typeof source.filters === "object" ? source.filters : {},
+    works,
+  };
+}
+
 function compactWorkPreflight(preflight) {
   if (!preflight || typeof preflight !== "object") return null;
   return {
@@ -126,6 +151,9 @@ function compactWorkPreflight(preflight) {
       ? { preferred_route: preflight.tool_routing.preferred_route }
       : preflight.tool_routing,
     shared_memory_bootstrap: compactBootstrap(preflight.shared_memory_bootstrap),
+    operational_surface: preflight.operational_surface,
+    gallery_version: preflight.gallery_version,
+    tenant_work_gallery: preflight.tenant_work_gallery,
   };
 }
 
@@ -263,6 +291,14 @@ function isVerifiedOwnerRoot(identity) {
   return identity?.godMode === true && identity?.role === "owner_root";
 }
 
+function isVerifiedOAuthTenantOwner(identity) {
+  return identity?.kind === "oauth" &&
+    identity?.oauthOwnerElevated === true &&
+    identity?.ownerConfirmed === true &&
+    Boolean(String(identity?.subject || "").trim()) &&
+    Boolean(String(identity?.confirmationReference || "").trim());
+}
+
 function requireHostNativeOwnerConfirmation(identity, config) {
   if (isCodexGoodModeDelegation(identity, config)) return "codex_good_mode";
   if (identity?.kind !== "oauth" || !String(identity?.subject || "").trim()) {
@@ -288,12 +324,15 @@ function hostNativeConfirmationReference(identity, ownerMode, purpose, idempoten
   return `god_mode_codex:${requestDigest.slice(0, 40)}`;
 }
 
-function hasExplicitVerifiedOwnerConfirmation(identity) {
-  return isVerifiedOwnerRoot(identity) && identity?.ownerConfirmed === true;
+function hasExplicitVerifiedOwnerConfirmation(identity, { allowOAuthTenantOwner = false } = {}) {
+  return identity?.ownerConfirmed === true && (
+    isVerifiedOwnerRoot(identity) ||
+    (allowOAuthTenantOwner && isVerifiedOAuthTenantOwner(identity))
+  );
 }
 
-function verifiedConfirmationReference(identity) {
-  if (!hasExplicitVerifiedOwnerConfirmation(identity)) return "";
+function verifiedConfirmationReference(identity, options = {}) {
+  if (!hasExplicitVerifiedOwnerConfirmation(identity, options)) return "";
   return String(identity?.confirmationReference || "").slice(0, 240);
 }
 
@@ -323,6 +362,7 @@ export function createCoreHandlers(config, options = {}) {
   const fetchImpl = options.fetchImpl || fetch;
   const contextProvider = options.contextProvider;
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
+  const tenantWorkGallery = options.tenantWorkGallery;
   const analysisCache = new Map();
   const analysisCacheTtlMs = Math.min(Math.max(Number(options.analysisCacheTtlMs || 300_000), 30_000), 300_000);
 
@@ -421,6 +461,7 @@ export function createCoreHandlers(config, options = {}) {
     const optionObject = options && typeof options === "object" && !Array.isArray(options);
     const requestBinding = optionObject ? options.requestBinding : options;
     const hostNativeOwner = optionObject && options.hostNativeOwner === true;
+    const allowOAuthTenantOwner = optionObject && options.allowOAuthTenantOwner === true;
 
     // Generic owner assertions are signed with the tenant Core key and bind
     // the exact request body. Host-native delegation operations use the
@@ -448,7 +489,10 @@ export function createCoreHandlers(config, options = {}) {
       ) {
         throw new Error("host_native_owner_context_signing_unavailable");
       }
-    } else if (identity.godMode !== true) {
+    } else if (
+      identity.godMode !== true &&
+      !(allowOAuthTenantOwner && isVerifiedOAuthTenantOwner(identity))
+    ) {
       return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
     }
     const signingKey = hostNativeOwner
@@ -489,6 +533,33 @@ export function createCoreHandlers(config, options = {}) {
   async function memoryContext(input, identity) {
     if (typeof contextProvider !== "function") return undefined;
     return contextProvider(input, identity);
+  }
+
+  async function galleryContext(input, identity) {
+    if (typeof tenantWorkGallery?.load !== "function") {
+      return compactGalleryBootstrap({
+        available: false,
+        state: "runtime_unavailable",
+      }, identity.tenantId);
+    }
+    try {
+      const gallery = await tenantWorkGallery.load(identity, input);
+      if (String(gallery?.tenant_id || "") !== String(identity.tenantId || "")) {
+        throw new Error("tenant_work_gallery_tenant_mismatch");
+      }
+      return compactGalleryBootstrap({
+        ...gallery,
+        available: true,
+        state: "ready",
+        generated_at: new Date().toISOString(),
+      }, identity.tenantId);
+    } catch (error) {
+      const state = error?.code === "tenant_work_membership_required"
+        || error?.message === "tenant_work_membership_required"
+        ? "membership_required"
+        : "runtime_unavailable";
+      return compactGalleryBootstrap({ available: false, state }, identity.tenantId);
+    }
   }
 
   function hierarchyInput(args = {}, identity, operation = "advisory_work") {
@@ -922,6 +993,7 @@ export function createCoreHandlers(config, options = {}) {
       const bootstrap = sharedMemoryBootstrap
         ? await sharedMemoryBootstrap.load(identity)
         : { loaded: false, tenant_id: identity.tenantId, missing_files: [], reason: "shared_memory_bootstrap_unavailable" };
+      const gallery = await galleryContext(args, identity);
       const sharedContext = await memoryContext({
         query: args.request,
         project_id: args.project_id,
@@ -968,11 +1040,19 @@ export function createCoreHandlers(config, options = {}) {
             ? { confirmation_reference: verifiedConfirmationReference(identity) }
             : {}),
           ...(sharedContext ? { memory_context: sharedContext } : {}),
+          gallery_context: gallery,
           agent_presence: agentPresence,
           tenant_id: identity.tenantId,
         },
       });
-      const complete = { ...attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap), agent_presence: agentPresence, core_runtime: coreRuntime };
+      const complete = {
+        ...attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap),
+        operational_surface: "tenant_work_gallery",
+        gallery_version: gallery.schema_version,
+        tenant_work_gallery: gallery,
+        agent_presence: agentPresence,
+        core_runtime: coreRuntime,
+      };
       if (args.response_mode === "full") return textResult(complete);
       const compact = {
         ok: complete.ok !== false,
@@ -982,6 +1062,9 @@ export function createCoreHandlers(config, options = {}) {
         governance: complete.governance,
         core_runtime: coreRuntime,
         shared_memory_bootstrap: compactBootstrap(complete.shared_memory_bootstrap || complete.work_preflight?.shared_memory_bootstrap),
+        operational_surface: "tenant_work_gallery",
+        gallery_version: gallery.schema_version,
+        tenant_work_gallery: gallery,
         agent_presence: agentPresence,
         details_available: true,
         full_mode: "work_preflight.response_mode=full",
@@ -990,6 +1073,9 @@ export function createCoreHandlers(config, options = {}) {
         preflight_id: compact.work_preflight?.preflight_id,
         state: compact.work_preflight?.state,
         tenant_id: compact.tenant_id,
+        operational_surface: compact.operational_surface,
+        gallery_state: compact.tenant_work_gallery.state,
+        gallery_work_count: compact.tenant_work_gallery.work_count,
         shared_memory_bootstrap_loaded: compact.shared_memory_bootstrap?.loaded === true,
       });
     },
@@ -1550,8 +1636,18 @@ export function createCoreHandlers(config, options = {}) {
       body: { cases: args.cases, tenant_id: identity.tenantId },
     })),
     core_gate_action: async (args, identity) => {
-      const confirmed = hasExplicitVerifiedOwnerConfirmation(identity);
-      const confirmationReference = verifiedConfirmationReference(identity);
+      // This internal-only scope is set by the MCP server's continuity
+      // wrapper. It is stripped before transport and lets a fresh, bound
+      // OAuth tenant owner bootstrap only a persistent Work Identity. It
+      // cannot be supplied through the public tool schema.
+      const tenantWorkBootstrap =
+        args.internal_owner_assertion_scope === "tenant_work_bootstrap" &&
+        ["work.continuity.create", "work.continuity.start_or_resume"].includes(
+          String(args.action_type || ""),
+        );
+      const confirmationOptions = { allowOAuthTenantOwner: tenantWorkBootstrap };
+      const confirmed = hasExplicitVerifiedOwnerConfirmation(identity, confirmationOptions);
+      const confirmationReference = verifiedConfirmationReference(identity, confirmationOptions);
       const boundedInternalCoordination =
         args.operation_class === "bounded_internal_coordination_write";
       const sharedContext = await memoryContext({
@@ -1567,6 +1663,7 @@ export function createCoreHandlers(config, options = {}) {
         authenticated_tenant_id: _untrustedAuthenticatedTenantId,
         owner_context: _untrustedOwnerContext,
         memory_context: _untrustedMemoryContext,
+        internal_owner_assertion_scope: _internalOwnerAssertionScope,
         ...safeArgs
       } = args;
       const requestBody = sanitizeCoreBody({
@@ -1586,7 +1683,10 @@ export function createCoreHandlers(config, options = {}) {
           ...(!boundedInternalCoordination ? {
             owner_context: ownerContext(
               identity,
-              ownerRequestBinding("core_action_evaluator", requestBody),
+              {
+                requestBinding: ownerRequestBinding("core_action_evaluator", requestBody),
+                allowOAuthTenantOwner: tenantWorkBootstrap,
+              },
             ),
           } : {}),
         }
@@ -1626,6 +1726,9 @@ export function createCoreWriteGuard(config, options = {}) {
       "research.feedback",
     ]);
     const actionType = String(action.action_type || "").toLowerCase();
+    const tenantWorkBootstrap =
+      actionType === "work.continuity.create" ||
+      actionType === "work.continuity.start_or_resume";
     const operationClass = action.operation_class ||
       (autonomousInternalActionTypes.has(actionType)
         ? "bounded_internal_coordination_write"
@@ -1670,7 +1773,8 @@ export function createCoreWriteGuard(config, options = {}) {
       target_authority_verified: action.target_authority_verified === true,
       actor_authorized_for_target: action.actor_authorized_for_target === true,
       owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
-      ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {})
+      ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
+      ...(tenantWorkBootstrap ? { internal_owner_assertion_scope: "tenant_work_bootstrap" } : {}),
     }, identity);
     const payload = result.structuredContent || {};
     const authorization = payload.authorization || {};
