@@ -514,6 +514,10 @@ test("host-native MCP to Core reaches independently attested closure material wi
       agentSignatureSecret: "zero-provider-agent-presence-signing-secret",
       dttAgentIdentitySigningSecret:
         "zero-provider-assignment-and-closure-signing-secret",
+      godModeEnabled: true,
+      godModeCodexEnabled: true,
+      godModeTenantIds: ["owner-private"],
+      godModeEmergencyStop: false,
       openaiApiKey: poisonKey,
       openaiResearchEnabled: true,
     };
@@ -541,7 +545,13 @@ test("host-native MCP to Core reaches independently attested closure material wi
       work_continuity_start_or_resume: async (args, identity) =>
         textResult({
           ok: true,
-          result: await continuity.ensure(identity, args),
+          result: await continuity.ensure(identity, args, { creationAuthorized: true }),
+          dedicated_core_gate: {
+            authorized: true,
+            authority: "universal_core",
+            route: "/v1/action-evaluator",
+            server_owned: true,
+          },
         }),
       work_continuity_native_plan: async (args, identity) => {
         const intent = await continuity.readIntent(identity, { work_id: args.work_id });
@@ -714,6 +724,8 @@ test("host-native MCP to Core reaches independently attested closure material wi
         catalog_revision: catalogRevision,
         arguments: targetArguments,
         idempotency_key: idempotencyKey,
+        owner_confirmed: targetArguments.owner_confirmed === true,
+        confirmation_reference: targetArguments.confirmation_reference,
       },
       id,
     });
@@ -738,6 +750,8 @@ test("host-native MCP to Core reaches independently attested closure material wi
         },
         next_action: "Create the bounded native plan.",
         host_type: "codex_native",
+        owner_confirmed: true,
+        confirmation_reference: "bootstrap the isolated host-native work",
       },
       idempotencyKey: "invoke-start-zero-provider-0001",
       id: 3,
@@ -970,7 +984,9 @@ test("host-native MCP to Core reaches independently attested closure material wi
     const corePaths = routedCoreCalls.map((call) => call.path);
     assert(corePaths.includes("/v1/host-native/work-plans"));
     assert(corePaths.includes("/v1/host-native/release-intents"));
-    assert(corePaths.filter((route) => route === "/v1/action-evaluator").length >= 7);
+    // Bootstrap uses its server-owned dedicated Core gate; the remaining
+    // host-native capabilities continue to use the generic evaluator.
+    assert(corePaths.filter((route) => route === "/v1/action-evaluator").length >= 6);
     assert.equal(
       corePaths.some((route) => /providers\/openai|setup-links|multi-agent-runs/i.test(route)),
       false,

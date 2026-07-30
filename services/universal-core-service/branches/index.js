@@ -170,6 +170,16 @@ const CODEX_GUARD_BRANCHES = [
   "change_impact_orchestration",
 ];
 
+// A Nyra-owned team receives orchestration and identity context only. It does
+// not receive a standing grant to deploy, merge, access credentials or invoke
+// external tools.
+const NYRA_NATIVE_TEAM_BRANCHES = [
+  "agent_orchestration",
+  "ai_orchestration",
+  "agent_orchestration_guard",
+  "workload_identity_delegation_guard",
+];
+
 const MARKETING_INTELLIGENCE_BRANCHES = [
   "marketing_copy",
   "paid_ads_guard",
@@ -418,6 +428,7 @@ export const BRANCH_GROUPS = Object.freeze({
 export const BRANCH_PACKAGES = Object.freeze({
   starter: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES],
   base: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES],
+  nyra_native_team: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, ...NYRA_NATIVE_TEAM_BRANCHES],
   pro: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "email_recall_guard", "content_localization_guard", "translation_governance", "translator_marketing_governance", "ramo_testo", "consent_ledger_guard", "event_taxonomy_guard", "customer_360_guard"],
   silver: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "consent_ledger_guard", "event_taxonomy_guard"],
   gold: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "smartdesk_operations_guard", "beauty_protocol_guard", "customer_360_guard", "consent_ledger_guard"],

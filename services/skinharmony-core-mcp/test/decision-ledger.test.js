@@ -57,6 +57,24 @@ test("ledger classification distinguishes confirmation, hard block, outcome and 
   assert.equal(classifyLedgerEvent("any", null, new Error("failed")), "tool_failed");
 });
 
+test("ledger records an expiring support delegation without expanding its authority", async () => {
+  const pool = fakePool();
+  const ledger = createDecisionLedger({ databaseUrl: "postgres://unused" }, { pool });
+  await ledger.startWork({
+    tenantId: "client-a",
+    subject: "oauth|support",
+    kind: "oauth",
+    tenantSupportDelegationBound: true,
+    tenantSupportDelegationId: "support-case-42",
+    tenantSupportDelegationExpiresAt: "2030-01-01T00:00:00.000Z",
+  }, "tenant_work_gallery_list", {});
+  const eventInsert = pool.calls.find((call) => /INSERT INTO core_decision_events/.test(call.sql));
+  const metadata = JSON.parse(eventInsert.params[20]);
+  assert.equal(metadata.support_delegation_id, "support-case-42");
+  assert.equal(metadata.support_delegation_expires_at, "2030-01-01T00:00:00.000Z");
+  assert.equal(metadata.owner, undefined);
+});
+
 test("ledger reports are always filtered by authenticated tenant", async () => {
   const pool = fakePool();
   const ledger = createDecisionLedger({ databaseUrl: "postgres://unused" }, { pool });

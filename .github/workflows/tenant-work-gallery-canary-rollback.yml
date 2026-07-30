@@ -3,39 +3,61 @@ name: Tenant Work Gallery Canary Rollback
 on:
   push:
     branches:
-      - agent/tenant-work-gallery-20260729
-  workflow_dispatch:
-    inputs:
-      expected_commit:
-        description: Canary commit expected from both staging health endpoints
-        required: true
-        type: string
-      rollback_commit:
-        description: Direct parent commit to restore if validation fails
-        required: true
-        type: string
+      - agent/tenant-work-gallery-on-continuity
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: tenant-work-gallery-canary-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  validate-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate isolated canary references
+        shell: bash
+        run: |
+          set -euo pipefail
+          canary_ref="agent/tenant-work-gallery-on-continuity"
+          test "$(grep -c "branch: $canary_ref" render-tenant-work-gallery-staging.yaml)" -eq 2
+          grep -F "CANARY_REF: $canary_ref" .github/workflows/tenant-work-gallery-canary-rollback.yml
+          grep -Eq '^[[:space:]]*EXPECTED_SHA: \$\{\{ github\.sha \}\}$' .github/workflows/tenant-work-gallery-canary-rollback.yml
+          grep -F 'ROLLBACK_SHA: 569a8135a58e4ff0ad1b1ccf538fa0f6a5b6a9c1' .github/workflows/tenant-work-gallery-canary-rollback.yml
+          grep -F "skinharmony-core-mcp-twg-staging" render-tenant-work-gallery-staging.yaml
+          grep -F "skinharmony-universal-core-twg-staging" render-tenant-work-gallery-staging.yaml
+          grep -F 'MCP_SELF_SERVICE_TENANTS_ENABLED' render-tenant-work-gallery-staging.yaml
+          grep -F 'AUTH0_TENANT_MEMBERSHIPS_JSON' render-tenant-work-gallery-staging.yaml
+          ! grep -Eq 'https://skinharmony-(core-mcp|universal-core)\.onrender\.com|name: skinharmony-(core-mcp|universal-core)$' render-tenant-work-gallery-staging.yaml
+
   validate-or-rollback:
+    needs: validate-contract
+    if: >-
+      github.event_name == 'push' && !(github.actor == 'github-actions[bot]' && contains(github.event.head_commit.message, '[skip tenant-work-gallery-rollback]'))
+    permissions:
+      contents: write
     # A forward revert is also a push. Observe it without creating a rollback
     # loop, while retaining the workflow record for the incident timeline.
-    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[skip tenant-work-gallery-rollback]') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 65
     env:
       STAGING_MCP_HEALTH_URL: https://skinharmony-core-mcp-twg-staging.onrender.com/healthz
       STAGING_CORE_HEALTH_URL: https://skinharmony-universal-core-twg-staging.onrender.com/healthz
-      EXPECTED_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_commit || github.sha }}
-      ROLLBACK_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.rollback_commit || github.event.before }}
-      CANARY_REF: agent/tenant-work-gallery-20260729
+      EXPECTED_SHA: ${{ github.sha }}
+      # Change only after both isolated staging health endpoints attest the new baseline.
+      ROLLBACK_SHA: 569a8135a58e4ff0ad1b1ccf538fa0f6a5b6a9c1
+      CANARY_REF: agent/tenant-work-gallery-on-continuity
     steps:
+      - name: Require the candidate push on the canary ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/$CANARY_REF" ]]
+          [[ "$GITHUB_SHA" == "$EXPECTED_SHA" ]]
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -49,6 +71,14 @@ jobs:
 
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$ROLLBACK_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_SHA" == "$EXPECTED_SHA" ]]
+          git cat-file -e "${EXPECTED_SHA}^{commit}"
+          git cat-file -e "${ROLLBACK_SHA}^{commit}"
+          current_sha="$(git ls-remote origin "refs/heads/$CANARY_REF" | awk '{print $1}')"
+          [[ "$current_sha" == "$EXPECTED_SHA" ]]
+          git merge-base --is-ancestor "$ROLLBACK_SHA" "$EXPECTED_SHA"
+          [[ "$ROLLBACK_SHA" != "$EXPECTED_SHA" ]]
+          [[ -z "$(git rev-list --merges "$ROLLBACK_SHA..$EXPECTED_SHA")" ]]
 
           for attempt in {1..48}; do
             mcp_response="$(curl --fail --silent --show-error --max-time 10 "$STAGING_MCP_HEALTH_URL" || true)"
@@ -94,22 +124,64 @@ jobs:
           set -euo pipefail
 
           # Never overwrite a newer canary decision. The published candidate
-          # must be a single-parent commit directly above the known rollback
-          # point, which makes the forward revert deterministic and safe.
+          # must be a linear descendant of the known-good rollback point,
+          # which makes the forward revert deterministic and safe.
           current_sha="$(git ls-remote origin "refs/heads/$CANARY_REF" | awk '{print $1}')"
           if [[ "$current_sha" != "$EXPECTED_SHA" ]]; then
             echo "Canary ref advanced to $current_sha; automatic rollback is intentionally skipped." >&2
             exit 1
           fi
 
-          read -r published parent extra <<<"$(git show -s --format='%H %P' "$EXPECTED_SHA")"
-          if [[ "$published" != "$EXPECTED_SHA" || "$parent" != "$ROLLBACK_SHA" || -n "$extra" ]]; then
-            echo "Published canary does not satisfy the single-parent rollback contract." >&2
+          if ! git merge-base --is-ancestor "$ROLLBACK_SHA" "$EXPECTED_SHA" \
+            || [[ "$ROLLBACK_SHA" == "$EXPECTED_SHA" ]] \
+            || [[ -n "$(git rev-list --merges "$ROLLBACK_SHA..$EXPECTED_SHA")" ]]; then
+            echo "Published canary does not satisfy the linear rollback contract." >&2
             exit 1
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git revert --no-edit "$EXPECTED_SHA"
-          git commit --amend --message "revert: automatic Tenant Work Gallery canary rollback [skip tenant-work-gallery-rollback]"
+          git revert --no-commit "$ROLLBACK_SHA..$EXPECTED_SHA"
+          git diff --quiet "$ROLLBACK_SHA"
+          git commit --message "revert: automatic Tenant Work Gallery canary rollback [skip tenant-work-gallery-rollback]"
           git push origin "HEAD:refs/heads/$CANARY_REF"
+
+      - name: Confirm forward rollback reached isolated staging
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rollback_commit="$(git rev-parse HEAD)"
+          [[ "$rollback_commit" =~ ^[0-9a-f]{40}$ ]]
+
+          for attempt in {1..48}; do
+            mcp_response="$(curl --fail --silent --show-error --max-time 10 "$STAGING_MCP_HEALTH_URL" || true)"
+            core_response="$(curl --fail --silent --show-error --max-time 10 "$STAGING_CORE_HEALTH_URL" || true)"
+
+            if jq -e --arg expected "$rollback_commit" '
+              .ok == true
+              and .build.commit_sha == $expected
+              and .build.commit_verifiable == true
+              and .cloud_memory.backend == "postgres"
+              and .work_continuity.backend == "postgres"
+              and .work_continuity.tenant_isolated == true
+            ' <<<"$mcp_response" >/dev/null \
+              && jq -e --arg expected "$rollback_commit" '
+                .ok == true
+                and .build.commit_sha == $expected
+                and .build.commit_verifiable == true
+                and .governed_agent_queue_backend == "postgresql"
+                and .dynamic_task_tree.state_backend == "postgresql_cas_v1"
+                and .dynamic_task_tree.restart_durable == true
+              ' <<<"$core_response" >/dev/null; then
+              echo "Forward rollback reached durable isolated staging on $rollback_commit"
+              exit 0
+            fi
+
+            echo "Attempt $attempt/48: waiting for isolated rollback staging"
+            sleep 15
+          done
+
+          echo "Forward rollback was pushed but isolated staging did not attest it" >&2
+          exit 1

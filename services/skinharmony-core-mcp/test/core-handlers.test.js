@@ -614,19 +614,45 @@ test("maps the complete intelligence toolset to tenant-scoped Core routes", asyn
   assert.match(JSON.parse(calls[1].init.body).text, /Interpreta e spiega/);
 });
 
-test("adds automatic shared-memory bootstrap to a generic first work_preflight call", async () => {
+test("opens the tenant Gallery and shared memory on the first work_preflight call", async () => {
+  const calls = [];
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
     universalCoreKeys: { "codexai": "tenant-core-key" },
   }, {
-    fetchImpl: async () => new Response(JSON.stringify({
-      ok: true,
-      work_preflight: {
-        preflight_id: "preflight-bootstrap",
-        state: "completed_read_only",
-        governance: { execution_allowed_by_preflight: true },
-      },
-    }), { status: 200 }),
+    fetchImpl: async (url, init) => {
+      calls.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (new URL(url).pathname === "/v1/runtime/hierarchy/evaluate") {
+        return new Response(JSON.stringify({
+          ok: true,
+          result: {
+            mode: "shadow",
+            router: { route: "V1" },
+            selected_authority: "V1",
+            parity: { attempted: false, matched: null },
+            execution_allowed: false,
+          },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        work_preflight: {
+          preflight_id: "preflight-bootstrap",
+          state: "completed_read_only",
+          operational_surface: "tenant_work_gallery",
+          gallery_version: "tenant_work_gallery_v1",
+          tenant_work_gallery: {
+            schema_version: "tenant_work_gallery_v1",
+            tenant_id: "codexai",
+            available: true,
+            state: "ready",
+            work_count: 1,
+            works: [{ work_id: "11111111-1111-4111-8111-111111111111" }],
+          },
+          governance: { execution_allowed_by_preflight: true },
+        },
+      }), { status: 200 });
+    },
     sharedMemoryBootstrap: {
       load: async (identity) => ({
         loaded: true,
@@ -640,11 +666,35 @@ test("adds automatic shared-memory bootstrap to a generic first work_preflight c
         recent_artifacts: [],
       }),
     },
+    tenantWorkGallery: {
+      load: async (identity) => ({
+        schema_version: "tenant_work_gallery_v1",
+        tenant_id: identity.tenantId,
+        filters: { status: "active" },
+        works: [{
+          work_id: "11111111-1111-4111-8111-111111111111",
+          project_id: "gallery",
+          status: "active",
+          current_version: 4,
+          next_action: "run canary",
+          active_participants: 2,
+          active_leases: 1,
+          active_branches: 3,
+        }],
+      }),
+    },
   });
   const result = await handlers.work_preflight({ request: "Dimmi lo stato corrente", agent_id: "codex-bootstrap", client_type: "codex", session_id: "session-bootstrap" }, { tenantId: "codexai" });
   assert.equal(result.structuredContent.shared_memory_bootstrap.loaded, true);
   assert.equal(result.structuredContent.shared_memory_bootstrap.tenant_id, "codexai");
   assert.equal(result.structuredContent.work_preflight.shared_memory_bootstrap.loaded, true);
+  assert.equal(result.structuredContent.operational_surface, "tenant_work_gallery");
+  assert.equal(result.structuredContent.gallery_version, "tenant_work_gallery_v1");
+  assert.equal(result.structuredContent.tenant_work_gallery.state, "ready");
+  assert.equal(result.structuredContent.tenant_work_gallery.work_count, 1);
+  const preflightCall = calls.find((call) => new URL(call.url).pathname === "/v1/work/preflight");
+  assert.equal(preflightCall.body.gallery_context.tenant_id, "codexai");
+  assert.equal(preflightCall.body.gallery_context.works[0].next_action, "run canary");
 });
 
 test("binds host-native delegation and action routes to OAuth owner and server presence", async () => {
@@ -1163,4 +1213,59 @@ test("write guard fails closed on hard blocks and allows controlled writes", asy
   assert.equal(calls[2].operation_class, "billable_external_read");
   assert.equal(calls[2].external_side_effect, true);
   assert.equal(calls[2].rollback_ready, false);
+});
+
+test("write guard gives a fresh OAuth tenant owner a request-bound continuity bootstrap assertion only", async () => {
+  const calls = [];
+  const guard = createCoreWriteGuard({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({
+        authorization: {
+          allowed: true,
+          state: "authorized_after_confirmation",
+          mediation: "confirmed",
+          confirmation_required: true,
+          confirmation_satisfied: true,
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const identity = {
+    tenantId: "tenant-a",
+    kind: "oauth",
+    subject: "auth0|bound-tenant-owner",
+    role: "tenant_owner",
+    oauthOwnerElevated: true,
+    ownerConfirmed: true,
+    confirmationReference: "create the first client Work Identity",
+  };
+  const result = await guard({
+    action_label: "Create persistent Work Identity",
+    action_type: "work.continuity.create",
+    target: "client-project",
+    operation_class: "owner_confirmed_governed_action",
+    external_side_effect: false,
+    destructive: false,
+    bounded_scope: true,
+    low_impact: false,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  }, identity);
+  assert.equal(result.allowed, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].owner_confirmed, true);
+  assert.equal(calls[0].confirmation_reference, identity.confirmationReference);
+  assert.equal(calls[0].owner_context.owner_verified, true);
+  assert.equal(calls[0].owner_context.role, "tenant_owner");
+  assert.match(calls[0].owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
+  assert.equal("internal_owner_assertion_scope" in calls[0], false);
 });

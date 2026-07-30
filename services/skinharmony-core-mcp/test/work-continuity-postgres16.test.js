@@ -141,7 +141,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       next_action: "Index the bounded change cone.",
       host_type: "codex_native",
     };
-    const firstWork = await runtime.ensure(coordinator, initial);
+    const firstWork = await runtime.ensure(coordinator, initial, { creationAuthorized: true });
     const tables = await pool.query(`SELECT
       to_regclass('public.core_continuity_works') AS works,
       to_regclass('public.core_continuity_intent_anchors') AS anchors,
@@ -167,7 +167,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       session_id: secondSession,
       initial_message: "Continue the second indexed native work.",
       idea: "Cross-work Atlas provenance",
-    });
+    }, { creationAuthorized: true });
     const atlasInput = (workId, idempotencyKey, summarySuffix) => runtime.upsertAtlas(coordinator, {
       work_id: workId,
       nodes: [

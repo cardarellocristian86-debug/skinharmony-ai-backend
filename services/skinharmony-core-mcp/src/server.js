@@ -14,8 +14,12 @@ import {
   coreJoinIdempotencyKey,
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
+import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
+import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
 import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
 import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
+import { NYRA_NATIVE_TEAM_TOOLS } from "./nyra-native-team-tools.js";
+import { NYRA_AUTOPILOT_TOOLS } from "./nyra-autopilot-tools.js";
 import { HOST_NATIVE_TOOLS } from "./host-native-tools.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
@@ -34,6 +38,8 @@ const hostNativeContinuityTools = new Set([
 TOOLS.push(...WORK_CONTINUITY_TOOLS.filter((tool) =>
   config.hostNativeAgentProtocolEnabled === true ||
   !hostNativeContinuityTools.has(tool.name)));
+TOOLS.push(...NYRA_NATIVE_TEAM_TOOLS);
+TOOLS.push(...NYRA_AUTOPILOT_TOOLS);
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...HOST_NATIVE_TOOLS);
 
 const primaryDatabasePool = config.databaseUrl
@@ -54,6 +60,13 @@ const decisionLedger = createDecisionLedger(config, {
 });
 const workContinuityRuntime = createWorkContinuityRuntime(config, {
   pool: primaryDatabasePool,
+});
+const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
+  pool: primaryDatabasePool,
+});
+const nyraAutopilotRuntime = createNyraAutopilotRuntime(config, {
+  pool: primaryDatabasePool,
+  teamRuntime: nyraNativeTeamRuntime,
 });
 const startupReadiness = {
   continuityInitialized: false,
@@ -92,12 +105,29 @@ if (config.decisionLedgerRequired === true && decisionLedger) {
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
-const collaborationHandlers = (config.agentWorkspaceRoot || config.collaborationDatabaseUrl)
+const collaborationRuntime = (config.agentWorkspaceRoot || config.collaborationDatabaseUrl)
   ? createCollaborationHandlers(config, { govern })
   : {};
+const {
+  registerAuthenticatedPresence,
+  ...collaborationHandlers
+} = collaborationRuntime;
+if (config.mandatoryAgentPresenceEnabled === true && typeof registerAuthenticatedPresence !== "function") {
+  throw new Error("mandatory_agent_presence_registry_unavailable");
+}
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
+  tenantWorkGallery: workContinuityRuntime ? {
+    load: async (identity, input = {}) => {
+      requireTenantWorkCapability(identity, "read");
+      return workContinuityRuntime.gallery(identity, {
+        project_id: input.project_id,
+        status: "active",
+        limit: 20,
+      });
+    },
+  } : null,
 });
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
@@ -255,43 +285,55 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       "Use a bounded Core authorization for every external release action.",
       "Verify expected live commit and health before final closure when deployment is in scope.",
     ];
-  const continuity = await workContinuityRuntime.ensure(identity, {
-    ...(args.work_id ? { work_id: args.work_id } : {}),
-    ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
-    project_id: continuityProjectId(args),
-    session_id: sessionId,
-    initial_message: initialMessage,
-    idea: String(args.idea || initialMessage).slice(0, 8_000),
-    objective: String(args.objective || initialMessage).slice(0, 8_000),
-    acceptance_criteria: acceptanceCriteria,
-    constraints: [
-      ...(Array.isArray(args.constraints) ? args.constraints : []),
-      "Use ChatGPT/Codex host-native agents; do not require a provider API key.",
-      "Nyra supervises; Universal Core remains final policy authority.",
-      "Host sandbox, approval and auto-review policy cannot be bypassed.",
-    ],
-    architecture: {
-      schema_version: "governed_continuity_bootstrap_v1",
+  let continuity;
+  try {
+    continuity = await workContinuityRuntime.ensure(identity, {
+      ...(args.work_id ? { work_id: args.work_id } : {}),
+      ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
       project_id: continuityProjectId(args),
-      source_tool: toolName,
+      session_id: sessionId,
+      initial_message: initialMessage,
+      idea: String(args.idea || initialMessage).slice(0, 8_000),
+      objective: String(args.objective || initialMessage).slice(0, 8_000),
+      acceptance_criteria: acceptanceCriteria,
+      constraints: [
+        ...(Array.isArray(args.constraints) ? args.constraints : []),
+        "Use ChatGPT/Codex host-native agents; do not require a provider API key.",
+        "Nyra supervises; Universal Core remains final policy authority.",
+        "Host sandbox, approval and auto-review policy cannot be bypassed.",
+      ],
+      architecture: {
+        schema_version: "governed_continuity_bootstrap_v1",
+        project_id: continuityProjectId(args),
+        source_tool: toolName,
+        host_type: host,
+        provider_execution: false,
+        provider_api_key_required: false,
+        host_policy_override: false,
+        compact_mcp_surface_size: 13,
+      },
+      next_action: `Continue ${toolName} through Nyra supervision and the Universal Core gate.`,
       host_type: host,
-      provider_execution: false,
-      provider_api_key_required: false,
-      host_policy_override: false,
-      compact_mcp_surface_size: 13,
-    },
-    next_action: `Continue ${toolName} through Nyra supervision and the Universal Core gate.`,
-    host_type: host,
-    client_type: identity.agentPresence?.client_type || args.client_type,
-    agent_id: identity.agentPresence?.agent_id || args.agent_id || "connected_ai",
-    resume_existing: resumeExisting,
-  }, {
-    // Generic follow-up tool calls belong to the already anchored request and
-    // must not reinterpret each tool's short command as a replacement intent.
-    // The explicit start/resume capability does not receive this trust bit and
-    // must present an intent digest equal to the immutable anchor.
-    trustedSessionFollowup: resumeExisting,
-  });
+      client_type: identity.agentPresence?.client_type || args.client_type,
+      agent_id: identity.agentPresence?.agent_id || args.agent_id || "connected_ai",
+      resume_existing: resumeExisting,
+    }, {
+      // Generic preflight may resume an anchored work, but it never creates
+      // one. Bootstrap is an explicit, fresh owner-governed action.
+      trustedSessionFollowup: resumeExisting,
+      creationAuthorized: false,
+    });
+  } catch (error) {
+    if (error?.code !== "continuity_creation_owner_confirmation_required") throw error;
+    continuity = {
+      tenant_id: identity.tenantId,
+      project_id: continuityProjectId(args),
+      work_id: null,
+      state: "owner_bootstrap_required",
+      owner_governance_required: true,
+      next_action: "Use work_continuity_create with a fresh, request-bound owner confirmation.",
+    };
+  }
   attachContinuity(preflightResult, continuity);
   return continuity;
 }
@@ -308,6 +350,28 @@ function continuityMethod(method) {
     ok: true,
     result: await workContinuityRuntime[method](identity, args),
   });
+}
+
+async function reconcileNyraAutopilot(identity, work, triggerType) {
+  if (!nyraAutopilotRuntime || !work?.work_id) return null;
+  try {
+    return await nyraAutopilotRuntime.reconcile(identity, {
+      work_id: work.work_id,
+      project_id: work.project_id,
+      trigger_type: triggerType,
+    });
+  } catch (error) {
+    // Work Continuity is authoritative: a temporary Autopilot outage must
+    // never make the already-persisted Work look as if it failed. The owner
+    // recovery tool can reconcile this same Work later.
+    return {
+      work_id: work.work_id,
+      status: "deferred",
+      retryable: true,
+      code: String(error?.message || "nyra_autopilot_unavailable").slice(0, 160),
+      execution_authorized: false,
+    };
+  }
 }
 
 const baseHandlers = {
@@ -330,11 +394,19 @@ const baseHandlers = {
     work_continuity_create: async (args, identity) => {
       await requireOwnerGovernance(identity, "work.continuity.create", args.project_id);
       const payload = { ok: true, result: await workContinuityRuntime.create(identity, args) };
+      payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_created");
+      payload.dedicated_core_gate = {
+        authorized: true,
+        authority: "universal_core",
+        route: "/v1/action-evaluator",
+        server_owned: true,
+      };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_record_change: async (args, identity) => {
       await requireOwnerGovernance(identity, "work.continuity.record_change", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.recordChange(identity, args) };
+      payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_changed");
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_checkpoint: async (args, identity) => {
@@ -361,6 +433,7 @@ const baseHandlers = {
       const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
         gate.structuredContent?.result?.authorization || {};
       const payload = { ok: true, result: await workContinuityRuntime.resume(identity, args, authorization) };
+      payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_verify_memory: async (args, identity) => {
@@ -413,7 +486,20 @@ const baseHandlers = {
       const payload = { ok: true, result: await workContinuityRuntime.inbox(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
-    work_continuity_start_or_resume: continuityMethod("ensure"),
+    work_continuity_start_or_resume: async (args, identity) => {
+      requireTenantWorkCapability(identity, "read");
+      await requireOwnerGovernance(identity, "work.continuity.start_or_resume", args.project_id);
+      return continuityTextResult({
+        ok: true,
+        result: await workContinuityRuntime.ensure(identity, args, { creationAuthorized: true }),
+        dedicated_core_gate: {
+          authorized: true,
+          authority: "universal_core",
+          route: "/v1/action-evaluator",
+          server_owned: true,
+        },
+      });
+    },
     work_continuity_intent_read: continuityMethod("readIntent"),
     work_continuity_work_catalog: continuityMethod("listWorks"),
     work_continuity_native_plan: async (args, identity) => {
@@ -534,6 +620,75 @@ const baseHandlers = {
     work_continuity_incident_verify: continuityMethod("verifyIncident"),
     work_continuity_incident_resolve: continuityMethod("resolveIncident"),
   } : {}),
+  ...(nyraNativeTeamRuntime ? {
+    nyra_native_team_blueprints: async (_args, identity) => continuityTextResult({
+      ok: true,
+      tenant_id: identity.tenantId,
+      result: nyraNativeTeamRuntime.blueprintCatalog(),
+    }),
+    nyra_native_team_status: async (args, identity) => {
+      const status = await nyraNativeTeamRuntime.status(identity);
+      const team = args.work_id ? await nyraNativeTeamRuntime.read(identity, args) : null;
+      return continuityTextResult({ ok: true, tenant_id: identity.tenantId, status, ...(team ? { team } : {}) });
+    },
+    nyra_native_team_enable: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.native_team.enable", "nyra_native_team");
+      return continuityTextResult({
+        ok: true,
+        result: await nyraNativeTeamRuntime.enable(identity, args),
+        execution_authorized: false,
+      });
+    },
+    nyra_native_team_bootstrap: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.native_team.bootstrap", args.work_id);
+      return continuityTextResult({
+        ok: true,
+        result: await nyraNativeTeamRuntime.bootstrap(identity, args),
+        execution_authorized: false,
+      });
+    },
+  } : {}),
+  ...(nyraAutopilotRuntime ? {
+    nyra_autopilot_status: async (_args, identity) => continuityTextResult({
+      ok: true,
+      result: await nyraAutopilotRuntime.status(identity),
+    }),
+    nyra_autopilot_work_read: async (args, identity) => continuityTextResult({
+      ok: true,
+      result: await nyraAutopilotRuntime.readWork(identity, args),
+    }),
+    nyra_autopilot_enable: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.autopilot.enable", "nyra_autopilot");
+      return continuityTextResult({
+        ok: true,
+        result: await nyraAutopilotRuntime.enable(identity, args),
+        execution_authorized: false,
+      });
+    },
+    nyra_autopilot_reconcile: async (args, identity) => {
+      await requireOwnerGovernance(identity, "nyra.autopilot.reconcile", args.work_id);
+      return continuityTextResult({
+        ok: true,
+        result: await nyraAutopilotRuntime.reconcile(identity, {
+          ...args,
+          trigger_type: "reconcile",
+        }),
+        execution_authorized: false,
+      });
+    },
+    nyra_work_assignment_inbox: async (args, identity) => {
+      requireTenantWorkIdentity(identity);
+      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.inbox(identity, args) });
+    },
+    nyra_work_assignment_claim: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "nyra.assignment.claim", args.work_id);
+      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.claim(identity, args) });
+    },
+    nyra_work_assignment_submit: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "nyra.assignment.submit", args.work_id);
+      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.submit(identity, args) });
+    },
+  } : {}),
 };
 
 function internalCoordinationActionType(toolName) {
@@ -623,6 +778,14 @@ const app = createApp(config, {
   readiness: startupReadiness,
   postgresMajorVersionProbe,
   beforeToolCall: async ({ identity, toolName, args }) => {
+    if (config.mandatoryAgentPresenceEnabled === true && toolName !== "agent_heartbeat") {
+      try {
+        await registerAuthenticatedPresence(identity);
+      } catch (error) {
+        if (!error?.code || error.code === "core_gate_denied") error.code = "agent_presence_registration_failed";
+        throw error;
+      }
+    }
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
     try {
       if (!requiresGenericWorkPreflight(toolName)) return { preflight: null, ledgerContext };

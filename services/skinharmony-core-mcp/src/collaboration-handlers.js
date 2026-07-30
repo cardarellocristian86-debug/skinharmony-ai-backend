@@ -242,7 +242,7 @@ export function createCollaborationHandlers(config, options = {}) {
     });
   }
 
-  return {
+  const handlers = {
     workspace_list: async ({ prefix = "" }, identity) => {
       const state = readState(root, identity.tenantId);
       const normalizedPrefix = prefix ? logicalPath(prefix, { folder: true }) : "";
@@ -538,6 +538,26 @@ export function createCollaborationHandlers(config, options = {}) {
         return { message_id: message.id, acknowledged_by: agentId, acknowledged_by_signature: registeredAgent.signature };
       });
     }
+  };
+  // Every functional Nyra/Core request receives a server-derived identity.
+  // This private hook persists that exact signed session before any work or
+  // tenant data is read. It accepts no display name, capability or actor data
+  // from a tool payload, so registration cannot be used for privilege gain.
+  return {
+    ...handlers,
+    registerAuthenticatedPresence: async (identity) => {
+      const bound = identity?.agentPresence || {};
+      if (!bound.agent_id || !bound.client_type || !bound.session_id || !bound.signature || !bound.session_fingerprint) {
+        fail("agent_presence_registration_required");
+      }
+      return handlers.agent_heartbeat({
+        agent_id: bound.agent_id,
+        client_type: bound.client_type,
+        session_id: bound.session_id,
+        display_name: "",
+        capabilities: [],
+      }, identity);
+    },
   };
 }
 
