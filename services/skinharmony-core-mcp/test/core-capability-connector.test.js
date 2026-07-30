@@ -5,6 +5,7 @@ import { CORE_CONNECTOR_CAPABILITIES, readCoreCapabilityCatalog } from "../src/c
 import { createCoreHandlers } from "../src/core-handlers.js";
 import { TOOLS } from "../src/tool-definitions.js";
 import { mountAiLearningFactoryRoutes } from "../../universal-core-service/src/aiLearningFactoryRoutes.js";
+import { createResourceVisibilityBinding } from "../../universal-core-service/src/resourceVisibility.js";
 
 function ownerIdentity(overrides = {}) {
   return {
@@ -43,6 +44,17 @@ function aiLearningRouteBridge() {
     post(path, ...handlers) { routes.push({ method: "POST", path, handlers }); },
   };
   const storeCalls = [];
+  const visibility = (branchId) => createResourceVisibilityBinding({
+    tenant_id: "tenant-a",
+    branch_ids: [branchId],
+    origin_context: {
+      tenant_id: "tenant-a",
+      client_type: "codex",
+      audience: "codex_internal",
+      entitlements: [],
+    },
+    created_at: "2026-07-27T12:00:00.000Z",
+  });
   const learningStore = {
     async readEvaluationScorecard(input) {
       storeCalls.push({ method: "readEvaluationScorecard", input });
@@ -78,11 +90,28 @@ function aiLearningRouteBridge() {
     },
     async readLearningCandidate(input) {
       storeCalls.push({ method: "readLearningCandidate", input });
-      return { candidate_id: input.record_id, status: "under_review" };
+      return {
+        candidate_id: input.record_id,
+        candidate_version: "v1",
+        candidate_type: "dataset",
+        revision: 1,
+        status: "under_review",
+        evidence_digest: "evidence-v016",
+        dataset_id: "dataset-v1",
+        dataset_version: "v1",
+        scorecard_id: "scorecard-v016",
+        experiment_id: "experiment-v016",
+        rollback_reference: "rollback-v016",
+        resource_visibility: visibility("learning_data_governance"),
+      };
     },
     async listLearningCandidates(input) {
       storeCalls.push({ method: "listLearningCandidates", input });
-      return [{ candidate_id: "candidate-v016", status: "under_review" }];
+      return [{
+        candidate_id: "candidate-v016",
+        status: "under_review",
+        resource_visibility: visibility("learning_data_governance"),
+      }];
     },
     async reviewLearningCandidate(input) {
       storeCalls.push({ method: "reviewLearningCandidate", input });
@@ -103,11 +132,19 @@ function aiLearningRouteBridge() {
   const telemetryStore = {
     async read(input) {
       storeCalls.push({ method: "telemetry.read", input });
-      return { run_id: input.run_id, trace_id: "trace-v016" };
+      return {
+        run_id: input.run_id,
+        trace_id: "trace-v016",
+        resource_visibility: visibility("ai_evaluation_intelligence"),
+      };
     },
     async list(input) {
       storeCalls.push({ method: "telemetry.list", input });
-      return [{ run_id: "run-v016", trace_id: "trace-v016" }];
+      return [{
+        run_id: "run-v016",
+        trace_id: "trace-v016",
+        resource_visibility: visibility("ai_evaluation_intelligence"),
+      }];
     },
   };
   mountAiLearningFactoryRoutes({
@@ -128,6 +165,34 @@ function aiLearningRouteBridge() {
     },
     resolveRequestContext() {
       return { clientType: "codex", audience: "codex_internal" };
+    },
+    issueReviewBinding(input) {
+      storeCalls.push({ method: "issueReviewBinding", input });
+      const bindingDigest = `sha256:${"d".repeat(64)}`;
+      return {
+        schema_version: "ai_learning_review_binding_receipt_v0_16",
+        tenant_id: input.tenant_id,
+        candidate_id: input.candidate.candidate_id,
+        candidate_version: input.candidate.candidate_version,
+        source_revision: input.expected_revision,
+        resulting_revision: input.expected_revision + 1,
+        decision: input.decision,
+        issued_at: "2026-07-27T12:00:00.000Z",
+        expires_at: "2026-07-27T12:05:00.000Z",
+        nonce: `airn_${"a".repeat(32)}`,
+        binding_digest: bindingDigest,
+        evidence_snapshot_digest: `sha256:${"e".repeat(64)}`,
+        signature: `airr_${"f".repeat(64)}`,
+        binding: {
+          payload: {
+            schema_version: "ai_learning_candidate_review_binding_v0_16",
+            source_revision: input.expected_revision,
+            resulting_revision: input.expected_revision + 1,
+          },
+          binding_content: "{\"schema_version\":\"ai_learning_candidate_review_binding_v0_16\"}",
+          binding_digest: bindingDigest,
+        },
+      };
     },
   });
 
@@ -287,13 +352,14 @@ test("AI learning factory capabilities stay dynamic, tenant-bound and governed",
     "ai_performance_scorecard_read",
     "ai_experiment_read",
     "ai_learning_candidate_read",
+    "ai_learning_review_binding_preview",
     "ai_learning_candidate_review",
     "ai_learning_outcome_record",
   ];
   const definitions = ids.map((id) => TOOLS.find((tool) => tool.name === id));
   assert(definitions.every(Boolean));
-  assert(definitions.slice(0, 6).every((tool) => tool.annotations.readOnlyHint === true));
-  assert(definitions.slice(6).every((tool) =>
+  assert(definitions.slice(0, 7).every((tool) => tool.annotations.readOnlyHint === true));
+  assert(definitions.slice(7).every((tool) =>
     tool.annotations.readOnlyHint === false &&
     tool._meta["skinharmony/ownerConfirmationRequired"] === true &&
     tool.inputSchema.properties.idempotency_key,
@@ -303,6 +369,11 @@ test("AI learning factory capabilities stay dynamic, tenant-bound and governed",
   const reader = { tenantId: "tenant-a" };
   await handlers.ai_eval_scorecard_read({ release_version: "0.16.0", limit: 5 }, reader);
   await handlers.ai_learning_candidate_read({ state: "review_required" }, reader);
+  await handlers.ai_learning_review_binding_preview({
+    candidate_id: "candidate_one",
+    decision: "approved_for_shadow",
+    expected_revision: 1,
+  }, reader);
   const owner = ownerIdentity();
   await handlers.ai_learning_candidate_review({
     candidate_id: "candidate_one",
@@ -318,6 +389,8 @@ test("AI learning factory capabilities stay dynamic, tenant-bound and governed",
       outcome_id: "outcome_one",
       run_id: "run_one",
       candidate_id: "candidate_one",
+      candidate_version: "v1",
+      candidate_revision: 1,
       outcome_status: "abstained",
       outcome_verified: true,
       human_review_status: "approved",
@@ -335,13 +408,14 @@ test("AI learning factory capabilities stay dynamic, tenant-bound and governed",
   assert.deepEqual(calls.map((call) => call.url.pathname), [
     "/v1/ai-learning/eval/scorecards",
     "/v1/ai-learning/candidates",
+    "/v1/ai-learning/review-bindings/preview",
     "/v1/ai-learning/candidates/review",
     "/v1/ai-learning/outcomes",
   ]);
   assert.equal(calls[0].url.searchParams.get("release_version"), "0.16.0");
   assert.equal(calls[0].url.searchParams.get("limit"), "5");
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
-  assert(calls.slice(2).every((call) => call.body.owner_context?.owner_verified === true));
+  assert(calls.slice(3).every((call) => call.body.owner_context?.owner_verified === true));
   assert.equal(TOOLS.filter((tool) => [
     "core_health",
     "work_preflight",
@@ -359,7 +433,7 @@ test("AI learning factory capabilities stay dynamic, tenant-bound and governed",
   ].includes(tool.name)).length, 13);
 });
 
-test("all eight MCP learning handlers satisfy the mounted Core route contracts end to end", async () => {
+test("all nine MCP learning handlers satisfy the mounted Core route contracts end to end", async () => {
   const { handlers, storeCalls } = aiLearningRouteBridge();
   const reader = { tenantId: "tenant-a" };
 
@@ -399,6 +473,11 @@ test("all eight MCP learning handlers satisfy the mounted Core route contracts e
     limit: 8,
     cursor: "offset:0",
   }, reader);
+  await handlers.ai_learning_review_binding_preview({
+    candidate_id: "candidate-v016",
+    decision: "approved_for_shadow",
+    expected_revision: 1,
+  }, reader);
 
   const owner = ownerIdentity();
   await handlers.ai_learning_candidate_review({
@@ -415,6 +494,8 @@ test("all eight MCP learning handlers satisfy the mounted Core route contracts e
       outcome_id: "outcome-v016",
       run_id: "run-v016",
       candidate_id: "candidate-v016",
+      candidate_version: "v1",
+      candidate_revision: 1,
       outcome_status: "succeeded",
       outcome_verified: true,
       human_review_status: "approved",
@@ -436,15 +517,35 @@ test("all eight MCP learning handlers satisfy the mounted Core route contracts e
     "readPerformanceScorecard",
     "readCausalExperiment",
     "readLearningCandidate",
+    "readLearningCandidate",
+    "readDatasetMetadata",
+    "readEvaluationScorecard",
+    "readCausalExperiment",
+    "issueReviewBinding",
     "reviewLearningCandidate",
+    "telemetry.read",
+    "readLearningCandidate",
     "recordLearningOutcome",
   ]);
-  assert.deepEqual(storeCalls[0].input, { tenant_id: "tenant-a", record_id: "scorecard-v016" });
-  assert.deepEqual(storeCalls[3].input, { tenant_id: "tenant-a", record_id: "performance-v016" });
-  assert.equal(storeCalls[6].input.decision, "deferred");
-  assert.equal(storeCalls[6].input.expected_revision, 1);
-  assert.equal(storeCalls[6].input.authorization.audit_reference, "audit-route-bridge");
-  assert.equal(storeCalls[7].input.record.run_id, "run-v016");
-  assert.equal(storeCalls[7].input.record.learning_value, 0.9);
-  assert.equal(storeCalls[7].input.expected_revision, 0);
+  assert.equal(storeCalls[0].input.tenant_id, "tenant-a");
+  assert.equal(storeCalls[0].input.record_id, "scorecard-v016");
+  assert.deepEqual(storeCalls[0].input.visibility_context, {
+    tenant_id: "tenant-a",
+    client_type: "codex",
+    audience: "codex_internal",
+    entitlements: [],
+    role: "",
+  });
+  assert.equal(storeCalls[3].input.tenant_id, "tenant-a");
+  assert.equal(storeCalls[3].input.record_id, "performance-v016");
+  assert.equal(storeCalls[11].input.decision, "deferred");
+  assert.equal(storeCalls[11].input.expected_revision, 1);
+  assert.equal(storeCalls[11].input.authorization.audit_reference, "audit-route-bridge");
+  assert.equal(storeCalls[14].input.record.run_id, "run-v016");
+  assert.equal(storeCalls[14].input.record.learning_value, 0.9);
+  assert.equal(storeCalls[14].input.expected_revision, 0);
+  assert.deepEqual(storeCalls[14].input.visibility_branch_ids, [
+    "ai_evaluation_intelligence",
+    "learning_data_governance",
+  ]);
 });

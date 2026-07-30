@@ -148,6 +148,29 @@ export function createFileDynamicTaskTreeJoinVerdictStore({ root, now = () => ne
       });
     },
 
+    revoke({ tenant_id, tree_id, verdict_reference, reason }) {
+      const tenantId = requireText(tenant_id, "tenant_id", 120);
+      const treeId = requireText(tree_id, "tree_id", 160);
+      const reference = requireText(verdict_reference, "verdict_reference", 200);
+      const relevant = events().filter((event) =>
+        event.tenant_id === tenantId
+        && event.tree_id === treeId
+        && event.verdict_reference === reference);
+      const issued = relevant.some((event) => event.event_type === "issued");
+      const consumed = relevant.some((event) =>
+        event.event_type === "consumed");
+      const terminalRevocation = relevant.some((event) =>
+        ["voided", "revoked"].includes(event.event_type));
+      if (!issued || !consumed || terminalRevocation) return null;
+      return append("revoked", {
+        tenant_id: tenantId,
+        tree_id: treeId,
+        verdict_reference: reference,
+        reason: requireText(reason, "revoke_reason", 500),
+        execution_authorized: false,
+      });
+    },
+
     read({ tenant_id, tree_id }) {
       const tenantId = requireText(tenant_id, "tenant_id", 120);
       const treeId = requireText(tree_id, "tree_id", 160);
@@ -367,6 +390,38 @@ export function createPostgresDynamicTaskTreeJoinVerdictStore({
           tree_id: treeId,
           verdict_reference: reference,
           reason: requireText(reason, "void_reason", 500),
+          execution_authorized: false,
+        });
+      });
+    },
+
+    async revoke({ tenant_id, tree_id, verdict_reference, reason }) {
+      const tenantId = requireText(tenant_id, "tenant_id", 120);
+      const treeId = requireText(tree_id, "tree_id", 160);
+      const reference = requireText(verdict_reference, "verdict_reference", 200);
+      return inTransaction(async (client) => {
+        const current = await lockedEvents(client, tenantId, treeId);
+        const relevant = current.filter((event) =>
+          event.verdict_reference === reference);
+        const issued = relevant.some((event) => event.event_type === "issued");
+        const consumed = relevant.some((event) =>
+          event.event_type === "consumed");
+        const terminalRevocation = relevant.some((event) =>
+          ["voided", "revoked"].includes(event.event_type));
+        if (!issued || !consumed || terminalRevocation) return null;
+        const finalized = await client.query(
+          `UPDATE dynamic_task_tree_join_verdicts
+           SET status='revoked',finalized_at=$4
+           WHERE tenant_id=$1 AND tree_id=$2 AND verdict_reference=$3
+             AND status='consumed'`,
+          [tenantId, treeId, reference, now()],
+        );
+        if (finalized.rowCount !== 1) return null;
+        return appendEvent(client, current, "revoked", {
+          tenant_id: tenantId,
+          tree_id: treeId,
+          verdict_reference: reference,
+          reason: requireText(reason, "revoke_reason", 500),
           execution_authorized: false,
         });
       });

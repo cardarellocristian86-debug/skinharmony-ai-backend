@@ -17,6 +17,14 @@ const COLLECTION_ID_FIELDS = Object.freeze({
   performance_scorecards: "performance_scorecard_id",
   learning_outcomes: "outcome_id",
 });
+const COLLECTION_FILTER_FIELDS = Object.freeze({
+  evaluation_scorecards: Object.freeze(["release_version"]),
+  dataset_metadata: Object.freeze(["dataset_version"]),
+  causal_experiments: Object.freeze(["status"]),
+  learning_candidates: Object.freeze(["status"]),
+  performance_scorecards: Object.freeze(["release_version"]),
+  learning_outcomes: Object.freeze([]),
+});
 
 function requiredText(value, field, max = 4_000) {
   const normalized = String(value ?? "").trim();
@@ -60,6 +68,60 @@ function revision(value, field = "expected_revision") {
 
 function boundedLimit(value) {
   return Math.max(1, Math.min(500, Number(value) || 100));
+}
+
+function boundedOffset(value) {
+  const normalized = Number(value) || 0;
+  if (
+    !Number.isSafeInteger(normalized)
+    || normalized < 0
+    || normalized > 1_000_000
+  ) throw new Error("cursor_invalid");
+  return normalized;
+}
+
+function listFilterClause(collection, filters = {}, parameters = []) {
+  const source = filters && typeof filters === "object" && !Array.isArray(filters)
+    ? filters
+    : {};
+  const allowed = new Set(COLLECTION_FILTER_FIELDS[collection] || []);
+  const clauses = [];
+  for (const [field, rawValue] of Object.entries(source)) {
+    if (!allowed.has(field)) throw new Error("learning_factory_filter_invalid");
+    const value = recordId(rawValue, field);
+    parameters.push(value);
+    clauses.push(`record ->> '${field}' = $${parameters.length}`);
+  }
+  return clauses.length ? ` AND ${clauses.join(" AND ")}` : "";
+}
+
+function telemetryFilterClause(filters = {}, parameters = []) {
+  const source = filters && typeof filters === "object" && !Array.isArray(filters)
+    ? filters
+    : {};
+  const clauses = [];
+  for (const [field, rawValue] of Object.entries(source)) {
+    if (field !== "trace_id") throw new Error("telemetry_filter_invalid");
+    const value = recordId(rawValue, field);
+    parameters.push(value);
+    clauses.push(`record ->> 'trace_id' = $${parameters.length}`);
+  }
+  return clauses.length ? ` AND ${clauses.join(" AND ")}` : "";
+}
+
+function visibilityContext(value = {}) {
+  const tenant = tenantId(value.tenant_id || value.tenantId);
+  const clientType = requiredText(
+    value.client_type || value.clientType,
+    "resource_visibility_client_type",
+    80,
+  );
+  const audience = requiredText(value.audience, "resource_visibility_audience", 160);
+  const entitlements = Array.isArray(value.entitlements)
+    ? [...new Set(value.entitlements.map((item) =>
+        requiredText(item, "resource_visibility_entitlement", 240)))].sort()
+    : [];
+  return { tenant_id: tenant, client_type: clientType, audience, entitlements };
 }
 
 function canonical(value) {
@@ -299,6 +361,50 @@ export function createAiLearningFactoryPostgresPersistence({
       return storedRecord(result.rows[0]);
     },
 
+    async loadIdempotent({
+      tenant_id,
+      collection,
+      record_id,
+      idempotency_key,
+      request_digest,
+    } = {}) {
+      await ready();
+      const tenant = tenantId(tenant_id);
+      const collectionName = collectionId(collection);
+      const id = recordId(record_id);
+      const idempotencyKey = requiredText(
+        idempotency_key,
+        "idempotency_key",
+        240,
+      );
+      const requestDigest = requiredText(
+        request_digest,
+        "request_digest",
+        80,
+      );
+      if (!/^sha256:[a-f0-9]{64}$/.test(requestDigest)) {
+        throw new Error("request_digest_invalid");
+      }
+      const idempotencyDigest = digest({
+        tenant,
+        collection: collectionName,
+        idempotency_key: idempotencyKey,
+      });
+      const result = await runtimeQuery(
+        `SELECT request_digest,record_id,result_record
+         FROM ${databaseSchema}.idempotency_receipt
+         WHERE tenant_id=$1 AND operation=$2 AND idempotency_digest=$3`,
+        [tenant, collectionName, idempotencyDigest],
+      );
+      const receipt = result.rows[0];
+      if (!receipt) return null;
+      if (
+        receipt.request_digest !== requestDigest
+        || receipt.record_id !== id
+      ) throw new Error("learning_factory_idempotency_conflict");
+      return storedRecord({ record: receipt.result_record });
+    },
+
     async save({
       tenant_id,
       collection,
@@ -529,16 +635,92 @@ export function createAiLearningFactoryPostgresPersistence({
       });
     },
 
-    async list({ tenant_id, collection, limit = 100 } = {}) {
+    async list({
+      tenant_id,
+      collection,
+      limit = 100,
+      offset = 0,
+      filters = {},
+    } = {}) {
       await ready();
       const tenant = tenantId(tenant_id);
       const collectionName = collectionId(collection);
+      const parameters = [tenant, collectionName];
+      const filterClause = listFilterClause(collectionName, filters, parameters);
+      parameters.push(boundedLimit(limit), boundedOffset(offset));
       const result = await runtimeQuery(
         `SELECT record FROM ${databaseSchema}.learning_record
          WHERE tenant_id=$1 AND collection=$2
+         ${filterClause}
          ORDER BY updated_at DESC,record_id ASC
-         LIMIT $3`,
-        [tenant, collectionName, boundedLimit(limit)],
+         LIMIT $${parameters.length - 1}
+         OFFSET $${parameters.length}`,
+        parameters,
+      );
+      return result.rows.map(storedRecord);
+    },
+
+    async listForVisibility({
+      tenant_id,
+      collection,
+      visibility_context,
+      limit = 100,
+      offset = 0,
+      filters = {},
+    } = {}) {
+      await ready();
+      const tenant = tenantId(tenant_id);
+      const collectionName = collectionId(collection);
+      const context = visibilityContext({
+        ...visibility_context,
+        tenant_id: tenant,
+      });
+      if (context.client_type === "admin" && context.audience === "admin_control_room") {
+        const parameters = [tenant, collectionName];
+        const filterClause = listFilterClause(collectionName, filters, parameters);
+        parameters.push(boundedLimit(limit), boundedOffset(offset));
+        const adminResult = await runtimeQuery(
+          `SELECT record FROM ${databaseSchema}.learning_record
+           WHERE tenant_id=$1 AND collection=$2
+           ${filterClause}
+           ORDER BY updated_at DESC,record_id ASC
+           LIMIT $${parameters.length - 1}
+           OFFSET $${parameters.length}`,
+          parameters,
+        );
+        return adminResult.rows.map(storedRecord);
+      }
+      const parameters = [
+        tenant,
+        collectionName,
+        context.client_type,
+        context.audience,
+        JSON.stringify(context.entitlements),
+      ];
+      const filterClause = listFilterClause(collectionName, filters, parameters);
+      parameters.push(boundedLimit(limit), boundedOffset(offset));
+      const result = await runtimeQuery(
+        `SELECT record FROM ${databaseSchema}.learning_record
+         WHERE tenant_id=$1
+           AND collection=$2
+           AND record #>> '{resource_visibility,schema_version}' = 'resource_visibility_v1'
+           AND record #>> '{resource_visibility,tenant_id}' = $1
+           AND (record #> '{resource_visibility,allowed_client_types}') ? $3
+           AND (record #> '{resource_visibility,allowed_audiences}') ? $4
+           AND COALESCE(record #> '{resource_visibility,required_entitlements}','[]'::jsonb)
+             <@ $5::jsonb
+           AND (
+             $3 <> 'chatgpt'
+             OR (
+               record #>> '{resource_visibility,exposure_class}' = 'chatgpt_horizontal'
+               AND record #>> '{resource_visibility,domain_pack_id}' = 'generic'
+             )
+           )
+         ${filterClause}
+         ORDER BY updated_at DESC,record_id ASC
+         LIMIT $${parameters.length - 1}
+         OFFSET $${parameters.length}`,
+        parameters,
       );
       return result.rows.map(storedRecord);
     },
@@ -594,15 +776,86 @@ export function createAiLearningFactoryPostgresPersistence({
       return storedRecord(existing.rows[0]);
     },
 
-    async list({ tenant_id, limit = 100 } = {}) {
+    async list({
+      tenant_id,
+      limit = 100,
+      offset = 0,
+      filters = {},
+    } = {}) {
       await ready();
       const tenant = tenantId(tenant_id);
+      const parameters = [tenant];
+      const filterClause = telemetryFilterClause(filters, parameters);
+      parameters.push(boundedLimit(limit), boundedOffset(offset));
       const result = await runtimeQuery(
         `SELECT record FROM ${databaseSchema}.runtime_telemetry
          WHERE tenant_id=$1
+         ${filterClause}
          ORDER BY recorded_at DESC,run_id ASC
-         LIMIT $2`,
-        [tenant, boundedLimit(limit)],
+         LIMIT $${parameters.length - 1}
+         OFFSET $${parameters.length}`,
+        parameters,
+      );
+      return result.rows.map(storedRecord);
+    },
+
+    async listForVisibility({
+      tenant_id,
+      visibility_context,
+      limit = 100,
+      offset = 0,
+      filters = {},
+    } = {}) {
+      await ready();
+      const tenant = tenantId(tenant_id);
+      const context = visibilityContext({
+        ...visibility_context,
+        tenant_id: tenant,
+      });
+      if (context.client_type === "admin" && context.audience === "admin_control_room") {
+        const parameters = [tenant];
+        const filterClause = telemetryFilterClause(filters, parameters);
+        parameters.push(boundedLimit(limit), boundedOffset(offset));
+        const adminResult = await runtimeQuery(
+          `SELECT record FROM ${databaseSchema}.runtime_telemetry
+           WHERE tenant_id=$1
+           ${filterClause}
+           ORDER BY recorded_at DESC,run_id ASC
+           LIMIT $${parameters.length - 1}
+           OFFSET $${parameters.length}`,
+          parameters,
+        );
+        return adminResult.rows.map(storedRecord);
+      }
+      const parameters = [
+        tenant,
+        context.client_type,
+        context.audience,
+        JSON.stringify(context.entitlements),
+      ];
+      const filterClause = telemetryFilterClause(filters, parameters);
+      parameters.push(boundedLimit(limit), boundedOffset(offset));
+      const result = await runtimeQuery(
+        `SELECT record FROM ${databaseSchema}.runtime_telemetry
+         WHERE tenant_id=$1
+           AND record #>> '{resource_visibility,schema_version}' = 'resource_visibility_v1'
+           AND record #>> '{resource_visibility,tenant_id}' = $1
+           AND (record #> '{resource_visibility,allowed_client_types}') ? $2
+           AND (record #> '{resource_visibility,allowed_audiences}') ? $3
+           AND COALESCE(record #> '{resource_visibility,required_entitlements}','[]'::jsonb)
+             <@ $4::jsonb
+           AND (
+             $2 <> 'chatgpt'
+             OR (
+               record #>> '{resource_visibility,exposure_class}' = 'chatgpt_horizontal'
+               AND record #>> '{resource_visibility,domain_pack_id}' = 'generic'
+             )
+           )
+         ${filterClause}
+         ORDER BY recorded_at DESC,run_id ASC
+         LIMIT $${parameters.length - 1}
+         OFFSET $${parameters.length}`,
+        parameters,
       );
       return result.rows.map(storedRecord);
     },

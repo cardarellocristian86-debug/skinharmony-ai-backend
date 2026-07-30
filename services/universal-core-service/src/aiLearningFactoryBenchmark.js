@@ -112,7 +112,7 @@ function toolSelectionCases() {
         intent: `resolve dynamic capability ${capability}`,
         core_govern: !mutating || ordinal % 2 === 1,
         owner_confirmed: !mutating || ordinal % 2 === 1,
-        idempotency_key: mutating ? `idem-${ordinal}` : null,
+        idempotency_key: mutating ? `idem-case-${ordinal}` : null,
       },
       {
         decision: mutating && ordinal % 2 === 0 ? "block" : "select",

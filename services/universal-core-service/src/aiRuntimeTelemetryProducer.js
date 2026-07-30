@@ -216,6 +216,7 @@ export function createAiRuntimeTelemetryProducer({ store } = {}) {
         tenant_id: telemetry.tenant_id,
         idempotency_key: `telemetry:${telemetry.run_id}:core-join`,
         telemetry,
+        visibility_context: input.trustedContext,
       });
     },
   });

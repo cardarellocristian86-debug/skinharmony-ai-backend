@@ -143,6 +143,13 @@ import { mountAiLearningFactoryRoutes } from "./aiLearningFactoryRoutes.js";
 import { createAiRuntimeTelemetryStore } from "./aiRuntimeTelemetry.js";
 import { createAiRuntimeTelemetryProducer } from "./aiRuntimeTelemetryProducer.js";
 import {
+  createAiLearningCoreApprovalAttestationService,
+  createAiLearningOutcomeEvidenceVerifier,
+  createAiLearningReviewBindingReceiptService,
+  verifyAiLearningCoreApprovalStatus,
+  verifyAiLearningDttBinding,
+} from "./aiLearningEvidenceVerifier.js";
+import {
   AI_LEARNING_FACTORY_RUNTIME_ROLE,
   createAiLearningFactoryPostgresPersistence,
 } from "./aiLearningFactoryPostgres.js";
@@ -243,6 +250,7 @@ function ownerContextCanonical(context) {
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
     owner_subject_fingerprint: context.owner_subject_fingerprint,
+    owner_actor_provenance: context.owner_actor_provenance,
     issued_at: context.issued_at,
     binding_version: context.binding_version,
     binding_hash: context.binding_hash,
@@ -1306,12 +1314,11 @@ function composeMandatoryWorkPreflight(req, {
   const resolvedBranchContext = visible ? {
     ...mergedBranchContext,
     selected_branches: (mergedBranchContext.selected_branches || []).filter((branchId) => visible.has(branchId)),
-    denied_branches: [
-      ...new Set([
-        ...(mergedBranchContext.denied_branches || []),
-        ...(mergedBranchContext.selected_branches || []).filter((branchId) => !visible.has(branchId)),
-      ]),
-    ],
+    // Hidden server-known ids are omitted rather than reflected as denied.
+    // Call sites may add only exact identifiers supplied by the caller.
+    denied_branches: [...new Set(
+      (mergedBranchContext.denied_branches || []).filter((branchId) => visible.has(branchId)),
+    )],
   } : mergedBranchContext;
   const requestedNyraBranches = [
     ...MANDATORY_NYRA_WORK_BRANCHES,
@@ -3698,7 +3705,7 @@ export function createUniversalCoreService(options = {}) {
         selected_branches: resolution.selected_branches.filter((branchId) => visibleBranchIds.includes(branchId)),
         // Server-known hidden branches must never be enumerated as "denied";
         // only caller-requested unavailable ids may be returned.
-        denied_branches: [...new Set(resolution.denied_branches)],
+        denied_branches: [],
         hidden_branch_count: resolution.allowed_branches.length - visibleBranchIds.length,
       },
       complete_registry: completeRegistry,
@@ -3788,16 +3795,96 @@ export function createUniversalCoreService(options = {}) {
         allowUnattestedRuntimeWrites: options.allowUnattestedAiLearningRuntimeWrites === true,
       })
       : null);
-  const aiLearningStore = options.aiLearningFactoryStore || createAiLearningFactoryStore({
-    adapter: aiLearningFactoryPersistence?.learningAdapter || null,
-    verifyOutcomeEvidence: options.verifyAiLearningOutcomeEvidence,
-  });
   const aiLearningTelemetryStore = options.aiRuntimeTelemetryStore || createAiRuntimeTelemetryStore({
     adapter: aiLearningFactoryPersistence?.telemetryAdapter || null,
     verifyProviderUsage: options.verifyAiRuntimeProviderUsage,
     verifyEstimatedUsage: options.verifyAiRuntimeEstimatedUsage,
     verifyQualityEvidence: options.verifyAiRuntimeQualityEvidence,
   });
+  const aiLearningReviewBindingReceiptService = options.aiLearningReviewBindingReceiptService
+    || createAiLearningReviewBindingReceiptService({
+      secret: ownerContextSigningSecret,
+    });
+  const aiLearningCoreApprovalAttestationService =
+    options.aiLearningCoreApprovalAttestationService
+    || createAiLearningCoreApprovalAttestationService({
+      secret: ownerContextSigningSecret,
+    });
+  let aiLearningStore;
+  const aiLearningOutcomeEvidenceVerifier = createAiLearningOutcomeEvidenceVerifier({
+    telemetryStore: aiLearningTelemetryStore,
+    resolveLearningCandidate: async ({ tenant_id, candidate_id }) => (
+      aiLearningStore?.readLearningCandidate({
+        tenant_id,
+        record_id: candidate_id,
+      }) || null
+    ),
+    resolveLearningCandidateEvidence: async ({ tenant_id, candidate }) => {
+      const [dataset, scorecard, experiment] = await Promise.all([
+        aiLearningStore?.readDatasetMetadata({
+          tenant_id,
+          record_id: candidate.dataset_id,
+        }),
+        aiLearningStore?.readEvaluationScorecard({
+          tenant_id,
+          record_id: candidate.scorecard_id,
+        }),
+        aiLearningStore?.readCausalExperiment({
+          tenant_id,
+          record_id: candidate.experiment_id,
+        }),
+      ]);
+      return { dataset, scorecard, experiment };
+    },
+    verifyCandidateReviewBindingReceipt: (input) => (
+      aiLearningReviewBindingReceiptService.verify(input)
+    ),
+    verifyCandidateCoreApproval: async ({
+      tenant_id,
+      candidate,
+      review,
+      binding_verification,
+    }) => {
+      const approval = aiLearningCoreApprovalAttestationService.verify({
+        attestation: review?.core_approval_attestation,
+        tenant_id,
+        candidate,
+        binding_verification,
+        owner_actor_provenance: review?.owner_actor_provenance,
+      });
+      if (approval?.verified !== true) return approval;
+      const status = await verifyAiLearningCoreApprovalStatus({
+        tenant_id,
+        approval,
+        joinVerdictStore: dynamicTaskTreeJoinVerdictStore,
+        verificationTrustStore: dttVerificationTrustStore,
+      });
+      return Object.freeze({
+        ...approval,
+        verified: status?.verified === true,
+      });
+    },
+    verifyReviewAttestation: (input) => verifyAiLearningDttBinding({
+      ...input,
+      dynamicTaskTreeRuntime,
+      receiptService: dttAgentIdentityReceiptService,
+      verificationTrustStore: dttVerificationTrustStore,
+      joinVerdictStore: dynamicTaskTreeJoinVerdictStore,
+    }),
+  });
+  aiLearningStore = options.aiLearningFactoryStore || createAiLearningFactoryStore({
+    adapter: aiLearningFactoryPersistence?.learningAdapter || null,
+    verifyOutcomeEvidence: options.verifyAiLearningOutcomeEvidence
+      || aiLearningOutcomeEvidenceVerifier.verify,
+  });
+  if (
+    options.aiLearningFactoryStore
+    && typeof aiLearningStore.configureOutcomeEvidenceVerifier === "function"
+  ) {
+    aiLearningStore.configureOutcomeEvidenceVerifier(
+      options.verifyAiLearningOutcomeEvidence || aiLearningOutcomeEvidenceVerifier.verify,
+    );
+  }
   const aiRuntimeTelemetryProducer = options.aiRuntimeTelemetryProducer
     || createAiRuntimeTelemetryProducer({ store: aiLearningTelemetryStore });
   const requestedAgenticEfficiencyMode = String(
@@ -3987,6 +4074,12 @@ export function createUniversalCoreService(options = {}) {
       ownerRequestBinding(purpose, req.body || {}),
     );
     if (!requestBoundOwner) throw new Error("owner_confirmation_required");
+    const ownerActorProvenance = String(
+      req.body?.owner_context?.owner_actor_provenance || "",
+    ).trim();
+    if (!/^ap_[a-f0-9]{32}$/.test(ownerActorProvenance)) {
+      throw new Error("owner_actor_provenance_required");
+    }
 
     const targetId = purpose === "ai_learning_candidate_review"
       ? String(req.body?.candidate_id || "").trim()
@@ -4056,7 +4149,9 @@ export function createUniversalCoreService(options = {}) {
       state: authorization.state,
       autonomous_execution_allowed: false,
     });
-    const expectedIndependentReviewBinding = digestAgenticArtifact({
+    let candidateForReview = null;
+    let candidateReviewBindingVerification = null;
+    let expectedIndependentReviewBinding = digestAgenticArtifact({
       tenant_id: req.tenantId,
       target_id: targetId,
       expected_revision: expectedRevision,
@@ -4064,18 +4159,75 @@ export function createUniversalCoreService(options = {}) {
         ? String(req.body?.decision || "")
         : "record_outcome",
     });
-    const independentReview = (
+    if (
       purpose === "ai_learning_candidate_review"
-      && typeof options.verifyIndependentAiLearningReview === "function"
-    )
-      ? await options.verifyIndependentAiLearningReview({
-        req,
+      && req.body?.decision === "approved_for_shadow"
+    ) {
+      candidateForReview = await aiLearningStore.readLearningCandidate({
         tenant_id: req.tenantId,
-        target_id: targetId,
-        expected_revision: expectedRevision,
-        expected_binding_digest: expectedIndependentReviewBinding,
-      })
-      : null;
+        record_id: targetId,
+      });
+      if (candidateForReview) {
+        const [dataset, scorecard, experiment] = await Promise.all([
+          aiLearningStore.readDatasetMetadata({
+            tenant_id: req.tenantId,
+            record_id: candidateForReview.dataset_id,
+          }),
+          aiLearningStore.readEvaluationScorecard({
+            tenant_id: req.tenantId,
+            record_id: candidateForReview.scorecard_id,
+          }),
+          aiLearningStore.readCausalExperiment({
+            tenant_id: req.tenantId,
+            record_id: candidateForReview.experiment_id,
+          }),
+        ]);
+        candidateReviewBindingVerification = aiLearningReviewBindingReceiptService.verify({
+          receipt: req.body?.review_binding_receipt,
+          tenant_id: req.tenantId,
+          candidate: candidateForReview,
+          expected_revision: expectedRevision,
+          decision: req.body.decision,
+          dataset,
+          scorecard,
+          experiment,
+        });
+        if (candidateReviewBindingVerification?.verified !== true) {
+          throw new Error("ai_learning_review_binding_receipt_invalid");
+        }
+        expectedIndependentReviewBinding = candidateReviewBindingVerification
+          .binding.binding_digest;
+      }
+    }
+    let independentReview = null;
+    if (purpose === "ai_learning_candidate_review") {
+      try {
+        independentReview = typeof options.verifyIndependentAiLearningReview === "function"
+          ? await options.verifyIndependentAiLearningReview({
+            req,
+            tenant_id: req.tenantId,
+            target_id: targetId,
+            expected_revision: expectedRevision,
+            expected_binding_digest: expectedIndependentReviewBinding,
+          })
+          : candidateForReview
+            ? await verifyAiLearningDttBinding({
+              tenant_id: req.tenantId,
+              binding: candidateReviewBindingVerification.binding,
+              review_attestation: req.body?.review_attestation,
+              owner_actor_ids: [
+                ownerActorProvenance,
+              ],
+              dynamicTaskTreeRuntime,
+              receiptService: dttAgentIdentityReceiptService,
+              verificationTrustStore: dttVerificationTrustStore,
+              joinVerdictStore: dynamicTaskTreeJoinVerdictStore,
+            })
+            : null;
+      } catch {
+        independentReview = null;
+      }
+    }
     const independentReviewVerified = Boolean(
       independentReview?.verified === true
       && independentReview?.binding_digest === expectedIndependentReviewBinding
@@ -4086,6 +4238,17 @@ export function createUniversalCoreService(options = {}) {
       && Number.isFinite(Date.parse(String(independentReview?.reviewed_at || "")))
       && Date.parse(String(independentReview?.review_expires_at || "")) > Date.now()
     );
+    const coreApprovalAttestation = independentReviewVerified
+      && candidateForReview
+      && candidateReviewBindingVerification
+      ? aiLearningCoreApprovalAttestationService.issue({
+          tenant_id: req.tenantId,
+          candidate: candidateForReview,
+          binding_verification: candidateReviewBindingVerification,
+          independent_review: independentReview,
+          owner_actor_provenance: ownerActorProvenance,
+        })
+      : null;
     return {
       core_verdict: "ALLOW",
       owner_confirmed: true,
@@ -4098,13 +4261,32 @@ export function createUniversalCoreService(options = {}) {
       ...(purpose === "ai_learning_candidate_review" ? {
         human_owner_review_verified: true,
         independent_human_review_verified: independentReviewVerified,
+        review_owner_actor_ids: [
+          ownerActorProvenance,
+        ].filter(Boolean),
         ...(independentReviewVerified ? {
           reviewer_reference: String(independentReview.reviewer_reference).trim(),
           reviewed_at: new Date(independentReview.reviewed_at).toISOString(),
           review_expires_at: new Date(independentReview.review_expires_at).toISOString(),
           independent_review_receipt_digest: independentReview.receipt_digest,
+          independent_review_binding_digest: independentReview.binding_digest,
+          review_tree_id: independentReview.review_tree_id,
+          review_node_id: independentReview.review_node_id,
+          review_binding_receipt: candidateReviewBindingVerification.receipt,
+          review_binding_payload: candidateReviewBindingVerification.binding.payload,
+          review_source_revision: candidateReviewBindingVerification
+            .binding.payload.source_revision,
+          review_resulting_revision: candidateReviewBindingVerification
+            .binding.payload.resulting_revision,
+          review_evidence_snapshot_digest: candidateReviewBindingVerification
+            .receipt.evidence_snapshot_digest,
+          core_approval_attestation: coreApprovalAttestation,
         } : {}),
-      } : {}),
+      } : {
+        review_owner_actor_ids: [
+          ownerActorProvenance,
+        ].filter(Boolean),
+      }),
     };
   }
 
@@ -4622,6 +4804,7 @@ export function createUniversalCoreService(options = {}) {
       audit,
       resolveGovernanceProof: resolveAiLearningGovernanceProof,
       resolveRequestContext: resolveAgenticRequestContext,
+      issueReviewBinding: (input) => aiLearningReviewBindingReceiptService.issue(input),
       persistenceRequired: aiLearningPersistenceRequired,
       resolvePersistenceReadiness: () => aiLearningFactoryPersistence?.readiness?.() || {
         persistence_read_ready: false,
@@ -5673,6 +5856,77 @@ export function createUniversalCoreService(options = {}) {
     if (!record) return publicError(res, 404, "key_not_found");
     return res.json({ ok: true, key: record });
   });
+
+  app.post(
+    "/v1/admin/ai-learning/core-approvals/revoke",
+    requireAdmin,
+    async (req, res) => {
+      try {
+        const tenantId = String(req.body?.tenant_id || "").trim();
+        const treeId = String(req.body?.tree_id || "").trim();
+        const verdictReference = String(
+          req.body?.verdict_reference || "",
+        ).trim();
+        const reason = String(req.body?.reason || "").trim().slice(0, 500);
+        const confirmationReference = String(
+          req.body?.confirmation_reference || "",
+        ).trim().slice(0, 240);
+        if (
+          req.body?.owner_confirmed !== true
+          || !/^[a-z0-9][a-z0-9._-]{0,119}$/i.test(tenantId)
+          || !/^[a-z0-9][a-z0-9._:@/-]{0,159}$/i.test(treeId)
+          || !/^dttv_[a-f0-9]{64}$/.test(verdictReference)
+          || !reason
+          || !confirmationReference
+          || /\b(?:password|passwd|secret|api[_ -]?key|token)\s*[:=]/i.test(
+            `${reason}\n${confirmationReference}`,
+          )
+        ) throw new Error("ai_learning_core_approval_revocation_invalid");
+        const existing = await dynamicTaskTreeJoinVerdictStore.read({
+          tenant_id: tenantId,
+          tree_id: treeId,
+        });
+        const replay = existing.find((event) =>
+          event?.event_type === "revoked"
+          && event.verdict_reference === verdictReference);
+        const revoked = replay || await dynamicTaskTreeJoinVerdictStore.revoke({
+          tenant_id: tenantId,
+          tree_id: treeId,
+          verdict_reference: verdictReference,
+          reason,
+        });
+        if (!revoked) {
+          throw new Error("ai_learning_core_approval_not_revocable");
+        }
+        const event = audit.append("ai_learning_core_approval_revoked", {
+          tenant_id: tenantId,
+          tree_id: treeId,
+          verdict_reference: verdictReference,
+          confirmation_reference: confirmationReference,
+          replayed: Boolean(replay),
+          execution_authorized: false,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: tenantId,
+          tree_id: treeId,
+          verdict_reference: verdictReference,
+          revoked_at: revoked.created_at,
+          replayed: Boolean(replay),
+          audit_reference: `audit:${event.audit_id}`,
+          execution_authorized: false,
+        });
+      } catch (error) {
+        const code = error.message
+          || "ai_learning_core_approval_revocation_failed";
+        return publicError(
+          res,
+          code === "ai_learning_core_approval_not_revocable" ? 409 : 400,
+          code,
+        );
+      }
+    },
+  );
 
   app.post("/v1/setup-token/create", requireAdmin, (req, res) => {
     try {

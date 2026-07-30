@@ -75,6 +75,7 @@ function ownerContextCanonical(context) {
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
     owner_subject_fingerprint: context.owner_subject_fingerprint,
+    owner_actor_provenance: context.owner_actor_provenance,
     issued_at: context.issued_at,
     binding_version: context.binding_version,
     binding_hash: context.binding_hash,
@@ -465,6 +466,7 @@ export function createCoreHandlers(config, options = {}) {
       role: isVerifiedOwnerRoot(identity) ? "owner_root" : "tenant_owner",
       delegated_actor: identity.kind || "unknown",
       owner_verified: true,
+      owner_actor_provenance: identity.agentPresence?.actor_provenance,
       issued_at: new Date().toISOString(),
       ...(requestBinding === undefined ? {} : {
         binding_version: "owner_request_binding_v1",
@@ -1144,6 +1146,21 @@ export function createCoreHandlers(config, options = {}) {
       identity,
       ["candidate_id", "state", "limit", "cursor"],
     ),
+    ai_learning_review_binding_preview: async (args, identity) => textResult(await coreRequest(
+      "/v1/ai-learning/review-bindings/preview",
+      identity.tenantId,
+      {
+        method: "POST",
+        identity,
+        body: args.outcome
+          ? { outcome: args.outcome }
+          : {
+              candidate_id: args.candidate_id,
+              decision: args.decision,
+              expected_revision: args.expected_revision,
+            },
+      },
+    )),
     ai_learning_candidate_review: async (args, identity) => aiLearningWrite(
       "/v1/ai-learning/candidates/review",
       "ai_learning_candidate_review",

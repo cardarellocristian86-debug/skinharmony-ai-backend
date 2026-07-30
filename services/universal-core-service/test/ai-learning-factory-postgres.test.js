@@ -130,12 +130,24 @@ class FakePostgres {
       return { rows: row ? [{ record: row.record }] : [] };
     }
 
-    if (normalized.includes("SELECT record FROM ai_learning_governance.learning_record WHERE tenant_id=$1 AND collection=$2 ORDER BY")) {
-      const [tenant, collection, limit] = values;
+    if (
+      normalized.includes("SELECT record FROM ai_learning_governance.learning_record WHERE tenant_id=$1")
+      && normalized.includes("collection=$2")
+      && !normalized.includes("record_id=$3")
+    ) {
+      const [tenant, collection] = values;
+      const limit = values.at(-2);
+      const offset = values.at(-1);
+      const filters = [...normalized.matchAll(/record ->> '([^']+)' = \$(\d+)/g)]
+        .map((match) => [match[1], values[Number(match[2]) - 1]]);
       return {
         rows: [...this.learning.values()]
           .filter((row) => row.tenant_id === tenant && row.collection === collection)
-          .slice(0, limit)
+          .filter((row) => filters.every(([field, value]) => row.record[field] === value))
+          .sort((left, right) =>
+            right.updated_at.localeCompare(left.updated_at)
+            || left.record_id.localeCompare(right.record_id))
+          .slice(offset, offset + limit)
           .map((row) => ({ record: row.record })),
       };
     }
@@ -160,12 +172,23 @@ class FakePostgres {
       return { rows: row ? [{ record: row.record }] : [] };
     }
 
-    if (normalized.includes("SELECT record FROM ai_learning_governance.runtime_telemetry WHERE tenant_id=$1 ORDER BY")) {
-      const [tenant, limit] = values;
+    if (
+      normalized.includes("SELECT record FROM ai_learning_governance.runtime_telemetry WHERE tenant_id=$1")
+      && !normalized.includes("run_id=$2")
+    ) {
+      const [tenant] = values;
+      const limit = values.at(-2);
+      const offset = values.at(-1);
+      const filters = [...normalized.matchAll(/record ->> '([^']+)' = \$(\d+)/g)]
+        .map((match) => [match[1], values[Number(match[2]) - 1]]);
       return {
         rows: [...this.telemetry.entries()]
           .filter(([key]) => key.startsWith(`${tenant}:`))
-          .slice(0, limit)
+          .filter(([, row]) => filters.every(([field, value]) => row.record[field] === value))
+          .sort(([, left], [, right]) =>
+            right.record.recorded_at.localeCompare(left.record.recorded_at)
+            || left.record.run_id.localeCompare(right.record.run_id))
+          .slice(offset, offset + limit)
           .map(([, row]) => ({ record: row.record })),
       };
     }
@@ -399,4 +422,108 @@ test("durable idempotency survives a store restart and rejects a mismatched repl
     /learning_factory_idempotency_conflict/,
   );
   assert.equal(database.idempotency.size, 1);
+});
+
+test("bounded persistent pagination reaches records beyond 500 with filters applied before offset", async () => {
+  const database = new FakePostgres();
+  const persistence = createAiLearningFactoryPostgresPersistence({
+    pool: database,
+    runtimeRole: "ai_learning_runtime",
+    now: () => new Date("2026-07-27T10:00:00.000Z"),
+  });
+  const writer = createAiLearningFactoryStore({
+    adapter: persistence.learningAdapter,
+    now: () => "2026-07-27T10:00:00.000Z",
+  });
+  for (let index = 0; index < 620; index += 1) {
+    const suffix = String(index).padStart(4, "0");
+    await writer.recordEvaluationScorecard({
+      tenant_id: "tenant-a",
+      record: scorecardInput({
+        scorecard_id: `scorecard-${suffix}`,
+        release_version: index < 610 ? "0.16.0" : "other-release",
+      }),
+      idempotency_key: `scorecard-page-${suffix}`,
+      expected_revision: 0,
+    });
+  }
+
+  const restarted = createAiLearningFactoryStore({
+    adapter: persistence.learningAdapter,
+    now: () => "2026-07-27T10:05:00.000Z",
+  });
+  const seen = [];
+  let offset = 0;
+  let pageCount = 0;
+  do {
+    const page = await restarted.listEvaluationScorecards({
+      tenant_id: "tenant-a",
+      limit: 100,
+      offset,
+      filters: { release_version: "0.16.0" },
+      page: true,
+      visibility_context: {
+        tenant_id: "tenant-a",
+        client_type: "chatgpt",
+        audience: "chatgpt_connector",
+        entitlements: [],
+      },
+    });
+    seen.push(...page.records.map((record) => record.scorecard_id));
+    pageCount += 1;
+    offset = page.next_offset;
+  } while (offset !== null);
+
+  assert.equal(pageCount, 7);
+  assert.equal(seen.length, 610);
+  assert.equal(new Set(seen).size, 610);
+  assert(seen.includes("scorecard-0609"));
+  assert(!seen.includes("scorecard-0610"));
+  const listQueries = database.queries.filter((query) =>
+    query.sql.includes("SELECT record FROM ai_learning_governance.learning_record")
+    && query.sql.includes("ORDER BY updated_at DESC,record_id ASC"));
+  assert(listQueries.length >= 7);
+  assert(listQueries.every((query) =>
+    query.sql.includes("record ->> 'release_version'")
+    && query.sql.includes("LIMIT $")
+    && query.sql.includes("OFFSET $")));
+});
+
+test("telemetry adapter applies trace filtering and stable offset pagination", async () => {
+  const database = new FakePostgres();
+  for (let index = 0; index < 620; index += 1) {
+    const suffix = String(index).padStart(4, "0");
+    database.telemetry.set(`tenant-a:run-${suffix}`, {
+      record: {
+        ...telemetry(),
+        run_id: `run-${suffix}`,
+        trace_id: index < 605 ? "trace-shared" : "trace-other",
+      },
+      record_digest: `sha256:${suffix}`,
+    });
+  }
+  const persistence = createAiLearningFactoryPostgresPersistence({
+    pool: database,
+    runtimeRole: "ai_learning_runtime",
+  });
+  const seen = [];
+  for (let offset = 0; offset < 605; offset += 100) {
+    const rows = await persistence.telemetryAdapter.list({
+      tenant_id: "tenant-a",
+      limit: 100,
+      offset,
+      filters: { trace_id: "trace-shared" },
+    });
+    seen.push(...rows.map((row) => row.run_id));
+  }
+  assert.equal(seen.length, 605);
+  assert.equal(new Set(seen).size, 605);
+  assert(!seen.includes("run-0605"));
+  const listQueries = database.queries.filter((query) =>
+    query.sql.includes("SELECT record FROM ai_learning_governance.runtime_telemetry")
+    && query.sql.includes("ORDER BY recorded_at DESC,run_id ASC"));
+  assert.equal(listQueries.length, 7);
+  assert(listQueries.every((query) =>
+    query.sql.includes("record ->> 'trace_id'")
+    && query.sql.includes("OFFSET $")));
 });

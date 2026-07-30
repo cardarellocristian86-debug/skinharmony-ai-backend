@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createAiLearningFactoryStore } from "../src/aiLearningFactoryStore.js";
+import {
+  createAiLearningCoreApprovalAttestationService,
+  createAiLearningReviewBindingReceiptService,
+} from "../src/aiLearningEvidenceVerifier.js";
 
 const timestamp = "2026-07-27T12:00:00.000Z";
 
@@ -82,6 +86,82 @@ function candidate(overrides = {}) {
 }
 
 function authorization(overrides = {}) {
+  const signingSecret = "factory-store-review-binding-secret-0123456789";
+  const bindingIssuer = createAiLearningReviewBindingReceiptService({
+    secret: signingSecret,
+    now: () => Date.parse(timestamp),
+    randomBytes: () => Buffer.alloc(16, 9),
+  });
+  const candidateRecord = {
+    tenant_id: "tenant-a",
+    revision: 1,
+    ...candidate(),
+  };
+  const datasetRecord = {
+    tenant_id: "tenant-a",
+    revision: 1,
+    ...dataset(),
+  };
+  const scorecardRecord = {
+    tenant_id: "tenant-a",
+    revision: 1,
+    ...scorecard(),
+  };
+  const experimentRecord = {
+    tenant_id: "tenant-a",
+    revision: 1,
+    ...experiment(),
+  };
+  const issued = bindingIssuer.issue({
+    tenant_id: "tenant-a",
+    candidate: candidateRecord,
+    expected_revision: 1,
+    decision: "approved_for_shadow",
+    dataset: datasetRecord,
+    scorecard: scorecardRecord,
+    experiment: experimentRecord,
+  });
+  const reviewBindingReceipt = Object.fromEntries(
+    Object.entries(issued).filter(([key]) => key !== "binding"),
+  );
+  const bindingVerification = bindingIssuer.verify({
+    receipt: reviewBindingReceipt,
+    tenant_id: "tenant-a",
+    candidate: candidateRecord,
+    expected_revision: 1,
+    decision: "approved_for_shadow",
+    dataset: datasetRecord,
+    scorecard: scorecardRecord,
+    experiment: experimentRecord,
+  });
+  assert.equal(bindingVerification.verified, true);
+  const independentReviewReceiptDigest = `sha256:${"a".repeat(64)}`;
+  const ownerActorProvenance = `ap_${"c".repeat(32)}`;
+  const coreApprovalAttestation =
+    createAiLearningCoreApprovalAttestationService({
+      secret: signingSecret,
+      now: () => Date.parse(timestamp),
+    }).issue({
+      tenant_id: "tenant-a",
+      candidate: candidateRecord,
+      binding_verification: bindingVerification,
+      independent_review: {
+        verified: true,
+        binding_digest: bindingVerification.binding.binding_digest,
+        receipt_digest: independentReviewReceiptDigest,
+        review_tree_id: "tree-review-1",
+        review_node_id: "verify-review-1",
+        core_verdict_reference: `dttv_${"d".repeat(64)}`,
+        core_evidence_set_digest: `dttje_${"e".repeat(24)}`,
+        artifact_bindings: [{
+          artifact_id: "artifact-review-binding-1",
+          content_digest: bindingVerification.binding.binding_digest,
+          source_reference: "dtt://tree-review-1/verify-review-1",
+        }],
+        reviewed_at: timestamp,
+      },
+      owner_actor_provenance: ownerActorProvenance,
+    });
   return {
     core_verdict: "ALLOW",
     owner_confirmed: true,
@@ -92,6 +172,15 @@ function authorization(overrides = {}) {
     reviewed_at: timestamp,
     review_expires_at: "2026-07-27T12:15:00.000Z",
     independent_human_review_verified: true,
+    independent_review_receipt_digest: independentReviewReceiptDigest,
+    independent_review_binding_digest:
+      bindingVerification.binding.binding_digest,
+    review_tree_id: "tree-review-1",
+    review_node_id: "verify-review-1",
+    review_owner_actor_ids: [ownerActorProvenance],
+    review_binding_receipt: reviewBindingReceipt,
+    review_binding_payload: issued.binding.payload,
+    core_approval_attestation: coreApprovalAttestation,
     ...overrides,
   };
 }
@@ -440,31 +529,47 @@ test("performance scorecards and governed outcomes remain bounded", async () => 
   });
   assert.equal(performance.auto_scaling_authorized, false);
 
-  const outcome = await store.recordLearningOutcome({
+  const requestedOutcome = {
+    outcome_id: "outcome-1",
+    run_id: "run-1",
+    candidate_id: "candidate-prompt",
+    candidate_version: "v1",
+    candidate_revision: 1,
+    outcome_status: "succeeded",
+    outcome_verified: true,
+    human_review_status: "approved",
+    evidence_digest: "evd-outcome",
+    policy_snapshot: "policy-v1",
+    observed_at: timestamp,
+    learning_value: 0.8,
+  };
+  await assert.rejects(
+    store.recordLearningOutcome({
+      tenant_id: "tenant-a",
+      idempotency_key: "idem-outcome-missing-candidate",
+      expected_revision: 0,
+      authorization: authorization(),
+      record: requestedOutcome,
+    }),
+    /learning_candidate_visibility_invalid/,
+  );
+  const recordedCandidate = await store.recordLearningCandidate({
     tenant_id: "tenant-a",
-    idempotency_key: "idem-outcome-1",
+    idempotency_key: "idem-outcome-candidate",
     expected_revision: 0,
-    authorization: authorization(),
-    record: {
-      outcome_id: "outcome-1",
-      run_id: "run-1",
-      candidate_id: "candidate-prompt",
-      outcome_status: "succeeded",
-      outcome_verified: true,
-      human_review_status: "approved",
-      evidence_digest: "evd-outcome",
-      policy_snapshot: "policy-v1",
-      observed_at: timestamp,
-      learning_value: 0.8,
-    },
+    record: candidate(),
   });
-  assert.equal(outcome.training_triggered, false);
-  assert.equal(outcome.external_action_triggered, false);
-  assert.equal(outcome.governance.core_verdict, "ALLOW");
-  assert.equal(outcome.outcome_verified, false);
-  assert.equal(outcome.human_review_status, "pending");
-  assert.equal(outcome.learning_value, 0);
-  assert.equal(outcome.governance.outcome_attestation_verified, false);
+  await assert.rejects(
+    store.recordLearningOutcome({
+      tenant_id: "tenant-a",
+      idempotency_key: "idem-outcome-1",
+      expected_revision: 0,
+      authorization: authorization(),
+      record: requestedOutcome,
+    }),
+    /learning_outcome_evidence_unverified/,
+  );
+  assert(recordedCandidate.resource_visibility.branch_ids.length > 0);
 });
 
 test("learning outcome verification is server-resolved and bound to the exact run evidence", async () => {
@@ -487,12 +592,12 @@ test("learning outcome verification is server-resolved and bound to the exact ru
     run_id: "run-existing",
     candidate_id: null,
     outcome_status: "succeeded",
-    outcome_verified: false,
-    human_review_status: "pending",
+    outcome_verified: true,
+    human_review_status: "approved",
     evidence_digest: "evd-outcome",
     policy_snapshot: "policy-v1",
     observed_at: timestamp,
-    learning_value: 0,
+    learning_value: 0.8,
   };
   const verified = await store.recordLearningOutcome({
     tenant_id: "tenant-a",

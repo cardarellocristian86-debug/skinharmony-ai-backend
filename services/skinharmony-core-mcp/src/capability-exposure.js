@@ -86,6 +86,7 @@ const HORIZONTAL_CAPABILITY_IDS = Object.freeze([
   "ai_performance_scorecard_read",
   "ai_experiment_read",
   "ai_learning_candidate_read",
+  "ai_learning_review_binding_preview",
   "ai_learning_candidate_review",
   "ai_learning_outcome_record",
   "agentic_efficiency_plan",

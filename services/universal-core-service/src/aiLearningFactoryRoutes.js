@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-
+import { buildAiLearningOutcomeReviewBinding } from "./aiLearningEvidenceVerifier.js";
 const ROUTES = Object.freeze([
   { method: "GET", path: "/v1/ai-learning/eval/scorecards", capability_id: "ai_eval_scorecard_read" },
   { method: "GET", path: "/v1/ai-learning/eval/datasets", capability_id: "ai_eval_dataset_read" },
@@ -7,6 +7,7 @@ const ROUTES = Object.freeze([
   { method: "GET", path: "/v1/ai-learning/performance/scorecards", capability_id: "ai_performance_scorecard_read" },
   { method: "GET", path: "/v1/ai-learning/experiments", capability_id: "ai_experiment_read" },
   { method: "GET", path: "/v1/ai-learning/candidates", capability_id: "ai_learning_candidate_read" },
+  { method: "POST", path: "/v1/ai-learning/review-bindings/preview", capability_id: "ai_learning_review_binding_preview" },
   { method: "POST", path: "/v1/ai-learning/candidates/review", capability_id: "ai_learning_candidate_review" },
   { method: "POST", path: "/v1/ai-learning/outcomes", capability_id: "ai_learning_outcome_record" },
 ]);
@@ -15,49 +16,127 @@ export const AI_LEARNING_FACTORY_ROUTE_CONTRACTS = Object.freeze({
   ai_eval_scorecard_read: {
     method: "GET",
     path: "/v1/ai-learning/eval/scorecards",
+    output_schema: "ai_evaluation_scorecard_v0_16",
     query: ["scorecard_id", "release_version", "limit", "cursor"],
   },
   ai_eval_dataset_read: {
     method: "GET",
     path: "/v1/ai-learning/eval/datasets",
+    output_schema: "ai_learning_dataset_metadata_v0_16",
     query: ["dataset_id", "version", "limit", "cursor"],
   },
   ai_eval_trace_read: {
     method: "GET",
     path: "/v1/ai-learning/eval/traces",
+    output_schema: "ai_runtime_telemetry_v0_16",
     query: ["trace_id", "run_id", "limit", "cursor"],
   },
   ai_performance_scorecard_read: {
     method: "GET",
     path: "/v1/ai-learning/performance/scorecards",
+    output_schema: "ai_performance_scorecard_v0_16",
     query: ["scorecard_id", "release_version", "limit", "cursor"],
   },
   ai_experiment_read: {
     method: "GET",
     path: "/v1/ai-learning/experiments",
+    output_schema: "ai_causal_experiment_v0_16",
     query: ["experiment_id", "state", "limit", "cursor"],
     state: ["proposed", "shadow", "canary", "ab", "stopped", "completed"],
   },
   ai_learning_candidate_read: {
     method: "GET",
     path: "/v1/ai-learning/candidates",
+    output_schema: "ai_learning_candidate_v0_16",
     query: ["candidate_id", "state", "limit", "cursor"],
     state: ["proposed", "under_review", "deferred", "rejected", "approved_for_shadow"],
   },
   ai_learning_candidate_review: {
     method: "POST",
     path: "/v1/ai-learning/candidates/review",
-    body: ["candidate_id", "decision", "review_note", "expected_revision", "idempotency_key"],
+    output_schema: "ai_learning_candidate_v0_16",
+    body: [
+      "candidate_id",
+      "decision",
+      "review_note",
+      "review_attestation",
+      "review_binding_receipt",
+      "expected_revision",
+      "idempotency_key",
+    ],
+    review_attestation: ["tree_id", "node_id"],
+    review_binding_receipt_required_for: ["approved_for_shadow"],
     decision: ["approved_for_shadow", "deferred", "rejected"],
   },
-  ai_learning_outcome_record: {
+  ai_learning_review_binding_preview: {
     method: "POST",
-    path: "/v1/ai-learning/outcomes",
-    body: ["outcome", "expected_revision", "idempotency_key"],
+    path: "/v1/ai-learning/review-bindings/preview",
+    output_schema: "ai_learning_review_binding_preview_v0_16",
+    body: ["candidate_id", "decision", "expected_revision", "outcome"],
+    request_one_of: [
+      {
+        kind: "learning_candidate",
+        required: ["candidate_id", "decision", "expected_revision"],
+      },
+      {
+        kind: "learning_outcome",
+        required: ["outcome"],
+      },
+    ],
+    decision: ["approved_for_shadow"],
     outcome: [
       "outcome_id",
       "run_id",
       "candidate_id",
+      "candidate_version",
+      "candidate_revision",
+      "outcome_status",
+      "outcome_verified",
+      "human_review_status",
+      "evidence_digest",
+      "policy_snapshot",
+      "observed_at",
+      "learning_value",
+    ],
+    output_variants: {
+      learning_candidate: [
+        "binding_kind",
+        "binding_schema",
+        "binding_content",
+        "binding_digest",
+        "candidate_id",
+        "candidate_version",
+        "source_revision",
+        "resulting_revision",
+        "evidence_snapshot_digest",
+        "expires_at",
+        "receipt",
+        "execution_authorized",
+      ],
+      learning_outcome: [
+        "binding_kind",
+        "binding_schema",
+        "binding_content",
+        "binding_digest",
+        "outcome_id",
+        "run_id",
+        "telemetry_digest",
+        "execution_authorized",
+      ],
+    },
+  },
+  ai_learning_outcome_record: {
+    method: "POST",
+    path: "/v1/ai-learning/outcomes",
+    output_schema: "ai_learning_outcome_v0_16",
+    body: ["outcome", "review_attestation", "expected_revision", "idempotency_key"],
+    review_attestation: ["tree_id", "node_id"],
+    outcome: [
+      "outcome_id",
+      "run_id",
+      "candidate_id",
+      "candidate_version",
+      "candidate_revision",
       "outcome_status",
       "outcome_verified",
       "human_review_status",
@@ -107,7 +186,17 @@ function authorizeCapability(req, resolveRequestContext) {
   ) {
     throw new Error("branch_not_available_for_client");
   }
-  return Object.freeze({ client_type: clientType, audience });
+  return Object.freeze({
+    tenant_id: tenantId(req),
+    client_type: clientType,
+    audience,
+    entitlements: Object.freeze(
+      Array.isArray(context.entitlements)
+        ? [...new Set(context.entitlements.map((value) => String(value || "").trim()).filter(Boolean))]
+        : [],
+    ),
+    role: String(context.role || ""),
+  });
 }
 
 function tenantId(req) {
@@ -208,29 +297,66 @@ function asyncRoute(handler) {
   };
 }
 
-async function listOrRead({ req, store, idQuery, readMethod, listMethod, filters = [], allowedQuery = [] }) {
+async function listOrRead({
+  req,
+  store,
+  idQuery,
+  readMethod,
+  listMethod,
+  filters = [],
+  allowedQuery = [],
+  visibilityContext,
+}) {
   assertAllowedQuery(req, [idQuery, "limit", "cursor", ...allowedQuery]);
   const scopedTenantId = tenantId(req);
   const requestedId = optionalQueryIdentifier(req, idQuery);
-  let records;
-  if (requestedId) {
-    const record = await store[readMethod]({ tenant_id: scopedTenantId, record_id: requestedId });
-    records = record ? [record] : [];
-  } else {
-    records = await store[listMethod]({ tenant_id: scopedTenantId, limit: 500 });
-  }
+  const requestedFilters = {};
   for (const filter of filters) {
     const requestedValue = optionalQueryIdentifier(req, filter.query);
-    if (requestedValue) {
-      if (filter.allowed && !filter.allowed.includes(requestedValue)) throw new Error(`${filter.query}_invalid`);
-      records = records.filter((record) => record[filter.field] === requestedValue);
+    if (!requestedValue) continue;
+    if (filter.allowed && !filter.allowed.includes(requestedValue)) {
+      throw new Error(`${filter.query}_invalid`);
     }
+    requestedFilters[filter.field] = requestedValue;
   }
-  return pageRecords(records, req);
+  if (requestedId) {
+    const record = await store[readMethod]({
+      tenant_id: scopedTenantId,
+      record_id: requestedId,
+      visibility_context: visibilityContext,
+    });
+    const records = (record ? [record] : []).filter((candidate) =>
+      Object.entries(requestedFilters).every(([field, value]) =>
+        candidate[field] === value));
+    return pageRecords(records, req);
+  }
+  const listed = await store[listMethod]({
+    tenant_id: scopedTenantId,
+    limit: limit(req),
+    offset: cursorOffset(req),
+    filters: requestedFilters,
+    page: true,
+    visibility_context: visibilityContext,
+  });
+  if (Array.isArray(listed)) {
+    const records = listed.filter((record) =>
+      Object.entries(requestedFilters).every(([field, value]) =>
+        record[field] === value));
+    return pageRecords(records, req);
+  }
+  if (!listed || !Array.isArray(listed.records)) {
+    throw new Error("learning_factory_store_page_invalid");
+  }
+  return {
+    records: listed.records,
+    next_cursor: listed.next_offset === null
+      ? null
+      : `offset:${listed.next_offset}`,
+  };
 }
 
 /**
- * Mounts the eight dynamic AI Learning Factory capability routes.
+ * Mounts the nine dynamic AI Learning Factory capability routes.
  * Authentication and Core governance proof are injected by app.js so no
  * caller-controlled payload can widen tenant scope or self-authorize a write.
  */
@@ -243,6 +369,9 @@ export function mountAiLearningFactoryRoutes({
   audit,
   resolveGovernanceProof,
   resolveRequestContext,
+  issueReviewBinding = () => {
+    throw new Error("ai_learning_review_binding_signing_unavailable");
+  },
   persistenceRequired = false,
   resolvePersistenceReadiness = () => ({
     persistence_read_ready: false,
@@ -255,6 +384,10 @@ export function mountAiLearningFactoryRoutes({
   const governMiddleware = requireFunction(governAuth, "ai_learning_factory_govern_auth");
   const proofForRequest = requireFunction(resolveGovernanceProof, "ai_learning_factory_governance_resolver");
   const requestContextFor = requireFunction(resolveRequestContext, "ai_learning_factory_request_context_resolver");
+  const issueCandidateReviewBinding = requireFunction(
+    issueReviewBinding,
+    "ai_learning_review_binding_issuer",
+  );
   requireObject(telemetryStore, "telemetry_store");
   requireObject(learningStore, "learning_store");
   requireObject(audit, "audit");
@@ -275,8 +408,32 @@ export function mountAiLearningFactoryRoutes({
     if (!ready) throw new Error("ai_learning_persistence_required");
   }
 
+  async function candidateEvidence(tenant, candidate, visibilityContext = null) {
+    const [dataset, scorecard, experiment] = await Promise.all([
+      learningStore.readDatasetMetadata({
+        tenant_id: tenant,
+        record_id: candidate.dataset_id,
+        visibility_context: visibilityContext,
+      }),
+      learningStore.readEvaluationScorecard({
+        tenant_id: tenant,
+        record_id: candidate.scorecard_id,
+        visibility_context: visibilityContext,
+      }),
+      learningStore.readCausalExperiment({
+        tenant_id: tenant,
+        record_id: candidate.experiment_id,
+        visibility_context: visibilityContext,
+      }),
+    ]);
+    if (!dataset || !scorecard || !experiment) {
+      throw new Error("learning_candidate_evidence_incomplete");
+    }
+    return { dataset, scorecard, experiment };
+  }
+
   app.get("/v1/ai-learning/eval/scorecards", readMiddleware, asyncRoute(async (req, res) => {
-    authorizeCapability(req, requestContextFor);
+    const visibilityContext = authorizeCapability(req, requestContextFor);
     requirePersistenceReady(false);
     const page = await listOrRead({
       req,
@@ -286,12 +443,13 @@ export function mountAiLearningFactoryRoutes({
       listMethod: "listEvaluationScorecards",
       allowedQuery: ["release_version"],
       filters: [{ query: "release_version", field: "release_version" }],
+      visibilityContext,
     });
     return res.json({ ok: true, tenant_id: tenantId(req), scorecards: page.records, next_cursor: page.next_cursor });
   }));
 
   app.get("/v1/ai-learning/eval/datasets", readMiddleware, asyncRoute(async (req, res) => {
-    authorizeCapability(req, requestContextFor);
+    const visibilityContext = authorizeCapability(req, requestContextFor);
     requirePersistenceReady(false);
     const page = await listOrRead({
       req,
@@ -301,28 +459,69 @@ export function mountAiLearningFactoryRoutes({
       listMethod: "listDatasetMetadata",
       allowedQuery: ["version"],
       filters: [{ query: "version", field: "dataset_version" }],
+      visibilityContext,
     });
     return res.json({ ok: true, tenant_id: tenantId(req), datasets: page.records, next_cursor: page.next_cursor });
   }));
 
   app.get("/v1/ai-learning/eval/traces", readMiddleware, asyncRoute(async (req, res) => {
-    authorizeCapability(req, requestContextFor);
+    const visibilityContext = authorizeCapability(req, requestContextFor);
     requirePersistenceReady(false);
     assertAllowedQuery(req, ["tenant_id", "trace_id", "run_id", "limit", "cursor"]);
     const scopedTenantId = tenantId(req);
     const requestedRunId = optionalQueryIdentifier(req, "run_id");
     const requestedTraceId = optionalQueryIdentifier(req, "trace_id");
-    let records = requestedRunId
-      ? await telemetryStore.read({ tenant_id: scopedTenantId, run_id: requestedRunId })
-      : await telemetryStore.list({ tenant_id: scopedTenantId, limit: 500 });
-    records = Array.isArray(records) ? records : records ? [records] : [];
-    if (requestedTraceId) records = records.filter((record) => record.trace_id === requestedTraceId);
-    const page = pageRecords(records, req);
-    return res.json({ ok: true, tenant_id: scopedTenantId, traces: page.records, next_cursor: page.next_cursor });
+    if (requestedRunId) {
+      const record = await telemetryStore.read({
+        tenant_id: scopedTenantId,
+        run_id: requestedRunId,
+        visibility_context: visibilityContext,
+      });
+      const records = (record ? [record] : []).filter((candidate) =>
+        !requestedTraceId || candidate.trace_id === requestedTraceId);
+      const page = pageRecords(records, req);
+      return res.json({
+        ok: true,
+        tenant_id: scopedTenantId,
+        traces: page.records,
+        next_cursor: page.next_cursor,
+      });
+    }
+    const listed = await telemetryStore.list({
+      tenant_id: scopedTenantId,
+      limit: limit(req),
+      offset: cursorOffset(req),
+      filters: requestedTraceId ? { trace_id: requestedTraceId } : {},
+      page: true,
+      visibility_context: visibilityContext,
+    });
+    if (Array.isArray(listed)) {
+      const records = requestedTraceId
+        ? listed.filter((record) => record.trace_id === requestedTraceId)
+        : listed;
+      const page = pageRecords(records, req);
+      return res.json({
+        ok: true,
+        tenant_id: scopedTenantId,
+        traces: page.records,
+        next_cursor: page.next_cursor,
+      });
+    }
+    if (!listed || !Array.isArray(listed.records)) {
+      throw new Error("telemetry_store_page_invalid");
+    }
+    return res.json({
+      ok: true,
+      tenant_id: scopedTenantId,
+      traces: listed.records,
+      next_cursor: listed.next_offset === null
+        ? null
+        : `offset:${listed.next_offset}`,
+    });
   }));
 
   app.get("/v1/ai-learning/performance/scorecards", readMiddleware, asyncRoute(async (req, res) => {
-    authorizeCapability(req, requestContextFor);
+    const visibilityContext = authorizeCapability(req, requestContextFor);
     requirePersistenceReady(false);
     const page = await listOrRead({
       req,
@@ -332,12 +531,13 @@ export function mountAiLearningFactoryRoutes({
       listMethod: "listPerformanceScorecards",
       allowedQuery: ["release_version"],
       filters: [{ query: "release_version", field: "release_version" }],
+      visibilityContext,
     });
     return res.json({ ok: true, tenant_id: tenantId(req), scorecards: page.records, next_cursor: page.next_cursor });
   }));
 
   app.get("/v1/ai-learning/experiments", readMiddleware, asyncRoute(async (req, res) => {
-    authorizeCapability(req, requestContextFor);
+    const visibilityContext = authorizeCapability(req, requestContextFor);
     requirePersistenceReady(false);
     const page = await listOrRead({
       req,
@@ -351,12 +551,13 @@ export function mountAiLearningFactoryRoutes({
         field: "status",
         allowed: AI_LEARNING_FACTORY_ROUTE_CONTRACTS.ai_experiment_read.state,
       }],
+      visibilityContext,
     });
     return res.json({ ok: true, tenant_id: tenantId(req), experiments: page.records, next_cursor: page.next_cursor });
   }));
 
   app.get("/v1/ai-learning/candidates", readMiddleware, asyncRoute(async (req, res) => {
-    authorizeCapability(req, requestContextFor);
+    const visibilityContext = authorizeCapability(req, requestContextFor);
     requirePersistenceReady(false);
     const page = await listOrRead({
       req,
@@ -370,17 +571,151 @@ export function mountAiLearningFactoryRoutes({
         field: "status",
         allowed: AI_LEARNING_FACTORY_ROUTE_CONTRACTS.ai_learning_candidate_read.state,
       }],
+      visibilityContext,
     });
     return res.json({ ok: true, tenant_id: tenantId(req), candidates: page.records, next_cursor: page.next_cursor });
   }));
 
+  app.post("/v1/ai-learning/review-bindings/preview", readMiddleware, asyncRoute(async (req, res) => {
+    const visibilityContext = authorizeCapability(req, requestContextFor);
+    requirePersistenceReady(false);
+    const scopedTenantId = tenantId(req);
+    if (req.body?.outcome) {
+      const outcome = requireObject(req.body.outcome, "learning_outcome");
+      const runId = recordId(outcome.run_id, "run_id");
+      const telemetry = await telemetryStore.read({
+        tenant_id: scopedTenantId,
+        run_id: runId,
+        visibility_context: visibilityContext,
+      });
+      if (
+        !telemetry
+        || telemetry.tenant_id !== scopedTenantId
+        || telemetry.run_id !== runId
+        || !/^art_[a-f0-9]{64}$/.test(String(telemetry.telemetry_digest || ""))
+        || telemetry.evidence_digest !== outcome.evidence_digest
+        || telemetry.policy_snapshot !== outcome.policy_snapshot
+        || telemetry.outcome_status !== outcome.outcome_status
+      ) throw new Error("learning_outcome_telemetry_binding_invalid");
+      const binding = buildAiLearningOutcomeReviewBinding({
+        tenant_id: scopedTenantId,
+        outcome,
+        telemetry_digest: telemetry.telemetry_digest,
+      });
+      audit.append("ai_learning_review_binding_previewed", {
+        tenant_id: scopedTenantId,
+        binding_kind: "learning_outcome",
+        outcome_id: recordId(outcome.outcome_id, "outcome_id"),
+        run_id: runId,
+        binding_digest: binding.binding_digest,
+        execution_authorized: false,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: scopedTenantId,
+        review_binding: {
+          binding_kind: "learning_outcome",
+          binding_schema: binding.payload.schema_version,
+          binding_content: binding.binding_content,
+          binding_digest: binding.binding_digest,
+          outcome_id: outcome.outcome_id,
+          run_id: runId,
+          telemetry_digest: telemetry.telemetry_digest,
+          execution_authorized: false,
+        },
+      });
+    }
+    const candidateId = recordId(req.body?.candidate_id, "candidate_id");
+    const expectedRevision = Number(req.body?.expected_revision);
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
+      throw new Error("expected_revision_invalid");
+    }
+    if (req.body?.decision !== "approved_for_shadow") {
+      throw new Error("review_binding_decision_invalid");
+    }
+    const candidate = await learningStore.readLearningCandidate({
+      tenant_id: scopedTenantId,
+      record_id: candidateId,
+      visibility_context: visibilityContext,
+    });
+    if (!candidate) throw new Error("learning_candidate_not_found");
+    const evidence = await candidateEvidence(
+      scopedTenantId,
+      candidate,
+      visibilityContext,
+    );
+    const issued = await issueCandidateReviewBinding({
+      tenant_id: scopedTenantId,
+      candidate,
+      expected_revision: expectedRevision,
+      decision: req.body.decision,
+      ...evidence,
+    });
+    if (issued?.binding?.binding_digest !== issued?.binding_digest) {
+      throw new Error("ai_learning_review_binding_issuance_failed");
+    }
+    audit.append("ai_learning_review_binding_previewed", {
+      tenant_id: scopedTenantId,
+      candidate_id: candidateId,
+      candidate_revision: expectedRevision,
+      binding_digest: issued.binding_digest,
+      evidence_snapshot_digest: issued.evidence_snapshot_digest,
+      expires_at: issued.expires_at,
+      execution_authorized: false,
+    });
+    const { binding, ...receipt } = issued;
+    return res.json({
+      ok: true,
+      tenant_id: scopedTenantId,
+      review_binding: {
+        binding_kind: "learning_candidate",
+        binding_schema: binding.payload.schema_version,
+        binding_content: binding.binding_content,
+        binding_digest: binding.binding_digest,
+        candidate_id: candidate.candidate_id,
+        candidate_version: candidate.candidate_version,
+        source_revision: binding.payload.source_revision,
+        resulting_revision: binding.payload.resulting_revision,
+        evidence_snapshot_digest: issued.evidence_snapshot_digest,
+        expires_at: issued.expires_at,
+        receipt,
+        execution_authorized: false,
+      },
+    });
+  }));
+
   app.post("/v1/ai-learning/candidates/review", governMiddleware, asyncRoute(async (req, res) => {
-    authorizeCapability(req, requestContextFor);
+    const visibilityContext = authorizeCapability(req, requestContextFor);
     requirePersistenceReady(true);
     const scopedTenantId = tenantId(req);
-    const proof = await proofForRequest(req);
     const idempotency = idempotencyKey(req);
     const revision = expectedRevision(req);
+    const replay = await learningStore.replayLearningCandidateReview?.({
+      tenant_id: scopedTenantId,
+      candidate_id: req.body?.candidate_id,
+      decision: req.body?.decision,
+      review_note: req.body?.review_note,
+      idempotency_key: idempotency,
+      expected_revision: revision,
+      review_attestation: req.body?.review_attestation || null,
+      review_binding_receipt: req.body?.review_binding_receipt || null,
+      visibility_context: visibilityContext,
+    });
+    if (replay) {
+      audit.append("ai_learning_candidate_review_replayed", {
+        tenant_id: scopedTenantId,
+        candidate_id: replay.candidate_id,
+        revision: replay.revision,
+        idempotency_digest: idempotencyDigest(idempotency),
+      });
+      return res.status(200).json({
+        ok: true,
+        tenant_id: scopedTenantId,
+        candidate: replay,
+        idempotent_replay: true,
+      });
+    }
+    const proof = await proofForRequest(req);
     audit.append("ai_learning_candidate_review_authorized", {
       tenant_id: scopedTenantId,
       candidate_id: recordId(req.body?.candidate_id, "candidate_id"),
@@ -396,6 +731,10 @@ export function mountAiLearningFactoryRoutes({
       authorization: proof,
       idempotency_key: idempotency,
       expected_revision: revision,
+      review_attestation: req.body?.review_attestation || null,
+      review_binding_receipt: req.body?.review_binding_receipt || null,
+      owner_actor_ids: proof.review_owner_actor_ids || [],
+      visibility_context: visibilityContext,
     });
     audit.append("ai_learning_candidate_reviewed", {
       tenant_id: scopedTenantId,
@@ -408,13 +747,56 @@ export function mountAiLearningFactoryRoutes({
   }));
 
   app.post("/v1/ai-learning/outcomes", governMiddleware, asyncRoute(async (req, res) => {
-    authorizeCapability(req, requestContextFor);
+    const visibilityContext = authorizeCapability(req, requestContextFor);
     requirePersistenceReady(true);
     const scopedTenantId = tenantId(req);
-    const proof = await proofForRequest(req);
     const idempotency = idempotencyKey(req);
     const revision = expectedRevision(req);
     const requestedOutcome = requireObject(req.body?.outcome, "learning_outcome");
+    const telemetry = await telemetryStore.read({
+      tenant_id: scopedTenantId,
+      run_id: recordId(requestedOutcome.run_id, "run_id"),
+      visibility_context: visibilityContext,
+    });
+    if (!telemetry) throw new Error("branch_not_available_for_client");
+    const visibilityBranchIds = [
+      ...(telemetry.resource_visibility?.branch_ids || []),
+    ];
+    if (requestedOutcome.candidate_id) {
+      const candidate = await learningStore.readLearningCandidate({
+        tenant_id: scopedTenantId,
+        record_id: recordId(requestedOutcome.candidate_id, "candidate_id"),
+        visibility_context: visibilityContext,
+      });
+      if (!candidate) throw new Error("branch_not_available_for_client");
+      visibilityBranchIds.push(...(candidate.resource_visibility?.branch_ids || []));
+    }
+    if (!visibilityBranchIds.length) throw new Error("resource_visibility_missing");
+    const replay = await learningStore.replayLearningOutcome?.({
+      tenant_id: scopedTenantId,
+      record: requestedOutcome,
+      idempotency_key: idempotency,
+      expected_revision: revision,
+      review_attestation: req.body?.review_attestation || null,
+      visibility_context: visibilityContext,
+      visibility_branch_ids: [...new Set(visibilityBranchIds)],
+    });
+    if (replay) {
+      audit.append("ai_learning_outcome_record_replayed", {
+        tenant_id: scopedTenantId,
+        outcome_id: replay.outcome_id,
+        run_id: replay.run_id,
+        revision: replay.revision,
+        idempotency_digest: idempotencyDigest(idempotency),
+      });
+      return res.status(201).json({
+        ok: true,
+        tenant_id: scopedTenantId,
+        outcome: replay,
+        idempotent_replay: true,
+      });
+    }
+    const proof = await proofForRequest(req);
     audit.append("ai_learning_outcome_record_authorized", {
       tenant_id: scopedTenantId,
       outcome_id: recordId(requestedOutcome.outcome_id, "outcome_id"),
@@ -429,6 +811,10 @@ export function mountAiLearningFactoryRoutes({
       authorization: proof,
       idempotency_key: idempotency,
       expected_revision: revision,
+      review_attestation: req.body?.review_attestation || null,
+      owner_actor_ids: proof.review_owner_actor_ids || [],
+      visibility_context: visibilityContext,
+      visibility_branch_ids: [...new Set(visibilityBranchIds)],
     });
     audit.append("ai_learning_outcome_recorded", {
       tenant_id: scopedTenantId,

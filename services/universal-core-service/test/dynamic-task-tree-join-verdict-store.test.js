@@ -8,7 +8,7 @@ import {
   createPostgresDynamicTaskTreeJoinVerdictStore,
 } from "../src/dynamicTaskTreeJoinVerdictStore.js";
 
-test("DTT join verdict ledger issues server references once and records consumption append-only", () => {
+test("DTT join verdict ledger records consumption and post-consumption revocation append-only", () => {
   const root = path.join(os.tmpdir(), `dtt-verdict-${Date.now()}-${Math.random()}`);
   const store = createFileDynamicTaskTreeJoinVerdictStore({ root });
   const issued = store.issue({
@@ -39,13 +39,30 @@ test("DTT join verdict ledger issues server references once and records consumpt
     tree_id: "dtt_0123456789abcdef01234567",
     verdict_reference: issued.verdict_reference,
   }), /dtt_join_verdict_not_active/);
+  const revoked = store.revoke({
+    tenant_id: "tenant-a",
+    tree_id: "dtt_0123456789abcdef01234567",
+    verdict_reference: issued.verdict_reference,
+    reason: "Candidate approval withdrawn by governed review.",
+  });
+  assert.equal(revoked.event_type, "revoked");
+  assert.equal(store.revoke({
+    tenant_id: "tenant-a",
+    tree_id: "dtt_0123456789abcdef01234567",
+    verdict_reference: issued.verdict_reference,
+    reason: "Duplicate revocation.",
+  }), null);
 
   const events = store.read({
     tenant_id: "tenant-a",
     tree_id: "dtt_0123456789abcdef01234567",
   });
-  assert.deepEqual(events.map((event) => event.event_type), ["issued", "consumed"]);
+  assert.deepEqual(
+    events.map((event) => event.event_type),
+    ["issued", "consumed", "revoked"],
+  );
   assert.equal(events[1].previous_hash, events[0].event_hash);
+  assert.equal(events[2].previous_hash, events[1].event_hash);
 });
 
 test("DTT join verdict ledger detects tampering and can void an unconsumed verdict", () => {
@@ -118,8 +135,17 @@ class FakeVerdictPostgresPool {
     }
     if (/UPDATE dynamic_task_tree_join_verdicts/.test(sql)) {
       const verdict = this.verdicts.get(params[2]);
-      if (!verdict || verdict.key !== key || verdict.status !== "issued") return { rowCount: 0, rows: [] };
-      verdict.status = /status='consumed'/.test(sql) ? "consumed" : "voided";
+      const expectedStatus = /AND status='consumed'/.test(sql)
+        ? "consumed"
+        : "issued";
+      if (!verdict || verdict.key !== key || verdict.status !== expectedStatus) {
+        return { rowCount: 0, rows: [] };
+      }
+      verdict.status = /SET status='consumed'/.test(sql)
+        ? "consumed"
+        : /SET status='revoked'/.test(sql)
+          ? "revoked"
+          : "voided";
       return { rowCount: 1, rows: [] };
     }
     if (/INSERT INTO dynamic_task_tree_join_verdict_events/.test(sql)) {
@@ -169,6 +195,20 @@ test("DTT PostgreSQL verdict ledger serializes issuance, survives restart and is
     tree_id: input.tree_id,
     verdict_reference: issued.verdict_reference,
   }), /dtt_join_verdict_not_active/);
+  const revoked = await afterRestart.revoke({
+    tenant_id: "tenant-a",
+    tree_id: input.tree_id,
+    verdict_reference: issued.verdict_reference,
+    reason: "Governed candidate approval revoked.",
+  });
+  assert.equal(revoked.event_type, "revoked");
+  assert.deepEqual(
+    (await afterRestart.read({
+      tenant_id: "tenant-a",
+      tree_id: input.tree_id,
+    })).map((event) => event.event_type),
+    ["issued", "consumed", "revoked"],
+  );
   assert(pool.queries.some((sql) => /pg_advisory_xact_lock/.test(sql)));
   assert.equal(
     pool.queries.filter((sql) => /CREATE TABLE IF NOT EXISTS dynamic_task_tree_join_verdicts/.test(sql)).length,

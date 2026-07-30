@@ -1,4 +1,15 @@
 import crypto from "node:crypto";
+import {
+  buildAiLearningOutcomeRecordBinding,
+  digestAiLearningEvidenceSnapshot,
+  digestAiLearningReviewBindingPayload,
+} from "./aiLearningEvidenceVerifier.js";
+import {
+  createResourceVisibilityBinding,
+  learningRecordBranchIds,
+  resourceVisibleToContext,
+  validateResourceVisibilityBinding,
+} from "./resourceVisibility.js";
 
 const TENANT_PATTERN = /^[a-z0-9][a-z0-9_-]{1,119}$/i;
 const IDENTIFIER_PATTERN = /^[a-z0-9][a-z0-9._:@/-]*$/i;
@@ -48,6 +59,15 @@ const COLLECTIONS = Object.freeze({
   },
 });
 
+const COLLECTION_FILTER_FIELDS = Object.freeze({
+  evaluation_scorecards: Object.freeze(["release_version"]),
+  dataset_metadata: Object.freeze(["dataset_version"]),
+  causal_experiments: Object.freeze(["status"]),
+  learning_candidates: Object.freeze(["status"]),
+  performance_scorecards: Object.freeze(["release_version"]),
+  learning_outcomes: Object.freeze([]),
+});
+
 function requireObject(value, field) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${field}_invalid`);
   return value;
@@ -87,6 +107,15 @@ function optionalIdentifier(value, field, max = 200) {
   return value === null || value === undefined || value === "" ? null : requireIdentifier(value, field, max);
 }
 
+function ownerActorProvenance(value, { required = false } = {}) {
+  const normalized = optionalIdentifier(value, "owner_actor_provenance", 40);
+  if (normalized === null && !required) return null;
+  if (!/^ap_[a-f0-9]{32}$/.test(String(normalized || ""))) {
+    throw new Error("owner_actor_provenance_invalid");
+  }
+  return normalized;
+}
+
 function requireBoolean(value, field) {
   if (typeof value !== "boolean") throw new Error(`${field}_invalid`);
   return value;
@@ -121,6 +150,156 @@ function isoDate(value, field, { nullable = false } = {}) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw new Error(`${field}_invalid`);
   return date.toISOString();
+}
+
+function normalizeReviewBindingProof(receiptValue, payloadValue) {
+  const receipt = requireObject(receiptValue, "review_binding_receipt");
+  const payload = requireObject(payloadValue, "review_binding_payload");
+  const allowedReceiptKeys = [
+    "binding_digest",
+    "candidate_id",
+    "candidate_version",
+    "decision",
+    "evidence_snapshot_digest",
+    "expires_at",
+    "issued_at",
+    "nonce",
+    "resulting_revision",
+    "schema_version",
+    "signature",
+    "source_revision",
+    "tenant_id",
+  ];
+  const actualReceiptKeys = Object.keys(receipt).sort();
+  if (
+    actualReceiptKeys.length !== allowedReceiptKeys.length
+    || actualReceiptKeys.some((key, index) => key !== allowedReceiptKeys[index])
+    || receipt.schema_version !== "ai_learning_review_binding_receipt_v0_16"
+    || payload.schema_version !== "ai_learning_candidate_review_binding_v0_16"
+    || !/^airr_[a-f0-9]{64}$/.test(String(receipt.signature || ""))
+    || !/^sha256:[a-f0-9]{64}$/.test(String(receipt.binding_digest || ""))
+    || !/^sha256:[a-f0-9]{64}$/.test(String(
+      receipt.evidence_snapshot_digest || "",
+    ))
+    || digestAiLearningReviewBindingPayload(payload) !== receipt.binding_digest
+    || digestAiLearningEvidenceSnapshot(payload.evidence_snapshot)
+      !== receipt.evidence_snapshot_digest
+    || receipt.tenant_id !== payload.tenant_id
+    || receipt.candidate_id !== payload.candidate_id
+    || receipt.candidate_version !== payload.candidate_version
+    || receipt.decision !== payload.decision
+    || Number(receipt.source_revision) !== Number(payload.source_revision)
+    || Number(receipt.resulting_revision) !== Number(payload.resulting_revision)
+    || receipt.issued_at !== payload.review_window?.issued_at
+    || receipt.expires_at !== payload.review_window?.expires_at
+    || receipt.nonce !== payload.review_window?.nonce
+  ) throw new Error("review_binding_proof_invalid");
+  const sourceRevision = finiteNumber(
+    receipt.source_revision,
+    "review_source_revision",
+    { minimum: 1, integer: true },
+  );
+  const resultingRevision = finiteNumber(
+    receipt.resulting_revision,
+    "review_resulting_revision",
+    { minimum: 2, integer: true },
+  );
+  if (resultingRevision !== sourceRevision + 1) {
+    throw new Error("review_binding_revision_invalid");
+  }
+  return {
+    receipt: clone(receipt),
+    payload: clone(payload),
+    source_revision: sourceRevision,
+    resulting_revision: resultingRevision,
+    evidence_snapshot_digest: receipt.evidence_snapshot_digest,
+  };
+}
+
+function normalizeCoreApprovalAttestation(value) {
+  const source = requireObject(value, "core_approval_attestation");
+  const artifacts = Array.isArray(source.artifact_bindings)
+    ? source.artifact_bindings.map((artifact) => {
+        const record = requireObject(artifact, "core_approval_artifact");
+        return {
+          artifact_id: requireIdentifier(record.artifact_id, "artifact_id", 200),
+          content_digest: requireIdentifier(
+            record.content_digest,
+            "artifact_content_digest",
+            240,
+          ),
+          source_reference: requireIdentifier(
+            record.source_reference,
+            "artifact_source_reference",
+            500,
+          ),
+        };
+      })
+    : [];
+  if (
+    source.schema_version !== "ai_learning_core_approval_attestation_v0_16"
+    || !artifacts.length
+    || !/^aica_[a-f0-9]{64}$/.test(String(source.signature || ""))
+    || !/^sha256:[a-f0-9]{64}$/.test(String(source.binding_digest || ""))
+    || !/^sha256:[a-f0-9]{64}$/.test(String(
+      source.evidence_snapshot_digest || "",
+    ))
+    || !/^sha256:[a-f0-9]{64}$/.test(String(
+      source.independent_review_receipt_digest || "",
+    ))
+    || !/^dttv_[a-f0-9]{64}$/.test(String(source.core_verdict_reference || ""))
+    || !/^dttje_[a-f0-9]{24}$/.test(String(source.core_evidence_set_digest || ""))
+    || source.decision !== "approved_for_shadow"
+  ) throw new Error("core_approval_attestation_invalid");
+  return {
+    schema_version: source.schema_version,
+    tenant_id: requireTenant(source.tenant_id),
+    candidate_id: requireIdentifier(source.candidate_id, "candidate_id", 200),
+    candidate_version: requireIdentifier(
+      source.candidate_version,
+      "candidate_version",
+      200,
+    ),
+    candidate_type: requireIdentifier(source.candidate_type, "candidate_type", 80),
+    decision: source.decision,
+    source_revision: finiteNumber(
+      source.source_revision,
+      "core_approval_source_revision",
+      { minimum: 1, integer: true },
+    ),
+    resulting_revision: finiteNumber(
+      source.resulting_revision,
+      "core_approval_resulting_revision",
+      { minimum: 2, integer: true },
+    ),
+    binding_digest: source.binding_digest,
+    evidence_snapshot_digest: source.evidence_snapshot_digest,
+    independent_review_receipt_digest:
+      source.independent_review_receipt_digest,
+    review_tree_id: requireIdentifier(source.review_tree_id, "review_tree_id", 160),
+    review_node_id: requireIdentifier(source.review_node_id, "review_node_id", 120),
+    core_verdict_reference: source.core_verdict_reference,
+    core_evidence_set_digest: source.core_evidence_set_digest,
+    artifact_bindings: artifacts,
+    owner_actor_provenance: ownerActorProvenance(
+      source.owner_actor_provenance,
+      { required: true },
+    ),
+    reviewed_at: isoDate(source.reviewed_at, "reviewed_at"),
+    review_window_issued_at: isoDate(
+      source.review_window_issued_at,
+      "review_window_issued_at",
+    ),
+    review_window_expires_at: isoDate(
+      source.review_window_expires_at,
+      "review_window_expires_at",
+    ),
+    revalidation_due_at: isoDate(
+      source.revalidation_due_at,
+      "revalidation_due_at",
+    ),
+    signature: source.signature,
+  };
 }
 
 function assertAdvisoryOnly(input) {
@@ -215,6 +394,22 @@ function normalizeExperiment(input) {
 
 function normalizeCandidate(input) {
   assertAdvisoryOnly(input);
+  const normalizedOwnerActor = input.human_review
+    ? ownerActorProvenance(input.human_review.owner_actor_provenance)
+    : null;
+  const normalizedReviewBinding = input.human_review
+    && input.human_review.review_binding_receipt
+    && input.human_review.review_binding_payload
+    ? normalizeReviewBindingProof(
+        input.human_review.review_binding_receipt,
+        input.human_review.review_binding_payload,
+      )
+    : null;
+  const normalizedCoreApproval = input.human_review?.core_approval_attestation
+    ? normalizeCoreApprovalAttestation(
+        input.human_review.core_approval_attestation,
+      )
+    : null;
   const humanReview = input.human_review && typeof input.human_review === "object" && !Array.isArray(input.human_review)
     ? {
         decision: enumValue(input.human_review.decision, "human_review_decision", ["approved_for_shadow", "deferred", "rejected"]),
@@ -223,7 +418,44 @@ function normalizeCandidate(input) {
         reviewer_reference: requireIdentifier(input.human_review.reviewer_reference, "reviewer_reference", 240),
         reviewed_at: isoDate(input.human_review.reviewed_at, "reviewed_at"),
         review_expires_at: isoDate(input.human_review.review_expires_at, "review_expires_at"),
-        independent_human_review_verified: input.human_review.independent_human_review_verified === true,
+        independent_human_review_verified: (
+          input.human_review.independent_human_review_verified === true
+          && Boolean(input.human_review.independent_review_receipt_digest)
+          && Boolean(input.human_review.independent_review_binding_digest)
+          && Boolean(input.human_review.review_tree_id)
+          && Boolean(input.human_review.review_node_id)
+          && Boolean(normalizedOwnerActor)
+          && Boolean(normalizedReviewBinding)
+          && Boolean(normalizedCoreApproval)
+        ),
+        owner_actor_provenance: normalizedOwnerActor,
+        review_binding_receipt: normalizedReviewBinding?.receipt || null,
+        review_binding_payload: normalizedReviewBinding?.payload || null,
+        review_source_revision: normalizedReviewBinding?.source_revision || null,
+        review_resulting_revision: normalizedReviewBinding?.resulting_revision || null,
+        review_evidence_snapshot_digest: normalizedReviewBinding
+          ?.evidence_snapshot_digest || null,
+        core_approval_attestation: normalizedCoreApproval,
+        independent_review_receipt_digest: optionalIdentifier(
+          input.human_review.independent_review_receipt_digest,
+          "independent_review_receipt_digest",
+          240,
+        ),
+        independent_review_binding_digest: optionalIdentifier(
+          input.human_review.independent_review_binding_digest,
+          "independent_review_binding_digest",
+          240,
+        ),
+        review_tree_id: optionalIdentifier(
+          input.human_review.review_tree_id,
+          "review_tree_id",
+          160,
+        ),
+        review_node_id: optionalIdentifier(
+          input.human_review.review_node_id,
+          "review_node_id",
+          120,
+        ),
         guard_attestations: {
           ai_learning_governance_guard: enumValue(
             input.human_review.guard_attestations?.ai_learning_governance_guard,
@@ -302,10 +534,24 @@ function normalizePerformanceScorecard(input) {
 function normalizeLearningOutcome(input) {
   assertAdvisoryOnly(input);
   const governance = requireObject(input.governance, "governance");
+  const candidateId = optionalIdentifier(input.candidate_id, "candidate_id");
+  const candidateVersion = optionalIdentifier(input.candidate_version, "candidate_version");
+  const candidateRevision = input.candidate_revision === null || input.candidate_revision === undefined
+    ? null
+    : finiteNumber(input.candidate_revision, "candidate_revision", { integer: true });
+  if (
+    (candidateId === null && (candidateVersion !== null || candidateRevision !== null))
+    || (
+      candidateId !== null
+      && (candidateVersion === null || candidateRevision === null || candidateRevision < 1)
+    )
+  ) throw new Error("learning_outcome_candidate_lineage_invalid");
   return {
     outcome_id: requireIdentifier(input.outcome_id, "outcome_id"),
     run_id: requireIdentifier(input.run_id, "run_id"),
-    candidate_id: optionalIdentifier(input.candidate_id, "candidate_id"),
+    candidate_id: candidateId,
+    candidate_version: candidateVersion,
+    candidate_revision: candidateRevision,
     outcome_status: enumValue(input.outcome_status, "outcome_status", ["succeeded", "failed", "partial", "abstained"]),
     outcome_verified: requireBoolean(input.outcome_verified, "outcome_verified"),
     human_review_status: enumValue(input.human_review_status, "human_review_status", ["not_required", "pending", "approved", "rejected"]),
@@ -323,6 +569,11 @@ function normalizeLearningOutcome(input) {
         governance.outcome_attestation_receipt,
         "outcome_attestation_receipt",
         240,
+      ),
+      outcome_attestation_failure_reason: optionalIdentifier(
+        governance.outcome_attestation_failure_reason,
+        "outcome_attestation_failure_reason",
+        120,
       ),
       outcome_binding_digest: optionalIdentifier(
         governance.outcome_binding_digest,
@@ -349,14 +600,90 @@ function clone(value) {
   return value === null || value === undefined ? value : JSON.parse(JSON.stringify(value));
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function requestDigest(value) {
-  return `sha256:${crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+  return `sha256:${crypto.createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+}
+
+function candidateReviewIdempotencyIntent({
+  candidate_id,
+  decision,
+  review_note,
+  expected_revision,
+  review_attestation = null,
+  review_binding_receipt = null,
+} = {}) {
+  return {
+    operation: "learning_candidate_review",
+    candidate_id: requireIdentifier(candidate_id, "candidate_id"),
+    decision: enumValue(
+      decision,
+      "decision",
+      ["approved_for_shadow", "deferred", "rejected"],
+    ),
+    review_note: review_note
+      ? redact(review_note, "review_note", 2_000)
+      : null,
+    expected_revision: finiteNumber(
+      expected_revision,
+      "expected_revision",
+      { minimum: 0, integer: true },
+    ),
+    review_attestation: clone(review_attestation),
+    review_binding_receipt: clone(review_binding_receipt),
+  };
+}
+
+function learningOutcomeIdempotencyIntent({
+  tenant_id,
+  record,
+  expected_revision,
+  review_attestation = null,
+} = {}) {
+  const requested = requireObject(record, "learning_outcome");
+  return {
+    operation: "learning_outcome_record",
+    outcome_id: requireIdentifier(requested.outcome_id, "outcome_id"),
+    outcome_binding_digest: buildAiLearningOutcomeRecordBinding({
+      tenant_id: requireTenant(tenant_id),
+      outcome: requested,
+    }),
+    expected_revision: finiteNumber(
+      expected_revision,
+      "expected_revision",
+      { minimum: 0, integer: true },
+    ),
+    review_attestation: clone(review_attestation),
+  };
 }
 
 function collectionContract(collection) {
   const contract = COLLECTIONS[collection];
   if (!contract) throw new Error("learning_factory_collection_invalid");
   return contract;
+}
+
+function normalizedListFilters(collection, value = {}) {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? value
+    : {};
+  const allowed = new Set(COLLECTION_FILTER_FIELDS[collection] || []);
+  const output = {};
+  for (const [field, rawValue] of Object.entries(source)) {
+    if (!allowed.has(field)) throw new Error("learning_factory_filter_invalid");
+    output[field] = requireIdentifier(rawValue, field, 240);
+  }
+  return output;
 }
 
 function validateStoredRecord(record, { tenantId, collection, recordId }) {
@@ -372,6 +699,11 @@ function validateStoredRecord(record, { tenantId, collection, recordId }) {
     throw new Error("learning_factory_adapter_scope_violation");
   }
   const normalized = contract.normalize(record);
+  const resourceVisibility = record.resource_visibility
+    && typeof record.resource_visibility === "object"
+    && !Array.isArray(record.resource_visibility)
+    ? clone(record.resource_visibility)
+    : null;
   return {
     schema_version: contract.schemaVersion,
     tenant_id: tenantId,
@@ -381,6 +713,7 @@ function validateStoredRecord(record, { tenantId, collection, recordId }) {
     updated_at: isoDate(record.updated_at, "updated_at"),
     advisory_only: true,
     autonomous_execution_allowed: false,
+    ...(resourceVisibility ? { resource_visibility: resourceVisibility } : {}),
   };
 }
 
@@ -404,12 +737,45 @@ function governanceProof(value, { humanReviewRequired = false, nowIso = null } =
   if (new Date(reviewExpiresAt).getTime() <= new Date(nowIso).getTime()) {
     throw new Error("human_review_expired");
   }
+  const reviewOwnerActorIds = Array.isArray(proof.review_owner_actor_ids)
+    ? [...new Set(proof.review_owner_actor_ids.map((value) => String(value || "").trim()).filter(Boolean))]
+    : [];
+  if (reviewOwnerActorIds.length !== 1) {
+    throw new Error("owner_actor_provenance_required");
+  }
+  const reviewBinding = normalizeReviewBindingProof(
+    proof.review_binding_receipt,
+    proof.review_binding_payload,
+  );
   return {
     ...normalized,
     reviewer_reference: requireIdentifier(proof.reviewer_reference, "reviewer_reference", 240),
     reviewed_at: reviewedAt,
     review_expires_at: reviewExpiresAt,
     independent_human_review_verified: true,
+    independent_review_receipt_digest: requireIdentifier(
+      proof.independent_review_receipt_digest,
+      "independent_review_receipt_digest",
+      240,
+    ),
+    independent_review_binding_digest: requireIdentifier(
+      proof.independent_review_binding_digest,
+      "independent_review_binding_digest",
+      240,
+    ),
+    review_tree_id: requireIdentifier(proof.review_tree_id, "review_tree_id", 160),
+    review_node_id: requireIdentifier(proof.review_node_id, "review_node_id", 120),
+    owner_actor_provenance: ownerActorProvenance(reviewOwnerActorIds[0], {
+      required: true,
+    }),
+    review_binding_receipt: reviewBinding.receipt,
+    review_binding_payload: reviewBinding.payload,
+    review_source_revision: reviewBinding.source_revision,
+    review_resulting_revision: reviewBinding.resulting_revision,
+    review_evidence_snapshot_digest: reviewBinding.evidence_snapshot_digest,
+    core_approval_attestation: normalizeCoreApprovalAttestation(
+      proof.core_approval_attestation,
+    ),
   };
 }
 
@@ -504,12 +870,18 @@ export function evaluateAiLearningGovernanceGuard({
 export function createAiLearningFactoryStore({
   adapter = null,
   now = () => new Date().toISOString(),
-  verifyOutcomeEvidence = async () => ({ verified: false }),
+  verifyOutcomeEvidence = null,
 } = {}) {
   const persistence = validateAdapter(adapter);
-  if (typeof verifyOutcomeEvidence !== "function") {
+  if (
+    verifyOutcomeEvidence !== null
+    && typeof verifyOutcomeEvidence !== "function"
+  ) {
     throw new Error("learning_outcome_evidence_verifier_required");
   }
+  let outcomeEvidenceVerifier = verifyOutcomeEvidence
+    || (async () => ({ verified: false, reason: "outcome_evidence_unverified" }));
+  let outcomeEvidenceVerifierConfigurable = verifyOutcomeEvidence === null;
   const memory = new Map();
   const idempotency = new Map();
   const writeQueues = new Map();
@@ -561,14 +933,43 @@ export function createAiLearningFactoryStore({
     return validated;
   }
 
-  async function write({ tenantId, collection, value, idempotencyKey, expectedRevision = null }) {
+  async function write({
+    tenantId,
+    collection,
+    value,
+    idempotencyKey,
+    expectedRevision = null,
+    idempotencyIntent = null,
+    visibilityContext = null,
+    visibilityBranchIds = null,
+  }) {
     const contract = collectionContract(collection);
     const source = requireObject(value, collection);
     if (source.tenant_id !== undefined && source.tenant_id !== tenantId) throw new Error("cross_tenant_record_denied");
     const normalized = contract.normalize(source);
     const recordId = normalized[contract.idField];
     const operationKey = `${tenantId}:${collection}:${requireIdentifier(idempotencyKey, "idempotency_key", 240)}`;
-    const normalizedRequestDigest = requestDigest(normalized);
+    const requestedVisibilityBranches = visibilityBranchIds === null
+      ? null
+      : [...new Set(
+          (Array.isArray(visibilityBranchIds) ? visibilityBranchIds : [])
+            .map((branchId) => String(branchId || "").trim())
+            .filter(Boolean),
+        )].sort();
+    const normalizedRequestDigest = requestDigest({
+      intent: idempotencyIntent === null
+        ? { record: normalized }
+        : clone(requireObject(idempotencyIntent, "idempotency_intent")),
+      visibility_branch_ids: requestedVisibilityBranches,
+      visibility_origin: visibilityContext ? {
+        tenant_id: visibilityContext.tenant_id || visibilityContext.tenantId || tenantId,
+        client_type: visibilityContext.client_type || visibilityContext.clientType || "",
+        audience: visibilityContext.audience || "",
+        entitlements: Array.isArray(visibilityContext.entitlements)
+          ? [...new Set(visibilityContext.entitlements)].sort()
+          : [],
+      } : null,
+    });
     return serializeWrite(`${tenantId}:${collection}`, async () => {
       const priorOperation = idempotency.get(operationKey);
       if (priorOperation) {
@@ -588,6 +989,23 @@ export function createAiLearningFactoryStore({
         throw new Error("learning_factory_revision_conflict");
       }
       const timestamp = isoDate(now(), "updated_at");
+      let resourceVisibility = existing?.resource_visibility || null;
+      if (resourceVisibility) {
+        const validation = validateResourceVisibilityBinding(resourceVisibility, {
+          tenant_id: tenantId,
+        });
+        if (!validation.ok) throw new Error("resource_visibility_migration_required");
+      } else if (existing) {
+        throw new Error("resource_visibility_migration_required");
+      } else {
+        resourceVisibility = createResourceVisibilityBinding({
+          tenant_id: tenantId,
+          branch_ids: requestedVisibilityBranches
+            || learningRecordBranchIds(collection, normalized),
+          origin_context: visibilityContext,
+          created_at: timestamp,
+        });
+      }
       const record = {
         schema_version: contract.schemaVersion,
         tenant_id: tenantId,
@@ -597,6 +1015,7 @@ export function createAiLearningFactoryStore({
         updated_at: timestamp,
         advisory_only: true,
         autonomous_execution_allowed: false,
+        resource_visibility: resourceVisibility,
       };
       if (persistence) {
         const saved = typeof persistence.saveIdempotent === "function"
@@ -636,54 +1055,233 @@ export function createAiLearningFactoryStore({
     });
   }
 
-  async function read({ tenantId, collection, recordId }) {
-    collectionContract(collection);
-    return clone(await loadRecord({ tenantId, collection, recordId }));
+  async function replayWrite({
+    tenantId,
+    collection,
+    recordId,
+    idempotencyKey,
+    idempotencyIntent,
+    visibilityContext = null,
+    visibilityBranchIds = null,
+  }) {
+    const contract = collectionContract(collection);
+    const validatedRecordId = requireIdentifier(
+      recordId,
+      contract.idField,
+    );
+    const validatedIdempotencyKey = requireIdentifier(
+      idempotencyKey,
+      "idempotency_key",
+      240,
+    );
+    const operationKey =
+      `${tenantId}:${collection}:${validatedIdempotencyKey}`;
+    const requestedVisibilityBranches = visibilityBranchIds === null
+      ? null
+      : [...new Set(
+          (Array.isArray(visibilityBranchIds) ? visibilityBranchIds : [])
+            .map((branchId) => String(branchId || "").trim())
+            .filter(Boolean),
+        )].sort();
+    const normalizedRequestDigest = requestDigest({
+      intent: clone(requireObject(idempotencyIntent, "idempotency_intent")),
+      visibility_branch_ids: requestedVisibilityBranches,
+      visibility_origin: visibilityContext ? {
+        tenant_id:
+          visibilityContext.tenant_id
+          || visibilityContext.tenantId
+          || tenantId,
+        client_type:
+          visibilityContext.client_type
+          || visibilityContext.clientType
+          || "",
+        audience: visibilityContext.audience || "",
+        entitlements: Array.isArray(visibilityContext.entitlements)
+          ? [...new Set(visibilityContext.entitlements)].sort()
+          : [],
+      } : null,
+    });
+    return serializeWrite(`${tenantId}:${collection}`, async () => {
+      const priorOperation = idempotency.get(operationKey);
+      if (priorOperation) {
+        if (
+          priorOperation.record[contract.idField] !== validatedRecordId
+          || priorOperation.request_digest !== normalizedRequestDigest
+        ) throw new Error("learning_factory_idempotency_conflict");
+        return clone(priorOperation.record);
+      }
+      if (typeof persistence?.loadIdempotent !== "function") return null;
+      const persisted = await persistence.loadIdempotent({
+        tenant_id: tenantId,
+        collection,
+        record_id: validatedRecordId,
+        idempotency_key: validatedIdempotencyKey,
+        request_digest: normalizedRequestDigest,
+      });
+      if (!persisted) return null;
+      const validated = validateStoredRecord(persisted, {
+        tenantId,
+        collection,
+        recordId: validatedRecordId,
+      });
+      collectionRecords(tenantId, collection).set(
+        validatedRecordId,
+        validated,
+      );
+      idempotency.set(operationKey, {
+        request_digest: normalizedRequestDigest,
+        record: validated,
+      });
+      return clone(validated);
+    });
   }
 
-  async function list({ tenantId, collection, limit = 100 }) {
+  async function read({ tenantId, collection, recordId, visibilityContext = null }) {
+    collectionContract(collection);
+    const record = await loadRecord({ tenantId, collection, recordId });
+    if (
+      visibilityContext
+      && !resourceVisibleToContext(record, visibilityContext, { tenant_id: tenantId })
+    ) return null;
+    return clone(record);
+  }
+
+  async function list({
+    tenantId,
+    collection,
+    limit = 100,
+    offset = 0,
+    filters = {},
+    page = false,
+    visibilityContext = null,
+  }) {
     collectionContract(collection);
     const boundedLimit = Math.max(1, Math.min(500, Number(limit) || 100));
+    const boundedOffset = Number(offset);
+    if (
+      !Number.isSafeInteger(boundedOffset)
+      || boundedOffset < 0
+      || boundedOffset > 1_000_000
+    ) throw new Error("cursor_invalid");
+    const normalizedFilters = normalizedListFilters(collection, filters);
     if (persistence) {
-      const persisted = await persistence.list({ tenant_id: tenantId, collection, limit: boundedLimit });
+      if (visibilityContext && typeof persistence.listForVisibility !== "function") {
+        throw new Error("resource_visibility_adapter_required");
+      }
+      const persisted = visibilityContext
+        ? await persistence.listForVisibility({
+            tenant_id: tenantId,
+            collection,
+            visibility_context: visibilityContext,
+            limit: boundedLimit + (page ? 1 : 0),
+            offset: boundedOffset,
+            filters: normalizedFilters,
+          })
+        : await persistence.list({
+            tenant_id: tenantId,
+            collection,
+            limit: boundedLimit + (page ? 1 : 0),
+            offset: boundedOffset,
+            filters: normalizedFilters,
+          });
       if (!Array.isArray(persisted)) throw new Error("learning_factory_adapter_list_invalid");
+      const scanned = persisted.slice(0, boundedLimit);
+      const records = [];
       for (const row of persisted) {
         const contract = collectionContract(collection);
         const recordId = row?.[contract.idField];
         const validated = validateStoredRecord(row, { tenantId, collection, recordId });
         collectionRecords(tenantId, collection).set(recordId, validated);
+        if (
+          scanned.includes(row)
+          && (!visibilityContext || resourceVisibleToContext(
+            validated,
+            visibilityContext,
+            { tenant_id: tenantId },
+          ))
+        ) records.push(validated);
       }
+      if (page) {
+        return {
+          records: clone(records),
+          next_offset: persisted.length > boundedLimit
+            ? boundedOffset + boundedLimit
+            : null,
+        };
+      }
+      return clone(records);
     }
-    return clone(
-      [...collectionRecords(tenantId, collection).values()]
-        .sort((a, b) => a.updated_at.localeCompare(b.updated_at))
-        .slice(-boundedLimit),
+    const ordered = [...collectionRecords(tenantId, collection).values()]
+      .sort((a, b) =>
+        b.updated_at.localeCompare(a.updated_at)
+        || String(a[collectionContract(collection).idField])
+          .localeCompare(String(b[collectionContract(collection).idField])));
+    const visible = visibilityContext
+      ? ordered.filter((record) =>
+          resourceVisibleToContext(record, visibilityContext, { tenant_id: tenantId }))
+      : ordered;
+    const filtered = visible.filter((record) =>
+      Object.entries(normalizedFilters).every(([field, value]) =>
+        record[field] === value));
+    const records = filtered.slice(
+      boundedOffset,
+      boundedOffset + boundedLimit,
     );
+    if (page) {
+      return {
+        records: clone(records),
+        next_offset: boundedOffset + records.length < filtered.length
+          ? boundedOffset + records.length
+          : null,
+      };
+    }
+    return clone(records);
   }
 
   function typedWrite(collection) {
-    return ({ tenant_id, record, idempotency_key, expected_revision = null }) => write({
+    return ({
+      tenant_id,
+      record,
+      idempotency_key,
+      expected_revision = null,
+      visibility_context = null,
+      visibility_branch_ids = null,
+    }) => write({
       tenantId: requireTenant(tenant_id),
       collection,
       value: record,
       idempotencyKey: idempotency_key,
       expectedRevision: expected_revision,
+      visibilityContext: visibility_context,
+      visibilityBranchIds: visibility_branch_ids,
     });
   }
 
   function typedRead(collection) {
-    return ({ tenant_id, record_id }) => read({
+    return ({ tenant_id, record_id, visibility_context = null }) => read({
       tenantId: requireTenant(tenant_id),
       collection,
       recordId: requireIdentifier(record_id, "record_id"),
+      visibilityContext: visibility_context,
     });
   }
 
   function typedList(collection) {
-    return ({ tenant_id, limit = 100 }) => list({
+    return ({
+      tenant_id,
+      limit = 100,
+      offset = 0,
+      filters = {},
+      page = false,
+      visibility_context = null,
+    }) => list({
       tenantId: requireTenant(tenant_id),
       collection,
       limit,
+      offset,
+      filters,
+      page,
+      visibilityContext: visibility_context,
     });
   }
 
@@ -711,6 +1309,16 @@ export function createAiLearningFactoryStore({
     listLearningOutcomes: typedList("learning_outcomes"),
   };
 
+  api.configureOutcomeEvidenceVerifier = (verifier) => {
+    if (
+      !outcomeEvidenceVerifierConfigurable
+      || typeof verifier !== "function"
+    ) throw new Error("learning_outcome_evidence_verifier_locked");
+    outcomeEvidenceVerifier = verifier;
+    outcomeEvidenceVerifierConfigurable = false;
+    return true;
+  };
+
   api.recordLearningCandidate = async (input) => {
     if (input?.record?.status === "approved_for_shadow") throw new Error("learning_candidate_review_required");
     return await typedWrite("learning_candidates")(input);
@@ -724,11 +1332,18 @@ export function createAiLearningFactoryStore({
     authorization,
     idempotency_key,
     expected_revision,
+    review_attestation = null,
+    review_binding_receipt = null,
+    visibility_context = null,
   }) => {
     const tenantId = requireTenant(tenant_id);
     const candidateId = requireIdentifier(candidate_id, "candidate_id");
     const existing = await loadRecord({ tenantId, collection: "learning_candidates", recordId: candidateId });
     if (!existing) throw new Error("learning_candidate_not_found");
+    if (
+      visibility_context
+      && !resourceVisibleToContext(existing, visibility_context, { tenant_id: tenantId })
+    ) throw new Error("branch_not_available_for_client");
     const nextStatus = enumValue(decision, "decision", ["approved_for_shadow", "deferred", "rejected"]);
     const timestamp = isoDate(now(), "reviewed_at");
     let proof = governanceProof(authorization);
@@ -783,6 +1398,29 @@ export function createAiLearningFactoryStore({
           now: timestamp,
         });
         proof = governance.proof;
+        if (
+          proof.review_binding_payload.tenant_id !== tenantId
+          || proof.review_binding_payload.candidate_id !== existing.candidate_id
+          || proof.review_binding_payload.candidate_version
+            !== existing.candidate_version
+          || proof.review_binding_payload.decision !== nextStatus
+          || proof.review_source_revision !== Number(expected_revision)
+          || proof.review_resulting_revision !== Number(expected_revision) + 1
+          || ![
+            proof.review_source_revision,
+            proof.review_resulting_revision,
+          ].includes(Number(existing.revision))
+          || (
+            Number(existing.revision) === proof.review_resulting_revision
+            && (
+              existing.status !== nextStatus
+              || existing.human_review?.review_binding_receipt?.binding_digest
+                !== proof.review_binding_receipt.binding_digest
+            )
+          )
+        ) {
+          throw new Error("review_binding_candidate_mismatch");
+        }
         guardAttestations = {
           [governance.guard_id]: governance.verdict,
           [integrity.guard_id]: integrity.verdict,
@@ -804,6 +1442,15 @@ export function createAiLearningFactoryStore({
       collection: "learning_candidates",
       idempotencyKey: idempotency_key,
       expectedRevision: expected_revision,
+      idempotencyIntent: candidateReviewIdempotencyIntent({
+        candidate_id,
+        decision,
+        review_note,
+        expected_revision,
+        review_attestation,
+        review_binding_receipt,
+      }),
+      visibilityContext: visibility_context,
       value: {
         ...existing,
         status: nextStatus,
@@ -815,10 +1462,50 @@ export function createAiLearningFactoryStore({
           reviewed_at: proof.reviewed_at || timestamp,
           review_expires_at: proof.review_expires_at || new Date(new Date(timestamp).getTime() + 900_000).toISOString(),
           independent_human_review_verified: proof.independent_human_review_verified === true,
+          independent_review_receipt_digest: proof.independent_review_receipt_digest,
+          independent_review_binding_digest: proof.independent_review_binding_digest,
+          review_tree_id: proof.review_tree_id,
+          review_node_id: proof.review_node_id,
+          owner_actor_provenance: proof.owner_actor_provenance,
+          review_binding_receipt: proof.review_binding_receipt,
+          review_binding_payload: proof.review_binding_payload,
+          review_source_revision: proof.review_source_revision,
+          review_resulting_revision: proof.review_resulting_revision,
+          review_evidence_snapshot_digest: proof.review_evidence_snapshot_digest,
+          core_approval_attestation: proof.core_approval_attestation,
           guard_attestations: guardAttestations,
           review_note,
         },
       },
+    });
+  };
+
+  api.replayLearningCandidateReview = async ({
+    tenant_id,
+    candidate_id,
+    decision,
+    review_note,
+    idempotency_key,
+    expected_revision,
+    review_attestation = null,
+    review_binding_receipt = null,
+    visibility_context = null,
+  } = {}) => {
+    const tenantId = requireTenant(tenant_id);
+    return replayWrite({
+      tenantId,
+      collection: "learning_candidates",
+      recordId: candidate_id,
+      idempotencyKey: idempotency_key,
+      idempotencyIntent: candidateReviewIdempotencyIntent({
+        candidate_id,
+        decision,
+        review_note,
+        expected_revision,
+        review_attestation,
+        review_binding_receipt,
+      }),
+      visibilityContext: visibility_context,
     });
   };
 
@@ -828,33 +1515,67 @@ export function createAiLearningFactoryStore({
     authorization,
     idempotency_key,
     expected_revision = null,
+    review_attestation = null,
+    owner_actor_ids = [],
+    visibility_context = null,
+    visibility_branch_ids = null,
   }) => {
     const tenantId = requireTenant(tenant_id);
     const requested = requireObject(record, "learning_outcome");
     const proof = governanceProof(authorization);
-    const expectedBindingDigest = requestDigest({
+    const expectedBindingDigest = buildAiLearningOutcomeRecordBinding({
       tenant_id: tenantId,
-      outcome_id: requested.outcome_id,
-      run_id: requested.run_id,
-      candidate_id: requested.candidate_id || null,
-      outcome_status: requested.outcome_status,
-      evidence_digest: requested.evidence_digest,
-      policy_snapshot: requested.policy_snapshot,
-      observed_at: requested.observed_at,
+      outcome: requested,
     });
-    const attestation = await verifyOutcomeEvidence({
+    const attestation = await outcomeEvidenceVerifier({
       tenant_id: tenantId,
       record: clone(requested),
       expected_binding_digest: expectedBindingDigest,
+      review_attestation: clone(review_attestation),
+      owner_actor_ids: Array.isArray(owner_actor_ids) ? [...owner_actor_ids] : [],
     });
+    let canonicalAttestedOutcome = null;
+    try {
+      canonicalAttestedOutcome = attestation?.canonical_outcome
+        ? requireObject(attestation.canonical_outcome, "canonical_learning_outcome")
+        : null;
+    } catch {
+      canonicalAttestedOutcome = null;
+    }
     const verified = Boolean(
       attestation?.verified === true
       && attestation?.binding_digest === expectedBindingDigest
       && /^sha256:[a-f0-9]{64}$/.test(String(attestation?.receipt_digest || ""))
+      && canonicalAttestedOutcome
+      && buildAiLearningOutcomeRecordBinding({
+        tenant_id: tenantId,
+        outcome: canonicalAttestedOutcome,
+      }) === expectedBindingDigest
     );
-    const canonical = verified && attestation?.canonical_outcome
-      ? requireObject(attestation.canonical_outcome, "canonical_learning_outcome")
+    const canonical = verified
+      ? canonicalAttestedOutcome
       : requested;
+    let outcomeVisibilityBranches = Array.isArray(visibility_branch_ids)
+      ? [...new Set(visibility_branch_ids)]
+      : null;
+    if (!outcomeVisibilityBranches && requested.candidate_id) {
+      const candidate = await loadRecord({
+        tenantId,
+        collection: "learning_candidates",
+        recordId: requireIdentifier(requested.candidate_id, "candidate_id"),
+      });
+      const visibility = validateResourceVisibilityBinding(
+        candidate?.resource_visibility,
+        { tenant_id: tenantId },
+      );
+      if (!candidate || !visibility.ok) {
+        throw new Error("learning_candidate_visibility_invalid");
+      }
+      outcomeVisibilityBranches = [...visibility.binding.branch_ids];
+    }
+    if (requested.candidate_id && !verified) {
+      throw new Error("learning_outcome_evidence_unverified");
+    }
     return write({
       tenantId,
       collection: "learning_outcomes",
@@ -863,7 +1584,9 @@ export function createAiLearningFactoryStore({
         tenant_id: undefined,
         outcome_id: requested.outcome_id,
         run_id: requested.run_id,
-        candidate_id: requested.candidate_id || null,
+        candidate_id: verified
+          ? (canonical.candidate_id || null)
+          : (requested.candidate_id || null),
         outcome_verified: verified,
         human_review_status: verified
           ? canonical.human_review_status
@@ -873,11 +1596,53 @@ export function createAiLearningFactoryStore({
           ...proof,
           outcome_attestation_verified: verified,
           outcome_attestation_receipt: verified ? attestation.receipt_digest : null,
+          outcome_attestation_failure_reason: verified
+            ? null
+            : requireIdentifier(
+                attestation?.reason || "outcome_evidence_unverified",
+                "outcome_attestation_failure_reason",
+                120,
+              ),
           outcome_binding_digest: expectedBindingDigest,
         },
       },
       idempotencyKey: idempotency_key,
       expectedRevision: expected_revision,
+      idempotencyIntent: learningOutcomeIdempotencyIntent({
+        tenant_id: tenantId,
+        record: requested,
+        expected_revision,
+        review_attestation,
+      }),
+      visibilityContext: visibility_context,
+      visibilityBranchIds: outcomeVisibilityBranches,
+    });
+  };
+
+  api.replayLearningOutcome = async ({
+    tenant_id,
+    record,
+    idempotency_key,
+    expected_revision,
+    review_attestation = null,
+    visibility_context = null,
+    visibility_branch_ids = null,
+  } = {}) => {
+    const tenantId = requireTenant(tenant_id);
+    const requested = requireObject(record, "learning_outcome");
+    return replayWrite({
+      tenantId,
+      collection: "learning_outcomes",
+      recordId: requested.outcome_id,
+      idempotencyKey: idempotency_key,
+      idempotencyIntent: learningOutcomeIdempotencyIntent({
+        tenant_id: tenantId,
+        record: requested,
+        expected_revision,
+        review_attestation,
+      }),
+      visibilityContext: visibility_context,
+      visibilityBranchIds: visibility_branch_ids,
     });
   };
 

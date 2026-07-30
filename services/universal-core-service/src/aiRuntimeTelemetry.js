@@ -1,4 +1,8 @@
 import crypto from "node:crypto";
+import {
+  createResourceVisibilityBinding,
+  resourceVisibleToContext,
+} from "./resourceVisibility.js";
 
 export const AI_RUNTIME_TELEMETRY_SCHEMA_VERSION = "ai_runtime_telemetry_v0_16";
 
@@ -57,6 +61,8 @@ export const AI_RUNTIME_TELEMETRY_FIELDS = Object.freeze([
   "human_review_status",
   "quality",
   "quality_verified",
+  "quality_attestation_digest",
+  "learning_value",
   "provider_usage_verified",
   "evidence_digest",
   "policy_snapshot",
@@ -253,6 +259,41 @@ export function normalizeAiRuntimeTelemetry(input, {
       { maximum: 1 },
     )
     : null;
+  const qualityAttestationDigest = qualityVerified
+    ? requireReference(
+      trustedPersistence
+        ? source.quality_attestation_digest
+        : trustedAttestation.quality_attestation_digest,
+      "quality_attestation_digest",
+    )
+    : null;
+  const canonicalLearningValue = qualityVerified
+    ? requireNumber(
+      trustedPersistence
+        ? source.learning_value
+        : trustedAttestation.canonical_learning_value,
+      "learning_value",
+      { maximum: 1 },
+    )
+    : 0;
+  const canonicalHumanReviewStatus = qualityVerified
+    ? requireIdentifier(
+      trustedPersistence
+        ? source.human_review_status
+        : trustedAttestation.canonical_human_review_status,
+      "human_review_status",
+      80,
+    )
+    : requireIdentifier(source.human_review_status, "human_review_status", 80);
+  if (![
+    "not_required",
+    "pending",
+    "approved",
+    "rejected",
+    "completed_unattested",
+  ].includes(canonicalHumanReviewStatus)) {
+    throw new Error("human_review_status_invalid");
+  }
   const attestedOutcomeVerified = qualityVerified && (
     trustedPersistence
       ? source.outcome_verified === true
@@ -328,9 +369,11 @@ export function normalizeAiRuntimeTelemetry(input, {
     queue_observed: requireBoolean(source.queue_observed, "queue_observed"),
     outcome_status: requireIdentifier(source.outcome_status, "outcome_status", 80),
     outcome_verified: attestedOutcomeVerified,
-    human_review_status: requireIdentifier(source.human_review_status, "human_review_status", 80),
+    human_review_status: canonicalHumanReviewStatus,
     quality: canonicalQuality,
     quality_verified: qualityVerified,
+    quality_attestation_digest: qualityAttestationDigest,
+    learning_value: canonicalLearningValue,
     provider_usage_verified: providerUsageVerified,
     evidence_digest: requireReference(source.evidence_digest, "evidence_digest"),
     policy_snapshot: requireReference(source.policy_snapshot, "policy_snapshot"),
@@ -358,6 +401,13 @@ export function normalizeAiRuntimeTelemetry(input, {
     throw new Error("non_actual_usage_provenance_invalid");
   }
   if (event.quality_verified && event.quality === null) throw new Error("quality_attestation_invalid");
+  if (
+    event.quality_verified
+    && !/^sha256:[a-f0-9]{64}$/.test(String(event.quality_attestation_digest || ""))
+  ) throw new Error("quality_attestation_invalid");
+  if (!event.quality_verified && event.quality_attestation_digest !== null) {
+    throw new Error("quality_attestation_invalid");
+  }
   if (event.usage_kind === "estimated" && event.estimated_cost === null) {
     throw new Error("estimated_usage_cost_required");
   }
@@ -450,6 +500,7 @@ export function createAiRuntimeTelemetryStore({
         provider_usage_verified: persisted.provider_usage_verified === true,
         estimated_usage_verified: persisted.usage_kind === "estimated",
         quality_verified: persisted.quality_verified === true,
+        quality_attestation_digest: persisted.quality_attestation_digest,
         canonical_usage: {
           usage_kind: persisted.usage_kind,
           input_tokens: persisted.input_tokens,
@@ -463,12 +514,21 @@ export function createAiRuntimeTelemetryStore({
           provider_receipt_digest: persisted.provider_receipt_digest,
         },
         canonical_quality: persisted.quality,
+        canonical_learning_value: persisted.learning_value,
+        canonical_human_review_status: persisted.human_review_status,
         outcome_verified: persisted.outcome_verified === true,
       },
     });
     if (normalized.tenant_id !== tenantId || (runId && normalized.run_id !== runId)) throw new Error("telemetry_adapter_scope_violation");
     if (persisted.telemetry_digest !== normalized.telemetry_digest) throw new Error("telemetry_adapter_integrity_violation");
-    return normalized;
+    return {
+      ...normalized,
+      ...(persisted.resource_visibility
+        && typeof persisted.resource_visibility === "object"
+        && !Array.isArray(persisted.resource_visibility)
+        ? { resource_visibility: clone(persisted.resource_visibility) }
+        : {}),
+    };
   }
 
   async function loadPersisted(tenantId, runId) {
@@ -486,7 +546,12 @@ export function createAiRuntimeTelemetryStore({
     tenant_scoped: true,
     idempotent: true,
 
-    async record({ tenant_id, idempotency_key, telemetry }) {
+    async record({
+      tenant_id,
+      idempotency_key,
+      telemetry,
+      visibility_context = null,
+    }) {
       const tenantId = requireTenant(tenant_id);
       const idempotencyKey = requireIdentifier(idempotency_key, "idempotency_key", 200);
       const candidate = { ...requireObject(telemetry, "telemetry"), tenant_id: tenantId };
@@ -518,9 +583,26 @@ export function createAiRuntimeTelemetryStore({
             || qualityAttestation?.receipt_digest
             || null,
           canonical_quality: qualityAttestation?.canonical_quality,
+          canonical_learning_value: qualityAttestation?.canonical_learning_value,
+          canonical_human_review_status: qualityAttestation?.canonical_human_review_status,
           outcome_verified: qualityAttestation?.outcome_verified === true,
         },
       });
+      const resourceVisibility = createResourceVisibilityBinding({
+        tenant_id: tenantId,
+        branch_ids: [normalized.branch_id],
+        origin_context: visibility_context || {
+          tenant_id: tenantId,
+          client_type: normalized.client_type,
+          audience: normalized.audience,
+          entitlements: [],
+        },
+        created_at: normalized.recorded_at,
+      });
+      const storedCandidate = {
+        ...normalized,
+        resource_visibility: resourceVisibility,
+      };
       const key = `${tenantId}:${idempotencyKey}`;
       return serializeWrite(tenantId, async () => {
         const existingIdempotency = idempotency.get(key);
@@ -531,7 +613,7 @@ export function createAiRuntimeTelemetryStore({
         const bucket = tenantRecords(tenantId);
         const existing = bucket.get(normalized.run_id) || await loadPersisted(tenantId, normalized.run_id);
         if (existing && existing.telemetry_digest !== normalized.telemetry_digest) throw new Error("telemetry_run_conflict");
-        const stored = existing || normalized;
+        const stored = existing || storedCandidate;
         if (!existing && persistence) {
           await persistence.save({
             tenant_id: tenantId,
@@ -545,26 +627,108 @@ export function createAiRuntimeTelemetryStore({
       });
     },
 
-    async read({ tenant_id, run_id }) {
+    async read({ tenant_id, run_id, visibility_context = null }) {
       const tenantId = requireTenant(tenant_id);
       const runId = requireIdentifier(run_id, "run_id");
-      return clone(tenantRecords(tenantId).get(runId) || await loadPersisted(tenantId, runId));
+      const record = tenantRecords(tenantId).get(runId)
+        || await loadPersisted(tenantId, runId);
+      if (
+        visibility_context
+        && !resourceVisibleToContext(record, visibility_context, { tenant_id: tenantId })
+      ) return null;
+      return clone(record);
     },
 
-    async list({ tenant_id, limit = 100 }) {
+    async list({
+      tenant_id,
+      limit = 100,
+      offset = 0,
+      filters = {},
+      page = false,
+      visibility_context = null,
+    }) {
       const tenantId = requireTenant(tenant_id);
       const boundedLimit = Math.max(1, Math.min(500, Number(limit) || 100));
-      let rows = [...tenantRecords(tenantId).values()];
+      const boundedOffset = Number(offset);
+      if (
+        !Number.isSafeInteger(boundedOffset)
+        || boundedOffset < 0
+        || boundedOffset > 1_000_000
+      ) throw new Error("cursor_invalid");
+      const normalizedFilters = {};
+      for (const [field, value] of Object.entries(
+        filters && typeof filters === "object" && !Array.isArray(filters) ? filters : {},
+      )) {
+        if (field !== "trace_id") throw new Error("telemetry_filter_invalid");
+        normalizedFilters.trace_id = requireIdentifier(value, "trace_id");
+      }
       if (persistence) {
-        const persisted = await persistence.list({ tenant_id: tenantId, limit: boundedLimit });
+        if (visibility_context && typeof persistence.listForVisibility !== "function") {
+          throw new Error("resource_visibility_adapter_required");
+        }
+        const persisted = visibility_context
+          ? await persistence.listForVisibility({
+              tenant_id: tenantId,
+              visibility_context,
+              limit: boundedLimit + (page ? 1 : 0),
+              offset: boundedOffset,
+              filters: normalizedFilters,
+            })
+          : await persistence.list({
+              tenant_id: tenantId,
+              limit: boundedLimit + (page ? 1 : 0),
+              offset: boundedOffset,
+              filters: normalizedFilters,
+            });
         if (!Array.isArray(persisted)) throw new Error("telemetry_adapter_list_invalid");
+        const records = [];
         for (const row of persisted) {
           const normalized = normalizePersisted(row, tenantId);
           tenantRecords(tenantId).set(normalized.run_id, normalized);
+          if (
+            records.length < boundedLimit
+            && (!visibility_context || resourceVisibleToContext(
+              normalized,
+              visibility_context,
+              { tenant_id: tenantId },
+            ))
+            && Object.entries(normalizedFilters).every(([field, value]) =>
+              normalized[field] === value)
+          ) records.push(normalized);
         }
-        rows = [...tenantRecords(tenantId).values()];
+        if (page) {
+          return {
+            records: clone(records),
+            next_offset: persisted.length > boundedLimit
+              ? boundedOffset + boundedLimit
+              : null,
+          };
+        }
+        return clone(records);
       }
-      return clone(rows.sort((a, b) => a.recorded_at.localeCompare(b.recorded_at)).slice(-boundedLimit));
+      const ordered = [...tenantRecords(tenantId).values()].sort((a, b) =>
+        b.recorded_at.localeCompare(a.recorded_at)
+        || a.run_id.localeCompare(b.run_id));
+      const visible = visibility_context
+        ? ordered.filter((record) =>
+            resourceVisibleToContext(record, visibility_context, { tenant_id: tenantId }))
+        : ordered;
+      const filtered = visible.filter((record) =>
+        Object.entries(normalizedFilters).every(([field, value]) =>
+          record[field] === value));
+      const records = filtered.slice(
+        boundedOffset,
+        boundedOffset + boundedLimit,
+      );
+      if (page) {
+        return {
+          records: clone(records),
+          next_offset: boundedOffset + records.length < filtered.length
+            ? boundedOffset + records.length
+            : null,
+        };
+      }
+      return clone(records);
     },
   };
 }

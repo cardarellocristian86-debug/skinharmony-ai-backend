@@ -182,6 +182,8 @@ test("actual usage and verified quality require out-of-band attestations", async
       verified: true,
       attestation_digest: `sha256:${"b".repeat(64)}`,
       canonical_quality: 1,
+      canonical_learning_value: 0.8,
+      canonical_human_review_status: "approved",
       outcome_verified: true,
     }),
   });
@@ -202,6 +204,9 @@ test("actual usage and verified quality require out-of-band attestations", async
   });
   assert.equal(record.provider_usage_verified, true);
   assert.equal(record.quality_verified, true);
+  assert.equal(record.quality_attestation_digest, `sha256:${"b".repeat(64)}`);
+  assert.equal(record.learning_value, 0.8);
+  assert.equal(record.human_review_status, "approved");
   assert.equal(record.input_tokens, 100);
   assert.equal(record.cached_tokens, 20);
   assert.equal(record.usage_kind, "actual");

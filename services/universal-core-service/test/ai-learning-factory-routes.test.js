@@ -6,6 +6,10 @@ import {
   mountAiLearningFactoryRoutes,
 } from "../src/aiLearningFactoryRoutes.js";
 import { createAiRuntimeTelemetryStore } from "../src/aiRuntimeTelemetry.js";
+import {
+  createAiLearningCoreApprovalAttestationService,
+  createAiLearningReviewBindingReceiptService,
+} from "../src/aiLearningEvidenceVerifier.js";
 
 function mockApp() {
   const routes = [];
@@ -50,7 +54,7 @@ function candidate() {
   return {
     candidate_id: "candidate-prompt",
     candidate_version: "v1",
-    candidate_type: "prompt",
+    candidate_type: "dataset",
     status: "under_review",
     dataset_id: "dataset-golden",
     dataset_version: "golden-v1",
@@ -126,7 +130,110 @@ async function seedCandidateEvidence(store) {
   });
 }
 
-test("router exposes exactly eight dynamic endpoints without adding MCP tools", () => {
+function candidateReviewProof() {
+  const signingSecret = "route-review-binding-test-secret-0123456789";
+  const now = () => Date.parse("2026-07-27T12:00:00.000Z");
+  const bindingIssuer = createAiLearningReviewBindingReceiptService({
+    secret: signingSecret,
+    now,
+    randomBytes: () => Buffer.alloc(16, 7),
+  });
+  const candidateRecord = {
+    tenant_id: "tenant-a",
+    revision: 1,
+    ...candidate(),
+  };
+  const datasetRecord = {
+    tenant_id: "tenant-a",
+    revision: 1,
+    dataset_id: "dataset-golden",
+    dataset_version: "golden-v1",
+    provenance_digest: "sha256:provenance",
+    label_provenance_digest: "sha256:labels",
+    split_digests: { train: "sha256:train", eval: "sha256:eval" },
+    evidence_refs: ["evidence-dataset"],
+  };
+  const scorecardRecord = {
+    tenant_id: "tenant-a",
+    revision: 1,
+    scorecard_id: "scorecard-v016",
+    release_version: "0.16.0-ai-learning-factory",
+    dataset_version: "golden-v1",
+    benchmark_manifest_digest: "sha256:benchmark",
+    metrics: {
+      branch_selection_accuracy: 0.98,
+      tool_selection_accuracy: 0.97,
+      safety_compliance_score: 1,
+    },
+    evidence_refs: ["evidence-scorecard"],
+  };
+  const experimentRecord = {
+    tenant_id: "tenant-a",
+    revision: 1,
+    experiment_id: "experiment-shadow",
+    experiment_version: "v1",
+    assignment_integrity: "passed",
+    guardrail_metrics: { safety_compliance_score: 1 },
+    evidence_refs: ["evidence-experiment"],
+    rollback_reference: "rollback-experiment",
+  };
+  const issued = bindingIssuer.issue({
+    tenant_id: "tenant-a",
+    candidate: candidateRecord,
+    expected_revision: 1,
+    decision: "approved_for_shadow",
+    dataset: datasetRecord,
+    scorecard: scorecardRecord,
+    experiment: experimentRecord,
+  });
+  const receipt = Object.fromEntries(
+    Object.entries(issued).filter(([key]) => key !== "binding"),
+  );
+  const bindingVerification = bindingIssuer.verify({
+    receipt,
+    tenant_id: "tenant-a",
+    candidate: candidateRecord,
+    expected_revision: 1,
+    decision: "approved_for_shadow",
+    dataset: datasetRecord,
+    scorecard: scorecardRecord,
+    experiment: experimentRecord,
+  });
+  assert.equal(bindingVerification.verified, true);
+  const coreApprovalAttestation =
+    createAiLearningCoreApprovalAttestationService({
+      secret: signingSecret,
+      now,
+    }).issue({
+      tenant_id: "tenant-a",
+      candidate: candidateRecord,
+      binding_verification: bindingVerification,
+      independent_review: {
+        verified: true,
+        binding_digest: issued.binding.binding_digest,
+        receipt_digest: `sha256:${"a".repeat(64)}`,
+        review_tree_id: "tree-review-1",
+        review_node_id: "verify-review-1",
+        core_verdict_reference: `dttv_${"d".repeat(64)}`,
+        core_evidence_set_digest: `dttje_${"e".repeat(24)}`,
+        artifact_bindings: [{
+          artifact_id: "artifact-review-binding-1",
+          content_digest: issued.binding.binding_digest,
+          source_reference: "dtt://tree-review-1/verify-review-1",
+        }],
+        reviewed_at: "2026-07-27T12:00:00.000Z",
+      },
+      owner_actor_provenance: `ap_${"c".repeat(32)}`,
+    });
+  return {
+    receipt,
+    payload: issued.binding.payload,
+    binding_digest: issued.binding.binding_digest,
+    core_approval_attestation: coreApprovalAttestation,
+  };
+}
+
+test("router exposes exactly nine dynamic endpoints without adding MCP tools", () => {
   const app = mockApp();
   const mounted = mountAiLearningFactoryRoutes({
     app,
@@ -138,8 +245,8 @@ test("router exposes exactly eight dynamic endpoints without adding MCP tools", 
     resolveGovernanceProof() {},
     resolveRequestContext: horizontalRequestContext,
   });
-  assert.equal(app.routes.length, 8);
-  assert.equal(mounted.routes.length, 8);
+  assert.equal(app.routes.length, 9);
+  assert.equal(mounted.routes.length, 9);
   assert.equal(mounted.top_level_mcp_tools_added, 0);
   assert.deepEqual(mounted.contracts, AI_LEARNING_FACTORY_ROUTE_CONTRACTS);
   assert.deepEqual(mounted.routes.map((item) => item.capability_id), [
@@ -149,9 +256,36 @@ test("router exposes exactly eight dynamic endpoints without adding MCP tools", 
     "ai_performance_scorecard_read",
     "ai_experiment_read",
     "ai_learning_candidate_read",
+    "ai_learning_review_binding_preview",
     "ai_learning_candidate_review",
     "ai_learning_outcome_record",
   ]);
+  assert.equal(
+    mounted.contracts.ai_eval_scorecard_read.output_schema,
+    "ai_evaluation_scorecard_v0_16",
+  );
+  assert.equal(
+    mounted.contracts.ai_learning_review_binding_preview.output_schema,
+    "ai_learning_review_binding_preview_v0_16",
+  );
+  assert.deepEqual(
+    mounted.contracts.ai_learning_review_binding_preview.request_one_of
+      .map((variant) => variant.kind),
+    ["learning_candidate", "learning_outcome"],
+  );
+  assert(
+    mounted.contracts.ai_learning_review_binding_preview.output_variants
+      .learning_outcome.includes("telemetry_digest"),
+  );
+  assert(
+    mounted.contracts.ai_learning_candidate_review.body
+      .includes("review_binding_receipt"),
+  );
+  assert.deepEqual(
+    mounted.contracts.ai_learning_candidate_review
+      .review_binding_receipt_required_for,
+    ["approved_for_shadow"],
+  );
 });
 
 test("six read contracts apply canonical filters and bounded cursor pagination", async () => {
@@ -273,6 +407,65 @@ test("six read contracts apply canonical filters and bounded cursor pagination",
   assert.equal(rejected.payload.error, "ai_learning_query_parameter_not_allowed");
 });
 
+test("read routes delegate bounded cursor and filters to the persistence-backed page API", async () => {
+  const app = mockApp();
+  const calls = [];
+  const learningStore = {
+    async listLearningCandidates(input) {
+      calls.push(input);
+      return {
+        records: [{
+          candidate_id: "candidate-0501",
+          status: "under_review",
+        }],
+        next_offset: 551,
+      };
+    },
+  };
+  mountAiLearningFactoryRoutes({
+    app,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore: {},
+    learningStore,
+    audit: { append() {} },
+    resolveGovernanceProof() {},
+    resolveRequestContext: horizontalRequestContext,
+  });
+
+  const result = await invoke(
+    app,
+    "GET",
+    "/v1/ai-learning/candidates",
+    request({
+      query: {
+        state: "under_review",
+        limit: "50",
+        cursor: "offset:501",
+      },
+    }),
+  );
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.payload.candidates.map((record) => record.candidate_id), [
+    "candidate-0501",
+  ]);
+  assert.equal(result.payload.next_cursor, "offset:551");
+  assert.deepEqual(calls[0], {
+    tenant_id: "tenant-a",
+    limit: 50,
+    offset: 501,
+    filters: { status: "under_review" },
+    page: true,
+    visibility_context: {
+      tenant_id: "tenant-a",
+      client_type: "chatgpt",
+      audience: "chatgpt_connector",
+      entitlements: [],
+      role: "",
+    },
+  });
+});
+
 test("read routes derive tenant scope server-side", async () => {
   const app = mockApp();
   const learningStore = createAiLearningFactoryStore({ now: () => "2026-07-27T12:00:00.000Z" });
@@ -313,6 +506,163 @@ test("read routes derive tenant scope server-side", async () => {
   assert.equal(denied.payload.error, "tenant_scope_denied");
 });
 
+test("ChatGPT owner_root cannot read model-adaptation records and filtering precedes pagination", async () => {
+  const learningStore = createAiLearningFactoryStore({
+    now: () => "2026-07-27T12:00:00.000Z",
+  });
+  await learningStore.recordLearningCandidate({
+    tenant_id: "tenant-a",
+    idempotency_key: "candidate-horizontal-1",
+    expected_revision: 0,
+    record: { ...candidate(), candidate_id: "candidate-horizontal-1" },
+  });
+  await learningStore.recordLearningCandidate({
+    tenant_id: "tenant-a",
+    idempotency_key: "candidate-model-private",
+    expected_revision: 0,
+    record: {
+      ...candidate(),
+      candidate_id: "candidate-model-private",
+      candidate_type: "prompt",
+    },
+  });
+  await learningStore.recordLearningCandidate({
+    tenant_id: "tenant-a",
+    idempotency_key: "candidate-horizontal-2",
+    expected_revision: 0,
+    record: { ...candidate(), candidate_id: "candidate-horizontal-2" },
+  });
+
+  const chatgptApp = mockApp();
+  mountAiLearningFactoryRoutes({
+    app: chatgptApp,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore: createAiRuntimeTelemetryStore(),
+    learningStore,
+    audit: { append() {} },
+    resolveGovernanceProof() {},
+    resolveRequestContext() {
+      return {
+        clientType: "chatgpt",
+        audience: "chatgpt_connector",
+        role: "owner_root",
+      };
+    },
+  });
+  const firstPage = await invoke(
+    chatgptApp,
+    "GET",
+    "/v1/ai-learning/candidates",
+    request({ query: { limit: "1" } }),
+  );
+  assert.deepEqual(
+    firstPage.payload.candidates.map((item) => item.candidate_id),
+    ["candidate-horizontal-1"],
+  );
+  assert.equal(firstPage.payload.next_cursor, "offset:1");
+  const secondPage = await invoke(
+    chatgptApp,
+    "GET",
+    "/v1/ai-learning/candidates",
+    request({ query: { limit: "1", cursor: "offset:1" } }),
+  );
+  assert.deepEqual(
+    secondPage.payload.candidates.map((item) => item.candidate_id),
+    ["candidate-horizontal-2"],
+  );
+  const forced = await invoke(
+    chatgptApp,
+    "GET",
+    "/v1/ai-learning/candidates",
+    request({ query: { candidate_id: "candidate-model-private" } }),
+  );
+  assert.deepEqual(forced.payload.candidates, []);
+
+  const adminApp = mockApp();
+  mountAiLearningFactoryRoutes({
+    app: adminApp,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore: createAiRuntimeTelemetryStore(),
+    learningStore,
+    audit: { append() {} },
+    resolveGovernanceProof() {},
+    resolveRequestContext() {
+      return {
+        clientType: "admin",
+        audience: "admin_control_room",
+        role: "admin",
+      };
+    },
+  });
+  const adminRead = await invoke(
+    adminApp,
+    "GET",
+    "/v1/ai-learning/candidates",
+    request({ query: { candidate_id: "candidate-model-private" } }),
+  );
+  assert.deepEqual(
+    adminRead.payload.candidates.map((item) => item.candidate_id),
+    ["candidate-model-private"],
+  );
+});
+
+test("review binding preview returns the exact bounded server-derived artifact without mutating", async () => {
+  const app = mockApp();
+  const events = [];
+  const learningStore = createAiLearningFactoryStore({
+    now: () => "2026-07-27T12:00:00.000Z",
+  });
+  await seedCandidateEvidence(learningStore);
+  await learningStore.recordLearningCandidate({
+    tenant_id: "tenant-a",
+    idempotency_key: "candidate-preview",
+    expected_revision: 0,
+    record: candidate(),
+  });
+  mountAiLearningFactoryRoutes({
+    app,
+    readAuth() {},
+    governAuth() {},
+    telemetryStore: createAiRuntimeTelemetryStore(),
+    learningStore,
+    audit: { append(type, payload) { events.push({ type, payload }); } },
+    resolveGovernanceProof() {},
+    resolveRequestContext: horizontalRequestContext,
+    issueReviewBinding: createAiLearningReviewBindingReceiptService({
+      secret: "route-review-binding-test-secret-0123456789",
+      now: () => Date.parse("2026-07-27T12:00:00.000Z"),
+      randomBytes: () => Buffer.alloc(16, 7),
+    }).issue,
+  });
+  const result = await invoke(
+    app,
+    "POST",
+    "/v1/ai-learning/review-bindings/preview",
+    request({
+      body: {
+        candidate_id: "candidate-prompt",
+        decision: "approved_for_shadow",
+        expected_revision: 1,
+      },
+    }),
+  );
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.payload.review_binding.source_revision, 1);
+  assert.equal(result.payload.review_binding.resulting_revision, 2);
+  assert.match(result.payload.review_binding.binding_digest, /^sha256:[a-f0-9]{64}$/);
+  assert.match(result.payload.review_binding.receipt.signature, /^airr_[a-f0-9]{64}$/);
+  assert.equal(
+    JSON.parse(result.payload.review_binding.binding_content).candidate_id,
+    "candidate-prompt",
+  );
+  assert.equal(result.payload.review_binding.execution_authorized, false);
+  assert.deepEqual(events.map((event) => event.type), [
+    "ai_learning_review_binding_previewed",
+  ]);
+});
+
 test("direct AI Learning routes reject adjacent or mismatched client/audience pairs", async () => {
   for (const context of [
     { clientType: "analyzer", audience: "analyzer_runtime" },
@@ -348,6 +698,7 @@ test("mutating routes ignore caller authorization and use server Core proof", as
     expected_revision: 0,
     record: candidate(),
   });
+  const bindingProof = candidateReviewProof();
   mountAiLearningFactoryRoutes({
     app,
     readAuth() {},
@@ -366,6 +717,14 @@ test("mutating routes ignore caller authorization and use server Core proof", as
         reviewed_at: "2026-07-27T12:00:00.000Z",
         review_expires_at: "2026-07-27T12:15:00.000Z",
         independent_human_review_verified: true,
+        independent_review_receipt_digest: `sha256:${"a".repeat(64)}`,
+        independent_review_binding_digest: bindingProof.binding_digest,
+        review_tree_id: "tree-review-1",
+        review_node_id: "verify-review-1",
+        review_owner_actor_ids: [`ap_${"c".repeat(32)}`],
+        review_binding_receipt: bindingProof.receipt,
+        review_binding_payload: bindingProof.payload,
+        core_approval_attestation: bindingProof.core_approval_attestation,
       };
     },
     resolveRequestContext: horizontalRequestContext,

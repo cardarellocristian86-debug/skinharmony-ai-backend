@@ -15,7 +15,20 @@ function validateNode(schema, value, path, errors) {
       return candidateErrors.length === 0;
     });
     if (!matched) errors.push({ path, code: "any_of", message: "must match one allowed shape" });
-    return;
+  }
+  if (Array.isArray(schema.oneOf)) {
+    const matchedCount = schema.oneOf.reduce((count, candidate) => {
+      const candidateErrors = [];
+      validateNode(candidate, value, path, candidateErrors);
+      return count + (candidateErrors.length === 0 ? 1 : 0);
+    }, 0);
+    if (matchedCount !== 1) {
+      errors.push({
+        path,
+        code: "one_of",
+        message: "must match exactly one allowed shape",
+      });
+    }
   }
   if (Object.prototype.hasOwnProperty.call(schema, "const") && value !== schema.const) {
     errors.push({ path, code: "const", message: `must equal ${JSON.stringify(schema.const)}` });

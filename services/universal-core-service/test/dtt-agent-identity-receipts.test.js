@@ -138,6 +138,63 @@ test("missing or weak shared secret fails closed", () => {
   }), /secret_unavailable/);
 });
 
+test("agent context and receipt fail closed at the exact expiry millisecond", () => {
+  let nowMs = 1_800_000_000_000;
+  const store = createInMemoryDttAgentIdentityReceiptStore();
+  const service = receiptService({
+    secret,
+    now: () => nowMs,
+    receipt_ttl_ms: 30_000,
+    store,
+  });
+  const expiredContext = issueDttAgentContext({
+    secret,
+    tenant_id: "tenant-a",
+    agent_presence: presenceA,
+    now_ms: nowMs - 5_000,
+    ttl_ms: 5_000,
+  });
+  assert.throws(() => service.issue({
+    context_token: expiredContext,
+    tenant_id: "tenant-a",
+    tree_id: "tree-expiry",
+    node_id: "verify",
+    evidence_digest:
+      "evd_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    decision: "approve",
+    rationale: "Expiry boundary.",
+  }), /dtt_agent_context_expired/);
+
+  const liveContext = issueDttAgentContext({
+    secret,
+    tenant_id: "tenant-a",
+    agent_presence: presenceA,
+    now_ms: nowMs,
+  });
+  const issued = service.issue({
+    context_token: liveContext,
+    tenant_id: "tenant-a",
+    tree_id: "tree-expiry",
+    node_id: "verify",
+    evidence_digest:
+      "evd_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    decision: "approve",
+    rationale: "Expiry boundary.",
+  });
+  nowMs += 30_000;
+  assert.equal(service.validate({
+    tenant_id: "tenant-a",
+    tree_id: "tree-expiry",
+    node_id: "verify",
+    evidence_digest:
+      "evd_ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    decision: "approve",
+    rationale: "Expiry boundary.",
+    verifier_id: "agent-a",
+    identity_receipt: issued.identity_receipt,
+  }).verified, false);
+});
+
 test("different agent ids and sessions from the same signed actor cannot satisfy quorum", async () => {
   const store = createInMemoryDttAgentIdentityReceiptStore();
   const service = receiptService({ secret, store });
@@ -247,7 +304,7 @@ test("file CAS store preserves receipt validation and context replay denial acro
     evidence_digest: "evd_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     decision: "approve", rationale: "Persistent verification.",
     verifier_id: "agent-a", identity_receipt: issued.identity_receipt,
-  }).verified, true);
+  }).verified, false);
 });
 
 test("bounded long rationale produces a receipt accepted by the evidence contract", async () => {

@@ -89,7 +89,7 @@ export function createDttAgentIdentityReceiptService({
     if (payload.version !== CONTEXT_VERSION) throw new Error("dtt_agent_context_version_invalid");
     if (payload.tenant_id !== text(expectedTenantId, "tenant_id", 120)) throw new Error("dtt_agent_context_tenant_mismatch");
     if (!Number.isFinite(payload.issued_at_ms) || !Number.isFinite(payload.expires_at_ms)
-      || payload.issued_at_ms > current + 5_000 || payload.expires_at_ms < current) {
+      || payload.issued_at_ms > current + 5_000 || payload.expires_at_ms <= current) {
       throw new Error("dtt_agent_context_expired");
     }
     text(payload.agent_id, "agent_id", 160);
@@ -172,6 +172,13 @@ export function createDttAgentIdentityReceiptService({
     const stored = store.getReceipt(payload.receipt_id);
     if (!stored || stored.receipt !== identity_receipt) return { verified: false };
     if (payload.version !== RECEIPT_VERSION || payload.key_id !== keyId) return { verified: false };
+    const current = Number(now());
+    if (
+      !Number.isFinite(payload.issued_at_ms)
+      || !Number.isFinite(payload.expires_at_ms)
+      || payload.issued_at_ms > current + 5_000
+      || payload.expires_at_ms <= current
+    ) return { verified: false };
     const expected = {
       tenant_id: text(tenant_id, "tenant_id", 120),
       tree_id: text(tree_id, "tree_id", 160),
@@ -190,6 +197,8 @@ export function createDttAgentIdentityReceiptService({
       // Independence is principal-bound, not session-bound: one OAuth/service
       // actor cannot manufacture quorum by opening multiple sessions or aliases.
       independence_key: payload.actor_provenance,
+      issued_at_ms: payload.issued_at_ms,
+      expires_at_ms: payload.expires_at_ms,
     };
   }
 
@@ -330,7 +339,7 @@ export function createAsyncDttAgentIdentityReceiptService({
     if (payload.version !== CONTEXT_VERSION) throw new Error("dtt_agent_context_version_invalid");
     if (payload.tenant_id !== text(expectedTenantId, "tenant_id", 120)) throw new Error("dtt_agent_context_tenant_mismatch");
     if (!Number.isFinite(payload.issued_at_ms) || !Number.isFinite(payload.expires_at_ms)
-      || payload.issued_at_ms > current + 5_000 || payload.expires_at_ms < current) {
+      || payload.issued_at_ms > current + 5_000 || payload.expires_at_ms <= current) {
       throw new Error("dtt_agent_context_expired");
     }
     text(payload.agent_id, "agent_id", 160);
@@ -390,6 +399,13 @@ export function createAsyncDttAgentIdentityReceiptService({
       const stored = await store.getReceipt(payload.receipt_id);
       if (!stored || stored.receipt !== identity_receipt || payload.version !== RECEIPT_VERSION
         || payload.key_id !== keyId) return { verified: false };
+      const current = Number(now());
+      if (
+        !Number.isFinite(payload.issued_at_ms)
+        || !Number.isFinite(payload.expires_at_ms)
+        || payload.issued_at_ms > current + 5_000
+        || payload.expires_at_ms <= current
+      ) return { verified: false };
       const expected = {
         tenant_id: text(tenant_id, "tenant_id", 120),
         tree_id: text(tree_id, "tree_id", 160),
@@ -407,6 +423,8 @@ export function createAsyncDttAgentIdentityReceiptService({
         assignment_id: payload.assignment_id,
         // Distinct sessions owned by one actor are not independent verifiers.
         independence_key: payload.actor_provenance,
+        issued_at_ms: payload.issued_at_ms,
+        expires_at_ms: payload.expires_at_ms,
       };
     },
     verifyContext,
