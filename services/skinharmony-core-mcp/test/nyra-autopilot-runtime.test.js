@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createNyraAutopilotRuntime, NYRA_AUTOPILOT_SCHEMA_VERSION } from "../src/nyra-autopilot-runtime.js";
+import {
+  createNyraAutopilotRuntime,
+  NYRA_AUTOPILOT_ACTIVE_WORK_ADOPTION_LIMIT,
+  NYRA_AUTOPILOT_SCHEMA_VERSION,
+} from "../src/nyra-autopilot-runtime.js";
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
 
 test("Nyra Autopilot persists tenant and Work scoped plans, assignments and append-only receipts", () => {
@@ -32,4 +36,48 @@ test("Nyra Autopilot MCP surface has one owner activation and bounded claim/subm
     assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], false);
     assert.equal(tools[name]._meta["skinharmony/tenantBoundedCollaboration"], true);
   }
+});
+
+test("Nyra Autopilot activation adopts already active Work without granting execution", async () => {
+  const adopted = [];
+  const pool = {
+    query: async (sql) => {
+      if (sql.includes("FROM core_nyra_autopilot_tenants")) return { rows: [] };
+      if (sql.includes("SELECT work_id,project_id FROM core_continuity_works")) {
+        return { rows: [{ work_id: "a7448d84-3113-4c4f-9ff6-0b0a436f19c9", project_id: "skinharmony-ai-backend" }] };
+      }
+      return { rows: [] };
+    },
+    end() {},
+  };
+  const runtime = createNyraAutopilotRuntime({}, {
+    pool,
+    teamRuntime: {
+      schemaSql: "",
+      status: async () => ({ package: { enabled: true } }),
+      materializeForWork: async () => ({}),
+    },
+  });
+  runtime.reconcile = async (_identity, input) => {
+    adopted.push(input);
+    return { status: "materialized", run_id: "adoption-run" };
+  };
+  const result = await runtime.enable({ tenantId: "codexai", subject: "owner" }, { idempotency_key: "enable-autopilot-adoption" });
+  assert.equal(NYRA_AUTOPILOT_ACTIVE_WORK_ADOPTION_LIMIT, 100);
+  assert.deepEqual(adopted, [{
+    work_id: "a7448d84-3113-4c4f-9ff6-0b0a436f19c9",
+    project_id: "skinharmony-ai-backend",
+    trigger_type: "reconcile",
+  }]);
+  assert.deepEqual(result.active_work_adoption, {
+    attempted: 1,
+    limit: 100,
+    results: [{
+      work_id: "a7448d84-3113-4c4f-9ff6-0b0a436f19c9",
+      project_id: "skinharmony-ai-backend",
+      status: "materialized",
+      run_id: "adoption-run",
+    }],
+    execution_authorized: false,
+  });
 });
