@@ -105,9 +105,16 @@ if (config.decisionLedgerRequired === true && decisionLedger) {
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
-const collaborationHandlers = (config.agentWorkspaceRoot || config.collaborationDatabaseUrl)
+const collaborationRuntime = (config.agentWorkspaceRoot || config.collaborationDatabaseUrl)
   ? createCollaborationHandlers(config, { govern })
   : {};
+const {
+  registerAuthenticatedPresence,
+  ...collaborationHandlers
+} = collaborationRuntime;
+if (config.mandatoryAgentPresenceEnabled === true && typeof registerAuthenticatedPresence !== "function") {
+  throw new Error("mandatory_agent_presence_registry_unavailable");
+}
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
@@ -771,6 +778,14 @@ const app = createApp(config, {
   readiness: startupReadiness,
   postgresMajorVersionProbe,
   beforeToolCall: async ({ identity, toolName, args }) => {
+    if (config.mandatoryAgentPresenceEnabled === true && toolName !== "agent_heartbeat") {
+      try {
+        await registerAuthenticatedPresence(identity);
+      } catch (error) {
+        if (!error?.code || error.code === "core_gate_denied") error.code = "agent_presence_registration_failed";
+        throw error;
+      }
+    }
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
     try {
       if (!requiresGenericWorkPreflight(toolName)) return { preflight: null, ledgerContext };
