@@ -5,6 +5,7 @@ import { digest, WORK_CONTINUITY_SCHEMA_SQL } from "./work-continuity-runtime.js
 import { compileNyraAutopilotPlan } from "./nyra-autopilot-plan.js";
 
 export const NYRA_AUTOPILOT_SCHEMA_VERSION = "nyra_work_autopilot_v1";
+export const NYRA_AUTOPILOT_ACTIVE_WORK_ADOPTION_LIMIT = 100;
 const CLIENT_TYPES = new Set(["chatgpt", "codex", "api_agent", "other"]);
 const ACTIVE_ASSIGNMENT_STATES = new Set(["offered", "claimed", "submitted", "verified", "quarantined", "cancelled", "expired"]);
 
@@ -250,7 +251,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
     });
   }
 
-  return {
+  const runtime = {
     schemaSql: CREATE_SCHEMA_SQL,
     initialize,
     async enable(identity, input = {}) {
@@ -261,7 +262,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       if (!teamStatus.package.enabled) {
         await teamRuntime.enable(identity, { agent_id: enabledBy, idempotency_key: shortKey("autoteam", { tenantId, key }) });
       }
-      return transaction(async (client) => {
+      const activation = await transaction(async (client) => {
         const existing = await settingsFor(client, tenantId);
         if (existing) {
           if (existing.status !== "active") throw new Error("nyra_autopilot_disabled");
@@ -274,6 +275,36 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         return { tenant_id: tenantId, status: "active", policy_version: NYRA_AUTOPILOT_SCHEMA_VERSION, idempotent_replay: false,
           execution_authorized: false, model_invocation_allowed: false, external_action_allowed: false };
       });
+      // The first tenant activation also adopts persisted active Work records.
+      // This makes the change safe for work already in progress at deployment
+      // time. Reconcile is idempotent, so a retried activation only repairs a
+      // prior transient failure and never duplicates a team or an offer.
+      const works = await pool.query(`SELECT work_id,project_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND status='active' ORDER BY updated_at DESC LIMIT $2`, [tenantId, NYRA_AUTOPILOT_ACTIVE_WORK_ADOPTION_LIMIT]);
+      const adoption = [];
+      for (const work of works.rows) {
+        try {
+          const outcome = await runtime.reconcile(identity, {
+            work_id: work.work_id,
+            project_id: work.project_id,
+            trigger_type: "reconcile",
+          });
+          adoption.push({ work_id: work.work_id, project_id: work.project_id, status: outcome.status, run_id: outcome.run_id || null });
+        } catch (error) {
+          // Activation remains durable even if a legacy Work has corrupt or
+          // unavailable continuity data. The bounded recovery can retry it.
+          adoption.push({ work_id: work.work_id, project_id: work.project_id, status: "deferred", code: text(error?.message || "nyra_autopilot_adoption_failed", 160) });
+        }
+      }
+      return {
+        ...activation,
+        active_work_adoption: {
+          attempted: adoption.length,
+          limit: NYRA_AUTOPILOT_ACTIVE_WORK_ADOPTION_LIMIT,
+          results: adoption,
+          execution_authorized: false,
+        },
+      };
     },
     async status(identity) {
       const tenantId = tenant(identity?.tenantId);
@@ -434,4 +465,5 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       });
     },
   };
+  return runtime;
 }
