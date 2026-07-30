@@ -1028,6 +1028,90 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: identity.tenantId,
       },
     })),
+    nyra_research_distillation_status: async (_args, identity) => textResult(
+      await coreRequest("/v1/research/status", identity.tenantId),
+    ),
+    nyra_research_source_registry: async (_args, identity) => textResult(
+      await coreRequest("/v1/research/source-registry", identity.tenantId),
+    ),
+    nyra_research_learning_pack: async (args, identity) => {
+      const query = new URLSearchParams();
+      if (args.branch_id) query.set("branch_id", String(args.branch_id));
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return textResult(await coreRequest(`/v1/research/learning-packs${suffix}`, identity.tenantId));
+    },
+    nyra_research_envelope_authorize: async (args, identity) => textResult(
+      await coreRequest("/v1/research/envelope/authorize", identity.tenantId, {
+        method: "POST",
+        body: {
+          request_id: args.request_id,
+          question: args.question,
+          branch_ids: args.branch_ids,
+          allowed_source_ids: args.allowed_source_ids,
+          max_documents: args.max_documents,
+          max_bytes: args.max_bytes,
+          max_duration_ms: args.max_duration_ms,
+          max_cost: args.max_cost,
+          retention_mode: args.retention_mode,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_workspace_open: async (args, identity) => textResult(
+      await coreRequest("/v1/research/workspaces/open", identity.tenantId, {
+        method: "POST",
+        body: {
+          envelope_id: args.envelope_id,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_workspace_attach: async (args, identity) => textResult(
+      await coreRequest("/v1/research/workspaces/attach", identity.tenantId, {
+        method: "POST",
+        body: {
+          workspace_id: args.workspace_id,
+          evidence: args.evidence,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_distill: async (args, identity) => textResult(
+      await coreRequest("/v1/research/distill", identity.tenantId, {
+        method: "POST",
+        body: {
+          workspace_id: args.workspace_id,
+          evidence: args.evidence,
+          lesson: args.lesson,
+          learning: args.learning,
+          scope: args.scope,
+          confidence: args.confidence,
+          limitations: args.limitations,
+          outcome_refs: args.outcome_refs,
+          // The MCP bridge is deliberately candidate-only. Even if a direct
+          // caller bypasses its JSON schema, Core never receives a persistence
+          // request from this path.
+          persist_verified: false,
+          audit_reference: args.audit_reference,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_workspace_close: async (args, identity) => textResult(
+      await coreRequest("/v1/research/workspaces/close", identity.tenantId, {
+        method: "POST",
+        body: {
+          workspace_id: args.workspace_id,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_cleanup: async (_args, identity) => textResult(
+      await coreRequest("/v1/research/cleanup", identity.tenantId, {
+        method: "POST",
+        body: { tenant_id: identity.tenantId },
+      }),
+    ),
     nyra_v2_preview: async (args, identity) => textResult(
       await nyraDeepV2Request(args, identity, "preview"),
     ),
@@ -1320,6 +1404,13 @@ export function createCoreWriteGuard(config, options = {}) {
       "task.claim",
       "task.update",
       "message.acknowledge",
+      "work.participant.join",
+      "work.participant.heartbeat",
+      "work.branch.open",
+      "work.lease.acquire",
+      "work.lease.renew",
+      "work.lease.release",
+      "work.message.post",
     ]);
     const ownerConfirmedInternalActionTypes = new Set([
       "workspace.create_folder",

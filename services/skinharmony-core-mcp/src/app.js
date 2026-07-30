@@ -427,7 +427,7 @@ export function createApp(config, options = {}) {
         };
       }) } });
       if (method === "tools/call") {
-        const tool = TOOLS.find((item) => item.name === params.name);
+        const tool = visibleTools.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });

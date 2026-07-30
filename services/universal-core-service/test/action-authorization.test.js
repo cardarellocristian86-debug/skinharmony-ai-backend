@@ -40,6 +40,29 @@ test("authorizes a bounded low-impact coordination write without confirmation", 
   assert.equal(result.confirmation_satisfied, false);
 });
 
+test("authorizes tenant work-gallery coordination only within the bounded contract", () => {
+  for (const actionType of [
+    "work.participant.join",
+    "work.participant.heartbeat",
+    "work.branch.open",
+    "work.lease.acquire",
+    "work.lease.renew",
+    "work.lease.release",
+    "work.message.post",
+  ]) {
+    const result = buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: actionType,
+    });
+    assert.equal(result.allowed, true, actionType);
+    assert.equal(result.confirmation_required, false, actionType);
+  }
+  assert.equal(buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "work.verify_memory",
+  }).allowed, false);
+});
+
 test("keeps hard blocks, higher risk and unsafe internal writes closed", () => {
   assert.equal(buildActionAuthorization(contract({ state: "blocked" }), { ...boundedCoordinationWrite, owner_confirmed: true }).allowed, false);
   assert.equal(buildActionAuthorization(contract({ risk_band: "medium" }), { ...boundedCoordinationWrite, owner_confirmed: true }).allowed, false);

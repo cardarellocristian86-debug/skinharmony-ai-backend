@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import { createCoreHandlers } from "../src/core-handlers.js";
-import {
-  nyraDeepV2EvidencePackHash,
-  nyraDeepV2StableJson,
-} from "../src/nyra-deep-v2-mcp-request.js";
 import { TOOLS } from "../src/tool-definitions.js";
+import {
+  createNyraDeepV2McpRequestVerifier,
+  nyraDeepV2EvidencePackHash,
+} from "../../universal-core-service/src/nyraDeepV2McpRequest.js";
 
-const SIGNING_SECRET = "mcp-nyra-deep-v2-signing-secret-0123456789";
+const SIGNING_SECRET = crypto.randomBytes(32).toString("hex");
+const CORE_KEY = crypto.randomBytes(32).toString("hex");
 const IDENTITY = { tenantId: "tenant-a" };
 const BRANCH_ID = "context_intelligence";
 const SUBBRANCH_ID = "request_normalization";
@@ -55,29 +56,11 @@ function coreResponse(requestBody) {
   });
 }
 
-function verifySignature(attestation) {
-  const {
-    schema_version: schemaVersion,
-    issuer,
-    max_age_seconds: maxAgeSeconds,
-    signature,
-    ...payload
-  } = attestation;
-  assert.equal(schemaVersion, "mcp_nyra_deep_branch_v2_request_attestation_v1");
-  assert.equal(issuer, "skinharmony-core-mcp");
-  assert.equal(maxAgeSeconds, 60);
-  const expected = crypto
-    .createHmac("sha256", SIGNING_SECRET)
-    .update(`nyra-deep-branch-v2-request\u0000${nyraDeepV2StableJson(payload)}`)
-    .digest("hex");
-  assert.equal(signature, expected);
-}
-
 test("MCP signs and routes all Deep V2 operations through Universal Core", async () => {
   const calls = [];
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
-    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    universalCoreKeys: { "tenant-a": CORE_KEY },
     defaultTenantId: "owner-private",
     nyraDeepV2McpRequestSigningSecret: SIGNING_SECRET,
   }, {
@@ -149,7 +132,7 @@ test("MCP signs and routes all Deep V2 operations through Universal Core", async
 
   assert.equal(calls.length, 4);
   assert(calls.every((call) => new URL(call.url).pathname === "/v1/nira/core-bridge"));
-  assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
+  assert(calls.every((call) => call.init.headers.authorization === `Bearer ${CORE_KEY}`));
   assert(calls.every((call) => call.body.tenant_id === "tenant-a"));
   assert(calls.every((call) => call.body.memory_context?.tenant_id === "tenant-a"));
   assert.deepEqual(calls.map((call) => call.body.operation_type), [
@@ -160,7 +143,23 @@ test("MCP signs and routes all Deep V2 operations through Universal Core", async
   ]);
   assert.deepEqual(calls[0].body.nyra_branches, [BRANCH_ID]);
   assert(calls.every((call) => call.body.deep_branch_v2.request_attestation.tenant_id === "tenant-a"));
-  for (const call of calls) verifySignature(call.body.deep_branch_v2.request_attestation);
+  assert.deepEqual(calls.slice(1).map((call) => call.body.nyra_branches), [
+    [BRANCH_ID],
+    [BRANCH_ID],
+    [BRANCH_ID],
+  ]);
+
+  const verifier = createNyraDeepV2McpRequestVerifier({ secret: SIGNING_SECRET });
+  for (const call of calls) {
+    const deep = call.body.deep_branch_v2;
+    const verified = verifier.verify({
+      attestation: deep.request_attestation,
+      tenantId: "tenant-a",
+      requestId: call.body.request_id,
+      operation: deep.operation,
+    });
+    assert.equal(verified.ok, true, verified.reason);
+  }
   assert.equal(
     calls[2].body.deep_branch_v2.evidence_pack_hash,
     nyraDeepV2EvidencePackHash(evidencePack, requirementBindings),
@@ -174,7 +173,7 @@ test("MCP Deep V2 bridge fails closed when its dedicated signing secret is missi
   let calls = 0;
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
-    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    universalCoreKeys: { "tenant-a": CORE_KEY },
     defaultTenantId: "owner-private",
     nyraDeepV2McpRequestSigningSecret: "",
   }, {

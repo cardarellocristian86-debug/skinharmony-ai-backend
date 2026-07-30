@@ -1,19 +1,24 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, requiresGenericWorkPreflight, shouldAttachProviderOnboarding, toolFailure, TOOLS } from "../src/app.js";
 import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
 
+const CODEX_KEY = crypto.randomBytes(32).toString("hex");
+const CODEX_AUTHORIZATION = `Bearer ${CODEX_KEY}`;
+const ATTACKER_API_KEY = crypto.randomBytes(24).toString("base64url");
 const config = {
   publicUrl: "https://mcp.example.test",
   resource: "https://mcp.example.test/mcp",
   auth0Issuer: "https://tenant.auth0.com",
   auth0Audience: "https://core",
   jwksUri: "https://tenant.auth0.com/.well-known/jwks.json",
-  codexKeys: ["codex-key"],
+  codexKeys: [CODEX_KEY],
   codexScopes: ["core:read", "core:govern"],
   defaultTenantId: "owner-private",
   supportedScopes: ["core:read", "core:govern"]
 };
+const OWNER_CONTEXT_SECRET = crypto.randomBytes(32).toString("hex");
 
 async function serve(run, configOverride = {}) {
   const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({ content: [{ type: "text", text: "ok" }] })]));
@@ -121,10 +126,10 @@ test("reports only the dedicated provider setup-link source readiness", async ()
   const health = await fetch(`${base}/healthz`).then((response) => response.json());
   assert.equal(health.provider_setup_link_source_configured, true);
   assert.equal(health.owner_context_signing_configured, true);
-  assert.equal(JSON.stringify(health).includes("test-owner-context-signing-secret"), false);
+  assert.equal(JSON.stringify(health).includes(OWNER_CONTEXT_SECRET), false);
   assert.equal(Object.hasOwn(health, "universalCoreProviderSetupLinkKeys"), false);
   assert.equal(Object.hasOwn(health, "provider_setup_link_source_tenant"), false);
-}, { providerSetupLinkSourceConfigured: true, ownerContextSigningSecret: "test-owner-context-signing-secret" }));
+}, { providerSetupLinkSourceConfigured: true, ownerContextSigningSecret: OWNER_CONTEXT_SECRET }));
 
 test("health reports only the tenant membership binding count", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((response) => response.json());
@@ -148,7 +153,7 @@ test("returns RFC 9728 challenge when bearer is absent", async () => serve(async
 }));
 
 test("keeps Codex bearer compatibility and exposes MCP security schemes", async () => serve(async (base) => {
-  const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
+  const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }) });
   assert.equal(response.status, 200);
   const body = await response.json();
   assert(body.result.tools.every((tool) => tool._meta.securitySchemes.some((scheme) => scheme.type === "oauth2")));
@@ -254,7 +259,7 @@ test("production compact mode exposes only the stable connector surface", async 
       const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
         method: "POST",
         headers: {
-          authorization: "Bearer codex-key",
+          authorization: CODEX_AUTHORIZATION,
           "content-type": "application/json",
           "mcp-session-id": `compact-surface-test-${index}`,
         },
@@ -275,7 +280,7 @@ test("production compact mode exposes only the stable connector surface", async 
 test("publishes the governed host-browsing research sequence", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, {
     method: "POST",
-    headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
+    headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 40, method: "initialize" }),
   });
   const body = await response.json();
@@ -337,7 +342,7 @@ test("never attaches an unrelated blocked generic preflight to the bounded provi
   try {
     const body = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
       method: "POST",
-      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "native-provider-session" },
+      headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "native-provider-session" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 44, method: "tools/call", params: {
         name: "tenant_provider_openai_multi_agent_smoke_run",
         arguments: { task: "Run the fixed bounded test", owner_confirmed: true },
@@ -354,7 +359,7 @@ test("never attaches an unrelated blocked generic preflight to the bounded provi
 test("uses Core OAuth scopes for every collaboration capability", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, {
     method: "POST",
-    headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
+    headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 30, method: "tools/list" }),
   });
   const body = await response.json();
@@ -381,7 +386,7 @@ test("uses Core OAuth scopes for every collaboration capability", async () => se
 }));
 
 test("exposes specialist intelligence tools with read and governed-write scopes", async () => serve(async (base) => {
-  const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" }, body: JSON.stringify({ jsonrpc: "2.0", id: 40, method: "tools/list" }) });
+  const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" }, body: JSON.stringify({ jsonrpc: "2.0", id: 40, method: "tools/list" }) });
   const body = await response.json();
   const reads = ["intelligence_workflow", "scenario_analysis", "hypothesis_rank", "event_probability", "counterfactual_analysis", "decision_select", "outcome_verify", "calibration_status"];
   for (const name of reads) {
@@ -408,7 +413,7 @@ test("allows collaboration reads with core:read but blocks writes without core:g
   await new Promise((resolve) => server.once("listening", resolve));
   try {
     const base = `http://127.0.0.1:${server.address().port}`;
-    const headers = { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" };
+    const headers = { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" };
     const read = await fetch(`${base}/mcp`, {
       method: "POST",
       headers,
@@ -433,7 +438,7 @@ test("does not advertise collaboration tools without registered handlers", async
   await new Promise((resolve) => server.once("listening", resolve));
   try {
     const base = `http://127.0.0.1:${server.address().port}`;
-    const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" }, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }) });
+    const response = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" }, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/list" }) });
     const body = await response.json();
     assert.deepEqual(body.result.tools.map((tool) => tool.name), ["core_health"]);
   } finally {
@@ -464,7 +469,7 @@ test("rejects tenant, URL and key injection on every Suite tool before handler e
     for (const [name, argumentsValue] of Object.entries(valid)) {
       const response = await fetch(`${base}/mcp`, {
         method: "POST",
-        headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": `suite-injection-${name}` },
+        headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": `suite-injection-${name}` },
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: name,
@@ -475,7 +480,7 @@ test("rejects tenant, URL and key injection on every Suite tool before handler e
               ...argumentsValue,
               tenant_id: "tenant-b",
               url: "https://attacker.invalid",
-              api_key: "attacker-key",
+              api_key: ATTACKER_API_KEY,
             },
           },
         }),
@@ -507,7 +512,7 @@ test("binds five concurrent MCP chats to distinct stable signatures", async () =
     const call = async (session, agentId = "") => {
       const response = await fetch(`${base}/mcp`, {
         method: "POST",
-        headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": session },
+        headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": session },
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: session,
@@ -553,7 +558,7 @@ test("keeps one logical chat signature stable across rotated MCP transports", as
     const call = async (transport, sessionId, agentId = "chatgpt-chat-one") => {
       const response = await fetch(`${base}/mcp`, {
         method: "POST",
-        headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": transport },
+        headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": transport },
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: transport,
@@ -605,7 +610,7 @@ test("bootstraps authenticated stateless hosts without a transport session heade
       const response = await fetch(`${base}/mcp`, {
         method: "POST",
         headers: {
-          authorization: "Bearer codex-key",
+          authorization: CODEX_AUTHORIZATION,
           "content-type": "application/json",
           ...(sessionId ? { "mcp-session-id": sessionId } : {}),
         },
@@ -656,7 +661,7 @@ test("journals successful and failed tool calls without changing client response
   await new Promise((resolve) => server.once("listening", resolve));
   try {
     const base = `http://127.0.0.1:${server.address().port}`;
-    const headers = { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" };
+    const headers = { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" };
     const success = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "core_health", arguments: {} } }) });
     assert.equal(success.status, 200);
     const successBody = await success.json();
@@ -696,7 +701,7 @@ test("preserves ledger hook context when mandatory preflight fails", async () =>
     const base = `http://127.0.0.1:${server.address().port}`;
     const response = await fetch(`${base}/mcp`, {
       method: "POST",
-      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-ledger-failure-session" },
+      headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-ledger-failure-session" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "core_health", arguments: {} } }),
     });
     assert.equal(response.status, 200);
@@ -737,7 +742,7 @@ test("enforces and exposes automatic preflight before a work tool", async () => 
     const base = `http://127.0.0.1:${server.address().port}`;
     const response = await fetch(`${base}/mcp`, {
       method: "POST",
-      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
+      headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 20, method: "tools/call", params: { name: "search", arguments: { query: "current work" } } }),
     });
     const body = await response.json();
@@ -793,7 +798,7 @@ test("records explicit owner confirmation and completes a write after the Core g
   try {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
       method: "POST",
-      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
+      headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 22,
@@ -837,7 +842,7 @@ test("does not accept a raw confirmation flag from a non-owner MCP caller", asyn
   try {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
       method: "POST",
-      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
+      headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 23,
@@ -877,7 +882,7 @@ test("fails closed before the work tool when mandatory preflight is unavailable"
   try {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
       method: "POST",
-      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
+      headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-app-test-session" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 21, method: "tools/call", params: { name: "search", arguments: { query: "work" } } }),
     });
     assert.equal(response.status, 200);
@@ -901,7 +906,7 @@ test("returns an explicit client error for a cloud-memory checksum mismatch", as
   try {
     const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
       method: "POST",
-      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "checksum-test-session" },
+      headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "checksum-test-session" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 22, method: "tools/call", params: {
         name: "memory_document_upsert",
         arguments: { source_path: "SHARED_MEMORY/report.md", title: "Report", text: "content" },
@@ -917,21 +922,20 @@ test("returns an explicit client error for a cloud-memory checksum mismatch", as
 
 
 test("publishes the fixed secure OpenAI setup panel", async () => serve(async (base) => {
-  const init = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 40, method: "initialize" }) }).then((response) => response.json());
+  const init = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 40, method: "initialize" }) }).then((response) => response.json());
   assert.equal(init.result.capabilities.resources != null, true);
-  const resources = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 41, method: "resources/list" }) }).then((response) => response.json());
+  const resources = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 41, method: "resources/list" }) }).then((response) => response.json());
   const resource = resources.result.resources.find((item) => item.uri === "ui://skinharmony/openai-provider-setup.html");
   assert(resource);
-  const read = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 42, method: "resources/read", params: { uri: resource.uri } }) }).then((response) => response.json());
+  const read = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 42, method: "resources/read", params: { uri: resource.uri } }) }).then((response) => response.json());
   assert.match(read.result.contents[0].text, /Collega API key/);
   assert.match(read.result.contents[0].text, /link monouso verrà creato solo nella pagina protetta/);
   assert.doesNotMatch(read.result.contents[0].text, /setup_proof|setup_url.*provider-setup/);
-  const listed = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 43, method: "tools/list" }) }).then((response) => response.json());
+  const listed = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: CODEX_AUTHORIZATION, "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 43, method: "tools/list" }) }).then((response) => response.json());
   const panel = listed.result.tools.find((tool) => tool.name === "tenant_provider_openai_setup_panel");
   assert.equal(panel.annotations.readOnlyHint, true);
   assert.equal(panel._meta["openai/outputTemplate"], resource.uri);
 }));
-
 
 test("keeps optional OpenAI onboarding out of normal Nyra and Core work", () => {
   for (const toolName of ["work_preflight", "core_health", "core_capability_read", "core_gate_action"]) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -61,7 +62,8 @@ function evidenceFor(tree, nodeId, requiredApprovals) {
 
 test("orchestration API is tenant-bound, paged and proposal-only", async () => {
   const previousAdmin = process.env.CORE_SERVICE_ADMIN_KEY;
-  process.env.CORE_SERVICE_ADMIN_KEY = "orchestration-api-admin";
+  const adminKey = crypto.randomBytes(32).toString("hex");
+  process.env.CORE_SERVICE_ADMIN_KEY = adminKey;
   const storageRoot = path.join(os.tmpdir(), `core-orchestration-${Date.now()}-${Math.random()}`);
   const joinVerdictStore = createFileDynamicTaskTreeJoinVerdictStore({
     root: path.join(storageRoot, "test-join-verdicts"),
@@ -82,6 +84,12 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
       session_fingerprint: `session-${verifier_id}`,
       assignment_id: `assignment-${verifier_id}`,
     }),
+    dynamicTaskTreeEnv: {
+      NODE_ENV: "production",
+      CORE_DTT_ENABLED: "true",
+      CORE_DTT_MODE: "shadow",
+      CORE_DTT_TENANT_ALLOWLIST: "tenant-orchestration",
+    },
   });
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -90,7 +98,7 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
     const generated = await request(base, "POST", "/v1/keys/generate", {
       tenant_id: "tenant-orchestration",
       preset: "codex_automation",
-    }, "orchestration-api-admin");
+    }, adminKey);
     const key = generated.json.key;
 
     const catalog = await request(
@@ -172,6 +180,13 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
     assert.equal(tree.json.execution.authorized, false);
     assert.equal(tree.json.execution.core_join_required, true);
     assert.equal(tree.json.limits.max_parallel, 2);
+    assert.deepEqual(tree.json.rollout, {
+      enabled: true,
+      mode: "shadow",
+      tenant_allowed: true,
+      execution_authorized: false,
+      core_join_required: true,
+    });
 
     const read = await request(base, "GET", `/v1/orchestration/dtt/${tree.json.tree_id}`, undefined, key);
     assert.equal(read.status, 200);
@@ -284,7 +299,7 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
     const otherTenantKey = (await request(base, "POST", "/v1/keys/generate", {
       tenant_id: "tenant-other",
       preset: "codex_automation",
-    }, "orchestration-api-admin")).json.key;
+    }, adminKey)).json.key;
     const crossTenantRead = await request(
       base,
       "GET",
@@ -302,7 +317,8 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
 
 test("DTT join reconciles a durable joined tree after consume failure and restart", async () => {
   const previousAdmin = process.env.CORE_SERVICE_ADMIN_KEY;
-  process.env.CORE_SERVICE_ADMIN_KEY = "orchestration-recovery-admin";
+  const adminKey = crypto.randomBytes(32).toString("hex");
+  process.env.CORE_SERVICE_ADMIN_KEY = adminKey;
   const storageRoot = path.join(os.tmpdir(), `core-orchestration-recovery-${Date.now()}-${Math.random()}`);
   const ledgerRoot = path.join(storageRoot, "join-verdicts");
   const durableLedger = createFileDynamicTaskTreeJoinVerdictStore({ root: ledgerRoot });
@@ -347,7 +363,7 @@ test("DTT join reconciles a durable joined tree after consume failure and restar
     const generated = await request(first.base, "POST", "/v1/keys/generate", {
       tenant_id: "tenant-orchestration",
       preset: "codex_automation",
-    }, "orchestration-recovery-admin");
+    }, adminKey);
     const key = generated.json.key;
     const tree = await request(first.base, "POST", "/v1/orchestration/dtt/plan", {
       objective: "Recover join finalization after restart",
@@ -423,8 +439,9 @@ test("DTT join reconciles a durable joined tree after consume failure and restar
 
 test("signed assigned agents complete artifact registry, draft, quorum, outcome and Core join end to end", async () => {
   const previousAdmin = process.env.CORE_SERVICE_ADMIN_KEY;
-  process.env.CORE_SERVICE_ADMIN_KEY = "dtt-e2e-admin";
-  const secret = "dtt-e2e-shared-identity-secret-0000000000000000";
+  const adminKey = crypto.randomBytes(32).toString("hex");
+  process.env.CORE_SERVICE_ADMIN_KEY = adminKey;
+  const secret = crypto.randomBytes(32).toString("hex");
   const { app } = createUniversalCoreService({
     storageRoot: path.join(os.tmpdir(), `dtt-e2e-${Date.now()}-${Math.random()}`),
     dttAgentIdentitySigningSecret: secret,
@@ -435,7 +452,7 @@ test("signed assigned agents complete artifact registry, draft, quorum, outcome 
   try {
     const generated = await request(base, "POST", "/v1/keys/generate", {
       tenant_id: "tenant-e2e", preset: "codex_automation",
-    }, "dtt-e2e-admin");
+    }, adminKey);
     const key = generated.json.key;
     const tree = await request(base, "POST", "/v1/orchestration/dtt/plan", {
       objective: "Verify registered evidence",

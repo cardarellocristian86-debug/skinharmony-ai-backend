@@ -1,4 +1,8 @@
-personal-control-center/data/
+personal-control-center/data/*
+# Immutable generated Nyra V2 runtime artifacts required by the lazy production loader.
+!personal-control-center/data/nyra-deep-branch-v2.runtime-manifest.json
+!personal-control-center/data/nyra-deep-branch-v2.shards/
+!personal-control-center/data/nyra-deep-branch-v2.shards/**
 runtime/
 reports/
 universal-core/runtime/

@@ -39,6 +39,13 @@ function isBoundedInternalCoordinationWrite(body = {}) {
     "task.claim",
     "task.update",
     "message.acknowledge",
+    "work.participant.join",
+    "work.participant.heartbeat",
+    "work.branch.open",
+    "work.lease.acquire",
+    "work.lease.renew",
+    "work.lease.release",
+    "work.message.post",
   ]);
   return body.operation_class === "bounded_internal_coordination_write" &&
     allowedActionTypes.has(String(body.action_type || "").toLowerCase()) &&

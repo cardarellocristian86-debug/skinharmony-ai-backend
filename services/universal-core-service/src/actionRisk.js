@@ -265,6 +265,13 @@ export function classifyActionRisk(body = {}) {
     "task.claim",
     "task.update",
     "message.acknowledge",
+    "work.participant.join",
+    "work.participant.heartbeat",
+    "work.branch.open",
+    "work.lease.acquire",
+    "work.lease.renew",
+    "work.lease.release",
+    "work.message.post",
   ]);
   if (
     body.operation_class === "bounded_internal_coordination_write" &&

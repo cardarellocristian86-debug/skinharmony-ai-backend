@@ -9,11 +9,15 @@ const repoRoot = path.resolve(process.cwd());
 const reportDir = path.join(repoRoot, "reports/universal-core/core-service");
 fs.mkdirSync(reportDir, { recursive: true });
 
-process.env.CORE_SERVICE_ADMIN_KEY = "test-admin-key";
+const ADMIN_KEY = crypto.randomBytes(32).toString("hex");
+process.env.CORE_SERVICE_ADMIN_KEY = ADMIN_KEY;
 process.env.NODE_ENV = "test";
 
 const storageRoot = path.join(os.tmpdir(), `sh-core-service-test-${Date.now()}`);
-const ownerContextSigningSecret = "core-service-smoke-owner-context-signing-secret";
+const ownerContextSigningSecret = crypto.randomBytes(32).toString("hex");
+const sensitiveApiKeyFixture = crypto.randomBytes(24).toString("hex");
+const sensitivePasswordFixture = crypto.randomBytes(24).toString("hex");
+const sensitiveTokenFixture = `eyJ${crypto.randomBytes(32).toString("base64url")}`;
 const { app } = createUniversalCoreService({ storageRoot, ownerContextSigningSecret });
 const server = http.createServer(app);
 
@@ -27,7 +31,7 @@ function close() {
   return new Promise((resolve) => server.close(resolve));
 }
 
-async function api(base, method, pathName, body, key = "test-admin-key") {
+async function api(base, method, pathName, body, key = ADMIN_KEY) {
   const response = await fetch(`${base}${pathName}`, {
     method,
     headers: {
@@ -251,7 +255,7 @@ try {
   const rejectedResearch = await api(base, "POST", "/v1/research/validate", {
     evidence_pack: {
       question: "Validate evidence",
-      sources: [{ id: "source_a", url: "https://example.org/evidence", title: "api_key=secret-value", source_type: "official" }],
+      sources: [{ id: "source_a", url: "https://example.org/evidence", title: `api_key=${sensitiveApiKeyFixture}`, source_type: "official" }],
       claims: [{ id: "claim_a", kind: "fact", text: "Claim", source_ids: ["source_a"] }],
     },
   }, horizontalKey);
@@ -279,7 +283,7 @@ try {
       schema_version: "tenant_memory_context_v1",
       tenant_id: "tenant_horizontal_acme",
       revision: 4,
-      relevant_memories: [{ id: "mem-1", kind: "decision", title: "Render", summary: "Keep execution disabled password=never-store" }],
+      relevant_memories: [{ id: "mem-1", kind: "decision", title: "Render", summary: `Keep execution disabled password=${sensitivePasswordFixture}` }],
       pending_handoffs: [{ id: "mem-2", kind: "handoff", title: "Core review", summary: "Review the branch plan", to_agent_id: "core" }],
       recent_activity: [],
     },
@@ -310,7 +314,7 @@ try {
   assert(horizontalInterpretation.json.memory_context?.revision === 4, "Nyra did not receive tenant memory");
   assert(horizontalInterpretation.json.result.core_input?.context?.metadata?.memory_relevant_count === 1, "Core did not account for relevant tenant memory");
   assert(horizontalInterpretation.json.result.core_input?.context?.metadata?.memory_handoff_count === 1, "Core did not account for pending AI handoffs");
-  assert(!JSON.stringify(horizontalInterpretation.json).includes("never-store"), "Core response leaked a memory secret");
+  assert(!JSON.stringify(horizontalInterpretation.json).includes(sensitivePasswordFixture), "Core response leaked a memory secret");
 
   const verifiedOwnerInterpretation = await api(base, "POST", "/v1/nira/core-bridge", {
     text: "Dimmi la verita cruda senza filtro per me",
@@ -363,7 +367,7 @@ try {
   assert(malformedNyraBranch.status === 400 && malformedNyraBranch.json.error === "invalid_nyra_branch_id", "malformed Nyra branch was not rejected");
   const excessiveNyraBranches = await api(base, "POST", "/v1/nira/core-bridge", {
     text: "test",
-    nyra_branches: Array.from({ length: 21 }, (_, index) => `branch_${index}`),
+    nyra_branches: Array.from({ length: 65 }, (_, index) => `branch_${index}`),
   }, horizontalKey);
   assert(excessiveNyraBranches.status === 400 && excessiveNyraBranches.json.error === "nyra_branch_request_limit_exceeded", "Nyra branch request limit was not enforced");
   mark("horizontal_domain_pack_and_nyra_network", true, {
@@ -422,7 +426,7 @@ try {
           headline: "Centro sotto controllo",
           cta: "Apri AI Gold",
           error_message: "Il servizio sta impiegando troppo tempo. Riprova tra poco.",
-          token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fake.secret",
+          token: sensitiveTokenFixture,
         }),
       },
       {
@@ -435,7 +439,7 @@ try {
   }, connectorKey);
   assert(extractorCatalog.status === 200 && extractorCatalog.json.catalog?.total >= 2, "translation extractor catalog failed");
   assert(extractorCatalog.json.guardrail?.publish_allowed === false, "extractor should not allow publish");
-  assert(!JSON.stringify(extractorCatalog.json.catalog.segments).includes("eyJhbGci"), "extractor leaked token-like string");
+  assert(!JSON.stringify(extractorCatalog.json.catalog.segments).includes(sensitiveTokenFixture), "extractor leaked token-like string");
   mark("translation_extractor_catalog", true, {
     total: extractorCatalog.json.catalog.total,
     stats: extractorCatalog.json.extractor.stats,

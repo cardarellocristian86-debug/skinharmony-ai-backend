@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import { buildWorkPreflight, ROLE_CATALOG } from "../src/workPreflight.js";
 import { routeNyraBranches } from "../src/nyraBranchNetwork.js";
@@ -76,9 +77,11 @@ test("fails closed when the tenant memory provider has not supplied context", ()
 });
 
 test("redacts secrets from the preflight request summary", () => {
-  const result = fixture({ requestText: "Use GitHub token=super-secret-value password=hunter2" });
-  assert(!JSON.stringify(result).includes("super-secret-value"));
-  assert(!JSON.stringify(result).includes("hunter2"));
+  const token = crypto.randomBytes(24).toString("hex");
+  const password = crypto.randomBytes(24).toString("hex");
+  const result = fixture({ requestText: `Use GitHub token=${token} password=${password}` });
+  assert(!JSON.stringify(result).includes(token));
+  assert(!JSON.stringify(result).includes(password));
 });
 
 test("marks tenant-scoped reads ready without a redundant confirmation gate", () => {
@@ -92,6 +95,27 @@ test("marks tenant-scoped reads ready without a redundant confirmation gate", ()
   assert.equal(result.governance.owner_confirmation_required, false);
   assert.equal(result.governance.execution_allowed_by_preflight, true);
   assert.equal(result.task_graph.nodes.find((node) => node.id === "execute_approved_scope").status, "ready_read_only");
+});
+
+test("keeps Deep V2 evaluation read-only while research and distillation remain Core-gated", () => {
+  for (const operationType of [
+    "nyra_v2_preview",
+    "nyra_v2_requirements",
+    "nyra_v2_evidence_prepare",
+    "nyra_v2_evaluate",
+  ]) {
+    const result = fixture({
+      requestText: "Valuta il ramo Deep V2 con evidenze governate",
+      operationType,
+      toolName: operationType,
+    });
+    assert.equal(result.state, "ready_read_only");
+    assert.equal(result.memory_first.status, "recalled");
+    assert.equal(result.governance.execution_allowed_by_preflight, true);
+    assert.equal(result.core_research.directive.authority.research_execution_authorized, false);
+    assert.equal(result.core_research.directive.authority.distillation_authorized, false);
+    assert.equal(result.governed_learning.policy_activation_requires_verify, true);
+  }
 });
 
 test("tracks explicit owner confirmation while keeping a write Core-gated", () => {

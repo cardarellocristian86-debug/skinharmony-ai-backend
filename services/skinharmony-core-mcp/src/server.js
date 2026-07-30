@@ -14,6 +14,7 @@ import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { createAuthenticator } from "./auth.js";
 import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
+import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
 
@@ -62,6 +63,64 @@ function summarizeToolRequest(toolName, args = {}) {
   ).slice(0, 20_000);
 }
 
+function requireTenantWorkIdentity(identity) {
+  requireTenantWorkCapability(identity, "read");
+}
+
+async function requireOwnerGovernance(identity, actionType, target) {
+  const decision = await govern({
+    action_label: `Govern ${actionType}`,
+    action_type: actionType,
+    target,
+    operation_class: "owner_confirmed_governed_action",
+    external_side_effect: false,
+    destructive: false,
+    bounded_scope: true,
+    low_impact: false,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: Boolean(decisionLedger),
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  }, identity);
+  if (decision.allowed !== true) {
+    const error = new Error("core_owner_authorization_required");
+    error.code = "core_owner_authorization_required";
+    throw error;
+  }
+}
+
+async function requireBoundedTenantCoordination(identity, actionType, target) {
+  requireTenantWorkCapability(identity, "coordinate");
+  const decision = await govern({
+    action_label: `Coordinate tenant work: ${actionType}`,
+    action_type: actionType,
+    target,
+    operation_class: "bounded_internal_coordination_write",
+    external_side_effect: false,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: Boolean(decisionLedger),
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  }, identity);
+  if (decision.allowed !== true) {
+    const error = new Error("core_tenant_coordination_denied");
+    error.code = "core_tenant_coordination_denied";
+    throw error;
+  }
+}
+
 const baseHandlers = {
   tenant_provider_openai_setup_panel: async (_args, identity) => ({
       structuredContent: {
@@ -86,14 +145,17 @@ const baseHandlers = {
   } } : {}),
   ...(workContinuityRuntime ? {
     work_continuity_create: async (args, identity) => {
+      await requireOwnerGovernance(identity, "work.continuity.create", args.project_id);
       const payload = { ok: true, result: await workContinuityRuntime.create(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_record_change: async (args, identity) => {
+      await requireOwnerGovernance(identity, "work.continuity.record_change", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.recordChange(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_checkpoint: async (args, identity) => {
+      await requireOwnerGovernance(identity, "work.continuity.checkpoint", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.checkpoint(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
@@ -119,42 +181,52 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_verify_memory: async (args, identity) => {
+      await requireOwnerGovernance(identity, "work.continuity.verify_memory", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.verifyMemory(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_list: async (args, identity) => {
+      requireTenantWorkIdentity(identity);
       const payload = { ok: true, result: await workContinuityRuntime.gallery(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_join: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.participant.join", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.join(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_heartbeat: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.participant.heartbeat", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.heartbeat(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_branch_open: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.branch.open", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.openBranch(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_acquire: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.lease.acquire", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.acquireLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_renew: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.lease.renew", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.renewLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_release: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.lease.release", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.releaseLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_message_post: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.message.post", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.postMessage(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_inbox: async (args, identity) => {
+      requireTenantWorkIdentity(identity);
       const payload = { ok: true, result: await workContinuityRuntime.inbox(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
@@ -165,13 +237,24 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   gateAction: ({ tool, identity, catalogRevision, idempotencyKey }) => {
+    const sandboxedResearchTools = new Set([
+      "nyra_research_envelope_authorize",
+      "nyra_research_workspace_open",
+      "nyra_research_workspace_attach",
+      "nyra_research_distill",
+      "nyra_research_workspace_close",
+    ]);
+    const sandboxedResearch = sandboxedResearchTools.has(tool.name);
     const externalSideEffect = tool._meta?.["skinharmony/externalSideEffect"] ??
       (tool.annotations?.openWorldHint === true);
     return coreHandlers.core_gate_action({
       action_label: `Invoke dynamic capability ${tool.name}`,
       action_type: "dynamic_capability.invoke",
       target: tool.name,
-      operation_class: "owner_confirmed_governed_action",
+      operation_class: sandboxedResearch
+        ? "sandboxed_scoped_work"
+        : "owner_confirmed_governed_action",
+      dry_run: sandboxedResearch,
       external_side_effect: externalSideEffect === true,
       contains_customer_data: false,
       contains_secret: false,
