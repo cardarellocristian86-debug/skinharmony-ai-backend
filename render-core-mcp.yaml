@@ -119,3 +119,8 @@ services:
         value: "true"
       - key: HOST_NATIVE_AGENT_PROTOCOL_ENABLED
         value: "true"
+      # Every functional Nyra/Core call creates or refreshes a server-derived
+      # signed tenant presence. This is identity registration only: it grants
+      # no role, model, tool, credential, merge, deploy or external authority.
+      - key: MANDATORY_AGENT_PRESENCE_ENABLED
+        value: "true"
