@@ -72,13 +72,32 @@ services:
       - key: CORE_DTT_TENANT_ALLOWLIST
         value: codexai
       - key: CORE_RESEARCH_DISTILLATION_ENABLED
-        value: "false"
+        value: "true"
+      - key: CORE_RESEARCH_DISTILLATION_MODE
+        value: shadow
+      - key: CORE_RESEARCH_TENANT_ALLOWLIST
+        value: codexai
+      - key: CORE_RESEARCH_MAX_DOCUMENTS
+        value: "10"
+      - key: CORE_RESEARCH_MAX_BYTES
+        value: "2000000"
+      - key: CORE_RESEARCH_TIMEOUT_MS
+        value: "30000"
+      - key: CORE_RESEARCH_CACHE_TTL_SECONDS
+        value: "3600"
+      - key: CORE_DISTILLATION_REQUIRES_REVIEW
+        value: "true"
+      # Federated Deep Branch V2 remains fail-closed until this isolated stack
+      # has its own Nyra runtime and attestation material. Do not point staging
+      # at the production Nyra service.
       - key: CORE_NYRA_DEEP_BRANCH_V2_ENABLED
         value: "false"
       - key: CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_ENABLED
         value: "false"
       - key: NYRA_DEEP_RUNTIME_ENABLED
-        value: "false"
+        value: "true"
+      - key: NYRA_DEEP_RUNTIME_MODE
+        value: active
     disk:
       name: universal-core-twg-staging-data
       mountPath: /var/data
