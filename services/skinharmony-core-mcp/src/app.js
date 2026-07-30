@@ -819,6 +819,10 @@ export function createApp(config, options = {}) {
           : null;
         const attestedAgentPresence = {
           ...agentPresence,
+          // Keep the opaque logical session only on the server-side identity.
+          // The mandatory presence hook needs it to renew the exact signed
+          // session, while the public response can continue to omit it.
+          session_id: sessionId,
           transport_bound: Boolean(transportAgentPresence),
           host_transport_session_fingerprint:
             transportAgentPresence?.session_fingerprint || null,
