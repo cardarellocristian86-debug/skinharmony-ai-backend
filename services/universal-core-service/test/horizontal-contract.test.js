@@ -364,18 +364,16 @@ test("existing SkinHarmony keys retain their explicit horizontal guards and gain
   for (const branchId of HORIZONTAL_WORK_BRANCHES) assert(existingKey.allowed_branches.includes(branchId));
 });
 
-test("only the server-owned MCP gateway dynamically authorizes the complete branch registry", () => {
-  const registryIds = Object.keys(deterministicBranchRegistry());
+test("the server-owned MCP gateway is transport-only and never grants a complete registry", () => {
   const gateway = resolveBranchesForKey({
     tenant_id: "__mcp_tenant_gateway__",
     key_type: "connector",
     preset: null,
     metadata: { bootstrap_kind: "mcp_tenant_gateway" },
   });
-  assert.equal(gateway.tier, "omni_360");
-  assert.deepEqual(gateway.allowed_branches, registryIds);
-  assert.equal(gateway.allowed_branches.length, registryIds.length);
-  assert(VERTICAL_BRANCH_IDS.every((id) => gateway.allowed_branches.includes(id)));
+  assert.notEqual(gateway.tier, "omni_360");
+  assert.equal(gateway.allowed_branches.includes("suite_governance"), false);
+  assert.equal(gateway.allowed_branches.includes("smartdesk_operations_guard"), false);
 
   const ordinaryConnector = resolveBranchesForKey({
     tenant_id: "tenant-acme",
@@ -393,7 +391,6 @@ test("only the server-owned MCP gateway dynamically authorizes the complete bran
     metadata: {},
   });
   assert.equal(ordinaryCodexaiKey.tier, "base");
-  assert.notDeepEqual(ordinaryCodexaiKey.allowed_branches, registryIds);
   assert.equal(ordinaryCodexaiKey.allowed_branches.includes("smartdesk_operations_guard"), false);
   assert.equal(ordinaryCodexaiKey.allowed_branches.includes("skinharmony_analyzer"), false);
 });

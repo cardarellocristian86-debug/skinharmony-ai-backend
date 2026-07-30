@@ -254,7 +254,9 @@ function ownerBindingStatus(config, identity) {
       emergency_stop: config.godModeEmergencyStop === true,
       tenant_allowed: tenantIds.includes(identity.tenantId),
       subject_allowed: (config.godModeSubjects || []).includes(identity.subject),
-      codex_delegate_allowed: identity.kind === "codex" && config.godModeCodexEnabled === true,
+      // A Codex delegation is never inferred from an OAuth owner-confirmed
+      // workflow.  It must satisfy the separate Good Mode policy.
+      codex_delegate_allowed: isCodexGoodModeDelegation(identity, config),
     },
   };
 }
@@ -451,9 +453,16 @@ export function createCoreHandlers(config, options = {}) {
     } else if (identity.godMode !== true) {
       return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
     }
-    const signingKey = hostNativeOwner
-      ? config.ownerContextSigningSecret
-      : (configuredTenantGatewayKey() || coreKey(identity.tenantId));
+    // Production owner assertions use the dedicated bridge secret, never a
+    // tenant bearer/gateway key.  The legacy test-only fallback cannot unlock
+    // the owner profile because Core verifies that profile only with the
+    // dedicated secret.
+    const signingKey = config.ownerContextSigningSecret || (hostNativeOwner
+      ? ""
+      : (configuredTenantGatewayKey() || coreKey(identity.tenantId)));
+    if (hostNativeOwner && Buffer.byteLength(String(signingKey || ""), "utf8") < 32) {
+      throw new Error("owner_context_signing_unavailable");
+    }
     const hostNativeCodexGoodMode = hostNativeOwner && isCodexGoodModeDelegation(identity, config);
     const context = {
       assertion_version: OWNER_CONTEXT_ASSERTION_VERSION,
@@ -472,8 +481,8 @@ export function createCoreHandlers(config, options = {}) {
         binding_version: "owner_request_binding_v1",
         binding_hash: crypto.createHash("sha256").update(String(requestBinding)).digest("hex"),
       }),
-      ...(hostNativeOwner
-        ? {
+      ...(hostNativeOwner || isVerifiedOwnerRoot(identity)
+            ? {
           owner_subject_fingerprint: `osf_${crypto.createHmac("sha256", signingKey)
             .update(`${hostNativeCodexGoodMode ? "host-native-codex-owner" : "host-native-owner"}\u0000${String(identity.subject).trim()}`)
             .digest("hex")}`,
@@ -928,48 +937,45 @@ export function createCoreHandlers(config, options = {}) {
         session_id: args.session_id,
         agent_id: args.agent_id || "connected_ai",
       }, identity);
+      const preflightBody = {
+        request: args.request,
+        target_system: args.target_system || "universal_core",
+        operation_type: args.operation_type || "advisory_work",
+        source_tool: args.tool_name,
+        ...(args.work_id ? { work_id: args.work_id } : {}),
+        ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
+        ...(args.project_id ? { project_id: args.project_id } : {}),
+        ...(Array.isArray(args.acceptance_criteria) ? { acceptance_criteria: args.acceptance_criteria } : {}),
+        ...(Array.isArray(args.constraints) ? { constraints: args.constraints } : {}),
+        host_native: {
+          requested: args.host_type === "chatgpt_native" || args.host_type === "codex_native",
+          host_type: args.host_type || (agentPresence.client_type === "codex" ? "codex_native" : "chatgpt_native"),
+          provider_execution: false,
+          provider_api_key_required: false,
+          server_model_calls: 0,
+          host_spawn_required: true,
+          host_policy_override: false,
+          host_policy_must_allow: true,
+        },
+        ...(args.evidence_state && typeof args.evidence_state === "object" ? { evidence_state: args.evidence_state } : {}),
+        ...(Array.isArray(args.research_allowed_domains) ? { research_allowed_domains: args.research_allowed_domains } : {}),
+        ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
+        ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
+        owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
+        ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
+        ...(sharedContext ? { memory_context: sharedContext } : {}),
+        agent_presence: agentPresence,
+        tenant_id: identity.tenantId,
+      };
       const payload = await coreRequest("/v1/work/preflight", identity.tenantId, {
         method: "POST",
+        // Production uses the dedicated gateway and signed tenant context.
+        // Test-only configurations without that credential stay tenant-bound
+        // through their individual Core key and cannot cross tenant scope.
+        useTenantGateway: Boolean(config.tenantGatewayKey),
         body: {
-          request: args.request,
-          target_system: args.target_system || "universal_core",
-          operation_type: args.operation_type || "advisory_work",
-          source_tool: args.tool_name,
-          ...(args.work_id ? { work_id: args.work_id } : {}),
-          ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
-          ...(args.project_id ? { project_id: args.project_id } : {}),
-          ...(Array.isArray(args.acceptance_criteria)
-            ? { acceptance_criteria: args.acceptance_criteria }
-            : {}),
-          ...(Array.isArray(args.constraints) ? { constraints: args.constraints } : {}),
-          host_native: {
-            requested: args.host_type === "chatgpt_native" || args.host_type === "codex_native",
-            host_type: args.host_type || (
-              agentPresence.client_type === "codex" ? "codex_native" : "chatgpt_native"
-            ),
-            provider_execution: false,
-            provider_api_key_required: false,
-            server_model_calls: 0,
-            host_spawn_required: true,
-            host_policy_override: false,
-            host_policy_must_allow: true,
-          },
-          ...(args.evidence_state && typeof args.evidence_state === "object"
-            ? { evidence_state: args.evidence_state }
-            : {}),
-          ...(Array.isArray(args.research_allowed_domains)
-            ? { research_allowed_domains: args.research_allowed_domains }
-            : {}),
-          ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
-          ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
-          owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
-          owner_context: ownerContext(identity),
-          ...(verifiedConfirmationReference(identity)
-            ? { confirmation_reference: verifiedConfirmationReference(identity) }
-            : {}),
-          ...(sharedContext ? { memory_context: sharedContext } : {}),
-          agent_presence: agentPresence,
-          tenant_id: identity.tenantId,
+          ...preflightBody,
+          owner_context: ownerContext(identity, ownerRequestBinding("work_preflight", preflightBody)),
         },
       });
       const complete = { ...attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap), agent_presence: agentPresence, core_runtime: coreRuntime };
@@ -1036,7 +1042,15 @@ export function createCoreHandlers(config, options = {}) {
       const query = view === "authorized" && Array.isArray(args.branches) && args.branches.length
         ? `?${new URLSearchParams({ branches: args.branches.join(",") }).toString()}`
         : "";
-      return textResult(await coreRequest(`${paths[view]}${query}`, identity.tenantId));
+      const bindingPayload = { view, branches: Array.isArray(args.branches) ? args.branches : [] };
+      const owner = ownerContext(identity, ownerRequestBinding("branch_registry", bindingPayload));
+      const additionalHeaders = owner.owner_verified === true
+        ? { "x-sh-owner-context": Buffer.from(JSON.stringify(owner)).toString("base64url") }
+        : {};
+      return textResult(await coreRequest(`${paths[view]}${query}`, identity.tenantId, {
+        additionalHeaders,
+        useTenantGateway: Boolean(config.tenantGatewayKey),
+      }));
     },
     core_branch_analyze: async (args, identity) => textResult(await coreRequest(
       `/v1/branches/${encodeURIComponent(args.branch)}/analyze`,

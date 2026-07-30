@@ -502,13 +502,15 @@ export function resolveBranchesForKey(keyRecord, requestedBranches = []) {
           : keyRecord?.preset === "nyra_core_360_connector"
             ? "omni_360"
             : "base";
-  // Registry-wide visibility is reserved for the single server-owned MCP
-  // tenant-gateway record.  A tenant name, a preset, or caller-selected
-  // metadata must never make an ordinary tenant key omniscient.
+  // The tenant gateway authenticates transport, not authorization.  It must
+  // never become a registry-wide entitlement for every tenant it serves.
+  // Server-side verified owner profiles are applied separately by Core after
+  // tenant-context and owner-assertion verification.
   const registryWideAuthorization =
     keyRecord?.key_type === "connector" &&
     String(keyRecord?.tenant_id || "").trim() === "__mcp_tenant_gateway__" &&
-    metadata.bootstrap_kind === "mcp_tenant_gateway";
+    metadata.bootstrap_kind === "mcp_tenant_gateway" &&
+    metadata.server_verified_owner_profile === "tenant_scoped_verified_owner";
   const tier = registryWideAuthorization
     ? "omni_360"
     : normalizeTier(metadata.tier || keyRecord?.tier || presetTier);
