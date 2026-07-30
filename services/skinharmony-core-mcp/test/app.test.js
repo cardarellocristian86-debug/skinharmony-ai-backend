@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { buildIdentity, buildReadiness, createApp, inferClientType, requiresGenericWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import {
@@ -52,6 +56,72 @@ test("classifies verified connector identities by host", () => {
   assert.equal(inferClientType({ kind: "chatgpt" }), "chatgpt");
   assert.equal(inferClientType({ kind: "codex" }), "codex");
   assert.equal(inferClientType({ kind: "service" }), "api_agent");
+});
+
+test("passes the signed logical session to mandatory presence registration before a normal tool", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-mandatory-presence-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const presenceConfig = {
+    ...config,
+    environment: "production",
+    production: true,
+    mandatoryAgentPresenceEnabled: true,
+    agentSignatureSecret: "p".repeat(32),
+    agentWorkspaceRoot: root,
+  };
+  const collaboration = createCollaborationHandlers(presenceConfig, {
+    govern: async () => ({ allowed: true, decision: "allow_controlled", mediation: "allow" }),
+  });
+  let registeredIdentity;
+  const app = createApp(presenceConfig, {
+    handlers: {
+      core_health: async () => ({ structuredContent: { ok: true }, content: [{ type: "text", text: "ok" }] }),
+    },
+    beforeToolCall: async ({ identity, toolName }) => {
+      registeredIdentity = identity;
+      if (presenceConfig.mandatoryAgentPresenceEnabled && toolName !== "agent_heartbeat") {
+        await collaboration.registerAuthenticatedPresence(identity);
+      }
+      return { preflight: null };
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "mandatory-presence",
+        method: "tools/call",
+        params: {
+          name: "core_health",
+          arguments: {
+            agent_id: "codex-presence-test",
+            client_type: "codex",
+            session_id: "presence-session-test",
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.result.structuredContent.ok, true);
+    assert.equal(registeredIdentity.agentPresence.session_id, "presence-session-test");
+    const restarted = createCollaborationHandlers(presenceConfig, {
+      govern: async () => ({ allowed: true, decision: "allow_controlled", mediation: "allow" }),
+    });
+    const registered = JSON.parse((await restarted.agent_list({}, registeredIdentity)).content[0].text).agents;
+    assert.equal(registered.length, 1);
+    assert.equal(registered[0].id, "codex-presence-test");
+    assert.equal(registered[0].display_name, "codex-presence-test");
+    assert.deepEqual(registered[0].capabilities, []);
+    assert.equal(registered[0].signature, body.result.structuredContent.agent_presence.signature);
+    assert.equal(registered[0].session_fingerprint, body.result.structuredContent.agent_presence.session_fingerprint);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("publishes only a verifiable build identity", () => {
