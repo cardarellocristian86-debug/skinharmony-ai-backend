@@ -242,7 +242,7 @@ test("production readiness fails closed with coded non-secret component blockers
   }
 });
 
-test("production becomes ready only after required PostgreSQL runtimes initialize", async () => {
+test("production on PostgreSQL 18 becomes ready after required runtimes initialize", async () => {
   const readiness = {
     continuityInitialized: false,
     decisionLedgerInitialized: false,
@@ -273,7 +273,7 @@ test("production becomes ready only after required PostgreSQL runtimes initializ
   const app = createApp(productionConfig, {
     handlers,
     readiness,
-    postgresMajorVersionProbe: postgresMajorProbe(160_012),
+    postgresMajorVersionProbe: postgresMajorProbe(180_004),
   });
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
@@ -302,7 +302,7 @@ test("production becomes ready only after required PostgreSQL runtimes initializ
     assert.equal(ready.host_native_agents.tenant_context_signing_configured, true);
     assert.equal(ready.host_native_agents.agent_signature_configured, true);
     assert.equal(ready.host_native_agents.agent_signature_independent, true);
-    assert.deepEqual(ready.postgresql, { major: 16, verified: true });
+    assert.deepEqual(ready.postgresql, { major: 18, verified: true });
     assert.equal(JSON.stringify(ready).includes("tenant-core-secret"), false);
     assert.equal(JSON.stringify(ready).includes("z".repeat(32)), false);
     assert.equal(JSON.stringify(ready).includes("postgres://"), false);
@@ -311,7 +311,7 @@ test("production becomes ready only after required PostgreSQL runtimes initializ
   }
 });
 
-test("production MCP readiness rejects PostgreSQL 15, 17, and probe errors", async () => {
+test("production MCP readiness rejects PostgreSQL 15 and probe errors", async () => {
   const productionConfig = {
     ...config,
     environment: "production",
@@ -337,7 +337,6 @@ test("production MCP readiness rejects PostgreSQL 15, 17, and probe errors", asy
   );
   for (const [serverVersion, expectedMajor] of [
     [150_014, 15],
-    [170_003, 17],
     [new Error("postgresql://user:secret@example.test/private"), null],
   ]) {
     const app = createApp(productionConfig, {

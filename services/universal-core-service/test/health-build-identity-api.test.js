@@ -130,7 +130,7 @@ test("production host-native readiness requires gateway, separated signing, DTT,
   });
 });
 
-test("complete host-native production prerequisites clear readiness blockers", async () => {
+test("PostgreSQL 18 clears complete host-native production readiness blockers", async () => {
   await withEnv({
     NODE_ENV: "production",
     CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(32),
@@ -143,7 +143,7 @@ test("complete host-native production prerequisites clear readiness blockers", a
       tenantContextSigningSecret: "t".repeat(32),
       ownerContextSigningSecret: "o".repeat(32),
       dttAgentIdentitySigningSecret: "d".repeat(32),
-      governedAgentPostgresVersionProbe: postgresMajorProbe(160_012),
+      governedAgentPostgresVersionProbe: postgresMajorProbe(180_004),
     });
     assert.equal(
       health.host_native_governance.production_readiness_required,
@@ -179,7 +179,7 @@ test("complete host-native production prerequisites clear readiness blockers", a
     );
     assert.deepEqual(
       health.host_native_governance.governed_agent_postgres_version,
-      { major: 16, verified: true },
+      { major: 18, verified: true },
     );
     assert.equal(
       JSON.stringify(health).includes("postgresql://"),
@@ -188,7 +188,7 @@ test("complete host-native production prerequisites clear readiness blockers", a
   });
 });
 
-test("Core production readiness rejects PostgreSQL 15, 17, and probe errors", async () => {
+test("Core production readiness rejects PostgreSQL 15 and probe errors", async () => {
   await withEnv({
     NODE_ENV: "production",
     CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(32),
@@ -197,7 +197,6 @@ test("Core production readiness rejects PostgreSQL 15, 17, and probe errors", as
   }, async () => {
     for (const [serverVersion, expectedMajor] of [
       [150_014, 15],
-      [170_003, 17],
       [new Error("postgresql://user:secret@example.test/private"), null],
     ]) {
       const { response, health } = await readHealth({

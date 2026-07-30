@@ -16,7 +16,7 @@ export function normalizePostgresMajorVerification(
   const major = Number.isInteger(value?.major) ? value.major : null;
   return Object.freeze({
     major,
-    verified: value?.verified === true && major === expectedMajor,
+    verified: value?.verified === true && major >= expectedMajor,
   });
 }
 
@@ -65,7 +65,7 @@ export function createPostgresMajorVersionProbe({
       const major = normalizedMajor(result?.rows?.[0]?.server_version_num);
       return normalizePostgresMajorVerification({
         major,
-        verified: major === expectedMajor,
+        verified: major >= expectedMajor,
       }, expectedMajor);
     } catch {
       return normalizePostgresMajorVerification(null, expectedMajor);
