@@ -46,6 +46,14 @@ const V1_SOURCE_PIN = Object.freeze({
   core_branch_network_sha256:
     "25bd1cc03fb77dbf265b7802929c129edf14ca6b35dddee43ba2f6dcef7aa106",
 });
+const V1_COMPATIBLE_IMPLEMENTATION_PIN = Object.freeze({
+  repository_commit: "1a5c6ca6f7d6a3a0a578aea701b9e687a97b3760",
+  horizontal_runtime_sha256:
+    "267fead17d3b288ed7cc647fa45112200582fbd71bf1bf75c13c464972cbefe7",
+  core_branch_network_sha256:
+    "28018fa5a628bff2732ef82b579a9b2411365de8645e90bee01916141495de0d",
+});
+const V2_EXCLUDED_BRANCH_IDS = new Set(["tenant_work_coordination"]);
 
 const FIXTURE_FAMILIES = Object.freeze([
   ["positive_tests", "positive", "ALLOW_ADVISORY"],
@@ -924,6 +932,11 @@ function currentArtifactBindings(candidate) {
     repoRoot,
     "services/universal-core-service/src/nyraBranchNetwork.js",
   )));
+  const currentV1ImplementationPin = {
+    repository_commit: V1_COMPATIBLE_IMPLEMENTATION_PIN.repository_commit,
+    horizontal_runtime_sha256: horizontalRuntimeSha256,
+    core_branch_network_sha256: coreBranchNetworkSha256,
+  };
   const expectedBuildCheckpoint = canonicalHash({
     schema_version: candidate.schema_version,
     version: candidate.version,
@@ -956,10 +969,10 @@ function currentArtifactBindings(candidate) {
       V1_SOURCE_PIN,
     ),
     source_pin_bytes_match:
-      horizontalRuntimeSha256
-        === V1_SOURCE_PIN.horizontal_runtime_pre_v2_sha256
-      && coreBranchNetworkSha256
-        === V1_SOURCE_PIN.core_branch_network_sha256,
+      deepEqualJson(
+        currentV1ImplementationPin,
+        V1_COMPATIBLE_IMPLEMENTATION_PIN,
+      ),
     build_checkpoint_match:
       candidate.build_checkpoint === `sha256:${expectedBuildCheckpoint}`,
     rollback_checkpoint_match:
@@ -1577,7 +1590,11 @@ function main() {
     }
 
     const coreCatalog = nyraBranchCatalog("skinharmony");
-    const coreProjection = branchTopologyProjection(coreCatalog.branches);
+    const coreProjection = branchTopologyProjection(
+      coreCatalog.branches.filter(
+        (branch) => !V2_EXCLUDED_BRANCH_IDS.has(branch.id),
+      ),
+    );
     const topology = indexTopology(candidate);
     const functionAudit = functionRegistryAudit(candidate);
     const fixtureAudit = fixtureReferences(candidate, fixtureBundle);

@@ -36,6 +36,17 @@ const V1_SOURCE_PIN = Object.freeze({
   core_branch_network_sha256:
     "25bd1cc03fb77dbf265b7802929c129edf14ca6b35dddee43ba2f6dcef7aa106",
 });
+// The immutable rollback pin above predates intentional V1-only continuity
+// changes. Keep those current bytes independently pinned so V2 generation
+// cannot silently absorb unrelated V1 drift.
+const V1_COMPATIBLE_IMPLEMENTATION_PIN = Object.freeze({
+  repository_commit: "1a5c6ca6f7d6a3a0a578aea701b9e687a97b3760",
+  horizontal_runtime_sha256:
+    "267fead17d3b288ed7cc647fa45112200582fbd71bf1bf75c13c464972cbefe7",
+  core_branch_network_sha256:
+    "28018fa5a628bff2732ef82b579a9b2411365de8645e90bee01916141495de0d",
+});
+const V2_EXCLUDED_BRANCH_IDS = new Set(["tenant_work_coordination"]);
 function parseArgs(argv) {
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -1818,23 +1829,36 @@ function main() {
   const capturedAtEpoch = Date.parse(capturedAtInput);
   if (!Number.isFinite(capturedAtEpoch)) throw new Error("--captured-at must be a valid ISO-8601 timestamp");
   const capturedAt = new Date(capturedAtEpoch).toISOString();
-  const currentV1SourcePin = {
-    repository_commit: V1_SOURCE_PIN.repository_commit,
-    horizontal_runtime_pre_v2_sha256: sha256(
+  const currentV1ImplementationPin = {
+    repository_commit: V1_COMPATIBLE_IMPLEMENTATION_PIN.repository_commit,
+    horizontal_runtime_sha256: sha256(
       fs.readFileSync(HORIZONTAL_RUNTIME_PATH, "utf8"),
     ),
     core_branch_network_sha256: sha256(
       fs.readFileSync(CORE_BRANCH_NETWORK_PATH, "utf8"),
     ),
   };
-  if (JSON.stringify(currentV1SourcePin) !== JSON.stringify(V1_SOURCE_PIN)) {
-    throw new Error("Pinned V1 rollback source bytes do not match the current implementation");
+  if (
+    JSON.stringify(currentV1ImplementationPin)
+    !== JSON.stringify(V1_COMPATIBLE_IMPLEMENTATION_PIN)
+  ) {
+    throw new Error("Pinned V1-compatible source bytes do not match the current implementation");
   }
   const rawSource = readJson(sourcePath);
-  const sourceCatalog = rawSource.catalog || rawSource;
-  if (rawSource.ok === false || !sourceCatalog || sourceCatalog.schema_version !== "nyra_neural_branch_network_v1") {
+  const liveSourceCatalog = rawSource.catalog || rawSource;
+  if (
+    rawSource.ok === false
+    || !liveSourceCatalog
+    || liveSourceCatalog.schema_version !== "nyra_neural_branch_network_v1"
+  ) {
     throw new Error("Authenticated live V1 catalog response required");
   }
+  const sourceCatalog = {
+    ...liveSourceCatalog,
+    branches: liveSourceCatalog.branches.filter(
+      (branch) => !V2_EXCLUDED_BRANCH_IDS.has(branch.id),
+    ),
+  };
   const tenantId = String(rawSource.tenant_id || args.tenant || "");
   if (tenantId !== "codexai") throw new Error(`Expected authenticated tenant codexai, received ${tenantId || "missing"}`);
   const liveBranchIds = new Set(sourceCatalog.branches.map((branch) => branch.id));
