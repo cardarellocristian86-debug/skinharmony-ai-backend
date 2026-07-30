@@ -1772,6 +1772,7 @@ export function createCoreWriteGuard(config, options = {}) {
       audit_ready: action.audit_ready === true,
       target_authority_verified: action.target_authority_verified === true,
       actor_authorized_for_target: action.actor_authorized_for_target === true,
+      idempotency_key: action.idempotency_key,
       owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
       ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
       ...(tenantWorkBootstrap ? { internal_owner_assertion_scope: "tenant_work_bootstrap" } : {}),

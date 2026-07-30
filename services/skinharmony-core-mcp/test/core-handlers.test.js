@@ -185,6 +185,61 @@ test("bounded internal coordination never borrows owner identity or confirmation
   assert.equal(body.owner_context, undefined);
 });
 
+test("write guard forwards the bounded Gallery idempotency key without owner identity", async () => {
+  let body;
+  const guard = createCoreWriteGuard({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { codexai: "codexai-key" },
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (_url, init) => {
+      body = JSON.parse(init.body);
+      return new Response(JSON.stringify({
+        authorization: { allowed: true, state: "authorized", mediation: "allow" },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const result = await guard({
+    action_label: "Coordinate tenant work: work.lease.renew",
+    action_type: "work.lease.renew",
+    target: "6391ab9e-db83-59eb-bb32-29deef62ae7d",
+    operation_class: "bounded_internal_coordination_write",
+    idempotency_key: "gallery-lease-renew-0001",
+    external_side_effect: false,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  }, {
+    tenantId: "codexai",
+    kind: "codex",
+    role: "owner_root",
+    godMode: true,
+    ownerConfirmed: true,
+    confirmationReference: "owner session",
+  });
+
+  assert.equal(result.allowed, true);
+  assert.equal(body.action_type, "work.lease.renew");
+  assert.equal(body.idempotency_key, "gallery-lease-renew-0001");
+  assert.equal(body.owner_confirmed, false);
+  assert.equal(body.confirmation_reference, undefined);
+  assert.equal(body.owner_context, undefined);
+});
+
 test("Core gate preserves governed memory and agent presence for the exact admin bootstrap envelope", async () => {
   const calls = [];
   const handlers = createCoreHandlers({

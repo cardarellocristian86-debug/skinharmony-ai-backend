@@ -59,8 +59,15 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "work_atlas.update": "work_atlas_upsert",
     "incident.record": "work_continuity_incident_record",
     "delegation.consume": "work_continuity_delegation_consume",
+    "work.participant.join": "tenant_work_gallery_join",
+    "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
+    "work.branch.open": "tenant_work_branch_open",
+    "work.lease.acquire": "tenant_work_lease_acquire",
+    "work.lease.renew": "tenant_work_lease_renew",
+    "work.lease.release": "tenant_work_lease_release",
+    "work.message.post": "tenant_work_message_post",
   };
-  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 12);
+  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 19);
   for (const actionType of BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES) {
     const authorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
@@ -70,6 +77,43 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     });
     assert.equal(authorization.allowed, true, actionType);
     assert.equal(authorization.confirmation_required, false, actionType);
+  }
+});
+
+test("allows Gallery coordination only for the exact tool target or a valid work UUID", () => {
+  const workId = "6391ab9e-db83-59eb-bb32-29deef62ae7d";
+  const galleryTargets = {
+    "work.participant.join": "tenant_work_gallery_join",
+    "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
+    "work.branch.open": "tenant_work_branch_open",
+    "work.lease.acquire": "tenant_work_lease_acquire",
+    "work.lease.renew": "tenant_work_lease_renew",
+    "work.lease.release": "tenant_work_lease_release",
+    "work.message.post": "tenant_work_message_post",
+  };
+  assert.equal(Object.keys(galleryTargets).length, 7);
+  for (const [actionType, expectedTarget] of Object.entries(galleryTargets)) {
+    const allowed = buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: actionType,
+      target: workId,
+      idempotency_key: `gallery-${actionType}-0001`,
+    });
+    assert.equal(allowed.allowed, true, actionType);
+    for (const target of [
+      "another-work",
+      "tenant_work_lease_promote",
+      "00000000-0000-0000-0000-000000000000",
+      ...Object.values(galleryTargets).filter((value) => value !== expectedTarget),
+    ]) {
+      const denied = buildActionAuthorization(contract(), {
+        ...boundedCoordinationWrite,
+        action_type: actionType,
+        target,
+        idempotency_key: `gallery-${actionType}-0002`,
+      });
+      assert.equal(denied.allowed, false, `${actionType}:${target}`);
+    }
   }
 });
 test("keeps hard blocks, higher risk and unsafe internal writes closed", () => {

@@ -72,6 +72,16 @@ function delegatedWriteTool(name = "orchestration_dtt_agent_report") {
   return definition;
 }
 
+function idempotentDelegatedWriteTool(name = "tenant_work_lease_renew") {
+  const definition = delegatedWriteTool(name);
+  definition.inputSchema.properties.idempotency_key = {
+    type: "string",
+    minLength: 8,
+  };
+  definition.inputSchema.required = ["value", "idempotency_key"];
+  return definition;
+}
+
 function dedicatedCoreWriteTool(name = "host_native_action_reserve") {
   const definition = delegatedWriteTool(name);
   definition._meta["skinharmony/dedicatedCoreGate"] = true;
@@ -232,6 +242,69 @@ test("bounded internal mutations use the target metadata instead of impersonatin
   assert.equal(received.caller, caller);
   assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_required, false);
   assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_satisfied, true);
+});
+
+test("binds the target idempotency key to the wrapper key and rejects split identities", async () => {
+  const tool = idempotentDelegatedWriteTool();
+  const received = [];
+  const gated = [];
+  const handlers = {
+    [tool.name]: async (args) => {
+      received.push(args);
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async (context) => {
+      gated.push(context);
+      return { structuredContent: { authorization: { allowed: true } } };
+    },
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const base = {
+    capability_id: tool.name,
+    catalog_revision: revision,
+    idempotency_key: "gallery-renew-0001",
+  };
+
+  await router.core_capability_invoke({
+    ...base,
+    arguments: { value: "inject-wrapper-key" },
+  }, identity);
+  await router.core_capability_invoke({
+    ...base,
+    idempotency_key: "gallery-renew-0002",
+    arguments: {
+      value: "matching-key",
+      idempotency_key: "gallery-renew-0002",
+    },
+  }, identity);
+  await assert.rejects(
+    router.core_capability_invoke({
+      ...base,
+      idempotency_key: "gallery-renew-0003",
+      arguments: {
+        value: "split-key",
+        idempotency_key: "gallery-renew-other",
+      },
+    }, identity),
+    /dynamic_capability_idempotency_mismatch/,
+  );
+
+  assert.deepEqual(received, [
+    { value: "inject-wrapper-key", idempotency_key: "gallery-renew-0001" },
+    { value: "matching-key", idempotency_key: "gallery-renew-0002" },
+  ]);
+  assert.deepEqual(gated.map((context) => ({
+    wrapper: context.idempotencyKey,
+    target: context.args.idempotency_key,
+  })), [
+    { wrapper: "gallery-renew-0001", target: "gallery-renew-0001" },
+    { wrapper: "gallery-renew-0002", target: "gallery-renew-0002" },
+  ]);
 });
 
 test("dedicated Core routes replace the generic gate only with a verified Core marker", async () => {

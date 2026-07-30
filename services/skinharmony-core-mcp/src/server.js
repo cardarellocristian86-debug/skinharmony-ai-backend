@@ -21,6 +21,7 @@ import { createSuiteHandlers } from "./suite-handlers.js";
 import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
+import { internalCoordinationActionType } from "./internal-coordination-action.js";
 import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
 
 const config = loadConfig();
@@ -153,7 +154,12 @@ async function requireOwnerGovernance(identity, actionType, target) {
   }
 }
 
-async function requireBoundedTenantCoordination(identity, actionType, target) {
+async function requireBoundedTenantCoordination(
+  identity,
+  actionType,
+  target,
+  idempotencyKey,
+) {
   requireTenantWorkCapability(identity, "coordinate");
   const decision = await govern({
     action_label: `Coordinate tenant work: ${actionType}`,
@@ -176,6 +182,7 @@ async function requireBoundedTenantCoordination(identity, actionType, target) {
     audit_ready: Boolean(decisionLedger),
     target_authority_verified: true,
     actor_authorized_for_target: true,
+    idempotency_key: idempotencyKey,
   }, identity);
   if (decision.allowed !== true) {
     const error = new Error("core_tenant_coordination_denied");
@@ -402,37 +409,72 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_join: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.participant.join", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.participant.join",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.join(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_heartbeat: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.participant.heartbeat", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.participant.heartbeat",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.heartbeat(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_branch_open: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.branch.open", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.branch.open",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.openBranch(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_acquire: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.lease.acquire", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.lease.acquire",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.acquireLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_renew: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.lease.renew", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.lease.renew",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.renewLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_release: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.lease.release", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.lease.release",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.releaseLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_message_post: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.message.post", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.message.post",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.postMessage(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
@@ -576,17 +618,6 @@ const baseHandlers = {
     work_continuity_incident_resolve: continuityMethod("resolveIncident"),
   } : {}),
 };
-
-function internalCoordinationActionType(toolName) {
-  if (toolName.includes("native_plan")) return "native_agent.plan";
-  if (toolName.includes("native_bind")) return "native_agent.bind";
-  if (toolName.includes("native_report")) return "native_agent.report";
-  if (toolName.includes("closure")) return "native_agent.verify";
-  if (toolName.includes("atlas")) return "work_atlas.update";
-  if (toolName.includes("incident")) return "incident.record";
-  if (toolName.includes("delegation_consume")) return "delegation.consume";
-  return "continuity.update";
-}
 
 const researchDistillationShadowTools = new Set([
   "nyra_research_envelope_authorize",

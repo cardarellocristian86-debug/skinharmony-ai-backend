@@ -11,6 +11,13 @@ export const BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES = Object.freeze([
   "work_atlas.update",
   "incident.record",
   "delegation.consume",
+  "work.participant.join",
+  "work.participant.heartbeat",
+  "work.branch.open",
+  "work.lease.acquire",
+  "work.lease.renew",
+  "work.lease.release",
+  "work.message.post",
 ]);
 
 const ACTION_TYPES = new Set(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES);
@@ -22,9 +29,27 @@ function validIdempotencyKey(value) {
     !/[\u0000-\u001f\u007f]/u.test(normalized);
 }
 
+const TENANT_WORK_TOOL_TARGETS = Object.freeze({
+  "work.participant.join": "tenant_work_gallery_join",
+  "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
+  "work.branch.open": "tenant_work_branch_open",
+  "work.lease.acquire": "tenant_work_lease_acquire",
+  "work.lease.renew": "tenant_work_lease_renew",
+  "work.lease.release": "tenant_work_lease_release",
+  "work.message.post": "tenant_work_message_post",
+});
+
+function validWorkId(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    .test(String(value || ""));
+}
+
 function targetMatchesAction(actionType, value) {
   const target = String(value || "").trim().toLowerCase();
   if (!target || target.length > 240) return false;
+  if (TENANT_WORK_TOOL_TARGETS[actionType]) {
+    return target === TENANT_WORK_TOOL_TARGETS[actionType] || validWorkId(target);
+  }
   if (actionType === "agent.heartbeat") return target.includes("agent") || target.includes("heartbeat");
   if (actionType === "task.claim" || actionType === "task.update") return target.includes("task");
   if (actionType === "message.acknowledge") return target.includes("message");

@@ -151,9 +151,14 @@ function targetArguments(tool, wrapperArgs) {
   const args = { ...(wrapperArgs.arguments || {}) };
   if (
     tool.inputSchema?.properties?.idempotency_key &&
-    args.idempotency_key === undefined &&
     wrapperArgs.idempotency_key
   ) {
+    if (
+      args.idempotency_key !== undefined &&
+      args.idempotency_key !== wrapperArgs.idempotency_key
+    ) {
+      throw new Error("dynamic_capability_idempotency_mismatch");
+    }
     args.idempotency_key = wrapperArgs.idempotency_key;
   }
   const ownerConfirmationRequired =
