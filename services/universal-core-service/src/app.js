@@ -38,7 +38,6 @@ import {
   deterministicBranchTaxonomy,
   resolveBranchesForKey,
 } from "../branches/index.js";
-import { resolveOwnerTenantBranchProfile } from "./ownerTenantBranchProfile.js";
 import {
   listOrchestrationCapabilities,
   listVirtualOrchestrationCombinations,
@@ -642,32 +641,6 @@ function verifyOwnerContextAssertion(context, secret, tenantId, expectedBinding,
     .update(`owner-context\u0000${ownerContextCanonical(context)}`)
     .digest("hex")}`;
   return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
-}
-
-function verifiedOwnerBranchProfile(req, requestedBranches = [], purpose = "", ownerContextSigningSecret = "", bindingBody) {
-  const encodedHeader = String(req.get?.("x-sh-owner-context") || "").trim();
-  let headerContext = null;
-  if (encodedHeader && /^[A-Za-z0-9_-]{16,12000}$/.test(encodedHeader)) {
-    try { headerContext = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8")); } catch { headerContext = null; }
-  }
-  const context = req.body?.owner_context || headerContext;
-  const body = bindingBody || (req.body && typeof req.body === "object" ? req.body : {});
-  const expectedBinding = purpose ? ownerRequestBinding(purpose, body) : undefined;
-  const ownerVerified =
-    req.tenantId === "codexai" &&
-    context?.role === "owner_root" &&
-    context?.access_mode === "god_mode" &&
-    context?.delegated_actor === "oauth" &&
-    verifyOwnerContextAssertion(context, ownerContextSigningSecret, req.tenantId, expectedBinding);
-  const commercialResolution = resolveBranchesForKey(req.coreKey, requestedBranches);
-  return resolveOwnerTenantBranchProfile({
-    tenantId: req.tenantId,
-    ownerVerified,
-    registry: branchRegistry(),
-    groups: deterministicBranchGroups(),
-    requestedBranches,
-    commercialResolution,
-  }) || commercialResolution;
 }
 
 // A signed owner context is intentionally short-lived, but a short lifetime
@@ -6088,14 +6061,9 @@ export function createUniversalCoreService(options = {}) {
     if (Array.isArray(req.body?.nyra_branches) && req.body.nyra_branches.length > MAX_NYRA_BRANCH_REQUESTS) {
       return publicError(res, 400, "nyra_branch_request_limit_exceeded");
     }
-    const ownerBranches = verifiedOwnerBranchProfile(req, [], "work_preflight", ownerContextSigningSecret);
-    const ownerProfileActive = ownerBranches.owner_profile === "tenant_scoped_verified_owner";
     const preflight = composeMandatoryWorkPreflight(req, {
-      // A verified codexai OAuth owner gets a tenant-scoped registry profile;
-      // this is not a commercial plan and it does not alter execution policy.
-      domainPack: ownerProfileActive ? ownerBranches.domain_pack : domainPackAccess.pack,
+      domainPack: domainPackAccess.pack,
       memoryContext: memoryContext.value,
-      ...(ownerProfileActive ? { branchContext: ownerBranches } : {}),
     });
     audit.append("core_work_preflight_completed", {
       tenant_id: req.tenantId,
@@ -7619,13 +7587,7 @@ export function createUniversalCoreService(options = {}) {
     const requested = typeof req.query.branches === "string" && req.query.branches.trim()
       ? req.query.branches.split(",").map((item) => item.trim()).filter(Boolean)
       : [];
-    const resolution = verifiedOwnerBranchProfile(
-      req,
-      requested,
-      "branch_registry",
-      ownerContextSigningSecret,
-      { view: "authorized", branches: requested },
-    );
+    const resolution = resolveBranchesForKey(req.coreKey, requested);
     res.json({
       ok: true,
       tenant_id: req.tenantId,
