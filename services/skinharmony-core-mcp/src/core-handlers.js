@@ -2,17 +2,12 @@ import crypto from "node:crypto";
 import { attachSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
-import { issueOpenAiProviderSetupLink } from "./provider-setup-link-client.js";
 import { readCoreCapabilityCatalog } from "./core-capability-catalog.js";
-import {
-  PROVIDER_SETUP_LINK_BINDING_OPERATION_CLASS,
-  buildProviderSetupLinkBindingEnvelope,
-  providerSetupLinkBindingApprovalDigest,
-} from "../../universal-core-service/src/providerSetupLinkBinding.js";
 import {
   nyraDeepV2EvidencePackHash,
   signNyraDeepV2McpRequest,
 } from "./nyra-deep-v2-mcp-request.js";
+import { isCodexGoodModeDelegation } from "./auth.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
@@ -23,7 +18,7 @@ const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
 });
 
 function tenantContextHeader(tenantId, signingSecret) {
-  if (!signingSecret || signingSecret.length < 32) return "";
+  if (Buffer.byteLength(String(signingSecret || ""), "utf8") < 32) return "";
   const context = { version: "mcp_tenant_context_v1", tenant_id: tenantId, issued_at: new Date().toISOString() };
   const canonical = JSON.stringify(context);
   const assertion = `mtc_${crypto.createHmac("sha256", signingSecret).update(`mcp-tenant-context\u0000${canonical}`).digest("hex")}`;
@@ -66,6 +61,19 @@ function textResult(payload) {
     structuredContent: payload,
     content: [{ type: "text", text: JSON.stringify(payload) }]
   };
+}
+
+function dedicatedCoreTextResult(payload, route) {
+  return textResult({
+    ...payload,
+    dedicated_core_gate: {
+      authorized: payload?.ok === true,
+      authority: "universal_core",
+      route,
+      provider_execution: false,
+      host_policy_override: false,
+    },
+  });
 }
 
 function compactTextResult(payload, narration = {}) {
@@ -255,25 +263,29 @@ function isVerifiedOwnerRoot(identity) {
   return identity?.godMode === true && identity?.role === "owner_root";
 }
 
-function requireProviderSetupOwner(identity) {
-  // A provider setup link ultimately accepts a credential. A generic Codex
-  // bearer or a client-ID-only OAuth elevation can coordinate work but cannot
-  // authorize this subject-allowlisted owner-only flow.
-  if (
-    identity?.kind !== "oauth" ||
-    identity?.providerSetupOwner !== true ||
-    !String(identity?.subject || "").trim()
-  ) {
+function requireHostNativeOwnerConfirmation(identity, config) {
+  if (isCodexGoodModeDelegation(identity, config)) return "codex_good_mode";
+  if (identity?.kind !== "oauth" || !String(identity?.subject || "").trim()) {
     throw new Error("owner_required");
   }
+  if (
+    identity?.oauthOwnerElevated !== true ||
+    identity?.ownerConfirmed !== true ||
+    !String(identity?.confirmationReference || "").trim()
+  ) {
+    throw new Error("owner_confirmation_required");
+  }
+  return "oauth_owner_confirmation";
 }
 
-function requireProviderExecutionOwner(identity) {
-  requireProviderSetupOwner(identity);
-  // This is intentionally separate from god-mode confirmation. A normal
-  // tenant OAuth owner may explicitly approve their own bounded provider
-  // spend, while generic Core writes remain owner-root-only.
-  if (identity?.providerExecutionConfirmed !== true) throw new Error("owner_confirmation_required");
+function hostNativeConfirmationReference(identity, ownerMode, purpose, idempotencyKey) {
+  if (ownerMode !== "codex_good_mode") {
+    return String(identity?.confirmationReference || "").trim().slice(0, 240);
+  }
+  const requestDigest = crypto.createHash("sha256")
+    .update(`${identity.tenantId}\u0000${purpose}\u0000${String(idempotencyKey || "")}`)
+    .digest("hex");
+  return `god_mode_codex:${requestDigest.slice(0, 40)}`;
 }
 
 function hasExplicitVerifiedOwnerConfirmation(identity) {
@@ -333,8 +345,18 @@ export function createCoreHandlers(config, options = {}) {
     return entry.payload;
   }
 
+  function configuredTenantGatewayKey() {
+    const value = String(config.tenantGatewayKey || "").trim();
+    return Buffer.byteLength(value, "utf8") >= 32 ? value : "";
+  }
+
   function coreKey(tenantId) {
-    const selected = String(config.universalCoreKeys?.[tenantId] || (tenantId === config.defaultTenantId ? config.universalCoreKey : "") || config.tenantGatewayKey || "").trim();
+    const selected = String(
+      config.universalCoreKeys?.[tenantId] ||
+      (tenantId === config.defaultTenantId ? config.universalCoreKey : "") ||
+      configuredTenantGatewayKey() ||
+      "",
+    ).trim();
     if (!selected) throw new Error("core_tenant_key_missing");
     return selected;
   }
@@ -354,19 +376,27 @@ export function createCoreHandlers(config, options = {}) {
     const sanitizedBody = sanitizeCoreBody(body);
     const headers = { accept: "application/json" };
     if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
-    const selectedKey = useTenantGateway && config.tenantGatewayKey
-      ? config.tenantGatewayKey
-      : coreKey(tenantId);
+    const gatewayKey = configuredTenantGatewayKey();
+    if (useTenantGateway && !gatewayKey) {
+      throw new Error("core_tenant_gateway_key_missing");
+    }
+    const selectedKey = useTenantGateway ? gatewayKey : coreKey(tenantId);
     headers.authorization = `Bearer ${selectedKey}`;
     Object.assign(headers, additionalHeaders);
-    if (config.tenantGatewayKey && selectedKey === config.tenantGatewayKey) {
+    if (gatewayKey && selectedKey === gatewayKey) {
       // The gateway key has a synthetic tenant. Core therefore needs the
       // requested tenant alongside the signed context even for body-less GET
       // requests. The header is not trusted by itself: Core accepts it only
       // when the HMAC context below is valid for the exact same tenant.
       headers["x-sh-tenant-id"] = tenantId;
-      const context = tenantContextHeader(tenantId, config.ownerContextSigningSecret);
-      if (context) headers["x-sh-tenant-context"] = context;
+      const context = tenantContextHeader(
+        tenantId,
+        config.tenantContextSigningSecret,
+      );
+      if (!context) {
+        throw new Error("core_tenant_context_signing_unavailable");
+      }
+      headers["x-sh-tenant-context"] = context;
     }
     const response = await fetchImpl(`${config.universalCoreUrl}${path}`, {
       method,
@@ -374,44 +404,67 @@ export function createCoreHandlers(config, options = {}) {
       body: sanitizedBody === undefined ? undefined : JSON.stringify(sanitizedBody)
     });
     const payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
-    if (!response.ok) throw new Error(`core_request_failed:${response.status}:${payload.error || "unknown"}`);
+    if (!response.ok) {
+      const upstreamCode = typeof payload.error === "string" &&
+        /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/.test(payload.error)
+        ? payload.error
+        : "unknown";
+      const error = new Error(`core_request_failed:${response.status}:${upstreamCode}`);
+      error.code = upstreamCode === "unknown" ? "core_request_failed" : upstreamCode;
+      error.statusCode = response.status;
+      throw error;
+    }
     return payload;
   }
 
   function ownerContext(identity, options = {}) {
     const optionObject = options && typeof options === "object" && !Array.isArray(options);
     const requestBinding = optionObject ? options.requestBinding : options;
-    const approvalEnvelope = optionObject ? options.approvalEnvelope : undefined;
-    const providerSetup = optionObject && options.providerSetup === true;
+    const hostNativeOwner = optionObject && options.hostNativeOwner === true;
 
     // Generic owner assertions are signed with the tenant Core key and bind
-    // the exact request body. Provider setup uses a separate signing key and
-    // an OAuth-subject fingerprint, so it cannot be replayed as a generic
-    // Core owner assertion (or vice versa).
-    if (providerSetup) {
+    // the exact request body. Host-native delegation operations use the
+    // dedicated owner-context key. OAuth and Codex-Good-Mode fingerprints use
+    // distinct domains, so neither can be replayed as the other or as a
+    // generic Core owner assertion.
+    if (hostNativeOwner) {
+      const codexGoodMode = isCodexGoodModeDelegation(identity, config);
+      const oauthOwner =
+        identity.kind === "oauth" &&
+        identity.oauthOwnerElevated === true &&
+        identity.ownerConfirmed === true &&
+        Boolean(String(identity.subject || "").trim());
       if (
-        identity.kind !== "oauth" ||
-        identity.providerSetupOwner !== true ||
-        !String(identity.subject || "").trim() ||
-        String(config.ownerContextSigningSecret || "").length < 32
+        !codexGoodMode &&
+        !oauthOwner
       ) {
         return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+      }
+      if (
+        Buffer.byteLength(
+          String(config.ownerContextSigningSecret || ""),
+          "utf8",
+        ) < 32
+      ) {
+        throw new Error("host_native_owner_context_signing_unavailable");
       }
     } else if (identity.godMode !== true) {
       return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
     }
-    const approvalDigest = approvalEnvelope
-      ? providerSetupLinkBindingApprovalDigest(approvalEnvelope, identity.tenantId)
-      : "";
-    const signingKey = providerSetup
+    const signingKey = hostNativeOwner
       ? config.ownerContextSigningSecret
-      : (config.tenantGatewayKey || coreKey(identity.tenantId));
+      : (configuredTenantGatewayKey() || coreKey(identity.tenantId));
+    const hostNativeCodexGoodMode = hostNativeOwner && isCodexGoodModeDelegation(identity, config);
     const context = {
       assertion_version: OWNER_CONTEXT_ASSERTION_VERSION,
       audience: "nira_core_bridge",
       tenant_id: identity.tenantId,
-      access_mode: isVerifiedOwnerRoot(identity) ? "god_mode" : "tenant_owner",
-      role: isVerifiedOwnerRoot(identity) ? "owner_root" : "tenant_owner",
+      access_mode: (isVerifiedOwnerRoot(identity) && !hostNativeOwner) || hostNativeCodexGoodMode
+        ? "god_mode"
+        : "tenant_owner",
+      role: (isVerifiedOwnerRoot(identity) && !hostNativeOwner) || hostNativeCodexGoodMode
+        ? "owner_root"
+        : "tenant_owner",
       delegated_actor: identity.kind || "unknown",
       owner_verified: true,
       issued_at: new Date().toISOString(),
@@ -419,44 +472,18 @@ export function createCoreHandlers(config, options = {}) {
         binding_version: "owner_request_binding_v1",
         binding_hash: crypto.createHash("sha256").update(String(requestBinding)).digest("hex"),
       }),
-      ...(providerSetup
+      ...(hostNativeOwner
         ? {
           owner_subject_fingerprint: `osf_${crypto.createHmac("sha256", signingKey)
-            .update(`provider-setup-owner\u0000${String(identity.subject).trim()}`)
+            .update(`${hostNativeCodexGoodMode ? "host-native-codex-owner" : "host-native-owner"}\u0000${String(identity.subject).trim()}`)
             .digest("hex")}`,
         }
         : {}),
-      ...(approvalDigest ? { approval_digest: approvalDigest } : {}),
     };
     const digest = crypto.createHmac("sha256", signingKey)
       .update(`owner-context\u0000${ownerContextCanonical(context)}`)
       .digest("hex");
     return { ...context, assertion: `ocs_${digest}` };
-  }
-
-  async function issueOwnerOpenAiSetupLink(identity, ttlMinutes = 10) {
-    requireProviderSetupOwner(identity);
-    const signedOwnerContext = ownerContext(identity, { providerSetup: true });
-    if (
-      !/^ocs_[a-f0-9]{64}$/.test(String(signedOwnerContext.assertion || "")) ||
-      !/^osf_[a-f0-9]{64}$/.test(String(signedOwnerContext.owner_subject_fingerprint || ""))
-    ) {
-      throw new Error("provider_setup_link_owner_context_unavailable");
-    }
-    return issueOpenAiProviderSetupLink({
-      config,
-      fetchImpl,
-      tenantId: identity.tenantId,
-      ttlMinutes,
-      ownerContext: signedOwnerContext,
-    });
-  }
-
-  function providerSetupPortalUrl() {
-    const portal = new URL("/connect/openai", config.publicUrl);
-    portal.search = "";
-    portal.hash = "";
-    return portal.toString();
   }
 
   async function memoryContext(input, identity) {
@@ -616,12 +643,279 @@ export function createCoreHandlers(config, options = {}) {
     };
   }
 
+  function hostNativeSessionFingerprint(identity) {
+    const fingerprint = String(identity?.agentPresence?.session_fingerprint || "").trim();
+    if (!/^[a-f0-9]{16,64}$/i.test(fingerprint)) {
+      throw new Error("host_native_session_presence_required");
+    }
+    return fingerprint.toLowerCase();
+  }
+
+  function hostNativeKind(identity) {
+    const clientType = String(identity?.agentPresence?.client_type || "").toLowerCase();
+    if (clientType === "codex") return "codex_native";
+    if (clientType === "chatgpt") return "chatgpt_native";
+    throw new Error("host_native_client_type_required");
+  }
+
+  async function trustedHostNativeTicketRecord(ticketId, identity) {
+    const payload = await coreRequest(
+      `/v1/host-native/actions/${encodeURIComponent(ticketId)}`,
+      identity.tenantId,
+    );
+    const record = payload?.action_ticket;
+    if (
+      payload?.ok !== true ||
+      payload.tenant_id !== identity.tenantId ||
+      record?.schema_version !== "host_native_action_ticket_record_v1" ||
+      record.tenant_id !== identity.tenantId ||
+      record.ticket?.tenant_id !== identity.tenantId ||
+      record.ticket?.ticket_id !== ticketId
+    ) {
+      throw new Error("host_native_ticket_readback_invalid");
+    }
+    return record;
+  }
+
+  function attachTrustedHostNativeTicket(error, record) {
+    if (!error || !record) return error;
+    Object.defineProperties(error, {
+      hostNativeTicketTrusted: { value: true, enumerable: false },
+      hostNativeTicketRecord: { value: record, enumerable: false },
+    });
+    return error;
+  }
+
   const handlers = {
     core_health: async (_args, identity) => textResult({
       ...(await coreRequest("/healthz", identity.tenantId)),
       tenant_id: identity.tenantId,
       mcp_identity: ownerBindingStatus(config, identity),
     }),
+    host_native_status: async (_args, identity) => textResult(
+      await coreRequest("/v1/host-native/status", identity.tenantId),
+    ),
+    host_native_work_plan_create: async (args, identity) => textResult(
+      await coreRequest("/v1/host-native/work-plans", identity.tenantId, {
+        method: "POST",
+        body: {
+          work_id: args.work_id,
+          intent_anchor_digest: args.intent_anchor_digest,
+          repository: args.repository,
+          base_branch: args.base_branch,
+          objective: args.objective,
+          required_checks: args.required_checks,
+          agents: args.agents,
+          ...(args.max_parallel === undefined ? {} : { max_parallel: args.max_parallel }),
+        },
+      }),
+    ),
+    host_native_release_intent_build: async (args, identity) => {
+      const route = "/v1/host-native/release-intents";
+      return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          work_id: args.work_id,
+          intent_anchor_digest: args.intent_anchor_digest,
+          repository: args.repository,
+          base_branch: args.base_branch,
+          delivery_branch: args.delivery_branch,
+          base_commit: args.base_commit,
+          head_commit: args.head_commit,
+          tree_sha: args.tree_sha,
+          diff_digest: args.diff_digest,
+          changed_files: args.changed_files,
+          verification: args.verification,
+          delivery: args.delivery,
+          rollback: args.rollback,
+        },
+      }), route);
+    },
+    host_native_core_join_issue: async (args, identity) => {
+      const route = "/v1/host-native/core-join-verdicts";
+      return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          work_id: args.work_id,
+          intent_anchor_digest: args.intent_anchor_digest,
+          repository: args.repository,
+          core_plan_id: args.core_plan_id,
+          core_plan_digest: args.core_plan_digest,
+          local_plan_id: args.local_plan_id,
+          local_plan_digest: args.local_plan_digest,
+          evaluation_digest: args.evaluation_digest,
+          acceptance_criteria: args.acceptance_criteria,
+          builder_report: args.builder_report,
+          verifier_reports: args.verifier_reports,
+          checks: args.checks,
+          closure_attestation: args.closure_attestation,
+          release_intent: args.release_intent,
+          ...(args.required_checks_policy_digest
+            ? { required_checks_policy_digest: args.required_checks_policy_digest }
+            : {}),
+          provider_execution: false,
+          idempotency_key: args.idempotency_key,
+        },
+      }), route);
+    },
+    host_native_delegation_issue: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const ttlSeconds = Number(args.ttl_seconds);
+      if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 43_200) {
+        throw new Error("host_native_delegation_ttl_invalid");
+      }
+      const requestBody = {
+        work_id: args.work_id,
+        intent_anchor_digest: args.intent_anchor_digest,
+        repository: args.repository,
+        audience: args.audience,
+        allowed_branches: args.allowed_branches,
+        protected_branches: args.protected_branches || [],
+        allowed_path_prefixes: args.allowed_path_prefixes,
+        allowed_actions: args.allowed_actions,
+        ...(args.budget ? { budget: args.budget } : {}),
+        ...(args.release_policy ? { release_policy: args.release_policy } : {}),
+        idempotency_key: args.idempotency_key,
+        expires_at: new Date(Date.now() + ttlSeconds * 1_000).toISOString(),
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_delegation_issue",
+          args.idempotency_key,
+        ),
+      };
+      const payload = await coreRequest("/v1/host-native/delegations", identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding("host_native_delegation_issue", requestBody),
+          }),
+        },
+      });
+      return dedicatedCoreTextResult(payload, "/v1/host-native/delegations");
+    },
+    host_native_delegation_read: async (args, identity) => textResult(
+      await coreRequest(
+        `/v1/host-native/delegations/${encodeURIComponent(args.delegation_id)}`,
+        identity.tenantId,
+      ),
+    ),
+    host_native_delegation_revoke: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const requestBody = {
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_delegation_revoke",
+          args.idempotency_key,
+        ),
+      };
+      const route = `/v1/host-native/delegations/${encodeURIComponent(args.delegation_id)}/revoke`;
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding("host_native_delegation_revoke", requestBody),
+          }),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_action_authorize: async (args, identity) => {
+      const route = "/v1/host-native/actions/authorize";
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          delegation_id: args.delegation_id,
+          work_id: args.work_id,
+          intent_anchor_digest: args.intent_anchor_digest,
+          repository: args.repository,
+          host_kind: hostNativeKind(identity),
+          host_session_fingerprint: hostNativeSessionFingerprint(identity),
+          action: args.action,
+          evidence_digest: args.evidence_digest,
+          idempotency_key: args.idempotency_key,
+          ...(args.predecessor_ticket_id
+            ? { predecessor_ticket_id: args.predecessor_ticket_id }
+            : {}),
+          ...(args.release_manifest ? { release_manifest: args.release_manifest } : {}),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_action_read: async (args, identity) => textResult(
+      await coreRequest(
+        `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}`,
+        identity.tenantId,
+      ),
+    ),
+    host_native_action_reserve: async (args, identity) => {
+      const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reserve`;
+      return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          host_session_fingerprint: hostNativeSessionFingerprint(identity),
+          idempotency_key: args.idempotency_key,
+        },
+      }), route);
+    },
+    host_native_action_complete: async (args, identity) => {
+      const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/complete`;
+      const ticketRecord = await trustedHostNativeTicketRecord(args.ticket_id, identity);
+      try {
+        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+          method: "POST",
+          body: {
+            reservation_id: args.reservation_id,
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            outcome: args.outcome,
+            result_digest: args.result_digest,
+            idempotency_key: args.idempotency_key,
+            ...(args.result_commit ? { result_commit: args.result_commit } : {}),
+            ...(args.readback_digest ? { readback_digest: args.readback_digest } : {}),
+          },
+        }), route);
+      } catch (error) {
+        throw attachTrustedHostNativeTicket(error, ticketRecord);
+      }
+    },
+    host_native_action_reconcile: async (args, identity) => {
+      const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reconcile`;
+      const ticketRecord = await trustedHostNativeTicketRecord(args.ticket_id, identity);
+      try {
+        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+          method: "POST",
+          body: {
+            reservation_id: args.reservation_id,
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            idempotency_key: args.idempotency_key,
+            observed_outcome: args.observed_outcome,
+            readback_digest: args.readback_digest,
+            ...(args.observed_commit ? { observed_commit: args.observed_commit } : {}),
+          },
+        }), route);
+      } catch (error) {
+        throw attachTrustedHostNativeTicket(error, ticketRecord);
+      }
+    },
+    host_native_action_closure_receipt: async (args, identity) => {
+      const route =
+        `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/authorize-finalize`;
+      return textResult(await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        },
+      }));
+    },
     work_preflight: async (args, identity) => {
       const coreRuntime = await runtimeHierarchyEvaluate(args, identity, args.operation_type || "work_preflight");
       const agentPresence = identity.agentPresence || createAgentPresence(config, identity, args);
@@ -641,6 +935,25 @@ export function createCoreHandlers(config, options = {}) {
           target_system: args.target_system || "universal_core",
           operation_type: args.operation_type || "advisory_work",
           source_tool: args.tool_name,
+          ...(args.work_id ? { work_id: args.work_id } : {}),
+          ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
+          ...(args.project_id ? { project_id: args.project_id } : {}),
+          ...(Array.isArray(args.acceptance_criteria)
+            ? { acceptance_criteria: args.acceptance_criteria }
+            : {}),
+          ...(Array.isArray(args.constraints) ? { constraints: args.constraints } : {}),
+          host_native: {
+            requested: args.host_type === "chatgpt_native" || args.host_type === "codex_native",
+            host_type: args.host_type || (
+              agentPresence.client_type === "codex" ? "codex_native" : "chatgpt_native"
+            ),
+            provider_execution: false,
+            provider_api_key_required: false,
+            server_model_calls: 0,
+            host_spawn_required: true,
+            host_policy_override: false,
+            host_policy_must_allow: true,
+          },
           ...(args.evidence_state && typeof args.evidence_state === "object"
             ? { evidence_state: args.evidence_state }
             : {}),
@@ -1028,6 +1341,90 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: identity.tenantId,
       },
     })),
+    nyra_research_distillation_status: async (_args, identity) => textResult(
+      await coreRequest("/v1/research/status", identity.tenantId),
+    ),
+    nyra_research_source_registry: async (_args, identity) => textResult(
+      await coreRequest("/v1/research/source-registry", identity.tenantId),
+    ),
+    nyra_research_learning_pack: async (args, identity) => {
+      const query = new URLSearchParams();
+      if (args.branch_id) query.set("branch_id", String(args.branch_id));
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return textResult(await coreRequest(`/v1/research/learning-packs${suffix}`, identity.tenantId));
+    },
+    nyra_research_envelope_authorize: async (args, identity) => textResult(
+      await coreRequest("/v1/research/envelope/authorize", identity.tenantId, {
+        method: "POST",
+        body: {
+          request_id: args.request_id,
+          question: args.question,
+          branch_ids: args.branch_ids,
+          allowed_source_ids: args.allowed_source_ids,
+          max_documents: args.max_documents,
+          max_bytes: args.max_bytes,
+          max_duration_ms: args.max_duration_ms,
+          max_cost: args.max_cost,
+          retention_mode: args.retention_mode,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_workspace_open: async (args, identity) => textResult(
+      await coreRequest("/v1/research/workspaces/open", identity.tenantId, {
+        method: "POST",
+        body: {
+          envelope_id: args.envelope_id,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_workspace_attach: async (args, identity) => textResult(
+      await coreRequest("/v1/research/workspaces/attach", identity.tenantId, {
+        method: "POST",
+        body: {
+          workspace_id: args.workspace_id,
+          evidence: args.evidence,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_distill: async (args, identity) => textResult(
+      await coreRequest("/v1/research/distill", identity.tenantId, {
+        method: "POST",
+        body: {
+          workspace_id: args.workspace_id,
+          evidence: args.evidence,
+          lesson: args.lesson,
+          learning: args.learning,
+          scope: args.scope,
+          confidence: args.confidence,
+          limitations: args.limitations,
+          outcome_refs: args.outcome_refs,
+          // The MCP bridge is deliberately candidate-only. Even if a direct
+          // caller bypasses its JSON schema, Core never receives a persistence
+          // request from this path.
+          persist_verified: false,
+          audit_reference: args.audit_reference,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_workspace_close: async (args, identity) => textResult(
+      await coreRequest("/v1/research/workspaces/close", identity.tenantId, {
+        method: "POST",
+        body: {
+          workspace_id: args.workspace_id,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_cleanup: async (_args, identity) => textResult(
+      await coreRequest("/v1/research/cleanup", identity.tenantId, {
+        method: "POST",
+        body: { tenant_id: identity.tenantId },
+      }),
+    ),
     nyra_v2_preview: async (args, identity) => textResult(
       await nyraDeepV2Request(args, identity, "preview"),
     ),
@@ -1119,94 +1516,6 @@ export function createCoreHandlers(config, options = {}) {
     outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity, { ownerBindingPurpose: "intelligence_outcome_record" }),
     calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
     skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
-    tenant_provider_openai_status: async (_args, identity) => {
-      const payload = await coreRequest("/v1/generic-agents/providers/openai", identity.tenantId);
-      if (String(payload?.tenant_id || "").trim() !== String(identity.tenantId || "").trim()) {
-        throw new Error("provider_status_tenant_mismatch");
-      }
-      const provider = payload?.provider || {};
-      const boundedExecutionReady = provider.configured === true && provider.execution_available === true;
-      return textResult({
-        ...payload,
-        provider: {
-          ...provider,
-          onboarding_required: provider.configured !== true,
-          bounded_execution_ready: boundedExecutionReady,
-          readiness_rule: "configured_and_execution_available",
-        },
-      });
-    },
-    tenant_provider_openai_setup_link: async (_args, identity) => {
-      requireProviderSetupOwner(identity);
-      // The MCP response contains only the fixed owner portal. The actual
-      // one-time Core capability and its fragment-only proof are minted after
-      // a fresh OAuth owner session inside that portal, never in chat.
-      return textResult({
-        ok: true,
-        tenant_id: identity.tenantId,
-        setup_url: providerSetupPortalUrl(),
-        execution_enabled: false,
-      });
-    },
-    tenant_provider_openai_multi_agent_smoke_run: async (args, identity) => {
-      requireProviderExecutionOwner(identity);
-      const confirmationReference = String(identity.providerExecutionConfirmationReference || "").trim().slice(0, 240);
-      const requestBody = {
-        tenant_id: identity.tenantId,
-        task: String(args.task || "").trim(),
-        owner_confirmed: true,
-        ...(confirmationReference ? { confirmation_reference: confirmationReference } : {}),
-      };
-      return textResult(await coreRequest("/v1/generic-agents/providers/openai/multi-agent-runs", identity.tenantId, {
-        method: "POST",
-        body: {
-          ...requestBody,
-          owner_context: ownerContext(identity, {
-            providerSetup: true,
-            requestBinding: ownerRequestBinding("tenant_openai_multiagent_run", requestBody),
-          }),
-        },
-      }));
-    },
-    tenant_provider_openai_multi_agent_run_read: async (args, identity) => {
-      // Model output can contain the owner's own work. It is never exposed to
-      // an arbitrary same-tenant read key: an authenticated provider owner is
-      // required and the Core request is signed and bound to this run id.
-      requireProviderSetupOwner(identity);
-      const requestBody = { tenant_id: identity.tenantId, run_id: String(args.run_id || "").trim() };
-      return textResult(await coreRequest(
-        `/v1/generic-agents/providers/openai/multi-agent-runs/${encodeURIComponent(requestBody.run_id)}/result`,
-        identity.tenantId,
-        {
-          method: "POST",
-          body: {
-            ...requestBody,
-            owner_context: ownerContext(identity, {
-              providerSetup: true,
-              requestBinding: ownerRequestBinding("tenant_openai_multiagent_read", requestBody),
-            }),
-          },
-        },
-      ));
-    },
-    tenant_provider_openai_multi_agent_run_cancel: async (args, identity) => {
-      requireProviderSetupOwner(identity);
-      const requestBody = { tenant_id: identity.tenantId, run_id: String(args.run_id || "").trim() };
-      return textResult(await coreRequest(
-        `/v1/generic-agents/providers/openai/multi-agent-runs/${encodeURIComponent(requestBody.run_id)}/cancel`,
-        identity.tenantId,
-        {
-          method: "POST",
-          body: {
-            ...requestBody,
-            owner_context: ownerContext(identity, {
-              providerSetup: true,
-              requestBinding: ownerRequestBinding("tenant_openai_multiagent_cancel", requestBody),
-            }),
-          },
-        },
-      ));
-    },
     generic_agent_orchestration_create: async (args, identity) => textResult(await coreRequest(`/v1/generic-agents/runs/${encodeURIComponent(args.run_id)}/orchestration`, identity.tenantId, {
       method: "POST",
       body: { workers: args.workers, tenant_id: identity.tenantId },
@@ -1243,33 +1552,8 @@ export function createCoreHandlers(config, options = {}) {
     core_gate_action: async (args, identity) => {
       const confirmed = hasExplicitVerifiedOwnerConfirmation(identity);
       const confirmationReference = verifiedConfirmationReference(identity);
-      if (args.operation_class === PROVIDER_SETUP_LINK_BINDING_OPERATION_CLASS) {
-        requireProviderSetupOwner(identity);
-        // The caller never selects the commit for this binding. It is bound to
-        // the full SHA of the MCP process currently running on Render; if that
-        // identity is absent, the rule fails closed rather than minting an
-        // authorization for an arbitrary commit.
-        if (!/^[a-f0-9]{40}$/i.test(String(config.runtimeBuildCommit || ""))) {
-          throw new Error("provider_setup_link_build_identity_unavailable");
-        }
-        const binding = buildProviderSetupLinkBindingEnvelope({
-          tenantId: identity.tenantId,
-          targetCommit: config.runtimeBuildCommit,
-          confirmationReference,
-        });
-        const approvedBinding = { ...binding, owner_confirmed: confirmed };
-        return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
-          method: "POST",
-          body: {
-            ...approvedBinding,
-            owner_context: ownerContext(identity, {
-              providerSetup: true,
-              approvalEnvelope: approvedBinding,
-              requestBinding: ownerRequestBinding("core_action_evaluator", approvedBinding),
-            }),
-          },
-        }));
-      }
+      const boundedInternalCoordination =
+        args.operation_class === "bounded_internal_coordination_write";
       const sharedContext = await memoryContext({
         query: `${args.action_label || ""} ${args.action_type || ""}`.trim(),
         project_id: args.project_id,
@@ -1289,26 +1573,26 @@ export function createCoreHandlers(config, options = {}) {
         ...safeArgs,
         ...(sharedContext ? { memory_context: sharedContext } : {}),
         tenant_id: identity.tenantId,
-        owner_confirmed: confirmed,
-        ...(confirmationReference ? { confirmation_reference: confirmationReference } : {}),
+        owner_confirmed: boundedInternalCoordination ? false : confirmed,
+        ...(!boundedInternalCoordination && confirmationReference
+          ? { confirmation_reference: confirmationReference }
+          : {}),
       });
       return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
         method: "POST",
         useTenantGateway: true,
         body: {
           ...requestBody,
-          owner_context: ownerContext(identity, ownerRequestBinding("core_action_evaluator", requestBody)),
+          ...(!boundedInternalCoordination ? {
+            owner_context: ownerContext(
+              identity,
+              ownerRequestBinding("core_action_evaluator", requestBody),
+            ),
+          } : {}),
         }
       }));
     }
   };
-  // The browser portal is part of this MCP process, but it is not an MCP tool.
-  // Keep its raw link/proof issuance helper out of the enumerable tool map so
-  // it cannot be discovered or invoked through the connector protocol.
-  Object.defineProperty(handlers, "issueOwnerOpenAiSetupLink", {
-    value: issueOwnerOpenAiSetupLink,
-    enumerable: false,
-  });
   return handlers;
 }
 
@@ -1320,6 +1604,13 @@ export function createCoreWriteGuard(config, options = {}) {
       "task.claim",
       "task.update",
       "message.acknowledge",
+      "work.participant.join",
+      "work.participant.heartbeat",
+      "work.branch.open",
+      "work.lease.acquire",
+      "work.lease.renew",
+      "work.lease.release",
+      "work.message.post",
     ]);
     const ownerConfirmedInternalActionTypes = new Set([
       "workspace.create_folder",

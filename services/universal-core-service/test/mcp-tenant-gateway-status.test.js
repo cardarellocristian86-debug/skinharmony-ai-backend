@@ -8,11 +8,12 @@ import test from "node:test";
 import { createUniversalCoreService } from "../src/app.js";
 import { DEFAULT_AUTOMATION_SCOPES, SCOPES } from "../src/scope.js";
 
-const SIGNING_SECRET = "tenant-gateway-core-signing-secret-0123456789";
-const GATEWAY_KEY = "tenant-gateway-core-key";
+const TENANT_CONTEXT_SIGNING_SECRET = "tenant-context-signing-secret-0123456789";
+const OWNER_CONTEXT_SIGNING_SECRET = "owner-context-signing-secret-0123456789";
+const GATEWAY_KEY = "tenant-gateway-core-key-0123456789";
 const SETUP_SERVICE_KEY = "provider-setup-service-key";
 
-function signedTenantContext(tenantId) {
+function signedTenantContext(tenantId, secret = TENANT_CONTEXT_SIGNING_SECRET) {
   const context = {
     version: "mcp_tenant_context_v1",
     tenant_id: tenantId,
@@ -21,7 +22,7 @@ function signedTenantContext(tenantId) {
   const canonical = JSON.stringify(context);
   return Buffer.from(JSON.stringify({
     ...context,
-    assertion: `mtc_${crypto.createHmac("sha256", SIGNING_SECRET)
+    assertion: `mtc_${crypto.createHmac("sha256", secret)
       .update(`mcp-tenant-context\u0000${canonical}`)
       .digest("hex")}`,
   })).toString("base64url");
@@ -75,13 +76,23 @@ async function listen(app) {
   return { server, base: `http://127.0.0.1:${server.address().port}` };
 }
 
-async function providerStatus(base, key, tenantId, tenantContext) {
-  const headers = {
-    authorization: `Bearer ${key}`,
-    "x-sh-tenant-id": tenantId,
-  };
+async function providerRequest(base, {
+  method = "GET",
+  pathname = "",
+  key = "",
+  tenantId = "tenant-a",
+  tenantContext = "",
+  body,
+} = {}) {
+  const headers = { "content-type": "application/json" };
+  if (key) headers.authorization = `Bearer ${key}`;
+  if (tenantId) headers["x-sh-tenant-id"] = tenantId;
   if (tenantContext) headers["x-sh-tenant-context"] = tenantContext;
-  const response = await fetch(`${base}/v1/generic-agents/providers/openai`, { headers });
+  const response = await fetch(`${base}/v1/generic-agents/providers/openai${pathname}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
   return { status: response.status, json: await response.json() };
 }
 
@@ -115,7 +126,8 @@ test("legacy gateway record gains owner assertion without rotating its key", () 
   createUniversalCoreService({
     storageRoot,
     mcpTenantGatewayKey: GATEWAY_KEY,
-    ownerContextSigningSecret: SIGNING_SECRET,
+    tenantContextSigningSecret: TENANT_CONTEXT_SIGNING_SECRET,
+    ownerContextSigningSecret: OWNER_CONTEXT_SIGNING_SECRET,
   });
 
   const [record] = JSON.parse(fs.readFileSync(path.join(keysDir, "keys.json"), "utf8"));
@@ -124,52 +136,146 @@ test("legacy gateway record gains owner assertion without rotating its key", () 
   assert.deepEqual(record.allowed_scopes, [...DEFAULT_AUTOMATION_SCOPES, SCOPES.OWNER_ASSERTION]);
 });
 
-test("gateway GET provider status is tenant-bound and setup service key has no read authority", async (t) => {
+test("weak gateway bootstrap material fails closed without creating a gateway record", async () => {
+  const storageRoot = path.join(
+    os.tmpdir(),
+    `mcp-tenant-gateway-weak-${Date.now()}-${Math.random()}`,
+  );
+  const service = createUniversalCoreService({
+    storageRoot,
+    mcpTenantGatewayKey: "too-short",
+    tenantContextSigningSecret: TENANT_CONTEXT_SIGNING_SECRET,
+    ownerContextSigningSecret: OWNER_CONTEXT_SIGNING_SECRET,
+  });
+  const { server, base } = await listen(service.app);
+  try {
+    const response = await fetch(`${base}/healthz`);
+    const health = await response.json();
+    assert.equal(
+      health.host_native_governance.mcp_tenant_gateway_configured,
+      false,
+    );
+    const keysFile = path.join(storageRoot, "keys", "keys.json");
+    assert.deepEqual(
+      fs.existsSync(keysFile)
+        ? JSON.parse(fs.readFileSync(keysFile, "utf8"))
+        : [],
+      [],
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("provider retirement happens before tenant authentication or vault access", async () => {
+  let statusCalls = 0;
+  const service = createUniversalCoreService({
+    storageRoot: path.join(
+      os.tmpdir(),
+      `mcp-tenant-context-weak-${Date.now()}-${Math.random()}`,
+    ),
+    mcpTenantGatewayKey: GATEWAY_KEY,
+    tenantContextSigningSecret: "too-short",
+    ownerContextSigningSecret: OWNER_CONTEXT_SIGNING_SECRET,
+    tenantProviderCredentials: {
+      async status() {
+        statusCalls += 1;
+        throw new Error("weak tenant context must fail before provider access");
+      },
+    },
+  });
+  const { server, base } = await listen(service.app);
+  try {
+    const retired = await providerRequest(base, {
+      key: GATEWAY_KEY,
+      tenantId: "tenant-a",
+      tenantContext: signedTenantContext("tenant-a", "too-short"),
+    });
+    assert.equal(retired.status, 410);
+    assert.equal(retired.json.error, "native_agent_provider_retired");
+    assert.equal(statusCalls, 0);
+    const healthResponse = await fetch(`${base}/healthz`);
+    const health = await healthResponse.json();
+    assert.equal(
+      health.host_native_governance.tenant_context_signing_configured,
+      false,
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("every legacy provider and setup route is retired before a vault or runner can run", async (t) => {
   const previousSigningSecret = process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET;
-  process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET = SIGNING_SECRET;
+  process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET = OWNER_CONTEXT_SIGNING_SECRET;
   t.after(() => {
     if (previousSigningSecret === undefined) delete process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET;
     else process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET = previousSigningSecret;
   });
-  const statusCalls = [];
+  const providerCalls = [];
   const service = createUniversalCoreService({
     storageRoot: path.join(os.tmpdir(), `mcp-tenant-gateway-status-${Date.now()}-${Math.random()}`),
     mcpTenantGatewayKey: GATEWAY_KEY,
     providerSetupLinkServiceKey: SETUP_SERVICE_KEY,
-    ownerContextSigningSecret: SIGNING_SECRET,
+    tenantContextSigningSecret: TENANT_CONTEXT_SIGNING_SECRET,
+    ownerContextSigningSecret: OWNER_CONTEXT_SIGNING_SECRET,
     tenantProviderCredentials: {
       async status({ tenant_id }) {
-        statusCalls.push(tenant_id);
+        providerCalls.push(`vault-status:${tenant_id}`);
         return { provider: "openai", configured: true, execution_enabled: false };
       },
+      async getOpenAiForExecution() {
+        providerCalls.push("vault-execution");
+        return { api_key: "must-not-be-read" };
+      },
+    },
+    tenantProviderSetupLinks: {
+      async issue() {
+        providerCalls.push("setup-link");
+        return null;
+      },
+    },
+    tenantOpenAiMultiAgentRunner: {
+      start() { providerCalls.push("runner-start"); },
+      get() { providerCalls.push("runner-get"); },
+      cancel() { providerCalls.push("runner-cancel"); },
     },
   });
   const { server, base } = await listen(service.app);
 
   try {
-    const allowed = await providerStatus(base, GATEWAY_KEY, "tenant-a", signedTenantContext("tenant-a"));
-    assert.equal(allowed.status, 200);
-    assert.equal(allowed.json.tenant_id, "tenant-a");
-    assert.equal(allowed.json.provider.configured, true);
-    assert.deepEqual(statusCalls, ["tenant-a"]);
+    const requests = [
+      { method: "GET" },
+      { method: "PUT", body: { api_key: "must-not-be-accepted" } },
+      { method: "DELETE" },
+      { method: "GET", pathname: "/setup/opaque-capability" },
+      { method: "POST", pathname: "/setup/opaque-capability", body: { api_key: "must-not-be-accepted" } },
+      { method: "POST", pathname: "/setup-links", body: { owner_context: {} } },
+      { method: "POST", pathname: "/multi-agent-runs", body: { task: "must-not-run" } },
+      { method: "GET", pathname: "/multi-agent-runs/run-retired" },
+      { method: "POST", pathname: "/multi-agent-runs/run-retired/result", body: { run_id: "run-retired" } },
+      { method: "POST", pathname: "/multi-agent-runs/run-retired/cancel", body: { run_id: "run-retired" } },
+    ];
+    for (const request of requests) {
+      const retired = await providerRequest(base, {
+        ...request,
+        // A retired path must have the same response even when no bearer
+        // key or tenant assertion accompanies an old bookmarked setup link.
+        key: "",
+        tenantId: "",
+      });
+      assert.equal(retired.status, 410, `${request.method} ${request.pathname || "/"}`);
+      assert.equal(retired.json.error, "native_agent_provider_retired");
+      assert.equal(retired.json.message, "Provider execution is retired. Use native ChatGPT/Codex specialists.");
+    }
+    assert.deepEqual(providerCalls, []);
 
-    const mismatched = await providerStatus(base, GATEWAY_KEY, "tenant-a", signedTenantContext("tenant-b"));
-    assert.equal(mismatched.status, 403);
-    assert.equal(mismatched.json.error, "tenant_scope_denied");
-
-    const missingContext = await providerStatus(base, GATEWAY_KEY, "tenant-a", "");
-    assert.equal(missingContext.status, 403);
-    assert.equal(missingContext.json.error, "tenant_scope_denied");
-
-    const setupServiceRead = await providerStatus(
-      base,
-      SETUP_SERVICE_KEY,
-      "tenant-a",
-      signedTenantContext("tenant-a"),
-    );
-    assert.equal(setupServiceRead.status, 403);
-    assert.equal(setupServiceRead.json.error, "tenant_scope_denied");
-    assert.deepEqual(statusCalls, ["tenant-a"]);
+    const health = await (await fetch(`${base}/healthz`)).json();
+    assert.equal(health.governed_agent_runner.mode, "manual_dry_run");
+    assert.equal(health.governed_agent_runner.provider_execution_available, false);
+    assert.equal(health.governed_agent_runner.native_specialists_only, true);
+    assert.equal(health.tenant_provider_vault.retired, true);
+    assert.equal(health.tenant_provider_vault.execution_available, false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -177,7 +283,7 @@ test("gateway GET provider status is tenant-bound and setup service key has no r
 
 test("gateway connector accepts only tenant-bound request-bound owner assertions", async (t) => {
   const previousSigningSecret = process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET;
-  process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET = SIGNING_SECRET;
+  process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET = OWNER_CONTEXT_SIGNING_SECRET;
   t.after(() => {
     if (previousSigningSecret === undefined) delete process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET;
     else process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET = previousSigningSecret;
@@ -185,7 +291,8 @@ test("gateway connector accepts only tenant-bound request-bound owner assertions
   const service = createUniversalCoreService({
     storageRoot: path.join(os.tmpdir(), `mcp-tenant-gateway-owner-${Date.now()}-${Math.random()}`),
     mcpTenantGatewayKey: GATEWAY_KEY,
-    ownerContextSigningSecret: SIGNING_SECRET,
+    tenantContextSigningSecret: TENANT_CONTEXT_SIGNING_SECRET,
+    ownerContextSigningSecret: OWNER_CONTEXT_SIGNING_SECRET,
   });
   const { server, base } = await listen(service.app);
   const body = {

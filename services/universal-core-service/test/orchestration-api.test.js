@@ -82,6 +82,12 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
       session_fingerprint: `session-${verifier_id}`,
       assignment_id: `assignment-${verifier_id}`,
     }),
+    dynamicTaskTreeEnv: {
+      NODE_ENV: "production",
+      CORE_DTT_ENABLED: "true",
+      CORE_DTT_MODE: "shadow",
+      CORE_DTT_TENANT_ALLOWLIST: "tenant-orchestration",
+    },
   });
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -172,6 +178,13 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
     assert.equal(tree.json.execution.authorized, false);
     assert.equal(tree.json.execution.core_join_required, true);
     assert.equal(tree.json.limits.max_parallel, 2);
+    assert.deepEqual(tree.json.rollout, {
+      enabled: true,
+      mode: "shadow",
+      tenant_allowed: true,
+      execution_authorized: false,
+      core_join_required: true,
+    });
 
     const read = await request(base, "GET", `/v1/orchestration/dtt/${tree.json.tree_id}`, undefined, key);
     assert.equal(read.status, 200);

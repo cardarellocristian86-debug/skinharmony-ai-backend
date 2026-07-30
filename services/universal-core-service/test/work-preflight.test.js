@@ -94,6 +94,27 @@ test("marks tenant-scoped reads ready without a redundant confirmation gate", ()
   assert.equal(result.task_graph.nodes.find((node) => node.id === "execute_approved_scope").status, "ready_read_only");
 });
 
+test("keeps Deep V2 evaluation read-only while research and distillation remain Core-gated", () => {
+  for (const operationType of [
+    "nyra_v2_preview",
+    "nyra_v2_requirements",
+    "nyra_v2_evidence_prepare",
+    "nyra_v2_evaluate",
+  ]) {
+    const result = fixture({
+      requestText: "Valuta il ramo Deep V2 con evidenze governate",
+      operationType,
+      toolName: operationType,
+    });
+    assert.equal(result.state, "ready_read_only");
+    assert.equal(result.memory_first.status, "recalled");
+    assert.equal(result.governance.execution_allowed_by_preflight, true);
+    assert.equal(result.core_research.directive.authority.research_execution_authorized, false);
+    assert.equal(result.core_research.directive.authority.distillation_authorized, false);
+    assert.equal(result.governed_learning.policy_activation_requires_verify, true);
+  }
+});
+
 test("tracks explicit owner confirmation while keeping a write Core-gated", () => {
   const result = fixture({
     requestText: "Write shared document reports/core-nyra/status.md",

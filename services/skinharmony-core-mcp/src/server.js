@@ -1,5 +1,6 @@
 import { createApp, requiresGenericWorkPreflight } from "./app.js";
-import express from "express";
+import crypto from "node:crypto";
+import { Pool } from "pg";
 import { createCollaborationHandlers } from "./collaboration-handlers.js";
 import { loadConfig } from "./config.js";
 import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
@@ -9,21 +10,85 @@ import { createCloudMemoryStore } from "./cloud-memory-store.js";
 import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 import { createDecisionLedger } from "./decision-ledger.js";
-import { createWorkContinuityRuntime } from "./work-continuity-runtime.js";
+import {
+  coreJoinIdempotencyKey,
+  createWorkContinuityRuntime,
+} from "./work-continuity-runtime.js";
+import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
 import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
+import { HOST_NATIVE_TOOLS } from "./host-native-tools.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
-import { createAuthenticator } from "./auth.js";
-import { createOpenAiConnectPortal } from "./openai-connect-portal.js";
+import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
-
-TOOLS.push(...WORK_CONTINUITY_TOOLS);
+import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
 
 const config = loadConfig();
-const cloudMemoryStore = createCloudMemoryStore(config);
-const decisionLedger = createDecisionLedger(config);
-const workContinuityRuntime = createWorkContinuityRuntime(config);
-if (config.decisionLedgerRequired && !decisionLedger) throw new Error("core_decision_ledger_database_required");
+const hostNativeContinuityTools = new Set([
+  "work_continuity_native_plan",
+  "work_continuity_native_bind",
+  "work_continuity_native_report",
+  "work_continuity_closure_evaluate",
+  "work_continuity_closure_finalize",
+]);
+TOOLS.push(...WORK_CONTINUITY_TOOLS.filter((tool) =>
+  config.hostNativeAgentProtocolEnabled === true ||
+  !hostNativeContinuityTools.has(tool.name)));
+if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...HOST_NATIVE_TOOLS);
+
+const primaryDatabasePool = config.databaseUrl
+  ? new Pool({
+      connectionString: config.databaseUrl,
+      ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined,
+      max: config.databasePoolMax || 5,
+    })
+  : null;
+const postgresMajorVersionProbe = primaryDatabasePool
+  ? createPostgresMajorVersionProbe({ pool: primaryDatabasePool })
+  : null;
+const cloudMemoryStore = createCloudMemoryStore(config, {
+  pool: primaryDatabasePool,
+});
+const decisionLedger = createDecisionLedger(config, {
+  pool: primaryDatabasePool,
+});
+const workContinuityRuntime = createWorkContinuityRuntime(config, {
+  pool: primaryDatabasePool,
+});
+const startupReadiness = {
+  continuityInitialized: false,
+  continuityInitializationFailed: false,
+  decisionLedgerInitialized: false,
+  decisionLedgerInitializationFailed: false,
+};
+const workContinuityAutomation = workContinuityRuntime
+  ? createWorkContinuityAutomation({ runtime: workContinuityRuntime })
+  : null;
+const continuityRequired =
+  config.workContinuityAutoCaptureEnabled === true ||
+  config.hostNativeAgentProtocolEnabled === true;
+if (continuityRequired && workContinuityRuntime) {
+  void Promise.resolve()
+    .then(() => workContinuityRuntime.initialize())
+    .then(() => {
+      startupReadiness.continuityInitialized = true;
+    })
+    .catch(() => {
+      startupReadiness.continuityInitializationFailed = true;
+      console.error("[skinharmony-core-mcp] continuity_initialization_failed");
+    });
+}
+if (config.decisionLedgerRequired === true && decisionLedger) {
+  void Promise.resolve()
+    .then(() => decisionLedger.initialize())
+    .then(() => {
+      startupReadiness.decisionLedgerInitialized = true;
+    })
+    .catch(() => {
+      startupReadiness.decisionLedgerInitializationFailed = true;
+      console.error("[skinharmony-core-mcp] decision_ledger_initialization_failed");
+    });
+}
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
@@ -34,7 +99,6 @@ const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
 });
-const browserAuthenticate = createAuthenticator(config, { audience: config.auth0BrowserAudience });
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
       govern,
@@ -45,16 +109,6 @@ const researchCortex = config.researchCortexRoot
   : null;
 const suiteHandlers = createSuiteHandlers(config);
 
-const PROVIDER_ONBOARDING_EXEMPT_TOOLS = new Set([
-  "core_health",
-  "nyra_branch_catalog",
-  "tenant_provider_openai_status",
-  "tenant_provider_openai_setup_panel",
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
-]);
-
 function summarizeToolRequest(toolName, args = {}) {
   return String(
     args.request || args.message || args.action_label || args.title || args.query || args.description ||
@@ -62,19 +116,207 @@ function summarizeToolRequest(toolName, args = {}) {
   ).slice(0, 20_000);
 }
 
+function requireTenantWorkIdentity(identity) {
+  requireTenantWorkCapability(identity, "read");
+}
+
+async function requireOwnerGovernance(identity, actionType, target) {
+  const decision = await govern({
+    action_label: `Govern ${actionType}`,
+    action_type: actionType,
+    target,
+    operation_class: "owner_confirmed_governed_action",
+    external_side_effect: false,
+    destructive: false,
+    bounded_scope: true,
+    low_impact: false,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: Boolean(decisionLedger),
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  }, identity);
+  if (decision.allowed !== true) {
+    const error = new Error("core_owner_authorization_required");
+    error.code = "core_owner_authorization_required";
+    throw error;
+  }
+}
+
+async function requireBoundedTenantCoordination(identity, actionType, target) {
+  requireTenantWorkCapability(identity, "coordinate");
+  const decision = await govern({
+    action_label: `Coordinate tenant work: ${actionType}`,
+    action_type: actionType,
+    target,
+    operation_class: "bounded_internal_coordination_write",
+    external_side_effect: false,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: Boolean(decisionLedger),
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  }, identity);
+  if (decision.allowed !== true) {
+    const error = new Error("core_tenant_coordination_denied");
+    error.code = "core_tenant_coordination_denied";
+    throw error;
+  }
+}
+
+function continuityProjectId(args = {}) {
+  const raw = String(args.project_id || args.repository || args.target_system || "skinharmony-ai-backend")
+    .trim()
+    .replace(/[^a-zA-Z0-9_.:/-]+/g, "-")
+    .slice(0, 64);
+  return /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,63}$/.test(raw)
+    ? raw
+    : "skinharmony-ai-backend";
+}
+
+function hostType(identity, args = {}) {
+  if (args.host_type === "codex_native" || args.host_type === "chatgpt_native") return args.host_type;
+  return (identity.agentPresence?.client_type || args.client_type) === "codex"
+    ? "codex_native"
+    : "chatgpt_native";
+}
+
+function attachContinuity(preflightResult, continuity) {
+  if (!continuity) return preflightResult;
+  const structured = preflightResult?.structuredContent;
+  if (!structured || typeof structured !== "object") return preflightResult;
+  if (structured.work_preflight && typeof structured.work_preflight === "object") {
+    structured.work_preflight = { ...structured.work_preflight, continuity };
+  } else {
+    structured.continuity = continuity;
+  }
+  return preflightResult;
+}
+
+async function ensureContinuity(identity, args, toolName, preflightResult, { resumeExisting = false } = {}) {
+  if (!workContinuityRuntime || !config.workContinuityAutoCaptureEnabled) return null;
+  const sessionId = identity.agentPresence?.session_id || args.session_id;
+  if (!sessionId) throw new Error("continuity_session_required");
+  const initialMessage = summarizeToolRequest(toolName, args);
+  const host = hostType(identity, args);
+  const continuityGateIdempotencyKey = `continuity-anchor-${crypto.createHash("sha256")
+    .update(`${identity.tenantId}\u0000${continuityProjectId(args)}\u0000${sessionId}`)
+    .digest("hex")
+    .slice(0, 32)}`;
+  const continuityGate = await coreHandlers.core_gate_action({
+    action_label: "Persist a redacted immutable Work Continuity Intent Anchor",
+    action_type: "continuity.update",
+    target: `${continuityProjectId(args)}:${sessionId}`,
+    operation_class: "bounded_internal_coordination_write",
+    external_side_effect: false,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    deploy: false,
+    production_deploy: false,
+    merge: false,
+    delete: false,
+    execution_enabled: false,
+    force: false,
+    admin_bypass: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: Boolean(decisionLedger),
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+    idempotency_key: continuityGateIdempotencyKey,
+    owner_confirmed: false,
+  }, identity);
+  const authorization = continuityGate?.structuredContent?.authorization || {};
+  if (authorization.allowed !== true) throw new Error("continuity_capture_not_authorized");
+  const acceptanceCriteria = Array.isArray(args.acceptance_criteria) && args.acceptance_criteria.length
+    ? args.acceptance_criteria
+    : [
+      "Deliver the complete requested outcome, not a partial fragment.",
+      "Pass relevant positive, negative and regression tests.",
+      "Require a distinct host-native verifier before release readiness.",
+      "Use a bounded Core authorization for every external release action.",
+      "Verify expected live commit and health before final closure when deployment is in scope.",
+    ];
+  const continuity = await workContinuityRuntime.ensure(identity, {
+    ...(args.work_id ? { work_id: args.work_id } : {}),
+    ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
+    project_id: continuityProjectId(args),
+    session_id: sessionId,
+    initial_message: initialMessage,
+    idea: String(args.idea || initialMessage).slice(0, 8_000),
+    objective: String(args.objective || initialMessage).slice(0, 8_000),
+    acceptance_criteria: acceptanceCriteria,
+    constraints: [
+      ...(Array.isArray(args.constraints) ? args.constraints : []),
+      "Use ChatGPT/Codex host-native agents; do not require a provider API key.",
+      "Nyra supervises; Universal Core remains final policy authority.",
+      "Host sandbox, approval and auto-review policy cannot be bypassed.",
+    ],
+    architecture: {
+      schema_version: "governed_continuity_bootstrap_v1",
+      project_id: continuityProjectId(args),
+      source_tool: toolName,
+      host_type: host,
+      provider_execution: false,
+      provider_api_key_required: false,
+      host_policy_override: false,
+      compact_mcp_surface_size: 13,
+    },
+    next_action: `Continue ${toolName} through Nyra supervision and the Universal Core gate.`,
+    host_type: host,
+    client_type: identity.agentPresence?.client_type || args.client_type,
+    agent_id: identity.agentPresence?.agent_id || args.agent_id || "connected_ai",
+    resume_existing: resumeExisting,
+  }, {
+    // Generic follow-up tool calls belong to the already anchored request and
+    // must not reinterpret each tool's short command as a replacement intent.
+    // The explicit start/resume capability does not receive this trust bit and
+    // must present an intent digest equal to the immutable anchor.
+    trustedSessionFollowup: resumeExisting,
+  });
+  attachContinuity(preflightResult, continuity);
+  return continuity;
+}
+
+function continuityTextResult(payload) {
+  return {
+    structuredContent: payload,
+    content: [{ type: "text", text: JSON.stringify(payload) }],
+  };
+}
+
+function continuityMethod(method) {
+  return async (args, identity) => continuityTextResult({
+    ok: true,
+    result: await workContinuityRuntime[method](identity, args),
+  });
+}
+
 const baseHandlers = {
-  tenant_provider_openai_setup_panel: async (_args, identity) => ({
-      structuredContent: {
-        ok: true,
-        tenant_id: identity.tenantId,
-        provider: "openai",
-        execution_enabled: false,
-        key_entry: "one_time_secure_link_only",
-      },
-      content: [{ type: "text", text: "Apri il pannello Collega OpenAI e premi Crea link sicuro." }],
-      _meta: { "openai/outputTemplate": "ui://skinharmony/openai-provider-setup.html" },
-  }),
   ...coreHandlers,
+  work_preflight: async (args, identity) => {
+    const result = await coreHandlers.work_preflight(args, identity);
+    await ensureContinuity(identity, args, "work_preflight", result);
+    return result;
+  },
   ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
   ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
   ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
@@ -86,14 +328,17 @@ const baseHandlers = {
   } } : {}),
   ...(workContinuityRuntime ? {
     work_continuity_create: async (args, identity) => {
+      await requireOwnerGovernance(identity, "work.continuity.create", args.project_id);
       const payload = { ok: true, result: await workContinuityRuntime.create(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_record_change: async (args, identity) => {
+      await requireOwnerGovernance(identity, "work.continuity.record_change", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.recordChange(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_checkpoint: async (args, identity) => {
+      await requireOwnerGovernance(identity, "work.continuity.checkpoint", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.checkpoint(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
@@ -105,7 +350,7 @@ const baseHandlers = {
       const gate = await coreHandlers.core_gate_action({
         action_label: "Resume persistent Work Continuity work",
         action_type: "work_continuity.resume",
-        target: args.work_id,
+        target: `work_continuity_closure_finalize:${args.work_id}`,
         operation_class: "owner_confirmed_governed_action",
         external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
         idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
@@ -119,79 +364,253 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_verify_memory: async (args, identity) => {
+      await requireOwnerGovernance(identity, "work.continuity.verify_memory", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.verifyMemory(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_list: async (args, identity) => {
+      requireTenantWorkIdentity(identity);
       const payload = { ok: true, result: await workContinuityRuntime.gallery(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_join: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.participant.join", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.join(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_heartbeat: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.participant.heartbeat", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.heartbeat(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_branch_open: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.branch.open", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.openBranch(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_acquire: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.lease.acquire", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.acquireLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_renew: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.lease.renew", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.renewLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_release: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.lease.release", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.releaseLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_message_post: async (args, identity) => {
+      await requireBoundedTenantCoordination(identity, "work.message.post", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.postMessage(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_inbox: async (args, identity) => {
+      requireTenantWorkIdentity(identity);
       const payload = { ok: true, result: await workContinuityRuntime.inbox(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
+    work_continuity_start_or_resume: continuityMethod("ensure"),
+    work_continuity_intent_read: continuityMethod("readIntent"),
+    work_continuity_work_catalog: continuityMethod("listWorks"),
+    work_continuity_native_plan: async (args, identity) => {
+      const intent = await workContinuityRuntime.readIntent(identity, {
+        work_id: args.work_id,
+      });
+      const corePlanResult = await coreHandlers.host_native_work_plan_create({
+        work_id: args.work_id,
+        intent_anchor_digest: intent.intent_digest,
+        repository: args.repository,
+        base_branch: args.base_branch,
+        objective: intent.anchor?.objective,
+        required_checks: args.required_checks,
+        agents: args.tasks.map((task) => ({
+          agent_id: task.task_id,
+          role: task.kind,
+          task: task.instruction,
+          depends_on: task.dependencies || [],
+          capabilities: [],
+        })),
+        max_parallel: args.max_parallel,
+      }, identity);
+      const corePlan = corePlanResult?.structuredContent?.plan;
+      if (!corePlan) throw new Error("core_host_native_work_plan_required");
+      return continuityTextResult({
+        ok: true,
+        result: await workContinuityRuntime.planNativeAgents(identity, args, {
+          corePlan,
+        }),
+      });
+    },
+    work_continuity_native_bind: continuityMethod("bindNativeAgent"),
+    work_continuity_native_report: continuityMethod("reportNativeAgent"),
+    work_continuity_closure_evaluate: async (args, identity) => {
+      const evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
+      if (evaluation.closed !== true) {
+        return continuityTextResult({ ok: true, result: evaluation });
+      }
+      const material = evaluation.core_join_material;
+      if (
+        material?.schema_version !== "continuity_core_join_material_v1" ||
+        material.tenant_id !== identity.tenantId ||
+        !material.release_intent_request ||
+        !material.core_join_request
+      ) {
+        throw new Error("continuity_core_join_material_required");
+      }
+      const releaseIntentResult = await coreHandlers.host_native_release_intent_build(
+        material.release_intent_request,
+        identity,
+      );
+      const releaseIntent = releaseIntentResult?.structuredContent?.release_intent;
+      if (
+        releaseIntentResult?.structuredContent?.dedicated_core_gate?.authorized !== true ||
+        releaseIntentResult?.structuredContent?.tenant_id !== identity.tenantId ||
+        releaseIntent?.tenant_id !== identity.tenantId ||
+        releaseIntent?.work_id !== args.work_id
+      ) {
+        throw new Error("continuity_core_release_intent_invalid");
+      }
+      const coreJoinResult = await coreHandlers.host_native_core_join_issue({
+        ...material.core_join_request,
+        release_intent: releaseIntent,
+        idempotency_key: coreJoinIdempotencyKey(material),
+      }, identity);
+      const coreJoinRecord = coreJoinResult?.structuredContent?.core_join_verdict;
+      if (
+        coreJoinResult?.structuredContent?.dedicated_core_gate?.authorized !== true ||
+        coreJoinResult?.structuredContent?.tenant_id !== identity.tenantId ||
+        coreJoinRecord?.tenant_id !== identity.tenantId
+      ) {
+        throw new Error("continuity_core_join_response_invalid");
+      }
+      const coreJoin = await workContinuityRuntime.bindCoreJoinVerdict(identity, {
+        work_id: args.work_id,
+        plan_id: args.plan_id,
+        evaluation_id: evaluation.evaluation_id,
+      }, {
+        releaseIntent,
+        coreJoinRecord,
+      });
+      const { core_join_material: _coreJoinMaterial, ...publicEvaluation } = evaluation;
+      return continuityTextResult({
+        ok: true,
+        result: {
+          ...publicEvaluation,
+          release_ready: coreJoin.release_ready === true,
+          release_intent_digest: coreJoin.release_intent_digest,
+          core_join: coreJoin,
+        },
+      });
+    },
+    work_continuity_closure_finalize: async (args, identity) => {
+      const coreReceipt = await coreHandlers.host_native_action_closure_receipt({
+        ticket_id: args.action_ticket_id,
+      }, identity);
+      const authorization = coreReceipt?.structuredContent?.finalize_authorization;
+      if (
+        coreReceipt?.structuredContent?.tenant_id !== identity.tenantId ||
+        authorization?.schema_version !== "host_native_finalize_authorization_v1" ||
+        authorization?.trusted !== true ||
+        authorization?.allowed !== true ||
+        !/^hnf_[a-f0-9]{64}$/.test(String(authorization?.signature || "")) ||
+        authorization.tenant_id !== identity.tenantId ||
+        authorization.work_id !== args.work_id ||
+        authorization.action_ticket_id !== args.action_ticket_id
+      ) {
+        throw new Error("continuity_trusted_core_closure_receipt_required");
+      }
+      return continuityTextResult({
+        ok: true,
+        result: await workContinuityRuntime.finalizeClosure(identity, args, authorization),
+      });
+    },
+    work_continuity_atlas_upsert: continuityMethod("upsertAtlas"),
+    work_continuity_atlas_select: continuityMethod("selectAtlas"),
+    work_continuity_incident_record: continuityMethod("recordIncident"),
+    work_continuity_incident_verify: continuityMethod("verifyIncident"),
+    work_continuity_incident_resolve: continuityMethod("resolveIncident"),
   } : {}),
 };
+
+function internalCoordinationActionType(toolName) {
+  if (toolName.includes("native_plan")) return "native_agent.plan";
+  if (toolName.includes("native_bind")) return "native_agent.bind";
+  if (toolName.includes("native_report")) return "native_agent.report";
+  if (toolName.includes("closure")) return "native_agent.verify";
+  if (toolName.includes("atlas")) return "work_atlas.update";
+  if (toolName.includes("incident")) return "incident.record";
+  if (toolName.includes("delegation_consume")) return "delegation.consume";
+  return "continuity.update";
+}
+
+const researchDistillationShadowTools = new Set([
+  "nyra_research_envelope_authorize",
+  "nyra_research_workspace_open",
+  "nyra_research_workspace_attach",
+  "nyra_research_distill",
+  "nyra_research_workspace_close",
+]);
+
 const dynamicHandlers = createDynamicCapabilityHandlers({
   tools: TOOLS,
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   gateAction: ({ tool, identity, catalogRevision, idempotencyKey }) => {
-    const externalSideEffect = tool._meta?.["skinharmony/externalSideEffect"] ??
-      (tool.annotations?.openWorldHint === true);
+    const researchDistillationShadow =
+      researchDistillationShadowTools.has(tool.name);
+    const externalSideEffect = researchDistillationShadow
+      ? false
+      : tool._meta?.["skinharmony/externalSideEffect"] ??
+        (tool.annotations?.openWorldHint === true);
+    const ownerConfirmationRequired =
+      !researchDistillationShadow &&
+      tool._meta?.["skinharmony/ownerConfirmationRequired"] === true;
+    const destructive =
+      !researchDistillationShadow &&
+      tool.annotations?.destructiveHint === true;
     return coreHandlers.core_gate_action({
       action_label: `Invoke dynamic capability ${tool.name}`,
-      action_type: "dynamic_capability.invoke",
+      action_type: researchDistillationShadow
+        ? "research.distillation.shadow"
+        : ownerConfirmationRequired
+          ? "dynamic_capability.invoke"
+          : internalCoordinationActionType(tool.name),
       target: tool.name,
-      operation_class: "owner_confirmed_governed_action",
+      operation_class: researchDistillationShadow
+        ? "sandboxed_scoped_work"
+        : ownerConfirmationRequired
+          ? "owner_confirmed_governed_action"
+          : "bounded_internal_coordination_write",
+      dry_run: researchDistillationShadow,
       external_side_effect: externalSideEffect === true,
       contains_customer_data: false,
       contains_secret: false,
       secret_value_transmitted: false,
       cross_tenant: false,
       configuration_changes: false,
-      destructive: tool.annotations?.destructiveHint === true,
+      destructive,
       bypass_orchestrator: false,
       legal_violation: false,
       provider_execution: false,
       bounded_scope: true,
-      low_impact: tool.annotations?.destructiveHint !== true,
-      idempotent_or_compensable: tool.annotations?.idempotentHint === true,
-      rollback_ready: externalSideEffect !== true || tool.annotations?.idempotentHint === true,
+      low_impact: !destructive,
+      idempotent_or_compensable:
+        researchDistillationShadow ||
+        tool.annotations?.idempotentHint === true,
+      rollback_ready:
+        researchDistillationShadow ||
+        externalSideEffect !== true ||
+        tool.annotations?.idempotentHint === true,
       audit_ready: Boolean(decisionLedger),
       target_authority_verified: true,
       actor_authorized_for_target: true,
       catalog_revision: catalogRevision,
       idempotency_key: idempotencyKey,
-      owner_confirmed: identity.ownerConfirmed === true,
+      owner_confirmed: ownerConfirmationRequired && identity.ownerConfirmed === true,
       confirmation_reference: identity.confirmationReference,
     }, identity);
   }
@@ -201,14 +620,12 @@ const handlers = { ...baseHandlers, ...dynamicHandlers };
 const app = createApp(config, {
   handlers,
   toolSurface: "compact",
+  readiness: startupReadiness,
+  postgresMajorVersionProbe,
   beforeToolCall: async ({ identity, toolName, args }) => {
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
-    let providerStatus = null;
     try {
-      if (!PROVIDER_ONBOARDING_EXEMPT_TOOLS.has(toolName)) {
-        try { providerStatus = await coreHandlers.tenant_provider_openai_status({}, identity); } catch {}
-      }
-      if (!requiresGenericWorkPreflight(toolName)) return { preflight: null, ledgerContext, providerStatus };
+      if (!requiresGenericWorkPreflight(toolName)) return { preflight: null, ledgerContext };
       const result = await coreHandlers.work_preflight({
         request: summarizeToolRequest(toolName, args),
         operation_type: toolName,
@@ -217,54 +634,56 @@ const app = createApp(config, {
         session_id: identity.agentPresence?.session_id || args.session_id,
         agent_id: identity.agentPresence?.agent_id || args.agent_id || args.from_agent_id || "connected_ai",
         client_type: identity.agentPresence?.client_type || args.client_type,
-        available_capabilities: ["skinharmony_core_mcp", toolName],
+        ...(config.hostNativeAgentProtocolEnabled ? {
+          host_type: (identity.agentPresence?.client_type || args.client_type) === "codex"
+            ? "codex_native"
+            : "chatgpt_native",
+        } : {}),
+        available_capabilities: [
+          "skinharmony_core_mcp",
+          toolName,
+          ...(config.hostNativeAgentProtocolEnabled ? ["host_native_agents"] : []),
+        ],
         owner_confirmed: identity.ownerConfirmed === true,
         confirmation_reference: identity.confirmationReference,
       }, identity);
+      await ensureContinuity(identity, args, toolName, result, { resumeExisting: true });
       const preflight = result.structuredContent;
       if (ledgerContext) await decisionLedger.append(ledgerContext, "preflight_completed", {
         preflight_id: preflight?.work_preflight?.preflight_id || preflight?.preflight_id,
         reason_summary: preflight?.work_preflight?.state || preflight?.state || "preflight_completed",
         metadata: { execution_allowed: preflight?.work_preflight?.governance?.execution_allowed_by_preflight === true },
       });
-      return { preflight, ledgerContext, providerStatus };
+      return { preflight, ledgerContext };
     } catch (error) {
-      error.hookContext = { ledgerContext, providerStatus };
+      error.hookContext = { ledgerContext };
       throw error;
     }
   },
   afterToolCall: async (event) => {
-    if (decisionLedger && event.hookContext?.ledgerContext) await decisionLedger.finishWork(event.hookContext.ledgerContext, event);
-    if (memoryFabric) await memoryFabric.recordToolActivity(event);
+    if (workContinuityAutomation) await workContinuityAutomation(event);
+    // These are audit/projection writes after the governed action has already
+    // returned. A projection outage must not turn a successful connector side
+    // effect into a client-visible failure that encourages an unsafe replay.
+    await Promise.allSettled([
+      decisionLedger && event.hookContext?.ledgerContext
+        ? decisionLedger.finishWork(event.hookContext.ledgerContext, event)
+        : Promise.resolve(),
+      memoryFabric
+        ? memoryFabric.recordToolActivity(event)
+        : Promise.resolve(),
+    ]);
   },
 });
-const openAiPortal = createOpenAiConnectPortal({
-  config,
-  authenticate: browserAuthenticate,
-  issueSetupLink: (identity) => coreHandlers.issueOwnerOpenAiSetupLink(identity, 10),
-  providerStatus: coreHandlers.tenant_provider_openai_status,
-  startMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_smoke_run,
-  readMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_run_read,
-  cancelMultiAgentRun: coreHandlers.tenant_provider_openai_multi_agent_run_cancel,
-});
-app.get("/connect/openai", openAiPortal.start);
-app.get("/connect/openai/callback", openAiPortal.callback);
-app.post("/connect/openai/continue", express.urlencoded({ extended: false }), openAiPortal.continue);
-app.get("/agents", openAiPortal.agentsHome);
-app.get("/agents/login", openAiPortal.agentsLogin);
-app.post("/agents/connect", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsConnect);
-app.post("/agents/run", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunStart);
-app.get("/agents/runs/:runId", openAiPortal.agentsRunRead);
-app.post("/agents/runs/:runId/cancel", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunCancel);
-app.post("/agents/logout", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsLogout);
+const disabledProviderPortal = (_req, res) => res
+  .status(410)
+  .set({
+    "cache-control": "no-store, max-age=0",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+    "x-content-type-options": "nosniff",
+  })
+  .type("html")
+  .send('<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Funzione disattivata</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Funzione disattivata</h1><p>Il collegamento OpenAI non viene più usato. Nyra e Universal Core funzionano senza chiave API.</p><p>Puoi chiudere questa pagina e continuare normalmente in ChatGPT o Codex.</p></body></html>');
 
-// Preserve previously issued mobile-first links while keeping `/agents` as
-// the device- and client-neutral entrypoint for ChatGPT, Codex and browsers.
-app.get("/mobile/agents", openAiPortal.agentsHome);
-app.get("/mobile/agents/login", openAiPortal.agentsLogin);
-app.post("/mobile/agents/connect", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsConnect);
-app.post("/mobile/agents/run", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunStart);
-app.get("/mobile/agents/runs/:runId", openAiPortal.agentsRunRead);
-app.post("/mobile/agents/runs/:runId/cancel", express.urlencoded({ extended: false, limit: "8kb" }), openAiPortal.agentsRunCancel);
-app.post("/mobile/agents/logout", express.urlencoded({ extended: false, limit: "2kb" }), openAiPortal.agentsLogout);
+app.use(["/connect/openai", "/agents", "/mobile/agents"], disabledProviderPortal);
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));

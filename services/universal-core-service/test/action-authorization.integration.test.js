@@ -170,6 +170,10 @@ test("allows only bounded low-impact coordination writes without confirmation", 
   const base = {
     action_type: "task.claim",
     operation_class: "bounded_internal_coordination_write",
+    authenticated_tenant_id: "codexai",
+    tenant_id: "codexai",
+    target: "tenant_task_queue",
+    idempotency_key: "task-claim-idempotency-0001",
     external_side_effect: false,
     contains_customer_data: false,
     contains_secret: false,
@@ -206,6 +210,10 @@ test("allows only bounded low-impact coordination writes without confirmation", 
     { deploy: true },
     { merge: true },
     { execution_enabled: true },
+    { tenant_id: "other" },
+    { target: "render_service" },
+    { idempotency_key: "" },
+    { owner_confirmed: true },
   ]) assert.equal(evaluate({ ...base, ...unsafe }).authorization.allowed, false);
 });
 

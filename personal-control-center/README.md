@@ -15,7 +15,7 @@ Gerarchia nuova:
 - `Capital`: revenue, margin, inventory
 - `Runtime`: integrita fonti, agenda, task
 - `Finance Dock`: ingresso preparato per il futuro desk finanziario
-- `Nyra`: copilot operativo e proposte confermabili
+- `Nyra`: passaggio nativo verso ChatGPT/Codex e Core MCP
 
 Dottrina usata nel redesign:
 
@@ -121,11 +121,10 @@ http://127.0.0.1:3025
   - campagne senza clienti
   - lead senza follow-up da oltre 5 giorni
   - campagne sopra media
-- Assistente marketing interno:
-  - legge i dati locali gia presenti nel Control Desk
-  - risponde alle domande scritte dalla UI
-  - propone strategia marketing basata su invii, risposte, lead e task aperti
-  - non inventa dati non presenti
+- Handoff nativo Nyra/Core:
+  - prepara dalla UI una richiesta leggibile per ChatGPT/Codex
+  - non esegue modelli, fallback locali o azioni nel server del Control Desk
+  - rimanda analisi e azioni materiali al flusso Core MCP, con contesto autorizzato, deleghe/ticket e approvazioni dell'host quando richieste
 - Pulsanti per:
   - controllare risposte email
   - aggiornare report outreach
@@ -138,15 +137,15 @@ http://127.0.0.1:3025
 
 Questa è la prima base del programma personale. Non invia campagne email direttamente dalla UI: l'invio resta gestito dagli script dedicati e tracciati, per evitare automazioni rischiose.
 
-L'assistente marketing attuale genera risposte locali basate sui dati gia letti dal programma. Il prossimo passaggio tecnico utile e collegarlo a un endpoint AI dedicato, mantenendo la stessa regola: leggere solo dati reali del workspace e dichiarare quando manca un dato.
+Il Control Desk non esegue AI lato server e non presenta un fallback locale. Il pannello Nyra prepara un handoff da usare in ChatGPT/Codex connesso al Core MCP. L'agente nativo recupera solo il contesto autorizzato; per commit, push, deploy o altre azioni materiali servono la delega/ticket Core applicabile e tutte le approvazioni richieste dall'host.
 
-## Endpoint AI-ready
+## Endpoint di contesto
 
 ```text
 GET /api/ai/context
 ```
 
-Restituisce un JSON unico con campagne, lead, funnel, azioni, comportamento, vendite, margini, magazzino, social e alert. Questo endpoint e la base per collegare un assistente AI operativo senza fargli leggere file sparsi.
+Restituisce un JSON unico con campagne, lead, funnel, azioni, comportamento, vendite, margini, magazzino, social e alert. È un endpoint di sola lettura per il contesto del Control Desk: non esegue un modello né un'azione.
 
 ## Dati manuali Control Desk
 
@@ -228,22 +227,16 @@ Il Control Desk ora espone anche una lettura direzionale:
 - `Produttivita`: combina invii, risposte, interazioni, vendite, movimenti magazzino e log manuali
 - report `Produttivita` dentro Overview report
 - form `Produttivita e lavoro reale` per salvare ore, azioni e risultato operativo
-- assistente strategico aggiornato: legge anche qualita dati, produttivita e direzione consigliata
-- assistente AI OpenAI attivo nel pannello `Assistente`, con fallback locale se OpenAI non risponde
-- test OpenAI riuscito: risposta in modalita `openai` con modello configurato
+- lettura strategica basata su qualita dati, produttivita e direzione consigliata
+- pannello Nyra trasformato in handoff nativo per ChatGPT/Codex con Core MCP; nessun provider o fallback AI è eseguito dal server
 - card executive cliccabili con drawer laterale di dettaglio
 - drawer esteso anche a fonti dati, lead operativi e alert
-- barra AI globale `Chiedi o crea un'azione`
-- barra AI contestuale dentro drawer
-- proposte AI confermabili: task, note lead, bozze email e strategie salvate
-- log uso AI salvato in `aiLogs` con stima token input/output
-- bozze e strategie AI salvate in `aiDrafts`; nessun invio email automatico
+- le richieste operative vengono preparate per l'agente nativo; la UI non conferma né esegue proposte automaticamente
 
 Endpoint aggiunto:
 
 ```text
 POST /api/productivity
-POST /api/assistant/ai
-POST /api/assistant/action
-POST /api/assistant/commit
 ```
+
+Non esistono endpoint pubblici di esecuzione AI o di azione per il pannello Nyra: l'esecuzione passa dal flusso nativo ChatGPT/Codex + Core MCP.

@@ -10,7 +10,8 @@ import {
   stable,
   surfacesOverlap,
 } from "../src/work-continuity-runtime.js";
-import { WORK_CONTINUITY_TOOLS as TOOLS } from "../src/work-continuity-tools.js";
+import { TOOLS as BASE_TOOLS } from "../src/tool-definitions.js";
+import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 
 test("continuity digests are deterministic across object key order", () => {
   assert.deepEqual(stable({ b: 2, a: { d: 4, c: 3 } }), { a: { c: 3, d: 4 }, b: 2 });
@@ -60,7 +61,7 @@ test("continuity capabilities expose correct read/write and confirmation boundar
     "work_continuity_create", "work_continuity_record_change", "work_continuity_checkpoint",
     "work_continuity_read", "work_continuity_resume", "work_continuity_verify_memory",
   ];
-  const tools = Object.fromEntries(TOOLS.filter((item) => names.includes(item.name)).map((item) => [item.name, item]));
+  const tools = Object.fromEntries(WORK_CONTINUITY_TOOLS.filter((item) => names.includes(item.name)).map((item) => [item.name, item]));
   assert.deepEqual(Object.keys(tools).sort(), names.sort());
   assert.equal(tools.work_continuity_read.annotations.readOnlyHint, true);
   for (const name of names.filter((item) => item !== "work_continuity_read")) {
@@ -69,6 +70,16 @@ test("continuity capabilities expose correct read/write and confirmation boundar
   }
   const resumeHashes = tools.work_continuity_resume.inputSchema.properties.current_state_hashes;
   assert.deepEqual(resumeHashes.required.sort(), ["live_state_hash", "policy_hash", "repository_hash"]);
+});
+
+test("canonical Work Continuity tools register exactly once", () => {
+  const canonicalNames = WORK_CONTINUITY_TOOLS.map((tool) => tool.name);
+  assert.equal(new Set(canonicalNames).size, canonicalNames.length);
+  assert.deepEqual(
+    BASE_TOOLS.filter((tool) => canonicalNames.includes(tool.name)).map((tool) => tool.name),
+    [],
+  );
+  assert.equal(BASE_TOOLS.some((tool) => tool.name === "work_continuity_event"), false);
 });
 
 test("work gallery normalizes bounded surfaces and detects file ancestry overlap", () => {
@@ -115,7 +126,7 @@ test("work gallery schema is tenant/work scoped and uses temporary leases", () =
   ]) assert.ok(WORK_EVENT_TYPES.has(event));
 });
 
-test("work gallery tools preserve read/write and owner-confirmation boundaries", () => {
+test("work gallery tools preserve read/write and bounded tenant-collaboration boundaries", () => {
   const readTools = new Set(["tenant_work_gallery_list", "tenant_work_inbox"]);
   const names = [
     ...readTools,
@@ -127,13 +138,16 @@ test("work gallery tools preserve read/write and owner-confirmation boundaries",
     "tenant_work_lease_release",
     "tenant_work_message_post",
   ];
-  const tools = Object.fromEntries(TOOLS.filter((tool) => names.includes(tool.name))
+  const tools = Object.fromEntries(WORK_CONTINUITY_TOOLS.filter((tool) => names.includes(tool.name))
     .map((tool) => [tool.name, tool]));
   assert.deepEqual(Object.keys(tools).sort(), names.sort());
   for (const name of names) {
     assert.equal(tools[name].annotations.readOnlyHint, readTools.has(name));
     if (!readTools.has(name)) {
-      assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], true);
+      assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], false);
+      assert.equal(tools[name]._meta["skinharmony/tenantBoundedCollaboration"], true);
+      assert.equal(tools[name].inputSchema.properties.owner_confirmed, undefined);
+      assert.equal(tools[name].inputSchema.properties.confirmation_reference, undefined);
     }
   }
   assert.deepEqual(

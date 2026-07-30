@@ -24,9 +24,16 @@ Set these in the `skinharmony-core-mcp` service dashboard:
 - `UNIVERSAL_CORE_KEYS_JSON`
 - `CORE_MCP_KEY` for the tenant bound by `MCP_CHATGPT_TENANT_ID`, or a tenant-specific key in `UNIVERSAL_CORE_KEYS_JSON`
 - optionally `UNIVERSAL_CORE_KEY` for the `owner-private` compatibility path
+- `CODEX_BEARER_KEYS`, a manually provisioned host-connection secret for the
+  allowlisted native Codex path; it is not an OpenAI API key
 - `AGENT_WORKSPACE_ROOT` and `MEMORY_FABRIC_ROOT`, both pointing to the persistent Render disk
 - `RESEARCH_CORTEX_ROOT`, pointing to the same persistent Render disk
-- `OPENAI_API_KEY` only for the optional fallback; keep `NYRA_OPENAI_RESEARCH_ENABLED=false` by default
+- `DATABASE_URL`, the canonical managed PostgreSQL 16 connection used by the
+  continuity fabric
+
+This deployment accepts no server-side OpenAI/API-key research fallback and
+does not create provider agents. Research runs in the connected ChatGPT/Codex
+host and only reviewed, bounded evidence is ingested by MCP.
 
 Never commit their values.
 
@@ -105,5 +112,5 @@ restoring the previous `CORE_MCP_KEY` reference.
 For research, call `work_preflight`, `nyra_research_plan`, use the host web tool,
 then call `nyra_research_ingest` with the returned plan policy and a stable
 idempotency key. Verify candidate status, authorized feedback, validated
-`search`/`fetch`, and tenant isolation. Do not enable the optional API fallback
-for this smoke test.
+`search`/`fetch`, and tenant isolation. No backend model-provider fallback is
+available or needed for this smoke test.

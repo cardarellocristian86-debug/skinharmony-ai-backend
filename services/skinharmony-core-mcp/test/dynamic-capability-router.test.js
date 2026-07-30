@@ -62,12 +62,28 @@ function writeTool(name = "workspace_dynamic_write") {
   };
 }
 
+function delegatedWriteTool(name = "orchestration_dtt_agent_report") {
+  const definition = writeTool(name);
+  definition._meta = { "skinharmony/ownerConfirmationRequired": false };
+  delete definition.inputSchema.properties.owner_confirmed;
+  delete definition.inputSchema.properties.confirmation_reference;
+  definition.inputSchema.required = ["value"];
+  return definition;
+}
+
+function dedicatedCoreWriteTool(name = "host_native_action_reserve") {
+  const definition = delegatedWriteTool(name);
+  definition._meta["skinharmony/dedicatedCoreGate"] = true;
+  return definition;
+}
+
 test("publishes a fixed compact MCP surface below the connector import budget", () => {
   const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({})]));
   const compact = compactMcpTools(TOOLS, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 13);
+  assert.equal(compact.length, 7);
+  assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
   assert(Buffer.byteLength(JSON.stringify({ tools: compact })) < 64 * 1024);
 });
 
@@ -180,6 +196,94 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
     /owner_confirmation_required/,
   );
   assert.equal(writes, 1);
+});
+
+test("bounded internal mutations use the target metadata instead of impersonating the owner", async () => {
+  const tool = delegatedWriteTool();
+  let received;
+  let gated = 0;
+  const handlers = {
+    [tool.name]: async (args, caller) => {
+      received = { args, caller };
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => {
+      gated += 1;
+      return { structuredContent: { authorization: { allowed: true } } };
+    },
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const caller = { ...identity, ownerConfirmed: false };
+  const result = await router.core_capability_invoke({
+    capability_id: tool.name,
+    catalog_revision: revision,
+    idempotency_key: "agent-report-1",
+    arguments: { value: "verified receipt" },
+  }, caller);
+
+  assert.equal(gated, 1);
+  assert.deepEqual(received.args, { value: "verified receipt" });
+  assert.equal(received.caller, caller);
+  assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_required, false);
+  assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_satisfied, true);
+});
+
+test("dedicated Core routes replace the generic gate only with a verified Core marker", async () => {
+  const tool = dedicatedCoreWriteTool();
+  let genericGateCalls = 0;
+  let markerAuthorized = true;
+  const handlers = {
+    [tool.name]: async () => ({
+      structuredContent: {
+        ok: true,
+        dedicated_core_gate: {
+          authorized: markerAuthorized,
+          authority: "universal_core",
+        },
+      },
+    }),
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => {
+      genericGateCalls += 1;
+      return { structuredContent: { authorization: { allowed: true } } };
+    },
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const args = {
+    capability_id: tool.name,
+    catalog_revision: revision,
+    idempotency_key: "reserve-ticket-1",
+    arguments: { value: "ticket" },
+  };
+
+  const result = await router.core_capability_invoke(args, {
+    ...identity,
+    ownerConfirmed: false,
+  });
+  assert.equal(genericGateCalls, 0);
+  assert.equal(
+    result.structuredContent.dynamic_capability.gate_source,
+    "universal_core_dedicated_route",
+  );
+
+  markerAuthorized = false;
+  await assert.rejects(
+    router.core_capability_invoke(
+      { ...args, idempotency_key: "reserve-ticket-2" },
+      { ...identity, ownerConfirmed: false },
+    ),
+    /dynamic_capability_dedicated_core_gate_unverified/,
+  );
+  assert.equal(genericGateCalls, 0);
 });
 
 test("semantic selection builds candidates from the server catalog and never authorizes execution", async () => {

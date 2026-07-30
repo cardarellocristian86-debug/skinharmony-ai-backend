@@ -177,6 +177,26 @@ const researchPlanPolicy = object({
     allowed_domains: { type: "array", maxItems: 20, items: { type: "string", maxLength: 253 } },
   }, ["minimum_independent_sources", "freshness_days"]),
 }, ["source_policy"]);
+const researchDistillationEvidence = object({
+  source_id: identifier,
+  canonical_url: { type: "string", format: "uri", maxLength: 2_048 },
+  title: text(500),
+  published_at: { type: "string", format: "date-time" },
+  claim_summary: text(2_000),
+  support_direction: { type: "string", enum: ["support", "contradict", "neutral"] },
+  citation: { type: "string", maxLength: 1_000 },
+}, ["source_id", "canonical_url", "title", "claim_summary"]);
+const researchDistillationEnvelopeProperties = {
+  request_id: identifier,
+  question: text(2_000),
+  branch_ids: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: identifier },
+  allowed_source_ids: { type: "array", maxItems: 50, uniqueItems: true, items: identifier },
+  max_documents: { type: "integer", minimum: 1, maximum: 100 },
+  max_bytes: { type: "integer", minimum: 1, maximum: 5_000_000 },
+  max_duration_ms: { type: "integer", minimum: 1_000, maximum: 300_000 },
+  max_cost: { type: "number", minimum: 0, maximum: 100 },
+  retention_mode: { type: "string", enum: ["ephemeral", "candidate", "review_required"] },
+};
 const nyraDeepV2RequestId = {
   type: "string",
   minLength: 1,
@@ -531,14 +551,19 @@ export const TOOLS = [
       context: { type: "object", additionalProperties: true },
     }, additionalProperties: false },
   }, ["request"]), ["core:read"], true, true, { outputSchema: object({ ok: { type: "boolean" }, tenant_id: { type: "string" }, core_runtime: coreRuntimeOutputSchema }, ["ok", "tenant_id", "core_runtime"]) }),
-  tool("work_preflight", "Bootstrap shared memory and route work", "Use this as the first step for generic Nyra/Core work. It automatically loads the authenticated tenant's canonical STATE, TASKS, LOCKS, ARTIFACTS and HANDOFF documents by source path, then recalls relevant memory, assigns roles, opens Nyra/Core branches, builds the task graph, selects connected tools and returns fail-closed governance gates. It is not an authorization gate for tenant_provider_openai_status, setup, or the dedicated bounded multi-agent start/read/cancel tools, which use their own tenant OAuth owner gate. Never ask the user for a separate shared-memory loading prompt.", object({
+  tool("work_preflight", "Bootstrap shared memory and route work", "Use this as the first step for generic Nyra/Core work. It loads the authenticated tenant's canonical context, binds the redacted initial request to one persistent Work Identity when continuity is enabled, opens Nyra/Core branches, builds a bounded host-native task graph and returns fail-closed governance gates. Host-native children are created only by ChatGPT/Codex and require no provider API key. The optional provider workflow remains separate. Never ask the user for a separate shared-memory loading prompt.", object({
     request: text(),
     target_system: { type: "string", maxLength: 100 },
     operation_type: { type: "string", maxLength: 100 },
     tool_name: { type: "string", maxLength: 100 },
+    work_id: { type: "string", format: "uuid" },
+    parent_work_id: { type: "string", format: "uuid" },
     session_id: identifier,
     project_id: identifier,
     agent_id: identifier,
+    host_type: { type: "string", enum: ["chatgpt_native", "codex_native"] },
+    acceptance_criteria: { type: "array", maxItems: 100, items: text(1_000) },
+    constraints: { type: "array", maxItems: 100, items: text(1_000) },
     response_mode: { type: "string", enum: ["compact", "full"] },
     nyra_branches: { type: "array", maxItems: 64, items: identifier },
     available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } },
@@ -602,12 +627,15 @@ export const TOOLS = [
     catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
     arguments: { type: "object", maxProperties: 200, additionalProperties: true },
   }, ["capability_id", "catalog_revision"]), ["core:read"]),
-  tool("core_capability_invoke", "Invoke a governed dynamic capability", "Invoke one server-registered mutating capability by exact capability id and catalog revision. It is fail-closed and requires target scopes, exact schema validation, explicit owner confirmation, idempotency and a fresh Universal Core gate.", object({
+  tool("core_capability_invoke", "Invoke a governed dynamic capability", "Invoke one server-registered mutating capability by exact capability id and catalog revision. Bounded post-delegation actions use their signed Core gate without another owner prompt; only a target explicitly marked owner-confirmed may consume one fresh owner confirmation.", object({
     capability_id: identifier,
     catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
     arguments: { type: "object", maxProperties: 200, additionalProperties: true },
     idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
-  }, ["capability_id", "catalog_revision", "idempotency_key"]), ["core:govern"], false, false),
+    ...ownerConfirmationProperties,
+  }, ["capability_id", "catalog_revision", "idempotency_key"]), ["core:govern"], false, false, {
+    ownerConfirmationRequired: false,
+  }),
   tool("core_software_language_evaluate", "Evaluate software language", "Apply the horizontal V2/V1/V0 software-language gate to bounded UI copy. This returns findings only and never publishes changes.", object({
     app: identifier,
     target_lang: { type: "string", minLength: 2, maxLength: 64 },
@@ -930,11 +958,34 @@ export const TOOLS = [
     verdict: { type: "string", enum: ["confirm", "challenge", "deprecate"] },
     rationale: text(2_000),
   }, ["record_id", "verdict", "rationale"]), ["core:govern"], false, false),
-  tool("nyra_research_execute", "Run optional OpenAI web research", "Use this only when host browsing is unavailable and the optional server-side OpenAI fallback is enabled. It performs billable live web search but does not persist results; review and ingest the returned evidence template separately.", object({
-    query: text(2_000),
-    allowed_domains: { type: "array", maxItems: 20, items: { type: "string", maxLength: 253 } },
-    search_context_size: { type: "string", enum: ["low", "medium", "high"] },
-  }, ["query"]), ["core:govern"], false, false, { openWorld: true }),
+  tool("nyra_research_distillation_status", "Read Research Distillation status", "Read the tenant-bound Core mode, policy version, allowlist decision and shadow metrics. This never authorizes research or persistence.", object(), ["core:read"]),
+  tool("nyra_research_source_registry", "Read trusted research sources", "Read the Core-owned trusted source registry and branch bindings for this tenant. Use source ids from this registry when opening a workspace.", object(), ["core:read"]),
+  tool("nyra_research_learning_pack", "Read a branch learning pack", "Read the empty-by-default, versioned learning pack for one Core branch. Verified knowledge is never synthesized by the MCP.", object({
+    branch_id: identifier,
+  }), ["core:read"]),
+  tool("nyra_research_envelope_authorize", "Authorize a research envelope", "Ask Universal Core to issue its own non-executing directive and bound branches, source ids, document count, bytes, duration, cost and retention. Shadow mode returns shadow_only and never authorizes external side effects.", object(researchDistillationEnvelopeProperties, ["question", "branch_ids"]), ["core:govern"], false, false),
+  tool("nyra_research_workspace_open", "Open a governed research workspace", "Open a tenant-isolated Research Distillation workspace from a single-use opaque envelope issued by Universal Core. In shadow it is observational and has no durable workspace writes.", object({
+    envelope_id: { type: "string", pattern: "^rae_[a-f0-9-]{36}$" },
+  }, ["envelope_id"]), ["core:govern"], false, false),
+  tool("nyra_research_workspace_attach", "Attach governed research evidence", "Attach only short evidence records that match the Core source registry and workspace envelope. Raw pages, private hosts and unknown sources are rejected.", object({
+    workspace_id: { type: "string", pattern: "^rw_[a-f0-9-]{36}$" },
+    evidence: { type: "array", minItems: 1, maxItems: 100, items: researchDistillationEvidence },
+  }, ["workspace_id", "evidence"]), ["core:govern"], false, false),
+  tool("nyra_research_distill", "Distill a governed learning candidate", "Create a tenant-bound candidate from evidence already validated by Core. This MCP path always forces persist_verified=false; automatic promotion is impossible.", object({
+    workspace_id: { type: "string", pattern: "^rw_[a-f0-9-]{36}$" },
+    evidence: { type: "array", maxItems: 100, items: researchDistillationEvidence },
+    lesson: text(1_000),
+    learning: text(1_000),
+    scope: { type: "string", maxLength: 200 },
+    confidence: probability,
+    limitations: { type: "array", maxItems: 10, items: text(1_000) },
+    outcome_refs: { type: "array", maxItems: 10, items: identifier },
+    audit_reference: { type: "string", maxLength: 240 },
+  }, ["workspace_id"]), ["core:govern"], false, false),
+  tool("nyra_research_workspace_close", "Close a governed research workspace", "Close one tenant-bound Core workspace after candidate review. It cannot close another tenant's workspace.", object({
+    workspace_id: { type: "string", pattern: "^rw_[a-f0-9-]{36}$" },
+  }, ["workspace_id"]), ["core:govern"], false, true),
+  tool("nyra_research_cleanup", "Clean expired research workspaces", "Ask Core to remove only expired workspaces for the authenticated tenant. It cannot address another tenant.", object(), ["core:govern"], false, true, { destructive: true }),
   tool("nyra_v2_preview", "Preview Deep Branch V2", "Ask Universal Core to route Nyra V1 first, issue a signed bounded Deep V2 preview request and return only a non-executing Core-authoritative preview.", object({
     message: text(),
     request_id: nyraDeepV2RequestId,
@@ -974,32 +1025,6 @@ export const TOOLS = [
   tool("scalp_analyzer", "Interpret Scalp Analyzer metrics", "Read-only Scalp v2 for medical-study documentation support, salon technical trichology and pharmacy dermocosmetic counselling. It never impersonates a physician, diagnoses, prescribes or auto-publishes marketing.", object({
     overall: scalpMetrics, zones: { type: "array", maxItems: 12, items: object({ zone: identifier, metrics: scalpMetrics }, ["zone", "metrics"]) }, acquisition: scalpAcquisition, previous: object({ overall: scalpMetrics, acquisition: scalpAcquisition }), reported_warning_signals: { type: "array", maxItems: 5, uniqueItems: true, items: { type: "string", enum: ["sudden_change", "pain", "bleeding", "open_lesion", "infection_suspected"] } }, professional_profile: { type: "string", enum: ["medical_study", "salon_trichology", "pharmacy_dermocosmetic"] }, learning_context: object({ outcome_verified: { type: "boolean" }, human_reviewed: { type: "boolean" }, comparable_capture_count: { type: "integer", minimum: 0, maximum: 1000000 } }), locale: { type: "string", enum: ["it", "en"] }, session_id: identifier,
   }, ["overall"]), ["core:read"], true, true),
-  tool("tenant_provider_openai_status", "Check OpenAI connection", "Use only when the user explicitly asks to inspect or connect the optional OpenAI provider, or to run the bounded provider workflow. Nyra and Universal Core remain operational without it. This native control-plane check never requires work_preflight or shared-memory bootstrap and returns only masked provider status.", object(), ["core:read"], true, true, { outputSchema: object({
-    ok: { type: "boolean" },
-    tenant_id: { type: "string" },
-    provider: { type: "object", additionalProperties: true },
-  }, ["ok", "tenant_id", "provider"]) }),
-  tool("tenant_provider_openai_setup_panel", "Open secure OpenAI setup", "Use this to open the fixed OpenAI connection panel without running work_preflight. The user presses one button there to generate a one-time secure link; never ask them to paste an API key into chat.", object(), ["core:read"], true, true, { meta: { "openai/outputTemplate": "ui://skinharmony/openai-provider-setup.html", "openai/toolInvocation/invoking": "Apro la configurazione sicura…", "openai/toolInvocation/invoked": "Configurazione sicura pronta." } }),
-  tool("tenant_provider_openai_setup_link", "Connect OpenAI securely", "Use immediately when the user asks to connect OpenAI, configure an existing API key, or create agents and no provider is connected. Returns the fixed protected portal for the authenticated tenant administrator; only after fresh OAuth verification does that portal mint a short-lived one-time page for entering the key. Never ask for the key in ChatGPT or Codex. Opening the portal does not enable model execution.", object(), ["core:govern"], false, false, { outputSchema: object({
-    ok: { type: "boolean" },
-    tenant_id: { type: "string" },
-    setup_url: { type: "string", format: "uri" },
-    execution_enabled: { const: false },
-  }, ["ok", "tenant_id", "setup_url", "execution_enabled"]) }),
-  tool("tenant_provider_openai_multi_agent_smoke_run", "Run bounded OpenAI multi-agent test", "Start the bounded OpenAI multi-agent test directly, without work_preflight or shared-memory bootstrap, using the authenticated tenant's already-encrypted OpenAI key: Researcher → Reviewer → Nyra Synthesizer. Its native gate verifies configured provider, execution availability, authenticated tenant OAuth owner and a fresh request-bound confirmation. A completed run makes three sequential real calls; cancellation or a safety failure stops before every remaining call. Use only after the tenant owner explicitly confirms this exact test. The response immediately returns a run id; then read or cancel it. Fixed first-live budget: at most three sequential calls, 200 output tokens per stage, no browser, tools, external actions, writes, learning, or automatic retries. Never pass an API key, tenant id, model, agents, or budget in arguments.", object({
-    task: text(300),
-  }, ["task"]), ["core:read"], false, false, { outputSchema: object({
-    ok: { type: "boolean" },
-    tenant_id: { type: "string" },
-    run: { type: "object", additionalProperties: true },
-    governance: { type: "object", additionalProperties: true },
-  }, ["ok", "tenant_id", "run", "governance"]), meta: { "skinharmony/confirmation_authority": "tenant_provider_owner" } }),
-  tool("tenant_provider_openai_multi_agent_run_read", "Read bounded multi-agent test", "Read status and tenant-scoped output of a bounded OpenAI multi-agent test. Requires the authenticated provider owner, never invokes the provider, and spends no API credits.", object({
-    run_id: { type: "string", maxLength: 160 },
-  }, ["run_id"]), ["core:read"], true, true),
-  tool("tenant_provider_openai_multi_agent_run_cancel", "Cancel bounded multi-agent test", "Immediately cancel a tenant-scoped bounded OpenAI multi-agent test. The kill signal aborts the in-flight provider request and all remaining stages; it never starts a replacement call.", object({
-    run_id: { type: "string", maxLength: 160 },
-  }, ["run_id"]), ["core:read"], false, true, { meta: { "skinharmony/confirmation_authority": "tenant_provider_owner" } }),
   tool("generic_agent_orchestration_create", "Create generic agent orchestration", "Create a bounded tenant-scoped worker plan for an existing generic agent run. This plans internal work only and never authorizes external execution.", object({
     run_id: { type: "string", maxLength: 160 },
     workers: { type: "array", minItems: 1, maxItems: 200, items: { type: "object", properties: {

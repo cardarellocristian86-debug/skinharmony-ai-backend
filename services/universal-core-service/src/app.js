@@ -10,6 +10,20 @@ import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branche
 import { runTextBranch } from "../../../universal-core/packages/branches/ramo-testo/src/index.ts";
 import { runNiraUniversalCoreBridge } from "../../../universal-core/tools/nira-universal-core-bridge.ts";
 import { buildDeepNyraRuntime } from "./deepNyraRuntime.js";
+import { createNyraDeepBranchV2Client } from "./nyraDeepBranchV2Client.js";
+import {
+  createNyraDeepBranchV2Attester,
+  NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_BUNDLE_SCHEMA_VERSION,
+  NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_ISSUER,
+  NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_SCHEMA_VERSION,
+} from "./nyraDeepBranchV2Attestation.js";
+import { createNyraDeepV2EvidenceLedger } from "./nyraDeepV2EvidenceLedger.js";
+import { createNyraDeepV2SourceVerifier } from "./nyraDeepV2SourceVerification.js";
+import {
+  createNyraDeepV2McpRequestVerifier,
+  nyraDeepV2EvidencePackHash,
+  nyraDeepV2StableJson,
+} from "./nyraDeepV2McpRequest.js";
 import { createAudit, ensureDir } from "./audit.js";
 import { createKeyStore, isMcpTenantGatewayRecord, isProviderSetupLinkServiceRecord } from "./keyStore.js";
 import { createSetupTokenStore } from "./setupTokenStore.js";
@@ -80,6 +94,11 @@ import {
   MAX_EMBEDDED_ARTIFACT_BYTES,
 } from "./embeddedSoftwareIntelligence.js";
 import { buildResearchPlan, validateResearchEvidence } from "./researchCortex.js";
+import { buildCoreResearchDirective } from "./coreResearchDirective.js";
+import {
+  createResearchDistillationRuntime,
+  sourceRegistry as createResearchSourceRegistry,
+} from "./researchDistillationLayer.js";
 import {
   createUniversalSoftwareJobManager,
   issueSoftwareAuthorizationEnvelope,
@@ -113,6 +132,10 @@ import {
   createPostgresDttAgentIdentityReceiptStore,
 } from "../../shared/dtt-agent-identity-receipts.js";
 import {
+  createPostgresMajorVersionProbe,
+  normalizePostgresMajorVerification,
+} from "../../shared/postgres-major-version.js";
+import {
   assessLexicalSemanticText,
   lexicalSemanticCatalogDescriptor,
   listLexicalSemanticCapabilities,
@@ -123,25 +146,446 @@ import { createGovernedAgentBudgetStore } from "./governedAgentBudgetStore.js";
 import { createGovernedAgentQueueStore } from "./governedAgentQueueStore.js";
 import { createGovernedAgentPostgresQueueStore } from "./governedAgentPostgresQueueStore.js";
 import { createGovernedAgentDryRunRunner } from "./governedAgentDryRunRunner.js";
-import { createTenantProviderCredentialStore } from "./tenantProviderCredentialStore.js";
-import { createTenantProviderSetupLinkStore } from "./tenantProviderSetupLinkStore.js";
-import { createTenantOpenAiMultiAgentRunner } from "./tenantOpenAiMultiAgentRunner.js";
 import { mountAdminControlRoom } from "./adminControlRoom.js";
+import {
+  HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+  HOST_RELEASE_MANIFEST_VERSION,
+  buildHostNativeWorkPlan,
+  buildHostReleaseIntentV1,
+  createFileHostNativeGovernanceStore,
+  createHostNativeGovernance,
+  validateHostReleaseManifestV2,
+} from "./hostNativeGovernance.js";
+import {
+  createHostNativeExternalReadbackVerifier,
+  createHostNativeReleaseJoinVerdictResolver,
+} from "./hostNativeExternalReadback.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.12.0-lexical-semantic-intelligence";
+const SERVICE_VERSION = "0.13.0-host-native-governance";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
-const BUILD_COMMIT_SHA = String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim() || null;
+const BUILD_COMMIT_SHA =
+  String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim().toLowerCase() ||
+  null;
+const BUILD_COMMIT_VERIFIABLE = /^[a-f0-9]{40}$/.test(BUILD_COMMIT_SHA || "");
 const PROVIDER_SETUP_LINK_ISSUER_KIND = "provider_setup_link";
 const PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN = /^osf_[a-f0-9]{64}$/;
 const TRUSTED_PROVIDER_SETUP_ORIGIN = "https://skinharmony-universal-core.onrender.com";
 const TRUSTED_AGENT_PORTAL_URL = "https://skinharmony-core-mcp.onrender.com/agents";
+const NATIVE_AGENT_PROVIDER_RETIREMENT_CODE = "native_agent_provider_retired";
+const NATIVE_AGENT_PROVIDER_RETIREMENT_MESSAGE =
+  "Provider execution is retired. Use native ChatGPT/Codex specialists.";
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function dynamicTaskTreeRolloutConfig(env = process.env) {
+  const enabledRaw = env.CORE_DTT_ENABLED;
+  const enabled = enabledRaw === undefined
+    ? true
+    : ["1", "true", "yes", "on"].includes(String(enabledRaw).trim().toLowerCase());
+  const requestedMode = String(env.CORE_DTT_MODE || "shadow").trim().toLowerCase();
+  const mode = enabled && ["shadow", "active"].includes(requestedMode)
+    ? requestedMode
+    : "off";
+  const tenantAllowlist = [...new Set(
+    String(env.CORE_DTT_TENANT_ALLOWLIST || "")
+      .split(/[\s,]+/)
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )].slice(0, 64);
+  const production = String(env.NODE_ENV || "").trim().toLowerCase() === "production";
+  return Object.freeze({
+    enabled: enabled && mode !== "off",
+    mode,
+    tenant_allowlist: tenantAllowlist,
+    tenantAllowed(tenantId) {
+      return tenantAllowlist.length > 0
+        ? tenantAllowlist.includes(String(tenantId || ""))
+        : !production;
+    },
+  });
+}
+
+// Deep Branch V2 identifiers and evidence references are deliberately bounded
+// before any federation or persistence operation.
+const NYRA_DEEP_V2_ID_PATTERN = /^[a-z][a-z0-9_-]{1,63}$/i;
+const NYRA_DEEP_V2_REQUIREMENT_REF_PATTERN = /^req_[a-f0-9]{64}$/;
+const NYRA_DEEP_V2_RECORD_REF_PATTERN = /^[a-f0-9]{64}$/;
+const NYRA_DEEP_V2_OPERATIONS = new Set(["preview", "requirements", "prepare_evidence", "evaluate"]);
+const NYRA_DEEP_V2_PREFLIGHT_OPERATIONS = Object.freeze({
+  preview: "nyra_v2_preview",
+  requirements: "nyra_v2_requirements",
+  prepare_evidence: "nyra_v2_evidence_prepare",
+  evaluate: "nyra_v2_evaluate",
+});
+const MAX_NYRA_BRANCH_REQUESTS = 64;
+
+function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function nyraDeepV2Fallback({
+  requestId = null,
+  state = "disabled_v1_authoritative",
+  reason = "nyra_deep_branch_v2_unavailable",
+} = {}) {
+  return {
+    schema_version: "nyra_deep_branch_v2_core_operation_v1",
+    state,
+    ...(requestId ? { request_id: requestId } : {}),
+    reason: String(reason || "nyra_deep_branch_v2_unavailable").slice(0, 160),
+    requirements: [],
+    evidence: {
+      state: "not_prepared_v1_authoritative",
+      evidence_refs: [],
+      validation: {
+        state: "not_requested",
+        accepted_source_count: 0,
+        accepted_claim_count: 0,
+        rejected_count: 0,
+      },
+    },
+    evaluation: { state: "not_requested_v1_authoritative", evaluated_node_count: 0 },
+    execution_authorized: false,
+    core_final_authority: true,
+    fallback: "nyra_neural_branch_network_v1",
+  };
+}
+
+function nyraDeepV2Operation(value) {
+  const operation = String(value || "").trim();
+  return NYRA_DEEP_V2_OPERATIONS.has(operation) ? operation : null;
+}
+
+function nyraDeepV2PreflightOperation(value) {
+  const operation = nyraDeepV2Operation(value);
+  return operation ? NYRA_DEEP_V2_PREFLIGHT_OPERATIONS[operation] : null;
+}
+
+function boundedNyraDeepV2EvidenceRefs(values, maximum = 100) {
+  if (!Array.isArray(values) || values.length > maximum) return null;
+  const refs = values.map((value) => String(value || "").trim());
+  if (
+    refs.some((value) => !NYRA_DEEP_V2_RECORD_REF_PATTERN.test(value))
+    || new Set(refs).size !== refs.length
+  ) return null;
+  return refs;
+}
+
+function normalizeNyraDeepV2RequirementBindings(values, discovered = []) {
+  if (!Array.isArray(values) || values.length < 1 || values.length > 64) {
+    return {
+      ok: false,
+      reason: "nyra_deep_branch_v2_requirement_bindings_required",
+      bindings: [],
+    };
+  }
+  const available = new Map(
+    (Array.isArray(discovered) ? discovered : [])
+      .map((binding) => [binding.requirement_ref, binding]),
+  );
+  const seenIds = new Set();
+  const seenRefs = new Set();
+  const seenClaimIds = new Set();
+  const bindings = [];
+  for (const item of values) {
+    if (!isPlainRecord(item)) {
+      return {
+        ok: false,
+        reason: "nyra_deep_branch_v2_requirement_binding_invalid",
+        bindings: [],
+      };
+    }
+    const id = String(item.id || "").trim();
+    const requirementRef = String(item.requirement_ref || "").trim();
+    const sourceIds = Array.isArray(item.source_ids)
+      ? item.source_ids.map((value) => String(value || "").trim())
+      : null;
+    const claimIds = Array.isArray(item.claim_ids)
+      ? item.claim_ids.map((value) => String(value || "").trim())
+      : null;
+    if (
+      !NYRA_DEEP_V2_ID_PATTERN.test(id)
+      || !NYRA_DEEP_V2_REQUIREMENT_REF_PATTERN.test(requirementRef)
+      || !sourceIds
+      || !claimIds
+      || sourceIds.length < 1
+      || claimIds.length < 1
+      || sourceIds.length > 20
+      || claimIds.length > 30
+      || sourceIds.some((value) => !NYRA_DEEP_V2_ID_PATTERN.test(value))
+      || claimIds.some((value) => !NYRA_DEEP_V2_ID_PATTERN.test(value))
+      || new Set(sourceIds).size !== sourceIds.length
+      || new Set(claimIds).size !== claimIds.length
+      || seenIds.has(id)
+      || seenRefs.has(requirementRef)
+      || claimIds.some((claimId) => seenClaimIds.has(claimId))
+      || !available.has(requirementRef)
+    ) {
+      return {
+        ok: false,
+        reason: "nyra_deep_branch_v2_requirement_binding_rejected",
+        bindings: [],
+      };
+    }
+    seenIds.add(id);
+    seenRefs.add(requirementRef);
+    claimIds.forEach((claimId) => seenClaimIds.add(claimId));
+    const acceptance = available.get(requirementRef);
+    bindings.push({
+      id,
+      requirement_ref: requirementRef,
+      source_ids: sourceIds,
+      claim_ids: claimIds,
+      minimum_count: Math.max(1, Number(acceptance.minimum_count) || 1),
+      evidence_type: String(acceptance.evidence_type || ""),
+      semantic_claim_hash: String(acceptance.semantic_claim_hash || ""),
+      required_claim: String(acceptance.required_claim || ""),
+      required_content_tag: String(acceptance.required_content_tag || ""),
+      capability_spec_hash: String(acceptance.capability_spec_hash || ""),
+    });
+  }
+  return { ok: true, bindings };
+}
+
+function normalizedNyraDeepV2EvidenceText(value) {
+  return String(value || "").replace(/\s+/gu, " ").trim();
+}
+
+function nyraDeepV2AcceptanceContractsMatch(evidencePack, bindings) {
+  const sources = new Map(
+    (Array.isArray(evidencePack?.sources) ? evidencePack.sources : [])
+      .map((source) => [String(source?.id || ""), source]),
+  );
+  const claims = new Map(
+    (Array.isArray(evidencePack?.claims) ? evidencePack.claims : [])
+      .map((claim) => [String(claim?.id || ""), claim]),
+  );
+  for (const binding of bindings) {
+    let acceptedCount = 0;
+    const requiredClaim = normalizedNyraDeepV2EvidenceText(binding.required_claim);
+    for (const claimId of binding.claim_ids) {
+      const claim = claims.get(claimId);
+      const claimText = normalizedNyraDeepV2EvidenceText(claim?.text);
+      const facts = Array.isArray(claim?.facts)
+        ? claim.facts.map(normalizedNyraDeepV2EvidenceText)
+        : [];
+      const claimSourceIds = Array.isArray(claim?.source_ids)
+        ? [...new Set(claim.source_ids.map((value) => String(value || "")))]
+        : [];
+      const sourceSetMatches = claimSourceIds.length === binding.source_ids.length
+        && binding.source_ids.every((sourceId) => claimSourceIds.includes(sourceId));
+      const excerptsMatch = binding.source_ids.every((sourceId) => (
+        normalizedNyraDeepV2EvidenceText(sources.get(sourceId)?.excerpt)
+          .includes(requiredClaim)
+      ));
+      if (
+        claimText === requiredClaim
+        && facts.includes(requiredClaim)
+        && claim?.claim_hash === binding.semantic_claim_hash
+        && claim?.semantic_hash === binding.semantic_claim_hash
+        && claim?.content_tag === binding.required_content_tag
+        && claim?.capability_spec_hash === binding.capability_spec_hash
+        && sourceSetMatches
+        && excerptsMatch
+      ) acceptedCount += 1;
+    }
+    if (acceptedCount < binding.minimum_count) return false;
+  }
+  return true;
+}
+
+function coreBindNyraDeepV2EvidencePack({
+  evidencePack,
+  bindings,
+  sourceReceipts,
+  tenantId,
+  requestId,
+  branchId,
+  subbranchId,
+  workPreflight,
+}) {
+  const bindingByClaim = new Map();
+  for (const binding of bindings) {
+    for (const claimId of binding.claim_ids) bindingByClaim.set(claimId, binding);
+  }
+  const receipts = new Map(
+    sourceReceipts.map((receipt) => [receipt.source_id, receipt]),
+  );
+  const digest = (value) => crypto.createHash("sha256")
+    .update(nyraDeepV2StableJson(value))
+    .digest("hex");
+  return {
+    ...evidencePack,
+    claims: evidencePack.claims.map((claim) => {
+      const binding = bindingByClaim.get(String(claim?.id || ""));
+      const recordHashes = (Array.isArray(claim?.source_ids) ? claim.source_ids : [])
+        .map((sourceId) => receipts.get(sourceId)?.content_sha256)
+        .filter((value) => /^[a-f0-9]{64}$/u.test(String(value || "")))
+        .sort();
+      return {
+        ...claim,
+        capability_input_hash: digest({
+          tenant_id: tenantId,
+          request_id: requestId,
+          branch_id: branchId,
+          subbranch_id: subbranchId,
+          requirement_ref: binding?.requirement_ref || null,
+          work_preflight: workPreflight || null,
+        }),
+        subject_hash: digest({
+          tenant_id: tenantId,
+          branch_id: branchId,
+          subbranch_id: subbranchId,
+          requirement_ref: binding?.requirement_ref || null,
+        }),
+        record_hashes: recordHashes,
+      };
+    }),
+  };
+}
+
+function boundedNyraDeepV2EvidencePack(value) {
+  if (
+    !isPlainRecord(value)
+    || !Array.isArray(value.sources)
+    || !Array.isArray(value.claims)
+    || value.sources.length < 1
+    || value.sources.length > 20
+    || value.claims.length < 1
+    || value.claims.length > 30
+  ) {
+    return { ok: false, reason: "nyra_deep_branch_v2_evidence_pack_invalid" };
+  }
+  return { ok: true, evidence_pack: value };
+}
+
+function validNyraDeepV2SourceReceipt(receipt, now = Date.now()) {
+  const expiresAt = Date.parse(String(receipt?.expires_at || ""));
+  return receipt?.issuer === "skinharmony-universal-core"
+    && NYRA_DEEP_V2_ID_PATTERN.test(String(receipt?.source_id || ""))
+    && NYRA_DEEP_V2_ID_PATTERN.test(String(receipt?.registry_source_id || ""))
+    && ["official", "regulator", "academic", "standards", "manufacturer"]
+      .includes(String(receipt?.source_type || ""))
+    && Number.isFinite(Number(receipt?.reliability_score))
+    && Number(receipt.reliability_score) >= 0
+    && Number(receipt.reliability_score) <= 1
+    && /^[a-f0-9]{64}$/i.test(String(receipt?.source_url_sha256 || ""))
+    && /^[a-f0-9]{64}$/i.test(String(receipt?.content_sha256 || ""))
+    && /^[a-f0-9]{64}$/i.test(String(receipt?.excerpt_sha256 || ""))
+    && /^ev_[a-f0-9-]{36}$/i.test(String(receipt?.receipt_id || ""))
+    && Number.isFinite(expiresAt)
+    && expiresAt > now;
+}
+
+function coreValidatedNyraDeepV2Claims(
+  evidencePack,
+  validation,
+  sourceReceipts = [],
+  now = Date.now(),
+) {
+  const sourceAssessment = new Map(
+    (validation?.source_assessments || []).map((item) => [item.source_id, item]),
+  );
+  const claimInput = new Map(
+    (evidencePack?.claims || []).map((item) => [item.id, item]),
+  );
+  const receiptsBySource = new Map(
+    (Array.isArray(sourceReceipts) ? sourceReceipts : [])
+      .filter((receipt) => validNyraDeepV2SourceReceipt(receipt, now))
+      .map((receipt) => [receipt.source_id, receipt]),
+  );
+  const releaseEligible = validation?.release_readiness?.eligible_for_tenant_review === true;
+  const validatedClaims = [];
+  for (const assessment of validation?.claim_assessments || []) {
+    const claim = claimInput.get(assessment.claim_id);
+    const sourceIds = Array.isArray(claim?.source_ids) ? claim.source_ids : [];
+    const sources = sourceIds.map((id) => sourceAssessment.get(id)).filter(Boolean);
+    const receipts = sourceIds.map((id) => receiptsBySource.get(id)).filter(Boolean);
+    const authoritative = sources.some((source) => Number(source.authority_score) >= 80);
+    const supported = assessment.state === "supported"
+      && Array.isArray(assessment.contradictions)
+      && assessment.contradictions.length === 0;
+    const coreVerified = sourceIds.length > 0 && receipts.length === sourceIds.length;
+    validatedClaims.push({
+      claim_id: assessment.claim_id,
+      valid: releaseEligible && supported && authoritative && coreVerified,
+      authority: authoritative ? "authoritative" : "unverified",
+      independent: Number(assessment.independent_host_count || 0) >= 2,
+      valid_until: coreVerified
+        ? Math.min(...receipts.map((receipt) => Date.parse(receipt.expires_at)))
+        : null,
+      ...(coreVerified ? {
+        core_receipt: {
+          schema_version: "nyra_deep_v2_core_source_receipt_bundle_v1",
+          issuer: "skinharmony-universal-core",
+          receipt_ids: receipts.map((receipt) => receipt.receipt_id),
+          sources: receipts.map((receipt) => ({
+            source_id: receipt.source_id,
+            source_url_sha256: receipt.source_url_sha256,
+            content_sha256: receipt.content_sha256,
+            excerpt_sha256: receipt.excerpt_sha256,
+          })),
+        },
+      } : {}),
+    });
+  }
+  const acceptedClaimCount = validatedClaims.filter((claim) => claim.valid).length;
+  const acceptedSourceCount = (validation?.source_assessments || []).filter((source) => (
+    Number(source.authority_score) >= 80
+    && source.prompt_injection_detected !== true
+    && source.sensitive_content_detected !== true
+    && receiptsBySource.has(source.source_id)
+  )).length;
+  return {
+    validated_claims: validatedClaims,
+    compact_validation: {
+      state: releaseEligible && acceptedClaimCount > 0
+        ? "core_verified_candidate_validated"
+        : "core_verified_candidate_not_ready",
+      accepted_source_count: acceptedSourceCount,
+      accepted_claim_count: acceptedClaimCount,
+      rejected_count: Math.max(
+        0,
+        Number(validation?.claim_assessments?.length || 0) - acceptedClaimCount,
+      ),
+    },
+  };
+}
+
+function compactNyraDeepV2Requirements(bindings) {
+  return (Array.isArray(bindings) ? bindings : [])
+    .slice(0, 64)
+    .map((binding) => ({
+      requirement_ref: String(binding.requirement_ref || ""),
+      level: Number(binding.level),
+      node_type: String(binding.node_type || ""),
+      minimum_count: Math.max(1, Number(binding.minimum_count) || 1),
+      authority_requirement: String(binding.authority_requirement || "unverified"),
+      evidence_type: String(binding.evidence_type || ""),
+      semantic_claim_hash: String(binding.semantic_claim_hash || ""),
+      required_claim: String(binding.required_claim || ""),
+      required_content_tag: String(binding.required_content_tag || ""),
+      capability_spec_hash: String(binding.capability_spec_hash || ""),
+    }))
+    .filter((binding) => (
+      NYRA_DEEP_V2_REQUIREMENT_REF_PATTERN.test(binding.requirement_ref)
+      && Number.isInteger(binding.level)
+      && binding.level >= 2
+      && binding.level <= 4
+      && /^[a-f0-9]{64}$/u.test(binding.semantic_claim_hash)
+      && /^[a-f0-9]{64}$/u.test(binding.capability_spec_hash)
+      && binding.required_claim.length >= 16
+      && binding.required_claim.length <= 2_000
+      && /^[a-z][a-z0-9_]{1,159}$/u.test(binding.required_content_tag)
+      && /^[a-z][a-z0-9_]{1,159}$/u.test(binding.evidence_type)
+    ));
 }
 
 function ownerContextCanonical(context) {
@@ -370,6 +814,10 @@ function providerSetupLinkBootstrapErrorCode(error) {
     "provider_setup_link_tenant_required",
     "provider_setup_link_key_conflict",
     "provider_setup_link_key_rotation_required",
+    "mcp_tenant_gateway_key_required",
+    "mcp_tenant_gateway_key_weak",
+    "mcp_tenant_gateway_key_conflict",
+    "mcp_tenant_gateway_key_rotation_required",
   ]).has(code)
     ? code
     : "provider_setup_link_bootstrap_unavailable";
@@ -657,7 +1105,7 @@ function createAuth(keyStore, audit, requiredScope, { allowProviderSetupService 
     const tenantGateway = isMcpTenantGatewayRecord(auth.record);
     const validGatewayContext = tenantGateway && verifyMcpTenantContextAssertion(
       req.get("x-sh-tenant-context"),
-      tenantContextSigningSecret || process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET || "",
+      tenantContextSigningSecret,
       tenantId,
     );
     if (!tenantId || (!serviceIssuer && !validGatewayContext && !requireTenantAccess(auth.record, tenantId))) {
@@ -1187,6 +1635,11 @@ const MANDATORY_NYRA_WORK_BRANCHES = Object.freeze([
 
 function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, branchContext = null, nyraNetwork = null } = {}) {
   const body = req.body || {};
+  const operationType = body.operation_type
+    || body.action_type
+    || body.requested_action?.type
+    || nyraDeepV2PreflightOperation(body.deep_branch_v2?.operation)
+    || "advisory_work";
   const requestText = String(
     body.request || body.message || body.text || body.task || body.user_request || body.user_input || body.input || body.action_label ||
     body.requested_action?.label || body.requested_action?.type ||
@@ -1209,18 +1662,19 @@ function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, 
   } : mandatoryBranchContext;
   const requestedNyraBranches = [
     ...MANDATORY_NYRA_WORK_BRANCHES,
-    ...normalizeList(body.nyra_branches, 20),
+    ...normalizeList(body.nyra_branches, MAX_NYRA_BRANCH_REQUESTS),
   ];
   const resolvedNyraNetwork = nyraNetwork || routeNyraBranches({
     text: requestText,
     requestedBranches: requestedNyraBranches,
+    authorizedCoreBranches: resolvedBranchContext.selected_branches,
     domainPackId: domainPack.id,
   });
   return buildWorkPreflight({
     tenantId: req.tenantId,
     requestText,
     targetSystem: body.target_system || "universal_core",
-    operationType: body.operation_type || body.action_type || body.requested_action?.type || "advisory_work",
+    operationType,
     toolName: body.source_tool || body.tool_name || "",
     availableCapabilities: body.available_capabilities || body.available_tools || body.connected_capabilities || [],
     memoryContext,
@@ -1721,21 +2175,62 @@ function buildExtractorCoreInput(req, extraction) {
   };
 }
 
-function evaluateReleaseManifest(payload = {}) {
+function evaluateReleaseManifest(payload = {}, context = {}) {
   const manifest = typeof payload.manifest === "object" && payload.manifest ? payload.manifest : payload;
+  if (manifest?.schema_version === HOST_RELEASE_MANIFEST_VERSION) {
+    try {
+      const verified = validateHostReleaseManifestV2(manifest, context);
+      return {
+        status: "ready",
+        execution_allowed: false,
+        owner_confirmation_required: true,
+        manifest: {
+          ...verified,
+          integrity_verified: true,
+          signature_verified: false,
+          signed: false,
+        },
+        issues: [],
+        required_next_step: "bounded_host_action_ticket_then_host_policy_approval",
+      };
+    } catch (error) {
+      return {
+        status: "blocked",
+        execution_allowed: false,
+        owner_confirmation_required: true,
+        manifest: {
+          schema_version: HOST_RELEASE_MANIFEST_VERSION,
+          manifest_id: textValue(manifest.manifest_id) || null,
+          integrity_verified: false,
+          signature_verified: false,
+          signed: false,
+        },
+        issues: [{
+          code: "release_manifest_v2_invalid",
+          severity: "critical",
+          reason: String(error?.message || "release_manifest_invalid").slice(0, 160),
+        }],
+        required_next_step: "fix_manifest_before_release",
+      };
+    }
+  }
   const version = textValue(manifest.version || manifest.stable_version);
   const channel = textValue(manifest.channel || manifest.release_channel, "stable");
   const packageUrl = textValue(manifest.package_url || manifest.package || manifest.zip_url);
   const checksum = textValue(manifest.checksum_sha256 || manifest.sha256 || manifest.checksum);
   const rollbackUrl = textValue(manifest.rollback_url);
-  const signed = Boolean(manifest.signature || manifest.signed === true);
+  const signaturePresent = Boolean(manifest.signature || manifest.signed === true);
+  // Legacy envelopes have no canonical payload or trusted verification key.
+  // A boolean or arbitrary string therefore never proves a signature.
+  const signatureVerified = false;
   const issues = [];
 
   if (!version) issues.push({ code: "missing_version", severity: "critical" });
   if (!["stable", "beta", "canary"].includes(channel)) issues.push({ code: "invalid_channel", severity: "critical", channel });
   if (!packageUrl) issues.push({ code: "missing_package_url", severity: "critical" });
   if (!checksum || !/^[a-f0-9]{64}$/i.test(checksum)) issues.push({ code: "missing_or_invalid_sha256", severity: "critical" });
-  if (!signed) issues.push({ code: "missing_manifest_signature", severity: "high" });
+  if (!signaturePresent) issues.push({ code: "missing_manifest_signature", severity: "high" });
+  else issues.push({ code: "manifest_signature_unverified", severity: "high" });
   if (!rollbackUrl) issues.push({ code: "missing_rollback_url", severity: "high" });
   if (manifest.skip_integrity_check === true || manifest.bypass_checksum === true) issues.push({ code: "integrity_bypass_requested", severity: "critical" });
 
@@ -1744,7 +2239,16 @@ function evaluateReleaseManifest(payload = {}) {
     status: critical ? "blocked" : issues.length ? "review_required" : "ready",
     execution_allowed: false,
     owner_confirmation_required: true,
-    manifest: { version, channel, package_url: packageUrl, checksum_sha256: checksum || null, rollback_url: rollbackUrl || null, signed },
+    manifest: {
+      version,
+      channel,
+      package_url: packageUrl,
+      checksum_sha256: checksum || null,
+      rollback_url: rollbackUrl || null,
+      signed: signatureVerified,
+      signature_present: signaturePresent,
+      signature_verified: signatureVerified,
+    },
     issues,
     required_next_step: critical ? "fix_manifest_before_release" : issues.length ? "owner_review_before_release" : "staging_canary_then_owner_confirmation",
   };
@@ -3547,6 +4051,15 @@ export function createUniversalCoreService(options = {}) {
     options.providerSetupLinkServiceKey ?? process.env.CORE_PROVIDER_SETUP_LINK_SERVICE_KEY ?? "",
   ).trim();
   const mcpTenantGatewayKey = String(options.mcpTenantGatewayKey ?? process.env.CORE_MCP_TENANT_GATEWAY_KEY ?? "").trim();
+  const tenantContextSigningSecretCandidate = String(
+    options.tenantContextSigningSecret
+      ?? process.env.CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET
+      ?? "",
+  ).trim();
+  const tenantContextSigningSecret =
+    Buffer.byteLength(tenantContextSigningSecretCandidate, "utf8") >= 32
+      ? tenantContextSigningSecretCandidate
+      : "";
   const providerSetupLinkTenantId = String(
     options.providerSetupLinkTenantId ?? process.env.CORE_PROVIDER_SETUP_LINK_TENANT_ID ?? "",
   ).trim();
@@ -3598,14 +4111,116 @@ export function createUniversalCoreService(options = {}) {
       });
     }
   }
+  let mcpTenantGatewayConfigured = false;
   if (mcpTenantGatewayKey) {
-    try { keyStore.ensureMcpTenantGatewayKey({ secret: mcpTenantGatewayKey }); }
+    try {
+      keyStore.ensureMcpTenantGatewayKey({ secret: mcpTenantGatewayKey });
+      mcpTenantGatewayConfigured = true;
+    }
     catch (error) { audit.append("core_mcp_tenant_gateway_key_bootstrap_unavailable", { reason: providerSetupLinkBootstrapErrorCode(error) }); }
   }
   const setupTokens = createSetupTokenStore(storageRoot, audit);
   const snapshots = snapshotStore(storageRoot);
   const reviews = reviewStore(storageRoot);
   const evidence = evidenceStore(storageRoot);
+  // Deep Branch V2 has Core-only trust material. Missing or invalid material
+  // leaves V1 and the current relational DTT healthy while V2 fails closed.
+  const nyraDeepV2Env = options.nyraDeepV2Env || process.env;
+  const nyraDeepV2LedgerSecret = String(
+    options.nyraDeepV2LedgerSecret
+      ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_LEDGER_SECRET
+      ?? "",
+  ).trim();
+  const nyraDeepV2McpSigningSecret = String(
+    options.nyraDeepV2McpSigningSecret
+      ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
+      ?? "",
+  ).trim();
+  const nyraDeepV2AttestationPrivateKey = String(
+    options.nyraDeepV2AttestationPrivateKey
+      ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_PRIVATE_KEY
+      ?? "",
+  ).trim();
+  const nyraDeepV2AttestationKeyId = String(
+    options.nyraDeepV2AttestationKeyId
+      ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_KEY_ID
+      ?? "universal-core-nyra-v2",
+  ).trim();
+  let nyraDeepV2Ledger = options.nyraDeepV2EvidenceLedger || null;
+  let nyraDeepV2Attester = options.nyraDeepV2Attester || null;
+  let nyraDeepV2SourceVerifier = options.nyraDeepV2SourceVerifier || null;
+  const nyraDeepV2StateRoot = String(
+    options.nyraDeepV2StateRoot
+      || ((options.storageRoot || process.env.CORE_SERVICE_STORAGE_ROOT)
+        ? path.join(storageRoot, "nyra-deep-v2")
+        : ""),
+  ).trim();
+  const nyraDeepV2SourceRegistry = options.nyraDeepV2SourceRegistry
+    || createResearchSourceRegistry(nyraBranchCatalog("skinharmony").branches);
+  let nyraDeepV2IntegrationReason = null;
+  if (!nyraDeepV2Ledger && nyraDeepV2LedgerSecret.length >= 32) {
+    try {
+      nyraDeepV2Ledger = createNyraDeepV2EvidenceLedger({
+        secret: nyraDeepV2LedgerSecret,
+        storagePath: nyraDeepV2StateRoot
+          ? path.join(nyraDeepV2StateRoot, "evidence-ledger.json")
+          : "",
+      });
+    } catch {
+      nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_ledger_unavailable";
+    }
+  }
+  if (
+    !nyraDeepV2Attester
+    && nyraDeepV2Ledger
+    && nyraDeepV2AttestationPrivateKey
+  ) {
+    try {
+      nyraDeepV2Attester = createNyraDeepBranchV2Attester({
+        ledger: nyraDeepV2Ledger,
+        signingPrivateKey: nyraDeepV2AttestationPrivateKey,
+        keyId: nyraDeepV2AttestationKeyId,
+      });
+    } catch {
+      nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_attester_unavailable";
+    }
+  }
+  if (!nyraDeepV2SourceVerifier) {
+    try {
+      nyraDeepV2SourceVerifier = createNyraDeepV2SourceVerifier({
+        fetchImpl: options.nyraDeepV2SourceFetchImpl,
+        dnsLookup: options.nyraDeepV2SourceDnsLookup,
+        sourceRegistry: nyraDeepV2SourceRegistry,
+        timeoutMs: Number(
+          nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_SOURCE_FETCH_TIMEOUT_MS || 5_000,
+        ),
+        maxBytes: Number(
+          nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_SOURCE_MAX_BYTES || 250_000,
+        ),
+      });
+    } catch {
+      nyraDeepV2IntegrationReason = nyraDeepV2IntegrationReason
+        || "nyra_deep_branch_v2_source_verifier_unavailable";
+    }
+  }
+  if (
+    !nyraDeepV2IntegrationReason
+    && (!nyraDeepV2Ledger || !nyraDeepV2Attester || !nyraDeepV2SourceVerifier)
+  ) {
+    nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_core_material_unavailable";
+  }
+  const nyraDeepV2McpRequestVerifier = options.nyraDeepV2McpRequestVerifier
+    || createNyraDeepV2McpRequestVerifier({
+      secret: nyraDeepV2McpSigningSecret,
+      storagePath: nyraDeepV2StateRoot
+        ? path.join(nyraDeepV2StateRoot, "mcp-request-replay.json")
+        : "",
+    });
+  const nyraDeepBranchV2Client = options.nyraDeepBranchV2Client
+    || createNyraDeepBranchV2Client({
+      env: nyraDeepV2Env,
+      fetchImpl: options.nyraDeepBranchV2FetchImpl || fetch,
+    });
   const tenants = tenantRegistryStore(storageRoot);
   const entityGraph = entityGraphStore(storageRoot);
   const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
@@ -3622,6 +4237,8 @@ export function createUniversalCoreService(options = {}) {
   const governedAgentRegistry = options.governedAgentRegistry || createGovernedAgentRegistry();
   const relationalOrchestrationSupervisor = options.relationalOrchestrationSupervisor || createRelationalOrchestrationSupervisor();
   const governedAgentDatabaseUrl = String(process.env.GOVERNED_AGENT_DATABASE_URL || "").trim();
+  const governedAgentPostgresConfigured =
+    /^postgres(?:ql)?:\/\//i.test(governedAgentDatabaseUrl);
   const dynamicTaskTreeStateStore = options.dynamicTaskTreeStateStore || (governedAgentDatabaseUrl
     ? createPostgresDynamicTaskTreeStateStore({
         connectionString: governedAgentDatabaseUrl,
@@ -3645,6 +4262,26 @@ export function createUniversalCoreService(options = {}) {
     : "";
   const dttAgentIdentityPostgresPool = options.dttAgentIdentityPostgresPool
     || (dttAgentIdentitySecret && governedAgentDatabaseUrl ? new pg.Pool({ connectionString: governedAgentDatabaseUrl }) : null);
+  const governedAgentPostgresVersionPool =
+    options.governedAgentPostgresVersionProbe
+      ? null
+      : options.governedAgentPostgresVersionPool
+        || options.dynamicTaskTreePostgresPool
+        || dttAgentIdentityPostgresPool
+        || (governedAgentPostgresConfigured
+          ? new pg.Pool({
+              connectionString: governedAgentDatabaseUrl,
+              max: 1,
+              idleTimeoutMillis: 10_000,
+            })
+          : null);
+  const governedAgentPostgresVersionProbe =
+    options.governedAgentPostgresVersionProbe
+    || (governedAgentPostgresVersionPool
+      ? createPostgresMajorVersionProbe({
+          pool: governedAgentPostgresVersionPool,
+        })
+      : null);
   const dttVerificationTrustStore = options.dttVerificationTrustStore
     || (dttAgentIdentityPostgresPool
       ? createPostgresDttVerificationTrustStore({ pool: dttAgentIdentityPostgresPool })
@@ -3676,6 +4313,13 @@ export function createUniversalCoreService(options = {}) {
     resolve_verifier_identity: resolveDttVerifierIdentity,
     resolve_evidence_artifact: (input) => dttVerificationTrustStore.verifyArtifact(input),
   });
+  const dynamicTaskTreeRollout = dynamicTaskTreeRolloutConfig(
+    options.dynamicTaskTreeEnv || process.env,
+  );
+  const researchRuntime = options.researchRuntime || createResearchDistillationRuntime({
+    env: options.researchEnv || process.env,
+    storageRoot,
+  });
   const governedAgentActivationStore = options.governedAgentActivationStore || createGovernedAgentActivationStore({
     root: path.join(storageRoot, "governed-agent-activations"),
   });
@@ -3684,40 +4328,127 @@ export function createUniversalCoreService(options = {}) {
     ? createGovernedAgentPostgresQueueStore({ connectionString: governedAgentDatabaseUrl })
     : createGovernedAgentQueueStore({ root: path.join(storageRoot, "governed-agent-queue") }));
   const governedAgentDryRunRunner = options.governedAgentDryRunRunner || createGovernedAgentDryRunRunner({ queueStore: governedAgentQueueStore, audit });
-  const credentialVaultSecret = String(process.env.GOVERNED_AGENT_KEY_ENCRYPTION_SECRET || "").trim();
-  const tenantProviderCredentials = options.tenantProviderCredentials || (governedAgentDatabaseUrl && credentialVaultSecret
-    ? createTenantProviderCredentialStore({ connectionString: governedAgentDatabaseUrl, masterSecret: credentialVaultSecret })
-    : null);
+  // Core never instantiates, accepts, or invokes a provider credential vault.
+  // Native ChatGPT/Codex specialists are materialized by the host, not with an
+  // API key or a provider runner.  Keep the legacy values explicitly null so
+  // injected vaults, runners, and matching environment variables cannot
+  // reactivate the retired path.
+  const tenantProviderCredentials = null;
   const ownerExecutionApprovals = options.ownerExecutionApprovals || createOwnerExecutionApprovalStore({
     root: storageRoot,
-    credentialStore: tenantProviderCredentials,
+    credentialStore: null,
   });
-  const tenantProviderSetupLinks = options.tenantProviderSetupLinks || (governedAgentDatabaseUrl ? createTenantProviderSetupLinkStore({ connectionString: governedAgentDatabaseUrl }) : null);
-  // This runner is deliberately distinct from the existing queue/tick
-  // simulation. It can only execute the fixed, tenant-scoped three-stage
-  // workflow after a separately signed OAuth-owner confirmation.
-  const tenantOpenAiMultiAgentRunner = options.tenantOpenAiMultiAgentRunner || (tenantProviderCredentials && typeof tenantProviderCredentials.getOpenAiForExecution === "function"
-    ? createTenantOpenAiMultiAgentRunner({
-      tenantProviderCredentials,
-      genericAgentRuntime,
-      genericAgentOrchestrator,
-      genericAgentOrchestrationStore,
-      genericAgentCheckpointStore: genericAgentCheckpoints,
-      governedAgentBudgetStore,
-      audit,
-      fetchImpl: options.openAiFetchImpl || fetch,
-      model: options.tenantOpenAiModel || process.env.NYRA_TENANT_OPENAI_MODEL,
-      // Domain-separated HMAC use inside the runner prevents persisted task
-      // fingerprints from being reversible dictionary hashes.
-      taskFingerprintSecret: ownerContextSigningSecret,
-    })
-    : null);
-  // A setup URL carries an opaque capability in its path. Never make its
-  // destination configurable to an arbitrary host: that would turn a bad
-  // environment value into a token exfiltration redirect.
-  const providerSetupBaseUrl = trustedProviderSetupBaseUrl(
-    options.providerSetupBaseUrl ?? process.env.CORE_SERVICE_PUBLIC_URL,
-  );
+  const hostNativeGovernanceEnabled = options.hostNativeGovernance
+    ? true
+    : String(
+        options.hostNativeGovernanceEnabled ??
+        process.env.CORE_HOST_NATIVE_GOVERNANCE_ENABLED ??
+        "false",
+      ).trim().toLowerCase() === "true";
+  const hostNativeSigningSecret = String(
+    options.hostNativeSigningSecret ??
+    process.env.CORE_HOST_NATIVE_SIGNING_SECRET ??
+    "",
+  ).trim();
+  const hostNativeResolverConfigurationValid =
+    options.hostNativeResolverConfigurationValid !== false;
+  const hostNativeResolverConfigurationError = hostNativeResolverConfigurationValid
+    ? null
+    : String(
+        options.hostNativeResolverConfigurationError ||
+        "host_native_resolver_registry_invalid",
+      ).slice(0, 160);
+  let hostNativeGovernance = options.hostNativeGovernance || null;
+  let hostNativeGovernanceState = hostNativeGovernance ? "ready" : "disabled";
+  const hostNativeRequiredChecksPolicyResolver =
+    options.hostNativeRequiredChecksPolicyResolver || null;
+  if (
+    hostNativeGovernanceEnabled &&
+    hostNativeGovernance &&
+    (
+      hostNativeGovernance.required_checks_policy_resolver_configured !== true ||
+      hostNativeGovernance.closure_attestation_verifier_configured !== true
+    )
+  ) {
+    hostNativeGovernance = null;
+    hostNativeGovernanceState = "required_governance_verifier_unavailable";
+    audit.append("core_host_native_governance_unavailable", {
+      reason: hostNativeGovernanceState,
+    });
+  }
+  if (hostNativeGovernanceEnabled && !hostNativeGovernance) {
+    if (!hostNativeResolverConfigurationValid) {
+      hostNativeGovernanceState = "resolver_configuration_invalid";
+      audit.append("core_host_native_governance_unavailable", {
+        reason: hostNativeGovernanceState,
+        error_code: hostNativeResolverConfigurationError,
+      });
+    } else if (typeof hostNativeRequiredChecksPolicyResolver !== "function") {
+      hostNativeGovernanceState = "required_checks_policy_unavailable";
+      audit.append("core_host_native_governance_unavailable", {
+        reason: hostNativeGovernanceState,
+      });
+    } else if (!dttAgentIdentitySecret) {
+      hostNativeGovernanceState = "closure_attestation_signing_secret_unavailable";
+      audit.append("core_host_native_governance_unavailable", {
+        reason: hostNativeGovernanceState,
+      });
+    } else if (hostNativeSigningSecret.length < 32) {
+      hostNativeGovernanceState = "signing_secret_unavailable";
+      audit.append("core_host_native_governance_unavailable", {
+        reason: hostNativeGovernanceState,
+      });
+    } else {
+      try {
+        const hostNativeStore = options.hostNativeGovernanceStore ||
+          createFileHostNativeGovernanceStore({
+            root: path.join(storageRoot, "host-native-governance"),
+          });
+        const hostNativeExternalReadbackVerifier =
+          options.hostNativeExternalReadbackVerifier ||
+          createHostNativeExternalReadbackVerifier({
+            fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
+            githubTokenResolver: options.hostNativeGithubTokenResolver || null,
+            requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
+            timeoutMs: Number(
+              options.hostNativeReadbackTimeoutMs ??
+              process.env.CORE_HOST_NATIVE_READBACK_TIMEOUT_MS ??
+              5_000,
+            ),
+          });
+        const hostNativeReleaseJoinVerdictResolver =
+          options.hostNativeReleaseJoinVerdictResolver ||
+          createHostNativeReleaseJoinVerdictResolver({
+            fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
+            githubTokenResolver: options.hostNativeGithubTokenResolver || null,
+            requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
+            timeoutMs: Number(
+              options.hostNativeReadbackTimeoutMs ??
+              process.env.CORE_HOST_NATIVE_READBACK_TIMEOUT_MS ??
+              5_000,
+            ),
+          });
+        hostNativeGovernance = createHostNativeGovernance({
+          store: hostNativeStore,
+          signingSecret: hostNativeSigningSecret,
+          externalReadbackVerifier: hostNativeExternalReadbackVerifier,
+          releaseJoinVerdictResolver: hostNativeReleaseJoinVerdictResolver,
+          renderServiceOriginResolver: options.hostNativeRenderServiceOriginResolver || null,
+          requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
+          closureAttestationSigningSecret: dttAgentIdentitySecret,
+        });
+        hostNativeGovernanceState = "ready";
+      } catch (error) {
+        hostNativeGovernanceState = "persistent_store_unavailable";
+        audit.append("core_host_native_governance_unavailable", {
+          reason: hostNativeGovernanceState,
+          error_code: String(error?.message || "initialization_failed").slice(0, 160),
+        });
+      }
+    }
+  }
+  const tenantProviderSetupLinks = null;
+  const tenantOpenAiMultiAgentRunner = null;
 
   function recoverGenericOrchestration(tenantId, planId) {
     try {
@@ -3794,20 +4525,209 @@ export function createUniversalCoreService(options = {}) {
     if (consumed?.consumed !== true) throw new Error("owner_confirmation_replayed");
     return body;
   }
+
+  function issueNyraDeepV2PolicySnapshotBundle({
+    keyRecord,
+    tenantId,
+    requestId,
+    branchId,
+    subbranchId,
+    workPreflight,
+    nyraNetwork,
+    bridgeResult,
+    operationalContext,
+  } = {}) {
+    if (
+      !nyraDeepV2Attester
+      || typeof nyraDeepV2Attester.operationalPolicySnapshotRequirements !== "function"
+    ) {
+      return {
+        ok: false,
+        reason: "nyra_deep_branch_v2_policy_receipt_issuer_unavailable",
+      };
+    }
+    if (
+      !nyraDeepV2Ledger
+      || typeof nyraDeepV2Ledger.issueCorePolicyDecisionReceipt !== "function"
+    ) {
+      return {
+        ok: false,
+        reason: "nyra_deep_branch_v2_policy_receipt_ledger_unavailable",
+      };
+    }
+    const discovery = nyraDeepV2Attester
+      .operationalPolicySnapshotRequirements({ branchId, subbranchId });
+    if (
+      !discovery?.ok
+      || !Array.isArray(discovery.requirements)
+      || discovery.requirements.length < 1
+    ) {
+      return {
+        ok: false,
+        reason: discovery?.reason
+          || "nyra_deep_branch_v2_policy_requirements_unavailable",
+      };
+    }
+    const issuedMs = Math.max(
+      Date.now(),
+      Date.parse(String(operationalContext?.issued_at || "")) || 0,
+    );
+    const expiresMs = Date.parse(String(operationalContext?.expires_at || ""));
+    if (
+      !Number.isFinite(expiresMs)
+      || !Number.isFinite(issuedMs)
+      || expiresMs <= issuedMs
+    ) {
+      return {
+        ok: false,
+        reason: "nyra_deep_branch_v2_policy_receipt_window_invalid",
+      };
+    }
+    const branchRoute = (nyraNetwork?.opened_branches || [])
+      .find((item) => item?.id === branchId) || null;
+    const coreBranchBindings = Array.isArray(branchRoute?.core_branch_bindings)
+      ? branchRoute.core_branch_bindings
+        .filter((value) => /^[a-z][a-z0-9_]{1,63}$/.test(String(value || "")))
+      : [];
+    const branchResolution = resolveBranchesForKey(keyRecord);
+    const entitlement = buildEntitlement(keyRecord, branchResolution);
+    const tenantPolicy = getTenantPolicy(tenantId, keyRecord?.metadata?.tier, {
+      brandScope: keyRecord?.brand_scope,
+      metadata: keyRecord?.metadata,
+    });
+    const preflightReady = workPreflight?.mandatory === true
+      && workPreflight?.tenant_id === tenantId
+      && workPreflight?.state === "ready_read_only"
+      && workPreflight?.governance?.execution_allowed_by_preflight === true
+      && workPreflight?.memory_first?.status === "recalled";
+    const tenantIsolated = keyRecord?.tenant_id === tenantId;
+    const bridgeBlocked = Array.isArray(
+      bridgeResult?.selected_by_core?.blocked_reasons,
+    ) && bridgeResult.selected_by_core.blocked_reasons.length > 0;
+    const controlLevel = String(
+      bridgeResult?.selected_by_core?.control_level || "",
+    );
+    const riskHint = bridgeResult?.selected_by_core?.risk_band === "high"
+      ? 80
+      : bridgeResult?.selected_by_core?.risk_band === "medium"
+        ? 45
+        : 20;
+    const issuedAt = new Date(issuedMs).toISOString();
+    const expiresAt = new Date(expiresMs).toISOString();
+    const policySnapshots = [];
+    for (const requirement of discovery.requirements) {
+      const mediation = evaluatePolicyEngine({
+        tenantPolicy,
+        entitlement,
+        action: {
+          action_type: `nyra_deep_v2_${requirement.policy_id}_advisory`,
+          risk_hint: riskHint,
+          required_branches: coreBranchBindings,
+          audit_ready: true,
+          cross_tenant: false,
+          contains_pii: false,
+        },
+        policy: {
+          mode: "hard-gating",
+          required_branches: coreBranchBindings,
+        },
+        context: {
+          audit_ready: true,
+          cross_tenant: false,
+          contains_pii: false,
+          rollback_ready: true,
+        },
+      });
+      const allow = preflightReady
+        && tenantIsolated
+        && branchRoute !== null
+        && bridgeResult?.ok === true
+        && !bridgeBlocked
+        && ["observe", "suggest"].includes(controlLevel)
+        && mediation?.action_mediation?.state === "allow";
+      const receipt = nyraDeepV2Ledger.issueCorePolicyDecisionReceipt({
+        tenantId,
+        requestId,
+        branchId,
+        subbranchId,
+        nodeId: requirement.node_id,
+        policyId: requirement.policy_id,
+        effect: requirement.effect,
+        decision: allow ? "ALLOW" : "DENY",
+        preflightId: workPreflight?.preflight_id || "",
+        corePolicyHash:
+          operationalContext?.policy_hash
+          || operationalContext?.policyHash
+          || "",
+        issuedAt,
+        expiresAt,
+        observedAt: issuedMs,
+      });
+      if (!receipt?.ok) {
+        return {
+          ok: false,
+          reason: "nyra_deep_branch_v2_policy_receipt_persistence_failed",
+        };
+      }
+      policySnapshots.push({
+        schema_version: NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_SCHEMA_VERSION,
+        issuer: NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_ISSUER,
+        decision_id: receipt.decision_id,
+        decision_receipt: receipt.decision_receipt,
+        decision: allow ? "ALLOW" : "DENY",
+        tenant_id: tenantId,
+        request_id: requestId,
+        branch_id: branchId,
+        subbranch_id: subbranchId,
+        node_id: requirement.node_id,
+        policy_id: requirement.policy_id,
+        effect: requirement.effect,
+        preflight_id: workPreflight?.preflight_id || "",
+        core_policy_hash:
+          operationalContext?.policy_hash
+          || operationalContext?.policyHash
+          || "",
+        issued_at: issuedAt,
+        expires_at: expiresAt,
+      });
+    }
+    return {
+      ok: true,
+      corePolicyContext: {
+        schema_version:
+          NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_BUNDLE_SCHEMA_VERSION,
+        policy_snapshots: policySnapshots,
+      },
+      summary: {
+        required_policy_receipt_count: discovery.requirements.length,
+        allow_count: policySnapshots
+          .filter((item) => item.decision === "ALLOW").length,
+        deny_count: policySnapshots
+          .filter((item) => item.decision === "DENY").length,
+      },
+    };
+  }
+
   const requestedCoreRuntimeMode = String(options.coreRuntimeMode || process.env.CORE_RUNTIME_V2_MODE || "shadow").toLowerCase();
   const coreRuntimeMode = ["shadow", "active", "disabled"].includes(requestedCoreRuntimeMode) ? requestedCoreRuntimeMode : "shadow";
   const app = express();
+  const coreAuth = (requiredScope, authOptions = {}) => createAuth(
+    keyStore,
+    audit,
+    requiredScope,
+    { ...authOptions, tenantContextSigningSecret },
+  );
 
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
   app.use(express.urlencoded({ extended: false, limit: "8kb" }));
   mountDttAgentIdentityReceiptRoutes({
     app,
-    auth: createAuth(keyStore, audit, SCOPES.WRITE_DECISION),
+    auth: coreAuth(SCOPES.WRITE_DECISION),
     receiptService: dttAgentIdentityReceiptService,
     audit,
   });
-  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/verifier-assignments", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/verifier-assignments", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     if (!dttAgentIdentityReceiptService?.configured) {
       return res.status(503).json({ ok: false, error: "dtt_agent_identity_not_ready" });
     }
@@ -3854,7 +4774,7 @@ export function createUniversalCoreService(options = {}) {
       return publicError(res, 403, error.message || "dtt_verifier_assignment_denied");
     }
   });
-  app.post("/v1/orchestration/evidence/artifacts", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/evidence/artifacts", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     try {
       const artifact = await dttVerificationTrustStore.registerArtifact({
         tenant_id: req.tenantId,
@@ -3883,6 +4803,22 @@ export function createUniversalCoreService(options = {}) {
     nyraCatalog: nyraBranchCatalog,
     agentRegistry: multiAgentRegistry,
     uiRoot: path.join(__dirname, "../admin-ui"),
+  });
+  // This must remain before every legacy provider route below.  It is
+  // deliberately unauthenticated: accepting a token, setup proof, or body
+  // before returning retirement would keep a credential path alive and would
+  // produce inconsistent 401/403 responses instead of the stable 410.
+  app.use("/v1/generic-agents/providers/openai", (req, res) => {
+    audit.append("native_agent_provider_route_retired", {
+      method: req.method,
+      route: "generic_agents_provider",
+    });
+    return publicError(
+      res,
+      410,
+      NATIVE_AGENT_PROVIDER_RETIREMENT_CODE,
+      NATIVE_AGENT_PROVIDER_RETIREMENT_MESSAGE,
+    );
   });
   app.get("/v1/generic-agents/providers/openai/setup/:token", (req, res) => {
     const token = validProviderSetupToken(req.params.token);
@@ -3952,7 +4888,7 @@ export function createUniversalCoreService(options = {}) {
     return providerSetupHtml(res, 200, `<h1>OpenAI collegato</h1><p>La chiave è stata salvata nel vault cifrato del tuo account.</p><p><a href="${TRUSTED_AGENT_PORTAL_URL}" style="display:inline-block;background:#111;color:#fff;padding:14px 18px;border-radius:10px;text-decoration:none;font-weight:700">Torna a Nyra e avvia il test</a></p>`);
   });
 
-  app.get("/v1/generic-agents/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/generic-agents/registry", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const agents = governedAgentRegistry.listAgents();
     audit.append("governed_agent_registry_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, agent_count: agents.length });
     return res.json({
@@ -3963,7 +4899,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/generic-agents/activations", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/activations", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const existing = req.body?.idempotency_key
         ? governedAgentActivationStore.findByIdempotency({ tenant_id: req.tenantId, idempotency_key: req.body.idempotency_key })
@@ -3994,7 +4930,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/generic-agents/activations/:activationId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/generic-agents/activations/:activationId", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     try {
       const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
       if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
@@ -4004,7 +4940,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/activations/:activationId/research-workflow", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/generic-agents/activations/:activationId/research-workflow", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     try {
       const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
       if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
@@ -4031,7 +4967,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/activations/:activationId/research-evidence", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/activations/:activationId/research-evidence", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
       if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
@@ -4076,38 +5012,38 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/generic-agents/operational-budget", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/generic-agents/operational-budget", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const budget = governedAgentBudgetStore.get({ tenant_id: req.tenantId });
     return res.json({ ok: true, tenant_id: req.tenantId, budget, execution_allowed: false });
   });
 
-  app.get("/v1/generic-agents/queue/metrics", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+  app.get("/v1/generic-agents/queue/metrics", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
     res.json(await governedAgentQueueStore.metrics({ tenant_id: req.tenantId }));
   });
-  app.post("/v1/generic-agents/queue/tick", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/generic-agents/queue/tick", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     const outcome = await governedAgentDryRunRunner.tick({ tenant_id: req.tenantId });
     audit.append("governed_agent_queue_dry_run_tick", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, completed: outcome.completed.length, expired: outcome.expired });
     return res.json({ ok: true, tenant_id: req.tenantId, ...outcome });
   });
-  app.post("/v1/generic-agents/queue/claim", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/generic-agents/queue/claim", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     const job = await governedAgentQueueStore.claim({ tenant_id: req.tenantId });
     if (!job) return res.status(204).end();
     return res.json(job);
   });
-  app.post("/v1/generic-agents/queue/:jobId/complete", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/generic-agents/queue/:jobId/complete", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     const job = await governedAgentQueueStore.complete({ tenant_id: req.tenantId, job_id: req.params.jobId, result: req.body?.result || null });
     if (!job) return publicError(res, 404, "queue_job_not_found");
     return res.json(job);
   });
-  app.post("/v1/generic-agents/queue/:jobId/fail", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/generic-agents/queue/:jobId/fail", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     const job = await governedAgentQueueStore.fail({ tenant_id: req.tenantId, job_id: req.params.jobId, error: req.body?.error || "worker_failed" });
     if (!job) return publicError(res, 404, "queue_job_not_found");
     return res.json(job);
   });
-  app.post("/v1/generic-agents/queue/activations/:activationId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/generic-agents/queue/activations/:activationId/cancel", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     return res.json(await governedAgentQueueStore.cancelActivation({ tenant_id: req.tenantId, activation_id: req.params.activationId }));
   });
-  app.post("/v1/generic-agents/providers/openai/setup-links", createAuth(keyStore, audit, SCOPES.WRITE_PROVIDER_SETUP_LINK, { allowProviderSetupService: true }), async (req, res) => {
+  app.post("/v1/generic-agents/providers/openai/setup-links", coreAuth(SCOPES.WRITE_PROVIDER_SETUP_LINK, { allowProviderSetupService: true }), async (req, res) => {
     if (!tenantProviderSetupLinks) return publicError(res, 503, "tenant_provider_setup_not_configured");
     // `admin:tenant` is intentionally not a wildcard here. This endpoint
     // mints a credential-entry capability, so it accepts only the exact
@@ -4154,7 +5090,7 @@ export function createUniversalCoreService(options = {}) {
     return res.status(201).json({
       ok: true,
       tenant_id: req.tenantId,
-      setup_url: `${providerSetupBaseUrl}/v1/generic-agents/providers/openai/setup/${link.token}`,
+      setup_url: null,
       // This is delivered only to the server-side owner portal, which moves it
       // into the URL fragment. It is never included in an MCP tool response.
       setup_proof: link.proof,
@@ -4163,7 +5099,7 @@ export function createUniversalCoreService(options = {}) {
       execution_enabled: false,
     });
   });
-  app.get("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+  app.get("/v1/generic-agents/providers/openai", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
     if (!tenantProviderCredentials) return publicError(res, 503, "tenant_provider_vault_not_configured");
     const provider = await tenantProviderCredentials.status({ tenant_id: req.tenantId });
     return res.json({
@@ -4185,11 +5121,11 @@ export function createUniversalCoreService(options = {}) {
   // Provider credentials are intentionally accepted only by a consumed, short-lived
   // setup link. A normal Core key must never become a second, bypassable secret
   // input channel, even when it has a broad write scope.
-  app.put("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.put("/v1/generic-agents/providers/openai", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     audit.append("tenant_openai_provider_direct_write_blocked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     return publicError(res, 410, "provider_setup_link_required", "Use a one-time owner setup link.");
   });
-  app.delete("/v1/generic-agents/providers/openai", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.delete("/v1/generic-agents/providers/openai", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     audit.append("tenant_openai_provider_direct_delete_blocked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     return publicError(res, 410, "provider_setup_link_required", "Provider changes require the owner setup flow.");
   });
@@ -4197,7 +5133,7 @@ export function createUniversalCoreService(options = {}) {
   // The only live provider path. Its graph, model, token cap, concurrency and
   // tool policy are all fixed in the runner; callers can supply only a bounded
   // task plus a fresh, request-bound OAuth owner confirmation.
-  app.post("/v1/generic-agents/providers/openai/multi-agent-runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/generic-agents/providers/openai/multi-agent-runs", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     try {
       const body = await consumeBoundedProviderExecutionOwner(req);
       const run = tenantOpenAiMultiAgentRunner.start({ tenant_id: req.tenantId, task: body.task });
@@ -4224,7 +5160,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/generic-agents/providers/openai/multi-agent-runs/:runId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/generic-agents/providers/openai/multi-agent-runs/:runId", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     if (!tenantOpenAiMultiAgentRunner) return publicError(res, 503, "tenant_openai_execution_not_configured");
     try {
       // Status can be read by a tenant decision key; model output remains
@@ -4237,7 +5173,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/providers/openai/multi-agent-runs/:runId/result", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/providers/openai/multi-agent-runs/:runId/result", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const body = requireBoundedProviderExecutionOwner(req, "tenant_openai_multiagent_read");
       if (body.run_id !== req.params.runId) return publicError(res, 400, "run_id_mismatch");
@@ -4249,7 +5185,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/providers/openai/multi-agent-runs/:runId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/providers/openai/multi-agent-runs/:runId/cancel", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const body = requireBoundedProviderExecutionOwner(req, "tenant_openai_multiagent_cancel");
       if (body.run_id !== req.params.runId) return publicError(res, 400, "run_id_mismatch");
@@ -4261,7 +5197,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/runs", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/runs", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const run = genericAgentRuntime.startRun({ ...(req.body || {}), tenant_id: req.tenantId });
       audit.append("generic_agent_run_started", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, agent_id: run.agent_id });
@@ -4271,7 +5207,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/runs/:runId/checkpoint", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/runs/:runId/checkpoint", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const run = genericAgentRuntime.checkpointRun({ run_id: req.params.runId, tenant_id: req.tenantId, checkpoint: req.body?.checkpoint });
       const record = genericAgentCheckpoints.save({
@@ -4288,7 +5224,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/generic-agents/runs/:runId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/generic-agents/runs/:runId", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     try {
       let restored = false;
       let run;
@@ -4308,7 +5244,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     try {
       const report = evaluateGenericAgentRun(req.body?.cases);
       audit.append("generic_agent_evaluation_completed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, case_count: report.case_count, score: report.score });
@@ -4318,7 +5254,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/runs/:runId/model-reservations", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/runs/:runId/model-reservations", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const run = genericAgentRuntime.reserveModelCall({
         run_id: req.params.runId,
@@ -4333,7 +5269,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/runs/:runId/tool-events", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/runs/:runId/tool-events", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const run = genericAgentRuntime.recordToolEvent({
         run_id: req.params.runId,
@@ -4349,7 +5285,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/generic-agents/metrics", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/generic-agents/metrics", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     try {
       return res.json({ ok: true, metrics: genericAgentRuntime.getMetrics({ tenant_id: req.tenantId }) });
     } catch (error) {
@@ -4357,7 +5293,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/runs/:runId/orchestration", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/runs/:runId/orchestration", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       const run = genericAgentRuntime.getRun({ run_id: req.params.runId, tenant_id: req.tenantId });
       const plan = genericAgentOrchestrator.createPlan({ tenant_id: req.tenantId, run_id: run.run_id, workers: req.body?.workers });
@@ -4369,7 +5305,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/orchestration/:planId/claim", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/orchestration/:planId/claim", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       recoverGenericOrchestration(req.tenantId, req.params.planId);
       const claimed = genericAgentOrchestrator.claimReadyWorkers({ tenant_id: req.tenantId, plan_id: req.params.planId });
@@ -4381,7 +5317,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/orchestration/:planId/workers/:workerId/complete", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/orchestration/:planId/workers/:workerId/complete", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       recoverGenericOrchestration(req.tenantId, req.params.planId);
       const plan = genericAgentOrchestrator.completeWorker({ tenant_id: req.tenantId, plan_id: req.params.planId, worker_id: req.params.workerId, result: req.body?.result });
@@ -4394,7 +5330,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/orchestration/:planId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/orchestration/:planId/cancel", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       recoverGenericOrchestration(req.tenantId, req.params.planId);
       const plan = genericAgentOrchestrator.cancelPlan({ tenant_id: req.tenantId, plan_id: req.params.planId });
@@ -4406,7 +5342,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/generic-agents/orchestration/:planId/join", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), (req, res) => {
+  app.post("/v1/generic-agents/orchestration/:planId/join", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
     try {
       recoverGenericOrchestration(req.tenantId, req.params.planId);
       const joined = genericAgentOrchestrator.coreJoin({ tenant_id: req.tenantId, plan_id: req.params.planId });
@@ -4418,18 +5354,115 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/healthz", (req, res) => {
-    res.json({
+  app.get("/healthz", async (req, res) => {
+    const production = (process.env.NODE_ENV || "development") === "production";
+    const productionBuildReady =
+      !production ||
+      BUILD_COMMIT_VERIFIABLE;
+    const hostNativeRuntimeReady =
+      !hostNativeGovernanceEnabled ||
+      (
+        hostNativeGovernanceState === "ready" &&
+        hostNativeGovernance?.storage?.restart_durable === true &&
+        hostNativeGovernance?.trusted_readback_configured === true &&
+        hostNativeGovernance?.release_join_verdict_resolver_configured === true &&
+        hostNativeGovernance?.required_checks_policy_resolver_configured === true &&
+        hostNativeGovernance?.closure_attestation_verifier_configured === true &&
+        hostNativeResolverConfigurationValid
+      );
+    const hostNativeProductionReadinessRequired =
+      production && hostNativeGovernanceEnabled;
+    let governedAgentPostgresVersion =
+      normalizePostgresMajorVerification(null);
+    if (
+      hostNativeProductionReadinessRequired &&
+      governedAgentPostgresConfigured
+    ) {
+      const probe = governedAgentPostgresVersionProbe;
+      const check = typeof probe === "function"
+        ? probe
+        : typeof probe?.check === "function"
+          ? () => probe.check()
+          : null;
+      if (check) {
+        try {
+          governedAgentPostgresVersion =
+            normalizePostgresMajorVerification(await check());
+        } catch {
+          governedAgentPostgresVersion =
+            normalizePostgresMajorVerification(null);
+        }
+      }
+    }
+    const hostNativeProductionReadinessReasons = [];
+    if (
+      hostNativeProductionReadinessRequired &&
+      !mcpTenantGatewayConfigured
+    ) {
+      hostNativeProductionReadinessReasons.push(
+        "mcp_tenant_gateway_not_configured",
+      );
+    }
+    if (
+      hostNativeProductionReadinessRequired &&
+      !tenantContextSigningSecret
+    ) {
+      hostNativeProductionReadinessReasons.push(
+        "tenant_context_signing_not_configured",
+      );
+    }
+    if (
+      hostNativeProductionReadinessRequired &&
+      !ownerContextSigningSecret
+    ) {
+      hostNativeProductionReadinessReasons.push(
+        "owner_context_signing_not_configured",
+      );
+    }
+    if (
+      hostNativeProductionReadinessRequired &&
+      !dttAgentIdentitySecret
+    ) {
+      hostNativeProductionReadinessReasons.push(
+        "dtt_closure_signing_not_configured",
+      );
+    }
+    if (
+      hostNativeProductionReadinessRequired &&
+      !governedAgentPostgresConfigured
+    ) {
+      hostNativeProductionReadinessReasons.push(
+        "governed_agent_postgres_not_configured",
+      );
+    }
+    if (
+      hostNativeProductionReadinessRequired &&
+      governedAgentPostgresConfigured &&
+      !governedAgentPostgresVersion.verified
+    ) {
+      hostNativeProductionReadinessReasons.push(
+        "governed_agent_postgres_major_16_not_verified",
+      );
+    }
+    const hostNativeProductionReadinessReady =
+      !hostNativeProductionReadinessRequired ||
+      hostNativeProductionReadinessReasons.length === 0;
+    const hostNativeReady =
+      hostNativeRuntimeReady && hostNativeProductionReadinessReady;
+    const renderReady = productionBuildReady && hostNativeReady;
+    res.status(renderReady ? 200 : 503).json({
       ok: true,
       service: SERVICE_NAME,
       version: SERVICE_VERSION,
       build: {
         build_id: BUILD_ID,
         commit_sha: BUILD_COMMIT_SHA,
-        commit_verifiable: Boolean(BUILD_COMMIT_SHA),
+        commit_verifiable: BUILD_COMMIT_VERIFIABLE,
       },
+      health_contract_version: HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
       mode: process.env.NODE_ENV || "development",
-      render_ready: true,
+      render_ready: renderReady,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
       dynamic_task_tree: {
@@ -4448,23 +5481,107 @@ export function createUniversalCoreService(options = {}) {
         verified_outcome_and_join_ready: dttVerifierIdentityResolverConfigured,
         execution_authorized: false,
       },
+      nyra_deep_branch_v2: {
+        core_material_ready: !nyraDeepV2IntegrationReason,
+        integration_state: nyraDeepV2IntegrationReason || "ready",
+        evidence_ledger: typeof nyraDeepV2Ledger?.ledgerStats === "function"
+          ? nyraDeepV2Ledger.ledgerStats()
+          : {
+            backend: nyraDeepV2Ledger ? "injected" : "unavailable",
+            restart_durable: false,
+            distributed: false,
+            raw_content_retained: false,
+          },
+        mcp_request_replay: typeof nyraDeepV2McpRequestVerifier?.status === "function"
+          ? nyraDeepV2McpRequestVerifier.status()
+          : {
+            backend: nyraDeepV2McpRequestVerifier ? "injected" : "unavailable",
+            restart_durable: false,
+            distributed: false,
+            ready: Boolean(nyraDeepV2McpRequestVerifier),
+            raw_identifiers_retained: false,
+          },
+        attester_ready: Boolean(nyraDeepV2Attester),
+        source_verifier_ready: Boolean(nyraDeepV2SourceVerifier),
+        execution_authorized: false,
+      },
       governed_agent_runner: {
-        mode: tenantOpenAiMultiAgentRunner ? "manual_dry_run_plus_bounded_provider" : "manual_dry_run",
-        // Availability is not a global permission to call a provider: every
-        // real run still needs a configured tenant vault and a fresh signed
-        // OAuth-owner confirmation.
-        provider_execution_available: Boolean(tenantOpenAiMultiAgentRunner),
-        fixed_provider_workflow: tenantOpenAiMultiAgentRunner ? "research_review_synthesis_v1" : null,
+        mode: "manual_dry_run",
+        provider_execution_available: false,
+        fixed_provider_workflow: null,
+        native_specialists_only: true,
         max_jobs_per_tick: 2,
       },
       tenant_provider_vault: {
-        configured: Boolean(tenantProviderCredentials),
-        execution_available: Boolean(tenantOpenAiMultiAgentRunner),
+        retired: true,
+        configured: false,
+        execution_available: false,
         execution_enabled: false,
         tenant_scoped: true,
       },
+      host_native_governance: {
+        enabled: hostNativeGovernanceEnabled,
+        state: hostNativeGovernanceState,
+        production_readiness_required:
+          hostNativeProductionReadinessRequired,
+        production_readiness_ready:
+          hostNativeProductionReadinessReady,
+        production_readiness_reasons:
+          hostNativeProductionReadinessReasons,
+        mcp_tenant_gateway_configured: mcpTenantGatewayConfigured,
+        tenant_context_signing_configured:
+          Boolean(tenantContextSigningSecret),
+        owner_context_signing_configured:
+          Boolean(ownerContextSigningSecret),
+        dtt_closure_signing_configured:
+          Boolean(dttAgentIdentitySecret),
+        governed_agent_postgres_configured:
+          governedAgentPostgresConfigured,
+        governed_agent_postgres_version:
+          governedAgentPostgresVersion,
+        route_ready: Boolean(hostNativeGovernance),
+        store_backend: hostNativeGovernance?.storage?.kind || null,
+        restart_durable: hostNativeGovernance?.storage?.restart_durable === true,
+        distributed_store: hostNativeGovernance?.storage?.distributed === true,
+        trusted_readback_configured:
+          hostNativeGovernance?.trusted_readback_configured === true,
+        release_join_verdict_resolver_configured:
+          hostNativeGovernance?.release_join_verdict_resolver_configured === true,
+        required_checks_policy_resolver_configured:
+          hostNativeGovernance?.required_checks_policy_resolver_configured === true,
+        closure_attestation_verifier_configured:
+          hostNativeGovernance?.closure_attestation_verifier_configured === true,
+        render_service_origin_resolver_configured:
+          hostNativeGovernance?.render_service_origin_resolver_configured === true,
+        resolver_configuration_valid: hostNativeResolverConfigurationValid,
+        resolver_configuration_error: hostNativeResolverConfigurationError,
+        github_credential_resolver_state:
+          options.hostNativeGithubCredentialResolverState || "not_configured",
+        github_credential_binding_count:
+          Number(options.hostNativeGithubCredentialBindingCount || 0),
+        render_origin_resolver_state:
+          options.hostNativeRenderServiceOriginResolverState || "default_service_slug",
+        render_origin_binding_count:
+          Number(options.hostNativeRenderServiceOriginBindingCount || 0),
+        required_checks_policy_resolver_state:
+          options.hostNativeRequiredChecksPolicyResolverState || "not_configured",
+        required_checks_policy_binding_count:
+          Number(options.hostNativeRequiredChecksPolicyBindingCount || 0),
+        tenant_github_credential_resolver_configured:
+          typeof options.hostNativeGithubTokenResolver === "function",
+        public_repository_readback_ready: true,
+        private_repository_readback_ready:
+          typeof options.hostNativeGithubTokenResolver === "function",
+        caller_supplied_github_token_allowed: false,
+        execution_adapter: "host_native",
+        provider_execution: false,
+        provider_api_key_required: false,
+        maximum_specialists: 3,
+        maximum_parallel_specialists: 2,
+      },
       provider_setup_link_bootstrap_configured: providerSetupLinkBootstrapConfigured,
       provider_setup_link_bootstrap_state: providerSetupLinkBootstrapState,
+      tenant_context_signing_configured: Boolean(tenantContextSigningSecret),
       owner_context_signing_configured: Boolean(ownerContextSigningSecret),
       uptime_seconds: Math.round(process.uptime()),
     });
@@ -4474,11 +5591,11 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, scopes: Object.values(SCOPES), presets: KEY_PRESETS });
   });
 
-  app.get("/v1/runtime/hierarchy/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/runtime/hierarchy/status", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     res.json({ ok: true, tenant_id: req.tenantId, runtime: coreRuntimeHierarchyStatus(coreRuntime, coreRuntimeMode) });
   });
 
-  app.post("/v1/runtime/hierarchy/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/runtime/hierarchy/evaluate", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
     try {
       const rawInput = req.body?.core_input || req.body?.input;
       if (!rawInput || typeof rawInput !== "object") return publicError(res, 400, "core_runtime_input_required");
@@ -4653,7 +5770,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, tokens: setupTokens.list({ tenant_id: req.query.tenant_id }) });
   });
 
-  app.get("/v1/bootstrap/profile", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/bootstrap/profile", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const tenant = tenants.get(req.tenantId);
@@ -4672,7 +5789,7 @@ export function createUniversalCoreService(options = {}) {
     return res.json(profile);
   });
 
-  app.get("/v1/tenants/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/tenants/registry", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const all = tenants.list();
     const visible = hasScope(req.coreKey, SCOPES.ADMIN_TENANT)
       ? all
@@ -4686,7 +5803,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/domain-packs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/domain-packs", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const current = resolveDomainPackForKey(req.coreKey);
     audit.append("core_domain_pack_catalog_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, domain_pack_id: current.id });
     res.json({
@@ -4698,12 +5815,12 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/domain-packs/current", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/domain-packs/current", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const current = resolveDomainPackForKey(req.coreKey);
     res.json({ ok: true, tenant_id: req.tenantId, domain_pack: publicDomainPack(current) });
   });
 
-  app.get("/v1/nira/branches", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/nira/branches", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const current = resolveDomainPackForKey(req.coreKey);
     const catalog = nyraBranchCatalog(current.id);
     audit.append("core_nyra_branch_catalog_read", {
@@ -4715,7 +5832,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, tenant_id: req.tenantId, catalog });
   });
 
-  app.post("/v1/research/plan", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/research/plan", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     try {
@@ -4751,7 +5868,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/research/validate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/research/validate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     try {
@@ -4786,7 +5903,151 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/work/preflight", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/research/status", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
+    const status = researchRuntime.status(req.tenantId);
+    return res.json({ ok: true, tenant_id: req.tenantId, status });
+  });
+
+  app.get("/api/universal-core/research/status", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
+    const status = researchRuntime.status(req.tenantId);
+    return res.json({ ok: true, tenant_id: req.tenantId, status });
+  });
+
+  app.get("/v1/research/source-registry", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
+    try {
+      const payload = researchRuntime.registryForTenant(req.tenantId);
+      return res.json({ ok: true, tenant_id: req.tenantId, ...payload });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_registry_failed");
+    }
+  });
+
+  app.get("/v1/research/learning-packs", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
+    try {
+      const branchId = String(req.query.branch_id || "").trim() || null;
+      const payload = researchRuntime.branchPack(req.tenantId, branchId);
+      return res.json({ ok: true, tenant_id: req.tenantId, ...payload });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_learning_pack_failed");
+    }
+  });
+
+  app.post("/v1/research/envelope/authorize", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    try {
+      const question = String(req.body?.question || "").trim();
+      if (!question) return publicError(res, 400, "research_question_required");
+      const coreResearch = buildCoreResearchDirective({
+        tenantId: req.tenantId,
+        requestText: question,
+        operationType: "research_distillation_shadow",
+        evidenceState: {
+          source_count: 0,
+          confidence: 0,
+          freshness_state: "unknown",
+          evidence_gap: true,
+        },
+        selectedBranches: Array.isArray(req.body?.branch_ids) ? req.body.branch_ids : [],
+        allowedDomains: [],
+      });
+      if (!coreResearch.directive) return publicError(res, 409, "research_core_directive_not_required");
+      const payload = researchRuntime.authorizeEnvelope(req.body || {}, {
+        tenantId: req.tenantId,
+        coreDirective: coreResearch.directive,
+      });
+      return res.json({
+        ok: true,
+        tenant_id: req.tenantId,
+        envelope: payload,
+        core_directive: {
+          directive_id: coreResearch.directive.directive_id,
+          status: coreResearch.directive.status,
+          research_execution_authorized: false,
+          distillation_authorized: false,
+        },
+      });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_envelope_invalid");
+    }
+  });
+
+  app.post("/v1/research/workspaces/open", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    try {
+      const workspace = researchRuntime.openWorkspace({
+        tenant_id: req.tenantId,
+        envelope_id: req.body?.envelope_id,
+      });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, workspace });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_workspace_open_failed");
+    }
+  });
+
+  app.post("/v1/research/workspaces/attach", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    try {
+      const workspaceId = String(req.body?.workspace_id || "").trim();
+      if (!workspaceId) return publicError(res, 400, "research_workspace_id_required");
+      const payload = researchRuntime.attachEvidence(workspaceId, {
+        tenant_id: req.tenantId,
+        evidence: Array.isArray(req.body?.evidence) ? req.body.evidence : [],
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, ...payload });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_workspace_attach_failed");
+    }
+  });
+
+  app.post("/v1/research/workspaces/close", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    try {
+      const workspaceId = String(req.body?.workspace_id || "").trim();
+      if (!workspaceId) return publicError(res, 400, "research_workspace_id_required");
+      const workspace = researchRuntime.closeWorkspace(workspaceId, {
+        tenant_id: req.tenantId,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, workspace });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_workspace_close_failed");
+    }
+  });
+
+  app.post("/v1/research/distill", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    try {
+      const workspaceId = String(req.body?.workspace_id || "").trim();
+      if (!workspaceId) return publicError(res, 400, "research_workspace_id_required");
+      const result = researchRuntime.distillCandidate(workspaceId, {
+        tenant_id: req.tenantId,
+        evidence: Array.isArray(req.body?.evidence) ? req.body.evidence : [],
+        lesson: req.body?.lesson,
+        learning: req.body?.learning,
+        scope: req.body?.scope,
+        confidence: req.body?.confidence,
+        limitations: Array.isArray(req.body?.limitations) ? req.body.limitations : [],
+        outcome_refs: Array.isArray(req.body?.outcome_refs) ? req.body.outcome_refs : [],
+        persist_verified: req.body?.persist_verified === true,
+        audit_reference: req.body?.audit_reference || null,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, ...result });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_distillation_failed");
+    }
+  });
+
+  app.post("/v1/research/cleanup", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    try {
+      const cleaned = researchRuntime.cleanupExpired({
+        tenant_id: req.tenantId,
+      });
+      audit.append("core_research_cleanup_executed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        cleaned,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, cleanup: { cleaned } });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_cleanup_failed");
+    }
+  });
+
+  app.post("/v1/work/preflight", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -4797,7 +6058,7 @@ export function createUniversalCoreService(options = {}) {
     if (req.body?.nyra_branches !== undefined && !Array.isArray(req.body.nyra_branches)) {
       return publicError(res, 400, "nyra_branches_must_be_array");
     }
-    if (Array.isArray(req.body?.nyra_branches) && req.body.nyra_branches.length > 20) {
+    if (Array.isArray(req.body?.nyra_branches) && req.body.nyra_branches.length > MAX_NYRA_BRANCH_REQUESTS) {
       return publicError(res, 400, "nyra_branch_request_limit_exceeded");
     }
     const preflight = composeMandatoryWorkPreflight(req, {
@@ -4838,7 +6099,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/tenant/status", createAuth(keyStore, audit), (req, res) => {
+  app.get("/v1/tenant/status", coreAuth(), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const suitePolicy = buildSuitePolicy(req.coreKey, branchResolution);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
@@ -4861,14 +6122,14 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/entitlements/current", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/entitlements/current", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     audit.append("core_entitlement_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, tier: entitlement.tier });
     res.json({ ok: true, entitlement });
   });
 
-  app.get("/v1/control-plane/overview", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
+  app.get("/v1/control-plane/overview", coreAuth(SCOPES.READ_CONTROL_PLANE), (req, res) => {
     const overview = buildControlPlaneOverview({
       tenantId: req.tenantId,
       keyRecord: req.coreKey,
@@ -4881,7 +6142,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, overview });
   });
 
-  app.get("/v1/control-plane/dashboard", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/control-plane/dashboard", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const graph = entityGraph.readTenant(req.tenantId);
@@ -4925,12 +6186,12 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/connectors/sdk/manifest", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
+  app.get("/v1/connectors/sdk/manifest", coreAuth(SCOPES.READ_CONTROL_PLANE), (req, res) => {
     audit.append("core_connector_sdk_manifest_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, tenant_id: req.tenantId, sdk: buildConnectorSdkManifest() });
   });
 
-  app.get("/v1/translator/extractor/status", createAuth(keyStore, audit, SCOPES.EXTRACT_CATALOG), (req, res) => {
+  app.get("/v1/translator/extractor/status", coreAuth(SCOPES.EXTRACT_CATALOG), (req, res) => {
     const binary = resolveExtractorBinaryPath({ allowBuild: false });
     audit.append("core_translation_extractor_status_read", {
       tenant_id: req.tenantId,
@@ -4953,7 +6214,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/translator/extractor/catalog", createAuth(keyStore, audit, SCOPES.EXTRACT_CATALOG), (req, res) => {
+  app.post("/v1/translator/extractor/catalog", coreAuth(SCOPES.EXTRACT_CATALOG), (req, res) => {
     try {
       const extraction = runRustExtractorGovernor(storageRoot, req.body || {});
       const coreInput = buildExtractorCoreInput(req, extraction);
@@ -5023,7 +6284,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/customer-intelligence/contract", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/customer-intelligence/contract", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const contract = buildCustomerIntelligenceContract({
       tenantId: req.tenantId,
@@ -5035,7 +6296,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, contract });
   });
 
-  app.post("/v1/customer-intelligence/readiness", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/customer-intelligence/readiness", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const readiness = summarizeCustomerIntelligenceReadiness(req.body || {});
     audit.append("core_customer_intelligence_readiness_evaluated", {
       tenant_id: req.tenantId,
@@ -5051,7 +6312,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/runbooks", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
+  app.get("/v1/runbooks", coreAuth(SCOPES.READ_CONTROL_PLANE), (req, res) => {
     res.json({
       ok: true,
       tenant_id: req.tenantId,
@@ -5060,7 +6321,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/runbooks/evaluate", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+  app.post("/v1/runbooks/evaluate", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => {
     const runbookId = textValue(req.body?.runbook_id || req.body?.id);
     const runbook = suiteRunbookCatalog().find((item) => item.id === runbookId);
     if (!runbook) return publicError(res, 404, "runbook_not_found");
@@ -5137,8 +6398,8 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/releases/manifest/check", createAuth(keyStore, audit, SCOPES.POLICY_CHECK), (req, res) => {
-    const result = evaluateReleaseManifest(req.body || {});
+  app.post("/v1/releases/manifest/check", coreAuth(SCOPES.POLICY_CHECK), (req, res) => {
+    const result = evaluateReleaseManifest(req.body || {}, { tenant_id: req.tenantId });
     const evidenceRecord = evidence.append(req.tenantId, "release_manifest_checked", {
       result,
       rollback_possible: Boolean(result.manifest.rollback_url),
@@ -5152,11 +6413,11 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, tenant_id: req.tenantId, result, evidence: evidenceRecord });
   });
 
-  app.get("/v1/evidence/recent", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+  app.get("/v1/evidence/recent", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
     res.json({ ok: true, tenant_id: req.tenantId, evidence: evidence.recent(req.tenantId, Number(req.query.limit || 50)) });
   });
 
-  app.get("/v1/ecosystem-pulse", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/ecosystem-pulse", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const pulse = buildEcosystemPulse({
       tenantId: req.tenantId,
       keyRecord: req.coreKey,
@@ -5167,11 +6428,11 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, pulse });
   });
 
-  app.get("/v1/calibration/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/calibration/status", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     res.json({ ok: true, calibration: calibrationStatus() });
   });
 
-  app.post("/v1/calibration/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/calibration/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const result = calibrationEvaluate(req.body || {});
     audit.append("core_calibration_evaluated", {
       tenant_id: req.tenantId,
@@ -5206,38 +6467,38 @@ export function createUniversalCoreService(options = {}) {
     });
   }
 
-  app.post("/v1/intelligence/workflow", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/workflow", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     intelligenceResponse(req, res, "workflow", runIntelligenceWorkflow);
   });
 
-  app.post("/v1/intelligence/scenarios", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/scenarios", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     intelligenceResponse(req, res, "scenarios", analyzeScenarios);
   });
 
-  app.post("/v1/intelligence/hypotheses/rank", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/hypotheses/rank", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     if (!Array.isArray(req.body?.hypotheses) || !req.body.hypotheses.length) return publicError(res, 400, "hypotheses_required");
     intelligenceResponse(req, res, "hypothesis_ranking", rankHypotheses);
   });
 
-  app.post("/v1/intelligence/events/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/events/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     if (!Array.isArray(req.body?.events) || !req.body.events.length) return publicError(res, 400, "events_required");
     intelligenceResponse(req, res, "event_probability", evaluateEvents);
   });
 
-  app.post("/v1/intelligence/counterfactuals/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/counterfactuals/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     if (!req.body?.baseline || !Array.isArray(req.body?.alternatives) || !req.body.alternatives.length) {
       return publicError(res, 400, "baseline_and_alternatives_required");
     }
     intelligenceResponse(req, res, "counterfactual_analysis", evaluateCounterfactuals);
   });
 
-  app.post("/v1/intelligence/decisions/select", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/decisions/select", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const options = req.body?.options || req.body?.alternatives;
     if (!Array.isArray(options) || options.length < 2) return publicError(res, 400, "at_least_two_options_required");
     intelligenceResponse(req, res, "decision_selection", selectDecision);
   });
 
-  app.post("/v1/intelligence/outcomes/verify", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/outcomes/verify", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     if (req.body?.predicted_probability === undefined && req.body?.prediction?.probability === undefined) {
       return publicError(res, 400, "predicted_probability_required");
     }
@@ -5245,7 +6506,7 @@ export function createUniversalCoreService(options = {}) {
     intelligenceResponse(req, res, "outcome_verification", verifyOutcome);
   });
 
-  app.post("/v1/intelligence/outcomes/record", createAuth(keyStore, audit, [SCOPES.WRITE_INTELLIGENCE_OUTCOME, SCOPES.WRITE_SNAPSHOT]), (req, res) => {
+  app.post("/v1/intelligence/outcomes/record", coreAuth([SCOPES.WRITE_INTELLIGENCE_OUTCOME, SCOPES.WRITE_SNAPSHOT]), (req, res) => {
     if (!String(req.body?.outcome_id || "").trim()) return publicError(res, 400, "outcome_id_required");
     if (req.body?.predicted_probability === undefined && req.body?.prediction?.probability === undefined) {
       return publicError(res, 400, "predicted_probability_required");
@@ -5361,7 +6622,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/intelligence/calibration", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/intelligence/calibration", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const calibration = intelligenceOutcomes.calibration(req.tenantId);
     res.json({
       ok: true,
@@ -5371,7 +6632,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/compliance/claim-shield/status", createAuth(keyStore, audit, SCOPES.CLAIM_CHECK), (req, res) => {
+  app.get("/v1/compliance/claim-shield/status", coreAuth(SCOPES.CLAIM_CHECK), (req, res) => {
     res.json({
       ok: true,
       claim_shield: {
@@ -5385,13 +6646,431 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/compliance/claim-shield/check", createAuth(keyStore, audit, SCOPES.CLAIM_CHECK), (req, res) => {
+  app.post("/v1/compliance/claim-shield/check", coreAuth(SCOPES.CLAIM_CHECK), (req, res) => {
     const result = claimShieldCheck(req.body || {});
     audit.append("core_claim_shield_checked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, status: result.status, shield_status: result.shield_status });
     res.json({ ok: true, result });
   });
 
-  app.post("/v1/decision", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  function hostNativeFailure(res, error) {
+    const code = String(error?.message || "host_native_governance_failed").slice(0, 200);
+    const status = /(?:replayed|revision_conflict|already_exists|budget_exhausted|not_completable|not_reconcilable|idempotency_key_conflict)/.test(code)
+      ? 409
+      : /not_found/.test(code)
+        ? 404
+        : /(?:cross_tenant|not_active|expired|signature_invalid|owner_mismatch|host_session_mismatch)/.test(code)
+          ? 403
+          : /(?:store_lock_timeout|store_unavailable)/.test(code)
+            ? 503
+            : 400;
+    return publicError(res, status, code);
+  }
+
+  function requireHostNativeGovernance(res) {
+    if (hostNativeGovernance) return true;
+    publicError(res, 503, "host_native_governance_unavailable", hostNativeGovernanceState);
+    return false;
+  }
+
+  function verifyHostNativeOwnerConfirmation(req, purpose) {
+    if (
+      req.coreKey?.key_type !== "connector" ||
+      !hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) ||
+      req.body?.owner_confirmed !== true
+    ) {
+      throw new Error("verified_owner_confirmation_required");
+    }
+    const context = req.body?.owner_context;
+    if (
+      !verifyOwnerContextAssertion(
+        context,
+        ownerContextSigningSecret,
+        req.tenantId,
+        ownerRequestBinding(purpose, req.body || {}),
+      ) ||
+      !PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN.test(String(context?.owner_subject_fingerprint || ""))
+    ) {
+      throw new Error("verified_owner_confirmation_required");
+    }
+    return {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: context.owner_subject_fingerprint,
+      consent_nonce: String(context.assertion || ""),
+      confirmation_reference: textValue(req.body?.confirmation_reference),
+    };
+  }
+
+  app.get(
+    "/v1/host-native/status",
+    coreAuth(SCOPES.READ_DECISION),
+    (_req, res) => res.json({
+      ok: true,
+      enabled: hostNativeGovernanceEnabled,
+      state: hostNativeGovernanceState,
+      configured: Boolean(hostNativeGovernance),
+      store_backend: hostNativeGovernance?.storage?.kind || null,
+      restart_durable: hostNativeGovernance?.storage?.restart_durable === true,
+      distributed_store: hostNativeGovernance?.storage?.distributed === true,
+      trusted_readback_configured:
+        hostNativeGovernance?.trusted_readback_configured === true,
+      release_join_verdict_resolver_configured:
+        hostNativeGovernance?.release_join_verdict_resolver_configured === true,
+      required_checks_policy_resolver_configured:
+        hostNativeGovernance?.required_checks_policy_resolver_configured === true,
+      closure_attestation_verifier_configured:
+        hostNativeGovernance?.closure_attestation_verifier_configured === true,
+      render_service_origin_resolver_configured:
+        hostNativeGovernance?.render_service_origin_resolver_configured === true,
+      resolver_configuration_valid: hostNativeResolverConfigurationValid,
+      resolver_configuration_error: hostNativeResolverConfigurationError,
+      github_credential_resolver_state:
+        options.hostNativeGithubCredentialResolverState || "not_configured",
+      github_credential_binding_count:
+        Number(options.hostNativeGithubCredentialBindingCount || 0),
+      render_origin_resolver_state:
+        options.hostNativeRenderServiceOriginResolverState || "default_service_slug",
+      render_origin_binding_count:
+        Number(options.hostNativeRenderServiceOriginBindingCount || 0),
+      required_checks_policy_resolver_state:
+        options.hostNativeRequiredChecksPolicyResolverState || "not_configured",
+      required_checks_policy_binding_count:
+        Number(options.hostNativeRequiredChecksPolicyBindingCount || 0),
+      tenant_github_credential_resolver_configured:
+        typeof options.hostNativeGithubTokenResolver === "function",
+      public_repository_readback_ready: true,
+      private_repository_readback_ready:
+        typeof options.hostNativeGithubTokenResolver === "function",
+      caller_supplied_github_token_allowed: false,
+      execution_adapter: "host_native",
+      provider_execution: false,
+      provider_api_key_required: false,
+      persistent_store_required: true,
+    }),
+  );
+
+  app.post(
+    "/v1/host-native/work-plans",
+    coreAuth(SCOPES.READ_DECISION),
+    async (req, res) => {
+      try {
+        if (hostNativeGovernanceEnabled && !requireHostNativeGovernance(res)) return;
+        const { tenant_id: _tenantId, ...input } = req.body || {};
+        const plan = hostNativeGovernanceEnabled
+          ? await hostNativeGovernance.buildWorkPlan({
+            ...input,
+            tenant_id: req.tenantId,
+          })
+          : buildHostNativeWorkPlan({ ...input, tenant_id: req.tenantId });
+        audit.append("core_host_native_work_plan_built", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          work_id: plan.work_id,
+          plan_id: plan.plan_id,
+          agent_count: plan.agents.length,
+          maximum_parallel_agents: plan.maximum_parallel_agents,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          plan,
+          governance_state: hostNativeGovernanceState,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/release-intents",
+    coreAuth(SCOPES.READ_DECISION),
+    (req, res) => {
+      try {
+        const { tenant_id: _tenantId, release_intent_digest: _callerDigest, ...input } =
+          req.body || {};
+        const releaseIntent = buildHostReleaseIntentV1({
+          ...input,
+          tenant_id: req.tenantId,
+        });
+        audit.append("core_host_native_release_intent_built", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          work_id: releaseIntent.work_id,
+          repository: releaseIntent.repository,
+          release_intent_digest: releaseIntent.release_intent_digest,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          release_intent: releaseIntent,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/core-join-verdicts",
+    coreAuth(SCOPES.AUTOMATION_CODEX, {
+      tenantContextSigningSecret,
+    }),
+    async (req, res) => {
+      if (!isMcpTenantGatewayRecord(req.coreKey)) {
+        audit.append("core_host_native_core_join_gateway_denied", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          reason: "mcp_tenant_gateway_required",
+        });
+        return publicError(res, 403, "core_join_mcp_gateway_required");
+      }
+      const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
+      if (!assertedTenantId || assertedTenantId !== req.tenantId) {
+        audit.append("core_host_native_core_join_gateway_denied", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          reason: "tenant_context_mismatch",
+        });
+        return publicError(res, 403, "tenant_scope_denied");
+      }
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const { tenant_id: _tenantId, ...input } = req.body || {};
+        const coreJoinVerdict = await hostNativeGovernance.issueCoreJoinVerdict({
+          ...input,
+          tenant_id: req.tenantId,
+        });
+        audit.append("core_host_native_core_join_issued", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          verdict_id: coreJoinVerdict.verdict.verdict_id,
+          work_id: coreJoinVerdict.verdict.work_id,
+          target_commit: coreJoinVerdict.verdict.checks.commit,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          core_join_verdict: coreJoinVerdict,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.get(
+    "/v1/host-native/core-join-verdicts/:verdictId",
+    coreAuth(SCOPES.READ_DECISION),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const coreJoinVerdict = await hostNativeGovernance.readCoreJoinVerdict({
+          tenant_id: req.tenantId,
+          verdict_id: req.params.verdictId,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          core_join_verdict: coreJoinVerdict,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/delegations",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const ownerConfirmation = verifyHostNativeOwnerConfirmation(
+          req,
+          "host_native_delegation_issue",
+        );
+        const {
+          tenant_id: _tenantId,
+          owner_context: _ownerContext,
+          owner_confirmed: _ownerConfirmed,
+          owner_confirmation: _ownerConfirmation,
+          confirmation_reference: _confirmationReference,
+          ...input
+        } = req.body || {};
+        if (!ownerConfirmation.confirmation_reference) {
+          throw new Error("confirmation_reference_invalid");
+        }
+        const record = await hostNativeGovernance.issueDelegation({
+          ...input,
+          tenant_id: req.tenantId,
+          owner_confirmation: ownerConfirmation,
+        });
+        audit.append("core_host_native_delegation_issued", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          delegation_id: record.delegation_id,
+          work_id: record.grant.work_id,
+          expires_at: record.grant.expires_at,
+        });
+        return res.status(201).json({ ok: true, tenant_id: req.tenantId, delegation: record });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.get(
+    "/v1/host-native/delegations/:delegationId",
+    coreAuth(SCOPES.READ_DECISION),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const delegation = await hostNativeGovernance.readDelegation({
+          tenant_id: req.tenantId,
+          delegation_id: req.params.delegationId,
+        });
+        return res.json({ ok: true, tenant_id: req.tenantId, delegation });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/delegations/:delegationId/revoke",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const ownerConfirmation = verifyHostNativeOwnerConfirmation(
+          req,
+          "host_native_delegation_revoke",
+        );
+        if (!ownerConfirmation.confirmation_reference) {
+          throw new Error("confirmation_reference_invalid");
+        }
+        const delegation = await hostNativeGovernance.revokeDelegation({
+          tenant_id: req.tenantId,
+          delegation_id: req.params.delegationId,
+          owner_confirmation: ownerConfirmation,
+          idempotency_key: req.body?.idempotency_key,
+        });
+        audit.append("core_host_native_delegation_revoked", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          delegation_id: delegation.delegation_id,
+        });
+        return res.json({ ok: true, tenant_id: req.tenantId, delegation });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/actions/authorize",
+    coreAuth(SCOPES.AUTOMATION_CODEX),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const { tenant_id: _tenantId, ...input } = req.body || {};
+        const actionTicket = await hostNativeGovernance.issueActionTicket({
+          ...input,
+          tenant_id: req.tenantId,
+        });
+        audit.append("core_host_native_action_ticket_issued", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          ticket_id: actionTicket.ticket.ticket_id,
+          delegation_id: actionTicket.ticket.delegation_id,
+          action_kind: actionTicket.ticket.action.kind,
+        });
+        return res.status(201).json({ ok: true, tenant_id: req.tenantId, action_ticket: actionTicket });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.get(
+    "/v1/host-native/actions/:ticketId",
+    coreAuth(SCOPES.READ_DECISION),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const actionTicket = await hostNativeGovernance.readActionTicket({
+          tenant_id: req.tenantId,
+          ticket_id: req.params.ticketId,
+        });
+        return res.json({ ok: true, tenant_id: req.tenantId, action_ticket: actionTicket });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  for (const [suffix, method] of [
+    ["reserve", "reserveActionTicket"],
+    ["complete", "completeActionTicket"],
+    ["reconcile", "reconcileActionTicket"],
+  ]) {
+    app.post(
+      `/v1/host-native/actions/:ticketId/${suffix}`,
+      coreAuth(SCOPES.AUTOMATION_CODEX),
+      async (req, res) => {
+        if (!requireHostNativeGovernance(res)) return;
+        try {
+          const { tenant_id: _tenantId, ticket_id: _ticketId, ...input } = req.body || {};
+          const actionTicket = await hostNativeGovernance[method]({
+            ...input,
+            tenant_id: req.tenantId,
+            ticket_id: req.params.ticketId,
+          });
+          audit.append(`core_host_native_action_${suffix}`, {
+            tenant_id: req.tenantId,
+            key_id: req.coreKey.key_id,
+            ticket_id: req.params.ticketId,
+            state: actionTicket.state,
+          });
+          return res.json({ ok: true, tenant_id: req.tenantId, action_ticket: actionTicket });
+        } catch (error) {
+          return hostNativeFailure(res, error);
+        }
+      },
+    );
+  }
+
+  app.post(
+    "/v1/host-native/actions/:ticketId/authorize-finalize",
+    coreAuth(SCOPES.AUTOMATION_CODEX),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const finalizeAuthorization = await hostNativeGovernance.authorizeFinalize({
+          tenant_id: req.tenantId,
+          ticket_id: req.params.ticketId,
+          host_session_fingerprint: req.body?.host_session_fingerprint,
+        });
+        audit.append("core_host_native_finalize_authorized", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          ticket_id: req.params.ticketId,
+          target_commit: finalizeAuthorization.target_commit,
+          outcome_source: finalizeAuthorization.outcome_source,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          finalize_authorization: finalizeAuthorization,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post("/v1/decision", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const input = buildCoreInput(req, req.coreKey);
     if (!input.signals.length) {
       input.signals.push(normalizeSignal({ id: "core:no_signal", label: "Nessun segnale operativo fornito", normalized_score: 10, tags: ["system"] }));
@@ -5415,7 +7094,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/action-evaluator", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/action-evaluator", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -5460,7 +7139,45 @@ export function createUniversalCoreService(options = {}) {
       "reversible_owner_confirmed_mcp_default_tenant_correction";
     const coreAdminBootstrapAttempt = req.body?.operation_class ===
       "reversible_owner_confirmed_core_admin_bootstrap_configuration";
-    const requestBoundOwnerConfirmation = trustedOwnerContext && req.body?.owner_confirmed === true;
+    let requestBoundOwnerConfirmation = false;
+    if (trustedOwnerContext && req.body?.owner_confirmed === true && !providerSetupLinkAttempt) {
+      const ownerAssertion = String(req.body?.owner_context?.assertion || "");
+      const approvalHash = `sha256:${crypto.createHash("sha256")
+        .update(`core-action-owner-approval-v1\u0000${ownerAssertion}`)
+        .digest("hex")}`;
+      const assertionExpiry = new Date(
+        Date.parse(String(req.body?.owner_context?.issued_at || "")) + 120_000,
+      ).toISOString();
+      try {
+        const consumed = await ownerExecutionApprovals.consume({
+          tenant_id: req.tenantId,
+          approval_hash: approvalHash,
+          expires_at: assertionExpiry,
+        });
+        if (consumed?.consumed !== true) {
+          audit.append("core_action_owner_confirmation_replayed", {
+            tenant_id: req.tenantId,
+            key_id: req.coreKey.key_id,
+            operation_class: String(req.body?.operation_class || "").slice(0, 120),
+          });
+          return publicError(res, 409, "owner_confirmation_replayed");
+        }
+        requestBoundOwnerConfirmation = true;
+      } catch (error) {
+        audit.append("core_action_owner_confirmation_rejected", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          reason: error?.message === "approval_expired" ? "approval_expired" : "approval_store_unavailable",
+        });
+        return publicError(
+          res,
+          error?.message === "approval_expired" ? 403 : 503,
+          error?.message === "approval_expired"
+            ? "owner_context_required"
+            : "owner_confirmation_store_unavailable",
+        );
+      }
+    }
     const governedReq = Object.create(req);
     governedReq.body = {
       ...(req.body || {}),
@@ -5472,6 +7189,8 @@ export function createUniversalCoreService(options = {}) {
       // never accept caller-provided identity or request-binding booleans.
       request_bound_owner_confirmation: requestBoundOwnerConfirmation,
       authenticated_key_type: req.coreKey?.key_type || null,
+      authenticated_tenant_id: req.tenantId,
+      tenant_id: req.tenantId,
     };
     const workPreflight = composeMandatoryWorkPreflight(governedReq, {
       domainPack: domainPackAccess.pack,
@@ -5601,11 +7320,11 @@ export function createUniversalCoreService(options = {}) {
     });
   }
 
-  app.post("/v1/semantic-selection", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     return handleSemanticSelection(req, res);
   });
 
-  app.post("/api/v1/semantic-selection", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/api/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     return handleSemanticSelection(req, res);
   });
 
@@ -5651,11 +7370,11 @@ export function createUniversalCoreService(options = {}) {
     });
   }
 
-  app.post("/v1/software-language-gate/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/software-language-gate/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     return handleSoftwareLanguageGate(req, res);
   });
 
-  app.post("/api/v1/software-language-gate/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/api/v1/software-language-gate/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     return handleSoftwareLanguageGate(req, res);
   });
 
@@ -5764,42 +7483,42 @@ export function createUniversalCoreService(options = {}) {
     });
   }
 
-  app.post("/v1/ai-gateway/evaluate", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/v1/ai-gateway/evaluate", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res);
   });
-  app.post("/api/v1/ai-gateway/evaluate", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/api/v1/ai-gateway/evaluate", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res);
   });
 
-  app.post("/v1/adapters/codex/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/v1/adapters/codex/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "codex");
   });
-  app.post("/api/v1/adapters/codex/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/api/v1/adapters/codex/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "codex");
   });
 
-  app.post("/v1/adapters/site-suite/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/v1/adapters/site-suite/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "site_suite");
   });
-  app.post("/api/v1/adapters/site-suite/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/api/v1/adapters/site-suite/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "site_suite");
   });
 
-  app.post("/v1/adapters/smart-desk/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/v1/adapters/smart-desk/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "smart_desk");
   });
-  app.post("/api/v1/adapters/smart-desk/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/api/v1/adapters/smart-desk/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "smart_desk");
   });
 
-  app.post("/v1/adapters/skinharmony-core/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/v1/adapters/skinharmony-core/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "skinharmony_core");
   });
-  app.post("/api/v1/adapters/skinharmony-core/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/api/v1/adapters/skinharmony-core/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "skinharmony_core");
   });
 
-  app.post("/v1/flowcore/decision", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/flowcore/decision", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const branchInput = buildFlowCoreBranchInput(req.body || {});
     const input = mapFlowCoreToUniversal(branchInput);
     input.context = {
@@ -5836,7 +7555,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/branches", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/branches", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey);
     res.json({
       ok: true,
@@ -5849,7 +7568,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/branches/taxonomy", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/branches/taxonomy", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     res.json({
       ok: true,
       taxonomy: deterministicBranchTaxonomy(),
@@ -5858,13 +7577,13 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/branches/maturity", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/branches/maturity", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const report = branchMaturityReport();
     audit.append("core_branch_maturity_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, ...report });
   });
 
-  app.get("/v1/branches/authorized", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/branches/authorized", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const requested = typeof req.query.branches === "string" && req.query.branches.trim()
       ? req.query.branches.split(",").map((item) => item.trim()).filter(Boolean)
       : [];
@@ -5879,13 +7598,13 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/agents/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/agents/registry", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const pack = resolveDomainPackForKey(req.coreKey);
     audit.append("multi_agent_registry_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, domain_pack_id: pack.id });
     res.json({ ok: true, ...multiAgentRegistry({ domainPackId: pack.id }) });
   });
 
-  app.post("/v1/agents/plan", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/agents/plan", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -5906,7 +7625,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, ...plan });
   });
 
-  app.get("/v1/orchestration/capabilities", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/orchestration/capabilities", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     try {
       const branchId = String(req.query.branch || "");
       const view = String(req.query.view || "capabilities");
@@ -5938,7 +7657,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/lexical-semantics/catalog", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/lexical-semantics/catalog", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     try {
       const resolution = resolveBranchesForKey(req.coreKey, ["lexical_semantic_intelligence"]);
       if (!resolution.selected_branches.includes("lexical_semantic_intelligence")) {
@@ -5969,7 +7688,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/lexical-semantics/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/lexical-semantics/analyze", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     try {
       const runtimeMode = lexicalSemanticRuntimeMode();
       if (runtimeMode === "off") {
@@ -6067,7 +7786,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/orchestration/relational/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/orchestration/relational/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     try {
       const supervision = relationalOrchestrationSupervisor.create({
         ...(req.body || {}),
@@ -6086,7 +7805,13 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/orchestration/dtt/plan", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/plan", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+    if (!dynamicTaskTreeRollout.enabled) {
+      return publicError(res, 503, "dynamic_task_tree_disabled");
+    }
+    if (!dynamicTaskTreeRollout.tenantAllowed(req.tenantId)) {
+      return publicError(res, 403, "dynamic_task_tree_tenant_denied");
+    }
     try {
       const tree = await dynamicTaskTreeRuntime.create({
         ...(req.body || {}),
@@ -6099,14 +7824,25 @@ export function createUniversalCoreService(options = {}) {
         node_count: tree.nodes.length,
         max_depth: tree.limits.max_depth,
         max_parallel: tree.limits.max_parallel,
+        rollout_mode: dynamicTaskTreeRollout.mode,
       });
-      return res.json({ ok: true, ...tree });
+      return res.json({
+        ok: true,
+        ...tree,
+        rollout: {
+          enabled: true,
+          mode: dynamicTaskTreeRollout.mode,
+          tenant_allowed: true,
+          execution_authorized: false,
+          core_join_required: true,
+        },
+      });
     } catch (error) {
       return publicError(res, 400, error.message || "dynamic_task_tree_invalid");
     }
   });
 
-  app.get("/v1/orchestration/dtt/:treeId", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+  app.get("/v1/orchestration/dtt/:treeId", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
     try {
       const tree = await dynamicTaskTreeRuntime.get({
         tenant_id: req.tenantId,
@@ -6125,7 +7861,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/expansion-proposals", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/expansion-proposals", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
     try {
       const proposal = await dynamicTaskTreeRuntime.proposeExpansion({
         tenant_id: req.tenantId,
@@ -6147,7 +7883,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/replan-proposals", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/replan-proposals", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
     try {
       const proposal = await dynamicTaskTreeRuntime.proposePruneReplan({
         tenant_id: req.tenantId,
@@ -6171,7 +7907,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/evidence-drafts", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/evidence-drafts", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     try {
       const draft = prepareVerificationEvidenceDraft({
         tenant_id: req.tenantId,
@@ -6193,7 +7929,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/outcomes", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/outcomes", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     try {
       let outcomeEvidence = req.body?.evidence;
       if (!outcomeEvidence && req.body?.evidence_draft) {
@@ -6230,7 +7966,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/cancel", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/cancel", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     try {
       const tree = await dynamicTaskTreeRuntime.cancel({
         tenant_id: req.tenantId,
@@ -6250,7 +7986,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/orchestration/dtt/:treeId/retry-fallback", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+  app.get("/v1/orchestration/dtt/:treeId/retry-fallback", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
     try {
       const tree = await dynamicTaskTreeRuntime.get({
         tenant_id: req.tenantId,
@@ -6286,7 +8022,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/core-join", createAuth(keyStore, audit, SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/core-join", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
     let issuedVerdict = null;
     let joined = null;
     try {
@@ -6469,7 +8205,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/codex/context", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -6551,7 +8287,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/codex/guard", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
+  app.post("/v1/codex/guard", coreAuth(SCOPES.AUTOMATION_CODEX), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -6618,7 +8354,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, ...response });
   });
 
-  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/nira/core-bridge", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -6630,12 +8366,67 @@ export function createUniversalCoreService(options = {}) {
     if (requestedNyraBranches !== undefined && !Array.isArray(requestedNyraBranches)) {
       return publicError(res, 400, "nyra_branches_must_be_array");
     }
-    if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.length > 20) {
+    if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.length > MAX_NYRA_BRANCH_REQUESTS) {
       return publicError(res, 400, "nyra_branch_request_limit_exceeded");
     }
     if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.some((id) => !/^[a-z][a-z0-9_]{1,63}$/.test(String(id || "")))) {
       return publicError(res, 400, "invalid_nyra_branch_id");
     }
+    const rawDeepBranchV2 = isPlainRecord(req.body?.deep_branch_v2)
+      ? req.body.deep_branch_v2
+      : null;
+    const deepBranchV2Requested = req.body?.deep_branch_v2_preview === true
+      || rawDeepBranchV2 !== null;
+    const coreRequestId = String(
+      req.body?.request_id || `nira_service_${crypto.randomUUID()}`,
+    ).slice(0, 160);
+    const deepBranchV2Operation = rawDeepBranchV2
+      ? nyraDeepV2Operation(rawDeepBranchV2.operation)
+      : null;
+    let deepBranchV2McpRequest = {
+      ok: false,
+      reason: "nyra_deep_branch_v2_mcp_attestation_required",
+    };
+    if (deepBranchV2Requested && deepBranchV2Operation) {
+      deepBranchV2McpRequest = nyraDeepV2McpRequestVerifier.verify({
+        attestation: rawDeepBranchV2?.request_attestation,
+        tenantId: req.tenantId,
+        requestId: coreRequestId,
+        operation: deepBranchV2Operation,
+      });
+      if (
+        deepBranchV2McpRequest.ok
+        && deepBranchV2Operation !== "preview"
+        && (
+          rawDeepBranchV2.branch_id !== deepBranchV2McpRequest.branch_id
+          || rawDeepBranchV2.subbranch_id
+            !== deepBranchV2McpRequest.subbranch_id
+        )
+      ) {
+        deepBranchV2McpRequest = {
+          ok: false,
+          reason: "nyra_deep_branch_v2_mcp_branch_binding_mismatch",
+        };
+      }
+      if (
+        deepBranchV2McpRequest.ok
+        && JSON.stringify(rawDeepBranchV2.evidence_refs || [])
+          !== JSON.stringify(deepBranchV2McpRequest.evidence_refs || [])
+      ) {
+        deepBranchV2McpRequest = {
+          ok: false,
+          reason: "nyra_deep_branch_v2_mcp_evidence_binding_mismatch",
+        };
+      }
+    } else if (deepBranchV2Requested) {
+      deepBranchV2McpRequest = {
+        ok: false,
+        reason: "nyra_deep_branch_v2_mcp_operation_invalid",
+      };
+    }
+    const signedDeepBranchId = deepBranchV2McpRequest.ok
+      ? deepBranchV2McpRequest.branch_id
+      : null;
     const ownerContext = req.body?.owner_context && typeof req.body.owner_context === "object"
       ? req.body.owner_context
       : {};
@@ -6649,7 +8440,7 @@ export function createUniversalCoreService(options = {}) {
     let coreRuntimeDecision;
     try {
       coreRuntimeDecision = await evaluateCoreRuntimeHierarchy({
-        request_id: req.body?.request_id || `nyra_runtime_${crypto.randomUUID()}`,
+        request_id: coreRequestId,
         generated_at: new Date().toISOString(),
         domain: domainPackAccess.pack.domain,
         context: {
@@ -6705,7 +8496,9 @@ export function createUniversalCoreService(options = {}) {
       requestedBranches: [
         ...MANDATORY_NYRA_WORK_BRANCHES,
         ...(Array.isArray(requestedNyraBranches) ? requestedNyraBranches : []),
+        ...(signedDeepBranchId ? [signedDeepBranchId] : []),
       ],
+      authorizedCoreBranches: branchContext.selected_branches,
       domainPackId: domainPackAccess.pack.id,
     });
     const workPreflight = composeMandatoryWorkPreflight(req, {
@@ -6715,7 +8508,7 @@ export function createUniversalCoreService(options = {}) {
       nyraNetwork,
     });
     const result = runNiraUniversalCoreBridge({
-      request_id: req.body?.request_id || `nira_service_${crypto.randomUUID()}`,
+      request_id: coreRequestId,
       text: niraText,
       tenant_id: req.tenantId,
       domain: domainPackAccess.pack.domain,
@@ -6748,6 +8541,434 @@ export function createUniversalCoreService(options = {}) {
       nyraNetwork,
       memoryContext: memoryContext.value,
     });
+    const deepBranchV2 = !deepBranchV2Requested ? null : await (async () => {
+      if (!deepBranchV2McpRequest.ok) {
+        return nyraDeepV2Fallback({
+          requestId: coreRequestId,
+          state: "request_rejected_v1_authoritative",
+          reason: deepBranchV2McpRequest.reason,
+        });
+      }
+      const common = {
+        tenantId: req.tenantId,
+        requestId: coreRequestId,
+        entitlementDomainPackId: domainPackAccess.pack.id,
+        selectedByCore: result.selected_by_core,
+        nyraNetwork,
+        workPreflight,
+      };
+      if (deepBranchV2Operation === "preview") {
+        try {
+          return await nyraDeepBranchV2Client.evaluate({
+            requested: true,
+            ...common,
+          });
+        } catch {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "unavailable_v1_authoritative",
+            reason: "nyra_deep_branch_v2_preview_unavailable",
+          });
+        }
+      }
+      if (
+        nyraDeepV2IntegrationReason
+        || !nyraDeepV2Ledger
+        || !nyraDeepV2Attester
+        || !nyraDeepV2SourceVerifier
+      ) {
+        return nyraDeepV2Fallback({
+          requestId: coreRequestId,
+          reason: nyraDeepV2IntegrationReason
+            || "nyra_deep_branch_v2_core_material_unavailable",
+        });
+      }
+      const branchId = deepBranchV2McpRequest.branch_id;
+      const subbranchId = deepBranchV2McpRequest.subbranch_id;
+      const discovery = nyraDeepV2Attester.requirementBindings({
+        branchId,
+        subbranchId,
+      });
+      if (!discovery?.ok) {
+        return nyraDeepV2Fallback({
+          requestId: coreRequestId,
+          state: "catalog_rejected_v1_authoritative",
+          reason: discovery?.reason
+            || "nyra_deep_branch_v2_requirement_discovery_failed",
+        });
+      }
+      if (deepBranchV2Operation === "requirements") {
+        return {
+          schema_version: "nyra_deep_branch_v2_core_operation_v1",
+          state: "requirements_ready_v1_authoritative",
+          request_id: coreRequestId,
+          branch_id: branchId,
+          subbranch_id: subbranchId,
+          requirements: compactNyraDeepV2Requirements(
+            discovery.requirement_bindings,
+          ),
+          evidence: {
+            state: "not_prepared_v1_authoritative",
+            evidence_refs: [],
+            validation: {
+              state: "not_requested",
+              accepted_source_count: 0,
+              accepted_claim_count: 0,
+              rejected_count: 0,
+            },
+          },
+          evaluation: {
+            state: "not_requested_v1_authoritative",
+            evaluated_node_count: 0,
+          },
+          execution_authorized: false,
+          core_final_authority: true,
+          fallback: "nyra_neural_branch_network_v1",
+        };
+      }
+      if (deepBranchV2Operation === "prepare_evidence") {
+        const boundedEvidence = boundedNyraDeepV2EvidencePack(
+          rawDeepBranchV2.evidence_pack,
+        );
+        if (!boundedEvidence.ok) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: boundedEvidence.reason,
+          });
+        }
+        const suppliedBindings = Array.isArray(
+          rawDeepBranchV2.requirement_bindings,
+        ) ? rawDeepBranchV2.requirement_bindings : [];
+        if (
+          rawDeepBranchV2.evidence_pack_hash
+            !== deepBranchV2McpRequest.evidence_pack_hash
+          || rawDeepBranchV2.evidence_pack_hash
+            !== nyraDeepV2EvidencePackHash(
+              boundedEvidence.evidence_pack,
+              suppliedBindings,
+            )
+        ) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: "nyra_deep_branch_v2_evidence_hash_mismatch",
+          });
+        }
+        const normalizedBindings = normalizeNyraDeepV2RequirementBindings(
+          suppliedBindings,
+          discovery.requirement_bindings,
+        );
+        if (!normalizedBindings.ok) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: normalizedBindings.reason,
+          });
+        }
+        const sourceIds = new Set(
+          boundedEvidence.evidence_pack.sources
+            .map((source) => String(source?.id || "")),
+        );
+        const claimsById = new Map(
+          boundedEvidence.evidence_pack.claims
+            .map((claim) => [String(claim?.id || ""), claim]),
+        );
+        const bindingsMatchEvidence = normalizedBindings.bindings
+          .every((binding) => (
+            binding.source_ids.every((id) => sourceIds.has(id))
+            && binding.claim_ids.every((id) => {
+              const claimSources = Array.isArray(
+                claimsById.get(id)?.source_ids,
+              ) ? claimsById.get(id).source_ids : [];
+              return claimsById.has(id)
+                && binding.source_ids
+                  .some((sourceId) => claimSources.includes(sourceId));
+            })
+          ));
+        if (!bindingsMatchEvidence) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: "nyra_deep_branch_v2_evidence_binding_invalid",
+          });
+        }
+        if (!nyraDeepV2AcceptanceContractsMatch(
+          boundedEvidence.evidence_pack,
+          normalizedBindings.bindings,
+        )) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: "nyra_deep_branch_v2_evidence_acceptance_contract_rejected",
+          });
+        }
+        let sourceVerification;
+        try {
+          sourceVerification = await nyraDeepV2SourceVerifier.verifySources(
+            boundedEvidence.evidence_pack.sources,
+            { branchId },
+          );
+        } catch {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: "nyra_deep_branch_v2_source_verifier_unavailable",
+          });
+        }
+        if (!sourceVerification?.ok) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: "nyra_deep_branch_v2_source_verification_failed",
+          });
+        }
+        let sourceReceipts;
+        try {
+          sourceReceipts = sourceVerification.receipts.map((receipt) => {
+            const auditReceipt = evidence.append(
+              req.tenantId,
+              "nyra_deep_v2_source_verified",
+              {
+                issuer: receipt.issuer,
+                source_id: receipt.source_id,
+                registry_source_id: receipt.registry_source_id,
+                source_type: receipt.source_type,
+                reliability_score: receipt.reliability_score,
+                source_url_sha256: receipt.source_url_sha256,
+                content_sha256: receipt.content_sha256,
+                excerpt_sha256: receipt.excerpt_sha256,
+                content_type: receipt.content_type,
+                fetched_at: receipt.fetched_at,
+                expires_at: receipt.expires_at,
+                request_id: coreRequestId,
+                branch_id: branchId,
+                subbranch_id: subbranchId,
+              },
+            );
+            return {
+              ...receipt,
+              receipt_id: auditReceipt.evidence_id,
+            };
+          });
+        } catch {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: "nyra_deep_branch_v2_source_receipt_unavailable",
+          });
+        }
+        const coreBoundEvidencePack = coreBindNyraDeepV2EvidencePack({
+          evidencePack: boundedEvidence.evidence_pack,
+          bindings: normalizedBindings.bindings,
+          sourceReceipts,
+          tenantId: req.tenantId,
+          requestId: coreRequestId,
+          branchId,
+          subbranchId,
+          workPreflight,
+        });
+        let researchValidation;
+        try {
+          const trustedReceiptsBySource = new Map(
+            sourceReceipts.map((receipt) => [receipt.source_id, receipt]),
+          );
+          researchValidation = validateResearchEvidence({
+            question: String(
+              coreBoundEvidencePack.research_question
+                || `Nyra Deep V2 evidence for ${branchId}.${subbranchId}`,
+            ).slice(0, 2_000),
+            sources: coreBoundEvidencePack.sources.map((source) => ({
+              ...source,
+              source_type: trustedReceiptsBySource.get(String(source?.id || ""))
+                ?.source_type || "other",
+            })),
+            claims: coreBoundEvidencePack.claims,
+          });
+        } catch {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: "nyra_deep_branch_v2_research_validation_rejected",
+          });
+        }
+        const validated = coreValidatedNyraDeepV2Claims(
+          coreBoundEvidencePack,
+          researchValidation,
+          sourceReceipts,
+        );
+        let ingested;
+        try {
+          ingested = nyraDeepV2Ledger.ingestResearchEvidence({
+            tenantId: req.tenantId,
+            requestId: coreRequestId,
+            branchId,
+            subbranchId,
+            evidenceSessionId: `evs_${crypto.randomBytes(18).toString("hex")}`,
+            evidencePack: {
+              ...coreBoundEvidencePack,
+              validated_claims: validated.validated_claims,
+            },
+            bindings: normalizedBindings.bindings,
+          });
+        } catch {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: "nyra_deep_branch_v2_evidence_ledger_unavailable",
+          });
+        }
+        const evidenceRefs = Array.isArray(ingested?.evidence_refs)
+          ? ingested.evidence_refs
+            .map((item) => String(item?.record_ref || ""))
+            .filter((ref) => NYRA_DEEP_V2_RECORD_REF_PATTERN.test(ref))
+            .slice(0, 100)
+          : [];
+        const fullyPrepared = ingested?.ok === true
+          && Array.isArray(ingested?.missing_bindings)
+          && ingested.missing_bindings.length === 0
+          && evidenceRefs.length >= normalizedBindings.bindings.length;
+        if (!fullyPrepared) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: "nyra_deep_branch_v2_core_evidence_not_qualified",
+          });
+        }
+        return {
+          schema_version: "nyra_deep_branch_v2_core_operation_v1",
+          state: "evidence_prepared_v1_authoritative",
+          request_id: coreRequestId,
+          branch_id: branchId,
+          subbranch_id: subbranchId,
+          evidence: {
+            state: ingested?.state || "evidence_rejected",
+            evidence_refs: [...new Set(evidenceRefs)],
+            validation: validated.compact_validation,
+          },
+          evaluation: {
+            state: "not_requested_v1_authoritative",
+            evaluated_node_count: 0,
+          },
+          execution_authorized: false,
+          core_final_authority: true,
+          fallback: "nyra_neural_branch_network_v1",
+        };
+      }
+      if (deepBranchV2Operation === "evaluate") {
+        const operationalContext = typeof nyraDeepBranchV2Client.beginOperational
+          === "function"
+          ? nyraDeepBranchV2Client.beginOperational({
+            ...common,
+            branchId,
+            subbranchId,
+          })
+          : {
+            ok: false,
+            response: nyraDeepV2Fallback({
+              requestId: coreRequestId,
+              reason: "nyra_deep_branch_v2_client_operational_unavailable",
+            }),
+          };
+        if (!operationalContext?.ok) {
+          return operationalContext?.response || nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            reason: "nyra_deep_branch_v2_operational_configuration_disabled",
+          });
+        }
+        const evidenceRefs = boundedNyraDeepV2EvidenceRefs(
+          deepBranchV2McpRequest.evidence_refs,
+        );
+        if (
+          !evidenceRefs
+          || evidenceRefs.length === 0
+          || typeof nyraDeepV2Ledger.resolveEvidenceSession !== "function"
+        ) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: "nyra_deep_branch_v2_evidence_handoff_required",
+          });
+        }
+        const evidenceSession = nyraDeepV2Ledger.resolveEvidenceSession({
+          tenantId: req.tenantId,
+          branchId,
+          subbranchId,
+          recordRefs: evidenceRefs,
+        });
+        if (!evidenceSession?.ok) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "evidence_rejected_v1_authoritative",
+            reason: evidenceSession?.reason
+              || "nyra_deep_branch_v2_evidence_handoff_invalid",
+          });
+        }
+        const policyBundle = issueNyraDeepV2PolicySnapshotBundle({
+          keyRecord: req.coreKey,
+          tenantId: req.tenantId,
+          requestId: coreRequestId,
+          branchId,
+          subbranchId,
+          workPreflight,
+          nyraNetwork,
+          bridgeResult: result,
+          operationalContext,
+        });
+        if (!policyBundle.ok) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "unavailable_v1_authoritative",
+            reason: policyBundle.reason
+              || "nyra_deep_branch_v2_policy_receipt_unavailable",
+          });
+        }
+        const prepared = nyraDeepV2Attester.prepareOperational({
+          tenantId: req.tenantId,
+          requestId: coreRequestId,
+          domainPackId: "skinharmony",
+          entitlementDomainPackId: domainPackAccess.pack.id,
+          branchId,
+          subbranchId,
+          preflightId: workPreflight.preflight_id,
+          corePolicyHash:
+            operationalContext.policy_hash
+            || operationalContext.policyHash,
+          envelopeBindingHash: operationalContext.envelope_binding_hash,
+          issuedAt: operationalContext.issued_at,
+          expiresAt: operationalContext.expires_at,
+          observedAt: Date.now(),
+          evidenceRefs,
+          evidenceSessionRef: evidenceSession.evidence_session_ref,
+          corePolicyContext: policyBundle.corePolicyContext,
+        });
+        if (!prepared?.ok) {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "unavailable_v1_authoritative",
+            reason: prepared?.reason
+              || "nyra_deep_branch_v2_attestation_unavailable",
+          });
+        }
+        try {
+          return await nyraDeepBranchV2Client.evaluateOperational({
+            context: operationalContext,
+            operationalAttestation: prepared.attestation,
+          });
+        } catch {
+          return nyraDeepV2Fallback({
+            requestId: coreRequestId,
+            state: "unavailable_v1_authoritative",
+            reason: "nyra_deep_branch_v2_operational_unavailable",
+          });
+        }
+      }
+      return nyraDeepV2Fallback({
+        requestId: coreRequestId,
+        state: "request_rejected_v1_authoritative",
+        reason: "nyra_deep_branch_v2_operation_unsupported",
+      });
+    })();
     const guardedResult = {
       ...result,
       selected_by_core: {
@@ -6775,6 +8996,7 @@ export function createUniversalCoreService(options = {}) {
       work_preflight: workPreflight,
       deep_nyra_runtime: deepNyraRuntime,
       core_runtime: coreRuntimeDecision,
+      ...(deepBranchV2Requested ? { deep_branch_v2: deepBranchV2 } : {}),
     };
     audit.append("core_nira_bridge_evaluated", {
       tenant_id: req.tenantId,
@@ -6794,6 +9016,23 @@ export function createUniversalCoreService(options = {}) {
       core_runtime_route: coreRuntimeDecision.router.route,
       core_runtime_authority: coreRuntimeDecision.selected_authority,
       core_runtime_parity_matched: coreRuntimeDecision.parity.matched,
+      deep_branch_v2_requested: deepBranchV2Requested,
+      deep_branch_v2_operation: deepBranchV2Operation,
+      deep_branch_v2_branch_id: deepBranchV2McpRequest.ok
+        ? deepBranchV2McpRequest.branch_id
+        : null,
+      deep_branch_v2_subbranch_id: deepBranchV2McpRequest.ok
+        ? deepBranchV2McpRequest.subbranch_id
+        : null,
+      deep_branch_v2_state: deepBranchV2?.state || null,
+      deep_branch_v2_rollout_mode: deepBranchV2?.rollout_mode || null,
+      deep_branch_v2_selected_branch_count: Array.isArray(
+        deepBranchV2?.selected_branches,
+      ) ? deepBranchV2.selected_branches.length : 0,
+      deep_branch_v2_evaluated_node_count: Number.isInteger(
+        Number(deepBranchV2?.evaluation?.evaluated_node_count),
+      ) ? Number(deepBranchV2.evaluation.evaluated_node_count) : 0,
+      deep_branch_v2_execution_allowed: false,
     });
     res.json({
       ok: true,
@@ -6819,7 +9058,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/content-guard/check", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/content-guard/check", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey, ["ramo_testo"]);
     if (!resolution.selected_branches.includes("ramo_testo")) {
       audit.append("core_branch_denied", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, branch: "ramo_testo" });
@@ -6868,7 +9107,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/software-intelligence/components", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/software-intelligence/components", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
     if (!resolution.selected_branches.includes("software_binary_intelligence")) {
       audit.append("core_branch_denied", {
@@ -6889,7 +9128,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/software-intelligence/jobs", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
     if (!resolution.selected_branches.includes("software_binary_intelligence")) return publicError(res, 403, "branch_not_allowed");
     try {
@@ -6919,7 +9158,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/software-intelligence/authorize", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+  app.post("/v1/software-intelligence/authorize", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => {
     if (!options.softwareAuthorizationSecret) return publicError(res, 503, "software_authorization_issuer_unavailable");
     if (!req.body?.memory_context || typeof req.body.memory_context !== "object") return publicError(res, 400, "software_memory_required");
     const memoryContext = normalizeTenantMemoryContext(req.body.memory_context, req.tenantId);
@@ -6936,17 +9175,17 @@ export function createUniversalCoreService(options = {}) {
     } catch (error) { return publicError(res, 400, error.message || "software_authorization_failed"); }
   });
 
-  app.get("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/software-intelligence/jobs", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     res.json({ ok: true, tenant_id: req.tenantId, jobs: softwareJobs.list(req.tenantId) });
   });
 
-  app.get("/v1/software-intelligence/jobs/:jobId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/software-intelligence/jobs/:jobId", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const job = softwareJobs.get(req.params.jobId, req.tenantId);
     if (!job) return publicError(res, 404, "software_job_not_found");
     return res.json({ ok: true, job });
   });
 
-  app.post("/v1/software-intelligence/correlate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/software-intelligence/correlate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     try {
       const correlation = softwareJobs.correlate(req.body?.job_ids, req.tenantId);
       audit.append("core_software_evidence_correlated", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, source_job_ids: correlation.source_job_ids, raw_content_persisted: false });
@@ -6954,7 +9193,7 @@ export function createUniversalCoreService(options = {}) {
     } catch (error) { return publicError(res, 400, error.message || "software_correlation_failed"); }
   });
 
-  app.post("/v1/software-intelligence/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/software-intelligence/analyze", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
     if (!resolution.selected_branches.includes("software_binary_intelligence")) {
       audit.append("core_branch_denied", {
@@ -7010,7 +9249,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/branches/:branch/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/branches/:branch/analyze", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const branch = String(req.params.branch || "").trim();
     const resolution = resolveBranchesForKey(req.coreKey, [branch]);
     if (!resolution.selected_branches.includes(branch)) {
@@ -7047,7 +9286,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/entity-graph", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/entity-graph", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const graph = entityGraph.readTenant(req.tenantId);
     audit.append("core_entity_graph_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, entities: graph.entities.length, relations: graph.relations.length });
     res.json({
@@ -7060,7 +9299,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/entity-graph/upsert", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+  app.post("/v1/entity-graph/upsert", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
     const graph = entityGraph.upsert(req.tenantId, req.body || {});
     const evidenceRecord = evidence.append(req.tenantId, "entity_graph_upserted", {
       key_id: req.coreKey.key_id,
@@ -7071,29 +9310,29 @@ export function createUniversalCoreService(options = {}) {
     res.status(201).json({ ok: true, tenant_id: req.tenantId, graph, evidence: evidenceRecord });
   });
 
-  app.post("/v1/snapshot", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+  app.post("/v1/snapshot", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
     const record = snapshots.append(req.tenantId, req.body?.source || "unknown", req.body?.payload || req.body || {});
     audit.append("core_snapshot_written", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, snapshot_id: record.snapshot_id });
     res.status(201).json({ ok: true, snapshot: record });
   });
 
-  app.get("/v1/snapshot", createAuth(keyStore, audit, SCOPES.READ_SNAPSHOT), (req, res) => {
+  app.get("/v1/snapshot", coreAuth(SCOPES.READ_SNAPSHOT), (req, res) => {
     res.json({ ok: true, snapshot: snapshots.latest(req.tenantId) });
   });
 
-  app.post("/v1/sync/suite", createAuth(keyStore, audit, SCOPES.WRITE_SYNC_SUITE), (req, res) => {
+  app.post("/v1/sync/suite", coreAuth(SCOPES.WRITE_SYNC_SUITE), (req, res) => {
     const record = snapshots.append(req.tenantId, "suite", req.body || {});
     audit.append("core_suite_sync_received", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, snapshot_id: record.snapshot_id });
     res.json({ ok: true, sync_status: "received", snapshot_id: record.snapshot_id });
   });
 
-  app.post("/v1/sync/wordpress", createAuth(keyStore, audit, SCOPES.WRITE_SYNC_WORDPRESS), (req, res) => {
+  app.post("/v1/sync/wordpress", coreAuth(SCOPES.WRITE_SYNC_WORDPRESS), (req, res) => {
     const record = snapshots.append(req.tenantId, "wordpress", req.body || {});
     audit.append("core_wordpress_sync_received", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, snapshot_id: record.snapshot_id });
     res.json({ ok: true, sync_status: "received", snapshot_id: record.snapshot_id });
   });
 
-  app.post("/v1/policy/check", createAuth(keyStore, audit, SCOPES.POLICY_CHECK), (req, res) => {
+  app.post("/v1/policy/check", coreAuth(SCOPES.POLICY_CHECK), (req, res) => {
     const policy = req.body?.policy || {};
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
@@ -7119,7 +9358,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, result });
   });
 
-  app.post("/v1/action-mediation/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/action-mediation/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {
@@ -7142,30 +9381,30 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, result, evidence: evidenceRecord });
   });
 
-  app.post("/v1/claim-guard/check", createAuth(keyStore, audit, SCOPES.CLAIM_CHECK), (req, res) => {
+  app.post("/v1/claim-guard/check", coreAuth(SCOPES.CLAIM_CHECK), (req, res) => {
     const result = claimGuardCheck(req.body || {});
     audit.append("core_claim_checked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, status: result.status, issue_count: result.issue_count });
     res.json({ ok: true, result });
   });
 
-  app.post("/v1/pricing-guard/check", createAuth(keyStore, audit, SCOPES.PRICING_CHECK), (req, res) => {
+  app.post("/v1/pricing-guard/check", coreAuth(SCOPES.PRICING_CHECK), (req, res) => {
     const result = pricingGuardCheck(req.body || {});
     audit.append("core_pricing_checked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, status: result.status, issue_count: result.issue_count });
     res.json({ ok: true, result });
   });
 
-  app.get("/v1/review/pending", createAuth(keyStore, audit, SCOPES.READ_REVIEW), (req, res) => {
+  app.get("/v1/review/pending", coreAuth(SCOPES.READ_REVIEW), (req, res) => {
     res.json({ ok: true, reviews: reviews.pending(req.tenantId) });
   });
 
-  app.post("/v1/review/action", createAuth(keyStore, audit, SCOPES.WRITE_REVIEW), (req, res) => {
+  app.post("/v1/review/action", coreAuth(SCOPES.WRITE_REVIEW), (req, res) => {
     const record = reviews.action(req.tenantId, req.body || {});
     if (!record) return publicError(res, 404, "review_not_found");
     audit.append("core_review_action", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, review_id: record.review_id, status: record.status });
     res.json({ ok: true, review: record });
   });
 
-  app.get("/v1/audit/recent", createAuth(keyStore, audit, SCOPES.ADMIN_TENANT), (req, res) => {
+  app.get("/v1/audit/recent", coreAuth(SCOPES.ADMIN_TENANT), (req, res) => {
     res.json({ ok: true, audit: audit.recent(Number(req.query.limit || 50)).filter((event) => !req.tenantId || event.tenant_id === req.tenantId) });
   });
 

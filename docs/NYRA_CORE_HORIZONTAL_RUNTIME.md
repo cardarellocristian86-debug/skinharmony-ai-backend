@@ -65,8 +65,8 @@ libero dei pesi, auto-modifica del runtime o apprendimento tra tenant.
 La ricerca realtime segue un contratto separato: Core pianifica, ChatGPT/Codex
 usa la ricerca web disponibile nell'host, il MCP valida e conserva evidenza
 tenant-scoped, Nyra la interroga. Solo una conferma governata promuove evidenza
-idonea nella memoria tenant. Il fallback OpenAI server-side resta disabilitato di
-default e non e necessario per il flusso primario.
+idonea nella memoria tenant. In questo deployment non esiste un fallback
+OpenAI/API-key server-side: il flusso host-native e l'unico percorso previsto.
 
 ## Continuita tra AI
 

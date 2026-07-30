@@ -1,8 +1,15 @@
 let overview = null;
 let nyraControl = null;
+
+const nativeAgentHandoffNotice = [
+  "Il Control Desk non esegue AI o azioni dal server.",
+  "Per proseguire usa ChatGPT/Codex connesso al Core MCP: il contesto, le deleghe e gli eventuali ticket restano governati dal Core.",
+  "Le conferme del tuo host restano necessarie quando l'azione lo richiede."
+].join("\n");
+
 let assistantState = {
-  answer: "Nessuna risposta.",
-  proposal: null
+  answer: nativeAgentHandoffNotice,
+  handoff: ""
 };
 
 const byId = (id) => document.getElementById(id);
@@ -537,55 +544,21 @@ function renderFinanceDock(data) {
   `).join("");
 }
 
-function renderAssistantState() {
-  byId("assistantAnswer").textContent = assistantState.answer || "Nessuna risposta.";
-  const box = byId("proposalBox");
-  if (!assistantState.proposal) {
-    box.innerHTML = "Nessuna proposta.";
-    return;
-  }
-  const proposal = assistantState.proposal;
-  const proposals = Array.isArray(proposal.proposals) ? proposal.proposals : [];
-  box.innerHTML = `
-    <div class="proposal-card">
-      <h4>${esc(proposal.summary || "Proposta AI")}</h4>
-      <p>${esc(proposal.diagnosis || "")}</p>
-    </div>
-    ${proposals.map((item, index) => `
-      <div class="proposal-card">
-        <div class="item-meta">
-          <span class="pill ${toneClass(item.priority)}">${esc(item.priority || "media")}</span>
-          <span class="pill">${esc(item.type || "proposal")}</span>
-        </div>
-        <h4>${esc(item.title || `Proposta ${index + 1}`)}</h4>
-        <p>${esc(item.note || "")}</p>
-        <div class="proposal-actions">
-          <button class="btn btn-secondary" type="button" data-commit-index="${index}">Commit</button>
-        </div>
-      </div>
-    `).join("")}
-  `;
+function buildNativeAgentHandoff(kind, request, mode = "") {
+  const label = kind === "action" ? "Richiesta operativa governata" : "Richiesta di analisi";
+  const modeLine = mode ? `\nProfondita richiesta: ${mode}` : "";
+  return [
+    "Passaggio nativo pronto.",
+    `Tipo: ${label}${modeLine}`,
+    `Richiesta: ${request}`,
+    "Apri ChatGPT/Codex con il Core MCP e incolla questa richiesta.",
+    "L'agente nativo deve recuperare il contesto autorizzato, proporre un piano verificabile e, per azioni materiali, ottenere delega/ticket Core e le approvazioni dell'host."
+  ].join("\n");
+}
 
-  box.querySelectorAll("[data-commit-index]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const index = Number(button.getAttribute("data-commit-index"));
-      const item = proposals[index];
-      if (!item) return;
-      button.disabled = true;
-      try {
-        const result = await fetchJson("/api/assistant/commit", {
-          method: "POST",
-          body: JSON.stringify({ proposal: item })
-        });
-        assistantState.answer = `Commit eseguito: ${result.message || "ok"}`;
-      } catch (error) {
-        assistantState.answer = `Commit fallito: ${error.message}`;
-      } finally {
-        button.disabled = false;
-        renderAssistantState();
-      }
-    });
-  });
+function renderAssistantState() {
+  byId("assistantAnswer").textContent = assistantState.answer || nativeAgentHandoffNotice;
+  byId("handoffBox").textContent = assistantState.handoff || "Scrivi una richiesta per preparare un passaggio verso ChatGPT/Codex e Core MCP.";
 }
 
 function renderAll(data) {
@@ -642,46 +615,22 @@ function attachEvents() {
     }
   });
 
-  byId("askForm").addEventListener("submit", async (event) => {
+  byId("askForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const question = byId("askInput").value.trim();
     if (!question) return;
-    assistantState.answer = "Sto leggendo il contesto operativo...";
-    renderAssistantState();
-    try {
-      const result = await fetchJson("/api/assistant/ai", {
-        method: "POST",
-        body: JSON.stringify({ question })
-      });
-      assistantState.answer = result.answer || "Nessuna risposta.";
-    } catch (error) {
-      assistantState.answer = `Richiesta fallita: ${error.message}`;
-    }
+    assistantState.handoff = buildNativeAgentHandoff("analysis", question);
+    assistantState.answer = `${nativeAgentHandoffNotice}\n\nLa richiesta e stata preparata per il passaggio nativo.`;
     renderAssistantState();
   });
 
-  byId("actionForm").addEventListener("submit", async (event) => {
+  byId("actionForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const prompt = byId("actionInput").value.trim();
     const mode = byId("actionMode").value;
     if (!prompt) return;
-    assistantState.proposal = {
-      summary: "Sto costruendo una proposta...",
-      diagnosis: "",
-      proposals: []
-    };
-    renderAssistantState();
-    try {
-      const result = await fetchJson("/api/assistant/action", {
-        method: "POST",
-        body: JSON.stringify({ prompt, mode, scope: "control_desk", cardType: "command_center" })
-      });
-      assistantState.proposal = result.result || null;
-      assistantState.answer = `Proposta generata in modalita ${result.mode}.`;
-    } catch (error) {
-      assistantState.answer = `Proposta fallita: ${error.message}`;
-      assistantState.proposal = null;
-    }
+    assistantState.handoff = buildNativeAgentHandoff("action", prompt, mode);
+    assistantState.answer = `${nativeAgentHandoffNotice}\n\nLa richiesta operativa e stata preparata: non e stata eseguita ne inviata a un provider.`;
     renderAssistantState();
   });
 }

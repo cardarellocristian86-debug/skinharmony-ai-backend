@@ -10,9 +10,19 @@ test("advertises explicit confirmation fields only on write tools", () => {
   const advisoryWrites = writeTools.filter((tool) => tool._meta?.["skinharmony/ownerConfirmationRequired"] === false);
   assert(confirmedWrites.every((tool) => tool.inputSchema.properties.owner_confirmed?.type === "boolean"));
   assert(confirmedWrites.every((tool) => tool.inputSchema.properties.confirmation_reference?.type === "string"));
-  assert(advisoryWrites.every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
-  assert(advisoryWrites.every((tool) => tool.inputSchema.properties.confirmation_reference === undefined));
-  assert.deepEqual(advisoryWrites.map((tool) => tool.name), ["orchestration_dtt_core_join"]);
+  assert(advisoryWrites
+    .filter((tool) => tool.name !== "core_capability_invoke")
+    .every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
+  assert(advisoryWrites
+    .filter((tool) => tool.name !== "core_capability_invoke")
+    .every((tool) => tool.inputSchema.properties.confirmation_reference === undefined));
+  const dynamicInvoke = advisoryWrites.find((tool) => tool.name === "core_capability_invoke");
+  assert.equal(dynamicInvoke.inputSchema.properties.owner_confirmed.type, "boolean");
+  assert.equal(dynamicInvoke.inputSchema.properties.confirmation_reference.type, "string");
+  assert.deepEqual(
+    advisoryWrites.map((tool) => tool.name),
+    ["core_capability_invoke", "orchestration_dtt_core_join"],
+  );
   assert(readTools.every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
 });
 

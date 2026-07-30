@@ -20,15 +20,42 @@ function actor(identity) {
   return String(identity?.subject || identity?.kind || "unknown").slice(0, 200);
 }
 
-function signingKey(config, identity) {
-  const configured = String(
-    config.agentSignatureSecret ||
-    config.universalCoreKeys?.[identity.tenantId] ||
-    config.universalCoreKey ||
-    "",
-  ).trim();
-  if (configured) return configured;
-  if (process.env.NODE_ENV === "production") fail("agent_signature_key_unavailable");
+function sameConfiguredSecret(left, right) {
+  const leftBuffer = Buffer.from(String(left || "").trim(), "utf8");
+  const rightBuffer = Buffer.from(String(right || "").trim(), "utf8");
+  return (
+    leftBuffer.length > 0 &&
+    leftBuffer.length === rightBuffer.length &&
+    crypto.timingSafeEqual(leftBuffer, rightBuffer)
+  );
+}
+
+function signingKey(config) {
+  const configured = String(config.agentSignatureSecret || "").trim();
+  const reused = Boolean(
+    configured &&
+    (
+      config.agentSignatureSecretReused === true ||
+      [
+        config.universalCoreKey,
+        ...Object.values(config.universalCoreKeys || {}),
+        config.tenantGatewayKey,
+        config.ownerContextSigningSecret,
+        config.tenantContextSigningSecret,
+        config.dttAgentIdentitySigningSecret,
+        config.nyraDeepV2McpRequestSigningSecret,
+        ...(Array.isArray(config.codexKeys) ? config.codexKeys : []),
+      ].some((secret) => sameConfiguredSecret(configured, secret))
+    )
+  );
+  if (reused) fail("agent_signature_key_reused");
+  if (Buffer.byteLength(configured, "utf8") >= 32) return configured;
+  const environment = String(
+    config.environment ||
+    (config.production === true ? "production" : process.env.NODE_ENV) ||
+    "development",
+  ).trim().toLowerCase();
+  if (environment === "production") fail("agent_signature_key_unavailable");
   return "skinharmony-development-agent-presence-key";
 }
 
@@ -42,7 +69,7 @@ export function createAgentPresence(config, identity, input = {}) {
   if (!CLIENT_TYPES.has(clientType)) fail("client_type_invalid");
   const sessionId = safeId(input.session_id, "session");
   const tenantId = safeId(identity?.tenantId, "tenant");
-  const key = signingKey(config, identity);
+  const key = signingKey(config);
   const sessionFingerprint = digest(key, "session", JSON.stringify([SIGNATURE_VERSION, tenantId, actor(identity), sessionId]), 24);
   const canonical = JSON.stringify({
     version: SIGNATURE_VERSION,

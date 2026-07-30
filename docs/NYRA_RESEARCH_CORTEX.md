@@ -40,7 +40,6 @@ MCP receives only the resulting bounded evidence pack.
 | `nyra_research_status` | `core:read` | Reports counts, providers and learning policy without credentials. |
 | `nyra_research_feedback` | `core:govern` | Confirms, challenges or deprecates evidence after a Core gate. |
 | `search` / `fetch` | `core:read` | Exposes only validated research through the ChatGPT company-knowledge contract. |
-| `nyra_research_execute` | `core:govern` | Optional billable OpenAI fallback. Hidden unless configured and enabled. |
 
 Ingest requires a Core `plan_id` issued to the authenticated tenant during the
 previous 24 hours, the exact source policy returned with that plan, and an
@@ -70,28 +69,15 @@ cross-tenant or global promotion.
 - source instructions are treated as untrusted data; prompt injection is detected in English and Italian;
 - source HTML is stripped and full pages are never stored;
 - Core audit records IDs, counts and decisions, not source bodies or credentials;
-- writes and optional external calls fail closed unless Core explicitly allows them.
+- writes fail closed unless Core explicitly allows them; external web research
+  is performed by the authenticated ChatGPT/Codex host, never by a server-side
+  model provider.
 
-## Optional OpenAI fallback
+## Server-side provider fallback retired
 
-Production defaults:
-
-```text
-RESEARCH_CORTEX_ROOT=/var/data/skinharmony-core-mcp
-RESEARCH_RETENTION_DAYS=365
-NYRA_OPENAI_RESEARCH_ENABLED=false
-NYRA_OPENAI_RESEARCH_MODEL=gpt-5.6
-NYRA_OPENAI_RESEARCH_TIMEOUT_MS=90000
-NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR=10
-OPENAI_API_KEY=<Render secret, never sent to clients>
-```
-
-The existing key may be configured while the feature remains disabled. Enabling
-it requires a deployment configuration change. Every call then needs
-`core:govern`, mandatory preflight, an explicit Core gate classified as a
-billable external read, and the per-tenant hourly limit. The Responses API result
-is requested with `store:false`, is limited to three web tool calls, and is
-returned as an evidence template without automatic local persistence.
+There is no `nyra_research_execute` route, server-side provider configuration
+or Render `OPENAI_API_KEY` for this flow. The native-only boundary is code,
+not an environment toggle: host browsing is the only external-research path.
 
 ## Cost model
 
@@ -99,14 +85,14 @@ returned as an evidence template without automatic local persistence.
   product plan and usage limits still apply to the ChatGPT or Codex user.
 - The feature reuses the existing Core, MCP and Nyra Render services; no new
   service is required. Evidence uses the existing persistent storage allocation.
-- OpenAI API cost exists only when the optional fallback is enabled and invoked.
+- There is no backend provider/API-key cost in this deployment.
   Usage tokens are returned in the tool response for budget reporting.
 
 ## Operations and limits
 
 Nyra readiness probes the public MCP health endpoint through
 `NYRA_RESEARCH_MCP_URL` and reports only booleans and version data. It never reads
-the MCP provider key. The file-backed research store supports concurrent requests
+an MCP provider key because none is configured for this path. The file-backed research store supports concurrent requests
 inside one MCP instance. Horizontal multi-instance scaling requires a shared
 transactional database while preserving the same tenant and lifecycle contract.
 

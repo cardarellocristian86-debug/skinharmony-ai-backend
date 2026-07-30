@@ -240,29 +240,29 @@
           <div class="section-head">
             <div>
               <small class="label">Nyra</small>
-              <h2>Command copilot</h2>
+              <h2>Native coordination handoff</h2>
             </div>
           </div>
           <div class="split-grid nyra-grid">
             <div class="assistant-panel">
               <form id="askForm" class="assistant-form">
                 <label>
-                  <span>Ask</span>
-                  <textarea id="askInput" rows="4" placeholder="Una richiesta sola, chiara, verificabile."></textarea>
+                  <span>Richiesta per ChatGPT/Codex</span>
+                  <textarea id="askInput" rows="4" placeholder="Una richiesta sola, chiara e verificabile da passare all'agente nativo."></textarea>
                 </label>
                 <div class="form-actions">
-                  <button class="btn btn-secondary" type="submit">Ask AI</button>
+                  <button class="btn btn-secondary" type="submit">Prepara handoff nativo</button>
                 </div>
               </form>
 
               <form id="actionForm" class="assistant-form">
                 <label>
-                  <span>Propose action</span>
-                  <textarea id="actionInput" rows="4" placeholder="Crea una proposta operativa, task o strategia."></textarea>
+                  <span>Richiesta operativa governata</span>
+                  <textarea id="actionInput" rows="4" placeholder="Descrivi l'azione da valutare da ChatGPT/Codex con Core MCP."></textarea>
                 </label>
                 <div class="form-row">
                   <label>
-                    <span>Mode</span>
+                    <span>Profondita</span>
                     <select id="actionMode">
                       <option value="brief">Brief</option>
                       <option value="complete">Complete</option>
@@ -270,22 +270,22 @@
                   </label>
                 </div>
                 <div class="form-actions">
-                  <button class="btn btn-primary" type="submit">Generate proposal</button>
+                  <button class="btn btn-primary" type="submit">Prepara handoff Core MCP</button>
                 </div>
               </form>
             </div>
             <div class="assistant-output">
               <div>
                 <div class="subsection-head">
-                  <h3>Response</h3>
+                  <h3>Stato</h3>
                 </div>
-                <pre id="assistantAnswer" class="assistant-box">Nessuna risposta.</pre>
+                <pre id="assistantAnswer" class="assistant-box">Il Control Desk non esegue AI dal server.</pre>
               </div>
               <div>
                 <div class="subsection-head">
-                  <h3>Proposal</h3>
+                  <h3>Handoff</h3>
                 </div>
-                <div id="proposalBox" class="proposal-box">Nessuna proposta.</div>
+                <pre id="handoffBox" class="proposal-box">Scrivi una richiesta per preparare il passaggio nativo.</pre>
               </div>
             </div>
           </div>

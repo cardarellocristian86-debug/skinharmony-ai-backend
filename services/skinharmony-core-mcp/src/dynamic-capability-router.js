@@ -11,22 +11,11 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "core_semantic_select",
   "core_capability_read",
   "core_capability_invoke",
-  "tenant_provider_openai_status",
-  "tenant_provider_openai_setup_panel",
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_multi_agent_smoke_run",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
 ]);
 
 const DIRECT_ONLY = new Set(COMPACT_MCP_TOOL_NAMES);
 const FORBIDDEN_DYNAMIC_TOOLS = new Set([
   "core_gate_action",
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_setup_panel",
-  "tenant_provider_openai_multi_agent_smoke_run",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
 ]);
 const FORBIDDEN_ARGUMENT_KEYS = new Set([
   "__proto__",
@@ -59,9 +48,10 @@ function sha256(value) {
 
 function capabilityGroup(name) {
   const prefixes = [
+    ["work_continuity_", "continuity"],
+    ["host_native_", "continuity"],
     ["orchestration_dtt_", "orchestration"],
     ["generic_agent_", "agents"],
-    ["tenant_provider_", "provider"],
     ["nyra_research_", "research"],
     ["nyra_", "nyra"],
     ["core_", "core"],
@@ -120,6 +110,7 @@ function summary(tool) {
     open_world: tool.annotations?.openWorldHint === true,
     required_scopes: [...(tool.scopes || [])],
     owner_confirmation_required: tool._meta?.["skinharmony/ownerConfirmationRequired"] === true,
+    dedicated_core_gate: tool._meta?.["skinharmony/dedicatedCoreGate"] === true,
     schema_hash: sha256(tool.inputSchema || {}),
   };
 }
@@ -158,7 +149,16 @@ function assertRevision(expected, actual) {
 
 function targetArguments(tool, wrapperArgs) {
   const args = { ...(wrapperArgs.arguments || {}) };
-  if (tool.annotations?.readOnlyHint !== true) {
+  if (
+    tool.inputSchema?.properties?.idempotency_key &&
+    args.idempotency_key === undefined &&
+    wrapperArgs.idempotency_key
+  ) {
+    args.idempotency_key = wrapperArgs.idempotency_key;
+  }
+  const ownerConfirmationRequired =
+    tool._meta?.["skinharmony/ownerConfirmationRequired"] === true;
+  if (tool.annotations?.readOnlyHint !== true && ownerConfirmationRequired) {
     args.owner_confirmed = wrapperArgs.owner_confirmed === true;
     if (wrapperArgs.confirmation_reference) args.confirmation_reference = wrapperArgs.confirmation_reference;
   }
@@ -300,21 +300,36 @@ export function createDynamicCapabilityHandlers({
       const tool = exactCapability(tools, handlers, args.capability_id);
       if (tool.annotations?.readOnlyHint === true) throw new Error("dynamic_capability_mutation_required");
       requireScopes(identity, tool.scopes || []);
-      if (args.owner_confirmed !== true || identity.ownerConfirmed !== true) {
+      const ownerConfirmationRequired =
+        tool._meta?.["skinharmony/ownerConfirmationRequired"] === true;
+      const dedicatedCoreGate =
+        tool._meta?.["skinharmony/dedicatedCoreGate"] === true;
+      if (
+        ownerConfirmationRequired &&
+        (args.owner_confirmed !== true || identity.ownerConfirmed !== true)
+      ) {
         throw new Error("owner_confirmation_required");
       }
       if (!String(args.idempotency_key || "").trim()) throw new Error("idempotency_key_required");
       const callArgs = targetArguments(tool, args);
-      if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
-      const gate = await gateAction({
-        tool,
-        args: callArgs,
-        identity,
-        catalogRevision: state.revision,
-        idempotencyKey: args.idempotency_key,
-      });
-      if (!authorizationAllowed(gate)) throw new Error("dynamic_capability_not_authorized");
+      if (!dedicatedCoreGate) {
+        if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
+        const gate = await gateAction({
+          tool,
+          args: callArgs,
+          identity,
+          catalogRevision: state.revision,
+          idempotencyKey: args.idempotency_key,
+        });
+        if (!authorizationAllowed(gate)) throw new Error("dynamic_capability_not_authorized");
+      }
       const result = await handlers[tool.name](callArgs, identity);
+      if (
+        dedicatedCoreGate &&
+        result?.structuredContent?.dedicated_core_gate?.authorized !== true
+      ) {
+        throw new Error("dynamic_capability_dedicated_core_gate_unverified");
+      }
       return {
         ...result,
         structuredContent: {
@@ -324,6 +339,12 @@ export function createDynamicCapabilityHandlers({
             catalog_revision: state.revision,
             access_mode: "invoke",
             gate_allowed: true,
+            gate_source: dedicatedCoreGate
+              ? "universal_core_dedicated_route"
+              : "universal_core_action_evaluator",
+            owner_confirmation_required: ownerConfirmationRequired,
+            owner_confirmation_satisfied:
+              ownerConfirmationRequired === false || identity.ownerConfirmed === true,
             idempotency_key: args.idempotency_key,
           },
         },

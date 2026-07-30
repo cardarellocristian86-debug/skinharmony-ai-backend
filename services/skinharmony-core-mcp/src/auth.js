@@ -47,11 +47,29 @@ function applyOwnerRoot(identity, config) {
     role: "owner_root",
     godMode: true,
     scopes: [...new Set([...identity.scopes, ...config.supportedScopes, "owner:root"])],
-    ...(identity.kind === "oauth" ? { providerSetupOwner: true } : {}),
   };
 }
 
-function applyTenantProviderOwner(identity, config) {
+// Good Mode is a tenant-bound host policy, not a caller-supplied boolean. This
+// helper deliberately rechecks the deployment configuration wherever an MCP
+// handler needs to mint the initial host-native delegation. It applies only to
+// the configured Codex bearer identity; OAuth owners still use their fresh,
+// request-bound elevation flow.
+export function isCodexGoodModeDelegation(identity, config = {}) {
+  const tenantIds = config.godModeTenantIds || [config.godModeTenantId].filter(Boolean);
+  return (
+    identity?.kind === "codex" &&
+    identity?.godMode === true &&
+    identity?.role === "owner_root" &&
+    String(identity?.subject || "") === "codex" &&
+    config.godModeEnabled === true &&
+    config.godModeEmergencyStop !== true &&
+    config.godModeCodexEnabled === true &&
+    tenantIds.includes(identity.tenantId)
+  );
+}
+
+function applyTenantMemberRole(identity, config) {
   // OAuth identities are members by default. Owner capabilities are granted
   // only by the fresh, request-bound elevation below.
   if (identity.kind !== "oauth" || identity.oauthOwnerElevated === true) return identity;
@@ -81,7 +99,7 @@ function elevateOAuthOwner(identity, proof, config, consumed) {
   const role = identity.godMode === true && identity.role === "owner_root"
     ? "owner_root"
     : "tenant_owner";
-  return { ...identity, role, providerSetupOwner: true, oauthOwnerElevated: true, ownerConfirmationReference: reference };
+  return { ...identity, role, oauthOwnerElevated: true, ownerConfirmationReference: reference };
 }
 
 export class JwksCache {
@@ -170,7 +188,7 @@ export function createAuthenticator(config, options = {}) {
       return applyOwnerRoot({ kind: "codex", subject: "codex", tenantId: config.defaultTenantId, scopes: config.codexScopes }, config);
     }
     if (!config.auth0Issuer) throw new Error("bearer_invalid");
-    return applyTenantProviderOwner(applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config), config);
+    return applyTenantMemberRole(applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config), config);
   };
   authenticate.elevateOAuthOwner = (identity, proof) => elevateOAuthOwner(identity, proof, config, consumedOwnerConfirmations);
   return authenticate;

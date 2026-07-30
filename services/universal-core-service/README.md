@@ -135,19 +135,28 @@ Forma stabile:
 
 Regola architetturale:
 
-`OpenAI genera. Universal Core decide. Nyra spiega. I client eseguono solo entro i limiti del Core.`
+`ChatGPT/Codex host genera specialisti nativi. Universal Core decide. Nyra
+supervisiona. I client eseguono solo entro i limiti del Core e del proprio host.`
 
-## Provider OpenAI: link monouso e binding Core
+## Protocollo host-native
 
-Una chiave OpenAI esistente entra esclusivamente nella pagina protetta raggiunta dal flusso proprietario. Il link fisso del MCP apre un login OAuth; soltanto dopo aver verificato il tenant e il soggetto owner autorizzato, il Core emette un link monouso a vita breve. Il token nel percorso e la prova nel frammento URL sono entrambi necessari, il frammento non viene inviato al server e il consumo del link con il salvataggio cifrato avvengono nella stessa transazione PostgreSQL. Un errore o una revoca non lasciano una chiave modificata né un link consumato a metà. Il Core non accetta chiavi provider tramite normali bearer key: le route legacy `PUT` e `DELETE /v1/generic-agents/providers/openai` rispondono `410 provider_setup_link_required`.
+Universal Core non crea agenti tramite chiavi OpenAI, provider vault, Responses
+API o fallback nascosti. Le route storiche sotto
+`/v1/generic-agents/providers/openai` sono ritirate e rispondono
+`410 native_agent_provider_retired`.
 
-Il primo percorso live e volutamente piccolo e separato dalle code generiche: un owner OAuth puo confermare una sola esecuzione firmata e legata alla richiesta, che produce al massimo tre chiamate **Researcher → Reviewer → Nyra Synthesizer**. Il task e limitato a 300 caratteri, ogni risposta a 200 token, non sono disponibili browser, tool, scritture, retry o apprendimento. `POST /v1/generic-agents/providers/openai/multi-agent-runs` restituisce subito un `run_id`; il kill signal annulla la chiamata in corso e blocca gli stage successivi. Gli output restano solo in memoria fino alla lettura dell'owner OAuth; checkpoint e audit conservano soltanto metadati e digest redatti. Una conferma firmata e monouso e viene registrata nel database del vault come hash, quindi non puo essere riutilizzata dopo un riavvio. `execution_enabled` del vault resta `false`: non esiste un interruttore globale; la sola disponibilita e il workflow fisso richiedono ogni volta tenant configurato e conferma owner.
+Il percorso operativo è il Governed Continuity Fabric: il messaggio iniziale
+diventa un Intent Anchor immutabile, Nyra prepara un piano limitato, il host
+ChatGPT/Codex materializza builder e verificatore nativi, e Core rilascia solo
+deleghe e ticket esatti dopo evidenza indipendente. Commit, push, merge e deploy
+restano sottoposti alle approvazioni del host, ai ticket Core, alla lettura
+GitHub/Render e alla verifica di rollback. Un errore crea un checkpoint e un
+indice di recupero: non attiva un agente provider né un retry illimitato.
 
-Questa prima implementazione e volutamente a **una sola istanza Core**: lo stato attivo e la cancellazione vivono nel processo per evitare che una richiesta venga instradata a un worker diverso. Il Blueprint Render dichiara quindi `numInstances: 1`; prima di scalare va introdotto un lease condiviso per i run attivi.
-
-La regola `reversible_owner_confirmed_provider_setup_link_blueprint_binding` consente solo il binding Render interno da `skinharmony-core-mcp` a `skinharmony-universal-core`, sul Blueprint `exs-d99edqgki2s73e29nug`, ramo `main`, tenant `codexai`, e solo per `CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY` e `CORE_PROVIDER_SETUP_LINK_TENANT_ID`. Vieta esecuzione provider, modifiche Auth0, deploy, merge, rotazioni, cancellazioni, target alternativi e campi non previsti.
-
-Quando MCP e Core sono entrambi gestiti dai rispettivi Blueprint Render, `CORE_OWNER_CONTEXT_SIGNING_SECRET` viene generato una sola volta sul MCP e passato al Core con un riferimento `fromService`: non viene visualizzato, copiato o salvato nel repository. Il segreto firma una conferma OAuth owner con scadenza breve e legata crittograficamente all’envelope esatto; non è una chiave OpenAI né una chiave bearer Core. Finché un Core esistente non viene associato a `render-universal-core.yaml`, il controllo resta fail-closed e non memorizza alcuna chiave provider. Questo gate autorizza e registra il binding: non e un esecutore Render. Un Blueprint Render può sincronizzare il proprio `fromService` senza consumare un verdict Core, quindi non va presentato come un blocco fisico del deploy finché non verrà aggiunto un executor CI/Render che verifichi un'approvazione firmata. L'enforcement dell'infrastruttura rimane nei controlli Render/GitHub e `provider_execution` resta `false` finché non viene autorizzato separatamente.
+`CORE_OWNER_CONTEXT_SIGNING_SECRET` è un binding di conferma owner a breve
+durata per deleghe host-native; viene generato dal MCP e passato a Core con
+`fromService`. Non è una chiave OpenAI, non abilita provider execution e non
+può bypassare Render, GitHub o le approvazioni del host.
 
 ## Work preflight obbligatorio
 

@@ -6,7 +6,7 @@ The repository path and package name retain the historical SkinHarmony name for 
 
 ## Stable dynamic connector surface
 
-Version `0.15.0` keeps the ChatGPT connector registration stable while Nyra and
+Version `0.16.0` keeps the ChatGPT connector registration stable while Nyra and
 Core evolve. Production advertises thirteen bounded entrypoints instead of the
 entire internal tool registry. New handler-backed capabilities appear
 automatically in `core_capability_catalog`; clients select them through
@@ -18,30 +18,160 @@ OAuth app or the MCP `tools/list` surface.
 Dynamic routing never accepts a URL, HTTP method, tenant id, credential or
 arbitrary handler name. Every capability must exist in the server registry,
 match its current catalog revision and pass its original schema and scopes.
-Reads and mutations are separate. Mutations additionally require a fresh,
+Reads and mutations are separate. Owner-directed mutations require a fresh,
 request-bound owner confirmation, an idempotency key, a Universal Core verdict
-and the target handler's own controls. Provider setup and the fixed OpenAI
-multi-agent run remain direct native tools because they have dedicated OAuth,
-vault, billing and cancellation contracts.
+and the target handler's own controls. Narrow internal coordination can proceed
+without repeated owner confirmation only when it matches the server-defined
+tenant, target, idempotency and no-side-effect contract or a previously
+owner-confirmed bounded delegation. The host-native continuity protocol is
+catalog-backed and does not add another direct connector entrypoint, so the
+public surface remains fixed at thirteen tools. There are no provider
+onboarding or execution tools. Retired portal paths return `410 Gone` and do
+not read credentials; they are never a dependency of host-native work.
+
+## Governed Continuity Fabric
+
+The Governed Continuity Fabric turns the first complete work request into a
+tenant-bound Intent Anchor and carries the same `work_id` through planning,
+host-native specialist work, verification, governed side effects, live checks
+and evidence-backed closure. It is designed for ChatGPT and Codex hosts that
+already provide native subagents: the host creates those subagents directly and
+no OpenAI API key is required or read by this protocol.
+
+Nyra interprets the request, supervises bounded specialist work and asks for
+corrections. Universal Core remains the policy and authorization authority.
+Specialists cannot authorize themselves, and a reviewer that shares the same
+OAuth principal is an independent quality check, not an independent security
+principal. Commit, push, merge and deploy still require an exact, request-bound
+Core authorization plus every approval required by the ChatGPT/Codex host.
+OAuth owners explicitly confirm issuance or renewal of the narrow delegation.
+The exact configured Codex Good Mode profile may initiate that same signed
+delegation without a repeated form confirmation; it cannot bypass a Core ticket
+or any approval enforced by the ChatGPT/Codex host. An action that matches the
+delegation exactly can then use a one-time Core ticket without asking the owner
+to interpret and reconfirm every underlying command. Drift, expiry, revocation,
+hard blocks and host policy still stop execution.
+
+Builder and verifier receipts must come from distinct bound MCP/native transport
+sessions. Their fingerprints and presence signatures prevent session reuse and
+impersonation, but separate sessions under one OAuth principal are not
+independent cryptographic identities. The closure attestation signed by MCP is a
+service-to-service integrity proof over the persisted evaluation and evidence;
+it does not turn those sessions into a security quorum.
+
+The fabric has six durable records:
+
+- an immutable, redacted Intent Anchor with completion criteria;
+- a Work Atlas that indexes the relevant repository cone, components, symbols,
+  tests, CI and deploy services;
+- append-only changes, checkpoints and handoffs under one canonical `work_id`;
+- an Incident Runbook indexed by failure fingerprint and verified resolution;
+- an append-only signed Core Join that binds the local plan/evaluation to the
+  exact release intent before `release_ready`;
+- a final closure receipt that records tests, independent review, exact commit and
+  deployment evidence, rollback readiness and live verification.
+
+Interrupted work resumes from the last verified checkpoint. It does not rescan
+the complete repository when the Work Atlas identifies the affected cone, and
+it does not mark the overall request complete merely because one tool call or
+worker completed. Iterations, specialist fan-out and parallelism remain bounded.
+
+Runtime activation is fail-closed. The MCP recognizes
+`WORK_CONTINUITY_AUTO_CAPTURE_ENABLED` and
+`HOST_NATIVE_AGENT_PROTOCOL_ENABLED`; both default to disabled in code and must
+be enabled explicitly by deployment policy. Universal Core independently gates
+its host-native routes with `CORE_HOST_NATIVE_GOVERNANCE_ENABLED`, also disabled
+by default, and signs bounded authority records with the dedicated
+`CORE_HOST_NATIVE_SIGNING_SECRET`. None of these settings enables off-host model
+execution or bypasses Core and host approvals.
+
+The host-native path does not read an external-model key or make a server-side
+model call. It returns `provider_execution=false`,
+`provider_api_key_required=false` and `server_model_calls=0`; CI verifies those
+exact contract values and zero outbound model fetches. This is the production
+contract, not a dry-run or a best-effort convention.
+
+### Production trust and database bindings
+
+The gateway deliberately uses four independent shared secrets. Each must
+contain at least 32 UTF-8 bytes; a shorter or missing value is unavailable and
+production host-native readiness fails closed.
+
+| Variable | Exact use | Render binding |
+| --- | --- | --- |
+| `CORE_MCP_TENANT_GATEWAY_KEY` | MCP-to-Core bearer authentication for tenant-gateway routes only | Generated on Core MCP; referenced by Universal Core with `fromService` |
+| `CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET` | HMAC for `x-sh-tenant-context` only | Generated on Core MCP; referenced by Universal Core with `fromService` |
+| `CORE_OWNER_CONTEXT_SIGNING_SECRET` | Request-bound OAuth-owner or exact configured Codex Good Mode context for host-native delegation/revocation | Generated on Core MCP; referenced by Universal Core with `fromService` |
+| `DTT_AGENT_IDENTITY_SIGNING_SECRET` | DTT identity receipts, native assignment capabilities and closure attestations | Generated on Core MCP; referenced by Universal Core with `fromService` |
+
+There is no cross-purpose fallback: tenant context never uses the owner secret,
+host-native owner context never uses the gateway, and assignment/closure signing
+never uses `AGENT_SIGNATURE_SECRET`, owner context or a development literal.
+`CORE_HOST_NATIVE_SIGNING_SECRET` is a fifth, Core-only value for Core
+delegation, action-ticket and final receipt records and is never copied to MCP.
+Tests and local development must provide explicit fixture values; they do not
+receive a weaker implicit path.
+
+Production persistence uses one managed PostgreSQL 16 database. Core MCP reads
+the canonical connection from `DATABASE_URL`. Universal Core receives the same
+connection as `GOVERNED_AGENT_DATABASE_URL` through a Render `fromService`
+reference to MCP's `DATABASE_URL`; each service retains tenant-scoped,
+service-owned tables. `WORK_CONTINUITY_DATABASE_URL` is reserved for the
+isolated CI PostgreSQL 16 job and must not be configured as a second production
+database.
+
+### Initial bootstrap and secret rotation
+
+Initial secret bootstrap requires an authenticated owner to authorize the exact
+purpose and environment and a ChatGPT/Codex host or Render administrator to
+perform the control-plane write. The host provisions four independent current
+values, binds both services through Render, deploys them and verifies non-secret
+readiness plus the bounded host-native contract. Nyra and Core can diagnose a
+missing binding, but cannot bootstrap their own authority.
+
+Rotate each secret independently through `current → candidate → promote`.
+`current` stays active while the owner authorizes scope and rollback.
+`candidate` is a new value of at least 32 bytes held only by Render and bound to
+the producer/verifier pair for coordinated readiness and contract checks.
+`promote` makes it current only after both deployments and readback pass; the
+old value is revoked after the rollback window. The runtime accepts one active
+value per variable, so this is a coordinated service promotion, not a hidden
+dual-key grace period. Candidate failure preserves current or activates the
+recorded rollback, and no rotation may reuse one trust-domain secret as another.
+
+The project-scoped `.codex/config.toml` enables native agents with at most three
+concurrent session threads, selects the bounded `workspace-write` sandbox and
+keeps approval interactive with `on-request`. `auto_review` swaps the reviewer
+for eligible approval prompts; it does not expand network access, filesystem
+roots or the sandbox. Organization-managed Codex policy always takes
+precedence.
+
+See
+[`docs/architecture/governed-continuity-fabric-v1.md`](../../docs/architecture/governed-continuity-fabric-v1.md)
+for the authority model, state machine, host protocol, data ownership, failure
+semantics and deployment boundary.
 
 ## Authentication
 
-## ChatGPT install and tenant API-key onboarding
+## ChatGPT and Codex native onboarding
 
-Users install this connector in ChatGPT and authenticate with their own account; they never need access to Render. On first use, ChatGPT should explain that Nyra plans and coordinates while Universal Core remains the final safety authority.
-
-An API key for an external model provider must **never** be pasted into a ChatGPT message or tool argument. A ChatGPT/Codex subscription is separate from API billing. When tenant-provided model execution is enabled, the connector will return a one-time secure setup link outside the chat. The user enters their own provider API key there; Core stores only encrypted data in the tenant-scoped database, returns a masked status, and supports rotation or removal. Until that flow is available and a provider is explicitly enabled, all agent execution remains dry-run.
+Users install this connector in ChatGPT and authenticate with their own account;
+they never need access to Render or an external-model API key. On first use,
+Nyra plans and coordinates while Universal Core remains the final safety
+authority. Native ChatGPT/Codex subagents are created by the host directly; the
+MCP never accepts model credentials in a chat message, tool argument or browser
+form.
 
 ### What users need to know
 
 1. **Install and sign in.** Add the connector in ChatGPT and complete OAuth. This binds the session to the correct tenant; Render is never visible to the user.
 2. **Describe the job.** State the objective, desired result, constraints, deadline and whether it is research, analysis or planning. Nyra and Core prepare a bounded plan before work begins.
-3. **Build agents safely.** An agent is a role in a governed plan, not an autonomous account. Typical roles are supervisor, researcher and critic. The plan has explicit dependencies, limits and a deadline; keep specialist fan-out to three or fewer.
-4. **What is automatic.** Core performs tenant isolation, memory recall, preflight, routing, plan persistence, cancellation controls, audit and dry-run simulation.
-5. **What is not automatic.** Browser or tool side effects, messages to customers, payments, publishing, deployment and data deletion remain disabled or require a separate Core verdict plus explicit owner confirmation.
-6. **First live multi-agent mode.** After an OAuth tenant owner explicitly confirms a test, `tenant_provider_openai_multi_agent_smoke_run` can make up to three sequential billable calls with that tenant's already-encrypted OpenAI key: **Researcher → Reviewer → Nyra Synthesizer**. A completed run makes all three; cancellation or a safety failure prevents every remaining stage. The task is capped at 300 characters; each stage is capped at 200 output tokens; learning is frozen; browser, tools, external actions and retries are disabled. The start returns a run ID immediately; the owner can poll the result or cancel it, which aborts the active request and prevents every remaining stage. All other generic-agent and queue workflows remain `manual_dry_run`.
-7. **Provider setup.** ChatGPT Pro/Codex and API billing are separate. Never paste an API key into ChatGPT. Choose **Collega OpenAI** (or ask to create agents): the fixed page asks the administrator of the current tenant to sign in, then creates a short-lived, one-time protected page where the existing key is pasted. The chat never receives the key or the one-time credential. The tenant sees only a masked status and its administrators can rotate or remove it.
-8. **Research and privacy.** Research is planned first, then evidence is sourced and reviewed. Do not send secrets, raw customer records or full pages to the connector.
+3. **Build agents safely.** An agent is a bounded role in a governed plan, not an autonomous account. ChatGPT or Codex creates specialists with its native subagent capability. The plan has explicit dependencies, acceptance criteria, limits and a deadline; specialist fan-out remains three or fewer, with at most two active in parallel.
+4. **What is automatic.** The enabled continuity fabric anchors or resumes the initial request, exposes the tenant Work Gallery so authenticated users and chats can join the same work without duplication, recalls tenant memory, aggregates the bounded tenant/project Work Atlas, records Core-confirmed Git deltas and indexes exact candidates for connector failures, lease expiry, failed tests, verifier dissent, correction requests, closure gaps and final readback errors. Gallery branches use bounded participant leases and structured handoffs; incident candidates remain unusable until independent verification.
+5. **What the root host must drive.** ChatGPT/Codex selects the relevant Atlas cone, requests and materializes the bounded plan, submits assignment/result receipts, checkpoints blockers and requests review and closure under the same `work_id`. The connector cannot manufacture a native subagent or approve the host's local command prompt. Browser or tool side effects, messages to customers, payments, publishing, deployment and data deletion require their separate Core verdict, bounded owner authority and host approval.
+6. **Host-native multi-agent mode.** When the user asks to work in multi-agent mode, the root ChatGPT/Codex agent requests a bounded host-native plan and creates specialists directly with the host's built-in capability. The verified contract fixes `provider_execution=false`; Nyra supervises, Core governs, and the root host remains responsible for spawning, collecting and submitting specialist results.
+7. **Retired browser paths.** `/connect/openai`, `/agents` and `/mobile/agents` return `410 Gone`. They do not initiate credential setup, model execution or a parallel agent system; continue the work in the native ChatGPT/Codex session instead.
+8. **Research and privacy.** Research is planned first, then evidence is sourced and reviewed through the host-managed browser. Do not send secrets, raw customer records or full pages to the connector.
 
 - Codex: `Authorization: Bearer <key>` from `CODEX_BEARER_KEYS`; scopes come only from trusted server configuration.
 - ChatGPT: Auth0 RS256 access token verified against JWKS, exact issuer, audience, expiry and optional `nbf`.
@@ -66,9 +196,14 @@ SUITE_CONTROL_PLANE_TIMEOUT_MS=8000
 SUITE_CONTROL_PLANE_CACHE_TTL_MS=5000
 MCP_CHATGPT_TENANT_ID=tenant-a
 CORE_MCP_KEY=<server-side scoped Core key for MCP_CHATGPT_TENANT_ID>
-CORE_OWNER_CONTEXT_SIGNING_SECRET=<same random secret, at least 32 characters, configured on Universal Core>
+# Four independent values, each at least 32 UTF-8 bytes. Never reuse them.
+CORE_MCP_TENANT_GATEWAY_KEY=<tenant-gateway bearer shared with Universal Core>
+CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET=<x-sh-tenant-context HMAC shared with Universal Core>
+CORE_OWNER_CONTEXT_SIGNING_SECRET=<OAuth-owner assertion HMAC shared with Universal Core>
+DTT_AGENT_IDENTITY_SIGNING_SECRET=<DTT, assignment and closure HMAC shared with Universal Core>
 MCP_DEFAULT_TENANT_ID=owner-private
 MCP_TENANT_CLAIM=https://skinharmony.it/tenant_id
+AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS=300
 SHARED_WORK_MEMORY_ROOT=/app/shared-work-memory
 AGENT_WORKSPACE_ROOT=/var/data/skinharmony-core-mcp
 MEMORY_FABRIC_ROOT=/var/data/skinharmony-core-mcp
@@ -76,11 +211,22 @@ MEMORY_RETENTION_DAYS=365
 MEMORY_PERSONAL_RETENTION_DAYS=90
 RESEARCH_CORTEX_ROOT=/var/data/skinharmony-core-mcp
 RESEARCH_RETENTION_DAYS=365
-NYRA_OPENAI_RESEARCH_ENABLED=false
-NYRA_OPENAI_RESEARCH_MODEL=gpt-5.6
-NYRA_OPENAI_RESEARCH_TIMEOUT_MS=90000
-NYRA_OPENAI_RESEARCH_MAX_CALLS_PER_HOUR=10
-OPENAI_API_KEY=<optional server-side secret>
+DATABASE_URL=<canonical managed PostgreSQL 16 connection>
+DATABASE_SSL=true
+# Universal Core only: Render fromService reference to MCP DATABASE_URL.
+GOVERNED_AGENT_DATABASE_URL=<same canonical PostgreSQL 16 connection>
+# CI only; do not configure as a second production connection.
+WORK_CONTINUITY_DATABASE_URL=<isolated PostgreSQL 16 CI connection>
+WORK_CONTINUITY_AUTO_CAPTURE_ENABLED=false
+HOST_NATIVE_AGENT_PROTOCOL_ENABLED=false
+# Universal Core only; use an independent random value of at least 32 bytes.
+CORE_HOST_NATIVE_GOVERNANCE_ENABLED=false
+CORE_HOST_NATIVE_SIGNING_SECRET=<dedicated server-side signing secret>
+# Universal Core only. Registry JSON contains bindings, never a credential.
+CORE_HOST_NATIVE_GITHUB_CREDENTIAL_REGISTRY_JSON=<optional exact private tenant/repository bindings>
+CORE_HOST_NATIVE_GITHUB_TOKEN_<BINDING>=<server-only GitHub credential>
+CORE_HOST_NATIVE_RENDER_ORIGIN_REGISTRY_JSON=<optional exact tenant/repository/service origins>
+CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON=<exact per-tenant repository/branch CI provenance bindings>
 NYRA_GOD_MODE_ENABLED=false
 NYRA_GOD_MODE_TENANT_IDS=owner-private,codexai
 NYRA_GOD_MODE_SUBJECTS=<comma-separated Auth0 subject ids>
@@ -93,38 +239,14 @@ NYRA_GOD_MODE_EMERGENCY_STOP=false
 
 Configure the Auth0 application as a public OAuth client for ChatGPT, allow only approved callback URLs, enable authorization code with PKCE, and disable password/implicit grants. Do not commit secrets. Auth0 must issue RS256 access tokens containing `scope` or `permissions`. The MCP merges both claims when Auth0 emits requested OAuth scopes in `scope` and RBAC API permissions in `permissions`; duplicate values are removed before per-tool authorization.
 
-## Multi-tenant OpenAI connection page
+## Retired provider paths
 
-The fixed page `https://skinharmony-core-mcp.onrender.com/connect/openai` never accepts a tenant identifier from the browser. It uses Authorization Code + PKCE, verifies the authenticated tenant claim and an administrator role claim, then asks Core to issue the one-time vault page for that same tenant. A Codex bearer token and an OAuth client id alone cannot authorize this credential flow. The setup URL has no tenant or key; its short-lived path token is paired with a separate proof kept only in the URL fragment. Core consumes that proof and persists the encrypted key in one database transaction, so a failed or revoked flow does not partially change the provider configuration. It never enables provider execution.
-
-Every tenant administrator can use the same flow. Auth0 must issue both `MCP_TENANT_CLAIM` (default `https://skinharmony.it/tenant_id`) and `MCP_TENANT_OWNER_ROLE_CLAIM` (default `https://skinharmony.it/role`). Roles accepted for provider setup are configured in `MCP_TENANT_OWNER_ROLES`, whose safe default is `tenant_owner,tenant_admin,owner_root`. Normal members can use Nyra but cannot add, rotate or remove the tenant's provider key.
-
-The MCP resource server and browser owner portal use different Auth0 audiences. `AUTH0_AUDIENCE` remains the MCP API identifier (`https://.../mcp`); `AUTH0_BROWSER_AUDIENCE` must be the identifier of a separately authorized Auth0 API for the Regular Web Application. The portal never sends the MCP resource audience to the browser client.
-
-OAuth owner binding is server-side only: `AUTH0_OWNER_TENANT_BINDINGS_JSON` maps the verified Auth0 `sub` to an allowed tenant (for example, `{"<owner-subject>":"codexai"}`) and is never committed to the repository. A bound identity is still a `member` by default. `AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS` bounds fresh authentication (default 300 seconds); elevation to `tenant_owner` requires explicit confirmation, a request binding and a one-time confirmation reference. Unbound users retain their stable `chatgpt_*` self-service tenants when enabled. Tenant and role values from URLs, request bodies and tool arguments are ignored for identity routing.
-
-Configure these Render values only after deploying the code: `AUTH0_BROWSER_CLIENT_ID`, `AUTH0_BROWSER_AUDIENCE`, optional `AUTH0_BROWSER_CLIENT_SECRET` for a confidential Auth0 application, and `AUTH0_BROWSER_CALLBACK_URL=https://skinharmony-core-mcp.onrender.com/connect/openai/callback`. The Blueprint generates `AUTH0_BROWSER_STATE_SECRET` automatically; manual production deployments must use at least 32 random bytes. Do not use `OPENAI_API_KEY` for this feature. The Core service must already have its governed provider vault configured; no provider key is written to Render configuration.
-
-When both services are Blueprint-managed, Render generates `CORE_OWNER_CONTEXT_SIGNING_SECRET` on `skinharmony-core-mcp` and injects the same value into `skinharmony-universal-core` through `fromService`; nobody needs to copy or see it. It signs only the short-lived OAuth-owner confirmation for the exact provider-link binding: it is not an OpenAI key or a Core bearer key and must never be sent in chat, a URL, or the repository. Until an existing Core service is attached to `render-universal-core.yaml`, the flow remains fail-closed rather than accepting a manual fallback. The binding commit is taken from the full Render build SHA (`RENDER_GIT_COMMIT`) of the currently running MCP process, never from the caller; if that identity is unavailable, the gate blocks. This Core gate is an authorization and audit decision, not a Render deployment executor: Blueprint sync is physically enforced by Render/GitHub until a separate CI/Render executor verifies a signed approval.
-
-The one-time-link request uses a separate server-side credential. New multi-tenant deployments use `CORE_PROVIDER_SETUP_LINK_SERVICE_KEY`, generated by Render and restricted to the sole Core scope `write:provider_setup_link`; Core still verifies a fresh signed tenant-administrator context and requires its tenant to match the requested link. It never falls back to `CORE_MCP_KEY`, `UNIVERSAL_CORE_KEY`, or normal tenant keys, and it cannot read credentials, invoke providers or execute agents. `CORE_PROVIDER_SETUP_LINK_KEY` and `UNIVERSAL_CORE_PROVIDER_SETUP_LINK_KEYS_JSON` remain supported only for already-provisioned tenant-specific installations. Direct bearer-key provider write/delete routes are disabled: the consumed one-time page is the only credential-entry channel.
-
-## Cross-client multi-agent portal
-
-Tenant owners can open the secure portal from ChatGPT, Codex or a normal
-browser on Android, iOS, macOS, Windows and Linux at
-`https://skinharmony-core-mcp.onrender.com/agents`. It reuses the same Auth0
-Authorization Code + PKCE login, encrypted tenant vault and bounded Core
-runner; it does not require Render, a particular device or a terminal. The
-former `/mobile/agents` path remains a backward-compatible alias.
-
-After login the page either directs the authenticated tenant owner to the
-existing one-time OpenAI credential page, or displays the bounded task form.
-The owner must explicitly confirm the fixed three-call budget before each run.
-The portal then exposes tenant-bound status, result and cancellation controls.
-It never accepts a tenant id, API key, model, agent list or budget from the
-task form. Its short session is sealed, `Secure`, `HttpOnly` and
-`SameSite=Lax`; every write additionally requires a same-origin CSRF token.
+The historical `/connect/openai`, `/agents` and `/mobile/agents` routes are
+deliberately retained only as terminal compatibility responses. They uniformly
+return `410 Gone`, with no redirect, setup form, OAuth browser flow, credential
+write or model execution. The MCP does not provision any replacement portal.
+Use the authenticated native ChatGPT/Codex session and the governed
+host-native protocol for specialist work.
 
 ## WordPress Suite Cockpit adapter
 
@@ -176,6 +298,27 @@ external system that has no configured connector or server-side credential.
 npm test --prefix services/skinharmony-core-mcp
 MCP_PUBLIC_URL=http://localhost:8790 CODEX_BEARER_KEYS=local-test-key npm start --prefix services/skinharmony-core-mcp
 ```
+
+The CI deployment-parity path uses the repository root, matching the Render
+Blueprint commands:
+
+```bash
+npm ci
+npm run core:service:test
+npm run core:mcp:test
+```
+
+Root `npm ci` runs the governed Rust extractor build through `postinstall`; do
+not invoke the same build script a second time in the parity job.
+
+The CI-only PostgreSQL 16 job sets `WORK_CONTINUITY_DATABASE_URL` to its
+ephemeral database and runs
+`test/work-continuity-postgres16.test.js`. It verifies PostgreSQL 16 itself,
+schema initialization, immutable Intent persistence, recursive Atlas depth,
+cross-work node/edge provenance, distinct persisted builder/verifier sessions,
+append-only event-chain provenance and evidence-backed closure evaluation.
+Production does not use that override; it uses the shared
+`DATABASE_URL`/`GOVERNED_AGENT_DATABASE_URL` binding described above.
 
 For MCP Inspector, connect to `http://localhost:8790/mcp` and set `Authorization: Bearer local-test-key`. OAuth discovery can be validated without Auth0 credentials; an end-to-end ChatGPT login requires a separately configured Auth0 development tenant.
 
@@ -237,11 +380,9 @@ retry an interrupted memory promotion through the existing idempotency key.
 
 Tool input never accepts a tenant override. Allowed domains, HTTPS, private-host
 rejection, secret/PII handling, prompt-injection quarantine, idempotency and
-freshness retention are enforced server-side. The optional OpenAI Responses web
-search fallback is not advertised unless both its key and explicit enable flag
-are present. It is disabled by default and every invocation requires a billable
-external-read verdict from Core. Provider responses use `store:false` and a
-three-call web-search ceiling. See `../../docs/NYRA_RESEARCH_CORTEX.md`.
+freshness retention are enforced server-side. Evidence collection is performed
+through the host-managed browser; the MCP makes no server-side model or web
+search call. See `../../docs/NYRA_RESEARCH_CORTEX.md`.
 
 ## Mandatory memory-first work preflight
 
@@ -249,14 +390,27 @@ three-call web-search ceiling. See `../../docs/NYRA_RESEARCH_CORTEX.md`.
 work request. It recalls the authenticated tenant memory, asks Nyra to interpret
 and propose branches, lets Universal Core open and join the authorized branches,
 assigns roles, emits a dependency-aware task graph and selects the least-privilege
-connected capability. It never authorizes execution.
+connected capability. When continuity auto-capture is enabled, the first full
+request also creates or resumes its redacted Intent Anchor and returns the
+canonical `work_id`. Preflight never authorizes execution.
 
 The MCP initialization instructions identify `work_preflight` as the first tool
 for generic work. For work tools that do not natively call a Core routing
 endpoint, the server runs the preflight automatically before the tool handler
-and returns the preflight with the result. Failure is closed. Health,
-capability discovery/routing and the dedicated provider controls are exempt
-because they have their own authenticated, fail-closed governance path.
+and returns the preflight with the result. Failure is closed. Health and
+capability discovery/routing are exempt because they have their own
+authenticated, fail-closed governance path; retired provider URLs never enter a
+workflow.
+
+Completion is a separate operation from preflight and from individual tool
+success. Closure requires the original criteria, verified worker evidence,
+independent quality review, resolved blockers, exact release evidence where
+applicable, rollback readiness, a persisted signed Core Join and a fresh
+server-side GitHub/Render readback receipt. The final capability accepts only
+the work, plan, one-shot action-ticket and idempotency identifiers; it rejects
+caller-provided health booleans, commit claims, policy flags and readback
+digests. A failed or interrupted attempt leaves a checkpoint and bounded
+`next_action` for resume.
 
 ### Automatic shared-memory bootstrap
 
@@ -276,7 +430,18 @@ Routing is connector-first. For GitHub work, the connected GitHub app is the
 preferred route; GitHub CLI and manual browser authentication are prohibited
 while that connector is available. CLI is only a verified fallback when the
 connector is unavailable and the CLI is already installed and authenticated.
-Merge and deploy require a Core `ALLOW` verdict and explicit owner confirmation.
+Merge and deploy require a Core `ALLOW` verdict and host approval. The owner
+explicitly confirms the exact bounded delegation; a matching one-shot action
+ticket does not ask the owner to reinterpret every connector command.
+
+Universal Core performs its own read-only closure verification. Public GitHub
+repositories can be checked anonymously. A private repository needs an exact
+server-side `tenant_id + owner/repository` registry binding whose JSON points
+to a separately provisioned `CORE_HOST_NATIVE_GITHUB_TOKEN_*` secret. Render
+origins are resolved from exact tenant/repository/service/environment bindings
+and must be HTTPS `*.onrender.com`; the current `codexai` production services
+are provisioned in the Blueprint. Invalid registry configuration disables
+host-native governance and readiness rather than falling back to caller data.
 
 This enforcement covers AI clients that enter through SkinHarmony Core or this
 MCP. A client that directly invokes an unrelated external connector and bypasses

@@ -1,0 +1,15 @@
+# Project-scoped coordinator defaults. Managed workspace policy always wins.
+# Auto-review swaps the human reviewer for a separate Codex reviewer on
+# eligible prompts; it does not expand the sandbox or grant permissions.
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+
+[features]
+# Keep delegation native to the ChatGPT/Codex host. This enables no provider
+# API execution and does not override managed workspace policy.
+multi_agent = true
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
