@@ -121,6 +121,8 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$GITHUB_WORKSPACE/.render-rust/cargo/bin:$PATH"
           cargo test --locked --workspace --manifest-path services/universal-core-service/native/core-runtime/Cargo.toml
+      - name: Install Core MCP dependencies for continuity integration tests
+        run: npm ci --prefix ../skinharmony-core-mcp
       - run: npm ci
       - run: npm test
 
