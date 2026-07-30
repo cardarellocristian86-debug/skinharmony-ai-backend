@@ -246,6 +246,10 @@ export function loadConfig(env = process.env) {
   // Anchor. Existing tenants retain the previous no-capture behaviour.
   const workContinuityAutoCaptureEnabled = flag(env.WORK_CONTINUITY_AUTO_CAPTURE_ENABLED, false);
   const hostNativeAgentProtocolEnabled = flag(env.HOST_NATIVE_AGENT_PROTOCOL_ENABLED, false);
+  // When enabled, every functional Nyra/Core tool call must first refresh a
+  // server-derived signed presence in the tenant registry. It is intentionally
+  // opt-in so existing development installations are not silently tightened.
+  const mandatoryAgentPresenceEnabled = flag(env.MANDATORY_AGENT_PRESENCE_ENABLED, false);
   const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
   const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
   const researchCortexRoot = String(env.RESEARCH_CORTEX_ROOT || memoryFabricRoot || agentWorkspaceRoot || "").trim();
@@ -310,6 +314,7 @@ export function loadConfig(env = process.env) {
     decisionLedgerRequired,
     workContinuityAutoCaptureEnabled,
     hostNativeAgentProtocolEnabled,
+    mandatoryAgentPresenceEnabled,
     databaseSsl: flag(env.DATABASE_SSL, env.NODE_ENV === "production"),
     collaborationDatabaseSsl: flag(env.MCP_COLLABORATION_DATABASE_SSL, env.NODE_ENV === "production"),
     databasePoolMax: integer(env.DATABASE_POOL_MAX, 5, 1, 20),
