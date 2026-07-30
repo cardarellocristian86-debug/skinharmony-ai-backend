@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
+import { isBoundedInternalCoordinationWrite } from "../../universal-core-service/src/boundedInternalCoordination.js";
 
 function payload(result) {
   return result.structuredContent || JSON.parse(result.content[0].text);
@@ -34,7 +35,11 @@ async function register(handlers, agentId, identity, options = {}) {
 }
 
 test("server-derived signed presence can be registered without caller metadata", async (t) => {
-  const { handlers } = fixture(t);
+  const governedActions = [];
+  const { handlers } = fixture(t, async (action) => {
+    governedActions.push(action);
+    return { allowed: true, decision: "allow_controlled", mediation: "allow" };
+  });
   const identity = {
     tenantId: "tenant-a",
     subject: "auth0|owner",
@@ -50,6 +55,15 @@ test("server-derived signed presence can be registered without caller metadata",
   assert.equal(registered.agent.id, "codex-auto");
   assert.deepEqual(registered.agent.capabilities, []);
   assert.equal(registered.agent.display_name, "codex-auto");
+  assert.equal(governedActions[0].target, "agent:codex-auto");
+  assert.equal(governedActions[0].idempotency_key, `agent.heartbeat:${registered.agent.session_fingerprint}`);
+  assert.equal(isBoundedInternalCoordinationWrite({
+    ...governedActions[0],
+    operation_class: "bounded_internal_coordination_write",
+    tenant_id: identity.tenantId,
+    authenticated_tenant_id: identity.tenantId,
+    owner_confirmed: false,
+  }), true);
   await assert.rejects(
     handlers.registerAuthenticatedPresence({ tenantId: "tenant-a", subject: "auth0|owner", agentPresence: { agent_id: "missing-fields" } }),
     /agent_presence_registration_required/
