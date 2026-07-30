@@ -5,11 +5,12 @@ import {
   createPostgresMajorVersionProbe,
 } from "../postgres-major-version.js";
 
-test("PostgreSQL major probe verifies only major 16 and exposes no connection data", async () => {
+test("PostgreSQL major probe verifies major 16 or newer and exposes no connection data", async () => {
   for (const [serverVersionNum, expected] of [
     ["160012", { major: 16, verified: true }],
     ["150014", { major: 15, verified: false }],
-    ["170003", { major: 17, verified: false }],
+    ["170003", { major: 17, verified: true }],
+    ["180004", { major: 18, verified: true }],
   ]) {
     const statements = [];
     const probe = createPostgresMajorVersionProbe({
