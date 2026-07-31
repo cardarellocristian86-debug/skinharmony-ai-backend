@@ -17,6 +17,24 @@ function fixture(overrides = {}) {
       relevant_memories: [{ id: "memory-1" }],
       pending_handoffs: [{ id: "handoff-1" }],
     },
+    galleryContext: {
+      schema_version: "tenant_work_gallery_v1",
+      tenant_id: "tenant-a",
+      available: true,
+      state: "ready",
+      generated_at: "2026-07-30T12:00:00.000Z",
+      work_count: 1,
+      filters: { status: "active" },
+      works: [{
+        work_id: "11111111-1111-4111-8111-111111111111",
+        project_id: "gallery",
+        status: "active",
+        current_version: 3,
+        active_participants: 2,
+        active_leases: 1,
+        active_branches: 2,
+      }],
+    },
     branchContext: {
       selected_branches: [
         "work_intake_intelligence",
@@ -43,6 +61,12 @@ test("builds a mandatory memory-first role and task contract", () => {
   const result = fixture();
   assert.equal(result.mandatory, true);
   assert.equal(result.memory_first.status, "recalled");
+  assert.equal(result.operational_surface, "tenant_work_gallery");
+  assert.equal(result.gallery_version, "tenant_work_gallery_v1");
+  assert.equal(result.tenant_work_gallery.available, true);
+  assert.equal(result.tenant_work_gallery.tenant_isolated, true);
+  assert.equal(result.tenant_work_gallery.work_count, 1);
+  assert.equal(result.mandatory_sequence[0], "open_tenant_work_gallery");
   assert.equal(result.memory_first.revision, 9);
   assert.deepEqual(result.roles.map((role) => role.id), ROLE_CATALOG.map((role) => role.id));
   assert(result.task_graph.nodes.some((node) => node.id === "interpret_request" && node.dependencies.includes("recall_tenant_memory")));

@@ -151,6 +151,15 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   const membership = ownerTenantId ? undefined : config.oauthTenantMemberships?.[subject];
   const memberTenantId = String(membership?.tenantId || "").trim();
   const membershipRole = String(membership?.role || "").trim();
+  const supportDelegation = membershipRole === "support_delegate";
+  const supportDelegationExpiresAt = String(membership?.expiresAt || "").trim();
+  const supportDelegationExpiry = Date.parse(supportDelegationExpiresAt);
+  if (supportDelegation && (
+    !Number.isFinite(supportDelegationExpiry)
+    || supportDelegationExpiry <= Date.now()
+  )) {
+    throw new Error("tenant_support_delegation_expired");
+  }
   // Consumer users do not need an Auth0 administrator to pre-provision a
   // tenant or role. When the feature is enabled, an unprivileged login is
   // assigned a stable personal tenant derived only from its verified subject.
@@ -169,6 +178,11 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
     ...(selfServiceTenant ? { selfServiceTenant: true } : {}),
     ...(ownerTenantId ? { oauthOwnerBound: true } : {}),
     ...(memberTenantId ? { oauthTenantMemberBound: true, tenantMembershipRole: membershipRole } : {}),
+    ...(supportDelegation ? {
+      tenantSupportDelegationBound: true,
+      tenantSupportDelegationId: String(membership.delegationId),
+      tenantSupportDelegationExpiresAt: supportDelegationExpiresAt,
+    } : {}),
     ...(tenantRole ? { tenantRole } : {}),
     ...(Number.isFinite(Number(payload.auth_time || payload.iat)) ? { authenticatedAt: Number(payload.auth_time || payload.iat) } : {}),
     ...(Number.isFinite(Number(payload.iat)) ? { tokenIssuedAt: Number(payload.iat) } : {}),

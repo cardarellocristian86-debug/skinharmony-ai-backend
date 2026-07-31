@@ -33,6 +33,29 @@ async function register(handlers, agentId, identity, options = {}) {
   return result;
 }
 
+test("server-derived signed presence can be registered without caller metadata", async (t) => {
+  const { handlers } = fixture(t);
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "auth0|owner",
+    agentPresence: {
+      agent_id: "codex-auto",
+      client_type: "codex",
+      session_id: "session-codex-auto",
+      signature: `ags_${"a".repeat(32)}`,
+      session_fingerprint: "b".repeat(64),
+    },
+  };
+  const registered = payload(await handlers.registerAuthenticatedPresence(identity));
+  assert.equal(registered.agent.id, "codex-auto");
+  assert.deepEqual(registered.agent.capabilities, []);
+  assert.equal(registered.agent.display_name, "codex-auto");
+  await assert.rejects(
+    handlers.registerAuthenticatedPresence({ tenantId: "tenant-a", subject: "auth0|owner", agentPresence: { agent_id: "missing-fields" } }),
+    /agent_presence_registration_required/
+  );
+});
+
 test("workspace folders and versioned documents stay inside the authenticated tenant", async (t) => {
   const { handlers } = fixture(t);
   const tenantA = { tenantId: "tenant-a", subject: "auth0|alice" };

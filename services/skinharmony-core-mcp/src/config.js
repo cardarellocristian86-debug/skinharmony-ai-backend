@@ -40,7 +40,7 @@ function parseOauthOwnerTenantBindings(value, name) {
   return result;
 }
 
-const OAUTH_TENANT_MEMBERSHIP_ROLES = new Set(["member", "reviewer", "operator"]);
+const OAUTH_TENANT_MEMBERSHIP_ROLES = new Set(["member", "reviewer", "operator", "support_delegate"]);
 
 function parseOauthTenantMemberships(value, name) {
   const parsed = jsonObject(value, name);
@@ -58,6 +58,18 @@ function parseOauthTenantMemberships(value, name) {
     }
     if (!OAUTH_TENANT_MEMBERSHIP_ROLES.has(role)) {
       throw new Error(`${name} contains an invalid membership role`);
+    }
+    if (role === "support_delegate") {
+      const delegationId = String(membershipValue.delegation_id || "").trim();
+      const expiresAt = String(membershipValue.expires_at || "").trim();
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{1,119}$/.test(delegationId)) {
+        throw new Error(`${name} support delegation requires a valid delegation_id`);
+      }
+      if (!Number.isFinite(Date.parse(expiresAt))) {
+        throw new Error(`${name} support delegation requires a valid expires_at`);
+      }
+      result[subject] = { tenantId, role, delegationId, expiresAt };
+      continue;
     }
     result[subject] = { tenantId, role };
   }
@@ -234,6 +246,10 @@ export function loadConfig(env = process.env) {
   // Anchor. Existing tenants retain the previous no-capture behaviour.
   const workContinuityAutoCaptureEnabled = flag(env.WORK_CONTINUITY_AUTO_CAPTURE_ENABLED, false);
   const hostNativeAgentProtocolEnabled = flag(env.HOST_NATIVE_AGENT_PROTOCOL_ENABLED, false);
+  // When enabled, every functional Nyra/Core tool call must first refresh a
+  // server-derived signed presence in the tenant registry. It is intentionally
+  // opt-in so existing development installations are not silently tightened.
+  const mandatoryAgentPresenceEnabled = flag(env.MANDATORY_AGENT_PRESENCE_ENABLED, false);
   const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
   const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
   const researchCortexRoot = String(env.RESEARCH_CORTEX_ROOT || memoryFabricRoot || agentWorkspaceRoot || "").trim();
@@ -298,6 +314,7 @@ export function loadConfig(env = process.env) {
     decisionLedgerRequired,
     workContinuityAutoCaptureEnabled,
     hostNativeAgentProtocolEnabled,
+    mandatoryAgentPresenceEnabled,
     databaseSsl: flag(env.DATABASE_SSL, env.NODE_ENV === "production"),
     collaborationDatabaseSsl: flag(env.MCP_COLLABORATION_DATABASE_SSL, env.NODE_ENV === "production"),
     databasePoolMax: integer(env.DATABASE_POOL_MAX, 5, 1, 20),

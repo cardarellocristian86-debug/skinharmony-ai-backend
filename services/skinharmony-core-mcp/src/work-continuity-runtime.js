@@ -1070,7 +1070,7 @@ export function buildImpactMap(architecture = {}, change = {}) {
   };
 }
 
-const CREATE_SCHEMA_SQL = `
+export const WORK_CONTINUITY_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS core_continuity_works (
   tenant_id varchar(64) NOT NULL, project_id varchar(64) NOT NULL, work_id uuid NOT NULL,
   session_id varchar(64) NOT NULL, parent_work_id uuid, idea text NOT NULL, objective text NOT NULL,
@@ -1179,6 +1179,7 @@ CREATE INDEX IF NOT EXISTS core_continuity_lease_surfaces_lookup_idx
 CREATE TABLE IF NOT EXISTS core_continuity_messages (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, message_id uuid NOT NULL,
   branch_id uuid, from_session_id varchar(64) NOT NULL, to_session_id varchar(64),
+  to_actor_subject varchar(200),
   message_type varchar(40) NOT NULL DEFAULT 'update', subject varchar(240) NOT NULL,
   payload jsonb NOT NULL, created_by varchar(120) NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -1189,6 +1190,12 @@ CREATE TABLE IF NOT EXISTS core_continuity_messages (
 );
 CREATE INDEX IF NOT EXISTS core_continuity_messages_inbox_idx
   ON core_continuity_messages (tenant_id, work_id, to_session_id, created_at DESC);
+-- A session id can be reused after its presence TTL expires. Direct messages
+-- therefore bind to the authenticated recipient subject as well as the
+-- session id. Existing rows have no such proof and are deliberately hidden
+-- from direct inbox reads rather than being exposed to a replacement session.
+ALTER TABLE core_continuity_messages
+  ADD COLUMN IF NOT EXISTS to_actor_subject varchar(200);
 CREATE TABLE IF NOT EXISTS core_continuity_intent_anchors (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, project_id varchar(64) NOT NULL,
   session_id varchar(64) NOT NULL, anchor jsonb NOT NULL, intent_digest char(64) NOT NULL,
@@ -1347,7 +1354,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     config.dttAgentIdentitySigningSecret || "",
   ).trim();
   let ready;
-  const initialize = () => ready ||= pool.query(CREATE_SCHEMA_SQL);
+  const initialize = () => ready ||= pool.query(WORK_CONTINUITY_SCHEMA_SQL);
 
   function actorFor(identity, input = {}) {
     return safeText(
@@ -1562,6 +1569,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
           idempotent_replay: true,
         };
       }
+      if (options.creationAuthorized !== true) {
+        const error = new Error("continuity_creation_owner_confirmation_required");
+        error.code = "continuity_creation_owner_confirmation_required";
+        throw error;
+      }
       const architectureDigest = digest(architecture);
       await client.query(`INSERT INTO core_continuity_works
         (tenant_id,project_id,work_id,session_id,parent_work_id,idea,objective,status,current_version,
@@ -1602,7 +1614,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function create(identity, input) {
-    return ensure(identity, input);
+    return ensure(identity, input, { creationAuthorized: true });
   }
 
   async function readIntent(identity, input) {
@@ -1916,7 +1928,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function requireParticipant(client, context, sessionId, { active = true } = {}) {
-    const result = await client.query(`SELECT session_id,agent_id,branch_id,status,expires_at
+    const result = await client.query(`SELECT session_id,agent_id,branch_id,status,expires_at,actor_subject
       FROM core_continuity_participants
       WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND actor_subject=$4
         AND ($5::boolean=false OR (status='active' AND expires_at>now()))
@@ -2198,11 +2210,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "message_post", input, async () => {
         await requireParticipant(client, context, fromSessionId);
+        let recipient = null;
         if (toSessionId) {
-          const recipient = await client.query(`SELECT session_id FROM core_continuity_participants
-            WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+          const result = await client.query(`SELECT session_id,actor_subject FROM core_continuity_participants
+            WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3
+              AND status='active' AND expires_at>now()`,
           [context.tenantId, context.workId, toSessionId]);
-          if (!recipient.rows[0]) throw new Error("continuity_message_recipient_not_found");
+          recipient = result.rows[0] || null;
+          if (!recipient) throw new Error("continuity_message_recipient_not_found");
         }
         if (branchId) {
           const branch = await client.query(`SELECT branch_id FROM core_continuity_branches
@@ -2213,13 +2228,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
         const messageId = crypto.randomUUID();
         const payload = cleanJson(input.payload || {}, 40_000);
         const message = await client.query(`INSERT INTO core_continuity_messages
-          (tenant_id,work_id,message_id,branch_id,from_session_id,to_session_id,
+          (tenant_id,work_id,message_id,branch_id,from_session_id,to_session_id,to_actor_subject,
            message_type,subject,payload,created_by)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)
           RETURNING message_id,branch_id,from_session_id,to_session_id,message_type,subject,payload,created_at`,
         [context.tenantId, context.workId, messageId, branchId, fromSessionId, toSessionId,
-          safeText(input.message_type || "update", 40), safeText(input.subject, 240),
-          JSON.stringify(payload), context.actor]);
+          recipient?.actor_subject || null, safeText(input.message_type || "update", 40),
+          safeText(input.subject, 240), JSON.stringify(payload), context.actor]);
         const event = await appendEvent(client, context, "message_posted", {
           message_id: messageId, branch_id: branchId, from_session_id: fromSessionId,
           to_session_id: toSessionId, message_type: input.message_type || "update",
@@ -2234,17 +2249,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const context = workContext(identity, input);
     const sessionId = identifier(input.session_id, "session_id");
     const limit = positiveInteger(input.limit, 50, 200);
-    await requireParticipant(pool, context, sessionId, { active: false });
+    const participant = await requireParticipant(pool, context, sessionId, { active: false });
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     const messages = await pool.query(`SELECT message_id,branch_id,from_session_id,to_session_id,
         message_type,subject,payload,created_at
       FROM core_continuity_messages
       WHERE tenant_id=$1 AND work_id=$2
-        AND (to_session_id IS NULL OR to_session_id=$3)
-        AND ($4::uuid IS NULL OR branch_id=$4)
-        AND ($5::timestamptz IS NULL OR created_at>$5)
-      ORDER BY created_at DESC LIMIT $6`,
-    [context.tenantId, context.workId, sessionId, branchId, input.since || null, limit]);
+        AND (to_session_id IS NULL OR (to_session_id=$3 AND to_actor_subject=$4))
+        AND ($5::uuid IS NULL OR branch_id=$5)
+        AND ($6::timestamptz IS NULL OR created_at>$6)
+      ORDER BY created_at DESC LIMIT $7`,
+    [context.tenantId, context.workId, sessionId, participant.actor_subject, branchId, input.since || null, limit]);
     return { schema_version: "tenant_work_gallery_v1", tenant_id: context.tenantId,
       work_id: context.workId, session_id: sessionId, messages: messages.rows };
   }
@@ -4027,6 +4042,6 @@ export function createWorkContinuityRuntime(config, options = {}) {
     postMessage,
     inbox,
     close: () => pool.end(),
-    schemaSql: CREATE_SCHEMA_SQL,
+    schemaSql: WORK_CONTINUITY_SCHEMA_SQL,
   };
 }
