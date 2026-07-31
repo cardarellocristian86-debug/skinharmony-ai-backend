@@ -20,8 +20,10 @@ let nyraDialogue = null;
 let whatsappService = null;
 let suiteAppKeyBridge = null;
 let universalCoreBridge = null;
+let persistenceAdapter = null;
 const publicDir = path.resolve(__dirname, "public");
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
 
 const rateLimitBuckets = new Map();
 const safeModeMonitor = {
@@ -678,6 +680,15 @@ const planWeight = {
   enterprise: 4
 };
 
+function ensureSession(req) {
+  if (!req || req.session) return req?.session || null;
+  if (!service || typeof service.getSession !== "function") return null;
+  const session = service.getSession(readToken(req));
+  if (!session) return null;
+  req.session = session;
+  return session;
+}
+
 function normalizedPlan(session) {
   if (String(session?.role || "").toLowerCase() === "superadmin" && !session?.supportMode) return "enterprise";
   const plan = String(session?.subscriptionPlan || "").toLowerCase();
@@ -686,7 +697,16 @@ function normalizedPlan(session) {
 
 function requirePlan(requiredPlan) {
   return (req, res, next) => {
-    const currentWeight = planWeight[normalizedPlan(req.session)] || planWeight.gold;
+    const currentSession = ensureSession(req);
+    if (!currentSession) {
+      return res.status(401).json({
+        success: false,
+        code: "session_invalid",
+        message: "Sessione non valida o scaduta.",
+        nextAction: "Esegui di nuovo il login o aggiorna la pagina."
+      });
+    }
+    const currentWeight = planWeight[normalizedPlan(currentSession)] || planWeight.gold;
     const requiredWeight = planWeight[requiredPlan] || planWeight.gold;
     if (currentWeight >= requiredWeight) {
       return next();
@@ -740,15 +760,186 @@ function verifyWooCommerceWebhook(req) {
   return { ok: true };
 }
 
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-SkinHarmony-Bridge-Key, X-SkinHarmony-Bridge");
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
+const DEFAULT_SMARTDESK_ORIGINS = [
+  "https://skinharmony-smartdesk-live.onrender.com",
+  "https://skinharmony.it",
+  "https://www.skinharmony.it"
+];
+const LOCAL_SMARTDESK_ORIGINS = [
+  "http://127.0.0.1:3020",
+  "http://127.0.0.1:10000",
+  "http://localhost:3020",
+  "http://localhost:10000",
+  "http://localhost:5173"
+];
+const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function normalizeOrigin(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate) return "";
+  try {
+    const url = new URL(candidate);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.origin;
+  } catch (_error) {
+    return "";
+  }
+}
+
+function resolveAllowedOrigins() {
+  const configured = String(process.env.SMARTDESK_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map(normalizeOrigin)
+    .filter(Boolean);
+  const serviceOrigins = [
+    process.env.SMARTDESK_PUBLIC_URL,
+    process.env.RENDER_EXTERNAL_URL
+  ]
+    .map(normalizeOrigin)
+    .filter(Boolean);
+  const localOrigins = process.env.NODE_ENV === "production" ? [] : LOCAL_SMARTDESK_ORIGINS;
+  return new Set([
+    ...DEFAULT_SMARTDESK_ORIGINS,
+    ...localOrigins,
+    ...serviceOrigins,
+    ...configured
+  ]);
+}
+
+function applySecurityHeaders(req, res, next) {
+  const scriptSources = ["'self'"];
+  if (req.path === "/fleet-intelligence") {
+    scriptSources.push("'unsafe-inline'");
+  }
+  const connectSources = ["'self'"];
+  if (process.env.NODE_ENV !== "production") {
+    connectSources.push("http://127.0.0.1:3020", "http://localhost:3020");
+  }
+  const contentSecurityPolicy = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    `script-src ${scriptSources.join(" ")}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: https://www.skinharmony.it",
+    "font-src 'self' data:",
+    `connect-src ${connectSources.join(" ")}`,
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "object-src 'none'",
+    "manifest-src 'self'"
+  ];
+  if (process.env.NODE_ENV === "production") {
+    contentSecurityPolicy.push("upgrade-insecure-requests");
+  }
+
+  res.setHeader("Content-Security-Policy", contentSecurityPolicy.join("; "));
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+
+  const forwardedProtocol = String(req.headers["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  if (req.secure || forwardedProtocol === "https") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  if (req.path.startsWith("/api")) {
+    res.setHeader("Cache-Control", "no-store");
   }
   return next();
-});
+}
+
+function createCorsMiddleware(resolveOrigins = resolveAllowedOrigins) {
+  return (req, res, next) => {
+    const rawOrigin = String(req.headers.origin || "").trim();
+    const origin = normalizeOrigin(rawOrigin);
+    const allowedOrigins = resolveOrigins();
+
+    res.vary("Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Accept, Content-Type, Authorization, X-SkinHarmony-Bridge-Key, X-SkinHarmony-Bridge"
+    );
+    res.setHeader("Access-Control-Max-Age", "600");
+
+    if (rawOrigin && (!origin || !allowedOrigins.has(origin))) {
+      return res.status(403).json({
+        success: false,
+        code: "cors_origin_denied",
+        message: "Origine non autorizzata."
+      });
+    }
+
+    if (origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+    }
+    if (req.method === "OPTIONS") {
+      return res.status(204).end();
+    }
+    return next();
+  };
+}
+
+function createPersistenceCommitBarrier(resolveAdapter = () => persistenceAdapter) {
+  return (req, res, next) => {
+    if (!req.path.startsWith("/api") || !MUTATING_HTTP_METHODS.has(req.method)) {
+      return next();
+    }
+
+    const adapter = resolveAdapter();
+    if (!adapter || typeof adapter.runWithWriteTracking !== "function") {
+      return next();
+    }
+
+    return adapter.runWithWriteTracking((context) => {
+      const originalJson = res.json.bind(res);
+      const originalSend = res.send.bind(res);
+      const originalEnd = res.end.bind(res);
+      let commitStarted = false;
+
+      const commitThenSend = (send) => {
+        if (commitStarted || context.outcomes.length === 0) {
+          return send();
+        }
+
+        commitStarted = true;
+        void adapter.flushTrackedWrites(context).then(
+          () => {
+            res.setHeader("X-SmartDesk-Persistence", "confirmed");
+            send();
+          },
+          () => {
+            if (res.headersSent) {
+              res.destroy();
+              return;
+            }
+            res.status(503);
+            res.setHeader("X-SmartDesk-Persistence", "failed");
+            originalJson({
+              success: false,
+              code: "persistence_sync_failed",
+              message: "Salvataggio non confermato. Riprova tra poco."
+            });
+          }
+        );
+        return res;
+      };
+
+      res.json = (body) => commitThenSend(() => originalJson(body));
+      res.send = (body) => commitThenSend(() => originalSend(body));
+      res.end = (...args) => commitThenSend(() => originalEnd(...args));
+      return next();
+    });
+  };
+}
+
+app.use(applySecurityHeaders);
+app.use(createCorsMiddleware());
 
 app.use(express.json({
   limit: "15mb",
@@ -757,6 +948,7 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
+app.use(createPersistenceCommitBarrier());
 
 app.use((req, res, next) => {
   if (!req.path.startsWith("/api")) return next();
@@ -796,7 +988,13 @@ app.use("/exports", express.static(path.join(publicDir, "exports")));
 app.use("/web-preview", express.static(path.join(publicDir, "preview-shell")));
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "skinharmony-smartdesk-live" });
+  res.json({
+    ok: true,
+    service: "skinharmony-smartdesk-live",
+    persistence: persistenceAdapter
+      ? persistenceAdapter.getPersistenceStatus()
+      : { configured: false, healthy: true, pendingWrites: 0 }
+  });
 });
 
 app.get("/api/health", (req, res) => {
@@ -2431,7 +2629,7 @@ app.use((_req, res) => {
 const port = Number(process.env.PORT || 10000);
 
 async function bootstrap() {
-  const persistenceAdapter = process.env.DATABASE_URL
+  persistenceAdapter = process.env.DATABASE_URL
     ? new PostgresPersistenceAdapter(process.env.DATABASE_URL)
     : null;
 
@@ -2444,7 +2642,7 @@ async function bootstrap() {
   whatsappService = new WhatsappService();
   suiteAppKeyBridge = new SuiteAppKeyBridge();
 
-  app.listen(port, () => {
+  return app.listen(port, () => {
     console.log(`SkinHarmony Smart Desk live su http://localhost:${port}`);
     console.log(`[SmartDesk] Persistence: ${process.env.DATABASE_URL ? "Postgres (DATABASE_URL)" : "JSON locale"}`);
     console.log(`[SmartDesk] WhatsApp Twilio: ${whatsappService.isConfigured() ? "configurato" : "fallback copia"}`);
@@ -2453,7 +2651,18 @@ async function bootstrap() {
   });
 }
 
-bootstrap().catch((error) => {
-  console.error("[SmartDesk] Avvio fallito:", error);
-  process.exit(1);
-});
+if (require.main === module) {
+  bootstrap().catch((error) => {
+    console.error("[SmartDesk] Avvio fallito:", error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  app,
+  applySecurityHeaders,
+  bootstrap,
+  createCorsMiddleware,
+  createPersistenceCommitBarrier,
+  resolveAllowedOrigins
+};
