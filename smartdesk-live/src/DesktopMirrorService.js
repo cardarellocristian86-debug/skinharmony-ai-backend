@@ -72,6 +72,13 @@ const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
 const APPOINTMENTS_DAY_CACHE_TTL_MS = 15000;
+const DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX = "smartdesk-demo-seed-v1";
+const DEFAULT_OPERATIONAL_STAFF_COUNT_MIN = 1;
+const DEFAULT_OPERATIONAL_SERVICES_COUNT_MIN = 2;
+const DEFAULT_OPERATIONAL_CLIENTS_COUNT_MIN = 2;
+const DEFAULT_OPERATIONAL_INVENTORY_COUNT_MIN = 2;
+const DEFAULT_OPERATIONAL_APPOINTMENTS_COUNT_MIN = 1;
+const DEFAULT_OPERATIONAL_PAYMENTS_COUNT_MIN = 1;
 const CHANGE_IMPACT_CONTRACT = Object.freeze({
   schemaVersion: "skinharmony_change_impact_contract_v1",
   enabled: true,
@@ -109,6 +116,86 @@ const CHANGE_IMPACT_CONTRACT = Object.freeze({
     "rollback_path_is_known",
     "tests_are_defined"
   ])
+});
+
+const OPERATIONAL_DEMO_SEED = Object.freeze({
+  services: [
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:service:hair_cut`,
+      name: "Taglio e piega",
+      category: "Capelli",
+      durationMin: 45,
+      priceCents: 4500,
+      estimatedProductCostCents: 1200,
+      technologyCostCents: 1500
+    },
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:service:keratin`,
+      name: "Keratin Treatment",
+      category: "Ricostruzione",
+      durationMin: 90,
+      priceCents: 12000,
+      estimatedProductCostCents: 3200,
+      technologyCostCents: 1800
+    }
+  ],
+  clients: [
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:client:client_anna`,
+      fullName: "Anna Moretti",
+      firstName: "Anna",
+      lastName: "Moretti",
+      phone: "+39 333 111 2244",
+      email: "anna.moretti@example.com",
+      birthDate: "1990-03-12",
+      notes: "Cliente attiva mensilmente, preferisce appuntamenti nel tardo pomeriggio.",
+      privacyConsent: true,
+      marketingConsent: true
+    },
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:client:client_luigi`,
+      fullName: "Luigi Bianchi",
+      firstName: "Luigi",
+      lastName: "Bianchi",
+      phone: "347 888 5532",
+      email: "luigi.bianchi@example.com",
+      birthDate: "1986-11-02",
+      notes: "Cliente fidelizzato, gradisce promemoria SMS.",
+      marketingConsent: false
+    }
+  ],
+  inventory: [
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:inventory:shampoo`,
+      name: "Shampoo professionale",
+      sku: "SHAM-001",
+      category: "Capelli",
+      supplier: "Distributore Centro",
+      quantity: 24,
+      stockQuantity: 24,
+      minQuantity: 6,
+      thresholdQuantity: 6,
+      costCents: 900,
+      salePriceCents: 2100,
+      unit: "pz",
+      usageType: "cabina"
+    },
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:inventory:maschera`,
+      name: "Maschera idratante",
+      sku: "MASK-005",
+      category: "Capelli",
+      supplier: "Distributore Centro",
+      quantity: 12,
+      stockQuantity: 12,
+      minQuantity: 4,
+      thresholdQuantity: 4,
+      costCents: 1300,
+      salePriceCents: 2500,
+      unit: "pz",
+      usageType: "cabina"
+    }
+  ]
 });
 
 const ANALYTICS_BLOCKS = {
@@ -6268,6 +6355,126 @@ class DesktopMirrorService {
     this.ensureInitialAdmin();
     this.ensureSkinHarmonyProtocolLibrary();
     this.ensureDefaultStaffForCenter(DEFAULT_CENTER_ID, DEFAULT_CENTER_NAME);
+    this.ensureStarterOperationalDataForDefaultCenter();
+  }
+
+  getStarterOperationalCounts(centerId = DEFAULT_CENTER_ID) {
+    const session = { centerId, centerName: DEFAULT_CENTER_NAME };
+    return {
+      clients: this.getCenterRepositoryItems(this.clientsRepository, centerId).length,
+      services: this.getCenterRepositoryItems(this.servicesRepository, centerId).length,
+      inventory: this.getCenterRepositoryItems(this.inventoryRepository, centerId).length,
+      appointments: this.getCenterRepositoryItems(this.appointmentsRepository, centerId).length,
+      payments: this.getCenterRepositoryItems(this.paymentsRepository, centerId).length,
+      staff: this.getCenterRepositoryItems(this.staffRepository, centerId).length
+    };
+  }
+
+  ensureStarterOperationalDataForDefaultCenter() {
+    const centerId = DEFAULT_CENTER_ID;
+    const counts = this.getStarterOperationalCounts(centerId);
+    const needsClients = counts.clients < DEFAULT_OPERATIONAL_CLIENTS_COUNT_MIN;
+    const needsServices = counts.services < DEFAULT_OPERATIONAL_SERVICES_COUNT_MIN;
+    const needsInventory = counts.inventory < DEFAULT_OPERATIONAL_INVENTORY_COUNT_MIN;
+    const needsAppointments = counts.appointments < DEFAULT_OPERATIONAL_APPOINTMENTS_COUNT_MIN;
+    const needsPayments = counts.payments < DEFAULT_OPERATIONAL_PAYMENTS_COUNT_MIN;
+
+    if (!(needsClients || needsServices || needsInventory || needsAppointments || needsPayments)) {
+      return;
+    }
+
+    const session = { centerId, centerName: DEFAULT_CENTER_NAME };
+    const created = {
+      clients: [],
+      services: [],
+      inventory: [],
+      appointments: [],
+      payments: []
+    };
+    try {
+      if (counts.staff < DEFAULT_OPERATIONAL_STAFF_COUNT_MIN) {
+        this.ensureDefaultStaffForCenter(centerId, DEFAULT_CENTER_NAME);
+      }
+      if (needsServices) {
+        created.services = OPERATIONAL_DEMO_SEED.services.map((payload) => (
+          this.saveService({
+            ...payload,
+            durationMin: payload.durationMin,
+            estimatedProductCostCents: payload.estimatedProductCostCents,
+            technologyCostCents: payload.technologyCostCents,
+            priceCents: payload.priceCents
+          }, session)
+        ));
+      }
+      if (needsClients) {
+        created.clients = OPERATIONAL_DEMO_SEED.clients.map((payload) => this.saveClient(payload, session));
+      }
+      if (needsInventory) {
+        created.inventory = OPERATIONAL_DEMO_SEED.inventory.map((payload) => this.saveInventoryItem(payload, session));
+      }
+      if ((needsClients || needsServices) && (counts.appointments < DEFAULT_OPERATIONAL_APPOINTMENTS_COUNT_MIN)) {
+        const defaultClient = created.clients[0] || this.filterByCenter(this.clientsRepository.list(), session)[0];
+        const defaultService = created.services[0] || this.filterByCenter(this.servicesRepository.list(), session)[0];
+        if (defaultClient && defaultService) {
+          const startAt = new Date();
+          startAt.setDate(startAt.getDate() + 1);
+          startAt.setHours(10, 0, 0, 0);
+          const appointment = this.saveAppointment({
+            idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:appointment:default`,
+            clientId: defaultClient.id,
+            clientName: defaultClient.name || `${defaultClient.firstName || ""} ${defaultClient.lastName || ""}`.trim(),
+            staffId: this.filterByCenter(this.staffRepository.list(), session)[0]?.id || "",
+            staffName: this.filterByCenter(this.staffRepository.list(), session)[0]?.name || "Operatore 1",
+            serviceId: defaultService.id,
+            serviceIds: [defaultService.id],
+            serviceName: defaultService.name,
+            status: "booked",
+            notes: "Appuntamento seed demo per dashboard operativa",
+            startAt: startAt.toISOString(),
+            durationMin: defaultService.durationMin || 45
+          }, session);
+          if (appointment) {
+            created.appointments.push(appointment);
+          }
+        }
+      }
+      if ((needsClients || needsServices || needsInventory || needsAppointments) && counts.payments < DEFAULT_OPERATIONAL_PAYMENTS_COUNT_MIN) {
+        const defaultAppointment = created.appointments[0] || this.filterByCenter(this.appointmentsRepository.list(), session).filter(Boolean)[0];
+        const defaultClient = created.clients[0] || this.filterByCenter(this.clientsRepository.list(), session).filter(Boolean)[0];
+        const defaultService = created.services[0] || this.filterByCenter(this.servicesRepository.list(), session).filter(Boolean)[0];
+        const defaultItem = created.inventory[0] || this.filterByCenter(this.inventoryRepository.list(), session).filter(Boolean)[0];
+        if ((defaultAppointment || defaultClient) && defaultService) {
+          const payment = this.createPayment({
+            idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:payment:default`,
+            appointmentId: defaultAppointment?.id || "",
+            clientId: defaultClient?.id || "",
+            clientName: defaultClient?.name || "",
+            walkInName: defaultClient ? "" : "Cliente walk-in",
+            amountCents: defaultService.priceCents || 4500,
+            method: "cash",
+            serviceLines: [{
+              serviceId: defaultService.id,
+              name: defaultService.name,
+              amountCents: defaultService.priceCents || 4500,
+              priceCents: defaultService.priceCents || 4500,
+              listPriceCents: defaultService.priceCents || 4500,
+              salePriceCents: defaultService.priceCents || 4500
+            }],
+            productSales: defaultItem ? [{
+              itemId: defaultItem.id,
+              name: defaultItem.name,
+              quantity: 1,
+              salePriceCents: defaultItem.salePriceCents || 2000
+            }] : []
+          }, session);
+          if (payment) {
+            created.payments.push(payment);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("[SmartDesk] Seed operativo demo non completo:", error instanceof Error ? error.message : String(error));
+    }
   }
 
   ensureSkinHarmonyProtocolLibrary() {
@@ -6278,25 +6485,26 @@ class DesktopMirrorService {
     const nextItems = [...current];
     skinHarmonyProtocolLibrary.forEach((protocol) => {
       const existing = currentById.get(protocol.id);
-      const nextProtocol = {
-        ...protocol,
-        createdAt: existing?.createdAt || now,
-        updatedAt: now
-      };
       if (existing) {
+        // The library is seed data, not an activity log: do not rewrite a
+        // correct record (and its updatedAt timestamp) on every application boot.
+        const semanticChanged = Object.entries(protocol).some(([key, value]) => existing[key] !== value);
+        if (!semanticChanged) return;
         const index = nextItems.findIndex((item) => item.id === protocol.id);
         nextItems[index] = {
           ...existing,
-          ...nextProtocol,
-          centerId: SKINHARMONY_LIBRARY_CENTER_ID,
-          libraryScope: "skinharmony",
-          source: "skinharmony_library",
-          status: "active"
+          ...protocol,
+          createdAt: existing.createdAt || now,
+          updatedAt: now
         };
         changed = true;
         return;
       }
-      nextItems.unshift(nextProtocol);
+      nextItems.unshift({
+        ...protocol,
+        createdAt: now,
+        updatedAt: now
+      });
       changed = true;
     });
     if (changed) {
