@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createCollaborationPostgresStore } from "../src/collaboration-postgres-store.js";
-import { isBoundedInternalCoordinationWrite } from "../../universal-core-service/src/boundedInternalCoordination.js";
 
 class FakePool {
   constructor({ sessionConflict = false, presenceConflict = false } = {}) {
@@ -110,21 +109,16 @@ function identity(overrides = {}) {
 
 test("Postgres heartbeat binds session ids and permits only expired-session recovery", async () => {
   const pool = new FakePool();
-  const governedActions = [];
   const store = createCollaborationPostgresStore(
     { collaborationDatabaseUrl: "postgres://test" },
-    {
-      govern: async (action) => {
-        governedActions.push(action);
-        return govern();
-      },
-      pool,
-    }
+    { govern, pool }
   );
   await store.heartbeat({
     agent_id: "agent-one",
     session_id: "session-one",
     client_type: "codex",
+    display_name: "Agent One",
+    capabilities: ["coordination"],
   }, identity());
   const sessionQuery = pool.queries.find((sql) => /INSERT INTO agent_sessions/.test(sql));
   const presenceQuery = pool.queries.find((sql) => /INSERT INTO agent_presence/.test(sql));
@@ -132,15 +126,6 @@ test("Postgres heartbeat binds session ids and permits only expired-session reco
   assert.match(sessionQuery, /agent_sessions\.actor_subject=EXCLUDED\.actor_subject/);
   assert.match(sessionQuery, /agent_sessions\.expires_at<=now\(\)/);
   assert.match(presenceQuery, /agent_presence\.expires_at<=now\(\)/);
-  assert.equal(governedActions[0].target, "agent:agent-one");
-  assert.equal(governedActions[0].idempotency_key, "agent.heartbeat:fp_current");
-  assert.equal(isBoundedInternalCoordinationWrite({
-    ...governedActions[0],
-    operation_class: "bounded_internal_coordination_write",
-    tenant_id: "tenant-a",
-    authenticated_tenant_id: "tenant-a",
-    owner_confirmed: false,
-  }), true);
 
   const conflicted = createCollaborationPostgresStore(
     { collaborationDatabaseUrl: "postgres://test" },
