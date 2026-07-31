@@ -213,6 +213,116 @@ function createRateLimiter({ windowMs, max, keyPrefix }) {
 const loginRateLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 20, keyPrefix: "login" });
 const trialRateLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10, keyPrefix: "trial" });
 const passwordRateLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 8, keyPrefix: "password" });
+const controlRoomRateLimit = createRateLimiter({ windowMs: 60 * 1000, max: 240, keyPrefix: "control_room" });
+
+const CONTROL_ROOM_PAGE_MAX = 250;
+const CONTROL_ROOM_PAGE_DEFAULT = 50;
+const CONTROL_ROOM_READ_TIMEOUT_MS = Number(process.env.CONTROL_ROOM_READ_TIMEOUT_MS || 8000);
+
+function safeInteger(value, fallback = 0, options = {}) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  const min = Number.isFinite(options.min) ? options.min : -Infinity;
+  const max = Number.isFinite(options.max) ? options.max : Infinity;
+  return Math.max(min, Math.min(max, Math.trunc(numeric)));
+}
+
+function parseBoundedPagination(query = {}) {
+  return {
+    limit: safeInteger(query.limit, CONTROL_ROOM_PAGE_DEFAULT, { min: 1, max: CONTROL_ROOM_PAGE_MAX }),
+    offset: safeInteger(query.offset, 0, { min: 0 })
+  };
+}
+
+function parseBool(value, fallback = false) {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") return true;
+  if (normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no") return false;
+  return fallback;
+}
+
+function withControlRoomTimeout(operation) {
+  const timeout = Math.max(800, CONTROL_ROOM_READ_TIMEOUT_MS);
+  return Promise.race([
+    Promise.resolve().then(operation),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("control_room_timeout")), timeout);
+    })
+  ]);
+}
+
+function controlRoomErrorPayload(err, statusCode = 400) {
+  const message = err instanceof Error ? err.message : "Control Room non disponibile";
+  return {
+    success: false,
+    code: err?.code || "control_room_error",
+    statusCode,
+    message
+  };
+}
+
+function getControlRoomRuntimeMeta(reqSession) {
+  const role = service.getControlRole(reqSession);
+  const allowedTenants = service.getControlRoomAllowedTenants(reqSession);
+  const permissionKeys = [
+    "view_all_tenants",
+    "view_global_health",
+    "view_global_agents",
+    "view_global_branches",
+    "view_global_keys_metadata",
+    "view_global_audit",
+    "view_global_work_gallery",
+    "view_global_decision_ledger",
+    "view_global_memory_status",
+    "view_connectors_status",
+    "view_governance_blockers",
+    "export_sanitized_audit",
+    "view_own_tenant_health",
+    "view_own_tenant_agents",
+    "view_own_tenant_branches",
+    "view_own_tenant_keys_metadata",
+    "view_own_tenant_audit",
+    "view_own_tenant_work_gallery",
+    "view_own_tenant_decision_ledger",
+    "view_own_tenant_memory_status",
+    "view_own_tenant_connectors_status",
+    "export_own_sanitized_audit",
+    "view_own_assigned_work",
+    "view_own_agent_activity",
+    "view_own_branch_activity",
+    "impersonation"
+  ];
+  const permissions = permissionKeys.reduce((acc, permission) => {
+    acc[permission] = Boolean(service.controlHasPermission(reqSession, permission));
+    return acc;
+  }, {});
+  return {
+    controlRole: role,
+    tenantId: service.getCenterId(reqSession),
+    tenantName: service.getCenterName(reqSession),
+    allowedTenants: allowedTenants.map((tenant) => ({
+      tenantId: tenant.tenantId,
+      tenantName: tenant.tenantName,
+      isActive: Boolean(tenant.isActive)
+    })),
+    permissions
+  };
+}
+
+function requireControlPermission(permission) {
+  return (req, res, next) => {
+    if (service.controlHasPermission(req.session, permission)) return next();
+    return res.status(403).json({
+      success: false,
+      code: "control_permission_denied",
+      message: "Permesso non autorizzato per la Control Room."
+    });
+  };
+}
+
+function hasAnyControlPermission(session, permissions = []) {
+  return Array.isArray(permissions) && permissions.some((permission) => service.controlHasPermission(session, permission));
+}
 
 function trialMailConfigured() {
   return Boolean(
@@ -1532,6 +1642,7 @@ app.post("/api/center", (req, res) => {
 });
 
 app.get("/api/runtime-meta", (req, res) => {
+  const controlRuntime = getControlRoomRuntimeMeta(req.session);
   const settings = service.getPublicSettings(req.session);
   const plan = normalizedPlan(req.session);
   res.json({
@@ -1564,7 +1675,454 @@ app.get("/api/runtime-meta", (req, res) => {
       canEditCenter: true,
       canEditOperationalData: true,
       canExecuteSensitiveActionsWithoutConfirmation: false
+    },
+    control: controlRuntime
+  });
+});
+
+app.get("/api/control-room/tenants", requireAuth, controlRoomRateLimit, (req, res) => {
+  if (!service.controlHasPermission(req.session, "view_all_tenants")) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: tenant list"), 403));
+  }
+  return withControlRoomTimeout(() => service.getControlRoomTenantRows(req.session)).then((payload) => {
+    res.json({
+      ok: true,
+      schema: "control_room_tenants_v1",
+      role: service.getControlRole(req.session),
+      generatedAt: new Date().toISOString(),
+      data: payload,
+      control: getControlRoomRuntimeMeta(req.session)
+    });
+  }).catch((error) => {
+    if (error?.code === "control_cross_tenant_denied") {
+      return res.status(403).json(controlRoomErrorPayload(error, 403));
     }
+    return res.status(400).json(controlRoomErrorPayload(error));
+  });
+});
+
+app.get("/api/control-room/executive", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permission = service.getControlRole(req.session) === "super_admin"
+    ? "view_global_health"
+    : "view_own_tenant_health";
+  if (!service.controlHasPermission(req.session, permission)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: executive view"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const refreshIntervalMs = Number(req.query.refreshIntervalMs || CONTROL_ROOM_READ_TIMEOUT_MS);
+  return withControlRoomTimeout(() => service.getControlRoomExecutive(req.session, tenantFilter, { refreshIntervalMs }))
+    .then((payload) => {
+      return res.json({
+        ok: true,
+        schema: "control_room_executive_v1",
+        role: service.getControlRole(req.session),
+        requestedTenantId: tenantFilter || null,
+        ...payload,
+        control: getControlRoomRuntimeMeta(req.session),
+        generatedAt: new Date().toISOString()
+      });
+    }).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      if (error?.code === "control_work_not_found") return res.status(404).json(controlRoomErrorPayload(error, 404));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/work-gallery", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_work_gallery", "view_own_tenant_work_gallery", "view_own_assigned_work"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: work gallery"), 403));
+  }
+  const pagination = parseBoundedPagination(req.query);
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    status: String(req.query.status || "").trim(),
+    agent: String(req.query.agent || "").trim(),
+    risk: String(req.query.risk || "").trim(),
+    q: String(req.query.q || "").trim()
+  };
+  return withControlRoomTimeout(() => service.getControlRoomWorkGallery(req.session, tenantFilter, payload))
+    .then((result) => {
+      const query = payload.q.toLowerCase();
+      const data = Array.isArray(result?.data)
+        ? result.data.filter((item) => {
+          const statusMatch = !payload.status || String(item.status || "").toLowerCase() === payload.status.toLowerCase();
+          const riskMatch = !payload.risk || String(item.riskLevel || "").toLowerCase() === payload.risk.toLowerCase();
+          const tenantMatch = !tenantFilter || String(item.tenantId || "").trim() === tenantFilter;
+          const agentMatch = !payload.agent || (Array.isArray(item.agentsPresent) && item.agentsPresent.join("|").toLowerCase().includes(payload.agent.toLowerCase()));
+          const searchMatch = !query || String(item.title || "").toLowerCase().includes(query) || String(item.projectId || "").toLowerCase().includes(query) || String(item.workId || "").toLowerCase().includes(query);
+          return statusMatch && riskMatch && tenantMatch && agentMatch && searchMatch;
+        })
+        : [];
+      return res.json({
+        ok: true,
+        schema: "control_room_work_gallery_v1",
+        role: service.getControlRole(req.session),
+        requestedTenantId: tenantFilter || null,
+        data,
+        page: {
+          offset: pagination.offset,
+          limit: pagination.limit,
+          total: data.length
+        },
+        control: getControlRoomRuntimeMeta(req.session),
+        generatedAt: new Date().toISOString()
+      });
+    }).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(404).json(controlRoomErrorPayload(error, 404));
+    });
+});
+
+app.get("/api/control-room/work/:workId", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_work_gallery", "view_own_tenant_work_gallery", "view_own_assigned_work"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: work detail"), 403));
+  }
+  const workId = String(req.params.workId || "").trim();
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  if (!workId) {
+    return res.status(400).json(controlRoomErrorPayload(new Error("workId richiesto"), 400));
+  }
+  return withControlRoomTimeout(() => service.getControlRoomWork(req.session, tenantFilter, workId))
+    .then((payload) => res.json({
+      ok: true,
+      schema: "control_room_work_detail_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...payload,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_work_not_found") return res.status(404).json(controlRoomErrorPayload(error, 404));
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/work/:workId/timeline", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_work_gallery", "view_own_tenant_work_gallery", "view_own_assigned_work", "view_own_agent_activity"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: work timeline"), 403));
+  }
+  const workId = String(req.params.workId || "").trim();
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  if (!workId) {
+    return res.status(400).json(controlRoomErrorPayload(new Error("workId richiesto"), 400));
+  }
+  return withControlRoomTimeout(() => service.getControlRoomWorkTimeline(req.session, tenantFilter, workId))
+    .then((payload) => res.json({
+      ok: true,
+      schema: "control_room_work_timeline_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...payload,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_work_not_found") return res.status(404).json(controlRoomErrorPayload(error, 404));
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/agents", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_agents", "view_own_tenant_agents", "view_own_agent_activity"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: agents"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    role: String(req.query.role || "").trim()
+  };
+  return withControlRoomTimeout(() => service.getControlRoomAgents(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_agents_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/branches", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_branches", "view_own_tenant_branches", "view_own_branch_activity"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: branches"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = { limit: pagination.limit, offset: pagination.offset };
+  return withControlRoomTimeout(() => service.getControlRoomBranches(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_branches_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/keys", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_keys_metadata", "view_own_tenant_keys_metadata"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: keys"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    includeAudit: parseBool(req.query.includeAudit, false)
+  };
+  return withControlRoomTimeout(() => service.getControlRoomKeys(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_keys_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/audit", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_audit", "view_own_tenant_audit"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: audit"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    action: String(req.query.action || "").trim(),
+    outcome: String(req.query.outcome || "").trim(),
+    actor: String(req.query.actor || "").trim()
+  };
+  return withControlRoomTimeout(() => service.getControlRoomAudit(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_audit_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/decision-ledger", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_decision_ledger", "view_own_tenant_decision_ledger"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: decision ledger"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset
+  };
+  return withControlRoomTimeout(() => service.getControlRoomDecisionLedger(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_decision_ledger_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/memory", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_memory_status", "view_own_tenant_memory_status"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: memory"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset
+  };
+  return withControlRoomTimeout(() => service.getControlRoomMemory(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_memory_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/connectors", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_connectors_status", "view_own_tenant_connectors_status"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: connectors"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const payload = {
+    includeStatusOnly: parseBool(req.query.includeStatusOnly, true),
+    includeAllTenants: parseBool(req.query.includeAllTenants, String(service.getControlRole(req.session) === "super_admin" && !tenantFilter))
+  };
+  return withControlRoomTimeout(() => service.getControlRoomConnectors(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_connectors_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/governance", requireAuth, controlRoomRateLimit, (req, res) => {
+  if (!service.controlHasPermission(req.session, "view_governance_blockers")) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: governance"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  return withControlRoomTimeout(() => service.getControlRoomGovernance(req.session, tenantFilter, {
+    includeAllTenants: parseBool(req.query.includeAllTenants, String(service.getControlRole(req.session) === "super_admin" && !tenantFilter))
+  })).then((result) => res.json({
+    ok: true,
+    schema: "control_room_governance_v1",
+    role: service.getControlRole(req.session),
+    requestedTenantId: tenantFilter || null,
+    ...result,
+    control: getControlRoomRuntimeMeta(req.session),
+    generatedAt: new Date().toISOString()
+  })).catch((error) => {
+    if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+    return res.status(400).json(controlRoomErrorPayload(error));
+  });
+});
+
+app.get("/api/demo/agent-workspace-governance", requireAuth, controlRoomRateLimit, (req, res) => {
+  const tenantId = service.getCenterId(req.session);
+  const tenantName = service.getCenterName(req.session);
+  const role = service.getControlRole(req.session);
+  const control = getControlRoomRuntimeMeta(req.session);
+  const connectors = service.getControlRoomConnectors(req.session, tenantId, { includeStatusOnly: true });
+  const ledger = service.getControlRoomDecisionLedger(req.session, tenantId, { limit: 100, offset: 0 });
+  const workGallery = service.getControlRoomWorkGallery(req.session, tenantId, { limit: 30, offset: 0 });
+  const connectorStateById = {};
+  const baseConnList = Array.isArray(connectors?.tenants) ? connectors.tenants : [];
+  if (baseConnList[0]?.list) {
+    baseConnList[0].list.forEach((connector) => {
+      if (!connector?.connectorId) return;
+      connectorStateById[connector.connectorId] = connector.state;
+    });
+  }
+  const recentDecisionItems = (ledger?.data || []).filter((item) => {
+    const createdAt = new Date(item.createdAt || "").getTime();
+    return createdAt && Date.now() - createdAt <= 30 * 24 * 60 * 60 * 1000;
+  });
+  const riskyAction = "push main + deploy Render without tests, rollback or fresh owner confirmation";
+  res.json({
+    ok: true,
+    schema: "demo_agent_workspace_governance_v1",
+    role,
+    tenant: {
+      tenantId,
+      tenantName
+    },
+    coreHealth: {
+      state: "ACTIVE",
+      synthetic: true
+    },
+    nyraRuntime: {
+      state: connectorStateById["nyra-runtime"] || "DEGRADED",
+      synthetic: true
+    },
+    memoryCloud: {
+      docs: true,
+      size: Array.isArray(workGallery?.data) ? workGallery.data.length : 0
+    },
+    hostNativeGovernance: {
+      blocker: control.permissions?.view_governance_blockers ? "governance_active" : "governance_restricted",
+      schemaWrapperRequired: true
+    },
+    githubCredentialState: {
+      state: connectorStateById["github-resolver"] || "DEGRADED",
+      active: connectorStateById["github-resolver"] === "ACTIVE"
+    },
+    renderResolverState: {
+      state: connectorStateById["render-resolver"] || "DEGRADED",
+      active: connectorStateById["render-resolver"] === "ACTIVE"
+    },
+    workGallery: {
+      total: workGallery?.data?.length || 0,
+      items: (workGallery?.data || []).slice(0, 10).map((work) => ({
+        tenantId: work.tenantId,
+        workId: work.workId,
+        title: work.title,
+        status: work.status
+      }))
+    },
+    decisionLedger: {
+      periodDays: 30,
+      total: recentDecisionItems.length,
+      items: recentDecisionItems.slice(0, 30).map((item) => ({
+        tenantId: item.tenantId,
+        workId: item.workId,
+        decisionId: item.decisionId,
+        coreVerdict: item.coreVerdict || item.decision,
+        createdAt: item.createdAt
+      }))
+    },
+    riskyAction,
+    verdict: {
+      execution_allowed: false,
+      owner_confirmation_required: true,
+      core_verdict_required: true,
+      audit_required: true
+    },
+    explanationIT: "La richiesta simulata viene bloccata dal motore governance perché richiede test, wrapper e conferma owner valida prima dell’esecuzione.",
+    blocker: "schema wrapper required",
+    nextActions: [
+      "Eseguire suite di test",
+      "Richiedere conferma owner valida",
+      "Verificare rollback strategy",
+      "Aggiungere wrapper schema prima del deploy"
+    ],
+    schemaWrapperRequired: true,
+    generatedAt: new Date().toISOString(),
+    control
   });
 });
 

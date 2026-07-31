@@ -1,1 +1,36 @@
-[]
+[
+  {
+    "id": "service_1785523836714_1617a09c",
+    "idempotencyKey": "smartdesk-demo-seed-v1:service:keratin",
+    "centerId": "center_admin",
+    "centerName": "Privilege Parrucchieri",
+    "name": "Keratin Treatment",
+    "category": "Ricostruzione",
+    "durationMin": 90,
+    "priceCents": 12000,
+    "estimatedProductCostCents": 3200,
+    "technologyCostCents": 1800,
+    "productLinks": [],
+    "technologyLinks": [],
+    "active": true,
+    "updatedAt": "2026-07-31T18:50:36.714Z",
+    "createdAt": "2026-07-31T18:50:36.714Z"
+  },
+  {
+    "id": "service_1785523836697_0bcd0d0d",
+    "idempotencyKey": "smartdesk-demo-seed-v1:service:hair_cut",
+    "centerId": "center_admin",
+    "centerName": "Privilege Parrucchieri",
+    "name": "Taglio e piega",
+    "category": "Capelli",
+    "durationMin": 45,
+    "priceCents": 4500,
+    "estimatedProductCostCents": 1200,
+    "technologyCostCents": 1500,
+    "productLinks": [],
+    "technologyLinks": [],
+    "active": true,
+    "updatedAt": "2026-07-31T18:50:36.697Z",
+    "createdAt": "2026-07-31T18:50:36.697Z"
+  }
+]

@@ -1,1 +1,32 @@
-[]
+[
+  {
+    "id": "pay_1785523836742_3ad2d3ee",
+    "idempotencyKey": "smartdesk-demo-seed-v1:payment:default",
+    "centerId": "center_admin",
+    "centerName": "Privilege Parrucchieri",
+    "clientId": "client_1785523836720_cb9df89e",
+    "walkInName": "",
+    "appointmentId": "appt_1785523836736_b7a4a96d",
+    "amountCents": 4500,
+    "method": "cash",
+    "description": "",
+    "note": "",
+    "serviceLines": [
+      {
+        "serviceId": "service_1785523836697_0bcd0d0d",
+        "name": "Taglio e piega",
+        "listPriceCents": 4500,
+        "salePriceCents": 4500
+      }
+    ],
+    "productSales": [
+      {
+        "itemId": "inv_1785523836731_1f92c9b7",
+        "name": "Shampoo professionale",
+        "quantity": 1,
+        "salePriceCents": 2100
+      }
+    ],
+    "createdAt": "2026-07-31T18:50:36.742Z"
+  }
+]

@@ -107,10 +107,97 @@ function profitabilityStatusLabel(status) {
   return t("profitabilityView.statusProfitable");
 }
 
+function controlRole() {
+  return String(state.control?.role || "tenant_admin");
+}
+
+function controlCan(permission) {
+  const role = controlRole();
+  const matrix = {
+    super_admin: new Set([
+      "view_global_health",
+      "view_global_agents",
+      "view_global_branches",
+      "view_global_keys_metadata",
+      "view_global_audit",
+      "view_global_work_gallery",
+      "view_global_decision_ledger",
+      "view_global_memory_status",
+      "view_connectors_status",
+      "view_governance_blockers"
+    ]),
+    tenant_admin: new Set([
+      "view_own_tenant_health",
+      "view_own_tenant_agents",
+      "view_own_tenant_branches",
+      "view_own_tenant_keys_metadata",
+      "view_own_tenant_audit",
+      "view_own_tenant_work_gallery",
+      "view_own_tenant_decision_ledger",
+      "view_own_tenant_memory_status",
+      "view_own_tenant_connectors_status",
+      "view_governance_blockers"
+    ]),
+    tenant_operator: new Set([
+      "view_own_assigned_work",
+      "view_own_agent_activity",
+      "view_own_branch_activity"
+    ])
+  };
+  return matrix[role]?.has(permission) === true;
+}
+
+function controlFormatDate(value) {
+  const parsed = new Date(String(value || ""));
+  if (Number.isNaN(parsed.getTime())) return "--";
+  return new Intl.DateTimeFormat(currentLocale(), {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(parsed);
+}
+
+function controlConnectorStateById(tenantRows = [], connectorId) {
+  const rows = Array.isArray(tenantRows) ? tenantRows : [];
+  const tenant = rows.find((item) => Array.isArray(item?.list));
+  const entry = tenant?.list?.find((item) => item.connectorId === connectorId);
+  if (!entry) return "DEGRADED";
+  return String(entry.state || entry.health || "DEGRADED");
+}
+
+function controlConnectorSummary(connectors = {}) {
+  const tenantRows = Array.isArray(connectors?.tenants) ? connectors.tenants : [];
+  return {
+    github: controlConnectorStateById(tenantRows, "github-resolver"),
+    render: controlConnectorStateById(tenantRows, "render-resolver"),
+    nyra: controlConnectorStateById(tenantRows, "nyra-runtime"),
+    suite: controlConnectorStateById(tenantRows, "suite-bridge"),
+    workGallery: tenantRows.some((tenant) => Array.isArray(tenant?.list) && tenant.list.length > 0) ? "ACTIVE" : "DEGRADED"
+  };
+}
+
+function controlNoData(title, copy) {
+  return `
+    <section class=\"card\">
+      <div class=\"section-title\">${escapeHtml(title)}</div>
+      <div class=\"settings-note mt-16\">${escapeHtml(copy || "Nessun dato disponibile.")}</div>
+    </section>
+  `;
+}
+
+function controlListRows(value = {}) {
+  if (Array.isArray(value?.data)) return value.data;
+  if (Array.isArray(value)) return value;
+  return [];
+}
+
 const {
   loadProfitabilityOverview,
   loadTreatments,
   loadData,
+  loadControlDataForView,
   refreshForUserEvent,
   startLazyRefreshLoop
 } = createDataOrchestrator({
@@ -839,6 +926,472 @@ function renderDashboard() {
           </div>
         </section>
       </div>
+    </div>
+  `;
+}
+
+function renderControlExecutive() {
+  const executive = state.control?.executive || {};
+  const tenantsConfigured = executive.tiles?.tenantsConfigured ?? "—";
+  const tenantsActive = executive.tiles?.tenantsActive ?? "—";
+  const agentsRegistered = executive.tiles?.agentsRegistered ?? "—";
+  const nyraBranchesActive = executive.tiles?.nyraBranchesActive ?? "—";
+  const coreDecisions = executive.tiles?.coreDecisionsLast24h ?? "—";
+  const blockedActions = executive.tiles?.blockedActionsLast24h ?? "—";
+  const confirmationsRequested = executive.tiles?.confirmationsRequested ?? "—";
+  const toolCompleted = executive.tiles?.toolCompleted ?? "—";
+  const toolFailed = executive.tiles?.toolFailed ?? "—";
+  const activeWorks = executive.tiles?.activeWorks ?? "—";
+  const activeSessions = executive.tiles?.activeSessions ?? "—";
+  const locksActive = executive.tiles?.locksActive ?? "—";
+  const artifactsIndexed = executive.tiles?.artifactsIndexed ?? "—";
+  const memoryCloudDocs = executive.tiles?.memoryCloudDocs ?? "—";
+  const governance = executive.governance?.state || executive.scopeSummary?.governanceState || "DEGRADED";
+  const summaryTime = controlFormatDate(executive.tiles?.lastUpdateAt || executive.scopeSummary?.timestamp);
+  const connectorsSummary = controlConnectorSummary(executive.connectorHealth || state.control.connectors || {});
+  const scope = executive.scope || "tenant";
+  const selectedTenant = executive.selectedTenantId || "—";
+  const tenantRows = Array.isArray(executive.tenantBreakdown) ? executive.tenantBreakdown : [];
+
+  return `
+    <div class="stack">
+      <section class="card">
+        <div class="row between mb-16">
+          <div>
+            <div class="section-title">${currentLanguage() === "en" ? "Executive view" : "Executive View"}</div>
+            <div class="page-subtitle">${currentLanguage() === "en" ? "Panoramica governance enterprise" : "Panoramica enterprise governance"} · ${currentLanguage() === "en" ? "Scope" : "Ambito"}: ${scope === "global" ? "global" : escapeHtml(selectedTenant)}</div>
+          </div>
+          <div class="hero-badges">
+            <div class="module-pill active">${currentLanguage() === "en" ? "Read-only" : "Sola lettura"}</div>
+            <div class="module-pill">${controlRole()}</div>
+          </div>
+        </div>
+        <div class="settings-note">${controlRole() === "super_admin" ? (currentLanguage() === "en" ? "Cross-tenant aggregation available for super admin." : "Aggregati cross-tenant disponibili per super admin.") : (currentLanguage() === "en" ? "Data scoped to own tenant." : "Dati limitati al tenant proprietario.")}</div>
+      </section>
+      <div class="dashboard-focus-grid">
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Tenants configured" : "Tenant configurati"}</div><div class="focus-value">${escapeHtml(String(tenantsConfigured))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Tenants active" : "Tenant attivi"}</div><div class="focus-value">${escapeHtml(String(tenantsActive))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Registered agents" : "Agenti registrati"}</div><div class="focus-value">${escapeHtml(String(agentsRegistered))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Nyra active branches" : "Rami Nyra attivi"}</div><div class="focus-value">${escapeHtml(String(nyraBranchesActive))}</div></div>
+      </div>
+      <div class="dashboard-focus-grid">
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Core decisions (24h)" : "Decisioni Core 24h"}</div><div class="focus-value">${escapeHtml(String(coreDecisions))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Blocked actions (24h)" : "Azioni bloccate 24h"}</div><div class="focus-value">${escapeHtml(String(blockedActions))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Requested confirmations" : "Conferme richieste"}</div><div class="focus-value">${escapeHtml(String(confirmationsRequested))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Tools completed" : "Tool completati"}</div><div class="focus-value">${escapeHtml(String(toolCompleted))}</div></div>
+      </div>
+      <div class="dashboard-focus-grid">
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Tool failed" : "Tool falliti"}</div><div class="focus-value">${escapeHtml(String(toolFailed))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Active work" : "Work attivi"}</div><div class="focus-value">${escapeHtml(String(activeWorks))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Active sessions" : "Sessioni attive"}</div><div class="focus-value">${escapeHtml(String(activeSessions))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Active locks" : "Lock attivi"}</div><div class="focus-value">${escapeHtml(String(locksActive))}</div></div>
+      </div>
+      <div class="dashboard-focus-grid">
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Indexed artifacts" : "Artifact indicizzati"}</div><div class="focus-value">${escapeHtml(String(artifactsIndexed))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Memory docs" : "Documenti memoria cloud"}</div><div class="focus-value">${escapeHtml(String(memoryCloudDocs))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Governance state" : "Stato governance"}</div><div class="focus-value">${escapeHtml(String(governance))}</div></div>
+        <div class="dashboard-focus-item"><div class="stat-label">${currentLanguage() === "en" ? "Data update" : "Ultimo aggiornamento"}</div><div class="focus-value">${escapeHtml(summaryTime)}</div></div>
+      </div>
+      <div class="settings-grid">
+        <section class="card">
+          <div class="section-title">${currentLanguage() === "en" ? "Connector states" : "Stati connector"}</div>
+          <div class="list mt-16">
+            <div class="list-item"><div class="item-title">GitHub credential resolver</div><div class="item-subtitle">${escapeHtml(connectorsSummary.github)}</div></div>
+            <div class="list-item"><div class="item-title">Render resolver</div><div class="item-subtitle">${escapeHtml(connectorsSummary.render)}</div></div>
+            <div class="list-item"><div class="item-title">Core runtime</div><div class="item-subtitle">${escapeHtml(connectorsSummary.nyra)}</div></div>
+            <div class="list-item"><div class="item-title">Suite bridge</div><div class="item-subtitle">${escapeHtml(connectorsSummary.suite)}</div></div>
+            <div class="list-item"><div class="item-title">${currentLanguage() === "en" ? "Work Gallery" : "Work Gallery"}</div><div class="item-subtitle">${escapeHtml(connectorsSummary.workGallery)}</div></div>
+            <div class="list-item"><div class="item-title">Nyra workflow</div><div class="item-subtitle">${escapeHtml(connectorsSummary.nyra)}</div></div>
+          </div>
+        </section>
+        ${controlRole() === "super_admin" ? `
+          <section class="card">
+            <div class="section-title">${currentLanguage() === "en" ? "Tenant breakdown" : "Break down tenant"}</div>
+            <div class="list mt-16">
+              ${tenantRows.map((item) => `<div class="list-item"><div class="item-title">${escapeHtml(item.tenantName || item.tenantId || "")}</div><div class="item-subtitle">${currentLanguage() === "en" ? "Status" : "Stato"}: ${escapeHtml(item.tenantName ? "active" : "—")}</div></div>`).join("") || `<div class="settings-note">${currentLanguage() === "en" ? "No tenant data." : "Nessun dato tenant."}</div>`}
+            </div>
+          </section>
+        ` : ""}
+      </div>
+      <section class="card">
+        <div class="section-title">${currentLanguage() === "en" ? "Read-only controls" : "Controlli solo lettura"}</div>
+        <div class="settings-note">${currentLanguage() === "en" ? "La console control room non esegue mutazioni: tutte le azioni operative sono bloccate o route separata con conferma owner." : "La control room non esegue mutazioni: azioni operative bloccate o eseguite da workflow separato con conferma owner."}</div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlWorkGallery() {
+  if (!controlCan("view_own_tenant_work_gallery") && !controlCan("view_global_work_gallery")) {
+    return controlNoData(
+      currentLanguage() === "en" ? "Tenant Work Gallery" : "Tenant Work Gallery",
+      currentLanguage() === "en" ? "Permesso non disponibile per questo ruolo." : "Permesso non disponibile per questo ruolo."
+    );
+  }
+  const filters = state.control?.filters?.work || {};
+  const rows = Array.isArray(state.control?.workGallery?.data) ? state.control.workGallery.data : [];
+  const visibleRows = rows.filter((work) => {
+    const status = String(filters.status || "").toLowerCase();
+    const risk = String(filters.risk || "").toLowerCase();
+    const statusMatch = !status || String(work.status || "").toLowerCase() === status;
+    const riskMatch = !risk || String(work.riskLevel || work.risk || "").toLowerCase() === risk;
+    const agentMatch = !String(filters.agent || "").trim() || JSON.stringify(work.agentsPresent || []).toLowerCase().includes(String(filters.agent).toLowerCase());
+    const projectMatch = !String(filters.projectId || "").trim() || String(work.projectId || "").toLowerCase().includes(String(filters.projectId).toLowerCase());
+    const dateMatch = !String(filters.date || "").trim() || String(work.openedAt || work.lastUpdatedAt || "").includes(String(filters.date));
+    const q = String(filters.q || "").trim().toLowerCase();
+    const textMatch = !q || String(work.title || "").toLowerCase().includes(q) || String(work.workId || "").toLowerCase().includes(q) || String(work.projectId || "").toLowerCase().includes(q);
+    return statusMatch && riskMatch && agentMatch && projectMatch && dateMatch && textMatch;
+  });
+  return `
+    <div class="stack">
+      <section class="card">
+        <div class="section-title">${currentLanguage() === "en" ? "Tenant Work Gallery" : "Tenant Work Gallery"}</div>
+        <div class="list mt-16">
+          <div class="settings-grid">
+            <section class="card">
+              <label class="settings-language-field"><span>Filtro stato</span>
+                <select id="control-work-filter-status" class="sh-input mt-16">
+                  <option value="">${currentLanguage() === "en" ? "Tutti" : "Tutti"}</option>
+                  <option value="open" ${String(filters.status || "").toLowerCase() === "open" ? "selected" : ""}>Open</option>
+                  <option value="in_progress" ${String(filters.status || "").toLowerCase() === "in_progress" ? "selected" : ""}>In progress</option>
+                  <option value="blocked" ${String(filters.status || "").toLowerCase() === "blocked" ? "selected" : ""}>Blocked</option>
+                  <option value="done" ${String(filters.status || "").toLowerCase() === "done" ? "selected" : ""}>Done</option>
+                  <option value="completed" ${String(filters.status || "").toLowerCase() === "completed" ? "selected" : ""}>Completed</option>
+                </select>
+              </label>
+            </section>
+            <section class="card">
+              <label class="settings-language-field"><span>${currentLanguage() === "en" ? "Filtro rischio" : "Filtro rischio"}</span>
+                <select id="control-work-filter-risk" class="sh-input mt-16">
+                  <option value="">${currentLanguage() === "en" ? "Tutti" : "Tutti"}</option>
+                  <option value="alto" ${String(filters.risk || "").toLowerCase() === "alto" ? "selected" : ""}>alto</option>
+                  <option value="medio" ${String(filters.risk || "").toLowerCase() === "medio" ? "selected" : ""}>medio</option>
+                  <option value="basso" ${String(filters.risk || "").toLowerCase() === "basso" ? "selected" : ""}>basso</option>
+                </select>
+              </label>
+            </section>
+            <section class="card">
+              <label class="settings-language-field"><span>${currentLanguage() === "en" ? "Agente" : "Agente"}</span>
+                <input id="control-work-filter-agent" value="${escapeHtml(String(filters.agent || ""))}" class="sh-input mt-16" type="text" />
+              </label>
+            </section>
+            <section class="card">
+              <label class="settings-language-field"><span>${currentLanguage() === "en" ? "Progetto" : "Progetto"}</span>
+                <input id="control-work-filter-project" value="${escapeHtml(String(filters.projectId || ""))}" class="sh-input mt-16" type="text" />
+              </label>
+            </section>
+            <section class="card">
+              <label class="settings-language-field"><span>${currentLanguage() === "en" ? "Data" : "Data"}</span>
+                <input id="control-work-filter-date" value="${escapeHtml(String(filters.date || ""))}" class="sh-input mt-16" type="date" />
+              </label>
+            </section>
+            <section class="card">
+              <label class="settings-language-field"><span>Ricerca</span>
+                <input id="control-work-filter-q" value="${escapeHtml(String(filters.q || ""))}" class="sh-input mt-16" type="text" placeholder="${currentLanguage() === "en" ? "work id, titolo, progetto" : "work id, titolo, progetto"}" />
+              </label>
+            </section>
+          </div>
+          <div class="action-row mt-16">
+            <button class="sh-button" data-action="apply-control-work-filters" type="button">${currentLanguage() === "en" ? "Applica filtri" : "Applica filtri"}</button>
+            <button class="sh-button secondary-btn" data-action="reset-control-work-filters" type="button">${currentLanguage() === "en" ? "Reset" : "Azzera"}</button>
+          </div>
+        </div>
+      </section>
+      <section class="card">
+        <div class="section-title">${currentLanguage() === "en" ? "Lavori" : "Lavori"} (${escapeHtml(String(visibleRows.length))})</div>
+        <div class="list mt-16">
+          ${visibleRows.map((work) => `
+            <div class="list-item">
+              <div>
+                <div class="item-title">${escapeHtml(work.title || work.workId || work.projectId || `Work ${work.id || ""}`)}</div>
+                <div class="item-subtitle">${escapeHtml(work.projectId || "")} · ${escapeHtml(String(work.status || ""))} · ${escapeHtml(String(work.riskLevel || work.risk || ""))}</div>
+                <div class="item-subtitle">${currentLanguage() === "en" ? "Opened" : "Aperto"}: ${controlFormatDate(work.openedAt)} · ${currentLanguage() === "en" ? "Updated" : "Aggiornato"}: ${controlFormatDate(work.lastUpdatedAt)}</div>
+                <div class="item-subtitle">${currentLanguage() === "en" ? "Owner" : "Owner"}: ${escapeHtml(work.owner || work.requestOwner || "")} · ${currentLanguage() === "en" ? "Agents" : "Agenti"}: ${escapeHtml(Array.isArray(work.agentsPresent) ? work.agentsPresent.join(", ") : "")}</div>
+              </div>
+              <button class="sh-button secondary-btn" data-action="open-control-work-detail" data-work-id="${escapeHtml(String(work.workId || ""))}" type="button">${currentLanguage() === "en" ? "Dettaglio" : "Dettaglio"}</button>
+            </div>
+          `).join("") || `<div class=\"settings-note\">${currentLanguage() === "en" ? "Nessun lavoro trovato." : "Nessun lavoro trovato."}</div>`}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlWorkDetail() {
+  if (!state.control?.selectedWorkId) return controlNoData(currentLanguage() === "en" ? "Dettaglio lavoro" : "Dettaglio lavoro", currentLanguage() === "en" ? "Seleziona un lavoro dalla gallery." : "Seleziona un lavoro dalla gallery.");
+  const work = state.control?.work || {};
+  const timeline = Array.isArray(state.control?.workTimeline?.events) ? state.control.workTimeline.events : [];
+  return `
+    <div class="stack">
+      <section class="card">
+        <div class="row between mb-16">
+          <div>
+            <div class="section-title">${currentLanguage() === "en" ? "Work detail" : "Dettaglio lavoro"}</div>
+            <div class="page-subtitle">${escapeHtml(String(work.workId || state.control.selectedWorkId))} · ${escapeHtml(String(work.tenantId || ""))}</div>
+          </div>
+          <button class=\"sh-button secondary-btn\" data-view-link=\"control-work-gallery\" type=\"button\">${currentLanguage() === "en" ? "Torna alla gallery" : "Torna alla gallery"}</button>
+        </div>
+        <div class="list">
+          <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === "en" ? "Titolo" : "Titolo"}</div><div class=\"item-subtitle\">${escapeHtml(work.title || "—")}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === "en" ? "Descrizione breve" : "Descrizione breve"}</div><div class=\"item-subtitle\">${escapeHtml(work.description || "—")}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === "en" ? "Stato" : "Stato"}</div><div class=\"item-subtitle\">${escapeHtml(String(work.status || "—"))}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === "en" ? "Priorità" : "Priorità"}</div><div class=\"item-subtitle\">${escapeHtml(String(work.priority || "—"))}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === "en" ? "Rischio" : "Rischio"}</div><div class=\"item-subtitle\">${escapeHtml(String(work.riskLevel || work.risk || "—"))}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === "en" ? "Owner / request owner" : "Owner / request owner"}</div><div class=\"item-subtitle\">${escapeHtml(String(work.owner || "—"))} / ${escapeHtml(String(work.requestOwner || "—"))}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === "en" ? "Core verdict" : "Core verdict"}</div><div class=\"item-subtitle\">${escapeHtml(String(work.coreVerdict || "—"))}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === "en" ? "Verifica" : "Verifica"}</div><div class=\"item-subtitle\">${escapeHtml(String(work.verificationStatus || "—"))}</div></div>
+        </div>
+      </section>
+      <section class=\"card\">
+        <div class=\"section-title\">${currentLanguage() === "en" ? "Timeline operativa" : "Timeline operativa"}</div>
+        <div class=\"list mt-16\">
+          ${timeline.length ? timeline.map((event) => `
+            <div class=\"list-item\">
+              <div class=\"item-title\">${controlFormatDate(event.timestamp)} · ${escapeHtml(String(event.actor || ""))} · ${escapeHtml(String(event.event || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "Branch" : "Branch"}: ${escapeHtml(String(event.branch || ""))} · ${currentLanguage() === "en" ? "Outcome" : "Esito"}: ${escapeHtml(String(event.outcome || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "Evidence" : "Evidenza"}: ${escapeHtml(String(event.evidence || ""))} · ${currentLanguage() === "en" ? "Decisione" : "Decisione"}: ${escapeHtml(String(event.coreDecision || ""))}</div>
+              ${event.nextAction ? `<div class=\"item-subtitle\">${currentLanguage() === "en" ? "Prossima azione" : "Prossima azione"}: ${escapeHtml(String(event.nextAction || ""))}</div>` : ""}
+              ${event.confirmationRequested ? `<div class=\"item-subtitle\">${currentLanguage() === "en" ? "Richiesta conferma proprietario" : "Richiesta conferma owner"}</div>` : ""}
+            </div>
+          `).join("") : `<div class=\"settings-note\">${currentLanguage() === "en" ? "Nessun evento timeline." : "Nessun evento timeline."}</div>`}
+        </div>
+      </section>
+      <section class="card">
+        <div class="section-title">${currentLanguage() === "en" ? "Nota" : "Nota"}</div>
+        <div class="settings-note">Read-only</div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlAgents() {
+  const rows = controlListRows(state.control?.agents || {});
+  return `
+    <div class=\"stack\">
+      <section class=\"card\">
+        <div class=\"section-title\">${currentLanguage() === \"en\" ? \"Agenti\" : \"Agenti\"}</div>
+        <div class=\"list mt-16\">
+          ${rows.map((agent) => `
+            <div class=\"list-item\">
+              <div class=\"item-title\">${escapeHtml(agent.username || agent.fullName || agent.agentId || "—")}</div>
+              <div class=\"item-subtitle\">${escapeHtml(String(agent.tenantId || ""))} · ${escapeHtml(String(agent.role || ""))} · ${escapeHtml(String(agent.status || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "Risk" : "Rischio"}: ${escapeHtml(String(agent.risk || "—"))} · ${currentLanguage() === "en" ? "Task aperte" : "Task aperte"}: ${escapeHtml(String(agent.tasksOpen || 0))} · ${currentLanguage() === "en" ? "Task bloccate" : "Task bloccate"}: ${escapeHtml(String(agent.tasksLocked || 0))}</div>
+            </div>
+          `).join("") || `<div class=\"settings-note\">${currentLanguage() === "en" ? "Nessun agente caricato." : "Nessun agente caricato."}</div>`}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlBranches() {
+  const rows = controlListRows(state.control?.branches || {});
+  return `
+    <div class=\"stack\">
+      <section class=\"card\">
+        <div class=\"section-title\">${currentLanguage() === \"en\" ? \"Rami & flussi\" : \"Rami & flussi\"}</div>
+        <div class=\"list mt-16\">
+          ${rows.map((branch) => `
+            <div class=\"list-item\">
+              <div class=\"item-title\">${escapeHtml(branch.branchName || branch.branchId || "—")}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === \"en\" ? \"Tenant\" : \"Tenant\"}: ${escapeHtml(String(branch.tenantId || ""))} · ${escapeHtml(String(branch.status || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === \"en\" ? \"Aperti\" : \"Aperti\"}: ${escapeHtml(String(branch.openJobs || 0))} · ${currentLanguage() === \"en\" ? \"Work collegati\" : \"Lavori\"}: ${escapeHtml(String(branch.linkedWork || 0))}</div>
+            </div>
+          `).join("") || `<div class=\"settings-note\">${currentLanguage() === "en" ? "Nessun ramo disponibile." : "Nessun ramo disponibile."}</div>`}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlKeys() {
+  const rows = controlListRows(state.control?.keys?.keys || state.control?.keys || {});
+  return `
+    <div class=\"stack\">
+      <section class=\"card\">
+        <div class=\"section-title\">${currentLanguage() === \"en\" ? \"Chiavi (metadati)\" : \"Chiavi (metadati)\"}</div>
+        <div class=\"list mt-16\">
+          ${rows.map((key) => `
+            <div class=\"list-item\">
+              <div class=\"item-title\">${escapeHtml(String(key.provider || ""))} · ${escapeHtml(String(key.type || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "Tenant" : "Tenant"}: ${escapeHtml(String(key.tenantId || key.tenantName || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "Configurata" : "Configurata"}: ${escapeHtml(String(key.configured))} · ${currentLanguage() === "en" ? "Masked ID" : "ID mascherato"}: ${escapeHtml(String(key.maskedId || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "Ultima verifica" : "Ultima verifica"}: ${controlFormatDate(key.lastCheck)}</div>
+            </div>
+          `).join("") || `<div class=\"settings-note\">${currentLanguage() === "en" ? "Nessuna chiave disponibile." : "Nessuna chiave disponibile."}</div>`}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlAudit() {
+  const rows = controlListRows(state.control?.audit || {});
+  return `
+    <div class=\"stack\">
+      <section class=\"card\">
+        <div class=\"section-title\">${currentLanguage() === \"en\" ? \"Audit trail\" : \"Audit trail\"}</div>
+        <div class=\"list mt-16\">
+          ${rows.map((event) => `
+            <div class=\"list-item\">
+              <div class=\"item-title\">${escapeHtml(event.eventId || event.id || "event")}</div>
+              <div class=\"item-subtitle\">${controlFormatDate(event.ts)} · ${escapeHtml(String(event.action || ""))} · ${escapeHtml(String(event.outcome || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "Tenant" : "Tenant"}: ${escapeHtml(String(event.tenantId || ""))} · ${currentLanguage() === "en" ? "Actor" : "Utente"}: ${escapeHtml(event.actor?.username || event.actor?.user || "")}</div>
+              <div class=\"item-subtitle\">${escapeHtml(String(event.reason || ""))}</div>
+            </div>
+          `).join("") || `<div class=\"settings-note\">${currentLanguage() === "en" ? "Nessun evento audit." : "Nessun evento audit."}</div>`}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlDecisionLedger() {
+  const rows = controlListRows(state.control?.decisionLedger || {});
+  return `
+    <div class=\"stack\">
+      <section class=\"card\">
+        <div class=\"section-title\">${currentLanguage() === \"en\" ? \"Decision Ledger\" : \"Decision Ledger\"}</div>
+        <div class=\"list mt-16\">
+          ${rows.map((row) => `
+            <div class=\"list-item\">
+              <div class=\"item-title\">${escapeHtml(String(row.decisionId || row.id || row.workId || "decision"))}</div>
+              <div class=\"item-subtitle\">${escapeHtml(String(row.coreVerdict || ""))} · ${currentLanguage() === "en" ? "Owner requested" : "Owner richiesto"}: ${row.ownerRequested ? "yes" : "no"}</div>
+              <div class=\"item-subtitle\">${escapeHtml(String(row.nextAction || ""))}</div>
+              <div class=\"item-subtitle\">${controlFormatDate(row.createdAt)}</div>
+            </div>
+          `).join("") || `<div class=\"settings-note\">${currentLanguage() === "en" ? "Nessuna decisione trovata." : "Nessuna decisione trovata."}</div>`}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlMemory() {
+  const rows = controlListRows(state.control?.memory || {});
+  return `
+    <div class=\"stack\">
+      <section class=\"card\">
+        <div class=\"section-title\">${currentLanguage() === \"en\" ? \"Memoria\" : \"Memoria\"}</div>
+        <div class=\"list mt-16\">
+          ${rows.map((row) => `
+            <div class=\"list-item\">
+              <div class=\"item-title\">${escapeHtml(String(row.tenantName || row.tenantId || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "State" : "Stato"}: ${escapeHtml(String(row.memoryState || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "Docs" : "Docs"}: ${escapeHtml(String(row.memoryCloudDocs || 0))} · ${currentLanguage() === "en" ? "Artifacts" : "Artifact"}: ${escapeHtml(String(row.artifactsIndexed || 0))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "Decision entries" : "Decision entries"}: ${escapeHtml(String(row.decisionEntries || 0))} · ${currentLanguage() === "en" ? "Last snapshot" : "Ultimo snapshot"}: ${controlFormatDate(row.lastSnapshotAt)}</div>
+            </div>
+          `).join("") || `<div class=\"settings-note\">${currentLanguage() === "en" ? \"Nessun dato memoria.\" : \"Nessun dato memoria.\"}</div>`}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlConnectors() {
+  const connectors = state.control?.connectors || {};
+  const rows = Array.isArray(connectors?.tenants) ? connectors.tenants : [];
+  const summary = Array.isArray(rows) ? rows.length : 0;
+  return `
+    <div class=\"stack\">
+      <section class=\"card\">
+        <div class=\"section-title\">${currentLanguage() === \"en\" ? \"Connectors\" : \"Connectors\"}</div>
+        <div class=\"settings-note\">${currentLanguage() === \"en\" ? `Tenants: ${summary}` : `Tenant: ${summary}`}</div>
+        <div class=\"list mt-16\">
+          ${rows.map((tenant) => `
+            <div class=\"list-item\">
+              <div class=\"item-title\">${escapeHtml(String(tenant.tenantName || tenant.tenantId || ""))}</div>
+              <div class=\"item-subtitle\">${Array.isArray(tenant.list) ? tenant.list.map((item) => `${item.name}: ${item.state}`).join(" · ") : ""}</div>
+            </div>
+          `).join("") || `<div class=\"settings-note\">${currentLanguage() === "en" ? "Nessun connettore disponibile." : "Nessun connettore disponibile."}</div>`}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlGovernance() {
+  const governance = state.control?.governance || {};
+  const rows = Array.isArray(governance.tenantRows) ? governance.tenantRows : [];
+  const blockers = Array.isArray(governance.blockers) ? governance.blockers : [];
+  return `
+    <div class=\"stack\">
+      <section class=\"card\">
+        <div class=\"section-title\">${currentLanguage() === \"en\" ? \"Governance & Blockers\" : \"Governance & Blockers\"}</div>
+        <div class=\"settings-grid\">
+          <section class=\"card\">
+            <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === \"en\" ? \"Stato governance\" : \"Stato governance\"}</div><div class=\"item-subtitle\">${escapeHtml(String(governance.state || "DEGRADED"))}</div></div>
+            <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === \"en\" ? \"Tenant monitorati\" : \"Tenant monitorati\"}</div><div class=\"item-subtitle\">${escapeHtml(String(governance.tenantCount || rows.length || 0))}</div></div>
+            <div class=\"list-item\"><div class=\"item-title\">${currentLanguage() === \"en\" ? \"Aggiornato\" : \"Aggiornato\"}</div><div class=\"item-subtitle\">${controlFormatDate(governance.updatedAt)}</div></div>
+          </section>
+        </div>
+        <div class=\"list mt-16\">
+          ${rows.map((row) => `
+            <div class=\"list-item\">
+              <div class=\"item-title\">${escapeHtml(String(row.tenantName || row.tenantId || ""))}</div>
+              <div class=\"item-subtitle\">${currentLanguage() === "en" ? "Denied" : "Denied"}: ${escapeHtml(String(row.deniedActions || 0))} · ${currentLanguage() === "en" ? "Failed" : "Failed"}: ${escapeHtml(String(row.failedActions || 0))} · ${currentLanguage() === "en" ? "Last hour" : "Ultima ora"}: ${escapeHtml(String(row.actionsLastHour || 0))}</div>
+              ${Array.isArray(row.blockers) ? `<div class=\"item-subtitle\">${row.blockers.map((item) => escapeHtml(item)).join(" · ")}</div>` : ""}
+            </div>
+          `).join("") || `<div class=\"settings-note\">${currentLanguage() === "en" ? "Nessun blocker." : "Nessun blocker."}</div>`}
+        </div>
+        <section class=\"card mt-16\">
+          <div class=\"section-title\">${currentLanguage() === \"en\" ? \"Blocker globali\" : \"Blocker globali\"}</div>
+          <div class=\"list mt-16\">${blockers.map((item) => `<div class=\"list-item\"><div class=\"item-title\">${escapeHtml(item)}</div></div>`).join("") || `<div class=\"settings-note\">${currentLanguage() === \"en\" ? \"Nessun blocker attivo.\" : \"Nessun blocker attivo.\"}</div>`}</div>
+        </section>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlDemo() {
+  const demo = state.control?.demo || {};
+  return `
+    <div class=\"stack\">
+      <section class=\"card\">
+        <div class=\"section-title\">${currentLanguage() === \"en\" ? \"Agent Workspace Demo\" : \"Agent Workspace Demo\"}</div>
+        <div class=\"row between mb-16\">
+          <div class=\"list\">
+            <div class=\"list-item\"><div class=\"item-title\">Role</div><div class=\"item-subtitle\">${escapeHtml(String(demo.role || controlRole()))}</div></div>
+            <div class=\"list-item\"><div class=\"item-title\">Tenant</div><div class=\"item-subtitle\">${escapeHtml(String(demo.tenant?.tenantName || ""))} (${escapeHtml(String(demo.tenant?.tenantId || ""))})</div></div>
+            <div class=\"list-item\"><div class=\"item-title\">Risk action</div><div class=\"item-subtitle\">${escapeHtml(String(demo.riskyAction || ""))}</div></div>
+          </div>
+        </div>
+        <div class=\"list mt-16\">
+          <div class=\"list-item\"><div class=\"item-title\">Core health</div><div class=\"item-subtitle\">${escapeHtml(String(demo.coreHealth?.state || "UNKNOWN"))}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">Nyra runtime</div><div class=\"item-subtitle\">${escapeHtml(String(demo.nyraRuntime?.state || "UNKNOWN"))}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">Github resolver</div><div class=\"item-subtitle\">${escapeHtml(String(demo.githubCredentialState?.state || "UNKNOWN"))}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">Render resolver</div><div class=\"item-subtitle\">${escapeHtml(String(demo.renderResolverState?.state || "UNKNOWN"))}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">Verdict</div><div class=\"item-subtitle\">execution_allowed=${demo.verdict?.execution_allowed ? "true" : "false"} · owner_confirmation_required=${demo.verdict?.owner_confirmation_required ? "true" : "false"} · core_verdict_required=${demo.verdict?.core_verdict_required ? "true" : "false"} · audit_required=${demo.verdict?.audit_required ? "true" : "false"}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">Explanation</div><div class=\"item-subtitle\">${escapeHtml(String(demo.explanationIT || ""))}</div></div>
+          <div class=\"list-item\"><div class=\"item-title\">Next actions</div><div class=\"item-subtitle\">${Array.isArray(demo.nextActions) ? demo.nextActions.map((item) => escapeHtml(item)).join(\" · \") : ""}</div></div>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderControlSuperAdmin() {
+  if (controlRole() !== "super_admin") {
+    return controlNoData("Super Admin settings", "Pagina riservata al profilo super admin.");
+  }
+  const summary = state.control?.superAdminSettings || {};
+  return `
+    <div class=\"stack\">
+      <section class=\"card\">
+        <div class=\"section-title\">Super Admin settings</div>
+        <div class=\"settings-note\">${currentLanguage() === "en" ? "Area amministrativa riservata: accesso globale e audit di supervisione." : "Area amministrativa riservata: accesso globale e audit di supervisione."}</div>
+      </section>
+      <section class=\"card\">
+        <div class=\"section-title\">Tenants registrati</div>
+        <div class=\"list mt-16\">
+          ${controlListRows(summary).map((tenant) => `
+            <div class=\"list-item\">
+              <div class=\"item-title\">${escapeHtml(String(tenant.tenantName || tenant.name || tenant.tenantId || ""))}</div>
+              <div class=\"item-subtitle\">${escapeHtml(String(tenant.tenantId || ""))} ${tenant.active ? "· active" : "· inactive"}</div>
+            </div>
+          `).join("") || `<div class=\"settings-note\">Nessun tenant.</div>`}
+        </div>
+      </section>
     </div>
   `;
 }

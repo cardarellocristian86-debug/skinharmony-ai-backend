@@ -132,6 +132,92 @@ export function createDataOrchestrator(deps) {
     };
   }
 
+  function getControlTenantFilter() {
+    if (state.control?.role === "super_admin") {
+      return String(state.control.selectedTenantId || "").trim();
+    }
+    return "";
+  }
+
+  function toControlQuery(params = {}) {
+    const next = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      const normalized = String(value == null ? "" : value).trim();
+      if (normalized) next.set(key, normalized);
+    });
+    return next.toString();
+  }
+
+  function controlDataKeysForView(view) {
+    const tenantFilter = getControlTenantFilter();
+    const isSuper = state.control?.role === "super_admin";
+    if (view === "control-executive") {
+      return [
+        ...(isSuper ? ["controlTenants"] : []),
+        "controlExecutive",
+        "controlConnectors",
+        "controlGovernance",
+        "controlWorkGallery"
+      ];
+    }
+    if (view === "control-work-gallery") return ["controlWorkGallery"];
+    if (view === "control-work-detail") {
+      const workId = String(state.control?.selectedWorkId || "").trim();
+      if (!workId) return ["controlWorkGallery"];
+      return [tenantFilter ? "controlWork" : "controlWork", "controlWorkTimeline"];
+    }
+    if (view === "control-agents") return ["controlAgents"];
+    if (view === "control-branches") return ["controlBranches"];
+    if (view === "control-keys") return ["controlKeys"];
+    if (view === "control-audit") return ["controlAudit"];
+    if (view === "control-decision-ledger") return ["controlDecisionLedger"];
+    if (view === "control-memory") return ["controlMemory"];
+    if (view === "control-connectors") return ["controlConnectors"];
+    if (view === "control-governance") return ["controlGovernance"];
+    if (view === "control-demo") return ["controlDemo"];
+    if (view === "control-super-admin") return ["controlTenants", "controlConnectors"];
+    return [];
+  }
+
+  async function controlFetch(urlPath, params = {}, fallback = null) {
+    const query = toControlQuery(params);
+    const endpoint = `${urlPath}${query ? `?${query}` : ""}`;
+    try {
+      return await safeJsonFetch(`${API_SERVER_URL}${endpoint}`, endpoint);
+    } catch (_error) {
+      return fallback;
+    }
+  }
+
+  function applyControlPayloadMeta(payload) {
+    if (!payload || typeof payload !== "object") return;
+    if (typeof payload.role === "string" && payload.role) {
+      state.control.role = payload.role;
+    }
+  }
+
+  function setControlDefaultsFromRuntime() {
+    if (state.control && !state.control.role) {
+      state.control.role = String(state.runtimeMeta?.control?.role || "tenant_admin");
+    }
+  }
+
+  function readControlWorkFilters() {
+    const filters = state.control?.filters?.work || {};
+    const tenantFilter = getControlTenantFilter();
+    return {
+      limit: 120,
+      offset: 0,
+      tenantId: tenantFilter,
+      status: String(filters.status || "").trim(),
+      risk: String(filters.risk || "").trim(),
+      agent: String(filters.agent || "").trim(),
+      projectId: String(filters.projectId || "").trim(),
+      q: String(filters.q || "").trim(),
+      date: String(filters.date || "").trim()
+    };
+  }
+
   async function loadProfitabilityOverview() {
     const params = new URLSearchParams({
       startDate: state.profitabilityStartDate,
@@ -174,7 +260,83 @@ export function createDataOrchestrator(deps) {
     history: async () => readJson("/api/history", []),
     assistant: async () => readJson("/api/assistant/brief", null),
     goldCapabilities: async () => safeJsonFetch(`${API_SERVER_URL}/api/ai-gold/capabilities`, "/api/gold-state/decision").catch(() => null),
-    goldDecisionContext: async () => safeJsonFetch(`${API_SERVER_URL}/api/ai-gold/decision-context`, "/api/gold-state/decision").catch(() => null)
+    goldDecisionContext: async () => safeJsonFetch(`${API_SERVER_URL}/api/ai-gold/decision-context`, "/api/gold-state/decision").catch(() => null),
+    controlTenants: async () => {
+      const response = await controlFetch("/api/control-room/tenants", {});
+      if (response && Array.isArray(response.data)) {
+        return {
+          ...response,
+          tenants: response.data
+        };
+      }
+      return response;
+    },
+    controlExecutive: async () => controlFetch("/api/control-room/executive", {
+      tenantId: getControlTenantFilter(),
+      refreshIntervalMs: 120000
+    }, null),
+    controlWorkGallery: async () => {
+      const response = await controlFetch("/api/control-room/work-gallery", readControlWorkFilters(), {});
+      if (response && Array.isArray(response.data)) {
+        return {
+          ...response,
+          list: response.data
+        };
+      }
+      return response;
+    },
+    controlWork: async () => {
+      const workId = String(state.control?.selectedWorkId || "").trim();
+      if (!workId) return null;
+      return controlFetch(`/api/control-room/work/${encodeURIComponent(workId)}`, {
+        tenantId: getControlTenantFilter()
+      }, null);
+    },
+    controlWorkTimeline: async () => {
+      const workId = String(state.control?.selectedWorkId || "").trim();
+      if (!workId) return null;
+      return controlFetch(`/api/control-room/work/${encodeURIComponent(workId)}/timeline`, {
+        tenantId: getControlTenantFilter()
+      }, null);
+    },
+    controlAgents: async () => controlFetch("/api/control-room/agents", {
+      tenantId: getControlTenantFilter(),
+      limit: 120,
+      offset: 0
+    }, null),
+    controlBranches: async () => controlFetch("/api/control-room/branches", {
+      tenantId: getControlTenantFilter(),
+      limit: 120,
+      offset: 0
+    }, null),
+    controlKeys: async () => controlFetch("/api/control-room/keys", {
+      tenantId: getControlTenantFilter(),
+      limit: 120,
+      offset: 0
+    }, null),
+    controlAudit: async () => controlFetch("/api/control-room/audit", {
+      tenantId: getControlTenantFilter(),
+      limit: 120,
+      offset: 0
+    }, null),
+    controlDecisionLedger: async () => controlFetch("/api/control-room/decision-ledger", {
+      tenantId: getControlTenantFilter(),
+      limit: 120,
+      offset: 0
+    }, null),
+    controlMemory: async () => controlFetch("/api/control-room/memory", {
+      tenantId: getControlTenantFilter(),
+      limit: 120,
+      offset: 0
+    }, null),
+    controlConnectors: async () => controlFetch("/api/control-room/connectors", {
+      tenantId: getControlTenantFilter()
+    }, null),
+    controlGovernance: async () => controlFetch("/api/control-room/governance", {
+      tenantId: getControlTenantFilter()
+    }, null),
+    controlDemo: async () => controlFetch("/api/demo/agent-workspace-governance", {}, null),
+    controlSuperAdminSettings: async () => controlFetch("/api/control-room/tenants", {}, null)
   };
 
   function applyLoadedData(key, value) {
@@ -195,6 +357,88 @@ export function createDataOrchestrator(deps) {
     if (key === "assistant") state.assistant = value;
     if (key === "goldCapabilities") state.goldCapabilities = normalizeGoldCapabilities(value);
     if (key === "goldDecisionContext") state.goldDecisionContext = normalizeGoldDecisionContext(value);
+    if (key === "runtimeMeta" && value && typeof value === "object") {
+      applyControlPayloadMeta(value.control || value);
+      setControlDefaultsFromRuntime();
+      state.control = {
+        ...state.control,
+        role: String(state.control?.role || "tenant_admin")
+      };
+    }
+    if (key === "controlTenants") {
+      state.control.tenants = Array.isArray(value?.tenants)
+        ? value.tenants
+        : Array.isArray(value?.data)
+          ? value.data
+          : [];
+      if (!state.control.selectedTenantId && state.control.tenants.length > 0 && state.control.role === "super_admin") {
+        state.control.selectedTenantId = String(state.control.tenants[0].tenantId || "");
+      }
+    }
+    if (key === "controlExecutive") state.control.executive = value || null;
+    if (key === "controlWorkGallery") {
+      state.control.workGallery = {
+        data: Array.isArray(value?.list) ? value.list : Array.isArray(value?.data) ? value.data : [],
+        ...value
+      };
+    }
+    if (key === "controlWork") state.control.work = value || null;
+    if (key === "controlWorkTimeline") state.control.workTimeline = value || null;
+    if (key === "controlAgents") {
+      state.control.agents = {
+        data: Array.isArray(value?.data) ? value.data : [],
+        ...value
+      };
+    }
+    if (key === "controlBranches") {
+      state.control.branches = {
+        data: Array.isArray(value?.data) ? value.data : [],
+        ...value
+      };
+    }
+    if (key === "controlKeys") {
+      state.control.keys = {
+        keys: Array.isArray(value?.keys)
+          ? value.keys
+          : Array.isArray(value?.data)
+            ? value.data
+            : [],
+        ...value
+      };
+    }
+    if (key === "controlAudit") {
+      state.control.audit = {
+        data: Array.isArray(value?.data) ? value.data : [],
+        ...value
+      };
+    }
+    if (key === "controlDecisionLedger") {
+      state.control.decisionLedger = {
+        data: Array.isArray(value?.data) ? value.data : [],
+        ...value
+      };
+    }
+    if (key === "controlMemory") {
+      state.control.memory = {
+        data: Array.isArray(value?.data) ? value.data : [],
+        ...value
+      };
+    }
+    if (key === "controlConnectors") state.control.connectors = value || null;
+    if (key === "controlGovernance") state.control.governance = value || null;
+    if (key === "controlDemo") state.control.demo = value || null;
+    if (key === "controlSuperAdminSettings") state.control.superAdminSettings = value || null;
+    if (key.startsWith("control")) {
+      state.control.lastLoadByView[key] = {
+        loadedAt: new Date().toISOString(),
+        key
+      };
+    }
+  }
+
+  async function loadControlDataForView(view = state.currentView) {
+    const keys = controlDataKeysForView(view);
+    await loadData(keys);
   }
 
   async function loadData(keys = Object.keys(DATA_FETCHERS)) {
@@ -209,6 +453,9 @@ export function createDataOrchestrator(deps) {
   }
 
   function lazyModulesForCurrentView() {
+    if (String(state.currentView || "").startsWith("control")) {
+      return controlDataKeysForView(state.currentView);
+    }
     if (state.currentView === "dashboard" || state.currentView === "ecosystem") {
       return ["dashboard", "assistant", "goldCapabilities", "goldDecisionContext"];
     }
@@ -267,6 +514,8 @@ export function createDataOrchestrator(deps) {
     loadProfitabilityOverview,
     loadTreatments,
     loadData,
+    loadControlDataForView,
+    controlDataKeysForView,
     refreshForUserEvent,
     runLazyRefresh,
     startLazyRefreshLoop

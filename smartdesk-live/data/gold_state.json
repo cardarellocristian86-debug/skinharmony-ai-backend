@@ -1,1 +1,1357 @@
-[]
+[
+  {
+    "id": "gold_state:center_admin",
+    "version": "corelia_state_v1",
+    "centerId": "center_admin",
+    "centerName": "Privilege Parrucchieri",
+    "updatedAt": "2026-07-14T20:25:34.233Z",
+    "lastEvent": {
+      "type": "bootstrap_existing_data",
+      "at": "2026-07-14T20:25:34.233Z",
+      "reason": "one_time_state_initialization"
+    },
+    "eventSeq": 1,
+    "components": {
+      "Rev": 0,
+      "U": 0,
+      "Sat": 0,
+      "Act": 0,
+      "Cont": 0,
+      "Ticket": 0,
+      "Prod": 0,
+      "DQ": 0.15,
+      "CostConf": 0,
+      "Margin": 0,
+      "Conf": 1
+    },
+    "counters": {
+      "revenueTotalCents": 0,
+      "paymentCount": 0,
+      "unlinkedPayments": 0,
+      "todayAppointments": 0,
+      "appointmentSlots": 24,
+      "clientsTotal": 0,
+      "activeClients": 0,
+      "clientsWithContact": 0,
+      "servicesTotal": 0,
+      "servicesWithPrice": 0,
+      "servicesWithCost": 0,
+      "staffActive": 3,
+      "staffTotal": 3,
+      "inventoryTotal": 0,
+      "lowStock": 0,
+      "marginTotal": 0,
+      "marginSamples": 0,
+      "profitabilityRevenueCents": 0,
+      "profitabilityCostCents": 0,
+      "profitabilityProfitCents": 0,
+      "profitabilitySamples": 0,
+      "profitabilityReal": 0,
+      "profitabilityStandard": 0,
+      "profitabilityEstimated": 0,
+      "profitabilityIncomplete": 0
+    },
+    "dirty": {
+      "components": [],
+      "snapshots": [],
+      "signals": []
+    },
+    "snapshots": {
+      "business": {
+        "type": "business_snapshot",
+        "source": "smartdesk_gold_state",
+        "revenueCents": 0,
+        "unlinkedPayments": 0,
+        "agendaSaturation": 0,
+        "activeClients": 0,
+        "clientContinuity": 0,
+        "averageTicketCents": 0,
+        "productivity": 0,
+        "dataQuality": 0.15,
+        "confidence": 1,
+        "status": "centro_monitorato"
+      },
+      "profitability": {
+        "type": "profitability_snapshot",
+        "source": "smartdesk_gold_state",
+        "revenueCents": 0,
+        "coreRevenueCents": 0,
+        "coreCostCents": 0,
+        "coreProfitCents": 0,
+        "averageMargin": 0,
+        "costConfidence": 0,
+        "economicConfidence": 1,
+        "profitabilityConfidence": 0,
+        "confidenceLabel": "bassa",
+        "coreSamples": 0,
+        "confidenceBreakdown": {
+          "real": 0,
+          "standard": 0,
+          "estimated": 0,
+          "incomplete": 0
+        },
+        "mathCore": "profitability_core_v1",
+        "status": "margine_da_verificare"
+      },
+      "report": {
+        "type": "report_snapshot",
+        "source": "smartdesk_gold_state",
+        "revenueCents": 0,
+        "averageTicketCents": 0,
+        "productivity": 0,
+        "agendaSaturation": 0,
+        "continuity": 0,
+        "dataQuality": 0.15,
+        "unlinkedPayments": 0
+      }
+    },
+    "signals": {
+      "operationalRisk": 0,
+      "centerBelowThreshold": 0,
+      "opportunity": 0,
+      "cashAnomaly": 0,
+      "marginAnomaly": 0,
+      "dataReliability": 1,
+      "productivitySignal": 0
+    },
+    "decision": {
+      "source": "smartdesk_gold_state",
+      "domain": "cash",
+      "score": 0,
+      "weightedScore": 0,
+      "action": "MONITOR",
+      "primaryAction": {
+        "domain": "cash",
+        "action": "MONITOR",
+        "label": "Verifica pagamenti non collegati",
+        "actionabilityScore": 1
+      },
+      "secondaryActions": [
+        {
+          "domain": "profitability",
+          "score": 0,
+          "weightedScore": 0,
+          "actionabilityScore": 0.52,
+          "label": "Verifica marginalita e costi"
+        },
+        {
+          "domain": "operations",
+          "score": 0,
+          "weightedScore": 0,
+          "actionabilityScore": 0.85,
+          "label": "Controlla rischio operativo"
+        }
+      ],
+      "blockedActions": [],
+      "explanationShort": "Centro stabile: monitorare.",
+      "updatedAt": "2026-07-14T20:25:34.233Z",
+      "temporalStability": {
+        "stable": true,
+        "candidateCount": 0,
+        "requiredCycles": 2
+      }
+    },
+    "decisionStability": {
+      "acceptedKey": "cash:MONITOR",
+      "candidateKey": "",
+      "candidateCount": 0,
+      "minPersistenceCycles": 2,
+      "switchedAt": "2026-07-14T20:25:34.238Z"
+    },
+    "cashParallel": {
+      "mode": "shadow",
+      "status": "ok",
+      "mathCore": "cash_core_v1",
+      "mathAdapter": "cash_policy_adapter_v1",
+      "horizon": {
+        "startDate": "",
+        "endDate": "",
+        "mode": "empty"
+      },
+      "legacySnapshot": {
+        "source": "gold_state_legacy_cash",
+        "recordedCashCents": 0,
+        "reconciledCashCents": 0,
+        "operationalRevenueCents": 0,
+        "unlinkedPaymentCount": 0,
+        "unlinkedCashCents": 0,
+        "gapCents": 0,
+        "overdueCents": null,
+        "sourceFlags": [
+          "legacy_cash:recorded_cash_used_as_cash_equivalent",
+          "legacy_cash:no_overdue_metric"
+        ]
+      },
+      "coreSnapshot": {
+        "billedDueCents": 0,
+        "reconciledCashCents": 0,
+        "recordedCashCents": 0,
+        "unlinkedCashCents": 0,
+        "ambiguousCashCents": 0,
+        "overdueCents": 0,
+        "openResidualCents": 0,
+        "gapCents": 0,
+        "collectionRatio": null,
+        "reconciliationRatio": null,
+        "ambiguityRatio": null,
+        "overdueRatio": null,
+        "confidence": "INCOMPLETE",
+        "confidenceScore": 0,
+        "confidenceBreakdown": {
+          "reconciliationRatio": 0,
+          "ambiguityRatio": 1,
+          "dataCompleteness": 0,
+          "legacyFriction": 1,
+          "weights": {
+            "reconciliationRatio": 0.35,
+            "inverseAmbiguityRatio": 0.25,
+            "dataCompleteness": 0.25,
+            "inverseLegacyFriction": 0.15
+          }
+        },
+        "sourceFlags": [
+          "cash_ledger:simulated_allocations",
+          "cash_ledger:no_persistence"
+        ]
+      },
+      "comparableSnapshot": {
+        "mathAdapter": "cash_policy_adapter_v1",
+        "billedDueCents": 0,
+        "reconciledCashCents": 0,
+        "recordedCashCents": 0,
+        "unlinkedCashCents": 0,
+        "ambiguousCashCents": 0,
+        "overdueCents": null,
+        "openResidualCents": 0,
+        "gapCents": 0,
+        "collectionRatio": 0,
+        "reconciliationRatio": 0,
+        "ambiguityRatio": 0,
+        "overdueRatio": null,
+        "confidence": "INCOMPLETE",
+        "confidenceScore": 0,
+        "confidenceBreakdown": {
+          "reconciliationRatio": 0,
+          "ambiguityRatio": 1,
+          "dataCompleteness": 0,
+          "legacyFriction": 1,
+          "weights": {
+            "reconciliationRatio": 0.35,
+            "inverseAmbiguityRatio": 0.25,
+            "dataCompleteness": 0.25,
+            "inverseLegacyFriction": 0.15
+          }
+        },
+        "sourceFlags": [
+          "cash_policy_adapter:legacy_comparable_projection",
+          "cash_policy_adapter:status_policy_legacy_completed_ready_checkout",
+          "cash_policy_adapter:overdue_excluded_from_agreement",
+          "cash_policy_adapter:recorded_cash_used_as_cash_equivalent"
+        ],
+        "policyBreakdown": {
+          "legacyBilledDueStatuses": [
+            "completed",
+            "ready_checkout"
+          ],
+          "operationalExcludedStatuses": [
+            "cancelled",
+            "no_show",
+            "deleted"
+          ],
+          "futureOpenDueCents": 0,
+          "operationalOverdueCents": 0,
+          "ambiguousCashExcludedFromComparableUnlinkedCents": 0,
+          "comparableObligationCount": 0,
+          "totalObligationCount": 0,
+          "legacyComparableUnlinkedPaymentCount": 0,
+          "ambiguousPaymentCount": 0
+        }
+      },
+      "policyAdapter": {
+        "mathAdapter": "cash_policy_adapter_v1",
+        "policyDeltas": {
+          "billedDueCents": 0,
+          "reconciledCashCents": 0,
+          "unlinkedCashCents": 0,
+          "gapCents": 0,
+          "overdueCents": 0
+        },
+        "excludedFromAgreement": {
+          "overdueCents": {
+            "value": 0,
+            "reason": "legacy_has_no_real_overdue_metric"
+          },
+          "futureOpenDueCents": {
+            "value": 0,
+            "reason": "legacy_billed_due_counts_completed_ready_checkout_only"
+          }
+        },
+        "policyFlags": [
+          "legacy_status_policy:completed_ready_checkout",
+          "operational_status_policy:all_non_cancelled",
+          "overdue:operational_only",
+          "service_shape:preserve_core_operational_snapshot"
+        ],
+        "explanations": []
+      },
+      "diffSnapshot": {
+        "comparableMetrics": [
+          "billedDue",
+          "reconciledCash",
+          "unlinkedCash",
+          "gap"
+        ],
+        "deltas": {
+          "billedDueDeltaCents": 0,
+          "reconciledCashDeltaCents": 0,
+          "unlinkedCashDeltaCents": 0,
+          "gapDeltaCents": 0
+        },
+        "relativeErrors": {
+          "billedDueError": 0,
+          "reconciledCashError": 0,
+          "unlinkedCashError": 0,
+          "gapError": 0
+        },
+        "agreementScore": 1,
+        "agreementBand": "ALIGNED",
+        "warnings": [],
+        "excludedFromAgreement": {
+          "overdueCents": {
+            "reason": "legacy_has_no_real_overdue_metric",
+            "sourceFlag": "cash_policy_adapter:overdue_excluded_from_agreement"
+          }
+        },
+        "sourceFlags": [
+          "compare:adapter_billed_due_vs_legacy_operational_revenue",
+          "compare:core_recorded_cash_vs_legacy_recorded_cash",
+          "compare:adapter_missing_link_unlinked_vs_legacy_unlinked",
+          "compare:adapter_gap_vs_legacy_operational_gap",
+          "cash_policy_adapter:overdue_excluded_from_agreement"
+        ]
+      },
+      "sourceFlags": [
+        "cash_parallel:shadow_only",
+        "cash_parallel:no_primary_switch",
+        "cash_parallel:no_allocation_persistence",
+        "cash_parallel:agreement_uses_policy_adapter_comparable_snapshot",
+        "compare:adapter_billed_due_vs_legacy_operational_revenue",
+        "compare:core_recorded_cash_vs_legacy_recorded_cash",
+        "compare:adapter_missing_link_unlinked_vs_legacy_unlinked",
+        "compare:adapter_gap_vs_legacy_operational_gap",
+        "cash_policy_adapter:overdue_excluded_from_agreement"
+      ],
+      "updatedAt": "2026-07-14T20:25:34.236Z"
+    },
+    "cashSelection": {
+      "mode": "controlled_switch",
+      "primarySource": "legacy",
+      "previousSource": "legacy",
+      "shadowSource": "core",
+      "switchEligible": false,
+      "reliabilityScore": 0.4,
+      "agreementScore": 1,
+      "agreementBand": "ALIGNED",
+      "coreConfidence": "INCOMPLETE",
+      "coreConfidenceScore": 0,
+      "dataCompleteness": 0,
+      "reconciliationRatio": 0,
+      "ambiguityRatio": 1,
+      "thresholds": {
+        "agreementScore": 0.85,
+        "coreConfidenceScore": 0.8,
+        "dataCompleteness": 0.75,
+        "reconciliationRatio": 0.8,
+        "ambiguityRatio": 0.2,
+        "hysteresisOn": 0.85,
+        "hysteresisOff": 0.7
+      },
+      "switchReason": "",
+      "fallbackReason": "confidence_INCOMPLETE|core_confidence_below_threshold|data_completeness_below_threshold|reconciliation_below_threshold|ambiguity_above_threshold"
+    },
+    "cashPrimarySnapshot": {
+      "mathCore": "legacy_cash",
+      "sourceUsed": "legacy",
+      "billedDueCents": 0,
+      "reconciledCashCents": 0,
+      "recordedCashCents": 0,
+      "unlinkedCashCents": 0,
+      "ambiguousCashCents": 0,
+      "overdueCents": 0,
+      "openResidualCents": 0,
+      "gapCents": 0,
+      "collectionRatio": 0,
+      "reconciliationRatio": 0,
+      "ambiguityRatio": 0,
+      "overdueRatio": 0,
+      "confidence": "ESTIMATED",
+      "confidenceScore": 0.65,
+      "sourceFlags": [
+        "cash_primary_candidate:legacy",
+        "legacy_cash:recorded_cash_used_as_cash_equivalent",
+        "legacy_cash:no_overdue_metric"
+      ]
+    },
+    "cashShadowSnapshot": {
+      "mathCore": "cash_core_v1",
+      "sourceUsed": "core",
+      "billedDueCents": 0,
+      "reconciledCashCents": 0,
+      "recordedCashCents": 0,
+      "unlinkedCashCents": 0,
+      "ambiguousCashCents": 0,
+      "overdueCents": 0,
+      "openResidualCents": 0,
+      "gapCents": 0,
+      "collectionRatio": 0,
+      "reconciliationRatio": 0,
+      "ambiguityRatio": 0,
+      "overdueRatio": 0,
+      "confidence": "INCOMPLETE",
+      "confidenceScore": 0,
+      "sourceFlags": [
+        "cash_primary_candidate:core",
+        "cash_ledger:simulated_allocations",
+        "cash_ledger:no_persistence"
+      ]
+    },
+    "dataQualityParallel": {
+      "mode": "shadow",
+      "status": "ok",
+      "mathCore": "data_quality_core_v1",
+      "mathAdapter": "dq_policy_adapter_v1",
+      "horizon": {
+        "startDate": "",
+        "endDate": ""
+      },
+      "legacySnapshot": {
+        "source": "legacy",
+        "score": 0.86,
+        "band": "STANDARD",
+        "crmQuality": null,
+        "appointmentQuality": null,
+        "paymentQuality": null,
+        "costQuality": null,
+        "linkQuality": null,
+        "consistencyQuality": null,
+        "temporalQuality": null,
+        "dataQualityScore": 0.86,
+        "gate": {
+          "aiGoldEligible": true,
+          "decisionEligible": true,
+          "forecastEligible": false,
+          "profitabilityReliable": false,
+          "cashReliable": false,
+          "marketingReliable": false,
+          "reportReliable": true
+        },
+        "sourceFlags": [
+          "legacy:data_quality_penalty_model"
+        ]
+      },
+      "coreSnapshot": {
+        "source": "core",
+        "score": 0.125,
+        "band": "INCOMPLETE",
+        "crmQuality": 0,
+        "appointmentQuality": 0,
+        "paymentQuality": 0,
+        "costQuality": 0,
+        "linkQuality": 0.25,
+        "consistencyQuality": 1,
+        "temporalQuality": 0,
+        "dataQualityScore": 0.125,
+        "gate": {
+          "aiGoldEligible": false,
+          "decisionEligible": false,
+          "forecastEligible": false,
+          "profitabilityReliable": false,
+          "cashReliable": false,
+          "marketingReliable": false,
+          "reportReliable": false
+        },
+        "sourceFlags": [
+          "crm:no_clients",
+          "appointments:no_records",
+          "payments:no_records",
+          "costs:no_services"
+        ]
+      },
+      "operationalSnapshot": {
+        "source": "core",
+        "score": 0.125,
+        "band": "INCOMPLETE",
+        "crmQuality": 0,
+        "appointmentQuality": 0,
+        "paymentQuality": 0,
+        "costQuality": 0,
+        "linkQuality": 0.25,
+        "consistencyQuality": 1,
+        "temporalQuality": 0,
+        "dataQualityScore": 0.125,
+        "gate": {
+          "aiGoldEligible": false,
+          "decisionEligible": false,
+          "forecastEligible": false,
+          "profitabilityReliable": false,
+          "cashReliable": false,
+          "marketingReliable": false,
+          "reportReliable": false
+        },
+        "sourceFlags": [
+          "crm:no_clients",
+          "appointments:no_records",
+          "payments:no_records",
+          "costs:no_services"
+        ]
+      },
+      "comparableSnapshot": {
+        "source": "core_policy_adapter",
+        "score": 0.86,
+        "band": "STANDARD",
+        "crmQuality": 1,
+        "appointmentQuality": 1,
+        "paymentQuality": 1,
+        "costQuality": 1,
+        "linkQuality": null,
+        "consistencyQuality": null,
+        "temporalQuality": null,
+        "dataQualityScore": 0.86,
+        "gate": {
+          "aiGoldEligible": false,
+          "decisionEligible": false,
+          "forecastEligible": false,
+          "profitabilityReliable": false,
+          "cashReliable": false,
+          "marketingReliable": false,
+          "reportReliable": false
+        },
+        "sourceFlags": [
+          "dq_policy_adapter:legacy_comparable_projection",
+          "dq_policy_adapter:link_consistency_temporal_excluded"
+        ],
+        "legacyPolicyBlocks": {
+          "clientsBlock": {
+            "totalRecords": 0,
+            "missingCount": 0,
+            "issueRate": 0,
+            "quality": 1,
+            "penalty": 0,
+            "checks": {
+              "withoutContact": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutPhone": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutEmail": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutLastVisit": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "servicesBlock": {
+            "totalRecords": 0,
+            "missingCount": 0,
+            "issueRate": 0,
+            "quality": 1,
+            "penalty": 0,
+            "checks": {
+              "withoutPrice": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutCost": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutDuration": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutCategory": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "paymentsBlock": {
+            "totalRecords": 0,
+            "missingCount": 0,
+            "issueRate": 0,
+            "quality": 1,
+            "penalty": 0,
+            "checks": {
+              "completedWithoutPayment": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "unlinkedPayments": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutMethod": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "appointmentsBlock": {
+            "totalRecords": 0,
+            "missingCount": 0,
+            "issueRate": 0,
+            "quality": 1,
+            "penalty": 0,
+            "checks": {
+              "withoutClient": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutService": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutOperator": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "completedWithMissingFinalData": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "operatorsBlock": {
+            "totalRecords": 3,
+            "missingCount": 6,
+            "issueRate": 1,
+            "quality": 0,
+            "penalty": 14,
+            "checks": {
+              "withoutHourlyCost": {
+                "totalRecords": 3,
+                "missingCount": 3,
+                "issueRate": 1,
+                "penalty": 10
+              },
+              "withoutRole": {
+                "totalRecords": 3,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutServices": {
+                "totalRecords": 3,
+                "missingCount": 3,
+                "issueRate": 1,
+                "penalty": 4
+              }
+            }
+          },
+          "inventoryBlock": {
+            "totalRecords": 0,
+            "missingCount": 0,
+            "issueRate": 0,
+            "quality": 1,
+            "penalty": 0,
+            "checks": {
+              "withoutCost": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "withoutStock": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "productServiceLinksWithoutUsage": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "profitabilityBlock": {
+            "totalRecords": 0,
+            "missingCount": 0,
+            "issueRate": 0,
+            "quality": 1,
+            "penalty": 0,
+            "checks": {
+              "soldServicesWithoutCost": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "technologiesWithoutCost": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              },
+              "lowMarginServices": {
+                "totalRecords": 0,
+                "missingCount": 0,
+                "issueRate": 0,
+                "penalty": 0
+              }
+            }
+          },
+          "totalPenalty": 14,
+          "score": 0.86
+        }
+      },
+      "rawDiffSnapshot": {
+        "comparableMetrics": [
+          "dataQualityScore"
+        ],
+        "deltas": {
+          "dataQualityScore": -0.735
+        },
+        "relativeErrors": {
+          "dataQualityScore": 0.735
+        },
+        "agreementScore": 0.265,
+        "agreementBand": "DRIFT",
+        "warnings": [
+          "DQ_TOTAL_DRIFT"
+        ],
+        "weightsUsed": {
+          "dataQualityScore": 1
+        }
+      },
+      "diffSnapshot": {
+        "comparableMetrics": [
+          "dataQualityScore"
+        ],
+        "deltas": {
+          "dataQualityScore": 0
+        },
+        "relativeErrors": {
+          "dataQualityScore": 0
+        },
+        "agreementScore": 1,
+        "agreementBand": "ALIGNED",
+        "warnings": [],
+        "weightsUsed": {
+          "dataQualityScore": 1
+        }
+      },
+      "agreementScore": 1,
+      "agreementBand": "ALIGNED",
+      "rawAgreementScore": 0.265,
+      "rawAgreementBand": "DRIFT",
+      "policyAdapter": {
+        "mathAdapter": "dq_policy_adapter_v1",
+        "policyDeltas": {
+          "dataQualityScore": 0.735,
+          "crmQuality": 1,
+          "appointmentQuality": 1,
+          "paymentQuality": 1,
+          "costQuality": 1
+        },
+        "excludedFromAgreement": [
+          "linkQuality",
+          "consistencyQuality",
+          "temporalQuality"
+        ],
+        "policyFlags": [
+          "legacy_crm_penalty_projection",
+          "legacy_appointment_penalty_projection",
+          "legacy_payment_penalty_projection",
+          "legacy_cost_fallback_projection"
+        ],
+        "policyNotes": [
+          {
+            "policy": "CRM",
+            "explanation": "La vista comparabile replica le penalità legacy senza contatto, telefono, email e lastVisit. Il core operativo resta più granulare su email, telefono, nome, unicità e duplicati."
+          },
+          {
+            "policy": "APPOINTMENT",
+            "explanation": "La vista comparabile replica i controlli legacy su cliente, servizio, operatore e final data dei completati. Il core operativo mantiene controlli formali su date, status e ricavo."
+          },
+          {
+            "policy": "PAYMENT",
+            "explanation": "La vista comparabile replica la severità legacy su appuntamenti completati senza pagamento, pagamenti non collegati e metodo assente."
+          },
+          {
+            "policy": "COST",
+            "explanation": "La vista comparabile considera sufficienti anche fallback stimati legacy dove getDataQuality li considera completi; il core operativo mantiene lettura rigorosa."
+          },
+          {
+            "policy": "EXCLUDED",
+            "explanation": "Q_link, Q_cons e Q_temp restano nel core operativo ma sono esclusi dall'accordo comparabile perché il legacy non espone metriche omogenee."
+          }
+        ]
+      },
+      "sourceFlags": [
+        "legacy:data_quality_penalty_model",
+        "crm:no_clients",
+        "appointments:no_records",
+        "payments:no_records",
+        "costs:no_services",
+        "dq_policy_adapter:legacy_comparable_projection",
+        "dq_policy_adapter:link_consistency_temporal_excluded"
+      ]
+    },
+    "marketingParallel": {
+      "mode": "shadow",
+      "status": "not_comparable",
+      "mathCore": "marketing_core_v1",
+      "mathAdapter": "marketing_policy_adapter_v1",
+      "horizon": {
+        "startDate": "2025-07-14",
+        "endDate": "2026-07-14",
+        "mode": "last_365_days_marketing_shadow"
+      },
+      "legacySnapshot": {
+        "source": "legacy",
+        "readiness": null,
+        "averageOpportunity": null,
+        "averageChurnRisk": null,
+        "averageContactability": null,
+        "averageSpamPressure": null,
+        "clients": 0,
+        "eligibleClients": 0,
+        "contactableClients": 0,
+        "suppressedClients": 0,
+        "eligibleRatio": null,
+        "contactableRatio": null,
+        "suppressedRatio": null,
+        "topCandidates": [],
+        "sourceFlags": [
+          "legacy:gold_marketing_action_state",
+          "legacy:readiness_not_available"
+        ]
+      },
+      "coreSnapshot": {
+        "source": "core",
+        "readiness": 0,
+        "averageOpportunity": 0,
+        "averageChurnRisk": 0,
+        "averageContactability": 0,
+        "averageSpamPressure": 0,
+        "clients": 0,
+        "eligibleClients": 0,
+        "contactableClients": 0,
+        "suppressedClients": 0,
+        "eligibleRatio": 0,
+        "contactableRatio": 0,
+        "suppressedRatio": 0,
+        "topCandidates": [],
+        "sourceFlags": [
+          "marketing_core:marketing_history_missing_or_empty",
+          "marketing_core:schedule_gap_not_available"
+        ]
+      },
+      "diffSnapshot": {
+        "comparableMetrics": [],
+        "deltas": {},
+        "relativeErrors": {},
+        "top3Overlap": null,
+        "agreementScore": null,
+        "agreementBand": "N/A",
+        "warnings": [
+          "MARKETING_NOT_COMPARABLE"
+        ],
+        "weightsUsed": {}
+      },
+      "agreementScore": null,
+      "agreementBand": "N/A",
+      "sourceFlags": [
+        "marketing_parallel:shadow_only",
+        "marketing_parallel:no_primary_switch",
+        "marketing_parallel:no_message_send",
+        "legacy:gold_marketing_action_state",
+        "legacy:readiness_not_available",
+        "marketing_core:marketing_history_missing_or_empty",
+        "marketing_core:schedule_gap_not_available",
+        "marketing_parallel:not_comparable"
+      ]
+    },
+    "agendaParallel": {
+      "mode": "shadow",
+      "status": "ok",
+      "mathCore": "agenda_core_v1",
+      "mathAdapter": "agenda_policy_adapter_v1",
+      "legacySnapshot": {
+        "mathCore": "legacy_gold_state_agenda",
+        "saturation": 0,
+        "pressure": 0.75,
+        "need": 0.82,
+        "band": "intervento_ora",
+        "counts": {
+          "todayAppointments": 0,
+          "appointmentSlots": 24
+        },
+        "sourceFlags": [
+          "agenda_parallel:legacy_gold_state_counter_view"
+        ]
+      },
+      "coreSnapshot": {
+        "mathCore": "agenda_core_v1",
+        "horizon": {
+          "mode": "today",
+          "generatedAt": "2026-07-14T20:25:34.238Z"
+        },
+        "scores": {
+          "saturation": 0,
+          "pressure": 0.75,
+          "fragility": 1,
+          "noShowRisk": 0,
+          "slotValue": 0.85,
+          "urgency": 0.82,
+          "readiness": 0.35,
+          "agendaScore": 0.519
+        },
+        "band": "CRITICAL",
+        "counts": {
+          "todayAppointments": 0,
+          "appointmentSlots": 24
+        },
+        "sourceFlags": [
+          "agenda_parallel:core_shadow_from_gold_state_counters"
+        ]
+      },
+      "comparableSnapshot": {
+        "mathAdapter": "agenda_policy_adapter_v1",
+        "source": "agenda_core_comparable_legacy_policy",
+        "horizon": {
+          "mode": "today",
+          "generatedAt": "2026-07-14T20:25:34.238Z"
+        },
+        "saturation": 0,
+        "pressure": 0.75,
+        "need": 0.82,
+        "urgency": 0.82,
+        "band": "intervento_ora",
+        "bandProxy": 0.9,
+        "agendaScoreComparable": 0.61,
+        "operationalMetrics": {
+          "saturation": 0,
+          "pressure": 0.75,
+          "fragility": 1,
+          "noShowRisk": 0,
+          "slotValue": 0.85,
+          "urgency": 0.82,
+          "readiness": 0.35,
+          "agendaScore": 0.519,
+          "band": "CRITICAL"
+        },
+        "sourceFlags": [
+          "agenda_policy_adapter:capacity_uses_legacy_saturation_proxy",
+          "agenda_policy_adapter:pressure_uses_legacy_phi_proxy",
+          "agenda_policy_adapter:need_uses_legacy_max_item_need",
+          "agenda_policy_adapter:band_uses_legacy_summary_policy",
+          "agenda_policy_adapter:comparison_only",
+          "agenda_policy_adapter:operational_snapshot_unchanged"
+        ]
+      },
+      "diffSnapshot": {
+        "agreementScore": 1,
+        "agreementBand": "ALIGNED",
+        "averageError": 0,
+        "policyDeltas": {
+          "saturationDelta": 0,
+          "pressureDelta": 0,
+          "needDelta": 0,
+          "bandDelta": 0,
+          "excludedOperationalMetrics": {
+            "fragility": 1,
+            "noShowRisk": 0,
+            "slotValue": 0.85,
+            "readiness": 0.35,
+            "agendaScore": 0.519
+          }
+        }
+      },
+      "agreementScore": 1,
+      "agreementBand": "ALIGNED",
+      "sourceFlags": [
+        "agenda_parallel:shadow_only",
+        "agenda_parallel:no_primary_switch",
+        "agenda_policy_adapter:capacity_uses_legacy_saturation_proxy",
+        "agenda_policy_adapter:pressure_uses_legacy_phi_proxy",
+        "agenda_policy_adapter:need_uses_legacy_max_item_need",
+        "agenda_policy_adapter:band_uses_legacy_summary_policy",
+        "agenda_policy_adapter:comparison_only",
+        "agenda_policy_adapter:operational_snapshot_unchanged"
+      ]
+    },
+    "decisionParallel": {
+      "mode": "shadow",
+      "status": "ok",
+      "mathCore": "decision_core_v1",
+      "mathAdapter": "decision_policy_adapter_v1",
+      "legacySnapshot": {
+        "mathCore": "legacy_gold_state_decision",
+        "primaryAction": {
+          "actionKey": "cash",
+          "domain": "cash",
+          "label": "Centro stabile: monitorare.",
+          "priorityScore": 0,
+          "actionBand": "MONITOR",
+          "tone": "soft",
+          "eligible": true,
+          "confidence": 1,
+          "risk": 0,
+          "need": 0
+        },
+        "secondaryActions": [],
+        "blockedActions": [],
+        "actions": [
+          {
+            "actionKey": "cash",
+            "domain": "cash",
+            "label": "Centro stabile: monitorare.",
+            "priorityScore": 0,
+            "actionBand": "MONITOR",
+            "tone": "soft",
+            "eligible": true,
+            "confidence": 1,
+            "risk": 0,
+            "need": 0
+          }
+        ],
+        "summary": {
+          "topPriorityScore": 0,
+          "averageConfidence": 1,
+          "averageRisk": 0
+        }
+      },
+      "coreSnapshot": {
+        "mathCore": "decision_core_v1",
+        "primaryAction": {
+          "actionKey": "cash",
+          "domain": "cash",
+          "label": "Centro stabile: monitorare.",
+          "priorityScore": 0.4,
+          "actionBand": "MONITOR",
+          "tone": "soft",
+          "eligible": true,
+          "confidence": 1,
+          "risk": 0,
+          "need": 0,
+          "operationalSource": "decision_core_shadow_from_gold_state"
+        },
+        "secondaryActions": [],
+        "blockedActions": [],
+        "summary": {
+          "topPriorityScore": 0.4,
+          "averageConfidence": 1,
+          "averageRisk": 0
+        },
+        "actions": [
+          {
+            "actionKey": "cash",
+            "domain": "cash",
+            "label": "Centro stabile: monitorare.",
+            "priorityScore": 0.4,
+            "actionBand": "MONITOR",
+            "tone": "soft",
+            "eligible": true,
+            "confidence": 1,
+            "risk": 0,
+            "need": 0,
+            "operationalSource": "decision_core_shadow_from_gold_state"
+          }
+        ]
+      },
+      "comparableSnapshot": {
+        "mathAdapter": "decision_policy_adapter_v1",
+        "mathCore": "decision_core_v1",
+        "horizon": null,
+        "candidateCount": 1,
+        "primaryAction": {
+          "actionKey": "cash",
+          "domain": "cash",
+          "label": "Centro stabile: monitorare.",
+          "priorityScore": 0.3161,
+          "actionBand": "MONITOR",
+          "tone": "soft",
+          "eligible": true,
+          "confidence": 1,
+          "risk": 0,
+          "need": 0,
+          "operationalSource": "decision_core_shadow_from_gold_state",
+          "operationalPriorityScore": 0.4,
+          "operationalActionBand": "MONITOR",
+          "operationalTone": "soft",
+          "operationalEligible": true,
+          "priorityScoreComparable": 0.3161,
+          "actionBandComparable": "MONITOR",
+          "toneComparable": "soft",
+          "eligibleComparable": true,
+          "blockReasonsComparable": [
+            "NEED_TOO_LOW"
+          ],
+          "domainWeight": 0.9936,
+          "priorityCompressionMethod": "power_compression_fallback",
+          "policyFlags": [
+            "priority_adapter:power_fallback",
+            "domain_weight:stable_near_neutral_with_legacy_rank_nudge"
+          ]
+        },
+        "secondaryActions": [],
+        "blockedActions": [],
+        "summary": {
+          "topPriorityScore": 0.3161,
+          "averageConfidence": 1,
+          "averageRisk": 0
+        },
+        "actions": [
+          {
+            "actionKey": "cash",
+            "domain": "cash",
+            "label": "Centro stabile: monitorare.",
+            "priorityScore": 0.3161,
+            "actionBand": "MONITOR",
+            "tone": "soft",
+            "eligible": true,
+            "confidence": 1,
+            "risk": 0,
+            "need": 0,
+            "operationalSource": "decision_core_shadow_from_gold_state",
+            "operationalPriorityScore": 0.4,
+            "operationalActionBand": "MONITOR",
+            "operationalTone": "soft",
+            "operationalEligible": true,
+            "priorityScoreComparable": 0.3161,
+            "actionBandComparable": "MONITOR",
+            "toneComparable": "soft",
+            "eligibleComparable": true,
+            "blockReasonsComparable": [
+              "NEED_TOO_LOW"
+            ],
+            "domainWeight": 0.9936,
+            "priorityCompressionMethod": "power_compression_fallback",
+            "policyFlags": [
+              "priority_adapter:power_fallback",
+              "domain_weight:stable_near_neutral_with_legacy_rank_nudge"
+            ]
+          }
+        ]
+      },
+      "diffSnapshot": {
+        "agreementScore": 0.6839,
+        "agreementBand": "DRIFT",
+        "priorityDelta": 0.3161,
+        "bandChanged": false
+      },
+      "agreementScore": 0.6839,
+      "agreementBand": "DRIFT",
+      "sourceFlags": [
+        "decision_parallel:shadow_only",
+        "decision_parallel:no_primary_switch",
+        "decision_parallel:operator_confirmation_required"
+      ]
+    },
+    "graph": {
+      "eventToState": {
+        "appointment_created": [
+          "Sat",
+          "Prod"
+        ],
+        "appointment_updated": [
+          "Sat",
+          "Prod",
+          "DQ"
+        ],
+        "appointment_deleted": [
+          "Sat",
+          "Prod"
+        ],
+        "client_created": [
+          "Act",
+          "Cont",
+          "DQ"
+        ],
+        "client_updated": [
+          "Act",
+          "Cont",
+          "DQ"
+        ],
+        "client_deleted": [
+          "Act",
+          "Cont",
+          "DQ"
+        ],
+        "payment_created": [
+          "Rev",
+          "U",
+          "Ticket",
+          "Conf"
+        ],
+        "payment_updated": [
+          "Rev",
+          "U",
+          "Ticket",
+          "Conf"
+        ],
+        "service_created": [
+          "CostConf",
+          "Margin",
+          "DQ"
+        ],
+        "service_updated": [
+          "CostConf",
+          "Margin",
+          "DQ"
+        ],
+        "service_deleted": [
+          "CostConf",
+          "Margin",
+          "DQ"
+        ],
+        "staff_created": [
+          "Prod"
+        ],
+        "staff_updated": [
+          "Prod"
+        ],
+        "staff_deleted": [
+          "Prod"
+        ],
+        "inventory_created": [
+          "DQ"
+        ],
+        "inventory_updated": [
+          "DQ"
+        ],
+        "inventory_deleted": [
+          "DQ"
+        ]
+      },
+      "stateToSnapshot": {
+        "Rev": [
+          "business",
+          "profitability",
+          "report"
+        ],
+        "U": [
+          "business",
+          "report"
+        ],
+        "Sat": [
+          "business",
+          "report"
+        ],
+        "Act": [
+          "business",
+          "report"
+        ],
+        "Cont": [
+          "business",
+          "report"
+        ],
+        "Ticket": [
+          "business",
+          "profitability",
+          "report"
+        ],
+        "Prod": [
+          "business",
+          "report"
+        ],
+        "DQ": [
+          "business",
+          "profitability",
+          "report"
+        ],
+        "CostConf": [
+          "profitability"
+        ],
+        "Margin": [
+          "profitability"
+        ],
+        "Conf": [
+          "business",
+          "profitability"
+        ]
+      },
+      "snapshotToSignal": {
+        "business": [
+          "operationalRisk",
+          "centerBelowThreshold",
+          "opportunity"
+        ],
+        "profitability": [
+          "marginAnomaly",
+          "dataReliability"
+        ],
+        "report": [
+          "cashAnomaly",
+          "productivitySignal"
+        ]
+      }
+    },
+    "marketingActions": {
+      "source": "gold_decision_engine",
+      "sourceEndpoint": "/api/ai-gold/state",
+      "generatedAt": "2026-07-14T20:25:34.234Z",
+      "actions": [],
+      "counters": {
+        "clientsAtRiskToday": 0,
+        "totalActions": 0,
+        "approvedActions": 0,
+        "callableApproved": 0,
+        "highValueOpportunities": 0,
+        "toApprove": 0,
+        "discarded": 0
+      },
+      "debug": {
+        "clientsAnalyzed": 0,
+        "excludedByFilter": 0,
+        "nonContactable": 0,
+        "inCooldown": 0,
+        "generatedActions": 0
+      },
+      "semantics": {
+        "critical": "opportunita_ad_alto_valore",
+        "risk": "cliente_che_puo_perdersi",
+        "marketingActions": "opportunita_generate_da_ai"
+      }
+    }
+  }
+]

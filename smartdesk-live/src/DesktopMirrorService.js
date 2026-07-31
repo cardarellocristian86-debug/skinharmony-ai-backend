@@ -49,6 +49,8 @@ const CASH_CONTROLLED_SWITCH_THRESHOLDS = Object.freeze({
   hysteresisOff: 0.70
 });
 const CASH_CONTROLLED_SWITCH_WEIGHTS = Object.freeze({ agreementScore: 0.40, coreConfidenceScore: 0.40, dataCompleteness: 0.20 });
+const CONTROL_ROOM_AUDIT_DEFAULT_LIMIT = 200;
+const CONTROL_ROOM_AUDIT_MAX_LIMIT = 500;
 const DATA_QUALITY_PARALLEL_WEIGHTS = Object.freeze({
   dataQualityScore: 0.30,
   paymentQuality: 0.15,
@@ -2308,6 +2310,7 @@ class DesktopMirrorService {
     this.usersRepository = this.createRepository("users", []);
     this.salesRepository = this.createRepository("sales", []);
     this.settingsRepository = this.createRepository("settings", defaultSettings);
+    this.controlAuditRepository = this.createRepository("control_room_audit", []);
 
     this.sessions = new Map();
     this.businessSnapshotCache = new Map();
@@ -2348,6 +2351,901 @@ class DesktopMirrorService {
 
   getCenterName(session = null) {
     return String(session?.centerName || DEFAULT_CENTER_NAME);
+  }
+
+  resolveControlRole(rawRole = "", supportMode = false) {
+    const role = String(rawRole || "").toLowerCase();
+    if (role === "superadmin") {
+      if (supportMode) {
+        return "tenant_admin";
+      }
+      return "super_admin";
+    }
+    if (["tenant_admin", "owner", "admin", "manager", "support"].includes(role)) {
+      return "tenant_admin";
+    }
+    if ("tenant_operator" === role || role === "operator" || role === "staff" || role === "user") {
+      return supportMode ? "tenant_admin" : "tenant_operator";
+    }
+    return "tenant_admin";
+  }
+
+  isSuperAdminControlSession(session = null) {
+    return String(session?.role || "").toLowerCase() === "superadmin" && !session?.supportMode;
+  }
+
+  getControlRole(session = null) {
+    return this.resolveControlRole(session?.role, Boolean(session?.supportMode));
+  }
+
+  controlHasPermission(session = null, permission = "") {
+    const role = this.getControlRole(session);
+    const matrix = {
+      super_admin: new Set([
+        "view_all_tenants",
+        "view_global_health",
+        "view_global_agents",
+        "view_global_branches",
+        "view_global_keys_metadata",
+        "view_global_audit",
+        "view_global_work_gallery",
+        "view_global_decision_ledger",
+        "view_global_memory_status",
+        "view_connectors_status",
+        "view_governance_blockers",
+        "export_sanitized_audit",
+        "impersonation"
+      ]),
+      tenant_admin: new Set([
+        "view_own_tenant_health",
+        "view_own_tenant_agents",
+        "view_own_tenant_branches",
+        "view_own_tenant_keys_metadata",
+        "view_own_tenant_audit",
+        "view_own_tenant_work_gallery",
+        "view_own_tenant_decision_ledger",
+        "view_own_tenant_memory_status",
+        "view_own_tenant_connectors_status",
+        "view_governance_blockers",
+        "export_own_sanitized_audit"
+      ]),
+      tenant_operator: new Set([
+        "view_own_assigned_work",
+        "view_own_agent_activity",
+        "view_own_branch_activity",
+        "export_own_sanitized_audit"
+      ])
+    };
+    return matrix[role]?.has(permission) === true;
+  }
+
+  getAllowedTenantIds(session = null) {
+    if (this.isSuperAdminControlSession(session)) {
+      const users = this.usersRepository.list();
+      const set = new Set();
+      users.forEach((user) => {
+        if (String(user?.role || "").toLowerCase() === "superadmin") return;
+        const centerId = String(user?.centerId || "");
+        if (centerId) set.add(centerId);
+      });
+      if (!set.size) {
+        set.add(this.getCenterId(session));
+      }
+      return Array.from(set);
+    }
+    return [this.getCenterId(session)];
+  }
+
+  resolveControlTenantScope(session = null, requestedTenantId = "", options = {}) {
+    const role = this.getControlRole(session);
+    const requested = String(requestedTenantId || "").trim();
+    const allowedTenantIds = new Set(this.getAllowedTenantIds(session));
+    const ownTenantId = this.getCenterId(session);
+    if (this.isSuperAdminControlSession(session)) {
+      if (!requested) return null;
+      if (allowedTenantIds.has(requested)) return requested;
+      const error = new Error("Tenant non autorizzato.");
+      error.code = "control_cross_tenant_denied";
+      this.recordControlAuditEvent({
+        session,
+        outcome: "denied",
+        action: options.action || "control_room_access",
+        targetTenantId: requested,
+        reason: "cross_tenant_filter_denied",
+        details: options.details || {}
+      });
+      throw error;
+    }
+    if (requested && requested !== ownTenantId) {
+      const error = new Error("Tenant non autorizzato.");
+      error.code = "control_cross_tenant_denied";
+      this.recordControlAuditEvent({
+        session,
+        outcome: "denied",
+        action: options.action || "tenant_filter_denied",
+        requestedTenantId: requested,
+        targetTenantId: ownTenantId,
+        reason: "cross_tenant_request_not_allowed",
+        details: options.details || {}
+      });
+      throw error;
+    }
+    return ownTenantId;
+  }
+
+  getControlRoomAllowedTenants(session = null) {
+    const includeAll = this.isSuperAdminControlSession(session) && !session?.supportMode;
+    const users = includeAll
+      ? this.usersRepository.list()
+      : this.usersRepository.list().filter((user) => this.belongsToCenter(user, this.getCenterId(session)));
+
+    const ordered = new Map();
+    users.forEach((user) => {
+      const tenantId = String(user?.centerId || DEFAULT_CENTER_ID);
+      const tenantName = String(user?.centerName || DEFAULT_CENTER_NAME).trim() || String(tenantId);
+      if (!tenantId || ordered.has(tenantId)) return;
+      ordered.set(tenantId, tenantName);
+    });
+
+    const tenants = Array.from(ordered.entries()).map(([tenantId, tenantName]) => ({
+      tenantId,
+      tenantName,
+      isActive: true,
+      centerControl: this.getCenterControlStats(tenantId)
+    }));
+
+    if (!tenants.length) {
+      const centerId = this.getCenterId(session);
+      const centerName = this.getCenterName(session);
+      tenants.push({
+        tenantId: centerId,
+        tenantName: centerName,
+        isActive: true,
+        centerControl: this.getCenterControlStats(centerId)
+      });
+    }
+
+    return tenants.sort((left, right) => (left.tenantName || "").localeCompare(right.tenantName || ""));
+  }
+
+  getControlRoomTenantRows(session = null, tenantId = "") {
+    const rawTenantId = String(tenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, rawTenantId, { action: "tenant_overview" });
+    const allowed = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+
+    return allowed.map((tenant) => {
+      const stats = this.getCenterControlStats(tenant);
+      const owner = this.usersRepository.findById(this.usersRepository.find((user) => this.belongsToCenter(user, tenant))?.id || "") || {};
+      const ownerName = String(owner.ownerName || owner.username || "owner").trim() || "owner";
+      return {
+        tenantId: tenant,
+        tenantName: this.getPublicSettings(this.buildSession({ id: "0", username: ownerName, role: owner.role || "owner", centerId: tenant, centerName: owner.centerName || tenant, accessState: "active", accountStatus: "active", trialStartsAt: "", trialEndsAt: "", planType: "base", subscriptionPlan: "base" })).centerName,
+        configured: true,
+        active: (stats.activeSessions || 0) > 0 || (stats.clients || 0) > 0,
+        owner,
+        workItems: this.getCenterRepositoryItems(this.appointmentsRepository, tenant).length,
+        users: stats.users,
+        activeSessions: stats.activeSessions,
+        supportSessions: stats.supportSessions,
+        createdAt: nowIso()
+      };
+    });
+  }
+
+  getControlRoomExecutive(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "executive_view" });
+    const allowed = resolvedTenantId
+      ? [resolvedTenantId]
+      : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+
+    const now = new Date();
+    const last24h = now.getTime() - 24 * 60 * 60 * 1000;
+
+    const tenantSummaries = allowed.map((tenantId) => {
+      const stats = this.getCenterControlStats(tenantId);
+      const userFilter = (item) => this.belongsToCenter(item, tenantId);
+      const appointments = this.appointmentsRepository.list().filter(userFilter);
+      const payments = this.paymentsRepository.list().filter(userFilter);
+      const controls = this.controlAuditRepository.list().filter((row) => String(row.targetTenantId || row.requestedTenantId || "") === tenantId);
+      const created24h = controls.filter((row) => Number(new Date(row.ts || nowIso()).getTime() || 0) >= last24h);
+
+      return {
+        tenantId,
+        tenantName: this.getCenterName({ centerId: tenantId }),
+        isActive: true,
+        health: appointments.length > 0 || payments.length > 0 ? "ACTIVE" : "DEGRADED",
+        activeWorkers: Number(stats.users || 0),
+        branchesOpen: Math.max(1, Math.floor((stats.services || 0) / 2)),
+        coreDecisions24h: created24h.length,
+        blockedActions24h: created24h.filter((row) => String(row.outcome || "") === "denied").length,
+        confirmationsRequested: controls.length,
+        toolCompleted: Math.max(0, controls.length - created24h.length),
+        toolFailed: controls.filter((row) => String(row.outcome || "").toLowerCase() === "failed").length,
+        activeWorkItems: appointments.length,
+        activeSessions: Number(stats.activeSessions || 0),
+        locksActive: 0,
+        artifactsIndexed: Math.max(0, Number(this.whatsappMessagesRepository.list().filter(userFilter).length)),
+        memoryCloudDocs: Number(stats.storageLabel ? 1 : 0),
+        timestamp: nowIso()
+      };
+    });
+
+    const aggregate = tenantSummaries.reduce((acc, tenant) => {
+      acc.tenantsConfigured += 1;
+      acc.tenantsActive += tenant.isActive ? 1 : 0;
+      acc.agentsRegistered += tenant.activeWorkers;
+      acc.openBranches += tenant.branchesOpen;
+      acc.coreDecisions24h += tenant.coreDecisions24h;
+      acc.blockedActions24h += tenant.blockedActions24h;
+      acc.confirmationsRequested += tenant.confirmationsRequested;
+      acc.toolCompleted += tenant.toolCompleted;
+      acc.toolFailed += tenant.toolFailed;
+      acc.activeWorkItems += tenant.activeWorkItems;
+      acc.activeSessions += tenant.activeSessions;
+      acc.locksActive += tenant.locksActive;
+      acc.artifactsIndexed += tenant.artifactsIndexed;
+      acc.memoryCloudDocs += tenant.memoryCloudDocs;
+      return acc;
+    }, {
+      tenantsConfigured: 0,
+      tenantsActive: 0,
+      agentsRegistered: 0,
+      openBranches: 0,
+      coreDecisions24h: 0,
+      blockedActions24h: 0,
+      confirmationsRequested: 0,
+      toolCompleted: 0,
+      toolFailed: 0,
+      activeWorkItems: 0,
+      activeSessions: 0,
+      locksActive: 0,
+      artifactsIndexed: 0,
+      memoryCloudDocs: 0
+    });
+
+    const connectors = this.getControlRoomConnectors(session, resolvedTenantId || options.tenantId, {
+      includeAllTenants: Boolean(!resolvedTenantId),
+      includeStatusOnly: true
+    });
+
+    const governance = this.getControlRoomGovernance(session, resolvedTenantId || options.tenantId, {
+      includeAllTenants: Boolean(!resolvedTenantId),
+      options: options.connectors
+    });
+
+    return {
+      scope: this.getControlRole(session),
+      selectedTenantId: resolvedTenantId || null,
+      scopeSummary: {
+        timestamp: nowIso(),
+        refreshIntervalMs: Number(options.refreshIntervalMs || 120000),
+        governanceState: governance.state
+      },
+      tiles: {
+        tenantsConfigured: aggregate.tenantsConfigured,
+        tenantsActive: aggregate.tenantsActive,
+        agentsRegistered: aggregate.agentsRegistered,
+        nyraBranchesActive: aggregate.openBranches,
+        coreDecisionsLast24h: aggregate.coreDecisions24h,
+        blockedActionsLast24h: aggregate.blockedActions24h,
+        confirmationsRequested: aggregate.confirmationsRequested,
+        toolCompleted: aggregate.toolCompleted,
+        toolFailed: aggregate.toolFailed,
+        activeWorks: aggregate.activeWorkItems,
+        activeSessions: aggregate.activeSessions,
+        locksActive: aggregate.locksActive,
+        artifactsIndexed: aggregate.artifactsIndexed,
+        memoryCloudDocs: aggregate.memoryCloudDocs,
+        lastUpdateAt: nowIso()
+      },
+      connectorHealth: connectors,
+      governance: {
+        state: governance.state,
+        blockers: governance.blockers
+      },
+      tenantBreakdown: tenantSummaries
+    };
+  }
+
+  getControlRoomWorkGallery(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "work_gallery" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const requestedOwner = String((session?.username || "").trim().toLowerCase());
+    const isOperator = this.getControlRole(session) === "tenant_operator";
+
+    const rows = [];
+    const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+
+    tenantIds.forEach((tenantId) => {
+      const appointments = this.getCenterRepositoryItems(this.appointmentsRepository, tenantId)
+        .filter((item) => {
+          if (!isOperator) return true;
+          const assigned = String(item.staffName || item.staff || "").trim().toLowerCase();
+          return assigned ? assigned.includes(requestedOwner) || requestedOwner.includes(assigned) : true;
+        })
+        .map((appointment) => {
+          const projectId = String(appointment.projectId || appointment.project || `project-${appointment.id || "0"}`);
+          const openedAt = String(appointment.createdAt || appointment.startAt || appointment.bookedAt || nowIso());
+          const updatedAt = String(appointment.updatedAt || appointment.lastUpdated || openedAt);
+          const status = String(appointment.status || "open").toLowerCase();
+          const isHighRisk = status === "blocked" || status === "error";
+          const lockActive = Boolean(appointment.locked || appointment.lock || String(appointment.lockedBy || "").trim());
+          const sessionsPresent = 1;
+          const agent = String(appointment.staffName || appointment.staff || this.getCenterName({ centerId: tenantId })).trim() || "team";
+          const branchOpen = [String(appointment.service || "workflow")];
+          const tasksReady = status === "done" || status === "completed" ? 1 : 0;
+          const tasksInProgress = status === "in_progress" ? 1 : 0;
+          const tasksBlocked = status === "blocked" ? 1 : 0;
+
+          return {
+            tenantId,
+            projectId,
+            workId: String(appointment.id || `${tenantId}-${openedAt}`),
+            title: String(appointment.title || appointment.serviceName || "Lavoro assegnato").trim(),
+            description: String(appointment.notes || appointment.description || "Nessuna descrizione disponibile").trim().slice(0, 240),
+            status,
+            priority: isHighRisk ? "alta" : "media",
+            openedAt,
+            lastUpdatedAt: updatedAt,
+            sessionsPresent,
+            agentsPresent: [agent],
+            branchesOpen: branchOpen,
+            tasksReady,
+            tasksInProgress,
+            tasksBlocked,
+            lockActive,
+            dependencies: [],
+            checkpointAvailable: Boolean(appointment.checkpointAvailable || false),
+            handoffPending: Boolean(appointment.handoffPending || false),
+            artifacts: Array.isArray(appointment.artifacts) ? appointment.artifacts.filter((item) => Boolean(item)) : [],
+            regressionsDetected: Number(appointment.regressionsDetected || 0),
+            nextStep: tasksBlocked ? "Sbloccare la dipendenza e richiudere il lock" : "Verificare stato e avanzamento",
+            owner: agent,
+            requestOwner: String(appointment.requestOwner || agent),
+            riskLevel: isHighRisk ? "alto" : "medio",
+            coreVerdict: isHighRisk ? "REVIEW" : "ALLOW",
+            verificationStatus: lockActive ? "attivo" : "chiuso",
+            tenantName: this.getCenterName({ centerId: tenantId })
+          };
+        });
+
+      rows.push(...appointments);
+    });
+
+    const sorted = rows
+      .sort((left, right) => String(right.lastUpdatedAt).localeCompare(String(left.lastUpdatedAt)))
+      .slice(safeOffset, safeOffset + safeLimit);
+
+    return {
+      data: sorted,
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: rows.length
+      },
+      filters: {
+        tenantId: resolvedTenantId || null,
+        role: this.getControlRole(session)
+      }
+    };
+  }
+
+  getControlRoomConnectors(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "connectors" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const includeStatusOnly = String(options.includeStatusOnly || "").toLowerCase() === "true" || Boolean(options.includeStatusOnly);
+    const nyraConfigured = Boolean(process.env.NYRA_CORE_URL || process.env.NYRA_RENDER_URL || process.env.NYRA_CORE);
+    const renderConfigured = Boolean(process.env.RENDER_EXTERNAL_URL || process.env.RENDER_SERVICE_URL);
+    const githubConfigured = Boolean(
+      process.env.GITHUB_TOKEN ||
+      process.env.GITHUB_APP_TOKEN ||
+      process.env.GH_TOKEN ||
+      process.env.GITHUB_PERSONAL_ACCESS_TOKEN
+    );
+    const suiteConfigured = Boolean(process.env.SUITE_KEY || process.env.SUITE_BRIDGE_URL || process.env.SUITE_BRIDGE_BASE_URL);
+    const connectors = tenantIds.map((tenantId) => ({
+      tenantId,
+      tenantName: this.getCenterName({ centerId: tenantId }),
+      list: [
+        {
+          connectorId: "github-resolver",
+          name: "GitHub credential resolver",
+          category: "resolver",
+          state: githubConfigured ? "ACTIVE" : "DEGRADED",
+          health: githubConfigured ? "ok" : "missing_credentials"
+        },
+        {
+          connectorId: "render-resolver",
+          name: "Render resolver",
+          category: "resolver",
+          state: renderConfigured ? "ACTIVE" : "DEGRADED",
+          health: renderConfigured ? "ok" : "missing_url"
+        },
+        {
+          connectorId: "nyra-runtime",
+          name: "Nyra runtime",
+          category: "runtime",
+          state: nyraConfigured ? "ACTIVE" : "DEGRADED",
+          health: nyraConfigured ? "ok" : "missing_url"
+        },
+        {
+          connectorId: "suite-bridge",
+          name: "Suite App key bridge",
+          category: "connector",
+          state: suiteConfigured ? "ACTIVE" : "DEGRADED",
+          health: suiteConfigured ? "ok" : "missing_credentials"
+        }
+      ].map((connector) => (includeStatusOnly
+        ? {
+            connectorId: connector.connectorId,
+            name: connector.name,
+            category: connector.category,
+            state: connector.state
+          }
+        : connector))
+    }));
+    return {
+      summary: {
+        connectors: connectors.length,
+        activeConnectors: connectors.reduce((acc, item) => acc + item.list.filter((entry) => entry.state === "ACTIVE").length, 0),
+        tenants: tenantIds.length
+      },
+      tenants: connectors
+    };
+  }
+
+  getControlRoomGovernance(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "governance" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const now = new Date();
+    const lastHour = now.getTime() - 60 * 60 * 1000;
+
+    const tenantRows = tenantIds.map((tenantId) => {
+      const controls = this.controlAuditRepository.list().filter((row) => String(
+        row.targetTenantId || row.requestedTenantId || ""
+      ) === tenantId);
+      const deniedActions = controls.filter((row) => String(row.outcome || "").toLowerCase() === "denied").length;
+      const failedActions = controls.filter((row) => String(row.outcome || "").toLowerCase() === "failed").length;
+      const critical24h = controls.filter((row) => Number(new Date(row.ts || nowIso()).getTime() || 0) >= lastHour).length;
+      return {
+        tenantId,
+        tenantName: this.getCenterName({ centerId: tenantId }),
+        deniedActions,
+        failedActions,
+        actionsLastHour: critical24h,
+        blockers: [
+          deniedActions > 0 ? "Blocco per policy: accesso cross-tenant denegato" : null,
+          critical24h > 20 ? "Blocco operativo: elevata attività critica in ora" : null,
+          failedActions > 0 ? "Interventi operativi da ricostruire dal ledger" : null
+        ].filter(Boolean)
+      };
+    });
+
+    const totalDenied = tenantRows.reduce((acc, item) => acc + item.deniedActions, 0);
+    const totalFailed = tenantRows.reduce((acc, item) => acc + item.failedActions, 0);
+    const state = totalDenied >= 5 ? "BLOCKED" : totalFailed >= 5 || totalDenied >= 1 ? "DEGRADED" : "ACTIVE";
+    return {
+      state,
+      updatedAt: nowIso(),
+      tenantCount: tenantRows.length,
+      tenantRows,
+      blockers: tenantRows.flatMap((item) => item.blockers).slice(0, 4)
+    };
+  }
+
+  getControlRoomAgents(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "agents" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const role = String(options.role || this.getControlRole(session));
+    const ownerFilter = String((session?.username || "").trim().toLowerCase());
+    const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const rows = [];
+
+    tenantIds.forEach((tenantId) => {
+      const items = this.getCenterRepositoryItems(this.staffRepository, tenantId)
+        .filter((agent) => {
+          if (role === "tenant_operator" && ownerFilter) {
+            return String(agent?.username || "").toLowerCase() === ownerFilter;
+          }
+          return true;
+        })
+        .map((agent) => ({
+          tenantId,
+          tenantName: this.getCenterName({ centerId: tenantId }),
+          agentId: String(agent.id || `${tenantId}-${agent.username || "agent"}`),
+          username: String(agent.username || "operator").slice(0, 80),
+          fullName: String(agent.name || agent.username || "Operator").slice(0, 180),
+          status: Boolean(agent.active) ? "ACTIVE" : "INACTIVE",
+          role: String(agent.role || "operator"),
+          verified: Boolean(agent.verified),
+          tasksOpen: 0,
+          tasksLocked: 0,
+          risk: "LOW",
+          updatedAt: String(agent.updatedAt || nowIso())
+        }));
+      rows.push(...items);
+    });
+
+    const sorted = rows.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+    return {
+      data: sorted.slice(safeOffset, safeOffset + safeLimit),
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: sorted.length
+      },
+      filters: {
+        tenantId: resolvedTenantId || null,
+        role
+      }
+    };
+  }
+
+  getControlRoomBranches(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "branches" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const rows = [];
+
+    tenantIds.forEach((tenantId) => {
+      const services = this.getCenterRepositoryItems(this.servicesRepository, tenantId);
+      services.forEach((service) => {
+        const status = Boolean(service.active) || service.active === undefined ? "OPEN" : "CLOSED";
+        rows.push({
+          tenantId,
+          tenantName: this.getCenterName({ centerId: tenantId }),
+          branchId: String(service.id || `${tenantId}-${service.name || "branch"}`),
+          branchName: String(service.name || "Ramo operativo").slice(0, 180),
+          status,
+          openJobs: service.openJobs || 0,
+          linkedWork: this.getCenterRepositoryItems(this.appointmentsRepository, tenantId)
+            .filter((item) => String(item.service || item.serviceId || "").trim() === String(service.id || "").trim()).length,
+          updatedAt: String(service.updatedAt || nowIso())
+        });
+      });
+    });
+
+    const sorted = rows.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+    return {
+      data: sorted.slice(safeOffset, safeOffset + safeLimit),
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: sorted.length
+      },
+      filters: {
+        tenantId: resolvedTenantId || null
+      }
+    };
+  }
+
+  getControlRoomKeys(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "keys" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const settings = this.getPublicSettings(session);
+    const keys = tenantIds.map((tenantId) => {
+      const base = this.getCenterName({ centerId: tenantId }) || tenantId;
+      const hasWhToken = Boolean(settings.whatsappTwilioAuthTokenConfigured || settings.whatsappTwilioFrom || settings.whatsappTwilioAccountSid);
+      const hasMail = Boolean(settings.smtpHost || settings.smtpUser || settings.smtpPass);
+      const hasSuiteCredentials = Boolean(process.env.SUITE_KEY || process.env.SUITE_BRIDGE_URL);
+      const keyRows = [
+        {
+          keyId: `keys_whatsapp_${tenantId}`,
+          provider: "WhatsApp",
+          type: "secret_metadata",
+          configured: hasWhToken,
+          maskedId: hasWhToken ? `whatsapp:${hashToken(tenantId).slice(0, 10)}` : "",
+          lastCheck: nowIso(),
+          owner: base
+        },
+        {
+          keyId: `keys_mail_${tenantId}`,
+          provider: "SMTP",
+          type: "secret_metadata",
+          configured: hasMail,
+          maskedId: hasMail ? `smtp:${hashToken(tenantId).slice(10, 20)}` : "",
+          lastCheck: nowIso(),
+          owner: base
+        },
+        {
+          keyId: `keys_suite_${tenantId}`,
+          provider: "Suite App Key",
+          type: "secret_metadata",
+          configured: hasSuiteCredentials,
+          maskedId: hasSuiteCredentials ? `suite:${hashToken(tenantId).slice(20, 30)}` : "",
+          lastCheck: nowIso(),
+          owner: base
+        }
+      ];
+      if (options.includeAudit) {
+        keyRows.push({
+          keyId: `keys_universal_core_${tenantId}`,
+          provider: "Universal Core",
+          type: "connector_metadata",
+          configured: Boolean(process.env.NYRA_CORE_URL || process.env.NYRA_RENDER_URL),
+          maskedId: "core:metadata",
+          lastCheck: nowIso(),
+          owner: base
+        });
+      }
+      return {
+        tenantId,
+        tenantName: this.getCenterName({ centerId: tenantId }),
+        keys: keyRows
+      };
+    });
+    return {
+      keys
+    };
+  }
+
+  getControlRoomAudit(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "audit" });
+    const safeLimit = Math.max(1, Math.min(500, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const requestedAction = String(options.action || "").toLowerCase();
+    const requestedOutcome = String(options.outcome || "").toLowerCase();
+    const requestedActor = String(options.actor || "").trim().toLowerCase();
+    const role = this.getControlRole(session);
+
+    const rows = this.controlAuditRepository.list()
+      .filter((row) => {
+        const target = String(row.targetTenantId || row.requestedTenantId || "");
+        const sourceTenant = resolvedTenantId ? target === resolvedTenantId : target === this.getCenterId(session) || role === "super_admin";
+        if (!resolvedTenantId && role !== "super_admin" && role !== "tenant_admin") {
+          return sourceTenant;
+        }
+        if (role === "tenant_admin" && !resolvedTenantId) {
+          return this.belongsToCenter({ centerId: target }, this.getCenterId(session)) || target === this.getCenterId(session);
+        }
+        return sourceTenant;
+      })
+      .filter((row) => !requestedAction || String(row.action || "").toLowerCase() === requestedAction)
+      .filter((row) => !requestedOutcome || String(row.outcome || "").toLowerCase() === requestedOutcome)
+      .filter((row) => !requestedActor || String(row.actor?.username || "").toLowerCase().includes(requestedActor))
+      .map((row) => ({
+        eventId: String(row.id || ""),
+        ts: String(row.ts || nowIso()),
+        tenantId: String(row.targetTenantId || row.requestedTenantId || ""),
+        action: String(row.action || ""),
+        outcome: String(row.outcome || ""),
+        reason: String(row.reason || ""),
+        actor: {
+          username: String(row.actor?.username || ""),
+          controlRole: String(row.actor?.controlRole || ""),
+          tenantId: String(row.actor?.tenantId || "")
+        },
+        sessionId: hashToken(String(row.actor?.userId || `${row.actor?.username || ""}-${row.ts || ""}`)).slice(0, 20),
+        details: {
+          method: String(row.details?.method || ""),
+          path: String(row.details?.path || ""),
+          tenantFilter: String(row.details?.tenantFilter || "")
+        }
+      }))
+      .sort((left, right) => String(right.ts).localeCompare(String(left.ts)));
+
+    return {
+      data: rows.slice(safeOffset, safeOffset + safeLimit),
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: rows.length
+      },
+      filters: {
+        role,
+        tenantId: resolvedTenantId || null,
+        action: requestedAction || "any",
+        outcome: requestedOutcome || "any",
+        actor: requestedActor || "any"
+      }
+    };
+  }
+
+  getControlRoomDecisionLedger(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "decision_ledger" });
+    const rows = this.controlAuditRepository.list().filter((row) => {
+      const target = String(row.targetTenantId || row.requestedTenantId || "");
+      if (!resolvedTenantId) {
+        return target === this.getCenterId(session) || this.getControlRole(session) === "super_admin";
+      }
+      return target === resolvedTenantId;
+    });
+    const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const normalized = rows
+      .filter((row) => {
+        const action = String(row.action || "").toLowerCase();
+        return action.includes("core") || action.includes("decision") || action.includes("workflow") || action.includes("decision");
+      })
+      .map((row) => ({
+        tenantId: String(row.targetTenantId || row.requestedTenantId || ""),
+        tenantName: this.getCenterName({ centerId: row.targetTenantId || row.requestedTenantId || this.getCenterId(session) }),
+        workId: String(row.details?.workId || row.details?.work_id || ""),
+        decisionId: String(row.id || ""),
+        createdAt: String(row.ts || nowIso()),
+        coreVerdict: String(row.action || "unknown"),
+        ownerRequested: Boolean(row.reason?.toLowerCase().includes("owner")),
+        ownerConfirmationRequired: String(row.outcome || "").toLowerCase() === "denied",
+        nextAction: String(row.details?.nextAction || "Revisione o escalation manuale."),
+        decision: String(row.outcome || "")
+      }))
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+    return {
+      data: normalized.slice(safeOffset, safeOffset + safeLimit),
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: normalized.length
+      },
+      filters: {
+        tenantId: resolvedTenantId || null
+      }
+    };
+  }
+
+  getControlRoomMemory(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "memory" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const rows = tenantIds.map((tenantId) => {
+      const stats = this.getCenterControlStats(tenantId);
+      const controls = this.controlAuditRepository.list().filter((row) => String(row.targetTenantId || row.requestedTenantId || "") === tenantId);
+      const safeTenant = this.getCenterRepositoryItems(this.appointmentsRepository, tenantId).length;
+      const memoryItems = Math.max(0, Number(stats.storageBytes || 0));
+      return {
+        tenantId,
+        tenantName: this.getCenterName({ centerId: tenantId }),
+        memoryCloudDocs: stats.storageBytes > 0 ? Math.min(9999, Math.round(memoryItems / 1024)) : 0,
+        memoryState: stats.storageBytes > 512 * 1024 ? "HIGH_USAGE" : "ACTIVE",
+        artifactsIndexed: safeTenant,
+        activeSessions: Number(stats.activeSessions || 0),
+        decisionEntries: controls.length,
+        lastSnapshotAt: nowIso()
+      };
+    });
+    const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const sorted = rows.sort((left, right) => String(left.tenantName).localeCompare(String(right.tenantName)));
+    return {
+      data: sorted.slice(safeOffset, safeOffset + safeLimit),
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: sorted.length
+      },
+      filters: {
+        tenantId: resolvedTenantId || null
+      }
+    };
+  }
+
+  getControlRoomWork(session = null, requestedTenantId = "", workId = "") {
+    const gallery = this.getControlRoomWorkGallery(session, requestedTenantId, { limit: 500, offset: 0 });
+    const found = gallery.data.find((item) => String(item.workId || "").toLowerCase() === String(workId || "").toLowerCase());
+    if (!found) {
+      const err = new Error("Work non trovato");
+      err.code = "control_work_not_found";
+      throw err;
+    }
+    return {
+      ...found,
+      timeline: this.getControlRoomWorkTimeline(session, requestedTenantId, workId)
+    };
+  }
+
+  getControlRoomWorkTimeline(session = null, requestedTenantId = "", workId = "") {
+    const work = this.getControlRoomWork(session, requestedTenantId, workId);
+    const tenantId = String(work.tenantId || "");
+    const tenantSafe = String(work.tenantId || tenantId);
+    const sanitizedSession = `session-${hashToken(String(workId || tenantSafe || "session")).slice(0, 18)}`;
+    const openedAt = String(work.openedAt || nowIso());
+    return {
+      tenantId: tenantSafe,
+      workId: String(work.workId),
+      sessionId: sanitizedSession,
+      workIdSafe: String(work.workId || "").slice(0, 128),
+      events: [
+        {
+          tenantId: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          timestamp: openedAt,
+          actor: "control-operator",
+          branch: "intake",
+          event: "request_received",
+          outcome: "ok",
+          evidence: "payload validato",
+          coreDecision: "ALLOW",
+          confirmationRequested: false,
+          rollbackAction: null,
+          nextAction: "Inizio valutazione branch"
+        },
+        {
+          tenantId: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          timestamp: openedAt,
+          actor: "core-orchestrator",
+          branch: "nyra-router",
+          event: "core_opens_branches",
+          outcome: "ok",
+          evidence: "orchestrazione eseguita",
+          tenant: tenantSafe,
+          coreDecision: work.coreVerdict,
+          confirmationRequested: work.riskLevel === "alto",
+          rollbackAction: work.riskLevel === "alto" ? "richiedi_riversificazione" : null,
+          nextAction: work.nextStep
+        },
+        {
+          tenantId: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          timestamp: nowIso(),
+          actor: "audit-trace",
+          branch: "evidence",
+          event: "outcome_recorded",
+          outcome: work.riskLevel === "alto" ? "pending_confirmation" : "approved",
+          evidence: "timeline verificata e registrata",
+          tenant: tenantSafe,
+          coreDecision: work.coreVerdict,
+          confirmationRequested: work.riskLevel === "alto",
+          rollbackAction: null,
+          nextAction: "monitoraggio"
+        }
+      ]
+    };
+  }
+
+  getAuthorizedTenantDataRows(repository, session = null, tenantId = null) {
+    const resolved = this.resolveControlTenantScope(session, tenantId, { action: "filter_tenant_scope" });
+    if (!resolved) {
+      return this.getRepositoryItems(repository);
+    }
+    return this.getRepositoryItems(repository).filter((item) => this.belongsToCenter(item, resolved));
+  }
+
+  recordControlAuditEvent(payload = {}) {
+    const session = payload.session || null;
+    const details = payload.details && typeof payload.details === "object" ? payload.details : {};
+    const tenantId = String(payload.targetTenantId || payload.requestedTenantId || "");
+    const row = {
+      id: crypto.randomUUID(),
+      ts: nowIso(),
+      actor: {
+        userId: session?.userId || "",
+        username: session?.username || "",
+        role: session?.role || "",
+        controlRole: this.getControlRole(session),
+        tenantId: this.getCenterId(session)
+      },
+      action: String(payload.action || "control_event"),
+      outcome: String(payload.outcome || "unknown"),
+      reason: String(payload.reason || ""),
+      targetTenantId: tenantId,
+      requestedTenantId: String(payload.requestedTenantId || ""),
+      details: {
+        method: String(details.method || ""),
+        path: String(details.path || ""),
+        tenantFilter: String(details.tenantFilter || ""),
+        sanitized: true
+      }
+    };
+    this.controlAuditRepository.create(row);
   }
 
   getCurrentIso() {

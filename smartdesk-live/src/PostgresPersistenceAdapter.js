@@ -1,4 +1,6 @@
 const fs = require("fs");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const { atomicWriteJson } = require("./JsonFileRepository");
 
 function formatBytes(bytes) {
   const value = Number(bytes || 0);
@@ -13,7 +15,12 @@ class PostgresPersistenceAdapter {
   constructor(databaseUrl) {
     this.databaseUrl = databaseUrl;
     this.writeChains = new Map();
+    this.writeTracking = new AsyncLocalStorage();
     this.pool = null;
+    this.pendingWrites = 0;
+    this.failedCollections = new Set();
+    this.lastWriteAt = null;
+    this.lastFailureAt = null;
   }
 
   createPool() {
@@ -49,7 +56,7 @@ class PostgresPersistenceAdapter {
 
   ensureLocalFile(filePath, defaultValue) {
     if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2));
+      atomicWriteJson(filePath, defaultValue);
     }
   }
 
@@ -59,7 +66,7 @@ class PostgresPersistenceAdapter {
   }
 
   writeLocalPayload(filePath, payload) {
-    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+    atomicWriteJson(filePath, payload);
   }
 
   async bootstrapCollection({ name, filePath, defaultValue }) {
@@ -84,9 +91,18 @@ class PostgresPersistenceAdapter {
   }
 
   enqueueWrite(name, payload) {
-    if (!this.databaseUrl) return Promise.resolve();
+    if (!this.databaseUrl) {
+      return Promise.resolve({
+        ok: true,
+        collection: name,
+        skipped: true
+      });
+    }
+
+    const serializedPayload = JSON.stringify(payload);
     const currentChain = this.writeChains.get(name) || Promise.resolve();
-    const nextChain = currentChain
+    this.pendingWrites += 1;
+    const operation = currentChain
       .catch(() => undefined)
       .then(async () => {
         const pool = this.createPool();
@@ -95,15 +111,101 @@ class PostgresPersistenceAdapter {
            VALUES ($1, $2::jsonb, NOW())
            ON CONFLICT (name)
            DO UPDATE SET payload = EXCLUDED.payload, updated_at = NOW()`,
-          [name, JSON.stringify(payload)]
+          [name, serializedPayload]
         );
-      })
-      .catch((error) => {
-        console.error(`[SmartDesk][DB] Sync fallita per ${name}:`, error.message);
       });
 
-    this.writeChains.set(name, nextChain);
-    return nextChain;
+    const outcome = operation.then(
+      () => {
+        this.failedCollections.delete(name);
+        this.lastWriteAt = new Date().toISOString();
+        return {
+          ok: true,
+          collection: name,
+          skipped: false
+        };
+      },
+      () => {
+        this.failedCollections.add(name);
+        this.lastFailureAt = new Date().toISOString();
+        return {
+          ok: false,
+          collection: name,
+          code: "persistence_write_failed"
+        };
+      }
+    ).then((result) => {
+      this.pendingWrites = Math.max(0, this.pendingWrites - 1);
+      return result;
+    });
+
+    const serializedChain = outcome.then(() => undefined);
+    this.writeChains.set(name, serializedChain);
+    void serializedChain.then(() => {
+      if (this.writeChains.get(name) === serializedChain) {
+        this.writeChains.delete(name);
+      }
+    });
+
+    const context = this.writeTracking.getStore();
+    if (context) {
+      context.outcomes.push(outcome);
+    } else {
+      void outcome.then((result) => {
+        if (!result.ok) {
+          console.error(`[SmartDesk][DB] Sync fallita per ${name}: persistence_write_failed`);
+        }
+      });
+    }
+
+    return outcome;
+  }
+
+  runWithWriteTracking(callback) {
+    const context = {
+      outcomes: [],
+      flushPromise: null
+    };
+    return this.writeTracking.run(context, () => callback(context));
+  }
+
+  flushTrackedWrites(context = this.writeTracking.getStore()) {
+    if (!context) return Promise.resolve([]);
+    if (context.flushPromise) return context.flushPromise;
+
+    context.flushPromise = (async () => {
+      const results = [];
+      let cursor = 0;
+
+      while (cursor < context.outcomes.length) {
+        const batch = context.outcomes.slice(cursor);
+        cursor += batch.length;
+        results.push(...await Promise.all(batch));
+      }
+
+      const failures = results.filter((result) => !result.ok);
+      if (failures.length) {
+        const error = new Error("Persistenza dati non confermata.");
+        error.code = "persistence_sync_failed";
+        error.failedCollections = failures.map((result) => result.collection);
+        throw error;
+      }
+
+      return results;
+    })();
+
+    return context.flushPromise;
+  }
+
+  getPersistenceStatus() {
+    return {
+      configured: Boolean(this.databaseUrl),
+      healthy: this.failedCollections.size === 0,
+      pendingWrites: this.pendingWrites,
+      failedCollections: this.failedCollections.size,
+      lastWriteAt: this.lastWriteAt,
+      lastFailureAt: this.lastFailureAt
+    };
   }
 
   async getDatabaseUsage(options = {}) {

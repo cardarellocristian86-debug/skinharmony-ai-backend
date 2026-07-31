@@ -8,7 +8,10 @@
     "start": "node server.js",
     "audit:gold": "node scripts/smartdesk_gold_product_audit.js",
     "test:external-ai-gold": "node scripts/external_ai_gold_bridge_test.js",
-    "test:semantic-selection": "node scripts/universal_core_bridge_semantic_selection_test.js"
+    "test:semantic-selection": "node scripts/universal_core_bridge_semantic_selection_test.js",
+    "test:persistence": "node scripts/persistence_durability_test.js",
+    "test:http-security": "node scripts/http_security_policy_test.js",
+    "test:hardening": "npm run test:persistence && npm run test:http-security"
   },
   "dependencies": {
     "express": "^5.2.1",

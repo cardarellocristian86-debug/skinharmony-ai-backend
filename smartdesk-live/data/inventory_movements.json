@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "id": "move_1785523836744_5d0dc078",
+    "centerId": "center_admin",
+    "centerName": "Privilege Parrucchieri",
+    "itemId": "inv_1785523836731_1f92c9b7",
+    "type": "sale",
+    "quantity": 1,
+    "paymentId": "pay_1785523836742_3ad2d3ee",
+    "appointmentId": "appt_1785523836736_b7a4a96d",
+    "salePriceCents": 2100,
+    "lineTotalCents": 2100,
+    "note": "Vendita checkout: Shampoo professionale",
+    "createdAt": "2026-07-31T18:50:36.744Z"
+  }
+]

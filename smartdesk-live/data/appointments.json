@@ -1,1 +1,30 @@
-[]
+[
+  {
+    "id": "appt_1785523836736_b7a4a96d",
+    "idempotencyKey": "smartdesk-demo-seed-v1:appointment:default",
+    "centerId": "center_admin",
+    "centerName": "Privilege Parrucchieri",
+    "clientId": "client_1785523836720_cb9df89e",
+    "clientName": "Anna Moretti",
+    "walkInName": "",
+    "walkInPhone": "",
+    "staffId": "staff_3",
+    "staffName": "Responsabile",
+    "serviceId": "service_1785523836697_0bcd0d0d",
+    "serviceIds": [
+      "service_1785523836697_0bcd0d0d"
+    ],
+    "serviceName": "Taglio e piega",
+    "productSales": [],
+    "resourceId": "",
+    "resourceName": "",
+    "startAt": "2026-08-01T08:00:00.000Z",
+    "endAt": "2026-08-01T08:45:00.000Z",
+    "status": "booked",
+    "notes": "Appuntamento seed demo per dashboard operativa",
+    "durationMin": 45,
+    "locked": 0,
+    "createdAt": "2026-07-31T18:50:36.736Z",
+    "updatedAt": "2026-07-31T18:50:36.736Z"
+  }
+]

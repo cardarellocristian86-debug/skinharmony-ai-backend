@@ -1,5 +1,39 @@
 const fs = require("fs");
 
+let atomicWriteCounter = 0;
+
+function atomicWriteJson(filePath, value) {
+  const payload = JSON.stringify(value, null, 2);
+  const existingMode = fs.existsSync(filePath)
+    ? fs.statSync(filePath).mode & 0o777
+    : 0o600;
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${atomicWriteCounter += 1}.tmp`;
+  let descriptor = null;
+
+  try {
+    descriptor = fs.openSync(tempPath, "wx", existingMode);
+    fs.writeFileSync(descriptor, payload, "utf8");
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = null;
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    if (descriptor !== null) {
+      try {
+        fs.closeSync(descriptor);
+      } catch (_closeError) {
+        // Preserve the original write error.
+      }
+    }
+    try {
+      fs.unlinkSync(tempPath);
+    } catch (_cleanupError) {
+      // The temporary file may already have been renamed or removed.
+    }
+    throw error;
+  }
+}
+
 class JsonFileRepository {
   constructor(filePath, defaultValue = [], options = {}) {
     this.filePath = filePath;
@@ -11,7 +45,7 @@ class JsonFileRepository {
 
   ensureFile() {
     if (!fs.existsSync(this.filePath)) {
-      fs.writeFileSync(this.filePath, JSON.stringify(this.defaultValue, null, 2));
+      atomicWriteJson(this.filePath, this.defaultValue);
       this.cache = null;
     }
   }
@@ -36,7 +70,7 @@ class JsonFileRepository {
   }
 
   write(items) {
-    fs.writeFileSync(this.filePath, JSON.stringify(items, null, 2));
+    atomicWriteJson(this.filePath, items);
     const stat = fs.statSync(this.filePath);
     this.cache = {
       items,
@@ -94,5 +128,6 @@ class JsonFileRepository {
 }
 
 module.exports = {
-  JsonFileRepository
+  JsonFileRepository,
+  atomicWriteJson
 };

@@ -4,7 +4,7 @@
   var ROOT_ID = "nyra-gold-chat-layer";
   var API_BASE = (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost" || window.location.hostname === "skinharmony-smartdesk-live.onrender.com")
     ? window.location.origin
-    : (window.localStorage.getItem("skinharmony-web-api-url") || window.location.origin).replace(/\/$/, "");
+    : ((window.location.hostname === "127.0.0.1"||window.location.hostname === "localhost"?window.localStorage.getItem("skinharmony-web-api-url"):null) || window.location.origin).replace(/\/$/, "");
   var state = {
     open: false,
     sending: false,

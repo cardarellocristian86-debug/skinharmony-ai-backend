@@ -39,10 +39,26 @@
             <button class="sh-button secondary-btn" data-view="clients" type="button">Clienti</button>
             <button class="sh-button secondary-btn" data-view="services" type="button">Servizi</button>
             <button class="sh-button secondary-btn" data-view="protocols" type="button">Protocolli</button>
+            <button class="sh-button secondary-btn" data-view="control-executive" type="button">Executive View</button>
+            <button class="sh-button secondary-btn" data-view="control-work-gallery" type="button">Tenant Work Gallery</button>
+            <button class="sh-button secondary-btn" data-view="control-agents" type="button">Agenti</button>
+            <button class="sh-button secondary-btn" data-view="control-branches" type="button">Rami &amp; flussi</button>
+            <button class="sh-button secondary-btn" data-view="control-keys" type="button">Chiavi</button>
+            <button class="sh-button secondary-btn" data-view="control-audit" type="button">Audit trail</button>
+            <button class="sh-button secondary-btn" data-view="control-decision-ledger" type="button">Decision Ledger</button>
+            <button class="sh-button secondary-btn" data-view="control-memory" type="button">Memoria</button>
+            <button class="sh-button secondary-btn" data-view="control-connectors" type="button">Connectors</button>
+            <button class="sh-button secondary-btn" data-view="control-governance" type="button">Governance &amp; Blockers</button>
+            <button class="sh-button secondary-btn" data-view="control-demo" type="button">Agent Workspace Demo</button>
+            <button class="sh-button secondary-btn" data-view="control-super-admin" type="button">Super Admin settings</button>
             <button class="sh-button secondary-btn" data-view="settings" type="button">Impostazioni</button>
           </nav>
         </div>
         <div class="row gap-8">
+          <label id="control-tenant-switcher" class="topbar-control-switcher hidden">
+            <span id="control-tenant-label">Tenant</span>
+            <select id="control-tenant-select" class="sh-input topbar-control-select"></select>
+          </label>
           <label class="topbar-language-picker">
             <span id="language-label">Lingua</span>
             <select id="language-select" class="sh-input topbar-language-select">
