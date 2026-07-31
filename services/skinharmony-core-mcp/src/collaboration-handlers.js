@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { createAgentPresence } from "./agent-presence.js";
+import { CLIENT_TYPES, createAgentPresence } from "./agent-presence.js";
 import { createCollaborationPostgresStore } from "./collaboration-postgres-store.js";
 import { publicQuarantineReceipt, scanInterAgentHandoff } from "../../shared/handoff-injection-guard.mjs";
 
@@ -65,6 +65,19 @@ function heartbeatCoordinationAction(agentId, fingerprintValue, customMetadata) 
     target: `agent:${agentId}`,
     idempotency_key: `agent.heartbeat:${fingerprint}`,
   });
+}
+
+function requireSignedPresence(config, identity) {
+  const presence = identity?.agentPresence || {};
+  if (!presence.agent_id || !presence.client_type || !presence.session_id || !presence.signature || !presence.session_fingerprint) fail("agent_presence_registration_required");
+  const agentId = safeId(presence.agent_id, "agent_id");
+  const clientType = String(presence.client_type || "").trim().toLowerCase();
+  const sessionId = safeId(presence.session_id, "session_id");
+  const fingerprint = requiredText(presence.session_fingerprint, "agent_session_fingerprint", 128);
+  const signature = requiredText(presence.signature, "agent_signature", 128);
+  if (!CLIENT_TYPES.has(clientType)) fail("client_type_invalid");
+  if (!signature.startsWith("ags_")) fail("agent_presence_registration_required");
+  return { agentId, clientType, sessionId, fingerprint, signature };
 }
 
 function publicAgent(agent) {
@@ -255,6 +268,62 @@ export function createCollaborationHandlers(config, options = {}) {
   }
 
   return {
+    registerAuthenticatedPresence: async (payload, identity) => {
+      const requestIdentity = identity || payload;
+      const registered = requireSignedPresence(config, requestIdentity);
+      if (postgres) {
+        return postgres.heartbeat({
+          agent_id: registered.agentId,
+          client_type: registered.clientType,
+          session_id: registered.sessionId,
+          display_name: registered.agentId,
+          capabilities: [],
+        }, requestIdentity);
+      }
+      const presence = createAgentPresence(config, requestIdentity, {
+        agent_id: registered.agentId,
+        client_type: registered.clientType,
+        session_id: registered.sessionId,
+      });
+      const agentId = presence.agent_id;
+      const clientType = presence.client_type;
+      const fingerprint = presence.session_fingerprint;
+      return governed(requestIdentity, heartbeatCoordinationAction(agentId, fingerprint), async (state) => {
+        const timestamp = new Date().toISOString();
+        let record = state.agents.find((candidate) => candidate.id === agentId);
+        if (!record) {
+          record = {
+            id: agentId,
+            opaque_agent_id: presence.opaque_agent_id,
+            signature: presence.signature,
+            signature_version: presence.signature_version,
+            client_type: clientType,
+            session_fingerprint: fingerprint,
+            display_name: agentId,
+            capabilities: [],
+            actor_subject: actor(requestIdentity),
+            first_seen_at: timestamp,
+            last_seen_at: timestamp,
+          };
+          state.agents.push(record);
+        } else {
+          if (record.actor_subject !== actor(requestIdentity)) fail("agent_identity_conflict");
+          const lastSeen = Date.parse(record.last_seen_at || "");
+          const active = Number.isFinite(lastSeen) && Date.now() - lastSeen <= AGENT_ACTIVE_WINDOW_MS;
+          if (record.session_fingerprint && record.signature !== presence.signature && active) fail("agent_instance_conflict");
+          record.opaque_agent_id = presence.opaque_agent_id;
+          record.signature = presence.signature;
+          record.signature_version = presence.signature_version;
+          record.client_type = clientType;
+          record.session_fingerprint = fingerprint;
+          record.display_name = agentId;
+          record.capabilities = [];
+          record.last_seen_at = timestamp;
+        }
+        return { agent: publicAgent(record) };
+      });
+    },
+
     workspace_list: async ({ prefix = "" }, identity) => {
       const state = readState(root, identity.tenantId);
       const normalizedPrefix = prefix ? logicalPath(prefix, { folder: true }) : "";

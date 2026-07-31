@@ -33,7 +33,7 @@ function isAllowedDraftPullRequestBase(value) {
   );
 }
 
-function isBoundedInternalCoordinationWrite(body = {}) {
+export function isBoundedInternalCoordinationWrite(body = {}) {
   const allowedActionTypes = new Set([
     "agent.heartbeat",
     "task.claim",
