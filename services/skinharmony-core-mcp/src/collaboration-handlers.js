@@ -55,6 +55,18 @@ function actor(identity) {
   return String(identity.subject || identity.kind || "unknown").slice(0, 200);
 }
 
+function heartbeatCoordinationAction(agentId, fingerprintValue, customMetadata) {
+  const fingerprint = String(fingerprintValue || "");
+  if (!fingerprint) fail("agent_presence_session_required");
+  return boundedCollaborationAction({
+    action_type: "agent.heartbeat",
+    ...(customMetadata ? { operation_class: "owner_confirmed_governed_action", contains_customer_data: true } : {}),
+    action_label: `Register agent ${agentId}`,
+    target: `agent:${agentId}`,
+    idempotency_key: `agent.heartbeat:${fingerprint}`,
+  });
+}
+
 function publicAgent(agent) {
   const { actor_subject: _subject, ...record } = agent;
   const lastSeen = Date.parse(record.last_seen_at || "");
@@ -396,7 +408,7 @@ export function createCollaborationHandlers(config, options = {}) {
       const displayName = optionalText(display_name, "display_name", 120) || agentId;
       const safeCapabilities = Array.isArray(capabilities) ? [...new Set(capabilities.map((value) => safeId(value, "capability")))].slice(0, 20) : fail("capabilities_invalid");
       const customMetadata = displayName !== agentId || safeCapabilities.length > 0;
-      return governed(identity, boundedCollaborationAction({ action_type: "agent.heartbeat", ...(customMetadata ? { operation_class: "owner_confirmed_governed_action", contains_customer_data: true } : {}), action_label: `Register agent ${agentId}`, target: agentId }), async (state) => {
+      return governed(identity, heartbeatCoordinationAction(agentId, fingerprint, customMetadata), async (state) => {
         const timestamp = new Date().toISOString();
         let record = state.agents.find((candidate) => candidate.id === agentId);
         if (!record) {
