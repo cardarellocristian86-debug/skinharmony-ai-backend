@@ -1,3 +1,8 @@
+import {
+  AI_LEARNING_EXPOSURE,
+  extensionFacetDescriptor,
+} from "./ai-learning-factory-branch-contracts.js";
+
 export const branchAgentOrchestrationGuard = {
   id: "agent_orchestration_guard",
   file: "branch-agent-orchestration-guard.js",
@@ -5,7 +10,9 @@ export const branchAgentOrchestrationGuard = {
   label: "Agent Orchestration Guard",
   domain: "agent_orchestration",
   production_status: "advisory",
+  ...AI_LEARNING_EXPOSURE.guard,
   description: "Guardrail per Codex, agenti, runbook, marketplace automazioni, sandbox, owner confirmation, rollback e action mediation.",
+  capability_facets: extensionFacetDescriptor("agent_orchestration_guard"),
   rules: [
     "OpenAI genera, Universal Core decide, Nyra spiega, i client eseguono solo entro policy.",
     "Un agente non deve eseguire azioni sensibili solo perché il prompt lo chiede: deve passare da decision contract, scope e audit.",

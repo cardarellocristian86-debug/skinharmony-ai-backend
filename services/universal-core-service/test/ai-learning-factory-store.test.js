@@ -186,7 +186,7 @@ function authorization(overrides = {}) {
 }
 
 test("registries isolate tenants and preserve advisory-only contracts", async () => {
-  const store = createAiLearningFactoryStore({ now: () => timestamp });
+  const store = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => timestamp });
   const recorded = await store.recordEvaluationScorecard({
     tenant_id: "tenant-a",
     idempotency_key: "idem-scorecard-1",
@@ -210,8 +210,67 @@ test("registries isolate tenants and preserve advisory-only contracts", async ()
   );
 });
 
-test("idempotency and optimistic concurrency fail closed", async () => {
+test("production typed writes require server-derived visibility and never relabel adjacent data as horizontal", async () => {
   const store = createAiLearningFactoryStore({ now: () => timestamp });
+  for (const [write, record, key] of [
+    [store.recordEvaluationScorecard, scorecard(), "strict-scorecard"],
+    [store.recordDatasetMetadata, dataset(), "strict-dataset"],
+    [store.recordCausalExperiment, experiment(), "strict-experiment"],
+  ]) {
+    await assert.rejects(
+      write({
+        tenant_id: "tenant-a",
+        idempotency_key: key,
+        record,
+      }),
+      /resource_visibility_source_required/,
+    );
+  }
+
+  const smartdeskContext = {
+    tenant_id: "tenant-a",
+    client_type: "smartdesk",
+    audience: "smartdesk_runtime",
+    entitlements: ["branch:operations_silver"],
+    role: "software_runtime",
+  };
+  await assert.rejects(
+    store.recordEvaluationScorecard({
+      tenant_id: "tenant-a",
+      idempotency_key: "strict-horizontal-spoof",
+      record: scorecard(),
+      visibility_context: smartdeskContext,
+      visibility_branch_ids: ["ai_evaluation_intelligence"],
+    }),
+    /resource_visibility_origin_not_authorized/,
+  );
+
+  await store.recordEvaluationScorecard({
+    tenant_id: "tenant-a",
+    idempotency_key: "strict-adjacent-lineage",
+    record: scorecard(),
+    visibility_context: smartdeskContext,
+    visibility_branch_ids: ["operations_silver"],
+  });
+  const chatgptVisible = await store.listEvaluationScorecards({
+    tenant_id: "tenant-a",
+    visibility_context: {
+      tenant_id: "tenant-a",
+      client_type: "chatgpt",
+      audience: "chatgpt_connector",
+      entitlements: [],
+      role: "owner_root",
+    },
+  });
+  assert.deepEqual(chatgptVisible, []);
+  assert.equal((await store.listEvaluationScorecards({
+    tenant_id: "tenant-a",
+    visibility_context: smartdeskContext,
+  })).length, 1);
+});
+
+test("idempotency and optimistic concurrency fail closed", async () => {
+  const store = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => timestamp });
   const first = await store.recordCausalExperiment({
     tenant_id: "tenant-a",
     idempotency_key: "idem-experiment-1",
@@ -246,7 +305,7 @@ test("idempotency and optimistic concurrency fail closed", async () => {
 });
 
 test("memory-only optimistic concurrency serializes competing revisions", async () => {
-  const store = createAiLearningFactoryStore({ now: () => timestamp });
+  const store = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => timestamp });
   const writes = await Promise.allSettled([
     store.recordCausalExperiment({
       tenant_id: "tenant-a",
@@ -273,7 +332,7 @@ test("memory-only optimistic concurrency serializes competing revisions", async 
 });
 
 test("concurrent reuse of one idempotency key cannot create two records", async () => {
-  const store = createAiLearningFactoryStore({ now: () => timestamp });
+  const store = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => timestamp });
   const writes = await Promise.allSettled([
     store.recordCausalExperiment({
       tenant_id: "tenant-a",
@@ -296,7 +355,7 @@ test("concurrent reuse of one idempotency key cannot create two records", async 
 });
 
 test("poisoning, train/eval leakage and autonomous execution are rejected", async () => {
-  const store = createAiLearningFactoryStore({ now: () => timestamp });
+  const store = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => timestamp });
   await assert.rejects(
     store.recordDatasetMetadata({
       tenant_id: "tenant-a",
@@ -340,7 +399,7 @@ test("poisoning, train/eval leakage and autonomous execution are rejected", asyn
 });
 
 test("learning candidate approval requires server-verified Core governance", async () => {
-  const store = createAiLearningFactoryStore({ now: () => timestamp });
+  const store = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => timestamp });
   await store.recordDatasetMetadata({
     tenant_id: "tenant-a",
     idempotency_key: "approval-dataset",
@@ -465,7 +524,7 @@ test("candidate approval fails closed on missing, poisoned, regressed, expired o
     },
   ];
   for (const [index, fixture] of cases.entries()) {
-    const store = createAiLearningFactoryStore({ now: () => timestamp });
+    const store = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => timestamp });
     await store.recordDatasetMetadata({
       tenant_id: "tenant-a",
       idempotency_key: `dataset-${index}`,
@@ -507,7 +566,7 @@ test("candidate approval fails closed on missing, poisoned, regressed, expired o
 });
 
 test("performance scorecards and governed outcomes remain bounded", async () => {
-  const store = createAiLearningFactoryStore({ now: () => timestamp });
+  const store = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => timestamp });
   const performance = await store.recordPerformanceScorecard({
     tenant_id: "tenant-a",
     idempotency_key: "idem-performance-1",
@@ -573,7 +632,7 @@ test("performance scorecards and governed outcomes remain bounded", async () => 
 });
 
 test("learning outcome verification is server-resolved and bound to the exact run evidence", async () => {
-  const store = createAiLearningFactoryStore({
+  const store = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true,
     now: () => timestamp,
     verifyOutcomeEvidence: async ({ record, expected_binding_digest }) => ({
       verified: record.run_id === "run-existing",
@@ -618,7 +677,7 @@ test("optional adapter contract remains tenant-first", async () => {
     async save(input) { calls.push(["save", input]); },
     async list(input) { calls.push(["list", input]); return []; },
   };
-  const store = createAiLearningFactoryStore({ adapter, now: () => timestamp });
+  const store = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, adapter, now: () => timestamp });
   await store.recordEvaluationScorecard({
     tenant_id: "tenant-a",
     idempotency_key: "idem-scorecard-1",
@@ -637,7 +696,7 @@ test("optional adapter contract remains tenant-first", async () => {
     updated_at: timestamp,
     raw_prompt: "must never leave the adapter",
   };
-  const sanitizingStore = createAiLearningFactoryStore({
+  const sanitizingStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true,
     adapter: {
       async load() { return persisted; },
       async save() {},

@@ -84,7 +84,8 @@ function createNyraHorizontalRuntime(env = process.env) {
         source_instructions_are_data: true,
         raw_page_storage: false,
         automatic_global_promotion: false,
-        optional_openai_fallback_default: "disabled",
+        server_model_execution: "retired",
+        server_model_execution_environment_toggle: false,
       },
       mandatory_preflight: {
         schema_version: "universal_work_preflight_v1",

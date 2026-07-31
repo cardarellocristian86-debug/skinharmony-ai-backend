@@ -104,15 +104,63 @@ test("deep mode exposes reasoning details without raw tenant memory", async () =
   assert.equal(JSON.stringify(response).includes("must-not-leak"), false);
 });
 
-test("fetch returns cached details only inside the same tenant", async () => {
+test("fetch returns cached details only for the same tenant and authenticated client binding", async () => {
   const handlers = handlersFor();
-  const first = await handlers.nyra_interpret_request({ message: "analyze", session_id: "session-fetch" }, { tenantId: "tenant-a" });
+  const originatingIdentity = {
+    tenantId: "tenant-a",
+    kind: "oauth",
+    subject: "chatgpt-owner-a",
+    role: "owner_root",
+    scopes: ["core:read"],
+    agentPresence: { session_id: "session-fetch" },
+  };
+  const first = await handlers.nyra_interpret_request(
+    { message: "analyze", session_id: "session-fetch" },
+    originatingIdentity,
+  );
   const analysisId = first.structuredContent.analysis_id;
-  const deep = await handlers.nyra_fetch_analysis({ analysis_id: analysisId }, { tenantId: "tenant-a" });
+  const deep = await handlers.nyra_fetch_analysis(
+    { analysis_id: analysisId },
+    originatingIdentity,
+  );
   assert.equal(deep.structuredContent.analysis_id, analysisId);
   assert.equal(deep.structuredContent.response_mode, "deep");
   await assert.rejects(
-    handlers.nyra_fetch_analysis({ analysis_id: analysisId }, { tenantId: "tenant-b" }),
+    handlers.nyra_fetch_analysis(
+      { analysis_id: analysisId },
+      { ...originatingIdentity, tenantId: "tenant-b" },
+    ),
+    /nyra_analysis_not_found_or_expired/,
+  );
+  await assert.rejects(
+    handlers.nyra_fetch_analysis(
+      { analysis_id: analysisId },
+      {
+        ...originatingIdentity,
+        kind: "codex",
+        subject: "codex-owner-a",
+      },
+    ),
+    /nyra_analysis_not_found_or_expired/,
+  );
+  await assert.rejects(
+    handlers.nyra_fetch_analysis(
+      { analysis_id: analysisId },
+      {
+        ...originatingIdentity,
+        subject: "chatgpt-owner-b",
+      },
+    ),
+    /nyra_analysis_not_found_or_expired/,
+  );
+  await assert.rejects(
+    handlers.nyra_fetch_analysis(
+      { analysis_id: analysisId },
+      {
+        ...originatingIdentity,
+        agentPresence: { session_id: "session-other" },
+      },
+    ),
     /nyra_analysis_not_found_or_expired/,
   );
 });

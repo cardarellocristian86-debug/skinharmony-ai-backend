@@ -49,6 +49,8 @@ test("runs write, automatic recall, Nyra/Core interpretation and safe journal en
     universalCoreUrl: "https://core.example.test",
     universalCoreKeys: { "tenant-integration": "core-key" },
     universalCoreKey: "",
+    tenantGatewayKey: "g".repeat(32),
+    tenantContextSigningSecret: "t".repeat(32),
     memoryFabricRoot: root,
     memoryRetentionDays: 365,
     personalMemoryRetentionDays: 90,

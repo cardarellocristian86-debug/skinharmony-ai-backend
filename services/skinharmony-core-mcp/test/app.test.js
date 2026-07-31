@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachProviderOnboarding, buildIdentity, createApp, inferClientType, requiresGenericWorkPreflight, shouldAttachProviderOnboarding, toolFailure, TOOLS } from "../src/app.js";
+import { buildIdentity, buildReadiness, createApp, inferClientType, requiresGenericWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
 import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
+import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
+import {
+  HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+} from "../src/host-native-health-contract.js";
+import {
+  HOST_NATIVE_HEALTH_CONTRACT_DIGEST as CORE_HEALTH_CONTRACT_DIGEST,
+  HOST_NATIVE_HEALTH_CONTRACT_VERSION as CORE_HEALTH_CONTRACT_VERSION,
+} from "../../universal-core-service/src/hostNativeGovernance.js";
+import {
+  createPostgresMajorVersionProbe,
+} from "../../shared/postgres-major-version.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -15,9 +27,21 @@ const config = {
   supportedScopes: ["core:read", "core:govern"]
 };
 
-async function serve(run, configOverride = {}) {
+function postgresMajorProbe(serverVersionNum) {
+  return createPostgresMajorVersionProbe({
+    query: async () => {
+      if (serverVersionNum instanceof Error) throw serverVersionNum;
+      return {
+        rows: [{ server_version_num: String(serverVersionNum) }],
+      };
+    },
+    cacheTtlMs: 0,
+  });
+}
+
+async function serve(run, configOverride = {}, optionsOverride = {}) {
   const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({ content: [{ type: "text", text: "ok" }] })]));
-  const app = createApp({ ...config, ...configOverride }, { handlers });
+  const app = createApp({ ...config, ...configOverride }, { handlers, ...optionsOverride });
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   try { await run(`http://127.0.0.1:${server.address().port}`); } finally { await new Promise((resolve) => server.close(resolve)); }
@@ -87,24 +111,38 @@ test("keeps only genuine transient failures retryable", () => {
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
+  assert.equal(health.render_ready, false);
+  assert.equal(health.readiness.enforced, false);
+  assert.equal(health.readiness.ready, false);
+  assert(health.readiness.reasons.includes("build_identity_unverifiable"));
+  assert(health.readiness.reasons.includes("universal_core_not_configured"));
+  assert.equal(health.health_contract_version, HOST_NATIVE_HEALTH_CONTRACT_VERSION);
+  assert.equal(health.health_contract_digest, HOST_NATIVE_HEALTH_CONTRACT_DIGEST);
+  assert.equal(HOST_NATIVE_HEALTH_CONTRACT_VERSION, CORE_HEALTH_CONTRACT_VERSION);
+  assert.equal(HOST_NATIVE_HEALTH_CONTRACT_DIGEST, CORE_HEALTH_CONTRACT_DIGEST);
   assert.equal(health.version, "0.16.0-ai-learning-factory");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
-  assert.equal(health.openai_research_fallback_enabled, false);
-  assert.equal(health.openai_research_fallback_configured, false);
-  assert.equal(health.provider_setup_link_source_configured, false);
+  assert.equal(Object.hasOwn(health, "openai_research_fallback_enabled"), false);
+  assert.equal(Object.hasOwn(health, "provider_setup_link_source_configured"), false);
   assert.equal(health.owner_context_signing_configured, false);
   assert.equal(health.tenant_membership_bindings, 0);
-  assert.deepEqual(health.work_continuity, {
-    configured: false,
-    backend: "disabled",
-    persistent: false,
-    schema_version: "tenant_work_gallery_v1",
-    tenant_isolated: true,
-    bounded_leases: true,
-    agent_ownership_allowed: false,
-  });
+  assert.equal(health.work_continuity.configured, false);
+  assert.equal(health.work_continuity.enabled, false);
+  assert.equal(health.work_continuity.backend, "disabled");
+  assert.equal(health.work_continuity.persistent, false);
+  assert.equal(health.work_continuity.schema_version, "work_continuity_v2");
+  assert.equal(health.work_continuity.gallery_schema_version, "tenant_work_gallery_v1");
+  assert.equal(health.work_continuity.auto_capture_enabled, false);
+  assert.equal(health.work_continuity.intent_anchor_redacted, true);
+  assert.equal(health.work_continuity.raw_prompts_stored, false);
+  assert.equal(health.work_continuity.tenant_isolated, true);
+  assert.equal(health.work_continuity.bounded_leases, true);
+  assert.equal(health.work_continuity.agent_ownership_allowed, false);
+  assert.equal(health.host_native_agents.provider_execution, false);
+  assert.equal(health.host_native_agents.provider_api_key_required, false);
+  assert.equal(health.host_native_agents.server_model_calls, 0);
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);
@@ -117,14 +155,475 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.deepEqual(oauth.code_challenge_methods_supported, ["S256"]);
 }));
 
-test("reports only the dedicated provider setup-link source readiness", async () => serve(async (base) => {
+test("cannot force Render readiness with the legacy boolean", async () => {
+  const handlers = Object.fromEntries(
+    TOOLS.map((tool) => [tool.name, async () => ({
+      content: [{ type: "text", text: "ok" }],
+    })]),
+  );
+  const app = createApp(config, { handlers, renderReady: true });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const health = await fetch(`http://127.0.0.1:${server.address().port}/healthz`)
+      .then((response) => response.json());
+    assert.equal(health.render_ready, false);
+    assert.equal(health.readiness.ready, false);
+    assert(health.readiness.reasons.includes("build_identity_unverifiable"));
+    assert(health.readiness.reasons.includes("universal_core_not_configured"));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("production readiness fails closed with coded non-secret component blockers", async () => {
+  const productionConfig = {
+    ...config,
+    environment: "production",
+    production: true,
+    auth0Issuer: "",
+    codexKeys: [],
+    runtimeBuildCommit: "",
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "",
+    universalCoreKeys: {},
+    tenantGatewayKey: "",
+    databaseUrl: "",
+    workContinuityAutoCaptureEnabled: true,
+    hostNativeAgentProtocolEnabled: true,
+    decisionLedgerRequired: true,
+  };
+  const handlers = Object.fromEntries(
+    TOOLS.map((tool) => [tool.name, async () => ({
+      content: [{ type: "text", text: "ok" }],
+    })]),
+  );
+  const app = createApp(productionConfig, {
+    handlers,
+    buildIdentity: null,
+    readiness: {
+      continuityInitialized: false,
+      decisionLedgerInitialized: false,
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`);
+    const health = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(health.ok, false);
+    assert.equal(health.render_ready, false);
+    assert.deepEqual(health.readiness.reasons, [
+      "build_identity_unverifiable",
+      "authentication_not_configured",
+      "universal_core_not_configured",
+      "host_native_tenant_gateway_not_configured",
+      "host_native_owner_context_signing_not_configured",
+      "host_native_tenant_context_signing_not_configured",
+      "host_native_dtt_identity_signing_not_configured",
+      "host_native_agent_signature_not_configured",
+      "continuity_postgres_not_configured",
+      "decision_ledger_not_configured",
+    ]);
+    assert.equal(
+      health.readiness.components.host_native_security.required,
+      true,
+    );
+    assert.equal(health.tenant_context_signing_configured, false);
+    assert.equal(health.host_native_agents.tenant_context_signing_configured, false);
+    assert.equal(health.host_native_agents.agent_signature_configured, false);
+    assert.equal(health.host_native_agents.agent_signature_independent, false);
+    assert.equal(health.host_native_agents.ready, false);
+    assert.equal(health.readiness.components.universal_core.reachability_checked, false);
+    assert.equal(JSON.stringify(health).includes("tenant-core-secret"), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("production on PostgreSQL 18 becomes ready after required runtimes initialize", async () => {
+  const readiness = {
+    continuityInitialized: false,
+    decisionLedgerInitialized: false,
+  };
+  const productionConfig = {
+    ...config,
+    environment: "production",
+    production: true,
+    runtimeBuildCommit: "a".repeat(40),
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    universalCoreKeys: {},
+    tenantGatewayKey: "g".repeat(32),
+    ownerContextSigningSecret: "o".repeat(32),
+    tenantContextSigningSecret: "t".repeat(32),
+    dttAgentIdentitySigningSecret: "d".repeat(32),
+    agentSignatureSecret: "z".repeat(32),
+    databaseUrl: "postgres://configured-but-not-returned",
+    workContinuityAutoCaptureEnabled: true,
+    hostNativeAgentProtocolEnabled: true,
+    decisionLedgerRequired: true,
+  };
+  const handlers = Object.fromEntries(
+    TOOLS.map((tool) => [tool.name, async () => ({
+      content: [{ type: "text", text: "ok" }],
+    })]),
+  );
+  const app = createApp(productionConfig, {
+    handlers,
+    readiness,
+    postgresMajorVersionProbe: postgresMajorProbe(180_004),
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  const healthUrl = `http://127.0.0.1:${server.address().port}/healthz`;
+  try {
+    const pendingResponse = await fetch(healthUrl);
+    const pending = await pendingResponse.json();
+    assert.equal(pendingResponse.status, 503);
+    assert.deepEqual(pending.readiness.reasons, [
+      "continuity_not_initialized",
+      "decision_ledger_not_initialized",
+    ]);
+    readiness.continuityInitialized = true;
+    readiness.decisionLedgerInitialized = true;
+    const readyResponse = await fetch(healthUrl);
+    const ready = await readyResponse.json();
+    assert.equal(readyResponse.status, 200);
+    assert.equal(ready.ok, true);
+    assert.equal(ready.render_ready, true);
+    assert.deepEqual(ready.readiness.reasons, []);
+    assert.equal(ready.readiness.components.work_continuity.initialized, true);
+    assert.equal(ready.readiness.components.decision_ledger.initialized, true);
+    assert.equal(ready.readiness.components.host_native_security.ready, true);
+    assert.equal(ready.host_native_agents.ready, true);
+    assert.equal(ready.tenant_context_signing_configured, true);
+    assert.equal(ready.host_native_agents.tenant_context_signing_configured, true);
+    assert.equal(ready.host_native_agents.agent_signature_configured, true);
+    assert.equal(ready.host_native_agents.agent_signature_independent, true);
+    assert.deepEqual(ready.postgresql, { major: 18, verified: true });
+    assert.equal(JSON.stringify(ready).includes("tenant-core-secret"), false);
+    assert.equal(JSON.stringify(ready).includes("z".repeat(32)), false);
+    assert.equal(JSON.stringify(ready).includes("postgres://"), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("production MCP readiness rejects PostgreSQL 15 and probe errors", async () => {
+  const productionConfig = {
+    ...config,
+    environment: "production",
+    production: true,
+    runtimeBuildCommit: "a".repeat(40),
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    universalCoreKeys: {},
+    tenantGatewayKey: "g".repeat(32),
+    ownerContextSigningSecret: "o".repeat(32),
+    tenantContextSigningSecret: "t".repeat(32),
+    dttAgentIdentitySigningSecret: "d".repeat(32),
+    agentSignatureSecret: "a".repeat(32),
+    databaseUrl: "postgres://must-not-be-returned",
+    workContinuityAutoCaptureEnabled: true,
+    hostNativeAgentProtocolEnabled: true,
+    decisionLedgerRequired: true,
+  };
+  const handlers = Object.fromEntries(
+    TOOLS.map((tool) => [tool.name, async () => ({
+      content: [{ type: "text", text: "ok" }],
+    })]),
+  );
+  for (const [serverVersion, expectedMajor] of [
+    [150_014, 15],
+    [new Error("postgresql://user:secret@example.test/private"), null],
+  ]) {
+    const app = createApp(productionConfig, {
+      handlers,
+      readiness: {
+        continuityInitialized: true,
+        decisionLedgerInitialized: true,
+      },
+      postgresMajorVersionProbe: postgresMajorProbe(serverVersion),
+    });
+    const server = app.listen(0);
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${server.address().port}/healthz`,
+      );
+      const health = await response.json();
+      assert.equal(response.status, 503);
+      assert.deepEqual(
+        health.readiness.reasons,
+        ["postgres_major_16_not_verified"],
+      );
+      assert.deepEqual(health.postgresql, {
+        major: expectedMajor,
+        verified: false,
+      });
+      assert.equal(JSON.stringify(health).includes("postgres://"), false);
+      assert.equal(JSON.stringify(health).includes("postgresql://"), false);
+      assert.equal(JSON.stringify(health).includes("server_version_num"), false);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+});
+
+test("host-native security prerequisites are production-and-feature scoped", () => {
+  const productionBase = {
+    environment: "production",
+    runtimeBuildCommit: "b".repeat(40),
+    codexKeys: ["codex-key"],
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    databaseUrl: "postgres://configured",
+    workContinuityAutoCaptureEnabled: false,
+    decisionLedgerRequired: false,
+  };
+  const disabled = buildReadiness({
+    ...productionBase,
+    hostNativeAgentProtocolEnabled: false,
+  });
+  assert.equal(disabled.components.host_native_security.required, false);
+  assert.equal(disabled.components.host_native_security.ready, true);
+  assert.equal(
+    disabled.reasons.some((reason) => reason.startsWith("host_native_")),
+    false,
+  );
+
+  const missing = buildReadiness({
+    ...productionBase,
+    hostNativeAgentProtocolEnabled: true,
+  }, {
+    readiness: { continuityInitialized: true },
+  });
+  assert.deepEqual(
+    missing.reasons.filter((reason) => reason.startsWith("host_native_")),
+    [
+      "host_native_tenant_gateway_not_configured",
+      "host_native_owner_context_signing_not_configured",
+      "host_native_tenant_context_signing_not_configured",
+      "host_native_dtt_identity_signing_not_configured",
+      "host_native_agent_signature_not_configured",
+    ],
+  );
+
+  const complete = buildReadiness({
+    ...productionBase,
+    hostNativeAgentProtocolEnabled: true,
+    tenantGatewayKey: "g".repeat(32),
+    ownerContextSigningSecret: "o".repeat(32),
+    tenantContextSigningSecret: "t".repeat(32),
+    dttAgentIdentitySigningSecret: "d".repeat(32),
+    agentSignatureSecret: "a".repeat(32),
+  }, {
+    readiness: {
+      continuityInitialized: true,
+      postgresMajorVersion: { major: 16, verified: true },
+    },
+  });
+  assert.equal(complete.components.host_native_security.required, true);
+  assert.equal(complete.components.host_native_security.ready, true);
+  assert.equal(
+    complete.components.host_native_security.tenant_context_signing_configured,
+    true,
+  );
+  assert.equal(complete.ready, true);
+
+  const reusableSecret = "r".repeat(32);
+  for (const reusedConfig of [
+    { universalCoreKey: reusableSecret },
+    { universalCoreKeys: { tenant: reusableSecret } },
+    { tenantGatewayKey: reusableSecret },
+    { ownerContextSigningSecret: reusableSecret },
+    { tenantContextSigningSecret: reusableSecret },
+    { dttAgentIdentitySigningSecret: reusableSecret },
+    { nyraDeepV2McpRequestSigningSecret: reusableSecret },
+    { agentSignatureSecretReused: true },
+  ]) {
+    const reused = buildReadiness({
+      ...productionBase,
+      hostNativeAgentProtocolEnabled: true,
+      universalCoreKey: "tenant-core-secret",
+      tenantGatewayKey: "g".repeat(32),
+      ownerContextSigningSecret: "o".repeat(32),
+      tenantContextSigningSecret: "t".repeat(32),
+      dttAgentIdentitySigningSecret: "d".repeat(32),
+      agentSignatureSecret: reusableSecret,
+      ...reusedConfig,
+    }, {
+      readiness: {
+        continuityInitialized: true,
+        postgresMajorVersion: { major: 16, verified: true },
+      },
+    });
+    assert(reused.reasons.includes("host_native_agent_signature_reused"));
+    assert.equal(
+      reused.components.host_native_security.agent_signature_independent,
+      false,
+    );
+    assert.equal(reused.ready, false);
+  }
+
+  const weakGateway = buildReadiness({
+    ...productionBase,
+    hostNativeAgentProtocolEnabled: true,
+    tenantGatewayKey: "g".repeat(31),
+    ownerContextSigningSecret: "o".repeat(32),
+    tenantContextSigningSecret: "t".repeat(32),
+    dttAgentIdentitySigningSecret: "d".repeat(32),
+  }, {
+    readiness: { continuityInitialized: true },
+  });
+  assert(weakGateway.reasons.includes("host_native_tenant_gateway_not_configured"));
+
+  const development = buildReadiness({
+    ...productionBase,
+    environment: "development",
+    hostNativeAgentProtocolEnabled: true,
+  }, {
+    readiness: { continuityInitialized: true },
+  });
+  assert.equal(development.components.host_native_security.required, false);
+  assert.equal(
+    development.reasons.some((reason) => reason.startsWith("host_native_")),
+    false,
+  );
+});
+
+test("production host-native readiness fails closed for missing, short, and reused AGENT_SIGNATURE_SECRET", () => {
+  const independentBase = {
+    environment: "production",
+    runtimeBuildCommit: "b".repeat(40),
+    codexKeys: ["codex-key"],
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "core-bearer",
+    tenantGatewayKey: "g".repeat(32),
+    ownerContextSigningSecret: "o".repeat(32),
+    tenantContextSigningSecret: "t".repeat(32),
+    dttAgentIdentitySigningSecret: "d".repeat(32),
+    databaseUrl: "postgres://configured",
+    workContinuityAutoCaptureEnabled: false,
+    hostNativeAgentProtocolEnabled: true,
+    decisionLedgerRequired: false,
+  };
+  const readinessOptions = {
+    readiness: {
+      continuityInitialized: true,
+      postgresMajorVersion: { major: 16, verified: true },
+    },
+  };
+  for (const [name, override, expectedReason] of [
+    [
+      "missing",
+      {},
+      "host_native_agent_signature_not_configured",
+    ],
+    [
+      "short",
+      { agentSignatureSecret: "too-short" },
+      "host_native_agent_signature_not_configured",
+    ],
+    [
+      "Core bearer reuse",
+      {
+        agentSignatureSecret: "r".repeat(32),
+        universalCoreKey: "r".repeat(32),
+      },
+      "host_native_agent_signature_reused",
+    ],
+    [
+      "host-native owner secret reuse",
+      {
+        agentSignatureSecret: "r".repeat(32),
+        ownerContextSigningSecret: "r".repeat(32),
+      },
+      "host_native_agent_signature_reused",
+    ],
+  ]) {
+    const result = buildReadiness(
+      { ...independentBase, ...override },
+      readinessOptions,
+    );
+    assert(
+      result.reasons.includes(expectedReason),
+      `${name} must report ${expectedReason}`,
+    );
+    assert.equal(
+      result.components.host_native_security.agent_signature_independent,
+      false,
+      `${name} must not be independent`,
+    );
+    assert.equal(result.ready, false, `${name} must fail readiness`);
+  }
+});
+
+test("readiness evaluator accepts a complete production configuration without Core reachability", () => {
+  const readiness = buildReadiness({
+    environment: "production",
+    runtimeBuildCommit: "b".repeat(40),
+    auth0Issuer: "https://tenant.auth0.com",
+    codexKeys: [],
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKeys: { tenant: "secret" },
+    databaseUrl: "",
+    workContinuityAutoCaptureEnabled: false,
+    hostNativeAgentProtocolEnabled: false,
+    decisionLedgerRequired: false,
+  });
+  assert.equal(readiness.ready, true);
+  assert.equal(readiness.components.universal_core.reachability_checked, false);
+});
+
+test("production Gallery readiness requires PostgreSQL initialization, all handlers and exactly 13 tools", () => {
+  const production = {
+    environment: "production",
+    runtimeBuildCommit: "b".repeat(40),
+    codexKeys: ["codex-key"],
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    databaseUrl: "postgres://configured",
+    workContinuityAutoCaptureEnabled: false,
+    hostNativeAgentProtocolEnabled: false,
+    decisionLedgerRequired: false,
+  };
+  const base = {
+    galleryRequired: true,
+    galleryHandlersMounted: true,
+    compactToolCount: 13,
+    postgresMajorVersion: { major: 18, verified: true },
+  };
+
+  const notInitialized = buildReadiness(production, {
+    readiness: { ...base, continuityInitialized: false },
+  });
+  assert.equal(notInitialized.components.tenant_work_gallery.ready, false);
+  assert(notInitialized.reasons.includes("tenant_work_gallery_not_initialized"));
+
+  const incompleteSurface = buildReadiness(production, {
+    readiness: { ...base, continuityInitialized: true, compactToolCount: 12 },
+  });
+  assert.equal(incompleteSurface.components.tenant_work_gallery.ready, false);
+  assert(incompleteSurface.reasons.includes("compact_mcp_surface_incomplete"));
+
+  const ready = buildReadiness(production, {
+    readiness: { ...base, continuityInitialized: true },
+  });
+  assert.equal(ready.components.tenant_work_gallery.ready, true);
+  assert.equal(ready.components.tenant_work_gallery.exposed_top_level_tool_count, 13);
+  assert.equal(ready.ready, true);
+});
+
+test("does not publish retired provider setup readiness", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((response) => response.json());
-  assert.equal(health.provider_setup_link_source_configured, true);
   assert.equal(health.owner_context_signing_configured, true);
   assert.equal(JSON.stringify(health).includes("test-owner-context-signing-secret"), false);
   assert.equal(Object.hasOwn(health, "universalCoreProviderSetupLinkKeys"), false);
-  assert.equal(Object.hasOwn(health, "provider_setup_link_source_tenant"), false);
-}, { providerSetupLinkSourceConfigured: true, ownerContextSigningSecret: "test-owner-context-signing-secret" }));
+  assert.equal(Object.hasOwn(health, "provider_setup_link_source_configured"), false);
+}, { ownerContextSigningSecret: "test-owner-context-signing-secret" }));
 
 test("health reports only the tenant membership binding count", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((response) => response.json());
@@ -157,14 +656,7 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   const writeTools = body.result.tools.filter((tool) => tool.annotations.readOnlyHint === false);
   assert(readTools.length > 0);
   assert(writeTools.length > 0);
-  const nativeProviderOwnerWrites = new Set([
-    "tenant_provider_openai_multi_agent_smoke_run",
-    "tenant_provider_openai_multi_agent_run_cancel",
-  ]);
-  assert(writeTools.every((tool) =>
-    tool.securitySchemes[0].scopes.includes(
-      nativeProviderOwnerWrites.has(tool.name) ? "core:read" : "core:govern",
-    )));
+  assert(writeTools.every((tool) => tool.securitySchemes[0].scopes.includes("core:govern")));
   assert(writeTools.every((tool) =>
     tool._meta["skinharmony/ownerConfirmationRequired"] === false
     || tool.inputSchema.properties.owner_confirmed?.type === "boolean"));
@@ -176,20 +668,7 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert(preflight.outputSchema?.properties?.core_runtime);
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
   assert.equal(preflight._meta["openai/outputTemplate"], undefined);
-  const nativeProviderTools = [
-    "tenant_provider_openai_status",
-    "tenant_provider_openai_setup_panel",
-    "tenant_provider_openai_setup_link",
-    "tenant_provider_openai_multi_agent_smoke_run",
-    "tenant_provider_openai_multi_agent_run_read",
-    "tenant_provider_openai_multi_agent_run_cancel",
-  ];
-  for (const name of nativeProviderTools) {
-    const nativeTool = body.result.tools.find((tool) => tool.name === name);
-    assert(nativeTool, `missing native provider tool ${name}`);
-    assert.equal(nativeTool._meta["skinharmony/mandatory_first_tool"], undefined);
-    assert.equal(nativeTool._meta["skinharmony/native_governance"], "authenticated_tenant_control_plane");
-  }
+  assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
   const genericTool = body.result.tools.find((tool) => tool.name === "memory_document_upsert");
   assert.equal(genericTool._meta["skinharmony/mandatory_first_tool"], "work_preflight");
   assert.equal(genericTool._meta["skinharmony/native_governance"], undefined);
@@ -201,13 +680,11 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   }
   const plan = body.result.tools.find((tool) => tool.name === "nyra_research_plan");
   const ingest = body.result.tools.find((tool) => tool.name === "nyra_research_ingest");
-  const execute = body.result.tools.find((tool) => tool.name === "nyra_research_execute");
   assert.equal(plan.annotations.readOnlyHint, true);
   assert.deepEqual(plan.securitySchemes[0].scopes, ["core:read"]);
   assert.equal(ingest.annotations.readOnlyHint, false);
   assert.deepEqual(ingest.securitySchemes[0].scopes, ["core:govern"]);
-  assert.equal(execute.annotations.openWorldHint, true);
-  assert.deepEqual(execute.securitySchemes[0].scopes, ["core:govern"]);
+  assert.equal(body.result.tools.some((tool) => tool.name === "nyra_research_execute"), false);
   for (const name of ["search", "fetch"]) {
     assert(body.result.tools.find((tool) => tool.name === name).outputSchema);
   }
@@ -242,11 +719,12 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
 }));
 
 test("production compact mode exposes only the stable connector surface", async () => {
-  const handlers = Object.fromEntries(TOOLS.map((tool) => [
+  const toolDefinitions = [...TOOLS, ...WORK_CONTINUITY_TOOLS];
+  const handlers = Object.fromEntries(toolDefinitions.map((tool) => [
     tool.name,
     async () => ({ content: [{ type: "text", text: "ok" }] }),
   ]));
-  const app = createApp(config, { handlers, toolSurface: "compact" });
+  const app = createApp(config, { handlers, tools: toolDefinitions, toolSurface: "compact" });
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   try {
@@ -263,9 +741,36 @@ test("production compact mode exposes only the stable connector surface", async 
       const body = await response.json();
       assert.equal(response.status, 200);
       assert.deepEqual(body.result.tools.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-      assert(body.result.tools.some((tool) => tool.name === "tenant_provider_openai_multi_agent_smoke_run"));
-      assert(body.result.tools.some((tool) => tool.name === "tenant_provider_openai_multi_agent_run_read"));
+      assert.equal(body.result.tools.length, 13);
+      assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
+      assert.equal(body.result.tools.some((tool) => tool._meta?.["openai/outputTemplate"] === "ui://skinharmony/openai-provider-setup.html"), false);
       assert(Buffer.byteLength(JSON.stringify(body)) < 64 * 1024);
+
+      const resources = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer codex-key",
+          "content-type": "application/json",
+          "mcp-session-id": `compact-resources-test-${index}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 220 + index, method: "resources/list" }),
+      }).then((result) => result.json());
+      assert.deepEqual(resources.result.resources, []);
+
+      const retiredTool = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer codex-key",
+          "content-type": "application/json",
+          "mcp-session-id": `compact-retired-tool-test-${index}`,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 240 + index, method: "tools/call", params: {
+          name: "tenant_provider_openai_setup_panel",
+          arguments: {},
+        } }),
+      }).then((result) => result.json());
+      assert.equal(retiredTool.error.code, -32602);
+      assert.equal(retiredTool.error.message, "Unknown tool");
     }
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -286,68 +791,39 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /installed as a ChatGPT connector/);
   assert.match(body.result.instructions, /Never ask for or accept an API key in chat/);
   assert.match(body.result.instructions, /Nyra and Universal Core operate without an OpenAI API key/);
-  assert.match(body.result.instructions, /Do not call provider status or open setup panels unless the user explicitly asks/);
+  assert.match(body.result.instructions, /Never call provider tools, open setup panels/);
+  assert.match(body.result.instructions, /Old provider links are retired/);
   assert.doesNotMatch(body.result.instructions, /protected one-time Core page/);
+  assert.doesNotMatch(body.result.instructions, /provider test/);
+  assert.doesNotMatch(body.result.instructions, /manual_dry_run/);
+  assert.doesNotMatch(body.result.instructions, /Researcher → Reviewer → Nyra Synthesizer/);
+  assert.doesNotMatch(body.result.instructions, /bounded_execution_ready=true/);
   assert.match(body.result.instructions, /HOW TO BUILD AN AGENT/);
   assert.match(body.result.instructions, /AUTOMATIC/);
   assert.match(body.result.instructions, /NOT AUTOMATIC/);
-  assert.match(body.result.instructions, /manual_dry_run/);
-  assert.match(body.result.instructions, /Researcher → Reviewer → Nyra Synthesizer/);
-  assert.match(body.result.instructions, /Never call work_preflight before provider status/i);
-  assert.match(body.result.instructions, /bounded_execution_ready=true/);
+  assert.match(body.result.instructions, /HOST-NATIVE MULTI-AGENT/);
+  assert.match(body.result.instructions, /provider_execution=false/);
+  assert.match(body.result.instructions, /provider_api_key_required=false/);
+  assert.match(body.result.instructions, /cannot click, bypass or replace ChatGPT\/Codex approval/i);
+  assert.match(body.result.instructions, /RESEARCH DISTILLATION/);
+  assert.match(body.result.instructions, /tenant-isolated shadow workspace/);
+  assert.match(body.result.instructions, /never invokes a server-side model provider/i);
 }));
 
 test("keeps native Core-governed controls outside generic shared-memory preflight", () => {
   for (const name of [
     "work_preflight",
-    "tenant_provider_openai_status",
-    "tenant_provider_openai_setup_panel",
-    "tenant_provider_openai_setup_link",
-    "tenant_provider_openai_multi_agent_smoke_run",
-    "tenant_provider_openai_multi_agent_run_read",
-    "tenant_provider_openai_multi_agent_run_cancel",
     "orchestration_dtt_core_join",
+    "tenant_work_gallery_list",
+    "tenant_work_gallery_join",
+    "tenant_work_gallery_heartbeat",
+    "tenant_work_lease_acquire",
+    "tenant_work_message_post",
+    "tenant_work_inbox",
   ]) assert.equal(requiresGenericWorkPreflight(name), false, `${name} must use its native gate`);
 
   for (const name of ["memory_document_upsert", "generic_agent_start", "nyra_research_ingest"]) {
     assert.equal(requiresGenericWorkPreflight(name), true, `${name} must remain fail-closed by generic preflight`);
-  }
-});
-
-test("never attaches an unrelated blocked generic preflight to the bounded provider start", async () => {
-  const handlers = {
-    tenant_provider_openai_multi_agent_smoke_run: async () => ({
-      structuredContent: { ok: true, run: { run_id: "run_native_01", status: "running" } },
-      content: [{ type: "text", text: "started" }],
-    }),
-  };
-  const app = createApp(config, {
-    handlers,
-    beforeToolCall: async () => ({ preflight: {
-      work_preflight: {
-        preflight_id: "preflight_generic_blocked",
-        state: "shared_memory_bootstrap_required",
-        governance: { execution_allowed_by_preflight: false, shared_memory_bootstrap_required: true },
-        shared_memory_bootstrap: { loaded: false },
-      },
-    } }),
-  });
-  const server = app.listen(0);
-  await new Promise((resolve) => server.once("listening", resolve));
-  try {
-    const body = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
-      method: "POST",
-      headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "native-provider-session" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 44, method: "tools/call", params: {
-        name: "tenant_provider_openai_multi_agent_smoke_run",
-        arguments: { task: "Run the fixed bounded test", owner_confirmed: true },
-      } }),
-    }).then((response) => response.json());
-    assert.equal(body.result.structuredContent.ok, true);
-    assert.equal(body.result.structuredContent.work_preflight, undefined);
-    assert.equal(JSON.stringify(body.result).includes("shared_memory_bootstrap_required"), false);
-  } finally {
-    await new Promise((resolve) => server.close(resolve));
   }
 });
 
@@ -586,6 +1062,86 @@ test("keeps one logical chat signature stable across rotated MCP transports", as
     assert.equal(identityConflict.body.error.message, "agent_presence_conflict");
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("binds native reports to the child transport and exact native agent id", async () => {
+  const reportTool = WORK_CONTINUITY_TOOLS.find(
+    (tool) => tool.name === "work_continuity_native_report",
+  );
+  assert.ok(reportTool);
+  const existingIndex = TOOLS.findIndex((tool) => tool.name === reportTool.name);
+  if (existingIndex < 0) TOOLS.push(reportTool);
+  const captured = [];
+  const handlers = {
+    work_continuity_native_report: async (args, identity) => {
+      captured.push({ args, identity });
+      return { content: [{ type: "text", text: "recorded" }] };
+    },
+  };
+  const app = createApp(config, { handlers });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const transport = "native-child-transport-1";
+  const call = async (nativeAgentId, id) => fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer codex-key",
+      "content-type": "application/json",
+      "mcp-session-id": transport,
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: {
+        name: "work_continuity_native_report",
+        arguments: {
+          work_id: "11111111-1111-4111-8111-111111111111",
+          plan_id: "22222222-2222-4222-8222-222222222222",
+          native_agent_id: nativeAgentId,
+          host_task_id: "/root/native-child",
+          assignment_capability: `hnac_${"A".repeat(43)}`,
+          status: "completed",
+          report: { summary: "Child completed the assigned task." },
+        },
+      },
+    }),
+  }).then((response) => response.json());
+  try {
+    const initialized = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": transport,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize" }),
+    });
+    assert.equal(initialized.status, 200);
+
+    const accepted = await call("child-builder", 2);
+    assert.equal(accepted.error, undefined);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].args.agent_id, "child-builder");
+    assert.equal(captured[0].identity.agentPresence.agent_id, "child-builder");
+    assert.equal(captured[0].identity.agentPresence.transport_bound, true);
+    assert.match(
+      captured[0].identity.agentPresence.host_transport_session_fingerprint,
+      /^[a-f0-9]{16,64}$/,
+    );
+
+    const alias = await call("child-verifier-alias", 3);
+    assert.equal(alias.error?.code, -32602);
+    assert.equal(alias.error?.message, "agent_presence_conflict");
+    assert.equal(captured.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (existingIndex < 0) {
+      const index = TOOLS.indexOf(reportTool);
+      if (index >= 0) TOOLS.splice(index, 1);
+    }
   }
 });
 
@@ -916,35 +1472,19 @@ test("returns an explicit client error for a cloud-memory checksum mismatch", as
 });
 
 
-test("publishes the fixed secure OpenAI setup panel", async () => serve(async (base) => {
-  const init = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 40, method: "initialize" }) }).then((response) => response.json());
-  assert.equal(init.result.capabilities.resources != null, true);
-  const resources = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 41, method: "resources/list" }) }).then((response) => response.json());
-  const resource = resources.result.resources.find((item) => item.uri === "ui://skinharmony/openai-provider-setup.html");
-  assert(resource);
-  const read = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 42, method: "resources/read", params: { uri: resource.uri } }) }).then((response) => response.json());
-  assert.match(read.result.contents[0].text, /Collega API key/);
-  assert.match(read.result.contents[0].text, /link monouso verrà creato solo nella pagina protetta/);
-  assert.doesNotMatch(read.result.contents[0].text, /setup_proof|setup_url.*provider-setup/);
-  const listed = await fetch(`${base}/mcp`, { method: "POST", headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-openai-panel" }, body: JSON.stringify({ jsonrpc: "2.0", id: 43, method: "tools/list" }) }).then((response) => response.json());
-  const panel = listed.result.tools.find((tool) => tool.name === "tenant_provider_openai_setup_panel");
-  assert.equal(panel.annotations.readOnlyHint, true);
-  assert.equal(panel._meta["openai/outputTemplate"], resource.uri);
+test("retires the OpenAI setup resource from the MCP surface", async () => serve(async (base) => {
+  const resources = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-retired-openai-panel" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 41, method: "resources/list" }),
+  }).then((response) => response.json());
+  assert.deepEqual(resources.result.resources, []);
+
+  const read = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-retired-openai-panel" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 42, method: "resources/read", params: { uri: "ui://skinharmony/openai-provider-setup.html" } }),
+  }).then((response) => response.json());
+  assert.equal(read.error.code, -32602);
+  assert.equal(read.error.message, "Unknown resource");
 }));
-
-
-test("keeps optional OpenAI onboarding out of normal Nyra and Core work", () => {
-  for (const toolName of ["work_preflight", "core_health", "core_capability_read", "core_gate_action"]) {
-    assert.equal(shouldAttachProviderOnboarding(toolName), false, toolName);
-  }
-  assert.equal(shouldAttachProviderOnboarding("tenant_provider_openai_setup_panel"), true);
-  assert.equal(shouldAttachProviderOnboarding("tenant_provider_openai_setup_link"), true);
-});
-
-test("attaches the fixed setup panel when the tenant key is missing", () => {
-  const result = attachProviderOnboarding({ structuredContent: { ok: true } }, { structuredContent: { provider: { configured: false } } });
-  assert.equal(result.structuredContent.provider_onboarding.required, true);
-  assert.equal(result._meta["openai/outputTemplate"], "ui://skinharmony/openai-provider-setup.html");
-  const connected = attachProviderOnboarding({ structuredContent: { ok: true } }, { structuredContent: { provider: { configured: true } } });
-  assert.equal(connected._meta, undefined);
-});

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TOOLS } from "../src/tool-definitions.js";
+import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import {
   COMPACT_MCP_TOOL_NAMES,
   compactMcpTools,
@@ -23,6 +24,8 @@ const boundedMemberIdentity = {
   kind: "oauth",
   subject: "oauth|member-a",
   role: "member",
+  oauthTenantMemberBound: true,
+  tenantMembershipRole: "member",
   scopes: ["core:read", "core:govern"],
   ownerConfirmed: false,
   agentPresence: {
@@ -91,7 +94,7 @@ function writeTool(name = "workspace_dynamic_write") {
   };
 }
 
-function boundedGalleryTool(name = "tenant_work_gallery_join") {
+function boundedGalleryTool(name = "tenant_work_branch_open") {
   return {
     name,
     title: "Join tenant work",
@@ -107,7 +110,7 @@ function boundedGalleryTool(name = "tenant_work_gallery_join") {
     _meta: {
       "skinharmony/ownerConfirmationRequired": false,
       "skinharmony/tenantBoundedCollaboration": true,
-      "skinharmony/boundedActionType": "tenant_work.gallery_join",
+      "skinharmony/boundedActionType": "work.branch.open",
     },
     inputSchema: {
       type: "object",
@@ -124,12 +127,29 @@ function boundedGalleryTool(name = "tenant_work_gallery_join") {
   };
 }
 
+function delegatedWriteTool(name = "orchestration_dtt_agent_report") {
+  const definition = writeTool(name);
+  definition._meta = { "skinharmony/ownerConfirmationRequired": false };
+  delete definition.inputSchema.properties.owner_confirmed;
+  delete definition.inputSchema.properties.confirmation_reference;
+  definition.inputSchema.required = ["value"];
+  return definition;
+}
+
+function dedicatedCoreWriteTool(name = "host_native_action_reserve") {
+  const definition = delegatedWriteTool(name);
+  definition._meta["skinharmony/dedicatedCoreGate"] = true;
+  return definition;
+}
+
 test("publishes a fixed compact MCP surface below the connector import budget", () => {
-  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({})]));
-  const compact = compactMcpTools(TOOLS, handlers);
+  const toolDefinitions = [...TOOLS, ...WORK_CONTINUITY_TOOLS];
+  const handlers = Object.fromEntries(toolDefinitions.map((tool) => [tool.name, async () => ({})]));
+  const compact = compactMcpTools(toolDefinitions, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
   assert.equal(compact.length, 13);
+  assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
   assert(Buffer.byteLength(JSON.stringify({ tools: compact })) < 64 * 1024);
 });
 
@@ -301,7 +321,7 @@ test("bounded Gallery mutations accept a verified tenant member and overwrite sp
   assert.equal(result.structuredContent.dynamic_capability.gate_allowed, true);
 });
 
-test("bounded Gallery mutations fail closed for unverified identity, bad role, and unsafe payloads", async () => {
+test("bounded Gallery mutations fail closed for unbound membership, invalid presence, and unsafe payloads", async () => {
   const tool = boundedGalleryTool();
   let writes = 0;
   const handlers = {
@@ -328,7 +348,8 @@ test("bounded Gallery mutations fail closed for unverified identity, bad role, a
 
   for (const caller of [
     { ...boundedMemberIdentity, agentPresence: undefined },
-    { ...boundedMemberIdentity, role: "unbound" },
+    { ...boundedMemberIdentity, oauthTenantMemberBound: false },
+    { ...boundedMemberIdentity, tenantMembershipRole: "unbound" },
     {
       ...boundedMemberIdentity,
       agentPresence: {
@@ -340,7 +361,7 @@ test("bounded Gallery mutations fail closed for unverified identity, bad role, a
   ]) {
     await assert.rejects(
       router.core_capability_invoke(request, caller),
-      /tenant_collaboration_identity_required/,
+      /tenant_work_membership_required|tenant_collaboration_identity_required/,
     );
   }
   await assert.rejects(
@@ -351,6 +372,97 @@ test("bounded Gallery mutations fail closed for unverified identity, bad role, a
     /dynamic_capability_reserved_argument/,
   );
   assert.equal(writes, 0);
+});
+
+test("bounded internal mutations use target metadata instead of impersonating the owner", async () => {
+  const tool = delegatedWriteTool();
+  let received;
+  let gated = 0;
+  const handlers = {
+    [tool.name]: async (args, caller) => {
+      received = { args, caller };
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => {
+      gated += 1;
+      return { structuredContent: { authorization: { allowed: true } } };
+    },
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const caller = { ...identity, ownerConfirmed: false };
+  const result = await router.core_capability_invoke({
+    capability_id: tool.name,
+    catalog_revision: revision,
+    idempotency_key: "agent-report-1",
+    arguments: { value: "verified receipt" },
+  }, caller);
+
+  assert.equal(gated, 1);
+  assert.deepEqual(received.args, {
+    value: "verified receipt",
+    idempotency_key: "agent-report-1",
+  });
+  assert.equal(received.caller, caller);
+  assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_required, false);
+  assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_satisfied, true);
+});
+
+test("dedicated Core routes replace the generic gate only with a verified Core marker", async () => {
+  const tool = dedicatedCoreWriteTool();
+  let genericGateCalls = 0;
+  let markerAuthorized = true;
+  const handlers = {
+    [tool.name]: async () => ({
+      structuredContent: {
+        ok: true,
+        dedicated_core_gate: {
+          authorized: markerAuthorized,
+          authority: "universal_core",
+        },
+      },
+    }),
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => {
+      genericGateCalls += 1;
+      return { structuredContent: { authorization: { allowed: true } } };
+    },
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const args = {
+    capability_id: tool.name,
+    catalog_revision: revision,
+    idempotency_key: "reserve-ticket-1",
+    arguments: { value: "ticket" },
+  };
+
+  const result = await router.core_capability_invoke(args, {
+    ...identity,
+    ownerConfirmed: false,
+  });
+  assert.equal(genericGateCalls, 0);
+  assert.equal(
+    result.structuredContent.dynamic_capability.gate_source,
+    "universal_core_dedicated_route",
+  );
+
+  markerAuthorized = false;
+  await assert.rejects(
+    router.core_capability_invoke(
+      { ...args, idempotency_key: "reserve-ticket-2" },
+      { ...identity, ownerConfirmed: false },
+    ),
+    /dynamic_capability_dedicated_core_gate_unverified/,
+  );
+  assert.equal(genericGateCalls, 0);
 });
 
 test("semantic selection builds candidates from the server catalog and never authorizes execution", async () => {

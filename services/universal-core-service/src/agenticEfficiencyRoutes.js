@@ -144,6 +144,7 @@ export function mountAgenticEfficiencyRoutes({
   audit = null,
   efficiencyMode = AGENTIC_EFFICIENCY_DEFAULT_MODE,
   budgetMode = AGENTIC_BUDGET_DEFAULT_MODE,
+  hardBudgetStopStatus = null,
 } = {}) {
   if (!app || typeof app.get !== "function" || typeof app.post !== "function") throw new Error("agentic_route_app_invalid");
   if (!store || typeof store.status !== "function") throw new Error("agentic_route_store_invalid");
@@ -153,6 +154,12 @@ export function mountAgenticEfficiencyRoutes({
   if (typeof verifyGovernanceEvidence !== "function") throw new Error("agentic_route_governance_verifier_invalid");
   if (typeof verifySavingsEvidence !== "function") throw new Error("agentic_route_savings_verifier_invalid");
   if (typeof resolveRateCard !== "function") throw new Error("agentic_route_rate_card_resolver_invalid");
+  const hardBudgetStop = Object.freeze({
+    active: false,
+    state: String(hardBudgetStopStatus?.state || "disabled"),
+    advisory_only: hardBudgetStopStatus?.advisory_only === true,
+    reason: String(hardBudgetStopStatus?.reason || "hard_budget_stop_disabled"),
+  });
   const receiptBindings = new Map();
   const register = (method, path, capabilityId, handler) => {
     const middleware = capabilityById(capabilityId).required_scopes.includes("core:govern")
@@ -221,7 +228,10 @@ export function mountAgenticEfficiencyRoutes({
   register("get", "/v1/agentic-efficiency/status", "agentic_efficiency_status", async ({ context }) => ({
     mode: efficiencyMode,
     budget_mode: budgetMode,
-    hard_budget_stop: false,
+    hard_budget_stop: hardBudgetStop.active,
+    hard_budget_stop_state: hardBudgetStop.state,
+    hard_budget_stop_advisory_only: hardBudgetStop.advisory_only,
+    hard_budget_stop_reason: hardBudgetStop.reason,
     ...(await store.status({ tenant_id: context.tenantId })),
   }));
 
@@ -282,7 +292,10 @@ export function mountAgenticEfficiencyRoutes({
   register("get", "/v1/agentic-efficiency/budget/status", "agentic_budget_status", async ({ context }) => ({
     tenant_id: context.tenantId,
     mode: budgetMode,
-    hard_budget_stop: false,
+    hard_budget_stop: hardBudgetStop.active,
+    hard_budget_stop_state: hardBudgetStop.state,
+    hard_budget_stop_advisory_only: hardBudgetStop.advisory_only,
+    hard_budget_stop_reason: hardBudgetStop.reason,
     critical_task_behavior: "escalate_or_safe_degraded_mode",
     execution_authorized: false,
   }));
@@ -370,6 +383,7 @@ export function mountAgenticEfficiencyRoutes({
     base_path: "/v1/agentic-efficiency",
     capability_count: AGENTIC_EFFICIENCY_CAPABILITY_MANIFEST.length,
     top_level_mcp_tools_added: 0,
+    hard_budget_stop: hardBudgetStop,
     execution_authorized: false,
   });
 }

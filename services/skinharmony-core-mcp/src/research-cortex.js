@@ -432,71 +432,6 @@ function validationSummary(validation) {
   };
 }
 
-function providerSource(raw, index) {
-  let url;
-  try {
-    url = normalizeUrl(raw?.url);
-  } catch {
-    return null;
-  }
-  const title = sanitizeText(raw?.title || new URL(url).hostname, "research_provider_source_title", 500);
-  if (title.prompt_injection) fail("openai_research_source_quarantined");
-  return {
-    id: `source_${index + 1}`,
-    url,
-    title: title.text,
-    publisher: new URL(url).hostname,
-    source_type: "other",
-    published_at: null,
-    fetched_at: new Date().toISOString(),
-    excerpt: null,
-  };
-}
-
-function extractOpenAiResponse(payload, query) {
-  const sourceRows = [];
-  const textParts = [];
-  for (const item of Array.isArray(payload?.output) ? payload.output : []) {
-    if (item?.type === "web_search_call" && Array.isArray(item.action?.sources)) sourceRows.push(...item.action.sources);
-    if (item?.type !== "message") continue;
-    for (const content of Array.isArray(item.content) ? item.content : []) {
-      if (content?.type === "output_text" && content.text) textParts.push(String(content.text));
-      for (const annotation of Array.isArray(content?.annotations) ? content.annotations : []) {
-        if (annotation?.type === "url_citation" && annotation.url) sourceRows.push({ url: annotation.url, title: annotation.title });
-      }
-    }
-  }
-  const synthesis = sanitizeText(textParts.join("\n") || payload?.output_text, "research_provider_synthesis", 8_000);
-  if (synthesis.prompt_injection) fail("openai_research_synthesis_quarantined");
-  const deduplicated = [];
-  const seen = new Set();
-  for (const row of sourceRows) {
-    const normalized = providerSource(row, deduplicated.length);
-    if (!normalized || seen.has(normalized.url)) continue;
-    seen.add(normalized.url);
-    deduplicated.push(normalized);
-    if (deduplicated.length >= 20) break;
-  }
-  if (!deduplicated.length) fail("openai_research_sources_missing");
-  return {
-    provider: "openai_responses_web_search",
-    query,
-    synthesis: synthesis.text,
-    sources: deduplicated,
-    evidence_pack_template: {
-      question: query,
-      sources: deduplicated,
-      claims: [{
-        id: "claim_synthesis",
-        kind: "inference",
-        text: synthesis.text.slice(0, 2_000),
-        source_ids: deduplicated.map((source) => source.id),
-        confidence: 0.5,
-      }],
-    },
-  };
-}
-
 function governedResearchAction(action) {
   return {
     ...action,
@@ -523,8 +458,6 @@ export function createResearchCortex(config, options = {}) {
   const planProvider = options.planProvider;
   const validateProvider = options.validateProvider;
   const memoryFabric = options.memoryFabric;
-  const fetchImpl = options.fetchImpl || fetch;
-  const openAiCalls = new Map();
 
   function read(tenantId) {
     const state = readState(root, tenantId);
@@ -705,13 +638,7 @@ export function createResearchCortex(config, options = {}) {
       providers: {
         connected_ai_web: { available: true, credential_mode: "host_managed", server_secret_required: false },
         curated_collectors: { available: true, mode: "evidence_pack_ingest" },
-        openai_optional_fallback: {
-          enabled: config.openaiResearchEnabled === true,
-          configured: Boolean(config.openaiApiKey),
-          callable: config.openaiResearchEnabled === true && Boolean(config.openaiApiKey),
-          model: config.openaiResearchModel,
-          max_calls_per_hour_per_tenant: config.openaiResearchMaxCallsPerHour,
-        },
+        server_model_execution: { available: false, retired: true },
       },
       learning_policy: {
         candidate_memory_promoted_automatically: false,
@@ -850,89 +777,6 @@ export function createResearchCortex(config, options = {}) {
     return null;
   }
 
-  function checkOpenAiRate(identity) {
-    const now = Date.now();
-    const windowStart = now - 3_600_000;
-    const current = (openAiCalls.get(identity.tenantId) || []).filter((timestamp) => timestamp > windowStart);
-    if (current.length >= config.openaiResearchMaxCallsPerHour) fail("openai_research_rate_limited");
-    current.push(now);
-    openAiCalls.set(identity.tenantId, current);
-  }
-
-  async function executeOpenAi(input, identity) {
-    if (!config.openaiResearchEnabled) fail("openai_research_disabled");
-    if (!config.openaiApiKey) fail("openai_research_not_configured");
-    const normalizedQuery = sanitizeText(input.query || input.question, "research_query", 2_000);
-    if (normalizedQuery.prompt_injection) fail("research_query_rejected");
-    const query = normalizedQuery.text;
-    const contextSize = ["low", "medium", "high"].includes(input.search_context_size) ? input.search_context_size : "low";
-    const allowedDomains = unique((Array.isArray(input.allowed_domains) ? input.allowed_domains : []).slice(0, 20).map(normalizeDomain).filter(Boolean));
-    const queryFingerprint = crypto.createHash("sha256").update(query).digest("hex").slice(0, 24);
-    const gate = await authorize(identity, {
-      action_type: "research.external_web_search",
-      action_label: "Run optional billable OpenAI web research",
-      target: `research_query_${queryFingerprint}`,
-      operation_class: "billable_external_read",
-      external_side_effect: true,
-      contains_customer_data: normalizedQuery.redaction_count > 0,
-    });
-    checkOpenAiRate(identity);
-    const webTool = {
-      type: "web_search",
-      search_context_size: contextSize,
-      external_web_access: true,
-      ...(allowedDomains.length ? { filters: { allowed_domains: allowedDomains } } : {}),
-    };
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), config.openaiResearchTimeoutMs);
-    let response;
-    try {
-      response = await fetchImpl("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${config.openaiApiKey}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: config.openaiResearchModel,
-          tools: [webTool],
-          tool_choice: "required",
-          max_tool_calls: 3,
-          parallel_tool_calls: false,
-          max_output_tokens: 2_000,
-          store: false,
-          safety_identifier: crypto.createHash("sha256").update(`tenant:${identity.tenantId}`).digest("hex"),
-          include: ["web_search_call.action.sources"],
-          input: `Research this question with current, authoritative sources. Preserve contradictions and uncertainty. Return a concise evidence synthesis with citations. Question: ${query}`,
-        }),
-        signal: controller.signal,
-      });
-    } catch (error) {
-      fail(error?.name === "AbortError" ? "openai_research_timeout" : "openai_research_unavailable");
-    } finally {
-      clearTimeout(timeout);
-    }
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) fail(`openai_research_failed_${response.status}`);
-    const extracted = extractOpenAiResponse(payload, query);
-    return {
-      ...extracted,
-      model: config.openaiResearchModel,
-      usage: {
-        input_tokens: Number(payload.usage?.input_tokens || 0),
-        output_tokens: Number(payload.usage?.output_tokens || 0),
-        total_tokens: Number(payload.usage?.total_tokens || 0),
-      },
-      policy: {
-        stored: false,
-        next_step: "Review the evidence pack template, then call nyra_research_ingest.",
-        api_key_exposed: false,
-        tenant_scoped: true,
-        core_gate: { decision: gate.decision, mediation: gate.mediation },
-      },
-    };
-  }
-
   return {
     plan,
     ingest,
@@ -941,8 +785,6 @@ export function createResearchCortex(config, options = {}) {
     feedback,
     searchDocuments,
     fetchDocument,
-    executeOpenAi,
-    openAiAvailable: config.openaiResearchEnabled === true && Boolean(config.openaiApiKey),
   };
 }
 
@@ -953,9 +795,6 @@ export function createResearchHandlers(research) {
     nyra_research_query: async (args, identity) => textResult(research.query(args, identity)),
     nyra_research_status: async (args, identity) => textResult(research.status(args, identity)),
     nyra_research_feedback: async (args, identity) => textResult(await research.feedback(args, identity)),
-    ...(research.openAiAvailable
-      ? { nyra_research_execute: async (args, identity) => textResult(await research.executeOpenAi(args, identity)) }
-      : {}),
   };
 }
 

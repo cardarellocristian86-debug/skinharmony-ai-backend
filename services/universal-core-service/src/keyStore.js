@@ -279,6 +279,9 @@ export function createKeyStore(storageRoot, audit) {
   function ensureMcpTenantGatewayKey(input = {}) {
     const secret = String(input.secret || "").trim();
     if (!secret) throw new Error("mcp_tenant_gateway_key_required");
+    if (Buffer.byteLength(secret, "utf8") < 32) {
+      throw new Error("mcp_tenant_gateway_key_weak");
+    }
     const keyHash = sha256(secret);
     const records = listAll();
     const existing = records.find((record) => record.key_hash === keyHash);

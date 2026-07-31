@@ -101,6 +101,22 @@ const EXPECTED_EXTENSIONS = {
     "rate_card_reference", "savings_calculation", "quality_delta",
     "approval_and_expiry", "rollback_reference",
   ],
+  workload_identity_delegation_guard: [
+    "client_branch_binding", "audience_branch_binding", "entitlement_branch_binding",
+    "binding_expiry_revalidation",
+  ],
+  agent_orchestration_guard: [
+    "handoff_injection_block", "real_quorum_verification", "nonempty_evidence_gate",
+    "independent_attestation_verification",
+  ],
+  quality_verification_intelligence: [
+    "trace_grading", "routing_accuracy_scorecard", "tool_accuracy_scorecard",
+    "handoff_accuracy_scorecard", "regression_scorecard",
+  ],
+  runtime_deployment_scaling_guard: [
+    "slo_budget_gate", "shadow_canary_readiness", "capacity_saturation_gate",
+    "runtime_rollback_binding",
+  ],
 };
 
 const EXPECTED_AGENTIC_EFFICIENCY = {
@@ -279,6 +295,31 @@ test("agentic addendum aliases resolve to one canonical behavior without duplica
   assert.equal(ids.includes("skill_replay_verification"), false);
   assert.equal(ids.filter((id) => id === "skill_candidate_extraction").length, 1);
   assert.equal(ids.filter((id) => id === "skill_sandbox_replay").length, 1);
+});
+
+test("cost, savings, budget and reuse facets bind the Agentic Budget guard", () => {
+  const requiredBudgetBindings = {
+    agent_orchestration: ["skill_reuse_telemetry"],
+    adaptive_learning_intelligence: ["learning_value_estimation", "savings_outcome_validation"],
+    ai_orchestration: [
+      "task_difficulty_classifier", "quality_cost_router", "prompt_budget_enforcement",
+      "tool_surface_minimization", "tool_schema_budget", "stable_prefix_compilation",
+      "provider_usage_normalization",
+    ],
+    observability_roi_guard: EXPECTED_EXTENSIONS.observability_roi_guard,
+    decision_provenance_intelligence: EXPECTED_EXTENSIONS.decision_provenance_intelligence,
+  };
+
+  for (const [branchId, capabilityIds] of Object.entries(requiredBudgetBindings)) {
+    for (const capabilityId of capabilityIds) {
+      assert.equal(
+        AI_LEARNING_FACTORY_EXTENSION_FACETS[branchId][capabilityId]
+          .core_binding.required_guards.includes("agentic_budget_governance_guard"),
+        true,
+        `missing Agentic Budget binding: ${branchId}.${capabilityId}`,
+      );
+    }
+  }
 });
 
 test("agentic efficiency and budget descriptors preserve all IDs with at most twenty direct subbranches", () => {

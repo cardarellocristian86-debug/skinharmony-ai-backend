@@ -37,7 +37,23 @@ function freezeRecord(value) {
   return value;
 }
 
-function requiredCoreGuards(branchId) {
+const AGENTIC_BUDGET_EXTENSION_FACETS = freezeRecord({
+  agent_orchestration: ["skill_reuse_telemetry"],
+  adaptive_learning_intelligence: ["learning_value_estimation", "savings_outcome_validation"],
+  ai_orchestration: [
+    "task_difficulty_classifier",
+    "quality_cost_router",
+    "prompt_budget_enforcement",
+    "tool_surface_minimization",
+    "tool_schema_budget",
+    "stable_prefix_compilation",
+    "provider_usage_normalization",
+  ],
+  observability_roi_guard: ["*"],
+  decision_provenance_intelligence: ["*"],
+});
+
+function requiredCoreGuards(branchId, capabilityId = "") {
   if (branchId === "ai_data_integrity_guard") return ["ai_data_integrity_guard"];
   if (branchId === "ai_learning_governance_guard") return ["ai_learning_governance_guard"];
   if (branchId === "agentic_budget_governance_guard") return ["agentic_budget_governance_guard"];
@@ -46,6 +62,10 @@ function requiredCoreGuards(branchId) {
   }
   if (branchId === "learning_data_governance" || branchId === "learning_knowledge_intelligence") {
     return ["ai_data_integrity_guard", "ai_learning_governance_guard"];
+  }
+  const budgetFacets = AGENTIC_BUDGET_EXTENSION_FACETS[branchId] || [];
+  if (budgetFacets.includes("*") || budgetFacets.includes(capabilityId)) {
+    return ["agentic_budget_governance_guard", "ai_learning_governance_guard"];
   }
   return ["ai_learning_governance_guard"];
 }
@@ -113,7 +133,7 @@ function buildNodeContract(branch, [id, purpose]) {
     },
     core_binding: {
       authority: "universal_core",
-      required_guards: requiredCoreGuards(branch.id),
+      required_guards: requiredCoreGuards(branch.id, id),
       final_authority: true,
       bypass_allowed: false,
     },
@@ -554,6 +574,31 @@ export const AI_LEARNING_FACTORY_EXTENSION_FACETS = freezeRecord({
     ["quality_delta", "Conservare qualita baseline, ottimizzata, delta e verifica del quality floor."],
     ["approval_and_expiry", "Legare approvazione, autorita, ambito e scadenza alla decisione di efficienza."],
     ["rollback_reference", "Legare ogni ottimizzazione al checkpoint e al comportamento verificato precedente."],
+  ]),
+  workload_identity_delegation_guard: defineExtensionFacet("workload_identity_delegation_guard", [
+    ["client_branch_binding", "Vincolare il client autenticato ai soli rami server-side consentiti dal suo tipo."],
+    ["audience_branch_binding", "Vincolare audience verificata ed esposizione del ramo senza accettare override dal payload."],
+    ["entitlement_branch_binding", "Richiedere entitlement tenant-scoped esatto per ogni ramo software-adjacent."],
+    ["binding_expiry_revalidation", "Rivalidare scadenza, revoca e versione della matrice prima di ogni selezione."],
+  ]),
+  agent_orchestration_guard: defineExtensionFacet("agent_orchestration_guard", [
+    ["handoff_injection_block", "Bloccare istruzioni non attestate o fuori contratto introdotte in handoff e capsule."],
+    ["real_quorum_verification", "Contare nel quorum soltanto attestazioni indipendenti e verificabili."],
+    ["nonempty_evidence_gate", "Rifiutare join, approvazioni e closure con evidenza vuota o soltanto nominale."],
+    ["independent_attestation_verification", "Verificare indipendenza, identita e scope di ogni attestazione agente."],
+  ]),
+  quality_verification_intelligence: defineExtensionFacet("quality_verification_intelligence", [
+    ["trace_grading", "Valutare trace redatte e versionate contro rubric ed evidenza riproducibile."],
+    ["routing_accuracy_scorecard", "Misurare accuratezza del ramo selezionato sul golden set versionato."],
+    ["tool_accuracy_scorecard", "Misurare selezione tool e conformita schema senza esecuzione esterna autonoma."],
+    ["handoff_accuracy_scorecard", "Misurare correttezza, completezza e verificabilita degli handoff."],
+    ["regression_scorecard", "Confrontare baseline e candidato e bloccare regressioni oltre soglia."],
+  ]),
+  runtime_deployment_scaling_guard: defineExtensionFacet("runtime_deployment_scaling_guard", [
+    ["slo_budget_gate", "Valutare SLO e budget verificati prima di una proposta di rollout."],
+    ["shadow_canary_readiness", "Richiedere shadow o canary osservabile e rollback-ready prima della promozione."],
+    ["capacity_saturation_gate", "Rilevare queue pressure e saturazione senza autorizzare scaling autonomo."],
+    ["runtime_rollback_binding", "Legare ogni proposta runtime a snapshot, trigger e prova di rollback."],
   ]),
 });
 

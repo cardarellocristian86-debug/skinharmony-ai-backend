@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildActionAuthorization } from "../src/actionAuthorization.js";
+import { BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES } from "../src/boundedInternalCoordination.js";
 
 function contract(overrides = {}) {
   return {
@@ -15,6 +16,10 @@ function contract(overrides = {}) {
 const boundedCoordinationWrite = {
   action_type: "task.claim",
   operation_class: "bounded_internal_coordination_write",
+  authenticated_tenant_id: "codexai",
+  tenant_id: "codexai",
+  target: "tenant_task_queue",
+  idempotency_key: "task-claim-idempotency-0001",
   external_side_effect: false,
   contains_customer_data: false,
   contains_secret: false,
@@ -38,6 +43,63 @@ test("authorizes a bounded low-impact coordination write without confirmation", 
   assert.equal(result.state, "authorized");
   assert.equal(result.confirmation_required, false);
   assert.equal(result.confirmation_satisfied, false);
+});
+
+test("preserves the closed legacy and continuity coordination action set", () => {
+  const targets = {
+    "agent.heartbeat": "tenant_agent_heartbeat",
+    "task.claim": "tenant_task_queue",
+    "task.update": "tenant_task_queue",
+    "message.acknowledge": "tenant_message_queue",
+    "continuity.update": "work_continuity_checkpoint",
+    "native_agent.plan": "work_continuity_native_plan_create",
+    "native_agent.bind": "work_continuity_native_bind",
+    "native_agent.report": "work_continuity_native_report",
+    "native_agent.verify": "work_continuity_closure_evaluate",
+    "work_atlas.update": "work_atlas_upsert",
+    "incident.record": "work_continuity_incident_record",
+    "delegation.consume": "work_continuity_delegation_consume",
+    "work.participant.join": "tenant_work_gallery_join",
+    "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
+    "work.branch.open": "tenant_work_branch_open",
+    "work.lease.acquire": "tenant_work_lease_acquire",
+    "work.lease.renew": "tenant_work_lease_renew",
+    "work.lease.release": "tenant_work_lease_release",
+    "work.message.post": "tenant_work_message_post",
+  };
+  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 19);
+  for (const actionType of BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES) {
+    const authorization = buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: actionType,
+      target: targets[actionType],
+      idempotency_key: `bounded-${actionType}-0001`,
+    });
+    assert.equal(authorization.allowed, true, actionType);
+    assert.equal(authorization.confirmation_required, false, actionType);
+  }
+});
+
+test("Gallery coordination requires an exact action, target and idempotency binding", () => {
+  const exact = {
+    ...boundedCoordinationWrite,
+    action_type: "work.lease.acquire",
+    target: "tenant_work_lease_acquire",
+    idempotency_key: "gallery-lease-acquire-0001",
+  };
+  assert.equal(buildActionAuthorization(contract(), exact).allowed, true);
+  for (const mismatch of [
+    { target: "tenant_work_lease_release" },
+    { action_type: "work.lease.release" },
+    { idempotency_key: "" },
+    { idempotency_key: "short" },
+    { authenticated_tenant_id: "tenant-b" },
+  ]) {
+    assert.equal(
+      buildActionAuthorization(contract(), { ...exact, ...mismatch }).allowed,
+      false,
+    );
+  }
 });
 
 test("keeps hard blocks, higher risk and unsafe internal writes closed", () => {
@@ -71,6 +133,12 @@ test("keeps hard blocks, higher risk and unsafe internal writes closed", () => {
     { audit_ready: false },
     { target_authority_verified: false },
     { actor_authorized_for_target: false },
+    { authenticated_tenant_id: "other" },
+    { tenant_id: "other" },
+    { target: "render_service" },
+    { idempotency_key: "" },
+    { owner_confirmed: true },
+    { owner_context_verified: true },
   ]) {
     assert.equal(buildActionAuthorization(contract(), { ...boundedCoordinationWrite, ...unsafe }).allowed, false);
   }

@@ -137,7 +137,33 @@ test("mount exposes exactly eight bounded routes without adding MCP tools or exe
   assert.equal(app.routes.size, 8);
   assert.equal(result.capability_count, 8);
   assert.equal(result.top_level_mcp_tools_added, 0);
+  assert.equal(result.hard_budget_stop.active, false);
   assert.equal(result.execution_authorized, false);
+});
+
+test("status exposes a rejected hard-stop request without activating it", async () => {
+  const { app, result } = mount({
+    hardBudgetStopStatus: {
+      requested: true,
+      active: false,
+      state: "rejected",
+      advisory_only: true,
+      reason: "hard_budget_stop_not_authorized",
+    },
+  });
+  assert.equal(result.hard_budget_stop.active, false);
+  assert.equal(result.hard_budget_stop.state, "rejected");
+
+  const status = await invoke(app, "GET /v1/agentic-efficiency/status");
+  assert.equal(status.statusCode, 200);
+  assert.equal(status.payload.data.hard_budget_stop, false);
+  assert.equal(status.payload.data.hard_budget_stop_state, "rejected");
+  assert.equal(status.payload.data.hard_budget_stop_advisory_only, true);
+
+  const budget = await invoke(app, "GET /v1/agentic-efficiency/budget/status");
+  assert.equal(budget.statusCode, 200);
+  assert.equal(budget.payload.data.hard_budget_stop, false);
+  assert.equal(budget.payload.data.hard_budget_stop_reason, "hard_budget_stop_not_authorized");
 });
 
 test("plan uses server identity and suppresses unnecessary agents", async () => {

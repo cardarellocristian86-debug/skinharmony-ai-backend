@@ -382,7 +382,7 @@ test("durable idempotency survives a store restart and rejects a mismatched repl
     runtimeRole: "ai_learning_runtime",
     now: () => new Date("2026-07-27T10:00:00.000Z"),
   });
-  const firstStore = createAiLearningFactoryStore({
+  const firstStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true,
     adapter: firstPersistence.learningAdapter,
     now: () => "2026-07-27T10:00:00.000Z",
   });
@@ -399,7 +399,7 @@ test("durable idempotency survives a store restart and rejects a mismatched repl
     runtimeRole: "ai_learning_runtime",
     now: () => new Date("2026-07-27T10:05:00.000Z"),
   });
-  const restartedStore = createAiLearningFactoryStore({
+  const restartedStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true,
     adapter: restartedPersistence.learningAdapter,
     now: () => "2026-07-27T10:05:00.000Z",
   });
@@ -431,7 +431,7 @@ test("bounded persistent pagination reaches records beyond 500 with filters appl
     runtimeRole: "ai_learning_runtime",
     now: () => new Date("2026-07-27T10:00:00.000Z"),
   });
-  const writer = createAiLearningFactoryStore({
+  const writer = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true,
     adapter: persistence.learningAdapter,
     now: () => "2026-07-27T10:00:00.000Z",
   });
@@ -448,7 +448,7 @@ test("bounded persistent pagination reaches records beyond 500 with filters appl
     });
   }
 
-  const restarted = createAiLearningFactoryStore({
+  const restarted = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true,
     adapter: persistence.learningAdapter,
     now: () => "2026-07-27T10:05:00.000Z",
   });

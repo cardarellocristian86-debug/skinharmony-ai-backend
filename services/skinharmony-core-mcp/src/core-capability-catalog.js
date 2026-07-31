@@ -40,11 +40,6 @@ export const CORE_CONNECTOR_INTERNAL_SURFACES = [
     reason: "admin_or_bootstrap_credentials_must_not_be_exposed_to_model_tools",
   },
   {
-    group: "provider_secrets",
-    patterns: ["/v1/providers/openai/setup", "/v1/providers/openai/credentials"],
-    reason: "provider_credentials_use_dedicated_owner_bound_flows",
-  },
-  {
     group: "runtime_internals",
     patterns: ["/v1/agents/queue", "/v1/model-reservations", "/v1/tool-events"],
     reason: "low_level_runtime_mutations_require_governed_high_level_wrappers",

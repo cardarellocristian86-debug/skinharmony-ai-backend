@@ -25,8 +25,12 @@ CREATE TABLE IF NOT EXISTS ai_learning_governance.schema_migration_audit (
   applied_at TIMESTAMPTZ NOT NULL,
   actor_provenance TEXT NOT NULL,
   rollback_reference TEXT NOT NULL,
+  migration_digest TEXT,
   PRIMARY KEY (migration_version,state,applied_at)
 );
+
+ALTER TABLE ai_learning_governance.schema_migration_audit
+  ADD COLUMN IF NOT EXISTS migration_digest TEXT;
 
 CREATE TABLE IF NOT EXISTS ai_learning_governance.learning_record (
   tenant_id TEXT NOT NULL,
@@ -92,8 +96,15 @@ GRANT SELECT,INSERT ON ai_learning_governance.idempotency_receipt
   TO nyra_ai_learning_runtime_v016;
 
 INSERT INTO ai_learning_governance.schema_migration_audit
-  (migration_version,state,applied_at,actor_provenance,rollback_reference)
+  (migration_version,state,applied_at,actor_provenance,rollback_reference,migration_digest)
 VALUES
-  ('0.16.0-ai-learning-factory-v1','active',NOW(),'universal-core:migration','git:pre-v0.16');
+  (
+    '0.16.0-ai-learning-factory-v1',
+    'active',
+    NOW(),
+    'universal-core:migration',
+    '__V016_ROLLBACK_REFERENCE__',
+    '__V016_MIGRATION_DIGEST__'
+  );
 
 COMMIT;

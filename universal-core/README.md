@@ -76,3 +76,12 @@ Esempi vietati dentro il core:
 - ticket assistenza
 
 Questi vivono nei branch adapter.
+
+## Deploy production
+
+Per evitare due sincronizzazioni Render sullo stesso servizio, l’unico
+Blueprint autorevole di produzione è
+[`../render-universal-core.yaml`](../render-universal-core.yaml), che avvia
+`services/universal-core-service`. Il precedente `universal-core/render.yaml`
+è ritirato: questa directory resta materiale di ricerca/storico e non deve
+essere collegata al servizio `skinharmony-universal-core`.

@@ -3,6 +3,10 @@ const path = require("path");
 const crypto = require("crypto");
 const { resolveTenantScope, scopedEntityId, profileStoreKey } = require("./lib/tenant-isolation");
 const { createNyraHorizontalRuntime } = require("./lib/nyra-horizontal-runtime");
+const {
+  createNyraDeepBranchV2Federation,
+  createPersistentReplayGuard,
+} = require("./lib/nyra-deep-branch-v2-federation");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -131,6 +135,29 @@ function resolveStoragePath(relativePath) {
   return path.join(rootDir, relativePath);
 }
 
+const NYRA_DEEP_V2_FEDERATION_PATH = "/api/nyra/runtime/v2/evaluate";
+const configuredNyraDeepV2ReplayPath = String(
+  process.env.NYRA_DEEP_BRANCH_V2_REPLAY_STORE_PATH || "",
+).trim();
+if (
+  process.env.NODE_ENV === "production"
+  && envTruthy("NYRA_DEEP_BRANCH_V2_FEDERATION_ENABLED")
+  && !nyraStorageRoot
+  && !configuredNyraDeepV2ReplayPath
+) {
+  throw new Error("nyra_deep_branch_v2_persistent_replay_store_required");
+}
+const nyraDeepV2ReplayPath = configuredNyraDeepV2ReplayPath
+  ? path.resolve(configuredNyraDeepV2ReplayPath)
+  : resolveStoragePath("runtime/nyra-learning/nyra_deep_v2_replay_store.json");
+const nyraDeepV2ReplayGuard = createPersistentReplayGuard({
+  filePath: nyraDeepV2ReplayPath,
+});
+const nyraDeepV2Federation = createNyraDeepBranchV2Federation({
+  env: process.env,
+  replayGuard: nyraDeepV2ReplayGuard,
+});
+
 function envTruthy(name) {
   return ["1", "true", "yes", "on"].includes(String(process.env[name] || "").trim().toLowerCase());
 }
@@ -205,6 +232,17 @@ function rateLimitAllowed(req) {
 }
 
 function authenticateNyraRequest(req) {
+  if (req.path === NYRA_DEEP_V2_FEDERATION_PATH && req.method === "POST") {
+    const suppliedServiceKey = String(
+      req.get("x-nyra-deep-v2-service-key") || "",
+    ).trim();
+    const federationAuthentication = nyraDeepV2Federation.authenticate(
+      suppliedServiceKey,
+    );
+    return federationAuthentication.ok
+      ? { ok: true, method: "deep_v2_service_key" }
+      : { ok: false, code: federationAuthentication.error };
+  }
   const authorization = String(req.headers.authorization || "");
   const bearer = bearerTokenFromHeader(authorization);
   if (req.path.startsWith("/api/nyra/suite/")) {
@@ -259,8 +297,12 @@ app.use((req, res, next) => {
   const auth = authenticateNyraRequest(req);
   if (!auth.ok) {
     appendNyraSecurityAudit("auth_rejected", { request_id: requestId, method: req.method, path: req.path, ip: clientIpFor(req), reason: auth.code });
-    if (basicAuthEnabled()) res.setHeader("WWW-Authenticate", 'Basic realm="Nyra"');
-    res.status(auth.code === "nyra_auth_not_configured" ? 503 : 401).json({ ok: false, error: auth.code, request_id: requestId });
+    if (basicAuthEnabled() && req.path !== NYRA_DEEP_V2_FEDERATION_PATH) {
+      res.setHeader("WWW-Authenticate", 'Basic realm="Nyra"');
+    }
+    const unavailable = auth.code === "nyra_auth_not_configured"
+      || auth.code === "nyra_deep_branch_v2_federation_unavailable";
+    res.status(unavailable ? 503 : 401).json({ ok: false, error: auth.code, request_id: requestId });
     return;
   }
 
@@ -281,8 +323,27 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: NYRA_BODY_LIMIT }));
 
 app.get("/healthz", (_req, res) => {
-  res.json({
-    ok: true,
+  const deepV2FederationConfig = nyraDeepV2Federation.config();
+  const replayStorePersistent = Boolean(
+    nyraStorageRoot || configuredNyraDeepV2ReplayPath,
+  );
+  const federationConfigured = Boolean(
+    deepV2FederationConfig.shared_secret
+    && deepV2FederationConfig.tenant_allowlist.length > 0,
+  );
+  const replayStoreProbe = deepV2FederationConfig.enabled
+    ? nyraDeepV2ReplayGuard.probe()
+    : { ok: true, ready: true, durable: true };
+  const replayStoreReady = replayStorePersistent && replayStoreProbe.ready === true;
+  const replayStoreDurable = replayStorePersistent && replayStoreProbe.durable === true;
+  const federationReady = !deepV2FederationConfig.enabled || (
+    federationConfigured
+    && replayStoreReady
+    && replayStoreDurable
+  );
+  const healthy = federationReady;
+  res.status(healthy ? 200 : 503).json({
+    ok: healthy,
     service: NYRA_SERVICE_NAME,
     version: NYRA_SERVICE_VERSION,
     runtime_kind: "horizontal_neural_branch_runtime",
@@ -291,7 +352,40 @@ app.get("/healthz", (_req, res) => {
     auth_configured: basicCredentialsConfigured() || nyraBearerKeys().length > 0,
     storage_persistent: Boolean(nyraStorageRoot),
     suite_bridge_configured: suiteBridgeKeyConfigured(),
+    deep_branch_v2_federation: {
+      enabled: deepV2FederationConfig.enabled,
+      configured: federationConfigured,
+      ready: federationReady,
+      tenant_allowlist_configured: deepV2FederationConfig.tenant_allowlist.length > 0,
+      persistent_replay_store: replayStorePersistent,
+      replay_store_healthy: replayStoreReady && replayStoreDurable,
+      replay_store_ready: replayStoreReady,
+      replay_store_durable: replayStoreDurable,
+      operational_evaluation_enabled: deepV2FederationConfig.operational_evaluation_enabled,
+    },
   });
+});
+
+app.post(NYRA_DEEP_V2_FEDERATION_PATH, (req, res) => {
+  try {
+    const result = nyraDeepV2Federation.evaluate(req.body?.envelope);
+    appendNyraSecurityAudit("deep_v2_federation_evaluated", {
+      request_id: req.nyraRequestId,
+      tenant_id: req.body?.envelope?.tenant_id || null,
+      federation_state: result?.state || null,
+      federation_error: result?.error || null,
+      execution_authorized: result?.execution_authorized === true,
+    });
+    res.status(result?.ok === true ? 200 : Number(result?.status || 403)).json(result);
+  } catch {
+    res.status(503).json({
+      ok: false,
+      error: "nyra_deep_branch_v2_federation_unavailable",
+      request_id: req.nyraRequestId,
+      execution_authorized: false,
+      core_final_authority: true,
+    });
+  }
 });
 
 function analyzerScopedKeys() {
@@ -4192,143 +4286,6 @@ function buildLocalStrategyAnswer(question, context = buildControlContext()) {
   };
 }
 
-async function callOpenAIAssistant(question, context) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY mancante nel .env.");
-  }
-
-  const model = process.env.OPENAI_ASSISTANT_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
-  const compactContext = compactAssistantContext(context);
-  const response = await fetchJson("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        {
-          role: "system",
-          content: [
-            "Sei l'assistente operativo AI di SkinHarmony Control Desk.",
-            "Rispondi in italiano, tono diretto, premium, concreto.",
-            "Se il dato manca, dichiaralo. Non inventare numeri, vendite, margini, prezzi, insight o risultati.",
-            "Puoi ragionare liberamente su strategia marketing, vendite, produttivita, priorita, copy, follow-up e prossime azioni, ma devi separare dati reali da ipotesi.",
-            "Non inviare messaggi, non modificare prezzi, non modificare dati e non promettere risultati medici o terapeutici.",
-            "Quando utile, dai una decisione: cosa fare oggi, cosa evitare, quale dato manca, quale test lanciare.",
-            "Mantieni la risposta leggibile: priorita, diagnosi, azioni operative."
-          ].join(" ")
-        },
-        {
-          role: "user",
-          content: `Domanda: ${question}\n\nDati reali disponibili in JSON:\n${JSON.stringify(compactContext)}`
-        }
-      ],
-      max_output_tokens: 1200
-    })
-  });
-
-  const outputText = response.output_text
-    || (response.output || [])
-      .flatMap((item) => item.content || [])
-      .map((item) => item.text || "")
-      .join("\n")
-      .trim();
-
-  if (!outputText) {
-    throw new Error("OpenAI non ha restituito testo.");
-  }
-
-  return {
-    answer: outputText,
-    model,
-    usedData: {
-      dataQuality: context.dataQuality.score,
-      productivityScore: context.productivity.today.outputScore,
-      campaigns: context.campaigns.length,
-      alerts: context.alerts.length,
-      sales: context.economics.sales.length
-    }
-  };
-}
-
-async function callOpenAIAction({ prompt, scope, cardType, mode, context }) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY mancante nel .env.");
-  }
-
-  const model = process.env.OPENAI_ASSISTANT_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
-  const compactContext = compactAssistantContext(context);
-  const inputText = JSON.stringify({ prompt, scope, cardType, mode, context: compactContext });
-  const response = await fetchJson("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      input: [
-        {
-          role: "system",
-          content: [
-            "Sei l'assistente operativo AI di SkinHarmony Control Desk.",
-            "Devi proporre azioni operative controllate, non eseguirle.",
-            "Rispondi solo con JSON valido.",
-            "Schema: {summary:string, diagnosis:string, recommendations:string[], proposals:[{type:'task'|'note'|'email_draft'|'strategy', title:string, priority?:'bassa'|'media'|'alta', leadId?:string, to?:string, subject?:string, body?:string, note?:string, due?:string}], warnings:string[]}.",
-            "Non inventare email/contatti mancanti. Se manca destinatario, lascia to vuoto e inserisci warning.",
-            "Non inviare email, non modificare dati, non cambiare prezzi.",
-            "Tono premium, concreto, operativo. Separare dati reali da ipotesi."
-          ].join(" ")
-        },
-        {
-          role: "user",
-          content: inputText
-        }
-      ],
-      max_output_tokens: mode === "complete" ? 1600 : 900
-    })
-  });
-
-  const outputText = response.output_text
-    || (response.output || [])
-      .flatMap((item) => item.content || [])
-      .map((item) => item.text || "")
-      .join("\n")
-      .trim();
-  const parsed = parseJsonObject(outputText);
-  logAiUsage({ question: prompt, mode: "openai_action", scope: `${scope}:${cardType || "global"}`, model, inputText, outputText });
-  return { ...parsed, model };
-}
-
-function localActionProposal({ prompt, scope, cardType, context }) {
-  const problem = context.executive?.strategicActions?.[0] || { title: "Aggiornare priorita operative", detail: "Controllare alert e dati mancanti." };
-  return {
-    summary: "Proposta locale generata sui dati reali disponibili.",
-    diagnosis: `${problem.title}. ${problem.detail}`,
-    recommendations: context.executive?.strategyBrief || ["Completare dati mancanti e lavorare sulle priorita critiche."],
-    proposals: [
-      {
-        type: "task",
-        title: problem.title,
-        priority: problem.level === "critico" ? "alta" : "media",
-        due: new Date().toISOString().slice(0, 10),
-        note: `${problem.detail} Richiesta: ${prompt}`
-      },
-      {
-        type: "strategy",
-        title: `Strategia ${cardType || scope}`,
-        priority: "media",
-        note: context.executive?.strategyBrief?.join("\n") || problem.detail
-      }
-    ],
-    warnings: ["OpenAI non disponibile: proposta costruita con fallback locale."]
-  };
-}
-
 function buildNyraTextLearningStatus() {
   const store = readJson("universal-core/runtime/nyra/nyra_learning_core.json", {
     version: 1,
@@ -4545,8 +4502,8 @@ app.get("/api/nyra/runtime/readiness", async (_req, res) => {
       version: researchHealth.ok ? researchHealth.data?.version || null : null,
       primary_mode: "connected_ai_mcp_bridge",
       primary_provider: "host_chatgpt_or_codex_web",
-      openai_fallback_enabled: researchHealth.ok && researchHealth.data?.openai_research_fallback_enabled === true,
-      openai_fallback_configured: researchHealth.ok && researchHealth.data?.openai_research_fallback_configured === true,
+      native_host_only: true,
+      server_provider_execution: "retired",
       automatic_unreviewed_learning: false,
     },
     learning,
@@ -8823,64 +8780,24 @@ app.post("/api/assistant/strategy", (req, res) => {
   });
 });
 
-app.post("/api/assistant/ai", async (req, res) => {
-  const question = String(req.body.question || "").trim();
-  if (!question) {
-    res.status(400).json({ error: "Domanda mancante." });
-    return;
-  }
+function nativeHostAssistantRequired(res) {
+  res.status(410).json({
+    ok: false,
+    error: "server_side_ai_execution_retired",
+    message: "L'esecuzione AI dal server Nyra e ritirata. Usa un agente nativo ChatGPT/Codex nel flusso governato Core/MCP.",
+    replacement: {
+      mode: "native_chatgpt_codex",
+      workflow: "governed_core_mcp",
+    },
+  });
+}
 
-  const context = buildControlContext();
-  try {
-    const result = await callOpenAIAssistant(question, context);
-    res.json({
-      ok: true,
-      mode: "openai",
-      answer: result.answer,
-      model: result.model,
-      usedData: result.usedData
-    });
-  } catch (error) {
-    const fallback = buildLocalStrategyAnswer(question, context);
-    res.json({
-      ok: true,
-      mode: "local_fallback",
-      answer: [
-        "OpenAI non ha risposto, quindi uso la strategia locale sui dati reali.",
-        `Motivo tecnico: ${error.message}`,
-        "",
-        fallback.answer
-      ].join("\n"),
-      usedData: fallback.usedData
-    });
-  }
+app.post("/api/assistant/ai", (_req, res) => {
+  nativeHostAssistantRequired(res);
 });
 
-app.post("/api/assistant/action", async (req, res) => {
-  const prompt = String(req.body.prompt || "").trim();
-  const scope = String(req.body.scope || "global");
-  const cardType = String(req.body.cardType || "");
-  const mode = String(req.body.mode || "brief") === "complete" ? "complete" : "brief";
-  if (!prompt) {
-    res.status(400).json({ error: "Comando AI mancante." });
-    return;
-  }
-
-  const context = buildControlContext();
-  try {
-    const result = await callOpenAIAction({ prompt, scope, cardType, mode, context });
-    res.json({ ok: true, mode: "openai", result });
-  } catch (error) {
-    const result = localActionProposal({ prompt, scope, cardType, context });
-    res.json({
-      ok: true,
-      mode: "local_fallback",
-      result: {
-        ...result,
-        warnings: [`OpenAI non ha risposto: ${error.message}`, ...(result.warnings || [])]
-      }
-    });
-  }
+app.post("/api/assistant/action", (_req, res) => {
+  nativeHostAssistantRequired(res);
 });
 
 app.post("/api/assistant/commit", (req, res) => {

@@ -24,8 +24,12 @@ CREATE TABLE IF NOT EXISTS agentic_governance.agentic_schema_migration_audit (
   applied_at TIMESTAMPTZ NOT NULL,
   actor_provenance TEXT NOT NULL,
   rollback_reference TEXT NOT NULL,
+  migration_digest TEXT,
   PRIMARY KEY (migration_version, state, applied_at)
 );
+
+ALTER TABLE agentic_governance.agentic_schema_migration_audit
+  ADD COLUMN IF NOT EXISTS migration_digest TEXT;
 
 CREATE TABLE IF NOT EXISTS agentic_governance.agentic_run_budget (
   tenant_id TEXT NOT NULL,
@@ -183,8 +187,15 @@ GRANT SELECT,INSERT ON agentic_governance.agentic_rate_card_snapshot
   TO nyra_agentic_runtime_v016;
 
 INSERT INTO agentic_governance.agentic_schema_migration_audit
-  (migration_version, state, applied_at, actor_provenance, rollback_reference)
+  (migration_version, state, applied_at, actor_provenance, rollback_reference, migration_digest)
 VALUES
-  ('0.16.0-agentic-efficiency-v1', 'active', NOW(), 'universal-core:migration', 'git:pre-v0.16');
+  (
+    '0.16.0-agentic-efficiency-v1',
+    'active',
+    NOW(),
+    'universal-core:migration',
+    '__V016_ROLLBACK_REFERENCE__',
+    '__V016_MIGRATION_DIGEST__'
+  );
 
 COMMIT;

@@ -2,11 +2,21 @@ import crypto from "node:crypto";
 
 import { requireScopes } from "./auth.js";
 import { validateToolArguments } from "./schema-validation.js";
+import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 import {
   CAPABILITY_EXPOSURE_CONTRACT_VERSION,
   capabilityAvailableForIdentity,
   capabilityExposureProfile,
 } from "./capability-exposure.js";
+
+export const COMPACT_GALLERY_TOOL_NAMES = Object.freeze([
+  "tenant_work_gallery_list",
+  "tenant_work_gallery_join",
+  "tenant_work_gallery_heartbeat",
+  "tenant_work_lease_acquire",
+  "tenant_work_message_post",
+  "tenant_work_inbox",
+]);
 
 export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "core_health",
@@ -16,22 +26,12 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "core_semantic_select",
   "core_capability_read",
   "core_capability_invoke",
-  "tenant_provider_openai_status",
-  "tenant_provider_openai_setup_panel",
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_multi_agent_smoke_run",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
+  ...COMPACT_GALLERY_TOOL_NAMES,
 ]);
 
 const DIRECT_ONLY = new Set(COMPACT_MCP_TOOL_NAMES);
 const FORBIDDEN_DYNAMIC_TOOLS = new Set([
   "core_gate_action",
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_setup_panel",
-  "tenant_provider_openai_multi_agent_smoke_run",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
 ]);
 const FORBIDDEN_ARGUMENT_KEYS = new Set([
   "__proto__",
@@ -46,14 +46,14 @@ const FORBIDDEN_ARGUMENT_KEYS = new Set([
 ]);
 const CAPABILITY_ID = /^[a-z][a-z0-9_]{1,95}$/;
 const CATALOG_VERSION = "core_dynamic_capabilities_v1";
-const TENANT_ID = /^[a-z0-9][a-z0-9_-]{1,119}$/i;
-const TENANT_BOUNDED_COLLABORATION_ROLES = new Set([
-  "member",
-  "reviewer",
-  "operator",
-  "tenant_owner",
-  "tenant_admin",
-  "owner_root",
+const BOUNDED_TENANT_WORK_ACTIONS = new Map([
+  ["tenant_work_gallery_join", "work.participant.join"],
+  ["tenant_work_gallery_heartbeat", "work.participant.heartbeat"],
+  ["tenant_work_branch_open", "work.branch.open"],
+  ["tenant_work_lease_acquire", "work.lease.acquire"],
+  ["tenant_work_lease_renew", "work.lease.renew"],
+  ["tenant_work_lease_release", "work.lease.release"],
+  ["tenant_work_message_post", "work.message.post"],
 ]);
 
 function stableCanonical(value) {
@@ -74,17 +74,17 @@ function sha256(value) {
 function capabilityGroup(name) {
   const prefixes = [
     ["agentic_", "agentic"],
+    ["work_continuity_", "continuity"],
+    ["host_native_", "continuity"],
+    ["tenant_work_", "workspace"],
     ["orchestration_dtt_", "orchestration"],
     ["generic_agent_", "agents"],
-    ["tenant_provider_", "provider"],
     ["nyra_research_", "research"],
     ["nyra_", "nyra"],
     ["core_", "core"],
     ["suite_", "suite"],
     ["memory_", "memory"],
     ["workspace_", "workspace"],
-    ["work_continuity_", "workspace"],
-    ["tenant_work_", "workspace"],
     ["task_", "workspace"],
     ["agent_", "workspace"],
     ["message_", "workspace"],
@@ -140,6 +140,7 @@ function summary(tool) {
     owner_confirmation_required: tool._meta?.["skinharmony/ownerConfirmationRequired"] === true,
     tenant_bounded_collaboration:
       tool._meta?.["skinharmony/tenantBoundedCollaboration"] === true,
+    dedicated_core_gate: tool._meta?.["skinharmony/dedicatedCoreGate"] === true,
     schema_hash: sha256(tool.inputSchema || {}),
     ...exposure,
   };
@@ -186,14 +187,11 @@ function assertRevision(expected, actual) {
 function assertTenantBoundedCollaborationIdentity(identity = {}) {
   const tenantId = String(identity.tenantId || "");
   const kind = String(identity.kind || "");
-  const subject = String(identity.subject || "").trim();
-  const role = String(identity.role || "");
   const presence = identity.agentPresence || {};
+  requireTenantWorkCapability(identity, "coordinate");
   if (
-    !TENANT_ID.test(tenantId) ||
+    !tenantId ||
     !["oauth", "codex"].includes(kind) ||
-    !subject ||
-    !TENANT_BOUNDED_COLLABORATION_ROLES.has(role) ||
     !String(presence.agent_id || "").trim() ||
     !String(presence.session_id || "").trim() ||
     !String(presence.signature || "").startsWith("ags_")
@@ -236,7 +234,7 @@ function targetArguments(tool, wrapperArgs, identity = {}) {
       ownerConfirmationRequired ||
       properties.owner_confirmed ||
       properties.confirmation_reference ||
-      !boundedActionType.startsWith("tenant_work.") ||
+      BOUNDED_TENANT_WORK_ACTIONS.get(tool.name) !== boundedActionType ||
       tool.annotations?.idempotentHint !== true ||
       tool.annotations?.destructiveHint === true ||
       tool.annotations?.openWorldHint === true ||
@@ -406,23 +404,39 @@ export function createDynamicCapabilityHandlers({
       requireScopes(identity, tool.scopes || []);
       const tenantBoundedCollaboration =
         tool._meta?.["skinharmony/tenantBoundedCollaboration"] === true;
+      const ownerConfirmationRequired =
+        tool._meta?.["skinharmony/ownerConfirmationRequired"] === true;
+      const dedicatedCoreGate =
+        tool._meta?.["skinharmony/dedicatedCoreGate"] === true;
       if (tenantBoundedCollaboration) {
         assertTenantBoundedCollaborationIdentity(identity);
-      } else if (args.owner_confirmed !== true || identity.ownerConfirmed !== true) {
+      }
+      if (
+        ownerConfirmationRequired &&
+        (args.owner_confirmed !== true || identity.ownerConfirmed !== true)
+      ) {
         throw new Error("owner_confirmation_required");
       }
       if (!String(args.idempotency_key || "").trim()) throw new Error("idempotency_key_required");
       const callArgs = targetArguments(tool, args, identity);
-      if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
-      const gate = await gateAction({
-        tool,
-        args: callArgs,
-        identity,
-        catalogRevision: state.revision,
-        idempotencyKey: args.idempotency_key,
-      });
-      if (!authorizationAllowed(gate)) throw new Error("dynamic_capability_not_authorized");
+      if (!dedicatedCoreGate) {
+        if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
+        const gate = await gateAction({
+          tool,
+          args: callArgs,
+          identity,
+          catalogRevision: state.revision,
+          idempotencyKey: args.idempotency_key,
+        });
+        if (!authorizationAllowed(gate)) throw new Error("dynamic_capability_not_authorized");
+      }
       const result = await handlers[tool.name](callArgs, identity);
+      if (
+        dedicatedCoreGate &&
+        result?.structuredContent?.dedicated_core_gate?.authorized !== true
+      ) {
+        throw new Error("dynamic_capability_dedicated_core_gate_unverified");
+      }
       return {
         ...result,
         structuredContent: {
@@ -433,6 +447,12 @@ export function createDynamicCapabilityHandlers({
             access_mode: "invoke",
             gate_allowed: true,
             tenant_bounded_collaboration: tenantBoundedCollaboration,
+            gate_source: dedicatedCoreGate
+              ? "universal_core_dedicated_route"
+              : "universal_core_action_evaluator",
+            owner_confirmation_required: ownerConfirmationRequired,
+            owner_confirmation_satisfied:
+              ownerConfirmationRequired === false || identity.ownerConfirmed === true,
             idempotency_key: args.idempotency_key,
           },
         },

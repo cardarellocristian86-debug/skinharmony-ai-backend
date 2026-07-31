@@ -284,13 +284,12 @@ test("groups, packages and taxonomy never leak hidden branch labels", () => {
   assert.equal(taxonomy.synapses.length, 0);
 });
 
-test("the central matrix classifies every one of the 79 registered branches", () => {
+test("the central matrix classifies every registered branch", () => {
   const registered = deterministicBranchRegistry();
   const branchIds = Object.keys(registered).sort();
   const classifiedIds = Object.keys(BRANCH_EXPOSURE_CLASSIFICATION).sort();
 
-  assert.equal(branchIds.length, 79);
-  assert.equal(classifiedIds.length, 79);
+  assert(branchIds.length > 0);
   assert.deepEqual(classifiedIds, branchIds);
   for (const branchId of branchIds) {
     assert.deepEqual(
@@ -375,7 +374,24 @@ test("owner_root ChatGPT cannot bypass vertical, internal or test exposure", () 
   };
   const visible = filterBranchRegistry(registered, ownerRootChatGpt);
 
-  assert.equal(Object.keys(visible).length, 15);
+  assert.deepEqual(Object.keys(visible).sort(), [
+    "adaptive_learning_intelligence",
+    "agent_orchestration",
+    "agentic_efficiency_intelligence",
+    "ai_evaluation_intelligence",
+    "ai_orchestration",
+    "ai_runtime_performance_intelligence",
+    "decision_provenance_intelligence",
+    "execution_coordination_intelligence",
+    "experiment_causal_learning",
+    "learning_data_governance",
+    "lexical_semantic_intelligence",
+    "planning_priority_intelligence",
+    "quality_verification_intelligence",
+    "research_evidence_intelligence",
+    "tenant_work_coordination",
+    "work_intake_intelligence",
+  ]);
   assert(
     Object.values(visible).every((branch) => branch.exposure_class === "chatgpt_horizontal"),
   );
@@ -400,9 +416,17 @@ test("admin control room sees all branches while test branches never enter seman
     entitlements: [],
     role: "admin",
   };
-  assert.equal(Object.keys(filterBranchRegistry(registered, admin)).length, 79);
+  assert.deepEqual(
+    Object.keys(filterBranchRegistry(registered, admin)).sort(),
+    Object.keys(registered).sort(),
+  );
   const semantic = filterBranchRegistry(registered, admin, { semantic: true });
   assert.equal(semantic.model_adaptation_lab, undefined);
   assert.equal(semantic.nyra_finance_beauty_test, undefined);
-  assert.equal(Object.keys(semantic).length, 77);
+  assert.deepEqual(
+    Object.keys(semantic).sort(),
+    Object.keys(registered)
+      .filter((branchId) => registered[branchId].semantic_select_allowed)
+      .sort(),
+  );
 });

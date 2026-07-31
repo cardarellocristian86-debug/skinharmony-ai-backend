@@ -1,3 +1,8 @@
+import {
+  AI_LEARNING_EXPOSURE,
+  extensionFacetDescriptor,
+} from "./ai-learning-factory-branch-contracts.js";
+
 export const branchRuntimeDeploymentScalingGuard = {
   id: "runtime_deployment_scaling_guard",
   file: "branch-runtime-deployment-scaling-guard.js",
@@ -5,7 +10,9 @@ export const branchRuntimeDeploymentScalingGuard = {
   label: "Runtime Deployment Scaling Guard",
   domain: "runtime_deployment",
   production_status: "advisory",
+  ...AI_LEARNING_EXPOSURE.guard,
   description: "Guardrail per local, shared, dedicated runtime, Render, env, migrazioni, rollback, canary, scaling, storage e deploy sicuri.",
+  capability_facets: extensionFacetDescriptor("runtime_deployment_scaling_guard"),
   rules: [
     "Distinguere sempre local WordPress, shared central runtime e dedicated runtime: ogni modalità ha storage, tenant, chiavi e failure mode diversi.",
     "Deploy produzione solo con health check, env verificati, preflight, backup se migrazione, canary/rollout e rollback documentato.",

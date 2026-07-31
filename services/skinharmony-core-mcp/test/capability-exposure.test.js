@@ -7,7 +7,11 @@ import {
   capabilityExposureRegistryValidation,
   candidateLooksVertical,
 } from "../src/capability-exposure.js";
+import { HOST_NATIVE_TOOLS } from "../src/host-native-tools.js";
 import { TOOLS } from "../src/tool-definitions.js";
+import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
+
+const REGISTERED_TOOLS = [...TOOLS, ...WORK_CONTINUITY_TOOLS, ...HOST_NATIVE_TOOLS];
 
 const readTool = (name) => ({
   name,
@@ -73,14 +77,13 @@ test("semantic candidates with vertical identifiers are recognized fail-closed",
   assert.equal(candidateLooksVertical({ id: "ai_eval_scorecard_read" }), false);
 });
 
-test("the current connector capability registry is exhaustively classified", () => {
-  assert.deepEqual(capabilityExposureRegistryValidation(TOOLS), {
-    ok: true,
-    classified_count: 132,
-    capability_count: 132,
-    duplicate_ids: [],
-    incomplete_ids: [],
-  });
+test("every base, continuity, Gallery and host-native capability is exhaustively classified", () => {
+  const validation = capabilityExposureRegistryValidation(REGISTERED_TOOLS);
+  assert.equal(validation.ok, true);
+  assert.equal(validation.classified_count, REGISTERED_TOOLS.length);
+  assert.equal(validation.capability_count, REGISTERED_TOOLS.length);
+  assert.deepEqual(validation.duplicate_ids, []);
+  assert.deepEqual(validation.incomplete_ids, []);
 });
 
 test("unknown capability and unbound client identity fail closed", () => {

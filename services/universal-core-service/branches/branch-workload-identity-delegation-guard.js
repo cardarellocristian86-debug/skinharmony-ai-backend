@@ -1,3 +1,8 @@
+import {
+  AI_LEARNING_EXPOSURE,
+  extensionFacetDescriptor,
+} from "./ai-learning-factory-branch-contracts.js";
+
 export const branchWorkloadIdentityDelegationGuard = {
   id: "workload_identity_delegation_guard",
   file: "branch-workload-identity-delegation-guard.js",
@@ -5,12 +10,14 @@ export const branchWorkloadIdentityDelegationGuard = {
   label: "Workload Identity & Delegation Guard",
   domain: "identity_delegation",
   production_status: "advisory",
+  ...AI_LEARNING_EXPOSURE.guard,
   description: "Verifica identita di workload e agenti, deleghe limitate, audience binding, durata delle credenziali e separazione dei trust domain.",
   subbranches: [
     "workload_identity", "caller_attestation", "trust_domain_boundary", "delegation_chain", "act_as_scope",
     "resource_audience_binding", "credential_lifetime", "credential_rotation", "downstream_token_separation",
     "redirect_uri_allowlist", "delegation_expiry", "delegation_revocation", "identity_incident_containment",
   ],
+  capability_facets: extensionFacetDescriptor("workload_identity_delegation_guard"),
   rules: [
     "Ogni agente o workload deve avere un'identita verificabile separata dal tenant e dal ruolo umano che eventualmente delega.",
     "Una delega deve dichiarare delegante, delegato, azione, risorsa, tenant, scadenza e catena di approvazione; nessuna delega e implicita.",

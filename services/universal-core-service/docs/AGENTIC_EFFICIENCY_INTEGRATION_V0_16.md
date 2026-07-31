@@ -34,14 +34,23 @@ mountAgenticEfficiencyRoutes({
   verifyAcceptanceEvidence,
   verifyGovernanceEvidence,
   verifySavingsEvidence,
+  resolveRateCard,
   audit,
   efficiencyMode,
   budgetMode,
+  hardBudgetStopStatus,
 });
 ```
 
 All verifier callbacks are server-side. Defaults fail closed. The mount returns
 `top_level_mcp_tools_added: 0` and `execution_authorized: false`.
+
+`AGENTIC_HARD_BUDGET_STOP` is parsed by
+`resolveAgenticHardBudgetStop`. Only an absent value or the exact boolean/text
+value `false` is accepted as disabled. `true` is observable as
+`rejected`/`advisory_only`; ambiguous values are `invalid_rejected`. Every state
+keeps `hard_budget_stop=false`: v0.16 cannot terminate a critical task because
+its budget ended, and must instead escalate or return a safe degraded proposal.
 
 | Capability | Method and route | Request schema | Response schema |
 |---|---|---|---|
@@ -68,14 +77,18 @@ Migration SQL is additive. Rollback records a disabled state without dropping
 capsules, usage lineage, audit or comparison data. No raw prompt, credential,
 token, repository content or customer payload has a storage column.
 
-Runtime reads and writes additionally require a pre-existing, identifier-validated
-`runtimeRole` and `roleSeparationAttested=true`. Each operation executes under
-`SET LOCAL ROLE` in a transaction. If role separation is not attested, runtime
-access fails closed. The static migration creates a dedicated `NOLOGIN` role and
-grants it the minimum schema/table privileges; runtime code never creates roles,
-credentials or environment variables. Because both runtimes currently enter that
-role through the same `GOVERNED_AGENT_DATABASE_URL` session, this is privilege
-separation rather than independent database credentials.
+Runtime reads and writes additionally require a pre-existing,
+identifier-validated `runtimeRole`. A caller-provided
+`roleSeparationAttested` boolean is deliberately ignored: PostgreSQL must prove
+that `SET LOCAL ROLE` succeeded, `current_user` is the bounded runtime role,
+`session_user` remains distinct, and every required table privilege is present.
+Each operation then executes under `SET LOCAL ROLE` in a transaction. Any
+missing audit row, role separation or privilege fails closed. The static
+predeploy migration creates a dedicated `NOLOGIN` role and grants it the
+minimum schema/table privileges; runtime code never creates roles, credentials
+or environment variables. Because both runtimes enter that role through the
+same `GOVERNED_AGENT_DATABASE_URL` session, this is database-enforced privilege
+separation rather than independent connection credentials.
 
 ## Required application integration
 
@@ -88,7 +101,14 @@ The Universal Core composition root must:
 4. map Core MCP dynamic capability handlers to these exact routes;
 5. leave the top-level MCP tool count at 13;
 6. keep `execution_enabled=false`;
-7. keep the initial modes `shadow` and `observe`.
+7. keep the initial modes `shadow` and `observe`;
+8. expose the parsed hard-budget flag state without ever activating a hard
+   stop.
+
+`render-universal-core.yaml` runs
+`tools/apply-v016-static-migrations.js` as a predeploy command. The runner
+executes only the two versioned `.up.sql` artifacts, verifies their active audit
+rows and emits a digest-only receipt. It never prints the database URL.
 
 The connector must never accept an arbitrary route. It dispatches only a
 capability ID present in the authenticated, server-filtered manifest.

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 
 import { CORE_CONNECTOR_CAPABILITIES, readCoreCapabilityCatalog } from "../src/core-capability-catalog.js";
 import { createCoreHandlers } from "../src/core-handlers.js";
+import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
 import { TOOLS } from "../src/tool-definitions.js";
+import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import { mountAiLearningFactoryRoutes } from "../../universal-core-service/src/aiLearningFactoryRoutes.js";
 import { createResourceVisibilityBinding } from "../../universal-core-service/src/resourceVisibility.js";
 
@@ -231,8 +234,11 @@ function aiLearningRouteBridge() {
 }
 
 test("bridge derives and signs client exposure context without trusting owner role or payload labels", async () => {
+  const tenantContextSigningSecret = "test-tenant-context-signing-secret-1234567890";
+  const ownerContextSigningSecret = "test-owner-context-signing-secret-1234567890";
   const { calls, handlers } = harness({
-    ownerContextSigningSecret: "test-owner-context-signing-secret-1234567890",
+    tenantContextSigningSecret,
+    ownerContextSigningSecret,
   });
   await handlers.core_branch_registry({ view: "registry" }, {
     tenantId: "tenant-a",
@@ -249,6 +255,19 @@ test("bridge derives and signs client exposure context without trusting owner ro
   assert.equal(context.client_type, "chatgpt");
   assert.equal(context.audience, "chatgpt_connector");
   assert.match(context.assertion, /^mcc_[a-f0-9]{64}$/);
+  const { assertion: _assertion, ...unsignedContext } = context;
+  const canonical = JSON.stringify({
+    ...unsignedContext,
+    entitlements: [...unsignedContext.entitlements].sort(),
+  });
+  const tenantAssertion = `mcc_${crypto.createHmac("sha256", tenantContextSigningSecret)
+    .update(`mcp-client-context\u0000${canonical}`)
+    .digest("hex")}`;
+  const ownerAssertion = `mcc_${crypto.createHmac("sha256", ownerContextSigningSecret)
+    .update(`mcp-client-context\u0000${canonical}`)
+    .digest("hex")}`;
+  assert.equal(context.assertion, tenantAssertion);
+  assert.notEqual(context.assertion, ownerAssertion);
 });
 
 test("catalog classifies connector capabilities and excludes arbitrary/admin invocation", () => {
@@ -416,21 +435,17 @@ test("AI learning factory capabilities stay dynamic, tenant-bound and governed",
   assert.equal(calls[0].url.searchParams.get("limit"), "5");
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
   assert(calls.slice(3).every((call) => call.body.owner_context?.owner_verified === true));
-  assert.equal(TOOLS.filter((tool) => [
-    "core_health",
-    "work_preflight",
-    "core_capability_catalog",
-    "core_branch_registry",
-    "core_semantic_select",
-    "core_capability_read",
-    "core_capability_invoke",
-    "tenant_provider_openai_status",
-    "tenant_provider_openai_setup_panel",
-    "tenant_provider_openai_setup_link",
-    "tenant_provider_openai_multi_agent_smoke_run",
-    "tenant_provider_openai_multi_agent_run_read",
-    "tenant_provider_openai_multi_agent_run_cancel",
-  ].includes(tool.name)).length, 13);
+  assert.deepEqual(
+    [...TOOLS, ...WORK_CONTINUITY_TOOLS]
+      .filter((tool) => COMPACT_MCP_TOOL_NAMES.includes(tool.name))
+      .map((tool) => tool.name),
+    COMPACT_MCP_TOOL_NAMES,
+  );
+  assert.equal(COMPACT_MCP_TOOL_NAMES.length, 13);
+  assert.equal(
+    COMPACT_MCP_TOOL_NAMES.some((name) => name.startsWith("tenant_provider_openai_")),
+    false,
+  );
 });
 
 test("all nine MCP learning handlers satisfy the mounted Core route contracts end to end", async () => {

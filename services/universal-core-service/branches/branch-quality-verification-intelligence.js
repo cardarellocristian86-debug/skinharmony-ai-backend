@@ -1,3 +1,8 @@
+import {
+  AI_LEARNING_EXPOSURE,
+  extensionFacetDescriptor,
+} from "./ai-learning-factory-branch-contracts.js";
+
 export const branchQualityVerificationIntelligence = {
   id: "quality_verification_intelligence",
   file: "branch-quality-verification-intelligence.js",
@@ -5,12 +10,14 @@ export const branchQualityVerificationIntelligence = {
   label: "Quality & Verification Intelligence",
   domain: "horizontal_work",
   production_status: "advisory",
+  ...AI_LEARNING_EXPOSURE.horizontal,
   description: "Trasforma criteri di successo in collaudi, regressioni, evidenze e verdict di readiness.",
   subbranches: [
     "acceptance_criteria", "test_scope", "happy_path", "negative_path", "boundary_cases", "security_checks",
     "tenant_isolation_checks", "regression_matrix", "performance_checks", "observability_checks", "evidence_capture",
     "defect_triage", "root_cause_check", "fix_verification", "release_readiness", "quality_summary",
   ],
+  capability_facets: extensionFacetDescriptor("quality_verification_intelligence"),
   rules: [
     "Verificare criteri di accettazione, percorsi negativi, limiti e regressioni proporzionati al rischio.",
     "Un test superato senza evidenza riproducibile non basta per promuovere una modifica.",

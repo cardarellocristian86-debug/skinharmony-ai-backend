@@ -196,6 +196,34 @@ test("Core opens horizontal Nyra branches and isolates product-specific branches
   assert.deepEqual(skinharmony.denied_branches, []);
 });
 
+test("Core-to-Nyra mapping opens only entitled bindings and keeps Core-only branches out of Nyra denials", () => {
+  const route = routeNyraBranches({
+    requestedBranches: ["quality_verification", "unknown_nyra_branch"],
+    authorizedCoreBranches: [
+      "work_intake_intelligence",
+      "agent_orchestration",
+      "runtime_deployment_scaling_guard",
+    ],
+    domainPackId: "generic",
+  });
+  const opened = route.opened_branches.map((item) => item.id);
+  assert(opened.includes("context_intelligence"));
+  assert(opened.includes("work_intake"));
+  assert(opened.includes("relational_supervision"));
+  assert(opened.includes("agent_orchestration"));
+  assert(opened.includes("quality_verification"));
+  assert.deepEqual(route.denied_branches, ["unknown_nyra_branch"]);
+  assert.equal(route.unknown_or_unentitled_branch_count, 1);
+  assert.deepEqual(route.core_branch_mapping.mapped_core_branches, [
+    "work_intake_intelligence",
+    "agent_orchestration",
+  ]);
+  assert.deepEqual(route.core_branch_mapping.core_only_branches, [
+    "runtime_deployment_scaling_guard",
+  ]);
+  assert(route.parallel_analysis.waves.every((wave) => wave.length <= MAX_PARALLEL_BRANCHES));
+});
+
 test("Nyra proposes a complete horizontal work graph and Core opens it in bounded waves", () => {
   const route = routeNyraBranches({
     text: "Ricerca fonti, pianifica priorita, coordina il lavoro in parallelo, testa qualita e impara dal feedback",
@@ -260,6 +288,61 @@ test("Core places relational supervision above Nyra orchestration branches", () 
   assert.equal(route.execution_authorized, false);
 });
 
+test("authorized Core branch IDs map to bounded Nyra routes without false unknown diagnostics", () => {
+  const route = routeNyraBranches({
+    authorizedCoreBranches: [
+      "research_evidence_intelligence",
+      "execution_coordination_intelligence",
+      "codex_security_guard",
+    ],
+    domainPackId: "generic",
+  });
+  const opened = route.opened_branches.map((item) => item.id);
+  assert(opened.includes("research_evidence"));
+  assert(opened.includes("execution_planning"));
+  assert(opened.includes("parallel_coordination"));
+  assert.equal(opened.includes("software_intelligence"), false);
+  assert.equal(route.unknown_or_unentitled_branch_count, 0);
+  assert.deepEqual(route.core_branch_mapping.mapped_core_branches, [
+    "research_evidence_intelligence",
+    "execution_coordination_intelligence",
+  ]);
+  assert.deepEqual(route.core_branch_mapping.core_only_branches, ["codex_security_guard"]);
+  assert(route.parallel_analysis.waves.every((wave) => wave.length <= MAX_PARALLEL_BRANCHES));
+});
+
+test("Core-to-Nyra routing keeps untrusted Nyra IDs denied and respects domain packs", () => {
+  const generic = routeNyraBranches({
+    requestedBranches: ["unknown_branch"],
+    authorizedCoreBranches: ["suite_governance"],
+    domainPackId: "generic",
+  });
+  assert.deepEqual(generic.denied_branches, ["unknown_branch"]);
+  assert.equal(generic.unknown_or_unentitled_branch_count, 1);
+  assert.equal(generic.opened_branches.some((item) => item.id === "suite_domain"), false);
+  assert.deepEqual(generic.core_branch_mapping.core_only_branches, ["suite_governance"]);
+
+  const suite = routeNyraBranches({
+    authorizedCoreBranches: ["suite_governance"],
+    domainPackId: "suite",
+  });
+  assert(suite.opened_branches.some((item) => item.id === "suite_domain"));
+  assert.deepEqual(suite.core_branch_mapping.mapped_core_branches, ["suite_governance"]);
+  assert.deepEqual(suite.core_branch_mapping.core_only_branches, []);
+});
+
+test("shared Core dependencies do not reverse-open unrelated Nyra branches", () => {
+  const route = routeNyraBranches({
+    authorizedCoreBranches: ["quality_verification_intelligence"],
+    domainPackId: "generic",
+  });
+  const opened = route.opened_branches.map((item) => item.id);
+  assert(opened.includes("risk_governance"));
+  assert(opened.includes("quality_verification"));
+  assert.equal(opened.includes("software_intelligence"), false);
+  assert.equal(route.unknown_or_unentitled_branch_count, 0);
+});
+
 test("Core branch packages isolate Suite, SmartDesk and Analyzer verticals", () => {
   const generic = resolveBranchesForKey({
     tenant_id: "tenant_demo_skinharmony",
@@ -320,6 +403,39 @@ test("existing SkinHarmony keys retain their explicit horizontal guards and gain
   for (const branchId of HORIZONTAL_WORK_BRANCHES) assert(existingKey.allowed_branches.includes(branchId));
 });
 
+test("only the server-owned MCP gateway dynamically authorizes the complete branch registry", () => {
+  const registryIds = Object.keys(deterministicBranchRegistry());
+  const gateway = resolveBranchesForKey({
+    tenant_id: "__mcp_tenant_gateway__",
+    key_type: "connector",
+    preset: null,
+    metadata: { bootstrap_kind: "mcp_tenant_gateway" },
+  });
+  assert.equal(gateway.tier, "omni_360");
+  assert.deepEqual(gateway.allowed_branches, registryIds);
+  assert.equal(gateway.allowed_branches.length, registryIds.length);
+  assert(VERTICAL_BRANCH_IDS.every((id) => gateway.allowed_branches.includes(id)));
+
+  const ordinaryConnector = resolveBranchesForKey({
+    tenant_id: "tenant-acme",
+    key_type: "connector",
+    preset: null,
+    metadata: {},
+  });
+  assert.equal(ordinaryConnector.tier, "base");
+  assert.equal(ordinaryConnector.allowed_branches.includes("smartdesk_operations_guard"), false);
+
+  const ordinaryCodexaiKey = resolveBranchesForKey({
+    tenant_id: "codexai",
+    key_type: "automation",
+    preset: null,
+    metadata: {},
+  });
+  assert.equal(ordinaryCodexaiKey.tier, "base");
+  assert.notDeepEqual(ordinaryCodexaiKey.allowed_branches, registryIds);
+  assert.equal(ordinaryCodexaiKey.allowed_branches.includes("smartdesk_operations_guard"), false);
+  assert.equal(ordinaryCodexaiKey.allowed_branches.includes("skinharmony_analyzer"), false);
+});
 test("domain and branch routing remains deterministic under repeated load", () => {
   const start = performance.now();
   for (let index = 0; index < 10_000; index += 1) {

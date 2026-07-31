@@ -21,7 +21,7 @@ import {
   issueDttAgentContext,
 } from "../../shared/dtt-agent-identity-receipts.js";
 
-const GATEWAY_KEY = "ai-learning-gateway-key";
+const GATEWAY_KEY = "ai-learning-gateway-key-0123456789abcdef";
 const SIGNING_SECRET = "ai-learning-tenant-context-secret-0123456789";
 
 function canonical(value) {
@@ -373,7 +373,7 @@ async function listen(app) {
 }
 
 test("mounted Learning Factory derives tenant and Core proof server-side", async (t) => {
-  const learningStore = createAiLearningFactoryStore({
+  const learningStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true,
     now: () => "2026-07-27T12:00:00.000Z",
   });
   await learningStore.recordLearningCandidate({
@@ -385,6 +385,7 @@ test("mounted Learning Factory derives tenant and Core proof server-side", async
   const service = createUniversalCoreService({
     storageRoot: path.join(os.tmpdir(), `ai-learning-app-${Date.now()}-${Math.random()}`),
     mcpTenantGatewayKey: GATEWAY_KEY,
+    tenantContextSigningSecret: SIGNING_SECRET,
     ownerContextSigningSecret: SIGNING_SECRET,
     aiLearningFactoryStore: learningStore,
     aiRuntimeTelemetryStore: createAiRuntimeTelemetryStore(),
@@ -466,7 +467,7 @@ test("public binding preview plus Core-joined DTT proves an independent candidat
     os.tmpdir(),
     `ai-learning-dtt-app-${Date.now()}-${Math.random()}`,
   );
-  const learningStore = createAiLearningFactoryStore();
+  const learningStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true });
   const telemetryStore = createAiRuntimeTelemetryStore();
   await seedCandidateEvidence(learningStore);
   await learningStore.recordLearningCandidate({
@@ -502,6 +503,7 @@ test("public binding preview plus Core-joined DTT proves an independent candidat
   const service = createUniversalCoreService({
     storageRoot,
     mcpTenantGatewayKey: GATEWAY_KEY,
+    tenantContextSigningSecret: SIGNING_SECRET,
     ownerContextSigningSecret: SIGNING_SECRET,
     aiLearningFactoryStore: learningStore,
     aiRuntimeTelemetryStore: telemetryStore,
@@ -907,6 +909,7 @@ test("off mode removes Learning Factory routes without affecting the service", a
   const service = createUniversalCoreService({
     storageRoot: path.join(os.tmpdir(), `ai-learning-off-${Date.now()}-${Math.random()}`),
     mcpTenantGatewayKey: GATEWAY_KEY,
+    tenantContextSigningSecret: SIGNING_SECRET,
     ownerContextSigningSecret: SIGNING_SECRET,
     aiLearningFactoryMode: "off",
   });
@@ -927,6 +930,7 @@ test("required persistence blocks AI Learning reads and writes instead of report
   const service = createUniversalCoreService({
     storageRoot: path.join(os.tmpdir(), `ai-learning-required-${Date.now()}-${Math.random()}`),
     mcpTenantGatewayKey: GATEWAY_KEY,
+    tenantContextSigningSecret: SIGNING_SECRET,
     ownerContextSigningSecret: SIGNING_SECRET,
     aiLearningFactoryMode: "shadow",
     v016PersistenceRequired: true,
@@ -984,6 +988,7 @@ test("adapter initialization failure keeps required AI Learning routes unavailab
   const service = createUniversalCoreService({
     storageRoot: path.join(os.tmpdir(), `ai-learning-init-failure-${Date.now()}-${Math.random()}`),
     mcpTenantGatewayKey: GATEWAY_KEY,
+    tenantContextSigningSecret: SIGNING_SECRET,
     ownerContextSigningSecret: SIGNING_SECRET,
     aiLearningFactoryMode: "shadow",
     v016PersistenceRequired: true,

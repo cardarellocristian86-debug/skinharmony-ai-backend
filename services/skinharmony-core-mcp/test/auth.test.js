@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
-import { createAuthenticator, requireScopes, verifyAuth0Jwt } from "../src/auth.js";
+import {
+  createAuthenticator,
+  isCodexGoodModeDelegation,
+  requireScopes,
+  verifyAuth0Jwt,
+} from "../src/auth.js";
 
 function jwt(privateKey, kid, payload) {
   const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid })).toString("base64url");
@@ -69,6 +74,27 @@ test("the emergency stop disables owner_root immediately", async () => {
   });
 });
 
+test("recognizes a host-native Codex Good Mode delegation only under the exact tenant policy", async () => {
+  const config = {
+    codexKeys: ["secret"],
+    codexScopes: ["core:read"],
+    auth0Issuer: "",
+    defaultTenantId: "codexai",
+    supportedScopes: ["core:read", "core:govern", "workspace:write"],
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeTenantIds: ["owner-private", "codexai"],
+    godModeCodexEnabled: true,
+  };
+  const identity = await createAuthenticator(config)("Bearer secret");
+
+  assert.equal(isCodexGoodModeDelegation(identity, config), true);
+  assert.equal(isCodexGoodModeDelegation({ ...identity, subject: "untrusted" }, config), false);
+  assert.equal(isCodexGoodModeDelegation(identity, { ...config, godModeEmergencyStop: true }), false);
+  assert.equal(isCodexGoodModeDelegation(identity, { ...config, godModeCodexEnabled: false }), false);
+  assert.equal(isCodexGoodModeDelegation({ ...identity, tenantId: "tenant-a" }, config), false);
+});
+
 test("activates owner_root only for an allowlisted OAuth subject in an owner tenant", async () => {
   const ownerSubject = "google-oauth2|owner";
   const ownerFixture = auth0Fixture({
@@ -94,7 +120,6 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
   const ownerIdentity = await createAuthenticator(ownerConfig, { jwksCache: ownerFixture.cache })(`Bearer ${ownerFixture.token}`);
   assert.equal(ownerIdentity.role, "owner_root");
   assert.equal(ownerIdentity.godMode, true);
-  assert.equal(ownerIdentity.providerSetupOwner, true);
   assert.equal(ownerIdentity.clientId, "dynamic-chatgpt-client");
   const elevatedOwnerIdentity = createAuthenticator(ownerConfig, { jwksCache: ownerFixture.cache });
   const verifiedOwner = await elevatedOwnerIdentity(`Bearer ${ownerFixture.token}`);
@@ -119,7 +144,6 @@ test("activates owner_root only for an allowlisted OAuth subject in an owner ten
   }, { jwksCache: otherFixture.cache })(`Bearer ${otherFixture.token}`);
   assert.equal(otherIdentity.role, "member");
   assert.equal(otherIdentity.godMode, undefined);
-  assert.equal(otherIdentity.providerSetupOwner, undefined);
 });
 
 test("never elevates an OAuth identity from a client ID alone", async () => {
@@ -145,10 +169,9 @@ test("never elevates an OAuth identity from a client ID alone", async () => {
 
   assert.equal(identity.role, "member");
   assert.equal(identity.godMode, undefined);
-  assert.equal(identity.providerSetupOwner, undefined);
 });
 
-test("grants provider setup only to a tenant-owner role in the verified token", async () => {
+test("keeps a token-declared tenant role bounded without a server-side ownership binding", async () => {
   const fixture = auth0Fixture({
     sub: "google-oauth2|tenant-owner",
     scope: "core:read",
@@ -162,7 +185,6 @@ test("grants provider setup only to a tenant-owner role in the verified token", 
   }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
   assert.equal(identity.tenantId, "tenant-a");
   assert.equal(identity.role, "member");
-  assert.equal(identity.providerSetupOwner, undefined);
 
   const memberFixture = auth0Fixture({ "https://skinharmony.it/role": "member" });
   const member = await createAuthenticator({
@@ -170,7 +192,6 @@ test("grants provider setup only to a tenant-owner role in the verified token", 
     tenantOwnerRoleClaim: "https://skinharmony.it/role",
     tenantOwnerRoles: ["tenant_owner"], codexKeys: [], godModeEnabled: false,
   }, { jwksCache: memberFixture.cache })(`Bearer ${memberFixture.token}`);
-  assert.equal(member.providerSetupOwner, undefined);
 });
 
 test("verifies Auth0 RS256 issuer, audience, expiry and scopes", async () => {
@@ -199,7 +220,6 @@ test("gives an ordinary ChatGPT login a stable personal tenant when self-service
   assert.equal(first.tenantId === "shared-tenant-that-must-not-be-used", false);
   assert.equal(first.selfServiceTenant, true);
   assert.equal(first.role, "member");
-  assert.equal(first.providerSetupOwner, undefined);
 });
 
 test("keeps an unbound tenant claim inside the self-service tenant", async () => {
@@ -217,7 +237,6 @@ test("keeps an unbound tenant claim inside the self-service tenant", async () =>
   assert.match(identity.tenantId, /^chatgpt_[a-f0-9]{32}$/);
   assert.equal(identity.selfServiceTenant, true);
   assert.equal(identity.role, "member");
-  assert.equal(identity.providerSetupOwner, undefined);
 });
 
 test("binds multiple OAuth subjects to one shared tenant with bounded member roles", async () => {
@@ -258,13 +277,11 @@ test("binds multiple OAuth subjects to one shared tenant with bounded member rol
   assert.equal(identityB.oauthTenantMemberBound, true);
   assert.equal(identityA.oauthOwnerBound, undefined);
   assert.equal(identityB.oauthOwnerBound, undefined);
-  assert.equal(identityA.providerSetupOwner, undefined);
-  assert.equal(identityB.providerSetupOwner, undefined);
   assert.equal(identityA.selfServiceTenant, undefined);
   assert.equal(identityB.selfServiceTenant, undefined);
 });
 
-test("a tenant membership cannot elevate to owner or provider setup", async () => {
+test("a tenant membership cannot elevate to owner", async () => {
   const now = Math.floor(Date.now() / 1000);
   const fixture = auth0Fixture({
     sub: "google-oauth2|operator",
@@ -291,12 +308,11 @@ test("a tenant membership cannot elevate to owner or provider setup", async () =
 
   assert.equal(identity.role, "operator");
   assert.equal(identity.godMode, undefined);
-  assert.equal(identity.providerSetupOwner, undefined);
   assert.throws(
     () => auth.elevateOAuthOwner(identity, {
       confirmed: true,
       confirmationReference: "attempted owner elevation",
-      requestBinding: "provider-setup",
+      requestBinding: "restricted-owner-action",
     }),
     /owner_binding_required/,
   );
@@ -367,7 +383,6 @@ test("binds only the configured verified OAuth subject to codexai and keeps it a
   assert.equal(identity.tenantId, "codexai");
   assert.equal(identity.role, "member");
   assert.equal(identity.oauthOwnerBound, true);
-  assert.equal(identity.providerSetupOwner, undefined);
 });
 
 test("elevates the bound owner only once, only when fresh and request-bound", async () => {
@@ -380,7 +395,7 @@ test("elevates the bound owner only once, only when fresh and request-bound", as
   assert.throws(() => auth.elevateOAuthOwner(identity, { confirmed: false, confirmationReference: "r1", requestBinding: "request-a" }), /owner_confirmation_required/);
   const elevated = auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-a" });
   assert.equal(elevated.role, "tenant_owner");
-  assert.equal(elevated.providerSetupOwner, true);
+  assert.equal(elevated.oauthOwnerElevated, true);
   assert.throws(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-a" }), /owner_confirmation_replayed/);
   assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-b" }));
 });
@@ -407,7 +422,7 @@ test("uses the current OAuth access-token issuance for owner freshness after a r
   assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, {
     confirmed: true,
     confirmationReference: "fresh refreshed token",
-    requestBinding: "tenant-provider-smoke-run",
+    requestBinding: "tenant-owner-smoke-run",
   }));
 });
 

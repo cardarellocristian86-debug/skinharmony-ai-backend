@@ -1,14 +1,42 @@
 import crypto from "node:crypto";
 import express from "express";
-import { OPENAI_PROVIDER_SETUP_WIDGET, OPENAI_PROVIDER_SETUP_WIDGET_URI } from "./openai-provider-setup-widget.js";
-import { createAuthenticator, ownerRequestBinding, requireScopes } from "./auth.js";
+import {
+  createAuthenticator,
+  isCodexGoodModeDelegation,
+  ownerRequestBinding,
+  requireScopes,
+} from "./auth.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { validateToolArguments } from "./schema-validation.js";
-import { compactMcpTools } from "./dynamic-capability-router.js";
+import {
+  COMPACT_GALLERY_TOOL_NAMES,
+  COMPACT_MCP_TOOL_NAMES,
+  compactMcpTools,
+} from "./dynamic-capability-router.js";
+import {
+  HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+} from "./host-native-health-contract.js";
+import {
+  normalizePostgresMajorVerification,
+} from "../../shared/postgres-major-version.js";
 
 const SERVER_VERSION = "0.16.0-ai-learning-factory";
-const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work and summarizes; Universal Core enforces tenant isolation, budget, audit, cancellation and final governance. OPTIONAL OPENAI PROVIDER: Nyra and Universal Core operate without an OpenAI API key. Do not call provider status or open setup panels unless the user explicitly asks to connect OpenAI or run the optional bounded provider workflow. ChatGPT/Codex subscriptions remain separate from OpenAI API credits. Never ask for or accept an API key in chat or a tool argument. LIVE MULTI-AGENT TEST: this dedicated provider flow is governed natively and does not use work_preflight or the generic shared-memory bootstrap. Treat configured=true plus execution_available=true (also reported as bounded_execution_ready=true) as ready even though the global execution_enabled flag remains false by design. Missing canonical shared-memory files and owner_confirmation_satisfied=false from a separate generic preflight do not deny this fixed flow. If a configured tenant owner explicitly asks to test real multi-agent work, explain that it makes at most three billable sequential calls, then call tenant_provider_openai_multi_agent_smoke_run directly with owner_confirmed=true. It returns a run id immediately and runs only Researcher → Reviewer → Nyra Synthesizer, with a fixed low budget, learning frozen, no browser, no tools, no external actions and no retries. Use tenant_provider_openai_multi_agent_run_read to poll status or read the owner-only result, and tenant_provider_openai_multi_agent_run_cancel to stop it; cancellation propagates immediately to the active call and every remaining stage. Never call work_preflight before provider status, setup, bounded start, read or cancel. All generic-agent and queue workflows remain manual_dry_run unless this dedicated bounded tool is explicitly used. RESEARCH: for current external evidence outside this fixed run, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest reviewed evidence; never treat browsing as part of the three-agent run. HOW TO BUILD AN AGENT: define a narrow role, bounded input, owner-confirmed action, audit and cancellation. AUTOMATIC: generic flows use preflight and shared memory; the provider test uses tenant isolation, a request-bound owner proof, audit, cancellation and the fixed handoff sequence. NOT AUTOMATIC: deploying, browsing, external actions, or generic-agent execution. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
+const SERVER_INSTRUCTIONS = [
+  "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link.",
+  "FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. If the connector is already present, use it from a new normal chat.",
+  "WHAT IT DOES: the first host-supplied request becomes a redacted immutable Intent Anchor when continuity capture is enabled. Nyra interprets it, plans bounded specialist work, supervises evidence and asks for correction until the closure criteria are met. Universal Core remains the final policy authority for tenant isolation, budgets, delegation, audit, release and rollback.",
+  "HOST-NATIVE MULTI-AGENT: when the user asks for multi-agent work, Nyra/Core returns a bounded host-native plan. The root ChatGPT or Codex coordinator must create the real children with its native agent capability, then register assignment and result receipts. The server makes zero provider model calls for this path: provider_execution=false, provider_api_key_required=false and server_model_calls=0. A child never inherits owner authority, cannot mint a delegation, and cannot approve its own work. A distinct verifier and a Core closure verdict are required.",
+  "DELEGATED ACTIONS: Nyra may request a bounded, expiring, revocable delegation for exact work, repository, branch, action, evidence and rollback. Core may issue a short one-shot action ticket, but host_policy_override is always false and host_policy_must_allow is always true. Nyra/Core cannot click, bypass or replace ChatGPT/Codex approval, sandbox or auto-review controls.",
+  "CONTINUITY: use the Work Atlas for targeted context, record only verified incident runbooks, checkpoint every blocker with a clear next action, and resume only after digest and drift verification. Do not close work from a caller-provided supervisor boolean.",
+  "OPENAI PROVIDER DISABLED: Nyra and Universal Core operate without an OpenAI API key. Never ask for or accept an API key in chat or a tool argument. Never call provider tools, open setup panels or direct the user to /connect/openai, /agents or /mobile/agents. Old provider links are retired.",
+  "RESEARCH DISTILLATION: for current external evidence, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest and distill reviewed evidence in the tenant-isolated shadow workspace. Research never invokes a server-side model provider.",
+  "HOW TO BUILD AN AGENT: define a narrow role, bounded task digest, dependencies, acceptance criteria, budget, cancellation and a host assignment receipt.",
+  "AUTOMATIC: generic flows use preflight, shared memory and continuity; host-native flows use the host coordinator plus Nyra/Core supervision.",
+  "NOT AUTOMATIC: host permission grants, unbounded deployment, browsing or external actions.",
+  "PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth or the configured Codex bearer, and only redacted reviewed evidence enters memory.",
+].join(" ");
 
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "work_preflight",
@@ -19,25 +47,17 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "core_semantic_select",
   "core_capability_read",
   "core_capability_invoke",
-  "tenant_provider_openai_status",
-  "tenant_provider_openai_setup_panel",
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_multi_agent_smoke_run",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
+  "tenant_work_gallery_list",
+  "tenant_work_gallery_join",
+  "tenant_work_gallery_heartbeat",
+  "tenant_work_lease_acquire",
+  "tenant_work_message_post",
+  "tenant_work_inbox",
   "orchestration_dtt_core_join",
 ]);
 
 export function requiresGenericWorkPreflight(toolName) {
   return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(String(toolName || ""));
-}
-const PROVIDER_ONBOARDING_UI_TOOLS = new Set([
-  "tenant_provider_openai_setup_panel",
-  "tenant_provider_openai_setup_link",
-]);
-
-export function shouldAttachProviderOnboarding(toolName) {
-  return PROVIDER_ONBOARDING_UI_TOOLS.has(String(toolName || ""));
 }
 const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "work_preflight",
@@ -47,15 +67,12 @@ const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "core_branch_registry",
   "core_semantic_select",
   "core_capability_read",
-  "tenant_provider_openai_status",
-  "tenant_provider_openai_setup_panel",
+  "tenant_work_gallery_list",
 ]);
 const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "core_capability_invoke",
-  "tenant_provider_openai_setup_link",
-  "tenant_provider_openai_multi_agent_smoke_run",
-  "tenant_provider_openai_multi_agent_run_read",
-  "tenant_provider_openai_multi_agent_run_cancel",
+  "host_native_delegation_issue",
+  "host_native_delegation_revoke",
 ]);
 
 function inferClientType(identity) {
@@ -83,6 +100,286 @@ function buildIdentity(env = process.env) {
   const commitSha = String(env.RENDER_GIT_COMMIT || env.GIT_COMMIT || "").trim();
   if (!/^[a-f0-9]{40}$/i.test(commitSha)) return null;
   return { commit_sha: commitSha, commit_verifiable: true };
+}
+
+function normalizedBuildIdentity(value) {
+  if (
+    value?.commit_verifiable !== true ||
+    !/^[a-f0-9]{40}$/i.test(String(value.commit_sha || ""))
+  ) {
+    return null;
+  }
+  return {
+    commit_sha: String(value.commit_sha).toLowerCase(),
+    commit_verifiable: true,
+  };
+}
+
+function sameConfiguredSecret(left, right) {
+  const leftBuffer = Buffer.from(String(left || "").trim(), "utf8");
+  const rightBuffer = Buffer.from(String(right || "").trim(), "utf8");
+  return (
+    leftBuffer.length > 0 &&
+    leftBuffer.length === rightBuffer.length &&
+    crypto.timingSafeEqual(leftBuffer, rightBuffer)
+  );
+}
+
+export function buildReadiness(config = {}, options = {}) {
+  const environment = String(
+    config.environment ||
+    (config.production === true ? "production" : process.env.NODE_ENV) ||
+    "development",
+  ).toLowerCase();
+  const enforced = environment === "production";
+  const configuredBuild = config.runtimeBuildCommit
+    ? { commit_sha: config.runtimeBuildCommit, commit_verifiable: true }
+    : buildIdentity();
+  const build = normalizedBuildIdentity(
+    options.buildIdentity === undefined ? configuredBuild : options.buildIdentity,
+  );
+  const authConfigured = Boolean(
+    config.auth0Issuer ||
+    (Array.isArray(config.codexKeys) && config.codexKeys.length),
+  );
+  const hostNativeTenantGatewayConfigured =
+    Buffer.byteLength(String(config.tenantGatewayKey || "").trim(), "utf8") >= 32;
+  const coreCredentialConfigured = [
+    config.universalCoreKey,
+    hostNativeTenantGatewayConfigured ? config.tenantGatewayKey : "",
+    ...Object.values(config.universalCoreKeys || {}),
+  ].some((credential) =>
+    typeof credential === "string" && credential.trim().length > 0);
+  const coreConfigured = Boolean(config.universalCoreUrl && coreCredentialConfigured);
+  const continuityRequired =
+    config.hostNativeAgentProtocolEnabled === true ||
+    config.workContinuityAutoCaptureEnabled === true;
+  const continuityConfigured = Boolean(config.databaseUrl);
+  const continuityInitialized = options.readiness?.continuityInitialized === true;
+  const galleryRequired = options.readiness?.galleryRequired === true;
+  const galleryHandlersMounted = options.readiness?.galleryHandlersMounted === true;
+  const compactToolCount = Number(options.readiness?.compactToolCount) || 0;
+  const ledgerRequired = config.decisionLedgerRequired === true;
+  const ledgerConfigured = Boolean(config.databaseUrl);
+  const ledgerInitialized = options.readiness?.decisionLedgerInitialized === true;
+  const postgresMajorVersion = normalizePostgresMajorVerification(
+    options.readiness?.postgresMajorVersion,
+  );
+  const postgresMajorVersionRequired = enforced && Boolean(config.databaseUrl);
+  const hostNativeSecurityRequired =
+    enforced && config.hostNativeAgentProtocolEnabled === true;
+  const hostNativeOwnerContextSigningConfigured =
+    Buffer.byteLength(String(config.ownerContextSigningSecret || ""), "utf8") >= 32;
+  const hostNativeTenantContextSigningConfigured =
+    Buffer.byteLength(
+      String(config.tenantContextSigningSecret || ""),
+      "utf8",
+    ) >= 32;
+  const hostNativeDttIdentitySigningConfigured =
+    Buffer.byteLength(
+      String(config.dttAgentIdentitySigningSecret || ""),
+      "utf8",
+    ) >= 32;
+  const hostNativeAgentSignatureConfigured =
+    Buffer.byteLength(
+      String(config.agentSignatureSecret || "").trim(),
+      "utf8",
+    ) >= 32;
+  const hostNativeAgentSignatureReused =
+    hostNativeAgentSignatureConfigured &&
+    (
+      config.agentSignatureSecretReused === true ||
+      [
+        config.universalCoreKey,
+        ...Object.values(config.universalCoreKeys || {}),
+        config.tenantGatewayKey,
+        config.ownerContextSigningSecret,
+        config.tenantContextSigningSecret,
+        config.dttAgentIdentitySigningSecret,
+        config.nyraDeepV2McpRequestSigningSecret,
+        ...(Array.isArray(config.codexKeys) ? config.codexKeys : []),
+      ].some((secret) =>
+        sameConfiguredSecret(config.agentSignatureSecret, secret))
+    );
+  const hostNativeAgentSignatureIndependent =
+    hostNativeAgentSignatureConfigured && !hostNativeAgentSignatureReused;
+  const components = {
+    build_identity: {
+      required: true,
+      configured: build !== null,
+      ready: build !== null,
+      commit_verifiable: build?.commit_verifiable === true,
+    },
+    authentication: {
+      required: true,
+      configured: authConfigured,
+      ready: authConfigured,
+    },
+    universal_core: {
+      required: true,
+      configured: coreConfigured,
+      ready: coreConfigured,
+      reachability_checked: false,
+    },
+    host_native_security: {
+      required: hostNativeSecurityRequired,
+      tenant_gateway_configured: hostNativeTenantGatewayConfigured,
+      owner_context_signing_configured:
+        hostNativeOwnerContextSigningConfigured,
+      tenant_context_signing_configured:
+        hostNativeTenantContextSigningConfigured,
+      dtt_identity_signing_configured:
+        hostNativeDttIdentitySigningConfigured,
+      agent_signature_configured:
+        hostNativeAgentSignatureConfigured,
+      agent_signature_independent:
+        hostNativeAgentSignatureIndependent,
+      ready:
+        !hostNativeSecurityRequired ||
+        (
+          hostNativeTenantGatewayConfigured &&
+          hostNativeOwnerContextSigningConfigured &&
+          hostNativeTenantContextSigningConfigured &&
+          hostNativeDttIdentitySigningConfigured &&
+          hostNativeAgentSignatureIndependent
+        ),
+    },
+    postgresql_version: {
+      required: postgresMajorVersionRequired,
+      ready: !postgresMajorVersionRequired || postgresMajorVersion.verified,
+      major: postgresMajorVersion.major,
+      verified: postgresMajorVersion.verified,
+    },
+    work_continuity: {
+      required: continuityRequired,
+      configured: continuityConfigured,
+      initialized: continuityInitialized,
+      initialization_failed:
+        options.readiness?.continuityInitializationFailed === true,
+      ready: !continuityRequired ||
+        (continuityConfigured && continuityInitialized),
+    },
+    tenant_work_gallery: {
+      required: galleryRequired,
+      configured: continuityConfigured,
+      initialized: continuityInitialized,
+      handlers_mounted: galleryHandlersMounted,
+      expected_top_level_tool_count: COMPACT_MCP_TOOL_NAMES.length,
+      exposed_top_level_tool_count: compactToolCount,
+      ready: !galleryRequired || (
+        continuityConfigured
+        && continuityInitialized
+        && galleryHandlersMounted
+        && compactToolCount === COMPACT_MCP_TOOL_NAMES.length
+      ),
+    },
+    decision_ledger: {
+      required: ledgerRequired,
+      configured: ledgerConfigured,
+      initialized: ledgerInitialized,
+      initialization_failed:
+        options.readiness?.decisionLedgerInitializationFailed === true,
+      ready: !ledgerRequired || (ledgerConfigured && ledgerInitialized),
+    },
+  };
+  const reasons = [];
+  if (!components.build_identity.ready) reasons.push("build_identity_unverifiable");
+  if (!components.authentication.ready) reasons.push("authentication_not_configured");
+  if (!components.universal_core.ready) reasons.push("universal_core_not_configured");
+  if (
+    hostNativeSecurityRequired &&
+    !hostNativeTenantGatewayConfigured
+  ) {
+    reasons.push("host_native_tenant_gateway_not_configured");
+  }
+  if (
+    hostNativeSecurityRequired &&
+    !hostNativeOwnerContextSigningConfigured
+  ) {
+    reasons.push("host_native_owner_context_signing_not_configured");
+  }
+  if (
+    hostNativeSecurityRequired &&
+    !hostNativeTenantContextSigningConfigured
+  ) {
+    reasons.push("host_native_tenant_context_signing_not_configured");
+  }
+  if (
+    hostNativeSecurityRequired &&
+    !hostNativeDttIdentitySigningConfigured
+  ) {
+    reasons.push("host_native_dtt_identity_signing_not_configured");
+  }
+  if (
+    hostNativeSecurityRequired &&
+    !hostNativeAgentSignatureConfigured
+  ) {
+    reasons.push("host_native_agent_signature_not_configured");
+  } else if (
+    hostNativeSecurityRequired &&
+    hostNativeAgentSignatureReused
+  ) {
+    reasons.push("host_native_agent_signature_reused");
+  }
+  if (
+    postgresMajorVersionRequired &&
+    !postgresMajorVersion.verified
+  ) {
+    reasons.push("postgres_major_16_not_verified");
+  }
+  if (continuityRequired && !continuityConfigured) {
+    reasons.push("continuity_postgres_not_configured");
+  } else if (continuityRequired && !continuityInitialized) {
+    reasons.push("continuity_not_initialized");
+  }
+  if (galleryRequired && !continuityConfigured) {
+    reasons.push("tenant_work_gallery_postgres_not_configured");
+  } else if (galleryRequired && !continuityInitialized) {
+    reasons.push("tenant_work_gallery_not_initialized");
+  }
+  if (galleryRequired && !galleryHandlersMounted) {
+    reasons.push("tenant_work_gallery_handlers_not_mounted");
+  }
+  if (galleryRequired && compactToolCount !== COMPACT_MCP_TOOL_NAMES.length) {
+    reasons.push("compact_mcp_surface_incomplete");
+  }
+  if (ledgerRequired && !ledgerConfigured) {
+    reasons.push("decision_ledger_not_configured");
+  } else if (ledgerRequired && !ledgerInitialized) {
+    reasons.push("decision_ledger_not_initialized");
+  }
+  return {
+    environment,
+    enforced,
+    ready: reasons.length === 0,
+    reasons,
+    components,
+    build,
+  };
+}
+
+async function resolvePostgresMajorVersion(config, options) {
+  const configured = normalizePostgresMajorVerification(
+    options.readiness?.postgresMajorVersion,
+  );
+  const environment = String(
+    config.environment ||
+    (config.production === true ? "production" : process.env.NODE_ENV) ||
+    "development",
+  ).toLowerCase();
+  if (environment !== "production" || !config.databaseUrl) return configured;
+  const probe = options.postgresMajorVersionProbe;
+  const check = typeof probe === "function"
+    ? probe
+    : typeof probe?.check === "function"
+      ? () => probe.check()
+      : null;
+  if (!check) return configured;
+  try {
+    return normalizePostgresMajorVerification(await check());
+  } catch {
+    return normalizePostgresMajorVerification(null);
+  }
 }
 
 function setBounded(map, key, value, maximum = 5_000) {
@@ -145,6 +442,16 @@ function attachWorkPreflight(result, preflight) {
     core_runtime: resolvedPayload.core_runtime,
     governance: resolvedPayload.governance,
     gate: resolvedPayload.gate || result?.structuredContent?.gate,
+    continuity: resolvedPayload.continuity
+      ? {
+        schema_version: resolvedPayload.continuity.schema_version,
+        work_id: resolvedPayload.continuity.work_id,
+        project_id: resolvedPayload.continuity.project_id,
+        intent_digest: resolvedPayload.continuity.intent_digest,
+        architecture_version: resolvedPayload.continuity.architecture_version,
+        resumed: resolvedPayload.continuity.idempotent_replay === true,
+      }
+      : undefined,
     tool_routing: resolvedPayload.tool_routing?.preferred_route
       ? { preferred_route: resolvedPayload.tool_routing.preferred_route }
       : resolvedPayload.tool_routing,
@@ -171,6 +478,7 @@ function attachWorkPreflight(result, preflight) {
       preferred_route: payload.tool_routing?.preferred_route?.id,
       execution_allowed: executionAllowed,
       shared_memory_bootstrap_loaded: payload.shared_memory_bootstrap?.loaded === true,
+      work_id: payload.continuity?.work_id,
     },
   };
   return {
@@ -185,19 +493,6 @@ function attachWorkPreflight(result, preflight) {
       "skinharmony/preflight_id": payload.preflight_id,
       "skinharmony/preflight_mandatory": true,
     },
-  };
-}
-
-function attachProviderOnboarding(result, providerStatus) {
-  const provider = providerStatus?.structuredContent?.provider;
-  if (!provider || provider.configured === true) return result;
-  const structured = result?.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)
-    ? { ...result.structuredContent, provider_onboarding: { required: true, provider: "openai", execution_enabled: false } }
-    : { result: result?.structuredContent, provider_onboarding: { required: true, provider: "openai", execution_enabled: false } };
-  return {
-    ...(result || {}),
-    structuredContent: structured,
-    _meta: { ...(result?._meta || {}), "openai/outputTemplate": "ui://skinharmony/openai-provider-setup.html" },
   };
 }
 
@@ -232,13 +527,25 @@ const TOOL_FAILURE_STATUS_BY_CODE = Object.freeze({
   dynamic_capability_not_authorized: 403,
   owner_confirmation_required: 403,
   idempotency_key_required: 422,
+  continuity_capture_not_authorized: 403,
 });
+
+function inferredToolFailureStatus(code) {
+  if (/_not_found$/.test(code)) return 404;
+  if (/_(?:conflict|replayed|expired|revoked|closed|exhausted|limit_reached)$/.test(code)) return 409;
+  if (/_(?:not_authorized|forbidden|denied)$/.test(code) ||
+      /_(?:authorization|owner|host_policy)_required$/.test(code)) return 403;
+  if (/_(?:invalid|required|mismatch|missing)$/.test(code)) return 422;
+  return undefined;
+}
 
 function toolFailure(error) {
   const raw = String(error?.code || error?.message || "tool_execution_failed");
   const core = raw.match(/^core_request_failed:(\d{3}):([a-zA-Z0-9_-]+)$/);
   const mappedStatus = TOOL_FAILURE_STATUS_BY_CODE[raw];
-  const status = Number(error?.status ?? (core ? core[1] : mappedStatus ?? 500));
+  const status = Number(
+    error?.status ?? (core ? core[1] : mappedStatus ?? inferredToolFailureStatus(raw) ?? 500),
+  );
   const code = core?.[2] || (/^[a-zA-Z0-9_-]{3,80}$/.test(raw) ? raw : "tool_execution_failed");
   const retryable = error?.retryable === true ||
     status === 429 ||
@@ -271,12 +578,19 @@ export function createApp(config, options = {}) {
   const app = express();
   const authenticate = createAuthenticator(config, options);
   const handlers = options.handlers || {};
+  const toolDefinitions = Array.isArray(options.tools) ? options.tools : TOOLS;
   const beforeToolCall = options.beforeToolCall;
   const afterToolCall = options.afterToolCall;
-  const availableTools = TOOLS.filter((tool) => typeof handlers[tool.name] === "function");
+  const availableTools = toolDefinitions.filter((tool) => typeof handlers[tool.name] === "function");
   const visibleTools = options.toolSurface === "compact"
-    ? compactMcpTools(TOOLS, handlers)
+    ? compactMcpTools(toolDefinitions, handlers)
     : availableTools;
+  const compactToolNames = new Set(visibleTools.map((tool) => tool.name));
+  const galleryRequired =
+    options.toolSurface === "compact"
+    && COMPACT_GALLERY_TOOL_NAMES.every((name) => COMPACT_MCP_TOOL_NAMES.includes(name));
+  const galleryHandlersMounted = COMPACT_GALLERY_TOOL_NAMES.every((name) =>
+    compactToolNames.has(name) && typeof handlers[name] === "function");
   // A host can rotate the MCP transport between tool calls from one logical chat.
   // Keep the transport binding for anti-switch protection, while correlating the
   // server-signed presence through the explicitly declared logical session id.
@@ -285,17 +599,47 @@ export function createApp(config, options = {}) {
   const transportPresenceBindings = new Map();
   app.use(express.json({ limit: "1mb" }));
 
-  app.get("/healthz", (_req, res) => res.json({
-    ok: true,
+  app.get("/healthz", async (_req, res) => {
+    const postgresMajorVersion = await resolvePostgresMajorVersion(
+      config,
+      options,
+    );
+    const readiness = buildReadiness(config, {
+      ...options,
+      readiness: {
+        ...options.readiness,
+        postgresMajorVersion,
+        galleryRequired,
+        galleryHandlersMounted,
+        compactToolCount: visibleTools.length,
+      },
+    });
+    const status = readiness.enforced && !readiness.ready ? 503 : 200;
+    return res.status(status).json({
+    ok: !readiness.enforced || readiness.ready,
     service: "skinharmony-core-mcp",
     version: SERVER_VERSION,
-    build: buildIdentity(),
-    mode: process.env.NODE_ENV || "development",
-    auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
+    build: readiness.build,
+    mode: readiness.environment,
+    render_ready: readiness.ready,
+    readiness: {
+      enforced: readiness.enforced,
+      ready: readiness.ready,
+      reasons: readiness.reasons,
+      components: readiness.components,
+    },
+    health_contract_version: HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+    auth_configured: readiness.components.authentication.configured,
     tenant_membership_bindings: Object.keys(config.oauthTenantMemberships || {}).length,
-    core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
-    provider_setup_link_source_configured: config.providerSetupLinkSourceConfigured === true,
+    core_configured: readiness.components.universal_core.configured,
     owner_context_signing_configured: Boolean(config.ownerContextSigningSecret),
+    tenant_context_signing_configured:
+      readiness.components.host_native_security.tenant_context_signing_configured,
+    postgresql: {
+      major: readiness.components.postgresql_version.major,
+      verified: readiness.components.postgresql_version.verified,
+    },
     shared_memory_configured: Boolean(config.sharedMemoryRoot),
     cloud_memory: {
       configured: Boolean(config.databaseUrl),
@@ -312,18 +656,48 @@ export function createApp(config, options = {}) {
     },
     work_continuity: {
       configured: Boolean(config.databaseUrl),
+      enabled: Boolean(config.databaseUrl),
       backend: config.databaseUrl ? "postgres" : "disabled",
       persistent: Boolean(config.databaseUrl),
-      schema_version: "tenant_work_gallery_v1",
+      schema_version: "work_continuity_v2",
+      gallery_schema_version: "tenant_work_gallery_v1",
+      auto_capture_enabled: config.workContinuityAutoCaptureEnabled === true,
+      intent_anchor_redacted: true,
+      raw_prompts_stored: false,
       tenant_isolated: true,
       bounded_leases: true,
       agent_ownership_allowed: false,
+      gallery_operational: readiness.components.tenant_work_gallery.ready,
+      gallery_top_level_tools: COMPACT_GALLERY_TOOL_NAMES.length,
+      compact_top_level_tool_count:
+        readiness.components.tenant_work_gallery.exposed_top_level_tool_count,
+    },
+    host_native_agents: {
+      enabled: config.hostNativeAgentProtocolEnabled === true,
+      readiness_required:
+        readiness.components.host_native_security.required,
+      tenant_gateway_configured:
+        readiness.components.host_native_security.tenant_gateway_configured,
+      owner_context_signing_configured:
+        readiness.components.host_native_security.owner_context_signing_configured,
+      tenant_context_signing_configured:
+        readiness.components.host_native_security.tenant_context_signing_configured,
+      dtt_identity_signing_configured:
+        readiness.components.host_native_security.dtt_identity_signing_configured,
+      agent_signature_configured:
+        readiness.components.host_native_security.agent_signature_configured,
+      agent_signature_independent:
+        readiness.components.host_native_security.agent_signature_independent,
+      ready: readiness.components.host_native_security.ready,
+      provider_execution: false,
+      provider_api_key_required: false,
+      server_model_calls: 0,
+      host_spawn_required: true,
+      host_policy_override: false,
     },
     agent_workspace_configured: Boolean(config.agentWorkspaceRoot),
     memory_fabric_configured: Boolean(config.memoryFabricRoot),
     research_cortex_configured: Boolean(config.researchCortexRoot),
-    openai_research_fallback_enabled: config.openaiResearchEnabled === true,
-    openai_research_fallback_configured: Boolean(config.openaiApiKey),
     suite_control_plane: {
       configured: Boolean(config.suiteControlPlaneUrl && Object.keys(config.suiteControlPlaneKeys || {}).length),
       tenant_bindings: Object.keys(config.suiteControlPlaneKeys || {}).length,
@@ -335,7 +709,8 @@ export function createApp(config, options = {}) {
       tenant_isolated: true,
       emergency_stop: config.godModeEmergencyStop === true
     }
-  }));
+  });
+  });
 
   const protectedResourceMetadata = (_req, res) => res.json({
     // Keep one canonical OAuth resource/audience across versioned transport
@@ -391,22 +766,8 @@ export function createApp(config, options = {}) {
         return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS } });
       }
       if (method === "notifications/initialized") return res.status(202).end();
-      if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: { resources: [{
-        uri: OPENAI_PROVIDER_SETUP_WIDGET_URI,
-        name: "Collega OpenAI a Nyra",
-        title: "Collega OpenAI",
-        description: "Pannello fisso per creare un link monouso e inserire la chiave solo nella pagina protetta.",
-        mimeType: "text/html;profile=mcp-app",
-      }] } });
-      if (method === "resources/read") {
-        if (params.uri !== OPENAI_PROVIDER_SETUP_WIDGET_URI) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown resource" } });
-        return res.json({ jsonrpc: "2.0", id, result: { contents: [{
-          uri: OPENAI_PROVIDER_SETUP_WIDGET_URI,
-          mimeType: "text/html;profile=mcp-app",
-          text: OPENAI_PROVIDER_SETUP_WIDGET,
-          _meta: { "openai/widgetDescription": "A fixed secure setup panel for the user's own OpenAI API key.", "openai/widgetPrefersBorder": true },
-        }] } });
-      }
+      if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: { resources: [] } });
+      if (method === "resources/read") return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown resource" } });
       if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => {
         const schemes = securitySchemes(scopes);
         const genericPreflightRequired = requiresGenericWorkPreflight(tool.name);
@@ -427,7 +788,7 @@ export function createApp(config, options = {}) {
         };
       }) } });
       if (method === "tools/call") {
-        const tool = TOOLS.find((item) => item.name === params.name);
+        const tool = visibleTools.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
@@ -481,7 +842,14 @@ export function createApp(config, options = {}) {
         }
         const sessionId = transportPresence?.session_id || declaredSessionId || transportSessionId || serverIssuedSessionId;
         const serverIssuedBootstrap = Boolean(serverIssuedSessionId);
-        const requestedAgentId = (!serverIssuedBootstrap && (rawArgs.agent_id || rawArgs.from_agent_id)) || transportPresence?.agent_id ||
+        const hostNativeReporterAgentId = tool.name === "work_continuity_native_report"
+          ? rawArgs.native_agent_id
+          : null;
+        const requestedAgentId = (!serverIssuedBootstrap && (
+          rawArgs.agent_id ||
+          rawArgs.from_agent_id ||
+          hostNativeReporterAgentId
+        )) || transportPresence?.agent_id ||
           `agent_${crypto.createHash("sha256").update(`${identity.subject || identity.kind || "client"}\u0000${sessionId}`).digest("hex").slice(0, 20)}`;
         const presenceInput = {
           agent_id: requestedAgentId,
@@ -489,6 +857,18 @@ export function createApp(config, options = {}) {
           session_id: sessionId,
         };
         const agentPresence = createAgentPresence(config, identity, presenceInput);
+        const transportAgentPresence = transportSessionId
+          ? createAgentPresence(config, identity, {
+              ...presenceInput,
+              session_id: transportSessionId,
+            })
+          : null;
+        const attestedAgentPresence = {
+          ...agentPresence,
+          transport_bound: Boolean(transportAgentPresence),
+          host_transport_session_fingerprint:
+            transportAgentPresence?.session_fingerprint || null,
+        };
         const logicalPresence = logicalSessionPresences.get(agentPresence.session_fingerprint);
         if (
           (transportPresence && transportPresence.signature !== agentPresence.signature) ||
@@ -499,7 +879,7 @@ export function createApp(config, options = {}) {
           throw presenceError;
         }
         const presenceBinding = {
-          ...agentPresence,
+          ...attestedAgentPresence,
           session_id: sessionId,
           binding_source: transportPresence?.binding_source || (declaredSessionId ? "declared" : transportSessionId ? "transport" : "server_bootstrap"),
         };
@@ -510,27 +890,32 @@ export function createApp(config, options = {}) {
         if (serverIssuedSessionId) res.set("Mcp-Session-Id", serverIssuedSessionId);
         const args = { ...rawArgs, ...presenceInput };
         // A request flag is never an identity assertion. Generic Core writes
-        // still require verified owner-root confirmation. The bounded provider
-        // test has a deliberately narrower, separate tenant-OAuth-owner proof.
+        // still require verified owner-root confirmation.
         const explicitDynamicCapabilityConfirmation = tool.name === "core_capability_invoke" &&
           identity.oauthOwnerElevated === true &&
           args.owner_confirmed === true;
-        const explicitOwnerConfirmation = (identity.godMode === true || explicitDynamicCapabilityConfirmation) &&
+        const explicitHostNativeOwnerConfirmation =
+          ["host_native_delegation_issue", "host_native_delegation_revoke"].includes(tool.name) &&
+          identity.oauthOwnerElevated === true &&
           args.owner_confirmed === true;
-        const explicitProviderExecutionConfirmation = identity.kind === "oauth" &&
-          identity.providerSetupOwner === true &&
-          Boolean(String(identity.subject || "").trim()) &&
-          args.owner_confirmed === true;
+        const codexGoodModeHostNativeDelegation =
+          ["host_native_delegation_issue", "host_native_delegation_revoke"].includes(tool.name) &&
+          isCodexGoodModeDelegation(identity, config);
+        const explicitOwnerConfirmation = (
+          codexGoodModeHostNativeDelegation ||
+          identity.godMode === true ||
+          explicitDynamicCapabilityConfirmation ||
+          explicitHostNativeOwnerConfirmation
+        ) &&
+          (codexGoodModeHostNativeDelegation || args.owner_confirmed === true);
         const callIdentity = {
           ...identity,
           agentPresence: presenceBinding,
           ownerConfirmed: explicitOwnerConfirmation,
           confirmationReference: explicitOwnerConfirmation
-            ? String(args.confirmation_reference || "").slice(0, 240)
-            : "",
-          providerExecutionConfirmed: explicitProviderExecutionConfirmation,
-          providerExecutionConfirmationReference: explicitProviderExecutionConfirmation
-            ? String(args.confirmation_reference || "").slice(0, 240)
+            ? (codexGoodModeHostNativeDelegation
+              ? "god_mode_codex"
+              : String(args.confirmation_reference || "").slice(0, 240))
             : "",
         };
         activeToolCall = { identity: callIdentity, toolName: tool.name, args, hookContext: null, preflight: null };
@@ -543,20 +928,13 @@ export function createApp(config, options = {}) {
             throw error;
           }
         }
-        // Provider setup and the fixed bounded run have their own authenticated
-        // Core gates. Even if a host hook accidentally returns a generic
-        // preflight, never attach that unrelated shared-memory verdict to these
-        // native control-plane results.
         const preflight = requiresGenericWorkPreflight(tool.name)
           ? (hookContext?.preflight ?? hookContext)
           : null;
         activeToolCall = { ...activeToolCall, hookContext, preflight };
         const rawResult = await handlers[tool.name](args, callIdentity);
         const preflightResult = attachWorkPreflight(rawResult, preflight);
-        const providerResult = shouldAttachProviderOnboarding(tool.name)
-          ? attachProviderOnboarding(preflightResult, hookContext?.providerStatus)
-          : preflightResult;
-        const result = attachAgentPresence(providerResult, agentPresence);
+        const result = attachAgentPresence(preflightResult, agentPresence);
         if (typeof afterToolCall === "function") {
           afterToolCallAttempted = true;
           try {
@@ -607,4 +985,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachProviderOnboarding, attachWorkPreflight, buildIdentity, inferClientType, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, toolFailure, TOOLS };
+export { attachWorkPreflight, buildIdentity, inferClientType, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, toolFailure, TOOLS };

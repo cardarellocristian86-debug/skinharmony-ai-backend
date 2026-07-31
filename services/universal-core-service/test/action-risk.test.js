@@ -80,6 +80,10 @@ test("does not classify bounded coordination writes as unverified learning", () 
   const result = classifyActionRisk({
     action_type: "task.claim",
     operation_class: "bounded_internal_coordination_write",
+    authenticated_tenant_id: "codexai",
+    tenant_id: "codexai",
+    target: "tenant_task_queue",
+    idempotency_key: "task-claim-idempotency-0001",
     external_side_effect: false,
     contains_customer_data: false,
     contains_secret: false,
@@ -145,6 +149,10 @@ test("keeps bounded low-impact coordination writes autonomous", () => {
   const result = classifyActionRisk({
     action_type: "task.claim",
     operation_class: "bounded_internal_coordination_write",
+    authenticated_tenant_id: "codexai",
+    tenant_id: "codexai",
+    target: "tenant_task_queue",
+    idempotency_key: "task-claim-idempotency-0001",
     external_side_effect: false,
     contains_customer_data: false,
     contains_secret: false,
@@ -181,6 +189,10 @@ test("keeps bounded low-impact coordination writes autonomous", () => {
     const denied = classifyActionRisk({
       action_type: "task.claim",
       operation_class: "bounded_internal_coordination_write",
+      authenticated_tenant_id: "codexai",
+      tenant_id: "codexai",
+      target: "tenant_task_queue",
+      idempotency_key: "task-claim-idempotency-0001",
       external_side_effect: false,
       contains_customer_data: false,
       contains_secret: false,

@@ -10,7 +10,9 @@ import {
   stable,
   surfacesOverlap,
 } from "../src/work-continuity-runtime.js";
-import { WORK_CONTINUITY_TOOLS as TOOLS } from "../src/work-continuity-tools.js";
+import { TOOLS as BASE_TOOLS } from "../src/tool-definitions.js";
+import { validateToolArguments } from "../src/schema-validation.js";
+import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 
 test("continuity digests are deterministic across object key order", () => {
   assert.deepEqual(stable({ b: 2, a: { d: 4, c: 3 } }), { a: { c: 3, d: 4 }, b: 2 });
@@ -60,7 +62,7 @@ test("continuity capabilities expose correct read/write and confirmation boundar
     "work_continuity_create", "work_continuity_record_change", "work_continuity_checkpoint",
     "work_continuity_read", "work_continuity_resume", "work_continuity_verify_memory",
   ];
-  const tools = Object.fromEntries(TOOLS.filter((item) => names.includes(item.name)).map((item) => [item.name, item]));
+  const tools = Object.fromEntries(WORK_CONTINUITY_TOOLS.filter((item) => names.includes(item.name)).map((item) => [item.name, item]));
   assert.deepEqual(Object.keys(tools).sort(), names.sort());
   assert.equal(tools.work_continuity_read.annotations.readOnlyHint, true);
   for (const name of names.filter((item) => item !== "work_continuity_read")) {
@@ -69,6 +71,16 @@ test("continuity capabilities expose correct read/write and confirmation boundar
   }
   const resumeHashes = tools.work_continuity_resume.inputSchema.properties.current_state_hashes;
   assert.deepEqual(resumeHashes.required.sort(), ["live_state_hash", "policy_hash", "repository_hash"]);
+});
+
+test("canonical Work Continuity tools register exactly once", () => {
+  const canonicalNames = WORK_CONTINUITY_TOOLS.map((tool) => tool.name);
+  assert.equal(new Set(canonicalNames).size, canonicalNames.length);
+  assert.deepEqual(
+    BASE_TOOLS.filter((tool) => canonicalNames.includes(tool.name)).map((tool) => tool.name),
+    [],
+  );
+  assert.equal(BASE_TOOLS.some((tool) => tool.name === "work_continuity_event"), false);
 });
 
 test("work gallery normalizes bounded surfaces and detects file ancestry overlap", () => {
@@ -118,13 +130,13 @@ test("work gallery schema is tenant/work scoped and uses temporary leases", () =
 test("work gallery tools preserve read/write and bounded tenant-collaboration boundaries", () => {
   const readTools = new Set(["tenant_work_gallery_list", "tenant_work_inbox"]);
   const boundedActions = new Map([
-    ["tenant_work_gallery_join", "tenant_work.gallery_join"],
-    ["tenant_work_gallery_heartbeat", "tenant_work.gallery_heartbeat"],
-    ["tenant_work_branch_open", "tenant_work.branch_open"],
-    ["tenant_work_lease_acquire", "tenant_work.lease_acquire"],
-    ["tenant_work_lease_renew", "tenant_work.lease_renew"],
-    ["tenant_work_lease_release", "tenant_work.lease_release"],
-    ["tenant_work_message_post", "tenant_work.message_post"],
+    ["tenant_work_gallery_join", "work.participant.join"],
+    ["tenant_work_gallery_heartbeat", "work.participant.heartbeat"],
+    ["tenant_work_branch_open", "work.branch.open"],
+    ["tenant_work_lease_acquire", "work.lease.acquire"],
+    ["tenant_work_lease_renew", "work.lease.renew"],
+    ["tenant_work_lease_release", "work.lease.release"],
+    ["tenant_work_message_post", "work.message.post"],
   ]);
   const names = [
     ...readTools,
@@ -136,7 +148,7 @@ test("work gallery tools preserve read/write and bounded tenant-collaboration bo
     "tenant_work_lease_release",
     "tenant_work_message_post",
   ];
-  const tools = Object.fromEntries(TOOLS.filter((tool) => names.includes(tool.name))
+  const tools = Object.fromEntries(WORK_CONTINUITY_TOOLS.filter((tool) => names.includes(tool.name))
     .map((tool) => [tool.name, tool]));
   assert.deepEqual(Object.keys(tools).sort(), names.sort());
   for (const name of names) {
@@ -148,10 +160,33 @@ test("work gallery tools preserve read/write and bounded tenant-collaboration bo
       assert.equal(tools[name].inputSchema.properties.owner_confirmed, undefined);
       assert.equal(tools[name].inputSchema.properties.confirmation_reference, undefined);
       assert.ok(tools[name].inputSchema.properties.idempotency_key);
+      assert.equal(tools[name].inputSchema.properties.idempotency_key.minLength, 8);
+      assert.equal(tools[name].inputSchema.properties.idempotency_key.maxLength, 160);
     }
   }
   assert.deepEqual(
     tools.tenant_work_lease_acquire.inputSchema.properties.surfaces.items.properties.kind.enum,
     ["file", "component", "dependency"],
+  );
+});
+
+test("Gallery write schemas reject seven-character idempotency and accept eight", () => {
+  const tool = WORK_CONTINUITY_TOOLS.find((item) => item.name === "tenant_work_gallery_join");
+  const request = {
+    work_id: "11111111-1111-4111-8111-111111111111",
+    session_id: "session-1",
+    agent_id: "agent-1",
+    idempotency_key: "1234567",
+  };
+  assert(
+    validateToolArguments(tool.inputSchema, request)
+      .some((error) => error.path === "$.idempotency_key"),
+  );
+  assert.deepEqual(
+    validateToolArguments(tool.inputSchema, {
+      ...request,
+      idempotency_key: "12345678",
+    }),
+    [],
   );
 });

@@ -871,6 +871,7 @@ export function createAiLearningFactoryStore({
   adapter = null,
   now = () => new Date().toISOString(),
   verifyOutcomeEvidence = null,
+  allowImplicitVisibilityForTests = false,
 } = {}) {
   const persistence = validateAdapter(adapter);
   if (
@@ -998,10 +999,22 @@ export function createAiLearningFactoryStore({
       } else if (existing) {
         throw new Error("resource_visibility_migration_required");
       } else {
+        const implicitFixtureVisibility =
+          allowImplicitVisibilityForTests === true
+            ? learningRecordBranchIds(collection, normalized)
+            : null;
+        const effectiveVisibilityBranches =
+          requestedVisibilityBranches || implicitFixtureVisibility;
+        if (
+          !Array.isArray(effectiveVisibilityBranches)
+          || effectiveVisibilityBranches.length === 0
+          || (!visibilityContext && allowImplicitVisibilityForTests !== true)
+        ) {
+          throw new Error("resource_visibility_source_required");
+        }
         resourceVisibility = createResourceVisibilityBinding({
           tenant_id: tenantId,
-          branch_ids: requestedVisibilityBranches
-            || learningRecordBranchIds(collection, normalized),
+          branch_ids: effectiveVisibilityBranches,
           origin_context: visibilityContext,
           created_at: timestamp,
         });
@@ -1291,6 +1304,7 @@ export function createAiLearningFactoryStore({
     tenant_scoped: true,
     idempotent: true,
     autonomous_execution_allowed: false,
+    implicit_visibility_allowed: allowImplicitVisibilityForTests === true,
     recordEvaluationScorecard: typedWrite("evaluation_scorecards"),
     readEvaluationScorecard: typedRead("evaluation_scorecards"),
     listEvaluationScorecards: typedList("evaluation_scorecards"),

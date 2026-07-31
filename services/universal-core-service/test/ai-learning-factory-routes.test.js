@@ -240,7 +240,7 @@ test("router exposes exactly nine dynamic endpoints without adding MCP tools", (
     readAuth() {},
     governAuth() {},
     telemetryStore: createAiRuntimeTelemetryStore(),
-    learningStore: createAiLearningFactoryStore(),
+    learningStore: createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true }),
     audit: { append() {} },
     resolveGovernanceProof() {},
     resolveRequestContext: horizontalRequestContext,
@@ -468,7 +468,7 @@ test("read routes delegate bounded cursor and filters to the persistence-backed 
 
 test("read routes derive tenant scope server-side", async () => {
   const app = mockApp();
-  const learningStore = createAiLearningFactoryStore({ now: () => "2026-07-27T12:00:00.000Z" });
+  const learningStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => "2026-07-27T12:00:00.000Z" });
   await learningStore.recordLearningCandidate({
     tenant_id: "tenant-a",
     idempotency_key: "candidate-a",
@@ -507,7 +507,7 @@ test("read routes derive tenant scope server-side", async () => {
 });
 
 test("ChatGPT owner_root cannot read model-adaptation records and filtering precedes pagination", async () => {
-  const learningStore = createAiLearningFactoryStore({
+  const learningStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true,
     now: () => "2026-07-27T12:00:00.000Z",
   });
   await learningStore.recordLearningCandidate({
@@ -611,7 +611,7 @@ test("ChatGPT owner_root cannot read model-adaptation records and filtering prec
 test("review binding preview returns the exact bounded server-derived artifact without mutating", async () => {
   const app = mockApp();
   const events = [];
-  const learningStore = createAiLearningFactoryStore({
+  const learningStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true,
     now: () => "2026-07-27T12:00:00.000Z",
   });
   await seedCandidateEvidence(learningStore);
@@ -674,7 +674,7 @@ test("direct AI Learning routes reject adjacent or mismatched client/audience pa
       readAuth() {},
       governAuth() {},
       telemetryStore: createAiRuntimeTelemetryStore(),
-      learningStore: createAiLearningFactoryStore(),
+      learningStore: createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true }),
       audit: { append() {} },
       resolveGovernanceProof() {},
       resolveRequestContext() { return context; },
@@ -690,7 +690,7 @@ test("direct AI Learning routes reject adjacent or mismatched client/audience pa
 test("mutating routes ignore caller authorization and use server Core proof", async () => {
   const app = mockApp();
   const events = [];
-  const learningStore = createAiLearningFactoryStore({ now: () => "2026-07-27T12:00:00.000Z" });
+  const learningStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => "2026-07-27T12:00:00.000Z" });
   await seedCandidateEvidence(learningStore);
   await learningStore.recordLearningCandidate({
     tenant_id: "tenant-a",
@@ -758,7 +758,7 @@ test("mutating routes ignore caller authorization and use server Core proof", as
 
 test("outcome recording requires optimistic concurrency and server proof", async () => {
   const app = mockApp();
-  const learningStore = createAiLearningFactoryStore({ now: () => "2026-07-27T12:00:00.000Z" });
+  const learningStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => "2026-07-27T12:00:00.000Z" });
   mountAiLearningFactoryRoutes({
     app,
     readAuth() {},
@@ -804,7 +804,7 @@ test("outcome recording requires optimistic concurrency and server proof", async
 
 test("audit failure happens before a governed mutation", async () => {
   const app = mockApp();
-  const learningStore = createAiLearningFactoryStore({ now: () => "2026-07-27T12:00:00.000Z" });
+  const learningStore = createAiLearningFactoryStore({ allowImplicitVisibilityForTests: true, now: () => "2026-07-27T12:00:00.000Z" });
   await learningStore.recordLearningCandidate({
     tenant_id: "tenant-a",
     idempotency_key: "candidate-a",
