@@ -62,6 +62,9 @@ export function loadConfig(env = process.env) {
   const godModeClientIds = csv(env.NYRA_GOD_MODE_CLIENT_IDS);
   const godModeCodexEnabled = flag(env.NYRA_GOD_MODE_CODEX_ENABLED, false);
   const godModeEmergencyStop = flag(env.NYRA_GOD_MODE_EMERGENCY_STOP, false);
+  const defensiveHardeningMode = ["off", "shadow", "enforce"].includes(String(env.NYRA_DEFENSIVE_HARDENING_MODE || "off").toLowerCase())
+    ? String(env.NYRA_DEFENSIVE_HARDENING_MODE || "off").toLowerCase()
+    : "off";
   if (env.NODE_ENV === "production" && !auth0Issuer && !codexKeys.length) {
     throw new Error("At least one authentication method is required in production");
   }
@@ -98,6 +101,7 @@ export function loadConfig(env = process.env) {
     godModeClientIds,
     godModeCodexEnabled,
     godModeEmergencyStop,
+    defensiveHardeningMode,
     memoryRetentionDays: integer(env.MEMORY_RETENTION_DAYS, 365, 1, 3_650),
     personalMemoryRetentionDays: integer(env.MEMORY_PERSONAL_RETENTION_DAYS, 90, 1, 365),
     researchRetentionDays: integer(env.RESEARCH_RETENTION_DAYS, 365, 1, 3_650),

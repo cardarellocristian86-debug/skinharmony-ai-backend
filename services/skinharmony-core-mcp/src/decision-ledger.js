@@ -14,7 +14,22 @@ const EVENT_TYPES = new Set([
   "capability_consumed", "execution_completed", "execution_failed", "execution_rolled_back",
   "outcome_submitted", "outcome_verified", "outcome_rejected", "decision_confirmed_correct",
   "decision_confirmed_wrong", "learning_proposed", "learning_approved", "learning_rejected",
+  "hardening_allowed", "security_hardening_policy_violation", "untrusted_tool_detected",
+  "privilege_escalation_blocked", "network_egress_denied", "network_target_out_of_scope",
+  "network_redirect_policy_violation", "rollback_verification_failed", "remediation_quarantined",
 ]);
+
+const SENSITIVE_KEY = /authorization|cookie|password|passwd|secret|token|api[_-]?key|private[_-]?key|credential/i;
+
+function sanitizeMetadata(value, seen = new WeakSet()) {
+  if (value == null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return safeText(value, 2_000);
+  if (typeof value !== "object") return String(value);
+  if (seen.has(value)) return "[CIRCULAR]";
+  seen.add(value);
+  if (Array.isArray(value)) return value.slice(0, 100).map((entry) => sanitizeMetadata(entry, seen));
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, SENSITIVE_KEY.test(key) ? "[REDACTED]" : sanitizeMetadata(entry, seen)]));
+}
 
 function tenant(value) {
   const id = String(value || "");
@@ -177,7 +192,7 @@ export function createDecisionLedger(config, options = {}) {
         policy_version: input.policy_version || null, risk_band: input.risk_band || null,
         risk_score: input.risk_score ?? null, control_level: input.control_level || null,
         decision_state: input.decision_state || null, execution_allowed: input.execution_allowed === true,
-        evidence_refs: input.evidence_refs || [], metadata: input.metadata || {},
+        evidence_refs: input.evidence_refs || [], metadata: sanitizeMetadata(input.metadata || {}),
         previous_event_hash: previous.rows[0]?.event_hash || null,
       };
       const eventHash = hash(payload);
@@ -190,7 +205,7 @@ export function createDecisionLedger(config, options = {}) {
         input.preflight_id || null, input.decision_id || null, input.core_version || null, input.policy_version || null,
         input.risk_band || null, input.risk_score ?? null, input.control_level || null, input.decision_state || null,
         input.execution_allowed === true, JSON.stringify(input.reason_codes || []), safeText(input.reason_summary, 2_000),
-        JSON.stringify(input.evidence_refs || []), JSON.stringify(input.metadata || {}), payload.previous_event_hash, eventHash]);
+        JSON.stringify(input.evidence_refs || []), JSON.stringify(payload.metadata), payload.previous_event_hash, eventHash]);
       if (client.query !== pool.query) await client.query("COMMIT");
       return { schema_version: DECISION_LEDGER_SCHEMA_VERSION, work_id: context.workId, trace_id: context.traceId, sequence_number: sequence, event_type: eventType, event_hash: eventHash };
     } catch (error) {

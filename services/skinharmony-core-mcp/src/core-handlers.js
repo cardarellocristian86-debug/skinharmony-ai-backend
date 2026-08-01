@@ -362,6 +362,8 @@ export function createCoreWriteGuard(config, options = {}) {
       external_side_effect: action.external_side_effect === true,
       contains_customer_data: action.contains_customer_data === true,
       rollback_ready: action.rollback_ready === undefined ? action.external_side_effect !== true : action.rollback_ready === true,
+      requested_capabilities: action.requested_capabilities || [],
+      ...(action.security_hardening ? { security_hardening: action.security_hardening } : {}),
       owner_confirmed: identity.ownerConfirmed === true,
       ...(identity.confirmationReference ? { confirmation_reference: identity.confirmationReference } : {})
     }, identity);
@@ -369,9 +371,10 @@ export function createCoreWriteGuard(config, options = {}) {
     const authorization = payload.authorization || {};
     const contract = payload.decision_contract || payload.verdict?.decision_contract || payload.verdict || payload;
     const output = payload.output || {};
+    const hardening = payload.security_hardening || {};
     const decision = String(authorization.state || contract.state || contract.decision || "unknown");
     const mediation = String(authorization.mediation || contract.action_mediation?.state || contract.mediation || "unknown");
-    const blocked = decision === "block" || decision === "blocked" || mediation === "hard_block" ||
+    const blocked = hardening.allowed === false || decision === "block" || decision === "blocked" || mediation === "hard_block" ||
       output.recommended_actions?.some?.((item) => item.blocked === true) === true;
     const confirmationRequired = authorization.confirmation_required === true ||
       (!payload.authorization && (contract.control_level === "confirm" || output.execution_profile?.requires_user_confirmation === true));
@@ -383,6 +386,7 @@ export function createCoreWriteGuard(config, options = {}) {
       ? authorization.allowed === true && !blocked
       : legacyExplicitlyAllowed && !blocked && (!confirmationRequired || confirmationSatisfied);
     return {
+      security_hardening: hardening,
       allowed,
       decision,
       mediation,
