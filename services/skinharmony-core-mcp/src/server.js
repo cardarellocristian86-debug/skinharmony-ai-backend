@@ -775,7 +775,8 @@ const handlers = { ...baseHandlers, ...dynamicHandlers };
 
 function isAgentPresenceBootstrapCall(toolName, args = {}) {
   return toolName === "agent_heartbeat" ||
-    (toolName === "core_capability_invoke" && args?.capability_id === "agent_heartbeat");
+    ((toolName === "core_capability_catalog" || toolName === "core_capability_invoke") &&
+      args?.capability_id === "agent_heartbeat");
 }
 
 const app = createApp(config, {
