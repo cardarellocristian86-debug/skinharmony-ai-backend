@@ -9,6 +9,7 @@ import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branche
 import { runTextBranch } from "../../../universal-core/packages/branches/ramo-testo/src/index.ts";
 import { runNiraUniversalCoreBridge } from "../../../universal-core/tools/nira-universal-core-bridge.ts";
 import { createAudit, ensureDir } from "./audit.js";
+import { createHardeningDefensiveLayer } from "./securityDefensiveHardeningLayer.js";
 import { createKeyStore } from "./keyStore.js";
 import { createSetupTokenStore } from "./setupTokenStore.js";
 import { detectLanguageGuardIssues, supportedLanguageGuardLocales } from "./languageGuard.js";
@@ -3202,6 +3203,15 @@ export function createUniversalCoreService(options = {}) {
   ensureDir(storageRoot);
 
   const audit = createAudit(storageRoot);
+  const defensiveHardening = options.defensiveHardening || createHardeningDefensiveLayer({
+    mode: options.defensiveHardeningMode || process.env.NYRA_DEFENSIVE_HARDENING_MODE || "off",
+    audit,
+    catalog: options.hardeningCapabilityCatalog || {},
+    trustRoots: options.hardeningTrustRoots || {},
+    revoked: options.hardeningRevokedTools || [],
+    minimumVersions: options.hardeningMinimumToolVersions || {},
+    processAdapter: options.hardeningProcessAdapter,
+  });
   const keyStore = createKeyStore(storageRoot, audit);
   const setupTokens = createSetupTokenStore(storageRoot, audit);
   const snapshots = snapshotStore(storageRoot);
@@ -4382,7 +4392,11 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/action-evaluator", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/security/hardening/metrics", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, mode: defensiveHardening.mode, metrics: defensiveHardening.snapshotMetrics() });
+  });
+
+  app.post("/v1/action-evaluator", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -4402,6 +4416,17 @@ export function createUniversalCoreService(options = {}) {
       ...(req.body || {}),
       operation_class: req.body?.operation_class || riskClassification.operation_class,
     });
+    const hardeningInput = req.body?.security_hardening || {};
+    const hardening = await defensiveHardening.evaluate({
+      ...hardeningInput,
+      tenantContext: { ...(hardeningInput.tenantContext || {}), tenant_id: req.tenantId },
+      requestedCapabilities: hardeningInput.requestedCapabilities || req.body?.requested_capabilities || [],
+    });
+    if (!hardening.allowed && defensiveHardening.mode === "enforce") {
+      authorization.allowed = false;
+      authorization.state = "blocked";
+      authorization.mediation = hardening.verdict === "QUARANTINED" ? "quarantined" : "hard_block";
+    }
     audit.append("core_action_evaluated", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -4425,9 +4450,10 @@ export function createUniversalCoreService(options = {}) {
       work_preflight: workPreflight,
       authorization,
       risk_classification: riskClassification,
+      security_hardening: hardening,
       guardrail: {
         destructive_automation: false,
-        execution_allowed: authorization.allowed,
+        execution_allowed: authorization.allowed && hardening.allowed,
         mandatory_preflight_completed: true,
         owner_confirmation_required: authorization.confirmation_required && !authorization.confirmation_satisfied,
         mode: "core_action_gate",
@@ -4595,6 +4621,16 @@ export function createUniversalCoreService(options = {}) {
       coreOutput: output,
       adapterOverride,
     });
+    const hardeningInput = req.body?.security_hardening || {};
+    const hardening = await defensiveHardening.evaluate({
+      ...hardeningInput,
+      tenantContext: { ...(hardeningInput.tenantContext || {}), tenant_id: req.tenantId },
+      requestedCapabilities: hardeningInput.requestedCapabilities || req.body?.requested_capabilities || [],
+    });
+    if (!hardening.allowed && defensiveHardening.mode === "enforce") {
+      audit.append("core_ai_gateway_hardening_blocked", { tenant_id: req.tenantId, audit_event_id: hardening.auditEventId, policy_code: hardening.policyCode });
+      return res.status(403).json({ ok: false, error: "security_hardening_blocked", security_hardening: hardening });
+    }
     const operational = await coreOperationalRuntime.evaluate({
       tenantId: req.tenantId,
       input,
@@ -4632,6 +4668,7 @@ export function createUniversalCoreService(options = {}) {
         openai_call_executed: false,
         mandatory_preflight_completed: true,
         audit_event: "core_ai_gateway_evaluated",
+        security_hardening: hardening,
       },
       work_preflight: workPreflight,
       verdict,
