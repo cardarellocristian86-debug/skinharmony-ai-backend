@@ -14,6 +14,13 @@ const EVENT_TYPES = new Set([
   "capability_consumed", "execution_completed", "execution_failed", "execution_rolled_back",
   "outcome_submitted", "outcome_verified", "outcome_rejected", "decision_confirmed_correct",
   "decision_confirmed_wrong", "learning_proposed", "learning_approved", "learning_rejected",
+  "core_block_remediation_opened", "core_block_explained_by_nyra", "core_block_nyra_explanation_failed",
+  "core_block_diagnosis_submitted", "core_block_proposal_submitted", "core_block_proposal_rejected",
+  "core_block_remediation_nyra_reviewed", "core_block_remediation_revision_requested", "core_block_remediation_resubmitted",
+  "core_block_remediation_waiting_owner", "core_block_remediation_allowed", "core_block_remediation_hard_denied",
+  "core_block_remediation_execution_completed", "core_block_remediation_execution_failed", "core_block_remediation_outcome_verified",
+  "core_block_remediation_closed", "core_block_remediation_expired", "core_block_remediation_cancelled",
+  "core_block_remediation_scope_expansion_rejected", "core_block_remediation_replay_rejected", "core_block_remediation_max_attempts_reached",
 ]);
 
 function tenant(value) {
@@ -251,6 +258,14 @@ export function createDecisionLedger(config, options = {}) {
     const wrong = Number(events.decision_confirmed_wrong || 0);
     const verified = correct + wrong;
     const percent = (value, total) => total ? Number(((value / total) * 100).toFixed(2)) : 0;
+    const remediationOpened = Number(events.core_block_remediation_opened || 0);
+    const remediationCorrectable = Number(events.core_block_proposal_submitted || 0);
+    const remediationConfirmation = Number(events.core_block_remediation_waiting_owner || 0);
+    const remediationAbsolute = Number(events.core_block_remediation_hard_denied || 0);
+    const remediationTransient = Number(events.core_block_remediation_resubmitted || 0);
+    const remediationManualReview = Number(events.core_block_remediation_revision_requested || 0);
+    const resolution = Number(events.core_block_remediation_closed || 0);
+    const attempts = Number(events.core_block_proposal_submitted || 0);
     return {
       schema_version: DECISION_LEDGER_SCHEMA_VERSION, tenant_id: tenantId, days,
       sessions: sessions.rows[0], events,
@@ -261,6 +276,21 @@ export function createDecisionLedger(config, options = {}) {
         confirmation_rate_percent: percent(confirmations, completed),
         verified_decision_accuracy_percent: percent(correct, verified),
         verified_decision_sample_size: verified,
+        remediation_opened: remediationOpened,
+        remediation_correctable_count: remediationCorrectable,
+        remediation_confirmation_count: remediationConfirmation,
+        remediation_absolute_count: remediationAbsolute,
+        remediation_transient_count: remediationTransient,
+        remediation_manual_review_count: remediationManualReview,
+        remediation_resolution_rate_percent: percent(resolution, remediationOpened),
+        remediation_average_attempts: remediationOpened ? Number((attempts / remediationOpened).toFixed(2)) : 0,
+        remediation_scope_expansion_rejections: Number(events.core_block_remediation_scope_expansion_rejected || 0),
+        remediation_bypass_rejections: Number(events.core_block_proposal_rejected || 0),
+        remediation_replay_rejections: Number(events.core_block_remediation_replay_rejected || 0),
+        remediation_nyra_explanation_failures: Number(events.core_block_nyra_explanation_failed || 0),
+        remediation_owner_confirmation_routes: Number(events.core_block_remediation_waiting_owner || 0),
+        remediation_absolute_blocks_preserved: Number(events.core_block_remediation_hard_denied || 0),
+        remediation_median_time_to_resolution_ms: null,
       },
     };
   }

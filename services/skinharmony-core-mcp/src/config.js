@@ -241,6 +241,10 @@ export function loadConfig(env = process.env) {
   // DATABASE_URL. It is intentionally opt-in and has a distinct Render secret.
   const collaborationDatabaseUrl = String(env.MCP_COLLABORATION_DATABASE_URL || "").trim();
   const decisionLedgerRequired = flag(env.CORE_DECISION_LEDGER_REQUIRED, env.NODE_ENV === "production");
+  const coreBlockRemediationMode = String(env.CORE_BLOCK_REMEDIATION_MODE || "shadow").trim().toLowerCase();
+  const coreBlockRemediationMaxAttempts = integer(env.CORE_BLOCK_REMEDIATION_MAX_ATTEMPTS, 3, 1, 20);
+  const coreBlockRemediationTtlSeconds = integer(env.CORE_BLOCK_REMEDIATION_TTL_SECONDS, 86_400, 1, 7 * 86_400);
+  const coreBlockRemediationTransientRetryLimit = integer(env.CORE_BLOCK_REMEDIATION_TRANSIENT_RETRY_LIMIT, 2, 1, 20);
   // Automatic continuity capture is opt-in because it persists a redacted
   // derivative of the first host-supplied request as an immutable Intent
   // Anchor. Existing tenants retain the previous no-capture behaviour.
@@ -312,6 +316,10 @@ export function loadConfig(env = process.env) {
     databaseUrl,
     collaborationDatabaseUrl,
     decisionLedgerRequired,
+    coreBlockRemediationMode,
+    coreBlockRemediationMaxAttempts,
+    coreBlockRemediationTtlSeconds,
+    coreBlockRemediationTransientRetryLimit,
     workContinuityAutoCaptureEnabled,
     hostNativeAgentProtocolEnabled,
     mandatoryAgentPresenceEnabled,
