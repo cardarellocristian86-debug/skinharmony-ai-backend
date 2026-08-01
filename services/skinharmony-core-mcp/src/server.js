@@ -118,6 +118,7 @@ if (config.mandatoryAgentPresenceEnabled === true && typeof registerAuthenticate
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
+  decisionLedger,
   tenantWorkGallery: workContinuityRuntime ? {
     load: async (identity, input = {}) => {
       requireTenantWorkCapability(identity, "read");

@@ -868,6 +868,57 @@ export const TOOLS = [
   tool("nyra_interpret_request", "Interpret a Nyra request", "Use this when a request needs Nyra routing, bounded cognition, dialogue validation or owner protection. It returns a compact fast result by default; choose deep for scenarios and hypotheses, or full only for diagnostics. Universal Core remains final authority and execution stays disabled.", object({ message: text(), session_id: identifier, project_id: identifier, agent_id: identifier, response_mode: { type: "string", enum: ["fast", "deep", "full"] }, nyra_branches: { type: "array", maxItems: 64, items: identifier }, available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } } }, ["message"]), ["core:read"]),
   tool("nyra_fetch_analysis", "Fetch Nyra analysis details", "Use this after nyra_interpret_request when the compact result indicates that deeper or diagnostic details are relevant. Results are tenant-scoped and expire after five minutes; execution remains disabled.", object({ analysis_id: { type: "string", pattern: "^nyra_[a-f0-9]{24}$" }, response_mode: { type: "string", enum: ["deep", "full"] }, session_id: identifier, agent_id: identifier }, ["analysis_id"]), ["core:read"]),
   tool("core_gate_action", "Evaluate and authorize a scoped action", "Ask Universal Core to evaluate an action and, only for supported fail-closed operation classes, return a scoped authorization. This tool never executes the action.", { type: "object", required: ["action_label", "action_type"], properties: { action_label: text(500), action_type: text(120), operation_class: text(120), target_commit: { type: "string", pattern: "^[a-fA-F0-9]{40}$" }, read_only: { type: "boolean" }, dry_run: { type: "boolean" }, external_side_effect: { type: "boolean" }, contains_customer_data: { type: "boolean" }, contains_secret: { type: "boolean" }, cross_tenant: { type: "boolean" }, destructive: { type: "boolean" }, verified_outcome: { type: "boolean" }, bypass_orchestrator: { type: "boolean" }, rollback_ready: { type: "boolean" }, audit_ready: { type: "boolean" }, configuration_changes: { type: "boolean" } }, additionalProperties: true }, ["core:govern"], false, true),
+  tool("core_block_remediation_status", "Read core block remediation status", "Read the tenant-scoped remediation contract and blocker state for one remediation_id. This never authorizes execution.", object({
+    remediation_id: identifier,
+  }, ["remediation_id"]), ["core:read"], true, true),
+  tool("core_block_remediation_explain", "Read core block remediation explanation", "Read the Nyra explanation or deterministic fallback for one remediation contract. This only explains the block and never changes verdicts.", object({
+    remediation_id: identifier,
+  }, ["remediation_id"]), ["core:read"], true, true),
+  tool("core_block_remediation_propose", "Submit a core block remediation proposal", "Submit an AI proposal for a blocked Core decision. Core remains final authority; the proposal only records diagnosis, evidence, tests and rollback.", object({
+    remediation_id: identifier,
+    expected_version: { type: "integer", minimum: 0, maximum: 1_000_000 },
+    idempotency_key: text(120),
+    diagnosis: {
+      type: "object",
+      required: ["root_cause"],
+      properties: {
+        root_cause: text(4_000),
+        evidence: { type: "array", maxItems: 100, items: text(2_000) },
+        unknowns: { type: "array", maxItems: 100, items: text(2_000) },
+        affected_components: { type: "array", maxItems: 100, items: text(200) },
+      },
+      additionalProperties: false,
+    },
+    proposal: {
+      type: "object",
+      required: ["proposal_type", "summary", "scope"],
+      properties: {
+        proposal_type: { type: "string", enum: ["same_action_remediation", "safe_alternative", "owner_confirmation_route", "transient_retry"] },
+        summary: text(4_000),
+        scope: { type: "object", additionalProperties: true },
+        changes: { type: "array", maxItems: 100, items: { type: "object", properties: { component: text(120), path: text(500), change: text(2_000), reason: text(2_000) }, required: ["component", "change", "reason"], additionalProperties: false } },
+        tests: { type: "array", maxItems: 100, items: { type: "object", properties: { name: text(200), type: { type: "string", enum: ["unit", "integration", "security", "tenant_isolation", "regression", "smoke"] }, command: text(1_000), expected_result: text(2_000) }, required: ["name", "type", "expected_result"], additionalProperties: false } },
+        evidence: { type: "array", maxItems: 100, items: text(2_000) },
+        rollback: { type: "object", properties: { available: { type: "boolean" }, steps: { type: "array", maxItems: 100, items: text(2_000) }, trigger_conditions: { type: "array", maxItems: 100, items: text(2_000) } }, required: ["available"], additionalProperties: false },
+        conditions_addressed: { type: "array", maxItems: 100, items: text(2_000) },
+        residual_risks: { type: "array", maxItems: 100, items: text(2_000) },
+        alternative_only: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+  }, ["remediation_id", "expected_version", "idempotency_key", "diagnosis", "proposal"]), ["core:govern"], false, true),
+  tool("core_block_remediation_review", "Review a core block remediation proposal", "Ask Nyra to review the latest blocked-Core remediation proposal. Nyra may approve for Core, request revision, or reject, but never execute.", object({
+    remediation_id: identifier,
+    attempt_id: identifier,
+  }, ["remediation_id", "attempt_id"]), ["core:read"], true, true),
+  tool("core_block_remediation_resubmit", "Resubmit a core block remediation proposal to Core", "Ask Universal Core to re-evaluate the latest approved remediation proposal using a new decision request. Core remains the only authority that can produce ALLOW.", object({
+    remediation_id: identifier,
+    attempt_id: identifier,
+  }, ["remediation_id", "attempt_id"]), ["core:govern"], false, true),
+  tool("core_block_remediation_cancel", "Cancel a core block remediation", "Cancel a tenant-scoped remediation contract without deleting its audit trail.", object({
+    remediation_id: identifier,
+    reason: text(500),
+  }, ["remediation_id"]), ["core:govern"], false, true, { destructive: true }),
   tool("suite_status", "Read Suite connection status", "Use this when the authenticated tenant needs WordPress node freshness, Render connectivity, module coverage and branch readiness without loading the full Cockpit.", object({ node_id: suiteResourceId }), ["core:read"], true, true, {
     exactInputSchema: true,
     outputSchema: suiteStatusOutputSchema,

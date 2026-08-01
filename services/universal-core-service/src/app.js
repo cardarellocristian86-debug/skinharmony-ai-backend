@@ -1109,6 +1109,9 @@ function buildActionEvaluatorInput(req, keyRecord) {
         operation_class: riskClassification.operation_class,
         publish_intent: publishIntent ? "true" : "false",
         source: "action_evaluator",
+        ...(typeof body.remediation_context === "object" && body.remediation_context
+          ? { remediation_context: body.remediation_context }
+          : {}),
         ...(typeof body.metadata === "object" && body.metadata ? body.metadata : {}),
       },
     },

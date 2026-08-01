@@ -4,6 +4,26 @@ import { createAgentPresence } from "./agent-presence.js";
 import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
 import { readCoreCapabilityCatalog } from "./core-capability-catalog.js";
 import {
+  CORE_BLOCK_CLASS,
+  CORE_BLOCK_PROPOSAL_TYPES,
+  CORE_BLOCK_REMEDIATION_STATUS,
+  buildDeterministicBlockExplanation,
+  buildResubmissionContext,
+  openCoreBlockRemediation,
+  classifyCoreBlock,
+  compareScopeDigest,
+  deriveContinuationScope,
+  deriveRecommendedNextAction,
+  detectRemediationBypass,
+  evaluateEvidenceRequirements,
+  evaluateRollback,
+  evaluateTests,
+  proposeRemediationAttempt,
+  reviewRemediationProposal,
+  validateProposalForRemediation,
+} from "../../shared/core-block-remediation.js";
+import { createCoreBlockRemediationStore } from "./core-block-remediation-store.js";
+import {
   nyraDeepV2EvidencePackHash,
   signNyraDeepV2McpRequest,
 } from "./nyra-deep-v2-mcp-request.js";
@@ -365,8 +385,14 @@ export function createCoreHandlers(config, options = {}) {
   const contextProvider = options.contextProvider;
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
   const tenantWorkGallery = options.tenantWorkGallery;
+  const decisionLedger = options.decisionLedger || null;
+  const remediationStore = createCoreBlockRemediationStore(config, {
+    root: options.coreBlockRemediationRoot || config.sharedMemoryRoot || config.agentWorkspaceRoot,
+  });
   const analysisCache = new Map();
   const analysisCacheTtlMs = Math.min(Math.max(Number(options.analysisCacheTtlMs || 300_000), 30_000), 300_000);
+  const remediationMode = String(config.coreBlockRemediationMode || "shadow").trim().toLowerCase();
+  const remediationEnabled = remediationMode !== "disabled";
 
   function cacheAnalysis(tenantId, payload) {
     const now = Date.now();
@@ -414,6 +440,7 @@ export function createCoreHandlers(config, options = {}) {
     body,
     additionalHeaders = {},
     useTenantGateway = false,
+    allowFailurePayload = false,
   } = {}) {
     const sanitizedBody = sanitizeCoreBody(body);
     const headers = { accept: "application/json" };
@@ -447,6 +474,9 @@ export function createCoreHandlers(config, options = {}) {
     });
     const payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
     if (!response.ok) {
+      if (allowFailurePayload) {
+        return { ok: false, status: response.status, payload };
+      }
       const upstreamCode = typeof payload.error === "string" &&
         /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/.test(payload.error)
         ? payload.error
@@ -457,6 +487,171 @@ export function createCoreHandlers(config, options = {}) {
       throw error;
     }
     return payload;
+  }
+
+  async function openBlockedRemediation({
+    identity,
+    requestBody,
+    authorization,
+    contract,
+    output,
+  }) {
+    if (!remediationEnabled) return null;
+    const workContext = {
+      tenant_id: identity.tenantId,
+      project_id: requestBody.project_id || null,
+      work_id: requestBody.work_id || requestBody.request_id || requestBody.session_id || crypto.randomUUID(),
+      branch_id: requestBody.branch_id || null,
+      session_id: requestBody.session_id || null,
+      surface: requestBody.target || requestBody.action_label || requestBody.action_type || null,
+      target_system: requestBody.target_system || "universal_core",
+      operation_type: requestBody.action_type || requestBody.operation_type || "action_evaluator",
+      operation_class: requestBody.operation_class || null,
+      repository: requestBody.repository || null,
+      ref: requestBody.ref || null,
+      environment: requestBody.environment || null,
+      resource_ids: Array.isArray(requestBody.resource_ids) ? requestBody.resource_ids : [],
+    };
+    const decision = {
+      tenant_id: identity.tenantId,
+      decision_id: requestBody.request_id || crypto.randomUUID(),
+      verdict: String(authorization.state || contract.state || "BLOCK").toUpperCase(),
+      block_code: Array.isArray(output.recommended_actions)
+        ? String(output.recommended_actions.find((item) => item.blocked === true)?.reason_code || output.recommended_actions[0]?.reason_code || "UNKNOWN_BLOCK")
+        : String(contract.block_code || output.block_code || "UNKNOWN_BLOCK"),
+      block_class: String(contract.block_class || output.block_class || "manual_review"),
+      risk_band: String(output?.selected_by_core?.risk_band || contract.risk_band || "medium"),
+      reasons: Array.isArray(contract.blocked_reasons) ? contract.blocked_reasons : [],
+      unmet_conditions: Array.isArray(output?.selected_by_core?.unmet_conditions) ? output.selected_by_core.unmet_conditions : [],
+      evidence_requirements: Array.isArray(output?.selected_by_core?.evidence_requirements) ? output.selected_by_core.evidence_requirements : [],
+      allowed_alternatives: Array.isArray(output?.selected_by_core?.allowed_alternatives) ? output.selected_by_core.allowed_alternatives : [],
+      owner_confirmation_required: authorization.confirmation_required === true,
+      policy_snapshot_digest: contract.policy_snapshot_digest || contract.contract_digest || null,
+      expires_at: requestBody.expires_at || null,
+      target_system: workContext.target_system,
+      operation_type: workContext.operation_type,
+      operation_class: workContext.operation_class,
+      repository: workContext.repository,
+      ref: workContext.ref,
+      environment: workContext.environment,
+      resource_ids: workContext.resource_ids,
+      max_attempts: config.coreBlockRemediationMaxAttempts || 3,
+      transient_retry_limit: config.coreBlockRemediationTransientRetryLimit || 2,
+    };
+    const explainFn = async () => buildDeterministicBlockExplanation({
+      remediation_id: `cbr_${crypto.randomUUID()}`,
+      tenant_id: identity.tenantId,
+      project_id: workContext.project_id,
+      work_id: workContext.work_id,
+      branch_id: workContext.branch_id,
+      session_id: workContext.session_id,
+      original_decision: {
+        decision_id: decision.decision_id,
+        decision_digest: "pending",
+        verdict: decision.verdict,
+        block_code: decision.block_code,
+        block_class: decision.block_class,
+        risk_band: decision.risk_band,
+        reasons: decision.reasons,
+        unmet_conditions: decision.unmet_conditions,
+        evidence_requirements: decision.evidence_requirements,
+        allowed_alternatives: decision.allowed_alternatives,
+        correction_allowed: decision.block_class === CORE_BLOCK_CLASS.CORRECTABLE || decision.block_class === CORE_BLOCK_CLASS.TRANSIENT,
+        same_action_retry_allowed: decision.block_class !== CORE_BLOCK_CLASS.CONFIRMATION_REQUIRED && decision.block_class !== CORE_BLOCK_CLASS.ABSOLUTE,
+        owner_confirmation_required: decision.owner_confirmation_required,
+        policy_snapshot_digest: decision.policy_snapshot_digest,
+        expires_at: decision.expires_at,
+      },
+      bound_scope: {
+        target_system: workContext.target_system,
+        operation_type: workContext.operation_type,
+        operation_class: workContext.operation_class,
+        resource_ids: workContext.resource_ids,
+        repository: workContext.repository,
+        ref: workContext.ref,
+        environment: workContext.environment,
+        scope_digest: "pending",
+      },
+      continuation_scope: deriveContinuationScope({
+        decision,
+        classification: classifyCoreBlock(decision),
+      }),
+    });
+    const remediation = await openCoreBlockRemediation({
+      decision,
+      workContext,
+      actor: {
+        kind: identity.kind,
+        client_type: identity.kind,
+        subject: identity.subject,
+        tenant_id: identity.tenantId,
+      },
+      store: remediationStore,
+      ledger: decisionLedger,
+      now: () => new Date(),
+      explainFn,
+      maxAttempts: config.coreBlockRemediationMaxAttempts || 3,
+      transientRetryLimit: config.coreBlockRemediationTransientRetryLimit || 2,
+    });
+    if (!remediation) return null;
+    const statusPayload = {
+      state: "blocked_with_remediation",
+      allowed: false,
+      decision_contract: contract,
+      remediation: {
+        schema_version: remediation.schema_version,
+        remediation_id: remediation.remediation_id,
+        status: remediation.status,
+        block_class: remediation.original_decision.block_class,
+        can_continue_analysis: remediation.continuation_scope.mode !== "none",
+        can_submit_remediation: remediation.original_decision.block_class !== CORE_BLOCK_CLASS.ABSOLUTE,
+        can_retry_same_action: remediation.original_decision.same_action_retry_allowed === true,
+        owner_confirmation_required: remediation.original_decision.owner_confirmation_required === true,
+        continuation_scope: remediation.continuation_scope,
+        nyra_message: remediation.nyra_explanation,
+        next_action: remediation.nyra_explanation?.recommended_next_action || deriveRecommendedNextAction(remediation),
+        remediation_idempotency: remediation.contract_digest,
+      },
+    };
+    return { remediation, statusPayload };
+  }
+
+  async function loadRemediationForIdentity(identity, remediationId) {
+    const remediation = await remediationStore.findById({
+      tenant_id: identity.tenantId,
+      remediation_id: remediationId,
+    });
+    if (!remediation) throw new Error("remediation_not_found");
+    if (String(remediation.tenant_id || "") !== String(identity.tenantId || "")) {
+      throw new Error("tenant_scope_violation");
+    }
+    return remediation;
+  }
+
+  function remediationEnvelope(remediation, extra = {}) {
+    return {
+      schema_version: remediation.schema_version,
+      remediation_id: remediation.remediation_id,
+      tenant_id: remediation.tenant_id,
+      project_id: remediation.project_id,
+      work_id: remediation.work_id,
+      branch_id: remediation.branch_id,
+      session_id: remediation.session_id,
+      status: remediation.status,
+      block_class: remediation.original_decision.block_class,
+      block_code: remediation.original_decision.block_code,
+      can_continue_analysis: remediation.continuation_scope.mode !== "none",
+      can_submit_remediation: remediation.original_decision.block_class !== CORE_BLOCK_CLASS.ABSOLUTE,
+      can_retry_same_action: remediation.original_decision.same_action_retry_allowed === true,
+      owner_confirmation_required: remediation.original_decision.owner_confirmation_required === true,
+      continuation_scope: remediation.continuation_scope,
+      nyra_message: remediation.nyra_explanation,
+      next_action: remediation.nyra_explanation?.recommended_next_action || deriveRecommendedNextAction(remediation),
+      attempt_count: remediation.attempt_count,
+      max_attempts: remediation.max_attempts,
+      version: remediation.version,
+      ...extra,
+    };
   }
 
   function ownerContext(identity, options = {}) {
@@ -1682,6 +1877,7 @@ export function createCoreHandlers(config, options = {}) {
       } = args;
       const requestBody = sanitizeCoreBody({
         ...safeArgs,
+        request_id: safeArgs.request_id || `action_${crypto.randomUUID()}`,
         ...(sharedContext ? { memory_context: sharedContext } : {}),
         tenant_id: identity.tenantId,
         owner_confirmed: boundedInternalCoordination ? false : confirmed,
@@ -1689,7 +1885,7 @@ export function createCoreHandlers(config, options = {}) {
           ? { confirmation_reference: confirmationReference }
           : {}),
       });
-      return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
+      const coreResult = await coreRequest("/v1/action-evaluator", identity.tenantId, {
         method: "POST",
         useTenantGateway: true,
         body: {
@@ -1703,8 +1899,250 @@ export function createCoreHandlers(config, options = {}) {
               },
             ),
           } : {}),
+        },
+        allowFailurePayload: true,
+      });
+      const payload = coreResult.payload || coreResult;
+      const authorization = payload.authorization || payload.gate || payload.result?.authorization || {};
+      const decisionContract = payload.decision_contract || payload.result?.decision_contract || {};
+      const decisionState = String(
+        authorization.state ||
+        decisionContract.state ||
+        payload.verdict?.decision ||
+        payload.decision ||
+        "",
+      ).toLowerCase();
+      const mediationState = String(
+        authorization.mediation ||
+        decisionContract.action_mediation?.state ||
+        payload.verdict?.action_mediation?.state ||
+        "",
+      ).toLowerCase();
+      const legacyAllowed = ["allow", "allowed", "allow_controlled", "allow_advisory"].includes(decisionState) || mediationState === "allow";
+      const blocked = payload.authorization
+        ? authorization.allowed !== true || decisionState === "blocked" || mediationState === "hard_block"
+        : !legacyAllowed;
+      if (blocked) {
+        const remediation = await openBlockedRemediation({
+          identity,
+          requestBody,
+          authorization,
+          contract: decisionContract,
+          output: payload.output || payload.result?.output || {},
+        });
+        if (remediation) {
+          return textResult({
+            ...payload,
+            ...remediation.statusPayload,
+          });
         }
-      }));
+      }
+      return textResult(payload);
+    },
+    core_block_remediation_status: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      return textResult({
+        ok: true,
+        remediation: remediationEnvelope(remediation),
+      });
+    },
+    core_block_remediation_explain: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      return textResult({
+        ok: true,
+        remediation_id: remediation.remediation_id,
+        decision_id: remediation.original_decision.decision_id,
+        explanation: remediation.nyra_explanation,
+      });
+    },
+    core_block_remediation_propose: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      const idem = await remediationStore.findIdempotency({
+        tenant_id: identity.tenantId,
+        remediation_id: remediation.remediation_id,
+        idempotency_key: args.idempotency_key,
+      });
+      const attempt = proposeRemediationAttempt({
+        remediation,
+        actor: {
+          kind: identity.kind || "connected_ai",
+          subject: identity.subject || identity.agentId || "connected_ai",
+          tenant_id: identity.tenantId,
+        },
+        proposal: args.proposal,
+        diagnosis: args.diagnosis,
+        idempotencyKey: args.idempotency_key,
+        now: () => new Date(),
+      });
+      if (idem && idem.proposal_digest && idem.proposal_digest !== attempt.proposal_digest) {
+        throw new Error("core_block_remediation_replay_rejected");
+      }
+      if (idem?.result) {
+        return textResult({ ok: true, idempotent: true, ...idem.result });
+      }
+      validateProposalForRemediation(remediation, attempt, {
+        expectedVersion: args.expected_version,
+        idempotencyKey: args.idempotency_key,
+      });
+      const nextStatus = attempt.proposal_type === CORE_BLOCK_PROPOSAL_TYPES.OWNER_CONFIRMATION_ROUTE
+        ? CORE_BLOCK_REMEDIATION_STATUS.WAITING_OWNER
+        : CORE_BLOCK_REMEDIATION_STATUS.PROPOSAL_READY;
+      const updated = await remediationStore.appendAttempt({
+        tenant_id: remediation.tenant_id,
+        remediation_id: remediation.remediation_id,
+        expected_version: remediation.version,
+        attempt,
+        next_status: nextStatus,
+      });
+      const result = {
+        ok: true,
+        remediation: remediationEnvelope(updated, {
+          latest_attempt: attempt,
+          diagnosis: attempt.diagnosis,
+        }),
+      };
+      await remediationStore.rememberIdempotency({
+        tenant_id: remediation.tenant_id,
+        remediation_id: remediation.remediation_id,
+        idempotency_key: args.idempotency_key,
+        proposal_digest: attempt.proposal_digest,
+        result,
+      });
+      if (decisionLedger) {
+        await decisionLedger.append({
+          tenant_id: remediation.tenant_id,
+          work_id: remediation.work_id,
+          event_type: "core_block_proposal_submitted",
+          remediation_id: remediation.remediation_id,
+          decision_id: remediation.original_decision.decision_id,
+          reason_summary: attempt.summary,
+          metadata: {
+            proposal_digest: attempt.proposal_digest,
+            proposal_type: attempt.proposal_type,
+          },
+        });
+      }
+      return textResult(result);
+    },
+    core_block_remediation_review: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      const attempt = remediation.attempts.find((item) => item.attempt_id === args.attempt_id) || null;
+      if (!attempt) throw new Error("remediation_attempt_not_found");
+      const review = await reviewRemediationProposal({
+        remediation,
+        attempt,
+        actor: {
+          kind: identity.kind || "nyra",
+          tenant_id: identity.tenantId,
+          subject: identity.subject || identity.agentId || "nyra",
+        },
+        store: remediationStore,
+        ledger: decisionLedger,
+      });
+      return textResult({
+        ok: true,
+        remediation_id: remediation.remediation_id,
+        review,
+      });
+    },
+    core_block_remediation_resubmit: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      const attempt = remediation.attempts.find((item) => item.attempt_id === args.attempt_id) || null;
+      if (!attempt) throw new Error("remediation_attempt_not_found");
+      if (remediation.nyra_review?.status !== "approve_for_core") {
+        throw new Error("nyra_review_required");
+      }
+      const resubmissionContext = buildResubmissionContext(remediation, attempt, remediation.nyra_review);
+      const coreResponse = await coreRequest("/v1/action-evaluator", identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          request_id: `resubmit_${crypto.randomUUID()}`,
+          remediation_context: resubmissionContext,
+          ...sanitizeCoreBody({
+            action_label: remediation.bound_scope.operation_type,
+            action_type: remediation.bound_scope.operation_type,
+            project_id: remediation.project_id,
+            work_id: remediation.work_id,
+            branch_id: remediation.branch_id,
+            session_id: remediation.session_id,
+            target_system: remediation.bound_scope.target_system,
+            operation_class: remediation.bound_scope.operation_class,
+            repository: remediation.bound_scope.repository,
+            ref: remediation.bound_scope.ref,
+            environment: remediation.bound_scope.environment,
+            resource_ids: remediation.bound_scope.resource_ids,
+            tenant_id: identity.tenantId,
+          }),
+        },
+        allowFailurePayload: true,
+      });
+      const payload = coreResponse.payload || coreResponse;
+      const allowed = payload?.authorization?.allowed === true || payload?.allowed === true;
+      const nextStatus = allowed
+        ? CORE_BLOCK_REMEDIATION_STATUS.ALLOWED
+        : CORE_BLOCK_REMEDIATION_STATUS.REVISION_REQUIRED;
+      const resubmitted = await remediationStore.recordResubmission({
+        tenant_id: remediation.tenant_id,
+        remediation_id: remediation.remediation_id,
+        expected_version: remediation.version,
+        resubmission: {
+          status: allowed ? "allowed" : "blocked",
+          resubmission_id: `resub_${crypto.randomUUID()}`,
+          attempt_id: attempt.attempt_id,
+          new_decision_id: payload?.decision_contract?.decision_id || payload?.authorization?.decision_id || null,
+          new_decision_digest: payload?.decision_contract?.decision_digest || null,
+          new_verdict: payload?.authorization?.state || payload?.decision_contract?.state || null,
+          submitted_at: new Date().toISOString(),
+        },
+      });
+      const finalState = await remediationStore.markStatus({
+        tenant_id: remediation.tenant_id,
+        remediation_id: remediation.remediation_id,
+        expected_version: resubmitted.version,
+        status: nextStatus,
+      });
+      if (decisionLedger) {
+        await decisionLedger.append({
+          tenant_id: remediation.tenant_id,
+          work_id: remediation.work_id,
+          event_type: allowed ? "core_block_remediation_allowed" : "core_block_remediation_revision_requested",
+          remediation_id: remediation.remediation_id,
+          decision_id: remediation.original_decision.decision_id,
+          reason_summary: allowed ? "resubmission_allowed" : "resubmission_blocked",
+          metadata: { resubmission_context: resubmissionContext },
+        });
+      }
+      return textResult({
+        ok: true,
+        remediation: remediationEnvelope(finalState, {
+          resubmission_context: resubmissionContext,
+          core_response: payload,
+        }),
+      });
+    },
+    core_block_remediation_cancel: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      const cancelled = await remediationStore.cancel({
+        tenant_id: remediation.tenant_id,
+        remediation_id: remediation.remediation_id,
+        expected_version: remediation.version,
+        reason: args.reason,
+      });
+      if (decisionLedger) {
+        await decisionLedger.append({
+          tenant_id: remediation.tenant_id,
+          work_id: remediation.work_id,
+          event_type: "core_block_remediation_cancelled",
+          remediation_id: remediation.remediation_id,
+          decision_id: remediation.original_decision.decision_id,
+          reason_summary: args.reason || "cancelled",
+        });
+      }
+      return textResult({
+        ok: true,
+        remediation: remediationEnvelope(cancelled),
+      });
     }
   };
   return handlers;
