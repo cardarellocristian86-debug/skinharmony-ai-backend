@@ -26,6 +26,38 @@ const NATIVE_HOST_TYPES = new Set(["chatgpt_native", "codex_native"]);
 const NATIVE_TASK_KINDS = new Set(["builder", "verifier", "researcher", "reviewer", "supervisor"]);
 const NATIVE_REPORT_STATES = new Set(["completed", "failed", "blocked"]);
 const NATIVE_ASSIGNMENT_CAPABILITY_PATTERN = /^hnac_[A-Za-z0-9_-]{43}$/;
+const GALLERY_PARTICIPANT_MAX_TTL_SECONDS = 3_600;
+const GALLERY_PARTICIPANT_ACL = Object.freeze(["gallery.read", "gallery.coordinate"]);
+
+function gallerySecurityError(code) {
+  const error = new Error(code);
+  error.code = code;
+  throw error;
+}
+
+export function assertGalleryParticipantBinding(identity = {}, input = {}) {
+  const presence = identity.agentPresence;
+  if (
+    presence?.transport_bound !== true ||
+    !/^ags_[a-f0-9]{32}$/.test(String(presence.signature || "")) ||
+    !/^[a-f0-9]{16,64}$/i.test(String(presence.host_transport_session_fingerprint || ""))
+  ) {
+    gallerySecurityError("gallery_signed_presence_required");
+  }
+  if (
+    String(input.session_id || "") !== String(presence.session_id || "") ||
+    String(input.agent_id || "") !== String(presence.agent_id || "") ||
+    (input.client_type && String(input.client_type) !== String(presence.client_type || ""))
+  ) {
+    gallerySecurityError("gallery_participant_presence_mismatch");
+  }
+  return {
+    sessionId: identifier(presence.session_id, "session_id"),
+    agentId: identifier(presence.agent_id, "agent_id"),
+    clientType: safeText(presence.client_type || "other", 40),
+    acl: [...GALLERY_PARTICIPANT_ACL],
+  };
+}
 const WORK_CATALOG_STATUSES = new Set([
   "active", "verified", "release_ready", "completed", "blocked", "failed",
 ]);
@@ -1927,12 +1959,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
       }));
   }
 
-  async function requireParticipant(client, context, sessionId, { active = true } = {}) {
+  async function requireParticipant(client, context, sessionId, { active = true, agentId } = {}) {
     const result = await client.query(`SELECT session_id,agent_id,branch_id,status,expires_at,actor_subject
       FROM core_continuity_participants
       WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND actor_subject=$4
         AND ($5::boolean=false OR (status='active' AND expires_at>now()))
-      FOR UPDATE`, [context.tenantId, context.workId, sessionId, context.actorSubject, active]);
+        AND ($6::varchar IS NULL OR agent_id=$6)
+      FOR UPDATE`, [context.tenantId, context.workId, sessionId, context.actorSubject, active, agentId || null]);
     if (!result.rows[0]) throw new Error("continuity_participant_not_active");
     return result.rows[0];
   }
@@ -1993,10 +2026,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function join(identity, input) {
     const context = workContext(identity, input);
-    const sessionId = identifier(input.session_id, "session_id");
-    const agentId = identifier(input.agent_id, "agent_id");
+    const binding = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId } = binding;
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
-    const ttlSeconds = positiveInteger(input.ttl_seconds, 300, 3_600);
+    const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
+      GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "gallery_join", input, async () => {
         await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
@@ -2016,14 +2050,26 @@ export function createWorkContinuityRuntime(config, options = {}) {
           ON CONFLICT (tenant_id,work_id,session_id) DO UPDATE SET
             actor_subject=EXCLUDED.actor_subject,agent_id=EXCLUDED.agent_id,
             client_type=EXCLUDED.client_type,
-            branch_id=EXCLUDED.branch_id,status='active',last_seen_at=now(),
+            branch_id=CASE
+              WHEN core_continuity_participants.expires_at<=now() THEN EXCLUDED.branch_id
+              ELSE coalesce(core_continuity_participants.branch_id,EXCLUDED.branch_id)
+            END,
+            status='active',last_seen_at=now(),
             expires_at=EXCLUDED.expires_at,metadata=EXCLUDED.metadata
-          WHERE core_continuity_participants.actor_subject=EXCLUDED.actor_subject
+          WHERE (core_continuity_participants.actor_subject=EXCLUDED.actor_subject
+                 AND core_continuity_participants.agent_id=EXCLUDED.agent_id
+                 AND (core_continuity_participants.branch_id IS NULL
+                      OR EXCLUDED.branch_id IS NULL
+                      OR core_continuity_participants.branch_id=EXCLUDED.branch_id))
              OR core_continuity_participants.expires_at<=now()
           RETURNING session_id,agent_id,client_type,branch_id,status,joined_at,last_seen_at,expires_at`,
         [context.tenantId, context.workId, sessionId, context.actorSubject, agentId,
-          safeText(input.client_type || "other", 40), branchId, ttlSeconds,
-          JSON.stringify(cleanJson(input.metadata || {}, 20_000))]);
+          binding.clientType, branchId, ttlSeconds,
+          JSON.stringify(cleanJson({
+            profile: input.metadata || {},
+            gallery_acl: binding.acl,
+            ownership_transfer_allowed: false,
+          }, 20_000))]);
         if (!participant.rows[0]) throw new Error("continuity_session_conflict");
         const event = await appendEvent(client, context, "participant_joined", {
           session_id: sessionId, agent_id: agentId, branch_id: branchId,
@@ -2035,16 +2081,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function heartbeat(identity, input) {
     const context = workContext(identity, input);
-    const sessionId = identifier(input.session_id, "session_id");
-    const ttlSeconds = positiveInteger(input.ttl_seconds, 300, 3_600);
+    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
+    const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
+      GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "gallery_heartbeat", input, async () => {
-        await requireParticipant(client, context, sessionId, { active: false });
+        await requireParticipant(client, context, sessionId, { active: false, agentId });
         const participant = await client.query(`UPDATE core_continuity_participants
           SET status='active',last_seen_at=now(),expires_at=now()+($5::int*interval '1 second')
           WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND actor_subject=$4
+            AND agent_id=$6
           RETURNING session_id,agent_id,branch_id,status,last_seen_at,expires_at`,
-        [context.tenantId, context.workId, sessionId, context.actorSubject, ttlSeconds]);
+        [context.tenantId, context.workId, sessionId, context.actorSubject, ttlSeconds, agentId]);
+        if (!participant.rows[0]) throw new Error("continuity_participant_not_active");
         const recovered = await expireLeases(client, context);
         const event = await appendEvent(client, context, "participant_heartbeat", {
           session_id: sessionId, expired_leases_recovered: recovered.length,
@@ -2056,12 +2105,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function openBranch(identity, input) {
     const context = workContext(identity, input);
-    const sessionId = identifier(input.session_id, "session_id");
+    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
     const branchKey = identifier(input.branch_key, "branch_key");
     const parentBranchId = input.parent_branch_id ? uuid(input.parent_branch_id, "parent_branch_id") : null;
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "branch_open", input, async () => {
-        await requireParticipant(client, context, sessionId);
+        await requireParticipant(client, context, sessionId, { agentId });
         if (parentBranchId) {
           const parent = await client.query(`SELECT branch_id FROM core_continuity_branches
             WHERE tenant_id=$1 AND work_id=$2 AND branch_id=$3`,
@@ -2077,9 +2126,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
           RETURNING branch_id,parent_branch_id,branch_key,title,objective,status,created_at,updated_at`,
         [context.tenantId, context.workId, branchId, parentBranchId, branchKey,
           safeText(input.title, 240), safeText(input.objective, 4_000), context.actor]);
-        await client.query(`UPDATE core_continuity_participants SET branch_id=$4,last_seen_at=now()
-          WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+        const assigned = await client.query(`UPDATE core_continuity_participants SET branch_id=$4,last_seen_at=now()
+          WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3
+            AND (branch_id IS NULL OR branch_id=$4)
+          RETURNING branch_id`,
         [context.tenantId, context.workId, sessionId, branch.rows[0].branch_id]);
+        if (!assigned.rows[0]) throw new Error("continuity_participant_branch_locked");
         const event = await appendEvent(client, context, "branch_opened", {
           branch_id: branch.rows[0].branch_id, parent_branch_id: parentBranchId,
           branch_key: branchKey, session_id: sessionId,
@@ -2091,20 +2143,18 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function acquireLease(identity, input) {
     const context = workContext(identity, input);
-    const sessionId = identifier(input.session_id, "session_id");
+    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
-    const ttlSeconds = positiveInteger(input.ttl_seconds, 300, 3_600);
+    const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
+      GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
     const surfaces = normalizeSurfaces(input.surfaces);
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "lease_acquire", input, async () => {
         await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
           [context.tenantId, context.workId]);
-        const participant = await requireParticipant(client, context, sessionId);
+        const participant = await requireParticipant(client, context, sessionId, { agentId });
         if (branchId && branchId !== participant.branch_id) {
-          const branch = await client.query(`SELECT branch_id FROM core_continuity_branches
-            WHERE tenant_id=$1 AND work_id=$2 AND branch_id=$3 AND status='active'`,
-          [context.tenantId, context.workId, branchId]);
-          if (!branch.rows[0]) throw new Error("continuity_branch_not_found");
+          throw new Error("continuity_participant_branch_locked");
         }
         await expireLeases(client, context);
         const active = await client.query(`SELECT l.lease_id,l.session_id,l.branch_id,l.purpose,l.expires_at,
@@ -2160,12 +2210,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function renewLease(identity, input) {
     const context = workContext(identity, input);
-    const sessionId = identifier(input.session_id, "session_id");
+    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
     const leaseId = uuid(input.lease_id, "lease_id");
-    const ttlSeconds = positiveInteger(input.ttl_seconds, 300, 3_600);
+    const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
+      GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "lease_renew", input, async () => {
-        await requireParticipant(client, context, sessionId);
+        await requireParticipant(client, context, sessionId, { agentId });
         const lease = await client.query(`UPDATE core_continuity_leases
           SET renewed_at=now(),expires_at=now()+($5::int*interval '1 second')
           WHERE tenant_id=$1 AND work_id=$2 AND lease_id=$3 AND session_id=$4
@@ -2183,11 +2234,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function releaseLease(identity, input) {
     const context = workContext(identity, input);
-    const sessionId = identifier(input.session_id, "session_id");
+    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
     const leaseId = uuid(input.lease_id, "lease_id");
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "lease_release", input, async () => {
-        await requireParticipant(client, context, sessionId, { active: false });
+        await requireParticipant(client, context, sessionId, { active: false, agentId });
         const lease = await client.query(`UPDATE core_continuity_leases
           SET status='released',released_at=now()
           WHERE tenant_id=$1 AND work_id=$2 AND lease_id=$3 AND session_id=$4 AND status='active'
@@ -2204,12 +2255,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function postMessage(identity, input) {
     const context = workContext(identity, input);
-    const fromSessionId = identifier(input.session_id, "session_id");
+    const { sessionId: fromSessionId, agentId } = assertGalleryParticipantBinding(identity, input);
     const toSessionId = input.to_session_id ? identifier(input.to_session_id, "to_session_id") : null;
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "message_post", input, async () => {
-        await requireParticipant(client, context, fromSessionId);
+        await requireParticipant(client, context, fromSessionId, { agentId });
         let recipient = null;
         if (toSessionId) {
           const result = await client.query(`SELECT session_id,actor_subject FROM core_continuity_participants
@@ -2247,9 +2298,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
   async function inbox(identity, input) {
     await initialize();
     const context = workContext(identity, input);
-    const sessionId = identifier(input.session_id, "session_id");
+    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
     const limit = positiveInteger(input.limit, 50, 200);
-    const participant = await requireParticipant(pool, context, sessionId, { active: false });
+    const participant = await requireParticipant(pool, context, sessionId, { active: false, agentId });
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     const messages = await pool.query(`SELECT message_id,branch_id,from_session_id,to_session_id,
         message_type,subject,payload,created_at

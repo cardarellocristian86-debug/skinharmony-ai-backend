@@ -15,6 +15,21 @@ import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
 
+function galleryIdentity(subject, sessionId, agentId) {
+  return {
+    tenantId: "tenant-a",
+    subject,
+    agentPresence: {
+      session_id: sessionId,
+      agent_id: agentId,
+      client_type: "codex",
+      signature: `ags_${"a".repeat(32)}`,
+      transport_bound: true,
+      host_transport_session_fingerprint: "b".repeat(24),
+    },
+  };
+}
+
 function galleryMessagePool({ participantSubject, recipientSubject, messages = [] } = {}) {
   const calls = [];
   return {
@@ -194,10 +209,11 @@ test("direct Gallery messages bind the active recipient subject", async () => {
     recipientSubject: "oauth|original-recipient",
   });
   const runtime = createWorkContinuityRuntime({}, { pool });
-  await runtime.postMessage({ tenantId: "tenant-a", subject: "oauth|sender" }, {
+  await runtime.postMessage(galleryIdentity("oauth|sender", "sender-session", "sender-agent"), {
     work_id: WORK_ID,
     session_id: "sender-session",
     agent_id: "sender-agent",
+    client_type: "codex",
     to_session_id: "shared-recipient-session",
     message_type: "update",
     subject: "Private update",
@@ -223,9 +239,12 @@ test("Gallery inbox excludes legacy and prior-subject direct messages after sess
     ],
   });
   const runtime = createWorkContinuityRuntime({}, { pool });
-  const result = await runtime.inbox({ tenantId: "tenant-a", subject: "oauth|replacement-recipient" }, {
+  const result = await runtime.inbox(
+    galleryIdentity("oauth|replacement-recipient", "reused-session", "replacement-agent"), {
     work_id: WORK_ID,
     session_id: "reused-session",
+    agent_id: "replacement-agent",
+    client_type: "codex",
   });
   assert.deepEqual(result.messages.map((message) => message.message_id), ["broadcast", "replacement"]);
   const inboxQuery = pool.calls.find((call) => /FROM core_continuity_messages/.test(call.sql));

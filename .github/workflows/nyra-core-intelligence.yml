@@ -218,7 +218,7 @@ jobs:
             abort("#{key} must be explicitly enabled by the MCP Blueprint") unless mcp_env.dig(key, "value") == "true"
           end
           abort("Owner confirmation freshness must remain bounded to delegation bootstrap") unless
-            mcp_env.dig("AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS", "value") == "300"
+            mcp_env.dig("AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS", "value") == "43200"
           abort("Native Codex bearer must remain a manually provisioned service secret") unless
             mcp_env["CODEX_BEARER_KEYS"] == {
               "key" => "CODEX_BEARER_KEYS",
