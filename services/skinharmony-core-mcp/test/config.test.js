@@ -313,9 +313,9 @@ test("loads only bounded server-side OAuth tenant memberships", () => {
   );
 });
 
-test("keeps OAuth owner authentication usable for a 12-hour ChatGPT work session", () => {
+test("keeps OAuth owner confirmation usable during a bounded ChatGPT work session", () => {
   const config = loadConfig({});
-  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 43_200);
+  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 300);
 });
 
 test("maps Suite Control Plane keys only to their configured tenants", () => {

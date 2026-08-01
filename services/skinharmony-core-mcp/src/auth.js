@@ -90,7 +90,7 @@ function elevateOAuthOwner(identity, proof, config, consumed) {
   // still subject-bound, request-bound and single-use below.
   const authTime = Number(identity.tokenIssuedAt);
   const now = Math.floor(Date.now() / 1000);
-  const maxAge = Number(config.oauthOwnerConfirmationMaxAgeSeconds || 43_200);
+  const maxAge = Number(config.oauthOwnerConfirmationMaxAgeSeconds || 300);
   if (!Number.isFinite(authTime) || now - authTime > maxAge || authTime > now + 30) throw new Error("owner_authentication_stale");
   const key = `${identity.subject}\u0000${reference}\u0000${crypto.createHash("sha256").update(requestBinding).digest("hex")}`;
   if (consumed.has(key)) throw new Error("owner_confirmation_replayed");

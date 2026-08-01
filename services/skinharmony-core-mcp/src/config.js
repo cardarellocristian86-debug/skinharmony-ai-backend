@@ -263,12 +263,12 @@ export function loadConfig(env = process.env) {
   const godModeClientIds = csv(env.NYRA_GOD_MODE_CLIENT_IDS);
   const godModeCodexEnabled = flag(env.NYRA_GOD_MODE_CODEX_ENABLED, false);
   const godModeEmergencyStop = flag(env.NYRA_GOD_MODE_EMERGENCY_STOP, false);
-  // Keep the verified OAuth owner session usable for a normal working day.
-  // This does not make owner elevation persistent: each privileged write still
-  // needs a request-bound, single-use confirmation and bounded Core delegation.
+  // Owner elevation is only the short bootstrap for a bounded Core
+  // delegation. Long-running work continues through signed, expiring action
+  // tickets instead of treating an old browser login as fresh confirmation.
   const oauthOwnerConfirmationMaxAgeSeconds = integer(
     env.AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS,
-    43_200,
+    300,
     60,
     86_400,
   );

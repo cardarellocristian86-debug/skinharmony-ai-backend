@@ -474,11 +474,11 @@ test("uses the current OAuth access-token issuance for owner freshness after a r
   }));
 });
 
-test("keeps a verified OAuth owner token eligible for request-bound elevation for 12 hours", async () => {
+test("keeps OAuth owner elevation short and delegates long work to Core leases", async () => {
   const now = Math.floor(Date.now() / 1000);
   const fixture = auth0Fixture({
     sub: "oauth-owner-fixture",
-    iat: now - 43_199,
+    iat: now - 301,
     auth_time: now - 86_400,
     exp: now + 3_600,
   });
@@ -486,26 +486,13 @@ test("keeps a verified OAuth owner token eligible for request-bound elevation fo
     ...fixture.config,
     codexKeys: [],
     oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" },
-    oauthOwnerConfirmationMaxAgeSeconds: 43_200,
+    oauthOwnerConfirmationMaxAgeSeconds: 300,
   }, { jwksCache: fixture.cache });
   const identity = await auth(`Bearer ${fixture.token}`);
 
-  assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, {
-    confirmed: true,
-    confirmationReference: "12-hour work session",
-    requestBinding: "publish-draft-pr",
-  }));
   assert.throws(() => auth.elevateOAuthOwner(identity, {
     confirmed: true,
-    confirmationReference: "12-hour work session",
-    requestBinding: "publish-draft-pr",
-  }), /owner_confirmation_replayed/);
-  assert.throws(() => auth.elevateOAuthOwner({
-    ...identity,
-    tokenIssuedAt: now - 43_201,
-  }, {
-    confirmed: true,
-    confirmationReference: "expired 12-hour work session",
+    confirmationReference: "expired OAuth bootstrap",
     requestBinding: "publish-another-draft-pr",
   }), /owner_authentication_stale/);
 });
