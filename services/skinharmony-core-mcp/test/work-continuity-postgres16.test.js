@@ -118,7 +118,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
   const projectId = `continuity-${runId.slice(0, 16)}`;
   const firstSession = `session-${runId.slice(0, 16)}`;
   const secondSession = `aggregate-${runId.slice(16, 32)}`;
-  const pool = new Pool({ connectionString: databaseUrl, max: 4 });
+  const pool = new Pool({ connectionString: databaseUrl, max: 4, statement_timeout: 10_000 });
   const runtime = createWorkContinuityRuntime({
     databaseUrl,
     dttAgentIdentitySigningSecret: "postgres16-continuity-assignment-secret-0123456789",
@@ -252,6 +252,60 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       ...secondParticipant,
       idempotency_key: `participant-cross-tenant-${runId}`,
     }), /continuity_work_not_found/);
+
+    const raceSession = `race-${runId.slice(0, 16)}`;
+    const raceOwner = { tenantId, subject: "codex|race-owner" };
+    const raceSuccessor = { tenantId, subject: "chatgpt|race-successor" };
+    await runtime.join(raceOwner, {
+      work_id: firstWork.work_id,
+      session_id: raceSession,
+      agent_id: "race-owner",
+      client_type: "codex",
+      ttl_seconds: 300,
+      idempotency_key: `race-owner-join-${runId}`,
+    });
+    const raceLease = await runtime.acquireLease(raceOwner, {
+      work_id: firstWork.work_id,
+      session_id: raceSession,
+      purpose: "Verify participant/work lock order.",
+      surfaces: [{ kind: "file", value: `services/race-${runId.slice(0, 8)}` }],
+      ttl_seconds: 3_600,
+      idempotency_key: `race-owner-lease-${runId}`,
+    });
+    await pool.query(`UPDATE core_continuity_participants SET expires_at=now()-interval '1 second'
+      WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+    [tenantId, firstWork.work_id, raceSession]);
+    const raceResults = await Promise.allSettled([
+      runtime.heartbeat(raceOwner, {
+        work_id: firstWork.work_id,
+        session_id: raceSession,
+        ttl_seconds: 300,
+        idempotency_key: `race-owner-heartbeat-${runId}`,
+      }),
+      runtime.join(raceSuccessor, {
+        work_id: firstWork.work_id,
+        session_id: raceSession,
+        agent_id: "race-successor",
+        client_type: "chatgpt",
+        ttl_seconds: 300,
+        idempotency_key: `race-successor-join-${runId}`,
+      }),
+    ]);
+    assert.equal(raceResults.filter((result) => result.status === "fulfilled").length, 1);
+    for (const result of raceResults.filter((candidate) => candidate.status === "rejected")) {
+      assert.notEqual(result.reason?.code, "40P01");
+      assert.doesNotMatch(String(result.reason?.message || result.reason), /deadlock detected/i);
+    }
+    const raceState = await pool.query(`SELECT p.actor_subject,l.status AS lease_status
+      FROM core_continuity_participants p JOIN core_continuity_leases l
+        ON l.tenant_id=p.tenant_id AND l.work_id=p.work_id AND l.session_id=p.session_id
+      WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.session_id=$3 AND l.lease_id=$4`,
+    [tenantId, firstWork.work_id, raceSession, raceLease.lease.lease_id]);
+    assert.equal(raceState.rowCount, 1);
+    assert.equal(
+      raceState.rows[0].lease_status,
+      raceState.rows[0].actor_subject === raceSuccessor.subject ? "expired" : "active",
+    );
     const atlasInput = (workId, idempotencyKey, summarySuffix) => runtime.upsertAtlas(coordinator, {
       work_id: workId,
       nodes: [

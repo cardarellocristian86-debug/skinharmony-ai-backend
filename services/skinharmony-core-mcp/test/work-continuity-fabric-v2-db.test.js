@@ -26,6 +26,7 @@ class ContinuityPool {
     this.events = new Map();
     this.idempotency = new Map();
     this.participants = new Map();
+    this.leases = new Map();
     this.plans = new Map();
     this.nativeAgents = new Map();
     this.evaluations = new Map();
@@ -201,12 +202,36 @@ class ContinuityPool {
       const work = this.works.get(key(parameters[0], parameters[1]));
       return { rows: work ? [{ work_id: work.work_id }] : [], rowCount: work ? 1 : 0 };
     }
+    if (q.startsWith("SELECT actor_subject,expires_at FROM core_continuity_participants")) {
+      const row = this.participants.get(key(parameters[0], parameters[1], parameters[2]));
+      return { rows: row ? [{ actor_subject: row.actor_subject, expires_at: row.expires_at }] : [],
+        rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("UPDATE core_continuity_leases l")) {
+      const [tenantId, workId, sessionId, actorSubject] = parameters;
+      const participant = this.participants.get(key(tenantId, workId, sessionId));
+      const canRebind = participant && participant.actor_subject !== actorSubject &&
+        Date.parse(participant.expires_at) <= this.clock().getTime();
+      const rows = [];
+      if (canRebind) {
+        for (const lease of this.leases.values()) {
+          if (lease.tenant_id === tenantId && lease.work_id === workId &&
+            lease.session_id === sessionId && lease.status === "active") {
+            lease.status = "expired";
+            lease.released_at ||= this.clock().toISOString();
+            rows.push({ lease_id: lease.lease_id, session_id: lease.session_id });
+          }
+        }
+      }
+      return { rows, rowCount: rows.length };
+    }
     if (q.startsWith("INSERT INTO core_continuity_participants")) {
       const [tenantId, workId, sessionId, actorSubject, agentId, clientType,
         branchId, ttlSeconds, metadata] = parameters;
       const participantKey = key(tenantId, workId, sessionId);
       const current = this.participants.get(participantKey);
-      if (current && current.actor_subject !== actorSubject) {
+      if (current && current.actor_subject !== actorSubject &&
+        Date.parse(current.expires_at) > this.clock().getTime()) {
         return { rows: [], rowCount: 0 };
       }
       const timestamp = this.clock().toISOString();
@@ -226,6 +251,33 @@ class ContinuityPool {
       };
       this.participants.set(participantKey, row);
       return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT session_id,agent_id,branch_id,status,expires_at,actor_subject")) {
+      const row = this.participants.get(key(parameters[0], parameters[1], parameters[2]));
+      const requireActive = parameters[4] === true;
+      const active = row?.status === "active" && Date.parse(row.expires_at) > this.clock().getTime();
+      const matches = row?.actor_subject === parameters[3] && (!requireActive || active);
+      return { rows: matches ? [{ ...row }] : [], rowCount: matches ? 1 : 0 };
+    }
+    if (q.startsWith("UPDATE core_continuity_leases SET renewed_at")) {
+      const [tenantId, workId, leaseId, sessionId, ttlSeconds] = parameters;
+      const lease = this.leases.get(key(tenantId, workId, leaseId));
+      const active = lease?.session_id === sessionId && lease.status === "active" &&
+        Date.parse(lease.expires_at) > this.clock().getTime();
+      if (!active) return { rows: [], rowCount: 0 };
+      lease.renewed_at = this.clock().toISOString();
+      lease.expires_at = new Date(this.clock().getTime() + Number(ttlSeconds) * 1_000).toISOString();
+      return { rows: [{ ...lease }], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_leases SET status='released'")) {
+      const [tenantId, workId, leaseId, sessionId] = parameters;
+      const lease = this.leases.get(key(tenantId, workId, leaseId));
+      if (!lease || lease.session_id !== sessionId || lease.status !== "active") {
+        return { rows: [], rowCount: 0 };
+      }
+      lease.status = "released";
+      lease.released_at = this.clock().toISOString();
+      return { rows: [{ ...lease }], rowCount: 1 };
     }
     if (q.startsWith("SELECT project_id FROM core_continuity_works")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
@@ -887,6 +939,75 @@ test("Gallery admits multiple tenant-scoped participants and rejects session imp
     "work_created",
     "intent_anchored",
     "participant_joined",
+    "participant_joined",
+  ]);
+});
+
+test("Gallery expires prior-subject leases before reassigning an expired session", async () => {
+  let timestamp = Date.parse("2026-07-31T11:00:00.000Z");
+  const clock = () => new Date(timestamp);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const firstSubject = { tenantId: "tenant-a", subject: "subject-a" };
+  const secondSubject = { tenantId: "tenant-a", subject: "subject-b" };
+  const created = await runtime.ensure(firstSubject, initialInput, { creationAuthorized: true });
+  const sessionId = "rebound-participant-session";
+  const leaseId = "33333333-3333-4333-8333-333333333333";
+
+  await runtime.join(firstSubject, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: "codex-builder-a",
+    client_type: "codex",
+    ttl_seconds: 1,
+    idempotency_key: "rebound-participant-a",
+  });
+  pool.leases.set(key("tenant-a", created.work_id, leaseId), {
+    tenant_id: "tenant-a",
+    work_id: created.work_id,
+    lease_id: leaseId,
+    session_id: sessionId,
+    branch_id: null,
+    purpose: "protect the original subject work",
+    status: "active",
+    renewed_at: clock().toISOString(),
+    expires_at: new Date(timestamp + 3_600_000).toISOString(),
+    released_at: null,
+  });
+
+  timestamp += 2_000;
+  const rebound = await runtime.join(secondSubject, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: "chatgpt-verifier-b",
+    client_type: "chatgpt",
+    ttl_seconds: 300,
+    idempotency_key: "rebound-participant-b",
+  });
+
+  assert.equal(rebound.rebound_leases_expired, 1);
+  assert.equal(pool.participants.get(key("tenant-a", created.work_id, sessionId)).actor_subject,
+    secondSubject.subject);
+  assert.equal(pool.leases.get(key("tenant-a", created.work_id, leaseId)).status, "expired");
+  await assert.rejects(runtime.renewLease(secondSubject, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    lease_id: leaseId,
+    ttl_seconds: 300,
+    idempotency_key: "rebound-renew-denied",
+  }), /continuity_lease_not_active/);
+  await assert.rejects(runtime.releaseLease(secondSubject, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    lease_id: leaseId,
+    idempotency_key: "rebound-release-denied",
+  }), /continuity_lease_not_active/);
+  assert.deepEqual(pool.events.get(key("tenant-a", created.work_id))
+    .map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+    "participant_joined",
+    "lease_expired",
     "participant_joined",
   ]);
 });

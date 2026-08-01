@@ -268,6 +268,61 @@ test("work gallery tools preserve read/write and bounded tenant-collaboration bo
   );
 });
 
+test("Gallery mutations lock the work before participant rows", async () => {
+  const identity = { tenantId: "tenant-a", subject: "subject-a" };
+  const cases = [
+    ["heartbeat", {
+      work_id: WORK_ID, session_id: "lock-order-session", ttl_seconds: 300,
+      idempotency_key: "lock-order-heartbeat",
+    }],
+    ["openBranch", {
+      work_id: WORK_ID, session_id: "lock-order-session", branch_key: "lock-order",
+      title: "Lock order", objective: "Verify lock order.",
+      idempotency_key: "lock-order-branch",
+    }],
+    ["acquireLease", {
+      work_id: WORK_ID, session_id: "lock-order-session",
+      purpose: "Verify lock order.", surfaces: [{ kind: "file", value: "services/core" }],
+      ttl_seconds: 300, idempotency_key: "lock-order-acquire",
+    }],
+    ["renewLease", {
+      work_id: WORK_ID, session_id: "lock-order-session",
+      lease_id: "22222222-2222-4222-8222-222222222222", ttl_seconds: 300,
+      idempotency_key: "lock-order-renew",
+    }],
+    ["releaseLease", {
+      work_id: WORK_ID, session_id: "lock-order-session",
+      lease_id: "22222222-2222-4222-8222-222222222222",
+      idempotency_key: "lock-order-release",
+    }],
+    ["postMessage", {
+      work_id: WORK_ID, session_id: "lock-order-session", message_type: "update",
+      subject: "Lock order", payload: { verified: true },
+      idempotency_key: "lock-order-message",
+    }],
+  ];
+
+  for (const [method, input] of cases) {
+    const calls = [];
+    const pool = {
+      async query(sql, params = []) {
+        calls.push({ sql, params });
+        return { rows: [], rowCount: 0 };
+      },
+      async end() {},
+    };
+    const runtime = createWorkContinuityRuntime({}, { pool });
+    await assert.rejects(runtime[method](identity, input), /continuity_participant_not_active/);
+    const workLock = calls.findIndex((call) =>
+      /pg_advisory_xact_lock/.test(call.sql) && call.params[1] === WORK_ID);
+    const participantLock = calls.findIndex((call) =>
+      /SELECT session_id,agent_id,branch_id,status,expires_at,actor_subject/.test(call.sql));
+    assert.notEqual(workLock, -1, `${method}: missing work advisory lock`);
+    assert.notEqual(participantLock, -1, `${method}: missing participant lock`);
+    assert.ok(workLock < participantLock, `${method}: participant locked before work`);
+  }
+});
+
 test("Gallery mutations use bounded Core action types instead of generic continuity update", () => {
   assert.deepEqual({
     tenant_work_gallery_join: tenantWorkCoordinationActionType("tenant_work_gallery_join"),
