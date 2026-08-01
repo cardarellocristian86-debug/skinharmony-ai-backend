@@ -937,6 +937,7 @@ export function createCoreHandlers(config, options = {}) {
     const payload = await coreRequest(
       `/v1/host-native/actions/${encodeURIComponent(ticketId)}`,
       identity.tenantId,
+      { useTenantGateway: true },
     );
     const record = payload?.action_ticket;
     if (
@@ -1108,6 +1109,7 @@ export function createCoreHandlers(config, options = {}) {
       const route = "/v1/host-native/actions/authorize";
       const payload = await coreRequest(route, identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           delegation_id: args.delegation_id,
           work_id: args.work_id,
@@ -1130,12 +1132,14 @@ export function createCoreHandlers(config, options = {}) {
       await coreRequest(
         `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}`,
         identity.tenantId,
+        { useTenantGateway: true },
       ),
     ),
     host_native_action_reserve: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reserve`;
       return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           host_session_fingerprint: hostNativeSessionFingerprint(identity),
           idempotency_key: args.idempotency_key,
@@ -1148,6 +1152,7 @@ export function createCoreHandlers(config, options = {}) {
       try {
         return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
           method: "POST",
+          useTenantGateway: true,
           body: {
             reservation_id: args.reservation_id,
             host_session_fingerprint: hostNativeSessionFingerprint(identity),
@@ -1168,6 +1173,7 @@ export function createCoreHandlers(config, options = {}) {
       try {
         return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
           method: "POST",
+          useTenantGateway: true,
           body: {
             reservation_id: args.reservation_id,
             host_session_fingerprint: hostNativeSessionFingerprint(identity),
@@ -1186,6 +1192,7 @@ export function createCoreHandlers(config, options = {}) {
         `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/authorize-finalize`;
       return textResult(await coreRequest(route, identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           host_session_fingerprint: hostNativeSessionFingerprint(identity),
         },

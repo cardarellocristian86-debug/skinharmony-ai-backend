@@ -703,6 +703,7 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     universalCoreUrl: "https://core.test",
     universalCoreKeys: { "tenant-a": "tenant-core-key" },
     tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
     ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
     godModeEnabled: true,
     godModeTenantIds: ["tenant-a"],
@@ -715,6 +716,7 @@ test("binds host-native delegation and action routes to OAuth owner and server p
         path,
         method: init.method,
         body: init.body ? JSON.parse(init.body) : undefined,
+        headers: init.headers,
       });
       if (
         init.method === "GET" &&
@@ -869,6 +871,18 @@ test("binds host-native delegation and action routes to OAuth owner and server p
   assert.equal(calls[6].body.observed_commit, "c".repeat(40));
   assert.equal(calls[7].body.host_session_fingerprint, "a".repeat(64));
   assert.equal(closure.structuredContent.finalize_authorization.trusted, true);
+  assert.equal(calls[0].headers.authorization, "Bearer tenant-core-key");
+  assert.equal(calls[0].headers["x-sh-tenant-id"], undefined);
+  for (const call of calls.slice(1, 8)) {
+    assert.equal(call.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
+    assert.equal(call.headers["x-sh-tenant-id"], "tenant-a");
+    const tenantContext = JSON.parse(Buffer.from(
+      call.headers["x-sh-tenant-context"], "base64url",
+    ).toString("utf8"));
+    assert.equal(tenantContext.version, "mcp_tenant_context_v1");
+    assert.equal(tenantContext.tenant_id, "tenant-a");
+    assert.match(tenantContext.assertion, /^mtc_[a-f0-9]{64}$/);
+  }
 
   const codexGoodModeDelegation = await handlers.host_native_delegation_issue({
     work_id: "work-1",
@@ -976,6 +990,41 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     /host_native_owner_context_signing_unavailable/,
   );
   assert.equal(missingOwnerSecretCalled, false);
+});
+
+test("host-native action automation fails closed without the tenant gateway and never falls back", async () => {
+  let fetched = false;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "ordinary-tenant-key" },
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async () => {
+      fetched = true;
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  await assert.rejects(
+    handlers.host_native_action_authorize({
+      delegation_id: "hnd_delegation-12345678",
+      work_id: "work-1",
+      intent_anchor_digest: "b".repeat(64),
+      repository: "owner/repo",
+      action: { kind: "git.commit" },
+      evidence_digest: "d".repeat(64),
+    }, {
+      tenantId: "tenant-a",
+      agentPresence: {
+        client_type: "codex",
+        session_fingerprint: "a".repeat(64),
+      },
+    }),
+    /core_tenant_gateway_key_missing/,
+  );
+  assert.equal(fetched, false);
 });
 
 test("issues Core Join only through the signed MCP tenant gateway", async () => {

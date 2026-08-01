@@ -266,6 +266,11 @@ test("loads OAuth owner tenant bindings only from server-side configuration", ()
   assert.throws(() => loadConfig({ AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "../other" }) }), /invalid tenant id/);
 });
 
+test("accepts the production 12-hour owner confirmation freshness window", () => {
+  const config = loadConfig({ AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "43200" });
+  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 43_200);
+});
+
 test("loads only bounded server-side OAuth tenant memberships", () => {
   const config = loadConfig({
     AUTH0_TENANT_MEMBERSHIPS_JSON: JSON.stringify({
