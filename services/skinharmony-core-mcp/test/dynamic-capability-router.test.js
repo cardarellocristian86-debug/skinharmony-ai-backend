@@ -199,6 +199,63 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
   assert.equal(writes, 1);
 });
 
+test("allows only a metadata-free agent heartbeat without owner confirmation", async () => {
+  const tool = writeTool("agent_heartbeat");
+  tool.inputSchema.properties = {
+    agent_id: { type: "string" },
+    client_type: { type: "string" },
+    session_id: { type: "string" },
+    display_name: { type: "string" },
+    capabilities: { type: "array", items: { type: "string" } },
+    owner_confirmed: { type: "boolean" },
+    confirmation_reference: { type: "string" },
+  };
+  tool.inputSchema.required = ["agent_id", "client_type", "session_id", "owner_confirmed"];
+  let received;
+  let gatedTool;
+  const handlers = {
+    agent_heartbeat: async (args) => {
+      received = args;
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async ({ tool: target }) => {
+      gatedTool = target;
+      return { structuredContent: { authorization: { allowed: true } } };
+    },
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const minimal = {
+    capability_id: "agent_heartbeat",
+    catalog_revision: revision,
+    idempotency_key: "heartbeat-minimal-1",
+    arguments: { agent_id: "agent-a", client_type: "codex", session_id: "session-a" },
+  };
+
+  const result = await router.core_capability_invoke(minimal, { ...identity, ownerConfirmed: false });
+  assert.equal(gatedTool._meta["skinharmony/ownerConfirmationRequired"], false);
+  assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_required, false);
+  assert.deepEqual(received, { ...minimal.arguments, owner_confirmed: false });
+
+  for (const arguments_ of [
+    { ...minimal.arguments, display_name: "Custom agent" },
+    { ...minimal.arguments, capabilities: ["release_governance"] },
+    { ...minimal.arguments, capabilities: "release_governance" },
+  ]) {
+    await assert.rejects(
+      router.core_capability_invoke(
+        { ...minimal, idempotency_key: `blocked-${String(arguments_.display_name || arguments_.capabilities)}`, arguments: arguments_ },
+        { ...identity, ownerConfirmed: false },
+      ),
+      /owner_confirmation_required/,
+    );
+  }
+});
+
 test("bounded internal mutations use the target metadata instead of impersonating the owner", async () => {
   const tool = delegatedWriteTool();
   let received;

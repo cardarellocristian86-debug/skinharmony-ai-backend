@@ -172,6 +172,16 @@ function targetArguments(tool, wrapperArgs) {
   return args;
 }
 
+function ownerConfirmationRequiredForInvocation(tool, wrapperArgs) {
+  const required = tool._meta?.["skinharmony/ownerConfirmationRequired"] === true;
+  if (!required || tool.name !== "agent_heartbeat") return required;
+  const targetArgs = wrapperArgs.arguments || {};
+  const customDisplayName = String(targetArgs.display_name || "").trim().length > 0;
+  const customCapabilities = targetArgs.capabilities !== undefined &&
+    (!Array.isArray(targetArgs.capabilities) || targetArgs.capabilities.length > 0);
+  return customDisplayName || customCapabilities;
+}
+
 function authorizationAllowed(result) {
   const payload = result?.structuredContent || {};
   const authorization = payload.authorization || {};
@@ -300,8 +310,7 @@ export function createDynamicCapabilityHandlers({
       const tool = exactCapability(tools, handlers, args.capability_id);
       if (tool.annotations?.readOnlyHint === true) throw new Error("dynamic_capability_mutation_required");
       requireScopes(identity, tool.scopes || []);
-      const ownerConfirmationRequired =
-        tool._meta?.["skinharmony/ownerConfirmationRequired"] === true;
+      const ownerConfirmationRequired = ownerConfirmationRequiredForInvocation(tool, args);
       const dedicatedCoreGate =
         tool._meta?.["skinharmony/dedicatedCoreGate"] === true;
       if (
@@ -314,8 +323,17 @@ export function createDynamicCapabilityHandlers({
       const callArgs = targetArguments(tool, args);
       if (!dedicatedCoreGate) {
         if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
+        const gateTool = ownerConfirmationRequired
+          ? tool
+          : {
+              ...tool,
+              _meta: {
+                ...(tool._meta || {}),
+                "skinharmony/ownerConfirmationRequired": false,
+              },
+            };
         const gate = await gateAction({
-          tool,
+          tool: gateTool,
           args: callArgs,
           identity,
           catalogRevision: state.revision,
