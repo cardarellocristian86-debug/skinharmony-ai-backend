@@ -474,6 +474,42 @@ test("uses the current OAuth access-token issuance for owner freshness after a r
   }));
 });
 
+test("keeps a verified OAuth owner token eligible for request-bound elevation for 12 hours", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fixture = auth0Fixture({
+    sub: "oauth-owner-fixture",
+    iat: now - 43_199,
+    auth_time: now - 86_400,
+    exp: now + 3_600,
+  });
+  const auth = createAuthenticator({
+    ...fixture.config,
+    codexKeys: [],
+    oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" },
+    oauthOwnerConfirmationMaxAgeSeconds: 43_200,
+  }, { jwksCache: fixture.cache });
+  const identity = await auth(`Bearer ${fixture.token}`);
+
+  assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, {
+    confirmed: true,
+    confirmationReference: "12-hour work session",
+    requestBinding: "publish-draft-pr",
+  }));
+  assert.throws(() => auth.elevateOAuthOwner(identity, {
+    confirmed: true,
+    confirmationReference: "12-hour work session",
+    requestBinding: "publish-draft-pr",
+  }), /owner_confirmation_replayed/);
+  assert.throws(() => auth.elevateOAuthOwner({
+    ...identity,
+    tokenIssuedAt: now - 43_201,
+  }, {
+    confirmed: true,
+    confirmationReference: "expired 12-hour work session",
+    requestBinding: "publish-another-draft-pr",
+  }), /owner_authentication_stale/);
+});
+
 test("rejects impersonation, stale authentication and cross-tenant owner elevation", async () => {
   const stale = auth0Fixture({ sub: "oauth-owner-fixture", iat: 1, auth_time: 1 });
   const config = { ...stale.config, codexKeys: [], oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" }, oauthOwnerConfirmationMaxAgeSeconds: 60 };

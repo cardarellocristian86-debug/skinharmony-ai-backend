@@ -112,9 +112,8 @@ services:
       - key: AUTH0_TENANT_MEMBERSHIPS_JSON
         sync: false
       - key: AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS
-        # Runtime retains a 12-hour verified-token freshness floor so a normal
-        # connector session cannot be invalidated by an arbitrary Blueprint
-        # value. Declare that actual bound explicitly in this canary.
+        # Keep the canary aligned with the production 12-hour verified-token
+        # window. Privileged confirmations remain request-bound and one-use.
         value: "43200"
       - key: MCP_TENANT_CLAIM
         value: https://skinharmony.it/tenant_id

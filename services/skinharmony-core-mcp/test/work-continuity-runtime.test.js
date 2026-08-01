@@ -11,7 +11,10 @@ import {
   surfacesOverlap,
 } from "../src/work-continuity-runtime.js";
 import { TOOLS as BASE_TOOLS } from "../src/tool-definitions.js";
-import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
+import {
+  WORK_CONTINUITY_TOOLS,
+  tenantWorkCoordinationActionType,
+} from "../src/work-continuity-tools.js";
 
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -256,10 +259,32 @@ test("work gallery tools preserve read/write and bounded tenant-collaboration bo
       assert.equal(tools[name]._meta["skinharmony/tenantBoundedCollaboration"], true);
       assert.equal(tools[name].inputSchema.properties.owner_confirmed, undefined);
       assert.equal(tools[name].inputSchema.properties.confirmation_reference, undefined);
+      assert.equal(tools[name].inputSchema.properties.idempotency_key.minLength, 8);
     }
   }
   assert.deepEqual(
     tools.tenant_work_lease_acquire.inputSchema.properties.surfaces.items.properties.kind.enum,
     ["file", "component", "dependency"],
   );
+});
+
+test("Gallery mutations use bounded Core action types instead of generic continuity update", () => {
+  assert.deepEqual({
+    tenant_work_gallery_join: tenantWorkCoordinationActionType("tenant_work_gallery_join"),
+    tenant_work_gallery_heartbeat: tenantWorkCoordinationActionType("tenant_work_gallery_heartbeat"),
+    tenant_work_branch_open: tenantWorkCoordinationActionType("tenant_work_branch_open"),
+    tenant_work_lease_acquire: tenantWorkCoordinationActionType("tenant_work_lease_acquire"),
+    tenant_work_lease_renew: tenantWorkCoordinationActionType("tenant_work_lease_renew"),
+    tenant_work_lease_release: tenantWorkCoordinationActionType("tenant_work_lease_release"),
+    tenant_work_message_post: tenantWorkCoordinationActionType("tenant_work_message_post"),
+  }, {
+    tenant_work_gallery_join: "work.participant.join",
+    tenant_work_gallery_heartbeat: "work.participant.heartbeat",
+    tenant_work_branch_open: "work.branch.open",
+    tenant_work_lease_acquire: "work.lease.acquire",
+    tenant_work_lease_renew: "work.lease.renew",
+    tenant_work_lease_release: "work.lease.release",
+    tenant_work_message_post: "work.message.post",
+  });
+  assert.equal(tenantWorkCoordinationActionType("unknown_internal_write"), null);
 });

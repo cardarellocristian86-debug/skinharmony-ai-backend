@@ -1505,12 +1505,22 @@ export function createWorkContinuityRuntime(config, options = {}) {
         FROM core_continuity_session_bindings
         WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
       [tenantId, projectId, sessionId]);
-      if (binding.rows[0] && input.resume_existing === true) {
-        const existing = await client.query(`SELECT a.intent_digest,w.status,w.current_version,w.next_action
+      if (input.resume_existing === true && (binding.rows[0] || input.work_id)) {
+        if (binding.rows[0] && input.work_id && binding.rows[0].work_id !== workId) {
+          throw new Error("continuity_session_binding_conflict");
+        }
+        const resumeWorkId = binding.rows[0]?.work_id || workId;
+        const existing = await client.query(`SELECT a.intent_digest,a.create_request_digest,
+            w.project_id,w.status,w.current_version,w.next_action
           FROM core_continuity_intent_anchors a JOIN core_continuity_works w
             ON w.tenant_id=a.tenant_id AND w.work_id=a.work_id
-          WHERE a.tenant_id=$1 AND a.work_id=$2`,
-        [tenantId, binding.rows[0].work_id]);
+          WHERE a.tenant_id=$1 AND a.work_id=$2
+          FOR UPDATE OF w`,
+        [tenantId, resumeWorkId]);
+        if (!existing.rows[0]) throw new Error("continuity_work_not_found");
+        if (existing.rows[0].project_id !== projectId) {
+          throw new Error("continuity_project_mismatch");
+        }
         if (options.trustedSessionFollowup !== true) {
           const candidate = buildIntentAnchor({
             ...input,
@@ -1522,18 +1532,36 @@ export function createWorkContinuityRuntime(config, options = {}) {
             throw new Error("continuity_resume_intent_mismatch");
           }
         }
+        let sessionBindingCreated = false;
+        if (!binding.rows[0]) {
+          const inserted = await client.query(`INSERT INTO core_continuity_session_bindings
+            (tenant_id,project_id,session_id,work_id,create_request_digest)
+            VALUES ($1,$2,$3,$4,$5)
+            ON CONFLICT (tenant_id,project_id,session_id) DO NOTHING
+            RETURNING work_id,create_request_digest`,
+          [tenantId, projectId, sessionId, resumeWorkId, existing.rows[0].create_request_digest]);
+          if (!inserted.rows[0]) {
+            const concurrentBinding = await client.query(`SELECT work_id,create_request_digest
+              FROM core_continuity_session_bindings
+              WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3 AND work_id=$4`,
+            [tenantId, projectId, sessionId, resumeWorkId]);
+            if (!concurrentBinding.rows[0]) throw new Error("continuity_session_binding_conflict");
+          }
+          sessionBindingCreated = Boolean(inserted.rows[0]);
+        }
         return {
           schema_version: WORK_CONTINUITY_SCHEMA_VERSION,
           fabric_schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
           tenant_id: tenantId,
           project_id: projectId,
-          work_id: binding.rows[0].work_id,
+          work_id: resumeWorkId,
           intent_digest: existing.rows[0]?.intent_digest || null,
           status: existing.rows[0]?.status || null,
           architecture_version: Number(existing.rows[0]?.current_version || 0),
           next_action: existing.rows[0]?.next_action || "",
           resumed_existing: true,
-          idempotent_replay: true,
+          session_binding_created: sessionBindingCreated,
+          idempotent_replay: !sessionBindingCreated,
         };
       }
       const architecture = cleanJson(input.architecture || {});

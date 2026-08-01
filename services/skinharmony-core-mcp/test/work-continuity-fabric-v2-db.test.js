@@ -25,6 +25,7 @@ class ContinuityPool {
     this.anchors = new Map();
     this.events = new Map();
     this.idempotency = new Map();
+    this.participants = new Map();
     this.plans = new Map();
     this.nativeAgents = new Map();
     this.evaluations = new Map();
@@ -40,13 +41,16 @@ class ContinuityPool {
 
     if (q.startsWith("SELECT work_id,create_request_digest FROM core_continuity_session_bindings")) {
       const row = this.bindings.get(key(parameters[0], parameters[1], parameters[2]));
-      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+      const matchesWork = !parameters[3] || row?.work_id === parameters[3];
+      return { rows: row && matchesWork ? [{ ...row }] : [], rowCount: row && matchesWork ? 1 : 0 };
     }
-    if (q.startsWith("SELECT a.intent_digest,w.status,w.current_version,w.next_action")) {
+    if (q.startsWith("SELECT a.intent_digest,a.create_request_digest,")) {
       const anchor = this.anchors.get(key(parameters[0], parameters[1]));
       const work = this.works.get(key(parameters[0], parameters[1]));
       const row = anchor && work ? {
         intent_digest: anchor.intent_digest,
+        create_request_digest: anchor.create_request_digest,
+        project_id: work.project_id,
         status: work.status,
         current_version: work.current_version,
         next_action: work.next_action,
@@ -112,11 +116,20 @@ class ContinuityPool {
     }
     if (q.startsWith("INSERT INTO core_continuity_session_bindings")) {
       const [tenantId, projectId, sessionId, workId, createRequestDigest] = parameters;
-      this.bindings.set(key(tenantId, projectId, sessionId), {
+      const bindingKey = key(tenantId, projectId, sessionId);
+      const current = this.bindings.get(bindingKey);
+      if (current && q.includes("ON CONFLICT") && q.includes("DO NOTHING")) {
+        return { rows: [], rowCount: 0 };
+      }
+      const row = {
         work_id: workId,
         create_request_digest: createRequestDigest,
-      });
-      return { rows: [], rowCount: 1 };
+      };
+      this.bindings.set(bindingKey, row);
+      return {
+        rows: q.includes("RETURNING") ? [{ ...row }] : [],
+        rowCount: 1,
+      };
     }
 
     if (q.startsWith("SELECT sequence_number,event_hash FROM core_continuity_events")) {
@@ -187,6 +200,32 @@ class ContinuityPool {
     if (q.startsWith("SELECT work_id FROM core_continuity_works")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
       return { rows: work ? [{ work_id: work.work_id }] : [], rowCount: work ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_participants")) {
+      const [tenantId, workId, sessionId, actorSubject, agentId, clientType,
+        branchId, ttlSeconds, metadata] = parameters;
+      const participantKey = key(tenantId, workId, sessionId);
+      const current = this.participants.get(participantKey);
+      if (current && current.actor_subject !== actorSubject) {
+        return { rows: [], rowCount: 0 };
+      }
+      const timestamp = this.clock().toISOString();
+      const row = {
+        tenant_id: tenantId,
+        work_id: workId,
+        session_id: sessionId,
+        actor_subject: actorSubject,
+        agent_id: agentId,
+        client_type: clientType,
+        branch_id: branchId,
+        status: "active",
+        joined_at: current?.joined_at || timestamp,
+        last_seen_at: timestamp,
+        expires_at: new Date(this.clock().getTime() + (Number(ttlSeconds) * 1_000)).toISOString(),
+        metadata: JSON.parse(metadata),
+      };
+      this.participants.set(participantKey, row);
+      return { rows: [{ ...row }], rowCount: 1 };
     }
     if (q.startsWith("SELECT project_id FROM core_continuity_works")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
@@ -712,6 +751,144 @@ test("ensure survives runtime restart, is strict by default and isolates tenants
   assert.equal("idea" in catalog.works[0], false);
   assert.equal("objective" in catalog.works[0], false);
   assert.equal("anchor" in catalog.works[0], false);
+});
+
+test("exact Work resume binds new sessions idempotently without duplicating Work events", async () => {
+  const clock = () => new Date("2026-07-31T10:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const tenantA = { tenantId: "tenant-a", subject: "codex" };
+  const created = await runtime.ensure(tenantA, initialInput, { creationAuthorized: true });
+  const eventKey = key("tenant-a", created.work_id);
+  assert.deepEqual(pool.events.get(eventKey).map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+  ]);
+
+  const freshSession = {
+    ...initialInput,
+    session_id: "chat-session-after-restart",
+    work_id: created.work_id,
+    resume_existing: true,
+  };
+  const restartedRuntime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const firstResume = await restartedRuntime.ensure(tenantA, freshSession, {
+    trustedSessionFollowup: true,
+  });
+  const secondResume = await restartedRuntime.ensure(tenantA, freshSession, {
+    trustedSessionFollowup: true,
+  });
+  assert.equal(firstResume.work_id, created.work_id);
+  assert.equal(firstResume.session_binding_created, true);
+  assert.equal(firstResume.idempotent_replay, false);
+  assert.equal(secondResume.work_id, created.work_id);
+  assert.equal(secondResume.session_binding_created, false);
+  assert.equal(secondResume.idempotent_replay, true);
+  assert.equal(pool.bindings.get(key(
+    "tenant-a",
+    initialInput.project_id,
+    freshSession.session_id,
+  )).work_id, created.work_id);
+  assert.deepEqual(pool.events.get(eventKey).map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+  ]);
+
+  await assert.rejects(restartedRuntime.ensure(tenantA, {
+    ...freshSession,
+    project_id: "different-project",
+    session_id: "wrong-project-session",
+  }, { trustedSessionFollowup: true }), /continuity_project_mismatch/);
+  await assert.rejects(restartedRuntime.ensure({
+    tenantId: "tenant-b",
+    subject: "codex",
+  }, {
+    ...freshSession,
+    session_id: "cross-tenant-session",
+  }, { trustedSessionFollowup: true }), /continuity_work_not_found/);
+
+  const secondWork = await restartedRuntime.ensure(tenantA, {
+    ...initialInput,
+    session_id: "second-work-creator",
+  }, { creationAuthorized: true });
+  await assert.rejects(restartedRuntime.ensure(tenantA, {
+    ...freshSession,
+    work_id: secondWork.work_id,
+  }, { trustedSessionFollowup: true }), /continuity_session_binding_conflict/);
+
+  const concurrentSession = {
+    ...freshSession,
+    session_id: "concurrent-resume-session",
+  };
+  const concurrent = await Promise.all([
+    restartedRuntime.ensure(tenantA, concurrentSession, { trustedSessionFollowup: true }),
+    restartedRuntime.ensure(tenantA, concurrentSession, { trustedSessionFollowup: true }),
+  ]);
+  assert.deepEqual(concurrent.map((result) => result.work_id), [created.work_id, created.work_id]);
+  assert.equal(concurrent.filter((result) => result.session_binding_created).length, 1);
+  assert.equal(pool.bindings.get(key(
+    "tenant-a",
+    initialInput.project_id,
+    concurrentSession.session_id,
+  )).work_id, created.work_id);
+});
+
+test("Gallery admits multiple tenant-scoped participants and rejects session impersonation", async () => {
+  const clock = () => new Date("2026-07-31T11:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const owner = { tenantId: "tenant-a", subject: "owner-subject" };
+  const created = await runtime.ensure(owner, initialInput, { creationAuthorized: true });
+  const firstJoin = {
+    work_id: created.work_id,
+    session_id: "participant-session-1",
+    agent_id: "codex-builder",
+    client_type: "codex",
+    ttl_seconds: 300,
+    idempotency_key: "participant-join-1",
+  };
+  const secondJoin = {
+    work_id: created.work_id,
+    session_id: "participant-session-2",
+    agent_id: "chatgpt-verifier",
+    client_type: "chatgpt",
+    ttl_seconds: 300,
+    idempotency_key: "participant-join-2",
+  };
+
+  const first = await runtime.join(owner, firstJoin);
+  const second = await runtime.join({
+    tenantId: "tenant-a",
+    subject: "verifier-subject",
+  }, secondJoin);
+  const replay = await runtime.join(owner, firstJoin);
+  assert.equal(first.participant.session_id, firstJoin.session_id);
+  assert.equal(second.participant.session_id, secondJoin.session_id);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(pool.participants.size, 2);
+
+  await assert.rejects(runtime.join({
+    tenantId: "tenant-b",
+    subject: "cross-tenant-subject",
+  }, {
+    ...secondJoin,
+    idempotency_key: "cross-tenant-join",
+  }), /continuity_work_not_found/);
+  await assert.rejects(runtime.join({
+    tenantId: "tenant-a",
+    subject: "impersonator-subject",
+  }, {
+    ...firstJoin,
+    idempotency_key: "session-impersonation-attempt",
+  }), /continuity_session_conflict/);
+
+  assert.deepEqual(pool.events.get(key("tenant-a", created.work_id))
+    .map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+    "participant_joined",
+    "participant_joined",
+  ]);
 });
 
 test("first Work Identity fails closed without owner creation authorization", async () => {

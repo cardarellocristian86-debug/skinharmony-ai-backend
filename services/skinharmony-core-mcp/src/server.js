@@ -17,7 +17,10 @@ import {
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
 import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
 import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
-import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
+import {
+  WORK_CONTINUITY_TOOLS,
+  tenantWorkCoordinationActionType,
+} from "./work-continuity-tools.js";
 import { NYRA_NATIVE_TEAM_TOOLS } from "./nyra-native-team-tools.js";
 import { NYRA_AUTOPILOT_TOOLS } from "./nyra-autopilot-tools.js";
 import { HOST_NATIVE_TOOLS } from "./host-native-tools.js";
@@ -174,7 +177,7 @@ async function requireOwnerGovernance(identity, actionType, target) {
   }
 }
 
-async function requireBoundedTenantCoordination(identity, actionType, target) {
+async function requireBoundedTenantCoordination(identity, actionType, target, idempotencyKey) {
   requireTenantWorkCapability(identity, "coordinate");
   const decision = await govern({
     action_label: `Coordinate tenant work: ${actionType}`,
@@ -197,6 +200,7 @@ async function requireBoundedTenantCoordination(identity, actionType, target) {
     audit_ready: Boolean(decisionLedger),
     target_authority_verified: true,
     actor_authorized_for_target: true,
+    idempotency_key: idempotencyKey,
   }, identity);
   if (decision.allowed !== true) {
     const error = new Error("core_tenant_coordination_denied");
@@ -246,7 +250,7 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
     .slice(0, 32)}`;
   const continuityGate = await coreHandlers.core_gate_action({
     action_label: "Persist a redacted immutable Work Continuity Intent Anchor",
-    action_type: "continuity.update",
+    action_type: resumeExisting ? "work.continuity.resume_or_bind" : "continuity.update",
     target: `${continuityProjectId(args)}:${sessionId}`,
     operation_class: "bounded_internal_coordination_write",
     external_side_effect: false,
@@ -379,7 +383,7 @@ const baseHandlers = {
   ...coreHandlers,
   work_preflight: async (args, identity) => {
     const result = await coreHandlers.work_preflight(args, identity);
-    await ensureContinuity(identity, args, "work_preflight", result);
+    await ensureContinuity(identity, args, "work_preflight", result, { resumeExisting: true });
     return result;
   },
   ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
@@ -448,37 +452,72 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_join: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.participant.join", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.participant.join",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.join(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_heartbeat: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.participant.heartbeat", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.participant.heartbeat",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.heartbeat(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_branch_open: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.branch.open", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.branch.open",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.openBranch(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_acquire: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.lease.acquire", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.lease.acquire",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.acquireLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_renew: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.lease.renew", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.lease.renew",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.renewLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_release: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.lease.release", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.lease.release",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.releaseLease(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_message_post: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "work.message.post", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.message.post",
+        args.work_id,
+        args.idempotency_key,
+      );
       const payload = { ok: true, result: await workContinuityRuntime.postMessage(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
@@ -693,6 +732,8 @@ const baseHandlers = {
 };
 
 function internalCoordinationActionType(toolName) {
+  const tenantWorkActionType = tenantWorkCoordinationActionType(toolName);
+  if (tenantWorkActionType) return tenantWorkActionType;
   if (toolName.includes("native_plan")) return "native_agent.plan";
   if (toolName.includes("native_bind")) return "native_agent.bind";
   if (toolName.includes("native_report")) return "native_agent.report";

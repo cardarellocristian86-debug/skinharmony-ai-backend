@@ -162,12 +162,96 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       [tenantId, firstWork.work_id],
     ), /core_continuity_intent_anchor_immutable/);
 
+    const resumedSession = `resumed-${runId.slice(0, 16)}`;
+    const resumeInput = {
+      ...initial,
+      session_id: resumedSession,
+      work_id: firstWork.work_id,
+      resume_existing: true,
+    };
+    const concurrentResume = await Promise.all([
+      runtime.ensure(coordinator, resumeInput, { trustedSessionFollowup: true }),
+      runtime.ensure(coordinator, resumeInput, { trustedSessionFollowup: true }),
+    ]);
+    assert.deepEqual(
+      concurrentResume.map((result) => result.work_id),
+      [firstWork.work_id, firstWork.work_id],
+    );
+    assert.equal(concurrentResume.filter((result) => result.session_binding_created).length, 1);
+    const resumedBindings = await pool.query(`SELECT work_id FROM core_continuity_session_bindings
+      WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
+    [tenantId, projectId, resumedSession]);
+    assert.equal(resumedBindings.rowCount, 1);
+    assert.equal(resumedBindings.rows[0].work_id, firstWork.work_id);
+    const creationEvents = await pool.query(`SELECT event_type FROM core_continuity_events
+      WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number`,
+    [tenantId, firstWork.work_id]);
+    assert.deepEqual(creationEvents.rows.map((event) => event.event_type), [
+      "work_created",
+      "intent_anchored",
+    ]);
+    await assert.rejects(runtime.ensure(coordinator, {
+      ...resumeInput,
+      project_id: `other-${runId.slice(0, 16)}`,
+      session_id: `wrong-project-${runId.slice(0, 8)}`,
+    }, { trustedSessionFollowup: true }), /continuity_project_mismatch/);
+    await assert.rejects(runtime.ensure(
+      coordinatorIdentity(`${tenantId}_other`),
+      {
+        ...resumeInput,
+        session_id: `cross-tenant-${runId.slice(0, 8)}`,
+      },
+      { trustedSessionFollowup: true },
+    ), /continuity_work_not_found/);
+
     const secondWork = await runtime.ensure(coordinator, {
       ...initial,
       session_id: secondSession,
       initial_message: "Continue the second indexed native work.",
       idea: "Cross-work Atlas provenance",
     }, { creationAuthorized: true });
+    await assert.rejects(runtime.ensure(coordinator, {
+      ...resumeInput,
+      work_id: secondWork.work_id,
+    }, { trustedSessionFollowup: true }), /continuity_session_binding_conflict/);
+
+    const firstParticipant = {
+      work_id: firstWork.work_id,
+      session_id: `participant-a-${runId.slice(0, 8)}`,
+      agent_id: "codex-builder",
+      client_type: "codex",
+      idempotency_key: `participant-a-${runId}`,
+    };
+    const secondParticipant = {
+      work_id: firstWork.work_id,
+      session_id: `participant-b-${runId.slice(0, 8)}`,
+      agent_id: "chatgpt-verifier",
+      client_type: "chatgpt",
+      idempotency_key: `participant-b-${runId}`,
+    };
+    await runtime.join(coordinator, firstParticipant);
+    await runtime.join({ tenantId, subject: "chatgpt|postgres16-verifier" }, secondParticipant);
+    const participants = await pool.query(`SELECT session_id FROM core_continuity_participants
+      WHERE tenant_id=$1 AND work_id=$2 ORDER BY session_id`,
+    [tenantId, firstWork.work_id]);
+    assert.deepEqual(participants.rows.map((row) => row.session_id), [
+      firstParticipant.session_id,
+      secondParticipant.session_id,
+    ].sort());
+    await assert.rejects(runtime.join({
+      tenantId,
+      subject: "chatgpt|session-impersonator",
+    }, {
+      ...firstParticipant,
+      idempotency_key: `participant-conflict-${runId}`,
+    }), /continuity_session_conflict/);
+    await assert.rejects(runtime.join({
+      tenantId: `${tenantId}_other`,
+      subject: "chatgpt|cross-tenant",
+    }, {
+      ...secondParticipant,
+      idempotency_key: `participant-cross-tenant-${runId}`,
+    }), /continuity_work_not_found/);
     const atlasInput = (workId, idempotencyKey, summarySuffix) => runtime.upsertAtlas(coordinator, {
       work_id: workId,
       nodes: [

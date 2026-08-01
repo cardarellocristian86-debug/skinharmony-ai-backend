@@ -655,20 +655,20 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
         provider_execution: false,
       },
       evidence_digest: H("9"),
-    }, automationKey.json.key);
+    }, ownerKey.json.key);
     assert.equal(ticket.status, 201);
     assert.equal(ticket.json.action_ticket.ticket.max_uses, 1);
     const ticketId = ticket.json.action_ticket.ticket.ticket_id;
     const reserved = await request("POST", `/v1/host-native/actions/${ticketId}/reserve`, {
       idempotency_key: "api-reserve-commit-1",
       host_session_fingerprint: "codex-api-session-1",
-    }, automationKey.json.key);
+    }, ownerKey.json.key);
     assert.equal(reserved.status, 200);
     assert.equal(reserved.json.action_ticket.state, "reserved");
     const reserveReplay = await request("POST", `/v1/host-native/actions/${ticketId}/reserve`, {
       idempotency_key: "api-reserve-commit-1",
       host_session_fingerprint: "codex-api-session-1",
-    }, automationKey.json.key);
+    }, ownerKey.json.key);
     assert.equal(reserveReplay.status, 200);
     assert.equal(
       reserveReplay.json.action_ticket.reservation_id,
@@ -677,8 +677,25 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
     const reserveDifferentKey = await request("POST", `/v1/host-native/actions/${ticketId}/reserve`, {
       idempotency_key: "api-reserve-commit-2",
       host_session_fingerprint: "codex-api-session-1",
-    }, automationKey.json.key);
+    }, ownerKey.json.key);
     assert.equal(reserveDifferentKey.status, 409);
+
+    const completedOwnerTicket = await request(
+      "POST",
+      `/v1/host-native/actions/${ticketId}/complete`,
+      {
+        idempotency_key: "api-complete-owner-commit-1",
+        reservation_id: reserved.json.action_ticket.reservation_id,
+        host_session_fingerprint: "codex-api-session-1",
+        outcome: "success",
+        result_digest: H("4"),
+        result_commit: G("3"),
+        readback_digest: H("5"),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(completedOwnerTicket.status, 200, JSON.stringify(completedOwnerTicket.json));
+    assert.equal(completedOwnerTicket.json.action_ticket.state, "completed");
 
     const pendingManifest = releaseManifest();
     const {
