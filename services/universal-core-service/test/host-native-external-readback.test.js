@@ -325,6 +325,43 @@ function strictProtectedPushTicket() {
   return ticket;
 }
 
+function strictStagingDeployTicket() {
+  const ticket = strictTicket();
+  ticket.release_manifest_binding.services[0].environment = "staging";
+  ticket.action = {
+    kind: "render.deploy",
+    repository: "owner/repo",
+    service_id: "service-a",
+    environment: "staging",
+    branch: "agent/release",
+    source_commit: HEAD,
+    target_commit: HEAD,
+    expected_live_commit: BASE,
+    pull_request: 42,
+    base_branch: "main",
+    expected_base_commit: BASE,
+    provider_execution: false,
+  };
+  return ticket;
+}
+
+function strictStagingDeployFetch({
+  ticket = strictStagingDeployTicket(),
+  workflow = strictWorkflow(),
+  pull = pullRequest("owner/repo", { number: 42, merged: false, merge_commit_sha: null, state: "open", draft: false }),
+} = {}) {
+  const fallback = strictFetch({
+    ticket,
+    workflowById: new Map([[700, workflow]]),
+  });
+  return async (url, init) => {
+    if (url === "https://api.github.com/repos/owner/repo/pulls/42") {
+      return jsonResponse(pull);
+    }
+    return fallback(url, init);
+  };
+}
+
 function strictProtectedPushFetch({
   baseSource = WORKFLOW_SOURCE,
   headSource = WORKFLOW_SOURCE,
@@ -391,6 +428,52 @@ test("strict required-check attestation pins app/workflow, accepts deterministic
   assert.equal(first.github.observed_checks[0].workflow_run_attempt, 2);
   assert.match(first.github.required_checks_policy_digest, /^[a-f0-9]{64}$/);
   assert.match(first.github.checks_attestation_digest, /^[a-f0-9]{64}$/);
+});
+
+test("staging Render deploy accepts only an exact same-repository pull-request attestation", async (t) => {
+  const ticket = strictStagingDeployTicket();
+  const verify = ({ workflow, pull, policy = STRICT_POLICY } = {}) => {
+    const verifier = createHostNativeExternalReadbackVerifier({
+      fetchImpl: strictStagingDeployFetch({ ticket, workflow, pull }),
+      requiredChecksPolicyResolver: async () => policy,
+      now: () => Date.parse(VERIFIED_AT),
+    });
+    return verifier({ ticket, target_commit: HEAD });
+  };
+
+  await assert.rejects(verify(), /trusted_readback_action_invalid/);
+
+  await t.test("production remains push-only", async () => {
+    const production = structuredClone(ticket);
+    production.action.environment = "production";
+    production.release_manifest_binding.services[0].environment = "production";
+    const verifier = createHostNativeExternalReadbackVerifier({
+      fetchImpl: strictStagingDeployFetch({ ticket: production }),
+      requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    });
+    await assert.rejects(
+      verifier({ ticket: production, target_commit: HEAD }),
+      /workflow_run_mismatch/,
+    );
+  });
+
+  await t.test("policy must explicitly allow pull_request", async () => {
+    await assert.rejects(
+      verify({ policy: { ...STRICT_POLICY, allowed_events: ["push"] } }),
+      /required_checks_policy_event_denied/,
+    );
+  });
+
+  for (const [name, pull] of [
+    ["fork", pullRequest("owner/repo", { number: 42, merged: false, state: "open", draft: false, head: { sha: HEAD, ref: "agent/release", repo: { full_name: "fork/repo" } } })],
+    ["wrong head", pullRequest("owner/repo", { number: 42, merged: false, state: "open", draft: false, head: { sha: ALTERNATE, ref: "agent/release", repo: { full_name: "owner/repo" } } })],
+    ["wrong base", pullRequest("owner/repo", { number: 42, merged: false, state: "open", draft: false, base: { sha: ALTERNATE, ref: "main", repo: { full_name: "owner/repo" } } })],
+    ["draft", pullRequest("owner/repo", { number: 42, merged: false, state: "open", draft: true })],
+  ]) {
+    await t.test(name, async () => {
+      await assert.rejects(verify({ pull }), /workflow_pull_request_mismatch/);
+    });
+  }
 });
 
 test("strict workflow digest rotation permits only monotonic staged transitions", async (t) => {

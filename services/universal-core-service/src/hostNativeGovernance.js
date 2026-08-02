@@ -1363,6 +1363,13 @@ export function createHostNativeGovernance({
           if (!service || service.target_commit !== action.target_commit || service.expected_previous_commit !== action.expected_live_commit) {
             fail("release_manifest_action_mismatch");
           }
+          if (action.kind === "render.deploy" && action.environment === "staging" && (
+            !Number.isSafeInteger(Number(action.pull_request)) || Number(action.pull_request) < 1 ||
+            action.branch !== release_manifest.delivery_branch ||
+            action.source_commit !== release_manifest.head_commit ||
+            action.base_branch !== release_manifest.base_branch ||
+            action.expected_base_commit !== release_manifest.base_commit
+          )) fail("release_manifest_action_mismatch");
         }
         if (action.kind === "render.observe") {
           const parent = initial.tickets[String(action.parent_release_ticket_id || "")];
