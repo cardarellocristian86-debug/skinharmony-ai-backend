@@ -109,6 +109,59 @@ test("publishes the remediation capabilities in the MCP catalog", () => {
   }
 });
 
+test("shadow is observational, active enables writes, and disabled preserves the legacy block response", async (t) => {
+  const root = makeTempRoot("core-block-remediation-modes-");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const identity = { tenantId: "codexai", kind: "connected_ai", subject: "agent-mode-test" };
+  const fetchImpl = async () => ({ ok: false, status: 403, json: async () => blockedPayload() });
+  const baseConfig = {
+    universalCoreUrl: "https://core.example",
+    tenantGatewayKey: "g".repeat(64),
+    tenantContextSigningSecret: "z".repeat(64),
+    ownerContextSigningSecret: "o".repeat(64),
+    coreBlockRemediationMaxAttempts: 3,
+    coreBlockRemediationTransientRetryLimit: 2,
+    sharedMemoryRoot: root,
+    agentWorkspaceRoot: root,
+  };
+  const action = {
+    action_label: "Inspect blocked deploy",
+    action_type: "deploy",
+    work_id: "work-mode-test",
+    target_system: "render",
+    environment: "staging",
+  };
+
+  const shadow = createCoreHandlers({ ...baseConfig, coreBlockRemediationMode: "shadow" }, { fetchImpl });
+  const shadowBlocked = await shadow.core_gate_action(action, identity);
+  assert.equal(shadowBlocked.structuredContent.state, "blocked_with_remediation");
+  const remediationId = shadowBlocked.structuredContent.remediation.remediation_id;
+  const shadowStatus = await shadow.core_block_remediation_status({ remediation_id: remediationId }, identity);
+  assert.equal(shadowStatus.structuredContent.remediation.status, "open");
+  for (const [name, args] of [
+    ["core_block_remediation_propose", { remediation_id: remediationId }],
+    ["core_block_remediation_review", { remediation_id: remediationId }],
+    ["core_block_remediation_resubmit", { remediation_id: remediationId }],
+    ["core_block_remediation_cancel", { remediation_id: remediationId }],
+  ]) {
+    await assert.rejects(() => shadow[name](args, identity), /core_block_remediation_active_mode_required/);
+  }
+
+  const disabledRoot = makeTempRoot("core-block-remediation-disabled-");
+  t.after(() => fs.rmSync(disabledRoot, { recursive: true, force: true }));
+  const disabled = createCoreHandlers({
+    ...baseConfig,
+    sharedMemoryRoot: disabledRoot,
+    agentWorkspaceRoot: disabledRoot,
+    coreBlockRemediationMode: "disabled",
+  }, { fetchImpl });
+  const disabledBlocked = await disabled.core_gate_action({ ...action, work_id: "work-disabled" }, identity);
+  assert.equal(disabledBlocked.structuredContent.authorization.allowed, false);
+  assert.equal(disabledBlocked.structuredContent.state, undefined);
+  assert.equal(disabledBlocked.structuredContent.remediation, undefined);
+  assert.equal(fs.existsSync(`${disabledRoot}/core-block-remediations`), false);
+});
+
 test("core gate opens remediation on block and resubmits through a new Core request", async (t) => {
   const root = makeTempRoot("core-block-remediation-");
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -129,7 +182,7 @@ test("core gate opens remediation on block and resubmits through a new Core requ
     tenantGatewayKey: "y".repeat(64),
     tenantContextSigningSecret: "z".repeat(64),
     ownerContextSigningSecret: "o".repeat(64),
-    coreBlockRemediationMode: "shadow",
+    coreBlockRemediationMode: "active",
     coreBlockRemediationMaxAttempts: 3,
     coreBlockRemediationTransientRetryLimit: 2,
     sharedMemoryRoot: root,
