@@ -167,6 +167,7 @@ function validGovernanceManifest() {
 }
 
 try {
+  process.env.RENDER_GIT_COMMIT = "a".repeat(40);
   const health = await request("/health");
   assert.equal(health.response.status, 200);
   assert.equal(health.body.ok, true);
@@ -183,6 +184,12 @@ try {
   assert.equal(readyz.body.ready, true);
   assert.equal(readyz.body.branch_architecture.ok, true);
   assert.equal(readyz.body.auth.tenant_bound, true);
+
+  const hostHealth = await request("/healthz");
+  assert.equal(hostHealth.response.status, 200);
+  assert.equal(hostHealth.body.render_ready, true);
+  assert.equal(hostHealth.body.build.commit_sha, "a".repeat(40));
+  assert.equal(hostHealth.body.health_contract_digest, "91d772a7b30fc4b4a1c9076abf2841982c6b91d661d166c80db9d583a74c9420");
 
   const absentCount = sanitizeCockpit360Summary({});
   const realZeroCount = sanitizeCockpit360Summary({ customer: { profiles_visible: 0 } });

@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import healthContract from "../../shared/host-native-health-contract.cjs";
 import { SENSITIVE_ACTIONS, validateGovernanceRequest } from "./governance.js";
 import {
   loadSuiteBranchArchitecture,
@@ -2859,6 +2860,16 @@ export function createSuiteControlPlane(options = {}) {
       probe_cache_ms: readinessProbeCacheMs,
       ...readiness,
     });
+  });
+
+  app.get("/healthz", async (_req, res) => {
+    const readiness = await cachedRuntimeReadiness();
+    const health = healthContract.healthPayload({
+      service: "skinharmony-suite-control-plane",
+      version: SERVICE_VERSION,
+      ready: readiness.ready,
+    });
+    return res.status(health.render_ready ? 200 : 503).json(health);
   });
 
   app.get("/api/suite/overview", auth.require("suite:read"), (req, res) => {

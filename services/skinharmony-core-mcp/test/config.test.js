@@ -10,6 +10,17 @@ test("uses CORE_BASE_URL as a compatibility fallback for Universal Core", () => 
   assert.equal(config.universalCoreUrl, "https://core.example.test");
 });
 
+test("core block remediation mode defaults to shadow and accepts only the bounded enum", () => {
+  assert.equal(loadConfig({}).coreBlockRemediationMode, "shadow");
+  for (const mode of ["disabled", "shadow", "active"]) {
+    assert.equal(loadConfig({ CORE_BLOCK_REMEDIATION_MODE: mode }).coreBlockRemediationMode, mode);
+  }
+  assert.throws(
+    () => loadConfig({ CORE_BLOCK_REMEDIATION_MODE: "enabled" }),
+    /CORE_BLOCK_REMEDIATION_MODE must be disabled, shadow, or active/,
+  );
+});
+
 test("keeps agent collaboration disabled until a persistent root is configured", () => {
   const disabled = loadConfig({});
   assert.equal(disabled.agentWorkspaceRoot, "");

@@ -251,6 +251,9 @@ export function loadConfig(env = process.env) {
   const collaborationDatabaseUrl = String(env.MCP_COLLABORATION_DATABASE_URL || "").trim();
   const decisionLedgerRequired = flag(env.CORE_DECISION_LEDGER_REQUIRED, env.NODE_ENV === "production");
   const coreBlockRemediationMode = String(env.CORE_BLOCK_REMEDIATION_MODE || "shadow").trim().toLowerCase();
+  if (!["disabled", "shadow", "active"].includes(coreBlockRemediationMode)) {
+    throw new Error("CORE_BLOCK_REMEDIATION_MODE must be disabled, shadow, or active");
+  }
   const coreBlockRemediationMaxAttempts = integer(env.CORE_BLOCK_REMEDIATION_MAX_ATTEMPTS, 3, 1, 20);
   const coreBlockRemediationTtlSeconds = integer(env.CORE_BLOCK_REMEDIATION_TTL_SECONDS, 86_400, 1, 7 * 86_400);
   const coreBlockRemediationTransientRetryLimit = integer(env.CORE_BLOCK_REMEDIATION_TRANSIENT_RETRY_LIMIT, 2, 1, 20);
