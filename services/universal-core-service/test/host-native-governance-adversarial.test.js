@@ -462,6 +462,13 @@ test("file-backed HNJ is deterministic across restart and consumed once across c
     ]);
     assert.equal(raced.filter((result) => result.status === "fulfilled").length, 1);
     assert.equal(raced.filter((result) => result.status === "rejected").length, 1);
+    const winningTicket = raced.find((result) => result.status === "fulfilled").value;
+    await makeGovernance().reserveActionTicket({
+      tenant_id: "tenant-a",
+      ticket_id: winningTicket.ticket.ticket_id,
+      host_session_fingerprint: winningTicket.ticket.host_session_fingerprint,
+      idempotency_key: "release-race-reserve-winner",
+    });
 
     const restored = makeGovernance();
     const join = await restored.readCoreJoinVerdict({

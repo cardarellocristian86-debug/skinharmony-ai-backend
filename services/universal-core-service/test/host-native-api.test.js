@@ -900,12 +900,8 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
       automationKey.json.key,
     );
     assert.equal(consumedJoin.status, 200);
-    assert.equal(consumedJoin.json.core_join_verdict.state, "consumed");
-    assert.equal(consumedJoin.json.core_join_verdict.uses, 1);
-    assert.equal(
-      consumedJoin.json.core_join_verdict.consumed_by_ticket_id,
-      mergeTicketId,
-    );
+    assert.equal(consumedJoin.json.core_join_verdict.state, "active");
+    assert.equal(consumedJoin.json.core_join_verdict.uses, 0);
     const mergeReservation = await request(
       "POST",
       `/v1/host-native/actions/${mergeTicketId}/reserve`,
@@ -916,6 +912,19 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
       automationKey.json.key,
     );
     assert.equal(mergeReservation.status, 200);
+    const reservedJoin = await request(
+      "GET",
+      `/v1/host-native/core-join-verdicts/${coreJoinVerdictId}`,
+      undefined,
+      automationKey.json.key,
+    );
+    assert.equal(reservedJoin.status, 200);
+    assert.equal(reservedJoin.json.core_join_verdict.state, "consumed");
+    assert.equal(reservedJoin.json.core_join_verdict.uses, 1);
+    assert.equal(
+      reservedJoin.json.core_join_verdict.consumed_by_ticket_id,
+      mergeTicketId,
+    );
     const mergeReadbackDigest = H("c");
     const mergeCompletion = await request(
       "POST",

@@ -59,9 +59,9 @@ const GIT_SHA = /^[a-f0-9]{40}$/;
 const OWNER_FINGERPRINT = /^osf_[a-f0-9]{64}$/;
 const RENDER_ORIGIN = /^https:\/\/[a-z0-9][a-z0-9-]*\.onrender\.com$/;
 const MAX_DELEGATION_MS = 12 * 60 * 60 * 1_000;
-const DEFAULT_TICKET_TTL_MS = 60_000;
+const DEFAULT_TICKET_TTL_MS = 10 * 60_000;
 const DEFAULT_RESERVATION_LEASE_MS = 5 * 60_000;
-const DEFAULT_CORE_JOIN_TTL_MS = 10 * 60_000;
+const DEFAULT_CORE_JOIN_TTL_MS = 30 * 60_000;
 
 function fail(code) {
   throw new Error(code);
@@ -1463,19 +1463,50 @@ export function createHostNativeGovernance({
         if (descriptor?.result) return descriptor.result;
         const currentDelegation = state.delegations[String(input.delegation_id || "")];
         if (!currentDelegation || !delegationActive(currentDelegation, nowValue)) fail("delegation_not_active");
-        const usage = actionUsage(action.kind, action);
-        currentDelegation.usage = ensureBudget(currentDelegation, usage);
-        const ticketId = makeId("hnt", { input, issued_at: iso(nowValue) });
+        let releaseJoin = null;
+        let supersededTicket = null;
         if (isReleaseAction(action.kind) && action.kind !== "render.observe") {
-          const join = state.core_join_verdicts[release_manifest.verification.core_join_verdict_id];
-          if (!join || join.state !== "active") fail("core_join_verdict_consumed");
-          const joinExpiresAt = Date.parse(join.verdict?.expires_at || "");
+          releaseJoin = state.core_join_verdicts[release_manifest.verification.core_join_verdict_id];
+          if (!releaseJoin || releaseJoin.state !== "active") fail("core_join_verdict_consumed");
+          const joinExpiresAt = Date.parse(releaseJoin.verdict?.expires_at || "");
           if (!Number.isFinite(joinExpiresAt) || joinExpiresAt <= nowValue) {
             fail("core_join_verdict_expired");
           }
-          join.state = "consumed";
-          join.uses = 1;
-          join.consumed_by_ticket_id = ticketId;
+          const priorTicket = state.tickets[String(releaseJoin.authorized_ticket_id || "")];
+          if (
+            priorTicket?.state === "issued" &&
+            priorTicket.uses === 0 &&
+            Date.parse(priorTicket.ticket?.expires_at || "") > nowValue
+          ) {
+            fail("core_join_ticket_active");
+          }
+          if (priorTicket) {
+            if (
+              priorTicket.state !== "issued" ||
+              priorTicket.uses !== 0 ||
+              Date.parse(priorTicket.ticket?.expires_at || "") > nowValue ||
+              priorTicket.ticket.host_session_fingerprint !== host_session_fingerprint ||
+              priorTicket.ticket.evidence_digest !== evidence_digest ||
+              priorTicket.ticket.release_manifest_digest !== release_manifest.manifest_digest ||
+              priorTicket.ticket.release_intent_digest !== release_intent_digest ||
+              hostNativeDigest(priorTicket.ticket.action) !== hostNativeDigest(action)
+            ) {
+              fail("core_join_ticket_replacement_binding_mismatch");
+            }
+            supersededTicket = priorTicket;
+          }
+        }
+        const usage = actionUsage(action.kind, action);
+        ensureBudget(currentDelegation, usage);
+        const ticketId = makeId("hnt", { input, issued_at: iso(nowValue) });
+        if (releaseJoin) {
+          releaseJoin.authorized_ticket_id = ticketId;
+          releaseJoin.authorized_at = iso(nowValue);
+        }
+        if (supersededTicket) {
+          supersededTicket.state = "superseded";
+          supersededTicket.superseded_by_ticket_id = ticketId;
+          supersededTicket.superseded_at = iso(nowValue);
         }
         const expiresAt = Math.min(Date.parse(currentDelegation.grant.expires_at), nowValue + ticketTtl);
         const ticketUnsigned = {
@@ -1541,6 +1572,29 @@ export function createHostNativeGovernance({
         if (Date.parse(record.ticket.expires_at) <= nowValue) fail("action_ticket_expired");
         const delegation = state.delegations[record.ticket.delegation_id];
         if (!delegationActive(delegation, nowValue)) fail("delegation_not_active");
+        const usage = actionUsage(record.ticket.action.kind, record.ticket.action);
+        delegation.usage = ensureBudget(delegation, usage);
+        if (isReleaseAction(record.ticket.action.kind) && record.ticket.action.kind !== "render.observe") {
+          const join = state.core_join_verdicts[record.ticket.core_join_verdict_id];
+          if (!join || join.tenant_id !== tenantId) fail("core_join_verdict_not_found");
+          if (join.state !== "active") fail("core_join_verdict_consumed");
+          if (join.authorized_ticket_id !== record.ticket.ticket_id) {
+            fail("core_join_ticket_superseded");
+          }
+          const joinExpiresAt = Date.parse(join.verdict?.expires_at || "");
+          if (!Number.isFinite(joinExpiresAt) || joinExpiresAt <= nowValue) {
+            fail("core_join_verdict_expired");
+          }
+          if (
+            join.claim_digest !== record.ticket.core_join_verdict_digest ||
+            join.claim?.release_intent_digest !== record.ticket.release_intent_digest
+          ) {
+            fail("core_join_verdict_binding_mismatch");
+          }
+          join.state = "consumed";
+          join.uses = 1;
+          join.consumed_by_ticket_id = record.ticket.ticket_id;
+        }
         record.state = "reserved";
         record.uses = 1;
         record.reservation_id = makeId("hnr", { ticket_id: record.ticket.ticket_id, nowValue });

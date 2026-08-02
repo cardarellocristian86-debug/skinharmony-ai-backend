@@ -151,6 +151,18 @@ test("limits the dynamic presence bootstrap exemption to the exact agent heartbe
   );
 });
 
+test("allows server-issued MCP session bootstrap for agent heartbeat", () => {
+  const heartbeat = TOOLS.find((tool) => tool.name === "agent_heartbeat");
+  assert.ok(heartbeat);
+  assert.deepEqual(heartbeat.inputSchema.required, ["agent_id", "client_type"]);
+  const appSource = fs.readFileSync(new URL("../src/app.js", import.meta.url), "utf8");
+  assert.match(appSource, /SESSIONLESS_BOOTSTRAP_TOOLS = new Set\(\[\s*"agent_heartbeat"/);
+  assert.match(appSource, /isAgentPresenceBootstrapCall\(tool\.name, rawArgs\)/);
+  assert.match(appSource, /const presenceBinding = \{\s*\.\.\.attestedAgentPresence/);
+  assert.match(appSource, /agentPresence: presenceBinding/);
+  assert.match(appSource, /Access-Control-Expose-Headers/);
+});
+
 test("publishes only a verifiable build identity", () => {
   const commit = "e".repeat(40);
   assert.deepEqual(buildIdentity({ RENDER_GIT_COMMIT: commit }), { commit_sha: commit, commit_verifiable: true });
