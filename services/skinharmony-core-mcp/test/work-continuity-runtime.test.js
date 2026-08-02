@@ -11,7 +11,10 @@ import {
   surfacesOverlap,
 } from "../src/work-continuity-runtime.js";
 import { TOOLS as BASE_TOOLS } from "../src/tool-definitions.js";
-import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
+import {
+  WORK_CONTINUITY_TOOLS,
+  tenantWorkCoordinationActionType,
+} from "../src/work-continuity-tools.js";
 
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -36,13 +39,17 @@ function galleryMessagePool({ participantSubject, recipientSubject, messages = [
     calls,
     async query(sql, params = []) {
       calls.push({ sql, params });
-      if (/SELECT request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
-      if (/SELECT session_id,agent_id,branch_id,status,expires_at,actor_subject/.test(sql)) {
+      if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
+      if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) {
+        return { rows: [{ work_id: WORK_ID }] };
+      }
+      if (/SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject/.test(sql)) {
         if (params[3] !== participantSubject) return { rows: [] };
         return {
           rows: [{
             session_id: params[2],
             agent_id: "gallery-agent",
+            client_type: "codex",
             branch_id: null,
             status: "active",
             expires_at: "2030-01-01T00:00:00.000Z",
@@ -90,6 +97,58 @@ test("continuity digests are deterministic across object key order", () => {
   assert.deepEqual(stable({ b: 2, a: { d: 4, c: 3 } }), { a: { c: 3, d: 4 }, b: 2 });
   assert.equal(digest({ b: 2, a: 1 }), digest({ a: 1, b: 2 }));
   assert.notEqual(digest({ a: 1 }), digest({ a: 2 }));
+});
+
+test("legacy continuity idempotency cannot replay across authenticated subjects", async () => {
+  const cases = [
+    ["recordChange", "record_change"],
+    ["checkpoint", "checkpoint"],
+    ["resume", "resume"],
+    ["verifyMemory", "verify_memory"],
+  ];
+  for (const [method, operation] of cases) {
+    const input = {
+      work_id: WORK_ID,
+      agent_id: "shared-agent",
+      idempotency_key: `subject-bound-${operation}`,
+    };
+    const legacyActorDigest = digest({
+      operation,
+      actor_binding: "shared-agent",
+      request: input,
+    });
+    const pool = {
+      async query(sql) {
+        if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (/pg_advisory_xact_lock/.test(sql)) return { rows: [], rowCount: 0 };
+        if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) {
+          return {
+            rows: [{
+              operation,
+              request_digest: legacyActorDigest,
+              result: { replayed_from: "first-subject" },
+            }],
+            rowCount: 1,
+          };
+        }
+        throw new Error(`unexpected_query:${method}`);
+      },
+      async end() {},
+    };
+    const runtime = createWorkContinuityRuntime({}, { pool });
+    const call = method === "resume"
+      ? runtime[method]({
+        tenantId: "tenant-a",
+        subject: "different-authenticated-subject",
+      }, input, { allowed: true })
+      : runtime[method]({
+        tenantId: "tenant-a",
+        subject: "different-authenticated-subject",
+      }, input);
+    await assert.rejects(call, /idempotency_key_conflict/, method);
+  }
 });
 
 test("impact map follows functions, components, links and dependencies", () => {
@@ -275,10 +334,144 @@ test("work gallery tools preserve read/write and bounded tenant-collaboration bo
       assert.equal(tools[name]._meta["skinharmony/tenantBoundedCollaboration"], true);
       assert.equal(tools[name].inputSchema.properties.owner_confirmed, undefined);
       assert.equal(tools[name].inputSchema.properties.confirmation_reference, undefined);
+      assert.equal(tools[name].inputSchema.properties.idempotency_key.minLength, 8);
     }
   }
   assert.deepEqual(
     tools.tenant_work_lease_acquire.inputSchema.properties.surfaces.items.properties.kind.enum,
     ["file", "component", "dependency"],
   );
+});
+
+test("Gallery mutations lock the work before participant rows", async () => {
+  const identity = galleryIdentity("subject-a", "lock-order-session", "lock-order-agent");
+  const cases = [
+    ["heartbeat", {
+      work_id: WORK_ID, session_id: "lock-order-session", ttl_seconds: 300,
+      idempotency_key: "lock-order-heartbeat",
+    }],
+    ["openBranch", {
+      work_id: WORK_ID, session_id: "lock-order-session", branch_key: "lock-order",
+      title: "Lock order", objective: "Verify lock order.",
+      idempotency_key: "lock-order-branch",
+    }],
+    ["acquireLease", {
+      work_id: WORK_ID, session_id: "lock-order-session",
+      purpose: "Verify lock order.", surfaces: [{ kind: "file", value: "services/core" }],
+      ttl_seconds: 300, idempotency_key: "lock-order-acquire",
+    }],
+    ["renewLease", {
+      work_id: WORK_ID, session_id: "lock-order-session",
+      lease_id: "22222222-2222-4222-8222-222222222222", ttl_seconds: 300,
+      idempotency_key: "lock-order-renew",
+    }],
+    ["releaseLease", {
+      work_id: WORK_ID, session_id: "lock-order-session",
+      lease_id: "22222222-2222-4222-8222-222222222222",
+      idempotency_key: "lock-order-release",
+    }],
+    ["postMessage", {
+      work_id: WORK_ID, session_id: "lock-order-session", message_type: "update",
+      subject: "Lock order", payload: { verified: true },
+      idempotency_key: "lock-order-message",
+    }],
+  ];
+
+  for (const [method, input] of cases) {
+    const calls = [];
+    const pool = {
+      async query(sql, params = []) {
+        calls.push({ sql, params });
+        if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) {
+          return { rows: [{ work_id: WORK_ID }], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      },
+      async end() {},
+    };
+    const runtime = createWorkContinuityRuntime({}, { pool });
+    await assert.rejects(runtime[method](identity, {
+      ...input,
+      agent_id: "lock-order-agent",
+      client_type: "codex",
+    }), /continuity_participant_not_active/);
+    const rowLock = calls.findIndex((call) =>
+      /SELECT work_id FROM core_continuity_works/.test(call.sql) && /FOR UPDATE/.test(call.sql));
+    const workLock = calls.findIndex((call) =>
+      /pg_advisory_xact_lock/.test(call.sql) && call.params[1] === WORK_ID);
+    const participantLock = calls.findIndex((call) =>
+      /SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject/.test(call.sql));
+    assert.notEqual(rowLock, -1, `${method}: missing Work row lock`);
+    assert.notEqual(workLock, -1, `${method}: missing work advisory lock`);
+    assert.notEqual(participantLock, -1, `${method}: missing participant lock`);
+    assert.ok(rowLock < workLock, `${method}: advisory locked before Work row`);
+    assert.ok(workLock < participantLock, `${method}: participant locked before work`);
+  }
+});
+
+test("Gallery join locks the Work row before the advisory work lock", async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (/SELECT work_id FROM core_continuity_works/.test(sql)) {
+        return { rows: [{ work_id: WORK_ID }], rowCount: 1 };
+      }
+      if (/SELECT actor_subject,agent_id,client_type,branch_id,expires_at/.test(sql)) {
+        throw new Error("join-lock-order-observed");
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  await assert.rejects(runtime.join(
+    galleryIdentity("subject-a", "join-lock-session", "join-lock-agent"),
+    {
+      work_id: WORK_ID,
+      session_id: "join-lock-session",
+      agent_id: "join-lock-agent",
+      client_type: "codex",
+      ttl_seconds: 300,
+      idempotency_key: "join-lock-order-key",
+    },
+  ), /join-lock-order-observed/);
+  const rowLock = calls.findIndex((call) =>
+    /SELECT work_id FROM core_continuity_works/.test(call.sql) && /FOR UPDATE/.test(call.sql));
+  const workAdvisoryLock = calls.findIndex((call) =>
+    /pg_advisory_xact_lock/.test(call.sql) && call.params[1] === WORK_ID);
+  const participantLock = calls.findIndex((call) =>
+    /SELECT actor_subject,agent_id,client_type,branch_id,expires_at/.test(call.sql));
+  assert.notEqual(rowLock, -1);
+  assert.notEqual(workAdvisoryLock, -1);
+  assert.notEqual(participantLock, -1);
+  assert.ok(rowLock < workAdvisoryLock);
+  assert.ok(workAdvisoryLock < participantLock);
+});
+
+test("Gallery mutations use bounded Core action types instead of generic continuity update", () => {
+  assert.deepEqual({
+    tenant_work_gallery_join: tenantWorkCoordinationActionType("tenant_work_gallery_join"),
+    tenant_work_gallery_heartbeat: tenantWorkCoordinationActionType("tenant_work_gallery_heartbeat"),
+    tenant_work_branch_open: tenantWorkCoordinationActionType("tenant_work_branch_open"),
+    tenant_work_lease_acquire: tenantWorkCoordinationActionType("tenant_work_lease_acquire"),
+    tenant_work_lease_renew: tenantWorkCoordinationActionType("tenant_work_lease_renew"),
+    tenant_work_lease_release: tenantWorkCoordinationActionType("tenant_work_lease_release"),
+    tenant_work_message_post: tenantWorkCoordinationActionType("tenant_work_message_post"),
+  }, {
+    tenant_work_gallery_join: "work.participant.join",
+    tenant_work_gallery_heartbeat: "work.participant.heartbeat",
+    tenant_work_branch_open: "work.branch.open",
+    tenant_work_lease_acquire: "work.lease.acquire",
+    tenant_work_lease_renew: "work.lease.renew",
+    tenant_work_lease_release: "work.lease.release",
+    tenant_work_message_post: "work.message.post",
+  });
+  assert.equal(tenantWorkCoordinationActionType("unknown_internal_write"), null);
 });

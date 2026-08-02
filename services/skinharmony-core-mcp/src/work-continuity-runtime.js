@@ -1465,9 +1465,29 @@ export function createWorkContinuityRuntime(config, options = {}) {
     throw new Error("native_agent_coordinator_presence_required");
   }
 
+  async function lockWork(client, context) {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+      [context.tenantId, context.workId]);
+  }
+
+  async function lockWorkRow(client, context) {
+    const work = await client.query(`SELECT work_id FROM core_continuity_works
+      WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [context.tenantId, context.workId]);
+    if (!work.rows[0]) throw new Error("continuity_work_not_found");
+    return work.rows[0];
+  }
+
+  async function lockGalleryWork(client, context) {
+    await lockWorkRow(client, context);
+    // Work-row first is the shared order used by checkpoint/change writers.
+    // Taking the Gallery advisory lock only afterwards prevents a writer from
+    // holding one side of a row/advisory deadlock while waiting for the other.
+    await lockWork(client, context);
+  }
+
   async function appendEvent(client, context, eventType, payload = {}) {
     if (!WORK_EVENT_TYPES.has(eventType)) throw new Error("continuity_event_type_invalid");
-    await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [context.tenantId, context.workId]);
+    await lockWork(client, context);
     const previous = await client.query(`SELECT sequence_number,event_hash FROM core_continuity_events
       WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`,
     [context.tenantId, context.workId]);
@@ -1506,12 +1526,16 @@ export function createWorkContinuityRuntime(config, options = {}) {
     if (!idempotencyKey) throw new Error("idempotency_key_required");
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
       [context.tenantId, `${context.workId}:${idempotencyKey}`]);
-    const requestDigest = digest(request);
-    const existing = await client.query(`SELECT request_digest,result FROM core_continuity_idempotency
+    const existing = await client.query(`SELECT operation,request_digest,result FROM core_continuity_idempotency
       WHERE tenant_id=$1 AND work_id=$2 AND idempotency_key=$3`,
     [context.tenantId, context.workId, idempotencyKey]);
+    const actorBinding = String(context.actorSubject || context.actor || "");
+    const requestDigest = digest({ operation, actor_binding: actorBinding, request });
     if (existing.rows[0]) {
-      if (existing.rows[0].request_digest !== requestDigest) throw new Error("idempotency_key_conflict");
+      if (existing.rows[0].operation !== operation ||
+          existing.rows[0].request_digest !== requestDigest) {
+        throw new Error("idempotency_key_conflict");
+      }
       return { ...existing.rows[0].result, idempotent_replay: true };
     }
     const result = await perform();
@@ -1537,12 +1561,26 @@ export function createWorkContinuityRuntime(config, options = {}) {
         FROM core_continuity_session_bindings
         WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
       [tenantId, projectId, sessionId]);
-      if (binding.rows[0] && input.resume_existing === true) {
-        const existing = await client.query(`SELECT a.intent_digest,w.status,w.current_version,w.next_action
+      if (input.resume_existing === true && (binding.rows[0] || input.work_id)) {
+        if (binding.rows[0] && input.work_id && binding.rows[0].work_id !== workId) {
+          throw new Error("continuity_session_binding_conflict");
+        }
+        const resumeWorkId = binding.rows[0]?.work_id || workId;
+        const existing = await client.query(`SELECT a.intent_digest,a.create_request_digest,
+            w.project_id,w.status,w.current_version,w.next_action
           FROM core_continuity_intent_anchors a JOIN core_continuity_works w
             ON w.tenant_id=a.tenant_id AND w.work_id=a.work_id
-          WHERE a.tenant_id=$1 AND a.work_id=$2`,
-        [tenantId, binding.rows[0].work_id]);
+          WHERE a.tenant_id=$1 AND a.work_id=$2
+          FOR UPDATE OF w`,
+        [tenantId, resumeWorkId]);
+        if (!existing.rows[0]) throw new Error("continuity_work_not_found");
+        if (existing.rows[0].project_id !== projectId) {
+          throw new Error("continuity_project_mismatch");
+        }
+        if (binding.rows[0] &&
+            binding.rows[0].create_request_digest !== existing.rows[0].create_request_digest) {
+          throw new Error("continuity_session_binding_conflict");
+        }
         if (options.trustedSessionFollowup !== true) {
           const candidate = buildIntentAnchor({
             ...input,
@@ -1554,18 +1592,40 @@ export function createWorkContinuityRuntime(config, options = {}) {
             throw new Error("continuity_resume_intent_mismatch");
           }
         }
+        let sessionBindingCreated = false;
+        if (!binding.rows[0]) {
+          const inserted = await client.query(`INSERT INTO core_continuity_session_bindings
+            (tenant_id,project_id,session_id,work_id,create_request_digest)
+            VALUES ($1,$2,$3,$4,$5)
+            ON CONFLICT (tenant_id,project_id,session_id) DO NOTHING
+            RETURNING work_id,create_request_digest`,
+          [tenantId, projectId, sessionId, resumeWorkId, existing.rows[0].create_request_digest]);
+          if (!inserted.rows[0]) {
+            const concurrentBinding = await client.query(`SELECT work_id,create_request_digest
+              FROM core_continuity_session_bindings
+              WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3 AND work_id=$4`,
+            [tenantId, projectId, sessionId, resumeWorkId]);
+            if (!concurrentBinding.rows[0] ||
+                concurrentBinding.rows[0].create_request_digest !==
+                  existing.rows[0].create_request_digest) {
+              throw new Error("continuity_session_binding_conflict");
+            }
+          }
+          sessionBindingCreated = Boolean(inserted.rows[0]);
+        }
         return {
           schema_version: WORK_CONTINUITY_SCHEMA_VERSION,
           fabric_schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
           tenant_id: tenantId,
           project_id: projectId,
-          work_id: binding.rows[0].work_id,
+          work_id: resumeWorkId,
           intent_digest: existing.rows[0]?.intent_digest || null,
           status: existing.rows[0]?.status || null,
           architecture_version: Number(existing.rows[0]?.current_version || 0),
           next_action: existing.rows[0]?.next_action || "",
           resumed_existing: true,
-          idempotent_replay: true,
+          session_binding_created: sessionBindingCreated,
+          idempotent_replay: !sessionBindingCreated,
         };
       }
       const architecture = cleanJson(input.architecture || {});
@@ -1758,8 +1818,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function recordChange(identity, input) {
-    const context = { tenantId: tenant(identity.tenantId), workId: uuid(input.work_id, "work_id"),
-      actor: safeText(input.agent_id || identity.subject || "connected_ai", 120) };
+    const context = workContext(identity, input);
     return transaction(async (client) => withIdempotency(client, context, input.idempotency_key, "record_change", input,
       async () => {
         const current = await client.query(`SELECT w.current_version,v.architecture FROM core_continuity_works w
@@ -1787,8 +1846,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function checkpoint(identity, input) {
-    const context = { tenantId: tenant(identity.tenantId), workId: uuid(input.work_id, "work_id"),
-      actor: safeText(input.agent_id || identity.subject || "connected_ai", 120) };
+    const context = workContext(identity, input);
     return transaction(async (client) => withIdempotency(client, context, input.idempotency_key, "checkpoint", input,
       async () => {
         const current = await client.query(`SELECT current_version,repository_hash,policy_hash,live_state_hash,next_action
@@ -1868,8 +1926,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function resume(identity, input, authorization) {
-    const context = { tenantId: tenant(identity.tenantId), workId: uuid(input.work_id, "work_id"),
-      actor: safeText(input.agent_id || identity.subject || "connected_ai", 120) };
+    const context = workContext(identity, input);
     return transaction(async (client) => withIdempotency(client, context, input.idempotency_key, "resume", input,
       async () => {
         const result = await client.query(`SELECT w.*,c.capsule_id,c.capsule,c.capsule_digest,c.supervisor_approved
@@ -1941,10 +1998,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function verifyMemory(identity, input) {
-    const context = { tenantId: tenant(identity.tenantId), workId: uuid(input.work_id, "work_id"),
-      actor: safeText(input.agent_id || identity.subject || "connected_ai", 120) };
+    const context = workContext(identity, input);
     return transaction(async (client) => withIdempotency(client, context, input.idempotency_key, "verify_memory", input,
       async () => {
+        await lockWorkRow(client, context);
         const capsuleId = uuid(input.capsule_id, "capsule_id");
         const result = await client.query(`UPDATE core_continuity_capsules SET verified_memory=true
           WHERE tenant_id=$1 AND work_id=$2 AND capsule_id=$3 AND supervisor_approved=true
@@ -1959,13 +2016,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
       }));
   }
 
-  async function requireParticipant(client, context, sessionId, { active = true, agentId } = {}) {
-    const result = await client.query(`SELECT session_id,agent_id,branch_id,status,expires_at,actor_subject
+  async function requireParticipant(client, context, sessionId, {
+    active = true,
+    agentId,
+    clientType,
+  } = {}) {
+    const result = await client.query(`SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject
       FROM core_continuity_participants
       WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND actor_subject=$4
         AND ($5::boolean=false OR (status='active' AND expires_at>now()))
         AND ($6::varchar IS NULL OR agent_id=$6)
-      FOR UPDATE`, [context.tenantId, context.workId, sessionId, context.actorSubject, active, agentId || null]);
+        AND ($7::varchar IS NULL OR client_type=$7)
+      FOR UPDATE`, [context.tenantId, context.workId, sessionId, context.actorSubject, active,
+      agentId || null, clientType || null]);
     if (!result.rows[0]) throw new Error("continuity_participant_not_active");
     return result.rows[0];
   }
@@ -2033,17 +2096,39 @@ export function createWorkContinuityRuntime(config, options = {}) {
       GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "gallery_join", input, async () => {
-        await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
-          [context.tenantId, context.workId]);
-        const work = await client.query(`SELECT work_id FROM core_continuity_works
-          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [context.tenantId, context.workId]);
-        if (!work.rows[0]) throw new Error("continuity_work_not_found");
+        await lockGalleryWork(client, context);
         if (branchId) {
           const branch = await client.query(`SELECT branch_id FROM core_continuity_branches
             WHERE tenant_id=$1 AND work_id=$2 AND branch_id=$3 AND status='active'`,
           [context.tenantId, context.workId, branchId]);
           if (!branch.rows[0]) throw new Error("continuity_branch_not_found");
         }
+        // A session identifier may be reassigned only after its participant
+        // presence expires. Lock the prior participant first so a concurrent
+        // heartbeat/lease mutation cannot race the reassignment, then expire
+        // every lease owned by the old subject before changing the binding.
+        await client.query(`SELECT actor_subject,agent_id,client_type,branch_id,expires_at
+          FROM core_continuity_participants
+          WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3
+          FOR UPDATE`, [context.tenantId, context.workId, sessionId]);
+        const reboundLeases = await client.query(`UPDATE core_continuity_leases l
+          SET status='expired',released_at=coalesce(l.released_at,now())
+          WHERE l.tenant_id=$1 AND l.work_id=$2 AND l.session_id=$3 AND l.status='active'
+            AND EXISTS (
+              SELECT 1 FROM core_continuity_participants p
+              WHERE p.tenant_id=l.tenant_id AND p.work_id=l.work_id
+                AND p.session_id=l.session_id
+                AND (p.actor_subject<>$4 OR p.agent_id<>$5 OR p.client_type<>$6
+                     OR p.branch_id IS DISTINCT FROM $7::uuid)
+                AND (
+                  p.expires_at<=now()
+                  OR (p.actor_subject=$4 AND p.agent_id=$5 AND p.client_type=$6
+                      AND p.branch_id IS NULL AND $7::uuid IS NOT NULL)
+                )
+            )
+          RETURNING l.lease_id,l.session_id`,
+        [context.tenantId, context.workId, sessionId, context.actorSubject,
+          agentId, binding.clientType, branchId]);
         const participant = await client.query(`INSERT INTO core_continuity_participants
           (tenant_id,work_id,session_id,actor_subject,agent_id,client_type,branch_id,expires_at,metadata)
           VALUES ($1,$2,$3,$4,$5,$6,$7,now()+($8::int*interval '1 second'),$9::jsonb)
@@ -2058,6 +2143,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
             expires_at=EXCLUDED.expires_at,metadata=EXCLUDED.metadata
           WHERE (core_continuity_participants.actor_subject=EXCLUDED.actor_subject
                  AND core_continuity_participants.agent_id=EXCLUDED.agent_id
+                 AND core_continuity_participants.client_type=EXCLUDED.client_type
                  AND (core_continuity_participants.branch_id IS NULL
                       OR EXCLUDED.branch_id IS NULL
                       OR core_continuity_participants.branch_id=EXCLUDED.branch_id))
@@ -2071,28 +2157,46 @@ export function createWorkContinuityRuntime(config, options = {}) {
             ownership_transfer_allowed: false,
           }, 20_000))]);
         if (!participant.rows[0]) throw new Error("continuity_session_conflict");
+        const leaseRebindEvent = reboundLeases.rows.length
+          ? await appendEvent(client, context, "lease_expired", {
+            reason: "session_binding_changed",
+            recovered_leases: reboundLeases.rows.map((row) => ({
+              lease_id: row.lease_id,
+              session_id: row.session_id,
+            })),
+          })
+          : null;
         const event = await appendEvent(client, context, "participant_joined", {
-          session_id: sessionId, agent_id: agentId, branch_id: branchId,
+          session_id: sessionId, agent_id: agentId,
+          branch_id: participant.rows[0].branch_id,
         });
         return { schema_version: "tenant_work_gallery_v1", tenant_id: context.tenantId,
-          work_id: context.workId, participant: participant.rows[0], event };
+          work_id: context.workId, participant: participant.rows[0],
+          rebound_leases_expired: reboundLeases.rows.length,
+          lease_rebind_event: leaseRebindEvent, event };
       }));
   }
 
   async function heartbeat(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
     const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
       GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "gallery_heartbeat", input, async () => {
-        await requireParticipant(client, context, sessionId, { active: false, agentId });
+        await lockGalleryWork(client, context);
+        await requireParticipant(client, context, sessionId, {
+          active: false,
+          agentId,
+          clientType,
+        });
         const participant = await client.query(`UPDATE core_continuity_participants
           SET status='active',last_seen_at=now(),expires_at=now()+($5::int*interval '1 second')
           WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND actor_subject=$4
-            AND agent_id=$6
+            AND agent_id=$6 AND client_type=$7
           RETURNING session_id,agent_id,branch_id,status,last_seen_at,expires_at`,
-        [context.tenantId, context.workId, sessionId, context.actorSubject, ttlSeconds, agentId]);
+        [context.tenantId, context.workId, sessionId, context.actorSubject, ttlSeconds,
+          agentId, clientType]);
         if (!participant.rows[0]) throw new Error("continuity_participant_not_active");
         const recovered = await expireLeases(client, context);
         const event = await appendEvent(client, context, "participant_heartbeat", {
@@ -2105,12 +2209,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function openBranch(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
     const branchKey = identifier(input.branch_key, "branch_key");
     const parentBranchId = input.parent_branch_id ? uuid(input.parent_branch_id, "parent_branch_id") : null;
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "branch_open", input, async () => {
-        await requireParticipant(client, context, sessionId, { agentId });
+        await lockGalleryWork(client, context);
+        await requireParticipant(client, context, sessionId, { agentId, clientType });
         if (parentBranchId) {
           const parent = await client.query(`SELECT branch_id FROM core_continuity_branches
             WHERE tenant_id=$1 AND work_id=$2 AND branch_id=$3`,
@@ -2126,33 +2231,52 @@ export function createWorkContinuityRuntime(config, options = {}) {
           RETURNING branch_id,parent_branch_id,branch_key,title,objective,status,created_at,updated_at`,
         [context.tenantId, context.workId, branchId, parentBranchId, branchKey,
           safeText(input.title, 240), safeText(input.objective, 4_000), context.actor]);
+        const reboundLeases = await client.query(`UPDATE core_continuity_leases
+          SET status='expired',released_at=coalesce(released_at,now())
+          WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND status='active'
+            AND branch_id IS DISTINCT FROM $4::uuid
+          RETURNING lease_id,session_id`,
+        [context.tenantId, context.workId, sessionId, branch.rows[0].branch_id]);
         const assigned = await client.query(`UPDATE core_continuity_participants SET branch_id=$4,last_seen_at=now()
           WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3
             AND (branch_id IS NULL OR branch_id=$4)
           RETURNING branch_id`,
         [context.tenantId, context.workId, sessionId, branch.rows[0].branch_id]);
         if (!assigned.rows[0]) throw new Error("continuity_participant_branch_locked");
+        const leaseRebindEvent = reboundLeases.rows.length
+          ? await appendEvent(client, context, "lease_expired", {
+            reason: "participant_branch_bound",
+            recovered_leases: reboundLeases.rows.map((row) => ({
+              lease_id: row.lease_id,
+              session_id: row.session_id,
+            })),
+          })
+          : null;
         const event = await appendEvent(client, context, "branch_opened", {
           branch_id: branch.rows[0].branch_id, parent_branch_id: parentBranchId,
           branch_key: branchKey, session_id: sessionId,
         });
         return { schema_version: "tenant_work_gallery_v1", tenant_id: context.tenantId,
-          work_id: context.workId, branch: branch.rows[0], event };
+          work_id: context.workId, branch: branch.rows[0],
+          rebound_leases_expired: reboundLeases.rows.length,
+          lease_rebind_event: leaseRebindEvent, event };
       }));
   }
 
   async function acquireLease(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
       GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
     const surfaces = normalizeSurfaces(input.surfaces);
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "lease_acquire", input, async () => {
-        await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
-          [context.tenantId, context.workId]);
-        const participant = await requireParticipant(client, context, sessionId, { agentId });
+        await lockGalleryWork(client, context);
+        const participant = await requireParticipant(client, context, sessionId, {
+          agentId,
+          clientType,
+        });
         if (branchId && branchId !== participant.branch_id) {
           throw new Error("continuity_participant_branch_locked");
         }
@@ -2210,19 +2334,25 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function renewLease(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
     const leaseId = uuid(input.lease_id, "lease_id");
     const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
       GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "lease_renew", input, async () => {
-        await requireParticipant(client, context, sessionId, { agentId });
+        await lockGalleryWork(client, context);
+        const participant = await requireParticipant(client, context, sessionId, {
+          agentId,
+          clientType,
+        });
         const lease = await client.query(`UPDATE core_continuity_leases
           SET renewed_at=now(),expires_at=now()+($5::int*interval '1 second')
           WHERE tenant_id=$1 AND work_id=$2 AND lease_id=$3 AND session_id=$4
-            AND status='active' AND expires_at>now()
+            AND status='active' AND expires_at>now() AND created_by=$6
+            AND branch_id IS NOT DISTINCT FROM $7::uuid
           RETURNING lease_id,session_id,branch_id,purpose,status,renewed_at,expires_at`,
-        [context.tenantId, context.workId, leaseId, sessionId, ttlSeconds]);
+        [context.tenantId, context.workId, leaseId, sessionId, ttlSeconds,
+          agentId, participant.branch_id]);
         if (!lease.rows[0]) throw new Error("continuity_lease_not_active");
         const event = await appendEvent(client, context, "lease_renewed", {
           lease_id: leaseId, session_id: sessionId, expires_at: lease.rows[0].expires_at,
@@ -2234,16 +2364,24 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function releaseLease(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
     const leaseId = uuid(input.lease_id, "lease_id");
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "lease_release", input, async () => {
-        await requireParticipant(client, context, sessionId, { active: false, agentId });
+        await lockGalleryWork(client, context);
+        const participant = await requireParticipant(client, context, sessionId, {
+          active: false,
+          agentId,
+          clientType,
+        });
         const lease = await client.query(`UPDATE core_continuity_leases
           SET status='released',released_at=now()
-          WHERE tenant_id=$1 AND work_id=$2 AND lease_id=$3 AND session_id=$4 AND status='active'
+          WHERE tenant_id=$1 AND work_id=$2 AND lease_id=$3 AND session_id=$4
+            AND status='active' AND created_by=$5
+            AND branch_id IS NOT DISTINCT FROM $6::uuid
           RETURNING lease_id,session_id,branch_id,purpose,status,released_at`,
-        [context.tenantId, context.workId, leaseId, sessionId]);
+        [context.tenantId, context.workId, leaseId, sessionId,
+          agentId, participant.branch_id]);
         if (!lease.rows[0]) throw new Error("continuity_lease_not_active");
         const event = await appendEvent(client, context, "lease_released", {
           lease_id: leaseId, session_id: sessionId,
@@ -2255,12 +2393,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function postMessage(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId: fromSessionId, agentId } = assertGalleryParticipantBinding(identity, input);
+    const {
+      sessionId: fromSessionId,
+      agentId,
+      clientType,
+    } = assertGalleryParticipantBinding(identity, input);
     const toSessionId = input.to_session_id ? identifier(input.to_session_id, "to_session_id") : null;
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "message_post", input, async () => {
-        await requireParticipant(client, context, fromSessionId, { agentId });
+        await lockGalleryWork(client, context);
+        await requireParticipant(client, context, fromSessionId, { agentId, clientType });
         let recipient = null;
         if (toSessionId) {
           const result = await client.query(`SELECT session_id,actor_subject FROM core_continuity_participants
@@ -2298,9 +2441,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
   async function inbox(identity, input) {
     await initialize();
     const context = workContext(identity, input);
-    const { sessionId, agentId } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
     const limit = positiveInteger(input.limit, 50, 200);
-    const participant = await requireParticipant(pool, context, sessionId, { active: false, agentId });
+    const participant = await requireParticipant(pool, context, sessionId, {
+      active: false,
+      agentId,
+      clientType,
+    });
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     const messages = await pool.query(`SELECT message_id,branch_id,from_session_id,to_session_id,
         message_type,subject,payload,created_at
@@ -2441,6 +2588,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function expireNativeAgentLeases(context, planId) {
     return transaction(async (client) => {
+      await lockWorkRow(client, context);
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
         context.tenantId,
         planId,
@@ -2490,6 +2638,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("native_agent_binding_expired_replan_required");
     }
     return transaction(async (client) => {
+      await lockWorkRow(client, context);
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
         context.tenantId,
         planId,
@@ -2692,6 +2841,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("native_agent_binding_expired_replan_required");
     }
     return transaction(async (client) => {
+      await lockWorkRow(client, context);
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
         context.tenantId,
         planId,
@@ -2853,6 +3003,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       "native_closure_evaluation",
       input,
       async () => {
+        await lockWorkRow(client, context);
         const planResult = await client.query(`SELECT p.plan,p.plan_digest,p.status,a.intent_digest
           FROM core_continuity_native_plans p JOIN core_continuity_intent_anchors a
             ON a.tenant_id=p.tenant_id AND a.work_id=p.work_id
@@ -2933,6 +3084,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const releaseIntent = requireObject(options.releaseIntent, "core_release_intent");
     const coreJoinRecord = requireObject(options.coreJoinRecord, "core_join_record");
     return transaction(async (client) => {
+      await lockWorkRow(client, context);
       const stored = await client.query(`SELECT
           p.plan,p.plan_digest,p.status,a.intent_digest,e.evaluation,e.evaluation_digest
         FROM core_continuity_native_plans p
@@ -3214,6 +3366,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         authorization_digest: suppliedAuthorizationDigest,
       },
       async () => {
+        await lockWorkRow(client, context);
         const joined = await client.query(`SELECT
             p.plan,p.plan_digest,p.status,
             e.evaluation_id,e.evaluation,e.evaluation_digest,

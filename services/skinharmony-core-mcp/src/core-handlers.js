@@ -360,11 +360,23 @@ function verifiedConfirmationReference(identity, options = {}) {
 
 function applyVerifiedOwnerConfirmation(payload, identity) {
   if (!hasExplicitVerifiedOwnerConfirmation(identity)) return payload;
-  const verifiedGovernance = (governance) => ({
-    ...(governance || {}),
-    owner_confirmation_satisfied: true,
-    owner_identity_verified: true,
-  });
+  const verifiedGovernance = (governance) => {
+    const current = governance && typeof governance === "object" && !Array.isArray(governance)
+      ? governance
+      : {};
+    return {
+      ...current,
+      // Local identity may fill legacy payloads that did not report these
+      // fields. It must never turn an explicit Core denial into a verified
+      // owner result.
+      ...(Object.prototype.hasOwnProperty.call(current, "owner_confirmation_satisfied")
+        ? {}
+        : { owner_confirmation_satisfied: true }),
+      ...(Object.prototype.hasOwnProperty.call(current, "owner_identity_verified")
+        ? {}
+        : { owner_identity_verified: true }),
+    };
+  };
   const nestedPreflight = payload?.work_preflight;
   return {
     ...payload,
@@ -699,7 +711,12 @@ export function createCoreHandlers(config, options = {}) {
     const optionObject = options && typeof options === "object" && !Array.isArray(options);
     const requestBinding = optionObject ? options.requestBinding : options;
     const hostNativeOwner = optionObject && options.hostNativeOwner === true;
+    const actionEvaluatorGateway = optionObject && options.actionEvaluatorGateway === true;
     const allowOAuthTenantOwner = optionObject && options.allowOAuthTenantOwner === true;
+
+    if (hostNativeOwner && actionEvaluatorGateway) {
+      throw new Error("owner_context_signing_domain_conflict");
+    }
 
     // Generic owner assertions are signed with the tenant Core key and bind
     // the exact request body. Host-native delegation operations use the
@@ -733,13 +750,18 @@ export function createCoreHandlers(config, options = {}) {
     ) {
       return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
     }
-    // Production owner assertions use the dedicated bridge secret, never a
-    // tenant bearer/gateway key.  The legacy test-only fallback cannot unlock
-    // the owner profile because Core verifies that profile only with the
-    // dedicated secret.
-    const signingKey = config.ownerContextSigningSecret || (hostNativeOwner
-      ? ""
-      : (configuredTenantGatewayKey() || coreKey(identity.tenantId)));
+    // Owner assertions are verifier-domain bound. Host-native delegation and
+    // Work Preflight use the dedicated bridge secret. The action evaluator is
+    // the sole bearer-bound route and Core verifies it with the selected
+    // tenant-gateway key.
+    const signingKey = actionEvaluatorGateway
+      ? configuredTenantGatewayKey()
+      : (config.ownerContextSigningSecret || (hostNativeOwner
+        ? ""
+        : (configuredTenantGatewayKey() || coreKey(identity.tenantId))));
+    if (actionEvaluatorGateway && Buffer.byteLength(String(signingKey || ""), "utf8") < 32) {
+      throw new Error("core_tenant_gateway_key_missing");
+    }
     if (hostNativeOwner && Buffer.byteLength(String(signingKey || ""), "utf8") < 32) {
       throw new Error("owner_context_signing_unavailable");
     }
@@ -1943,6 +1965,7 @@ export function createCoreHandlers(config, options = {}) {
               identity,
               {
                 requestBinding: ownerRequestBinding("core_action_evaluator", requestBody),
+                actionEvaluatorGateway: true,
                 allowOAuthTenantOwner: tenantWorkBootstrap,
               },
             ),
@@ -2275,6 +2298,7 @@ export function createCoreWriteGuard(config, options = {}) {
       audit_ready: action.audit_ready === true,
       target_authority_verified: action.target_authority_verified === true,
       actor_authorized_for_target: action.actor_authorized_for_target === true,
+      idempotency_key: action.idempotency_key,
       owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
       ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
       ...(tenantWorkBootstrap ? { internal_owner_assertion_scope: "tenant_work_bootstrap" } : {}),
@@ -2289,8 +2313,9 @@ export function createCoreWriteGuard(config, options = {}) {
       output.recommended_actions?.some?.((item) => item.blocked === true) === true;
     const confirmationRequired = authorization.confirmation_required === true ||
       (!payload.authorization && (contract.control_level === "confirm" || output.execution_profile?.requires_user_confirmation === true));
-    const confirmationSatisfied = authorization.confirmation_satisfied === true ||
-      (identity.ownerConfirmed === true && confirmationRequired);
+    const confirmationSatisfied = payload.authorization
+      ? authorization.confirmation_satisfied === true
+      : identity.ownerConfirmed === true && confirmationRequired;
     const legacyExplicitlyAllowed = ["allow", "allowed", "allow_controlled", "allow_advisory"].includes(decision)
       || mediation === "allow";
     const allowed = payload.authorization
