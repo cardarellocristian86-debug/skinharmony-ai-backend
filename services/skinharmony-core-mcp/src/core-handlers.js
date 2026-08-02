@@ -403,9 +403,22 @@ export function createCoreHandlers(config, options = {}) {
   });
   const analysisCache = new Map();
   const analysisCacheTtlMs = Math.min(Math.max(Number(options.analysisCacheTtlMs || 300_000), 30_000), 300_000);
-  const remediationMode = String(config.coreBlockRemediationMode || "shadow").trim().toLowerCase();
+  const configuredRemediationMode = String(config.coreBlockRemediationMode || "shadow").trim().toLowerCase();
+  const remediationMode = ["disabled", "shadow", "active"].includes(configuredRemediationMode)
+    ? configuredRemediationMode
+    : "shadow";
   const remediationEnabled = remediationMode !== "disabled";
+  const remediationWritesEnabled = remediationMode === "active";
   const remediationLedgerContexts = new Map();
+
+  function assertRemediationWritesEnabled() {
+    if (!remediationWritesEnabled) {
+      const error = new Error("core_block_remediation_active_mode_required");
+      error.code = "core_block_remediation_active_mode_required";
+      error.statusCode = 409;
+      throw error;
+    }
+  }
 
   function remediationDecisionLedger(identity) {
     if (!decisionLedger) return null;
@@ -2061,6 +2074,7 @@ export function createCoreHandlers(config, options = {}) {
       });
     },
     core_block_remediation_propose: async (args, identity) => {
+      assertRemediationWritesEnabled();
       const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
       const idem = await remediationStore.findIdempotency({
         tenant_id: identity.tenantId,
@@ -2131,6 +2145,7 @@ export function createCoreHandlers(config, options = {}) {
       return textResult(result);
     },
     core_block_remediation_review: async (args, identity) => {
+      assertRemediationWritesEnabled();
       const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
       const attempt = remediation.attempts.find((item) => item.attempt_id === args.attempt_id) || null;
       if (!attempt) throw new Error("remediation_attempt_not_found");
@@ -2152,6 +2167,7 @@ export function createCoreHandlers(config, options = {}) {
       });
     },
     core_block_remediation_resubmit: async (args, identity) => {
+      assertRemediationWritesEnabled();
       const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
       const attempt = remediation.attempts.find((item) => item.attempt_id === args.attempt_id) || null;
       if (!attempt) throw new Error("remediation_attempt_not_found");
@@ -2229,6 +2245,7 @@ export function createCoreHandlers(config, options = {}) {
       });
     },
     core_block_remediation_cancel: async (args, identity) => {
+      assertRemediationWritesEnabled();
       const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
       const cancelled = await remediationStore.cancel({
         tenant_id: remediation.tenant_id,

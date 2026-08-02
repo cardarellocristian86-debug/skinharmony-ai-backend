@@ -260,7 +260,7 @@ function validateRequiredChecksPolicy(policy, scope, requiredChecks, action) {
   ) {
     error("required_checks_policy_invalid");
   }
-  const event = action?.kind === "github.merge" ? "pull_request" : "push";
+  const event = workflowEvidenceEvent(action);
   if (!Array.isArray(policy.allowed_events) || !policy.allowed_events.includes(event)) {
     error("required_checks_policy_event_denied");
   }
@@ -276,6 +276,14 @@ function validateRequiredChecksPolicy(policy, scope, requiredChecks, action) {
       candidate_sha256: workflow.candidate_sha256 == null ? null : string(workflow.candidate_sha256),
     },
   };
+}
+
+function workflowEvidenceEvent(action) {
+  if (action?.kind === "github.merge") return "pull_request";
+  if (action?.kind === "render.deploy" && action?.environment === "staging") {
+    return "pull_request";
+  }
+  return "push";
 }
 
 async function resolvePolicy(resolver, scope, requiredChecks, action) {
@@ -311,6 +319,8 @@ async function strictWorkflowEvidence({
     await getGithub(`/actions/runs/${workflowRunId}`),
   );
   const merge = action?.kind === "github.merge";
+  const stagingDeploy = action?.kind === "render.deploy" && action?.environment === "staging";
+  const pullRequestEvidence = merge || stagingDeploy;
   if (!merge && sha(action?.source_commit) !== checksCommit) {
     error("workflow_source_commit_mismatch");
   }
@@ -322,22 +332,35 @@ async function strictWorkflowEvidence({
     string(workflowRun?.repository?.full_name) === repository &&
     sha(workflowRun?.head_sha) === checksCommit &&
     workflowRun?.status === "completed" && workflowRun?.conclusion === "success" &&
-    string(workflowRun?.event) === (merge ? "pull_request" : "push") &&
+    string(workflowRun?.event) === (pullRequestEvidence ? "pull_request" : "push") &&
     string(workflowRun?.head_branch) === (merge ? action.head_branch : action.branch)
   );
   if (!runMatches) error("workflow_run_mismatch");
-  if (merge) {
+  if (pullRequestEvidence) {
     const pull = Array.isArray(workflowRun.pull_requests) ? workflowRun.pull_requests : [];
     const match = pull.some((entry) => (
       Number(entry?.number) === Number(action.pull_request) &&
-      string(entry?.head?.ref) === string(action.head_branch) &&
-      sha(entry?.head?.sha) === sha(action.head_commit) &&
+      string(entry?.head?.ref) === string(merge ? action.head_branch : action.branch) &&
+      sha(entry?.head?.sha) === sha(merge ? action.head_commit : action.source_commit) &&
       string(entry?.base?.ref) === string(action.base_branch) &&
       sha(entry?.base?.sha) === sha(action.expected_base_commit) &&
       string(new URL(string(entry?.url || "https://invalid.example")).pathname) ===
         `/repos/${repository}/pulls/${Number(action.pull_request)}`
     ));
     if (!match) error("workflow_pull_request_mismatch");
+    if (stagingDeploy) {
+      const pullRequest = await getGithub(`/pulls/${Number(action.pull_request)}`);
+      if (
+        Number(pullRequest?.number) !== Number(action.pull_request) ||
+        pullRequest?.state !== "open" || pullRequest?.draft === true ||
+        string(pullRequest?.head?.repo?.full_name) !== repository ||
+        string(pullRequest?.base?.repo?.full_name) !== repository ||
+        string(pullRequest?.head?.ref) !== string(action.branch) ||
+        sha(pullRequest?.head?.sha) !== checksCommit ||
+        string(pullRequest?.base?.ref) !== string(action.base_branch) ||
+        sha(pullRequest?.base?.sha) !== sha(action.expected_base_commit)
+      ) error("workflow_pull_request_mismatch");
+    }
   }
   async function source(role, commit) {
     const key = `${repository}\u0000${commit}\u0000${policy.workflow.path}`;
@@ -569,6 +592,16 @@ export function createHostNativeExternalReadbackVerifier({
       if (branchCommit !== targetCommit || targetCommit !== sha(action.source_commit)) {
         error("trusted_readback_branch_commit_mismatch");
       }
+    } else if (action.kind === "render.deploy") {
+      branch = string(action.branch);
+      if (!branch || /(^|\/)\.\.($|\/)/.test(branch)) error("trusted_readback_ticket_invalid");
+      const ref = await getGithub(`/git/ref/heads/${encodeURIComponent(branch).replace(/%2F/g, "/")}`);
+      branchCommit = sha(ref?.object?.sha);
+      if (
+        branchCommit !== targetCommit ||
+        targetCommit !== sha(action.source_commit) ||
+        targetCommit !== checksCommit
+      ) error("trusted_readback_branch_commit_mismatch");
     } else {
       error("trusted_readback_action_invalid");
     }
@@ -607,12 +640,17 @@ export function createHostNativeExternalReadbackVerifier({
       api_origin: GITHUB_ORIGIN,
       repository,
       action_kind: action.kind,
-      head_branch: action.kind === "github.merge" ? string(action.head_branch) : null,
-      base_branch: action.kind === "github.merge" ? string(action.base_branch) : null,
-      pull_request: action.kind === "github.merge" ? Number(action.pull_request) : null,
+      head_branch: action.kind === "github.merge" ? string(action.head_branch) :
+        action.kind === "render.deploy" ? branch : null,
+      base_branch: action.kind === "github.merge" || action.kind === "render.deploy"
+        ? string(action.base_branch || baseBranch) : null,
+      pull_request: action.kind === "github.merge" ||
+        action.kind === "render.deploy" && action.environment === "staging"
+        ? Number(action.pull_request) : null,
       merged,
       head_commit: action.kind === "github.merge" ? sha(action.head_commit) : checksCommit,
-      expected_base_commit: action.kind === "github.merge" ? sha(action.expected_base_commit) : sha(action.expected_remote_commit),
+      expected_base_commit: action.kind === "github.merge" || action.kind === "render.deploy"
+        ? sha(action.expected_base_commit || baseCommit) : sha(action.expected_remote_commit),
       merge_commit: mergeCommit,
       target_commit: targetCommit,
       branch,

@@ -1427,6 +1427,43 @@ test("protected push, Render deploy/rollback, and linked observation each requir
   const deployed = await finalizeExact(deploySubject, deployAction, deployManifest);
   assert.equal(deployed.receipt.live_services[0].live_commit, G("4"));
 
+  const stagingSubject = harness();
+  const stagingManifest = releaseManifestInput({
+    delivery_branch: "agent/release",
+    delivery: {
+      method: "manual_render_deploy",
+      services: [{
+        service_id: "srv-core",
+        environment: "staging",
+        expected_previous_commit: G("1"),
+        target_commit: G("4"),
+        target_resolution: "exact_commit",
+        health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      }],
+    },
+  });
+  const stagingAction = {
+    ...deployAction,
+    branch: "agent/release",
+    environment: "staging",
+    source_commit: G("4"),
+    pull_request: 42,
+    base_branch: "main",
+    expected_base_commit: G("1"),
+  };
+  const staged = await finalizeExact(stagingSubject, stagingAction, stagingManifest);
+  assert.equal(staged.receipt.live_services[0].live_commit, G("4"));
+
+  for (const omitted of ["pull_request", "source_commit", "base_branch", "expected_base_commit"]) {
+    const invalidSubject = harness();
+    const invalidAction = { ...stagingAction };
+    delete invalidAction[omitted];
+    await assert.rejects(
+      finalizeExact(invalidSubject, invalidAction, stagingManifest),
+      /release_manifest_action_mismatch/,
+    );
+  }
+
   const rollbackSubject = harness();
   const rollbackManifest = releaseManifestInput({
     base_commit: G("2"),

@@ -50,6 +50,7 @@ export function requiresGenericWorkPreflight(toolName) {
   return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(String(toolName || ""));
 }
 const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
+  "agent_heartbeat",
   "work_preflight",
   "core_health",
   "nyra_branch_catalog",
@@ -58,6 +59,12 @@ const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "core_semantic_select",
   "core_capability_read",
 ]);
+
+function isAgentPresenceBootstrapCall(toolName, args = {}) {
+  return toolName === "agent_heartbeat" ||
+    ((toolName === "core_capability_catalog" || toolName === "core_capability_invoke") &&
+      args?.capability_id === "agent_heartbeat");
+}
 const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "core_capability_invoke",
   "host_native_delegation_issue",
@@ -559,6 +566,10 @@ export function createApp(config, options = {}) {
   const logicalSessionPresences = new Map();
   const transportPresenceBindings = new Map();
   app.use(express.json({ limit: "1mb" }));
+  app.use((_req, res, next) => {
+    res.set("Access-Control-Expose-Headers", "Mcp-Session-Id, WWW-Authenticate");
+    next();
+  });
 
   app.get("/healthz", async (_req, res) => {
     const postgresMajorVersion = await resolvePostgresMajorVersion(
@@ -777,7 +788,9 @@ export function createApp(config, options = {}) {
         // session that the host can reuse. Stateful tools still fail closed, and
         // concurrent chats never collapse into one identity-derived session.
         const needsBootstrapSession = !transportSessionId && !declaredSessionId;
-        if (needsBootstrapSession && !SESSIONLESS_BOOTSTRAP_TOOLS.has(tool.name)) {
+        if (needsBootstrapSession &&
+          !SESSIONLESS_BOOTSTRAP_TOOLS.has(tool.name) &&
+          !isAgentPresenceBootstrapCall(tool.name, rawArgs)) {
           const presenceError = new Error("agent_presence_session_required");
           presenceError.code = "agent_presence_session_required";
           throw presenceError;
@@ -837,7 +850,7 @@ export function createApp(config, options = {}) {
           throw presenceError;
         }
         const presenceBinding = {
-          ...agentPresence,
+          ...attestedAgentPresence,
           session_id: sessionId,
           binding_source: transportPresence?.binding_source || (declaredSessionId ? "declared" : transportSessionId ? "transport" : "server_bootstrap"),
         };
@@ -866,7 +879,7 @@ export function createApp(config, options = {}) {
           (codexGoodModeHostNativeDelegation || args.owner_confirmed === true);
         const callIdentity = {
           ...identity,
-          agentPresence: attestedAgentPresence,
+          agentPresence: presenceBinding,
           ownerConfirmed: explicitOwnerConfirmation,
           confirmationReference: explicitOwnerConfirmation
             ? (codexGoodModeHostNativeDelegation
@@ -926,6 +939,20 @@ export function createApp(config, options = {}) {
           resourceMetadataPath,
         ));
         return res.status(403).json({ jsonrpc: "2.0", id, error: { code: -32003, message: "Insufficient scope" } });
+      }
+      if (error.message === "owner_authentication_stale") {
+        res.set("WWW-Authenticate", challenge(
+          config,
+          "invalid_token",
+          "",
+          "Fresh owner authentication is required; reconnect the OAuth session",
+          resourceMetadataPath,
+        ));
+        return res.status(401).json({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32001, message: "Fresh owner authentication is required" },
+        });
       }
       if (error.message === "memory_checksum_mismatch") {
         return res.status(400).json({
