@@ -199,6 +199,81 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
   assert.equal(writes, 1);
 });
 
+test("allows tenant_id only at the authorized release manifest root", async () => {
+  function manifestTool(name) {
+    const definition = dedicatedCoreWriteTool(name);
+    definition.inputSchema = {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        release_manifest: {
+          type: "object",
+          additionalProperties: true,
+          properties: { tenant_id: { type: "string", minLength: 1 } },
+          required: ["tenant_id"],
+        },
+      },
+      required: ["release_manifest"],
+    };
+    return definition;
+  }
+
+  const authorizedTool = manifestTool("host_native_action_authorize");
+  const otherTool = manifestTool("host_native_action_reserve");
+  let received;
+  const handlers = {
+    host_native_action_authorize: async (args) => {
+      received = args;
+      return {
+        structuredContent: {
+          dedicated_core_gate: { authorized: true, authority: "universal_core" },
+        },
+      };
+    },
+    host_native_action_reserve: async () => ({
+      structuredContent: {
+        dedicated_core_gate: { authorized: true, authority: "universal_core" },
+      },
+    }),
+  };
+  const tools = [authorizedTool, otherTool];
+  const router = createDynamicCapabilityHandlers({
+    tools,
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  const revision = dynamicCapabilityCatalogSnapshot(tools, handlers).catalog_revision;
+  const invoke = (capabilityId, arguments_, suffix) => router.core_capability_invoke({
+    capability_id: capabilityId,
+    catalog_revision: revision,
+    idempotency_key: `manifest-${suffix}`,
+    arguments: arguments_,
+  }, { ...identity, ownerConfirmed: false });
+
+  await invoke(
+    "host_native_action_authorize",
+    { release_manifest: { tenant_id: "tenant-a", repository: "owner/repository" } },
+    "allowed",
+  );
+  assert.deepEqual(received, {
+    release_manifest: { tenant_id: "tenant-a", repository: "owner/repository" },
+  });
+
+  const rejected = [
+    ["host_native_action_reserve", { release_manifest: { tenant_id: "tenant-a" } }, "other-capability"],
+    ["host_native_action_authorize", { tenant_id: "tenant-a", release_manifest: { tenant_id: "tenant-a" } }, "root"],
+    ["host_native_action_authorize", { release_manifest: { tenant_id: "tenant-a", delivery: { tenant_id: "tenant-a" } } }, "nested"],
+    ["host_native_action_authorize", { release_manifest: { tenant_id: "tenant-a", prototype: {} } }, "prototype"],
+    ["host_native_action_authorize", { release_manifest: { tenant_id: "tenant-a", owner_context: {} } }, "owner-context"],
+  ];
+  for (const [capabilityId, arguments_, suffix] of rejected) {
+    await assert.rejects(
+      invoke(capabilityId, arguments_, suffix),
+      /dynamic_capability_reserved_argument/,
+    );
+  }
+});
+
 test("allows only a metadata-free agent heartbeat without owner confirmation", async () => {
   const tool = writeTool("agent_heartbeat");
   tool.inputSchema.properties = {
