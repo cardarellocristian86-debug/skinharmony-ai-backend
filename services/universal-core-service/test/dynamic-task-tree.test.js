@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   buildDynamicTaskTreeContract,
   createDynamicTaskTreeRuntime,
 } from "../src/dynamicTaskTree.js";
 import { buildVerificationEvidenceContract } from "../src/verificationEvidenceContract.js";
+import { createFileDynamicTaskTreeStateStore } from "../src/dynamicTaskTreeStateStore.js";
 
 const identityReceipts = new Map([
   ["verifier-a", "core-receipt-verifier-a"],
@@ -232,11 +235,11 @@ test("DTT handles retry, fallback, cancellation propagation, tenant isolation an
   const runtime = createDynamicTaskTreeRuntime({ resolve_verifier_identity: resolveVerifierIdentity, resolve_evidence_artifact: () => ({ verified: true, registry_id: "test-registry" }) });
   const tree = await runtime.create({ tenant_id: "tenant-a", objective: "recover safely", nodes });
   const retry = await runtime.recordOutcome({
-    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "research", outcome: "failed",
+    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "research", idempotency_key: "retry-1", outcome: "failed",
   });
   assert.equal(retry.state, "retry_proposed");
   const fallback = await runtime.recordOutcome({
-    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "research", outcome: "failed",
+    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "research", idempotency_key: "retry-2", outcome: "failed",
   });
   assert.equal(fallback.state, "fallback_proposed");
   assert.equal(fallback.fallback_node_id, "fallback");
@@ -265,12 +268,13 @@ test("DTT handles retry, fallback, cancellation propagation, tenant isolation an
     core_verdict: { allowed: true, authority: "universal_core", verdict_reference: "v1" },
   }), /task_tree_not_verified/);
   await assert.rejects(runtime.recordOutcome({
-    tenant_id: "tenant-a", tree_id: joinedTree.tree_id, node_id: "only", outcome: "verified", evidence: {},
+    tenant_id: "tenant-a", tree_id: joinedTree.tree_id, node_id: "only", idempotency_key: "join-invalid", outcome: "verified", evidence: {},
   }), /verification_evidence_required/);
   await runtime.recordOutcome({
     tenant_id: "tenant-a",
     tree_id: joinedTree.tree_id,
     node_id: "only",
+    idempotency_key: "join-valid",
     outcome: "verified",
     evidence: evidenceFor(joinedTree, "only"),
   });
@@ -282,6 +286,63 @@ test("DTT handles retry, fallback, cancellation propagation, tenant isolation an
   });
   assert.equal(joined.status, "core_joined");
   assert.equal(joined.execution_authorized, false);
+});
+
+test("DTT outcome receipts survive response loss and restart and reject key reuse", async () => {
+  const root = path.join(os.tmpdir(), `dtt-outcome-replay-${Date.now()}-${Math.random()}`);
+  const store = createFileDynamicTaskTreeStateStore({ root });
+  const firstRuntime = createDynamicTaskTreeRuntime({ state_store: store });
+  const tree = await firstRuntime.create({
+    tenant_id: "tenant-a",
+    objective: "replay a lost outcome response",
+    nodes: [{ node_id: "attempt", kind: "analysis", task: "attempt", retry_policy: { max_attempts: 1 } }],
+  });
+  const request = {
+    tenant_id: "tenant-a",
+    tree_id: tree.tree_id,
+    node_id: "attempt",
+    idempotency_key: "lost-response-1",
+    outcome: "failed",
+    evidence: { failure_reference: "timeout" },
+  };
+  const first = await firstRuntime.recordOutcome(request);
+  const restartedRuntime = createDynamicTaskTreeRuntime({ state_store: createFileDynamicTaskTreeStateStore({ root }) });
+  const replay = await restartedRuntime.recordOutcome(request);
+  assert.deepEqual(replay, first);
+  assert.equal((await restartedRuntime.get({ tenant_id: "tenant-a", tree_id: tree.tree_id })).nodes[0].attempts, 1);
+  await assert.rejects(restartedRuntime.recordOutcome({
+    ...request,
+    evidence: { failure_reference: "different" },
+  }), /outcome_idempotency_key_conflict/);
+});
+
+test("DTT serializes concurrent duplicate outcomes to one atomic result", async () => {
+  const runtime = createDynamicTaskTreeRuntime();
+  const tree = await runtime.create({
+    tenant_id: "tenant-a",
+    objective: "deduplicate concurrent reports",
+    nodes: [
+      { node_id: "attempt", kind: "analysis", task: "attempt", retry_policy: { max_attempts: 1 } },
+      { node_id: "other", kind: "analysis", task: "other" },
+    ],
+  });
+  const request = {
+    tenant_id: "tenant-a",
+    tree_id: tree.tree_id,
+    node_id: "attempt",
+    idempotency_key: "concurrent-1",
+    outcome: "failed",
+    evidence: { failure_reference: "same" },
+  };
+  const [first, second] = await Promise.all([
+    runtime.recordOutcome(request),
+    runtime.recordOutcome(request),
+  ]);
+  assert.deepEqual(second, first);
+  assert.equal(first.state, "retry_proposed");
+  assert.equal((await runtime.get({ tenant_id: "tenant-a", tree_id: tree.tree_id })).nodes[0].attempts, 1);
+  const otherNode = await runtime.recordOutcome({ ...request, node_id: "other" });
+  assert.equal(otherNode.state, "failed");
 });
 
 test("DTT fails closed on forged provenance, self-verification, duplicate voters and dissent", async () => {
@@ -299,7 +360,7 @@ test("DTT fails closed on forged provenance, self-verification, duplicate voters
     const { runtime, tree } = await createVerificationTree();
     const wrongTenant = evidenceFor(tree, "verify", { tenantId: "tenant-b" });
     await assert.rejects(runtime.recordOutcome({
-      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", outcome: "verified", evidence: wrongTenant,
+      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", idempotency_key: "wrong-tenant", outcome: "verified", evidence: wrongTenant,
     }), /verification_evidence_scope_mismatch/);
   }
   {
@@ -357,6 +418,7 @@ test("DTT fails closed on forged provenance, self-verification, duplicate voters
       tenant_id: "tenant-a",
       tree_id: tree.tree_id,
       node_id: "verify",
+      idempotency_key: "fabricated",
       outcome: "verified",
       evidence: fabricatedQuorum,
     }), /verifier_identity_unverified/);
@@ -371,7 +433,7 @@ test("DTT fails closed on forged provenance, self-verification, duplicate voters
       requiredApprovals: 1,
     });
     await assert.rejects(runtime.recordOutcome({
-      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", outcome: "verified", evidence: singleVerifier,
+      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", idempotency_key: "single", outcome: "verified", evidence: singleVerifier,
     }), /evidence_quorum_invalid/);
   }
   {
@@ -403,7 +465,7 @@ test("DTT fails closed on forged provenance, self-verification, duplicate voters
       ],
     }), dissent);
     await assert.rejects(runtime.recordOutcome({
-      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", outcome: "verified", evidence: dissent,
+      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", idempotency_key: "dissent", outcome: "verified", evidence: dissent,
     }), /verification_evidence_quorum_unsatisfied/);
   }
 });
@@ -419,6 +481,7 @@ test("DTT Core join revalidates attested evidence and requires a verification no
     tenant_id: "tenant-a",
     tree_id: analysisTree.tree_id,
     node_id: "analysis",
+    idempotency_key: "analysis-verified",
     outcome: "verified",
     evidence: evidenceFor(analysisTree, "analysis", {
       votes: [{
@@ -443,7 +506,7 @@ test("DTT Core join revalidates attested evidence and requires a verification no
   const evidence = evidenceFor(tree, "verify");
   evidence.claim = "Tampered claim";
   await assert.rejects(tamperRuntime.recordOutcome({
-    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", outcome: "verified", evidence,
+    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", idempotency_key: "tamper", outcome: "verified", evidence,
   }), /evidence_digest_invalid/);
 });
 
@@ -462,6 +525,7 @@ test("DTT quarantines hostile outcome and join envelopes without raw persistence
     tenant_id: "tenant-a",
     tree_id: failedTree.tree_id,
     node_id: "analysis",
+    idempotency_key: "hostile",
     outcome: "failed",
     evidence: { nested: { output: hostileOutcome } },
   });
@@ -485,6 +549,7 @@ test("DTT quarantines hostile outcome and join envelopes without raw persistence
     tenant_id: "tenant-a",
     tree_id: joinTree.tree_id,
     node_id: "verify",
+    idempotency_key: "join-hostile",
     outcome: "verified",
     evidence: evidenceFor(joinTree, "verify"),
   });
