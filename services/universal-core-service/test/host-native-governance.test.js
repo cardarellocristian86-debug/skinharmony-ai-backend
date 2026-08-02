@@ -808,7 +808,7 @@ test("Core join is signed, exact-release-bound, deterministic, and rejects inval
   }), /core_join_verdict_binding_mismatch/);
 });
 
-test("Core join is consumed atomically by one release ticket and missing trust fails closed", async () => {
+test("Core join is consumed atomically by one reserved release ticket and missing trust fails closed", async () => {
   const subject = harness();
   const delegation = await subject.governance.issueDelegation(subject.delegationInput);
   const pending = buildHostReleaseManifestV2(mergeReleaseManifestInput());
@@ -826,9 +826,21 @@ test("Core join is consumed atomically by one release ticket and missing trust f
     evidence_digest: H("6"),
     release_manifest: manifest,
   });
-  const raced = await Promise.allSettled([issue("join-race-a"), issue("join-race-b")]);
-  assert.equal(raced.filter((result) => result.status === "fulfilled").length, 1);
-  assert.equal(raced.filter((result) => result.status === "rejected").length, 1);
+  const issued = await Promise.allSettled([issue("join-race-a"), issue("join-race-b")]);
+  assert.equal(issued.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(issued.filter((result) => result.status === "rejected").length, 1);
+  const activeJoin = await subject.governance.readCoreJoinVerdict({
+    tenant_id: "codexai",
+    verdict_id: join.verdict.verdict_id,
+  });
+  assert.equal(activeJoin.state, "active");
+  assert.equal(activeJoin.uses, 0);
+  const winningTicket = issued.find((result) => result.status === "fulfilled").value;
+  await subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: winningTicket.ticket.ticket_id,
+    host_session_fingerprint: winningTicket.ticket.host_session_fingerprint,
+  });
   const storedJoin = await subject.governance.readCoreJoinVerdict({
     tenant_id: "codexai",
     verdict_id: join.verdict.verdict_id,
@@ -1008,8 +1020,8 @@ test("all ticket lifecycle mutations are idempotent and conflicting key reuse fa
     tenant_id: "codexai",
     delegation_id: delegation.delegation_id,
   });
-  assert.equal(current.usage.commits, 1);
-  assert.equal(current.usage.total_actions, 1);
+  assert.equal(current.usage.commits, 0);
+  assert.equal(current.usage.total_actions, 0);
 
   const reserveInput = {
     tenant_id: "codexai",
@@ -1023,6 +1035,12 @@ test("all ticket lifecycle mutations are idempotent and conflicting key reuse fa
     ...reserveInput,
     host_session_fingerprint: "different-session",
   }), /idempotency_key_conflict/);
+  current = await subject.governance.readDelegation({
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+  });
+  assert.equal(current.usage.commits, 1);
+  assert.equal(current.usage.total_actions, 1);
 
   const completeInput = {
     tenant_id: "codexai",
@@ -1116,11 +1134,26 @@ test("atomic reservation permits one concurrent consumer only", async () => {
   assert.equal(results.filter((result) => result.status === "rejected").length, 2);
 });
 
-test("concurrent ticket issue cannot exceed the delegation budget", async () => {
+test("concurrent ticket reservation cannot exceed the delegation budget", async () => {
   const subject = harness({ budget: { max_commits: 1 } });
   const delegation = await subject.governance.issueDelegation(subject.delegationInput);
-  const issue = () => issueCommitTicket(subject.governance, delegation.delegation_id);
-  const results = await Promise.allSettled([issue(), issue()]);
+  const issued = await Promise.all([
+    issueCommitTicket(subject.governance, delegation.delegation_id, {
+      host_session_fingerprint: "budget-session-a",
+      idempotency_key: "budget-issue-a",
+    }),
+    issueCommitTicket(subject.governance, delegation.delegation_id, {
+      host_session_fingerprint: "budget-session-b",
+      idempotency_key: "budget-issue-b",
+    }),
+  ]);
+  const results = await Promise.allSettled(issued.map((ticket, index) =>
+    subject.governance.reserveActionTicket({
+      tenant_id: "codexai",
+      ticket_id: ticket.ticket.ticket_id,
+      host_session_fingerprint: ticket.ticket.host_session_fingerprint,
+      idempotency_key: `budget-reserve-${index}`,
+    })));
   assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
   assert.equal(results.filter((result) => result.status === "rejected").length, 1);
   const current = await subject.governance.readDelegation({
@@ -1233,6 +1266,17 @@ test("release checks come from signed delegation policy and induced deploy consu
 
   const first = await issueMergeTicket(subject.governance, delegation.delegation_id);
   assert.equal(first.ticket.action.kind, "github.merge");
+  const beforeReserve = await subject.governance.readDelegation({
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+  });
+  assert.equal(beforeReserve.usage.pushes, 0);
+  assert.equal(beforeReserve.usage.deploys, 0);
+  await subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: first.ticket.ticket_id,
+    host_session_fingerprint: first.ticket.host_session_fingerprint,
+  });
   const usage = await subject.governance.readDelegation({
     tenant_id: "codexai",
     delegation_id: delegation.delegation_id,
@@ -1875,6 +1919,7 @@ test("reserved releases close after ticket expiry or revocation, replay receipt 
   let verifierCalls = 0;
   let subject;
   subject = harness({
+    ticketTtlMs: 60_000,
     externalReadbackVerifier: async ({ ticket, target_commit }) => {
       verifierCalls += 1;
       return trustedExternalReadback(
@@ -2243,7 +2288,7 @@ test("file store recovers a reserved release without re-execution and persists r
   }
 });
 
-test("file governance store enforces CAS budgets across concurrent instances", async () => {
+test("file governance store enforces CAS reservation budgets across concurrent instances", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "host-native-governance-cas-"));
   const signingSecret = "host-native-persistent-cas-secret-at-least-32-bytes";
   let sequence = 0;
@@ -2263,9 +2308,29 @@ test("file governance store enforces CAS budgets across concurrent instances", a
     });
     const first = makeGovernance();
     const second = makeGovernance();
+    const issued = await Promise.all([
+      issueCommitTicket(first, delegation.delegation_id, {
+        host_session_fingerprint: "cas-session-a",
+        idempotency_key: "cas-issue-a",
+      }),
+      issueCommitTicket(second, delegation.delegation_id, {
+        host_session_fingerprint: "cas-session-b",
+        idempotency_key: "cas-issue-b",
+      }),
+    ]);
     const results = await Promise.allSettled([
-      issueCommitTicket(first, delegation.delegation_id),
-      issueCommitTicket(second, delegation.delegation_id),
+      first.reserveActionTicket({
+        tenant_id: "codexai",
+        ticket_id: issued[0].ticket.ticket_id,
+        host_session_fingerprint: issued[0].ticket.host_session_fingerprint,
+        idempotency_key: "cas-reserve-a",
+      }),
+      second.reserveActionTicket({
+        tenant_id: "codexai",
+        ticket_id: issued[1].ticket.ticket_id,
+        host_session_fingerprint: issued[1].ticket.host_session_fingerprint,
+        idempotency_key: "cas-reserve-b",
+      }),
     ]);
     assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
     assert.equal(results.filter((result) => result.status === "rejected").length, 1);
@@ -2324,4 +2389,83 @@ test("brief ticket expires before reservation and cannot be revived", async () =
     ticket_id: issued.ticket.ticket_id,
     host_session_fingerprint: issued.ticket.host_session_fingerprint,
   }), /action_ticket_expired/);
+});
+
+test("expired unreserved release ticket leaves budget and Core join available for same-session recovery", async () => {
+  const subject = harness();
+  const delegation = await subject.governance.issueDelegation({
+    ...subject.delegationInput,
+    budget: {
+      ...subject.delegationInput.budget,
+      max_pushes: 1,
+      max_deploys: 1,
+      max_total_actions: 1,
+    },
+  });
+  const pending = buildHostReleaseManifestV2(mergeReleaseManifestInput());
+  const join = await subject.governance.issueCoreJoinVerdict(coreJoinInput(pending));
+  const manifest = manifestWithCoreJoin(pending, join.verdict.verdict_id);
+  const issue = (session) => subject.governance.issueActionTicket({
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: session,
+    action: githubMergeAction(),
+    evidence_digest: H("6"),
+    release_manifest: manifest,
+  });
+  const expired = await issue("expired-release-session");
+  subject.advance(10 * 60 * 1_000 + 1);
+  await assert.rejects(subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: expired.ticket.ticket_id,
+    host_session_fingerprint: expired.ticket.host_session_fingerprint,
+  }), /action_ticket_expired/);
+  const stillActive = await subject.governance.readCoreJoinVerdict({
+    tenant_id: "codexai",
+    verdict_id: join.verdict.verdict_id,
+  });
+  assert.equal(stillActive.state, "active");
+  assert.equal(stillActive.uses, 0);
+  const unusedDelegation = await subject.governance.readDelegation({
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+  });
+  assert.equal(unusedDelegation.usage.total_actions, 0);
+
+  await assert.rejects(issue("different-release-session"),
+    /core_join_ticket_replacement_binding_mismatch/);
+
+  const replacement = await issue("expired-release-session");
+  const superseded = await subject.governance.readActionTicket({
+    tenant_id: "codexai",
+    ticket_id: expired.ticket.ticket_id,
+  });
+  assert.equal(superseded.state, "superseded");
+  assert.equal(superseded.superseded_by_ticket_id, replacement.ticket.ticket_id);
+  await assert.rejects(subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: expired.ticket.ticket_id,
+    host_session_fingerprint: expired.ticket.host_session_fingerprint,
+  }), /replayed/);
+  const reserved = await subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: replacement.ticket.ticket_id,
+    host_session_fingerprint: replacement.ticket.host_session_fingerprint,
+  });
+  assert.equal(reserved.state, "reserved");
+  const consumed = await subject.governance.readCoreJoinVerdict({
+    tenant_id: "codexai",
+    verdict_id: join.verdict.verdict_id,
+  });
+  assert.equal(consumed.state, "consumed");
+  assert.equal(consumed.consumed_by_ticket_id, replacement.ticket.ticket_id);
+  const chargedDelegation = await subject.governance.readDelegation({
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+  });
+  assert.equal(chargedDelegation.usage.total_actions, 1);
 });
