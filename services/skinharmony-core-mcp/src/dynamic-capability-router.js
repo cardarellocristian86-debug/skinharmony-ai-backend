@@ -67,23 +67,39 @@ function capabilityGroup(name) {
   return prefixes.find(([prefix]) => name.startsWith(prefix))?.[1] || "intelligence";
 }
 
-function assertBoundedSafeArguments(value, path = "$", state = { nodes: 0 }, depth = 0) {
+function assertBoundedSafeArguments(
+  value,
+  path = "$",
+  state = { nodes: 0 },
+  depth = 0,
+  capabilityId = "",
+) {
   state.nodes += 1;
   if (state.nodes > 2_000) throw new Error("dynamic_capability_arguments_too_large");
   if (depth > 12) throw new Error("dynamic_capability_arguments_too_deep");
   if (!value || typeof value !== "object") return;
   if (Array.isArray(value)) {
     if (value.length > 1_000) throw new Error("dynamic_capability_arguments_too_large");
-    value.forEach((item, index) => assertBoundedSafeArguments(item, `${path}[${index}]`, state, depth + 1));
+    value.forEach((item, index) => assertBoundedSafeArguments(
+      item,
+      `${path}[${index}]`,
+      state,
+      depth + 1,
+      capabilityId,
+    ));
     return;
   }
   for (const [key, item] of Object.entries(value)) {
-    if (FORBIDDEN_ARGUMENT_KEYS.has(key.toLowerCase())) {
+    const releaseManifestTenant =
+      capabilityId === "host_native_action_authorize" &&
+      path === "$.release_manifest" &&
+      key === "tenant_id";
+    if (FORBIDDEN_ARGUMENT_KEYS.has(key.toLowerCase()) && !releaseManifestTenant) {
       const error = new Error("dynamic_capability_reserved_argument");
       error.argumentPath = `${path}.${key}`;
       throw error;
     }
-    assertBoundedSafeArguments(item, `${path}.${key}`, state, depth + 1);
+    assertBoundedSafeArguments(item, `${path}.${key}`, state, depth + 1, capabilityId);
   }
 }
 
@@ -162,7 +178,7 @@ function targetArguments(tool, wrapperArgs) {
     args.owner_confirmed = wrapperArgs.owner_confirmed === true;
     if (wrapperArgs.confirmation_reference) args.confirmation_reference = wrapperArgs.confirmation_reference;
   }
-  assertBoundedSafeArguments(args);
+  assertBoundedSafeArguments(args, "$", { nodes: 0 }, 0, tool.name);
   const errors = validateToolArguments(tool.inputSchema, args);
   if (errors.length) {
     const error = new Error("dynamic_capability_arguments_invalid");

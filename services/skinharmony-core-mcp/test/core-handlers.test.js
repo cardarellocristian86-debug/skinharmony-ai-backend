@@ -774,6 +774,7 @@ test("opens the tenant Gallery and shared memory on the first work_preflight cal
 
 test("binds host-native delegation and action routes to OAuth owner and server presence", async () => {
   const calls = [];
+  let ticketReadCount = 0;
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
     universalCoreKeys: { "tenant-a": "tenant-core-key" },
@@ -797,15 +798,32 @@ test("binds host-native delegation and action routes to OAuth owner and server p
         init.method === "GET" &&
         path === "/v1/host-native/actions/hnt_ticket-12345678"
       ) {
+        ticketReadCount += 1;
         return new Response(JSON.stringify({
           ok: true,
           tenant_id: "tenant-a",
           action_ticket: {
-            schema_version: "host_native_action_ticket_record_v1",
-            tenant_id: "tenant-a",
+            state: ticketReadCount === 1 ? "reserved" : "reconciliation_required",
+            uses: 1,
             ticket: {
+              schema_version: "host_native_action_ticket_v1",
               tenant_id: "tenant-a",
               ticket_id: "hnt_ticket-12345678",
+              delegation_id: "hnd_delegation-12345678",
+              work_id: "work-1",
+              intent_anchor_digest: "b".repeat(64),
+              repository: "owner/repo",
+              host_kind: "chatgpt_native",
+              host_session_fingerprint: "a".repeat(64),
+              action: { kind: "git.push.branch" },
+              evidence_digest: "d".repeat(64),
+              issued_at: "2026-08-02T10:00:00.000Z",
+              expires_at: "2026-08-02T11:00:00.000Z",
+              max_uses: 1,
+              host_policy_override: false,
+              host_policy_must_allow: true,
+              provider_execution: false,
+              signature: `hnt_${"1".repeat(64)}`,
             },
           },
         }), {
@@ -1065,6 +1083,86 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     /host_native_owner_context_signing_unavailable/,
   );
   assert.equal(missingOwnerSecretCalled, false);
+});
+
+test("validates the real host-native ticket readback shape fail-closed", async () => {
+  const ticketId = "hnt_ticket-12345678";
+  const fingerprint = "a".repeat(64);
+  const identity = {
+    tenantId: "tenant-a",
+    agentPresence: { client_type: "codex", session_fingerprint: fingerprint },
+  };
+  const validPayload = () => ({
+    ok: true,
+    tenant_id: "tenant-a",
+    action_ticket: {
+      state: "reserved",
+      uses: 1,
+      ticket: {
+        schema_version: "host_native_action_ticket_v1",
+        tenant_id: "tenant-a",
+        ticket_id: ticketId,
+        delegation_id: "hnd_delegation-12345678",
+        work_id: "work-1",
+        intent_anchor_digest: "b".repeat(64),
+        repository: "owner/repo",
+        host_kind: "codex_native",
+        host_session_fingerprint: fingerprint,
+        action: { kind: "git.commit" },
+        evidence_digest: "c".repeat(64),
+        issued_at: "2026-08-02T10:00:00.000Z",
+        expires_at: "2026-08-02T11:00:00.000Z",
+        max_uses: 1,
+        host_policy_override: false,
+        host_policy_must_allow: true,
+        provider_execution: false,
+        signature: `hnt_${"1".repeat(64)}`,
+      },
+    },
+  });
+  const invoke = async (mutate = () => {}) => {
+    const payload = validPayload();
+    mutate(payload);
+    const handlers = createCoreHandlers({
+      universalCoreUrl: "https://core.test",
+      universalCoreKeys: { "tenant-a": "tenant-core-key" },
+      tenantGatewayKey: TENANT_GATEWAY_KEY,
+      tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+    }, {
+      fetchImpl: async (url) => {
+        if (new URL(url).pathname === `/v1/host-native/actions/${ticketId}`) {
+          return new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    return handlers.host_native_action_complete({
+      ticket_id: ticketId,
+      reservation_id: "hnr_reservation-12345678",
+      outcome: "success",
+      result_digest: "b".repeat(64),
+    }, identity);
+  };
+
+  await invoke();
+  await assert.rejects(invoke((value) => { value.tenant_id = "tenant-b"; }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.tenant_id = "tenant-b"; }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.schema_version = "unknown_record_v1"; }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.ticket.tenant_id = "tenant-b"; }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.ticket.ticket_id = "hnt_other"; }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.ticket.schema_version = "host_native_action_ticket_v0"; }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.ticket.host_session_fingerprint = "b".repeat(64); }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.ticket.signature = "hnt_invalid"; }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.state = "completed"; }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.uses = 0; }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.ticket.max_uses = 2; }), /host_native_ticket_readback_invalid/);
+  await assert.rejects(invoke((value) => { value.action_ticket.ticket.provider_execution = true; }), /host_native_ticket_readback_invalid/);
 });
 
 test("host-native action automation fails closed without the tenant gateway and never falls back", async () => {
