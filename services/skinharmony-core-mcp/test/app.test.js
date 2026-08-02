@@ -145,6 +145,10 @@ test("limits the dynamic presence bootstrap exemption to the exact agent heartbe
 
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   assert.match(serverSource, /!isAgentPresenceBootstrapCall\(toolName, args\)/);
+  assert.match(
+    serverSource,
+    /if \(toolName === "agent_heartbeat"\) return "agent\.heartbeat";/,
+  );
 });
 
 test("publishes only a verifiable build identity", () => {
