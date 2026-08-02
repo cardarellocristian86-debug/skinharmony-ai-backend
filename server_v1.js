@@ -3,6 +3,7 @@ const { buildProtocolDraft } = require("./engine_v1");
 const { classifyImageWithAI, hasVisionSupport } = require("./vision_adapter");
 const { selectLibraryProtocol, pickRecommendedPackage, library } = require("./library_selector");
 const { AssistantService } = require("./AssistantService");
+const { healthPayload } = require("./services/shared/host-native-health-contract.cjs");
 
 const app = express();
 const assistantService = new AssistantService();
@@ -23,6 +24,15 @@ app.use(express.json({ limit: "12mb" }));
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "protocol-engine-v1", vision: hasVisionSupport() });
+});
+
+app.get("/healthz", (_req, res) => {
+  const health = healthPayload({
+    service: "protocol-engine-v1",
+    version: "1.0.0",
+    ready: true,
+  });
+  return res.status(health.render_ready ? 200 : 503).json(health);
 });
 
 app.get("/meta/webhook", (req, res) => {
@@ -148,7 +158,11 @@ app.post("/api/assistant/chat", async (req, res) => {
   }
 });
 
-const port = Number(process.env.PROTOCOL_ENGINE_PORT || 3030);
-app.listen(port, () => {
-  console.log(`Protocol engine v1 attivo su http://localhost:${port}`);
-});
+if (require.main === module) {
+  const port = Number(process.env.PROTOCOL_ENGINE_PORT || 3030);
+  app.listen(port, () => {
+    console.log(`Protocol engine v1 attivo su http://localhost:${port}`);
+  });
+}
+
+module.exports = app;
