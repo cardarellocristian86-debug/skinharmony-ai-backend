@@ -996,20 +996,46 @@ export function createCoreHandlers(config, options = {}) {
     throw new Error("host_native_client_type_required");
   }
 
-  async function trustedHostNativeTicketRecord(ticketId, identity) {
+  async function trustedHostNativeTicketRecord(ticketId, identity, allowedStates) {
     const payload = await coreRequest(
       `/v1/host-native/actions/${encodeURIComponent(ticketId)}`,
       identity.tenantId,
       { useTenantGateway: true },
     );
     const record = payload?.action_ticket;
+    const ticket = record?.ticket;
+    const state = String(record?.state || "");
+    const uses = record?.uses;
+    const sessionFingerprint = hostNativeSessionFingerprint(identity);
     if (
       payload?.ok !== true ||
       payload.tenant_id !== identity.tenantId ||
-      record?.schema_version !== "host_native_action_ticket_record_v1" ||
-      record.tenant_id !== identity.tenantId ||
-      record.ticket?.tenant_id !== identity.tenantId ||
-      record.ticket?.ticket_id !== ticketId
+      !record || typeof record !== "object" || Array.isArray(record) ||
+      (record.schema_version !== undefined &&
+        record.schema_version !== "host_native_action_ticket_record_v1") ||
+      (record.tenant_id !== undefined && record.tenant_id !== identity.tenantId) ||
+      !ticket || typeof ticket !== "object" || Array.isArray(ticket) ||
+      ticket.schema_version !== "host_native_action_ticket_v1" ||
+      ticket.tenant_id !== identity.tenantId ||
+      ticket.ticket_id !== ticketId ||
+      !/^hnd_[a-zA-Z0-9._-]{8,}$/.test(String(ticket.delegation_id || "")) ||
+      typeof ticket.work_id !== "string" || ticket.work_id.length < 1 ||
+      !/^[a-f0-9]{64}$/i.test(String(ticket.intent_anchor_digest || "")) ||
+      typeof ticket.repository !== "string" || ticket.repository.length < 1 ||
+      !["codex_native", "chatgpt_native"].includes(ticket.host_kind) ||
+      ticket.host_session_fingerprint !== sessionFingerprint ||
+      !ticket.action || typeof ticket.action !== "object" || Array.isArray(ticket.action) ||
+      typeof ticket.action.kind !== "string" || ticket.action.kind.length < 1 ||
+      !/^[a-f0-9]{64}$/i.test(String(ticket.evidence_digest || "")) ||
+      !Number.isFinite(Date.parse(ticket.issued_at || "")) ||
+      !Number.isFinite(Date.parse(ticket.expires_at || "")) ||
+      ticket.max_uses !== 1 ||
+      ticket.provider_execution !== false ||
+      ticket.host_policy_override !== false ||
+      ticket.host_policy_must_allow !== true ||
+      !/^hnt_[a-f0-9]{64}$/i.test(String(ticket.signature || "")) ||
+      !allowedStates.includes(state) ||
+      !Number.isInteger(uses) || uses !== 1
     ) {
       throw new Error("host_native_ticket_readback_invalid");
     }
@@ -1211,7 +1237,11 @@ export function createCoreHandlers(config, options = {}) {
     },
     host_native_action_complete: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/complete`;
-      const ticketRecord = await trustedHostNativeTicketRecord(args.ticket_id, identity);
+      const ticketRecord = await trustedHostNativeTicketRecord(
+        args.ticket_id,
+        identity,
+        ["reserved"],
+      );
       try {
         return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
           method: "POST",
@@ -1232,7 +1262,11 @@ export function createCoreHandlers(config, options = {}) {
     },
     host_native_action_reconcile: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reconcile`;
-      const ticketRecord = await trustedHostNativeTicketRecord(args.ticket_id, identity);
+      const ticketRecord = await trustedHostNativeTicketRecord(
+        args.ticket_id,
+        identity,
+        ["reserved", "reconciliation_required"],
+      );
       try {
         return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
           method: "POST",
