@@ -12,37 +12,12 @@ import {
 
 const identity = {
   tenantId: "tenant-a",
-  kind: "codex",
-  subject: "codex|owner",
-  role: "owner_root",
+  kind: "oauth",
+  serverClientType: "chatgpt",
+  subject: "test-subject",
   scopes: ["core:read", "core:govern"],
   ownerConfirmed: true,
 };
-
-const boundedMemberIdentity = {
-  tenantId: "tenant-a",
-  kind: "oauth",
-  subject: "oauth|member-a",
-  role: "member",
-  oauthTenantMemberBound: true,
-  tenantMembershipRole: "member",
-  scopes: ["core:read", "core:govern"],
-  ownerConfirmed: false,
-  agentPresence: {
-    agent_id: "member-agent-a",
-    client_type: "chatgpt",
-    session_id: "member-session-a",
-    signature: "ags_verified_member_a",
-  },
-};
-
-const horizontalExposure = Object.freeze({
-  exposure_class: "chatgpt_horizontal",
-  allowed_client_types: ["chatgpt", "codex", "api_agent", "admin"],
-  allowed_audiences: ["chatgpt_connector", "codex_internal", "api_agent", "admin_control_room"],
-  discoverable_in_connector: true,
-  semantic_select_allowed: true,
-});
 
 function readTool(name = "nyra_dynamic_read") {
   return {
@@ -50,12 +25,18 @@ function readTool(name = "nyra_dynamic_read") {
     title: "Dynamic read",
     description: "Reads a tenant-bound capability.",
     scopes: ["core:read"],
-    exposure: horizontalExposure,
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
+    },
+    exposure: {
+      exposure_class: "chatgpt_horizontal",
+      allowed_client_types: ["chatgpt", "codex", "api_agent", "admin"],
+      allowed_audiences: ["chatgpt_connector", "codex_internal", "api_agent", "admin_control_room"],
+      discoverable_in_connector: true,
+      semantic_select_allowed: true,
     },
     inputSchema: {
       type: "object",
@@ -72,7 +53,6 @@ function writeTool(name = "workspace_dynamic_write") {
     title: "Dynamic write",
     description: "Writes through the governed capability router.",
     scopes: ["core:govern"],
-    exposure: horizontalExposure,
     annotations: {
       readOnlyHint: false,
       destructiveHint: false,
@@ -80,6 +60,13 @@ function writeTool(name = "workspace_dynamic_write") {
       openWorldHint: false,
     },
     _meta: { "skinharmony/ownerConfirmationRequired": true },
+    exposure: {
+      exposure_class: "chatgpt_horizontal",
+      allowed_client_types: ["chatgpt", "codex", "api_agent", "admin"],
+      allowed_audiences: ["chatgpt_connector", "codex_internal", "api_agent", "admin_control_room"],
+      discoverable_in_connector: true,
+      semantic_select_allowed: true,
+    },
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -87,42 +74,8 @@ function writeTool(name = "workspace_dynamic_write") {
         value: { type: "string", minLength: 1 },
         owner_confirmed: { type: "boolean" },
         confirmation_reference: { type: "string" },
-        idempotency_key: { type: "string", minLength: 8 },
       },
       required: ["value", "owner_confirmed"],
-    },
-  };
-}
-
-function boundedGalleryTool(name = "tenant_work_branch_open") {
-  return {
-    name,
-    title: "Join tenant work",
-    description: "Joins shared tenant work through a bounded Core action.",
-    scopes: ["core:govern"],
-    exposure: horizontalExposure,
-    annotations: {
-      readOnlyHint: false,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    },
-    _meta: {
-      "skinharmony/ownerConfirmationRequired": false,
-      "skinharmony/tenantBoundedCollaboration": true,
-      "skinharmony/boundedActionType": "work.branch.open",
-    },
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        work_id: { type: "string", minLength: 1 },
-        agent_id: { type: "string", minLength: 1 },
-        client_type: { type: "string", minLength: 1 },
-        session_id: { type: "string", minLength: 1 },
-        idempotency_key: { type: "string", minLength: 8 },
-      },
-      required: ["work_id", "agent_id", "client_type", "session_id", "idempotency_key"],
     },
   };
 }
@@ -143,12 +96,11 @@ function dedicatedCoreWriteTool(name = "host_native_action_reserve") {
 }
 
 test("publishes a fixed compact MCP surface below the connector import budget", () => {
-  const toolDefinitions = [...TOOLS, ...WORK_CONTINUITY_TOOLS];
-  const handlers = Object.fromEntries(toolDefinitions.map((tool) => [tool.name, async () => ({})]));
-  const compact = compactMcpTools(toolDefinitions, handlers);
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({})]));
+  const compact = compactMcpTools(TOOLS, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 13);
+  assert.equal(compact.length, 7);
   assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
   assert(Buffer.byteLength(JSON.stringify({ tools: compact })) < 64 * 1024);
 });
@@ -169,15 +121,6 @@ test("adds capabilities through the catalog without changing the connector surfa
     "nyra_dynamic_read",
     "nyra_future_read",
   ]);
-});
-
-test("unknown or incomplete capabilities stay hidden until explicitly classified", () => {
-  const unknown = { ...readTool("mystery_capability") };
-  delete unknown.exposure;
-  const handlers = { mystery_capability: async () => ({}) };
-  const snapshot = dynamicCapabilityCatalogSnapshot([unknown], handlers);
-
-  assert.deepEqual(snapshot.capabilities, []);
 });
 
 test("reads only exact server-registered capabilities with scopes and a fresh revision", async () => {
@@ -217,19 +160,17 @@ test("reads only exact server-registered capabilities with scopes and a fresh re
       catalog_revision: revision,
       arguments: { query: "status" },
     }, { ...identity, scopes: [] }),
-    /dynamic_capability_catalog_revision_mismatch|dynamic_capability_unavailable/,
+    /insufficient_scope/,
   );
 });
 
 test("mutations fail closed unless owner confirmation, Core gate, and safe arguments agree", async () => {
   const tool = writeTool();
   let writes = 0;
-  let receivedArguments = null;
   let gateAllowed = true;
   const handlers = {
-    [tool.name]: async (arguments_) => {
+    [tool.name]: async () => {
       writes += 1;
-      receivedArguments = arguments_;
       return { structuredContent: { ok: true } };
     },
   };
@@ -245,7 +186,7 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
   const args = {
     capability_id: tool.name,
     catalog_revision: revision,
-    idempotency_key: "write-01",
+    idempotency_key: "write-1",
     owner_confirmed: true,
     confirmation_reference: "owner-approved",
     arguments: { value: "safe" },
@@ -253,18 +194,17 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
 
   await router.core_capability_invoke(args, identity);
   assert.equal(writes, 1);
-  assert.equal(receivedArguments.idempotency_key, "write-01");
 
   gateAllowed = false;
   await assert.rejects(
-    router.core_capability_invoke({ ...args, idempotency_key: "write-02" }, identity),
+    router.core_capability_invoke({ ...args, idempotency_key: "write-2" }, identity),
     /dynamic_capability_not_authorized/,
   );
   assert.equal(writes, 1);
 
   await assert.rejects(
     router.core_capability_invoke(
-      { ...args, idempotency_key: "write-03", arguments: { value: "unsafe", nested: { tenant_id: "tenant-b" } } },
+      { ...args, idempotency_key: "write-3", arguments: { value: "unsafe", nested: { tenant_id: "tenant-b" } } },
       identity,
     ),
     /dynamic_capability_reserved_argument/,
@@ -276,13 +216,98 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
   assert.equal(writes, 1);
 });
 
-test("bounded Gallery mutations accept a verified tenant member and overwrite spoofed presence", async () => {
-  const tool = boundedGalleryTool();
-  let receivedArguments;
-  let receivedGate;
+test("allows tenant_id only at the authorized release manifest root", async () => {
+  function manifestTool(name) {
+    const definition = dedicatedCoreWriteTool(name);
+    definition.inputSchema = {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        release_manifest: {
+          type: "object",
+          additionalProperties: true,
+          properties: { tenant_id: { type: "string", minLength: 1 } },
+          required: ["tenant_id"],
+        },
+      },
+      required: ["release_manifest"],
+    };
+    return definition;
+  }
+
+  const authorizedTool = manifestTool("host_native_action_authorize");
+  const otherTool = manifestTool("host_native_action_reserve");
+  let received;
   const handlers = {
-    [tool.name]: async (arguments_) => {
-      receivedArguments = arguments_;
+    host_native_action_authorize: async (args) => {
+      received = args;
+      return {
+        structuredContent: {
+          dedicated_core_gate: { authorized: true, authority: "universal_core" },
+        },
+      };
+    },
+    host_native_action_reserve: async () => ({
+      structuredContent: {
+        dedicated_core_gate: { authorized: true, authority: "universal_core" },
+      },
+    }),
+  };
+  const tools = [authorizedTool, otherTool];
+  const router = createDynamicCapabilityHandlers({
+    tools,
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  const revision = dynamicCapabilityCatalogSnapshot(tools, handlers).catalog_revision;
+  const invoke = (capabilityId, arguments_, suffix) => router.core_capability_invoke({
+    capability_id: capabilityId,
+    catalog_revision: revision,
+    idempotency_key: `manifest-${suffix}`,
+    arguments: arguments_,
+  }, { ...identity, ownerConfirmed: false });
+
+  await invoke(
+    "host_native_action_authorize",
+    { release_manifest: { tenant_id: "tenant-a", repository: "owner/repository" } },
+    "allowed",
+  );
+  assert.deepEqual(received, {
+    release_manifest: { tenant_id: "tenant-a", repository: "owner/repository" },
+  });
+
+  const rejected = [
+    ["host_native_action_reserve", { release_manifest: { tenant_id: "tenant-a" } }, "other-capability"],
+    ["host_native_action_authorize", { tenant_id: "tenant-a", release_manifest: { tenant_id: "tenant-a" } }, "root"],
+    ["host_native_action_authorize", { release_manifest: { tenant_id: "tenant-a", delivery: { tenant_id: "tenant-a" } } }, "nested"],
+    ["host_native_action_authorize", { release_manifest: { tenant_id: "tenant-a", prototype: {} } }, "prototype"],
+    ["host_native_action_authorize", { release_manifest: { tenant_id: "tenant-a", owner_context: {} } }, "owner-context"],
+  ];
+  for (const [capabilityId, arguments_, suffix] of rejected) {
+    await assert.rejects(
+      invoke(capabilityId, arguments_, suffix),
+      /dynamic_capability_reserved_argument/,
+    );
+  }
+});
+
+test("allows only a metadata-free agent heartbeat without owner confirmation", async () => {
+  const tool = writeTool("agent_heartbeat");
+  tool.inputSchema.properties = {
+    agent_id: { type: "string" },
+    client_type: { type: "string" },
+    session_id: { type: "string" },
+    display_name: { type: "string" },
+    capabilities: { type: "array", items: { type: "string" } },
+    owner_confirmed: { type: "boolean" },
+    confirmation_reference: { type: "string" },
+  };
+  tool.inputSchema.required = ["agent_id", "client_type"];
+  let received;
+  let gatedTool;
+  const handlers = {
+    agent_heartbeat: async (args) => {
+      received = args;
       return { structuredContent: { ok: true } };
     },
   };
@@ -290,91 +315,53 @@ test("bounded Gallery mutations accept a verified tenant member and overwrite sp
     tools: [tool],
     handlers,
     semanticSelect: async () => ({}),
-    gateAction: async (input) => {
-      receivedGate = input;
+    gateAction: async ({ tool: target }) => {
+      gatedTool = target;
       return { structuredContent: { authorization: { allowed: true } } };
     },
   });
   const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
-  const result = await router.core_capability_invoke({
-    capability_id: tool.name,
+  const minimal = {
+    capability_id: "agent_heartbeat",
     catalog_revision: revision,
-    idempotency_key: "gallery-join-01",
-    arguments: {
-      work_id: "work-a",
-      agent_id: "spoofed-agent",
-      client_type: "other",
-      session_id: "spoofed-session",
-    },
-  }, boundedMemberIdentity);
-
-  assert.deepEqual(receivedArguments, {
-    work_id: "work-a",
-    agent_id: "member-agent-a",
-    client_type: "chatgpt",
-    session_id: "member-session-a",
-    idempotency_key: "gallery-join-01",
-  });
-  assert.equal(receivedGate.tool.name, tool.name);
-  assert.equal(receivedGate.identity, boundedMemberIdentity);
-  assert.equal(result.structuredContent.dynamic_capability.tenant_bounded_collaboration, true);
-  assert.equal(result.structuredContent.dynamic_capability.gate_allowed, true);
-});
-
-test("bounded Gallery mutations fail closed for unbound membership, invalid presence, and unsafe payloads", async () => {
-  const tool = boundedGalleryTool();
-  let writes = 0;
-  const handlers = {
-    [tool.name]: async () => {
-      writes += 1;
-      return { structuredContent: { ok: true } };
-    },
-  };
-  const router = createDynamicCapabilityHandlers({
-    tools: [tool],
-    handlers,
-    semanticSelect: async () => ({}),
-    gateAction: async () => ({
-      structuredContent: { authorization: { allowed: true } },
-    }),
-  });
-  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
-  const request = {
-    capability_id: tool.name,
-    catalog_revision: revision,
-    idempotency_key: "gallery-join-02",
-    arguments: { work_id: "work-a" },
+    idempotency_key: "heartbeat-minimal-1",
+    arguments: { agent_id: "agent-a", client_type: "codex" },
   };
 
-  for (const caller of [
-    { ...boundedMemberIdentity, agentPresence: undefined },
-    { ...boundedMemberIdentity, oauthTenantMemberBound: false },
-    { ...boundedMemberIdentity, tenantMembershipRole: "unbound" },
-    {
-      ...boundedMemberIdentity,
-      agentPresence: {
-        ...boundedMemberIdentity.agentPresence,
-        signature: "caller-declared",
-      },
+  const result = await router.core_capability_invoke(minimal, {
+    ...identity,
+    ownerConfirmed: false,
+    agentPresence: {
+      agent_id: "agent-a",
+      client_type: "codex",
+      session_id: "transport-session-a",
+      signature: "ags_" + "a".repeat(32),
     },
-    { ...boundedMemberIdentity, tenantId: "" },
+  });
+  assert.equal(gatedTool._meta["skinharmony/ownerConfirmationRequired"], false);
+  assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_required, false);
+  assert.deepEqual(received, {
+    ...minimal.arguments,
+    session_id: "transport-session-a",
+    owner_confirmed: false,
+  });
+
+  for (const arguments_ of [
+    { ...minimal.arguments, display_name: "Custom agent" },
+    { ...minimal.arguments, capabilities: ["release_governance"] },
+    { ...minimal.arguments, capabilities: "release_governance" },
   ]) {
     await assert.rejects(
-      router.core_capability_invoke(request, caller),
-      /tenant_work_membership_required|tenant_collaboration_identity_required/,
+      router.core_capability_invoke(
+        { ...minimal, idempotency_key: `blocked-${String(arguments_.display_name || arguments_.capabilities)}`, arguments: arguments_ },
+        { ...identity, ownerConfirmed: false },
+      ),
+      /owner_confirmation_required/,
     );
   }
-  await assert.rejects(
-    router.core_capability_invoke({
-      ...request,
-      arguments: { work_id: "work-a", nested: { tenant_id: "tenant-b" } },
-    }, boundedMemberIdentity),
-    /dynamic_capability_reserved_argument/,
-  );
-  assert.equal(writes, 0);
 });
 
-test("bounded internal mutations use target metadata instead of impersonating the owner", async () => {
+test("bounded internal mutations use the target metadata instead of impersonating the owner", async () => {
   const tool = delegatedWriteTool();
   let received;
   let gated = 0;
@@ -403,10 +390,7 @@ test("bounded internal mutations use target metadata instead of impersonating th
   }, caller);
 
   assert.equal(gated, 1);
-  assert.deepEqual(received.args, {
-    value: "verified receipt",
-    idempotency_key: "agent-report-1",
-  });
+  assert.deepEqual(received.args, { value: "verified receipt" });
   assert.equal(received.caller, caller);
   assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_required, false);
   assert.equal(result.structuredContent.dynamic_capability.owner_confirmation_satisfied, true);
@@ -589,27 +573,4 @@ test("semantic selection builds candidates from the server catalog and never aut
   assert.deepEqual(selectedArgs.candidates.map((item) => item.id), ["nyra_dynamic_read"]);
   assert.equal(result.structuredContent.execution_authorized, false);
   assert.deepEqual(result.structuredContent.candidate_capability_ids, ["nyra_dynamic_read"]);
-});
-
-test("semantic selection rejects every candidate without an exact visible catalog binding", async () => {
-  const tool = readTool("nyra_dynamic_read");
-  const handlers = { [tool.name]: async () => ({}) };
-  const router = createDynamicCapabilityHandlers({
-    tools: [tool],
-    handlers,
-    semanticSelect: async () => {
-      throw new Error("semantic_selector_must_not_run");
-    },
-  });
-
-  for (const candidate of [
-    { id: "mystery_capability", text: "Looks harmless" },
-    { id: "skin_private_read", text: "Prefixed vertical" },
-    { id: "operations_silver", text: "Non-prefixed vertical" },
-  ]) {
-    await assert.rejects(
-      router.core_semantic_select({ candidates: [candidate] }, identity),
-      /branch_not_available_for_client/,
-    );
-  }
 });

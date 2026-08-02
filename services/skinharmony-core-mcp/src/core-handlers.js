@@ -4,6 +4,26 @@ import { createAgentPresence } from "./agent-presence.js";
 import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
 import { readCoreCapabilityCatalog } from "./core-capability-catalog.js";
 import {
+  CORE_BLOCK_CLASS,
+  CORE_BLOCK_PROPOSAL_TYPES,
+  CORE_BLOCK_REMEDIATION_STATUS,
+  buildDeterministicBlockExplanation,
+  buildResubmissionContext,
+  openCoreBlockRemediation,
+  classifyCoreBlock,
+  compareScopeDigest,
+  deriveContinuationScope,
+  deriveRecommendedNextAction,
+  detectRemediationBypass,
+  evaluateEvidenceRequirements,
+  evaluateRollback,
+  evaluateTests,
+  proposeRemediationAttempt,
+  reviewRemediationProposal,
+  validateProposalForRemediation,
+} from "../../shared/core-block-remediation.js";
+import { createCoreBlockRemediationStore } from "./core-block-remediation-store.js";
+import {
   nyraDeepV2EvidencePackHash,
   signNyraDeepV2McpRequest,
 } from "./nyra-deep-v2-mcp-request.js";
@@ -25,55 +45,6 @@ function tenantContextHeader(tenantId, signingSecret) {
   return Buffer.from(JSON.stringify({ ...context, assertion })).toString("base64url");
 }
 
-function serverClientType(identity = {}) {
-  if (identity.kind === "oauth") return "chatgpt";
-  if (identity.kind === "codex") return "codex";
-  const trusted = String(identity.serverClientType || "");
-  return [
-    "api_agent",
-    "smartdesk",
-    "analyzer",
-    "tricocamera",
-    "suite",
-    "waas",
-    "admin",
-  ].includes(trusted) ? trusted : "unbound";
-}
-
-function serverClientAudience(identity = {}, clientType = serverClientType(identity)) {
-  if (clientType === "chatgpt") return "chatgpt_connector";
-  if (clientType === "codex") return "codex_internal";
-  if (clientType === "smartdesk") return "smartdesk_runtime";
-  if (clientType === "analyzer" || clientType === "tricocamera") return "analyzer_runtime";
-  if (clientType === "suite" || clientType === "waas") return "suite_runtime";
-  if (clientType === "admin") return "admin_control_room";
-  if (clientType === "api_agent") return "api_agent";
-  return "unbound";
-}
-
-function clientContextHeader(identity, signingSecret) {
-  if (!identity || !signingSecret || signingSecret.length < 32) return "";
-  const clientType = serverClientType(identity);
-  const context = {
-    version: "mcp_client_context_v1",
-    tenant_id: String(identity.tenantId || ""),
-    client_type: clientType,
-    audience: serverClientAudience(identity, clientType),
-    entitlements: [...new Set([
-      ...(identity.scopes || []),
-      ...(identity.serverEntitlements || []),
-      ...(identity.activeBranches || []).map((branchId) => `branch:${branchId}`),
-    ].map(String))].sort(),
-    role: String(identity.role || "member"),
-    issued_at: new Date().toISOString(),
-  };
-  const canonical = JSON.stringify(context);
-  const assertion = `mcc_${crypto.createHmac("sha256", signingSecret)
-    .update(`mcp-client-context\u0000${canonical}`)
-    .digest("hex")}`;
-  return Buffer.from(JSON.stringify({ ...context, assertion })).toString("base64url");
-}
-
 function ownerContextCanonical(context) {
   return JSON.stringify({
     version: context.assertion_version,
@@ -84,7 +55,6 @@ function ownerContextCanonical(context) {
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
     owner_subject_fingerprint: context.owner_subject_fingerprint,
-    owner_actor_provenance: context.owner_actor_provenance,
     issued_at: context.issued_at,
     binding_version: context.binding_version,
     binding_hash: context.binding_hash,
@@ -332,7 +302,9 @@ function ownerBindingStatus(config, identity) {
       emergency_stop: config.godModeEmergencyStop === true,
       tenant_allowed: tenantIds.includes(identity.tenantId),
       subject_allowed: (config.godModeSubjects || []).includes(identity.subject),
-      codex_delegate_allowed: identity.kind === "codex" && config.godModeCodexEnabled === true,
+      // A Codex delegation is never inferred from an OAuth owner-confirmed
+      // workflow.  It must satisfy the separate Good Mode policy.
+      codex_delegate_allowed: isCodexGoodModeDelegation(identity, config),
     },
   };
 }
@@ -388,11 +360,23 @@ function verifiedConfirmationReference(identity, options = {}) {
 
 function applyVerifiedOwnerConfirmation(payload, identity) {
   if (!hasExplicitVerifiedOwnerConfirmation(identity)) return payload;
-  const verifiedGovernance = (governance) => ({
-    ...(governance || {}),
-    owner_confirmation_satisfied: true,
-    owner_identity_verified: true,
-  });
+  const verifiedGovernance = (governance) => {
+    const current = governance && typeof governance === "object" && !Array.isArray(governance)
+      ? governance
+      : {};
+    return {
+      ...current,
+      // Local identity may fill legacy payloads that did not report these
+      // fields. It must never turn an explicit Core denial into a verified
+      // owner result.
+      ...(Object.prototype.hasOwnProperty.call(current, "owner_confirmation_satisfied")
+        ? {}
+        : { owner_confirmation_satisfied: true }),
+      ...(Object.prototype.hasOwnProperty.call(current, "owner_identity_verified")
+        ? {}
+        : { owner_identity_verified: true }),
+    };
+  };
   const nestedPreflight = payload?.work_preflight;
   return {
     ...payload,
@@ -413,49 +397,69 @@ export function createCoreHandlers(config, options = {}) {
   const contextProvider = options.contextProvider;
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
   const tenantWorkGallery = options.tenantWorkGallery;
+  const decisionLedger = options.decisionLedger || null;
+  const remediationStore = createCoreBlockRemediationStore(config, {
+    root: options.coreBlockRemediationRoot || config.sharedMemoryRoot || config.agentWorkspaceRoot,
+  });
   const analysisCache = new Map();
   const analysisCacheTtlMs = Math.min(Math.max(Number(options.analysisCacheTtlMs || 300_000), 30_000), 300_000);
+  const remediationMode = String(config.coreBlockRemediationMode || "shadow").trim().toLowerCase();
+  const remediationEnabled = remediationMode !== "disabled";
+  const remediationLedgerContexts = new Map();
 
-  function analysisAccessBinding(identity) {
-    const binding = {
-      tenant_id: String(identity?.tenantId || ""),
-      client_type: serverClientType(identity),
-      audience: serverClientAudience(identity),
-      subject: String(identity?.subject || ""),
-      session_id: String(identity?.agentPresence?.session_id || ""),
-      entitlements: [...new Set([
-        ...(identity?.scopes || []),
-        ...(identity?.serverEntitlements || []),
-        ...(identity?.activeBranches || []).map((branchId) => `branch:${branchId}`),
-      ].map(String))].sort(),
+  function remediationDecisionLedger(identity) {
+    if (!decisionLedger) return null;
+    return {
+      append: async (event = {}) => {
+        const eventTenantId = String(event.tenant_id || "");
+        if (!eventTenantId || eventTenantId !== String(identity.tenantId || "")) {
+          throw new Error("core_block_remediation_ledger_tenant_mismatch");
+        }
+        const eventType = String(event.event_type || "");
+        const remediationIdentity = String(event.remediation_id || event.work_id || "");
+        if (!remediationIdentity) throw new Error("core_block_remediation_ledger_identity_missing");
+        const contextKey = `${eventTenantId}:${remediationIdentity}`;
+        let contextPromise = remediationLedgerContexts.get(contextKey);
+        if (!contextPromise) {
+          contextPromise = decisionLedger.startWork(identity, "core_block_remediation", {
+            request: event.reason_summary || eventType,
+            agent_id: identity.subject || identity.agentId || "connected_ai",
+            project_id: event.project_id || null,
+            session_id: event.session_id || null,
+          });
+          remediationLedgerContexts.set(contextKey, contextPromise);
+          contextPromise.catch(() => remediationLedgerContexts.delete(contextKey));
+        }
+        const context = await contextPromise;
+        return decisionLedger.append(context, eventType, {
+          decision_id: event.decision_id || null,
+          reason_summary: event.reason_summary || event.block_code || eventType,
+          metadata: {
+            ...(event.metadata && typeof event.metadata === "object" ? event.metadata : {}),
+            remediation_id: event.remediation_id || null,
+            remediation_work_id: event.work_id || null,
+            block_code: event.block_code || null,
+            block_class: event.block_class || null,
+            contract_digest: event.contract_digest || null,
+          },
+        });
+      },
     };
-    return crypto.createHash("sha256")
-      .update(JSON.stringify(stableCanonical(binding)))
-      .digest("hex");
   }
 
-  function cacheAnalysis(identity, payload) {
+  function cacheAnalysis(tenantId, payload) {
     const now = Date.now();
     for (const [key, value] of analysisCache) if (value.expires_at <= now) analysisCache.delete(key);
     while (analysisCache.size >= 500) analysisCache.delete(analysisCache.keys().next().value);
     const analysisId = `nyra_${crypto.randomBytes(12).toString("hex")}`;
-    const accessBinding = analysisAccessBinding(identity);
-    analysisCache.set(
-      `${identity.tenantId}:${accessBinding}:${analysisId}`,
-      { payload, access_binding: accessBinding, expires_at: now + analysisCacheTtlMs },
-    );
+    analysisCache.set(`${tenantId}:${analysisId}`, { payload, expires_at: now + analysisCacheTtlMs });
     return analysisId;
   }
 
-  function fetchAnalysis(identity, analysisId) {
-    const accessBinding = analysisAccessBinding(identity);
-    const key = `${identity.tenantId}:${accessBinding}:${analysisId}`;
+  function fetchAnalysis(tenantId, analysisId) {
+    const key = `${tenantId}:${analysisId}`;
     const entry = analysisCache.get(key);
-    if (
-      !entry
-      || entry.access_binding !== accessBinding
-      || entry.expires_at <= Date.now()
-    ) {
+    if (!entry || entry.expires_at <= Date.now()) {
       analysisCache.delete(key);
       throw new Error("nyra_analysis_not_found_or_expired");
     }
@@ -488,8 +492,8 @@ export function createCoreHandlers(config, options = {}) {
     method = "GET",
     body,
     additionalHeaders = {},
-    identity,
     useTenantGateway = false,
+    allowFailurePayload = false,
   } = {}) {
     const sanitizedBody = sanitizeCoreBody(body);
     const headers = { accept: "application/json" };
@@ -501,8 +505,6 @@ export function createCoreHandlers(config, options = {}) {
     const selectedKey = useTenantGateway ? gatewayKey : coreKey(tenantId);
     headers.authorization = `Bearer ${selectedKey}`;
     Object.assign(headers, additionalHeaders);
-    const clientContext = clientContextHeader(identity, config.tenantContextSigningSecret);
-    if (clientContext) headers["x-sh-client-context"] = clientContext;
     if (gatewayKey && selectedKey === gatewayKey) {
       // The gateway key has a synthetic tenant. Core therefore needs the
       // requested tenant alongside the signed context even for body-less GET
@@ -525,6 +527,9 @@ export function createCoreHandlers(config, options = {}) {
     });
     const payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
     if (!response.ok) {
+      if (allowFailurePayload) {
+        return { ok: false, status: response.status, payload };
+      }
       const upstreamCode = typeof payload.error === "string" &&
         /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/.test(payload.error)
         ? payload.error
@@ -556,11 +561,181 @@ export function createCoreHandlers(config, options = {}) {
 
   const agenticTaskBody = (args) => exactFields(args, AGENTIC_TASK_FIELDS);
 
+  async function openBlockedRemediation({
+    identity,
+    requestBody,
+    authorization,
+    contract,
+    output,
+  }) {
+    if (!remediationEnabled) return null;
+    const workContext = {
+      tenant_id: identity.tenantId,
+      project_id: requestBody.project_id || null,
+      work_id: requestBody.work_id || requestBody.request_id || requestBody.session_id || crypto.randomUUID(),
+      branch_id: requestBody.branch_id || null,
+      session_id: requestBody.session_id || null,
+      surface: requestBody.target || requestBody.action_label || requestBody.action_type || null,
+      target_system: requestBody.target_system || "universal_core",
+      operation_type: requestBody.action_type || requestBody.operation_type || "action_evaluator",
+      operation_class: requestBody.operation_class || null,
+      repository: requestBody.repository || null,
+      ref: requestBody.ref || null,
+      environment: requestBody.environment || null,
+      resource_ids: Array.isArray(requestBody.resource_ids) ? requestBody.resource_ids : [],
+    };
+    const decision = {
+      tenant_id: identity.tenantId,
+      decision_id: requestBody.request_id || crypto.randomUUID(),
+      verdict: String(authorization.state || contract.state || "BLOCK").toUpperCase(),
+      block_code: Array.isArray(output.recommended_actions)
+        ? String(output.recommended_actions.find((item) => item.blocked === true)?.reason_code || output.recommended_actions[0]?.reason_code || "UNKNOWN_BLOCK")
+        : String(contract.block_code || output.block_code || "UNKNOWN_BLOCK"),
+      block_class: String(contract.block_class || output.block_class || "manual_review"),
+      risk_band: String(output?.selected_by_core?.risk_band || contract.risk_band || "medium"),
+      reasons: Array.isArray(contract.blocked_reasons) ? contract.blocked_reasons : [],
+      unmet_conditions: Array.isArray(output?.selected_by_core?.unmet_conditions) ? output.selected_by_core.unmet_conditions : [],
+      evidence_requirements: Array.isArray(output?.selected_by_core?.evidence_requirements) ? output.selected_by_core.evidence_requirements : [],
+      allowed_alternatives: Array.isArray(output?.selected_by_core?.allowed_alternatives) ? output.selected_by_core.allowed_alternatives : [],
+      owner_confirmation_required: authorization.confirmation_required === true,
+      policy_snapshot_digest: contract.policy_snapshot_digest || contract.contract_digest || null,
+      expires_at: requestBody.expires_at || null,
+      target_system: workContext.target_system,
+      operation_type: workContext.operation_type,
+      operation_class: workContext.operation_class,
+      repository: workContext.repository,
+      ref: workContext.ref,
+      environment: workContext.environment,
+      resource_ids: workContext.resource_ids,
+      max_attempts: config.coreBlockRemediationMaxAttempts || 3,
+      transient_retry_limit: config.coreBlockRemediationTransientRetryLimit || 2,
+    };
+    const explainFn = async () => buildDeterministicBlockExplanation({
+      remediation_id: `cbr_${crypto.randomUUID()}`,
+      tenant_id: identity.tenantId,
+      project_id: workContext.project_id,
+      work_id: workContext.work_id,
+      branch_id: workContext.branch_id,
+      session_id: workContext.session_id,
+      original_decision: {
+        decision_id: decision.decision_id,
+        decision_digest: "pending",
+        verdict: decision.verdict,
+        block_code: decision.block_code,
+        block_class: decision.block_class,
+        risk_band: decision.risk_band,
+        reasons: decision.reasons,
+        unmet_conditions: decision.unmet_conditions,
+        evidence_requirements: decision.evidence_requirements,
+        allowed_alternatives: decision.allowed_alternatives,
+        correction_allowed: decision.block_class === CORE_BLOCK_CLASS.CORRECTABLE || decision.block_class === CORE_BLOCK_CLASS.TRANSIENT,
+        same_action_retry_allowed: decision.block_class !== CORE_BLOCK_CLASS.CONFIRMATION_REQUIRED && decision.block_class !== CORE_BLOCK_CLASS.ABSOLUTE,
+        owner_confirmation_required: decision.owner_confirmation_required,
+        policy_snapshot_digest: decision.policy_snapshot_digest,
+        expires_at: decision.expires_at,
+      },
+      bound_scope: {
+        target_system: workContext.target_system,
+        operation_type: workContext.operation_type,
+        operation_class: workContext.operation_class,
+        resource_ids: workContext.resource_ids,
+        repository: workContext.repository,
+        ref: workContext.ref,
+        environment: workContext.environment,
+        scope_digest: "pending",
+      },
+      continuation_scope: deriveContinuationScope({
+        decision,
+        classification: classifyCoreBlock(decision),
+      }),
+    });
+    const remediation = await openCoreBlockRemediation({
+      decision,
+      workContext,
+      actor: {
+        kind: identity.kind,
+        client_type: identity.kind,
+        subject: identity.subject,
+        tenant_id: identity.tenantId,
+      },
+      store: remediationStore,
+      ledger: remediationDecisionLedger(identity),
+      now: () => new Date(),
+      explainFn,
+      maxAttempts: config.coreBlockRemediationMaxAttempts || 3,
+      transientRetryLimit: config.coreBlockRemediationTransientRetryLimit || 2,
+    });
+    if (!remediation) return null;
+    const statusPayload = {
+      state: "blocked_with_remediation",
+      allowed: false,
+      decision_contract: contract,
+      remediation: {
+        schema_version: remediation.schema_version,
+        remediation_id: remediation.remediation_id,
+        status: remediation.status,
+        block_class: remediation.original_decision.block_class,
+        can_continue_analysis: remediation.continuation_scope.mode !== "none",
+        can_submit_remediation: remediation.original_decision.block_class !== CORE_BLOCK_CLASS.ABSOLUTE,
+        can_retry_same_action: remediation.original_decision.same_action_retry_allowed === true,
+        owner_confirmation_required: remediation.original_decision.owner_confirmation_required === true,
+        continuation_scope: remediation.continuation_scope,
+        nyra_message: remediation.nyra_explanation,
+        next_action: remediation.nyra_explanation?.recommended_next_action || deriveRecommendedNextAction(remediation),
+        remediation_idempotency: remediation.contract_digest,
+      },
+    };
+    return { remediation, statusPayload };
+  }
+
+  async function loadRemediationForIdentity(identity, remediationId) {
+    const remediation = await remediationStore.findById({
+      tenant_id: identity.tenantId,
+      remediation_id: remediationId,
+    });
+    if (!remediation) throw new Error("remediation_not_found");
+    if (String(remediation.tenant_id || "") !== String(identity.tenantId || "")) {
+      throw new Error("tenant_scope_violation");
+    }
+    return remediation;
+  }
+
+  function remediationEnvelope(remediation, extra = {}) {
+    return {
+      schema_version: remediation.schema_version,
+      remediation_id: remediation.remediation_id,
+      tenant_id: remediation.tenant_id,
+      project_id: remediation.project_id,
+      work_id: remediation.work_id,
+      branch_id: remediation.branch_id,
+      session_id: remediation.session_id,
+      status: remediation.status,
+      block_class: remediation.original_decision.block_class,
+      block_code: remediation.original_decision.block_code,
+      can_continue_analysis: remediation.continuation_scope.mode !== "none",
+      can_submit_remediation: remediation.original_decision.block_class !== CORE_BLOCK_CLASS.ABSOLUTE,
+      can_retry_same_action: remediation.original_decision.same_action_retry_allowed === true,
+      owner_confirmation_required: remediation.original_decision.owner_confirmation_required === true,
+      continuation_scope: remediation.continuation_scope,
+      nyra_message: remediation.nyra_explanation,
+      next_action: remediation.nyra_explanation?.recommended_next_action || deriveRecommendedNextAction(remediation),
+      attempt_count: remediation.attempt_count,
+      max_attempts: remediation.max_attempts,
+      version: remediation.version,
+      ...extra,
+    };
+  }
+
   function ownerContext(identity, options = {}) {
     const optionObject = options && typeof options === "object" && !Array.isArray(options);
     const requestBinding = optionObject ? options.requestBinding : options;
     const hostNativeOwner = optionObject && options.hostNativeOwner === true;
+    const actionEvaluatorGateway = optionObject && options.actionEvaluatorGateway === true;
     const allowOAuthTenantOwner = optionObject && options.allowOAuthTenantOwner === true;
+
+    if (hostNativeOwner && actionEvaluatorGateway) {
+      throw new Error("owner_context_signing_domain_conflict");
+    }
 
     // Generic owner assertions are signed with the tenant Core key and bind
     // the exact request body. Host-native delegation operations use the
@@ -594,9 +769,21 @@ export function createCoreHandlers(config, options = {}) {
     ) {
       return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
     }
-    const signingKey = hostNativeOwner
-      ? config.ownerContextSigningSecret
-      : (configuredTenantGatewayKey() || coreKey(identity.tenantId));
+    // Owner assertions are verifier-domain bound. Host-native delegation and
+    // Work Preflight use the dedicated bridge secret. The action evaluator is
+    // the sole bearer-bound route and Core verifies it with the selected
+    // tenant-gateway key.
+    const signingKey = actionEvaluatorGateway
+      ? configuredTenantGatewayKey()
+      : (config.ownerContextSigningSecret || (hostNativeOwner
+        ? ""
+        : (configuredTenantGatewayKey() || coreKey(identity.tenantId))));
+    if (actionEvaluatorGateway && Buffer.byteLength(String(signingKey || ""), "utf8") < 32) {
+      throw new Error("core_tenant_gateway_key_missing");
+    }
+    if (hostNativeOwner && Buffer.byteLength(String(signingKey || ""), "utf8") < 32) {
+      throw new Error("owner_context_signing_unavailable");
+    }
     const hostNativeCodexGoodMode = hostNativeOwner && isCodexGoodModeDelegation(identity, config);
     const context = {
       assertion_version: OWNER_CONTEXT_ASSERTION_VERSION,
@@ -610,14 +797,13 @@ export function createCoreHandlers(config, options = {}) {
         : "tenant_owner",
       delegated_actor: identity.kind || "unknown",
       owner_verified: true,
-      owner_actor_provenance: identity.agentPresence?.actor_provenance,
       issued_at: new Date().toISOString(),
       ...(requestBinding === undefined ? {} : {
         binding_version: "owner_request_binding_v1",
         binding_hash: crypto.createHash("sha256").update(String(requestBinding)).digest("hex"),
       }),
-      ...(hostNativeOwner
-        ? {
+      ...(hostNativeOwner || isVerifiedOwnerRoot(identity)
+            ? {
           owner_subject_fingerprint: `osf_${crypto.createHmac("sha256", signingKey)
             .update(`${hostNativeCodexGoodMode ? "host-native-codex-owner" : "host-native-owner"}\u0000${String(identity.subject).trim()}`)
             .digest("hex")}`,
@@ -633,6 +819,35 @@ export function createCoreHandlers(config, options = {}) {
   async function memoryContext(input, identity) {
     if (typeof contextProvider !== "function") return undefined;
     return contextProvider(input, identity);
+  }
+
+  async function aiLearningRead(path, args, identity, allowedQuery) {
+    const query = new URLSearchParams();
+    for (const key of allowedQuery) {
+      if (args[key] !== undefined && args[key] !== "") query.set(key, String(args[key]));
+    }
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return textResult(await coreRequest(`${path}${suffix}`, identity.tenantId, { identity }));
+  }
+
+  async function aiLearningWrite(path, purpose, args, identity) {
+    const requestBody = {
+      ...args,
+      owner_confirmed: args.owner_confirmed === true && identity.ownerConfirmed === true,
+      confirmation_reference: String(
+        args.confirmation_reference || identity.confirmationReference || "",
+      ).trim(),
+    };
+    const binding = ownerRequestBinding(purpose, requestBody);
+    const verifiedOwner = isVerifiedOAuthTenantOwner(identity) || isCodexGoodModeDelegation(identity, config);
+    const assertion = verifiedOwner
+      ? ownerContext(identity, { hostNativeOwner: true, requestBinding: binding })
+      : ownerContext(identity, binding);
+    return textResult(await coreRequest(path, identity.tenantId, {
+      method: "POST",
+      identity,
+      body: { ...requestBody, owner_context: assertion },
+    }));
   }
 
   async function galleryContext(input, identity) {
@@ -675,7 +890,6 @@ export function createCoreHandlers(config, options = {}) {
     const started = Date.now();
     const payload = await coreRequest("/v1/runtime/hierarchy/evaluate", identity.tenantId, {
       method: "POST",
-      identity,
       body: { core_input: hierarchyInput(args, identity, operation) },
     });
     return compactCoreRuntime({ ...payload, latency_ms: Date.now() - started });
@@ -694,7 +908,6 @@ export function createCoreHandlers(config, options = {}) {
       : undefined;
     const coreAnalysis = await coreRequest(path, identity.tenantId, {
       method: "POST",
-      identity,
       body: { ...requestBody, owner_context: ownerContext(identity, requestBinding) },
     });
     if (options.nyraInterpretation !== true) return textResult(coreAnalysis);
@@ -712,7 +925,6 @@ export function createCoreHandlers(config, options = {}) {
     try {
       const nyraInterpretation = await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
         method: "POST",
-        identity,
         body: {
           text: `Interpreta e spiega questo risultato Core senza autorizzare esecuzioni: ${interpretationInput}`,
           request_id: args.workflow_id || args.session_id,
@@ -735,34 +947,6 @@ export function createCoreHandlers(config, options = {}) {
         intelligence_path: { core_analyzed: true, nyra_interpreted: false, execution_allowed: false },
       });
     }
-  }
-
-  async function aiLearningRead(path, args, identity, allowedQuery) {
-    const query = new URLSearchParams();
-    for (const key of allowedQuery) {
-      if (args[key] !== undefined && args[key] !== "") query.set(key, String(args[key]));
-    }
-    const suffix = query.size ? `?${query.toString()}` : "";
-    return textResult(await coreRequest(`${path}${suffix}`, identity.tenantId, { identity }));
-  }
-
-  async function aiLearningWrite(path, purpose, args, identity) {
-    const requestBody = {
-      ...args,
-      owner_confirmed: args.owner_confirmed === true && identity.ownerConfirmed === true,
-      confirmation_reference: String(
-        args.confirmation_reference || identity.confirmationReference || "",
-      ).trim(),
-    };
-    const binding = ownerRequestBinding(purpose, requestBody);
-    return textResult(await coreRequest(path, identity.tenantId, {
-      method: "POST",
-      identity,
-      body: {
-        ...requestBody,
-        owner_context: ownerContext(identity, binding),
-      },
-    }));
   }
 
   async function nyraDeepV2Request(args, identity, operation) {
@@ -810,7 +994,6 @@ export function createCoreHandlers(config, options = {}) {
     };
     const payload = await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
       method: "POST",
-      identity,
       body: {
         text: args.message,
         request_id: requestId,
@@ -861,19 +1044,46 @@ export function createCoreHandlers(config, options = {}) {
     throw new Error("host_native_client_type_required");
   }
 
-  async function trustedHostNativeTicketRecord(ticketId, identity) {
+  async function trustedHostNativeTicketRecord(ticketId, identity, allowedStates) {
     const payload = await coreRequest(
       `/v1/host-native/actions/${encodeURIComponent(ticketId)}`,
       identity.tenantId,
+      { useTenantGateway: true },
     );
     const record = payload?.action_ticket;
+    const ticket = record?.ticket;
+    const state = String(record?.state || "");
+    const uses = record?.uses;
+    const sessionFingerprint = hostNativeSessionFingerprint(identity);
     if (
       payload?.ok !== true ||
       payload.tenant_id !== identity.tenantId ||
-      record?.schema_version !== "host_native_action_ticket_record_v1" ||
-      record.tenant_id !== identity.tenantId ||
-      record.ticket?.tenant_id !== identity.tenantId ||
-      record.ticket?.ticket_id !== ticketId
+      !record || typeof record !== "object" || Array.isArray(record) ||
+      (record.schema_version !== undefined &&
+        record.schema_version !== "host_native_action_ticket_record_v1") ||
+      (record.tenant_id !== undefined && record.tenant_id !== identity.tenantId) ||
+      !ticket || typeof ticket !== "object" || Array.isArray(ticket) ||
+      ticket.schema_version !== "host_native_action_ticket_v1" ||
+      ticket.tenant_id !== identity.tenantId ||
+      ticket.ticket_id !== ticketId ||
+      !/^hnd_[a-zA-Z0-9._-]{8,}$/.test(String(ticket.delegation_id || "")) ||
+      typeof ticket.work_id !== "string" || ticket.work_id.length < 1 ||
+      !/^[a-f0-9]{64}$/i.test(String(ticket.intent_anchor_digest || "")) ||
+      typeof ticket.repository !== "string" || ticket.repository.length < 1 ||
+      !["codex_native", "chatgpt_native"].includes(ticket.host_kind) ||
+      ticket.host_session_fingerprint !== sessionFingerprint ||
+      !ticket.action || typeof ticket.action !== "object" || Array.isArray(ticket.action) ||
+      typeof ticket.action.kind !== "string" || ticket.action.kind.length < 1 ||
+      !/^[a-f0-9]{64}$/i.test(String(ticket.evidence_digest || "")) ||
+      !Number.isFinite(Date.parse(ticket.issued_at || "")) ||
+      !Number.isFinite(Date.parse(ticket.expires_at || "")) ||
+      ticket.max_uses !== 1 ||
+      ticket.provider_execution !== false ||
+      ticket.host_policy_override !== false ||
+      ticket.host_policy_must_allow !== true ||
+      !/^hnt_[a-f0-9]{64}$/i.test(String(ticket.signature || "")) ||
+      !allowedStates.includes(state) ||
+      !Number.isInteger(uses) || uses !== 1
     ) {
       throw new Error("host_native_ticket_readback_invalid");
     }
@@ -1036,6 +1246,7 @@ export function createCoreHandlers(config, options = {}) {
       const route = "/v1/host-native/actions/authorize";
       const payload = await coreRequest(route, identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           delegation_id: args.delegation_id,
           work_id: args.work_id,
@@ -1058,12 +1269,14 @@ export function createCoreHandlers(config, options = {}) {
       await coreRequest(
         `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}`,
         identity.tenantId,
+        { useTenantGateway: true },
       ),
     ),
     host_native_action_reserve: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reserve`;
       return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           host_session_fingerprint: hostNativeSessionFingerprint(identity),
           idempotency_key: args.idempotency_key,
@@ -1072,10 +1285,15 @@ export function createCoreHandlers(config, options = {}) {
     },
     host_native_action_complete: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/complete`;
-      const ticketRecord = await trustedHostNativeTicketRecord(args.ticket_id, identity);
+      const ticketRecord = await trustedHostNativeTicketRecord(
+        args.ticket_id,
+        identity,
+        ["reserved"],
+      );
       try {
         return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
           method: "POST",
+          useTenantGateway: true,
           body: {
             reservation_id: args.reservation_id,
             host_session_fingerprint: hostNativeSessionFingerprint(identity),
@@ -1092,10 +1310,15 @@ export function createCoreHandlers(config, options = {}) {
     },
     host_native_action_reconcile: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reconcile`;
-      const ticketRecord = await trustedHostNativeTicketRecord(args.ticket_id, identity);
+      const ticketRecord = await trustedHostNativeTicketRecord(
+        args.ticket_id,
+        identity,
+        ["reserved", "reconciliation_required"],
+      );
       try {
         return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
           method: "POST",
+          useTenantGateway: true,
           body: {
             reservation_id: args.reservation_id,
             host_session_fingerprint: hostNativeSessionFingerprint(identity),
@@ -1114,6 +1337,7 @@ export function createCoreHandlers(config, options = {}) {
         `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/authorize-finalize`;
       return textResult(await coreRequest(route, identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           host_session_fingerprint: hostNativeSessionFingerprint(identity),
         },
@@ -1133,50 +1357,42 @@ export function createCoreHandlers(config, options = {}) {
         agent_id: args.agent_id || "connected_ai",
       }, identity);
       const preflightBody = {
-          request: args.request,
-          target_system: args.target_system || "universal_core",
-          operation_type: args.operation_type || "advisory_work",
-          source_tool: args.tool_name,
-          ...(args.work_id ? { work_id: args.work_id } : {}),
-          ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
-          ...(args.project_id ? { project_id: args.project_id } : {}),
-          ...(Array.isArray(args.acceptance_criteria)
-            ? { acceptance_criteria: args.acceptance_criteria }
-            : {}),
-          ...(Array.isArray(args.constraints) ? { constraints: args.constraints } : {}),
-          host_native: {
-            requested: args.host_type === "chatgpt_native" || args.host_type === "codex_native",
-            host_type: args.host_type || (
-              agentPresence.client_type === "codex" ? "codex_native" : "chatgpt_native"
-            ),
-            provider_execution: false,
-            provider_api_key_required: false,
-            server_model_calls: 0,
-            host_spawn_required: true,
-            host_policy_override: false,
-            host_policy_must_allow: true,
-          },
-          ...(args.evidence_state && typeof args.evidence_state === "object"
-            ? { evidence_state: args.evidence_state }
-            : {}),
-          ...(Array.isArray(args.research_allowed_domains)
-            ? { research_allowed_domains: args.research_allowed_domains }
-            : {}),
-          ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
-          ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
-          owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
-          ...(verifiedConfirmationReference(identity)
-            ? { confirmation_reference: verifiedConfirmationReference(identity) }
-            : {}),
-          ...(sharedContext ? { memory_context: sharedContext } : {}),
-          gallery_context: gallery,
-          agent_presence: agentPresence,
-          tenant_id: identity.tenantId,
+        request: args.request,
+        target_system: args.target_system || "universal_core",
+        operation_type: args.operation_type || "advisory_work",
+        source_tool: args.tool_name,
+        ...(args.work_id ? { work_id: args.work_id } : {}),
+        ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
+        ...(args.project_id ? { project_id: args.project_id } : {}),
+        ...(Array.isArray(args.acceptance_criteria) ? { acceptance_criteria: args.acceptance_criteria } : {}),
+        ...(Array.isArray(args.constraints) ? { constraints: args.constraints } : {}),
+        host_native: {
+          requested: args.host_type === "chatgpt_native" || args.host_type === "codex_native",
+          host_type: args.host_type || (agentPresence.client_type === "codex" ? "codex_native" : "chatgpt_native"),
+          provider_execution: false,
+          provider_api_key_required: false,
+          server_model_calls: 0,
+          host_spawn_required: true,
+          host_policy_override: false,
+          host_policy_must_allow: true,
+        },
+        ...(args.evidence_state && typeof args.evidence_state === "object" ? { evidence_state: args.evidence_state } : {}),
+        ...(Array.isArray(args.research_allowed_domains) ? { research_allowed_domains: args.research_allowed_domains } : {}),
+        ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
+        ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
+        owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
+        ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
+        ...(sharedContext ? { memory_context: sharedContext } : {}),
+        gallery_context: gallery,
+        agent_presence: agentPresence,
+        tenant_id: identity.tenantId,
       };
       const payload = await coreRequest("/v1/work/preflight", identity.tenantId, {
         method: "POST",
-        identity,
-        useTenantGateway: Boolean(configuredTenantGatewayKey()),
+        // Production uses the dedicated gateway and signed tenant context.
+        // Test-only configurations without that credential stay tenant-bound
+        // through their individual Core key and cannot cross tenant scope.
+        useTenantGateway: Boolean(config.tenantGatewayKey),
         body: {
           ...preflightBody,
           owner_context: (isVerifiedOAuthTenantOwner(identity) || isCodexGoodModeDelegation(identity, config))
@@ -1239,7 +1455,6 @@ export function createCoreHandlers(config, options = {}) {
       }, identity);
       return textResult(await coreRequest("/v1/codex/context", identity.tenantId, {
         method: "POST",
-        identity,
         body: {
         task: "ChatGPT requests Nyra runtime context",
         user_input: args.include_control_snapshot ? "Include control snapshot" : "Read readiness context",
@@ -1249,11 +1464,7 @@ export function createCoreHandlers(config, options = {}) {
         }
       }));
     },
-    nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest(
-      "/v1/nira/branches",
-      identity.tenantId,
-      { identity },
-    )),
+    nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
     core_capability_catalog: async (args, identity) => textResult({
       ...readCoreCapabilityCatalog(args),
       tenant_id: identity.tenantId,
@@ -1269,18 +1480,17 @@ export function createCoreHandlers(config, options = {}) {
       const query = view === "authorized" && Array.isArray(args.branches) && args.branches.length
         ? `?${new URLSearchParams({ branches: args.branches.join(",") }).toString()}`
         : "";
-      const branches = view === "authorized" && Array.isArray(args.branches)
-        ? [...new Set(args.branches.map(String))]
-        : [];
-      const requestBinding = ownerRequestBinding("branch_registry", { view, branches });
-      const owner = (isVerifiedOwnerRoot(identity) || isVerifiedOAuthTenantOwner(identity))
-        ? ownerContext(identity, { hostNativeOwner: true, requestBinding })
-        : null;
+      const bindingPayload = { view, branches: Array.isArray(args.branches) ? args.branches : [] };
+      const ownerBinding = ownerRequestBinding("branch_registry", bindingPayload);
+      const owner = (isVerifiedOAuthTenantOwner(identity) || isCodexGoodModeDelegation(identity, config))
+        ? ownerContext(identity, { hostNativeOwner: true, requestBinding: ownerBinding })
+        : ownerContext(identity, ownerBinding);
+      const additionalHeaders = owner.owner_verified === true
+        ? { "x-sh-owner-context": Buffer.from(JSON.stringify(owner)).toString("base64url") }
+        : {};
       return textResult(await coreRequest(`${paths[view]}${query}`, identity.tenantId, {
-        identity,
-        ...(owner?.owner_verified === true
-          ? { additionalHeaders: { "x-sh-owner-context": Buffer.from(JSON.stringify(owner)).toString("base64url") } }
-          : {}),
+        additionalHeaders,
+        useTenantGateway: Boolean(config.tenantGatewayKey),
       }));
     },
     core_branch_analyze: async (args, identity) => textResult(await coreRequest(
@@ -1288,7 +1498,6 @@ export function createCoreHandlers(config, options = {}) {
       identity.tenantId,
       {
         method: "POST",
-        identity,
         body: {
           request: args.request,
           ...(args.signals ? { signals: args.signals } : {}),
@@ -1307,19 +1516,14 @@ export function createCoreHandlers(config, options = {}) {
         connector_manifest: "/v1/connectors/sdk/manifest",
         customer_intelligence_contract: "/v1/customer-intelligence/contract",
       };
-      return textResult(await coreRequest(paths[args.view], identity.tenantId, { identity }));
+      return textResult(await coreRequest(paths[args.view], identity.tenantId));
     },
     core_evidence_recent: async (args, identity) => {
       const query = new URLSearchParams({ limit: String(args.limit || 50) });
-      return textResult(await coreRequest(
-        `/v1/evidence/recent?${query.toString()}`,
-        identity.tenantId,
-        { identity },
-      ));
+      return textResult(await coreRequest(`/v1/evidence/recent?${query.toString()}`, identity.tenantId));
     },
     core_semantic_select: async (args, identity) => textResult(await coreRequest("/v1/semantic-selection", identity.tenantId, {
       method: "POST",
-      identity,
       body: {
         candidates: args.candidates,
         target_language: args.target_language,
@@ -1576,7 +1780,6 @@ export function createCoreHandlers(config, options = {}) {
     )),
     research_plan: async (args, identity) => textResult(await coreRequest("/v1/research/plan", identity.tenantId, {
       method: "POST",
-      identity,
       body: {
         question: args.question || args.query,
         decision_context: args.decision_context,
@@ -1587,7 +1790,6 @@ export function createCoreHandlers(config, options = {}) {
     })),
     research_validate: async (args, identity) => textResult(await coreRequest("/v1/research/validate", identity.tenantId, {
       method: "POST",
-      identity,
       body: {
         evidence_pack: args.evidence_pack || args,
         ...(args.domain_pack ? { domain_pack: args.domain_pack } : {}),
@@ -1595,25 +1797,20 @@ export function createCoreHandlers(config, options = {}) {
       },
     })),
     nyra_research_distillation_status: async (_args, identity) => textResult(
-      await coreRequest("/v1/research/status", identity.tenantId, { identity }),
+      await coreRequest("/v1/research/status", identity.tenantId),
     ),
     nyra_research_source_registry: async (_args, identity) => textResult(
-      await coreRequest("/v1/research/source-registry", identity.tenantId, { identity }),
+      await coreRequest("/v1/research/source-registry", identity.tenantId),
     ),
     nyra_research_learning_pack: async (args, identity) => {
       const query = new URLSearchParams();
       if (args.branch_id) query.set("branch_id", String(args.branch_id));
       const suffix = query.size ? `?${query.toString()}` : "";
-      return textResult(await coreRequest(
-        `/v1/research/learning-packs${suffix}`,
-        identity.tenantId,
-        { identity },
-      ));
+      return textResult(await coreRequest(`/v1/research/learning-packs${suffix}`, identity.tenantId));
     },
     nyra_research_envelope_authorize: async (args, identity) => textResult(
       await coreRequest("/v1/research/envelope/authorize", identity.tenantId, {
         method: "POST",
-        identity,
         body: {
           request_id: args.request_id,
           question: args.question,
@@ -1631,7 +1828,6 @@ export function createCoreHandlers(config, options = {}) {
     nyra_research_workspace_open: async (args, identity) => textResult(
       await coreRequest("/v1/research/workspaces/open", identity.tenantId, {
         method: "POST",
-        identity,
         body: {
           envelope_id: args.envelope_id,
           tenant_id: identity.tenantId,
@@ -1641,7 +1837,6 @@ export function createCoreHandlers(config, options = {}) {
     nyra_research_workspace_attach: async (args, identity) => textResult(
       await coreRequest("/v1/research/workspaces/attach", identity.tenantId, {
         method: "POST",
-        identity,
         body: {
           workspace_id: args.workspace_id,
           evidence: args.evidence,
@@ -1652,7 +1847,6 @@ export function createCoreHandlers(config, options = {}) {
     nyra_research_distill: async (args, identity) => textResult(
       await coreRequest("/v1/research/distill", identity.tenantId, {
         method: "POST",
-        identity,
         body: {
           workspace_id: args.workspace_id,
           evidence: args.evidence,
@@ -1674,7 +1868,6 @@ export function createCoreHandlers(config, options = {}) {
     nyra_research_workspace_close: async (args, identity) => textResult(
       await coreRequest("/v1/research/workspaces/close", identity.tenantId, {
         method: "POST",
-        identity,
         body: {
           workspace_id: args.workspace_id,
           tenant_id: identity.tenantId,
@@ -1684,7 +1877,6 @@ export function createCoreHandlers(config, options = {}) {
     nyra_research_cleanup: async (_args, identity) => textResult(
       await coreRequest("/v1/research/cleanup", identity.tenantId, {
         method: "POST",
-        identity,
         body: { tenant_id: identity.tenantId },
       }),
     ),
@@ -1712,7 +1904,6 @@ export function createCoreHandlers(config, options = {}) {
       }, identity);
       const payload = await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
         method: "POST",
-        identity,
         body: {
         text: args.message,
         request_id: args.session_id,
@@ -1727,7 +1918,7 @@ export function createCoreHandlers(config, options = {}) {
       });
       const coreRuntime = coreRuntimeFromBridge(payload);
       const governedPayload = { ...payload, core_runtime: coreRuntime };
-      const analysisId = cacheAnalysis(identity, governedPayload);
+      const analysisId = cacheAnalysis(identity.tenantId, governedPayload);
       if (args.response_mode === "full") {
         return compactTextResult({ ...governedPayload, analysis_id: analysisId, response_mode: "full" }, {
           ok: governedPayload.ok === true,
@@ -1753,7 +1944,7 @@ export function createCoreHandlers(config, options = {}) {
       });
     },
     nyra_fetch_analysis: async (args, identity) => {
-      const payload = fetchAnalysis(identity, args.analysis_id);
+      const payload = fetchAnalysis(identity.tenantId, args.analysis_id);
       if (args.response_mode === "full") {
         return compactTextResult({ ...payload, analysis_id: args.analysis_id, response_mode: "full" }, {
           ok: payload.ok === true,
@@ -1780,124 +1971,73 @@ export function createCoreHandlers(config, options = {}) {
     outcome_record: async (args, identity) => intelligenceRequest("/v1/intelligence/outcomes/record", args, identity, { ownerBindingPurpose: "intelligence_outcome_record" }),
     calibration_status: async (args, identity) => textResult(await coreRequest(`/v1/intelligence/calibration?limit=${Number(args.limit || 20)}`, identity.tenantId)),
     ai_eval_scorecard_read: async (args, identity) => aiLearningRead(
-      "/v1/ai-learning/eval/scorecards",
-      args,
-      identity,
+      "/v1/ai-learning/eval/scorecards", args, identity,
       ["scorecard_id", "release_version", "limit", "cursor"],
     ),
     ai_eval_dataset_read: async (args, identity) => aiLearningRead(
-      "/v1/ai-learning/eval/datasets",
-      args,
-      identity,
+      "/v1/ai-learning/eval/datasets", args, identity,
       ["dataset_id", "version", "limit", "cursor"],
     ),
     ai_eval_trace_read: async (args, identity) => aiLearningRead(
-      "/v1/ai-learning/eval/traces",
-      args,
-      identity,
+      "/v1/ai-learning/eval/traces", args, identity,
       ["trace_id", "run_id", "limit", "cursor"],
     ),
     ai_performance_scorecard_read: async (args, identity) => aiLearningRead(
-      "/v1/ai-learning/performance/scorecards",
-      args,
-      identity,
+      "/v1/ai-learning/performance/scorecards", args, identity,
       ["scorecard_id", "release_version", "limit", "cursor"],
     ),
     ai_experiment_read: async (args, identity) => aiLearningRead(
-      "/v1/ai-learning/experiments",
-      args,
-      identity,
+      "/v1/ai-learning/experiments", args, identity,
       ["experiment_id", "state", "limit", "cursor"],
     ),
     ai_learning_candidate_read: async (args, identity) => aiLearningRead(
-      "/v1/ai-learning/candidates",
-      args,
-      identity,
+      "/v1/ai-learning/candidates", args, identity,
       ["candidate_id", "state", "limit", "cursor"],
     ),
     ai_learning_review_binding_preview: async (args, identity) => textResult(await coreRequest(
-      "/v1/ai-learning/review-bindings/preview",
-      identity.tenantId,
-      {
-        method: "POST",
-        identity,
-        body: args.outcome
-          ? { outcome: args.outcome }
-          : {
-              candidate_id: args.candidate_id,
-              decision: args.decision,
-              expected_revision: args.expected_revision,
-            },
-      },
+      "/v1/ai-learning/review-bindings/preview", identity.tenantId,
+      { method: "POST", identity, body: args.outcome
+        ? { outcome: args.outcome }
+        : { candidate_id: args.candidate_id, decision: args.decision, expected_revision: args.expected_revision } },
     )),
     ai_learning_candidate_review: async (args, identity) => aiLearningWrite(
-      "/v1/ai-learning/candidates/review",
-      "ai_learning_candidate_review",
-      args,
-      identity,
+      "/v1/ai-learning/candidates/review", "ai_learning_candidate_review", args, identity,
     ),
     ai_learning_outcome_record: async (args, identity) => aiLearningWrite(
-      "/v1/ai-learning/outcomes",
-      "ai_learning_outcome_record",
-      args,
-      identity,
+      "/v1/ai-learning/outcomes", "ai_learning_outcome_record", args, identity,
     ),
     agentic_efficiency_plan: async (args, identity) => textResult(await coreRequest(
-      "/v1/agentic-efficiency/plan",
-      identity.tenantId,
+      "/v1/agentic-efficiency/plan", identity.tenantId,
       { method: "POST", identity, body: agenticTaskBody(args) },
     )),
     agentic_efficiency_status: async (_args, identity) => textResult(await coreRequest(
-      "/v1/agentic-efficiency/status",
-      identity.tenantId,
-      { identity },
+      "/v1/agentic-efficiency/status", identity.tenantId, { identity },
     )),
     agentic_efficiency_report: async (_args, identity) => textResult(await coreRequest(
-      "/v1/agentic-efficiency/report",
-      identity.tenantId,
-      { identity },
+      "/v1/agentic-efficiency/report", identity.tenantId, { identity },
     )),
     agentic_budget_preview: async (args, identity) => textResult(await coreRequest(
-      "/v1/agentic-efficiency/budget/preview",
-      identity.tenantId,
-      {
-        method: "POST",
-        identity,
-        body: exactFields(args, ["task", "policy", "usage", "rate_card"]),
-      },
+      "/v1/agentic-efficiency/budget/preview", identity.tenantId,
+      { method: "POST", identity, body: exactFields(args, ["task", "policy", "usage", "rate_card"]) },
     )),
     agentic_budget_status: async (_args, identity) => textResult(await coreRequest(
-      "/v1/agentic-efficiency/budget/status",
-      identity.tenantId,
-      { identity },
+      "/v1/agentic-efficiency/budget/status", identity.tenantId, { identity },
     )),
     agentic_work_capsule_read: async (args, identity) => textResult(await coreRequest(
       `/v1/agentic-efficiency/work-capsules/${encodeURIComponent(args.capsule_id)}`,
-      identity.tenantId,
-      { identity },
+      identity.tenantId, { identity },
     )),
     agentic_savings_compare: async (args, identity) => textResult(await coreRequest(
-      "/v1/agentic-efficiency/savings/compare",
-      identity.tenantId,
-      {
-        method: "POST",
-        identity,
-        body: exactFields(args, [
-          "baseline", "optimized", "rate_card", "baseline_quality",
-          "optimized_quality", "security_preserved",
-        ]),
-      },
+      "/v1/agentic-efficiency/savings/compare", identity.tenantId,
+      { method: "POST", identity, body: exactFields(args, [
+        "baseline", "optimized", "rate_card", "baseline_quality", "optimized_quality", "security_preserved",
+      ]) },
     )),
     agentic_artifact_reuse_check: async (args, identity) => textResult(await coreRequest(
-      "/v1/agentic-efficiency/artifacts/reuse-check",
-      identity.tenantId,
-      {
-        method: "POST",
-        identity,
-        body: exactFields(args, ["artifact_hash", "artifact_version"]),
-      },
+      "/v1/agentic-efficiency/artifacts/reuse-check", identity.tenantId,
+      { method: "POST", identity, body: exactFields(args, ["artifact_hash", "artifact_version"]) },
     )),
-    skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", identity, body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
+    skin_analyzer: async (args, identity) => textResult(await coreRequest("/v1/branches/skinharmony_analyzer/analyze", identity.tenantId, { method: "POST", body: { data: { scores: args.scores, products: args.products || [], protocols: args.protocols || [], report_text: args.report_text, data_quality_score: args.data_quality_score, acquisition: args.acquisition, previous_scores: args.previous_scores, previous_acquisition: args.previous_acquisition, learning_context: args.learning_context }, tenant_id: identity.tenantId } })),
     generic_agent_orchestration_create: async (args, identity) => textResult(await coreRequest(`/v1/generic-agents/runs/${encodeURIComponent(args.run_id)}/orchestration`, identity.tenantId, {
       method: "POST",
       body: { workers: args.workers, tenant_id: identity.tenantId },
@@ -1964,6 +2104,7 @@ export function createCoreHandlers(config, options = {}) {
       } = args;
       const requestBody = sanitizeCoreBody({
         ...safeArgs,
+        request_id: safeArgs.request_id || `action_${crypto.randomUUID()}`,
         ...(sharedContext ? { memory_context: sharedContext } : {}),
         tenant_id: identity.tenantId,
         owner_confirmed: boundedInternalCoordination ? false : confirmed,
@@ -1971,9 +2112,8 @@ export function createCoreHandlers(config, options = {}) {
           ? { confirmation_reference: confirmationReference }
           : {}),
       });
-      return textResult(await coreRequest("/v1/action-evaluator", identity.tenantId, {
+      const coreResult = await coreRequest("/v1/action-evaluator", identity.tenantId, {
         method: "POST",
-        identity,
         useTenantGateway: true,
         body: {
           ...requestBody,
@@ -1982,12 +2122,258 @@ export function createCoreHandlers(config, options = {}) {
               identity,
               {
                 requestBinding: ownerRequestBinding("core_action_evaluator", requestBody),
+                actionEvaluatorGateway: true,
                 allowOAuthTenantOwner: tenantWorkBootstrap,
               },
             ),
           } : {}),
+        },
+        allowFailurePayload: true,
+      });
+      const payload = coreResult.payload || coreResult;
+      const authorization = payload.authorization || payload.gate || payload.result?.authorization || {};
+      const decisionContract = payload.decision_contract || payload.result?.decision_contract || {};
+      const decisionState = String(
+        authorization.state ||
+        decisionContract.state ||
+        payload.verdict?.decision ||
+        payload.decision ||
+        "",
+      ).toLowerCase();
+      const mediationState = String(
+        authorization.mediation ||
+        decisionContract.action_mediation?.state ||
+        payload.verdict?.action_mediation?.state ||
+        "",
+      ).toLowerCase();
+      const legacyAllowed = ["allow", "allowed", "allow_controlled", "allow_advisory"].includes(decisionState) || mediationState === "allow";
+      const blocked = payload.authorization
+        ? authorization.allowed !== true || decisionState === "blocked" || mediationState === "hard_block"
+        : !legacyAllowed;
+      if (blocked) {
+        const remediation = await openBlockedRemediation({
+          identity,
+          requestBody,
+          authorization,
+          contract: decisionContract,
+          output: payload.output || payload.result?.output || {},
+        });
+        if (remediation) {
+          return textResult({
+            ...payload,
+            ...remediation.statusPayload,
+          });
         }
-      }));
+      }
+      return textResult(payload);
+    },
+    core_block_remediation_status: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      return textResult({
+        ok: true,
+        remediation: remediationEnvelope(remediation),
+      });
+    },
+    core_block_remediation_explain: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      return textResult({
+        ok: true,
+        remediation_id: remediation.remediation_id,
+        decision_id: remediation.original_decision.decision_id,
+        explanation: remediation.nyra_explanation,
+      });
+    },
+    core_block_remediation_propose: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      const idem = await remediationStore.findIdempotency({
+        tenant_id: identity.tenantId,
+        remediation_id: remediation.remediation_id,
+        idempotency_key: args.idempotency_key,
+      });
+      const attempt = proposeRemediationAttempt({
+        remediation,
+        actor: {
+          kind: identity.kind || "connected_ai",
+          subject: identity.subject || identity.agentId || "connected_ai",
+          tenant_id: identity.tenantId,
+        },
+        proposal: args.proposal,
+        diagnosis: args.diagnosis,
+        idempotencyKey: args.idempotency_key,
+        now: () => new Date(),
+      });
+      if (idem && idem.proposal_digest && idem.proposal_digest !== attempt.proposal_digest) {
+        throw new Error("core_block_remediation_replay_rejected");
+      }
+      if (idem?.result) {
+        return textResult({ ok: true, idempotent: true, ...idem.result });
+      }
+      validateProposalForRemediation(remediation, attempt, {
+        expectedVersion: args.expected_version,
+        idempotencyKey: args.idempotency_key,
+      });
+      const nextStatus = attempt.proposal_type === CORE_BLOCK_PROPOSAL_TYPES.OWNER_CONFIRMATION_ROUTE
+        ? CORE_BLOCK_REMEDIATION_STATUS.WAITING_OWNER
+        : CORE_BLOCK_REMEDIATION_STATUS.PROPOSAL_READY;
+      const updated = await remediationStore.appendAttempt({
+        tenant_id: remediation.tenant_id,
+        remediation_id: remediation.remediation_id,
+        expected_version: remediation.version,
+        attempt,
+        next_status: nextStatus,
+      });
+      const result = {
+        ok: true,
+        remediation: remediationEnvelope(updated, {
+          latest_attempt: attempt,
+          diagnosis: attempt.diagnosis,
+        }),
+      };
+      await remediationStore.rememberIdempotency({
+        tenant_id: remediation.tenant_id,
+        remediation_id: remediation.remediation_id,
+        idempotency_key: args.idempotency_key,
+        proposal_digest: attempt.proposal_digest,
+        result,
+      });
+      const ledger = remediationDecisionLedger(identity);
+      if (ledger) {
+        await ledger.append({
+          tenant_id: remediation.tenant_id,
+          work_id: remediation.work_id,
+          event_type: "core_block_proposal_submitted",
+          remediation_id: remediation.remediation_id,
+          decision_id: remediation.original_decision.decision_id,
+          reason_summary: attempt.summary,
+          metadata: {
+            proposal_digest: attempt.proposal_digest,
+            proposal_type: attempt.proposal_type,
+          },
+        });
+      }
+      return textResult(result);
+    },
+    core_block_remediation_review: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      const attempt = remediation.attempts.find((item) => item.attempt_id === args.attempt_id) || null;
+      if (!attempt) throw new Error("remediation_attempt_not_found");
+      const review = await reviewRemediationProposal({
+        remediation,
+        attempt,
+        actor: {
+          kind: identity.kind || "nyra",
+          tenant_id: identity.tenantId,
+          subject: identity.subject || identity.agentId || "nyra",
+        },
+        store: remediationStore,
+        ledger: remediationDecisionLedger(identity),
+      });
+      return textResult({
+        ok: true,
+        remediation_id: remediation.remediation_id,
+        review,
+      });
+    },
+    core_block_remediation_resubmit: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      const attempt = remediation.attempts.find((item) => item.attempt_id === args.attempt_id) || null;
+      if (!attempt) throw new Error("remediation_attempt_not_found");
+      if (remediation.nyra_review?.status !== "approve_for_core") {
+        throw new Error("nyra_review_required");
+      }
+      const resubmissionContext = buildResubmissionContext(remediation, attempt, remediation.nyra_review);
+      const coreResponse = await coreRequest("/v1/action-evaluator", identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          request_id: `resubmit_${crypto.randomUUID()}`,
+          remediation_context: resubmissionContext,
+          ...sanitizeCoreBody({
+            action_label: remediation.bound_scope.operation_type,
+            action_type: remediation.bound_scope.operation_type,
+            project_id: remediation.project_id,
+            work_id: remediation.work_id,
+            branch_id: remediation.branch_id,
+            session_id: remediation.session_id,
+            target_system: remediation.bound_scope.target_system,
+            operation_class: remediation.bound_scope.operation_class,
+            repository: remediation.bound_scope.repository,
+            ref: remediation.bound_scope.ref,
+            environment: remediation.bound_scope.environment,
+            resource_ids: remediation.bound_scope.resource_ids,
+            tenant_id: identity.tenantId,
+          }),
+        },
+        allowFailurePayload: true,
+      });
+      const payload = coreResponse.payload || coreResponse;
+      const allowed = payload?.authorization?.allowed === true || payload?.allowed === true;
+      const nextStatus = allowed
+        ? CORE_BLOCK_REMEDIATION_STATUS.ALLOWED
+        : CORE_BLOCK_REMEDIATION_STATUS.REVISION_REQUIRED;
+      const resubmitted = await remediationStore.recordResubmission({
+        tenant_id: remediation.tenant_id,
+        remediation_id: remediation.remediation_id,
+        expected_version: remediation.version,
+        resubmission: {
+          status: allowed ? "allowed" : "blocked",
+          resubmission_id: `resub_${crypto.randomUUID()}`,
+          attempt_id: attempt.attempt_id,
+          new_decision_id: payload?.decision_contract?.decision_id || payload?.authorization?.decision_id || null,
+          new_decision_digest: payload?.decision_contract?.decision_digest || null,
+          new_verdict: payload?.authorization?.state || payload?.decision_contract?.state || null,
+          submitted_at: new Date().toISOString(),
+        },
+      });
+      const finalState = await remediationStore.markStatus({
+        tenant_id: remediation.tenant_id,
+        remediation_id: remediation.remediation_id,
+        expected_version: resubmitted.version,
+        status: nextStatus,
+      });
+      const ledger = remediationDecisionLedger(identity);
+      if (ledger) {
+        await ledger.append({
+          tenant_id: remediation.tenant_id,
+          work_id: remediation.work_id,
+          event_type: allowed ? "core_block_remediation_allowed" : "core_block_remediation_revision_requested",
+          remediation_id: remediation.remediation_id,
+          decision_id: remediation.original_decision.decision_id,
+          reason_summary: allowed ? "resubmission_allowed" : "resubmission_blocked",
+          metadata: { resubmission_context: resubmissionContext },
+        });
+      }
+      return textResult({
+        ok: true,
+        remediation: remediationEnvelope(finalState, {
+          resubmission_context: resubmissionContext,
+          core_response: payload,
+        }),
+      });
+    },
+    core_block_remediation_cancel: async (args, identity) => {
+      const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      const cancelled = await remediationStore.cancel({
+        tenant_id: remediation.tenant_id,
+        remediation_id: remediation.remediation_id,
+        expected_version: remediation.version,
+        reason: args.reason,
+      });
+      const ledger = remediationDecisionLedger(identity);
+      if (ledger) {
+        await ledger.append({
+          tenant_id: remediation.tenant_id,
+          work_id: remediation.work_id,
+          event_type: "core_block_remediation_cancelled",
+          remediation_id: remediation.remediation_id,
+          decision_id: remediation.original_decision.decision_id,
+          reason_summary: args.reason || "cancelled",
+        });
+      }
+      return textResult({
+        ok: true,
+        remediation: remediationEnvelope(cancelled),
+      });
     }
   };
   return handlers;
@@ -2069,6 +2455,7 @@ export function createCoreWriteGuard(config, options = {}) {
       audit_ready: action.audit_ready === true,
       target_authority_verified: action.target_authority_verified === true,
       actor_authorized_for_target: action.actor_authorized_for_target === true,
+      idempotency_key: action.idempotency_key,
       owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
       ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
       ...(tenantWorkBootstrap ? { internal_owner_assertion_scope: "tenant_work_bootstrap" } : {}),
@@ -2083,8 +2470,9 @@ export function createCoreWriteGuard(config, options = {}) {
       output.recommended_actions?.some?.((item) => item.blocked === true) === true;
     const confirmationRequired = authorization.confirmation_required === true ||
       (!payload.authorization && (contract.control_level === "confirm" || output.execution_profile?.requires_user_confirmation === true));
-    const confirmationSatisfied = authorization.confirmation_satisfied === true ||
-      (identity.ownerConfirmed === true && confirmationRequired);
+    const confirmationSatisfied = payload.authorization
+      ? authorization.confirmation_satisfied === true
+      : identity.ownerConfirmed === true && confirmationRequired;
     const legacyExplicitlyAllowed = ["allow", "allowed", "allow_controlled", "allow_advisory"].includes(decision)
       || mediation === "allow";
     const allowed = payload.authorization

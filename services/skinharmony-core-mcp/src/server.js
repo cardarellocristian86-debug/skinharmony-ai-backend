@@ -17,7 +17,10 @@ import {
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
 import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
 import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
-import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
+import {
+  WORK_CONTINUITY_TOOLS,
+  tenantWorkCoordinationActionType,
+} from "./work-continuity-tools.js";
 import { NYRA_NATIVE_TEAM_TOOLS } from "./nyra-native-team-tools.js";
 import { NYRA_AUTOPILOT_TOOLS } from "./nyra-autopilot-tools.js";
 import { HOST_NATIVE_TOOLS } from "./host-native-tools.js";
@@ -118,6 +121,7 @@ if (config.mandatoryAgentPresenceEnabled === true && typeof registerAuthenticate
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
+  decisionLedger,
   tenantWorkGallery: workContinuityRuntime ? {
     load: async (identity, input = {}) => {
       requireTenantWorkCapability(identity, "read");
@@ -173,12 +177,7 @@ async function requireOwnerGovernance(identity, actionType, target) {
   }
 }
 
-async function requireBoundedTenantCoordination(
-  identity,
-  actionType,
-  target,
-  idempotencyKey,
-) {
+async function requireBoundedTenantCoordination(identity, actionType, target, idempotencyKey) {
   requireTenantWorkCapability(identity, "coordinate");
   const decision = await govern({
     action_label: `Coordinate tenant work: ${actionType}`,
@@ -202,7 +201,6 @@ async function requireBoundedTenantCoordination(
     target_authority_verified: true,
     actor_authorized_for_target: true,
     idempotency_key: idempotencyKey,
-    owner_confirmed: false,
   }, identity);
   if (decision.allowed !== true) {
     const error = new Error("core_tenant_coordination_denied");
@@ -252,7 +250,7 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
     .slice(0, 32)}`;
   const continuityGate = await coreHandlers.core_gate_action({
     action_label: "Persist a redacted immutable Work Continuity Intent Anchor",
-    action_type: "continuity.update",
+    action_type: resumeExisting ? "work.continuity.resume_or_bind" : "continuity.update",
     target: `${continuityProjectId(args)}:${sessionId}`,
     operation_class: "bounded_internal_coordination_write",
     external_side_effect: false,
@@ -385,7 +383,7 @@ const baseHandlers = {
   ...coreHandlers,
   work_preflight: async (args, identity) => {
     const result = await coreHandlers.work_preflight(args, identity);
-    await ensureContinuity(identity, args, "work_preflight", result);
+    await ensureContinuity(identity, args, "work_preflight", result, { resumeExisting: true });
     return result;
   },
   ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
@@ -457,7 +455,7 @@ const baseHandlers = {
       await requireBoundedTenantCoordination(
         identity,
         "work.participant.join",
-        "tenant_work_gallery_join",
+        args.work_id,
         args.idempotency_key,
       );
       const payload = { ok: true, result: await workContinuityRuntime.join(identity, args) };
@@ -467,7 +465,7 @@ const baseHandlers = {
       await requireBoundedTenantCoordination(
         identity,
         "work.participant.heartbeat",
-        "tenant_work_gallery_heartbeat",
+        args.work_id,
         args.idempotency_key,
       );
       const payload = { ok: true, result: await workContinuityRuntime.heartbeat(identity, args) };
@@ -477,7 +475,7 @@ const baseHandlers = {
       await requireBoundedTenantCoordination(
         identity,
         "work.branch.open",
-        "tenant_work_branch_open",
+        args.work_id,
         args.idempotency_key,
       );
       const payload = { ok: true, result: await workContinuityRuntime.openBranch(identity, args) };
@@ -487,7 +485,7 @@ const baseHandlers = {
       await requireBoundedTenantCoordination(
         identity,
         "work.lease.acquire",
-        "tenant_work_lease_acquire",
+        args.work_id,
         args.idempotency_key,
       );
       const payload = { ok: true, result: await workContinuityRuntime.acquireLease(identity, args) };
@@ -497,7 +495,7 @@ const baseHandlers = {
       await requireBoundedTenantCoordination(
         identity,
         "work.lease.renew",
-        "tenant_work_lease_renew",
+        args.work_id,
         args.idempotency_key,
       );
       const payload = { ok: true, result: await workContinuityRuntime.renewLease(identity, args) };
@@ -507,7 +505,7 @@ const baseHandlers = {
       await requireBoundedTenantCoordination(
         identity,
         "work.lease.release",
-        "tenant_work_lease_release",
+        args.work_id,
         args.idempotency_key,
       );
       const payload = { ok: true, result: await workContinuityRuntime.releaseLease(identity, args) };
@@ -517,7 +515,7 @@ const baseHandlers = {
       await requireBoundedTenantCoordination(
         identity,
         "work.message.post",
-        "tenant_work_message_post",
+        args.work_id,
         args.idempotency_key,
       );
       const payload = { ok: true, result: await workContinuityRuntime.postMessage(identity, args) };
@@ -734,6 +732,9 @@ const baseHandlers = {
 };
 
 function internalCoordinationActionType(toolName) {
+  const tenantWorkActionType = tenantWorkCoordinationActionType(toolName);
+  if (tenantWorkActionType) return tenantWorkActionType;
+  if (toolName === "agent_heartbeat") return "agent.heartbeat";
   if (toolName.includes("native_plan")) return "native_agent.plan";
   if (toolName.includes("native_bind")) return "native_agent.bind";
   if (toolName.includes("native_report")) return "native_agent.report";
@@ -757,11 +758,6 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   gateAction: ({ tool, identity, catalogRevision, idempotencyKey }) => {
-    const tenantBoundedCollaboration =
-      tool._meta?.["skinharmony/tenantBoundedCollaboration"] === true;
-    const boundedActionType = String(
-      tool._meta?.["skinharmony/boundedActionType"] || "",
-    );
     const researchDistillationShadow =
       researchDistillationShadowTools.has(tool.name);
     const externalSideEffect = researchDistillationShadow
@@ -780,9 +776,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
         ? "research.distillation.shadow"
         : ownerConfirmationRequired
           ? "dynamic_capability.invoke"
-          : tenantBoundedCollaboration
-            ? boundedActionType
-            : internalCoordinationActionType(tool.name),
+          : internalCoordinationActionType(tool.name),
       target: tool.name,
       operation_class: researchDistillationShadow
         ? "sandboxed_scoped_work"
@@ -821,13 +815,19 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
 });
 const handlers = { ...baseHandlers, ...dynamicHandlers };
 
+function isAgentPresenceBootstrapCall(toolName, args = {}) {
+  return toolName === "agent_heartbeat" ||
+    ((toolName === "core_capability_catalog" || toolName === "core_capability_invoke") &&
+      args?.capability_id === "agent_heartbeat");
+}
+
 const app = createApp(config, {
   handlers,
   toolSurface: "compact",
   readiness: startupReadiness,
   postgresMajorVersionProbe,
   beforeToolCall: async ({ identity, toolName, args }) => {
-    if (config.mandatoryAgentPresenceEnabled === true && toolName !== "agent_heartbeat") {
+    if (config.mandatoryAgentPresenceEnabled === true && !isAgentPresenceBootstrapCall(toolName, args)) {
       try {
         await registerAuthenticatedPresence(identity);
       } catch (error) {

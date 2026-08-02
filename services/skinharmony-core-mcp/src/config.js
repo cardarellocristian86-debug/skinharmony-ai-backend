@@ -134,6 +134,15 @@ function integer(value, fallback, min, max) {
   return Math.min(Math.max(parsed, min), max);
 }
 
+function strictInteger(value, fallback, min, max, name) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
 function flag(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
@@ -241,6 +250,10 @@ export function loadConfig(env = process.env) {
   // DATABASE_URL. It is intentionally opt-in and has a distinct Render secret.
   const collaborationDatabaseUrl = String(env.MCP_COLLABORATION_DATABASE_URL || "").trim();
   const decisionLedgerRequired = flag(env.CORE_DECISION_LEDGER_REQUIRED, env.NODE_ENV === "production");
+  const coreBlockRemediationMode = String(env.CORE_BLOCK_REMEDIATION_MODE || "shadow").trim().toLowerCase();
+  const coreBlockRemediationMaxAttempts = integer(env.CORE_BLOCK_REMEDIATION_MAX_ATTEMPTS, 3, 1, 20);
+  const coreBlockRemediationTtlSeconds = integer(env.CORE_BLOCK_REMEDIATION_TTL_SECONDS, 86_400, 1, 7 * 86_400);
+  const coreBlockRemediationTransientRetryLimit = integer(env.CORE_BLOCK_REMEDIATION_TRANSIENT_RETRY_LIMIT, 2, 1, 20);
   // Automatic continuity capture is opt-in because it persists a redacted
   // derivative of the first host-supplied request as an immutable Intent
   // Anchor. Existing tenants retain the previous no-capture behaviour.
@@ -259,14 +272,16 @@ export function loadConfig(env = process.env) {
   const godModeClientIds = csv(env.NYRA_GOD_MODE_CLIENT_IDS);
   const godModeCodexEnabled = flag(env.NYRA_GOD_MODE_CODEX_ENABLED, false);
   const godModeEmergencyStop = flag(env.NYRA_GOD_MODE_EMERGENCY_STOP, false);
-  // Owner elevation is only the short bootstrap for a bounded Core
-  // delegation. Long-running work continues through signed, expiring action
-  // tickets instead of treating an old browser login as fresh confirmation.
-  const oauthOwnerConfirmationMaxAgeSeconds = integer(
+  // Owner elevation is bounded to twelve hours and remains subject-bound,
+  // request-bound and single-use. Long-running work still continues through
+  // signed, expiring action tickets; this window prevents the connector from
+  // losing the owner session during a governed work run.
+  const oauthOwnerConfirmationMaxAgeSeconds = strictInteger(
     env.AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS,
-    300,
+    43_200,
     60,
-    86_400,
+    43_200,
+    "AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS",
   );
   // Missing production prerequisites are reported by the local readiness
   // endpoint. Authentication itself still fails closed, while keeping the
@@ -312,6 +327,10 @@ export function loadConfig(env = process.env) {
     databaseUrl,
     collaborationDatabaseUrl,
     decisionLedgerRequired,
+    coreBlockRemediationMode,
+    coreBlockRemediationMaxAttempts,
+    coreBlockRemediationTtlSeconds,
+    coreBlockRemediationTransientRetryLimit,
     workContinuityAutoCaptureEnabled,
     hostNativeAgentProtocolEnabled,
     mandatoryAgentPresenceEnabled,

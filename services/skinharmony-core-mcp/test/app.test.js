@@ -124,6 +124,42 @@ test("passes the signed logical session to mandatory presence registration befor
   }
 });
 
+test("limits the dynamic presence bootstrap exemption to the exact agent heartbeat capability", () => {
+  const isAgentPresenceBootstrapCall = (toolName, args = {}) =>
+    toolName === "agent_heartbeat" ||
+    ((toolName === "core_capability_catalog" || toolName === "core_capability_invoke") &&
+      args?.capability_id === "agent_heartbeat");
+
+  assert.equal(isAgentPresenceBootstrapCall("agent_heartbeat"), true);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog", { capability_id: "agent_heartbeat" }), true);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_invoke", { capability_id: "agent_heartbeat" }), true);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog"), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog", { capability_id: "core_health" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog", { capability_id: "agent_heartbeat_extra" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog", { capability_id: "AGENT_HEARTBEAT" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog", { args: { capability_id: "agent_heartbeat" } }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_invoke", { capability_id: "core_health" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_invoke", { capability_id: "agent_heartbeat_extra" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_invoke", { capability_id: "AGENT_HEARTBEAT" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_invoke", { args: { capability_id: "agent_heartbeat" } }), false);
+
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(serverSource, /!isAgentPresenceBootstrapCall\(toolName, args\)/);
+  assert.match(
+    serverSource,
+    /if \(toolName === "agent_heartbeat"\) return "agent\.heartbeat";/,
+  );
+});
+
+test("allows server-issued MCP session bootstrap for agent heartbeat", () => {
+  const heartbeat = TOOLS.find((tool) => tool.name === "agent_heartbeat");
+  assert.ok(heartbeat);
+  assert.deepEqual(heartbeat.inputSchema.required, ["agent_id", "client_type"]);
+  const appSource = fs.readFileSync(new URL("../src/app.js", import.meta.url), "utf8");
+  assert.match(appSource, /SESSIONLESS_BOOTSTRAP_TOOLS = new Set\(\[\s*"agent_heartbeat"/);
+  assert.match(appSource, /isAgentPresenceBootstrapCall\(tool\.name, rawArgs\)/);
+});
+
 test("publishes only a verifiable build identity", () => {
   const commit = "e".repeat(40);
   assert.deepEqual(buildIdentity({ RENDER_GIT_COMMIT: commit }), { commit_sha: commit, commit_verifiable: true });
@@ -855,6 +891,8 @@ test("publishes the governed host-browsing research sequence", async () => serve
   });
   const body = await response.json();
   assert.equal(response.headers.get("mcp-session-id"), "mcp-app-test-session");
+  assert.match(response.headers.get("access-control-expose-headers") || "", /Mcp-Session-Id/i);
+  assert.match(response.headers.get("access-control-expose-headers") || "", /WWW-Authenticate/i);
   assert.match(body.result.instructions, /nyra_research_plan/);
   assert.match(body.result.instructions, /host ChatGPT or Codex web tool/);
   assert.match(body.result.instructions, /never include secrets/i);

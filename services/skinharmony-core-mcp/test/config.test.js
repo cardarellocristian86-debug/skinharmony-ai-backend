@@ -259,10 +259,18 @@ test("ignores retired browser-provider portal configuration", () => {
 test("loads OAuth owner tenant bindings only from server-side configuration", () => {
   const config = loadConfig({
     AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "codexai" }),
-    AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "600",
+    AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "43200",
   });
   assert.deepEqual(config.oauthOwnerTenantBindings, { "oauth-owner-fixture": "codexai" });
-  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 600);
+  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 43200);
+  assert.throws(
+    () => loadConfig({ AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "43201" }),
+    /AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS/,
+  );
+  assert.throws(
+    () => loadConfig({ AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "59" }),
+    /AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS/,
+  );
   assert.throws(() => loadConfig({ AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "../other" }) }), /invalid tenant id/);
 });
 
@@ -315,7 +323,7 @@ test("loads only bounded server-side OAuth tenant memberships", () => {
 
 test("keeps OAuth owner confirmation usable during a bounded ChatGPT work session", () => {
   const config = loadConfig({});
-  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 300);
+  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 43200);
 });
 
 test("maps Suite Control Plane keys only to their configured tenants", () => {

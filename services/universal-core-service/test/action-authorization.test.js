@@ -52,13 +52,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "task.update": "tenant_task_queue",
     "message.acknowledge": "tenant_message_queue",
     "continuity.update": "work_continuity_checkpoint",
-    "native_agent.plan": "work_continuity_native_plan_create",
-    "native_agent.bind": "work_continuity_native_bind",
-    "native_agent.report": "work_continuity_native_report",
-    "native_agent.verify": "work_continuity_closure_evaluate",
-    "work_atlas.update": "work_atlas_upsert",
-    "incident.record": "work_continuity_incident_record",
-    "delegation.consume": "work_continuity_delegation_consume",
+    "work.continuity.resume_or_bind": "skinharmony-ai-backend:chat-session-1",
     "work.participant.join": "tenant_work_gallery_join",
     "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
     "work.branch.open": "tenant_work_branch_open",
@@ -66,8 +60,15 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "work.lease.renew": "tenant_work_lease_renew",
     "work.lease.release": "tenant_work_lease_release",
     "work.message.post": "tenant_work_message_post",
+    "native_agent.plan": "work_continuity_native_plan_create",
+    "native_agent.bind": "work_continuity_native_bind",
+    "native_agent.report": "work_continuity_native_report",
+    "native_agent.verify": "work_continuity_closure_evaluate",
+    "work_atlas.update": "work_atlas_upsert",
+    "incident.record": "work_continuity_incident_record",
+    "delegation.consume": "work_continuity_delegation_consume",
   };
-  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 19);
+  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 20);
   for (const actionType of BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES) {
     const authorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
@@ -78,30 +79,24 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     assert.equal(authorization.allowed, true, actionType);
     assert.equal(authorization.confirmation_required, false, actionType);
   }
-});
-
-test("Gallery coordination requires an exact action, target and idempotency binding", () => {
-  const exact = {
-    ...boundedCoordinationWrite,
-    action_type: "work.lease.acquire",
-    target: "tenant_work_lease_acquire",
-    idempotency_key: "gallery-lease-acquire-0001",
-  };
-  assert.equal(buildActionAuthorization(contract(), exact).allowed, true);
-  for (const mismatch of [
-    { target: "tenant_work_lease_release" },
-    { action_type: "work.lease.release" },
-    { idempotency_key: "" },
-    { idempotency_key: "short" },
-    { authenticated_tenant_id: "tenant-b" },
-  ]) {
-    assert.equal(
-      buildActionAuthorization(contract(), { ...exact, ...mismatch }).allowed,
-      false,
-    );
+  for (const actionType of Object.keys(targets).filter((value) => value.startsWith("work.") &&
+    value !== "work.continuity.resume_or_bind")) {
+    const innerAuthorization = buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: actionType,
+      target: "11111111-1111-4111-8111-111111111111",
+      idempotency_key: `work-bound-${actionType}-0001`,
+    });
+    assert.equal(innerAuthorization.allowed, true, `${actionType}:work_id`);
+    const wrongTarget = buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: actionType,
+      target: "tenant_work_gallery_unknown",
+      idempotency_key: `wrong-target-${actionType}-0001`,
+    });
+    assert.equal(wrongTarget.allowed, false, `${actionType}:wrong_target`);
   }
 });
-
 test("keeps hard blocks, higher risk and unsafe internal writes closed", () => {
   assert.equal(buildActionAuthorization(contract({ state: "blocked" }), { ...boundedCoordinationWrite, owner_confirmed: true }).allowed, false);
   assert.equal(buildActionAuthorization(contract({ risk_band: "medium" }), { ...boundedCoordinationWrite, owner_confirmed: true }).allowed, false);

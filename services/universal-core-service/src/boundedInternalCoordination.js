@@ -4,6 +4,14 @@ export const BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES = Object.freeze([
   "task.update",
   "message.acknowledge",
   "continuity.update",
+  "work.continuity.resume_or_bind",
+  "work.participant.join",
+  "work.participant.heartbeat",
+  "work.branch.open",
+  "work.lease.acquire",
+  "work.lease.renew",
+  "work.lease.release",
+  "work.message.post",
   "native_agent.plan",
   "native_agent.bind",
   "native_agent.report",
@@ -42,8 +50,9 @@ function targetMatchesAction(actionType, value) {
   const target = String(value || "").trim().toLowerCase();
   if (!target || target.length > 240) return false;
   if (TENANT_WORK_TARGETS.has(actionType)) {
-    return target === TENANT_WORK_TARGETS.get(actionType);
+    if (target === TENANT_WORK_TARGETS.get(actionType)) return true;
   }
+  const workIdTarget = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(target);
   if (actionType === "agent.heartbeat") return target.includes("agent") || target.includes("heartbeat");
   if (actionType === "task.claim" || actionType === "task.update") return target.includes("task");
   if (actionType === "message.acknowledge") return target.includes("message");
@@ -51,6 +60,16 @@ function targetMatchesAction(actionType, value) {
     return target.startsWith("work_continuity_") ||
       /^[a-z0-9][a-z0-9._/-]{1,63}:[a-z0-9][a-z0-9._-]{1,63}$/i.test(target);
   }
+  if (actionType === "work.continuity.resume_or_bind") {
+    return /^[a-z0-9][a-z0-9._:/-]{1,63}:[a-z0-9][a-z0-9._-]{1,63}$/i.test(target);
+  }
+  if (actionType === "work.participant.join") return workIdTarget || target === "tenant_work_gallery_join";
+  if (actionType === "work.participant.heartbeat") return workIdTarget || target === "tenant_work_gallery_heartbeat";
+  if (actionType === "work.branch.open") return workIdTarget || target === "tenant_work_branch_open";
+  if (actionType === "work.lease.acquire") return workIdTarget || target === "tenant_work_lease_acquire";
+  if (actionType === "work.lease.renew") return workIdTarget || target === "tenant_work_lease_renew";
+  if (actionType === "work.lease.release") return workIdTarget || target === "tenant_work_lease_release";
+  if (actionType === "work.message.post") return workIdTarget || target === "tenant_work_message_post";
   if (actionType === "native_agent.plan") return target.includes("native_plan");
   if (actionType === "native_agent.bind") return target.includes("native_bind");
   if (actionType === "native_agent.report") return target.includes("native_report");

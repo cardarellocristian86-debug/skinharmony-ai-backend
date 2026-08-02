@@ -187,12 +187,45 @@ integrationTest("v0.16 static migrations attest roles, survive restart and prese
       actor_provenance: "postgres-integration-rollback",
       rollback_reference: migrationReceipt.migrations[1].rollback_reference,
     });
+    assert.equal(aiPersistence.readiness().persistence_read_ready, false);
+    assert.equal(aiPersistence.readiness().persistence_write_ready, false);
+    assert.equal(agentic.roleSeparationStatus().reads_allowed, false);
+    assert.equal(agentic.roleSeparationStatus().writes_allowed, false);
+    await assert.rejects(
+      aiPersistence.learningAdapter.load({
+        tenant_id: "tenant-pg-a",
+        collection: "evaluation_scorecards",
+        record_id: "scorecard-postgres-v016",
+      }),
+      /ai_learning_static_migration_not_active/,
+    );
+    await assert.rejects(
+      agentic.getWorkCapsule({
+        tenant_id: "tenant-pg-a",
+        capsule_id: "capsule-postgres-v016",
+      }),
+      /agentic_static_migration_not_active/,
+    );
     for (const artifact of [
       "../migrations/0.16.0-ai-learning-factory.down.sql",
       "../migrations/0.16.0-agentic-efficiency.down.sql",
     ]) {
       await pool.query(await readFile(new URL(artifact, import.meta.url), "utf8"));
     }
+    const revoked = await pool.query(
+      `SELECT
+         has_schema_privilege($1,'ai_learning_governance','USAGE') AS ai_schema_usage,
+         has_table_privilege($1,'ai_learning_governance.learning_record','SELECT,INSERT,UPDATE') AS ai_table_access,
+         has_schema_privilege($2,'agentic_governance','USAGE') AS agentic_schema_usage,
+         has_table_privilege($2,'agentic_governance.agentic_work_capsule','SELECT,INSERT,UPDATE') AS agentic_table_access`,
+      [AI_LEARNING_FACTORY_RUNTIME_ROLE, AGENTIC_EFFICIENCY_RUNTIME_ROLE],
+    );
+    assert.deepEqual(revoked.rows[0], {
+      ai_schema_usage: false,
+      ai_table_access: false,
+      agentic_schema_usage: false,
+      agentic_table_access: false,
+    });
     const retained = await pool.query(
       `SELECT
          (SELECT count(*)::int FROM ai_learning_governance.learning_record) AS learning_records,

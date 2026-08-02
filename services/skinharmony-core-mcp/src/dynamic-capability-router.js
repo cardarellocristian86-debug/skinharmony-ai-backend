@@ -94,23 +94,39 @@ function capabilityGroup(name) {
   return prefixes.find(([prefix]) => name.startsWith(prefix))?.[1] || "intelligence";
 }
 
-function assertBoundedSafeArguments(value, path = "$", state = { nodes: 0 }, depth = 0) {
+function assertBoundedSafeArguments(
+  value,
+  path = "$",
+  state = { nodes: 0 },
+  depth = 0,
+  capabilityId = "",
+) {
   state.nodes += 1;
   if (state.nodes > 2_000) throw new Error("dynamic_capability_arguments_too_large");
   if (depth > 12) throw new Error("dynamic_capability_arguments_too_deep");
   if (!value || typeof value !== "object") return;
   if (Array.isArray(value)) {
     if (value.length > 1_000) throw new Error("dynamic_capability_arguments_too_large");
-    value.forEach((item, index) => assertBoundedSafeArguments(item, `${path}[${index}]`, state, depth + 1));
+    value.forEach((item, index) => assertBoundedSafeArguments(
+      item,
+      `${path}[${index}]`,
+      state,
+      depth + 1,
+      capabilityId,
+    ));
     return;
   }
   for (const [key, item] of Object.entries(value)) {
-    if (FORBIDDEN_ARGUMENT_KEYS.has(key.toLowerCase())) {
+    const releaseManifestTenant =
+      capabilityId === "host_native_action_authorize" &&
+      path === "$.release_manifest" &&
+      key === "tenant_id";
+    if (FORBIDDEN_ARGUMENT_KEYS.has(key.toLowerCase()) && !releaseManifestTenant) {
       const error = new Error("dynamic_capability_reserved_argument");
       error.argumentPath = `${path}.${key}`;
       throw error;
     }
-    assertBoundedSafeArguments(item, `${path}.${key}`, state, depth + 1);
+    assertBoundedSafeArguments(item, `${path}.${key}`, state, depth + 1, capabilityId);
   }
 }
 
@@ -246,8 +262,7 @@ function targetArguments(tool, wrapperArgs, identity = {}) {
   } else if (boundedActionType) {
     throw new Error("tenant_collaboration_contract_invalid");
   }
-
-  assertBoundedSafeArguments(args);
+  assertBoundedSafeArguments(args, "$", { nodes: 0 }, 0, tool.name);
   const errors = validateToolArguments(tool.inputSchema, args);
   if (errors.length) {
     const error = new Error("dynamic_capability_arguments_invalid");
@@ -255,6 +270,16 @@ function targetArguments(tool, wrapperArgs, identity = {}) {
     throw error;
   }
   return args;
+}
+
+function ownerConfirmationRequiredForInvocation(tool, wrapperArgs) {
+  const required = tool._meta?.["skinharmony/ownerConfirmationRequired"] === true;
+  if (!required || tool.name !== "agent_heartbeat") return required;
+  const targetArgs = wrapperArgs.arguments || {};
+  const customDisplayName = String(targetArgs.display_name || "").trim().length > 0;
+  const customCapabilities = targetArgs.capabilities !== undefined &&
+    (!Array.isArray(targetArgs.capabilities) || targetArgs.capabilities.length > 0);
+  return customDisplayName || customCapabilities;
 }
 
 function authorizationAllowed(result) {
@@ -402,10 +427,9 @@ export function createDynamicCapabilityHandlers({
       const tool = exactCapability(tools, handlers, args.capability_id, identity);
       if (tool.annotations?.readOnlyHint === true) throw new Error("dynamic_capability_mutation_required");
       requireScopes(identity, tool.scopes || []);
+      const ownerConfirmationRequired = ownerConfirmationRequiredForInvocation(tool, args);
       const tenantBoundedCollaboration =
         tool._meta?.["skinharmony/tenantBoundedCollaboration"] === true;
-      const ownerConfirmationRequired =
-        tool._meta?.["skinharmony/ownerConfirmationRequired"] === true;
       const dedicatedCoreGate =
         tool._meta?.["skinharmony/dedicatedCoreGate"] === true;
       if (tenantBoundedCollaboration) {
@@ -421,8 +445,17 @@ export function createDynamicCapabilityHandlers({
       const callArgs = targetArguments(tool, args, identity);
       if (!dedicatedCoreGate) {
         if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
+        const gateTool = ownerConfirmationRequired
+          ? tool
+          : {
+              ...tool,
+              _meta: {
+                ...(tool._meta || {}),
+                "skinharmony/ownerConfirmationRequired": false,
+              },
+            };
         const gate = await gateAction({
-          tool,
+          tool: gateTool,
           args: callArgs,
           identity,
           catalogRevision: state.revision,

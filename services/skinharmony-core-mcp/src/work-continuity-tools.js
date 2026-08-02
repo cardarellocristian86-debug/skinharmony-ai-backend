@@ -13,12 +13,12 @@ const presence = {
 };
 const object = (properties = {}, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 const text = (maxLength = 20_000) => ({ type: "string", minLength: 1, maxLength });
-const idempotencyKey = { type: "string", minLength: 8, maxLength: 160 };
 const identifier = {
   type: "string",
   pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,63}$",
 };
 const hash = { type: "string", pattern: "^[a-f0-9]{64}$" };
+const coordinationIdempotencyKey = { type: "string", minLength: 8, maxLength: 160 };
 const gitSha = { type: "string", pattern: "^[a-f0-9]{40}$" };
 const exactBranch = {
   type: "string",
@@ -42,6 +42,20 @@ const leaseSurface = object({
   value: { type: "string", minLength: 1, maxLength: 500 },
 }, ["kind", "value"]);
 
+const TENANT_WORK_COORDINATION_ACTION_TYPES = Object.freeze({
+  tenant_work_gallery_join: "work.participant.join",
+  tenant_work_gallery_heartbeat: "work.participant.heartbeat",
+  tenant_work_branch_open: "work.branch.open",
+  tenant_work_lease_acquire: "work.lease.acquire",
+  tenant_work_lease_renew: "work.lease.renew",
+  tenant_work_lease_release: "work.lease.release",
+  tenant_work_message_post: "work.message.post",
+});
+
+export function tenantWorkCoordinationActionType(toolName) {
+  return TENANT_WORK_COORDINATION_ACTION_TYPES[String(toolName || "")] || null;
+}
+
 function tool(name, title, description, inputSchema, readOnly, options = {}) {
   const boundedCollaboration = options.boundedCollaboration === true;
   const ownerConfirmationRequired =
@@ -61,10 +75,9 @@ function tool(name, title, description, inputSchema, readOnly, options = {}) {
     ...(!readOnly ? {
       _meta: {
         "skinharmony/ownerConfirmationRequired": ownerConfirmationRequired,
-        ...(boundedCollaboration ? {
-          "skinharmony/tenantBoundedCollaboration": true,
-          "skinharmony/boundedActionType": options.boundedActionType,
-        } : {}),
+        ...(boundedCollaboration
+          ? { "skinharmony/tenantBoundedCollaboration": true }
+          : {}),
         ...(options.delegationAware === true
           ? { "skinharmony/delegationAware": true }
           : {}),
@@ -78,11 +91,6 @@ function tool(name, title, description, inputSchema, readOnly, options = {}) {
     } : {}),
   };
 }
-
-const boundedCollaboration = (boundedActionType) => ({
-  boundedCollaboration: true,
-  boundedActionType,
-});
 
 export const WORK_CONTINUITY_TOOLS = [
   tool("work_continuity_create", "Create persistent work continuity",
@@ -109,7 +117,7 @@ export const WORK_CONTINUITY_TOOLS = [
         depth_delta: { type: "integer", minimum: -16, maximum: 16 },
       }, ["reason"]),
       event_type: { type: "string", enum: ["branch_opened", "function_added", "function_changed", "dependency_changed", "test_completed", "defect_found", "correction_verified", "rollback_prepared"] },
-      next_action: text(4_000), idempotency_key: idempotencyKey,
+      next_action: text(4_000), idempotency_key: text(160),
     }, ["work_id", "expected_version", "architecture", "change", "next_action", "idempotency_key"]), false),
   tool("work_continuity_checkpoint", "Create continuity capsule",
     "Create a digest-verifiable Continuity Capsule with snapshot, evidence, commit, tests, authorization, rollback and next action.",
@@ -122,18 +130,18 @@ export const WORK_CONTINUITY_TOOLS = [
       provenance: { type: "object", additionalProperties: true },
       repository_hash: hash, policy_hash: hash, live_state_hash: hash,
       supervisor_approved: { type: "boolean" }, handoff_to: { type: "string", maxLength: 120 },
-      idempotency_key: idempotencyKey,
+      idempotency_key: text(160),
     }, ["work_id", "next_action", "rollback", "provenance", "idempotency_key"]), false),
   tool("work_continuity_read", "Read persistent work continuity",
     "Read one tenant-scoped work identity, latest architecture, capsule and hash-chained events.",
     object({ work_id: uuid, event_limit: { type: "integer", minimum: 1, maximum: 200 } }, ["work_id"]), true),
   tool("work_continuity_resume", "Resume verified persistent work",
     "Resume only after capsule digest, drift checks and a fresh Universal Core authorization recalculation.",
-    object({ work_id: uuid, session_id: identifier, current_state_hashes: stateHashes, idempotency_key: idempotencyKey },
+    object({ work_id: uuid, session_id: identifier, current_state_hashes: stateHashes, idempotency_key: text(160) },
       ["work_id", "session_id", "current_state_hashes", "idempotency_key"]), false),
   tool("work_continuity_verify_memory", "Promote verified continuity memory",
     "Mark a capsule as verified memory only after test evidence and prior Supervisor approval.",
-    object({ work_id: uuid, capsule_id: uuid, test_evidence: text(4_000), idempotency_key: idempotencyKey },
+    object({ work_id: uuid, capsule_id: uuid, test_evidence: text(4_000), idempotency_key: text(160) },
       ["work_id", "capsule_id", "test_evidence", "idempotency_key"]), false),
   tool("tenant_work_gallery_list", "Browse tenant work gallery",
     "List and search tenant-scoped work with project, status, participant, branch and active-lease summaries.",
@@ -149,55 +157,48 @@ export const WORK_CONTINUITY_TOOLS = [
       work_id: uuid, branch_id: uuid,
       ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
       metadata: { type: "object", additionalProperties: true },
-      idempotency_key: idempotencyKey,
-    }, ["work_id", "session_id", "agent_id", "idempotency_key"]), false,
-    boundedCollaboration("work.participant.join")),
+      idempotency_key: coordinationIdempotencyKey,
+    }, ["work_id", "session_id", "agent_id", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_gallery_heartbeat", "Renew participant presence",
     "Renew a participant session and recover expired work leases transactionally.",
     object({
       work_id: uuid,
       ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
-      idempotency_key: idempotencyKey,
-    }, ["work_id", "session_id", "agent_id", "idempotency_key"]), false,
-    boundedCollaboration("work.participant.heartbeat")),
+      idempotency_key: coordinationIdempotencyKey,
+    }, ["work_id", "session_id", "agent_id", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_branch_open", "Open a work-aware branch",
     "Create or join a named branch inside one work and correlate it to the active participant session.",
     object({
       work_id: uuid, branch_key: identifier, parent_branch_id: uuid,
-      title: text(240), objective: text(4_000), idempotency_key: idempotencyKey,
-    }, ["work_id", "session_id", "agent_id", "branch_key", "title", "objective", "idempotency_key"]), false,
-    boundedCollaboration("work.branch.open")),
+      title: text(240), objective: text(4_000), idempotency_key: coordinationIdempotencyKey,
+    }, ["work_id", "session_id", "agent_id", "branch_key", "title", "objective", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_lease_acquire", "Acquire bounded work lease",
     "Acquire a temporary lease over files, components or dependencies after transactional overlap detection.",
     object({
       work_id: uuid, branch_id: uuid, purpose: text(2_000),
       surfaces: { type: "array", minItems: 1, maxItems: 100, items: leaseSurface },
       ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
-      idempotency_key: idempotencyKey,
-    }, ["work_id", "session_id", "agent_id", "purpose", "surfaces", "idempotency_key"]), false,
-    boundedCollaboration("work.lease.acquire")),
+      idempotency_key: coordinationIdempotencyKey,
+    }, ["work_id", "session_id", "agent_id", "purpose", "surfaces", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_lease_renew", "Renew bounded work lease",
     "Renew only an active temporary lease held by the same authenticated participant session.",
     object({
       work_id: uuid, lease_id: uuid,
       ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
-      idempotency_key: idempotencyKey,
-    }, ["work_id", "session_id", "agent_id", "lease_id", "idempotency_key"]), false,
-    boundedCollaboration("work.lease.renew")),
+      idempotency_key: coordinationIdempotencyKey,
+    }, ["work_id", "session_id", "agent_id", "lease_id", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_lease_release", "Release bounded work lease",
     "Release a temporary work lease held by the same authenticated participant session.",
-    object({ work_id: uuid, lease_id: uuid, idempotency_key: idempotencyKey },
-      ["work_id", "session_id", "agent_id", "lease_id", "idempotency_key"]), false,
-    boundedCollaboration("work.lease.release")),
+    object({ work_id: uuid, lease_id: uuid, idempotency_key: coordinationIdempotencyKey },
+      ["work_id", "session_id", "agent_id", "lease_id", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_message_post", "Post structured work message",
     "Post a tenant- and work-scoped structured update to one participant or broadcast it inside the work.",
     object({
       work_id: uuid, branch_id: uuid, to_session_id: identifier,
       message_type: { type: "string", enum: ["update", "handoff", "conflict", "decision", "test", "blocker"] },
       subject: text(240), payload: { type: "object", additionalProperties: true },
-      idempotency_key: idempotencyKey,
-    }, ["work_id", "session_id", "agent_id", "message_type", "subject", "payload", "idempotency_key"]), false,
-    boundedCollaboration("work.message.post")),
+      idempotency_key: coordinationIdempotencyKey,
+    }, ["work_id", "session_id", "agent_id", "message_type", "subject", "payload", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_inbox", "Read structured work inbox",
     "Read direct and broadcast structured messages visible to an authenticated participant within one work.",
     object({
@@ -262,7 +263,7 @@ export const WORK_CONTINUITY_TOOLS = [
         evidence_required: { type: "boolean" },
         live_verification_required: { type: "boolean" },
       }),
-      idempotency_key: idempotencyKey,
+      idempotency_key: text(160),
     }, [
       "work_id", "repository", "base_branch", "host_type", "required_checks",
       "tasks", "idempotency_key",
@@ -385,7 +386,7 @@ export const WORK_CONTINUITY_TOOLS = [
         "delivery",
         "rollback",
       ]),
-      idempotency_key: idempotencyKey,
+      idempotency_key: text(160),
     }, ["work_id", "plan_id", "release", "idempotency_key"]),
     false, { ownerConfirmationRequired: false }),
   tool("work_continuity_closure_finalize", "Finalize verified live work",
@@ -397,7 +398,7 @@ export const WORK_CONTINUITY_TOOLS = [
         pattern: "^hnt_[A-Za-z0-9-]{8,160}$",
         maxLength: 164,
       },
-      idempotency_key: idempotencyKey,
+      idempotency_key: text(160),
     }, ["work_id", "plan_id", "action_ticket_id", "idempotency_key"]),
     false, { ownerConfirmationRequired: false, delegationAware: true }),
   tool("work_continuity_atlas_upsert", "Update incremental Work Atlas",
@@ -421,7 +422,7 @@ export const WORK_CONTINUITY_TOOLS = [
         }, ["from_node_id", "to_node_id", "edge_type"]),
       },
       allow_existing_edge_nodes: { type: "boolean" }, replace: { type: "boolean" },
-      source_hash: hash, idempotency_key: idempotencyKey,
+      source_hash: hash, idempotency_key: text(160),
     }, ["work_id", "nodes", "idempotency_key"]),
     false, { ownerConfirmationRequired: false }),
   tool("work_continuity_atlas_select", "Select bounded Work Atlas context",
