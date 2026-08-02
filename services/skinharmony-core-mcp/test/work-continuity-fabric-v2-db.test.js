@@ -17,6 +17,21 @@ function key(...parts) {
   return parts.join("\u0000");
 }
 
+function galleryIdentity(subject, sessionId, agentId, clientType = "codex", tenantId = "tenant-a") {
+  return {
+    tenantId,
+    subject,
+    agentPresence: {
+      session_id: sessionId,
+      agent_id: agentId,
+      client_type: clientType,
+      signature: `ags_${"a".repeat(32)}`,
+      transport_bound: true,
+      host_transport_session_fingerprint: "b".repeat(24),
+    },
+  };
+}
+
 class ContinuityPool {
   constructor(clock) {
     this.clock = clock;
@@ -25,6 +40,9 @@ class ContinuityPool {
     this.anchors = new Map();
     this.events = new Map();
     this.idempotency = new Map();
+    this.participants = new Map();
+    this.branches = new Map();
+    this.leases = new Map();
     this.plans = new Map();
     this.nativeAgents = new Map();
     this.evaluations = new Map();
@@ -40,13 +58,16 @@ class ContinuityPool {
 
     if (q.startsWith("SELECT work_id,create_request_digest FROM core_continuity_session_bindings")) {
       const row = this.bindings.get(key(parameters[0], parameters[1], parameters[2]));
-      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+      const matchesWork = !parameters[3] || row?.work_id === parameters[3];
+      return { rows: row && matchesWork ? [{ ...row }] : [], rowCount: row && matchesWork ? 1 : 0 };
     }
-    if (q.startsWith("SELECT a.intent_digest,w.status,w.current_version,w.next_action")) {
+    if (q.startsWith("SELECT a.intent_digest,a.create_request_digest,")) {
       const anchor = this.anchors.get(key(parameters[0], parameters[1]));
       const work = this.works.get(key(parameters[0], parameters[1]));
       const row = anchor && work ? {
         intent_digest: anchor.intent_digest,
+        create_request_digest: anchor.create_request_digest,
+        project_id: work.project_id,
         status: work.status,
         current_version: work.current_version,
         next_action: work.next_action,
@@ -112,11 +133,20 @@ class ContinuityPool {
     }
     if (q.startsWith("INSERT INTO core_continuity_session_bindings")) {
       const [tenantId, projectId, sessionId, workId, createRequestDigest] = parameters;
-      this.bindings.set(key(tenantId, projectId, sessionId), {
+      const bindingKey = key(tenantId, projectId, sessionId);
+      const current = this.bindings.get(bindingKey);
+      if (current && q.includes("ON CONFLICT") && q.includes("DO NOTHING")) {
+        return { rows: [], rowCount: 0 };
+      }
+      const row = {
         work_id: workId,
         create_request_digest: createRequestDigest,
-      });
-      return { rows: [], rowCount: 1 };
+      };
+      this.bindings.set(bindingKey, row);
+      return {
+        rows: q.includes("RETURNING") ? [{ ...row }] : [],
+        rowCount: 1,
+      };
     }
 
     if (q.startsWith("SELECT sequence_number,event_hash FROM core_continuity_events")) {
@@ -171,7 +201,7 @@ class ContinuityPool {
       return { rows, rowCount: rows.length };
     }
 
-    if (q.startsWith("SELECT request_digest,result FROM core_continuity_idempotency")) {
+    if (q.startsWith("SELECT operation,request_digest,result FROM core_continuity_idempotency")) {
       const row = this.idempotency.get(key(parameters[0], parameters[1], parameters[2]));
       return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
     }
@@ -187,6 +217,162 @@ class ContinuityPool {
     if (q.startsWith("SELECT work_id FROM core_continuity_works")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
       return { rows: work ? [{ work_id: work.work_id }] : [], rowCount: work ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT branch_id FROM core_continuity_branches")) {
+      const branch = this.branches.get(key(parameters[0], parameters[1], parameters[2]));
+      const active = branch?.status === "active";
+      return { rows: active ? [{ branch_id: branch.branch_id }] : [], rowCount: active ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_branches")) {
+      const [tenantId, workId, branchId, parentBranchId, branchKey, title, objective, createdBy] = parameters;
+      const existing = [...this.branches.values()].find((branch) =>
+        branch.tenant_id === tenantId && branch.work_id === workId && branch.branch_key === branchKey);
+      const timestamp = this.clock().toISOString();
+      const row = existing || {
+        tenant_id: tenantId,
+        work_id: workId,
+        branch_id: branchId,
+        parent_branch_id: parentBranchId,
+        branch_key: branchKey,
+        title,
+        objective,
+        status: "active",
+        created_by: createdBy,
+        created_at: timestamp,
+        updated_at: timestamp,
+      };
+      if (!existing) this.branches.set(key(tenantId, workId, branchId), row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT actor_subject,agent_id,client_type,branch_id,expires_at FROM core_continuity_participants")) {
+      const row = this.participants.get(key(parameters[0], parameters[1], parameters[2]));
+      return { rows: row ? [{
+        actor_subject: row.actor_subject,
+        agent_id: row.agent_id,
+        client_type: row.client_type,
+        branch_id: row.branch_id,
+        expires_at: row.expires_at,
+      }] : [],
+        rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("UPDATE core_continuity_leases l")) {
+      const [tenantId, workId, sessionId, actorSubject, agentId, clientType, branchId] = parameters;
+      const participant = this.participants.get(key(tenantId, workId, sessionId));
+      const bindingChanged = participant && (
+        participant.actor_subject !== actorSubject ||
+        participant.agent_id !== agentId ||
+        participant.client_type !== clientType ||
+        participant.branch_id !== branchId
+      );
+      const activeBranchPromotion = participant &&
+        participant.actor_subject === actorSubject &&
+        participant.agent_id === agentId &&
+        participant.client_type === clientType &&
+        participant.branch_id === null && branchId !== null;
+      const canRebind = (bindingChanged &&
+        Date.parse(participant.expires_at) <= this.clock().getTime()) ||
+        activeBranchPromotion;
+      const rows = [];
+      if (canRebind) {
+        for (const lease of this.leases.values()) {
+          if (lease.tenant_id === tenantId && lease.work_id === workId &&
+            lease.session_id === sessionId && lease.status === "active") {
+            lease.status = "expired";
+            lease.released_at ||= this.clock().toISOString();
+            rows.push({ lease_id: lease.lease_id, session_id: lease.session_id });
+          }
+        }
+      }
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_participants")) {
+      const [tenantId, workId, sessionId, actorSubject, agentId, clientType,
+        branchId, ttlSeconds, metadata] = parameters;
+      const participantKey = key(tenantId, workId, sessionId);
+      const current = this.participants.get(participantKey);
+      const currentExpired = current &&
+        Date.parse(current.expires_at) <= this.clock().getTime();
+      const compatibleActiveBinding = current &&
+        current.actor_subject === actorSubject &&
+        current.agent_id === agentId &&
+        current.client_type === clientType &&
+        (current.branch_id === null || branchId === null || current.branch_id === branchId);
+      if (current && !currentExpired && !compatibleActiveBinding) {
+        return { rows: [], rowCount: 0 };
+      }
+      const timestamp = this.clock().toISOString();
+      const row = {
+        tenant_id: tenantId,
+        work_id: workId,
+        session_id: sessionId,
+        actor_subject: actorSubject,
+        agent_id: agentId,
+        client_type: clientType,
+        branch_id: currentExpired ? branchId : (current?.branch_id ?? branchId),
+        status: "active",
+        joined_at: current?.joined_at || timestamp,
+        last_seen_at: timestamp,
+        expires_at: new Date(this.clock().getTime() + (Number(ttlSeconds) * 1_000)).toISOString(),
+        metadata: JSON.parse(metadata),
+      };
+      this.participants.set(participantKey, row);
+      return { rows: [{ ...row }], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject")) {
+      const row = this.participants.get(key(parameters[0], parameters[1], parameters[2]));
+      const requireActive = parameters[4] === true;
+      const active = row?.status === "active" && Date.parse(row.expires_at) > this.clock().getTime();
+      const matchesAgent = !parameters[5] || row?.agent_id === parameters[5];
+      const matchesClient = !parameters[6] || row?.client_type === parameters[6];
+      const matches = row?.actor_subject === parameters[3] && matchesAgent && matchesClient &&
+        (!requireActive || active);
+      return { rows: matches ? [{ ...row }] : [], rowCount: matches ? 1 : 0 };
+    }
+    if (q.startsWith("UPDATE core_continuity_leases SET status='expired'")) {
+      const [tenantId, workId, sessionId, branchId] = parameters;
+      const rows = [];
+      for (const lease of this.leases.values()) {
+        if (lease.tenant_id === tenantId && lease.work_id === workId &&
+          lease.session_id === sessionId && lease.status === "active" &&
+          lease.branch_id !== branchId) {
+          lease.status = "expired";
+          lease.released_at ||= this.clock().toISOString();
+          rows.push({ lease_id: lease.lease_id, session_id: lease.session_id });
+        }
+      }
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("UPDATE core_continuity_participants SET branch_id")) {
+      const [tenantId, workId, sessionId, branchId] = parameters;
+      const participant = this.participants.get(key(tenantId, workId, sessionId));
+      if (!participant || (participant.branch_id !== null && participant.branch_id !== branchId)) {
+        return { rows: [], rowCount: 0 };
+      }
+      participant.branch_id = branchId;
+      participant.last_seen_at = this.clock().toISOString();
+      return { rows: [{ branch_id: branchId }], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_leases SET renewed_at")) {
+      const [tenantId, workId, leaseId, sessionId, ttlSeconds, agentId, branchId] = parameters;
+      const lease = this.leases.get(key(tenantId, workId, leaseId));
+      const active = lease?.session_id === sessionId && lease.status === "active" &&
+        Date.parse(lease.expires_at) > this.clock().getTime() &&
+        lease.created_by === agentId && lease.branch_id === branchId;
+      if (!active) return { rows: [], rowCount: 0 };
+      lease.renewed_at = this.clock().toISOString();
+      lease.expires_at = new Date(this.clock().getTime() + Number(ttlSeconds) * 1_000).toISOString();
+      return { rows: [{ ...lease }], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_leases SET status='released'")) {
+      const [tenantId, workId, leaseId, sessionId, agentId, branchId] = parameters;
+      const lease = this.leases.get(key(tenantId, workId, leaseId));
+      if (!lease || lease.session_id !== sessionId || lease.status !== "active" ||
+        lease.created_by !== agentId || lease.branch_id !== branchId) {
+        return { rows: [], rowCount: 0 };
+      }
+      lease.status = "released";
+      lease.released_at = this.clock().toISOString();
+      return { rows: [{ ...lease }], rowCount: 1 };
     }
     if (q.startsWith("SELECT project_id FROM core_continuity_works")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
@@ -712,6 +898,606 @@ test("ensure survives runtime restart, is strict by default and isolates tenants
   assert.equal("idea" in catalog.works[0], false);
   assert.equal("objective" in catalog.works[0], false);
   assert.equal("anchor" in catalog.works[0], false);
+});
+
+test("exact Work resume binds new sessions idempotently without duplicating Work events", async () => {
+  const clock = () => new Date("2026-07-31T10:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const tenantA = { tenantId: "tenant-a", subject: "codex" };
+  const created = await runtime.ensure(tenantA, initialInput, { creationAuthorized: true });
+  const eventKey = key("tenant-a", created.work_id);
+  assert.deepEqual(pool.events.get(eventKey).map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+  ]);
+
+  const freshSession = {
+    ...initialInput,
+    session_id: "chat-session-after-restart",
+    work_id: created.work_id,
+    resume_existing: true,
+  };
+  const restartedRuntime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const firstResume = await restartedRuntime.ensure(tenantA, freshSession, {
+    trustedSessionFollowup: true,
+  });
+  const secondResume = await restartedRuntime.ensure(tenantA, freshSession, {
+    trustedSessionFollowup: true,
+  });
+  assert.equal(firstResume.work_id, created.work_id);
+  assert.equal(firstResume.session_binding_created, true);
+  assert.equal(firstResume.idempotent_replay, false);
+  assert.equal(secondResume.work_id, created.work_id);
+  assert.equal(secondResume.session_binding_created, false);
+  assert.equal(secondResume.idempotent_replay, true);
+  const freshBindingKey = key(
+    "tenant-a",
+    initialInput.project_id,
+    freshSession.session_id,
+  );
+  assert.equal(pool.bindings.get(freshBindingKey).work_id, created.work_id);
+  const originalBindingDigest = pool.bindings.get(freshBindingKey).create_request_digest;
+  pool.bindings.get(freshBindingKey).create_request_digest = "f".repeat(64);
+  await assert.rejects(restartedRuntime.ensure(tenantA, freshSession, {
+    trustedSessionFollowup: true,
+  }), /continuity_session_binding_conflict/);
+  pool.bindings.get(freshBindingKey).create_request_digest = originalBindingDigest;
+  assert.deepEqual(pool.events.get(eventKey).map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+  ]);
+
+  await assert.rejects(restartedRuntime.ensure(tenantA, {
+    ...freshSession,
+    project_id: "different-project",
+    session_id: "wrong-project-session",
+  }, { trustedSessionFollowup: true }), /continuity_project_mismatch/);
+  await assert.rejects(restartedRuntime.ensure({
+    tenantId: "tenant-b",
+    subject: "codex",
+  }, {
+    ...freshSession,
+    session_id: "cross-tenant-session",
+  }, { trustedSessionFollowup: true }), /continuity_work_not_found/);
+
+  const secondWork = await restartedRuntime.ensure(tenantA, {
+    ...initialInput,
+    session_id: "second-work-creator",
+  }, { creationAuthorized: true });
+  await assert.rejects(restartedRuntime.ensure(tenantA, {
+    ...freshSession,
+    work_id: secondWork.work_id,
+  }, { trustedSessionFollowup: true }), /continuity_session_binding_conflict/);
+
+  const concurrentSession = {
+    ...freshSession,
+    session_id: "concurrent-resume-session",
+  };
+  const concurrent = await Promise.all([
+    restartedRuntime.ensure(tenantA, concurrentSession, { trustedSessionFollowup: true }),
+    restartedRuntime.ensure(tenantA, concurrentSession, { trustedSessionFollowup: true }),
+  ]);
+  assert.deepEqual(concurrent.map((result) => result.work_id), [created.work_id, created.work_id]);
+  assert.equal(concurrent.filter((result) => result.session_binding_created).length, 1);
+  assert.equal(pool.bindings.get(key(
+    "tenant-a",
+    initialInput.project_id,
+    concurrentSession.session_id,
+  )).work_id, created.work_id);
+});
+
+test("Gallery admits multiple tenant-scoped participants and rejects session impersonation", async () => {
+  const clock = () => new Date("2026-07-31T11:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const owner = { tenantId: "tenant-a", subject: "owner-subject" };
+  const created = await runtime.ensure(owner, initialInput, { creationAuthorized: true });
+  const firstJoin = {
+    work_id: created.work_id,
+    session_id: "participant-session-1",
+    agent_id: "codex-builder",
+    client_type: "codex",
+    ttl_seconds: 300,
+    idempotency_key: "participant-join-1",
+  };
+  const secondJoin = {
+    work_id: created.work_id,
+    session_id: "participant-session-2",
+    agent_id: "chatgpt-verifier",
+    client_type: "chatgpt",
+    ttl_seconds: 300,
+    idempotency_key: "participant-join-2",
+  };
+
+  const firstIdentity = galleryIdentity(
+    owner.subject, firstJoin.session_id, firstJoin.agent_id, firstJoin.client_type,
+  );
+  const secondIdentity = galleryIdentity(
+    "verifier-subject", secondJoin.session_id, secondJoin.agent_id, secondJoin.client_type,
+  );
+  const first = await runtime.join(firstIdentity, firstJoin);
+  const second = await runtime.join(secondIdentity, secondJoin);
+  const replay = await runtime.join(firstIdentity, firstJoin);
+  assert.equal(first.participant.session_id, firstJoin.session_id);
+  assert.equal(second.participant.session_id, secondJoin.session_id);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(pool.participants.size, 2);
+
+  await assert.rejects(runtime.join(galleryIdentity(
+    "cross-tenant-subject", secondJoin.session_id, secondJoin.agent_id,
+    secondJoin.client_type, "tenant-b",
+  ), {
+    ...secondJoin,
+    idempotency_key: "cross-tenant-join",
+  }), /continuity_work_not_found/);
+  await assert.rejects(runtime.join(galleryIdentity(
+    "impersonator-subject", firstJoin.session_id, firstJoin.agent_id, firstJoin.client_type,
+  ), {
+    ...firstJoin,
+    idempotency_key: "session-impersonation-attempt",
+  }), /continuity_session_conflict/);
+  await assert.rejects(runtime.join(galleryIdentity(
+    owner.subject, firstJoin.session_id, firstJoin.agent_id, "chatgpt",
+  ), {
+    ...firstJoin,
+    client_type: "chatgpt",
+    idempotency_key: "active-client-binding-switch-attempt",
+  }), /continuity_session_conflict/);
+
+  assert.deepEqual(pool.events.get(key("tenant-a", created.work_id))
+    .map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+    "participant_joined",
+    "participant_joined",
+  ]);
+});
+
+test("Gallery rejects every participant operation from a different signed client type", async () => {
+  const clock = () => new Date("2026-07-31T11:15:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const subject = "client-bound-subject";
+  const sessionId = "client-bound-session";
+  const agentId = "client-bound-agent";
+  const created = await runtime.ensure({ tenantId: "tenant-a", subject }, initialInput, {
+    creationAuthorized: true,
+  });
+  const originalIdentity = galleryIdentity(subject, sessionId, agentId, "codex");
+  await runtime.join(originalIdentity, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: agentId,
+    client_type: "codex",
+    ttl_seconds: 300,
+    idempotency_key: "client-bound-original-join",
+  });
+
+  const forgedClientIdentity = galleryIdentity(subject, sessionId, agentId, "chatgpt");
+  const common = {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: agentId,
+    client_type: "chatgpt",
+  };
+  const cases = [
+    ["heartbeat", {
+      ttl_seconds: 300,
+      idempotency_key: "wrong-client-heartbeat",
+    }],
+    ["openBranch", {
+      branch_key: "wrong-client-branch",
+      title: "Wrong client",
+      objective: "Must not open",
+      idempotency_key: "wrong-client-open-branch",
+    }],
+    ["acquireLease", {
+      purpose: "Must not acquire",
+      surfaces: [{ kind: "file", value: "services/client-bound" }],
+      ttl_seconds: 300,
+      idempotency_key: "wrong-client-acquire",
+    }],
+    ["renewLease", {
+      lease_id: "99999999-9999-4999-8999-999999999999",
+      ttl_seconds: 300,
+      idempotency_key: "wrong-client-renew",
+    }],
+    ["releaseLease", {
+      lease_id: "99999999-9999-4999-8999-999999999999",
+      idempotency_key: "wrong-client-release",
+    }],
+    ["postMessage", {
+      message_type: "update",
+      subject: "Wrong client",
+      payload: { allowed: false },
+      idempotency_key: "wrong-client-message",
+    }],
+    ["inbox", { limit: 10 }],
+  ];
+  for (const [method, input] of cases) {
+    await assert.rejects(
+      runtime[method](forgedClientIdentity, { ...common, ...input }),
+      /continuity_participant_not_active/,
+      method,
+    );
+  }
+});
+
+test("Gallery idempotency is bound to both operation and authenticated subject", async () => {
+  const clock = () => new Date("2026-07-31T11:30:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const owner = { tenantId: "tenant-a", subject: "idempotency-owner" };
+  const created = await runtime.ensure(owner, initialInput, { creationAuthorized: true });
+  const input = {
+    work_id: created.work_id,
+    session_id: "idempotency-bound-session",
+    agent_id: "idempotency-bound-agent",
+    client_type: "codex",
+    ttl_seconds: 300,
+    idempotency_key: "shared-operation-idempotency-key",
+  };
+  const identity = galleryIdentity(
+    owner.subject, input.session_id, input.agent_id, input.client_type,
+  );
+  await runtime.join(identity, input);
+  await assert.rejects(runtime.heartbeat(identity, input), /idempotency_key_conflict/);
+  await assert.rejects(runtime.join(galleryIdentity(
+    "different-authenticated-subject", input.session_id, input.agent_id, input.client_type,
+  ), input), /idempotency_key_conflict/);
+  assert.equal(pool.participants.size, 1);
+});
+
+test("Gallery expires prior-subject leases before reassigning an expired session", async () => {
+  let timestamp = Date.parse("2026-07-31T11:00:00.000Z");
+  const clock = () => new Date(timestamp);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const firstSubject = { tenantId: "tenant-a", subject: "subject-a" };
+  const secondSubject = { tenantId: "tenant-a", subject: "subject-b" };
+  const created = await runtime.ensure(firstSubject, initialInput, { creationAuthorized: true });
+  const sessionId = "rebound-participant-session";
+  const leaseId = "33333333-3333-4333-8333-333333333333";
+
+  const firstGalleryIdentity = galleryIdentity(
+    firstSubject.subject, sessionId, "codex-builder-a", "codex",
+  );
+  await runtime.join(firstGalleryIdentity, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: "codex-builder-a",
+    client_type: "codex",
+    ttl_seconds: 1,
+    idempotency_key: "rebound-participant-a",
+  });
+  pool.leases.set(key("tenant-a", created.work_id, leaseId), {
+    tenant_id: "tenant-a",
+    work_id: created.work_id,
+    lease_id: leaseId,
+    session_id: sessionId,
+    branch_id: null,
+    purpose: "protect the original subject work",
+    status: "active",
+    renewed_at: clock().toISOString(),
+    expires_at: new Date(timestamp + 3_600_000).toISOString(),
+    released_at: null,
+  });
+
+  timestamp += 2_000;
+  const secondGalleryIdentity = galleryIdentity(
+    secondSubject.subject, sessionId, "chatgpt-verifier-b", "chatgpt",
+  );
+  const rebound = await runtime.join(secondGalleryIdentity, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: "chatgpt-verifier-b",
+    client_type: "chatgpt",
+    ttl_seconds: 300,
+    idempotency_key: "rebound-participant-b",
+  });
+
+  assert.equal(rebound.rebound_leases_expired, 1);
+  assert.equal(pool.participants.get(key("tenant-a", created.work_id, sessionId)).actor_subject,
+    secondSubject.subject);
+  assert.equal(pool.leases.get(key("tenant-a", created.work_id, leaseId)).status, "expired");
+  await assert.rejects(runtime.renewLease(secondGalleryIdentity, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: "chatgpt-verifier-b",
+    client_type: "chatgpt",
+    lease_id: leaseId,
+    ttl_seconds: 300,
+    idempotency_key: "rebound-renew-denied",
+  }), /continuity_lease_not_active/);
+  await assert.rejects(runtime.releaseLease(secondGalleryIdentity, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: "chatgpt-verifier-b",
+    client_type: "chatgpt",
+    lease_id: leaseId,
+    idempotency_key: "rebound-release-denied",
+  }), /continuity_lease_not_active/);
+  assert.deepEqual(pool.events.get(key("tenant-a", created.work_id))
+    .map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+    "participant_joined",
+    "lease_expired",
+    "participant_joined",
+  ]);
+});
+
+test("Gallery expires leases when an expired session changes agent under the same subject", async () => {
+  let timestamp = Date.parse("2026-07-31T12:00:00.000Z");
+  const clock = () => new Date(timestamp);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identitySubject = "stable-oauth-subject";
+  const owner = { tenantId: "tenant-a", subject: identitySubject };
+  const created = await runtime.ensure(owner, initialInput, { creationAuthorized: true });
+  const sessionId = "same-subject-agent-rebind";
+  const leaseId = "44444444-4444-4444-8444-444444444444";
+  const originalIdentity = galleryIdentity(identitySubject, sessionId, "codex-agent-a", "codex");
+
+  await runtime.join(originalIdentity, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: "codex-agent-a",
+    client_type: "codex",
+    ttl_seconds: 1,
+    idempotency_key: "same-subject-original-join",
+  });
+  pool.leases.set(key("tenant-a", created.work_id, leaseId), {
+    tenant_id: "tenant-a",
+    work_id: created.work_id,
+    lease_id: leaseId,
+    session_id: sessionId,
+    branch_id: null,
+    purpose: "protect the original agent work",
+    status: "active",
+    renewed_at: clock().toISOString(),
+    expires_at: new Date(timestamp + 3_600_000).toISOString(),
+    released_at: null,
+    created_by: "codex-agent-a",
+  });
+
+  timestamp += 2_000;
+  const replacementIdentity = galleryIdentity(
+    identitySubject, sessionId, "chatgpt-agent-b", "chatgpt",
+  );
+  const rebound = await runtime.join(replacementIdentity, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: "chatgpt-agent-b",
+    client_type: "chatgpt",
+    ttl_seconds: 300,
+    idempotency_key: "same-subject-replacement-join",
+  });
+
+  assert.equal(rebound.rebound_leases_expired, 1);
+  assert.equal(pool.leases.get(key("tenant-a", created.work_id, leaseId)).status, "expired");
+  await assert.rejects(runtime.renewLease(replacementIdentity, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: "chatgpt-agent-b",
+    client_type: "chatgpt",
+    lease_id: leaseId,
+    ttl_seconds: 300,
+    idempotency_key: "same-subject-old-lease-renew-denied",
+  }), /continuity_lease_not_active/);
+});
+
+test("Gallery clears cross-branch leases but preserves an exact expired-session resume", async () => {
+  let timestamp = Date.parse("2026-07-31T13:00:00.000Z");
+  const clock = () => new Date(timestamp);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const subject = "branch-bound-subject";
+  const owner = { tenantId: "tenant-a", subject };
+  const created = await runtime.ensure(owner, initialInput, { creationAuthorized: true });
+  const branchA = "55555555-5555-4555-8555-555555555555";
+  const branchB = "66666666-6666-4666-8666-666666666666";
+  for (const branchId of [branchA, branchB]) {
+    pool.branches.set(key("tenant-a", created.work_id, branchId), {
+      branch_id: branchId,
+      status: "active",
+    });
+  }
+
+  const switchedSession = "cross-branch-rebind-session";
+  const switchedIdentity = galleryIdentity(subject, switchedSession, "codex-branch-agent", "codex");
+  await runtime.join(switchedIdentity, {
+    work_id: created.work_id,
+    session_id: switchedSession,
+    agent_id: "codex-branch-agent",
+    client_type: "codex",
+    branch_id: branchA,
+    ttl_seconds: 1,
+    idempotency_key: "cross-branch-original-join",
+  });
+  const switchedLeaseId = "77777777-7777-4777-8777-777777777777";
+  pool.leases.set(key("tenant-a", created.work_id, switchedLeaseId), {
+    tenant_id: "tenant-a",
+    work_id: created.work_id,
+    lease_id: switchedLeaseId,
+    session_id: switchedSession,
+    branch_id: branchA,
+    purpose: "branch A lease",
+    status: "active",
+    renewed_at: clock().toISOString(),
+    expires_at: new Date(timestamp + 3_600_000).toISOString(),
+    released_at: null,
+    created_by: "codex-branch-agent",
+  });
+  timestamp += 2_000;
+  const switched = await runtime.join(switchedIdentity, {
+    work_id: created.work_id,
+    session_id: switchedSession,
+    agent_id: "codex-branch-agent",
+    client_type: "codex",
+    branch_id: branchB,
+    ttl_seconds: 300,
+    idempotency_key: "cross-branch-replacement-join",
+  });
+  assert.equal(switched.rebound_leases_expired, 1);
+  assert.equal(pool.leases.get(key("tenant-a", created.work_id, switchedLeaseId)).status, "expired");
+
+  const stableSession = "exact-binding-resume-session";
+  const stableIdentity = galleryIdentity(subject, stableSession, "codex-stable-agent", "codex");
+  await runtime.join(stableIdentity, {
+    work_id: created.work_id,
+    session_id: stableSession,
+    agent_id: "codex-stable-agent",
+    client_type: "codex",
+    branch_id: branchA,
+    ttl_seconds: 1,
+    idempotency_key: "exact-binding-original-join",
+  });
+  const stableLeaseId = "88888888-8888-4888-8888-888888888888";
+  pool.leases.set(key("tenant-a", created.work_id, stableLeaseId), {
+    tenant_id: "tenant-a",
+    work_id: created.work_id,
+    lease_id: stableLeaseId,
+    session_id: stableSession,
+    branch_id: branchA,
+    purpose: "same binding lease",
+    status: "active",
+    renewed_at: clock().toISOString(),
+    expires_at: new Date(timestamp + 3_600_000).toISOString(),
+    released_at: null,
+    created_by: "codex-stable-agent",
+  });
+  timestamp += 2_000;
+  const resumed = await runtime.join(stableIdentity, {
+    work_id: created.work_id,
+    session_id: stableSession,
+    agent_id: "codex-stable-agent",
+    client_type: "codex",
+    branch_id: branchA,
+    ttl_seconds: 300,
+    idempotency_key: "exact-binding-resume-join",
+  });
+  assert.equal(resumed.rebound_leases_expired, 0);
+  assert.equal(pool.leases.get(key("tenant-a", created.work_id, stableLeaseId)).status, "active");
+  const renewed = await runtime.renewLease(stableIdentity, {
+    work_id: created.work_id,
+    session_id: stableSession,
+    agent_id: "codex-stable-agent",
+    client_type: "codex",
+    lease_id: stableLeaseId,
+    ttl_seconds: 300,
+    idempotency_key: "exact-binding-lease-renew",
+  });
+  assert.equal(renewed.lease.lease_id, stableLeaseId);
+  assert.equal(renewed.lease.branch_id, branchA);
+  const participantEvents = pool.events.get(key("tenant-a", created.work_id))
+    .filter((event) => event.event_type === "participant_joined");
+  assert.equal(participantEvents.find((event) =>
+    event.payload.session_id === switchedSession &&
+    event.payload.branch_id === branchB)?.payload.branch_id, branchB);
+  assert.equal(participantEvents.findLast((event) =>
+    event.payload.session_id === stableSession)?.payload.branch_id, branchA);
+});
+
+test("Gallery expires unbound leases before assigning an active participant branch", async () => {
+  const clock = () => new Date("2026-07-31T14:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const subject = "branch-promotion-subject";
+  const sessionId = "branch-promotion-session";
+  const agentId = "branch-promotion-agent";
+  const identity = galleryIdentity(subject, sessionId, agentId, "codex");
+  const created = await runtime.ensure({ tenantId: "tenant-a", subject }, initialInput, {
+    creationAuthorized: true,
+  });
+  await runtime.join(identity, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: agentId,
+    client_type: "codex",
+    ttl_seconds: 300,
+    idempotency_key: "branch-promotion-join",
+  });
+  const leaseId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  pool.leases.set(key("tenant-a", created.work_id, leaseId), {
+    tenant_id: "tenant-a",
+    work_id: created.work_id,
+    lease_id: leaseId,
+    session_id: sessionId,
+    branch_id: null,
+    purpose: "unbound work before branch selection",
+    status: "active",
+    renewed_at: clock().toISOString(),
+    expires_at: "2026-07-31T15:00:00.000Z",
+    released_at: null,
+    created_by: agentId,
+  });
+
+  const opened = await runtime.openBranch(identity, {
+    work_id: created.work_id,
+    session_id: sessionId,
+    agent_id: agentId,
+    client_type: "codex",
+    branch_key: "implementation",
+    title: "Implementation",
+    objective: "Bind the participant without inheriting its unbound lease.",
+    idempotency_key: "branch-promotion-open",
+  });
+
+  assert.equal(opened.rebound_leases_expired, 1);
+  assert.equal(pool.leases.get(key("tenant-a", created.work_id, leaseId)).status, "expired");
+  assert.equal(
+    pool.participants.get(key("tenant-a", created.work_id, sessionId)).branch_id,
+    opened.branch.branch_id,
+  );
+  const events = pool.events.get(key("tenant-a", created.work_id));
+  assert.deepEqual(events.map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+    "participant_joined",
+    "lease_expired",
+    "branch_opened",
+  ]);
+  assert.equal(events.at(-2).payload.reason, "participant_branch_bound");
+
+  const joinSessionId = "active-join-branch-promotion";
+  const joinAgentId = "active-join-branch-agent";
+  const joinIdentity = galleryIdentity(subject, joinSessionId, joinAgentId, "codex");
+  await runtime.join(joinIdentity, {
+    work_id: created.work_id,
+    session_id: joinSessionId,
+    agent_id: joinAgentId,
+    client_type: "codex",
+    ttl_seconds: 300,
+    idempotency_key: "active-join-before-branch",
+  });
+  const joinLeaseId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  pool.leases.set(key("tenant-a", created.work_id, joinLeaseId), {
+    tenant_id: "tenant-a",
+    work_id: created.work_id,
+    lease_id: joinLeaseId,
+    session_id: joinSessionId,
+    branch_id: null,
+    purpose: "unbound lease before join branch promotion",
+    status: "active",
+    renewed_at: clock().toISOString(),
+    expires_at: "2026-07-31T15:00:00.000Z",
+    released_at: null,
+    created_by: joinAgentId,
+  });
+  const promoted = await runtime.join(joinIdentity, {
+    work_id: created.work_id,
+    session_id: joinSessionId,
+    agent_id: joinAgentId,
+    client_type: "codex",
+    branch_id: opened.branch.branch_id,
+    ttl_seconds: 300,
+    idempotency_key: "active-join-with-branch",
+  });
+  assert.equal(promoted.rebound_leases_expired, 1);
+  assert.equal(pool.leases.get(key("tenant-a", created.work_id, joinLeaseId)).status, "expired");
+  assert.equal(promoted.participant.branch_id, opened.branch.branch_id);
 });
 
 test("first Work Identity fails closed without owner creation authorization", async () => {

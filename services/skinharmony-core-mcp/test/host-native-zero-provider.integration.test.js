@@ -43,6 +43,13 @@ class EphemeralContinuityPool {
     if (query.startsWith("SELECT pg_advisory_xact_lock")) {
       return { rows: [], rowCount: 0 };
     }
+    if (query.startsWith("SELECT work_id FROM core_continuity_works")) {
+      const work = this.works.get(mapKey(parameters[0], parameters[1]));
+      return {
+        rows: work ? [{ work_id: work.work_id }] : [],
+        rowCount: work ? 1 : 0,
+      };
+    }
 
     if (query.startsWith("SELECT work_id,create_request_digest FROM core_continuity_session_bindings")) {
       const row = this.bindings.get(mapKey(parameters[0], parameters[1], parameters[2]));
@@ -163,7 +170,7 @@ class EphemeralContinuityPool {
       return { rows: [], rowCount: 1 };
     }
 
-    if (query.startsWith("SELECT request_digest,result FROM core_continuity_idempotency")) {
+    if (query.startsWith("SELECT operation,request_digest,result FROM core_continuity_idempotency")) {
       const row = this.idempotency.get(mapKey(parameters[0], parameters[1], parameters[2]));
       return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
     }

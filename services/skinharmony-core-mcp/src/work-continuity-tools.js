@@ -18,6 +18,7 @@ const identifier = {
   pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,63}$",
 };
 const hash = { type: "string", pattern: "^[a-f0-9]{64}$" };
+const coordinationIdempotencyKey = { type: "string", minLength: 8, maxLength: 160 };
 const gitSha = { type: "string", pattern: "^[a-f0-9]{40}$" };
 const exactBranch = {
   type: "string",
@@ -40,6 +41,20 @@ const leaseSurface = object({
   kind: { type: "string", enum: ["file", "component", "dependency"] },
   value: { type: "string", minLength: 1, maxLength: 500 },
 }, ["kind", "value"]);
+
+const TENANT_WORK_COORDINATION_ACTION_TYPES = Object.freeze({
+  tenant_work_gallery_join: "work.participant.join",
+  tenant_work_gallery_heartbeat: "work.participant.heartbeat",
+  tenant_work_branch_open: "work.branch.open",
+  tenant_work_lease_acquire: "work.lease.acquire",
+  tenant_work_lease_renew: "work.lease.renew",
+  tenant_work_lease_release: "work.lease.release",
+  tenant_work_message_post: "work.message.post",
+});
+
+export function tenantWorkCoordinationActionType(toolName) {
+  return TENANT_WORK_COORDINATION_ACTION_TYPES[String(toolName || "")] || null;
+}
 
 function tool(name, title, description, inputSchema, readOnly, options = {}) {
   const boundedCollaboration = options.boundedCollaboration === true;
@@ -142,20 +157,20 @@ export const WORK_CONTINUITY_TOOLS = [
       work_id: uuid, branch_id: uuid,
       ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
       metadata: { type: "object", additionalProperties: true },
-      idempotency_key: text(160),
+      idempotency_key: coordinationIdempotencyKey,
     }, ["work_id", "session_id", "agent_id", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_gallery_heartbeat", "Renew participant presence",
     "Renew a participant session and recover expired work leases transactionally.",
     object({
       work_id: uuid,
       ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
-      idempotency_key: text(160),
+      idempotency_key: coordinationIdempotencyKey,
     }, ["work_id", "session_id", "agent_id", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_branch_open", "Open a work-aware branch",
     "Create or join a named branch inside one work and correlate it to the active participant session.",
     object({
       work_id: uuid, branch_key: identifier, parent_branch_id: uuid,
-      title: text(240), objective: text(4_000), idempotency_key: text(160),
+      title: text(240), objective: text(4_000), idempotency_key: coordinationIdempotencyKey,
     }, ["work_id", "session_id", "agent_id", "branch_key", "title", "objective", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_lease_acquire", "Acquire bounded work lease",
     "Acquire a temporary lease over files, components or dependencies after transactional overlap detection.",
@@ -163,18 +178,18 @@ export const WORK_CONTINUITY_TOOLS = [
       work_id: uuid, branch_id: uuid, purpose: text(2_000),
       surfaces: { type: "array", minItems: 1, maxItems: 100, items: leaseSurface },
       ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
-      idempotency_key: text(160),
+      idempotency_key: coordinationIdempotencyKey,
     }, ["work_id", "session_id", "agent_id", "purpose", "surfaces", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_lease_renew", "Renew bounded work lease",
     "Renew only an active temporary lease held by the same authenticated participant session.",
     object({
       work_id: uuid, lease_id: uuid,
       ttl_seconds: { type: "integer", minimum: 1, maximum: 3_600 },
-      idempotency_key: text(160),
+      idempotency_key: coordinationIdempotencyKey,
     }, ["work_id", "session_id", "agent_id", "lease_id", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_lease_release", "Release bounded work lease",
     "Release a temporary work lease held by the same authenticated participant session.",
-    object({ work_id: uuid, lease_id: uuid, idempotency_key: text(160) },
+    object({ work_id: uuid, lease_id: uuid, idempotency_key: coordinationIdempotencyKey },
       ["work_id", "session_id", "agent_id", "lease_id", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_message_post", "Post structured work message",
     "Post a tenant- and work-scoped structured update to one participant or broadcast it inside the work.",
@@ -182,7 +197,7 @@ export const WORK_CONTINUITY_TOOLS = [
       work_id: uuid, branch_id: uuid, to_session_id: identifier,
       message_type: { type: "string", enum: ["update", "handoff", "conflict", "decision", "test", "blocker"] },
       subject: text(240), payload: { type: "object", additionalProperties: true },
-      idempotency_key: text(160),
+      idempotency_key: coordinationIdempotencyKey,
     }, ["work_id", "session_id", "agent_id", "message_type", "subject", "payload", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_inbox", "Read structured work inbox",
     "Read direct and broadcast structured messages visible to an authenticated participant within one work.",

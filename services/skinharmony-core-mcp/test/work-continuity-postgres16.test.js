@@ -26,6 +26,21 @@ function coordinatorIdentity(tenantId) {
   };
 }
 
+function galleryIdentity(tenantId, subject, sessionId, agentId, clientType = "codex", hex = "b") {
+  return {
+    tenantId,
+    subject,
+    agentPresence: {
+      session_id: sessionId,
+      agent_id: agentId,
+      client_type: clientType,
+      signature: `ags_${hex.repeat(32)}`,
+      transport_bound: true,
+      host_transport_session_fingerprint: hex.repeat(24),
+    },
+  };
+}
+
 function reporterIdentity(tenantId, agentId, fingerprint, signatureHex) {
   return {
     tenantId,
@@ -118,7 +133,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
   const projectId = `continuity-${runId.slice(0, 16)}`;
   const firstSession = `session-${runId.slice(0, 16)}`;
   const secondSession = `aggregate-${runId.slice(16, 32)}`;
-  const pool = new Pool({ connectionString: databaseUrl, max: 4 });
+  const pool = new Pool({ connectionString: databaseUrl, max: 4, statement_timeout: 10_000 });
   const runtime = createWorkContinuityRuntime({
     databaseUrl,
     dttAgentIdentitySigningSecret: "postgres16-continuity-assignment-secret-0123456789",
@@ -162,12 +177,421 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       [tenantId, firstWork.work_id],
     ), /core_continuity_intent_anchor_immutable/);
 
+    const resumedSession = `resumed-${runId.slice(0, 16)}`;
+    const resumeInput = {
+      ...initial,
+      session_id: resumedSession,
+      work_id: firstWork.work_id,
+      resume_existing: true,
+    };
+    const concurrentResume = await Promise.all([
+      runtime.ensure(coordinator, resumeInput, { trustedSessionFollowup: true }),
+      runtime.ensure(coordinator, resumeInput, { trustedSessionFollowup: true }),
+    ]);
+    assert.deepEqual(
+      concurrentResume.map((result) => result.work_id),
+      [firstWork.work_id, firstWork.work_id],
+    );
+    assert.equal(concurrentResume.filter((result) => result.session_binding_created).length, 1);
+    const resumedBindings = await pool.query(`SELECT work_id,create_request_digest FROM core_continuity_session_bindings
+      WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
+    [tenantId, projectId, resumedSession]);
+    assert.equal(resumedBindings.rowCount, 1);
+    assert.equal(resumedBindings.rows[0].work_id, firstWork.work_id);
+    await pool.query(`UPDATE core_continuity_session_bindings SET create_request_digest=$4
+      WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
+    [tenantId, projectId, resumedSession, "f".repeat(64)]);
+    await assert.rejects(runtime.ensure(coordinator, resumeInput, {
+      trustedSessionFollowup: true,
+    }), /continuity_session_binding_conflict/);
+    await pool.query(`UPDATE core_continuity_session_bindings SET create_request_digest=$4
+      WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
+    [tenantId, projectId, resumedSession, resumedBindings.rows[0].create_request_digest]);
+    const creationEvents = await pool.query(`SELECT event_type FROM core_continuity_events
+      WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number`,
+    [tenantId, firstWork.work_id]);
+    assert.deepEqual(creationEvents.rows.map((event) => event.event_type), [
+      "work_created",
+      "intent_anchored",
+    ]);
+
+    const memoryCheckpoint = await runtime.checkpoint(coordinator, {
+      work_id: firstWork.work_id,
+      agent_id: "codex-coordinator",
+      evidence: [{ kind: "test", ref: "postgres16-lock-order" }],
+      tests: [{ name: "postgres16-lock-order", passed: true }],
+      rollback: { ready: true },
+      provenance: { source: "postgres16-integration" },
+      supervisor_approved: true,
+      next_action: "Verify memory without inverting the Work lock order.",
+      idempotency_key: `memory-checkpoint-${runId}`,
+    });
+    const memoryRowLockClient = await pool.connect();
+    let memoryVerificationWhileRowLocked;
+    try {
+      await memoryRowLockClient.query("BEGIN");
+      const holder = await memoryRowLockClient.query("SELECT pg_backend_pid() AS pid");
+      const holderPid = Number(holder.rows[0].pid);
+      await memoryRowLockClient.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, firstWork.work_id]);
+      memoryVerificationWhileRowLocked = runtime.verifyMemory(coordinator, {
+        work_id: firstWork.work_id,
+        capsule_id: memoryCheckpoint.capsule_id,
+        agent_id: "codex-coordinator",
+        test_evidence: [{ name: "postgres16-lock-order", passed: true }],
+        idempotency_key: `memory-verify-lock-order-${runId}`,
+      });
+      let workRowWaitObserved = false;
+      for (let attempt = 0; attempt < 100 && !workRowWaitObserved; attempt += 1) {
+        const waiters = await pool.query(`SELECT 1 FROM pg_stat_activity a
+          WHERE $1::int=ANY(pg_blocking_pids(a.pid))
+            AND a.wait_event_type='Lock'
+            AND a.query LIKE '%core_continuity_works%FOR UPDATE%'
+          LIMIT 1`, [holderPid]);
+        workRowWaitObserved = waiters.rowCount === 1;
+        if (!workRowWaitObserved) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(workRowWaitObserved, true, "memory verification did not wait on the Work row");
+      const advisory = await memoryRowLockClient.query(`SELECT
+        pg_try_advisory_xact_lock(hashtext($1),hashtext($2)) AS acquired`,
+      [tenantId, firstWork.work_id]);
+      assert.equal(advisory.rows[0].acquired, true,
+        "memory verification acquired the Work advisory before the Work row");
+      await memoryRowLockClient.query("COMMIT");
+    } catch (error) {
+      await memoryRowLockClient.query("ROLLBACK").catch(() => {});
+      if (memoryVerificationWhileRowLocked) {
+        await Promise.allSettled([memoryVerificationWhileRowLocked]);
+      }
+      assert.notEqual(error?.code, "40P01");
+      throw error;
+    } finally {
+      memoryRowLockClient.release();
+    }
+    await memoryVerificationWhileRowLocked;
+    await assert.rejects(runtime.ensure(coordinator, {
+      ...resumeInput,
+      project_id: `other-${runId.slice(0, 16)}`,
+      session_id: `wrong-project-${runId.slice(0, 8)}`,
+    }, { trustedSessionFollowup: true }), /continuity_project_mismatch/);
+    await assert.rejects(runtime.ensure(
+      coordinatorIdentity(`${tenantId}_other`),
+      {
+        ...resumeInput,
+        session_id: `cross-tenant-${runId.slice(0, 8)}`,
+      },
+      { trustedSessionFollowup: true },
+    ), /continuity_work_not_found/);
+
     const secondWork = await runtime.ensure(coordinator, {
       ...initial,
       session_id: secondSession,
       initial_message: "Continue the second indexed native work.",
       idea: "Cross-work Atlas provenance",
     }, { creationAuthorized: true });
+    await assert.rejects(runtime.ensure(coordinator, {
+      ...resumeInput,
+      work_id: secondWork.work_id,
+    }, { trustedSessionFollowup: true }), /continuity_session_binding_conflict/);
+
+    const firstParticipant = {
+      work_id: firstWork.work_id,
+      session_id: `participant-a-${runId.slice(0, 8)}`,
+      agent_id: "codex-builder",
+      client_type: "codex",
+      idempotency_key: `participant-a-${runId}`,
+    };
+    const secondParticipant = {
+      work_id: firstWork.work_id,
+      session_id: `participant-b-${runId.slice(0, 8)}`,
+      agent_id: "chatgpt-verifier",
+      client_type: "chatgpt",
+      idempotency_key: `participant-b-${runId}`,
+    };
+    const firstParticipantIdentity = galleryIdentity(
+      tenantId, coordinator.subject, firstParticipant.session_id,
+      firstParticipant.agent_id, firstParticipant.client_type,
+    );
+    await runtime.join(firstParticipantIdentity, firstParticipant);
+    await runtime.join(galleryIdentity(
+      tenantId, "chatgpt|postgres16-verifier", secondParticipant.session_id,
+      secondParticipant.agent_id, secondParticipant.client_type, "c",
+    ), secondParticipant);
+    const participants = await pool.query(`SELECT session_id FROM core_continuity_participants
+      WHERE tenant_id=$1 AND work_id=$2 ORDER BY session_id`,
+    [tenantId, firstWork.work_id]);
+    assert.deepEqual(participants.rows.map((row) => row.session_id), [
+      firstParticipant.session_id,
+      secondParticipant.session_id,
+    ].sort());
+    await assert.rejects(runtime.join(galleryIdentity(
+      tenantId, "chatgpt|session-impersonator", firstParticipant.session_id,
+      firstParticipant.agent_id, firstParticipant.client_type, "d",
+    ), {
+      ...firstParticipant,
+      idempotency_key: `participant-conflict-${runId}`,
+    }), /continuity_session_conflict/);
+    await assert.rejects(runtime.join(galleryIdentity(
+      tenantId, coordinator.subject, firstParticipant.session_id,
+      firstParticipant.agent_id, "chatgpt", "9",
+    ), {
+      ...firstParticipant,
+      client_type: "chatgpt",
+      idempotency_key: `participant-client-conflict-${runId}`,
+    }), /continuity_session_conflict/);
+    await assert.rejects(runtime.join(galleryIdentity(
+      `${tenantId}_other`, "chatgpt|cross-tenant", secondParticipant.session_id,
+      secondParticipant.agent_id, secondParticipant.client_type, "e",
+    ), {
+      ...secondParticipant,
+      idempotency_key: `participant-cross-tenant-${runId}`,
+    }), /continuity_work_not_found/);
+
+    const clientBoundLease = await runtime.acquireLease(firstParticipantIdentity, {
+      ...firstParticipant,
+      purpose: "Verify the signed participant client binding.",
+      surfaces: [{ kind: "file", value: `services/client-bound-${runId.slice(0, 8)}` }],
+      ttl_seconds: 3_600,
+      idempotency_key: `participant-client-lease-${runId}`,
+    });
+    const forgedClientIdentity = galleryIdentity(
+      tenantId, coordinator.subject, firstParticipant.session_id,
+      firstParticipant.agent_id, "chatgpt", "9",
+    );
+    await assert.rejects(runtime.heartbeat(forgedClientIdentity, {
+      ...firstParticipant,
+      client_type: "chatgpt",
+      ttl_seconds: 300,
+      idempotency_key: `participant-wrong-client-heartbeat-${runId}`,
+    }), /continuity_participant_not_active/);
+    await assert.rejects(runtime.renewLease(forgedClientIdentity, {
+      ...firstParticipant,
+      client_type: "chatgpt",
+      lease_id: clientBoundLease.lease.lease_id,
+      ttl_seconds: 300,
+      idempotency_key: `participant-wrong-client-renew-${runId}`,
+    }), /continuity_participant_not_active/);
+    await assert.rejects(runtime.inbox(forgedClientIdentity, {
+      ...firstParticipant,
+      client_type: "chatgpt",
+      limit: 10,
+    }), /continuity_participant_not_active/);
+    await runtime.releaseLease(firstParticipantIdentity, {
+      ...firstParticipant,
+      lease_id: clientBoundLease.lease.lease_id,
+      idempotency_key: `participant-client-lease-release-${runId}`,
+    });
+
+    const branchSession = `branch-promotion-${runId.slice(0, 10)}`;
+    const branchIdentity = galleryIdentity(
+      tenantId, "codex|branch-promotion", branchSession, "branch-promotion-agent", "codex", "5",
+    );
+    await runtime.join(branchIdentity, {
+      work_id: firstWork.work_id,
+      session_id: branchSession,
+      agent_id: "branch-promotion-agent",
+      client_type: "codex",
+      ttl_seconds: 300,
+      idempotency_key: `branch-promotion-join-${runId}`,
+    });
+    const unboundLease = await runtime.acquireLease(branchIdentity, {
+      work_id: firstWork.work_id,
+      session_id: branchSession,
+      agent_id: "branch-promotion-agent",
+      client_type: "codex",
+      purpose: "Expire this lease when the participant receives a branch.",
+      surfaces: [{ kind: "file", value: `services/branch-promotion-${runId.slice(0, 8)}` }],
+      ttl_seconds: 3_600,
+      idempotency_key: `branch-promotion-lease-${runId}`,
+    });
+    const openedBranch = await runtime.openBranch(branchIdentity, {
+      work_id: firstWork.work_id,
+      session_id: branchSession,
+      agent_id: "branch-promotion-agent",
+      client_type: "codex",
+      branch_key: `implementation-${runId.slice(0, 10)}`,
+      title: "Implementation",
+      objective: "Bind the participant without carrying an unbound lease.",
+      idempotency_key: `branch-promotion-open-${runId}`,
+    });
+    assert.equal(openedBranch.rebound_leases_expired, 1);
+    const unboundLeaseState = await pool.query(`SELECT status FROM core_continuity_leases
+      WHERE tenant_id=$1 AND work_id=$2 AND lease_id=$3`,
+    [tenantId, firstWork.work_id, unboundLease.lease.lease_id]);
+    assert.equal(unboundLeaseState.rows[0].status, "expired");
+    const promotedParticipant = await pool.query(`SELECT branch_id FROM core_continuity_participants
+      WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+    [tenantId, firstWork.work_id, branchSession]);
+    assert.equal(promotedParticipant.rows[0].branch_id, openedBranch.branch.branch_id);
+
+    const raceSession = `race-${runId.slice(0, 16)}`;
+    const raceOwner = galleryIdentity(
+      tenantId, "codex|race-owner", raceSession, "race-owner", "codex", "f",
+    );
+    const raceSuccessor = galleryIdentity(
+      tenantId, "chatgpt|race-successor", raceSession, "race-successor", "chatgpt", "a",
+    );
+    await runtime.join(raceOwner, {
+      work_id: firstWork.work_id,
+      session_id: raceSession,
+      agent_id: "race-owner",
+      client_type: "codex",
+      ttl_seconds: 300,
+      idempotency_key: `race-owner-join-${runId}`,
+    });
+    const raceLease = await runtime.acquireLease(raceOwner, {
+      work_id: firstWork.work_id,
+      session_id: raceSession,
+      agent_id: "race-owner",
+      client_type: "codex",
+      purpose: "Verify participant/work lock order.",
+      surfaces: [{ kind: "file", value: `services/race-${runId.slice(0, 8)}` }],
+      ttl_seconds: 3_600,
+      idempotency_key: `race-owner-lease-${runId}`,
+    });
+    await pool.query(`UPDATE core_continuity_participants SET expires_at=now()-interval '1 second'
+      WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+    [tenantId, firstWork.work_id, raceSession]);
+    const raceResults = await Promise.allSettled([
+      runtime.heartbeat(raceOwner, {
+        work_id: firstWork.work_id,
+        session_id: raceSession,
+        agent_id: "race-owner",
+        client_type: "codex",
+        ttl_seconds: 300,
+        idempotency_key: `race-owner-heartbeat-${runId}`,
+      }),
+      runtime.join(raceSuccessor, {
+        work_id: firstWork.work_id,
+        session_id: raceSession,
+        agent_id: "race-successor",
+        client_type: "chatgpt",
+        ttl_seconds: 300,
+        idempotency_key: `race-successor-join-${runId}`,
+      }),
+    ]);
+    assert.equal(raceResults.filter((result) => result.status === "fulfilled").length, 1);
+    for (const result of raceResults.filter((candidate) => candidate.status === "rejected")) {
+      assert.notEqual(result.reason?.code, "40P01");
+      assert.doesNotMatch(String(result.reason?.message || result.reason), /deadlock detected/i);
+    }
+    const raceState = await pool.query(`SELECT p.actor_subject,l.status AS lease_status
+      FROM core_continuity_participants p JOIN core_continuity_leases l
+        ON l.tenant_id=p.tenant_id AND l.work_id=p.work_id AND l.session_id=p.session_id
+      WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.session_id=$3 AND l.lease_id=$4`,
+    [tenantId, firstWork.work_id, raceSession, raceLease.lease.lease_id]);
+    assert.equal(raceState.rowCount, 1);
+    assert.equal(
+      raceState.rows[0].lease_status,
+      raceState.rows[0].actor_subject === raceSuccessor.subject ? "expired" : "active",
+    );
+
+    const sameSubjectSession = `same-subject-${runId.slice(0, 12)}`;
+    const sameSubject = "codex|same-subject-rebind";
+    const originalAgent = galleryIdentity(
+      tenantId, sameSubject, sameSubjectSession, "same-subject-agent-a", "codex", "7",
+    );
+    const replacementAgent = galleryIdentity(
+      tenantId, sameSubject, sameSubjectSession, "same-subject-agent-b", "chatgpt", "8",
+    );
+    await runtime.join(originalAgent, {
+      work_id: firstWork.work_id,
+      session_id: sameSubjectSession,
+      agent_id: "same-subject-agent-a",
+      client_type: "codex",
+      ttl_seconds: 300,
+      idempotency_key: `same-subject-agent-a-join-${runId}`,
+    });
+    const inheritedLease = await runtime.acquireLease(originalAgent, {
+      work_id: firstWork.work_id,
+      session_id: sameSubjectSession,
+      agent_id: "same-subject-agent-a",
+      client_type: "codex",
+      purpose: "Reject lease inheritance after same-subject agent change.",
+      surfaces: [{ kind: "file", value: `services/same-subject-${runId.slice(0, 8)}` }],
+      ttl_seconds: 3_600,
+      idempotency_key: `same-subject-agent-a-lease-${runId}`,
+    });
+    await pool.query(`UPDATE core_continuity_participants SET expires_at=now()-interval '1 second'
+      WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+    [tenantId, firstWork.work_id, sameSubjectSession]);
+    const sameSubjectRebound = await runtime.join(replacementAgent, {
+      work_id: firstWork.work_id,
+      session_id: sameSubjectSession,
+      agent_id: "same-subject-agent-b",
+      client_type: "chatgpt",
+      ttl_seconds: 300,
+      idempotency_key: `same-subject-agent-b-join-${runId}`,
+    });
+    assert.equal(sameSubjectRebound.rebound_leases_expired, 1);
+    const inheritedLeaseState = await pool.query(`SELECT status FROM core_continuity_leases
+      WHERE tenant_id=$1 AND work_id=$2 AND lease_id=$3`,
+    [tenantId, firstWork.work_id, inheritedLease.lease.lease_id]);
+    assert.equal(inheritedLeaseState.rows[0].status, "expired");
+    await assert.rejects(runtime.renewLease(replacementAgent, {
+      work_id: firstWork.work_id,
+      session_id: sameSubjectSession,
+      agent_id: "same-subject-agent-b",
+      client_type: "chatgpt",
+      lease_id: inheritedLease.lease.lease_id,
+      ttl_seconds: 300,
+      idempotency_key: `same-subject-agent-b-renew-${runId}`,
+    }), /continuity_lease_not_active/);
+
+    const lockOrderSession = `lock-order-${runId.slice(0, 12)}`;
+    const lockOrderIdentity = galleryIdentity(
+      tenantId, "codex|lock-order", lockOrderSession, "lock-order-agent", "codex", "6",
+    );
+    await runtime.join(lockOrderIdentity, {
+      work_id: firstWork.work_id,
+      session_id: lockOrderSession,
+      agent_id: "lock-order-agent",
+      client_type: "codex",
+      ttl_seconds: 300,
+      idempotency_key: `lock-order-join-${runId}`,
+    });
+    const rowLockClient = await pool.connect();
+    let heartbeatWhileRowLocked;
+    try {
+      await rowLockClient.query("BEGIN");
+      const holder = await rowLockClient.query("SELECT pg_backend_pid() AS pid");
+      const holderPid = Number(holder.rows[0].pid);
+      await rowLockClient.query(`SELECT work_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenantId, firstWork.work_id]);
+      heartbeatWhileRowLocked = runtime.heartbeat(lockOrderIdentity, {
+        work_id: firstWork.work_id,
+        session_id: lockOrderSession,
+        agent_id: "lock-order-agent",
+        client_type: "codex",
+        ttl_seconds: 300,
+        idempotency_key: `lock-order-heartbeat-${runId}`,
+      });
+      let workRowWaitObserved = false;
+      for (let attempt = 0; attempt < 100 && !workRowWaitObserved; attempt += 1) {
+        const waiters = await pool.query(`SELECT 1 FROM pg_stat_activity a
+          WHERE $1::int=ANY(pg_blocking_pids(a.pid))
+            AND a.wait_event_type='Lock'
+            AND a.query LIKE '%core_continuity_works%FOR UPDATE%'
+          LIMIT 1`, [holderPid]);
+        workRowWaitObserved = waiters.rowCount === 1;
+        if (!workRowWaitObserved) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(workRowWaitObserved, true, "heartbeat did not wait on the Work row");
+      const advisory = await rowLockClient.query(`SELECT
+        pg_try_advisory_xact_lock(hashtext($1),hashtext($2)) AS acquired`,
+      [tenantId, firstWork.work_id]);
+      assert.equal(advisory.rows[0].acquired, true,
+        "heartbeat acquired the work advisory before the Work row");
+      await rowLockClient.query("COMMIT");
+    } catch (error) {
+      await rowLockClient.query("ROLLBACK").catch(() => {});
+      if (heartbeatWhileRowLocked) await Promise.allSettled([heartbeatWhileRowLocked]);
+      assert.notEqual(error?.code, "40P01");
+      throw error;
+    } finally {
+      rowLockClient.release();
+    }
+    await heartbeatWhileRowLocked;
     const atlasInput = (workId, idempotencyKey, summarySuffix) => runtime.upsertAtlas(coordinator, {
       work_id: workId,
       nodes: [
