@@ -592,6 +592,16 @@ export function createHostNativeExternalReadbackVerifier({
       if (branchCommit !== targetCommit || targetCommit !== sha(action.source_commit)) {
         error("trusted_readback_branch_commit_mismatch");
       }
+    } else if (action.kind === "render.deploy") {
+      branch = string(action.branch);
+      if (!branch || /(^|\/)\.\.($|\/)/.test(branch)) error("trusted_readback_ticket_invalid");
+      const ref = await getGithub(`/git/ref/heads/${encodeURIComponent(branch).replace(/%2F/g, "/")}`);
+      branchCommit = sha(ref?.object?.sha);
+      if (
+        branchCommit !== targetCommit ||
+        targetCommit !== sha(action.source_commit) ||
+        targetCommit !== checksCommit
+      ) error("trusted_readback_branch_commit_mismatch");
     } else {
       error("trusted_readback_action_invalid");
     }
@@ -630,12 +640,17 @@ export function createHostNativeExternalReadbackVerifier({
       api_origin: GITHUB_ORIGIN,
       repository,
       action_kind: action.kind,
-      head_branch: action.kind === "github.merge" ? string(action.head_branch) : null,
-      base_branch: action.kind === "github.merge" ? string(action.base_branch) : null,
-      pull_request: action.kind === "github.merge" ? Number(action.pull_request) : null,
+      head_branch: action.kind === "github.merge" ? string(action.head_branch) :
+        action.kind === "render.deploy" ? branch : null,
+      base_branch: action.kind === "github.merge" || action.kind === "render.deploy"
+        ? string(action.base_branch || baseBranch) : null,
+      pull_request: action.kind === "github.merge" ||
+        action.kind === "render.deploy" && action.environment === "staging"
+        ? Number(action.pull_request) : null,
       merged,
       head_commit: action.kind === "github.merge" ? sha(action.head_commit) : checksCommit,
-      expected_base_commit: action.kind === "github.merge" ? sha(action.expected_base_commit) : sha(action.expected_remote_commit),
+      expected_base_commit: action.kind === "github.merge" || action.kind === "render.deploy"
+        ? sha(action.expected_base_commit || baseCommit) : sha(action.expected_remote_commit),
       merge_commit: mergeCommit,
       target_commit: targetCommit,
       branch,

@@ -328,6 +328,7 @@ function strictProtectedPushTicket() {
 function strictStagingDeployTicket() {
   const ticket = strictTicket();
   ticket.release_manifest_binding.services[0].environment = "staging";
+  ticket.release_manifest_binding.join_resolution.previous_live_attestations[0].environment = "staging";
   ticket.action = {
     kind: "render.deploy",
     repository: "owner/repo",
@@ -349,14 +350,29 @@ function strictStagingDeployFetch({
   ticket = strictStagingDeployTicket(),
   workflow = strictWorkflow(),
   pull = pullRequest("owner/repo", { number: 42, merged: false, merge_commit_sha: null, state: "open", draft: false }),
+  refSha = HEAD,
 } = {}) {
   const fallback = strictFetch({
     ticket,
     workflowById: new Map([[700, workflow]]),
   });
   return async (url, init) => {
+    if (url === "https://api.github.com/repos/owner/repo/git/ref/heads/agent/release") {
+      return jsonResponse({ object: { sha: refSha } });
+    }
+    if (url === "https://api.github.com/repos/owner/repo/commits/2222222222222222222222222222222222222222") {
+      return jsonResponse({ sha: HEAD });
+    }
+    if (url === "https://api.github.com/repos/owner/repo/commits/1111111111111111111111111111111111111111") {
+      return jsonResponse({ sha: BASE });
+    }
     if (url === "https://api.github.com/repos/owner/repo/pulls/42") {
       return jsonResponse(pull);
+    }
+    if (url === "https://service-a.onrender.com/healthz") {
+      return jsonResponse(serviceHealth("service-a", {
+        build: { build_id: "build-service-a", commit_sha: HEAD, commit_verifiable: true },
+      }));
     }
     return fallback(url, init);
   };
@@ -441,7 +457,10 @@ test("staging Render deploy accepts only an exact same-repository pull-request a
     return verifier({ ticket, target_commit: HEAD });
   };
 
-  await assert.rejects(verify(), /trusted_readback_action_invalid/);
+  const result = await verify();
+  assert.equal(result.github.branch_commit, HEAD);
+  assert.equal(result.github.pull_request, 42);
+  assert.equal(result.services[0].live_commit, HEAD);
 
   await t.test("production remains push-only", async () => {
     const production = structuredClone(ticket);
@@ -464,11 +483,23 @@ test("staging Render deploy accepts only an exact same-repository pull-request a
     );
   });
 
+  await t.test("remote branch must still resolve to the exact target", async () => {
+    const verifier = createHostNativeExternalReadbackVerifier({
+      fetchImpl: strictStagingDeployFetch({ ticket, refSha: ALTERNATE }),
+      requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    });
+    await assert.rejects(
+      verifier({ ticket, target_commit: HEAD }),
+      /trusted_readback_branch_commit_mismatch/,
+    );
+  });
+
   for (const [name, pull] of [
     ["fork", pullRequest("owner/repo", { number: 42, merged: false, state: "open", draft: false, head: { sha: HEAD, ref: "agent/release", repo: { full_name: "fork/repo" } } })],
     ["wrong head", pullRequest("owner/repo", { number: 42, merged: false, state: "open", draft: false, head: { sha: ALTERNATE, ref: "agent/release", repo: { full_name: "owner/repo" } } })],
     ["wrong base", pullRequest("owner/repo", { number: 42, merged: false, state: "open", draft: false, base: { sha: ALTERNATE, ref: "main", repo: { full_name: "owner/repo" } } })],
     ["draft", pullRequest("owner/repo", { number: 42, merged: false, state: "open", draft: true })],
+    ["closed", pullRequest("owner/repo", { number: 42, merged: false, state: "closed", draft: false })],
   ]) {
     await t.test(name, async () => {
       await assert.rejects(verify({ pull }), /workflow_pull_request_mismatch/);
