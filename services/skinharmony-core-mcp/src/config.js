@@ -257,12 +257,12 @@ export function loadConfig(env = process.env) {
   // Automatic continuity capture is opt-in because it persists a redacted
   // derivative of the first host-supplied request as an immutable Intent
   // Anchor. Existing tenants retain the previous no-capture behaviour.
-  const workContinuityAutoCaptureEnabled = flag(env.WORK_CONTINUITY_AUTO_CAPTURE_ENABLED, false);
+  // Production work is always anchored in the persistent Gallery; local/dev may opt out explicitly.\n  const workContinuityAutoCaptureEnabled = flag(env.WORK_CONTINUITY_AUTO_CAPTURE_ENABLED, environment === "production");
   const hostNativeAgentProtocolEnabled = flag(env.HOST_NATIVE_AGENT_PROTOCOL_ENABLED, false);
   // When enabled, every functional Nyra/Core tool call must first refresh a
   // server-derived signed presence in the tenant registry. It is intentionally
   // opt-in so existing development installations are not silently tightened.
-  const mandatoryAgentPresenceEnabled = flag(env.MANDATORY_AGENT_PRESENCE_ENABLED, false);
+  // Production sessions must remain visible in the tenant Gallery, including Codex-native local work.\n  const mandatoryAgentPresenceEnabled = flag(env.MANDATORY_AGENT_PRESENCE_ENABLED, environment === "production");
   const agentWorkspaceRoot = String(env.AGENT_WORKSPACE_ROOT || "").trim();
   const memoryFabricRoot = String(env.MEMORY_FABRIC_ROOT || agentWorkspaceRoot || "").trim();
   const researchCortexRoot = String(env.RESEARCH_CORTEX_ROOT || memoryFabricRoot || agentWorkspaceRoot || "").trim();
