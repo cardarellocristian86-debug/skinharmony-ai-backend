@@ -134,6 +134,15 @@ function integer(value, fallback, min, max) {
   return Math.min(Math.max(parsed, min), max);
 }
 
+function strictInteger(value, fallback, min, max, name) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
 function flag(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
@@ -266,11 +275,12 @@ export function loadConfig(env = process.env) {
   // Owner elevation is only the short bootstrap for a bounded Core
   // delegation. Long-running work continues through signed, expiring action
   // tickets instead of treating an old browser login as fresh confirmation.
-  const oauthOwnerConfirmationMaxAgeSeconds = integer(
+  const oauthOwnerConfirmationMaxAgeSeconds = strictInteger(
     env.AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS,
     300,
     60,
-    86_400,
+    300,
+    "AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS",
   );
   // Missing production prerequisites are reported by the local readiness
   // endpoint. Authentication itself still fails closed, while keeping the

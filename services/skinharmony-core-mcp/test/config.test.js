@@ -259,10 +259,18 @@ test("ignores retired browser-provider portal configuration", () => {
 test("loads OAuth owner tenant bindings only from server-side configuration", () => {
   const config = loadConfig({
     AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "codexai" }),
-    AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "600",
+    AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "300",
   });
   assert.deepEqual(config.oauthOwnerTenantBindings, { "oauth-owner-fixture": "codexai" });
-  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 600);
+  assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 300);
+  assert.throws(
+    () => loadConfig({ AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "301" }),
+    /AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS/,
+  );
+  assert.throws(
+    () => loadConfig({ AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS: "43200" }),
+    /AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS/,
+  );
   assert.throws(() => loadConfig({ AUTH0_OWNER_TENANT_BINDINGS_JSON: JSON.stringify({ "oauth-owner-fixture": "../other" }) }), /invalid tenant id/);
 });
 

@@ -7,6 +7,26 @@ const OWNER_CONTEXT_SECRET = "test-owner-context-signing-secret-0123456789";
 const TENANT_CONTEXT_SECRET = "test-tenant-context-signing-secret-0123456789";
 const TENANT_GATEWAY_KEY = "test-tenant-gateway-key-0123456789abcdef";
 
+function expectedOwnerAssertion(secret, context) {
+  const canonical = JSON.stringify({
+    version: context.assertion_version,
+    audience: context.audience,
+    tenant_id: context.tenant_id,
+    access_mode: context.access_mode,
+    role: context.role,
+    delegated_actor: context.delegated_actor,
+    owner_verified: context.owner_verified,
+    owner_subject_fingerprint: context.owner_subject_fingerprint,
+    issued_at: context.issued_at,
+    binding_version: context.binding_version,
+    binding_hash: context.binding_hash,
+    approval_digest: context.approval_digest,
+  });
+  return `ocs_${crypto.createHmac("sha256", secret)
+    .update(`owner-context\u0000${canonical}`)
+    .digest("hex")}`;
+}
+
 test("maps MCP tools to Universal Core without forwarding the ChatGPT token", async () => {
   const calls = [];
   const contextCalls = [];
@@ -146,6 +166,14 @@ test("Core gate overwrites caller confirmation and tenant fields with verified i
   assert.equal(calls[2].body.confirmation_reference, "verified owner confirmation");
   assert.equal(calls[2].body.owner_context.tenant_id, "tenant-a");
   assert.match(calls[2].body.owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
+  assert.equal(
+    calls[2].body.owner_context.assertion,
+    expectedOwnerAssertion(TENANT_GATEWAY_KEY, calls[2].body.owner_context),
+  );
+  assert.notEqual(
+    calls[2].body.owner_context.assertion,
+    expectedOwnerAssertion(OWNER_CONTEXT_SECRET, calls[2].body.owner_context),
+  );
 });
 
 test("bounded internal coordination never borrows owner identity or confirmation", async () => {
@@ -515,7 +543,7 @@ test("reports owner binding checks without exposing OAuth identifiers", async ()
   assert.equal(JSON.stringify(result).includes(clientId), false);
 });
 
-test("marks preflight owner confirmation satisfied only for a verified owner identity", async () => {
+test("preflight preserves an explicit Core owner verdict", async () => {
   const calls = [];
   const handlers = createCoreHandlers({
     universalCoreUrl: "https://core.test",
@@ -532,12 +560,14 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
           governance: {
             owner_confirmation_required: false,
             owner_confirmation_satisfied: false,
+            owner_identity_verified: false,
             execution_allowed_by_preflight: false,
           },
         },
         governance: {
           owner_confirmation_required: false,
           owner_confirmation_satisfied: false,
+          owner_identity_verified: false,
           execution_allowed_by_preflight: true,
         },
       }), { status: 200, headers: { "content-type": "application/json" } });
@@ -551,11 +581,11 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
     godMode: true,
     ownerConfirmed: true,
   });
-  assert.equal(ownerResult.structuredContent.governance.owner_confirmation_satisfied, true);
-  assert.equal(ownerResult.structuredContent.governance.owner_identity_verified, true);
+  assert.equal(ownerResult.structuredContent.governance.owner_confirmation_satisfied, false);
+  assert.equal(ownerResult.structuredContent.governance.owner_identity_verified, false);
   assert.equal(ownerResult.structuredContent.governance.execution_allowed_by_preflight, true);
-  assert.equal(ownerResult.structuredContent.work_preflight.governance.owner_confirmation_satisfied, true);
-  assert.equal(ownerResult.structuredContent.work_preflight.governance.owner_identity_verified, true);
+  assert.equal(ownerResult.structuredContent.work_preflight.governance.owner_confirmation_satisfied, false);
+  assert.equal(ownerResult.structuredContent.work_preflight.governance.owner_identity_verified, false);
   assert.equal(ownerResult.structuredContent.work_preflight.governance.execution_allowed_by_preflight, false);
   assert.equal(calls[1].owner_confirmed, true);
   assert.equal(calls[1].owner_context.assertion_version, "owner_context_assertion_v1");
@@ -568,11 +598,56 @@ test("marks preflight owner confirmation satisfied only for a verified owner ide
     tenantId: "tenant-a",
   });
   assert.equal(standardResult.structuredContent.governance.owner_confirmation_satisfied, false);
-  assert.equal(standardResult.structuredContent.governance.owner_identity_verified, undefined);
+  assert.equal(standardResult.structuredContent.governance.owner_identity_verified, false);
   assert.equal(standardResult.structuredContent.work_preflight.governance.owner_confirmation_satisfied, false);
-  assert.equal(standardResult.structuredContent.work_preflight.governance.owner_identity_verified, undefined);
+  assert.equal(standardResult.structuredContent.work_preflight.governance.owner_identity_verified, false);
   assert.equal(standardResult.structuredContent.work_preflight.governance.execution_allowed_by_preflight, false);
   assert.equal(calls[3].owner_confirmed, false);
+});
+
+test("preflight uses verified local owner identity only for legacy Core fields", async () => {
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (url) => {
+      if (new URL(url).pathname === "/v1/runtime/hierarchy/evaluate") {
+        return new Response(JSON.stringify({
+          ok: true,
+          result: {
+            mode: "shadow",
+            router: { route: "V1" },
+            selected_authority: "V1",
+            parity: { attempted: false, matched: null },
+            execution_allowed: false,
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        work_preflight: { governance: { execution_allowed_by_preflight: false } },
+        governance: { execution_allowed_by_preflight: false },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const result = await handlers.work_preflight({
+    request: "read legacy status",
+    agent_id: "chatgpt-test",
+    client_type: "chatgpt",
+    session_id: "session-owner-legacy",
+  }, {
+    kind: "oauth",
+    tenantId: "tenant-a",
+    role: "owner_root",
+    godMode: true,
+    ownerConfirmed: true,
+  });
+  assert.equal(result.structuredContent.governance.owner_confirmation_satisfied, true);
+  assert.equal(result.structuredContent.governance.owner_identity_verified, true);
+  assert.equal(result.structuredContent.work_preflight.governance.owner_confirmation_satisfied, true);
+  assert.equal(result.structuredContent.work_preflight.governance.owner_identity_verified, true);
 });
 
 test("maps the complete intelligence toolset to tenant-scoped Core routes", async () => {
@@ -703,6 +778,7 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     universalCoreUrl: "https://core.test",
     universalCoreKeys: { "tenant-a": "tenant-core-key" },
     tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
     ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
     godModeEnabled: true,
     godModeTenantIds: ["tenant-a"],
@@ -715,6 +791,7 @@ test("binds host-native delegation and action routes to OAuth owner and server p
         path,
         method: init.method,
         body: init.body ? JSON.parse(init.body) : undefined,
+        headers: init.headers,
       });
       if (
         init.method === "GET" &&
@@ -869,6 +946,18 @@ test("binds host-native delegation and action routes to OAuth owner and server p
   assert.equal(calls[6].body.observed_commit, "c".repeat(40));
   assert.equal(calls[7].body.host_session_fingerprint, "a".repeat(64));
   assert.equal(closure.structuredContent.finalize_authorization.trusted, true);
+  assert.equal(calls[0].headers.authorization, "Bearer tenant-core-key");
+  assert.equal(calls[0].headers["x-sh-tenant-id"], undefined);
+  for (const call of calls.slice(1, 8)) {
+    assert.equal(call.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
+    assert.equal(call.headers["x-sh-tenant-id"], "tenant-a");
+    const tenantContext = JSON.parse(Buffer.from(
+      call.headers["x-sh-tenant-context"], "base64url",
+    ).toString("utf8"));
+    assert.equal(tenantContext.version, "mcp_tenant_context_v1");
+    assert.equal(tenantContext.tenant_id, "tenant-a");
+    assert.match(tenantContext.assertion, /^mtc_[a-f0-9]{64}$/);
+  }
 
   const codexGoodModeDelegation = await handlers.host_native_delegation_issue({
     work_id: "work-1",
@@ -976,6 +1065,41 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     /host_native_owner_context_signing_unavailable/,
   );
   assert.equal(missingOwnerSecretCalled, false);
+});
+
+test("host-native action automation fails closed without the tenant gateway and never falls back", async () => {
+  let fetched = false;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "ordinary-tenant-key" },
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async () => {
+      fetched = true;
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  await assert.rejects(
+    handlers.host_native_action_authorize({
+      delegation_id: "hnd_delegation-12345678",
+      work_id: "work-1",
+      intent_anchor_digest: "b".repeat(64),
+      repository: "owner/repo",
+      action: { kind: "git.commit" },
+      evidence_digest: "d".repeat(64),
+    }, {
+      tenantId: "tenant-a",
+      agentPresence: {
+        client_type: "codex",
+        session_fingerprint: "a".repeat(64),
+      },
+    }),
+    /core_tenant_gateway_key_missing/,
+  );
+  assert.equal(fetched, false);
 });
 
 test("issues Core Join only through the signed MCP tenant gateway", async () => {
@@ -1213,6 +1337,105 @@ test("write guard fails closed on hard blocks and allows controlled writes", asy
   assert.equal(calls[2].operation_class, "billable_external_read");
   assert.equal(calls[2].external_side_effect, true);
   assert.equal(calls[2].rollback_ready, false);
+});
+
+test("write guard never promotes an explicit Core confirmation denial", async () => {
+  const guard = createCoreWriteGuard({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      authorization: {
+        allowed: false,
+        state: "confirmation_required",
+        mediation: "confirm",
+        confirmation_required: true,
+        confirmation_satisfied: false,
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+
+  const result = await guard({
+    action_label: "Create task",
+    action_type: "task.create",
+    target: "task",
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+  }, {
+    tenantId: "tenant-a",
+    kind: "oauth",
+    subject: "auth0|verified-owner",
+    role: "owner_root",
+    godMode: true,
+    ownerConfirmed: true,
+    confirmationReference: "explicit owner confirmation",
+  });
+
+  assert.equal(result.allowed, false);
+  assert.equal(result.owner_confirmation_required, true);
+  assert.equal(result.confirmation_satisfied, false);
+});
+
+test("write guard preserves bounded coordination idempotency through the Core transport", async () => {
+  const calls = [];
+  const guard = createCoreWriteGuard({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({
+        authorization: {
+          allowed: true,
+          state: "allow_controlled",
+          mediation: "allow",
+          confirmation_required: false,
+          confirmation_satisfied: false,
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const identity = { tenantId: "tenant-a" };
+  for (const action of [
+    {
+      action_label: "Join tenant work",
+      action_type: "work.participant.join",
+      target: "11111111-1111-4111-8111-111111111111",
+      idempotency_key: "gallery-join-operation-0001",
+    },
+    {
+      action_label: "Register signed agent presence",
+      action_type: "agent.heartbeat",
+      target: "agent:codex-supervisor",
+      idempotency_key: "agent.heartbeat:transport-fingerprint-0001",
+    },
+  ]) {
+    const result = await guard({
+      ...action,
+      operation_class: "bounded_internal_coordination_write",
+      external_side_effect: false,
+      bounded_scope: true,
+      low_impact: true,
+      idempotent_or_compensable: true,
+      rollback_ready: true,
+      audit_ready: true,
+      target_authority_verified: true,
+      actor_authorized_for_target: true,
+    }, identity);
+    assert.equal(result.allowed, true);
+  }
+  assert.deepEqual(calls.map((body) => body.idempotency_key), [
+    "gallery-join-operation-0001",
+    "agent.heartbeat:transport-fingerprint-0001",
+  ]);
+  assert(calls.every((body) => body.operation_class === "bounded_internal_coordination_write"));
+  assert(calls.every((body) => body.owner_confirmed === false));
 });
 
 test("write guard gives a fresh OAuth tenant owner a request-bound continuity bootstrap assertion only", async () => {

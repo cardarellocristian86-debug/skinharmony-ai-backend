@@ -360,11 +360,23 @@ function verifiedConfirmationReference(identity, options = {}) {
 
 function applyVerifiedOwnerConfirmation(payload, identity) {
   if (!hasExplicitVerifiedOwnerConfirmation(identity)) return payload;
-  const verifiedGovernance = (governance) => ({
-    ...(governance || {}),
-    owner_confirmation_satisfied: true,
-    owner_identity_verified: true,
-  });
+  const verifiedGovernance = (governance) => {
+    const current = governance && typeof governance === "object" && !Array.isArray(governance)
+      ? governance
+      : {};
+    return {
+      ...current,
+      // Local identity may fill legacy payloads that did not report these
+      // fields. It must never turn an explicit Core denial into a verified
+      // owner result.
+      ...(Object.prototype.hasOwnProperty.call(current, "owner_confirmation_satisfied")
+        ? {}
+        : { owner_confirmation_satisfied: true }),
+      ...(Object.prototype.hasOwnProperty.call(current, "owner_identity_verified")
+        ? {}
+        : { owner_identity_verified: true }),
+    };
+  };
   const nestedPreflight = payload?.work_preflight;
   return {
     ...payload,
@@ -393,6 +405,47 @@ export function createCoreHandlers(config, options = {}) {
   const analysisCacheTtlMs = Math.min(Math.max(Number(options.analysisCacheTtlMs || 300_000), 30_000), 300_000);
   const remediationMode = String(config.coreBlockRemediationMode || "shadow").trim().toLowerCase();
   const remediationEnabled = remediationMode !== "disabled";
+  const remediationLedgerContexts = new Map();
+
+  function remediationDecisionLedger(identity) {
+    if (!decisionLedger) return null;
+    return {
+      append: async (event = {}) => {
+        const eventTenantId = String(event.tenant_id || "");
+        if (!eventTenantId || eventTenantId !== String(identity.tenantId || "")) {
+          throw new Error("core_block_remediation_ledger_tenant_mismatch");
+        }
+        const eventType = String(event.event_type || "");
+        const remediationIdentity = String(event.remediation_id || event.work_id || "");
+        if (!remediationIdentity) throw new Error("core_block_remediation_ledger_identity_missing");
+        const contextKey = `${eventTenantId}:${remediationIdentity}`;
+        let contextPromise = remediationLedgerContexts.get(contextKey);
+        if (!contextPromise) {
+          contextPromise = decisionLedger.startWork(identity, "core_block_remediation", {
+            request: event.reason_summary || eventType,
+            agent_id: identity.subject || identity.agentId || "connected_ai",
+            project_id: event.project_id || null,
+            session_id: event.session_id || null,
+          });
+          remediationLedgerContexts.set(contextKey, contextPromise);
+          contextPromise.catch(() => remediationLedgerContexts.delete(contextKey));
+        }
+        const context = await contextPromise;
+        return decisionLedger.append(context, eventType, {
+          decision_id: event.decision_id || null,
+          reason_summary: event.reason_summary || event.block_code || eventType,
+          metadata: {
+            ...(event.metadata && typeof event.metadata === "object" ? event.metadata : {}),
+            remediation_id: event.remediation_id || null,
+            remediation_work_id: event.work_id || null,
+            block_code: event.block_code || null,
+            block_class: event.block_class || null,
+            contract_digest: event.contract_digest || null,
+          },
+        });
+      },
+    };
+  }
 
   function cacheAnalysis(tenantId, payload) {
     const now = Date.now();
@@ -587,7 +640,7 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: identity.tenantId,
       },
       store: remediationStore,
-      ledger: decisionLedger,
+      ledger: remediationDecisionLedger(identity),
       now: () => new Date(),
       explainFn,
       maxAttempts: config.coreBlockRemediationMaxAttempts || 3,
@@ -658,7 +711,12 @@ export function createCoreHandlers(config, options = {}) {
     const optionObject = options && typeof options === "object" && !Array.isArray(options);
     const requestBinding = optionObject ? options.requestBinding : options;
     const hostNativeOwner = optionObject && options.hostNativeOwner === true;
+    const actionEvaluatorGateway = optionObject && options.actionEvaluatorGateway === true;
     const allowOAuthTenantOwner = optionObject && options.allowOAuthTenantOwner === true;
+
+    if (hostNativeOwner && actionEvaluatorGateway) {
+      throw new Error("owner_context_signing_domain_conflict");
+    }
 
     // Generic owner assertions are signed with the tenant Core key and bind
     // the exact request body. Host-native delegation operations use the
@@ -692,13 +750,18 @@ export function createCoreHandlers(config, options = {}) {
     ) {
       return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
     }
-    // Production owner assertions use the dedicated bridge secret, never a
-    // tenant bearer/gateway key.  The legacy test-only fallback cannot unlock
-    // the owner profile because Core verifies that profile only with the
-    // dedicated secret.
-    const signingKey = config.ownerContextSigningSecret || (hostNativeOwner
-      ? ""
-      : (configuredTenantGatewayKey() || coreKey(identity.tenantId)));
+    // Owner assertions are verifier-domain bound. Host-native delegation and
+    // Work Preflight use the dedicated bridge secret. The action evaluator is
+    // the sole bearer-bound route and Core verifies it with the selected
+    // tenant-gateway key.
+    const signingKey = actionEvaluatorGateway
+      ? configuredTenantGatewayKey()
+      : (config.ownerContextSigningSecret || (hostNativeOwner
+        ? ""
+        : (configuredTenantGatewayKey() || coreKey(identity.tenantId))));
+    if (actionEvaluatorGateway && Buffer.byteLength(String(signingKey || ""), "utf8") < 32) {
+      throw new Error("core_tenant_gateway_key_missing");
+    }
     if (hostNativeOwner && Buffer.byteLength(String(signingKey || ""), "utf8") < 32) {
       throw new Error("owner_context_signing_unavailable");
     }
@@ -937,6 +1000,7 @@ export function createCoreHandlers(config, options = {}) {
     const payload = await coreRequest(
       `/v1/host-native/actions/${encodeURIComponent(ticketId)}`,
       identity.tenantId,
+      { useTenantGateway: true },
     );
     const record = payload?.action_ticket;
     if (
@@ -1108,6 +1172,7 @@ export function createCoreHandlers(config, options = {}) {
       const route = "/v1/host-native/actions/authorize";
       const payload = await coreRequest(route, identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           delegation_id: args.delegation_id,
           work_id: args.work_id,
@@ -1130,12 +1195,14 @@ export function createCoreHandlers(config, options = {}) {
       await coreRequest(
         `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}`,
         identity.tenantId,
+        { useTenantGateway: true },
       ),
     ),
     host_native_action_reserve: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reserve`;
       return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           host_session_fingerprint: hostNativeSessionFingerprint(identity),
           idempotency_key: args.idempotency_key,
@@ -1148,6 +1215,7 @@ export function createCoreHandlers(config, options = {}) {
       try {
         return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
           method: "POST",
+          useTenantGateway: true,
           body: {
             reservation_id: args.reservation_id,
             host_session_fingerprint: hostNativeSessionFingerprint(identity),
@@ -1168,6 +1236,7 @@ export function createCoreHandlers(config, options = {}) {
       try {
         return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
           method: "POST",
+          useTenantGateway: true,
           body: {
             reservation_id: args.reservation_id,
             host_session_fingerprint: hostNativeSessionFingerprint(identity),
@@ -1186,6 +1255,7 @@ export function createCoreHandlers(config, options = {}) {
         `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/authorize-finalize`;
       return textResult(await coreRequest(route, identity.tenantId, {
         method: "POST",
+        useTenantGateway: true,
         body: {
           host_session_fingerprint: hostNativeSessionFingerprint(identity),
         },
@@ -1895,6 +1965,7 @@ export function createCoreHandlers(config, options = {}) {
               identity,
               {
                 requestBinding: ownerRequestBinding("core_action_evaluator", requestBody),
+                actionEvaluatorGateway: true,
                 allowOAuthTenantOwner: tenantWorkBootstrap,
               },
             ),
@@ -2008,8 +2079,9 @@ export function createCoreHandlers(config, options = {}) {
         proposal_digest: attempt.proposal_digest,
         result,
       });
-      if (decisionLedger) {
-        await decisionLedger.append({
+      const ledger = remediationDecisionLedger(identity);
+      if (ledger) {
+        await ledger.append({
           tenant_id: remediation.tenant_id,
           work_id: remediation.work_id,
           event_type: "core_block_proposal_submitted",
@@ -2037,7 +2109,7 @@ export function createCoreHandlers(config, options = {}) {
           subject: identity.subject || identity.agentId || "nyra",
         },
         store: remediationStore,
-        ledger: decisionLedger,
+        ledger: remediationDecisionLedger(identity),
       });
       return textResult({
         ok: true,
@@ -2102,8 +2174,9 @@ export function createCoreHandlers(config, options = {}) {
         expected_version: resubmitted.version,
         status: nextStatus,
       });
-      if (decisionLedger) {
-        await decisionLedger.append({
+      const ledger = remediationDecisionLedger(identity);
+      if (ledger) {
+        await ledger.append({
           tenant_id: remediation.tenant_id,
           work_id: remediation.work_id,
           event_type: allowed ? "core_block_remediation_allowed" : "core_block_remediation_revision_requested",
@@ -2129,8 +2202,9 @@ export function createCoreHandlers(config, options = {}) {
         expected_version: remediation.version,
         reason: args.reason,
       });
-      if (decisionLedger) {
-        await decisionLedger.append({
+      const ledger = remediationDecisionLedger(identity);
+      if (ledger) {
+        await ledger.append({
           tenant_id: remediation.tenant_id,
           work_id: remediation.work_id,
           event_type: "core_block_remediation_cancelled",
@@ -2224,6 +2298,7 @@ export function createCoreWriteGuard(config, options = {}) {
       audit_ready: action.audit_ready === true,
       target_authority_verified: action.target_authority_verified === true,
       actor_authorized_for_target: action.actor_authorized_for_target === true,
+      idempotency_key: action.idempotency_key,
       owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
       ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
       ...(tenantWorkBootstrap ? { internal_owner_assertion_scope: "tenant_work_bootstrap" } : {}),
@@ -2238,8 +2313,9 @@ export function createCoreWriteGuard(config, options = {}) {
       output.recommended_actions?.some?.((item) => item.blocked === true) === true;
     const confirmationRequired = authorization.confirmation_required === true ||
       (!payload.authorization && (contract.control_level === "confirm" || output.execution_profile?.requires_user_confirmation === true));
-    const confirmationSatisfied = authorization.confirmation_satisfied === true ||
-      (identity.ownerConfirmed === true && confirmationRequired);
+    const confirmationSatisfied = payload.authorization
+      ? authorization.confirmation_satisfied === true
+      : identity.ownerConfirmed === true && confirmationRequired;
     const legacyExplicitlyAllowed = ["allow", "allowed", "allow_controlled", "allow_advisory"].includes(decision)
       || mediation === "allow";
     const allowed = payload.authorization

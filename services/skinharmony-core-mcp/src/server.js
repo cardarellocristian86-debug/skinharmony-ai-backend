@@ -814,13 +814,19 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
 });
 const handlers = { ...baseHandlers, ...dynamicHandlers };
 
+function isAgentPresenceBootstrapCall(toolName, args = {}) {
+  return toolName === "agent_heartbeat" ||
+    ((toolName === "core_capability_catalog" || toolName === "core_capability_invoke") &&
+      args?.capability_id === "agent_heartbeat");
+}
+
 const app = createApp(config, {
   handlers,
   toolSurface: "compact",
   readiness: startupReadiness,
   postgresMajorVersionProbe,
   beforeToolCall: async ({ identity, toolName, args }) => {
-    if (config.mandatoryAgentPresenceEnabled === true && toolName !== "agent_heartbeat") {
+    if (config.mandatoryAgentPresenceEnabled === true && !isAgentPresenceBootstrapCall(toolName, args)) {
       try {
         await registerAuthenticatedPresence(identity);
       } catch (error) {

@@ -7071,10 +7071,7 @@ export function createUniversalCoreService(options = {}) {
 
   app.post(
     "/v1/host-native/actions/authorize",
-    // An OAuth-owner connector deliberately has owner:assertion instead of
-    // automation:codex. Once that owner has issued an exact signed delegation,
-    // the delegation—not a broader key scope—bounds each one-use action ticket.
-    coreAuth([SCOPES.AUTOMATION_CODEX, SCOPES.OWNER_ASSERTION]),
+    coreAuth(SCOPES.AUTOMATION_CODEX),
     async (req, res) => {
       if (!requireHostNativeGovernance(res)) return;
       try {
@@ -7121,7 +7118,7 @@ export function createUniversalCoreService(options = {}) {
   ]) {
     app.post(
       `/v1/host-native/actions/:ticketId/${suffix}`,
-      coreAuth([SCOPES.AUTOMATION_CODEX, SCOPES.OWNER_ASSERTION]),
+      coreAuth(SCOPES.AUTOMATION_CODEX),
       async (req, res) => {
         if (!requireHostNativeGovernance(res)) return;
         try {
@@ -7147,7 +7144,7 @@ export function createUniversalCoreService(options = {}) {
 
   app.post(
     "/v1/host-native/actions/:ticketId/authorize-finalize",
-    coreAuth([SCOPES.AUTOMATION_CODEX, SCOPES.OWNER_ASSERTION]),
+    coreAuth(SCOPES.AUTOMATION_CODEX),
     async (req, res) => {
       if (!requireHostNativeGovernance(res)) return;
       try {

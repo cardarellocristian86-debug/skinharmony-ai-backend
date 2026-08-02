@@ -124,6 +124,29 @@ test("passes the signed logical session to mandatory presence registration befor
   }
 });
 
+test("limits the dynamic presence bootstrap exemption to the exact agent heartbeat capability", () => {
+  const isAgentPresenceBootstrapCall = (toolName, args = {}) =>
+    toolName === "agent_heartbeat" ||
+    ((toolName === "core_capability_catalog" || toolName === "core_capability_invoke") &&
+      args?.capability_id === "agent_heartbeat");
+
+  assert.equal(isAgentPresenceBootstrapCall("agent_heartbeat"), true);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog", { capability_id: "agent_heartbeat" }), true);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_invoke", { capability_id: "agent_heartbeat" }), true);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog"), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog", { capability_id: "core_health" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog", { capability_id: "agent_heartbeat_extra" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog", { capability_id: "AGENT_HEARTBEAT" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_catalog", { args: { capability_id: "agent_heartbeat" } }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_invoke", { capability_id: "core_health" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_invoke", { capability_id: "agent_heartbeat_extra" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_invoke", { capability_id: "AGENT_HEARTBEAT" }), false);
+  assert.equal(isAgentPresenceBootstrapCall("core_capability_invoke", { args: { capability_id: "agent_heartbeat" } }), false);
+
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(serverSource, /!isAgentPresenceBootstrapCall\(toolName, args\)/);
+});
+
 test("publishes only a verifiable build identity", () => {
   const commit = "e".repeat(40);
   assert.deepEqual(buildIdentity({ RENDER_GIT_COMMIT: commit }), { commit_sha: commit, commit_verifiable: true });

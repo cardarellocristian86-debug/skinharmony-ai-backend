@@ -18,19 +18,38 @@ import {
 
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
 
+function galleryIdentity(subject, sessionId, agentId) {
+  return {
+    tenantId: "tenant-a",
+    subject,
+    agentPresence: {
+      session_id: sessionId,
+      agent_id: agentId,
+      client_type: "codex",
+      signature: `ags_${"a".repeat(32)}`,
+      transport_bound: true,
+      host_transport_session_fingerprint: "b".repeat(24),
+    },
+  };
+}
+
 function galleryMessagePool({ participantSubject, recipientSubject, messages = [] } = {}) {
   const calls = [];
   return {
     calls,
     async query(sql, params = []) {
       calls.push({ sql, params });
-      if (/SELECT request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
-      if (/SELECT session_id,agent_id,branch_id,status,expires_at,actor_subject/.test(sql)) {
+      if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
+      if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) {
+        return { rows: [{ work_id: WORK_ID }] };
+      }
+      if (/SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject/.test(sql)) {
         if (params[3] !== participantSubject) return { rows: [] };
         return {
           rows: [{
             session_id: params[2],
             agent_id: "gallery-agent",
+            client_type: "codex",
             branch_id: null,
             status: "active",
             expires_at: "2030-01-01T00:00:00.000Z",
@@ -78,6 +97,58 @@ test("continuity digests are deterministic across object key order", () => {
   assert.deepEqual(stable({ b: 2, a: { d: 4, c: 3 } }), { a: { c: 3, d: 4 }, b: 2 });
   assert.equal(digest({ b: 2, a: 1 }), digest({ a: 1, b: 2 }));
   assert.notEqual(digest({ a: 1 }), digest({ a: 2 }));
+});
+
+test("legacy continuity idempotency cannot replay across authenticated subjects", async () => {
+  const cases = [
+    ["recordChange", "record_change"],
+    ["checkpoint", "checkpoint"],
+    ["resume", "resume"],
+    ["verifyMemory", "verify_memory"],
+  ];
+  for (const [method, operation] of cases) {
+    const input = {
+      work_id: WORK_ID,
+      agent_id: "shared-agent",
+      idempotency_key: `subject-bound-${operation}`,
+    };
+    const legacyActorDigest = digest({
+      operation,
+      actor_binding: "shared-agent",
+      request: input,
+    });
+    const pool = {
+      async query(sql) {
+        if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) {
+          return { rows: [], rowCount: 0 };
+        }
+        if (/pg_advisory_xact_lock/.test(sql)) return { rows: [], rowCount: 0 };
+        if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) {
+          return {
+            rows: [{
+              operation,
+              request_digest: legacyActorDigest,
+              result: { replayed_from: "first-subject" },
+            }],
+            rowCount: 1,
+          };
+        }
+        throw new Error(`unexpected_query:${method}`);
+      },
+      async end() {},
+    };
+    const runtime = createWorkContinuityRuntime({}, { pool });
+    const call = method === "resume"
+      ? runtime[method]({
+        tenantId: "tenant-a",
+        subject: "different-authenticated-subject",
+      }, input, { allowed: true })
+      : runtime[method]({
+        tenantId: "tenant-a",
+        subject: "different-authenticated-subject",
+      }, input);
+    await assert.rejects(call, /idempotency_key_conflict/, method);
+  }
 });
 
 test("impact map follows functions, components, links and dependencies", () => {
@@ -197,10 +268,11 @@ test("direct Gallery messages bind the active recipient subject", async () => {
     recipientSubject: "oauth|original-recipient",
   });
   const runtime = createWorkContinuityRuntime({}, { pool });
-  await runtime.postMessage({ tenantId: "tenant-a", subject: "oauth|sender" }, {
+  await runtime.postMessage(galleryIdentity("oauth|sender", "sender-session", "sender-agent"), {
     work_id: WORK_ID,
     session_id: "sender-session",
     agent_id: "sender-agent",
+    client_type: "codex",
     to_session_id: "shared-recipient-session",
     message_type: "update",
     subject: "Private update",
@@ -226,9 +298,12 @@ test("Gallery inbox excludes legacy and prior-subject direct messages after sess
     ],
   });
   const runtime = createWorkContinuityRuntime({}, { pool });
-  const result = await runtime.inbox({ tenantId: "tenant-a", subject: "oauth|replacement-recipient" }, {
+  const result = await runtime.inbox(
+    galleryIdentity("oauth|replacement-recipient", "reused-session", "replacement-agent"), {
     work_id: WORK_ID,
     session_id: "reused-session",
+    agent_id: "replacement-agent",
+    client_type: "codex",
   });
   assert.deepEqual(result.messages.map((message) => message.message_id), ["broadcast", "replacement"]);
   const inboxQuery = pool.calls.find((call) => /FROM core_continuity_messages/.test(call.sql));
@@ -269,7 +344,7 @@ test("work gallery tools preserve read/write and bounded tenant-collaboration bo
 });
 
 test("Gallery mutations lock the work before participant rows", async () => {
-  const identity = { tenantId: "tenant-a", subject: "subject-a" };
+  const identity = galleryIdentity("subject-a", "lock-order-session", "lock-order-agent");
   const cases = [
     ["heartbeat", {
       work_id: WORK_ID, session_id: "lock-order-session", ttl_seconds: 300,
@@ -307,20 +382,77 @@ test("Gallery mutations lock the work before participant rows", async () => {
     const pool = {
       async query(sql, params = []) {
         calls.push({ sql, params });
+        if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) {
+          return { rows: [{ work_id: WORK_ID }], rowCount: 1 };
+        }
         return { rows: [], rowCount: 0 };
       },
       async end() {},
     };
     const runtime = createWorkContinuityRuntime({}, { pool });
-    await assert.rejects(runtime[method](identity, input), /continuity_participant_not_active/);
+    await assert.rejects(runtime[method](identity, {
+      ...input,
+      agent_id: "lock-order-agent",
+      client_type: "codex",
+    }), /continuity_participant_not_active/);
+    const rowLock = calls.findIndex((call) =>
+      /SELECT work_id FROM core_continuity_works/.test(call.sql) && /FOR UPDATE/.test(call.sql));
     const workLock = calls.findIndex((call) =>
       /pg_advisory_xact_lock/.test(call.sql) && call.params[1] === WORK_ID);
     const participantLock = calls.findIndex((call) =>
-      /SELECT session_id,agent_id,branch_id,status,expires_at,actor_subject/.test(call.sql));
+      /SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject/.test(call.sql));
+    assert.notEqual(rowLock, -1, `${method}: missing Work row lock`);
     assert.notEqual(workLock, -1, `${method}: missing work advisory lock`);
     assert.notEqual(participantLock, -1, `${method}: missing participant lock`);
+    assert.ok(rowLock < workLock, `${method}: advisory locked before Work row`);
     assert.ok(workLock < participantLock, `${method}: participant locked before work`);
   }
+});
+
+test("Gallery join locks the Work row before the advisory work lock", async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (/SELECT work_id FROM core_continuity_works/.test(sql)) {
+        return { rows: [{ work_id: WORK_ID }], rowCount: 1 };
+      }
+      if (/SELECT actor_subject,agent_id,client_type,branch_id,expires_at/.test(sql)) {
+        throw new Error("join-lock-order-observed");
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  await assert.rejects(runtime.join(
+    galleryIdentity("subject-a", "join-lock-session", "join-lock-agent"),
+    {
+      work_id: WORK_ID,
+      session_id: "join-lock-session",
+      agent_id: "join-lock-agent",
+      client_type: "codex",
+      ttl_seconds: 300,
+      idempotency_key: "join-lock-order-key",
+    },
+  ), /join-lock-order-observed/);
+  const rowLock = calls.findIndex((call) =>
+    /SELECT work_id FROM core_continuity_works/.test(call.sql) && /FOR UPDATE/.test(call.sql));
+  const workAdvisoryLock = calls.findIndex((call) =>
+    /pg_advisory_xact_lock/.test(call.sql) && call.params[1] === WORK_ID);
+  const participantLock = calls.findIndex((call) =>
+    /SELECT actor_subject,agent_id,client_type,branch_id,expires_at/.test(call.sql));
+  assert.notEqual(rowLock, -1);
+  assert.notEqual(workAdvisoryLock, -1);
+  assert.notEqual(participantLock, -1);
+  assert.ok(rowLock < workAdvisoryLock);
+  assert.ok(workAdvisoryLock < participantLock);
 });
 
 test("Gallery mutations use bounded Core action types instead of generic continuity update", () => {

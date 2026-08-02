@@ -137,11 +137,29 @@ test("core gate opens remediation on block and resubmits through a new Core requ
   };
 
   const ledgerEvents = [];
+  const ledgerContexts = [];
   const handlers = createCoreHandlers(config, {
     fetchImpl,
     decisionLedger: {
-      append: async (event) => {
-        ledgerEvents.push(event);
+      startWork: async (identity, toolName, args) => {
+        const context = {
+          tenantId: identity.tenantId,
+          workId: crypto.randomUUID(),
+          traceId: crypto.randomUUID(),
+          toolName,
+          agentId: args.agent_id,
+        };
+        ledgerContexts.push({ identity, toolName, args, context });
+        ledgerEvents.push({ context, event_type: "work_received", sequence_number: 1 });
+        return context;
+      },
+      append: async (context, eventType, input) => {
+        assert.equal(context.tenantId, "codexai");
+        assert.equal(context.toolName, "core_block_remediation");
+        assert.equal(typeof eventType, "string");
+        assert.equal(typeof input, "object");
+        const sequenceNumber = ledgerEvents.filter((event) => event.context.workId === context.workId).length + 1;
+        ledgerEvents.push({ context, event_type: eventType, sequence_number: sequenceNumber, ...input });
       },
     },
   });
@@ -223,6 +241,7 @@ test("core gate opens remediation on block and resubmits through a new Core requ
   const attempt = proposed.structuredContent.remediation.latest_attempt;
   assert.equal(attempt.proposal_type, "same_action_remediation");
   assert.equal(proposed.structuredContent.remediation.status, "proposal_ready");
+  const eventsBeforeReplay = ledgerEvents.length;
 
   const repeated = await handlers.core_block_remediation_propose({
     remediation_id: remediationId,
@@ -238,6 +257,12 @@ test("core gate opens remediation on block and resubmits through a new Core requ
   }, identity);
   assert.equal(repeated.structuredContent.ok, true);
   assert.equal(repeated.structuredContent.idempotent, true);
+  assert.equal(ledgerEvents.length, eventsBeforeReplay);
+
+  await assert.rejects(() => handlers.core_block_remediation_status({
+    remediation_id: remediationId,
+  }, { tenantId: "other-tenant", kind: "connected_ai", subject: "agent-2" }), /not_found/);
+  assert.equal(ledgerEvents.length, eventsBeforeReplay);
 
   await assert.rejects(() => handlers.core_block_remediation_propose({
     remediation_id: remediationId,
@@ -291,5 +316,17 @@ test("core gate opens remediation on block and resubmits through a new Core requ
     reason: "cleanup",
   }, identity);
   assert.equal(cancel.structuredContent.remediation.status, "cancelled");
-  assert.ok(ledgerEvents.some((event) => event.event_type === "core_block_remediation_opened"));
+  for (const eventType of [
+    "core_block_remediation_opened",
+    "core_block_proposal_submitted",
+    "core_block_remediation_allowed",
+    "core_block_remediation_cancelled",
+  ]) {
+    assert.ok(ledgerEvents.some((event) => event.event_type === eventType), eventType);
+  }
+  assert.equal(ledgerContexts.length, 1);
+  assert.equal(new Set(ledgerEvents.map((event) => event.context.workId)).size, 1);
+  assert.deepEqual(ledgerEvents.map((event) => event.sequence_number), ledgerEvents.map((_, index) => index + 1));
+  assert.ok(ledgerEvents.filter((event) => event.event_type !== "work_received")
+    .every((event) => event.metadata.remediation_work_id));
 });
