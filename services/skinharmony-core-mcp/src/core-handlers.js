@@ -393,6 +393,47 @@ export function createCoreHandlers(config, options = {}) {
   const analysisCacheTtlMs = Math.min(Math.max(Number(options.analysisCacheTtlMs || 300_000), 30_000), 300_000);
   const remediationMode = String(config.coreBlockRemediationMode || "shadow").trim().toLowerCase();
   const remediationEnabled = remediationMode !== "disabled";
+  const remediationLedgerContexts = new Map();
+
+  function remediationDecisionLedger(identity) {
+    if (!decisionLedger) return null;
+    return {
+      append: async (event = {}) => {
+        const eventTenantId = String(event.tenant_id || "");
+        if (!eventTenantId || eventTenantId !== String(identity.tenantId || "")) {
+          throw new Error("core_block_remediation_ledger_tenant_mismatch");
+        }
+        const eventType = String(event.event_type || "");
+        const remediationIdentity = String(event.remediation_id || event.work_id || "");
+        if (!remediationIdentity) throw new Error("core_block_remediation_ledger_identity_missing");
+        const contextKey = `${eventTenantId}:${remediationIdentity}`;
+        let contextPromise = remediationLedgerContexts.get(contextKey);
+        if (!contextPromise) {
+          contextPromise = decisionLedger.startWork(identity, "core_block_remediation", {
+            request: event.reason_summary || eventType,
+            agent_id: identity.subject || identity.agentId || "connected_ai",
+            project_id: event.project_id || null,
+            session_id: event.session_id || null,
+          });
+          remediationLedgerContexts.set(contextKey, contextPromise);
+          contextPromise.catch(() => remediationLedgerContexts.delete(contextKey));
+        }
+        const context = await contextPromise;
+        return decisionLedger.append(context, eventType, {
+          decision_id: event.decision_id || null,
+          reason_summary: event.reason_summary || event.block_code || eventType,
+          metadata: {
+            ...(event.metadata && typeof event.metadata === "object" ? event.metadata : {}),
+            remediation_id: event.remediation_id || null,
+            remediation_work_id: event.work_id || null,
+            block_code: event.block_code || null,
+            block_class: event.block_class || null,
+            contract_digest: event.contract_digest || null,
+          },
+        });
+      },
+    };
+  }
 
   function cacheAnalysis(tenantId, payload) {
     const now = Date.now();
@@ -587,7 +628,7 @@ export function createCoreHandlers(config, options = {}) {
         tenant_id: identity.tenantId,
       },
       store: remediationStore,
-      ledger: decisionLedger,
+      ledger: remediationDecisionLedger(identity),
       now: () => new Date(),
       explainFn,
       maxAttempts: config.coreBlockRemediationMaxAttempts || 3,
@@ -2015,8 +2056,9 @@ export function createCoreHandlers(config, options = {}) {
         proposal_digest: attempt.proposal_digest,
         result,
       });
-      if (decisionLedger) {
-        await decisionLedger.append({
+      const ledger = remediationDecisionLedger(identity);
+      if (ledger) {
+        await ledger.append({
           tenant_id: remediation.tenant_id,
           work_id: remediation.work_id,
           event_type: "core_block_proposal_submitted",
@@ -2044,7 +2086,7 @@ export function createCoreHandlers(config, options = {}) {
           subject: identity.subject || identity.agentId || "nyra",
         },
         store: remediationStore,
-        ledger: decisionLedger,
+        ledger: remediationDecisionLedger(identity),
       });
       return textResult({
         ok: true,
@@ -2109,8 +2151,9 @@ export function createCoreHandlers(config, options = {}) {
         expected_version: resubmitted.version,
         status: nextStatus,
       });
-      if (decisionLedger) {
-        await decisionLedger.append({
+      const ledger = remediationDecisionLedger(identity);
+      if (ledger) {
+        await ledger.append({
           tenant_id: remediation.tenant_id,
           work_id: remediation.work_id,
           event_type: allowed ? "core_block_remediation_allowed" : "core_block_remediation_revision_requested",
@@ -2136,8 +2179,9 @@ export function createCoreHandlers(config, options = {}) {
         expected_version: remediation.version,
         reason: args.reason,
       });
-      if (decisionLedger) {
-        await decisionLedger.append({
+      const ledger = remediationDecisionLedger(identity);
+      if (ledger) {
+        await ledger.append({
           tenant_id: remediation.tenant_id,
           work_id: remediation.work_id,
           event_type: "core_block_remediation_cancelled",
