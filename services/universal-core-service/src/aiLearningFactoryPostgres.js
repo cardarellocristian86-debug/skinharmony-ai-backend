@@ -877,6 +877,20 @@ export function createAiLearningFactoryPostgresPersistence({
         requiredText(rollback_reference, "rollback_reference", 500),
       ],
     );
+    // A resolved initialization promise must not outlive the migration state
+    // it attested. Reset both caches after the durable disabled audit row so
+    // this same process fails closed without requiring a restart.
+    initialized = false;
+    initialization = null;
+    runtimeRoleState = {
+      configured: Boolean(databaseRuntimeRole),
+      attempted: true,
+      attested: false,
+      read_ready: false,
+      write_ready: false,
+      session_user_separated: false,
+      reason: "static_migration_disabled_by_rollback",
+    };
     return {
       rolled_back: true,
       data_dropped: false,

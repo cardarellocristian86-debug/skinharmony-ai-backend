@@ -603,4 +603,3 @@ verified artifact reuse, tool minimization, selective reviewer context, checkpoi
 resume and valid early stop. Model routing without host control, hard budget stop,
 autonomous prompt/model/weight changes and automatic removal of critical reviewers
 remain advisory or disabled.
-

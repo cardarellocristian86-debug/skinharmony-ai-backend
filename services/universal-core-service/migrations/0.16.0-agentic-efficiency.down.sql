@@ -16,4 +16,24 @@ VALUES
     'manifest:docs/releases/0.16.0-ai-learning-factory-rollback-point.json'
   );
 
+REVOKE SELECT,INSERT,UPDATE ON agentic_governance.agentic_work_capsule
+  FROM nyra_agentic_runtime_v016;
+REVOKE SELECT,INSERT,UPDATE ON agentic_governance.agentic_artifact_reuse
+  FROM nyra_agentic_runtime_v016;
+REVOKE SELECT,INSERT ON agentic_governance.agentic_usage_ledger
+  FROM nyra_agentic_runtime_v016;
+REVOKE SELECT,INSERT ON agentic_governance.agentic_efficiency_comparison
+  FROM nyra_agentic_runtime_v016;
+REVOKE SELECT,INSERT,UPDATE ON agentic_governance.agentic_run_budget
+  FROM nyra_agentic_runtime_v016;
+REVOKE SELECT,INSERT ON agentic_governance.agentic_efficiency_baseline
+  FROM nyra_agentic_runtime_v016;
+REVOKE SELECT,INSERT ON agentic_governance.agentic_savings_claim
+  FROM nyra_agentic_runtime_v016;
+REVOKE SELECT,INSERT ON agentic_governance.agentic_rate_card_snapshot
+  FROM nyra_agentic_runtime_v016;
+REVOKE USAGE ON SCHEMA agentic_governance
+  FROM nyra_agentic_runtime_v016;
+REVOKE nyra_agentic_runtime_v016 FROM CURRENT_USER;
+
 COMMIT;

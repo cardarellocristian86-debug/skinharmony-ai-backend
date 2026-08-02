@@ -75,6 +75,7 @@ import {
   filterBranchTaxonomy,
   filterSemanticBranchCandidates,
 } from "./branchExposure.js";
+import { resolveOwnerTenantBranchProfile } from "./ownerTenantBranchProfile.js";
 import {
   SOFTWARE_LANGUAGE_GATE_VERSION,
   evaluateSoftwareLanguageGate,
@@ -4259,8 +4260,72 @@ export function createUniversalCoreService(options = {}) {
     ? ownerContextSigningSecretCandidate
     : "";
 
-  function exposureView(req, { semantic = false } = {}) {
-    const resolution = resolveBranchesForKey(req.coreKey);
+  function parseSignedOwnerContextHeader(req) {
+    const header = req.get("x-sh-owner-context");
+    if (!header || typeof header !== "string") return null;
+    try {
+      const decoded = Buffer.from(header, "base64url").toString("utf8");
+      const parsed = JSON.parse(decoded);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveOwnerProfileForRequest(req, { requestedBranches = [], ownerBinding } = {}) {
+    const bodyContext = req.body?.owner_context;
+    const headerContext = parseSignedOwnerContextHeader(req);
+    const ownerContext = (headerContext && headerContext.assertion && verifyOwnerContextAssertion(
+      headerContext,
+      ownerContextSigningSecret,
+      req.tenantId,
+      ownerBinding,
+    )) ? headerContext : req.body?.owner_context;
+    if (!ownerContext) return null;
+    if (!verifyOwnerContextAssertion(ownerContext, ownerContextSigningSecret, req.tenantId, ownerBinding)) return null;
+    // The owner projection is narrower than generic tenant-owner governance:
+    // it requires the verified OAuth owner-root/god-mode assertion emitted by
+    // the MCP bridge's dedicated signing key. Tenant-owner or bearer-signed
+    // assertions must remain on the ordinary horizontal surface.
+    if (
+      ownerContext.tenant_id !== "codexai" ||
+      ownerContext.role !== "owner_root" ||
+      ownerContext.access_mode !== "god_mode" ||
+      ownerContext.delegated_actor !== "oauth" ||
+      ownerContext.owner_verified !== true ||
+      !/^osf_[a-f0-9]{64}$/iu.test(String(ownerContext.owner_subject_fingerprint || ""))
+    ) return null;
+    const completeRegistry = branchRegistry();
+    const registryResolution = resolveBranchesForKey(req.coreKey);
+    return resolveOwnerTenantBranchProfile({
+      tenantId: req.tenantId,
+      ownerVerified: ownerContext.owner_verified === true,
+      registry: completeRegistry,
+      groups: deterministicBranchGroups(),
+      requestedBranches,
+      commercialResolution: registryResolution,
+    });
+  }
+
+  function exposureView(req, {
+    semantic = false,
+    ownerBinding,
+    requestedBranches = [],
+  } = {}) {
+    const requested = Array.isArray(requestedBranches) ? [...new Set(requestedBranches.map(String))] : [];
+    let resolution = resolveBranchesForKey(req.coreKey, requested);
+    const ownerProfile = resolveOwnerProfileForRequest(req, {
+      requestedBranches: requested,
+      ownerBinding,
+    });
+    if (ownerProfile) {
+      resolution = {
+        ...resolution,
+        ...ownerProfile,
+        tier: ownerProfile.tier || resolution.tier,
+        domain_pack: ownerProfile.domain_pack || resolution.domain_pack,
+      };
+    }
     const context = deriveBranchAccessContext(
       req,
       req.coreKey,
@@ -4268,12 +4333,31 @@ export function createUniversalCoreService(options = {}) {
       { allowed_branches: resolution.allowed_branches },
     );
     const completeRegistry = branchRegistry();
-    const registry = filterBranchRegistry(completeRegistry, context, { semantic });
+    // A verified owner receives the exact server-computed owner allowlist. Keep
+    // the caller's verified client context and project only those allowlisted
+    // profiles onto that context. This avoids the generic admin bypass and
+    // prevents codex_internal/test_only branches from entering the view.
+    const adjustedRegistry = ownerProfile
+      ? Object.fromEntries(Object.entries(completeRegistry)
+        .filter(([branchId]) => ownerProfile.allowed_branches.includes(branchId))
+        .map(([branchId, branch]) => {
+          return [branchId, {
+            ...branch,
+            // Registry exposure metadata is top-level; do not create an
+            // ignored nested `exposure` object.
+            allowed_client_types: [context.client_type],
+            allowed_audiences: [context.audience],
+            required_entitlements: [],
+          }];
+        }))
+      : completeRegistry;
+    const registry = filterBranchRegistry(adjustedRegistry, context, { semantic });
     const visibleBranchIds = Object.keys(registry);
     return {
       context,
       resolution: {
         ...resolution,
+        owner_profile: ownerProfile?.owner_profile,
         allowed_branches: resolution.allowed_branches.filter((branchId) => visibleBranchIds.includes(branchId)),
         selected_branches: resolution.selected_branches.filter((branchId) => visibleBranchIds.includes(branchId)),
         // Server-known hidden branches must never be enumerated as "denied";
@@ -7522,11 +7606,15 @@ export function createUniversalCoreService(options = {}) {
     if (Array.isArray(req.body?.nyra_branches) && req.body.nyra_branches.length > MAX_NYRA_BRANCH_REQUESTS) {
       return publicError(res, 400, "nyra_branch_request_limit_exceeded");
     }
-    const exposure = exposureView(req);
+    const ownerBinding = req.body && typeof req.body === "object"
+      ? ownerRequestBinding("work_preflight", req.body)
+      : undefined;
+    const exposure = exposureView(req, { ownerBinding });
     const preflight = composeMandatoryWorkPreflight(req, {
       domainPack: domainPackAccess.pack,
       memoryContext: memoryContext.value,
       galleryContext: galleryContext.value,
+      branchContext: exposure.resolution,
       exposureContext: exposure.context,
       visibleBranchIds: exposure.visible_branch_ids,
     });
@@ -9044,7 +9132,7 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/branches", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    const view = exposureView(req);
+    const view = exposureView(req, { ownerBinding: ownerRequestBinding("branch_registry", { view: "registry", branches: [] }) });
     res.json({
       ok: true,
       schema_version: BRANCH_EXPOSURE_CONTRACT_VERSION,
@@ -9063,7 +9151,10 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/branches/taxonomy", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    const view = exposureView(req);
+    const view = exposureView(req, {
+      semantic: true,
+      ownerBinding: ownerRequestBinding("branch_registry", { view: "taxonomy", branches: [] }),
+    });
     res.json({
       ok: true,
       schema_version: BRANCH_EXPOSURE_CONTRACT_VERSION,
@@ -9074,7 +9165,9 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/branches/maturity", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    const view = exposureView(req);
+    const view = exposureView(req, {
+      ownerBinding: ownerRequestBinding("branch_registry", { view: "maturity", branches: [] }),
+    });
     const report = filterBranchMaturity(branchMaturityReport(), view.visible_branch_ids);
     audit.append("core_branch_maturity_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, ...report });
@@ -9084,7 +9177,11 @@ export function createUniversalCoreService(options = {}) {
     const requested = typeof req.query.branches === "string" && req.query.branches.trim()
       ? req.query.branches.split(",").map((item) => item.trim()).filter(Boolean)
       : [];
-    const view = exposureView(req);
+    const binding = ownerRequestBinding("branch_registry", { view: "authorized", branches: requested });
+    const view = exposureView(req, {
+      requestedBranches: requested,
+      ownerBinding: binding,
+    });
     const selected = requested.length
       ? requested.filter((branchId) => view.visible_branch_ids.includes(branchId))
       : view.resolution.selected_branches;

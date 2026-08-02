@@ -41,6 +41,46 @@ test("OAuth owner_root remains a ChatGPT client and cannot see vertical capabili
   assert.equal(capabilityAvailableForIdentity(readTool("ai_eval_scorecard_read"), identity), true);
 });
 
+test("verified OAuth owner on ChatGPT keeps software_adjacent blocked and sees horizontal", () => {
+  const unverifiedOwner = {
+    kind: "oauth",
+    role: "owner_root",
+    godMode: true,
+    tenantId: "codexai",
+    subject: "owner-subject",
+    oauthOwnerBound: true,
+    scopes: ["core:read", "owner:root"],
+    serverClientType: "chatgpt",
+  };
+  assert.equal(capabilityAvailableForIdentity(readTool("skin_analyzer"), unverifiedOwner), false);
+  assert.equal(capabilityAvailableForIdentity(readTool("suite_status"), unverifiedOwner), false);
+
+  const verifiedOwner = {
+    ...unverifiedOwner,
+    oauthOwnerElevated: true,
+    role: "owner_root",
+    ownerConfirmed: true,
+    ownerConfirmationReference: "owner-confirmed-chatgpt",
+  };
+  assert.equal(capabilityAvailableForIdentity(readTool("skin_analyzer"), verifiedOwner), false);
+  assert.equal(capabilityAvailableForIdentity(readTool("suite_status"), verifiedOwner), false);
+  assert.equal(capabilityAvailableForIdentity(readTool("ai_eval_scorecard_read"), verifiedOwner), true);
+  assert.equal(capabilityAvailableForIdentity(readTool("core_branch_registry"), verifiedOwner), true);
+
+  const godModeOwner = {
+    kind: "oauth",
+    role: "owner_root",
+    tenantId: "codexai",
+    subject: "owner-subject",
+    godMode: true,
+    oauthOwnerBound: true,
+    scopes: ["core:read", "owner:root"],
+    serverClientType: "chatgpt",
+  };
+  assert.equal(capabilityAvailableForIdentity(readTool("skin_analyzer"), godModeOwner), false);
+  assert.equal(capabilityAvailableForIdentity(readTool("suite_status"), godModeOwner), false);
+});
+
 test("server-bound adjacent identity sees only its vertical surface", () => {
   const allScopes = [...new Set(TOOLS.flatMap((tool) => tool.scopes || []))];
   const analyzer = {

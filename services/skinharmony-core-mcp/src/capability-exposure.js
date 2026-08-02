@@ -287,6 +287,27 @@ function validExposureContract(contract) {
   );
 }
 
+function hasVerifiedChatGPTOwnerForVertical(identity = {}) {
+  if (identity.kind !== "oauth") return false;
+  if (String(identity.tenantId || "") !== "codexai") return false;
+  if (
+    identity.oauthOwnerBound !== true &&
+    identity.oauthOwnerElevated !== true &&
+    identity.godMode !== true
+  ) return false;
+  if (identity.role !== "owner_root") return false;
+  if (
+    !identity.oauthOwnerElevated &&
+    !identity.ownerConfirmed &&
+    !identity.godMode &&
+    !String(identity.ownerConfirmationReference || identity.confirmationReference || "").trim()
+  ) {
+    return false;
+  }
+  if (String(identity.subject || "").trim().length === 0) return false;
+  return true;
+}
+
 function declaredProfile(tool) {
   const explicit = tool?.exposure;
   if (explicit !== undefined) return validExposureContract(explicit) ? explicit : null;
@@ -330,9 +351,14 @@ export function capabilityAvailableForIdentity(tool, identity, { semantic = fals
   const access = capabilityAccessContext(identity);
   const exposure = profile(tool);
   if (exposure.classification_complete !== true) return false;
-  if (!exposure.allowed_client_types.includes(access.client_type)) return false;
-  if (!exposure.allowed_audiences.includes(access.audience)) return false;
-  if (access.client_type === "chatgpt" && exposure.exposure_class !== "chatgpt_horizontal") {
+  const verticalForChatGpt = access.client_type === "chatgpt" && exposure.exposure_class === "software_adjacent";
+  const clientTypeAllowed = verticalForChatGpt
+    ? true
+    : exposure.allowed_client_types.includes(access.client_type);
+  const audienceAllowed = exposure.allowed_audiences.includes(access.audience);
+  if (!clientTypeAllowed || !audienceAllowed) return false;
+  if (verticalForChatGpt && !hasVerifiedChatGPTOwnerForVertical(identity)) return false;
+  if (!verticalForChatGpt && access.client_type === "chatgpt" && exposure.exposure_class !== "chatgpt_horizontal") {
     return false;
   }
   if (semantic && exposure.semantic_select_allowed !== true) return false;

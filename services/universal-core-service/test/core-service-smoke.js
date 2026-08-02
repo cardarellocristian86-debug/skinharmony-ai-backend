@@ -14,7 +14,12 @@ process.env.NODE_ENV = "test";
 
 const storageRoot = path.join(os.tmpdir(), `sh-core-service-test-${Date.now()}`);
 const ownerContextSigningSecret = "core-service-smoke-owner-context-signing-secret";
-const { app } = createUniversalCoreService({ storageRoot, ownerContextSigningSecret });
+const tenantContextSigningSecret = "core-service-smoke-tenant-context-signing-secret";
+const { app } = createUniversalCoreService({
+  storageRoot,
+  ownerContextSigningSecret,
+  tenantContextSigningSecret,
+});
 const server = http.createServer(app);
 
 function listen() {
@@ -1339,7 +1344,7 @@ try {
     },
   }, controlRoomKey, {
     "x-sh-client-context": signedClientContext(
-      ownerContextSigningSecret,
+      tenantContextSigningSecret,
       "tenant_demo_skinharmony",
     ),
   });

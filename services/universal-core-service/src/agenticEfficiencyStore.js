@@ -712,6 +712,19 @@ export function createAgenticEfficiencyPostgresStore({
        VALUES ($1,'disabled',$2,$3,$4)`,
       [AGENTIC_EFFICIENCY_MIGRATION_VERSION, now().toISOString(), actor, rollback],
     );
+    // The rollback audit row is authoritative for this process too. Clear the
+    // cached readiness immediately so the same store instance cannot keep
+    // reading or writing with an attestation obtained before the rollback.
+    initialized = false;
+    runtimeRoleState = {
+      configured: databaseRuntimeRole !== null,
+      attempted: true,
+      attested: false,
+      read_ready: false,
+      write_ready: false,
+      session_user_separated: false,
+      reason: "static_migration_disabled_by_rollback",
+    };
     return {
       rolled_back: true,
       data_dropped: false,

@@ -15,6 +15,7 @@ class FakePostgres {
     this.telemetry = new Map();
     this.idempotency = new Map();
     this.queries = [];
+    this.migrationAudit = [];
   }
 
   async connect() {
@@ -28,7 +29,15 @@ class FakePostgres {
     const normalized = String(sql).replace(/\s+/g, " ").trim();
     this.queries.push({ sql: normalized, values });
     if (normalized.startsWith("SELECT state FROM ai_learning_governance.schema_migration_audit")) {
-      return { rows: [{ state: "active" }] };
+      return { rows: [{ state: this.migrationAudit.at(-1)?.state || "active" }] };
+    }
+    if (normalized.startsWith("INSERT INTO ai_learning_governance.schema_migration_audit")) {
+      this.migrationAudit.push({
+        version: values[0],
+        state: normalized.includes("'disabled'") ? "disabled" : "active",
+        actor: values[2],
+      });
+      return { rows: [] };
     }
     if (
       ["BEGIN", "COMMIT", "ROLLBACK"].includes(normalized)
@@ -244,6 +253,10 @@ function scorecardInput(overrides = {}) {
 test("migration is additive, rollback preserving and creates only a static NOLOGIN role", () => {
   const plan = aiLearningFactoryMigrationPlan();
   const sql = readFileSync(new URL("../migrations/0.16.0-ai-learning-factory.up.sql", import.meta.url), "utf8").toUpperCase();
+  const rollbackSql = readFileSync(
+    new URL("../migrations/0.16.0-ai-learning-factory.down.sql", import.meta.url),
+    "utf8",
+  ).toUpperCase();
   assert.equal(plan.additive, true);
   assert.equal(plan.rollback_safe, true);
   assert.equal(plan.preserves_history, true);
@@ -256,6 +269,9 @@ test("migration is additive, rollback preserving and creates only a static NOLOG
   assert(!sql.includes(" LOGIN"));
   assert(!sql.includes("PASSWORD"));
   assert(sql.includes("LEARNING_RECORD_HISTORY"));
+  assert(rollbackSql.includes("REVOKE USAGE ON SCHEMA AI_LEARNING_GOVERNANCE"));
+  assert(rollbackSql.includes("REVOKE NYRA_AI_LEARNING_RUNTIME_V016 FROM CURRENT_USER"));
+  assert(!rollbackSql.includes("DROP "));
 });
 
 test("runtime writes fail closed until a pre-existing dedicated role is attested", async () => {
@@ -334,6 +350,65 @@ test("tenant-scoped records survive a store restart and keep CAS rollback histor
     /learning_factory_revision_conflict/,
   );
   assert(database.queries.some((query) => query.sql === "SET LOCAL ROLE ai_learning_runtime"));
+});
+
+test("rollback disables reads and writes in the same persistence instance while preserving records", async () => {
+  const database = new FakePostgres();
+  const persistence = createAiLearningFactoryPostgresPersistence({
+    pool: database,
+    runtimeRole: "ai_learning_runtime",
+  });
+  await persistence.learningAdapter.save({
+    tenant_id: "tenant-a",
+    collection: "evaluation_scorecards",
+    record_id: "scorecard-v016",
+    expected_revision: 0,
+    record: scorecard(1),
+  });
+
+  const rollback = await persistence.rollbackMigration({
+    actor_provenance: "core:rollback-test",
+    rollback_reference: "git:pre-v0.16",
+  });
+  assert.equal(rollback.data_dropped, false);
+  assert.equal(rollback.history_preserved, true);
+  assert.equal(database.learning.size, 1);
+  assert(database.migrationAudit.some((entry) => entry.state === "disabled"));
+  assert.deepEqual(persistence.readiness(), {
+    initialized: false,
+    persistence_read_ready: false,
+    persistence_write_ready: false,
+    runtime_role_attested: false,
+    runtime_role_configured: true,
+    runtime_role_probe_attempted: true,
+    session_user_separated: false,
+    reason: "static_migration_disabled_by_rollback",
+  });
+  const roleProbeCount = database.queries.filter(({ sql }) =>
+    sql.startsWith("SET LOCAL ROLE ")).length;
+  await assert.rejects(
+    persistence.learningAdapter.load({
+      tenant_id: "tenant-a",
+      collection: "evaluation_scorecards",
+      record_id: "scorecard-v016",
+    }),
+    /ai_learning_static_migration_not_active/,
+  );
+  await assert.rejects(
+    persistence.learningAdapter.save({
+      tenant_id: "tenant-a",
+      collection: "evaluation_scorecards",
+      record_id: "scorecard-after-rollback",
+      expected_revision: 0,
+      record: scorecard(1),
+    }),
+    /ai_learning_static_migration_not_active/,
+  );
+  assert.equal(
+    database.queries.filter(({ sql }) => sql.startsWith("SET LOCAL ROLE ")).length,
+    roleProbeCount,
+    "same-instance operations must stop before re-attesting the revoked runtime role",
+  );
 });
 
 test("telemetry is immutable, idempotent and tenant-bound across restarts", async () => {

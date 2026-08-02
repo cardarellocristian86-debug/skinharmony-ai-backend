@@ -128,7 +128,10 @@ class FakePostgresPool {
       };
     }
     if (sql.startsWith("SELECT state FROM agentic_governance.agentic_schema_migration_audit")) {
-      return { rows: [{ state: "active" }], rowCount: 1 };
+      return {
+        rows: [{ state: this.migrationAudit.at(-1)?.state || "active" }],
+        rowCount: 1,
+      };
     }
     if (sql.includes("INSERT INTO agentic_governance.agentic_schema_migration_audit")) {
       this.migrationAudit.push({
@@ -333,6 +336,10 @@ test("migration is additive, defines the eight required structures and rollback 
     new URL("../migrations/0.16.0-agentic-efficiency.up.sql", import.meta.url),
     "utf8",
   );
+  const rollback = readFileSync(
+    new URL("../migrations/0.16.0-agentic-efficiency.down.sql", import.meta.url),
+    "utf8",
+  );
   for (const table of [
     "agentic_run_budget",
     "agentic_usage_ledger",
@@ -355,6 +362,9 @@ test("migration is additive, defines the eight required structures and rollback 
   assert.equal(joined.includes("DROP "), false);
   assert(joined.includes("CREATE ROLE nyra_agentic_runtime_v016 NOLOGIN"));
   assert.equal(joined.includes("PASSWORD"), false);
+  assert(rollback.includes("REVOKE USAGE ON SCHEMA agentic_governance"));
+  assert(rollback.includes("REVOKE nyra_agentic_runtime_v016 FROM CURRENT_USER"));
+  assert.equal(rollback.includes("DROP "), false);
 });
 
 test("store fails closed without the isolated governance database URL", () => {
@@ -421,6 +431,26 @@ test("fake-pool migration, checkpoint restart, tenant isolation and duplicate cl
   assert.equal(rollback.audit_preserved, true);
   assert.equal(pool.capsules.size, 1);
   assert(pool.migrationAudit.some((entry) => entry.state === "disabled"));
+  assert.deepEqual(restarted.roleSeparationStatus(), {
+    attested: false,
+    runtime_role_configured: true,
+    probe_attempted: true,
+    session_user_separated: false,
+    reads_allowed: false,
+    writes_allowed: false,
+    reason: "static_migration_disabled_by_rollback",
+  });
+  const roleProbeCount = pool.calls.filter(({ sql }) =>
+    sql.startsWith("SET LOCAL ROLE ")).length;
+  await assert.rejects(
+    restarted.getWorkCapsule({ tenant_id: "tenant-a", capsule_id: "task-1" }),
+    /agentic_static_migration_not_active/,
+  );
+  assert.equal(
+    pool.calls.filter(({ sql }) => sql.startsWith("SET LOCAL ROLE ")).length,
+    roleProbeCount,
+    "same-instance read must stop before re-attesting the revoked runtime role",
+  );
 });
 
 test("optimistic concurrency supports create-update and rejects stale capsule versions", async () => {

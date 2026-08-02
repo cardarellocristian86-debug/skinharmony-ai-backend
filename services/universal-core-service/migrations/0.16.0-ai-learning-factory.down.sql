@@ -15,4 +15,16 @@ VALUES
     'manifest:docs/releases/0.16.0-ai-learning-factory-rollback-point.json'
   );
 
+REVOKE SELECT,INSERT,UPDATE ON ai_learning_governance.learning_record
+  FROM nyra_ai_learning_runtime_v016;
+REVOKE SELECT,INSERT ON ai_learning_governance.learning_record_history
+  FROM nyra_ai_learning_runtime_v016;
+REVOKE SELECT,INSERT ON ai_learning_governance.runtime_telemetry
+  FROM nyra_ai_learning_runtime_v016;
+REVOKE SELECT,INSERT ON ai_learning_governance.idempotency_receipt
+  FROM nyra_ai_learning_runtime_v016;
+REVOKE USAGE ON SCHEMA ai_learning_governance
+  FROM nyra_ai_learning_runtime_v016;
+REVOKE nyra_ai_learning_runtime_v016 FROM CURRENT_USER;
+
 COMMIT;

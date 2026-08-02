@@ -39,6 +39,18 @@ function boundedCollaborationAction(action) {
   };
 }
 
+function heartbeatCoordinationAction(identity, agentId, customMetadata) {
+  const fingerprint = String(identity?.agentPresence?.session_fingerprint || "");
+  if (!fingerprint) throw new Error("agent_presence_session_required");
+  return boundedCollaborationAction({
+    action_type: "agent.heartbeat",
+    ...(customMetadata ? { operation_class: "owner_confirmed_governed_action", contains_customer_data: true } : {}),
+    action_label: `Register agent ${agentId}`,
+    target: `agent:${agentId}`,
+    idempotency_key: `agent.heartbeat:${fingerprint}`,
+  });
+}
+
 async function requireOwnedAgentSession(client, identity, agentId) {
   const actorSubject = String(identity.subject || identity.kind || "unknown");
   const signature = String(identity.agentPresence?.signature || "");
@@ -88,7 +100,7 @@ export function createCollaborationPostgresStore(config, options = {}) {
       const agentId = id(args.agent_id, "agent"); const sessionId = String(args.session_id || "").slice(0, 240); if (!sessionId) throw new Error("session_id_invalid");
       const customMetadata = (String(args.display_name || "").trim() && String(args.display_name).trim() !== agentId) ||
         (Array.isArray(args.capabilities) && args.capabilities.length > 0);
-      return governed(identity, boundedCollaborationAction({ action_type: "agent.heartbeat", ...(customMetadata ? { operation_class: "owner_confirmed_governed_action", contains_customer_data: true } : {}), action_label: `Register agent ${agentId}`, target: agentId }), async (client) => {
+      return governed(identity, heartbeatCoordinationAction(identity, agentId, customMetadata), async (client) => {
         const expires = new Date(Date.now() + TTL_MS); const actor = String(identity.subject || identity.kind || "unknown");
         const signature = String(identity.agentPresence?.signature || "");
         const fingerprint = String(identity.agentPresence?.session_fingerprint || "");

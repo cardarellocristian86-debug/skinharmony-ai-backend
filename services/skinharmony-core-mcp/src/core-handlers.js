@@ -1132,10 +1132,7 @@ export function createCoreHandlers(config, options = {}) {
         session_id: args.session_id,
         agent_id: args.agent_id || "connected_ai",
       }, identity);
-      const payload = await coreRequest("/v1/work/preflight", identity.tenantId, {
-        method: "POST",
-        identity,
-        body: {
+      const preflightBody = {
           request: args.request,
           target_system: args.target_system || "universal_core",
           operation_type: args.operation_type || "advisory_work",
@@ -1168,7 +1165,6 @@ export function createCoreHandlers(config, options = {}) {
           ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
           ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
           owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
-          owner_context: ownerContext(identity),
           ...(verifiedConfirmationReference(identity)
             ? { confirmation_reference: verifiedConfirmationReference(identity) }
             : {}),
@@ -1176,6 +1172,19 @@ export function createCoreHandlers(config, options = {}) {
           gallery_context: gallery,
           agent_presence: agentPresence,
           tenant_id: identity.tenantId,
+      };
+      const payload = await coreRequest("/v1/work/preflight", identity.tenantId, {
+        method: "POST",
+        identity,
+        useTenantGateway: Boolean(configuredTenantGatewayKey()),
+        body: {
+          ...preflightBody,
+          owner_context: (isVerifiedOAuthTenantOwner(identity) || isCodexGoodModeDelegation(identity, config))
+            ? ownerContext(identity, {
+              hostNativeOwner: true,
+              requestBinding: ownerRequestBinding("work_preflight", preflightBody),
+            })
+            : ownerContext(identity, ownerRequestBinding("work_preflight", preflightBody)),
         },
       });
       const complete = {
@@ -1260,7 +1269,19 @@ export function createCoreHandlers(config, options = {}) {
       const query = view === "authorized" && Array.isArray(args.branches) && args.branches.length
         ? `?${new URLSearchParams({ branches: args.branches.join(",") }).toString()}`
         : "";
-      return textResult(await coreRequest(`${paths[view]}${query}`, identity.tenantId, { identity }));
+      const branches = view === "authorized" && Array.isArray(args.branches)
+        ? [...new Set(args.branches.map(String))]
+        : [];
+      const requestBinding = ownerRequestBinding("branch_registry", { view, branches });
+      const owner = (isVerifiedOwnerRoot(identity) || isVerifiedOAuthTenantOwner(identity))
+        ? ownerContext(identity, { hostNativeOwner: true, requestBinding })
+        : null;
+      return textResult(await coreRequest(`${paths[view]}${query}`, identity.tenantId, {
+        identity,
+        ...(owner?.owner_verified === true
+          ? { additionalHeaders: { "x-sh-owner-context": Buffer.from(JSON.stringify(owner)).toString("base64url") } }
+          : {}),
+      }));
     },
     core_branch_analyze: async (args, identity) => textResult(await coreRequest(
       `/v1/branches/${encodeURIComponent(args.branch)}/analyze`,
