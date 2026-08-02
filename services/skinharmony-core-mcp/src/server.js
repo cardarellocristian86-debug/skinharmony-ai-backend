@@ -693,6 +693,7 @@ const baseHandlers = {
 };
 
 function internalCoordinationActionType(toolName) {
+  if (toolName === "agent_heartbeat") return "agent.heartbeat";
   if (toolName.includes("native_plan")) return "native_agent.plan";
   if (toolName.includes("native_bind")) return "native_agent.bind";
   if (toolName.includes("native_report")) return "native_agent.report";
