@@ -4299,8 +4299,12 @@ export function createUniversalCoreService(options = {}) {
   const nyraPolicyRegistryDatabaseUrl = String(
     options.nyraPolicyRegistryDatabaseUrl ?? process.env.GOVERNED_AGENT_DATABASE_URL ?? "",
   ).trim();
+  // An injected PostgreSQL version probe is a fully controlled test/host seam.
+  // Do not open implicit network pools behind it; callers that need database
+  // behavior can still provide the explicit pool options above.
+  const hasInjectedPostgresVersionProbe = Boolean(options.governedAgentPostgresVersionProbe);
   const nyraPolicyRegistryPostgresPool = options.nyraPolicyRegistryPostgresPool ||
-    (/^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
+    (!hasInjectedPostgresVersionProbe && /^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
       ? new pg.Pool({ connectionString: nyraPolicyRegistryDatabaseUrl })
       : null);
   const nyraPolicyRegistryProofService = options.nyraPolicyRegistryProofService ||
@@ -4441,14 +4445,14 @@ export function createUniversalCoreService(options = {}) {
   const governedAgentDatabaseUrl = String(process.env.GOVERNED_AGENT_DATABASE_URL || "").trim();
   const governedAgentPostgresConfigured =
     /^postgres(?:ql)?:\/\//i.test(governedAgentDatabaseUrl);
-  const dynamicTaskTreeStateStore = options.dynamicTaskTreeStateStore || (governedAgentDatabaseUrl
+  const dynamicTaskTreeStateStore = options.dynamicTaskTreeStateStore || (!hasInjectedPostgresVersionProbe && governedAgentDatabaseUrl
     ? createPostgresDynamicTaskTreeStateStore({
         connectionString: governedAgentDatabaseUrl,
         pool: options.dynamicTaskTreePostgresPool || null,
       })
     : createFileDynamicTaskTreeStateStore({ root: path.join(storageRoot, "dynamic-task-trees") }));
   const dynamicTaskTreeJoinVerdictStore = options.dynamicTaskTreeJoinVerdictStore
-    || (governedAgentDatabaseUrl
+    || (!hasInjectedPostgresVersionProbe && governedAgentDatabaseUrl
       ? createPostgresDynamicTaskTreeJoinVerdictStore({
           connectionString: governedAgentDatabaseUrl,
           pool: options.dynamicTaskTreePostgresPool || null,
@@ -4463,7 +4467,9 @@ export function createUniversalCoreService(options = {}) {
     ? dttAgentIdentitySecretCandidate
     : "";
   const dttAgentIdentityPostgresPool = options.dttAgentIdentityPostgresPool
-    || (dttAgentIdentitySecret && governedAgentDatabaseUrl ? new pg.Pool({ connectionString: governedAgentDatabaseUrl }) : null);
+    || (!hasInjectedPostgresVersionProbe && dttAgentIdentitySecret && governedAgentDatabaseUrl
+      ? new pg.Pool({ connectionString: governedAgentDatabaseUrl })
+      : null);
   const governedAgentPostgresVersionPool =
     options.governedAgentPostgresVersionProbe
       ? null
