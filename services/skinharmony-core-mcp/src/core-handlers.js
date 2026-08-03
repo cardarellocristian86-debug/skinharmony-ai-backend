@@ -1612,7 +1612,12 @@ export function createCoreHandlers(config, options = {}) {
     core_action_mediation_evaluate: async (args, identity) => {
       const coreResponse = await coreRequest("/v1/action-mediation/evaluate", identity.tenantId, {
         method: "POST",
-        body: { action: args.action, policy: args.policy, context: args.context },
+        body: {
+          action: args.action,
+          policy: args.policy,
+          context: args.context,
+          work_preflight: args.work_preflight,
+        },
       });
       const response = applyQualityFailureMediation(args, coreResponse);
       const ledger = await recordQualityFailureObservation(identity, response);

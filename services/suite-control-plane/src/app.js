@@ -2489,6 +2489,14 @@ function createUniversalCoreClient(options = {}) {
   const defaultTenantId = sanitizeId(options.tenantId || process.env.UNIVERSAL_CORE_TENANT_ID || "suite-control-plane", "tenant");
   const timeoutMs = Number(options.timeoutMs || process.env.UNIVERSAL_CORE_TIMEOUT_MS || 8000);
 
+  function requireWorkPreflight(body = {}, route = "") {
+    const workPreflight = body?.work_preflight || body?.context?.work_preflight || null;
+    if (!workPreflight || typeof workPreflight !== "object") {
+      return { success: false, http_status: 428, code: "WORK_PREFLIGHT_REQUIRED", execution_allowed: false, core_route_path: route };
+    }
+    return null;
+  }
+
   async function request(method, route, body, tenantId = defaultTenantId) {
     if (!baseUrl || !apiKey) {
       return { success: false, code: "universal_core_not_configured", core_route_path: route };
@@ -2547,6 +2555,7 @@ function createUniversalCoreClient(options = {}) {
       action_label: String(action.label || action.action_label || payload.action_label || action.id || "Suite action mediation").slice(0, 180),
       risk_hint: Number(action.risk_hint ?? payload.risk_hint ?? 45),
       publish_intent: payload.publish_intent === true || action.publish_intent === true,
+      work_preflight: payload.work_preflight || payload.context?.work_preflight,
       context: {
         ...(payload.context && typeof payload.context === "object" ? payload.context : {}),
         suite_policy: payload.policy || {},
@@ -2603,16 +2612,25 @@ function createUniversalCoreClient(options = {}) {
       };
     },
     customerIntelligenceContract: (tenantId = defaultTenantId) => request("GET", `/v1/customer-intelligence/contract?tenant_id=${encodeURIComponent(tenantId)}`, undefined, tenantId),
-    customerIntelligenceReadiness: (payload = {}, tenantId = defaultTenantId) => request("POST", "/v1/customer-intelligence/readiness", {
+    customerIntelligenceReadiness: (payload = {}, tenantId = defaultTenantId) => {
+      const blocked = requireWorkPreflight(payload, "/v1/customer-intelligence/readiness");
+      if (blocked) return Promise.resolve(blocked);
+      return request("POST", "/v1/customer-intelligence/readiness", {
       tenant_id: tenantId,
       events: Array.isArray(payload.events) ? payload.events : [],
       consents: Array.isArray(payload.consents) ? payload.consents : [],
       customer_profile: payload.customer_profile || payload.customerProfile || {},
-    }, tenantId),
-    actionMediation: (tenantId = defaultTenantId, payload = {}) => requestWithFallback("POST", [
+      work_preflight: payload.work_preflight || payload.context?.work_preflight,
+      }, tenantId);
+    },
+    actionMediation: (tenantId = defaultTenantId, payload = {}) => {
+      const blocked = requireWorkPreflight(payload, "/v1/action-evaluator");
+      if (blocked) return Promise.resolve(blocked);
+      return requestWithFallback("POST", [
       { label: "action_evaluator", path: "/v1/action-evaluator", payload: toActionEvaluatorPayload(payload, tenantId) },
       { label: "legacy_action_mediation", path: "/v1/action-mediation/evaluate", payload },
-    ], payload, tenantId),
+      ], payload, tenantId);
+    },
     probe: () => request("GET", "/healthz", undefined, defaultTenantId),
   };
 }
@@ -3601,6 +3619,7 @@ export function createSuiteControlPlane(options = {}) {
     const result = await coreClient.actionMediation(tenantId, {
       action,
       policy: req.body?.policy || {},
+      work_preflight: req.body?.work_preflight || req.body?.context?.work_preflight,
       context: {
         source: "suite_control_plane",
         no_auto_execute: true,
