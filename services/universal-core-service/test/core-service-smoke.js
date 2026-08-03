@@ -27,14 +27,46 @@ function close() {
   return new Promise((resolve) => server.close(resolve));
 }
 
+const tenantByKey = new Map();
+
+function workPreflightFor(tenantId) {
+  return {
+    schema_version: "skinharmony_work_preflight_v1",
+    preflight_id: `preflight_core_smoke_${tenantId}`,
+    mandatory: true,
+    tenant_id: tenantId,
+    operational_surface: "tenant_work_gallery",
+    tenant_work_gallery: {
+      schema_version: "tenant_work_gallery_v1",
+      tenant_id: tenantId,
+      available: true,
+      state: "ready",
+    },
+    memory_first: { status: "recalled" },
+    governance: { execution_allowed_by_preflight: true },
+  };
+}
+
 async function api(base, method, pathName, body, key = "test-admin-key") {
+  const requestBody = pathName === "/v1/nira/core-bridge" && body && typeof body === "object"
+    ? {
+      ...body,
+      work_preflight: body.work_preflight || workPreflightFor(
+        tenantByKey.get(key)
+          || body.tenant_id
+          || body.memory_context?.tenant_id
+          || body.owner_context?.tenant_id
+          || "tenant_demo_skinharmony",
+      ),
+    }
+    : body;
   const response = await fetch(`${base}${pathName}`, {
     method,
     headers: {
       "content-type": "application/json",
       authorization: `Bearer ${key}`,
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: requestBody === undefined ? undefined : JSON.stringify(requestBody),
   });
   const json = await response.json();
   return { status: response.status, json };
@@ -95,6 +127,7 @@ try {
   });
   assert(generated.status === 201 && generated.json.key, "key generation failed");
   const connectorKey = generated.json.key;
+  tenantByKey.set(connectorKey, generated.json.record.tenant_id);
   assert(generated.json.record.preset === "suite_connector", "key preset failed");
   mark("key_generate", true, { key_id: generated.json.record.key_id, preset: generated.json.record.preset, scopes: generated.json.record.allowed_scopes });
 
@@ -108,6 +141,7 @@ try {
   });
   assert(codexGenerated.status === 201 && codexGenerated.json.key, "codex key generation failed");
   const codexKey = codexGenerated.json.key;
+  tenantByKey.set(codexKey, codexGenerated.json.record.tenant_id);
   mark("codex_key_generate", true, { key_id: codexGenerated.json.record.key_id, tier: codexGenerated.json.record.metadata.tier });
 
   const codexGenericGenerated = await api(base, "POST", "/v1/keys/generate", {
@@ -120,6 +154,7 @@ try {
   });
   assert(codexGenericGenerated.status === 201 && codexGenericGenerated.json.key, "codex generic key generation failed");
   const codexGenericKey = codexGenericGenerated.json.key;
+  tenantByKey.set(codexGenericKey, codexGenericGenerated.json.record.tenant_id);
   mark("codex_generic_key_generate", true, { key_id: codexGenericGenerated.json.record.key_id, branches: codexGenericGenerated.json.record.metadata.active_branches });
 
   const regulatedGenerated = await api(base, "POST", "/v1/keys/generate", {
@@ -133,6 +168,7 @@ try {
   });
   assert(regulatedGenerated.status === 201 && regulatedGenerated.json.key, "regulated codex key generation failed");
   const regulatedKey = regulatedGenerated.json.key;
+  tenantByKey.set(regulatedKey, regulatedGenerated.json.record.tenant_id);
   mark("regulated_codex_key_generate", true, { key_id: regulatedGenerated.json.record.key_id, tenant_id: regulatedGenerated.json.record.tenant_id });
 
   const horizontalGenerated = await api(base, "POST", "/v1/keys/generate", {
@@ -144,6 +180,7 @@ try {
   });
   assert(horizontalGenerated.status === 201 && horizontalGenerated.json.key, "horizontal key generation failed");
   const horizontalKey = horizontalGenerated.json.key;
+  tenantByKey.set(horizontalKey, horizontalGenerated.json.record.tenant_id);
 
   const invalidPackKey = await api(base, "POST", "/v1/keys/generate", {
     tenant_id: "tenant-invalid-pack",
