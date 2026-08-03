@@ -20,6 +20,7 @@ export const WORK_EVENT_TYPES = new Set([
   "incident_recorded", "incident_runbook_verified", "incident_runbook_quarantined",
   "native_plan_superseded", "native_agent_lease_expired",
   "core_join_issued", "closure_finalized",
+  "quality_failure_observed", "security_observation_quarantined", "quality_evidence_verified", "quality_completion_rejected",
 ]);
 
 const NATIVE_HOST_TYPES = new Set(["chatgpt_native", "codex_native"]);
