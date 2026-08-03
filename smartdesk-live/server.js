@@ -2221,7 +2221,12 @@ const handleAgentWorkspaceGovernanceDemo = (req, res) => {
 };
 
 app.get("/api/demo/agent-workspace-governance", requireAuth, controlRoomRateLimit, handleAgentWorkspaceGovernanceDemo);
-app.get("/demo/agent-workspace-governance", requireAuth, controlRoomRateLimit, handleAgentWorkspaceGovernanceDemo);
+app.use("/demo/agent-workspace-governance", requireAuth, controlRoomRateLimit, (req, res, next) => {
+  if (req.method !== "GET") {
+    return res.status(405).json(controlRoomErrorPayload(new Error("Metodo non consentito"), 405));
+  }
+  return handleAgentWorkspaceGovernanceDemo(req, res);
+});
 
 app.get("/api/reports/operational", (req, res) => {
   res.json(service.getOperationalReport({
