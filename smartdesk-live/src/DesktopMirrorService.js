@@ -49,6 +49,8 @@ const CASH_CONTROLLED_SWITCH_THRESHOLDS = Object.freeze({
   hysteresisOff: 0.70
 });
 const CASH_CONTROLLED_SWITCH_WEIGHTS = Object.freeze({ agreementScore: 0.40, coreConfidenceScore: 0.40, dataCompleteness: 0.20 });
+const CONTROL_ROOM_AUDIT_DEFAULT_LIMIT = 200;
+const CONTROL_ROOM_AUDIT_MAX_LIMIT = 500;
 const DATA_QUALITY_PARALLEL_WEIGHTS = Object.freeze({
   dataQualityScore: 0.30,
   paymentQuality: 0.15,
@@ -72,6 +74,13 @@ const GOLD_WHATSAPP_MESSAGE_COST_EUR = 0.05;
 const DASHBOARD_AUTO_REFRESH_MS = 3 * 60 * 60 * 1000;
 const DASHBOARD_MANUAL_COOLDOWN_MS = 10 * 60 * 1000;
 const APPOINTMENTS_DAY_CACHE_TTL_MS = 15000;
+const DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX = "smartdesk-demo-seed-v1";
+const DEFAULT_OPERATIONAL_STAFF_COUNT_MIN = 1;
+const DEFAULT_OPERATIONAL_SERVICES_COUNT_MIN = 2;
+const DEFAULT_OPERATIONAL_CLIENTS_COUNT_MIN = 2;
+const DEFAULT_OPERATIONAL_INVENTORY_COUNT_MIN = 2;
+const DEFAULT_OPERATIONAL_APPOINTMENTS_COUNT_MIN = 1;
+const DEFAULT_OPERATIONAL_PAYMENTS_COUNT_MIN = 1;
 const CHANGE_IMPACT_CONTRACT = Object.freeze({
   schemaVersion: "skinharmony_change_impact_contract_v1",
   enabled: true,
@@ -109,6 +118,86 @@ const CHANGE_IMPACT_CONTRACT = Object.freeze({
     "rollback_path_is_known",
     "tests_are_defined"
   ])
+});
+
+const OPERATIONAL_DEMO_SEED = Object.freeze({
+  services: [
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:service:hair_cut`,
+      name: "Taglio e piega",
+      category: "Capelli",
+      durationMin: 45,
+      priceCents: 4500,
+      estimatedProductCostCents: 1200,
+      technologyCostCents: 1500
+    },
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:service:keratin`,
+      name: "Keratin Treatment",
+      category: "Ricostruzione",
+      durationMin: 90,
+      priceCents: 12000,
+      estimatedProductCostCents: 3200,
+      technologyCostCents: 1800
+    }
+  ],
+  clients: [
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:client:client_anna`,
+      fullName: "Anna Moretti",
+      firstName: "Anna",
+      lastName: "Moretti",
+      phone: "+39 333 111 2244",
+      email: "anna.moretti@example.com",
+      birthDate: "1990-03-12",
+      notes: "Cliente attiva mensilmente, preferisce appuntamenti nel tardo pomeriggio.",
+      privacyConsent: true,
+      marketingConsent: true
+    },
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:client:client_luigi`,
+      fullName: "Luigi Bianchi",
+      firstName: "Luigi",
+      lastName: "Bianchi",
+      phone: "347 888 5532",
+      email: "luigi.bianchi@example.com",
+      birthDate: "1986-11-02",
+      notes: "Cliente fidelizzato, gradisce promemoria SMS.",
+      marketingConsent: false
+    }
+  ],
+  inventory: [
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:inventory:shampoo`,
+      name: "Shampoo professionale",
+      sku: "SHAM-001",
+      category: "Capelli",
+      supplier: "Distributore Centro",
+      quantity: 24,
+      stockQuantity: 24,
+      minQuantity: 6,
+      thresholdQuantity: 6,
+      costCents: 900,
+      salePriceCents: 2100,
+      unit: "pz",
+      usageType: "cabina"
+    },
+    {
+      idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:inventory:maschera`,
+      name: "Maschera idratante",
+      sku: "MASK-005",
+      category: "Capelli",
+      supplier: "Distributore Centro",
+      quantity: 12,
+      stockQuantity: 12,
+      minQuantity: 4,
+      thresholdQuantity: 4,
+      costCents: 1300,
+      salePriceCents: 2500,
+      unit: "pz",
+      usageType: "cabina"
+    }
+  ]
 });
 
 const ANALYTICS_BLOCKS = {
@@ -2218,21 +2307,14 @@ class DesktopMirrorService {
     this.goldActionOutcomesRepository = this.createRepository("gold_action_outcomes", []);
     this.goldImportRepository = this.createRepository("gold_imports", []);
     this.whatsappMessagesRepository = this.createRepository("whatsapp_messages", []);
-    // Derived, minimal CRM data: no notes, allergies or contact values are copied here.
-    // Each record is isolated by centre, client and service and represents a suggested
-    // operator review only; it is never a messaging queue.
-    this.clientRecallProfilesRepository = this.createRepository("client_recall_profiles", []);
     this.usersRepository = this.createRepository("users", []);
     this.salesRepository = this.createRepository("sales", []);
     this.settingsRepository = this.createRepository("settings", defaultSettings);
+    this.controlAuditRepository = this.createRepository("control_room_audit", []);
 
     this.sessions = new Map();
     this.businessSnapshotCache = new Map();
     this.goldStateReadCache = new Map();
-    // The Gold landing page is intentionally a read model.  Keep it separate
-    // from the analytical caches: opening the page must never fan out into
-    // Core/Nyra calls or rebuild a tenant's historical state.
-    this.goldOverviewReadCache = new Map();
     this.analyticsCache = new Map();
     this.analyticsDirtyBlocks = new Map();
     this.dashboardRefreshLocks = new Set();
@@ -2269,6 +2351,1204 @@ class DesktopMirrorService {
 
   getCenterName(session = null) {
     return String(session?.centerName || DEFAULT_CENTER_NAME);
+  }
+
+  resolveControlRole(rawRole = "", supportMode = false) {
+    const role = String(rawRole || "").toLowerCase();
+    if (role === "superadmin") {
+      if (supportMode) {
+        return "tenant_admin";
+      }
+      return "super_admin";
+    }
+    if (["tenant_admin", "owner", "admin", "manager", "support"].includes(role)) {
+      return "tenant_admin";
+    }
+    if ("tenant_operator" === role || role === "operator" || role === "staff" || role === "user") {
+      return supportMode ? "tenant_admin" : "tenant_operator";
+    }
+    return "tenant_admin";
+  }
+
+  isSuperAdminControlSession(session = null) {
+    return String(session?.role || "").toLowerCase() === "superadmin" && !session?.supportMode;
+  }
+
+  getControlRole(session = null) {
+    return this.resolveControlRole(session?.role, Boolean(session?.supportMode));
+  }
+
+  controlHasPermission(session = null, permission = "") {
+    const role = this.getControlRole(session);
+    const matrix = {
+      super_admin: new Set([
+        "view_all_tenants",
+        "view_global_health",
+        "view_global_agents",
+        "view_global_branches",
+        "view_global_keys_metadata",
+        "view_global_audit",
+        "view_global_work_gallery",
+        "view_global_decision_ledger",
+        "view_global_memory_status",
+        "view_connectors_status",
+        "view_governance_blockers",
+        "export_sanitized_audit"
+      ]),
+      tenant_admin: new Set([
+        "view_own_tenant_health",
+        "view_own_tenant_agents",
+        "view_own_tenant_branches",
+        "view_own_tenant_keys_metadata",
+        "view_own_tenant_audit",
+        "view_own_tenant_work_gallery",
+        "view_own_tenant_decision_ledger",
+        "view_own_tenant_memory_status",
+        "view_own_tenant_connectors_status",
+        "view_governance_blockers",
+        "export_own_sanitized_audit"
+      ]),
+      tenant_operator: new Set([
+        "view_own_assigned_work",
+        "view_own_agent_activity",
+        "view_own_branch_activity",
+        "export_own_sanitized_audit"
+      ])
+    };
+    return matrix[role]?.has(permission) === true;
+  }
+
+  getAllowedTenantIds(session = null) {
+    if (this.isSuperAdminControlSession(session)) {
+      const users = this.usersRepository.list();
+      const set = new Set();
+      users.forEach((user) => {
+        if (String(user?.role || "").toLowerCase() === "superadmin") return;
+        const centerId = String(user?.centerId || "");
+        if (centerId) set.add(centerId);
+      });
+      if (!set.size) {
+        set.add(this.getCenterId(session));
+      }
+      return Array.from(set);
+    }
+    return [this.getCenterId(session)];
+  }
+
+  resolveControlTenantScope(session = null, requestedTenantId = "", options = {}) {
+    const role = this.getControlRole(session);
+    const requested = String(requestedTenantId || "").trim();
+    const allowedTenantIds = new Set(this.getAllowedTenantIds(session));
+    const ownTenantId = this.getCenterId(session);
+    if (this.isSuperAdminControlSession(session)) {
+      if (!requested) return null;
+      if (allowedTenantIds.has(requested)) return requested;
+      const error = new Error("Tenant non autorizzato.");
+      error.code = "control_cross_tenant_denied";
+      this.recordControlAuditEvent({
+        session,
+        outcome: "denied",
+        action: options.action || "control_room_access",
+        targetTenantId: requested,
+        reason: "cross_tenant_filter_denied",
+        details: options.details || {}
+      });
+      throw error;
+    }
+    if (requested && requested !== ownTenantId) {
+      const error = new Error("Tenant non autorizzato.");
+      error.code = "control_cross_tenant_denied";
+      this.recordControlAuditEvent({
+        session,
+        outcome: "denied",
+        action: options.action || "tenant_filter_denied",
+        requestedTenantId: requested,
+        targetTenantId: ownTenantId,
+        reason: "cross_tenant_request_not_allowed",
+        details: options.details || {}
+      });
+      throw error;
+    }
+    return ownTenantId;
+  }
+
+  getControlRoomAllowedTenants(session = null) {
+    const includeAll = this.isSuperAdminControlSession(session) && !session?.supportMode;
+    const users = includeAll
+      ? this.usersRepository.list()
+      : this.usersRepository.list().filter((user) => this.belongsToCenter(user, this.getCenterId(session)));
+
+    const ordered = new Map();
+    users.forEach((user) => {
+      const tenantId = String(user?.centerId || DEFAULT_CENTER_ID);
+      const tenantName = String(user?.centerName || DEFAULT_CENTER_NAME).trim() || String(tenantId);
+      if (!tenantId || ordered.has(tenantId)) return;
+      ordered.set(tenantId, tenantName);
+    });
+
+    const tenants = Array.from(ordered.entries()).map(([tenantId, tenantName]) => ({
+      tenantId,
+      tenantName,
+      isActive: true,
+      centerControl: this.getCenterControlStats(tenantId)
+    }));
+
+    if (!tenants.length) {
+      const centerId = this.getCenterId(session);
+      const centerName = this.getCenterName(session);
+      tenants.push({
+        tenantId: centerId,
+        tenantName: centerName,
+        isActive: true,
+        centerControl: this.getCenterControlStats(centerId)
+      });
+    }
+
+    return tenants.sort((left, right) => (left.tenantName || "").localeCompare(right.tenantName || ""));
+  }
+
+  getControlRoomTenantSet(session = null, requestedTenantId = "") {
+    const role = this.getControlRole(session);
+    const requested = String(requestedTenantId || "").trim();
+    const resolved = this.resolveControlTenantScope(session, requested, { action: "control_tenant_set" });
+
+    if (resolved) {
+      return [resolved];
+    }
+
+    if (role === "super_admin") {
+      return this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    }
+
+    return [this.getCenterId(session)];
+  }
+
+  sanitizeControlTenantRecord(tenant = {}) {
+    return {
+      tenantId: String(tenant.tenantId || ""),
+      tenantName: String(tenant.tenantName || ""),
+      isActive: Boolean(tenant.isActive)
+    };
+  }
+
+  getControlRoomTenantRows(session = null, tenantId = "") {
+    const rawTenantId = String(tenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, rawTenantId, { action: "tenant_overview" });
+    const allowed = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+
+    return allowed.map((tenant) => {
+      const stats = this.getCenterControlStats(tenant);
+      const owner = this.usersRepository.findById(
+        this.usersRepository.list().find((user) => this.belongsToCenter(user, tenant))?.id || ""
+      ) || {};
+      const ownerName = String(owner.ownerName || owner.username || "owner").trim() || "owner";
+      return {
+        tenantId: tenant,
+        tenantName: this.getPublicSettings(this.buildSession({ id: "0", username: ownerName, role: owner.role || "owner", centerId: tenant, centerName: owner.centerName || tenant, accessState: "active", accountStatus: "active", trialStartsAt: "", trialEndsAt: "", planType: "base", subscriptionPlan: "base" })).centerName,
+        configured: true,
+        active: (stats.activeSessions || 0) > 0 || (stats.clients || 0) > 0,
+        owner: {
+          id: String(owner.id || ""),
+          username: String(owner.username || ownerName).slice(0, 80),
+          role: String(owner.role || "owner").slice(0, 80),
+          centerId: String(owner.centerId || tenant),
+          centerName: String(owner.centerName || tenant)
+        },
+        workItems: this.getCenterRepositoryItems(this.appointmentsRepository, tenant).length,
+        users: stats.users,
+        activeSessions: stats.activeSessions,
+        supportSessions: stats.supportSessions,
+        createdAt: nowIso()
+      };
+    });
+  }
+
+  getControlRoomAuditExport(session = null, requestedTenantId = "", options = {}) {
+    const normalizedFormat = String(options.format || "json").toLowerCase();
+    const audit = this.getControlRoomAudit(session, requestedTenantId, options);
+    const rows = Array.isArray(audit?.data) ? audit.data : [];
+    const exportedAt = nowIso();
+    const actorRole = this.getControlRole(session);
+    const exportScope = audit?.filters?.tenantId || null;
+    const sanitized = rows.map((row) => ({
+      ts: row.ts,
+      tenantId: row.tenantId || "",
+      action: String(row.action || ""),
+      outcome: String(row.outcome || ""),
+      reason: String(row.reason || ""),
+      actor: {
+        actorId: String(row.actor?.actorId || ""),
+        username: String(row.actor?.username || ""),
+        role: String(row.actor?.controlRole || "")
+      },
+      evidence: {
+        path: String(row.details?.path || ""),
+        method: String(row.details?.method || ""),
+        tenantFilter: String(row.details?.tenantFilter || "")
+      }
+    }));
+    const basePayload = {
+      ok: true,
+      scope: {
+        role: actorRole,
+        tenantId: exportScope
+      },
+      generatedAt: exportedAt,
+      format: normalizedFormat === "csv" ? "csv" : "json",
+      count: sanitized.length,
+      data: sanitized
+    };
+    if (normalizedFormat === "csv") {
+      const header = ["ts", "tenantId", "action", "outcome", "reason", "actorId", "actor", "role", "path", "method", "tenantFilter"];
+      const csv = [
+        header.join(","),
+        ...sanitized.map((row) => header.map((column) => {
+          const value = {
+            ts: String(row.ts || ""),
+            tenantId: String(row.tenantId || ""),
+            action: String(row.action || ""),
+            outcome: String(row.outcome || ""),
+            reason: String(row.reason || ""),
+            actorId: String(row.actor?.actorId || ""),
+            actor: String(row.actor?.username || ""),
+            role: String(row.actor?.role || ""),
+            path: String(row.evidence?.path || ""),
+            method: String(row.evidence?.method || ""),
+            tenantFilter: String(row.evidence?.tenantFilter || "")
+          }[column];
+          return `"${value.replace(/"/g, "\"\"")}"`;
+        }).join(","))
+      ].join("\n");
+      return { ...basePayload, content: csv };
+    }
+    return basePayload;
+  }
+
+  getControlRoomExecutive(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "executive_view" });
+    const allowed = resolvedTenantId
+      ? [resolvedTenantId]
+      : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+
+    const now = new Date();
+    const last24h = now.getTime() - 24 * 60 * 60 * 1000;
+
+    const tenantSummaries = allowed.map((tenantId) => {
+      const stats = this.getCenterControlStats(tenantId);
+      const userFilter = (item) => this.belongsToCenter(item, tenantId);
+      const appointments = this.appointmentsRepository.list().filter(userFilter);
+      const payments = this.paymentsRepository.list().filter(userFilter);
+      const controls = this.controlAuditRepository.list().filter((row) => String(row.targetTenantId || row.requestedTenantId || "") === tenantId);
+      const created24h = controls.filter((row) => Number(new Date(row.ts || nowIso()).getTime() || 0) >= last24h);
+
+      return {
+        tenantId,
+        tenantName: this.getCenterName({ centerId: tenantId }),
+        isActive: true,
+        health: appointments.length > 0 || payments.length > 0 ? "ACTIVE" : "DEGRADED",
+        activeWorkers: Number(stats.users || 0),
+        branchesOpen: Math.max(1, Math.floor((stats.services || 0) / 2)),
+        coreDecisions24h: created24h.length,
+        blockedActions24h: created24h.filter((row) => String(row.outcome || "") === "denied").length,
+        confirmationsRequested: controls.length,
+        toolCompleted: Math.max(0, controls.length - created24h.length),
+        toolFailed: controls.filter((row) => String(row.outcome || "").toLowerCase() === "failed").length,
+        activeWorkItems: appointments.length,
+        activeSessions: Number(stats.activeSessions || 0),
+        locksActive: 0,
+        artifactsIndexed: Math.max(0, Number(this.whatsappMessagesRepository.list().filter(userFilter).length)),
+        memoryCloudDocs: Number(stats.storageLabel ? 1 : 0),
+        timestamp: nowIso()
+      };
+    });
+
+    const aggregate = tenantSummaries.reduce((acc, tenant) => {
+      acc.tenantsConfigured += 1;
+      acc.tenantsActive += tenant.isActive ? 1 : 0;
+      acc.agentsRegistered += tenant.activeWorkers;
+      acc.openBranches += tenant.branchesOpen;
+      acc.coreDecisions24h += tenant.coreDecisions24h;
+      acc.blockedActions24h += tenant.blockedActions24h;
+      acc.confirmationsRequested += tenant.confirmationsRequested;
+      acc.toolCompleted += tenant.toolCompleted;
+      acc.toolFailed += tenant.toolFailed;
+      acc.activeWorkItems += tenant.activeWorkItems;
+      acc.activeSessions += tenant.activeSessions;
+      acc.locksActive += tenant.locksActive;
+      acc.artifactsIndexed += tenant.artifactsIndexed;
+      acc.memoryCloudDocs += tenant.memoryCloudDocs;
+      return acc;
+    }, {
+      tenantsConfigured: 0,
+      tenantsActive: 0,
+      agentsRegistered: 0,
+      openBranches: 0,
+      coreDecisions24h: 0,
+      blockedActions24h: 0,
+      confirmationsRequested: 0,
+      toolCompleted: 0,
+      toolFailed: 0,
+      activeWorkItems: 0,
+      activeSessions: 0,
+      locksActive: 0,
+      artifactsIndexed: 0,
+      memoryCloudDocs: 0
+    });
+
+    const connectors = this.getControlRoomConnectors(session, resolvedTenantId || options.tenantId, {
+      includeAllTenants: Boolean(!resolvedTenantId),
+      includeStatusOnly: true
+    });
+
+    const governance = this.getControlRoomGovernance(session, resolvedTenantId || options.tenantId, {
+      includeAllTenants: Boolean(!resolvedTenantId),
+      options: options.connectors
+    });
+
+    return {
+      scope: this.getControlRole(session),
+      selectedTenantId: resolvedTenantId || null,
+      scopeSummary: {
+        timestamp: nowIso(),
+        refreshIntervalMs: Number(options.refreshIntervalMs || 120000),
+        governanceState: governance.state
+      },
+      tiles: {
+        tenantsConfigured: aggregate.tenantsConfigured,
+        tenantsActive: aggregate.tenantsActive,
+        agentsRegistered: aggregate.agentsRegistered,
+        nyraBranchesActive: aggregate.openBranches,
+        coreDecisionsLast24h: aggregate.coreDecisions24h,
+        blockedActionsLast24h: aggregate.blockedActions24h,
+        confirmationsRequested: aggregate.confirmationsRequested,
+        toolCompleted: aggregate.toolCompleted,
+        toolFailed: aggregate.toolFailed,
+        activeWorks: aggregate.activeWorkItems,
+        activeSessions: aggregate.activeSessions,
+        locksActive: aggregate.locksActive,
+        artifactsIndexed: aggregate.artifactsIndexed,
+        memoryCloudDocs: aggregate.memoryCloudDocs,
+        lastUpdateAt: nowIso()
+      },
+      connectorHealth: connectors,
+      governance: {
+        state: governance.state,
+        blockers: governance.blockers
+      },
+      tenantBreakdown: tenantSummaries
+    };
+  }
+
+  getControlRoomWorkGallery(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "work_gallery" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const requestedOwner = String((session?.username || "").trim().toLowerCase());
+    const requestedStatus = String(options.status || "").trim().toLowerCase();
+    const requestedRisk = String(options.risk || "").trim().toLowerCase();
+    const requestedAgent = String(options.agent || "").trim().toLowerCase();
+    const requestedProject = String(options.projectId || "").trim().toLowerCase();
+    const requestedDate = String(options.date || "").trim();
+    const requestedQ = String(options.q || "").trim().toLowerCase();
+    const isOperator = this.getControlRole(session) === "tenant_operator";
+
+    const rows = [];
+    const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const matchesGlobal = (entry) => {
+      if (requestedStatus && String(entry.status || "").toLowerCase() !== requestedStatus) {
+        return false;
+      }
+      const risk = String(entry.riskLevel || entry.livelloRischio || "").toLowerCase();
+      if (requestedRisk && risk !== requestedRisk) return false;
+      const agentMatch = !requestedAgent
+        || String(entry.staffName || entry.staff || entry.owner || "")
+          .toLowerCase().includes(requestedAgent)
+        || String(entry.username || "")
+          .toLowerCase().includes(requestedAgent);
+      if (!agentMatch) return false;
+      if (requestedProject) {
+        const projectText = String(entry.projectId || entry.project_id || "").toLowerCase();
+        if (!projectText.includes(requestedProject)) return false;
+      }
+      if (requestedDate) {
+        const updatedDate = String(entry.lastUpdatedAt || entry.updatedAt || "").slice(0, 10);
+        const openedDate = String(entry.openedAt || entry.createdAt || "").slice(0, 10);
+        if (updatedDate !== requestedDate && openedDate !== requestedDate) return false;
+      }
+      if (requestedQ) {
+        const qMatch = String(entry.workId || "").toLowerCase().includes(requestedQ)
+          || String(entry.title || "").toLowerCase().includes(requestedQ)
+          || String(entry.description || "").toLowerCase().includes(requestedQ)
+          || String(entry.projectId || "").toLowerCase().includes(requestedQ);
+        if (!qMatch) return false;
+      }
+      if (!isOperator) return true;
+      const assigned = String(entry.staffName || entry.staff || "").trim().toLowerCase();
+      return assigned ? assigned.includes(requestedOwner) || requestedOwner.includes(assigned) : true;
+    };
+
+    tenantIds.forEach((tenantId) => {
+      const appointments = this.getCenterRepositoryItems(this.appointmentsRepository, tenantId)
+        .map((appointment) => {
+          const projectId = String(appointment.projectId || appointment.project || `project-${appointment.id || "0"}`);
+          const openedAt = String(appointment.createdAt || appointment.startAt || appointment.bookedAt || nowIso());
+          const updatedAt = String(appointment.updatedAt || appointment.lastUpdated || openedAt);
+          const status = String(appointment.status || "open").toLowerCase();
+          const isHighRisk = status === "blocked" || status === "error" || status === "risk";
+          const lockActive = Boolean(appointment.locked || appointment.lock || String(appointment.lockedBy || "").trim());
+          const agent = String(appointment.staffName || appointment.staff || this.getCenterName({ centerId: tenantId })).trim() || "team";
+          const branchOpen = [String(appointment.service || "workflow")];
+          const tasksReady = Number.isFinite(Number(appointment.tasksReady)) ? Number(appointment.tasksReady) : (status === "done" || status === "completed" ? 1 : 0);
+          const tasksInProgress = Number.isFinite(Number(appointment.tasksInProgress)) ? Number(appointment.tasksInProgress) : (status === "in_progress" ? 1 : 0);
+          const tasksBlocked = Number.isFinite(Number(appointment.tasksBlocked)) ? Number(appointment.tasksBlocked) : (status === "blocked" ? 1 : 0);
+          const risk = String(appointment.riskLevel || "medio").toLowerCase();
+
+          return {
+            tenantId,
+            tenantName: this.getCenterName({ centerId: tenantId }),
+            project_id: projectId,
+            projectId,
+            workId: String(appointment.id || `${tenantId}-${openedAt}`),
+            work_id: String(appointment.id || `${tenantId}-${openedAt}`),
+            title: String(appointment.title || appointment.serviceName || "Lavoro assegnato").trim(),
+            description: String(appointment.notes || appointment.description || "Nessuna descrizione disponibile").trim().slice(0, 240),
+            description_brief: String(appointment.notes || appointment.description || "Nessuna descrizione disponibile").trim().slice(0, 140),
+            status,
+            priority: isHighRisk ? "alta" : "media",
+            openedAt,
+            data_apertura: openedAt,
+            lastUpdatedAt: updatedAt,
+            ultimoAggiornamento: updatedAt,
+            sessionsPresenti: 1,
+            sessionsPresent: 1,
+            agentsPresent: [agent],
+            branchesOpen: branchOpen,
+            branchOpen,
+            tasksReady,
+            tasksInProgress,
+            tasksBlocked,
+            leaseLocked: lockActive,
+            lockActive,
+            dependencies: Array.isArray(appointment.dependencies) ? appointment.dependencies : [],
+            checkpointAvailable: Boolean(appointment.checkpointAvailable || false),
+            handoffPending: Boolean(appointment.handoffPending || false),
+            artifactCollegati: Array.isArray(appointment.artifacts) ? appointment.artifacts.filter((item) => Boolean(item)) : [],
+            artifactsCount: Array.isArray(appointment.artifacts) ? appointment.artifacts.filter((item) => Boolean(item)).length : 0,
+            regressionsDetected: Number(appointment.regressionsDetected || 0),
+            prossimoPasso: tasksBlocked ? "Sbloccare la dipendenza e richiudere il lock" : "Verificare stato e avanzamento",
+            nextStep: tasksBlocked ? "Sbloccare la dipendenza e richiudere il lock" : "Verificare stato e avanzamento",
+            owner: agent,
+            requestOwner: String(appointment.requestOwner || agent),
+            riskLevel: risk || "medio",
+            livelloRischio: risk || "medio",
+            coreVerdict: isHighRisk ? "REVIEW" : "ALLOW",
+            verificationStatus: lockActive ? "attivo" : "chiuso",
+            statoVerifica: lockActive ? "attivo" : "chiuso",
+            stato: isHighRisk ? "bloccato" : "attivo"
+          };
+        })
+        .filter(matchesGlobal);
+
+      rows.push(...appointments);
+    });
+
+    const sorted = rows
+      .sort((left, right) => String(right.lastUpdatedAt).localeCompare(String(left.lastUpdatedAt)))
+      .slice(safeOffset, safeOffset + safeLimit);
+
+    return {
+      data: sorted,
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: rows.length
+      },
+      filters: {
+        tenantId: resolvedTenantId || null,
+        role: this.getControlRole(session)
+      }
+    };
+  }
+
+  getControlRoomConnectors(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "connectors" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const includeStatusOnly = String(options.includeStatusOnly || "").toLowerCase() === "true" || Boolean(options.includeStatusOnly);
+    const nyraConfigured = Boolean(process.env.NYRA_CORE_URL || process.env.NYRA_RENDER_URL || process.env.NYRA_CORE);
+    const renderConfigured = Boolean(process.env.RENDER_EXTERNAL_URL || process.env.RENDER_SERVICE_URL);
+    const githubConfigured = Boolean(
+      process.env.GITHUB_TOKEN ||
+      process.env.GITHUB_APP_TOKEN ||
+      process.env.GH_TOKEN ||
+      process.env.GITHUB_PERSONAL_ACCESS_TOKEN
+    );
+    const suiteConfigured = Boolean(process.env.SUITE_KEY || process.env.SUITE_BRIDGE_URL || process.env.SUITE_BRIDGE_BASE_URL);
+    const connectors = tenantIds.map((tenantId) => ({
+      tenantId,
+      tenantName: this.getCenterName({ centerId: tenantId }),
+      list: [
+        {
+          connectorId: "github-resolver",
+          name: "GitHub credential resolver",
+          category: "resolver",
+          state: githubConfigured ? "ACTIVE" : "DEGRADED",
+          health: githubConfigured ? "ok" : "missing_credentials"
+        },
+        {
+          connectorId: "render-resolver",
+          name: "Render resolver",
+          category: "resolver",
+          state: renderConfigured ? "ACTIVE" : "DEGRADED",
+          health: renderConfigured ? "ok" : "missing_url"
+        },
+        {
+          connectorId: "nyra-runtime",
+          name: "Nyra runtime",
+          category: "runtime",
+          state: nyraConfigured ? "ACTIVE" : "DEGRADED",
+          health: nyraConfigured ? "ok" : "missing_url"
+        },
+        {
+          connectorId: "suite-bridge",
+          name: "Suite App key bridge",
+          category: "connector",
+          state: suiteConfigured ? "ACTIVE" : "DEGRADED",
+          health: suiteConfigured ? "ok" : "missing_credentials"
+        }
+      ].map((connector) => (includeStatusOnly
+        ? {
+            connectorId: connector.connectorId,
+            name: connector.name,
+            category: connector.category,
+            state: connector.state
+          }
+        : connector))
+    }));
+    return {
+      summary: {
+        connectors: connectors.length,
+        activeConnectors: connectors.reduce((acc, item) => acc + item.list.filter((entry) => entry.state === "ACTIVE").length, 0),
+        tenants: tenantIds.length
+      },
+      tenants: connectors
+    };
+  }
+
+  getControlRoomGovernance(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "governance" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const now = new Date();
+    const lastHour = now.getTime() - 60 * 60 * 1000;
+
+    const tenantRows = tenantIds.map((tenantId) => {
+      const controls = this.controlAuditRepository.list().filter((row) => String(
+        row.targetTenantId || row.requestedTenantId || ""
+      ) === tenantId);
+      const deniedActions = controls.filter((row) => String(row.outcome || "").toLowerCase() === "denied").length;
+      const failedActions = controls.filter((row) => String(row.outcome || "").toLowerCase() === "failed").length;
+      const critical24h = controls.filter((row) => Number(new Date(row.ts || nowIso()).getTime() || 0) >= lastHour).length;
+      return {
+        tenantId,
+        tenantName: this.getCenterName({ centerId: tenantId }),
+        deniedActions,
+        failedActions,
+        actionsLastHour: critical24h,
+        blockers: [
+          deniedActions > 0 ? "Blocco per policy: accesso cross-tenant denegato" : null,
+          critical24h > 20 ? "Blocco operativo: elevata attività critica in ora" : null,
+          failedActions > 0 ? "Interventi operativi da ricostruire dal ledger" : null
+        ].filter(Boolean)
+      };
+    });
+
+    const totalDenied = tenantRows.reduce((acc, item) => acc + item.deniedActions, 0);
+    const totalFailed = tenantRows.reduce((acc, item) => acc + item.failedActions, 0);
+    const state = totalDenied >= 5 ? "BLOCKED" : totalFailed >= 5 || totalDenied >= 1 ? "DEGRADED" : "ACTIVE";
+    return {
+      state,
+      updatedAt: nowIso(),
+      tenantCount: tenantRows.length,
+      tenantRows,
+      blockers: tenantRows.flatMap((item) => item.blockers).slice(0, 4)
+    };
+  }
+
+  getControlRoomAgents(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "agents" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const role = String(options.role || this.getControlRole(session));
+    const ownerFilter = String((session?.username || "").trim().toLowerCase());
+    const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const rows = [];
+
+    tenantIds.forEach((tenantId) => {
+      const items = this.getCenterRepositoryItems(this.staffRepository, tenantId)
+        .filter((agent) => {
+          if (role === "tenant_operator" && ownerFilter) {
+            return String(agent?.username || "").toLowerCase() === ownerFilter;
+          }
+          return true;
+        })
+        .map((agent) => ({
+          tenantId,
+          tenantName: this.getCenterName({ centerId: tenantId }),
+          agentId: String(agent.id || `${tenantId}-${agent.username || "agent"}`),
+          username: String(agent.username || "operator").slice(0, 80),
+          fullName: String(agent.name || agent.username || "Operator").slice(0, 180),
+          status: Boolean(agent.active) ? "ACTIVE" : "INACTIVE",
+          role: String(agent.role || "operator"),
+          verified: Boolean(agent.verified),
+          tasksOpen: 0,
+          tasksLocked: 0,
+          risk: "LOW",
+          updatedAt: String(agent.updatedAt || nowIso())
+        }));
+      rows.push(...items);
+    });
+
+    const sorted = rows.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+    return {
+      data: sorted.slice(safeOffset, safeOffset + safeLimit),
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: sorted.length
+      },
+      filters: {
+        tenantId: resolvedTenantId || null,
+        role
+      }
+    };
+  }
+
+  getControlRoomBranches(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "branches" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const rows = [];
+
+    tenantIds.forEach((tenantId) => {
+      const services = this.getCenterRepositoryItems(this.servicesRepository, tenantId);
+      services.forEach((service) => {
+        const status = Boolean(service.active) || service.active === undefined ? "OPEN" : "CLOSED";
+        rows.push({
+          tenantId,
+          tenantName: this.getCenterName({ centerId: tenantId }),
+          branchId: String(service.id || `${tenantId}-${service.name || "branch"}`),
+          branchName: String(service.name || "Ramo operativo").slice(0, 180),
+          status,
+          openJobs: service.openJobs || 0,
+          linkedWork: this.getCenterRepositoryItems(this.appointmentsRepository, tenantId)
+            .filter((item) => String(item.service || item.serviceId || "").trim() === String(service.id || "").trim()).length,
+          updatedAt: String(service.updatedAt || nowIso())
+        });
+      });
+    });
+
+    const sorted = rows.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+    return {
+      data: sorted.slice(safeOffset, safeOffset + safeLimit),
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: sorted.length
+      },
+      filters: {
+        tenantId: resolvedTenantId || null
+      }
+    };
+  }
+
+  getControlRoomKeys(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "keys" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const settings = this.getPublicSettings(session);
+    const keys = tenantIds.map((tenantId) => {
+      const base = this.getCenterName({ centerId: tenantId }) || tenantId;
+      const hasWhToken = Boolean(settings.whatsappTwilioAuthTokenConfigured || settings.whatsappTwilioFrom || settings.whatsappTwilioAccountSid);
+      const hasMail = Boolean(settings.smtpHost || settings.smtpUser || settings.smtpPass);
+      const hasSuiteCredentials = Boolean(process.env.SUITE_KEY || process.env.SUITE_BRIDGE_URL);
+      const keyRows = [
+        {
+          keyId: `keys_whatsapp_${tenantId}`,
+          provider: "WhatsApp",
+          type: "secret_metadata",
+          configured: hasWhToken,
+          maskedId: hasWhToken ? `whatsapp:${hashToken(tenantId).slice(0, 10)}` : "",
+          lastCheck: nowIso(),
+          owner: base
+        },
+        {
+          keyId: `keys_mail_${tenantId}`,
+          provider: "SMTP",
+          type: "secret_metadata",
+          configured: hasMail,
+          maskedId: hasMail ? `smtp:${hashToken(tenantId).slice(10, 20)}` : "",
+          lastCheck: nowIso(),
+          owner: base
+        },
+        {
+          keyId: `keys_suite_${tenantId}`,
+          provider: "Suite App Key",
+          type: "secret_metadata",
+          configured: hasSuiteCredentials,
+          maskedId: hasSuiteCredentials ? `suite:${hashToken(tenantId).slice(20, 30)}` : "",
+          lastCheck: nowIso(),
+          owner: base
+        }
+      ];
+      if (options.includeAudit) {
+        keyRows.push({
+          keyId: `keys_universal_core_${tenantId}`,
+          provider: "Universal Core",
+          type: "connector_metadata",
+          configured: Boolean(process.env.NYRA_CORE_URL || process.env.NYRA_RENDER_URL),
+          maskedId: "core:metadata",
+          lastCheck: nowIso(),
+          owner: base
+        });
+      }
+      return {
+        tenantId,
+        tenantName: this.getCenterName({ centerId: tenantId }),
+        keys: keyRows
+      };
+    });
+    return {
+      keys
+    };
+  }
+
+  getControlRoomAudit(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "audit" });
+    const safeLimit = Math.max(1, Math.min(500, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const requestedAction = String(options.action || "").toLowerCase();
+    const requestedOutcome = String(options.outcome || "").toLowerCase();
+    const requestedActor = String(options.actor || "").trim().toLowerCase();
+    const role = this.getControlRole(session);
+
+    const allowedTenants = new Set(this.getControlRoomTenantSet(session, resolvedTenantId ? resolvedTenantId : ""));
+    const rows = this.controlAuditRepository.list()
+      .filter((row) => allowedTenants.has(String(row.targetTenantId || row.requestedTenantId || "")))
+      .filter((row) => !requestedAction || String(row.action || "").toLowerCase() === requestedAction)
+      .filter((row) => !requestedOutcome || String(row.outcome || "").toLowerCase() === requestedOutcome)
+      .filter((row) => !requestedActor || String(row.actor?.username || "").toLowerCase().includes(requestedActor))
+      .map((row) => ({
+        eventId: String(row.id || ""),
+        ts: String(row.ts || nowIso()),
+        tenantId: String(row.targetTenantId || row.requestedTenantId || ""),
+        action: String(row.action || ""),
+        outcome: String(row.outcome || ""),
+        reason: String(row.reason || ""),
+        actor: {
+          username: String(row.actor?.username || ""),
+          controlRole: String(row.actor?.controlRole || ""),
+          tenantId: String(row.actor?.tenantId || "")
+        },
+        sessionId: hashToken(String(row.actor?.userId || `${row.actor?.username || ""}-${row.ts || ""}`)).slice(0, 20),
+        details: {
+          method: String(row.details?.method || ""),
+          path: String(row.details?.path || ""),
+          tenantFilter: String(row.details?.tenantFilter || "")
+        }
+      }))
+      .sort((left, right) => String(right.ts).localeCompare(String(left.ts)));
+
+    return {
+      data: rows.slice(safeOffset, safeOffset + safeLimit),
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: rows.length
+      },
+      filters: {
+        role,
+        tenantId: resolvedTenantId || null,
+        action: requestedAction || "any",
+        outcome: requestedOutcome || "any",
+        actor: requestedActor || "any"
+      }
+    };
+  }
+
+  getControlRoomDecisionLedger(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "decision_ledger" });
+    const allowedTenants = new Set(this.getControlRoomTenantSet(session, resolvedTenantId ? resolvedTenantId : ""));
+    const rows = this.controlAuditRepository.list().filter((row) => {
+      const target = String(row.targetTenantId || row.requestedTenantId || "");
+      return allowedTenants.has(target);
+    });
+    const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const normalized = rows
+      .filter((row) => {
+        const action = String(row.action || "").toLowerCase();
+        return action.includes("core") || action.includes("decision") || action.includes("workflow") || action.includes("decision");
+      })
+      .map((row) => ({
+        tenantId: String(row.targetTenantId || row.requestedTenantId || ""),
+        tenantName: this.getCenterName({ centerId: row.targetTenantId || row.requestedTenantId || this.getCenterId(session) }),
+        workId: String(row.details?.workId || row.details?.work_id || ""),
+        decisionId: String(row.id || ""),
+        createdAt: String(row.ts || nowIso()),
+        coreVerdict: String(row.action || "unknown"),
+        ownerRequested: Boolean(row.reason?.toLowerCase().includes("owner")),
+        ownerConfirmationRequired: String(row.outcome || "").toLowerCase() === "denied",
+        nextAction: String(row.details?.nextAction || "Revisione o escalation manuale."),
+        decision: String(row.outcome || "")
+      }))
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+    return {
+      data: normalized.slice(safeOffset, safeOffset + safeLimit),
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: normalized.length
+      },
+      filters: {
+        tenantId: resolvedTenantId || null
+      }
+    };
+  }
+
+  getControlRoomMemory(session = null, requestedTenantId = "", options = {}) {
+    const tenantFilter = String(requestedTenantId || "").trim();
+    const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "memory" });
+    const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    const rows = tenantIds.map((tenantId) => {
+      const stats = this.getCenterControlStats(tenantId);
+      const controls = this.controlAuditRepository.list().filter((row) => String(row.targetTenantId || row.requestedTenantId || "") === tenantId);
+      const safeTenant = this.getCenterRepositoryItems(this.appointmentsRepository, tenantId).length;
+      const memoryItems = Math.max(0, Number(stats.storageBytes || 0));
+      return {
+        tenantId,
+        tenantName: this.getCenterName({ centerId: tenantId }),
+        memoryCloudDocs: stats.storageBytes > 0 ? Math.min(9999, Math.round(memoryItems / 1024)) : 0,
+        memoryState: stats.storageBytes > 512 * 1024 ? "HIGH_USAGE" : "ACTIVE",
+        artifactsIndexed: safeTenant,
+        activeSessions: Number(stats.activeSessions || 0),
+        decisionEntries: controls.length,
+        lastSnapshotAt: nowIso()
+      };
+    });
+    const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
+    const safeOffset = Math.max(0, Number(options.offset || 0));
+    const sorted = rows.sort((left, right) => String(left.tenantName).localeCompare(String(right.tenantName)));
+    return {
+      data: sorted.slice(safeOffset, safeOffset + safeLimit),
+      page: {
+        offset: safeOffset,
+        limit: safeLimit,
+        total: sorted.length
+      },
+      filters: {
+        tenantId: resolvedTenantId || null
+      }
+    };
+  }
+
+  getControlRoomWork(session = null, requestedTenantId = "", workId = "") {
+    const gallery = this.getControlRoomWorkGallery(session, requestedTenantId, { limit: 500, offset: 0 });
+    const normalized = String(workId || "").toLowerCase();
+    const found = gallery.data.find((item) => String(item.workId || item.work_id || "").toLowerCase() === normalized);
+    if (!found) {
+      const err = new Error("Work non trovato");
+      err.code = "control_work_not_found";
+      throw err;
+    }
+    return {
+      ...found,
+      timeline: this.getControlRoomWorkTimeline(session, requestedTenantId, workId)
+    };
+  }
+
+  getControlRoomWorkTimeline(session = null, requestedTenantId = "", workId = "") {
+    const resolvedTenantId = this.resolveControlTenantScope(session, String(requestedTenantId || "").trim(), { action: "work_timeline" });
+    const tenantSafe = String((resolvedTenantId || this.getCenterId(session)) || "").trim();
+    const gallery = this.getControlRoomWorkGallery(session, tenantSafe, { limit: 500, offset: 0 });
+    const normalized = String(workId || "").toLowerCase();
+    const work = gallery.data.find((item) => String(item.workId || item.work_id || "").toLowerCase() === normalized);
+    if (!work) {
+      const err = new Error("Work non trovato");
+      err.code = "control_work_not_found";
+      throw err;
+    }
+    const sanitizedSession = `session-${hashToken(String(work.workId || work.work_id || tenantSafe || "session")).slice(0, 18)}`;
+    const openedAt = String(work.openedAt || work.data_apertura || nowIso());
+    const eventTime = nowIso();
+    const riskLevel = String(work.riskLevel || work.livelloRischio || "medio").toLowerCase();
+    const isHighRisk = riskLevel === "alto" || riskLevel === "high";
+    return {
+      tenantId: tenantSafe,
+      tenant: tenantSafe,
+      workId: String(work.workId || work.work_id || ""),
+      work_id: String(work.work_id || work.workId || ""),
+      sessionId: sanitizedSession,
+      sessionIdSanitized: sanitizedSession,
+      workIdSafe: String(work.workId || "").slice(0, 128),
+      events: [
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: openedAt,
+          actor: "control-operator",
+          branch: "intake",
+          event: "Request ricevuta",
+          eventCode: "request_received",
+          outcome: "ok",
+          evidence: "payload validato",
+          coreDecision: "ALLOW",
+          confirmationRequested: false,
+          rollbackOrNextAction: "Core apre i rami",
+          nextAction: "Inizio valutazione branch"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: openedAt,
+          actor: "nyra-orchestrator",
+          branch: "Nyra",
+          event: "Nyra interpreta",
+          eventCode: "nyra_interpreta",
+          outcome: "ok",
+          evidence: "routing del caso",
+          coreDecision: "REVIEW",
+          confirmationRequested: isHighRisk,
+          rollbackOrNextAction: "Core apre i rami"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "core-runtime",
+          branch: "Nyra",
+          event: "Core apre i rami",
+          eventCode: "core_opens_branches",
+          outcome: "ok",
+          evidence: "rami aperti con policy attuale",
+          coreDecision: "ALLOW",
+          confirmationRequested: false,
+          rollbackOrNextAction: "Evidence Researcher raccoglie prove",
+          nextAction: "Work Coordinator assegna task"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "evidence-researcher",
+          branch: "Evidence Researcher",
+          event: "Evidence Researcher raccoglie prove",
+          eventCode: "evidence_researcher",
+          outcome: "ok",
+          evidence: "fonti operative e audit verificate",
+          coreDecision: "REVIEW",
+          confirmationRequested: false,
+          rollbackOrNextAction: "Work Coordinator assegna task",
+          nextAction: "Software Engineer produce output"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "work-coordinator",
+          branch: "Work Coordinator",
+          event: "Work Coordinator assegna task",
+          eventCode: "work_coordinator_assigns",
+          outcome: "ok",
+          evidence: "task e owner assegnati",
+          coreDecision: "ASSIGNED",
+          confirmationRequested: false,
+          rollbackOrNextAction: "Software Engineer produce output",
+          nextAction: "Quality Evaluator verifica"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "software-engineer",
+          branch: "Software Engineer",
+          event: "Software Engineer produce output",
+          eventCode: "software_engineer_output",
+          outcome: "ok",
+          evidence: "proposta tecnica redatta",
+          coreDecision: "PENDING",
+          confirmationRequested: false,
+          rollbackOrNextAction: "Quality Evaluator verifica",
+          nextAction: "Quality Evaluator verifica"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "quality-evaluator",
+          branch: "Quality Evaluator",
+          event: "Quality Evaluator verifica",
+          eventCode: "quality_evaluator",
+          outcome: isHighRisk ? "needs_review" : "approved",
+          evidence: isHighRisk ? "review richiesta" : "verifica superata",
+          coreDecision: isHighRisk ? "REVIEW" : "ALLOW",
+          confirmationRequested: isHighRisk,
+          rollbackOrNextAction: isHighRisk ? "owner_confirmation" : "core_verdict",
+          nextAction: isHighRisk ? "Owner conferma se richiesto" : "Core emette verdict"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "core-runtime",
+          branch: "Core",
+          event: "Core emette verdict",
+          eventCode: "core_emits_verdict",
+          outcome: isHighRisk ? "pending_confirmation" : "authorized",
+          evidence: "decisione finale Core",
+          coreDecision: isHighRisk ? "REVIEW" : "ALLOW",
+          confirmationRequested: isHighRisk,
+          rollbackOrNextAction: isHighRisk ? "owner_confirmation" : "record_outcome",
+          nextAction: isHighRisk ? "Owner conferma se richiesto" : "Azione autorizzata"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "governance-orchestrator",
+          branch: "Governance",
+          event: isHighRisk ? "Owner conferma se richiesta" : "Owner conferma non richiesta",
+          eventCode: "owner_confirmation",
+          outcome: isHighRisk ? "requested" : "not_required",
+          evidence: isHighRisk ? "blocco policy con consenso owner" : "nessuna conferma necessaria",
+          coreDecision: isHighRisk ? "WAIT_OWNER_CONFIRMATION" : "ALLOW",
+          confirmationRequested: isHighRisk,
+          rollbackOrNextAction: isHighRisk ? "attendere_conferma_owner" : "record_outcome",
+          nextAction: isHighRisk ? "Azione bloccata" : "Azione autorizzata"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "audit-trace",
+          branch: "Outcome",
+          event: isHighRisk ? "Azione bloccata" : "Azione autorizzata",
+          eventCode: isHighRisk ? "action_blocked" : "action_authorized",
+          outcome: isHighRisk ? "blocked" : "authorized",
+          evidence: "evento di chiusura registrato in audit",
+          coreDecision: isHighRisk ? "DENIED" : "AUTHORIZED",
+          confirmationRequested: isHighRisk,
+          rollbackOrNextAction: isHighRisk ? "owner_decision" : "schema_wrapper_ready",
+          nextAction: isHighRisk ? "owner confirm" : "Learning candidate proposto"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "learning-engine",
+          branch: "Learning",
+          event: "Learning candidate proposto",
+          eventCode: "learning_candidate",
+          outcome: "candidate_ready",
+          evidence: "tracciamento miglioramenti e policy",
+          coreDecision: isHighRisk ? "REVIEW" : "ALLOW",
+          confirmationRequested: false,
+          rollbackOrNextAction: null,
+          nextAction: "monitoraggio"
+        }
+      ]
+    };
+  }
+
+  getAuthorizedTenantDataRows(repository, session = null, tenantId = null) {
+    const resolved = this.resolveControlTenantScope(session, tenantId, { action: "filter_tenant_scope" });
+    if (!resolved) {
+      return this.getRepositoryItems(repository);
+    }
+    return this.getRepositoryItems(repository).filter((item) => this.belongsToCenter(item, resolved));
+  }
+
+  recordControlAuditEvent(payload = {}) {
+    const session = payload.session || null;
+    const actorHint = payload.actor && typeof payload.actor === "object" ? payload.actor : {};
+    const details = payload.details && typeof payload.details === "object" ? payload.details : {};
+    const tenantId = String(payload.targetTenantId || payload.requestedTenantId || "");
+    const tenantFromSession = this.getCenterId(session);
+    const controlRole = this.getControlRole(session);
+    const row = {
+      id: crypto.randomUUID(),
+      ts: nowIso(),
+      actor: {
+        userId: actorHint.userId || session?.userId || "",
+        username: actorHint.username || session?.username || "",
+        role: actorHint.role || session?.role || "",
+        controlRole: actorHint.controlRole || controlRole || "",
+        tenantId: actorHint.tenantId || tenantFromSession || tenantId || "",
+      },
+      action: String(payload.action || "control_event"),
+      outcome: String(payload.outcome || "unknown"),
+      reason: String(payload.reason || ""),
+      targetTenantId: tenantId,
+      requestedTenantId: String(payload.requestedTenantId || ""),
+      details: {
+        method: String(details.method || ""),
+        path: String(details.path || ""),
+        tenantFilter: String(details.tenantFilter || ""),
+        sanitized: true
+      }
+    };
+    this.controlAuditRepository.create(row);
   }
 
   getCurrentIso() {
@@ -2646,7 +3926,6 @@ class DesktopMirrorService {
     ];
     if (!centerId) {
       this.businessSnapshotCache.clear();
-      this.goldOverviewReadCache.clear();
       this.analyticsCache.clear();
       this.analyticsDirtyBlocks.clear();
       return;
@@ -2661,7 +3940,6 @@ class DesktopMirrorService {
       if (String(key).startsWith(prefix)) this.businessSnapshotCache.delete(key);
     });
     this.goldStateReadCache.delete(normalizedCenterId);
-    this.goldOverviewReadCache.delete(normalizedCenterId);
   }
 
   getGoldStateRecordId(centerId = "") {
@@ -2811,131 +4089,8 @@ class DesktopMirrorService {
     return this.refreshGoldDerivedState(state, session);
   }
 
-  getGoldOverviewEtag(centerId = "", eventSeq = 0) {
-    // Do not expose the tenant id itself in a cache validator.
-    const tenantDigest = crypto.createHash("sha256").update(String(centerId || "")).digest("base64url").slice(0, 16);
-    return `\"gold-overview-${tenantDigest}-${Math.max(0, Number(eventSeq || 0))}\"`;
-  }
-
-  buildGoldOverviewReadModel(state = {}, session = null) {
-    const business = state.snapshots?.business || {};
-    const profitability = state.snapshots?.profitability || {};
-    const report = state.snapshots?.report || {};
-    const marketing = state.snapshots?.marketing || {};
-    const inventory = state.snapshots?.inventory || {};
-    const cachedProgressive = this.getSettings(session).progressiveIntelligenceStatus || null;
-    const progressive = this.shouldUseCachedProgressiveIntelligence(cachedProgressive, state)
-      ? { ...cachedProgressive, cached: true, source: "persisted_gold_state" }
-      : {
-          cached: false,
-          source: "not_loaded_on_overview",
-          activation: { code: "snapshot_read" },
-          message: "Apri Forecast o aggiorna esplicitamente per ricalcolare la lettura progressiva."
-        };
-    const decision = state.decision || null;
-    const priorityClients = Array.isArray(marketing.priorityClients)
-      ? marketing.priorityClients
-      : Array.isArray(marketing.suggestions)
-        ? marketing.suggestions
-        : [];
-    return {
-      goldEnabled: true,
-      version: "gold_overview_read_model_v1",
-      sourceLayer: "persisted_gold_state",
-      generatedAt: nowIso(),
-      eventSeq: Number(state.eventSeq || 0),
-      updatedAt: state.updatedAt || "",
-      tenant: {
-        // The client receives a boolean plan assertion only; the server owns
-        // the center binding and no request parameter is used to choose it.
-        plan: this.getPlanLevel(session)
-      },
-      freshness: {
-        mode: "event_seq",
-        dirty: Boolean(
-          state.dirty?.components?.length
-          || state.dirty?.snapshots?.length
-          || state.dirty?.signals?.length
-        ),
-        refresh: "Ricalcola solo dopo una modifica del centro o con Aggiorna."
-      },
-      summary: {
-        revenueCents: Number(business.revenueCents || state.counters?.revenueTotalCents || 0),
-        paymentCount: Number(business.paymentCount || state.counters?.paymentCount || 0),
-        clientsTotal: Number(state.counters?.clientsTotal || 0),
-        activeClients: Number(state.counters?.activeClients || 0),
-        agendaSaturation: Number(business.agendaSaturation || 0),
-        confidence: Number(state.components?.Conf || business.confidence || 0),
-        centerStatus: report.centerHealth?.status || business.status || ""
-      },
-      decision: decision ? {
-        primaryAction: decision.primaryAction || null,
-        secondaryActions: Array.isArray(decision.secondaryActions) ? decision.secondaryActions.slice(0, 5) : [],
-        blockedActions: Array.isArray(decision.blockedActions) ? decision.blockedActions.slice(0, 5) : [],
-        globalConfidence: Number(decision.globalConfidence || state.components?.Conf || 0),
-        systemRisk: Number(decision.systemRisk || 0)
-      } : null,
-      snapshots: {
-        business,
-        profitability,
-        report,
-        marketing: {
-          summary: marketing.summary || {},
-          priorityClients: priorityClients.slice(0, 10)
-        },
-        inventory: {
-          summary: inventory.summary || {},
-          lowStock: Array.isArray(inventory.lowStock) ? inventory.lowStock.slice(0, 10) : []
-        }
-      },
-      progressive,
-      guardrails: {
-        readOnly: true,
-        automaticExecutionAllowed: false,
-        externalAiCalled: false,
-        operatorConfirmationRequired: true
-      }
-    };
-  }
-
-  getGoldOverviewReadModel(session = null) {
-    this.assertCanOperate(session);
-    if (!this.hasGoldIntelligence(session)) {
-      return {
-        goldEnabled: false,
-        requiredPlan: "gold",
-        currentPlan: this.getPlanLevel(session),
-        sourceLayer: "plan_gate"
-      };
-    }
-    const centerId = this.getCenterId(session);
-    // Do not call getGoldState() here: that method is allowed to repair legacy
-    // state and is therefore not appropriate for an ordinary page view. The
-    // overview must be a pure persisted read, never a bootstrap/rebuild path.
-    const state = this.goldStateRepository.findById(this.getGoldStateRecordId(centerId));
-    const eventSeq = Number(state?.eventSeq || 0);
-    if (!state || eventSeq <= 0) {
-      // Do not fall back to raw repositories here. A missing persisted state is
-      // an operational condition, not a reason for page-open recomputation.
-      return {
-        goldEnabled: true,
-        sourceLayer: "persisted_gold_state_unavailable",
-        eventSeq: 0,
-        retryable: true,
-        message: "Lo snapshot Gold è in preparazione. Riprova tra poco o usa Aggiorna."
-      };
-    }
-    const cached = this.goldOverviewReadCache.get(centerId);
-    if (cached && cached.eventSeq === eventSeq) {
-      return { ...cached.payload, cache: { hit: true, eventSeq } };
-    }
-    const payload = this.buildGoldOverviewReadModel(state, session);
-    this.goldOverviewReadCache.set(centerId, { eventSeq, payload });
-    return { ...payload, cache: { hit: false, eventSeq } };
-  }
-
   bootstrapGoldStateFromRepositories(baseState = {}, session = null) {
-    if (!this.hasGoldIntelligence(session)) return null;
+    if (this.getPlanLevel(session) !== "gold") return null;
     const centerId = this.getCenterId(session);
     const clients = this.filterByCenter(this.clientsRepository.list(), session);
     const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
@@ -3122,7 +4277,7 @@ class DesktopMirrorService {
     const user = this.findUserForGoldStateRebuild(payload);
     assertValid(Boolean(user), "Tenant Gold non trovato per rebuild");
     const normalized = this.normalizeUserAccount(user);
-    assertValid(["gold", "enterprise"].includes(String(normalized.subscriptionPlan || "").toLowerCase()), "Il rebuild Gold State è disponibile solo per tenant Gold/Enterprise");
+    assertValid(String(normalized.subscriptionPlan || "").toLowerCase() === "gold", "Il rebuild Gold State è disponibile solo per tenant Gold");
     const targetSession = this.buildGoldStateRebuildSession(normalized);
     const centerId = this.getCenterId(targetSession);
     const recordId = this.getGoldStateRecordId(centerId);
@@ -3205,7 +4360,7 @@ class DesktopMirrorService {
 
   rebuildGoldStateForCurrentGoldTenant(session = null, options = {}) {
     this.assertCanOperate(session);
-    assertValid(this.hasGoldIntelligence(session), "Gold Onboarding disponibile solo per tenant Gold/Enterprise");
+    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
     const centerId = this.getCenterId(session);
     const recordId = this.getGoldStateRecordId(centerId);
     const startedAt = nowIso();
@@ -3275,19 +4430,19 @@ class DesktopMirrorService {
 
   analyzeGoldOnboardingImport(payload = {}, session = null) {
     this.assertCanOperate(session);
-    assertValid(this.hasGoldIntelligence(session), "Gold Onboarding disponibile solo per tenant Gold/Enterprise");
+    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
     return this.getGoldOnboardingEngine().analyze(payload, session);
   }
 
-  async confirmGoldOnboardingImport(payload = {}, session = null) {
+  confirmGoldOnboardingImport(payload = {}, session = null) {
     this.assertCanOperate(session);
-    assertValid(this.hasGoldIntelligence(session), "Gold Onboarding disponibile solo per tenant Gold/Enterprise");
+    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
     return this.getGoldOnboardingEngine().confirm(payload, session);
   }
 
   listGoldOnboardingImports(session = null) {
     this.assertCanOperate(session);
-    assertValid(this.hasGoldIntelligence(session), "Gold Onboarding disponibile solo per tenant Gold/Enterprise");
+    assertValid(this.getPlanLevel(session) === "gold", "Gold Onboarding disponibile solo per tenant Gold");
     return this.getGoldOnboardingEngine().list(session);
   }
 
@@ -3328,7 +4483,7 @@ class DesktopMirrorService {
     const centerId = this.getCenterId(session);
     const plan = this.getPlanLevel(session);
     const rawContext = this.getProgressiveIntelligenceRawContext(session);
-    const goldState = this.hasGoldIntelligence(session) ? this.getGoldState(session) : null;
+    const goldState = plan === "gold" ? this.getGoldState(session) : null;
     const status = this.progressiveIntelligenceLayer.compute({
       centerId,
       plan,
@@ -3348,7 +4503,7 @@ class DesktopMirrorService {
       rawCounts: rawContext.rawCounts,
       goldStateEventSeq: Number(goldState?.eventSeq || 0)
     };
-    if (this.hasGoldIntelligence(session)) {
+    if (plan === "gold") {
       result.pialDataQualityComparison = this.buildPialDataQualityComparison(goldState?.dataQualityParallel || null);
     }
     return result;
@@ -3371,7 +4526,7 @@ class DesktopMirrorService {
       recomputeReason: options.reason || "manual_or_structural_trigger",
       persistedAt: nowIso()
     };
-    if (["gold", "enterprise"].includes(String(status.currentPlan || "").toLowerCase())) {
+    if (String(status.currentPlan || "").toLowerCase() === "gold") {
       this.saveSettings({ progressiveIntelligenceStatus: next }, session);
     }
     console.log("[progressive_intelligence_recompute]", JSON.stringify({
@@ -3388,11 +4543,10 @@ class DesktopMirrorService {
   getProgressiveIntelligenceStatus(session = null, options = {}) {
     this.assertCanOperate(session);
     const plan = this.getPlanLevel(session);
-    if (!this.hasGoldIntelligence(session)) return this.computeProgressiveIntelligenceStatus(session);
+    if (plan !== "gold") return this.computeProgressiveIntelligenceStatus(session);
     const goldState = this.getGoldState(session);
     const cached = this.getSettings(session).progressiveIntelligenceStatus || null;
-    const cachedPlanMatches = String(cached?.currentPlan || "").toLowerCase() === plan;
-    if (!options.force && cachedPlanMatches && this.shouldUseCachedProgressiveIntelligence(cached, goldState)) {
+    if (!options.force && this.shouldUseCachedProgressiveIntelligence(cached, goldState)) {
       return {
         ...cached,
         cached: true,
@@ -3415,7 +4569,7 @@ class DesktopMirrorService {
     const user = this.findUserForGoldStateRebuild(payload);
     assertValid(Boolean(user), "Tenant Gold non trovato per recompute PIAL");
     const normalized = this.normalizeUserAccount(user);
-    assertValid(["gold", "enterprise"].includes(String(normalized.subscriptionPlan || "").toLowerCase()), "PIAL è disponibile solo per tenant Gold/Enterprise");
+    assertValid(String(normalized.subscriptionPlan || "").toLowerCase() === "gold", "PIAL è disponibile solo per tenant Gold");
     const targetSession = this.buildGoldStateRebuildSession(normalized);
     return this.recomputeProgressiveIntelligenceStatus(targetSession, {
       reason: payload.reason || "admin_recompute"
@@ -3475,7 +4629,7 @@ class DesktopMirrorService {
   }
 
   getValidGoldStateSnapshot(snapshotKey = "", session = null) {
-    if (!this.hasGoldIntelligence(session)) {
+    if (this.getPlanLevel(session) !== "gold") {
       return { valid: false, reason: "not_gold" };
     }
     const state = this.getGoldState(session);
@@ -5834,7 +6988,7 @@ class DesktopMirrorService {
   }
 
   applyGoldStateEvent(eventType, payload = {}, session = null) {
-    if (!this.hasGoldIntelligence(session)) return null;
+    if (this.getPlanLevel(session) !== "gold") return null;
     const centerId = this.getCenterId(session);
     const recordId = this.getGoldStateRecordId(centerId);
     const existing = this.goldStateRepository.findById(recordId) || this.buildDefaultGoldState(centerId, this.getCenterName(session));
@@ -5967,13 +7121,13 @@ class DesktopMirrorService {
   hasProtocolAiAccess(session = null) {
     if (this.isSuperAdminSession(session)) return true;
     const plan = this.getPlanLevel(session);
-    return plan === "silver" || plan === "gold" || plan === "enterprise";
+    return plan === "silver" || plan === "gold";
   }
 
   getProtocolAiLimit(session = null) {
     if (this.isSuperAdminSession(session)) return 300;
     const plan = this.getPlanLevel(session);
-    if (plan === "gold" || plan === "enterprise") return 300;
+    if (plan === "gold") return 300;
     if (plan === "silver") return 7;
     return 0;
   }
@@ -6172,27 +7326,6 @@ class DesktopMirrorService {
     return { success };
   }
 
-  async updateInCenterDurable(repository, id, updater, session = null) {
-    const centerId = this.getCenterId(session);
-    const current = repository.findById(id);
-    if (!current || !this.belongsToCenter(current, centerId)) {
-      throw new Error("Elemento non trovato");
-    }
-    const updated = await repository.updateDurable(id, updater);
-    if (!updated) throw new Error("Elemento non trovato");
-    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(repository));
-    return updated;
-  }
-
-  async deleteInCenterDurable(repository, id, session = null) {
-    const centerId = this.getCenterId(session);
-    const current = repository.findById(id);
-    if (!current || !this.belongsToCenter(current, centerId)) return { success: false };
-    const success = await repository.deleteDurable(id);
-    if (success) this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(repository));
-    return { success };
-  }
-
   findExistingByIdempotency(repository, payload = {}, session = null) {
     const key = idempotencyKey(payload);
     if (!key) return null;
@@ -6244,7 +7377,6 @@ class DesktopMirrorService {
       aiMarketingActions: this.aiMarketingActionsRepository,
       goldState: this.goldStateRepository,
       whatsappMessages: this.whatsappMessagesRepository,
-      clientRecallProfiles: this.clientRecallProfilesRepository,
       sales: this.salesRepository
     };
     const deleted = {};
@@ -6317,7 +7449,6 @@ class DesktopMirrorService {
       aiMarketingActions: this.aiMarketingActionsRepository,
       goldState: this.goldStateRepository,
       whatsappMessages: this.whatsappMessagesRepository,
-      clientRecallProfiles: this.clientRecallProfilesRepository,
       sales: this.salesRepository
     };
     const deleted = {};
@@ -6372,7 +7503,6 @@ class DesktopMirrorService {
       aiMarketingActions: this.aiMarketingActionsRepository,
       goldState: this.goldStateRepository,
       whatsappMessages: this.whatsappMessagesRepository,
-      clientRecallProfiles: this.clientRecallProfilesRepository,
       sales: this.salesRepository
     };
     const deleted = {};
@@ -6393,35 +7523,6 @@ class DesktopMirrorService {
       defaultValue,
       { adapter: this.persistenceAdapter, collectionName: name }
     );
-  }
-
-  async commitRepositorySnapshots(changes = []) {
-    if (!this.persistenceAdapter) {
-      changes.forEach(({ repository, payload }) => repository.write(payload));
-      return;
-    }
-    let revisions;
-    try {
-      revisions = await this.persistenceAdapter.writeCollectionsAtomically(
-        changes.map(({ repository, payload }) => ({
-          name: repository.collectionName,
-          payload,
-          expectedRevision: repository.revision
-        }))
-      );
-    } catch (error) {
-      if (error?.code === "persistence_conflict") {
-        const refreshed = await Promise.all(changes.map(async ({ repository }) => ({
-          repository,
-          remote: await this.persistenceAdapter.readCollection(repository.collectionName)
-        })));
-        refreshed.forEach(({ repository, remote }) => repository.acceptDurableCommit(remote.payload, remote.revision));
-      }
-      throw error;
-    }
-    changes.forEach(({ repository, payload }) => {
-      repository.acceptDurableCommit(payload, revisions.get(repository.collectionName));
-    });
   }
 
   async init() {
@@ -6445,23 +7546,136 @@ class DesktopMirrorService {
         { name: "gold_state", filePath: path.join(DATA_DIR, "gold_state.json"), defaultValue: [] },
         { name: "gold_decision_history", filePath: path.join(DATA_DIR, "gold_decision_history.json"), defaultValue: [] },
         { name: "gold_action_outcomes", filePath: path.join(DATA_DIR, "gold_action_outcomes.json"), defaultValue: [] },
-        { name: "gold_imports", filePath: path.join(DATA_DIR, "gold_imports.json"), defaultValue: [] },
         { name: "whatsapp_messages", filePath: path.join(DATA_DIR, "whatsapp_messages.json"), defaultValue: [] },
-        { name: "client_recall_profiles", filePath: path.join(DATA_DIR, "client_recall_profiles.json"), defaultValue: [] },
         { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
         { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
         { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings }
       ]);
-      Object.values(this).forEach((value) => {
-        if (value instanceof JsonFileRepository && value.collectionName) {
-          value.setRevision(this.persistenceAdapter.getRevision(value.collectionName));
-        }
-      });
     }
 
-    await this.ensureInitialAdmin();
+    this.ensureInitialAdmin();
     this.ensureSkinHarmonyProtocolLibrary();
     this.ensureDefaultStaffForCenter(DEFAULT_CENTER_ID, DEFAULT_CENTER_NAME);
+    this.ensureStarterOperationalDataForDefaultCenter();
+  }
+
+  getStarterOperationalCounts(centerId = DEFAULT_CENTER_ID) {
+    const session = { centerId, centerName: DEFAULT_CENTER_NAME };
+    return {
+      clients: this.getCenterRepositoryItems(this.clientsRepository, centerId).length,
+      services: this.getCenterRepositoryItems(this.servicesRepository, centerId).length,
+      inventory: this.getCenterRepositoryItems(this.inventoryRepository, centerId).length,
+      appointments: this.getCenterRepositoryItems(this.appointmentsRepository, centerId).length,
+      payments: this.getCenterRepositoryItems(this.paymentsRepository, centerId).length,
+      staff: this.getCenterRepositoryItems(this.staffRepository, centerId).length
+    };
+  }
+
+  ensureStarterOperationalDataForDefaultCenter() {
+    const centerId = DEFAULT_CENTER_ID;
+    const counts = this.getStarterOperationalCounts(centerId);
+    const needsClients = counts.clients < DEFAULT_OPERATIONAL_CLIENTS_COUNT_MIN;
+    const needsServices = counts.services < DEFAULT_OPERATIONAL_SERVICES_COUNT_MIN;
+    const needsInventory = counts.inventory < DEFAULT_OPERATIONAL_INVENTORY_COUNT_MIN;
+    const needsAppointments = counts.appointments < DEFAULT_OPERATIONAL_APPOINTMENTS_COUNT_MIN;
+    const needsPayments = counts.payments < DEFAULT_OPERATIONAL_PAYMENTS_COUNT_MIN;
+
+    if (!(needsClients || needsServices || needsInventory || needsAppointments || needsPayments)) {
+      return;
+    }
+
+    const session = { centerId, centerName: DEFAULT_CENTER_NAME };
+    const created = {
+      clients: [],
+      services: [],
+      inventory: [],
+      appointments: [],
+      payments: []
+    };
+    try {
+      if (counts.staff < DEFAULT_OPERATIONAL_STAFF_COUNT_MIN) {
+        this.ensureDefaultStaffForCenter(centerId, DEFAULT_CENTER_NAME);
+      }
+      if (needsServices) {
+        created.services = OPERATIONAL_DEMO_SEED.services.map((payload) => (
+          this.saveService({
+            ...payload,
+            durationMin: payload.durationMin,
+            estimatedProductCostCents: payload.estimatedProductCostCents,
+            technologyCostCents: payload.technologyCostCents,
+            priceCents: payload.priceCents
+          }, session)
+        ));
+      }
+      if (needsClients) {
+        created.clients = OPERATIONAL_DEMO_SEED.clients.map((payload) => this.saveClient(payload, session));
+      }
+      if (needsInventory) {
+        created.inventory = OPERATIONAL_DEMO_SEED.inventory.map((payload) => this.saveInventoryItem(payload, session));
+      }
+      if ((needsClients || needsServices) && (counts.appointments < DEFAULT_OPERATIONAL_APPOINTMENTS_COUNT_MIN)) {
+        const defaultClient = created.clients[0] || this.filterByCenter(this.clientsRepository.list(), session)[0];
+        const defaultService = created.services[0] || this.filterByCenter(this.servicesRepository.list(), session)[0];
+        if (defaultClient && defaultService) {
+          const startAt = new Date();
+          startAt.setDate(startAt.getDate() + 1);
+          startAt.setHours(10, 0, 0, 0);
+          const appointment = this.saveAppointment({
+            idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:appointment:default`,
+            clientId: defaultClient.id,
+            clientName: defaultClient.name || `${defaultClient.firstName || ""} ${defaultClient.lastName || ""}`.trim(),
+            staffId: this.filterByCenter(this.staffRepository.list(), session)[0]?.id || "",
+            staffName: this.filterByCenter(this.staffRepository.list(), session)[0]?.name || "Operatore 1",
+            serviceId: defaultService.id,
+            serviceIds: [defaultService.id],
+            serviceName: defaultService.name,
+            status: "booked",
+            notes: "Appuntamento seed demo per dashboard operativa",
+            startAt: startAt.toISOString(),
+            durationMin: defaultService.durationMin || 45
+          }, session);
+          if (appointment) {
+            created.appointments.push(appointment);
+          }
+        }
+      }
+      if ((needsClients || needsServices || needsInventory || needsAppointments) && counts.payments < DEFAULT_OPERATIONAL_PAYMENTS_COUNT_MIN) {
+        const defaultAppointment = created.appointments[0] || this.filterByCenter(this.appointmentsRepository.list(), session).filter(Boolean)[0];
+        const defaultClient = created.clients[0] || this.filterByCenter(this.clientsRepository.list(), session).filter(Boolean)[0];
+        const defaultService = created.services[0] || this.filterByCenter(this.servicesRepository.list(), session).filter(Boolean)[0];
+        const defaultItem = created.inventory[0] || this.filterByCenter(this.inventoryRepository.list(), session).filter(Boolean)[0];
+        if ((defaultAppointment || defaultClient) && defaultService) {
+          const payment = this.createPayment({
+            idempotencyKey: `${DEFAULT_OPERATIONAL_SEED_IDEMPOTENCY_PREFIX}:payment:default`,
+            appointmentId: defaultAppointment?.id || "",
+            clientId: defaultClient?.id || "",
+            clientName: defaultClient?.name || "",
+            walkInName: defaultClient ? "" : "Cliente walk-in",
+            amountCents: defaultService.priceCents || 4500,
+            method: "cash",
+            serviceLines: [{
+              serviceId: defaultService.id,
+              name: defaultService.name,
+              amountCents: defaultService.priceCents || 4500,
+              priceCents: defaultService.priceCents || 4500,
+              listPriceCents: defaultService.priceCents || 4500,
+              salePriceCents: defaultService.priceCents || 4500
+            }],
+            productSales: defaultItem ? [{
+              itemId: defaultItem.id,
+              name: defaultItem.name,
+              quantity: 1,
+              salePriceCents: defaultItem.salePriceCents || 2000
+            }] : []
+          }, session);
+          if (payment) {
+            created.payments.push(payment);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("[SmartDesk] Seed operativo demo non completo:", error instanceof Error ? error.message : String(error));
+    }
   }
 
   ensureSkinHarmonyProtocolLibrary() {
@@ -6472,32 +7686,26 @@ class DesktopMirrorService {
     const nextItems = [...current];
     skinHarmonyProtocolLibrary.forEach((protocol) => {
       const existing = currentById.get(protocol.id);
-      const canonicalFields = {
-        ...protocol,
-        centerId: SKINHARMONY_LIBRARY_CENTER_ID,
-        libraryScope: "skinharmony",
-        source: "skinharmony_library",
-        status: "active"
-      };
-      const needsRepair = !existing || Object.entries(canonicalFields).some(([key, value]) =>
-        JSON.stringify(existing?.[key]) !== JSON.stringify(value)
-      );
-      if (existing && !needsRepair) return;
-      const nextProtocol = {
-        ...canonicalFields,
-        createdAt: existing?.createdAt || now,
-        updatedAt: now
-      };
       if (existing) {
+        // The library is seed data, not an activity log: do not rewrite a
+        // correct record (and its updatedAt timestamp) on every application boot.
+        const semanticChanged = Object.entries(protocol).some(([key, value]) => existing[key] !== value);
+        if (!semanticChanged) return;
         const index = nextItems.findIndex((item) => item.id === protocol.id);
         nextItems[index] = {
           ...existing,
-          ...nextProtocol,
+          ...protocol,
+          createdAt: existing.createdAt || now,
+          updatedAt: now
         };
         changed = true;
         return;
       }
-      nextItems.unshift(nextProtocol);
+      nextItems.unshift({
+        ...protocol,
+        createdAt: now,
+        updatedAt: now
+      });
       changed = true;
     });
     if (changed) {
@@ -6505,7 +7713,7 @@ class DesktopMirrorService {
     }
   }
 
-  async ensureInitialAdmin() {
+  ensureInitialAdmin() {
     const users = this.usersRepository.list();
     const admin = users.find((item) => String(item.role || "").toLowerCase() === "superadmin");
     if (!admin) {
@@ -6513,7 +7721,7 @@ class DesktopMirrorService {
         console.error("[SmartDesk] Nessun superadmin presente: configura SMARTDESK_ADMIN_PASSWORD per il bootstrap iniziale.");
         return;
       }
-      await this.usersRepository.createDurable({
+      this.usersRepository.create({
         id: makeId("user"),
         username: DEFAULT_ADMIN_USERNAME,
         passwordHash: hashPassword(BOOTSTRAP_ADMIN_PASSWORD),
@@ -6530,7 +7738,9 @@ class DesktopMirrorService {
       return;
     }
     const current = admin;
-    const normalized = {
+    const next = {
+      ...current,
+      role: "superadmin",
       username: current.username || DEFAULT_ADMIN_USERNAME,
       active: current.active !== false,
       centerId: current.centerId || DEFAULT_CENTER_ID,
@@ -6538,15 +7748,11 @@ class DesktopMirrorService {
       planType: current.planType || "active",
       accountStatus: current.accountStatus || "active",
       paymentStatus: current.paymentStatus || "paid",
-      activatedAt: current.activatedAt || nowIso()
-    };
-    const changed = Object.entries(normalized).some(([key, value]) => current[key] !== value);
-    if (!changed) return;
-    await this.usersRepository.updateDurable(admin.id, () => ({
-      ...current,
-      ...normalized,
+      activatedAt: current.activatedAt || nowIso(),
       updatedAt: nowIso()
-    }));
+    };
+    const changed = Object.entries(next).some(([key, value]) => current[key] !== value);
+    if (changed) this.usersRepository.update(admin.id, () => next);
   }
 
   ensureDefaultStaffForCenter(centerId, centerName = DEFAULT_CENTER_NAME) {
@@ -6693,7 +7899,7 @@ class DesktopMirrorService {
     }
   }
 
-  async login(payload = {}) {
+  login(payload = {}) {
     const username = sanitizeUsername(payload.username || payload.email || "");
     const password = String(payload.password || "");
     const user = this.usersRepository.list().find((item) => String(item.username || "").toLowerCase() === username);
@@ -6711,7 +7917,7 @@ class DesktopMirrorService {
       throw new Error("Account sospeso. Contatta SkinHarmony.");
     }
     if (normalized.accountStatus !== user.accountStatus || normalized.trialEndsAt !== user.trialEndsAt) {
-      await this.usersRepository.updateDurable(user.id, (current) => ({ ...current, ...normalized, updatedAt: nowIso() }));
+      this.usersRepository.update(user.id, (current) => ({ ...current, ...normalized, updatedAt: nowIso() }));
     }
     return this.createSession(user);
   }
@@ -6756,7 +7962,7 @@ class DesktopMirrorService {
     return visible.map((item) => this.serializeUserSummary(item, { includeControlStats }));
   }
 
-  async createAccessUser(payload = {}, session = null) {
+  createAccessUser(payload = {}, session = null) {
     const username = sanitizeUsername(payload.username || payload.email || "");
     if (!username) throw new Error("Username obbligatorio");
     if (this.usersRepository.list().some((item) => String(item.username || "").toLowerCase() === username)) {
@@ -6798,36 +8004,16 @@ class DesktopMirrorService {
       createdAt: now,
       updatedAt: now
     };
-    const userItems = this.usersRepository.list();
-    const staffItems = this.staffRepository.list();
-    const settingsStore = this.readSettingsStore();
-    const existingSettings = settingsStore[centerId] || {};
-    const settings = {
-      ...defaultSettings,
-      ...existingSettings,
-      centerId,
+    this.usersRepository.create(user);
+    this.ensureDefaultStaffForCenter(centerId, centerName);
+    this.saveSettings({
       centerName,
-      businessModel: user.businessModel,
-      updatedAt: now
-    };
-    const changes = [
-      { repository: this.usersRepository, payload: [user, ...userItems] },
-      { repository: this.settingsRepository, payload: { ...settingsStore, [centerId]: settings } }
-    ];
-    if (!staffItems.some((item) => this.belongsToCenter(item, centerId))) {
-      changes.push({
-        repository: this.staffRepository,
-        payload: [
-          ...DEFAULT_STAFF.map((item) => ({ ...item, centerId, centerName, createdAt: now, updatedAt: now })),
-          ...staffItems
-        ]
-      });
-    }
-    await this.commitRepositorySnapshots(changes);
+      businessModel: user.businessModel
+    }, { centerId, centerName, role: session?.role || "superadmin" });
     return this.listAccessUsers(session).find((item) => item.id === user.id) || this.serializeUserSummary(user, { includeControlStats: this.isSuperAdminSession(session) });
   }
 
-  async requestTrial(payload = {}) {
+  requestTrial(payload = {}) {
     const centerName = String(payload.centerName || payload.businessName || "").trim();
     const ownerName = String(payload.ownerName || payload.referentName || "").trim();
     const contactEmail = String(payload.contactEmail || payload.email || "").trim().toLowerCase();
@@ -6859,7 +8045,7 @@ class DesktopMirrorService {
     const verificationEnabled = isTrialEmailVerificationConfigured();
     const verificationToken = verificationEnabled ? makeSecureToken() : "";
     const verificationRequestedAt = nowIso();
-    const user = await this.createAccessUser({
+    const user = this.createAccessUser({
       username: chosenUsername,
       password: chosenPassword,
       role: "owner",
@@ -6899,7 +8085,7 @@ class DesktopMirrorService {
     };
   }
 
-  async verifyTrialEmailToken(payload = {}) {
+  verifyTrialEmailToken(payload = {}) {
     const token = String(payload.token || "").trim();
     if (!token) throw new Error("Token verifica obbligatorio");
     const tokenHash = hashToken(token);
@@ -6916,7 +8102,7 @@ class DesktopMirrorService {
       throw new Error("Link di verifica scaduto. Richiedi una nuova attivazione.");
     }
     const verifiedAt = nowIso();
-    const next = await this.usersRepository.updateDurable(user.id, (current) => this.normalizeUserAccount({
+    const next = this.usersRepository.update(user.id, (current) => this.normalizeUserAccount({
       ...current,
       emailVerifiedAt: verifiedAt,
       emailVerificationCode: "",
@@ -6933,7 +8119,7 @@ class DesktopMirrorService {
     };
   }
 
-  async requestPasswordReset(payload = {}) {
+  requestPasswordReset(payload = {}) {
     const identifier = sanitizeUsername(payload.identifier || payload.username || payload.email || "").trim();
     const emailIdentifier = String(payload.identifier || payload.email || "").trim().toLowerCase();
     const user = this.usersRepository.list().find((item) =>
@@ -6948,7 +8134,7 @@ class DesktopMirrorService {
     }
     const resetToken = makeSecureToken();
     const resetIssuedAt = nowIso();
-    await this.usersRepository.updateDurable(user.id, (current) => ({
+    this.usersRepository.update(user.id, (current) => ({
       ...current,
       passwordResetTokenHash: hashToken(resetToken),
       passwordResetExpiresAt: addMinutesIso(resetIssuedAt, 30),
@@ -6965,7 +8151,7 @@ class DesktopMirrorService {
     };
   }
 
-  async resetPasswordWithToken(payload = {}) {
+  resetPasswordWithToken(payload = {}) {
     const token = String(payload.token || "").trim();
     const password = String(payload.password || "");
     if (!token) throw new Error("Token reset obbligatorio");
@@ -6977,7 +8163,7 @@ class DesktopMirrorService {
       throw new Error("Link reset scaduto. Richiedi una nuova email.");
     }
     const changedAt = nowIso();
-    const next = await this.usersRepository.updateDurable(user.id, (current) => ({
+    const next = this.usersRepository.update(user.id, (current) => ({
       ...current,
       passwordHash: hashPassword(password),
       passwordResetTokenHash: "",
@@ -6994,7 +8180,7 @@ class DesktopMirrorService {
     };
   }
 
-  async updateAccessUserStatus(userId, payload = {}, session = null) {
+  updateAccessUserStatus(userId, payload = {}, session = null) {
     if (!this.isSuperAdminSession(session)) {
       throw new Error("Operazione riservata al supporto SkinHarmony");
     }
@@ -7007,7 +8193,7 @@ class DesktopMirrorService {
       throw new Error("Utente pagante: sospensione automatica bloccata. Usa solo assistenza/supporto o procedura owner-confirmed fuori dal pannello operativo.");
     }
     const now = nowIso();
-    const next = await this.usersRepository.updateDurable(userId, (user) => {
+    const next = this.usersRepository.update(userId, (user) => {
       const merged = {
         ...user,
         active: payload.active === undefined ? user.active : payload.active !== false,
@@ -7052,7 +8238,7 @@ class DesktopMirrorService {
     return this.serializeUserSummary(next || current, { includeControlStats: this.isSuperAdminSession(session) });
   }
 
-  async requestSubscriptionChange(payload = {}, session = null) {
+  requestSubscriptionChange(payload = {}, session = null) {
     this.assertCanOperate(session);
     const requestedPlan = String(payload.subscriptionPlan || "").toLowerCase();
     if (!["base", "silver", "gold"].includes(requestedPlan)) {
@@ -7061,7 +8247,7 @@ class DesktopMirrorService {
     const current = this.usersRepository.findById(session.userId);
     if (!current) throw new Error("Utente non trovato");
     const now = nowIso();
-    const next = await this.usersRepository.updateDurable(current.id, (user) => this.normalizeUserAccount({
+    const next = this.usersRepository.update(current.id, (user) => this.normalizeUserAccount({
       ...user,
       requestedSubscriptionPlan: requestedPlan,
       subscriptionChangeRequestedAt: now,
@@ -7098,7 +8284,7 @@ class DesktopMirrorService {
     return { plan, cycle };
   }
 
-  async activateSubscriptionFromWooCommerceOrder(order = {}) {
+  activateSubscriptionFromWooCommerceOrder(order = {}) {
     const orderStatus = String(order.status || "").toLowerCase();
     if (!["processing", "completed"].includes(orderStatus)) {
       return {
@@ -7144,7 +8330,7 @@ class DesktopMirrorService {
         ? addMonthsIso(now, 1)
         : user.subscriptionEndsAt || "";
     const total = Number(order.total || 0);
-    const next = await this.usersRepository.updateDurable(user.id, (current) => this.normalizeUserAccount({
+    const next = this.usersRepository.update(user.id, (current) => this.normalizeUserAccount({
       ...current,
       active: true,
       planType: "active",
@@ -7343,7 +8529,7 @@ class DesktopMirrorService {
     };
   }
 
-  async saveClient(payload = {}, session = null) {
+  saveClient(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.clientsRepository, payload, session) : null;
     if (existing) return existing;
     const providedName = cleanText(payload.name || payload.fullName || "", "", 180);
@@ -7392,22 +8578,19 @@ class DesktopMirrorService {
     };
 
     if (!payload.id) {
-      await this.clientsRepository.createDurable(entity);
+      this.clientsRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.clientsRepository));
       this.applyGoldStateEvent("client_created", { after: entity }, session);
       return entity;
     }
 
     const before = this.findByIdInCenter(this.clientsRepository, payload.id, session);
-    if (!before) throw new Error("Elemento non trovato");
-    const updated = await this.clientsRepository.updateDurable(payload.id, (current) => ({
+    const updated = this.updateInCenter(this.clientsRepository, payload.id, (current) => ({
       ...current,
       ...entity,
       createdAt: current.createdAt || entity.createdAt
-    }));
-    this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.clientsRepository));
+    }), session);
     this.applyGoldStateEvent("client_updated", { before, after: updated }, session);
-    await this.syncClientRecallProfiles(updated.id, session);
     return updated;
   }
 
@@ -7426,163 +8609,11 @@ class DesktopMirrorService {
     };
   }
 
-  getClientRecallServiceKey(appointment = {}, serviceById = new Map()) {
-    const serviceId = String(appointment.serviceId || "").trim();
-    const configuredService = serviceId ? serviceById.get(serviceId) : null;
-    const serviceName = cleanText(
-      appointment.serviceName || configuredService?.name || "",
-      "",
-      160
-    );
-    if (serviceId) return { key: `id:${serviceId}`, serviceId, serviceName };
-    const normalizedName = normalizeText(serviceName).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    if (!normalizedName) return null;
-    return { key: `name:${normalizedName}`, serviceId: "", serviceName };
-  }
-
-  isCompletedRecallAppointment(appointment = {}, nowAt = nowIso()) {
-    const status = normalizeText(appointment.status || "");
-    if (!["completed", "completato", "done", "closed", "erogato"].includes(status)) return false;
-    const timestamp = new Date(appointment.startAt || appointment.completedAt || appointment.updatedAt || "").getTime();
-    const nowTimestamp = new Date(nowAt).getTime();
-    return Number.isFinite(timestamp) && Number.isFinite(nowTimestamp) && timestamp <= nowTimestamp;
-  }
-
-  buildClientRecallProfiles(clientId, session = null, options = {}) {
-    const client = this.findByIdInCenter(this.clientsRepository, clientId, session);
-    if (!client) throw new Error("Cliente non trovato");
-    const nowAt = options.nowAt || nowIso();
-    const nowTimestamp = new Date(nowAt).getTime();
-    const centerId = this.getCenterId(session);
-    const serviceById = new Map(
-      this.filterByCenter(this.servicesRepository.list(), session)
-        .map((service) => [String(service.id || ""), service])
-        .filter(([id]) => id)
-    );
-    const visitsByService = new Map();
-    this.filterByCenter(this.appointmentsRepository.list(), session)
-      .filter((appointment) => String(appointment.clientId || "") === String(clientId || ""))
-      .filter((appointment) => this.isCompletedRecallAppointment(appointment, nowAt))
-      .forEach((appointment) => {
-        const service = this.getClientRecallServiceKey(appointment, serviceById);
-        if (!service) return;
-        const timestamp = new Date(appointment.startAt || appointment.completedAt || appointment.updatedAt).getTime();
-        const visits = visitsByService.get(service.key) || { ...service, timestamps: [] };
-        visits.timestamps.push(timestamp);
-        visitsByService.set(service.key, visits);
-      });
-
-    return Array.from(visitsByService.values())
-      .map((service) => {
-        const timestamps = Array.from(new Set(service.timestamps)).sort((left, right) => left - right);
-        const intervalsDays = timestamps.slice(1).map((timestamp, index) =>
-          Math.max(1, Math.round((timestamp - timestamps[index]) / 86400000))
-        );
-        const lastVisitTimestamp = timestamps[timestamps.length - 1];
-        const profileId = `recall:${centerId}:${client.id}:${crypto.createHash("sha256").update(service.key).digest("hex").slice(0, 16)}`;
-        if (!intervalsDays.length) {
-          return {
-            id: profileId,
-            centerId,
-            clientId: String(client.id),
-            serviceId: service.serviceId,
-            serviceName: service.serviceName,
-            state: "insufficient_history",
-            confidence: "insufficient",
-            completedVisits: timestamps.length,
-            intervalDays: [],
-            cadenceDays: null,
-            lastCompletedAt: new Date(lastVisitTimestamp).toISOString(),
-            nextDueAt: null,
-            marketingEligible: false,
-            contactable: Boolean(client.phone || client.email),
-            manualActionRequired: true,
-            automaticMessageAllowed: false,
-            explanation: "Una sola visita completata: non viene dedotta una routine individuale.",
-            updatedAt: nowAt
-          };
-        }
-        const sortedIntervals = [...intervalsDays].sort((left, right) => left - right);
-        const midpoint = Math.floor(sortedIntervals.length / 2);
-        const cadenceDays = sortedIntervals.length % 2
-          ? sortedIntervals[midpoint]
-          : Math.round((sortedIntervals[midpoint - 1] + sortedIntervals[midpoint]) / 2);
-        const nextDueTimestamp = lastVisitTimestamp + cadenceDays * 86400000;
-        const overdueTimestamp = nextDueTimestamp + Math.max(7, Math.round(cadenceDays * 0.35)) * 86400000;
-        const approachingTimestamp = nextDueTimestamp - Math.max(1, Math.round(cadenceDays * 0.2)) * 86400000;
-        const state = nowTimestamp > overdueTimestamp
-          ? "overdue"
-          : nowTimestamp >= nextDueTimestamp
-            ? "due"
-            : nowTimestamp >= approachingTimestamp
-              ? "approaching"
-              : "not_due";
-        const confidence = intervalsDays.length >= 3 ? "high" : intervalsDays.length === 2 ? "medium" : "low";
-        return {
-          id: profileId,
-          centerId,
-          clientId: String(client.id),
-          serviceId: service.serviceId,
-          serviceName: service.serviceName,
-          state,
-          confidence,
-          completedVisits: timestamps.length,
-          intervalDays: sortedIntervals,
-          cadenceDays,
-          lastCompletedAt: new Date(lastVisitTimestamp).toISOString(),
-          nextDueAt: new Date(nextDueTimestamp).toISOString(),
-          marketingEligible: Boolean(client.marketingConsent && (client.phone || client.email)),
-          contactable: Boolean(client.phone || client.email),
-          manualActionRequired: true,
-          automaticMessageAllowed: false,
-          explanation: `Routine stimata dalla mediana di ${intervalsDays.length} intervalli tra appuntamenti completati.`,
-          updatedAt: nowAt
-        };
-      })
-      .sort((left, right) => String(left.nextDueAt || "9999").localeCompare(String(right.nextDueAt || "9999")));
-  }
-
-  async syncClientRecallProfiles(clientId, session = null, options = {}) {
-    const profiles = this.buildClientRecallProfiles(clientId, session, options);
-    const centerId = this.getCenterId(session);
-    const existing = this.filterByCenter(this.clientRecallProfilesRepository.list(), session)
-      .filter((profile) => String(profile.clientId || "") === String(clientId || ""));
-    const nextIds = new Set(profiles.map((profile) => profile.id));
-    for (const profile of profiles) {
-      const current = this.clientRecallProfilesRepository.findById(profile.id);
-      if (current && this.belongsToCenter(current, centerId)) {
-        await this.clientRecallProfilesRepository.updateDurable(profile.id, () => profile);
-      } else {
-        await this.clientRecallProfilesRepository.createDurable(profile);
-      }
-    }
-    for (const profile of existing) {
-      if (!nextIds.has(profile.id)) await this.clientRecallProfilesRepository.deleteDurable(profile.id);
-    }
-    return {
-      clientId: String(clientId),
-      profiles,
-      automaticMessaging: false,
-      message: "Profili aggiornati da visite completate; ogni eventuale contatto richiede consenso marketing e conferma dell'operatore."
-    };
-  }
-
-  async getClientRecallProfiles(clientId, session = null) {
-    return this.syncClientRecallProfiles(clientId, session);
-  }
-
   getClientConsultation(clientId, session = null) {
     const detail = this.getClientDetail(clientId, session);
-    const history = [...detail.appointments]
-      .sort((left, right) => {
-        const leftTime = new Date(left.startAt || left.createdAt || 0).getTime();
-        const rightTime = new Date(right.startAt || right.createdAt || 0).getTime();
-        return (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
-      })
-      .slice(0, 10);
     return {
       client: detail.client,
-      history,
+      history: detail.appointments.slice(0, 10),
       recommendations: []
     };
   }
@@ -7731,7 +8762,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.appointmentsRepository.list(), session);
   }
 
-  async saveAppointment(payload = {}, session = null) {
+  saveAppointment(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.appointmentsRepository, payload, session) : null;
     if (existing) return existing;
     const startAt = payload.startAt || toDateTime(payload.date, payload.time);
@@ -7782,45 +8813,33 @@ class DesktopMirrorService {
     };
 
     if (!payload.id) {
-      await this.appointmentsRepository.createDurable(entity);
+      this.appointmentsRepository.create(entity);
       this.invalidateAppointmentsDayCache(centerId, [entity.startAt]);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.appointmentsRepository));
       this.applyGoldStateEvent("appointment_created", { after: entity }, session);
-      if (entity.clientId) await this.syncClientRecallProfiles(entity.clientId, session);
       return entity;
     }
 
     const currentAppointment = this.findByIdInCenter(this.appointmentsRepository, payload.id, session);
-    if (!currentAppointment) throw new Error("Elemento non trovato");
-    const updated = await this.appointmentsRepository.updateDurable(payload.id, (current) => ({
+    const updated = this.updateInCenter(this.appointmentsRepository, payload.id, (current) => ({
       ...current,
       ...entity,
       createdAt: current.createdAt || entity.createdAt
-    }));
-    if (!updated) throw new Error("Elemento non trovato");
-    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(this.appointmentsRepository));
+    }), session);
     this.invalidateAppointmentsDayCache(centerId, [
       currentAppointment?.startAt || "",
       updated?.startAt || entity.startAt
     ]);
     this.applyGoldStateEvent("appointment_updated", { before: currentAppointment, after: updated }, session);
-    if (currentAppointment.clientId && currentAppointment.clientId !== updated.clientId) {
-      await this.syncClientRecallProfiles(currentAppointment.clientId, session);
-    }
-    if (updated.clientId) await this.syncClientRecallProfiles(updated.clientId, session);
     return updated;
   }
 
-  async deleteAppointment(id, session = null) {
+  deleteAppointment(id, session = null) {
     const currentAppointment = this.findByIdInCenter(this.appointmentsRepository, id, session);
-    if (!currentAppointment) return { success: false };
-    const success = await this.appointmentsRepository.deleteDurable(id);
-    const result = { success };
-    if (success) {
-      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.appointmentsRepository));
+    const result = this.deleteInCenter(this.appointmentsRepository, id, session);
+    if (result?.success) {
       this.invalidateAppointmentsDayCache(this.getCenterId(session), [currentAppointment?.startAt || ""]);
       this.applyGoldStateEvent("appointment_deleted", { before: currentAppointment }, session);
-      if (currentAppointment.clientId) await this.syncClientRecallProfiles(currentAppointment.clientId, session);
     }
     return result;
   }
@@ -7829,7 +8848,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.servicesRepository.list(), session);
   }
 
-  async saveService(payload = {}, session = null) {
+  saveService(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.servicesRepository, payload, session) : null;
     if (existing) return existing;
     const serviceName = cleanText(payload.name || "", "", 160);
@@ -7872,20 +8891,20 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      await this.servicesRepository.createDurable(entity);
+      this.servicesRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.servicesRepository));
       this.applyGoldStateEvent("service_created", { after: entity }, session);
       return entity;
     }
     const before = this.findByIdInCenter(this.servicesRepository, payload.id, session);
-    const updated = await this.updateInCenterDurable(this.servicesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    const updated = this.updateInCenter(this.servicesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
     this.applyGoldStateEvent("service_updated", { before, after: updated }, session);
     return updated;
   }
 
-  async deleteService(id, session = null) {
+  deleteService(id, session = null) {
     const before = this.findByIdInCenter(this.servicesRepository, id, session);
-    const result = await this.deleteInCenterDurable(this.servicesRepository, id, session);
+    const result = this.deleteInCenter(this.servicesRepository, id, session);
     if (result?.success) this.applyGoldStateEvent("service_deleted", { before }, session);
     return result;
   }
@@ -7894,7 +8913,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.staffRepository.list(), session);
   }
 
-  async saveStaff(payload = {}, session = null) {
+  saveStaff(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.staffRepository, payload, session) : null;
     if (existing) return existing;
     const staffName = cleanText(payload.name || "", "", 120);
@@ -7918,21 +8937,23 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      await this.staffRepository.createDurable(entity);
+      this.staffRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
       this.applyGoldStateEvent("staff_created", { after: entity }, session);
       return entity;
     }
     const before = this.findByIdInCenter(this.staffRepository, payload.id, session);
-    const updated = await this.updateInCenterDurable(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    const updated = this.updateInCenter(this.staffRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
     this.applyGoldStateEvent("staff_updated", { before, after: updated }, session);
     return updated;
   }
 
-  async deleteStaff(id, session = null) {
+  deleteStaff(id, session = null) {
     const before = this.findByIdInCenter(this.staffRepository, id, session);
-    const result = await this.deleteInCenterDurable(this.staffRepository, id, session);
+    const result = this.deleteInCenter(this.staffRepository, id, session);
     if (result?.success) {
+      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.staffRepository));
       this.applyGoldStateEvent("staff_deleted", { before }, session);
     }
     return result;
@@ -7952,7 +8973,7 @@ class DesktopMirrorService {
     return shifts;
   }
 
-  async saveShift(payload = {}, session = null) {
+  saveShift(payload = {}, session = null) {
     const settings = this.getSettings(session);
     if (settings.shiftsBaseEnabled === false) {
       throw new Error("Modulo turni non attivo");
@@ -8000,15 +9021,15 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      await this.shiftsRepository.createDurable(entity);
+      this.shiftsRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.shiftsRepository));
       return entity;
     }
-    return this.updateInCenterDurable(this.shiftsRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    return this.updateInCenter(this.shiftsRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
   }
 
-  async deleteShift(id, session = null) {
-    return this.deleteInCenterDurable(this.shiftsRepository, id, session);
+  deleteShift(id, session = null) {
+    return this.deleteInCenter(this.shiftsRepository, id, session);
   }
 
   exportShiftReport(_options = {}, _session = null) {
@@ -8023,7 +9044,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.shiftTemplatesRepository.list(), session);
   }
 
-  async saveShiftTemplate(payload = {}, session = null) {
+  saveShiftTemplate(payload = {}, session = null) {
     const templateName = cleanText(payload.name || "", "", 120);
     assertValid(templateName.length >= 2, "Nome schema turni obbligatorio");
     const entity = {
@@ -8036,14 +9057,14 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      await this.shiftTemplatesRepository.createDurable(entity);
+      this.shiftTemplatesRepository.create(entity);
       return entity;
     }
-    return this.updateInCenterDurable(this.shiftTemplatesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    return this.updateInCenter(this.shiftTemplatesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
   }
 
-  async deleteShiftTemplate(id, session = null) {
-    return this.deleteInCenterDurable(this.shiftTemplatesRepository, id, session);
+  deleteShiftTemplate(id, session = null) {
+    return this.deleteInCenter(this.shiftTemplatesRepository, id, session);
   }
 
   generateShiftTemplate(payload = {}) {
@@ -8058,7 +9079,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.resourcesRepository.list(), session);
   }
 
-  async saveResource(payload = {}, session = null) {
+  saveResource(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.resourcesRepository, payload, session) : null;
     if (existing) return existing;
     const resourceName = cleanText(payload.name || "", "", 120);
@@ -8107,22 +9128,22 @@ class DesktopMirrorService {
       createdAt
     };
     if (!payload.id) {
-      await this.resourcesRepository.createDurable(entity);
+      this.resourcesRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.resourcesRepository));
       return entity;
     }
-    return this.updateInCenterDurable(this.resourcesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    return this.updateInCenter(this.resourcesRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
   }
 
-  async deleteResource(id, session = null) {
-    return this.deleteInCenterDurable(this.resourcesRepository, id, session);
+  deleteResource(id, session = null) {
+    return this.deleteInCenter(this.resourcesRepository, id, session);
   }
 
   listInventoryItems(session = null) {
     return this.filterByCenter(this.inventoryRepository.list(), session);
   }
 
-  async saveInventoryItem(payload = {}, session = null) {
+  saveInventoryItem(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.inventoryRepository, payload, session) : null;
     if (existing) return existing;
     const itemName = cleanText(payload.name || "", "", 160);
@@ -8155,20 +9176,20 @@ class DesktopMirrorService {
       createdAt: payload.createdAt || nowIso()
     };
     if (!payload.id) {
-      await this.inventoryRepository.createDurable(entity);
+      this.inventoryRepository.create(entity);
       this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryRepository));
       this.applyGoldStateEvent("inventory_created", { after: entity }, session);
       return entity;
     }
     const before = this.findByIdInCenter(this.inventoryRepository, payload.id, session);
-    const updated = await this.updateInCenterDurable(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
+    const updated = this.updateInCenter(this.inventoryRepository, payload.id, (current) => ({ ...current, ...entity, createdAt: current.createdAt || entity.createdAt }), session);
     this.applyGoldStateEvent("inventory_updated", { before, after: updated }, session);
     return updated;
   }
 
-  async deleteInventoryItem(id, session = null) {
+  deleteInventoryItem(id, session = null) {
     const before = this.findByIdInCenter(this.inventoryRepository, id, session);
-    const result = await this.deleteInCenterDurable(this.inventoryRepository, id, session);
+    const result = this.deleteInCenter(this.inventoryRepository, id, session);
     if (result?.success) this.applyGoldStateEvent("inventory_deleted", { before }, session);
     return result;
   }
@@ -8177,7 +9198,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.inventoryMovementsRepository.list(), session).filter((item) => !itemId || item.itemId === itemId);
   }
 
-  async createInventoryMovement(payload = {}, session = null) {
+  createInventoryMovement(payload = {}, session = null) {
     const centerId = this.getCenterId(session);
     assertValid(Boolean(payload.itemId), "Articolo magazzino obbligatorio");
     assertValid(Boolean(this.findByIdInCenter(this.inventoryRepository, payload.itemId, session)), "Articolo magazzino non trovato");
@@ -8196,29 +9217,19 @@ class DesktopMirrorService {
       note: cleanText(payload.note || "", "", 500),
       createdAt: nowIso()
     };
-    const nextMovements = [movement, ...this.inventoryMovementsRepository.list()];
-    const nextInventory = [...this.inventoryRepository.list()];
+    this.inventoryMovementsRepository.create(movement);
+    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(this.inventoryMovementsRepository));
     if (movement.itemId) {
       const signedQuantity = ["unload", "internal_use", "sale"].includes(movement.type)
         ? -movement.quantity
         : movement.quantity;
-      const itemIndex = nextInventory.findIndex((item) => String(item.id || "") === movement.itemId && this.belongsToCenter(item, centerId));
-      assertValid(itemIndex >= 0, "Articolo magazzino non trovato");
-      const current = nextInventory[itemIndex];
-      const nextQuantity = Math.max(0, Number(current.quantity || current.stockQuantity || 0) + signedQuantity);
-      nextInventory[itemIndex] = {
+      this.updateInCenter(this.inventoryRepository, movement.itemId, (current) => ({
         ...current,
-        quantity: nextQuantity,
-        stockQuantity: nextQuantity,
+        quantity: Math.max(0, Number(current.quantity || current.stockQuantity || 0) + signedQuantity),
+        stockQuantity: Math.max(0, Number(current.quantity || current.stockQuantity || 0) + signedQuantity),
         updatedAt: nowIso()
-      };
+      }), session);
     }
-    await this.commitRepositorySnapshots([
-      { repository: this.inventoryMovementsRepository, payload: nextMovements },
-      { repository: this.inventoryRepository, payload: nextInventory }
-    ]);
-    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(this.inventoryMovementsRepository));
-    this.invalidateBusinessSnapshot(centerId, this.dirtyBlocksForRepository(this.inventoryRepository));
     return movement;
   }
 
@@ -8238,7 +9249,7 @@ class DesktopMirrorService {
     return this.filterByCenter(this.treatmentsRepository.list(), session).filter((item) => !clientId || item.clientId === clientId);
   }
 
-  async createTreatment(payload = {}, session = null) {
+  createTreatment(payload = {}, session = null) {
     const treatment = {
       id: makeId("treat"),
       centerId: this.getCenterId(session),
@@ -8248,7 +9259,7 @@ class DesktopMirrorService {
       note: String(payload.note || ""),
       createdAt: nowIso()
     };
-    await this.treatmentsRepository.createDurable(treatment);
+    this.treatmentsRepository.create(treatment);
     this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.OPERATIONAL_REPORT]);
     return treatment;
   }
@@ -8261,7 +9272,7 @@ class DesktopMirrorService {
       .sort((a, b) => new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime());
   }
 
-  async saveProtocol(payload = {}, session = null) {
+  saveProtocol(payload = {}, session = null) {
     const existing = !payload.id ? this.findExistingByIdempotency(this.protocolsRepository, payload, session) : null;
     if (existing) return existing;
     const now = nowIso();
@@ -8299,7 +9310,7 @@ class DesktopMirrorService {
       updatedAt: now
     };
     if (payload.id) {
-      return this.updateInCenterDurable(this.protocolsRepository, payload.id, (current) => ({
+      return this.updateInCenter(this.protocolsRepository, payload.id, (current) => ({
         ...current,
         ...entity,
         id: current.id,
@@ -8311,13 +9322,13 @@ class DesktopMirrorService {
       ...entity,
       createdAt: now
     };
-    await this.protocolsRepository.createDurable(protocol);
+    this.protocolsRepository.create(protocol);
     this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.OPERATIONAL_REPORT]);
     return protocol;
   }
 
-  async deleteProtocol(id, session = null) {
-    return this.deleteInCenterDurable(this.protocolsRepository, id, session);
+  deleteProtocol(id, session = null) {
+    return this.deleteInCenter(this.protocolsRepository, id, session);
   }
 
   async generateAiGoldProtocolDraft(payload = {}, session = null) {
@@ -8336,7 +9347,7 @@ class DesktopMirrorService {
     if (usedCount >= protocolLimit) {
       return {
         protocolAiEnabled: false,
-        goldEnabled: ["gold", "enterprise"].includes(currentPlan),
+        goldEnabled: currentPlan === "gold",
         currentPlan,
         protocolLimit,
         usedCount,
@@ -8401,7 +9412,7 @@ class DesktopMirrorService {
     if (preflightErrors.length) {
       return {
         protocolAiEnabled: true,
-        goldEnabled: ["gold", "enterprise"].includes(currentPlan),
+        goldEnabled: currentPlan === "gold",
         currentPlan,
         protocolLimit,
         usedCount,
@@ -8471,7 +9482,7 @@ class DesktopMirrorService {
     if (protocolMode === "center" && !centerProtocol) {
       return {
         protocolAiEnabled: true,
-        goldEnabled: ["gold", "enterprise"].includes(currentPlan),
+        goldEnabled: currentPlan === "gold",
         currentPlan,
         protocolLimit,
         usedCount,
@@ -8483,7 +9494,7 @@ class DesktopMirrorService {
     if (protocolMode === "skinharmony" && !skinHarmonyProtocol && !canUseRemoteProtocolLibrary) {
       return {
         protocolAiEnabled: true,
-        goldEnabled: ["gold", "enterprise"].includes(currentPlan),
+        goldEnabled: currentPlan === "gold",
         currentPlan,
         protocolLimit,
         usedCount,
@@ -8495,7 +9506,7 @@ class DesktopMirrorService {
     if (protocolMode === "hybrid" && !centerProtocol && !skinHarmonyProtocol && !canUseRemoteProtocolLibrary) {
       return {
         protocolAiEnabled: true,
-        goldEnabled: ["gold", "enterprise"].includes(currentPlan),
+        goldEnabled: currentPlan === "gold",
         currentPlan,
         protocolLimit,
         usedCount,
@@ -8755,7 +9766,7 @@ class DesktopMirrorService {
     };
     return {
       protocolAiEnabled: true,
-      goldEnabled: ["gold", "enterprise"].includes(currentPlan),
+      goldEnabled: currentPlan === "gold",
       currentPlan,
       protocolLimit,
       usedCount,
@@ -8973,7 +9984,7 @@ class DesktopMirrorService {
   getSeededGoldDemoDataQuality(session = null) {
     const centerId = this.getCenterId(session);
     if (String(centerId || "") !== "center_demo_gold_cockpit") return null;
-    if (!this.hasGoldIntelligence(session)) return null;
+    if (this.getPlanLevel(session) !== "gold") return null;
     const recordId = this.getGoldStateRecordId(centerId);
     const state = this.goldStateRepository.findById(recordId);
     const business = state?.snapshots?.business || {};
@@ -9469,7 +10480,7 @@ class DesktopMirrorService {
     };
   }
 
-  async closeCashdesk(payload = {}, session = null) {
+  closeCashdesk(payload = {}, session = null) {
     const closeDate = toDateOnly(payload.date || nowIso());
     const summary = this.getPaymentsSummary({ period: "day", anchorDate: closeDate }, session);
     const unlinkedPayments = this.listUnlinkedPayments(session, { forceRefresh: true })
@@ -9522,8 +10533,8 @@ class DesktopMirrorService {
     };
 
     const saved = existing
-      ? await this.cashClosuresRepository.updateDurable(existing.id, () => closure)
-      : await this.cashClosuresRepository.createDurable(closure);
+      ? this.cashClosuresRepository.update(existing.id, () => closure)
+      : this.cashClosuresRepository.create(closure);
     return {
       success: true,
       status: "closed",
@@ -9535,7 +10546,7 @@ class DesktopMirrorService {
     };
   }
 
-  async createPayment(payload = {}, session = null) {
+  createPayment(payload = {}, session = null) {
     const existing = this.findExistingByIdempotency(this.paymentsRepository, payload, session);
     if (existing) return existing;
     const amountCents = assertRange(payload.amountCents || payload.amount || 0, "Importo pagamento", { min: 1, max: 100000000 });
@@ -9591,45 +10602,19 @@ class DesktopMirrorService {
       productSales,
       createdAt
     };
-    if (!productSales.length) {
-      await this.paymentsRepository.createDurable(payment);
-    } else {
-      const nextInventory = [...this.inventoryRepository.list()];
-      const movements = [];
-      productSales.forEach((line) => {
-        const itemIndex = nextInventory.findIndex((item) => String(item.id || "") === line.itemId && this.belongsToCenter(item, this.getCenterId(session)));
-        assertValid(itemIndex >= 0, "Prodotto carrello non trovato in magazzino");
-        const current = nextInventory[itemIndex];
-        const nextQuantity = Math.max(0, Number(current.quantity || current.stockQuantity || 0) - line.quantity);
-        nextInventory[itemIndex] = {
-          ...current,
-          quantity: nextQuantity,
-          stockQuantity: nextQuantity,
-          updatedAt: nowIso()
-        };
-        movements.unshift({
-          id: makeId("move"),
-          centerId: this.getCenterId(session),
-          centerName: this.getCenterName(session),
-          itemId: line.itemId,
-          type: "sale",
-          quantity: line.quantity,
-          paymentId: payment.id,
-          appointmentId: payment.appointmentId,
-          salePriceCents: line.salePriceCents,
-          lineTotalCents: line.salePriceCents * line.quantity,
-          note: `Vendita checkout: ${line.name || line.itemId}`,
-          createdAt: nowIso()
-        });
-      });
-      await this.commitRepositorySnapshots([
-        { repository: this.paymentsRepository, payload: [payment, ...this.paymentsRepository.list()] },
-        { repository: this.inventoryMovementsRepository, payload: [...movements, ...this.inventoryMovementsRepository.list()] },
-        { repository: this.inventoryRepository, payload: nextInventory }
-      ]);
-      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryMovementsRepository));
-      this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.inventoryRepository));
-    }
+    this.paymentsRepository.create(payment);
+    productSales.forEach((line) => {
+      this.createInventoryMovement({
+        itemId: line.itemId,
+        type: "sale",
+        quantity: line.quantity,
+        paymentId: payment.id,
+        appointmentId: payment.appointmentId,
+        salePriceCents: line.salePriceCents,
+        lineTotalCents: line.salePriceCents * line.quantity,
+        note: `Vendita checkout: ${line.name || line.itemId}`
+      }, session);
+    });
     this.invalidateBusinessSnapshot(this.getCenterId(session), this.dirtyBlocksForRepository(this.paymentsRepository));
     this.applyGoldStateEvent("payment_created", { after: payment }, session);
     return payment;
@@ -9772,7 +10757,7 @@ class DesktopMirrorService {
 
   computeDashboardStats(options = {}, session = null) {
     const plan = this.getPlanLevel(session);
-    const goldEnabled = plan === "gold" || plan === "enterprise";
+    const goldEnabled = plan === "gold";
     const mode = String(options.period || "day");
     const anchorDate = toDateOnly(options.anchorDate || nowIso());
     let startDate = anchorDate;
@@ -11099,7 +12084,7 @@ class DesktopMirrorService {
     };
   }
 
-  async generateAiMarketingAutopilotActions(session = null) {
+  generateAiMarketingAutopilotActions(session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       return {
@@ -11124,7 +12109,7 @@ class DesktopMirrorService {
       ))
       .slice(0, 12);
 
-    for (const suggestion of candidates) {
+    candidates.forEach((suggestion) => {
       const alreadyOpen = existing.some((item) => (
         String(item.clientId || "") === String(suggestion.clientId || "")
         && String(item.type || "") === "recall"
@@ -11134,7 +12119,7 @@ class DesktopMirrorService {
         String(item.clientId || "") === String(suggestion.clientId || "")
         && toDateOnly(item.generatedAt || item.createdAt) === today
       ));
-      if (alreadyOpen || generatedToday) continue;
+      if (alreadyOpen || generatedToday) return;
       const action = {
         id: makeId("aimkt"),
         centerId,
@@ -11170,9 +12155,9 @@ class DesktopMirrorService {
         approvedAt: "",
         copiedAt: ""
       };
-      await this.aiMarketingActionsRepository.createDurable(action);
+      this.aiMarketingActionsRepository.create(action);
       created.push(action);
-    }
+    });
     if (created.length) {
       this.invalidateBusinessSnapshot(centerId, [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
     }
@@ -11185,7 +12170,7 @@ class DesktopMirrorService {
     };
   }
 
-  async updateAiMarketingActionStatus(actionId, payload = {}, session = null) {
+  updateAiMarketingActionStatus(actionId, payload = {}, session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       throw new Error("Marketing Autopilot disponibile solo con piano Gold");
@@ -11201,7 +12186,7 @@ class DesktopMirrorService {
       const action = (state.marketingActions?.actions || []).find((item) => String(item.clientId || "") === clientId);
       if (!action) throw new Error("Azione Gold non trovata");
       const now = nowIso();
-      const created = await this.aiMarketingActionsRepository.createDurable({
+      const created = this.aiMarketingActionsRepository.create({
         id: makeId("aimkt"),
         centerId: this.getCenterId(session),
         centerName: this.getCenterName(session),
@@ -11239,7 +12224,7 @@ class DesktopMirrorService {
       this.invalidateBusinessSnapshot(this.getCenterId(session), [ANALYTICS_BLOCKS.MARKETING_RECALL, ANALYTICS_BLOCKS.GOLD_STATE]);
       return created;
     }
-    const updated = await this.updateInCenterDurable(this.aiMarketingActionsRepository, actionId, (current) => ({
+    const updated = this.updateInCenter(this.aiMarketingActionsRepository, actionId, (current) => ({
       ...current,
       status: status === "discarded" ? "archived" : status,
       updatedAt: nowIso(),
@@ -11251,17 +12236,17 @@ class DesktopMirrorService {
     return updated;
   }
 
-  async updateAiMarketingActionDrafts(enhancements = [], session = null) {
+  updateAiMarketingActionDrafts(enhancements = [], session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       return [];
     }
     const byId = new Map(enhancements.map((item) => [String(item.id || ""), item]));
     const updated = [];
-    for (const action of this.filterByCenter(this.aiMarketingActionsRepository.list(), session)) {
+    this.filterByCenter(this.aiMarketingActionsRepository.list(), session).forEach((action) => {
       const enhancement = byId.get(String(action.id || ""));
-      if (!enhancement) continue;
-      const next = await this.updateInCenterDurable(this.aiMarketingActionsRepository, action.id, (current) => ({
+      if (!enhancement) return;
+      const next = this.updateInCenter(this.aiMarketingActionsRepository, action.id, (current) => ({
         ...current,
         reason: String(enhancement.reason || current.reason || ""),
         suggestedMessage: String(enhancement.suggestedMessage || current.suggestedMessage || ""),
@@ -11269,7 +12254,7 @@ class DesktopMirrorService {
         updatedAt: nowIso()
       }), session);
       updated.push(next);
-    }
+    });
     return updated;
   }
 
@@ -11488,20 +12473,7 @@ class DesktopMirrorService {
       .filter((item) => String(item.clientId || "") === String(client.id || ""));
     const activeMessage = centerMessages.find((item) => activeStatuses.has(String(item.status || "")));
     const attempts = centerMessages.filter((item) => !["failed", "fallback_copy"].includes(String(item.status || ""))).length;
-    const whatsappGoldMode = String(this.getSettings(session).whatsappGoldMode || "").trim().toLowerCase();
     const blocks = [];
-    if (client.synthetic === true) {
-      blocks.push({
-        reason: "synthetic_profile",
-        message: "Profilo dimostrativo: invio esterno bloccato, usa solo anteprima o copia manuale."
-      });
-    }
-    if (whatsappGoldMode !== "active") {
-      blocks.push({
-        reason: "whatsapp_manual_mode",
-        message: "WhatsApp Gold non è attivo per questo centro: usa copia manuale."
-      });
-    }
     if (!phone || phone.length < 7) blocks.push({ reason: "invalid_phone", message: "Numero cliente non valido." });
     if (!client.marketingConsent && !suggestion?.hasMarketingConsent) blocks.push({ reason: "missing_consent", message: "Consenso marketing non presente." });
     if (!["ACT_NOW", "SUGGEST"].includes(action)) blocks.push({ reason: "decision_not_actionable", message: "Decision Matrix non autorizza un invio ora." });
@@ -11721,7 +12693,7 @@ class DesktopMirrorService {
     };
   }
 
-  async handleWhatsappWebhook(payload = {}, whatsappService = null) {
+  handleWhatsappWebhook(payload = {}, whatsappService = null) {
     const messageId = String(payload.MessageSid || payload.SmsSid || payload.SmsMessageSid || "");
     const status = whatsappService?.mapStatus?.(payload.MessageStatus || payload.SmsStatus || (payload.Body ? "received" : "")) || "";
     const from = cleanPhone(String(payload.From || "").replace(/^whatsapp:/, ""));
@@ -11736,7 +12708,7 @@ class DesktopMirrorService {
     if (!target) {
       return { success: true, matched: false, status };
     }
-    const updated = await this.whatsappMessagesRepository.updateDurable(target.id, (current) => ({
+    const updated = this.whatsappMessagesRepository.update(target.id, (current) => ({
       ...current,
       status: status || current.status || "sent",
       response: payload.Body ? String(payload.Body || "").slice(0, 1000) : current.response || "",
@@ -11749,7 +12721,7 @@ class DesktopMirrorService {
       webhookRaw: payload
     }));
     if (updated && status === "replied") {
-      await this.goldActionOutcomesRepository.createDurable({
+      this.goldActionOutcomesRepository.create({
         id: crypto.randomUUID(),
         centerId: updated.centerId,
         createdAt: now,
@@ -11841,7 +12813,7 @@ class DesktopMirrorService {
     return learningMap.get(`${domain}:${action}`) || { attempts: 0, successes: 0, failures: 0 };
   }
 
-  async recordGoldActionOutcome(payload = {}, session = null) {
+  recordGoldActionOutcome(payload = {}, session = null) {
     this.assertCanOperate(session);
     if (!this.hasGoldIntelligence(session)) {
       throw new Error("Outcome Gold disponibile solo con piano Gold");
@@ -11858,7 +12830,7 @@ class DesktopMirrorService {
       valueCents: Number(payload.valueCents || 0),
       note: String(payload.note || "").slice(0, 500)
     };
-    await this.goldActionOutcomesRepository.createDurable(row);
+    this.goldActionOutcomesRepository.create(row);
     return row;
   }
 
@@ -12421,7 +13393,7 @@ class DesktopMirrorService {
       ? (progressive?.blockedFeatures || []).find((item) => item.key === requiredFeature)
       : null;
     const reasons = [];
-    if (!["gold", "enterprise"].includes(plan)) reasons.push("Piano non Gold");
+    if (plan !== "gold") reasons.push("Piano non Gold");
     if (!["ACT_NOW", "SUGGEST"].includes(action)) reasons.push("Azione non eseguibile dal motore Gold");
     if (blocked) reasons.push("Azione bloccata dal Gold Engine");
     if (confidence < 0.5) reasons.push("Fiducia sotto soglia");
@@ -13600,7 +14572,7 @@ class DesktopMirrorService {
   getBusinessSnapshot(options = {}, session = null) {
     this.assertCanOperate(session);
     const plan = this.getPlanLevel(session);
-    if (!["gold", "enterprise"].includes(plan)) {
+    if (plan !== "gold") {
       return {
         snapshotAvailable: false,
         requiredPlan: "gold",
@@ -14332,14 +15304,14 @@ class DesktopMirrorService {
         sections: []
       };
     }
-    if (this.hasGoldIntelligence(session) && options.forceRefresh) {
+    if (this.getPlanLevel(session) === "gold" && options.forceRefresh) {
       try {
         this.rebuildGoldStateForCurrentGoldTenant(session, { reason: "api_force_refresh" });
       } catch (error) {
         console.warn("[gold_state_force_refresh_error]", error?.message || error);
       }
     }
-    if (this.hasGoldIntelligence(session)) {
+    if (this.getPlanLevel(session) === "gold") {
       try {
         const stateDecisionCenter = this.buildDecisionCenterFromGoldState(options, session);
         if (stateDecisionCenter) {
