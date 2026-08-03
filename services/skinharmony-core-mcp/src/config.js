@@ -254,6 +254,10 @@ export function loadConfig(env = process.env) {
   if (!["disabled", "shadow", "active"].includes(coreBlockRemediationMode)) {
     throw new Error("CORE_BLOCK_REMEDIATION_MODE must be disabled, shadow, or active");
   }
+  const aiWorkQualityMode = String(env.AI_WORK_QUALITY_MODE || "observe").trim().toLowerCase();
+  if (!["observe", "draft", "sandbox_active", "scoped_active", "privileged"].includes(aiWorkQualityMode)) {
+    throw new Error("AI_WORK_QUALITY_MODE must be observe, draft, sandbox_active, scoped_active, or privileged");
+  }
   const coreBlockRemediationMaxAttempts = integer(env.CORE_BLOCK_REMEDIATION_MAX_ATTEMPTS, 3, 1, 20);
   const coreBlockRemediationTtlSeconds = integer(env.CORE_BLOCK_REMEDIATION_TTL_SECONDS, 86_400, 1, 7 * 86_400);
   const coreBlockRemediationTransientRetryLimit = integer(env.CORE_BLOCK_REMEDIATION_TRANSIENT_RETRY_LIMIT, 2, 1, 20);
@@ -330,6 +334,7 @@ export function loadConfig(env = process.env) {
     collaborationDatabaseUrl,
     decisionLedgerRequired,
     coreBlockRemediationMode,
+    aiWorkQualityMode,
     coreBlockRemediationMaxAttempts,
     coreBlockRemediationTtlSeconds,
     coreBlockRemediationTransientRetryLimit,

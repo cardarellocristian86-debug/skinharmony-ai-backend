@@ -122,6 +122,7 @@ const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
   decisionLedger,
+  remediationStore: workContinuityRuntime?.remediationStore,
   tenantWorkGallery: workContinuityRuntime ? {
     load: async (identity, input = {}) => {
       requireTenantWorkCapability(identity, "read");
@@ -130,6 +131,25 @@ const coreHandlers = createCoreHandlers(config, {
         status: "active",
         limit: 20,
       });
+    },
+    verifyActiveLease: async (identity, workId) => {
+      requireTenantWorkCapability(identity, "read");
+      const state = await workContinuityRuntime.read(identity, { work_id: workId });
+      const sessionId = String(identity.agentPresence?.session_id || "");
+      const agentId = String(identity.agentPresence?.agent_id || identity.subject || identity.agentId || "");
+      const participant = state.participants.find((item) => String(item.session_id) === sessionId &&
+        String(item.agent_id) === agentId && item.active === true);
+      const lease = state.leases.find((item) => String(item.session_id) === sessionId &&
+        item.status === "active" && Date.parse(item.expires_at) > Date.now());
+      if (!participant || !lease) return null;
+      return {
+        lease_id: lease.lease_id,
+        session_id: sessionId,
+        agent_id: agentId,
+        session_fingerprint: identity.agentPresence?.session_fingerprint || null,
+        expires_at: lease.expires_at,
+        surfaces: lease.surfaces || [],
+      };
     },
   } : null,
 });

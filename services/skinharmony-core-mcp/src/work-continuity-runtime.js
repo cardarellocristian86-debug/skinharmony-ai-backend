@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { Pool } from "pg";
 import { redactMemoryText } from "./cloud-memory-store.js";
+import { assertTransitionAllowed } from "../../shared/core-block-remediation.js";
 
 // Existing MCP create/read/capsule responses retain their v1 contract. New
 // fabric methods advertise WORK_CONTINUITY_FABRIC_SCHEMA_VERSION; the storage
@@ -1372,6 +1373,60 @@ CREATE TABLE IF NOT EXISTS core_continuity_incident_runbooks (
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, project_id, fingerprint)
 );
+
+CREATE TABLE IF NOT EXISTS core_continuity_remediations (
+  tenant_id varchar(64) NOT NULL,
+  remediation_id varchar(80) NOT NULL,
+  work_id varchar(160) NOT NULL,
+  project_id varchar(64),
+  original_decision_id varchar(160) NOT NULL,
+  status varchar(40) NOT NULL,
+  block_class varchar(40) NOT NULL,
+  scope_digest char(64) NOT NULL,
+  contract_digest char(64) NOT NULL,
+  version bigint NOT NULL DEFAULT 0,
+  payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL,
+  expires_at timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id, remediation_id),
+  UNIQUE (tenant_id, original_decision_id)
+);
+CREATE INDEX IF NOT EXISTS core_continuity_remediations_work_status_idx
+  ON core_continuity_remediations (tenant_id, work_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS core_continuity_remediations_expiry_idx
+  ON core_continuity_remediations (tenant_id, expires_at);
+
+CREATE TABLE IF NOT EXISTS core_continuity_remediation_versions (
+  tenant_id varchar(64) NOT NULL,
+  remediation_id varchar(80) NOT NULL,
+  version bigint NOT NULL,
+  contract_digest char(64) NOT NULL,
+  payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, remediation_id, version),
+  FOREIGN KEY (tenant_id, remediation_id)
+    REFERENCES core_continuity_remediations(tenant_id, remediation_id)
+);
+CREATE OR REPLACE FUNCTION core_continuity_remediation_versions_append_only() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'core_continuity_remediation_versions_append_only'; END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS core_continuity_remediation_versions_no_mutation ON core_continuity_remediation_versions;
+CREATE TRIGGER core_continuity_remediation_versions_no_mutation
+BEFORE UPDATE OR DELETE ON core_continuity_remediation_versions
+FOR EACH ROW EXECUTE FUNCTION core_continuity_remediation_versions_append_only();
+
+CREATE TABLE IF NOT EXISTS core_continuity_remediation_idempotency (
+  tenant_id varchar(64) NOT NULL,
+  remediation_id varchar(80) NOT NULL,
+  idempotency_key varchar(160) NOT NULL,
+  proposal_digest char(64) NOT NULL,
+  result jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, remediation_id, idempotency_key),
+  FOREIGN KEY (tenant_id, remediation_id)
+    REFERENCES core_continuity_remediations(tenant_id, remediation_id)
+);
 `;
 
 export function createWorkContinuityRuntime(config, options = {}) {
@@ -2080,11 +2135,45 @@ export function createWorkContinuityRuntime(config, options = {}) {
           w.objective ILIKE '%'||$4||'%' OR w.next_action ILIKE '%'||$4||'%')
       GROUP BY w.tenant_id,w.project_id,w.work_id
       ORDER BY w.updated_at DESC LIMIT $5`, [tenantId, projectId, status, query, limit]);
+    const remediationRows = await pool.query(`SELECT work_id,remediation_id,original_decision_id,
+        status,block_class,payload->'original_decision'->>'block_code' AS block_code,
+        payload->'nyra_explanation'->>'plain_summary' AS summary,
+        payload->'nyra_explanation'->>'recommended_next_action' AS next_action,
+        payload->>'assigned_agent_id' AS assigned_agent_id,
+        payload->>'surface' AS surface,
+        created_at,updated_at
+      FROM core_continuity_remediations
+      WHERE tenant_id=$1 AND ($2::varchar IS NULL OR project_id=$2)
+        AND status NOT IN ('closed','cancelled','expired')
+      ORDER BY updated_at DESC`, [tenantId, projectId]);
+    const blockersByWork = new Map();
+    for (const row of remediationRows.rows) {
+      const blockers = blockersByWork.get(row.work_id) || [];
+      blockers.push({
+        blocker_id: row.remediation_id,
+        type: "core_block_remediation",
+        decision_id: row.original_decision_id,
+        block_code: row.block_code,
+        block_class: row.block_class,
+        status: row.status,
+        assigned_agent_id: row.assigned_agent_id || null,
+        surface: row.surface || null,
+        summary: row.summary || row.block_code,
+        next_action: row.next_action || "inspect_remediation",
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      });
+      blockersByWork.set(row.work_id, blockers);
+    }
     return {
       schema_version: "tenant_work_gallery_v1",
       tenant_id: tenantId,
       filters: { project_id: projectId, status, query },
-      works: result.rows,
+      works: result.rows.map((work) => ({
+        ...work,
+        blockers: blockersByWork.get(String(work.work_id)) || [],
+        blocker_count: (blockersByWork.get(String(work.work_id)) || []).length,
+      })),
     };
   }
 
@@ -4214,6 +4303,232 @@ export function createWorkContinuityRuntime(config, options = {}) {
     };
   }
 
+  function remediationPayload(row) {
+    return row?.payload && typeof row.payload === "object" ? row.payload : null;
+  }
+
+  const remediationStore = {
+    backend: "tenant_work_gallery_postgresql",
+    async list(tenantId, { work_id, status } = {}) {
+      await initialize();
+      const values = [tenant(tenantId)];
+      const where = ["tenant_id=$1"];
+      if (work_id) { values.push(String(work_id)); where.push(`work_id=$${values.length}`); }
+      if (status) { values.push(String(status)); where.push(`status=$${values.length}`); }
+      const result = await pool.query(`SELECT payload FROM core_continuity_remediations
+        WHERE ${where.join(" AND ")} ORDER BY updated_at DESC`, values);
+      return result.rows.map(remediationPayload).filter(Boolean);
+    },
+    async listBlockers(tenantId) { return this.list(tenantId); },
+    async findById({ tenant_id, remediation_id }) {
+      await initialize();
+      const result = await pool.query(`SELECT payload FROM core_continuity_remediations
+        WHERE tenant_id=$1 AND remediation_id=$2`, [tenant(tenant_id), String(remediation_id)]);
+      return remediationPayload(result.rows[0]);
+    },
+    async findByOriginalDecision({ tenant_id, decision_id }) {
+      await initialize();
+      const result = await pool.query(`SELECT payload FROM core_continuity_remediations
+        WHERE tenant_id=$1 AND original_decision_id=$2`, [tenant(tenant_id), String(decision_id)]);
+      return remediationPayload(result.rows[0]);
+    },
+    async findIdempotency({ tenant_id, remediation_id, idempotency_key }) {
+      await initialize();
+      const result = await pool.query(`SELECT proposal_digest,result,created_at
+        FROM core_continuity_remediation_idempotency
+        WHERE tenant_id=$1 AND remediation_id=$2 AND idempotency_key=$3`,
+      [tenant(tenant_id), String(remediation_id), String(idempotency_key)]);
+      return result.rows[0] || null;
+    },
+    async rememberIdempotency({ tenant_id, remediation_id, idempotency_key, proposal_digest, result }) {
+      await initialize();
+      const tenantKey = tenant(tenant_id);
+      const inserted = await pool.query(`INSERT INTO core_continuity_remediation_idempotency
+        (tenant_id,remediation_id,idempotency_key,proposal_digest,result)
+        VALUES ($1,$2,$3,$4,$5::jsonb) ON CONFLICT DO NOTHING
+        RETURNING proposal_digest,result,created_at`,
+      [tenantKey, String(remediation_id), String(idempotency_key), String(proposal_digest), JSON.stringify(result)]);
+      const stored = inserted.rows[0] || await this.findIdempotency({
+        tenant_id: tenantKey, remediation_id, idempotency_key,
+      });
+      if (stored?.proposal_digest !== proposal_digest) throw new Error("core_block_remediation_replay_rejected");
+      return stored;
+    },
+    async create(remediation) {
+      await initialize();
+      const tenantKey = tenant(remediation.tenant_id);
+      const existing = await this.findByOriginalDecision({
+        tenant_id: tenantKey, decision_id: remediation.original_decision?.decision_id,
+      });
+      if (existing) return existing;
+      const payload = structuredClone(remediation);
+      const result = await pool.query(`INSERT INTO core_continuity_remediations
+        (tenant_id,remediation_id,work_id,project_id,original_decision_id,status,block_class,
+         scope_digest,contract_digest,version,payload,created_at,updated_at,expires_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14)
+        ON CONFLICT (tenant_id,original_decision_id) DO NOTHING RETURNING payload`, [
+        tenantKey, payload.remediation_id, String(payload.work_id), payload.project_id || null,
+        payload.original_decision.decision_id, payload.status, payload.original_decision.block_class,
+        payload.bound_scope.scope_digest, payload.contract_digest, Number(payload.version || 0),
+        JSON.stringify(payload), payload.created_at, payload.updated_at, payload.expires_at,
+      ]);
+      const created = remediationPayload(result.rows[0]);
+      if (created) await pool.query(`INSERT INTO core_continuity_remediation_versions
+        (tenant_id,remediation_id,version,contract_digest,payload) VALUES ($1,$2,$3,$4,$5::jsonb)
+        ON CONFLICT DO NOTHING`, [tenantKey, created.remediation_id, Number(created.version || 0),
+        created.contract_digest, JSON.stringify(created)]);
+      return created || this.findByOriginalDecision({
+        tenant_id: tenantKey, decision_id: payload.original_decision.decision_id,
+      });
+    },
+    async update({ tenant_id, remediation_id, expected_version, mutate }) {
+      await initialize();
+      const tenantKey = tenant(tenant_id);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const selected = await client.query(`SELECT payload,version FROM core_continuity_remediations
+          WHERE tenant_id=$1 AND remediation_id=$2 FOR UPDATE`, [tenantKey, String(remediation_id)]);
+        const row = selected.rows[0];
+        if (!row) throw new Error("remediation_not_found");
+        if (Number(row.version) !== Number(expected_version)) throw new Error("remediation_version_conflict");
+        const current = structuredClone(row.payload);
+        const next = await mutate(current);
+        if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("remediation_update_invalid");
+        if (next.tenant_id !== current.tenant_id ||
+            next.original_decision?.decision_id !== current.original_decision?.decision_id ||
+            next.bound_scope?.scope_digest !== current.bound_scope?.scope_digest) {
+          throw new Error("remediation_immutable_identity_changed");
+        }
+        next.version = Number(row.version) + 1;
+        next.updated_at = nowDate().toISOString();
+        next.contract_digest = digest({ ...next, contract_digest: null });
+        await client.query(`UPDATE core_continuity_remediations SET
+          status=$3,block_class=$4,contract_digest=$5,version=$6,payload=$7::jsonb,
+          updated_at=$8,expires_at=$9 WHERE tenant_id=$1 AND remediation_id=$2`, [
+          tenantKey, String(remediation_id), next.status, next.original_decision.block_class,
+          next.contract_digest, next.version, JSON.stringify(next), next.updated_at, next.expires_at,
+        ]);
+        await client.query(`INSERT INTO core_continuity_remediation_versions
+          (tenant_id,remediation_id,version,contract_digest,payload) VALUES ($1,$2,$3,$4,$5::jsonb)`, [
+          tenantKey, String(remediation_id), next.version, next.contract_digest, JSON.stringify(next),
+        ]);
+        await client.query("COMMIT");
+        return next;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw error;
+      } finally { client.release(); }
+    },
+    async attachNyraReview({ tenant_id, remediation_id, expected_version, review }) {
+      return this.update({ tenant_id, remediation_id, expected_version, mutate: (current) => {
+        const nextStatus = review.status === "approve_for_core" ? "nyra_reviewed"
+          : review.status === "request_revision" ? "revision_required" : "hard_denied";
+        assertTransitionAllowed(current.status, nextStatus);
+        current.nyra_review = review;
+        current.status = nextStatus;
+        return current;
+      }});
+    },
+    async appendAttempt({ tenant_id, remediation_id, expected_version, attempt, next_status }) {
+      return this.update({ tenant_id, remediation_id, expected_version, mutate: (current) => {
+        const nextStatus = next_status || "proposal_ready";
+        if (current.status === "open" && nextStatus === "waiting_owner") {
+          assertTransitionAllowed(current.status, nextStatus);
+        } else if (current.status === "open") {
+          assertTransitionAllowed(current.status, "diagnosing");
+          assertTransitionAllowed("diagnosing", nextStatus);
+        } else {
+          assertTransitionAllowed(current.status, nextStatus);
+        }
+        current.attempts = [...(Array.isArray(current.attempts) ? current.attempts : []), attempt];
+        current.attempt_count = Number(current.attempt_count || 0) + 1;
+        current.status = nextStatus;
+        current.diagnosis = { status: "submitted", submitted_by: attempt.submitted_by,
+          root_cause: attempt.diagnosis?.root_cause || null, evidence: attempt.diagnosis?.evidence || [],
+          unknowns: attempt.diagnosis?.unknowns || [], affected_components: attempt.diagnosis?.affected_components || [],
+          submitted_at: attempt.created_at, diagnosis_digest: digest(attempt.diagnosis || {}) };
+        return current;
+      }});
+    },
+    async appendAttemptIdempotent({ tenant_id, remediation_id, expected_version, attempt, next_status,
+      idempotency_key, proposal_digest }) {
+      await initialize();
+      const tenantKey = tenant(tenant_id);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const selected = await client.query(`SELECT payload,version FROM core_continuity_remediations
+          WHERE tenant_id=$1 AND remediation_id=$2 FOR UPDATE`, [tenantKey, String(remediation_id)]);
+        const row = selected.rows[0];
+        if (!row) throw new Error("remediation_not_found");
+        const replay = await client.query(`SELECT proposal_digest,result FROM core_continuity_remediation_idempotency
+          WHERE tenant_id=$1 AND remediation_id=$2 AND idempotency_key=$3 FOR UPDATE`,
+        [tenantKey, String(remediation_id), String(idempotency_key)]);
+        if (replay.rows[0]) {
+          if (replay.rows[0].proposal_digest !== proposal_digest) throw new Error("core_block_remediation_replay_rejected");
+          await client.query("COMMIT");
+          return { idempotent: true, remediation: replay.rows[0].result?.remediation || null };
+        }
+        if (Number(row.version) !== Number(expected_version)) throw new Error("remediation_version_conflict");
+        const next = structuredClone(row.payload);
+        const nextStatus = next_status || "proposal_ready";
+        if (next.status === "open" && nextStatus === "waiting_owner") assertTransitionAllowed(next.status, nextStatus);
+        else if (next.status === "open") {
+          assertTransitionAllowed(next.status, "diagnosing");
+          assertTransitionAllowed("diagnosing", nextStatus);
+        } else assertTransitionAllowed(next.status, nextStatus);
+        next.attempts = [...(Array.isArray(next.attempts) ? next.attempts : []), attempt];
+        next.attempt_count = Number(next.attempt_count || 0) + 1;
+        next.status = nextStatus;
+        next.diagnosis = { status: "submitted", submitted_by: attempt.submitted_by,
+          root_cause: attempt.diagnosis?.root_cause || null, evidence: attempt.diagnosis?.evidence || [],
+          unknowns: attempt.diagnosis?.unknowns || [], affected_components: attempt.diagnosis?.affected_components || [],
+          submitted_at: attempt.created_at, diagnosis_digest: digest(attempt.diagnosis || {}) };
+        next.version = Number(row.version) + 1;
+        next.updated_at = nowDate().toISOString();
+        next.contract_digest = digest({ ...next, contract_digest: null });
+        await client.query(`UPDATE core_continuity_remediations SET status=$3,contract_digest=$4,version=$5,
+          payload=$6::jsonb,updated_at=$7 WHERE tenant_id=$1 AND remediation_id=$2`, [
+          tenantKey, String(remediation_id), next.status, next.contract_digest, next.version,
+          JSON.stringify(next), next.updated_at,
+        ]);
+        await client.query(`INSERT INTO core_continuity_remediation_versions
+          (tenant_id,remediation_id,version,contract_digest,payload) VALUES ($1,$2,$3,$4,$5::jsonb)`, [
+          tenantKey, String(remediation_id), next.version, next.contract_digest, JSON.stringify(next),
+        ]);
+        await client.query(`INSERT INTO core_continuity_remediation_idempotency
+          (tenant_id,remediation_id,idempotency_key,proposal_digest,result)
+          VALUES ($1,$2,$3,$4,$5::jsonb)`, [tenantKey, String(remediation_id), String(idempotency_key),
+          String(proposal_digest), JSON.stringify({ remediation: next })]);
+        await client.query("COMMIT");
+        return { idempotent: false, remediation: next };
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw error;
+      } finally { client.release(); }
+    },
+    async markStatus({ tenant_id, remediation_id, expected_version, status, fields = {} }) {
+      return this.update({ tenant_id, remediation_id, expected_version, mutate: (current) => {
+        assertTransitionAllowed(current.status, status);
+        current.status = status; Object.assign(current, fields); return current;
+      }});
+    },
+    async recordResubmission({ tenant_id, remediation_id, expected_version, resubmission }) {
+      return this.markStatus({ tenant_id, remediation_id, expected_version, status: "resubmitted",
+        fields: { resubmission } });
+    },
+    async recordOutcome({ tenant_id, remediation_id, expected_version, outcome }) {
+      return this.update({ tenant_id, remediation_id, expected_version, mutate: (current) => {
+        current.outcome = { ...(current.outcome || {}), ...outcome }; return current;
+      }});
+    },
+    async cancel({ tenant_id, remediation_id, expected_version, reason }) {
+      return this.markStatus({ tenant_id, remediation_id, expected_version, status: "cancelled",
+        fields: { cancel_reason: reason || "cancelled" } });
+    },
+  };
+
   return {
     initialize,
     create,
@@ -4237,6 +4552,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     recordIncident,
     verifyIncident,
     resolveIncident,
+    remediationStore,
     gallery,
     join,
     heartbeat,

@@ -1,5 +1,9 @@
 import crypto from "node:crypto";
-import { FAILURE_CODES } from "./ai-work-quality-failure-mediation.mjs";
+import {
+  AI_WORK_FAILURE_DEFINITIONS,
+  AI_WORK_FAILURE_DISPOSITION,
+  redactAiWorkQualityValue,
+} from "./ai-work-quality-failure.js";
 
 export const CORE_BLOCK_REMEDIATION_SCHEMA_VERSION = "core_block_remediation_v1";
 
@@ -50,6 +54,9 @@ export const ABSOLUTE_CODES = new Set([
   "WRONG_REPOSITORY",
   "WRONG_BRANCH",
   "WRONG_SURFACE",
+  ...Object.values(AI_WORK_FAILURE_DEFINITIONS)
+    .filter((entry) => entry.disposition === AI_WORK_FAILURE_DISPOSITION.ABSOLUTE)
+    .map((entry) => entry.code),
 ]);
 
 export const CONFIRMATION_CODES = new Set([
@@ -60,6 +67,9 @@ export const CONFIRMATION_CODES = new Set([
   "DEPLOY_CONFIRMATION_REQUIRED",
   "PUBLISH_CONFIRMATION_REQUIRED",
   "MERGE_CONFIRMATION_REQUIRED",
+  ...Object.values(AI_WORK_FAILURE_DEFINITIONS)
+    .filter((entry) => entry.disposition === AI_WORK_FAILURE_DISPOSITION.CONFIRMATION_REQUIRED)
+    .map((entry) => entry.code),
 ]);
 
 export const CORRECTABLE_CODES = new Set([
@@ -95,6 +105,9 @@ export const CORRECTABLE_CODES = new Set([
   "HANDOFF_INCOMPLETE",
   "MEMORY_PROVENANCE_MISSING",
   "MODEL_UNCERTAINTY_TOO_HIGH",
+  ...Object.values(AI_WORK_FAILURE_DEFINITIONS)
+    .filter((entry) => entry.disposition === AI_WORK_FAILURE_DISPOSITION.CORRECTABLE)
+    .map((entry) => entry.code),
 ]);
 
 export const TRANSIENT_CODES = new Set([
@@ -105,6 +118,9 @@ export const TRANSIENT_CODES = new Set([
   "TEMPORARY_PROVIDER_FAILURE",
   "RETRYABLE_STORE_CONFLICT",
   "WORKER_NOT_READY",
+  ...Object.values(AI_WORK_FAILURE_DEFINITIONS)
+    .filter((entry) => entry.disposition === AI_WORK_FAILURE_DISPOSITION.TRANSIENT)
+    .map((entry) => entry.code),
 ]);
 
 const ALLOWED_STATUS_TRANSITIONS = new Map([
@@ -457,6 +473,9 @@ export function buildRemediationContract({
     work_id: workContext.work_id,
     branch_id: workContext.branch_id || null,
     session_id: workContext.session_id || null,
+    assigned_agent_id: actor.subject || actor.agent_id || actor.id || null,
+    surface: [boundScope.repository, boundScope.ref, boundScope.environment]
+      .filter(Boolean).join("#") || boundScope.target_system || null,
     original_decision: originalDecision,
     bound_scope: {
       ...boundScope,
@@ -518,7 +537,11 @@ export function buildRemediationContract({
       evidence: [],
       verified_at: null,
     },
-    status: "open",
+    status: originalDecision.block_class === CORE_BLOCK_CLASS.ABSOLUTE
+      ? CORE_BLOCK_REMEDIATION_STATUS.HARD_DENIED
+      : originalDecision.block_class === CORE_BLOCK_CLASS.CONFIRMATION_REQUIRED
+        ? CORE_BLOCK_REMEDIATION_STATUS.WAITING_OWNER
+        : CORE_BLOCK_REMEDIATION_STATUS.OPEN,
     attempt_count: 0,
     max_attempts: Math.max(1, Number(decision.max_attempts || 3)),
     version: 0,
@@ -695,13 +718,20 @@ export function proposeRemediationAttempt({
   proposal = {},
   diagnosis = {},
   idempotencyKey,
+  allowExistingReplay = false,
   now = () => new Date(),
 }) {
   if (!remediation) throw new Error("remediation_required");
-  if (remediation.status === CORE_BLOCK_REMEDIATION_STATUS.EXPIRED) throw new Error("remediation_expired");
-  if (remediation.attempt_count >= remediation.max_attempts) throw new Error("remediation_max_attempts_reached");
   const proposalType = String(proposal.proposal_type || "").trim();
-  const summary = cleanText(proposal.summary, 2_000);
+  const ownerRouteFromWaiting = remediation.status === CORE_BLOCK_REMEDIATION_STATUS.WAITING_OWNER &&
+    proposalType === CORE_BLOCK_PROPOSAL_TYPES.OWNER_CONFIRMATION_ROUTE;
+  if (![CORE_BLOCK_REMEDIATION_STATUS.OPEN, CORE_BLOCK_REMEDIATION_STATUS.DIAGNOSING,
+    CORE_BLOCK_REMEDIATION_STATUS.REVISION_REQUIRED].includes(remediation.status) &&
+    !ownerRouteFromWaiting && !allowExistingReplay) {
+    throw new Error("remediation_proposal_state_invalid");
+  }
+  if (remediation.attempt_count >= remediation.max_attempts) throw new Error("remediation_max_attempts_reached");
+  const summary = cleanText(redactAiWorkQualityValue(proposal.summary), 2_000);
   const attemptNo = remediation.attempts.length + 1;
   const attemptId = `cba_${crypto.randomUUID()}`;
   const digestInput = {
@@ -711,13 +741,13 @@ export function proposeRemediationAttempt({
     idempotency_key: String(idempotencyKey || ""),
     proposal_type: proposalType,
     summary,
-    scope: proposal.scope || {},
-    changes: proposal.changes || [],
-    tests: proposal.tests || [],
-    evidence: proposal.evidence || [],
-    rollback: proposal.rollback || {},
-    conditions_addressed: proposal.conditions_addressed || [],
-    residual_risks: proposal.residual_risks || [],
+    scope: redactAiWorkQualityValue(proposal.scope || {}),
+    changes: redactAiWorkQualityValue(proposal.changes || []),
+    tests: redactAiWorkQualityValue(proposal.tests || []),
+    evidence: redactAiWorkQualityValue(proposal.evidence || []),
+    rollback: redactAiWorkQualityValue(proposal.rollback || {}),
+    conditions_addressed: redactAiWorkQualityValue(proposal.conditions_addressed || []),
+    residual_risks: redactAiWorkQualityValue(proposal.residual_risks || []),
     alternative_only: proposal.alternative_only === true,
   };
   const attempt = {
@@ -731,21 +761,21 @@ export function proposeRemediationAttempt({
     },
     proposal_type: proposalType,
     summary,
-    scope: proposal.scope || {},
-    changes: Array.isArray(proposal.changes) ? proposal.changes.slice(0, 100) : [],
-    tests: Array.isArray(proposal.tests) ? proposal.tests.slice(0, 100) : [],
-    evidence: Array.isArray(proposal.evidence) ? proposal.evidence.slice(0, 100) : [],
-    rollback: proposal.rollback || {},
-    conditions_addressed: Array.isArray(proposal.conditions_addressed) ? proposal.conditions_addressed.slice(0, 100) : [],
-    residual_risks: Array.isArray(proposal.residual_risks) ? proposal.residual_risks.slice(0, 100) : [],
+    scope: redactAiWorkQualityValue(proposal.scope || {}),
+    changes: redactAiWorkQualityValue(Array.isArray(proposal.changes) ? proposal.changes.slice(0, 100) : []),
+    tests: redactAiWorkQualityValue(Array.isArray(proposal.tests) ? proposal.tests.slice(0, 100) : []),
+    evidence: redactAiWorkQualityValue(Array.isArray(proposal.evidence) ? proposal.evidence.slice(0, 100) : []),
+    rollback: redactAiWorkQualityValue(proposal.rollback || {}),
+    conditions_addressed: redactAiWorkQualityValue(Array.isArray(proposal.conditions_addressed) ? proposal.conditions_addressed.slice(0, 100) : []),
+    residual_risks: redactAiWorkQualityValue(Array.isArray(proposal.residual_risks) ? proposal.residual_risks.slice(0, 100) : []),
     alternative_only: proposal.alternative_only === true,
     proposal_digest: sha256(digestInput),
     created_at: new Date(now instanceof Date ? now.getTime() : typeof now === "function" ? now() : Date.now()).toISOString(),
     diagnosis: {
-      root_cause: cleanText(diagnosis.root_cause, 2_000),
-      evidence: Array.isArray(diagnosis.evidence) ? diagnosis.evidence.slice(0, 100) : [],
-      unknowns: Array.isArray(diagnosis.unknowns) ? diagnosis.unknowns.slice(0, 100) : [],
-      affected_components: Array.isArray(diagnosis.affected_components) ? diagnosis.affected_components.slice(0, 100) : [],
+      root_cause: cleanText(redactAiWorkQualityValue(diagnosis.root_cause), 2_000),
+      evidence: redactAiWorkQualityValue(Array.isArray(diagnosis.evidence) ? diagnosis.evidence.slice(0, 100) : []),
+      unknowns: redactAiWorkQualityValue(Array.isArray(diagnosis.unknowns) ? diagnosis.unknowns.slice(0, 100) : []),
+      affected_components: redactAiWorkQualityValue(Array.isArray(diagnosis.affected_components) ? diagnosis.affected_components.slice(0, 100) : []),
     },
   };
   return attempt;
@@ -753,6 +783,12 @@ export function proposeRemediationAttempt({
 
 export function validateProposalForRemediation(remediation, attempt, { expectedVersion, idempotencyKey } = {}) {
   if (!remediation) throw new Error("remediation_required");
+  const ownerRouteFromWaiting = remediation.status === CORE_BLOCK_REMEDIATION_STATUS.WAITING_OWNER &&
+    attempt.proposal_type === CORE_BLOCK_PROPOSAL_TYPES.OWNER_CONFIRMATION_ROUTE;
+  if (![CORE_BLOCK_REMEDIATION_STATUS.OPEN, CORE_BLOCK_REMEDIATION_STATUS.DIAGNOSING,
+    CORE_BLOCK_REMEDIATION_STATUS.REVISION_REQUIRED].includes(remediation.status) && !ownerRouteFromWaiting) {
+    throw new Error("remediation_proposal_state_invalid");
+  }
   if (remediation.expires_at && Date.parse(remediation.expires_at) <= Date.now()) throw new Error("remediation_expired");
   if (expectedVersion !== undefined && Number(expectedVersion) !== Number(remediation.version)) {
     throw new Error("remediation_version_conflict");
@@ -790,8 +826,13 @@ export function validateProposalForRemediation(remediation, attempt, { expectedV
 
 export function evaluateEvidenceRequirements({ requirements = [], evidence = [] } = {}) {
   if (!Array.isArray(requirements) || !requirements.length) return true;
-  const evidenceText = JSON.stringify(evidence || []);
-  return requirements.every((requirement) => evidenceText.includes(String(requirement)));
+  const claims = new Set((Array.isArray(evidence) ? evidence : []).flatMap((item) => {
+    if (typeof item === "string") return [item];
+    if (!item || typeof item !== "object") return [];
+    return [item.digest, item.evidence_digest, item.requirement_digest, item.requirement_id]
+      .filter((value) => typeof value === "string");
+  }));
+  return requirements.every((requirement) => claims.has(String(requirement)));
 }
 
 export function evaluateTests({ risk_band, tests = [] } = {}) {
@@ -889,6 +930,7 @@ export function reviewRemediationProposal({
   const review = {
     status,
     reviewed_attempt_id: attempt.attempt_id,
+    reviewed_proposal_digest: attempt.proposal_digest,
     scope_consistent: scopeConsistent,
     bypass_detected: bypassDetected,
     evidence_sufficient: evidenceSufficient,

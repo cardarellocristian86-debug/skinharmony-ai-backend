@@ -114,12 +114,13 @@ export function createFileDttVerificationTrustStore({ root } = {}) {
         return structuredClone(state.artifacts[key]);
       });
     },
-    verifyArtifact({ tenant_id, artifact_id, content_digest, source_reference }) {
+    verifyArtifact({ tenant_id, artifact_id, content_digest, source_reference, registry_reference }) {
       const matches = Object.values(read().artifacts).filter((record) => (
         record.tenant_id === tenant_id
         && record.artifact_id === artifact_id
         && record.content_digest === content_digest
         && record.source_reference === source_reference
+        && (!registry_reference || record.registry_reference === registry_reference)
       ));
       return matches.length === 1
         ? { verified: true, registry_id: matches[0].registry_id }
@@ -239,12 +240,13 @@ export function createPostgresDttVerificationTrustStore({ pool } = {}) {
       );
       return result.rows[0];
     },
-    async verifyArtifact({ tenant_id, artifact_id, content_digest, source_reference }) {
+    async verifyArtifact({ tenant_id, artifact_id, content_digest, source_reference, registry_reference }) {
       await initialize();
       const result = await pool.query(
         `SELECT registry_id FROM dtt_evidence_artifacts
-         WHERE tenant_id=$1 AND artifact_id=$2 AND content_digest=$3 AND source_reference=$4`,
-        [tenant_id, artifact_id, content_digest, source_reference],
+         WHERE tenant_id=$1 AND artifact_id=$2 AND content_digest=$3 AND source_reference=$4
+           AND ($5::text IS NULL OR registry_reference=$5)`,
+        [tenant_id, artifact_id, content_digest, source_reference, registry_reference || null],
       );
       return result.rows.length === 1
         ? { verified: true, registry_id: result.rows[0].registry_id }

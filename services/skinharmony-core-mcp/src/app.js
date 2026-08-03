@@ -71,6 +71,7 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "host_native_delegation_revoke",
   "work_continuity_create",
   "work_continuity_start_or_resume",
+  "core_block_remediation_resubmit",
 ]);
 
 function inferClientType(identity) {

@@ -184,6 +184,10 @@ test("continuity schema is persistent, tenant-scoped and append-only", () => {
   assert.match(runtime.schemaSql, /core_continuity_capsules/);
   assert.match(runtime.schemaSql, /core_continuity_idempotency/);
   assert.match(runtime.schemaSql, /core_continuity_events_append_only/);
+  assert.match(runtime.schemaSql, /core_continuity_remediations/);
+  assert.match(runtime.schemaSql, /UNIQUE \(tenant_id, original_decision_id\)/);
+  assert.match(runtime.schemaSql, /core_continuity_remediation_idempotency/);
+  assert.equal(runtime.remediationStore.backend, "tenant_work_gallery_postgresql");
   assert.ok(WORK_EVENT_TYPES.has("drift_detected"));
   assert.ok(WORK_EVENT_TYPES.has("memory_verified"));
 });
