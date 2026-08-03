@@ -191,6 +191,63 @@ test("reads only exact server-registered capabilities with scopes and a fresh re
   );
 });
 
+test("injects only the server-issued Gallery preflight into action mediation", async () => {
+  const tool = readTool("core_action_mediation_evaluate");
+  tool.inputSchema.properties = {
+    action: { type: "object", additionalProperties: true },
+    work_preflight: { type: "object" },
+  };
+  tool.inputSchema.required = ["action", "work_preflight"];
+  let received;
+  const handlers = {
+    [tool.name]: async (args) => {
+      received = args;
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  const catalogRevision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const serverPreflight = {
+    schema_version: "skinharmony_work_preflight_v1",
+    preflight_id: "preflight-server-issued",
+    tenant_id: "tenant-a",
+    operational_surface: "tenant_work_gallery",
+  };
+
+  await router.core_capability_read({
+    capability_id: tool.name,
+    catalog_revision: catalogRevision,
+    arguments: { action: { type: "git.commit" } },
+    work_preflight: serverPreflight,
+  }, identity);
+
+  assert.deepEqual(received.work_preflight, serverPreflight);
+  await assert.rejects(
+    router.core_capability_read({
+      capability_id: tool.name,
+      catalog_revision: catalogRevision,
+      arguments: {
+        action: { type: "git.commit" },
+        work_preflight: { tenant_id: "tenant-b" },
+      },
+      work_preflight: serverPreflight,
+    }, identity),
+    /dynamic_capability_reserved_argument/,
+  );
+  await assert.rejects(
+    router.core_capability_read({
+      capability_id: tool.name,
+      catalog_revision: catalogRevision,
+      arguments: { action: { type: "git.commit" } },
+    }, identity),
+    /dynamic_capability_arguments_invalid/,
+  );
+});
+
 test("mutations fail closed unless owner confirmation, Core gate, and safe arguments agree", async () => {
   const tool = writeTool();
   let writes = 0;

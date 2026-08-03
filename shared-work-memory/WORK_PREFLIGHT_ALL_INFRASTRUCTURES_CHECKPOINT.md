@@ -1,6 +1,6 @@
 # Work Preflight — checkpoint esteso a tutte le infrastrutture
 
-Data: 2026-08-03  
+Data: 2026-08-03
 Stato: implementazione locale verificata, non ancora promossa live
 
 ## Obiettivo

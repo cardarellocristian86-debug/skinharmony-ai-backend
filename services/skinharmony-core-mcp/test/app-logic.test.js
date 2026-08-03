@@ -21,7 +21,7 @@ test("advertises explicit confirmation fields only on write tools", () => {
   assert.equal(dynamicInvoke.inputSchema.properties.confirmation_reference.type, "string");
   assert.deepEqual(
     advisoryWrites.map((tool) => tool.name),
-    ["core_capability_invoke", "orchestration_dtt_core_join"],
+    ["core_capability_invoke", "orchestration_dtt_core_join", "ai_work_quality_observe"],
   );
   assert(readTools.every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
 });

@@ -71,6 +71,11 @@ import {
 } from "./softwareLanguageGate.js";
 import { buildWorkPreflight } from "./workPreflight.js";
 import {
+  AI_WORK_FAILURE_DISPOSITION,
+  aiWorkQualityEvidenceBindingReference,
+  verifyAiWorkQualityObservation,
+} from "../../shared/ai-work-quality-failure.js";
+import {
   validateWorkPreflightEnvelope,
   workPreflightFailure,
 } from "../../shared/work-preflight-gate.mjs";
@@ -7255,6 +7260,102 @@ export function createUniversalCoreService(options = {}) {
         publish_requires_owner_confirmation: true,
         execution_from_api_allowed: output.execution_profile.can_execute === true && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX),
       },
+    });
+  });
+
+  app.post("/v1/work-quality/evaluate", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+    const observation = req.body?.observation;
+    const observerBinding = req.body?.observer_binding;
+    if (!isMcpTenantGatewayRecord(req.coreKey)) {
+      return publicError(res, 403, "ai_work_quality_gateway_required");
+    }
+    if (!verifyAiWorkQualityObservation(observation)) {
+      return publicError(res, 400, "ai_work_quality_observation_invalid");
+    }
+    if (String(observation.tenant_id || "") !== req.tenantId) {
+      return publicError(res, 403, "tenant_scope_violation");
+    }
+    if (observerBinding?.transport_bound !== true || observerBinding?.active_lease_verified !== true ||
+        String(observerBinding?.gallery_work_id || "") !== String(observation.work_id || "") ||
+        !String(observerBinding?.agent_id || "") || !String(observerBinding?.session_id || "") ||
+        !String(observerBinding?.lease_id || "")) {
+      return publicError(res, 403, "ai_work_quality_observer_binding_invalid");
+    }
+    if (!observation.expected_state_digest || !observation.observed_state_digest ||
+        !Array.isArray(observation.evidence_receipts) || observation.evidence_receipts.length < 1) {
+      return publicError(res, 400, "ai_work_quality_verified_evidence_required");
+    }
+    const expectedEvidenceBinding = aiWorkQualityEvidenceBindingReference({
+      ...observation,
+      observer_session_id: observerBinding.session_id,
+    });
+    for (const receipt of observation.evidence_receipts) {
+      if (receipt.registry_reference !== expectedEvidenceBinding) {
+        return publicError(res, 403, "ai_work_quality_evidence_binding_invalid");
+      }
+      const verified = await dttVerificationTrustStore.verifyArtifact({
+        tenant_id: req.tenantId,
+        artifact_id: receipt.artifact_id,
+        content_digest: receipt.content_digest,
+        source_reference: receipt.source_reference,
+        registry_reference: receipt.registry_reference,
+      });
+      if (!verified?.verified) return publicError(res, 403, "ai_work_quality_evidence_receipt_invalid");
+    }
+    const disposition = observation.disposition;
+    const verdict = disposition === AI_WORK_FAILURE_DISPOSITION.CONFIRMATION_REQUIRED
+      ? "CONFIRM"
+      : disposition === AI_WORK_FAILURE_DISPOSITION.TRANSIENT ? "DEFER" : "BLOCK";
+    const decisionId = `awq_${observation.observation_digest.slice(0, 40)}`;
+    const decisionContract = {
+      schema_version: "core_decision_contract_v1",
+      decision_id: decisionId,
+      decision_digest: crypto.createHash("sha256").update(JSON.stringify({
+        tenant_id: req.tenantId,
+        observation_digest: observation.observation_digest,
+        observer_binding: observerBinding,
+        verdict,
+      })).digest("hex"),
+      state: verdict,
+      verdict,
+      block_code: observation.code,
+      block_class: disposition,
+      risk_band: disposition === AI_WORK_FAILURE_DISPOSITION.ABSOLUTE ? "critical" : "medium",
+      policy_snapshot_digest: crypto.createHash("sha256").update(JSON.stringify({
+        policy: "ai_work_quality_failure_v1",
+        rollout_tier: observation.rollout_tier,
+        disposition,
+        code: observation.code,
+      })).digest("hex"),
+      blocked_reasons: [observation.summary],
+      evidence_requirements: observation.evidence_digests,
+      allowed_alternatives: disposition === AI_WORK_FAILURE_DISPOSITION.ABSOLUTE
+        ? ["new_scope_decision_contract"] : ["verified_remediation_proposal"],
+    };
+    const authorization = {
+      allowed: false,
+      state: verdict,
+      confirmation_required: disposition === AI_WORK_FAILURE_DISPOSITION.CONFIRMATION_REQUIRED,
+      confirmation_satisfied: false,
+      execution_authorized: false,
+    };
+    audit.append("ai_work_quality_evaluated", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      decision_id: decisionId,
+      observation_digest: observation.observation_digest,
+      failure_code: observation.code,
+      failure_class: observation.failure_class,
+      disposition,
+      execution_authorized: false,
+    });
+    return res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      observation_digest: observation.observation_digest,
+      decision_contract: decisionContract,
+      authorization,
+      guardrail: { execution_allowed: false, authority: "universal_core" },
     });
   });
 
