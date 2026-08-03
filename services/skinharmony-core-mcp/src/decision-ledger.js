@@ -21,6 +21,7 @@ const EVENT_TYPES = new Set([
   "core_block_remediation_execution_completed", "core_block_remediation_execution_failed", "core_block_remediation_outcome_verified",
   "core_block_remediation_closed", "core_block_remediation_expired", "core_block_remediation_cancelled",
   "core_block_remediation_scope_expansion_rejected", "core_block_remediation_replay_rejected", "core_block_remediation_max_attempts_reached",
+  "quality_failure_observed", "security_observation_quarantined", "quality_evidence_verified", "quality_completion_rejected",
 ]);
 
 function tenant(value) {
@@ -266,6 +267,10 @@ export function createDecisionLedger(config, options = {}) {
     const remediationManualReview = Number(events.core_block_remediation_revision_requested || 0);
     const resolution = Number(events.core_block_remediation_closed || 0);
     const attempts = Number(events.core_block_proposal_submitted || 0);
+    const qualityObserved = Number(events.quality_failure_observed || 0);
+    const securityQuarantined = Number(events.security_observation_quarantined || 0);
+    const qualityVerified = Number(events.quality_evidence_verified || 0);
+    const falseCompletions = Number(events.quality_completion_rejected || 0);
     return {
       schema_version: DECISION_LEDGER_SCHEMA_VERSION, tenant_id: tenantId, days,
       sessions: sessions.rows[0], events,
@@ -291,6 +296,12 @@ export function createDecisionLedger(config, options = {}) {
         remediation_owner_confirmation_routes: Number(events.core_block_remediation_waiting_owner || 0),
         remediation_absolute_blocks_preserved: Number(events.core_block_remediation_hard_denied || 0),
         remediation_median_time_to_resolution_ms: null,
+        quality_failure_observations: qualityObserved,
+        security_quarantined_observations: securityQuarantined,
+        quality_evidence_verified: qualityVerified,
+        false_completion_claims_rejected: falseCompletions,
+        quality_observation_rate_percent: percent(qualityObserved, completed),
+        quality_verification_rate_percent: percent(qualityVerified, qualityObserved),
       },
     };
   }

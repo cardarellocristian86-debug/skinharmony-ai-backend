@@ -351,6 +351,7 @@ export function scanInterAgentHandoff({
   return {
     suspicious: deduplicatedRules.length > 0,
     action: deduplicatedRules.length > 0 ? "quarantine" : "allow",
+    failure_code: deduplicatedRules.length > 0 ? "PROMPT_INJECTION_DETECTED" : null,
     scanner_version: HANDOFF_INJECTION_SCANNER_VERSION,
     trust_boundary: { ...UNTRUSTED_DATA_BOUNDARY },
     content_digest: contentDigest,

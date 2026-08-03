@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { QUALITY_SECURITY_CONTRACT } from "../../shared/ai-work-quality-failure-mediation.mjs";
 import { buildCoreResearchDirective } from "./coreResearchDirective.js";
 
 const PREFLIGHT_VERSION = "skinharmony_work_preflight_v1";
@@ -378,6 +379,17 @@ export function buildWorkPreflight({
       cross_tenant_learning: false,
       free_weight_training: false,
       runtime_self_modification: false,
+    },
+    failure_observation: {
+      schema_version: QUALITY_SECURITY_CONTRACT.schema_version,
+      classification: QUALITY_SECURITY_CONTRACT.classification,
+      exact_codes_only: true,
+      independent_verifier_required: QUALITY_SECURITY_CONTRACT.independent_verifier_required,
+      core_is_final_authority: QUALITY_SECURITY_CONTRACT.core_is_final_authority,
+      default_execution_allowed: QUALITY_SECURITY_CONTRACT.default_execution_allowed,
+      observation_surface: "tenant_work_gallery",
+      decision_ledger_required: true,
+      required_evidence: ["scope_digest", "tool_receipt", "test_receipt", "completion_receipt"],
     },
     protocol: {
       applies_to: "every_ai_connected_through_skinharmony_core_or_mcp",
