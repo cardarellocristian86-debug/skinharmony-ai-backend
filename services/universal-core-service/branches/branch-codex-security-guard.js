@@ -5,6 +5,9 @@ export const branchCodexSecurityGuard = {
   label: "Codex Security Guard",
   domain: "codex_security",
   production_status: "advisory",
+  enforcement_contract: "services/shared/ai-work-quality-failure-mediation.mjs",
+  failure_taxonomy: "exact_code_only",
+  activation_mode: "observe_shadow",
   description: "Regole su API key, token, tenant isolation, capability, audit e dati sensibili.",
   rules: [
     "Codex deve usare chiavi scoped, revocabili e tenant-bound; mai una key unica per tutto.",
@@ -18,5 +21,7 @@ export const branchCodexSecurityGuard = {
     publish_requires_owner_confirmation: true,
     allowed_action_level: "scoped_and_audited",
     blocked_actions: ["secret_leak", "tenant_scope_bypass", "unscoped_admin_action", "hard_block_without_policy", "unaudited_sensitive_action"],
+    failure_observation_required: true,
+    independent_verifier_required: true,
   },
 };
