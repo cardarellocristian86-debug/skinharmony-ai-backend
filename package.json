@@ -22,6 +22,7 @@
     "postinstall": "bash scripts/build-rust-extractor-render.sh",
     "nyra:render": "node personal-control-center/server.js",
     "nyra:runtime:test": "node personal-control-center/test/nyra-runtime-smoke.js",
+    "nyra:deep-v2:runtime:verify": "node scripts/build-nyra-deep-branch-v2-runtime-artifacts.mjs --mode verify --manifest personal-control-center/data/nyra-deep-branch-v2.runtime-manifest.json",
     "core:service": "node --experimental-strip-types services/universal-core-service/server.js",
     "core:service:test": "node --experimental-strip-types services/universal-core-service/test/core-service-smoke.js",
     "core:client": "node services/universal-core-service/tools/core-service-client.js",
