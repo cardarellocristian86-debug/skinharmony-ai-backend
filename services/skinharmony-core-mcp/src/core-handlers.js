@@ -28,6 +28,7 @@ import {
   signNyraDeepV2McpRequest,
 } from "./nyra-deep-v2-mcp-request.js";
 import { isCodexGoodModeDelegation } from "./auth.js";
+import { AI_WORK_QUALITY_SCHEMA_VERSION } from "../../shared/ai-work-quality-failure-mediation.mjs";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
@@ -458,6 +459,55 @@ export function createCoreHandlers(config, options = {}) {
         });
       },
     };
+  }
+
+  async function recordQualityFailureObservation(identity, response) {
+    const failure = response?.result?.failure_mediation || response?.failure_mediation;
+    if (!failure || !decisionLedger) return { recorded: false, reason: "unavailable" };
+    const context = await decisionLedger.startWork(identity, "core_action_mediation_evaluate", {
+      request: `quality_failure:${failure.code}`,
+      agent_id: identity.subject || identity.agentId || "connected_ai",
+      project_id: response?.result?.tenant_id || identity.tenantId,
+      session_id: failure.scope?.session_id || null,
+    });
+    const metadata = {
+      schema_version: AI_WORK_QUALITY_SCHEMA_VERSION,
+      failure_code: failure.code,
+      failure_class: failure.classification?.block_class || null,
+      failure_action: failure.action || null,
+      mediation_state: failure.mediation_state || null,
+      retry_allowed: failure.classification?.retry_allowed === true,
+      retry_exhausted: failure.classification?.retry_exhausted === true,
+      quarantine: failure.quarantine === true,
+      execution_allowed: false,
+    };
+    await decisionLedger.append(context, "quality_failure_observed", {
+      reason_codes: [failure.code],
+      reason_summary: `quality_failure:${failure.code}`,
+      decision_state: failure.mediation_state || null,
+      execution_allowed: false,
+      metadata,
+    });
+    if (failure.quarantine === true) {
+      await decisionLedger.append(context, "security_observation_quarantined", {
+        reason_codes: [failure.code],
+        reason_summary: `security_quarantine:${failure.code}`,
+        decision_state: "hard_block",
+        execution_allowed: false,
+        metadata,
+      });
+    }
+    if (failure.action === "manual_review") {
+      await decisionLedger.append(context, "quality_completion_rejected", {
+        reason_codes: [failure.code],
+        reason_summary: `quality_manual_review:${failure.code}`,
+        decision_state: "defer",
+        execution_allowed: false,
+        metadata,
+      });
+    }
+    await decisionLedger.finishWork(context, { result: { structuredContent: response } });
+    return { recorded: true, work_id: context.workId };
   }
 
   function cacheAnalysis(tenantId, payload) {
@@ -1509,10 +1559,14 @@ export function createCoreHandlers(config, options = {}) {
       method: "POST",
       body: { action: args.action, policy: args.policy, context: args.context },
     })),
-    core_action_mediation_evaluate: async (args, identity) => textResult(await coreRequest("/v1/action-mediation/evaluate", identity.tenantId, {
-      method: "POST",
-      body: { action: args.action, policy: args.policy, context: args.context },
-    })),
+    core_action_mediation_evaluate: async (args, identity) => {
+      const response = await coreRequest("/v1/action-mediation/evaluate", identity.tenantId, {
+        method: "POST",
+        body: { action: args.action, policy: args.policy, context: args.context },
+      });
+      const ledger = await recordQualityFailureObservation(identity, response);
+      return textResult({ ...response, quality_ledger: ledger });
+    },
     core_release_manifest_check: async (args, identity) => textResult(await coreRequest("/v1/releases/manifest/check", identity.tenantId, {
       method: "POST",
       body: { manifest: args.manifest },

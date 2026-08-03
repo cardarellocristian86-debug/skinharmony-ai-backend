@@ -5,6 +5,7 @@ import {
   QUALITY_SECURITY_CONTRACT,
   buildFailureReceipt,
   classifyFailure,
+  mediateFailureObservation,
   observeFailure,
   sanitizeObservation,
   verifyWorkEvidence,
@@ -74,6 +75,28 @@ test("retry is bounded and becomes manual review", () => {
     attempt_limit: 3,
   });
   assert.equal(result.action, "manual_review");
+});
+
+test("failure mediation maps transient retries and terminal review fail-closed", () => {
+  const retry = mediateFailureObservation({
+    code: "STALE_LEASE",
+    scope: { tenant_id: "codexai", work_id: "w1" },
+    attempt: 1,
+    attempt_limit: 2,
+  });
+  assert.equal(retry.mediation_state, "defer");
+  assert.equal(retry.action, "retry_limited");
+  assert.equal(retry.execution_allowed, false);
+
+  const review = mediateFailureObservation({
+    code: "STALE_LEASE",
+    scope: { tenant_id: "codexai", work_id: "w1" },
+    attempt: 2,
+    attempt_limit: 2,
+  });
+  assert.equal(review.mediation_state, "defer");
+  assert.equal(review.action, "manual_review");
+  assert.equal(review.execution_allowed, false);
 });
 
 test("contract is fail closed", () => {

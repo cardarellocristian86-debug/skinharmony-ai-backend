@@ -200,6 +200,23 @@ export function observeFailure(input = {}) {
   };
 }
 
+export function mediateFailureObservation(input = {}) {
+  const observation = observeFailure(input);
+  const mediation_state = observation.action === "block"
+    ? "hard_block"
+    : observation.action === "confirm"
+      ? "confirm"
+      : observation.action === "diagnose_and_correct"
+        ? "rewrite_required"
+        : "defer";
+  return {
+    ...observation,
+    mediation_state,
+    execution_allowed: false,
+    blocked: mediation_state === "hard_block",
+  };
+}
+
 export function buildFailureReceipt(observation, {
   gallery_work_id = null,
   decision_ledger_id = null,
