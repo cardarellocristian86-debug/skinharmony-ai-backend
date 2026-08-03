@@ -74,7 +74,23 @@ test("ChatGPT MCP executes a full tenant-scoped intelligence and calibration cyc
       return rpc.result.structuredContent;
     };
 
+    const workPreflight = {
+      schema_version: "skinharmony_work_preflight_v1",
+      preflight_id: "preflight_intelligence_integration",
+      mandatory: true,
+      tenant_id: "tenant-integrated",
+      operational_surface: "tenant_work_gallery",
+      tenant_work_gallery: {
+        schema_version: "tenant_work_gallery_v1",
+        tenant_id: "tenant-integrated",
+        available: true,
+        state: "ready",
+      },
+      memory_first: { status: "recalled" },
+      governance: { execution_allowed_by_preflight: true },
+    };
     const workflow = await call("intelligence_workflow", {
+      work_preflight: workPreflight,
       request: "Valuta il lancio e seleziona la strategia con il miglior rapporto valore-rischio",
       hypotheses: [
         { id: "demand_growth", label: "La domanda cresce", prior_probability: 0.55, evidence: [{ direction: "support", strength: 0.8, reliability: 0.9 }] },

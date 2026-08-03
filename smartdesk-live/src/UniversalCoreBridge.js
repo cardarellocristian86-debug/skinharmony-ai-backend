@@ -1,6 +1,7 @@
 "use strict";
 
 const DEFAULT_TIMEOUT_MS = 8000;
+const DEFAULT_PREFLIGHT_TTL_MS = 90_000;
 
 function cleanText(value, fallback = "", max = 240) {
   const text = String(value || fallback || "").trim();
@@ -31,6 +32,9 @@ class UniversalCoreBridge {
     this.tenantId = cleanText(options.tenantId || process.env.UNIVERSAL_CORE_TENANT_ID || "smartdesk", "smartdesk", 120);
     this.brandScope = cleanText(options.brandScope || process.env.UNIVERSAL_CORE_BRAND_SCOPE || "skinharmony", "skinharmony", 120);
     this.timeoutMs = cleanNumber(options.timeoutMs || process.env.UNIVERSAL_CORE_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+    this.lastWorkPreflight = null;
+    this.workPreflightExpiresAt = 0;
+    this.preflightTtlMs = cleanNumber(options.preflightTtlMs || process.env.SMARTDESK_WORK_PREFLIGHT_TTL_MS, DEFAULT_PREFLIGHT_TTL_MS);
   }
 
   isConfigured() {
@@ -62,17 +66,17 @@ class UniversalCoreBridge {
   }
 
   async customerIntelligenceReadiness(payload = {}) {
-    return this.request("POST", "/v1/customer-intelligence/readiness", {
+    return this.governedRequest("POST", "/v1/customer-intelligence/readiness", {
       tenant_id: this.tenantId,
       brand_scope: this.brandScope,
       events: Array.isArray(payload.events) ? payload.events : [],
       consents: Array.isArray(payload.consents) ? payload.consents : [],
       customer_profile: payload.customer_profile || payload.customerProfile || {},
-    });
+    }, payload);
   }
 
   async decision(payload = {}) {
-    return this.request("POST", "/v1/decision", {
+    return this.governedRequest("POST", "/v1/decision", {
       tenant_id: this.tenantId,
       brand_scope: this.brandScope,
       domain: cleanText(payload.domain, "smartdesk", 80),
@@ -87,13 +91,13 @@ class UniversalCoreBridge {
         require_confirmation: true,
         safety_mode: true,
         ...(payload.constraints || {})
-      }
-    });
+      },
+    }, payload);
   }
 
   async semanticSelection(payload = {}) {
     const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
-    return this.request("POST", "/v1/semantic-selection", {
+    return this.governedRequest("POST", "/v1/semantic-selection", {
       tenant_id: this.tenantId,
       brand_scope: this.brandScope,
       adapter: cleanText(payload.adapter, "smart_desk", 80),
@@ -103,20 +107,20 @@ class UniversalCoreBridge {
         source: "smartdesk_live",
         product: "smartdesk",
         ...(payload.context || {})
-      }
-    });
+      },
+    }, payload);
   }
 
   async branchAnalyze(branch, payload = {}) {
-    return this.request("POST", `/v1/branches/${encodeURIComponent(branch)}/analyze`, {
+    return this.governedRequest("POST", `/v1/branches/${encodeURIComponent(branch)}/analyze`, {
       tenant_id: this.tenantId,
       brand_scope: this.brandScope,
       data: payload.data || payload,
       metadata: {
         source: "smartdesk_live",
         ...(payload.metadata || {})
-      }
-    });
+      },
+    }, payload);
   }
 
   async nyraInterpret(payload = {}) {
@@ -124,7 +128,7 @@ class UniversalCoreBridge {
     if (!text) {
       return { success: false, code: "nyra_bridge_message_required", message: "Serve una richiesta Smart Desk sintetica." };
     }
-    return this.request("POST", "/v1/nira/core-bridge", {
+    const response = await this.governedRequest("POST", "/v1/nira/core-bridge", {
       text,
       request: text,
       target_system: "smartdesk",
@@ -137,7 +141,39 @@ class UniversalCoreBridge {
         mode: cleanText(payload.mode, "gold", 16),
         center_scope: cleanText(payload.centerScope, "", 120),
       },
-    });
+    }, payload);
+    this.rememberWorkPreflight(response?.work_preflight || response?.core_router?.work_preflight || null);
+    return response;
+  }
+
+  async governedRequest(method, path, body, payload = {}) {
+    const explicitPreflight = payload.work_preflight || null;
+    if (explicitPreflight) this.rememberWorkPreflight(explicitPreflight);
+    const workPreflight = explicitPreflight || this.getWorkPreflight();
+    if (!workPreflight) {
+      return {
+        success: false,
+        code: "work_preflight_required",
+        execution_allowed: false,
+        message: "Smart Desk deve passare da Nyra/Core e dalla Tenant Work Gallery prima della richiesta."
+      };
+    }
+    return this.request(method, path, { ...body, work_preflight: workPreflight });
+  }
+
+  rememberWorkPreflight(preflight) {
+    if (!preflight || typeof preflight !== "object") return;
+    this.lastWorkPreflight = preflight;
+    this.workPreflightExpiresAt = Date.now() + Math.max(1_000, this.preflightTtlMs);
+  }
+
+  getWorkPreflight() {
+    if (!this.lastWorkPreflight || Date.now() >= this.workPreflightExpiresAt) {
+      this.lastWorkPreflight = null;
+      this.workPreflightExpiresAt = 0;
+      return null;
+    }
+    return this.lastWorkPreflight;
   }
 
   async request(method, path, body) {

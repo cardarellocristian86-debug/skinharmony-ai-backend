@@ -169,6 +169,7 @@ function compactWorkPreflight(preflight) {
     state: preflight.state,
     mandatory: preflight.mandatory === true,
     governance: preflight.governance,
+    memory_first: preflight.memory_first,
     gate: preflight.gate,
     core_research: preflight.core_research,
     tool_routing: preflight.tool_routing?.preferred_route
@@ -967,7 +968,12 @@ export function createCoreHandlers(config, options = {}) {
       session_id: args.session_id,
       agent_id: args.agent_id || "nyra",
     }, identity);
-    const requestBody = { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId };
+    const requestBody = {
+      ...args,
+      ...(sharedContext ? { memory_context: sharedContext } : {}),
+      ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
+      tenant_id: identity.tenantId,
+    };
     const requestBinding = options.ownerBindingPurpose
       ? ownerRequestBinding(options.ownerBindingPurpose, requestBody)
       : undefined;
@@ -997,6 +1003,7 @@ export function createCoreHandlers(config, options = {}) {
           mode: "standard",
           owner_context: ownerContext(identity),
           ...(sharedContext ? { memory_context: sharedContext } : {}),
+          ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
           tenant_id: identity.tenantId,
         },
       });
@@ -1068,6 +1075,7 @@ export function createCoreHandlers(config, options = {}) {
           ? [branchId]
           : [...(Array.isArray(args.nyra_branches) ? args.nyra_branches : [])],
         ...(sharedContext ? { memory_context: sharedContext } : {}),
+        ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
         deep_branch_v2: deepBranchV2,
         tenant_id: identity.tenantId,
       },
@@ -1520,6 +1528,7 @@ export function createCoreHandlers(config, options = {}) {
         user_input: args.include_control_snapshot ? "Include control snapshot" : "Read readiness context",
         locale: "it",
         ...(sharedContext ? { memory_context: sharedContext } : {}),
+        ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
         tenant_id: identity.tenantId
         }
       }));
@@ -1612,7 +1621,12 @@ export function createCoreHandlers(config, options = {}) {
     core_action_mediation_evaluate: async (args, identity) => {
       const coreResponse = await coreRequest("/v1/action-mediation/evaluate", identity.tenantId, {
         method: "POST",
-        body: { action: args.action, policy: args.policy, context: args.context },
+        body: {
+          action: args.action,
+          policy: args.policy,
+          context: args.context,
+          work_preflight: args.work_preflight,
+        },
       });
       const response = applyQualityFailureMediation(args, coreResponse);
       const ledger = await recordQualityFailureObservation(identity, response);

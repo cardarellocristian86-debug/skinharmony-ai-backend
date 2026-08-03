@@ -901,7 +901,10 @@ export function createApp(config, options = {}) {
           ? (hookContext?.preflight ?? hookContext)
           : null;
         activeToolCall = { ...activeToolCall, hookContext, preflight };
-        const rawResult = await handlers[tool.name](args, callIdentity);
+        const handlerArgs = preflight?.work_preflight && !args.work_preflight
+          ? { ...args, work_preflight: preflight.work_preflight }
+          : args;
+        const rawResult = await handlers[tool.name](handlerArgs, callIdentity);
         const preflightResult = attachWorkPreflight(rawResult, preflight);
         const result = attachAgentPresence(preflightResult, agentPresence);
         if (typeof afterToolCall === "function") {
