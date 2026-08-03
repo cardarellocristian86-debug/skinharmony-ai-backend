@@ -290,14 +290,15 @@ function getControlRoomRuntimeMeta(reqSession) {
     "view_own_assigned_work",
     "view_own_agent_activity",
     "view_own_branch_activity",
-    "impersonation"
   ];
   const permissions = permissionKeys.reduce((acc, permission) => {
     acc[permission] = Boolean(service.controlHasPermission(reqSession, permission));
     return acc;
   }, {});
   return {
+    role,
     controlRole: role,
+    tenantSwitcherAllowed: role === "super_admin",
     tenantId: service.getCenterId(reqSession),
     tenantName: service.getCenterName(reqSession),
     allowedTenants: allowedTenants.map((tenant) => ({
@@ -1181,9 +1182,33 @@ app.get("/web-preview", (_req, res) => {
 });
 
 app.post("/api/auth/login", loginRateLimit, (req, res) => {
+  const usernameHint = String(req.body?.username || req.body?.email || req.body?.user || "").trim();
   try {
-    res.json({ success: true, ...service.login(req.body || {}) });
+    const session = service.login(req.body || {});
+    service.recordControlAuditEvent({
+      session,
+      action: "login_success",
+      outcome: "success",
+      reason: "login",
+      details: {
+        method: "POST",
+        path: "/api/auth/login",
+        tenantFilter: String(session?.centerId || "")
+      }
+    });
+    res.json({ success: true, ...session });
   } catch (error) {
+    service.recordControlAuditEvent({
+      actor: { username: usernameHint },
+      action: "login_failed",
+      outcome: "failed",
+      reason: error instanceof Error ? error.message : "login failed",
+      details: {
+        method: "POST",
+        path: "/api/auth/login",
+        tenantFilter: ""
+      }
+    });
     res.status(401).send(error instanceof Error ? error.message : "Credenziali non valide");
   }
 });
@@ -1684,7 +1709,8 @@ app.get("/api/control-room/tenants", requireAuth, controlRoomRateLimit, (req, re
   if (!service.controlHasPermission(req.session, "view_all_tenants")) {
     return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: tenant list"), 403));
   }
-  return withControlRoomTimeout(() => service.getControlRoomTenantRows(req.session)).then((payload) => {
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  return withControlRoomTimeout(() => service.getControlRoomTenantRows(req.session, tenantFilter)).then((payload) => {
     res.json({
       ok: true,
       schema: "control_room_tenants_v1",
@@ -1741,7 +1767,9 @@ app.get("/api/control-room/work-gallery", requireAuth, controlRoomRateLimit, (re
     status: String(req.query.status || "").trim(),
     agent: String(req.query.agent || "").trim(),
     risk: String(req.query.risk || "").trim(),
-    q: String(req.query.q || "").trim()
+    q: String(req.query.q || "").trim().slice(0, 200),
+    projectId: String(req.query.projectId || req.query.project || "").trim(),
+    date: String(req.query.date || "").trim()
   };
   return withControlRoomTimeout(() => service.getControlRoomWorkGallery(req.session, tenantFilter, payload))
     .then((result) => {
@@ -2032,97 +2060,162 @@ app.get("/api/control-room/governance", requireAuth, controlRoomRateLimit, (req,
   });
 });
 
+app.get("/api/control-room/audit/export", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["export_sanitized_audit", "export_own_sanitized_audit"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: audit export"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const format = String(req.query.format || "json").toLowerCase();
+  return withControlRoomTimeout(() => service.getControlRoomAuditExport(req.session, tenantFilter, {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    format
+  })).then((result) => res.json({
+    ok: true,
+    schema: "control_room_audit_export_v1",
+    role: service.getControlRole(req.session),
+    requestedTenantId: tenantFilter || null,
+    ...result,
+    control: getControlRoomRuntimeMeta(req.session),
+    generatedAt: new Date().toISOString()
+  })).catch((error) => {
+    if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+    return res.status(400).json(controlRoomErrorPayload(error));
+  });
+});
+
 app.get("/api/demo/agent-workspace-governance", requireAuth, controlRoomRateLimit, (req, res) => {
+  const demoPermissions = [
+    "view_global_health",
+    "view_own_tenant_health",
+    "view_own_assigned_work",
+    "view_own_agent_activity"
+  ];
+  if (!hasAnyControlPermission(req.session, demoPermissions)) {
+    service.recordControlAuditEvent({
+      session: req.session,
+      action: "control_demo_access_denied",
+      outcome: "denied",
+      reason: "permission_denied",
+      details: {
+        method: req.method,
+        path: req.path
+      }
+    });
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: demo governance"), 403));
+  }
   const tenantId = service.getCenterId(req.session);
   const tenantName = service.getCenterName(req.session);
   const role = service.getControlRole(req.session);
   const control = getControlRoomRuntimeMeta(req.session);
-  const connectors = service.getControlRoomConnectors(req.session, tenantId, { includeStatusOnly: true });
-  const ledger = service.getControlRoomDecisionLedger(req.session, tenantId, { limit: 100, offset: 0 });
-  const workGallery = service.getControlRoomWorkGallery(req.session, tenantId, { limit: 30, offset: 0 });
-  const connectorStateById = {};
-  const baseConnList = Array.isArray(connectors?.tenants) ? connectors.tenants : [];
-  if (baseConnList[0]?.list) {
-    baseConnList[0].list.forEach((connector) => {
-      if (!connector?.connectorId) return;
-      connectorStateById[connector.connectorId] = connector.state;
-    });
-  }
-  const recentDecisionItems = (ledger?.data || []).filter((item) => {
-    const createdAt = new Date(item.createdAt || "").getTime();
-    return createdAt && Date.now() - createdAt <= 30 * 24 * 60 * 60 * 1000;
-  });
-  const riskyAction = "push main + deploy Render without tests, rollback or fresh owner confirmation";
-  res.json({
-    ok: true,
-    schema: "demo_agent_workspace_governance_v1",
-    role,
-    tenant: {
+  return withControlRoomTimeout(() => {
+    const connectors = service.getControlRoomConnectors(req.session, tenantId, { includeStatusOnly: true });
+    const ledger = service.getControlRoomDecisionLedger(req.session, tenantId, { limit: 100, offset: 0 });
+    const workGallery = service.getControlRoomWorkGallery(req.session, tenantId, { limit: 30, offset: 0 });
+    return {
       tenantId,
-      tenantName
-    },
-    coreHealth: {
-      state: "ACTIVE",
-      synthetic: true
-    },
-    nyraRuntime: {
-      state: connectorStateById["nyra-runtime"] || "DEGRADED",
-      synthetic: true
-    },
-    memoryCloud: {
-      docs: true,
-      size: Array.isArray(workGallery?.data) ? workGallery.data.length : 0
-    },
-    hostNativeGovernance: {
-      blocker: control.permissions?.view_governance_blockers ? "governance_active" : "governance_restricted",
-      schemaWrapperRequired: true
-    },
-    githubCredentialState: {
-      state: connectorStateById["github-resolver"] || "DEGRADED",
-      active: connectorStateById["github-resolver"] === "ACTIVE"
-    },
-    renderResolverState: {
-      state: connectorStateById["render-resolver"] || "DEGRADED",
-      active: connectorStateById["render-resolver"] === "ACTIVE"
-    },
-    workGallery: {
-      total: workGallery?.data?.length || 0,
-      items: (workGallery?.data || []).slice(0, 10).map((work) => ({
-        tenantId: work.tenantId,
-        workId: work.workId,
-        title: work.title,
-        status: work.status
-      }))
-    },
-    decisionLedger: {
-      periodDays: 30,
-      total: recentDecisionItems.length,
-      items: recentDecisionItems.slice(0, 30).map((item) => ({
-        tenantId: item.tenantId,
-        workId: item.workId,
-        decisionId: item.decisionId,
-        coreVerdict: item.coreVerdict || item.decision,
-        createdAt: item.createdAt
-      }))
-    },
-    riskyAction,
-    verdict: {
-      execution_allowed: false,
-      owner_confirmation_required: true,
-      core_verdict_required: true,
-      audit_required: true
-    },
-    explanationIT: "La richiesta simulata viene bloccata dal motore governance perché richiede test, wrapper e conferma owner valida prima dell’esecuzione.",
-    blocker: "schema wrapper required",
-    nextActions: [
-      "Eseguire suite di test",
-      "Richiedere conferma owner valida",
-      "Verificare rollback strategy",
-      "Aggiungere wrapper schema prima del deploy"
-    ],
-    schemaWrapperRequired: true,
-    generatedAt: new Date().toISOString(),
-    control
+      tenantName,
+      role,
+      control,
+      connectors,
+      ledger,
+      workGallery
+    };
+  }).then((payload) => {
+    const connectors = payload.connectors;
+    const ledger = payload.ledger;
+    const workGallery = payload.workGallery;
+    const connectorStateById = {};
+    const baseConnList = Array.isArray(connectors?.tenants) ? connectors.tenants : [];
+    if (baseConnList[0]?.list) {
+      baseConnList[0].list.forEach((connector) => {
+        if (!connector?.connectorId) return;
+        connectorStateById[connector.connectorId] = connector.state;
+      });
+    }
+    const recentDecisionItems = (ledger?.data || []).filter((item) => {
+      const createdAt = new Date(item.createdAt || "").getTime();
+      return createdAt && Date.now() - createdAt <= 30 * 24 * 60 * 60 * 1000;
+    });
+    const riskyAction = "push main + deploy Render without tests, rollback or fresh owner confirmation";
+    res.json({
+      ok: true,
+      schema: "demo_agent_workspace_governance_v1",
+      role: payload.role,
+      tenant: {
+        tenantId: payload.tenantId,
+        tenantName: payload.tenantName
+      },
+      coreHealth: {
+        state: "ACTIVE",
+        synthetic: true
+      },
+      nyraRuntime: {
+        state: connectorStateById["nyra-runtime"] || "DEGRADED",
+        synthetic: true
+      },
+      memoryCloud: {
+        docs: true,
+        size: Array.isArray(workGallery?.data) ? workGallery.data.length : 0
+      },
+      hostNativeGovernance: {
+        blocker: payload.control.permissions?.view_governance_blockers ? "governance_active" : "governance_restricted",
+        schemaWrapperRequired: true
+      },
+      githubCredentialState: {
+        state: connectorStateById["github-resolver"] || "DEGRADED",
+        active: connectorStateById["github-resolver"] === "ACTIVE"
+      },
+      renderResolverState: {
+        state: connectorStateById["render-resolver"] || "DEGRADED",
+        active: connectorStateById["render-resolver"] === "ACTIVE"
+      },
+      workGallery: {
+        total: workGallery?.data?.length || 0,
+        items: (workGallery?.data || []).slice(0, 10).map((work) => ({
+          tenantId: work.tenantId,
+          workId: work.workId,
+          title: work.title,
+          status: work.status
+        }))
+      },
+      decisionLedger: {
+        periodDays: 30,
+        total: recentDecisionItems.length,
+        items: recentDecisionItems.slice(0, 30).map((item) => ({
+          tenantId: item.tenantId,
+          workId: item.workId,
+          decisionId: item.decisionId,
+          coreVerdict: item.coreVerdict || item.decision,
+          createdAt: item.createdAt
+        }))
+      },
+      riskyAction,
+      verdict: {
+        execution_allowed: false,
+        owner_confirmation_required: true,
+        core_verdict_required: true,
+        audit_required: true
+      },
+      explanationIT: "La richiesta simulata viene bloccata dal motore governance perché richiede test, wrapper e conferma owner valida prima dell’esecuzione.",
+      blocker: "schema wrapper required",
+      nextActions: [
+        "Eseguire suite di test",
+        "Richiedere conferma owner valida",
+        "Verificare rollback strategy",
+        "Aggiungere wrapper schema prima del deploy"
+      ],
+      schemaWrapperRequired: true,
+      generatedAt: new Date().toISOString(),
+      control: payload.control
+    });
+  }).catch((error) => {
+    if (error?.code === "control_cross_tenant_denied") {
+      return res.status(403).json(controlRoomErrorPayload(error, 403));
+    }
+    return res.status(400).json(controlRoomErrorPayload(error));
   });
 });
 

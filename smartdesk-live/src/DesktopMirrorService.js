@@ -2393,8 +2393,7 @@ class DesktopMirrorService {
         "view_global_memory_status",
         "view_connectors_status",
         "view_governance_blockers",
-        "export_sanitized_audit",
-        "impersonation"
+        "export_sanitized_audit"
       ]),
       tenant_admin: new Set([
         "view_own_tenant_health",
@@ -2508,6 +2507,30 @@ class DesktopMirrorService {
     return tenants.sort((left, right) => (left.tenantName || "").localeCompare(right.tenantName || ""));
   }
 
+  getControlRoomTenantSet(session = null, requestedTenantId = "") {
+    const role = this.getControlRole(session);
+    const requested = String(requestedTenantId || "").trim();
+    const resolved = this.resolveControlTenantScope(session, requested, { action: "control_tenant_set" });
+
+    if (resolved) {
+      return [resolved];
+    }
+
+    if (role === "super_admin") {
+      return this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
+    }
+
+    return [this.getCenterId(session)];
+  }
+
+  sanitizeControlTenantRecord(tenant = {}) {
+    return {
+      tenantId: String(tenant.tenantId || ""),
+      tenantName: String(tenant.tenantName || ""),
+      isActive: Boolean(tenant.isActive)
+    };
+  }
+
   getControlRoomTenantRows(session = null, tenantId = "") {
     const rawTenantId = String(tenantId || "").trim();
     const resolvedTenantId = this.resolveControlTenantScope(session, rawTenantId, { action: "tenant_overview" });
@@ -2515,14 +2538,22 @@ class DesktopMirrorService {
 
     return allowed.map((tenant) => {
       const stats = this.getCenterControlStats(tenant);
-      const owner = this.usersRepository.findById(this.usersRepository.find((user) => this.belongsToCenter(user, tenant))?.id || "") || {};
+      const owner = this.usersRepository.findById(
+        this.usersRepository.list().find((user) => this.belongsToCenter(user, tenant))?.id || ""
+      ) || {};
       const ownerName = String(owner.ownerName || owner.username || "owner").trim() || "owner";
       return {
         tenantId: tenant,
         tenantName: this.getPublicSettings(this.buildSession({ id: "0", username: ownerName, role: owner.role || "owner", centerId: tenant, centerName: owner.centerName || tenant, accessState: "active", accountStatus: "active", trialStartsAt: "", trialEndsAt: "", planType: "base", subscriptionPlan: "base" })).centerName,
         configured: true,
         active: (stats.activeSessions || 0) > 0 || (stats.clients || 0) > 0,
-        owner,
+        owner: {
+          id: String(owner.id || ""),
+          username: String(owner.username || ownerName).slice(0, 80),
+          role: String(owner.role || "owner").slice(0, 80),
+          centerId: String(owner.centerId || tenant),
+          centerName: String(owner.centerName || tenant)
+        },
         workItems: this.getCenterRepositoryItems(this.appointmentsRepository, tenant).length,
         users: stats.users,
         activeSessions: stats.activeSessions,
@@ -2530,6 +2561,67 @@ class DesktopMirrorService {
         createdAt: nowIso()
       };
     });
+  }
+
+  getControlRoomAuditExport(session = null, requestedTenantId = "", options = {}) {
+    const normalizedFormat = String(options.format || "json").toLowerCase();
+    const audit = this.getControlRoomAudit(session, requestedTenantId, options);
+    const rows = Array.isArray(audit?.data) ? audit.data : [];
+    const exportedAt = nowIso();
+    const actorRole = this.getControlRole(session);
+    const exportScope = audit?.filters?.tenantId || null;
+    const sanitized = rows.map((row) => ({
+      ts: row.ts,
+      tenantId: row.tenantId || "",
+      action: String(row.action || ""),
+      outcome: String(row.outcome || ""),
+      reason: String(row.reason || ""),
+      actor: {
+        actorId: String(row.actor?.actorId || ""),
+        username: String(row.actor?.username || ""),
+        role: String(row.actor?.controlRole || "")
+      },
+      evidence: {
+        path: String(row.details?.path || ""),
+        method: String(row.details?.method || ""),
+        tenantFilter: String(row.details?.tenantFilter || "")
+      }
+    }));
+    const basePayload = {
+      ok: true,
+      scope: {
+        role: actorRole,
+        tenantId: exportScope
+      },
+      generatedAt: exportedAt,
+      format: normalizedFormat === "csv" ? "csv" : "json",
+      count: sanitized.length,
+      data: sanitized
+    };
+    if (normalizedFormat === "csv") {
+      const header = ["ts", "tenantId", "action", "outcome", "reason", "actorId", "actor", "role", "path", "method", "tenantFilter"];
+      const csv = [
+        header.join(","),
+        ...sanitized.map((row) => header.map((column) => {
+          const value = {
+            ts: String(row.ts || ""),
+            tenantId: String(row.tenantId || ""),
+            action: String(row.action || ""),
+            outcome: String(row.outcome || ""),
+            reason: String(row.reason || ""),
+            actorId: String(row.actor?.actorId || ""),
+            actor: String(row.actor?.username || ""),
+            role: String(row.actor?.role || ""),
+            path: String(row.evidence?.path || ""),
+            method: String(row.evidence?.method || ""),
+            tenantFilter: String(row.evidence?.tenantFilter || "")
+          }[column];
+          return `"${value.replace(/"/g, "\"\"")}"`;
+        }).join(","))
+      ].join("\n");
+      return { ...basePayload, content: csv };
+    }
+    return basePayload;
   }
 
   getControlRoomExecutive(session = null, requestedTenantId = "", options = {}) {
@@ -2653,64 +2745,111 @@ class DesktopMirrorService {
     const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "work_gallery" });
     const tenantIds = resolvedTenantId ? [resolvedTenantId] : this.getControlRoomAllowedTenants(session).map((tenant) => tenant.tenantId);
     const requestedOwner = String((session?.username || "").trim().toLowerCase());
+    const requestedStatus = String(options.status || "").trim().toLowerCase();
+    const requestedRisk = String(options.risk || "").trim().toLowerCase();
+    const requestedAgent = String(options.agent || "").trim().toLowerCase();
+    const requestedProject = String(options.projectId || "").trim().toLowerCase();
+    const requestedDate = String(options.date || "").trim();
+    const requestedQ = String(options.q || "").trim().toLowerCase();
     const isOperator = this.getControlRole(session) === "tenant_operator";
 
     const rows = [];
     const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
     const safeOffset = Math.max(0, Number(options.offset || 0));
+    const matchesGlobal = (entry) => {
+      if (requestedStatus && String(entry.status || "").toLowerCase() !== requestedStatus) {
+        return false;
+      }
+      const risk = String(entry.riskLevel || entry.livelloRischio || "").toLowerCase();
+      if (requestedRisk && risk !== requestedRisk) return false;
+      const agentMatch = !requestedAgent
+        || String(entry.staffName || entry.staff || entry.owner || "")
+          .toLowerCase().includes(requestedAgent)
+        || String(entry.username || "")
+          .toLowerCase().includes(requestedAgent);
+      if (!agentMatch) return false;
+      if (requestedProject) {
+        const projectText = String(entry.projectId || entry.project_id || "").toLowerCase();
+        if (!projectText.includes(requestedProject)) return false;
+      }
+      if (requestedDate) {
+        const updatedDate = String(entry.lastUpdatedAt || entry.updatedAt || "").slice(0, 10);
+        const openedDate = String(entry.openedAt || entry.createdAt || "").slice(0, 10);
+        if (updatedDate !== requestedDate && openedDate !== requestedDate) return false;
+      }
+      if (requestedQ) {
+        const qMatch = String(entry.workId || "").toLowerCase().includes(requestedQ)
+          || String(entry.title || "").toLowerCase().includes(requestedQ)
+          || String(entry.description || "").toLowerCase().includes(requestedQ)
+          || String(entry.projectId || "").toLowerCase().includes(requestedQ);
+        if (!qMatch) return false;
+      }
+      if (!isOperator) return true;
+      const assigned = String(entry.staffName || entry.staff || "").trim().toLowerCase();
+      return assigned ? assigned.includes(requestedOwner) || requestedOwner.includes(assigned) : true;
+    };
 
     tenantIds.forEach((tenantId) => {
       const appointments = this.getCenterRepositoryItems(this.appointmentsRepository, tenantId)
-        .filter((item) => {
-          if (!isOperator) return true;
-          const assigned = String(item.staffName || item.staff || "").trim().toLowerCase();
-          return assigned ? assigned.includes(requestedOwner) || requestedOwner.includes(assigned) : true;
-        })
         .map((appointment) => {
           const projectId = String(appointment.projectId || appointment.project || `project-${appointment.id || "0"}`);
           const openedAt = String(appointment.createdAt || appointment.startAt || appointment.bookedAt || nowIso());
           const updatedAt = String(appointment.updatedAt || appointment.lastUpdated || openedAt);
           const status = String(appointment.status || "open").toLowerCase();
-          const isHighRisk = status === "blocked" || status === "error";
+          const isHighRisk = status === "blocked" || status === "error" || status === "risk";
           const lockActive = Boolean(appointment.locked || appointment.lock || String(appointment.lockedBy || "").trim());
-          const sessionsPresent = 1;
           const agent = String(appointment.staffName || appointment.staff || this.getCenterName({ centerId: tenantId })).trim() || "team";
           const branchOpen = [String(appointment.service || "workflow")];
-          const tasksReady = status === "done" || status === "completed" ? 1 : 0;
-          const tasksInProgress = status === "in_progress" ? 1 : 0;
-          const tasksBlocked = status === "blocked" ? 1 : 0;
+          const tasksReady = Number.isFinite(Number(appointment.tasksReady)) ? Number(appointment.tasksReady) : (status === "done" || status === "completed" ? 1 : 0);
+          const tasksInProgress = Number.isFinite(Number(appointment.tasksInProgress)) ? Number(appointment.tasksInProgress) : (status === "in_progress" ? 1 : 0);
+          const tasksBlocked = Number.isFinite(Number(appointment.tasksBlocked)) ? Number(appointment.tasksBlocked) : (status === "blocked" ? 1 : 0);
+          const risk = String(appointment.riskLevel || "medio").toLowerCase();
 
           return {
             tenantId,
+            tenantName: this.getCenterName({ centerId: tenantId }),
+            project_id: projectId,
             projectId,
             workId: String(appointment.id || `${tenantId}-${openedAt}`),
+            work_id: String(appointment.id || `${tenantId}-${openedAt}`),
             title: String(appointment.title || appointment.serviceName || "Lavoro assegnato").trim(),
             description: String(appointment.notes || appointment.description || "Nessuna descrizione disponibile").trim().slice(0, 240),
+            description_brief: String(appointment.notes || appointment.description || "Nessuna descrizione disponibile").trim().slice(0, 140),
             status,
             priority: isHighRisk ? "alta" : "media",
             openedAt,
+            data_apertura: openedAt,
             lastUpdatedAt: updatedAt,
-            sessionsPresent,
+            ultimoAggiornamento: updatedAt,
+            sessionsPresenti: 1,
+            sessionsPresent: 1,
             agentsPresent: [agent],
             branchesOpen: branchOpen,
+            branchOpen,
             tasksReady,
             tasksInProgress,
             tasksBlocked,
+            leaseLocked: lockActive,
             lockActive,
-            dependencies: [],
+            dependencies: Array.isArray(appointment.dependencies) ? appointment.dependencies : [],
             checkpointAvailable: Boolean(appointment.checkpointAvailable || false),
             handoffPending: Boolean(appointment.handoffPending || false),
-            artifacts: Array.isArray(appointment.artifacts) ? appointment.artifacts.filter((item) => Boolean(item)) : [],
+            artifactCollegati: Array.isArray(appointment.artifacts) ? appointment.artifacts.filter((item) => Boolean(item)) : [],
+            artifactsCount: Array.isArray(appointment.artifacts) ? appointment.artifacts.filter((item) => Boolean(item)).length : 0,
             regressionsDetected: Number(appointment.regressionsDetected || 0),
+            prossimoPasso: tasksBlocked ? "Sbloccare la dipendenza e richiudere il lock" : "Verificare stato e avanzamento",
             nextStep: tasksBlocked ? "Sbloccare la dipendenza e richiudere il lock" : "Verificare stato e avanzamento",
             owner: agent,
             requestOwner: String(appointment.requestOwner || agent),
-            riskLevel: isHighRisk ? "alto" : "medio",
+            riskLevel: risk || "medio",
+            livelloRischio: risk || "medio",
             coreVerdict: isHighRisk ? "REVIEW" : "ALLOW",
             verificationStatus: lockActive ? "attivo" : "chiuso",
-            tenantName: this.getCenterName({ centerId: tenantId })
+            statoVerifica: lockActive ? "attivo" : "chiuso",
+            stato: isHighRisk ? "bloccato" : "attivo"
           };
-        });
+        })
+        .filter(matchesGlobal);
 
       rows.push(...appointments);
     });
@@ -2999,18 +3138,9 @@ class DesktopMirrorService {
     const requestedActor = String(options.actor || "").trim().toLowerCase();
     const role = this.getControlRole(session);
 
+    const allowedTenants = new Set(this.getControlRoomTenantSet(session, resolvedTenantId ? resolvedTenantId : ""));
     const rows = this.controlAuditRepository.list()
-      .filter((row) => {
-        const target = String(row.targetTenantId || row.requestedTenantId || "");
-        const sourceTenant = resolvedTenantId ? target === resolvedTenantId : target === this.getCenterId(session) || role === "super_admin";
-        if (!resolvedTenantId && role !== "super_admin" && role !== "tenant_admin") {
-          return sourceTenant;
-        }
-        if (role === "tenant_admin" && !resolvedTenantId) {
-          return this.belongsToCenter({ centerId: target }, this.getCenterId(session)) || target === this.getCenterId(session);
-        }
-        return sourceTenant;
-      })
+      .filter((row) => allowedTenants.has(String(row.targetTenantId || row.requestedTenantId || "")))
       .filter((row) => !requestedAction || String(row.action || "").toLowerCase() === requestedAction)
       .filter((row) => !requestedOutcome || String(row.outcome || "").toLowerCase() === requestedOutcome)
       .filter((row) => !requestedActor || String(row.actor?.username || "").toLowerCase().includes(requestedActor))
@@ -3055,12 +3185,10 @@ class DesktopMirrorService {
   getControlRoomDecisionLedger(session = null, requestedTenantId = "", options = {}) {
     const tenantFilter = String(requestedTenantId || "").trim();
     const resolvedTenantId = this.resolveControlTenantScope(session, tenantFilter, { action: "decision_ledger" });
+    const allowedTenants = new Set(this.getControlRoomTenantSet(session, resolvedTenantId ? resolvedTenantId : ""));
     const rows = this.controlAuditRepository.list().filter((row) => {
       const target = String(row.targetTenantId || row.requestedTenantId || "");
-      if (!resolvedTenantId) {
-        return target === this.getCenterId(session) || this.getControlRole(session) === "super_admin";
-      }
-      return target === resolvedTenantId;
+      return allowedTenants.has(target);
     });
     const safeLimit = Math.max(1, Math.min(200, Number(options.limit || 120)));
     const safeOffset = Math.max(0, Number(options.offset || 0));
@@ -3133,7 +3261,8 @@ class DesktopMirrorService {
 
   getControlRoomWork(session = null, requestedTenantId = "", workId = "") {
     const gallery = this.getControlRoomWorkGallery(session, requestedTenantId, { limit: 500, offset: 0 });
-    const found = gallery.data.find((item) => String(item.workId || "").toLowerCase() === String(workId || "").toLowerCase());
+    const normalized = String(workId || "").toLowerCase();
+    const found = gallery.data.find((item) => String(item.workId || item.work_id || "").toLowerCase() === normalized);
     if (!found) {
       const err = new Error("Work non trovato");
       err.code = "control_work_not_found";
@@ -3146,65 +3275,236 @@ class DesktopMirrorService {
   }
 
   getControlRoomWorkTimeline(session = null, requestedTenantId = "", workId = "") {
-    const work = this.getControlRoomWork(session, requestedTenantId, workId);
-    const tenantId = String(work.tenantId || "");
-    const tenantSafe = String(work.tenantId || tenantId);
-    const sanitizedSession = `session-${hashToken(String(workId || tenantSafe || "session")).slice(0, 18)}`;
-    const openedAt = String(work.openedAt || nowIso());
+    const resolvedTenantId = this.resolveControlTenantScope(session, String(requestedTenantId || "").trim(), { action: "work_timeline" });
+    const tenantSafe = String((resolvedTenantId || this.getCenterId(session)) || "").trim();
+    const gallery = this.getControlRoomWorkGallery(session, tenantSafe, { limit: 500, offset: 0 });
+    const normalized = String(workId || "").toLowerCase();
+    const work = gallery.data.find((item) => String(item.workId || item.work_id || "").toLowerCase() === normalized);
+    if (!work) {
+      const err = new Error("Work non trovato");
+      err.code = "control_work_not_found";
+      throw err;
+    }
+    const sanitizedSession = `session-${hashToken(String(work.workId || work.work_id || tenantSafe || "session")).slice(0, 18)}`;
+    const openedAt = String(work.openedAt || work.data_apertura || nowIso());
+    const eventTime = nowIso();
+    const riskLevel = String(work.riskLevel || work.livelloRischio || "medio").toLowerCase();
+    const isHighRisk = riskLevel === "alto" || riskLevel === "high";
     return {
       tenantId: tenantSafe,
-      workId: String(work.workId),
+      tenant: tenantSafe,
+      workId: String(work.workId || work.work_id || ""),
+      work_id: String(work.work_id || work.workId || ""),
       sessionId: sanitizedSession,
+      sessionIdSanitized: sanitizedSession,
       workIdSafe: String(work.workId || "").slice(0, 128),
       events: [
         {
           tenantId: tenantSafe,
+          tenant: tenantSafe,
           workId: String(work.workId || ""),
           workIdSafe: String(work.workId || "").slice(0, 128),
           sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
           timestamp: openedAt,
           actor: "control-operator",
           branch: "intake",
-          event: "request_received",
+          event: "Request ricevuta",
+          eventCode: "request_received",
           outcome: "ok",
           evidence: "payload validato",
           coreDecision: "ALLOW",
           confirmationRequested: false,
-          rollbackAction: null,
+          rollbackOrNextAction: "Core apre i rami",
           nextAction: "Inizio valutazione branch"
         },
         {
           tenantId: tenantSafe,
+          tenant: tenantSafe,
           workId: String(work.workId || ""),
           workIdSafe: String(work.workId || "").slice(0, 128),
           sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
           timestamp: openedAt,
-          actor: "core-orchestrator",
-          branch: "nyra-router",
-          event: "core_opens_branches",
+          actor: "nyra-orchestrator",
+          branch: "Nyra",
+          event: "Nyra interpreta",
+          eventCode: "nyra_interpreta",
           outcome: "ok",
-          evidence: "orchestrazione eseguita",
-          tenant: tenantSafe,
-          coreDecision: work.coreVerdict,
-          confirmationRequested: work.riskLevel === "alto",
-          rollbackAction: work.riskLevel === "alto" ? "richiedi_riversificazione" : null,
-          nextAction: work.nextStep
+          evidence: "routing del caso",
+          coreDecision: "REVIEW",
+          confirmationRequested: isHighRisk,
+          rollbackOrNextAction: "Core apre i rami"
         },
         {
           tenantId: tenantSafe,
+          tenant: tenantSafe,
           workId: String(work.workId || ""),
           workIdSafe: String(work.workId || "").slice(0, 128),
           sessionId: sanitizedSession,
-          timestamp: nowIso(),
-          actor: "audit-trace",
-          branch: "evidence",
-          event: "outcome_recorded",
-          outcome: work.riskLevel === "alto" ? "pending_confirmation" : "approved",
-          evidence: "timeline verificata e registrata",
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "core-runtime",
+          branch: "Nyra",
+          event: "Core apre i rami",
+          eventCode: "core_opens_branches",
+          outcome: "ok",
+          evidence: "rami aperti con policy attuale",
+          coreDecision: "ALLOW",
+          confirmationRequested: false,
+          rollbackOrNextAction: "Evidence Researcher raccoglie prove",
+          nextAction: "Work Coordinator assegna task"
+        },
+        {
+          tenantId: tenantSafe,
           tenant: tenantSafe,
-          coreDecision: work.coreVerdict,
-          confirmationRequested: work.riskLevel === "alto",
-          rollbackAction: null,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "evidence-researcher",
+          branch: "Evidence Researcher",
+          event: "Evidence Researcher raccoglie prove",
+          eventCode: "evidence_researcher",
+          outcome: "ok",
+          evidence: "fonti operative e audit verificate",
+          coreDecision: "REVIEW",
+          confirmationRequested: false,
+          rollbackOrNextAction: "Work Coordinator assegna task",
+          nextAction: "Software Engineer produce output"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "work-coordinator",
+          branch: "Work Coordinator",
+          event: "Work Coordinator assegna task",
+          eventCode: "work_coordinator_assigns",
+          outcome: "ok",
+          evidence: "task e owner assegnati",
+          coreDecision: "ASSIGNED",
+          confirmationRequested: false,
+          rollbackOrNextAction: "Software Engineer produce output",
+          nextAction: "Quality Evaluator verifica"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "software-engineer",
+          branch: "Software Engineer",
+          event: "Software Engineer produce output",
+          eventCode: "software_engineer_output",
+          outcome: "ok",
+          evidence: "proposta tecnica redatta",
+          coreDecision: "PENDING",
+          confirmationRequested: false,
+          rollbackOrNextAction: "Quality Evaluator verifica",
+          nextAction: "Quality Evaluator verifica"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "quality-evaluator",
+          branch: "Quality Evaluator",
+          event: "Quality Evaluator verifica",
+          eventCode: "quality_evaluator",
+          outcome: isHighRisk ? "needs_review" : "approved",
+          evidence: isHighRisk ? "review richiesta" : "verifica superata",
+          coreDecision: isHighRisk ? "REVIEW" : "ALLOW",
+          confirmationRequested: isHighRisk,
+          rollbackOrNextAction: isHighRisk ? "owner_confirmation" : "core_verdict",
+          nextAction: isHighRisk ? "Owner conferma se richiesto" : "Core emette verdict"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "core-runtime",
+          branch: "Core",
+          event: "Core emette verdict",
+          eventCode: "core_emits_verdict",
+          outcome: isHighRisk ? "pending_confirmation" : "authorized",
+          evidence: "decisione finale Core",
+          coreDecision: isHighRisk ? "REVIEW" : "ALLOW",
+          confirmationRequested: isHighRisk,
+          rollbackOrNextAction: isHighRisk ? "owner_confirmation" : "record_outcome",
+          nextAction: isHighRisk ? "Owner conferma se richiesto" : "Azione autorizzata"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "governance-orchestrator",
+          branch: "Governance",
+          event: isHighRisk ? "Owner conferma se richiesta" : "Owner conferma non richiesta",
+          eventCode: "owner_confirmation",
+          outcome: isHighRisk ? "requested" : "not_required",
+          evidence: isHighRisk ? "blocco policy con consenso owner" : "nessuna conferma necessaria",
+          coreDecision: isHighRisk ? "WAIT_OWNER_CONFIRMATION" : "ALLOW",
+          confirmationRequested: isHighRisk,
+          rollbackOrNextAction: isHighRisk ? "attendere_conferma_owner" : "record_outcome",
+          nextAction: isHighRisk ? "Azione bloccata" : "Azione autorizzata"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "audit-trace",
+          branch: "Outcome",
+          event: isHighRisk ? "Azione bloccata" : "Azione autorizzata",
+          eventCode: isHighRisk ? "action_blocked" : "action_authorized",
+          outcome: isHighRisk ? "blocked" : "authorized",
+          evidence: "evento di chiusura registrato in audit",
+          coreDecision: isHighRisk ? "DENIED" : "AUTHORIZED",
+          confirmationRequested: isHighRisk,
+          rollbackOrNextAction: isHighRisk ? "owner_decision" : "schema_wrapper_ready",
+          nextAction: isHighRisk ? "owner confirm" : "Learning candidate proposto"
+        },
+        {
+          tenantId: tenantSafe,
+          tenant: tenantSafe,
+          workId: String(work.workId || ""),
+          workIdSafe: String(work.workId || "").slice(0, 128),
+          sessionId: sanitizedSession,
+          sessionIdSafe: sanitizedSession,
+          timestamp: eventTime,
+          actor: "learning-engine",
+          branch: "Learning",
+          event: "Learning candidate proposto",
+          eventCode: "learning_candidate",
+          outcome: "candidate_ready",
+          evidence: "tracciamento miglioramenti e policy",
+          coreDecision: isHighRisk ? "REVIEW" : "ALLOW",
+          confirmationRequested: false,
+          rollbackOrNextAction: null,
           nextAction: "monitoraggio"
         }
       ]
@@ -3221,17 +3521,20 @@ class DesktopMirrorService {
 
   recordControlAuditEvent(payload = {}) {
     const session = payload.session || null;
+    const actorHint = payload.actor && typeof payload.actor === "object" ? payload.actor : {};
     const details = payload.details && typeof payload.details === "object" ? payload.details : {};
     const tenantId = String(payload.targetTenantId || payload.requestedTenantId || "");
+    const tenantFromSession = this.getCenterId(session);
+    const controlRole = this.getControlRole(session);
     const row = {
       id: crypto.randomUUID(),
       ts: nowIso(),
       actor: {
-        userId: session?.userId || "",
-        username: session?.username || "",
-        role: session?.role || "",
-        controlRole: this.getControlRole(session),
-        tenantId: this.getCenterId(session)
+        userId: actorHint.userId || session?.userId || "",
+        username: actorHint.username || session?.username || "",
+        role: actorHint.role || session?.role || "",
+        controlRole: actorHint.controlRole || controlRole || "",
+        tenantId: actorHint.tenantId || tenantFromSession || tenantId || "",
       },
       action: String(payload.action || "control_event"),
       outcome: String(payload.outcome || "unknown"),

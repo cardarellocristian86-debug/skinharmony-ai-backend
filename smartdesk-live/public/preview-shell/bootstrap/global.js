@@ -6,6 +6,7 @@ export function bindGlobalEvents(deps) {
     openAppointmentDialog,
     languageSelect,
     saveLanguage,
+    loadControlDataForView,
     assistantResponseNode,
     escapeHtml,
     t,
@@ -20,6 +21,9 @@ export function bindGlobalEvents(deps) {
       state.selectedAppointmentId = null;
       state.selectedSlot = null;
       state.fullScreenAgenda = false;
+      if (String(state.currentView || "").startsWith("control-")) {
+        await loadControlDataForView(state.currentView);
+      }
       if (state.currentView === "profitability") {
         await deps.loadProfitabilityOverview();
       }

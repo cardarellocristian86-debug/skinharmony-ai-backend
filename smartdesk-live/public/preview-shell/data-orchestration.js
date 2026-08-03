@@ -139,6 +139,17 @@ export function createDataOrchestrator(deps) {
     return "";
   }
 
+  function getWorkTenantFilter() {
+    const role = state.control?.role;
+    if (role === "super_admin") {
+      const requestedTenantFilter = String(state.control?.filters?.work?.tenantId || "").trim();
+      if (requestedTenantFilter) {
+        return requestedTenantFilter;
+      }
+    }
+    return getControlTenantFilter();
+  }
+
   function toControlQuery(params = {}) {
     const next = new URLSearchParams();
     Object.entries(params).forEach(([key, value]) => {
@@ -191,20 +202,30 @@ export function createDataOrchestrator(deps) {
 
   function applyControlPayloadMeta(payload) {
     if (!payload || typeof payload !== "object") return;
-    if (typeof payload.role === "string" && payload.role) {
-      state.control.role = payload.role;
-    }
+    const controlPayload = payload.control;
+    const nextRole = typeof controlPayload?.role === "string" && controlPayload.role
+      ? String(controlPayload.role)
+      : typeof payload.role === "string"
+        ? String(payload.role)
+        : "tenant_admin";
+    const normalizedRole = nextRole === "super_admin" || nextRole === "tenant_operator" || nextRole === "tenant_admin"
+      ? nextRole
+      : "tenant_admin";
+    state.control.role = normalizedRole;
   }
 
   function setControlDefaultsFromRuntime() {
     if (state.control && !state.control.role) {
-      state.control.role = String(state.runtimeMeta?.control?.role || "tenant_admin");
+      const nextRole = String(state.runtimeMeta?.control?.role || "tenant_admin");
+      state.control.role = nextRole === "super_admin" || nextRole === "tenant_operator" || nextRole === "tenant_admin"
+        ? nextRole
+        : "tenant_admin";
     }
   }
 
   function readControlWorkFilters() {
     const filters = state.control?.filters?.work || {};
-    const tenantFilter = getControlTenantFilter();
+    const tenantFilter = getWorkTenantFilter();
     return {
       limit: 120,
       offset: 0,
@@ -289,14 +310,14 @@ export function createDataOrchestrator(deps) {
       const workId = String(state.control?.selectedWorkId || "").trim();
       if (!workId) return null;
       return controlFetch(`/api/control-room/work/${encodeURIComponent(workId)}`, {
-        tenantId: getControlTenantFilter()
+        tenantId: getWorkTenantFilter()
       }, null);
     },
     controlWorkTimeline: async () => {
       const workId = String(state.control?.selectedWorkId || "").trim();
       if (!workId) return null;
       return controlFetch(`/api/control-room/work/${encodeURIComponent(workId)}/timeline`, {
-        tenantId: getControlTenantFilter()
+        tenantId: getWorkTenantFilter()
       }, null);
     },
     controlAgents: async () => controlFetch("/api/control-room/agents", {
@@ -366,12 +387,14 @@ export function createDataOrchestrator(deps) {
       };
     }
     if (key === "controlTenants") {
-      state.control.tenants = Array.isArray(value?.tenants)
+      const isSuper = state.control?.role === "super_admin";
+      const tenants = Array.isArray(value?.tenants)
         ? value.tenants
         : Array.isArray(value?.data)
           ? value.data
           : [];
-      if (!state.control.selectedTenantId && state.control.tenants.length > 0 && state.control.role === "super_admin") {
+      state.control.tenants = isSuper ? tenants : [];
+      if (!state.control.selectedTenantId && isSuper && state.control.tenants.length > 0) {
         state.control.selectedTenantId = String(state.control.tenants[0].tenantId || "");
       }
     }
