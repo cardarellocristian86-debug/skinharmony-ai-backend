@@ -1675,8 +1675,18 @@ export function createHostNativeGovernance({
       const nowValue = nowMillis(now);
       const current = readTicketRecord(tenantId, input.ticket_id);
       if (current.ticket.host_session_fingerprint !== text(input.host_session_fingerprint, "host_session_mismatch", 300)) fail("host_session_mismatch");
-      if (Date.parse(current.reservation_expires_at || 0) <= nowValue) fail("action_ticket_reservation_expired");
-      if (current.finalize_authorization) return clone(current.finalize_authorization);
+      if (current.finalize_authorization) {
+        if (Date.parse(current.finalize_authorization.expires_at || 0) <= nowValue) {
+          fail("finalize_authorization_expired");
+        }
+        return clone(current.finalize_authorization);
+      }
+      if (
+        !["completed", "reconciled"].includes(current.state) &&
+        Date.parse(current.reservation_expires_at || 0) <= nowValue
+      ) {
+        fail("action_ticket_reservation_expired");
+      }
       if (!["completed", "reconciled"].includes(current.state) || (current.outcome !== "success" && current.observed_outcome !== "success")) {
         fail("successful_outcome_required");
       }
@@ -1722,8 +1732,13 @@ export function createHostNativeGovernance({
       return store.mutate((state) => {
         const record = state.tickets[String(input.ticket_id || "")];
         if (!record || record.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
-        if (Date.parse(record.reservation_expires_at || 0) <= nowMillis(now)) fail("action_ticket_reservation_expired");
-        if (record.finalize_authorization) return record.finalize_authorization;
+        const receiptNow = nowMillis(now);
+        if (record.finalize_authorization) {
+          if (Date.parse(record.finalize_authorization.expires_at || 0) <= receiptNow) {
+            fail("finalize_authorization_expired");
+          }
+          return record.finalize_authorization;
+        }
         const receiptUnsigned = {
           schema_version: "host_native_finalize_authorization_v1",
           trusted: true,
@@ -1758,8 +1773,8 @@ export function createHostNativeGovernance({
           live_services: external.services,
           outcome_source: record.state === "reconciled" ? "reconciled_readback" : "verified_completion",
           readback_source: external.verifier_id,
-          issued_at: iso(nowMillis(now)),
-          expires_at: record.reservation_expires_at,
+          issued_at: iso(receiptNow),
+          expires_at: iso(receiptNow + leaseMs),
           host_policy_override: false,
           host_policy_must_allow: true,
           external_execution_allowed: false,

@@ -1952,7 +1952,7 @@ test("GitHub merge reconciliation rejects a mismatched observed commit", async (
   assert.equal(finalize.host_readback_digest, reconciliationReadbackDigest);
 });
 
-test("reserved releases close after ticket expiry or revocation, replay receipt exactly, and stop at lease expiry", async () => {
+test("completed releases close after reservation expiry, replay receipt exactly, and stop at receipt expiry", async () => {
   let verifierCalls = 0;
   let subject;
   subject = harness({
@@ -1996,13 +1996,14 @@ test("reserved releases close after ticket expiry or revocation, replay receipt 
     readback_digest: H("b"),
   });
   assert.equal(completed.state, "completed");
+  subject.advance(Date.parse(reserved.reservation_expires_at) - subject.now() + 1);
   const receipt = await subject.governance.authorizeFinalize({
     tenant_id: "codexai",
     ticket_id: issued.ticket.ticket_id,
     host_session_fingerprint: issued.ticket.host_session_fingerprint,
   });
   assert.ok(Date.parse(receipt.issued_at) > Date.parse(issued.ticket.expires_at));
-  assert.equal(receipt.expires_at, reserved.reservation_expires_at);
+  assert.ok(Date.parse(receipt.expires_at) > Date.parse(reserved.reservation_expires_at));
   assert.ok(Date.parse(receipt.expires_at) > Date.parse(receipt.issued_at));
   assert.deepEqual(receipt.changed_files, issued.ticket.release_manifest_binding.changed_files);
   assert.equal(receipt.core_join_verdict_id, issued.ticket.core_join_verdict_id);
@@ -2016,12 +2017,12 @@ test("reserved releases close after ticket expiry or revocation, replay receipt 
   assert.deepEqual(replay, receipt);
   assert.equal(verifierCalls, 1);
   await assert.rejects(issueCommitTicket(subject.governance, delegation.delegation_id), /delegation_not_active/);
-  subject.advance(Date.parse(reserved.reservation_expires_at) - subject.now() + 1);
+  subject.advance(Date.parse(receipt.expires_at) - subject.now() + 1);
   await assert.rejects(subject.governance.authorizeFinalize({
     tenant_id: "codexai",
     ticket_id: issued.ticket.ticket_id,
     host_session_fingerprint: issued.ticket.host_session_fingerprint,
-  }), /reservation_expired/);
+  }), /finalize_authorization_expired/);
   const historical = await subject.governance.readActionTicket({
     tenant_id: "codexai",
     ticket_id: issued.ticket.ticket_id,

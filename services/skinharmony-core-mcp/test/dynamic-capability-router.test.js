@@ -106,6 +106,50 @@ test("adds capabilities through the catalog without changing the connector surfa
   ]);
 });
 
+test("binds dynamic Gallery coordination to the authenticated transport presence", async () => {
+  const tool = WORK_CONTINUITY_TOOLS.find((item) => item.name === "tenant_work_gallery_join");
+  let received;
+  const handlers = {
+    tenant_work_gallery_join: async (args) => {
+      received = args;
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({ structuredContent: { authorization: { allowed: true } } }),
+  });
+  const catalogRevision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const transportIdentity = {
+    ...identity,
+    ownerConfirmed: false,
+    agentPresence: {
+      agent_id: "transport-agent",
+      session_id: "transport-session",
+      client_type: "codex",
+    },
+  };
+
+  await router.core_capability_invoke({
+    capability_id: "tenant_work_gallery_join",
+    catalog_revision: catalogRevision,
+    idempotency_key: "gallery-transport-binding",
+    arguments: {
+      work_id: "dc6dc703-b1a6-4764-9d88-f2238d54df3a",
+      agent_id: "caller-controlled-agent",
+      session_id: "caller-controlled-session",
+      client_type: "other",
+      idempotency_key: "gallery-transport-binding",
+    },
+  }, transportIdentity);
+
+  assert.equal(received.agent_id, "transport-agent");
+  assert.equal(received.session_id, "transport-session");
+  assert.equal(received.client_type, "codex");
+});
+
 test("reads only exact server-registered capabilities with scopes and a fresh revision", async () => {
   const tool = readTool();
   let received;

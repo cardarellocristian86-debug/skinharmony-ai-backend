@@ -650,7 +650,7 @@ test("final receipt replays exactly only while fresh and remains persisted as ex
     tenant_id: "tenant-a",
     ticket_id: issued.ticket.ticket_id,
     host_session_fingerprint: issued.ticket.host_session_fingerprint,
-  }), /action_ticket_reservation_expired/);
+  }), /finalize_authorization_expired/);
   assert.equal(externalReadbackCalls.length, 1);
 
   const stored = await governance.readActionTicket({
