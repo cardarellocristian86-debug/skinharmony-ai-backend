@@ -34,6 +34,7 @@ const expectedBranchCounts = Object.freeze({
   ai_orchestration: 20,
   execution_planning: 10,
   parallel_coordination: 15,
+  tenant_work_coordination: 18,
   quality_verification: 16,
   learning_memory: 10,
   adaptive_learning: 16,
