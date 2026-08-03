@@ -169,6 +169,7 @@ function compactWorkPreflight(preflight) {
     state: preflight.state,
     mandatory: preflight.mandatory === true,
     governance: preflight.governance,
+    memory_first: preflight.memory_first,
     gate: preflight.gate,
     core_research: preflight.core_research,
     tool_routing: preflight.tool_routing?.preferred_route
