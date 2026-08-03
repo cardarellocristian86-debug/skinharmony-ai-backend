@@ -4,6 +4,21 @@ const assert = require("node:assert");
 const { UniversalCoreBridge } = require("../src/UniversalCoreBridge");
 
 const originalFetch = global.fetch;
+const workPreflight = {
+  schema_version: "skinharmony_work_preflight_v1",
+  preflight_id: "preflight_test_semantic",
+  mandatory: true,
+  tenant_id: "tenant_privilege",
+  operational_surface: "tenant_work_gallery",
+  tenant_work_gallery: {
+    schema_version: "tenant_work_gallery_v1",
+    tenant_id: "tenant_privilege",
+    available: true,
+    state: "ready",
+  },
+  memory_first: { status: "recalled" },
+  governance: { execution_allowed_by_preflight: true },
+};
 
 global.fetch = async (url, options = {}) => {
   assert.strictEqual(url, "http://core.test/v1/semantic-selection");
@@ -42,6 +57,7 @@ global.fetch = async (url, options = {}) => {
       brandScope: "skinharmony",
     });
     const result = await bridge.semanticSelection({
+      work_preflight: workPreflight,
       candidates: [
         { id: "visible", source: "Operational reports", semantic_context: { surface: "visible_text" } },
         { id: "class", source: "sh-card-grid sh-is-open", semantic_context: { surface: "class_name" } },

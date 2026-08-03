@@ -21,6 +21,14 @@ test("core block remediation mode defaults to shadow and accepts only the bounde
   );
 });
 
+test("AI work quality mode defaults to observe and exposes bounded rollout tiers", () => {
+  assert.equal(loadConfig({}).aiWorkQualityMode, "observe");
+  for (const mode of ["observe", "draft", "sandbox_active", "scoped_active", "privileged"]) {
+    assert.equal(loadConfig({ AI_WORK_QUALITY_MODE: mode }).aiWorkQualityMode, mode);
+  }
+  assert.throws(() => loadConfig({ AI_WORK_QUALITY_MODE: "true" }), /AI_WORK_QUALITY_MODE must be/);
+});
+
 test("keeps agent collaboration disabled until a persistent root is configured", () => {
   const disabled = loadConfig({});
   assert.equal(disabled.agentWorkspaceRoot, "");

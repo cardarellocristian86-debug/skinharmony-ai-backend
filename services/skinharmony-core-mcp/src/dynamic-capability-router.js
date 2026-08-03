@@ -184,7 +184,15 @@ function targetArguments(tool, wrapperArgs, identity = {}) {
     args.owner_confirmed = wrapperArgs.owner_confirmed === true;
     if (wrapperArgs.confirmation_reference) args.confirmation_reference = wrapperArgs.confirmation_reference;
   }
+  // Validate caller-controlled arguments before attaching the server-issued
+  // preflight envelope. The outer compact tool schema does not expose this
+  // field, so clients cannot supply or alter it.
   assertBoundedSafeArguments(args, "$", { nodes: 0 }, 0, tool.name);
+  if (
+    tool.inputSchema?.properties?.work_preflight &&
+    wrapperArgs.work_preflight &&
+    typeof wrapperArgs.work_preflight === "object"
+  ) args.work_preflight = wrapperArgs.work_preflight;
   const errors = validateToolArguments(tool.inputSchema, args);
   if (errors.length) {
     const error = new Error("dynamic_capability_arguments_invalid");

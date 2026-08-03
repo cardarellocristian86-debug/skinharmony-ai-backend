@@ -19,6 +19,8 @@ import {
 } from "./nyraDeepBranchV2Attestation.js";
 import { createNyraDeepV2EvidenceLedger } from "./nyraDeepV2EvidenceLedger.js";
 import { createNyraDeepV2SourceVerifier } from "./nyraDeepV2SourceVerification.js";
+import { createNyraPolicyRegistryStore, createPostgresNyraPolicyRegistryStore } from "./nyraPolicyRegistryStore.js";
+import { createNyraPolicyRegistryProofService } from "./nyraPolicyRegistryProofService.js";
 import {
   createNyraDeepV2McpRequestVerifier,
   nyraDeepV2EvidencePackHash,
@@ -70,6 +72,16 @@ import {
   evaluateSoftwareLanguageGate,
 } from "./softwareLanguageGate.js";
 import { buildWorkPreflight } from "./workPreflight.js";
+import {
+  AI_WORK_FAILURE_DISPOSITION,
+  aiWorkQualityEvidenceBindingReference,
+  verifyAiWorkQualityObservation,
+} from "../../shared/ai-work-quality-failure.js";
+import {
+    validateWorkPreflightEnvelope,
+  workPreflightFailure,
+} from "../../shared/work-preflight-gate.mjs";
+import { mediateFailureObservation } from "../../shared/ai-work-quality-failure-mediation.mjs";
 import {
   analyzeScenarios,
   evaluateCounterfactuals,
@@ -1178,7 +1190,12 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-function createAuth(keyStore, audit, requiredScope, { allowProviderSetupService = false, tenantContextSigningSecret = "" } = {}) {
+function createAuth(keyStore, audit, requiredScope, {
+  allowProviderSetupService = false,
+  tenantContextSigningSecret = "",
+  requireWorkPreflight = false,
+  requireWorkPreflightExecution = false,
+} = {}) {
   return (req, res, next) => {
     const auth = keyStore.authenticate(readSecret(req));
     if (!auth.ok) {
@@ -1207,6 +1224,29 @@ function createAuth(keyStore, audit, requiredScope, { allowProviderSetupService 
 
     req.coreKey = auth.record;
     req.tenantId = tenantId || auth.record.tenant_id;
+    if (requireWorkPreflight) {
+      const gate = validateWorkPreflightEnvelope(req.body || {}, req.tenantId, {
+        requireGallery: true,
+        requireMemory: true,
+        requireExecution: requireWorkPreflightExecution,
+      });
+      if (!gate.ok) {
+        audit.append("core_work_preflight_gate_denied", {
+          tenant_id: req.tenantId,
+          key_id: auth.record.key_id,
+          path: req.path,
+          reason_codes: gate.errors,
+        });
+        const failure = workPreflightFailure(gate.errors);
+        return res.status(428).json({
+          ok: false,
+          error: failure.code,
+          reason_codes: failure.reason_codes,
+          execution_allowed: false,
+        });
+      }
+      req.workPreflight = gate.preflight;
+    }
     return next();
   };
 }
@@ -1794,10 +1834,33 @@ function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy =
   const crossTenant = context.cross_tenant === true || action.cross_tenant === true || policy.cross_tenant === true;
   const pii = context.contains_pii === true || action.contains_pii === true || policy.contains_pii === true;
   const missingAudit = context.audit_ready === false || action.audit_ready === false;
+  const requestedFailureCode = action.failure_code ?? context.failure_code ?? policy.failure_code;
+  const hasFailureObservation = requestedFailureCode !== undefined && requestedFailureCode !== null && String(requestedFailureCode).trim() !== "";
+  const failureObservation = hasFailureObservation
+    ? mediateFailureObservation({
+      code: requestedFailureCode,
+      scope: {
+        tenant_id: entitlement.tenant_id,
+        repository: action.repository || context.repository || policy.repository,
+        branch: action.branch || action.ref || context.branch || context.ref || policy.branch || policy.ref,
+        surface: action.surface || context.surface || policy.surface,
+        work_id: action.work_id || context.work_id || policy.work_id,
+        session_id: action.session_id || context.session_id || policy.session_id,
+      },
+      worker_id: action.worker_id || context.worker_id || policy.worker_id,
+      verifier_id: action.verifier_id || context.verifier_id || policy.verifier_id,
+      attempt: action.attempt ?? context.attempt ?? policy.attempt,
+      attempt_limit: action.attempt_limit ?? context.attempt_limit ?? policy.attempt_limit,
+      summary: action.failure_summary || context.failure_summary || policy.failure_summary,
+    })
+    : null;
 
   let mediation = "allow";
   const reasons = [];
-  if (crossTenant) {
+  if (failureObservation) {
+    mediation = failureObservation.mediation_state;
+    reasons.push(failureObservation.code);
+  } else if (crossTenant) {
     mediation = "block";
     reasons.push("cross_tenant_denied");
   } else if (destructive && !ownerConfirmed) {
@@ -1831,12 +1894,18 @@ function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy =
     decision: mediation === "block" ? "blocked" : mediation === "allow" ? "ready" : "attention",
     action_mediation: {
       state: mediation,
-      execution_allowed: mediation === "allow" || mediation === "rewrite" || mediation === "sandbox",
+      execution_allowed: failureObservation ? false : mediation === "allow" || mediation === "rewrite" || mediation === "sandbox",
       owner_confirmation_required: mediation === "confirm" || mediation === "rollback_required",
       sandbox_required: mediation === "sandbox",
       rollback_required: mediation === "rollback_required",
       rewrite_allowed: mediation === "rewrite",
-      blocked: mediation === "block",
+      blocked: mediation === "block" || mediation === "hard_block",
+      failure_code: failureObservation?.code || null,
+      failure_class: failureObservation?.classification?.block_class || null,
+      failure_action: failureObservation?.action || null,
+      retry_allowed: failureObservation?.classification?.retry_allowed === true,
+      retry_exhausted: failureObservation?.classification?.retry_exhausted === true,
+      quarantine: failureObservation?.quarantine === true,
       next_step:
         mediation === "allow"
           ? "execute_with_audit"
@@ -1857,6 +1926,7 @@ function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy =
       score: Math.max(0, Math.min(100, riskHint + (destructive ? 15 : 0) + (crossTenant ? 50 : 0))),
       reasons: reasons,
     },
+    failure_mediation: failureObservation,
     policy_flags: {
       missing_required_branches: missingBranches,
       sensitive_domain: sensitiveDomain,
@@ -4214,6 +4284,45 @@ export function createUniversalCoreService(options = {}) {
   }
   const setupTokens = createSetupTokenStore(storageRoot, audit);
   const snapshots = snapshotStore(storageRoot);
+  const nyraPolicyRegistryRequestedMode = String(
+    options.nyraPolicyRegistryEnforcementMode
+      ?? process.env.CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE
+      ?? "advisory_evaluate",
+  ).trim().toLowerCase();
+  const nyraPolicyRegistryModeValid = new Set(["disabled", "advisory_evaluate", "enforced"])
+    .has(nyraPolicyRegistryRequestedMode);
+  // Invalid configuration is never interpreted as advisory or disabled.
+  const nyraPolicyRegistryMode = nyraPolicyRegistryModeValid
+    ? nyraPolicyRegistryRequestedMode
+    : "enforced";
+  const nyraPolicyRegistryEvaluationEnabled = nyraPolicyRegistryMode !== "disabled";
+  const nyraPolicyRegistryDatabaseUrl = String(
+    options.nyraPolicyRegistryDatabaseUrl ?? process.env.GOVERNED_AGENT_DATABASE_URL ?? "",
+  ).trim();
+  const nyraPolicyRegistryPostgresPool = options.nyraPolicyRegistryPostgresPool ||
+    (/^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
+      ? new pg.Pool({ connectionString: nyraPolicyRegistryDatabaseUrl })
+      : null);
+  const nyraPolicyRegistryProofService = options.nyraPolicyRegistryProofService ||
+    (nyraPolicyRegistryPostgresPool
+      ? createNyraPolicyRegistryProofService({
+          pool: nyraPolicyRegistryPostgresPool,
+          env: options.nyraPolicyRegistryProofEnv || process.env,
+        })
+      : null);
+  const nyraPolicyRegistry = options.nyraPolicyRegistryStore || (nyraPolicyRegistryPostgresPool
+    ? createPostgresNyraPolicyRegistryStore({
+        pool: nyraPolicyRegistryPostgresPool,
+        consumeCoreReceipt: options.consumeNyraPolicyRegistryCoreReceipt ||
+          nyraPolicyRegistryProofService?.consume,
+        verifyActivationSnapshot: options.verifyNyraPolicyRegistryActivationSnapshot ||
+          nyraPolicyRegistryProofService?.verifyActivationSnapshot,
+      })
+    : createNyraPolicyRegistryStore({
+        filePath: path.join(storageRoot, "nyra-policy-registry.json"),
+        consumeCoreReceipt: options.consumeNyraPolicyRegistryCoreReceipt,
+        verifyActivationSnapshot: options.verifyNyraPolicyRegistryActivationSnapshot,
+      }));
   const reviews = reviewStore(storageRoot);
   const evidence = evidenceStore(storageRoot);
   // Deep Branch V2 has Core-only trust material. Missing or invalid material
@@ -5542,7 +5651,16 @@ export function createUniversalCoreService(options = {}) {
       hostNativeProductionReadinessReasons.length === 0;
     const hostNativeReady =
       hostNativeRuntimeReady && hostNativeProductionReadinessReady;
-    const renderReady = productionBuildReady && hostNativeReady;
+    const nyraPolicyRegistryStatus = await nyraPolicyRegistry.status();
+    const nyraPolicyRegistryProofStatus = nyraPolicyRegistryProofService
+      ? await nyraPolicyRegistryProofService.status()
+      : { ready: false, backend: "unavailable", error: "policy_proof_not_configured" };
+    const nyraPolicyRegistryProductionReady = !production || (
+      nyraPolicyRegistryStatus.backend === "postgresql" &&
+      nyraPolicyRegistryStatus.ready === true &&
+      (nyraPolicyRegistryMode !== "enforced" || nyraPolicyRegistryProofStatus.ready === true)
+    );
+    const renderReady = productionBuildReady && hostNativeReady && nyraPolicyRegistryModeValid && nyraPolicyRegistryProductionReady;
     res.status(renderReady ? 200 : 503).json({
       ok: true,
       service: SERVICE_NAME,
@@ -5597,6 +5715,22 @@ export function createUniversalCoreService(options = {}) {
         attester_ready: Boolean(nyraDeepV2Attester),
         source_verifier_ready: Boolean(nyraDeepV2SourceVerifier),
         execution_authorized: false,
+      },
+      nyra_policy_registry: {
+        configuration_valid: nyraPolicyRegistryModeValid,
+        evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
+        enforcement: nyraPolicyRegistryMode === "enforced"
+          ? "mandatory"
+          : nyraPolicyRegistryEvaluationEnabled
+            ? "conditional_on_active_snapshot"
+            : "disabled",
+        configured: nyraPolicyRegistryStatus.configured === true,
+        backend: nyraPolicyRegistryStatus.backend || "unavailable",
+        restart_durable: nyraPolicyRegistryStatus.restart_durable === true,
+        distributed: nyraPolicyRegistryStatus.distributed === true,
+        state: nyraPolicyRegistryStatus.state || (nyraPolicyRegistryStatus.ready === false ? "unavailable" : "ready"),
+        ready: nyraPolicyRegistryProductionReady,
+        proof: nyraPolicyRegistryProofStatus,
       },
       governed_agent_runner: {
         mode: "manual_dry_run",
@@ -6397,7 +6531,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, contract });
   });
 
-  app.post("/v1/customer-intelligence/readiness", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/customer-intelligence/readiness", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     const readiness = summarizeCustomerIntelligenceReadiness(req.body || {});
     audit.append("core_customer_intelligence_readiness_evaluated", {
       tenant_id: req.tenantId,
@@ -7171,7 +7305,100 @@ export function createUniversalCoreService(options = {}) {
     },
   );
 
-  app.post("/v1/decision", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/nyra-policy-registry/activate", coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }), async (req, res) => {
+    try {
+      const result = await nyraPolicyRegistry.activate({
+        tenant_id: req.tenantId,
+        operation_id: req.body?.operation_id,
+        snapshot: req.body?.snapshot,
+        core_receipt: req.body?.core_receipt,
+        core_branch_id: "nyra_policy_registry",
+        nyra_branch_id: "risk_governance",
+        domain_pack_id: req.body?.domain_pack_id,
+      });
+      audit.append("core_nyra_policy_registry_activated", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        snapshot_digest: result.snapshot_digest,
+        idempotent_replay: result.idempotent_replay,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, activation: result });
+    } catch (error) {
+      audit.append("core_nyra_policy_registry_activation_rejected", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        reason: String(error?.message || "policy_registry_activation_failed").slice(0, 160),
+      });
+      return publicError(res, 409, String(error?.message || "policy_registry_activation_failed").slice(0, 160));
+    }
+  });
+
+  app.post("/v1/nyra-policy-registry/rollback", coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }), async (req, res) => {
+    try {
+      const result = await nyraPolicyRegistry.rollback({
+        tenant_id: req.tenantId,
+        operation_id: req.body?.operation_id,
+        target_snapshot_digest: req.body?.target_snapshot_digest,
+        core_receipt: req.body?.core_receipt,
+        core_branch_id: "nyra_policy_registry",
+        nyra_branch_id: "risk_governance",
+        domain_pack_id: req.body?.domain_pack_id,
+      });
+      audit.append("core_nyra_policy_registry_rolled_back", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        snapshot_digest: result.snapshot_digest,
+        activation_generation: result.activation_generation,
+        idempotent_replay: result.idempotent_replay,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, rollback: result });
+    } catch (error) {
+      audit.append("core_nyra_policy_registry_rollback_rejected", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        reason: String(error?.message || "policy_registry_rollback_failed").slice(0, 160),
+      });
+      return publicError(res, 409, String(error?.message || "policy_registry_rollback_failed").slice(0, 160));
+    }
+  });
+
+  app.post("/v1/nyra-policy-registry/reconcile", coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }), async (req, res) => {
+    try {
+      if (!nyraPolicyRegistryProofService) throw new Error("policy_proof_unavailable");
+      const serverConsumptionProof = await nyraPolicyRegistryProofService.reconcileConsumption({
+        tenant_id: req.tenantId,
+        operation_id: req.body?.operation_id,
+        operation: req.body?.operation,
+        snapshot_digest: req.body?.snapshot_digest,
+      });
+      const result = await nyraPolicyRegistry.reconcile({
+        tenant_id: req.tenantId,
+        operation_id: req.body?.operation_id,
+        operation: req.body?.operation,
+        snapshot_digest: req.body?.snapshot_digest,
+        core_receipt: req.body?.core_receipt,
+        // Never trust a caller-supplied consumption proof. Reconciliation is
+        // derived from the tenant-bound one-use receipt state in PostgreSQL.
+        consumption_proof: serverConsumptionProof,
+      });
+      audit.append("core_nyra_policy_registry_reconciled", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        snapshot_digest: result.snapshot_digest,
+        idempotent_replay: result.idempotent_replay,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, reconciliation: result });
+    } catch (error) {
+      audit.append("core_nyra_policy_registry_reconciliation_rejected", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        reason: String(error?.message || "policy_registry_reconciliation_failed").slice(0, 160),
+      });
+      return publicError(res, 409, String(error?.message || "policy_registry_reconciliation_failed").slice(0, 160));
+    }
+  });
+
+    app.post("/v1/decision", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     const input = buildCoreInput(req, req.coreKey);
     if (!input.signals.length) {
       input.signals.push(normalizeSignal({ id: "core:no_signal", label: "Nessun segnale operativo fornito", normalized_score: 10, tags: ["system"] }));
@@ -7192,6 +7419,102 @@ export function createUniversalCoreService(options = {}) {
         publish_requires_owner_confirmation: true,
         execution_from_api_allowed: output.execution_profile.can_execute === true && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX),
       },
+    });
+  });
+
+  app.post("/v1/work-quality/evaluate", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+    const observation = req.body?.observation;
+    const observerBinding = req.body?.observer_binding;
+    if (!isMcpTenantGatewayRecord(req.coreKey)) {
+      return publicError(res, 403, "ai_work_quality_gateway_required");
+    }
+    if (!verifyAiWorkQualityObservation(observation)) {
+      return publicError(res, 400, "ai_work_quality_observation_invalid");
+    }
+    if (String(observation.tenant_id || "") !== req.tenantId) {
+      return publicError(res, 403, "tenant_scope_violation");
+    }
+    if (observerBinding?.transport_bound !== true || observerBinding?.active_lease_verified !== true ||
+        String(observerBinding?.gallery_work_id || "") !== String(observation.work_id || "") ||
+        !String(observerBinding?.agent_id || "") || !String(observerBinding?.session_id || "") ||
+        !String(observerBinding?.lease_id || "")) {
+      return publicError(res, 403, "ai_work_quality_observer_binding_invalid");
+    }
+    if (!observation.expected_state_digest || !observation.observed_state_digest ||
+        !Array.isArray(observation.evidence_receipts) || observation.evidence_receipts.length < 1) {
+      return publicError(res, 400, "ai_work_quality_verified_evidence_required");
+    }
+    const expectedEvidenceBinding = aiWorkQualityEvidenceBindingReference({
+      ...observation,
+      observer_session_id: observerBinding.session_id,
+    });
+    for (const receipt of observation.evidence_receipts) {
+      if (receipt.registry_reference !== expectedEvidenceBinding) {
+        return publicError(res, 403, "ai_work_quality_evidence_binding_invalid");
+      }
+      const verified = await dttVerificationTrustStore.verifyArtifact({
+        tenant_id: req.tenantId,
+        artifact_id: receipt.artifact_id,
+        content_digest: receipt.content_digest,
+        source_reference: receipt.source_reference,
+        registry_reference: receipt.registry_reference,
+      });
+      if (!verified?.verified) return publicError(res, 403, "ai_work_quality_evidence_receipt_invalid");
+    }
+    const disposition = observation.disposition;
+    const verdict = disposition === AI_WORK_FAILURE_DISPOSITION.CONFIRMATION_REQUIRED
+      ? "CONFIRM"
+      : disposition === AI_WORK_FAILURE_DISPOSITION.TRANSIENT ? "DEFER" : "BLOCK";
+    const decisionId = `awq_${observation.observation_digest.slice(0, 40)}`;
+    const decisionContract = {
+      schema_version: "core_decision_contract_v1",
+      decision_id: decisionId,
+      decision_digest: crypto.createHash("sha256").update(JSON.stringify({
+        tenant_id: req.tenantId,
+        observation_digest: observation.observation_digest,
+        observer_binding: observerBinding,
+        verdict,
+      })).digest("hex"),
+      state: verdict,
+      verdict,
+      block_code: observation.code,
+      block_class: disposition,
+      risk_band: disposition === AI_WORK_FAILURE_DISPOSITION.ABSOLUTE ? "critical" : "medium",
+      policy_snapshot_digest: crypto.createHash("sha256").update(JSON.stringify({
+        policy: "ai_work_quality_failure_v1",
+        rollout_tier: observation.rollout_tier,
+        disposition,
+        code: observation.code,
+      })).digest("hex"),
+      blocked_reasons: [observation.summary],
+      evidence_requirements: observation.evidence_digests,
+      allowed_alternatives: disposition === AI_WORK_FAILURE_DISPOSITION.ABSOLUTE
+        ? ["new_scope_decision_contract"] : ["verified_remediation_proposal"],
+    };
+    const authorization = {
+      allowed: false,
+      state: verdict,
+      confirmation_required: disposition === AI_WORK_FAILURE_DISPOSITION.CONFIRMATION_REQUIRED,
+      confirmation_satisfied: false,
+      execution_authorized: false,
+    };
+    audit.append("ai_work_quality_evaluated", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      decision_id: decisionId,
+      observation_digest: observation.observation_digest,
+      failure_code: observation.code,
+      failure_class: observation.failure_class,
+      disposition,
+      execution_authorized: false,
+    });
+    return res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      observation_digest: observation.observation_digest,
+      decision_contract: decisionContract,
+      authorization,
+      guardrail: { execution_allowed: false, authority: "universal_core" },
     });
   });
 
@@ -7324,7 +7647,43 @@ export function createUniversalCoreService(options = {}) {
         : trustedOwnerContext,
       owner_context_approval_bound: providerSetupLinkApprovalBound,
     };
-    const authorization = buildActionAuthorization(decisionContract, evaluatedActionBody);
+    const coreAuthorization = buildActionAuthorization(decisionContract, evaluatedActionBody);
+    const policyRegistryEvaluation = nyraPolicyRegistryEvaluationEnabled
+      ? await nyraPolicyRegistry.evaluate({
+          tenant_id: req.tenantId,
+          action: String(evaluatedActionBody.action_type || input.context.metadata.action_type || "unknown"),
+          core_branch_id: "nyra_policy_registry",
+          nyra_branch_id: "risk_governance",
+          domain_pack_id: domainPackAccess.pack.id,
+          satisfied_gates: coreAuthorization.allowed ? ["core_allow"] : [],
+          context: {
+            tenant_id: req.tenantId,
+            domain_pack_id: domainPackAccess.pack.id,
+            action_type: String(evaluatedActionBody.action_type || input.context.metadata.action_type || "unknown"),
+          },
+        })
+      : {
+          verdict: "NOT_EVALUATED",
+          reasons: [],
+          fail_closed: true,
+          snapshot_digest: null,
+          snapshot_present: false,
+          snapshot_verified: false,
+        };
+    // The registry is a deny-only constraint. It can narrow an authorization
+    // issued by Universal Core, but can never manufacture an ALLOW.
+    const policyRegistryEnforcementActive = nyraPolicyRegistryMode === "enforced" ||
+      (nyraPolicyRegistryEvaluationEnabled && policyRegistryEvaluation.snapshot_present === true);
+    const policyRegistryDenied = policyRegistryEnforcementActive && policyRegistryEvaluation.verdict !== "ALLOW";
+    const authorization = policyRegistryDenied
+      ? {
+          ...coreAuthorization,
+          allowed: false,
+          state: "blocked",
+          mediation: "hard_block",
+          policy_registry_denied: true,
+        }
+      : coreAuthorization;
     const tenantBindingAuthorization = authorization.allowed === true && [
       "reversible_owner_confirmed_mcp_default_tenant_correction",
       "reversible_owner_confirmed_mcp_default_tenant_blueprint_alignment",
@@ -7341,6 +7700,10 @@ export function createUniversalCoreService(options = {}) {
       publish_safe: decisionContract.publish_safe,
       preflight_id: workPreflight.preflight_id,
       authorization_state: authorization.state,
+      policy_registry_evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
+      policy_registry_enforcement: policyRegistryEnforcementActive ? "enforced" : "advisory_until_snapshot",
+      policy_registry_verdict: policyRegistryEvaluation.verdict,
+      policy_registry_snapshot_digest: policyRegistryEvaluation.snapshot_digest,
       action_classification: riskClassification.classification,
       action_risk_band: riskClassification.risk_band,
       action_reason_codes: riskClassification.reason_codes,
@@ -7381,6 +7744,16 @@ export function createUniversalCoreService(options = {}) {
       output,
       work_preflight: workPreflight,
       authorization,
+      policy_registry: {
+        evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
+        enforcement: policyRegistryEnforcementActive ? "enforced" : "advisory_until_snapshot",
+        verdict: policyRegistryEvaluation.verdict,
+        reasons: policyRegistryEvaluation.reasons,
+        snapshot_digest: policyRegistryEvaluation.snapshot_digest,
+        snapshot_present: policyRegistryEvaluation.snapshot_present,
+        snapshot_verified: policyRegistryEvaluation.snapshot_verified,
+        deny_only: true,
+      },
       risk_classification: riskClassification,
       guardrail: {
         destructive_automation: false,
@@ -7421,11 +7794,11 @@ export function createUniversalCoreService(options = {}) {
     });
   }
 
-  app.post("/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     return handleSemanticSelection(req, res);
   });
 
-  app.post("/api/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/api/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     return handleSemanticSelection(req, res);
   });
 
@@ -8461,7 +8834,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, ...response });
   });
 
-  app.post("/v1/nira/core-bridge", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/nira/core-bridge", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), async (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -9356,7 +9729,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/branches/:branch/analyze", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/branches/:branch/analyze", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     const branch = String(req.params.branch || "").trim();
     const resolution = resolveBranchesForKey(req.coreKey, [branch]);
     if (!resolution.selected_branches.includes(branch)) {
@@ -9465,7 +9838,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, result });
   });
 
-  app.post("/v1/action-mediation/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/action-mediation/evaluate", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {

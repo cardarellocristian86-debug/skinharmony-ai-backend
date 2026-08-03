@@ -141,7 +141,7 @@ jobs:
 
           const manifestPath = path.resolve(process.argv[2]);
           const shardRoot = path.resolve(process.argv[3]);
-          const expectedShardCount = 299;
+          const expectedShardCount = 317;
           const manifestLimit = 5 * 1024 * 1024;
           const compressedLimit = 256 * 1024;
           const uncompressedLimit = 1024 * 1024;

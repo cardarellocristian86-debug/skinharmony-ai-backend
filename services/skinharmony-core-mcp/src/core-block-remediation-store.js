@@ -5,6 +5,7 @@ import {
   CORE_BLOCK_REMEDIATION_SCHEMA_VERSION,
   CORE_BLOCK_REMEDIATION_STATUS,
   assertSameTenant,
+  assertTransitionAllowed,
   normalizeRemediationList,
   sha256,
 } from "../../shared/core-block-remediation.js";
@@ -194,6 +195,11 @@ export function createCoreBlockRemediationStore(config = {}, options = {}) {
       if (Number(expected_version) !== Number(current.version)) throw new Error("remediation_version_conflict");
       const next = await mutate(JSON.parse(JSON.stringify(current)));
       if (!next || typeof next !== "object" || Array.isArray(next)) throw new Error("remediation_update_invalid");
+      if (next.tenant_id !== current.tenant_id ||
+          next.original_decision?.decision_id !== current.original_decision?.decision_id ||
+          next.bound_scope?.scope_digest !== current.bound_scope?.scope_digest) {
+        throw new Error("remediation_immutable_identity_changed");
+      }
       next.version = Number(current.version) + 1;
       next.updated_at = new Date().toISOString();
       next.contract_digest = null;
@@ -211,12 +217,14 @@ export function createCoreBlockRemediationStore(config = {}, options = {}) {
       remediation_id,
       expected_version,
       mutate: async (current) => {
-        current.nyra_review = review;
-        current.status = review.status === "approve_for_core"
+        const nextStatus = review.status === "approve_for_core"
           ? CORE_BLOCK_REMEDIATION_STATUS.NYRA_REVIEWED
           : review.status === "request_revision"
             ? CORE_BLOCK_REMEDIATION_STATUS.REVISION_REQUIRED
             : CORE_BLOCK_REMEDIATION_STATUS.HARD_DENIED;
+        assertTransitionAllowed(current.status, nextStatus);
+        current.nyra_review = review;
+        current.status = nextStatus;
         return current;
       },
     });
@@ -228,9 +236,16 @@ export function createCoreBlockRemediationStore(config = {}, options = {}) {
       remediation_id,
       expected_version,
       mutate: async (current) => {
+        const nextStatus = next_status || CORE_BLOCK_REMEDIATION_STATUS.PROPOSAL_READY;
+        if (current.status === CORE_BLOCK_REMEDIATION_STATUS.OPEN && nextStatus === CORE_BLOCK_REMEDIATION_STATUS.WAITING_OWNER) {
+          assertTransitionAllowed(current.status, nextStatus);
+        } else if (current.status === CORE_BLOCK_REMEDIATION_STATUS.OPEN) {
+          assertTransitionAllowed(current.status, CORE_BLOCK_REMEDIATION_STATUS.DIAGNOSING);
+          assertTransitionAllowed(CORE_BLOCK_REMEDIATION_STATUS.DIAGNOSING, nextStatus);
+        } else assertTransitionAllowed(current.status, nextStatus);
         current.attempts = [...normalizeRemediationList(current.attempts), attempt];
         current.attempt_count = Number(current.attempt_count || 0) + 1;
-        current.status = next_status || CORE_BLOCK_REMEDIATION_STATUS.PROPOSAL_READY;
+        current.status = nextStatus;
         current.diagnosis = {
           ...(current.diagnosis || {}),
           status: "submitted",
@@ -247,12 +262,56 @@ export function createCoreBlockRemediationStore(config = {}, options = {}) {
     });
   }
 
+  async function appendAttemptIdempotent({ tenant_id, remediation_id, expected_version, attempt, next_status,
+    idempotency_key, proposal_digest }) {
+    const tenant = tenantId(tenant_id);
+    const key = idempotencyKey(remediation_id, idempotency_key);
+    const transaction = await updateTenantState(root, tenant, async (state) => {
+      const replay = state.idempotency?.[key];
+      if (replay) {
+        if (replay.proposal_digest !== proposal_digest) throw new Error("core_block_remediation_replay_rejected");
+        return { idempotent: true, remediation: replay.result?.remediation || null };
+      }
+      const remediations = normalizeRemediationList(state.remediations);
+      const index = remediations.findIndex((item) => item.remediation_id === remediation_id);
+      if (index < 0) throw new Error("remediation_not_found");
+      const current = remediations[index];
+      if (Number(current.version) !== Number(expected_version)) throw new Error("remediation_version_conflict");
+      const next = JSON.parse(JSON.stringify(current));
+      const nextStatus = next_status || CORE_BLOCK_REMEDIATION_STATUS.PROPOSAL_READY;
+      if (next.status === CORE_BLOCK_REMEDIATION_STATUS.OPEN && nextStatus === CORE_BLOCK_REMEDIATION_STATUS.WAITING_OWNER) {
+        assertTransitionAllowed(next.status, nextStatus);
+      } else if (next.status === CORE_BLOCK_REMEDIATION_STATUS.OPEN) {
+        assertTransitionAllowed(next.status, CORE_BLOCK_REMEDIATION_STATUS.DIAGNOSING);
+        assertTransitionAllowed(CORE_BLOCK_REMEDIATION_STATUS.DIAGNOSING, nextStatus);
+      } else assertTransitionAllowed(next.status, nextStatus);
+      next.attempts = [...normalizeRemediationList(next.attempts), attempt];
+      next.attempt_count = Number(next.attempt_count || 0) + 1;
+      next.status = nextStatus;
+      next.diagnosis = { ...(next.diagnosis || {}), status: "submitted", submitted_by: attempt.submitted_by,
+        root_cause: attempt.diagnosis?.root_cause || null, evidence: attempt.diagnosis?.evidence || [],
+        unknowns: attempt.diagnosis?.unknowns || [], affected_components: attempt.diagnosis?.affected_components || [],
+        submitted_at: attempt.created_at, diagnosis_digest: digest(attempt.diagnosis || {}) };
+      next.version = Number(current.version) + 1;
+      next.updated_at = new Date().toISOString();
+      next.contract_digest = null;
+      next.contract_digest = digest(next);
+      remediations[index] = next;
+      state.remediations = remediations;
+      state.idempotency[key] = { remediation_id, idempotency_key, proposal_digest,
+        result: { remediation: next }, updated_at: next.updated_at };
+      return { idempotent: false, remediation: next };
+    });
+    return transaction.result;
+  }
+
   async function markStatus({ tenant_id, remediation_id, expected_version, status, fields = {} }) {
     return update({
       tenant_id,
       remediation_id,
       expected_version,
       mutate: async (current) => {
+        assertTransitionAllowed(current.status, status);
         current.status = status;
         Object.assign(current, fields);
         return current;
@@ -266,8 +325,9 @@ export function createCoreBlockRemediationStore(config = {}, options = {}) {
       remediation_id,
       expected_version,
       mutate: async (current) => {
+        assertTransitionAllowed(current.status, CORE_BLOCK_REMEDIATION_STATUS.RESUBMITTED);
         current.resubmission = resubmission;
-        current.status = resubmission.status;
+        current.status = CORE_BLOCK_REMEDIATION_STATUS.RESUBMITTED;
         return current;
       },
     });
@@ -311,6 +371,7 @@ export function createCoreBlockRemediationStore(config = {}, options = {}) {
     update,
     attachNyraReview,
     appendAttempt,
+    appendAttemptIdempotent,
     markStatus,
     recordResubmission,
     recordOutcome,

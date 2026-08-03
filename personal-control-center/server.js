@@ -7,6 +7,7 @@ const {
   createNyraDeepBranchV2Federation,
   createPersistentReplayGuard,
 } = require("./lib/nyra-deep-branch-v2-federation");
+const { createNyraPolicyRegistryAttester } = require("./lib/nyra-policy-registry-attestation");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -136,6 +137,7 @@ function resolveStoragePath(relativePath) {
 }
 
 const NYRA_DEEP_V2_FEDERATION_PATH = "/api/nyra/runtime/v2/evaluate";
+const NYRA_POLICY_REGISTRY_ATTESTATION_PATH = "/api/nyra/policy-registry/attestations";
 const configuredNyraDeepV2ReplayPath = String(
   process.env.NYRA_DEEP_BRANCH_V2_REPLAY_STORE_PATH || "",
 ).trim();
@@ -157,6 +159,7 @@ const nyraDeepV2Federation = createNyraDeepBranchV2Federation({
   env: process.env,
   replayGuard: nyraDeepV2ReplayGuard,
 });
+const nyraPolicyRegistryAttester = createNyraPolicyRegistryAttester({ env: process.env });
 
 function envTruthy(name) {
   return ["1", "true", "yes", "on"].includes(String(process.env[name] || "").trim().toLowerCase());
@@ -232,6 +235,13 @@ function rateLimitAllowed(req) {
 }
 
 function authenticateNyraRequest(req) {
+  if (req.path === NYRA_POLICY_REGISTRY_ATTESTATION_PATH && req.method === "POST") {
+    const expected = String(process.env.NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY || "").trim();
+    const supplied = String(req.get("x-nyra-policy-registry-service-key") || "").trim();
+    return expected && supplied && safeSecretEqual(expected, supplied)
+      ? { ok: true, method: "policy_registry_core_service_key" }
+      : { ok: false, code: expected ? "nyra_policy_registry_auth_required" : "nyra_policy_registry_unavailable" };
+  }
   if (req.path === NYRA_DEEP_V2_FEDERATION_PATH && req.method === "POST") {
     const suppliedServiceKey = String(
       req.get("x-nyra-deep-v2-service-key") || "",
@@ -301,7 +311,8 @@ app.use((req, res, next) => {
       res.setHeader("WWW-Authenticate", 'Basic realm="Nyra"');
     }
     const unavailable = auth.code === "nyra_auth_not_configured"
-      || auth.code === "nyra_deep_branch_v2_federation_unavailable";
+      || auth.code === "nyra_deep_branch_v2_federation_unavailable"
+      || auth.code === "nyra_policy_registry_unavailable";
     res.status(unavailable ? 503 : 401).json({ ok: false, error: auth.code, request_id: requestId });
     return;
   }
@@ -341,7 +352,9 @@ app.get("/healthz", (_req, res) => {
     && replayStoreReady
     && replayStoreDurable
   );
-  const healthy = federationReady;
+  const policyRegistryAttestation = nyraPolicyRegistryAttester.status();
+  const policyRegistryReady = !policyRegistryAttestation.enabled || policyRegistryAttestation.ready;
+  const healthy = federationReady && policyRegistryReady;
   res.status(healthy ? 200 : 503).json({
     ok: healthy,
     service: NYRA_SERVICE_NAME,
@@ -363,7 +376,38 @@ app.get("/healthz", (_req, res) => {
       replay_store_durable: replayStoreDurable,
       operational_evaluation_enabled: deepV2FederationConfig.operational_evaluation_enabled,
     },
+    policy_registry_attestation: policyRegistryAttestation,
   });
+});
+
+app.post(NYRA_POLICY_REGISTRY_ATTESTATION_PATH, (req, res) => {
+  try {
+    const attestation = nyraPolicyRegistryAttester.attest({
+      envelope: req.body?.envelope,
+      core_signature: req.body?.core_signature,
+    });
+    appendNyraSecurityAudit("policy_registry_attestation_issued", {
+      request_id: req.nyraRequestId,
+      tenant_id: attestation.envelope.tenant_id,
+      operation_id: attestation.envelope.operation_id,
+      action: attestation.envelope.action,
+      snapshot_digest: attestation.envelope.snapshot_digest,
+      idempotent_replay: attestation.idempotent_replay,
+    });
+    res.json({ ok: true, attestation });
+  } catch (error) {
+    const code = String(error?.message || "nyra_policy_attestation_failed").slice(0, 120);
+    appendNyraSecurityAudit("policy_registry_attestation_rejected", {
+      request_id: req.nyraRequestId,
+      reason: code,
+    });
+    res.status(code === "nyra_policy_attestation_unavailable" ? 503 : 403).json({
+      ok: false,
+      error: code,
+      request_id: req.nyraRequestId,
+      core_final_authority: true,
+    });
+  }
 });
 
 app.post(NYRA_DEEP_V2_FEDERATION_PATH, (req, res) => {

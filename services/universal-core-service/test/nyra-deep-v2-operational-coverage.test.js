@@ -26,7 +26,7 @@ const LEDGER_SECRET = crypto.randomBytes(32).toString("hex");
 const KEY_ID = "universal-core-nyra-v2-coverage";
 const CORE_SKINHARMONY_CATALOG = nyraBranchCatalog("skinharmony");
 const CORE_BRANCH_IDS = new Set(CORE_SKINHARMONY_CATALOG.branches.map((branch) => branch.id));
-const EXPECTED_V2_SUBBRANCH_COUNT = 299;
+const EXPECTED_V2_SUBBRANCH_COUNT = 317;
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -183,7 +183,7 @@ test("all live V2 shards are Core-opened, attested, and operationally evaluated 
   assert.equal(loaded.validation.integrity.unchecked_shards, 0);
   const branches = [...new Set(loaded.manifest.shards.map((shard) => shard.branch_id))];
   assert(branches.every((branchId) => CORE_BRANCH_IDS.has(branchId)));
-  assert.equal(branches.includes("tenant_work_coordination"), false);
+  assert.equal(branches.includes("tenant_work_coordination"), true);
 
   const keys = crypto.generateKeyPairSync("ed25519");
   const ledger = createNyraDeepV2EvidenceLedger({ secret: LEDGER_SECRET, now: () => NOW });

@@ -131,6 +131,17 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     body.configuration_changes !== true;
   const authenticatedTenant = String(body.authenticated_tenant_id || "");
   const requestedTenant = String(body.tenant_id || "");
+  const policyRegistrySnapshotMutation =
+    String(body.operation_class || "") === "policy_registry_snapshot_mutation" &&
+    new Set(["policy.snapshot.activate", "policy.snapshot.rollback", "policy.snapshot.reconcile"])
+      .has(String(body.action_type || "").toLowerCase()) &&
+    ownerConfirmed && body.request_bound_owner_confirmation === true &&
+    body.owner_context_verified === true && authenticatedTenant.length > 0 &&
+    requestedTenant === authenticatedTenant && body.work_preflight_ready === true &&
+    body.external_side_effect === false && body.provider_execution === false &&
+    body.contains_secret === false && body.secret_value_transmitted === false &&
+    body.cross_tenant === false && body.bypass_orchestrator === false &&
+    body.destructive === false && body.rollback_ready === true && body.audit_ready === true;
   const ownerSovereigntyOperation = [
     "owner_confirmed_governed_action",
     "owner_confirmed_high_impact",
@@ -667,7 +678,7 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
     (!body.allowed_modes.includes("frida_local_agent") || (Array.isArray(body.target_allowlist) && body.target_allowlist.length > 0));
   const confirmationRequired = tenantScopedRead || sandboxedScopedWork || boundedInternalCoordinationWrite
     ? false
-    : decisionContract.control_level === "confirm" || ownerSovereigntyOperation || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || adminControlRoomSecretConfiguration || providerSetupLinkBlueprintBindingAttempt || connectorMetadataRefreshAttempt || connectorKeyRotationAttempt || mcpDefaultTenantCorrectionClassAttempt || verifiedOutcomeRecordAttempt || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
+    : decisionContract.control_level === "confirm" || policyRegistrySnapshotMutation || ownerSovereigntyOperation || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || adminControlRoomSecretConfiguration || providerSetupLinkBlueprintBindingAttempt || connectorMetadataRefreshAttempt || connectorKeyRotationAttempt || mcpDefaultTenantCorrectionClassAttempt || verifiedOutcomeRecordAttempt || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
   // The owner confirmation is bound to the exact staging target and branch. A
   // changed target or branch must never inherit a confirmation issued for it.
   const confirmationSatisfied = confirmationRequired && ownerConfirmed &&
@@ -694,8 +705,8 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
       body.merge === true || body.production_deploy === true || body.deploy === true ||
       body.force === true || body.admin_bypass === true
     ));
-  const authorizedScope = tenantScopedRead || sandboxedScopedWork || ownerConfirmedGovernedAction || boundedInternalCoordinationWrite || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || adminControlRoomSecretConfiguration || providerSetupLinkBlueprintBinding || connectorMetadataRefresh || connectorKeyRotation || mcpDefaultTenantCorrection || mcpDefaultTenantBlueprintAlignment || verifiedOutcomeRecord || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
-  const riskAllowed = ownerConfirmedGovernedAction || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || adminControlRoomSecretConfiguration || providerSetupLinkBlueprintBinding || connectorMetadataRefresh || connectorKeyRotation || mcpDefaultTenantCorrection || mcpDefaultTenantBlueprintAlignment || verifiedOutcomeRecord || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady
+  const authorizedScope = tenantScopedRead || sandboxedScopedWork || policyRegistrySnapshotMutation || ownerConfirmedGovernedAction || boundedInternalCoordinationWrite || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || adminControlRoomSecretConfiguration || providerSetupLinkBlueprintBinding || connectorMetadataRefresh || connectorKeyRotation || mcpDefaultTenantCorrection || mcpDefaultTenantBlueprintAlignment || verifiedOutcomeRecord || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady || deepSoftwareAnalysis;
+  const riskAllowed = policyRegistrySnapshotMutation || ownerConfirmedGovernedAction || reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration || adminControlRoomSecretConfiguration || providerSetupLinkBlueprintBinding || connectorMetadataRefresh || connectorKeyRotation || mcpDefaultTenantCorrection || mcpDefaultTenantBlueprintAlignment || verifiedOutcomeRecord || reversibleBranchChange || reversibleDraftPullRequest || reversiblePullRequestMerge || reversiblePullRequestReady
     ? ["low", "medium", "high"].includes(String(decisionContract.risk_band || ""))
     : decisionContract.risk_band === "low";
   const executionAllowed = Boolean(
@@ -724,6 +735,8 @@ export function buildActionAuthorization(decisionContract = {}, body = {}) {
         ? "sandboxed_scoped_work"
         : ownerConfirmedGovernedAction
           ? String(body.operation_class)
+        : policyRegistrySnapshotMutation
+          ? "policy_registry_snapshot_mutation"
         : boundedInternalCoordinationWrite
           ? "bounded_internal_coordination_write"
           : reversibleDeploy || stagingPostgresConfiguration || nyraGovernancePostgresConfiguration || tenantProviderVaultSecretConfiguration

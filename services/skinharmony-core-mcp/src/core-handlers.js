@@ -24,6 +24,10 @@ import {
 } from "../../shared/core-block-remediation.js";
 import { createCoreBlockRemediationStore } from "./core-block-remediation-store.js";
 import {
+  AI_WORK_FAILURE_DEFINITIONS,
+  buildAiWorkQualityObservation,
+} from "../../shared/ai-work-quality-failure.js";
+import {
   nyraDeepV2EvidencePackHash,
   signNyraDeepV2McpRequest,
 } from "./nyra-deep-v2-mcp-request.js";
@@ -73,6 +77,22 @@ function stableCanonical(value) {
     if (value[key] !== undefined) result[key] = stableCanonical(value[key]);
     return result;
   }, {});
+}
+
+export function classifyRemediationResubmissionOutcome(payload = {}) {
+  const allowed = payload?.authorization?.allowed === true || payload?.allowed === true;
+  const verdict = String(payload?.authorization?.state || payload?.decision_contract?.state ||
+    payload?.decision_contract?.verdict || "").toUpperCase();
+  const confirmationRequired = payload?.authorization?.confirmation_required === true ||
+    ["CONFIRM", "CONFIRMATION_REQUIRED"].includes(verdict);
+  return {
+    allowed,
+    confirmationRequired,
+    verdict,
+    status: allowed ? CORE_BLOCK_REMEDIATION_STATUS.ALLOWED
+      : confirmationRequired ? CORE_BLOCK_REMEDIATION_STATUS.WAITING_OWNER
+        : CORE_BLOCK_REMEDIATION_STATUS.REVISION_REQUIRED,
+  };
 }
 
 function ownerRequestBinding(purpose, body = {}) {
@@ -169,6 +189,7 @@ function compactWorkPreflight(preflight) {
     state: preflight.state,
     mandatory: preflight.mandatory === true,
     governance: preflight.governance,
+    memory_first: preflight.memory_first,
     gate: preflight.gate,
     core_research: preflight.core_research,
     tool_routing: preflight.tool_routing?.preferred_route
@@ -402,7 +423,7 @@ export function createCoreHandlers(config, options = {}) {
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
   const tenantWorkGallery = options.tenantWorkGallery;
   const decisionLedger = options.decisionLedger || null;
-  const remediationStore = createCoreBlockRemediationStore(config, {
+  const remediationStore = options.remediationStore || createCoreBlockRemediationStore(config, {
     root: options.coreBlockRemediationRoot || config.sharedMemoryRoot || config.agentWorkspaceRoot,
   });
   const analysisCache = new Map();
@@ -412,13 +433,33 @@ export function createCoreHandlers(config, options = {}) {
     ? configuredRemediationMode
     : "shadow";
   const remediationEnabled = remediationMode !== "disabled";
-  const remediationWritesEnabled = remediationMode === "active";
+  const workQualityMode = String(config.aiWorkQualityMode || "observe").trim().toLowerCase();
+  const workQualityRank = Object.freeze({ observe: 0, draft: 1, sandbox_active: 2, scoped_active: 3, privileged: 4 });
+  const qualityRank = workQualityRank[workQualityMode] ?? 0;
   const remediationLedgerContexts = new Map();
 
-  function assertRemediationWritesEnabled() {
-    if (!remediationWritesEnabled) {
+  function isWorkQualityRemediation(remediation) {
+    return Boolean(AI_WORK_FAILURE_DEFINITIONS[String(remediation?.original_decision?.block_code || "")]);
+  }
+
+  function assertRemediationWritesEnabled(remediation) {
+    const qualityContract = isWorkQualityRemediation(remediation);
+    const enabled = qualityContract
+      ? qualityRank >= workQualityRank.draft
+      : remediationMode === "active";
+    if (!enabled) {
       const error = new Error("core_block_remediation_active_mode_required");
       error.code = "core_block_remediation_active_mode_required";
+      error.statusCode = 409;
+      throw error;
+    }
+  }
+
+  function assertRemediationResubmissionEnabled(remediation) {
+    assertRemediationWritesEnabled(remediation);
+    if (isWorkQualityRemediation(remediation) && qualityRank < workQualityRank.sandbox_active) {
+      const error = new Error("ai_work_quality_sandbox_active_required");
+      error.code = "ai_work_quality_sandbox_active_required";
       error.statusCode = 409;
       throw error;
     }
@@ -967,7 +1008,12 @@ export function createCoreHandlers(config, options = {}) {
       session_id: args.session_id,
       agent_id: args.agent_id || "nyra",
     }, identity);
-    const requestBody = { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId };
+    const requestBody = {
+      ...args,
+      ...(sharedContext ? { memory_context: sharedContext } : {}),
+      ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
+      tenant_id: identity.tenantId,
+    };
     const requestBinding = options.ownerBindingPurpose
       ? ownerRequestBinding(options.ownerBindingPurpose, requestBody)
       : undefined;
@@ -997,6 +1043,7 @@ export function createCoreHandlers(config, options = {}) {
           mode: "standard",
           owner_context: ownerContext(identity),
           ...(sharedContext ? { memory_context: sharedContext } : {}),
+          ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
           tenant_id: identity.tenantId,
         },
       });
@@ -1068,6 +1115,7 @@ export function createCoreHandlers(config, options = {}) {
           ? [branchId]
           : [...(Array.isArray(args.nyra_branches) ? args.nyra_branches : [])],
         ...(sharedContext ? { memory_context: sharedContext } : {}),
+        ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
         deep_branch_v2: deepBranchV2,
         tenant_id: identity.tenantId,
       },
@@ -1520,6 +1568,7 @@ export function createCoreHandlers(config, options = {}) {
         user_input: args.include_control_snapshot ? "Include control snapshot" : "Read readiness context",
         locale: "it",
         ...(sharedContext ? { memory_context: sharedContext } : {}),
+        ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
         tenant_id: identity.tenantId
         }
       }));
@@ -1612,7 +1661,12 @@ export function createCoreHandlers(config, options = {}) {
     core_action_mediation_evaluate: async (args, identity) => {
       const coreResponse = await coreRequest("/v1/action-mediation/evaluate", identity.tenantId, {
         method: "POST",
-        body: { action: args.action, policy: args.policy, context: args.context },
+        body: {
+          action: args.action,
+          policy: args.policy,
+          context: args.context,
+          work_preflight: args.work_preflight,
+        },
       });
       const response = applyQualityFailureMediation(args, coreResponse);
       const ledger = await recordQualityFailureObservation(identity, response);
@@ -2162,6 +2216,84 @@ export function createCoreHandlers(config, options = {}) {
       }
       return textResult(payload);
     },
+    ai_work_quality_observe: async (args, identity) => {
+      if (String(args.tenant_id || identity.tenantId) !== String(identity.tenantId)) {
+        throw new Error("tenant_scope_violation");
+      }
+      if (!identity.agentPresence?.transport_bound || !identity.agentPresence?.session_id) {
+        throw new Error("ai_work_quality_signed_presence_required");
+      }
+      const gallery = await galleryContext({ work_id: args.work_id }, identity);
+      const boundWork = gallery.works.find((work) => String(work.work_id) === String(args.work_id));
+      if (!gallery.available || !boundWork) throw new Error("ai_work_quality_gallery_work_required");
+      const leaseBinding = typeof tenantWorkGallery?.verifyActiveLease === "function"
+        ? await tenantWorkGallery.verifyActiveLease(identity, args.work_id)
+        : null;
+      if (!leaseBinding) throw new Error("ai_work_quality_active_lease_required");
+      const observation = buildAiWorkQualityObservation({
+        ...args,
+        tenant_id: identity.tenantId,
+        observer_id: identity.subject || identity.agentId || "connected_ai",
+        observer_session_id: identity.agentPresence.session_id,
+        observer_role: args.observer_role || "connected_ai_worker",
+        rollout_tier: workQualityMode,
+      });
+      const evaluated = await coreRequest("/v1/work-quality/evaluate", identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          observation,
+          observer_binding: {
+            agent_id: identity.agentPresence.agent_id || identity.subject || identity.agentId,
+            session_id: identity.agentPresence.session_id,
+            session_fingerprint: identity.agentPresence.session_fingerprint || null,
+            transport_bound: true,
+            gallery_work_id: observation.work_id,
+            lease_id: leaseBinding.lease_id,
+            active_lease_verified: true,
+          },
+        },
+      });
+      const requestBody = {
+        request_id: evaluated.decision_contract.decision_id,
+        project_id: args.project_id || null,
+        work_id: observation.work_id,
+        branch_id: args.branch_id || null,
+        session_id: args.session_id || null,
+        target_system: args.target_system || "ai_work_quality",
+        operation_type: args.operation_type || "quality_failure_remediation",
+        operation_class: observation.failure_class,
+        repository: args.repository || null,
+        ref: args.ref || null,
+        environment: args.environment || null,
+        resource_ids: args.resource_ids || [],
+      };
+      const remediation = await openBlockedRemediation({
+        identity,
+        requestBody,
+        authorization: evaluated.authorization,
+        contract: evaluated.decision_contract,
+        output: {
+          block_code: observation.code,
+          block_class: observation.disposition,
+          recommended_actions: [{ blocked: true, reason_code: observation.code }],
+          selected_by_core: {
+            risk_band: evaluated.decision_contract.risk_band,
+            evidence_requirements: observation.evidence_digests,
+            unmet_conditions: ["independent_verification_required"],
+            allowed_alternatives: evaluated.decision_contract.allowed_alternatives,
+          },
+        },
+      });
+      return textResult({
+        ok: true,
+        allowed: false,
+        execution_authorized: false,
+        observation,
+        decision_contract: evaluated.decision_contract,
+        ...(remediation?.statusPayload || {}),
+      });
+    },
     core_block_remediation_status: async (args, identity) => {
       const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
       return textResult({
@@ -2179,8 +2311,8 @@ export function createCoreHandlers(config, options = {}) {
       });
     },
     core_block_remediation_propose: async (args, identity) => {
-      assertRemediationWritesEnabled();
       const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      assertRemediationWritesEnabled(remediation);
       const idem = await remediationStore.findIdempotency({
         tenant_id: identity.tenantId,
         remediation_id: remediation.remediation_id,
@@ -2196,13 +2328,22 @@ export function createCoreHandlers(config, options = {}) {
         proposal: args.proposal,
         diagnosis: args.diagnosis,
         idempotencyKey: args.idempotency_key,
+        allowExistingReplay: Boolean(idem),
         now: () => new Date(),
       });
       if (idem && idem.proposal_digest && idem.proposal_digest !== attempt.proposal_digest) {
         throw new Error("core_block_remediation_replay_rejected");
       }
       if (idem?.result) {
-        return textResult({ ok: true, idempotent: true, ...idem.result });
+        const replayed = idem.result.remediation || idem.result?.remediation?.remediation || null;
+        return textResult({
+          ok: true,
+          idempotent: true,
+          remediation: replayed ? remediationEnvelope(replayed, {
+            latest_attempt: replayed.attempts?.at(-1) || null,
+            diagnosis: replayed.attempts?.at(-1)?.diagnosis || null,
+          }) : idem.result.remediation,
+        });
       }
       validateProposalForRemediation(remediation, attempt, {
         expectedVersion: args.expected_version,
@@ -2211,27 +2352,25 @@ export function createCoreHandlers(config, options = {}) {
       const nextStatus = attempt.proposal_type === CORE_BLOCK_PROPOSAL_TYPES.OWNER_CONFIRMATION_ROUTE
         ? CORE_BLOCK_REMEDIATION_STATUS.WAITING_OWNER
         : CORE_BLOCK_REMEDIATION_STATUS.PROPOSAL_READY;
-      const updated = await remediationStore.appendAttempt({
+      const appended = await remediationStore.appendAttemptIdempotent({
         tenant_id: remediation.tenant_id,
         remediation_id: remediation.remediation_id,
         expected_version: remediation.version,
         attempt,
         next_status: nextStatus,
-      });
-      const result = {
-        ok: true,
-        remediation: remediationEnvelope(updated, {
-          latest_attempt: attempt,
-          diagnosis: attempt.diagnosis,
-        }),
-      };
-      await remediationStore.rememberIdempotency({
-        tenant_id: remediation.tenant_id,
-        remediation_id: remediation.remediation_id,
         idempotency_key: args.idempotency_key,
         proposal_digest: attempt.proposal_digest,
-        result,
       });
+      const updated = appended.remediation;
+      const result = {
+        ok: true,
+        ...(appended.idempotent ? { idempotent: true } : {}),
+        remediation: remediationEnvelope(updated, {
+          latest_attempt: updated.attempts?.at(-1) || attempt,
+          diagnosis: updated.attempts?.at(-1)?.diagnosis || attempt.diagnosis,
+        }),
+      };
+      if (appended.idempotent) return textResult(result);
       const ledger = remediationDecisionLedger(identity);
       if (ledger) {
         await ledger.append({
@@ -2250,8 +2389,8 @@ export function createCoreHandlers(config, options = {}) {
       return textResult(result);
     },
     core_block_remediation_review: async (args, identity) => {
-      assertRemediationWritesEnabled();
       const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      assertRemediationWritesEnabled(remediation);
       const attempt = remediation.attempts.find((item) => item.attempt_id === args.attempt_id) || null;
       if (!attempt) throw new Error("remediation_attempt_not_found");
       const review = await reviewRemediationProposal({
@@ -2272,54 +2411,83 @@ export function createCoreHandlers(config, options = {}) {
       });
     },
     core_block_remediation_resubmit: async (args, identity) => {
-      assertRemediationWritesEnabled();
       const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      assertRemediationResubmissionEnabled(remediation);
       const attempt = remediation.attempts.find((item) => item.attempt_id === args.attempt_id) || null;
       if (!attempt) throw new Error("remediation_attempt_not_found");
-      if (remediation.nyra_review?.status !== "approve_for_core") {
-        throw new Error("nyra_review_required");
+      const ownerRoute = attempt.proposal_type === CORE_BLOCK_PROPOSAL_TYPES.OWNER_CONFIRMATION_ROUTE &&
+        remediation.original_decision.owner_confirmation_required === true;
+      if (ownerRoute) {
+        if (remediation.status !== CORE_BLOCK_REMEDIATION_STATUS.WAITING_OWNER ||
+            remediation.attempts.at(-1)?.attempt_id !== attempt.attempt_id) {
+          throw new Error("owner_confirmation_route_state_invalid");
+        }
+        if (!hasExplicitVerifiedOwnerConfirmation(identity, { allowOAuthTenantOwner: true })) {
+          throw new Error("owner_confirmation_required");
+        }
+      } else {
+        if (remediation.nyra_review?.status !== "approve_for_core") {
+          throw new Error("nyra_review_required");
+        }
+        if (remediation.nyra_review.reviewed_attempt_id !== attempt.attempt_id ||
+            remediation.nyra_review.reviewed_proposal_digest !== attempt.proposal_digest) {
+          throw new Error("nyra_review_attempt_binding_mismatch");
+        }
       }
-      const resubmissionContext = buildResubmissionContext(remediation, attempt, remediation.nyra_review);
+      const reviewForCore = ownerRoute ? {
+        review_digest: remediation.nyra_explanation.explanation_digest,
+      } : remediation.nyra_review;
+      const resubmissionContext = buildResubmissionContext(remediation, attempt, reviewForCore);
+      const actionBody = {
+        request_id: `resubmit_${crypto.randomUUID()}`,
+        remediation_context: resubmissionContext,
+        ...sanitizeCoreBody({
+          action_label: remediation.bound_scope.operation_type,
+          action_type: remediation.bound_scope.operation_type,
+          project_id: remediation.project_id,
+          work_id: remediation.work_id,
+          branch_id: remediation.branch_id,
+          session_id: remediation.session_id,
+          target_system: remediation.bound_scope.target_system,
+          operation_class: remediation.bound_scope.operation_class,
+          repository: remediation.bound_scope.repository,
+          ref: remediation.bound_scope.ref,
+          environment: remediation.bound_scope.environment,
+          resource_ids: remediation.bound_scope.resource_ids,
+          tenant_id: identity.tenantId,
+          ...(ownerRoute ? {
+            owner_confirmed: true,
+            confirmation_reference: verifiedConfirmationReference(identity, { allowOAuthTenantOwner: true }),
+          } : {}),
+        }),
+      };
       const coreResponse = await coreRequest("/v1/action-evaluator", identity.tenantId, {
         method: "POST",
         useTenantGateway: true,
         body: {
-          request_id: `resubmit_${crypto.randomUUID()}`,
-          remediation_context: resubmissionContext,
-          ...sanitizeCoreBody({
-            action_label: remediation.bound_scope.operation_type,
-            action_type: remediation.bound_scope.operation_type,
-            project_id: remediation.project_id,
-            work_id: remediation.work_id,
-            branch_id: remediation.branch_id,
-            session_id: remediation.session_id,
-            target_system: remediation.bound_scope.target_system,
-            operation_class: remediation.bound_scope.operation_class,
-            repository: remediation.bound_scope.repository,
-            ref: remediation.bound_scope.ref,
-            environment: remediation.bound_scope.environment,
-            resource_ids: remediation.bound_scope.resource_ids,
-            tenant_id: identity.tenantId,
-          }),
+          ...actionBody,
+          ...(ownerRoute ? { owner_context: ownerContext(identity, {
+            requestBinding: ownerRequestBinding("core_action_evaluator", actionBody),
+            actionEvaluatorGateway: true,
+            allowOAuthTenantOwner: true,
+          }) } : {}),
         },
         allowFailurePayload: true,
       });
       const payload = coreResponse.payload || coreResponse;
-      const allowed = payload?.authorization?.allowed === true || payload?.allowed === true;
-      const nextStatus = allowed
-        ? CORE_BLOCK_REMEDIATION_STATUS.ALLOWED
-        : CORE_BLOCK_REMEDIATION_STATUS.REVISION_REQUIRED;
+      const { allowed, confirmationRequired, verdict: returnedVerdict, status: nextStatus } =
+        classifyRemediationResubmissionOutcome(payload);
       const resubmitted = await remediationStore.recordResubmission({
         tenant_id: remediation.tenant_id,
         remediation_id: remediation.remediation_id,
         expected_version: remediation.version,
         resubmission: {
-          status: allowed ? "allowed" : "blocked",
+          status: allowed ? "allowed" : confirmationRequired ? "waiting_owner" : "blocked",
           resubmission_id: `resub_${crypto.randomUUID()}`,
           attempt_id: attempt.attempt_id,
           new_decision_id: payload?.decision_contract?.decision_id || payload?.authorization?.decision_id || null,
           new_decision_digest: payload?.decision_contract?.decision_digest || null,
-          new_verdict: payload?.authorization?.state || payload?.decision_contract?.state || null,
+          new_verdict: returnedVerdict || null,
           submitted_at: new Date().toISOString(),
         },
       });
@@ -2334,10 +2502,14 @@ export function createCoreHandlers(config, options = {}) {
         await ledger.append({
           tenant_id: remediation.tenant_id,
           work_id: remediation.work_id,
-          event_type: allowed ? "core_block_remediation_allowed" : "core_block_remediation_revision_requested",
+          event_type: allowed ? "core_block_remediation_allowed"
+            : confirmationRequired ? "core_block_remediation_waiting_owner"
+              : "core_block_remediation_revision_requested",
           remediation_id: remediation.remediation_id,
           decision_id: remediation.original_decision.decision_id,
-          reason_summary: allowed ? "resubmission_allowed" : "resubmission_blocked",
+          reason_summary: allowed ? "resubmission_allowed"
+            : confirmationRequired ? "request_bound_owner_confirmation_required"
+              : "resubmission_blocked",
           metadata: { resubmission_context: resubmissionContext },
         });
       }
@@ -2350,8 +2522,8 @@ export function createCoreHandlers(config, options = {}) {
       });
     },
     core_block_remediation_cancel: async (args, identity) => {
-      assertRemediationWritesEnabled();
       const remediation = await loadRemediationForIdentity(identity, args.remediation_id);
+      assertRemediationWritesEnabled(remediation);
       const cancelled = await remediationStore.cancel({
         tenant_id: remediation.tenant_id,
         remediation_id: remediation.remediation_id,

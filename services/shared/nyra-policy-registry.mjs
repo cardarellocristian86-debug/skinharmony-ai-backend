@@ -594,9 +594,48 @@ export function evaluatePolicySnapshot(snapshot, {
   context = {},
   now = new Date(),
 } = {}) {
-  const reasons = [];
   const tenantId = requireText(tenant_id, "tenant_id", 120);
   const requestedAction = requireText(action, "action", 200);
+  const coreBranchId = requireText(core_branch_id, "core_branch_id", 160);
+  const nyraBranchId = requireText(nyra_branch_id, "nyra_branch_id", 160);
+  const validation = validatePolicySnapshot(snapshot, {
+    tenant_id: tenantId,
+    core_branch_id: coreBranchId,
+    nyra_branch_id: nyraBranchId,
+    now,
+  });
+  const reasons = [...validation.reasons];
+  if (Array.isArray(diagnostics) && diagnostics.length) reasons.push("policy_diagnostics_present");
+  if (snapshot?.policy?.deny_actions?.includes(requestedAction)) reasons.push("explicit_deny");
+  if (!snapshot?.policy?.allow_actions?.includes(requestedAction)) reasons.push("default_deny");
+  const satisfied = new Set(uniqueText(satisfied_gates, "satisfied_gate"));
+  const missingGates = (snapshot?.policy?.required_gates || []).filter((gate) => !satisfied.has(gate));
+  if (missingGates.length) reasons.push("required_gate_missing");
+  const constraintContext = context && typeof context === "object" ? context : {};
+  const failedConstraints = Object.entries(snapshot?.policy?.constraints || {})
+    .filter(([key, expected]) => canonical(constraintContext[key]) !== canonical(expected))
+    .map(([key]) => key)
+    .sort();
+  if (failedConstraints.length) reasons.push("policy_constraint_unsatisfied");
+  return {
+    verdict: reasons.length ? "DENY" : "ALLOW",
+    reasons: [...new Set(reasons)],
+    missing_gates: missingGates,
+    failed_constraints: failedConstraints,
+    snapshot_digest: snapshot?.snapshot_digest || null,
+    fail_closed: true,
+  };
+}
+
+export function validatePolicySnapshot(snapshot, {
+  tenant_id,
+  core_branch_id,
+  nyra_branch_id,
+  domain_pack_id = null,
+  now = new Date(),
+} = {}) {
+  const reasons = [];
+  const tenantId = requireText(tenant_id, "tenant_id", 120);
   const coreBranchId = requireText(core_branch_id, "core_branch_id", 160);
   const nyraBranchId = requireText(nyra_branch_id, "nyra_branch_id", 160);
   if (snapshot?.tenant_id !== tenantId) reasons.push("cross_tenant_snapshot_denied");
@@ -615,23 +654,10 @@ export function evaluatePolicySnapshot(snapshot, {
   ) reasons.push("policy_snapshot_not_current");
   if (!snapshot?.bindings?.core_branch_ids?.includes(coreBranchId)) reasons.push("core_branch_binding_denied");
   if (!snapshot?.bindings?.nyra_branch_ids?.includes(nyraBranchId)) reasons.push("nyra_branch_binding_denied");
-  if (Array.isArray(diagnostics) && diagnostics.length) reasons.push("policy_diagnostics_present");
-  if (snapshot?.policy?.deny_actions?.includes(requestedAction)) reasons.push("explicit_deny");
-  if (!snapshot?.policy?.allow_actions?.includes(requestedAction)) reasons.push("default_deny");
-  const satisfied = new Set(uniqueText(satisfied_gates, "satisfied_gate"));
-  const missingGates = (snapshot?.policy?.required_gates || []).filter((gate) => !satisfied.has(gate));
-  if (missingGates.length) reasons.push("required_gate_missing");
-  const constraintContext = context && typeof context === "object" ? context : {};
-  const failedConstraints = Object.entries(snapshot?.policy?.constraints || {})
-    .filter(([key, expected]) => canonical(constraintContext[key]) !== canonical(expected))
-    .map(([key]) => key)
-    .sort();
-  if (failedConstraints.length) reasons.push("policy_constraint_unsatisfied");
+  if (domain_pack_id && snapshot?.domain_pack_id !== domain_pack_id) reasons.push("domain_pack_binding_denied");
   return {
-    verdict: reasons.length ? "DENY" : "ALLOW",
+    ok: reasons.length === 0,
     reasons: [...new Set(reasons)],
-    missing_gates: missingGates,
-    failed_constraints: failedConstraints,
     snapshot_digest: snapshot?.snapshot_digest || null,
     fail_closed: true,
   };

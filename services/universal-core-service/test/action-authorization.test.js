@@ -1186,3 +1186,48 @@ test("authorizes only a verified, tenant-bound and owner-confirmed outcome recor
     { predicted_probability: 2 }, { actual_outcome: "unknown" }, { confirmation_outcome_id: "different" },
   ]) assert.equal(buildActionAuthorization(contract(), { ...verifiedOutcomeRecord, owner_confirmed: true, ...unsafe }).allowed, false);
 });
+
+test("authorizes only exact preflight-ready Policy Registry snapshot mutations", () => {
+  const base = {
+    operation_class: "policy_registry_snapshot_mutation",
+    action_type: "policy.snapshot.activate",
+    authenticated_tenant_id: "codexai",
+    tenant_id: "codexai",
+    owner_confirmed: true,
+    request_bound_owner_confirmation: true,
+    owner_context_verified: true,
+    work_preflight_ready: true,
+    external_side_effect: false,
+    provider_execution: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    bypass_orchestrator: false,
+    destructive: false,
+    rollback_ready: true,
+    audit_ready: true,
+  };
+  for (const action_type of [
+    "policy.snapshot.activate", "policy.snapshot.rollback", "policy.snapshot.reconcile",
+  ]) {
+    const result = buildActionAuthorization(contract({ risk_band: "high" }), { ...base, action_type });
+    assert.equal(result.allowed, true, action_type);
+    assert.equal(result.confirmation_required, true, action_type);
+    assert.equal(result.confirmation_satisfied, true, action_type);
+    assert.equal(result.scope, "policy_registry_snapshot_mutation", action_type);
+  }
+  for (const unsafe of [
+    { action_type: "policy.snapshot.activate.similar" },
+    { operation_class: "owner_confirmed_high_impact" },
+    { owner_confirmed: false }, { request_bound_owner_confirmation: false },
+    { owner_context_verified: false }, { work_preflight_ready: false },
+    { tenant_id: "other" }, { external_side_effect: true }, { provider_execution: true },
+    { contains_secret: true }, { secret_value_transmitted: true }, { cross_tenant: true },
+    { bypass_orchestrator: true }, { destructive: true }, { rollback_ready: false },
+    { audit_ready: false },
+  ]) {
+    assert.equal(buildActionAuthorization(contract({ risk_band: "high" }), {
+      ...base, ...unsafe,
+    }).allowed, false, JSON.stringify(unsafe));
+  }
+});
