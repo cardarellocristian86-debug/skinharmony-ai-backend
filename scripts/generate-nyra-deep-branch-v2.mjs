@@ -34,7 +34,7 @@ const V1_SOURCE_PIN = Object.freeze({
   horizontal_runtime_pre_v2_sha256:
     "eea4aef34164f3681433aca0b338c93ed8276d719a18e379d124bc0b60b2a6d3",
   core_branch_network_sha256:
-    "28018fa5a628bff2732ef82b579a9b2411365de8645e90bee01916141495de0d",
+    "25bd1cc03fb77dbf265b7802929c129edf14ca6b35dddee43ba2f6dcef7aa106",
 });
 // The immutable rollback pin above predates intentional V1-only continuity
 // changes. Keep those current bytes independently pinned so V2 generation
