@@ -7962,6 +7962,59 @@ class DesktopMirrorService {
     return visible.map((item) => this.serializeUserSummary(item, { includeControlStats }));
   }
 
+  async deleteTenant(userId, payload = {}, session = null) {
+    if (!this.isSuperAdminSession(session) || session?.supportMode) {
+      throw new Error("Eliminazione tenant riservata al super admin");
+    }
+    const target = this.usersRepository.findById(String(userId || ""));
+    const centerId = String(target?.centerId || "").trim();
+    if (!target || !centerId || String(target.role || "").toLowerCase() === "superadmin") {
+      throw new Error("Tenant non valido");
+    }
+    if (centerId === DEFAULT_CENTER_ID) {
+      throw new Error("Il centro principale non può essere eliminato");
+    }
+    const confirmation = String(payload.confirm || "").trim();
+    if (confirmation !== `DELETE-${centerId}`) {
+      throw new Error(`Conferma richiesta: DELETE-${centerId}`);
+    }
+    const repositories = {
+      users: this.usersRepository,
+      clients: this.clientsRepository,
+      appointments: this.appointmentsRepository,
+      services: this.servicesRepository,
+      staff: this.staffRepository,
+      shifts: this.shiftsRepository,
+      shiftTemplates: this.shiftTemplatesRepository,
+      resources: this.resourcesRepository,
+      inventory: this.inventoryRepository,
+      inventoryMovements: this.inventoryMovementsRepository,
+      payments: this.paymentsRepository,
+      cashClosures: this.cashClosuresRepository,
+      treatments: this.treatmentsRepository,
+      protocols: this.protocolsRepository,
+      aiMarketingActions: this.aiMarketingActionsRepository,
+      goldState: this.goldStateRepository,
+      whatsappMessages: this.whatsappMessagesRepository,
+      clientRecallProfiles: this.clientRecallProfilesRepository,
+      sales: this.salesRepository
+    };
+    const changes = Object.values(repositories).map((repository) => ({
+      repository,
+      payload: repository.list().filter((item) => !this.belongsToCenter(item, centerId))
+    }));
+    const settings = this.settingsRepository.list();
+    const nextSettings = settings && !Array.isArray(settings) && typeof settings === "object"
+      ? { ...settings }
+      : settings;
+    if (nextSettings && typeof nextSettings === "object" && !Array.isArray(nextSettings)) {
+      delete nextSettings[centerId];
+      changes.push({ repository: this.settingsRepository, payload: nextSettings });
+    }
+    await this.commitRepositorySnapshots(changes);
+    return { success: true, centerId, centerName: String(target.centerName || "") };
+  }
+
   createAccessUser(payload = {}, session = null) {
     const username = sanitizeUsername(payload.username || payload.email || "");
     if (!username) throw new Error("Username obbligatorio");

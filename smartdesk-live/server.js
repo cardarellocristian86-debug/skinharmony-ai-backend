@@ -1347,6 +1347,17 @@ app.post("/api/auth/users/:id/status", requireAuth, (req, res) => {
   }
 });
 
+app.delete("/api/auth/users/:id", requireAuth, requireSuperAdmin, async (req, res) => {
+  try {
+    res.json(await service.deleteTenant(req.params.id, req.body || {}, req.session));
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error instanceof Error ? error.message : "Impossibile eliminare il tenant"
+    });
+  }
+});
+
 app.post("/api/auth/users/:id/support-session", requireAuth, (req, res) => {
   try {
     res.json({ success: true, ...service.createSupportSessionForUser(req.params.id, req.session) });
