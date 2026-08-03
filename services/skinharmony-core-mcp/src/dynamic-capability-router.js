@@ -163,8 +163,14 @@ function assertRevision(expected, actual) {
   }
 }
 
-function targetArguments(tool, wrapperArgs) {
+function targetArguments(tool, wrapperArgs, identity = {}) {
   const args = { ...(wrapperArgs.arguments || {}) };
+  if (tool._meta?.["skinharmony/tenantBoundedCollaboration"] === true) {
+    const presence = identity.agentPresence || {};
+    args.agent_id = presence.agent_id;
+    args.session_id = presence.session_id;
+    args.client_type = presence.client_type;
+  }
   if (
     tool.inputSchema?.properties?.idempotency_key &&
     args.idempotency_key === undefined &&
@@ -305,7 +311,7 @@ export function createDynamicCapabilityHandlers({
       const tool = exactCapability(tools, handlers, args.capability_id);
       if (tool.annotations?.readOnlyHint !== true) throw new Error("dynamic_capability_read_only_required");
       requireScopes(identity, tool.scopes || []);
-      const callArgs = targetArguments(tool, args);
+      const callArgs = targetArguments(tool, args, identity);
       const result = await handlers[tool.name](callArgs, identity);
       return {
         ...result,
@@ -336,7 +342,7 @@ export function createDynamicCapabilityHandlers({
         throw new Error("owner_confirmation_required");
       }
       if (!String(args.idempotency_key || "").trim()) throw new Error("idempotency_key_required");
-      const callArgs = targetArguments(tool, args);
+      const callArgs = targetArguments(tool, args, identity);
       if (!dedicatedCoreGate) {
         if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
         const gateTool = ownerConfirmationRequired

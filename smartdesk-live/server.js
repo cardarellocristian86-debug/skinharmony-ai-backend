@@ -1,7 +1,6 @@
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
-const { resolveBridgeScope, hasExplicitBridgeScope } = require("./src/TenantIsolation");
 const nodemailer = require("nodemailer");
 const { DesktopMirrorService } = require("./src/DesktopMirrorService");
 const { AssistantService } = require("./src/AssistantService");
@@ -11,7 +10,6 @@ const { PostgresPersistenceAdapter } = require("./src/PostgresPersistenceAdapter
 const { WhatsappService } = require("./src/WhatsappService");
 const { SuiteAppKeyBridge } = require("./src/SuiteAppKeyBridge");
 const { UniversalCoreBridge } = require("./src/UniversalCoreBridge");
-const { cockpit360Contract } = require("./src/Cockpit360Contract");
 const { computeAppointmentProfitability } = require("./src/core/profitability/ProfitabilityCore");
 
 const app = express();
@@ -22,8 +20,10 @@ let nyraDialogue = null;
 let whatsappService = null;
 let suiteAppKeyBridge = null;
 let universalCoreBridge = null;
+let persistenceAdapter = null;
 const publicDir = path.resolve(__dirname, "public");
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
 
 const rateLimitBuckets = new Map();
 const safeModeMonitor = {
@@ -213,6 +213,117 @@ function createRateLimiter({ windowMs, max, keyPrefix }) {
 const loginRateLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 20, keyPrefix: "login" });
 const trialRateLimit = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 10, keyPrefix: "trial" });
 const passwordRateLimit = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 8, keyPrefix: "password" });
+const controlRoomRateLimit = createRateLimiter({ windowMs: 60 * 1000, max: 240, keyPrefix: "control_room" });
+
+const CONTROL_ROOM_PAGE_MAX = 250;
+const CONTROL_ROOM_PAGE_DEFAULT = 50;
+const CONTROL_ROOM_READ_TIMEOUT_MS = Number(process.env.CONTROL_ROOM_READ_TIMEOUT_MS || 8000);
+
+function safeInteger(value, fallback = 0, options = {}) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  const min = Number.isFinite(options.min) ? options.min : -Infinity;
+  const max = Number.isFinite(options.max) ? options.max : Infinity;
+  return Math.max(min, Math.min(max, Math.trunc(numeric)));
+}
+
+function parseBoundedPagination(query = {}) {
+  return {
+    limit: safeInteger(query.limit, CONTROL_ROOM_PAGE_DEFAULT, { min: 1, max: CONTROL_ROOM_PAGE_MAX }),
+    offset: safeInteger(query.offset, 0, { min: 0 })
+  };
+}
+
+function parseBool(value, fallback = false) {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") return true;
+  if (normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no") return false;
+  return fallback;
+}
+
+function withControlRoomTimeout(operation) {
+  const timeout = Math.max(800, CONTROL_ROOM_READ_TIMEOUT_MS);
+  return Promise.race([
+    Promise.resolve().then(operation),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("control_room_timeout")), timeout);
+    })
+  ]);
+}
+
+function controlRoomErrorPayload(err, statusCode = 400) {
+  const message = err instanceof Error ? err.message : "Control Room non disponibile";
+  return {
+    success: false,
+    code: err?.code || "control_room_error",
+    statusCode,
+    message
+  };
+}
+
+function getControlRoomRuntimeMeta(reqSession) {
+  const role = service.getControlRole(reqSession);
+  const allowedTenants = service.getControlRoomAllowedTenants(reqSession);
+  const permissionKeys = [
+    "view_all_tenants",
+    "view_global_health",
+    "view_global_agents",
+    "view_global_branches",
+    "view_global_keys_metadata",
+    "view_global_audit",
+    "view_global_work_gallery",
+    "view_global_decision_ledger",
+    "view_global_memory_status",
+    "view_connectors_status",
+    "view_governance_blockers",
+    "export_sanitized_audit",
+    "view_own_tenant_health",
+    "view_own_tenant_agents",
+    "view_own_tenant_branches",
+    "view_own_tenant_keys_metadata",
+    "view_own_tenant_audit",
+    "view_own_tenant_work_gallery",
+    "view_own_tenant_decision_ledger",
+    "view_own_tenant_memory_status",
+    "view_own_tenant_connectors_status",
+    "export_own_sanitized_audit",
+    "view_own_assigned_work",
+    "view_own_agent_activity",
+    "view_own_branch_activity",
+  ];
+  const permissions = permissionKeys.reduce((acc, permission) => {
+    acc[permission] = Boolean(service.controlHasPermission(reqSession, permission));
+    return acc;
+  }, {});
+  return {
+    role,
+    controlRole: role,
+    tenantSwitcherAllowed: role === "super_admin",
+    tenantId: service.getCenterId(reqSession),
+    tenantName: service.getCenterName(reqSession),
+    allowedTenants: allowedTenants.map((tenant) => ({
+      tenantId: tenant.tenantId,
+      tenantName: tenant.tenantName,
+      isActive: Boolean(tenant.isActive)
+    })),
+    permissions
+  };
+}
+
+function requireControlPermission(permission) {
+  return (req, res, next) => {
+    if (service.controlHasPermission(req.session, permission)) return next();
+    return res.status(403).json({
+      success: false,
+      code: "control_permission_denied",
+      message: "Permesso non autorizzato per la Control Room."
+    });
+  };
+}
+
+function hasAnyControlPermission(session, permissions = []) {
+  return Array.isArray(permissions) && permissions.some((permission) => service.controlHasPermission(session, permission));
+}
 
 function trialMailConfigured() {
   return Boolean(
@@ -403,9 +514,6 @@ function findBridgeAccess(req) {
     if (expiresAt && Number.isFinite(Date.parse(expiresAt)) && new Date(expiresAt) < now) {
       return { ok: false, code: "bridge_key_expired", id: record.id || "" };
     }
-    if (String(process.env.SMARTDESK_REQUIRE_SCOPED_BRIDGE_KEYS || "").toLowerCase() === "true" && !hasExplicitBridgeScope(record)) {
-      return { ok: false, code: "bridge_scope_required", id: record.id || "" };
-    }
 
     return {
       ok: true,
@@ -413,31 +521,19 @@ function findBridgeAccess(req) {
       label: record.label || record.name || "Smart Desk Bridge",
       plan: record.plan || "annual",
       expiresAt,
-      scopes: Array.isArray(record.scopes) ? record.scopes : ["health", "waas_bridge"],
-      scopeBound: hasExplicitBridgeScope(record),
-      ...resolveBridgeScope(record, {
-        tenantId: process.env.UNIVERSAL_CORE_TENANT_ID || "smartdesk-skinharmony",
-        centerId: service?.getCenterId?.() || "center_admin",
-        centerName: service?.getCenterName?.() || "Privilege Parrucchieri"
-      })
+      scopes: Array.isArray(record.scopes) ? record.scopes : ["health", "waas_bridge"]
     };
   }
 
   return { ok: false, code: "invalid_bridge_key" };
 }
 
-function bridgeSession(bridge = {}) {
-  const scope = resolveBridgeScope(bridge, {
-    tenantId: process.env.UNIVERSAL_CORE_TENANT_ID || "smartdesk-skinharmony",
-    centerId: service?.getCenterId?.() || "center_admin",
-    centerName: service?.getCenterName?.() || "Privilege Parrucchieri"
-  });
+function bridgeSession() {
   return {
     role: "superadmin",
     username: "nyra_bridge",
-    tenantId: scope.tenantId,
-    centerId: scope.centerId,
-    centerName: scope.centerName,
+    centerId: service?.getCenterId?.() || "center_admin",
+    centerName: service?.getCenterName?.() || "Privilege Parrucchieri",
     subscriptionPlan: "gold",
     accessState: "active"
   };
@@ -458,10 +554,8 @@ function bridgeMoney(row, keys = []) {
 }
 
 function buildNyraBridgeSnapshot(bridge) {
-  const session = bridgeSession(bridge);
-  const tenantId = session.tenantId;
+  const session = bridgeSession();
   const centerId = session.centerId;
-  const scope = { tenant_id: tenantId, center_id: centerId };
   const scoped = (repository) => service.getCenterRepositoryItems(repository, centerId);
   const clients = scoped(service.clientsRepository);
   const appointments = scoped(service.appointmentsRepository);
@@ -475,7 +569,6 @@ function buildNyraBridgeSnapshot(bridge) {
   const consentEvents = clients
     .filter((client) => client.consentStatus === "granted" || client.consentGiven === true || client.consentAt)
     .map((client) => ({
-      ...scope,
       stage: "consent",
       event_type: "consent_granted",
       status: "ready",
@@ -489,7 +582,6 @@ function buildNyraBridgeSnapshot(bridge) {
     .filter((appointment) => appointment.clientId)
     .filter((appointment) => !["cancelled", "no_show"].includes(String(appointment.status || "").toLowerCase()))
     .map((appointment) => ({
-      ...scope,
       stage: "booking",
       event_type: "booking_recorded",
       status: ["completed", "confirmed", "booked", "scheduled"].includes(String(appointment.status || "").toLowerCase()) ? "ready" : "pending",
@@ -502,7 +594,6 @@ function buildNyraBridgeSnapshot(bridge) {
   const treatmentEvents = treatments
     .filter((treatment) => treatment.clientId)
     .map((treatment) => ({
-      ...scope,
       stage: "treatment",
       event_type: "treatment_recorded",
       status: ["completed", "done", "closed"].includes(String(treatment.status || "").toLowerCase()) ? "ready" : "pending",
@@ -513,7 +604,6 @@ function buildNyraBridgeSnapshot(bridge) {
       metadata: { treatment_id: treatment.id, protocol_id: treatment.protocolId || "" }
     }));
   const saleRows = sales.map((sale) => ({
-    ...scope,
     sale_id: sale.id,
     client_id: sale.clientId || "",
     product_id: sale.productId || sale.product || "",
@@ -526,7 +616,6 @@ function buildNyraBridgeSnapshot(bridge) {
   const saleEvents = saleRows
     .filter((sale) => sale.client_id)
     .map((sale) => ({
-      ...scope,
       stage: "commerce",
       event_type: "sale_recorded",
       status: "ready",
@@ -574,7 +663,6 @@ function buildNyraBridgeSnapshot(bridge) {
     }
   });
   const paymentRows = payments.map((payment) => ({
-    ...scope,
     payment_id: payment.id,
     client_id: payment.clientId || "",
     appointment_id: payment.appointmentId || "",
@@ -588,7 +676,6 @@ function buildNyraBridgeSnapshot(bridge) {
   const paymentEvents = paymentRows
     .filter((payment) => payment.client_id && Number(payment.amount || 0) > 0)
     .map((payment) => ({
-      ...scope,
       stage: "commerce",
       event_type: "payment_recorded",
       status: "ready",
@@ -600,7 +687,6 @@ function buildNyraBridgeSnapshot(bridge) {
       metadata: { payment_id: payment.payment_id, appointment_id: payment.appointment_id, channel: payment.method, cost_source: payment.cost_source }
     }));
   const inventoryRows = inventory.map((item) => ({
-    ...scope,
     product_id: item.id || item.sku || "",
     sku: item.sku || "",
     quantity: bridgeNumber(item.quantity ?? item.stockQuantity ?? item.stock) || 0,
@@ -617,10 +703,8 @@ function buildNyraBridgeSnapshot(bridge) {
       id: bridge.id,
       label: bridge.label,
       plan: bridge.plan,
-      scopes: bridge.scopes,
-      scope_bound: Boolean(bridge.scopeBound)
+      scopes: bridge.scopes
     },
-    tenant_id: tenantId,
     center_id: centerId,
     counts: service.getCenterControlStats(centerId),
     data_quality: {
@@ -707,6 +791,15 @@ const planWeight = {
   enterprise: 4
 };
 
+function ensureSession(req) {
+  if (!req || req.session) return req?.session || null;
+  if (!service || typeof service.getSession !== "function") return null;
+  const session = service.getSession(readToken(req));
+  if (!session) return null;
+  req.session = session;
+  return session;
+}
+
 function normalizedPlan(session) {
   if (String(session?.role || "").toLowerCase() === "superadmin" && !session?.supportMode) return "enterprise";
   const plan = String(session?.subscriptionPlan || "").toLowerCase();
@@ -715,7 +808,16 @@ function normalizedPlan(session) {
 
 function requirePlan(requiredPlan) {
   return (req, res, next) => {
-    const currentWeight = planWeight[normalizedPlan(req.session)] || planWeight.gold;
+    const currentSession = ensureSession(req);
+    if (!currentSession) {
+      return res.status(401).json({
+        success: false,
+        code: "session_invalid",
+        message: "Sessione non valida o scaduta.",
+        nextAction: "Esegui di nuovo il login o aggiorna la pagina."
+      });
+    }
+    const currentWeight = planWeight[normalizedPlan(currentSession)] || planWeight.gold;
     const requiredWeight = planWeight[requiredPlan] || planWeight.gold;
     if (currentWeight >= requiredWeight) {
       return next();
@@ -747,13 +849,7 @@ function sendCoreliaSafe(res, fallbackFactory, compute) {
 }
 
 function sendBadRequest(res, error, fallback) {
-  const code = String(error?.code || "");
-  const status = code === "persistence_conflict"
-    ? 409
-    : code === "persistence_unavailable" || code === "persistence_revision_missing"
-      ? 503
-      : 400;
-  res.status(status).send(error instanceof Error ? error.message : fallback);
+  res.status(400).send(error instanceof Error ? error.message : fallback);
 }
 
 function verifyWooCommerceWebhook(req) {
@@ -775,15 +871,186 @@ function verifyWooCommerceWebhook(req) {
   return { ok: true };
 }
 
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-SkinHarmony-Bridge-Key, X-SkinHarmony-Bridge");
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
+const DEFAULT_SMARTDESK_ORIGINS = [
+  "https://skinharmony-smartdesk-live.onrender.com",
+  "https://skinharmony.it",
+  "https://www.skinharmony.it"
+];
+const LOCAL_SMARTDESK_ORIGINS = [
+  "http://127.0.0.1:3020",
+  "http://127.0.0.1:10000",
+  "http://localhost:3020",
+  "http://localhost:10000",
+  "http://localhost:5173"
+];
+const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function normalizeOrigin(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate) return "";
+  try {
+    const url = new URL(candidate);
+    if (!["http:", "https:"].includes(url.protocol)) return "";
+    return url.origin;
+  } catch (_error) {
+    return "";
+  }
+}
+
+function resolveAllowedOrigins() {
+  const configured = String(process.env.SMARTDESK_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map(normalizeOrigin)
+    .filter(Boolean);
+  const serviceOrigins = [
+    process.env.SMARTDESK_PUBLIC_URL,
+    process.env.RENDER_EXTERNAL_URL
+  ]
+    .map(normalizeOrigin)
+    .filter(Boolean);
+  const localOrigins = process.env.NODE_ENV === "production" ? [] : LOCAL_SMARTDESK_ORIGINS;
+  return new Set([
+    ...DEFAULT_SMARTDESK_ORIGINS,
+    ...localOrigins,
+    ...serviceOrigins,
+    ...configured
+  ]);
+}
+
+function applySecurityHeaders(req, res, next) {
+  const scriptSources = ["'self'"];
+  if (req.path === "/fleet-intelligence") {
+    scriptSources.push("'unsafe-inline'");
+  }
+  const connectSources = ["'self'"];
+  if (process.env.NODE_ENV !== "production") {
+    connectSources.push("http://127.0.0.1:3020", "http://localhost:3020");
+  }
+  const contentSecurityPolicy = [
+    "default-src 'self'",
+    "base-uri 'self'",
+    `script-src ${scriptSources.join(" ")}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: https://www.skinharmony.it",
+    "font-src 'self' data:",
+    `connect-src ${connectSources.join(" ")}`,
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "object-src 'none'",
+    "manifest-src 'self'"
+  ];
+  if (process.env.NODE_ENV === "production") {
+    contentSecurityPolicy.push("upgrade-insecure-requests");
+  }
+
+  res.setHeader("Content-Security-Policy", contentSecurityPolicy.join("; "));
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+
+  const forwardedProtocol = String(req.headers["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  if (req.secure || forwardedProtocol === "https") {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  if (req.path.startsWith("/api")) {
+    res.setHeader("Cache-Control", "no-store");
   }
   return next();
-});
+}
+
+function createCorsMiddleware(resolveOrigins = resolveAllowedOrigins) {
+  return (req, res, next) => {
+    const rawOrigin = String(req.headers.origin || "").trim();
+    const origin = normalizeOrigin(rawOrigin);
+    const allowedOrigins = resolveOrigins();
+
+    res.vary("Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Accept, Content-Type, Authorization, X-SkinHarmony-Bridge-Key, X-SkinHarmony-Bridge"
+    );
+    res.setHeader("Access-Control-Max-Age", "600");
+
+    if (rawOrigin && (!origin || !allowedOrigins.has(origin))) {
+      return res.status(403).json({
+        success: false,
+        code: "cors_origin_denied",
+        message: "Origine non autorizzata."
+      });
+    }
+
+    if (origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+    }
+    if (req.method === "OPTIONS") {
+      return res.status(204).end();
+    }
+    return next();
+  };
+}
+
+function createPersistenceCommitBarrier(resolveAdapter = () => persistenceAdapter) {
+  return (req, res, next) => {
+    if (!req.path.startsWith("/api") || !MUTATING_HTTP_METHODS.has(req.method)) {
+      return next();
+    }
+
+    const adapter = resolveAdapter();
+    if (!adapter || typeof adapter.runWithWriteTracking !== "function") {
+      return next();
+    }
+
+    return adapter.runWithWriteTracking((context) => {
+      const originalJson = res.json.bind(res);
+      const originalSend = res.send.bind(res);
+      const originalEnd = res.end.bind(res);
+      let commitStarted = false;
+
+      const commitThenSend = (send) => {
+        if (commitStarted || context.outcomes.length === 0) {
+          return send();
+        }
+
+        commitStarted = true;
+        void adapter.flushTrackedWrites(context).then(
+          () => {
+            res.setHeader("X-SmartDesk-Persistence", "confirmed");
+            send();
+          },
+          () => {
+            if (res.headersSent) {
+              res.destroy();
+              return;
+            }
+            res.status(503);
+            res.setHeader("X-SmartDesk-Persistence", "failed");
+            originalJson({
+              success: false,
+              code: "persistence_sync_failed",
+              message: "Salvataggio non confermato. Riprova tra poco."
+            });
+          }
+        );
+        return res;
+      };
+
+      res.json = (body) => commitThenSend(() => originalJson(body));
+      res.send = (body) => commitThenSend(() => originalSend(body));
+      res.end = (...args) => commitThenSend(() => originalEnd(...args));
+      return next();
+    });
+  };
+}
+
+app.use(applySecurityHeaders);
+app.use(createCorsMiddleware());
 
 app.use(express.json({
   limit: "15mb",
@@ -792,22 +1059,7 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
-
-function isWriteFreezeEnabled() {
-  return ["1", "true", "yes", "on"].includes(String(process.env.SMARTDESK_WRITE_FREEZE || "").toLowerCase());
-}
-
-app.use((req, res, next) => {
-  if (!isWriteFreezeEnabled() || !req.path.startsWith("/api") || req.path === "/api/health") {
-    return next();
-  }
-  res.setHeader("Retry-After", "120");
-  return res.status(503).json({
-    success: false,
-    code: "smartdesk_maintenance_write_freeze",
-    message: "Smart Desk e temporaneamente in manutenzione controllata. Riprova tra pochi minuti."
-  });
-});
+app.use(createPersistenceCommitBarrier());
 
 app.use((req, res, next) => {
   if (!req.path.startsWith("/api")) return next();
@@ -847,7 +1099,13 @@ app.use("/exports", express.static(path.join(publicDir, "exports")));
 app.use("/web-preview", express.static(path.join(publicDir, "preview-shell")));
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "skinharmony-smartdesk-live" });
+  res.json({
+    ok: true,
+    service: "skinharmony-smartdesk-live",
+    persistence: persistenceAdapter
+      ? persistenceAdapter.getPersistenceStatus()
+      : { configured: false, healthy: true, pendingWrites: 0 }
+  });
 });
 
 app.get("/api/health", (req, res) => {
@@ -923,10 +1181,34 @@ app.get("/web-preview", (_req, res) => {
   res.redirect(302, "/web-preview/");
 });
 
-app.post("/api/auth/login", loginRateLimit, async (req, res) => {
+app.post("/api/auth/login", loginRateLimit, (req, res) => {
+  const usernameHint = String(req.body?.username || req.body?.email || req.body?.user || "").trim();
   try {
-    res.json({ success: true, ...await service.login(req.body || {}) });
+    const session = service.login(req.body || {});
+    service.recordControlAuditEvent({
+      session,
+      action: "login_success",
+      outcome: "success",
+      reason: "login",
+      details: {
+        method: "POST",
+        path: "/api/auth/login",
+        tenantFilter: String(session?.centerId || "")
+      }
+    });
+    res.json({ success: true, ...session });
   } catch (error) {
+    service.recordControlAuditEvent({
+      actor: { username: usernameHint },
+      action: "login_failed",
+      outcome: "failed",
+      reason: error instanceof Error ? error.message : "login failed",
+      details: {
+        method: "POST",
+        path: "/api/auth/login",
+        tenantFilter: ""
+      }
+    });
     res.status(401).send(error instanceof Error ? error.message : "Credenziali non valide");
   }
 });
@@ -937,7 +1219,7 @@ app.get("/api/auth/trial-config", (_req, res) => {
 
 app.post("/api/auth/request-trial", trialRateLimit, async (req, res) => {
   try {
-    const result = await service.requestTrial(req.body || {});
+    const result = service.requestTrial(req.body || {});
     let emailDelivery = { status: "disabled" };
     if (result.verification?.required && result.verification?.token) {
       emailDelivery = await sendTrialVerificationMail({
@@ -964,9 +1246,9 @@ app.post("/api/auth/request-trial", trialRateLimit, async (req, res) => {
   }
 });
 
-app.post("/api/auth/verify-trial-email", async (req, res) => {
+app.post("/api/auth/verify-trial-email", (req, res) => {
   try {
-    const result = await service.verifyTrialEmailToken(req.body || {});
+    const result = service.verifyTrialEmailToken(req.body || {});
     void sendTrialWelcomeMail({
       email: result.user.contactEmail || "",
       centerName: result.user.centerName || "",
@@ -981,7 +1263,7 @@ app.post("/api/auth/verify-trial-email", async (req, res) => {
 
 app.post("/api/auth/forgot-password", passwordRateLimit, async (req, res) => {
   try {
-    const result = await service.requestPasswordReset(req.body || {});
+    const result = service.requestPasswordReset(req.body || {});
     if (result.delivery?.email && result.delivery?.token) {
       await sendPasswordResetMail({
         email: result.delivery.email,
@@ -996,7 +1278,7 @@ app.post("/api/auth/forgot-password", passwordRateLimit, async (req, res) => {
 
 app.post("/api/auth/reset-password", passwordRateLimit, async (req, res) => {
   try {
-    const result = await service.resetPasswordWithToken(req.body || {});
+    const result = service.resetPasswordWithToken(req.body || {});
     if (result.user.contactEmail) {
       await sendPasswordChangedMail({ email: result.user.contactEmail });
     }
@@ -1049,17 +1331,17 @@ app.get("/api/enterprise/control", requireAuth, requireSuperAdmin, (req, res) =>
   }
 });
 
-app.post("/api/auth/users", requireAuth, async (req, res) => {
+app.post("/api/auth/users", requireAuth, (req, res) => {
   try {
-    res.status(201).json(await service.createAccessUser(req.body || {}, req.session));
+    res.status(201).json(service.createAccessUser(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile creare l'accesso");
   }
 });
 
-app.post("/api/auth/users/:id/status", requireAuth, async (req, res) => {
+app.post("/api/auth/users/:id/status", requireAuth, (req, res) => {
   try {
-    res.json(await service.updateAccessUserStatus(req.params.id, req.body || {}, req.session));
+    res.json(service.updateAccessUserStatus(req.params.id, req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare lo stato utente");
   }
@@ -1073,21 +1355,21 @@ app.post("/api/auth/users/:id/support-session", requireAuth, (req, res) => {
   }
 });
 
-app.post("/api/auth/subscription/request-change", requireAuth, async (req, res) => {
+app.post("/api/auth/subscription/request-change", requireAuth, (req, res) => {
   try {
-    res.json(await service.requestSubscriptionChange(req.body || {}, req.session));
+    res.json(service.requestSubscriptionChange(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile inviare la richiesta abbonamento");
   }
 });
 
-app.post("/api/integrations/woocommerce/order-paid", async (req, res) => {
+app.post("/api/integrations/woocommerce/order-paid", (req, res) => {
   const verification = verifyWooCommerceWebhook(req);
   if (!verification.ok) {
     return res.status(401).json({ success: false, ...verification });
   }
   try {
-    res.json(await service.activateSubscriptionFromWooCommerceOrder(req.body || {}));
+    res.json(service.activateSubscriptionFromWooCommerceOrder(req.body || {}));
   } catch (error) {
     res.status(400).json({
       success: false,
@@ -1096,14 +1378,14 @@ app.post("/api/integrations/woocommerce/order-paid", async (req, res) => {
   }
 });
 
-app.post("/api/integrations/twilio/whatsapp-webhook", async (req, res) => {
+app.post("/api/integrations/twilio/whatsapp-webhook", (req, res) => {
   const expectedToken = String(process.env.TWILIO_WEBHOOK_TOKEN || "").trim();
   const providedToken = String(req.query.token || req.headers["x-smartdesk-webhook-token"] || "").trim();
   if (expectedToken && providedToken !== expectedToken) {
     return res.status(401).json({ success: false, message: "Webhook non autorizzato" });
   }
   try {
-    res.json(await service.handleWhatsappWebhook(req.body || {}, whatsappService));
+    res.json(service.handleWhatsappWebhook(req.body || {}, whatsappService));
   } catch (error) {
     res.status(400).json({
       success: false,
@@ -1385,6 +1667,7 @@ app.post("/api/center", (req, res) => {
 });
 
 app.get("/api/runtime-meta", (req, res) => {
+  const controlRuntime = getControlRoomRuntimeMeta(req.session);
   const settings = service.getPublicSettings(req.session);
   const plan = normalizedPlan(req.session);
   res.json({
@@ -1417,8 +1700,532 @@ app.get("/api/runtime-meta", (req, res) => {
       canEditCenter: true,
       canEditOperationalData: true,
       canExecuteSensitiveActionsWithoutConfirmation: false
-    }
+    },
+    control: controlRuntime
   });
+});
+
+app.get("/api/control-room/tenants", requireAuth, controlRoomRateLimit, (req, res) => {
+  if (!service.controlHasPermission(req.session, "view_all_tenants")) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: tenant list"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  return withControlRoomTimeout(() => service.getControlRoomTenantRows(req.session, tenantFilter)).then((payload) => {
+    res.json({
+      ok: true,
+      schema: "control_room_tenants_v1",
+      role: service.getControlRole(req.session),
+      generatedAt: new Date().toISOString(),
+      data: payload,
+      control: getControlRoomRuntimeMeta(req.session)
+    });
+  }).catch((error) => {
+    if (error?.code === "control_cross_tenant_denied") {
+      return res.status(403).json(controlRoomErrorPayload(error, 403));
+    }
+    return res.status(400).json(controlRoomErrorPayload(error));
+  });
+});
+
+app.get("/api/control-room/executive", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permission = service.getControlRole(req.session) === "super_admin"
+    ? "view_global_health"
+    : "view_own_tenant_health";
+  if (!service.controlHasPermission(req.session, permission)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: executive view"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const refreshIntervalMs = Number(req.query.refreshIntervalMs || CONTROL_ROOM_READ_TIMEOUT_MS);
+  return withControlRoomTimeout(() => service.getControlRoomExecutive(req.session, tenantFilter, { refreshIntervalMs }))
+    .then((payload) => {
+      return res.json({
+        ok: true,
+        schema: "control_room_executive_v1",
+        role: service.getControlRole(req.session),
+        requestedTenantId: tenantFilter || null,
+        ...payload,
+        control: getControlRoomRuntimeMeta(req.session),
+        generatedAt: new Date().toISOString()
+      });
+    }).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      if (error?.code === "control_work_not_found") return res.status(404).json(controlRoomErrorPayload(error, 404));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/work-gallery", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_work_gallery", "view_own_tenant_work_gallery", "view_own_assigned_work"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: work gallery"), 403));
+  }
+  const pagination = parseBoundedPagination(req.query);
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    status: String(req.query.status || "").trim(),
+    agent: String(req.query.agent || "").trim(),
+    risk: String(req.query.risk || "").trim(),
+    q: String(req.query.q || "").trim().slice(0, 200),
+    projectId: String(req.query.projectId || req.query.project || "").trim(),
+    date: String(req.query.date || "").trim()
+  };
+  return withControlRoomTimeout(() => service.getControlRoomWorkGallery(req.session, tenantFilter, payload))
+    .then((result) => {
+      const query = payload.q.toLowerCase();
+      const data = Array.isArray(result?.data)
+        ? result.data.filter((item) => {
+          const statusMatch = !payload.status || String(item.status || "").toLowerCase() === payload.status.toLowerCase();
+          const riskMatch = !payload.risk || String(item.riskLevel || "").toLowerCase() === payload.risk.toLowerCase();
+          const tenantMatch = !tenantFilter || String(item.tenantId || "").trim() === tenantFilter;
+          const agentMatch = !payload.agent || (Array.isArray(item.agentsPresent) && item.agentsPresent.join("|").toLowerCase().includes(payload.agent.toLowerCase()));
+          const searchMatch = !query || String(item.title || "").toLowerCase().includes(query) || String(item.projectId || "").toLowerCase().includes(query) || String(item.workId || "").toLowerCase().includes(query);
+          return statusMatch && riskMatch && tenantMatch && agentMatch && searchMatch;
+        })
+        : [];
+      return res.json({
+        ok: true,
+        schema: "control_room_work_gallery_v1",
+        role: service.getControlRole(req.session),
+        requestedTenantId: tenantFilter || null,
+        data,
+        page: {
+          offset: pagination.offset,
+          limit: pagination.limit,
+          total: data.length
+        },
+        control: getControlRoomRuntimeMeta(req.session),
+        generatedAt: new Date().toISOString()
+      });
+    }).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(404).json(controlRoomErrorPayload(error, 404));
+    });
+});
+
+app.get("/api/control-room/work/:workId", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_work_gallery", "view_own_tenant_work_gallery", "view_own_assigned_work"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: work detail"), 403));
+  }
+  const workId = String(req.params.workId || "").trim();
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  if (!workId) {
+    return res.status(400).json(controlRoomErrorPayload(new Error("workId richiesto"), 400));
+  }
+  return withControlRoomTimeout(() => service.getControlRoomWork(req.session, tenantFilter, workId))
+    .then((payload) => res.json({
+      ok: true,
+      schema: "control_room_work_detail_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...payload,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_work_not_found") return res.status(404).json(controlRoomErrorPayload(error, 404));
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/work/:workId/timeline", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_work_gallery", "view_own_tenant_work_gallery", "view_own_assigned_work", "view_own_agent_activity"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: work timeline"), 403));
+  }
+  const workId = String(req.params.workId || "").trim();
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  if (!workId) {
+    return res.status(400).json(controlRoomErrorPayload(new Error("workId richiesto"), 400));
+  }
+  return withControlRoomTimeout(() => service.getControlRoomWorkTimeline(req.session, tenantFilter, workId))
+    .then((payload) => res.json({
+      ok: true,
+      schema: "control_room_work_timeline_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...payload,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_work_not_found") return res.status(404).json(controlRoomErrorPayload(error, 404));
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/agents", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_agents", "view_own_tenant_agents", "view_own_agent_activity"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: agents"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    role: String(req.query.role || "").trim()
+  };
+  return withControlRoomTimeout(() => service.getControlRoomAgents(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_agents_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/branches", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_branches", "view_own_tenant_branches", "view_own_branch_activity"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: branches"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = { limit: pagination.limit, offset: pagination.offset };
+  return withControlRoomTimeout(() => service.getControlRoomBranches(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_branches_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/keys", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_keys_metadata", "view_own_tenant_keys_metadata"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: keys"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    includeAudit: parseBool(req.query.includeAudit, false)
+  };
+  return withControlRoomTimeout(() => service.getControlRoomKeys(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_keys_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/audit", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_audit", "view_own_tenant_audit"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: audit"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    action: String(req.query.action || "").trim(),
+    outcome: String(req.query.outcome || "").trim(),
+    actor: String(req.query.actor || "").trim()
+  };
+  return withControlRoomTimeout(() => service.getControlRoomAudit(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_audit_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/decision-ledger", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_decision_ledger", "view_own_tenant_decision_ledger"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: decision ledger"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset
+  };
+  return withControlRoomTimeout(() => service.getControlRoomDecisionLedger(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_decision_ledger_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/memory", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_global_memory_status", "view_own_tenant_memory_status"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: memory"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const payload = {
+    limit: pagination.limit,
+    offset: pagination.offset
+  };
+  return withControlRoomTimeout(() => service.getControlRoomMemory(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_memory_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/connectors", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["view_connectors_status", "view_own_tenant_connectors_status"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: connectors"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const payload = {
+    includeStatusOnly: parseBool(req.query.includeStatusOnly, true),
+    includeAllTenants: parseBool(req.query.includeAllTenants, String(service.getControlRole(req.session) === "super_admin" && !tenantFilter))
+  };
+  return withControlRoomTimeout(() => service.getControlRoomConnectors(req.session, tenantFilter, payload))
+    .then((result) => res.json({
+      ok: true,
+      schema: "control_room_connectors_v1",
+      role: service.getControlRole(req.session),
+      requestedTenantId: tenantFilter || null,
+      ...result,
+      control: getControlRoomRuntimeMeta(req.session),
+      generatedAt: new Date().toISOString()
+    })).catch((error) => {
+      if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+      return res.status(400).json(controlRoomErrorPayload(error));
+    });
+});
+
+app.get("/api/control-room/governance", requireAuth, controlRoomRateLimit, (req, res) => {
+  if (!service.controlHasPermission(req.session, "view_governance_blockers")) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: governance"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  return withControlRoomTimeout(() => service.getControlRoomGovernance(req.session, tenantFilter, {
+    includeAllTenants: parseBool(req.query.includeAllTenants, String(service.getControlRole(req.session) === "super_admin" && !tenantFilter))
+  })).then((result) => res.json({
+    ok: true,
+    schema: "control_room_governance_v1",
+    role: service.getControlRole(req.session),
+    requestedTenantId: tenantFilter || null,
+    ...result,
+    control: getControlRoomRuntimeMeta(req.session),
+    generatedAt: new Date().toISOString()
+  })).catch((error) => {
+    if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+    return res.status(400).json(controlRoomErrorPayload(error));
+  });
+});
+
+app.get("/api/control-room/audit/export", requireAuth, controlRoomRateLimit, (req, res) => {
+  const permissions = ["export_sanitized_audit", "export_own_sanitized_audit"];
+  if (!hasAnyControlPermission(req.session, permissions)) {
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: audit export"), 403));
+  }
+  const tenantFilter = String(req.query.tenantId || "").trim();
+  const pagination = parseBoundedPagination(req.query);
+  const format = String(req.query.format || "json").toLowerCase();
+  return withControlRoomTimeout(() => service.getControlRoomAuditExport(req.session, tenantFilter, {
+    limit: pagination.limit,
+    offset: pagination.offset,
+    format
+  })).then((result) => res.json({
+    ok: true,
+    schema: "control_room_audit_export_v1",
+    role: service.getControlRole(req.session),
+    requestedTenantId: tenantFilter || null,
+    ...result,
+    control: getControlRoomRuntimeMeta(req.session),
+    generatedAt: new Date().toISOString()
+  })).catch((error) => {
+    if (error?.code === "control_cross_tenant_denied") return res.status(403).json(controlRoomErrorPayload(error, 403));
+    return res.status(400).json(controlRoomErrorPayload(error));
+  });
+});
+
+const handleAgentWorkspaceGovernanceDemo = (req, res) => {
+  const demoPermissions = [
+    "view_global_health",
+    "view_own_tenant_health",
+    "view_own_assigned_work",
+    "view_own_agent_activity"
+  ];
+  if (!hasAnyControlPermission(req.session, demoPermissions)) {
+    service.recordControlAuditEvent({
+      session: req.session,
+      action: "control_demo_access_denied",
+      outcome: "denied",
+      reason: "permission_denied",
+      details: {
+        method: req.method,
+        path: req.path
+      }
+    });
+    return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: demo governance"), 403));
+  }
+
+  const tenantId = service.getCenterId(req.session);
+  const tenantName = service.getCenterName(req.session);
+  const role = service.getControlRole(req.session);
+  const control = getControlRoomRuntimeMeta(req.session);
+  return withControlRoomTimeout(() => {
+    const connectors = service.getControlRoomConnectors(req.session, tenantId, { includeStatusOnly: true });
+    const ledger = service.getControlRoomDecisionLedger(req.session, tenantId, { limit: 100, offset: 0 });
+    const workGallery = service.getControlRoomWorkGallery(req.session, tenantId, { limit: 30, offset: 0 });
+    return {
+      tenantId,
+      tenantName,
+      role,
+      control,
+      connectors,
+      ledger,
+      workGallery
+    };
+  }).then((payload) => {
+    const connectors = payload.connectors;
+    const ledger = payload.ledger;
+    const workGallery = payload.workGallery;
+    const connectorStateById = {};
+    const baseConnList = Array.isArray(connectors?.tenants) ? connectors.tenants : [];
+    if (baseConnList[0]?.list) {
+      baseConnList[0].list.forEach((connector) => {
+        if (!connector?.connectorId) return;
+        connectorStateById[connector.connectorId] = connector.state;
+      });
+    }
+    const recentDecisionItems = (ledger?.data || []).filter((item) => {
+      const createdAt = new Date(item.createdAt || "").getTime();
+      return createdAt && Date.now() - createdAt <= 30 * 24 * 60 * 60 * 1000;
+    });
+    const riskyAction = "push main + deploy Render without tests, rollback or fresh owner confirmation";
+    res.json({
+      ok: true,
+      schema: "demo_agent_workspace_governance_v1",
+      role: payload.role,
+      tenant: {
+        tenantId: payload.tenantId,
+        tenantName: payload.tenantName
+      },
+      coreHealth: {
+        state: "ACTIVE",
+        synthetic: true
+      },
+      nyraRuntime: {
+        state: connectorStateById["nyra-runtime"] || "DEGRADED",
+        synthetic: true
+      },
+      memoryCloud: {
+        docs: true,
+        size: Array.isArray(workGallery?.data) ? workGallery.data.length : 0
+      },
+      hostNativeGovernance: {
+        blocker: payload.control.permissions?.view_governance_blockers ? "governance_active" : "governance_restricted",
+        schemaWrapperRequired: true
+      },
+      githubCredentialState: {
+        state: connectorStateById["github-resolver"] || "DEGRADED",
+        active: connectorStateById["github-resolver"] === "ACTIVE"
+      },
+      renderResolverState: {
+        state: connectorStateById["render-resolver"] || "DEGRADED",
+        active: connectorStateById["render-resolver"] === "ACTIVE"
+      },
+      workGallery: {
+        total: workGallery?.data?.length || 0,
+        items: (workGallery?.data || []).slice(0, 10).map((work) => ({
+          tenantId: work.tenantId,
+          workId: work.workId,
+          title: work.title,
+          status: work.status
+        }))
+      },
+      decisionLedger: {
+        periodDays: 30,
+        total: recentDecisionItems.length,
+        items: recentDecisionItems.slice(0, 30).map((item) => ({
+          tenantId: item.tenantId,
+          workId: item.workId,
+          decisionId: item.decisionId,
+          coreVerdict: item.coreVerdict || item.decision,
+          createdAt: item.createdAt
+        }))
+      },
+      riskyAction,
+      verdict: {
+        execution_allowed: false,
+        owner_confirmation_required: true,
+        core_verdict_required: true,
+        audit_required: true
+      },
+      explanationIT: "La richiesta simulata viene bloccata dal motore governance perché richiede test, wrapper e conferma owner valida prima dell’esecuzione.",
+      blocker: "schema wrapper required",
+      nextActions: [
+        "Eseguire suite di test",
+        "Richiedere conferma owner valida",
+        "Verificare rollback strategy",
+        "Aggiungere wrapper schema prima del deploy"
+      ],
+      schemaWrapperRequired: true,
+      generatedAt: new Date().toISOString(),
+      control: payload.control
+    });
+  }).catch((error) => {
+    if (error?.code === "control_cross_tenant_denied") {
+      return res.status(403).json(controlRoomErrorPayload(error, 403));
+    }
+    return res.status(400).json(controlRoomErrorPayload(error));
+  });
+};
+
+app.get("/api/demo/agent-workspace-governance", requireAuth, controlRoomRateLimit, handleAgentWorkspaceGovernanceDemo);
+app.use("/demo/agent-workspace-governance", requireAuth, controlRoomRateLimit, (req, res, next) => {
+  if (req.method !== "GET") {
+    return res.status(405).json(controlRoomErrorPayload(new Error("Metodo non consentito"), 405));
+  }
+  return handleAgentWorkspaceGovernanceDemo(req, res);
 });
 
 app.get("/api/reports/operational", (req, res) => {
@@ -1489,17 +2296,17 @@ app.post("/api/clients/merge", (req, res) => {
   }
 });
 
-app.post("/api/clients", async (req, res) => {
+app.post("/api/clients", (req, res) => {
   try {
-    res.status(201).json(await service.saveClient(req.body || {}, req.session));
+    res.status(201).json(service.saveClient(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il cliente");
   }
 });
 
-app.put("/api/clients/:id", async (req, res) => {
+app.put("/api/clients/:id", (req, res) => {
   try {
-    res.json(await service.saveClient({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(service.saveClient({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare il cliente");
   }
@@ -1516,14 +2323,6 @@ app.get("/api/clients/:id", (req, res) => {
 app.get("/api/clients/:id/consultation", (req, res) => {
   try {
     res.json(service.getClientConsultation(req.params.id, req.session));
-  } catch (error) {
-    res.status(404).send(error instanceof Error ? error.message : "Cliente non trovato");
-  }
-});
-
-app.get("/api/clients/:id/recall-profiles", async (req, res) => {
-  try {
-    res.json(await service.getClientRecallProfiles(req.params.id, req.session));
   } catch (error) {
     res.status(404).send(error instanceof Error ? error.message : "Cliente non trovato");
   }
@@ -1547,100 +2346,96 @@ app.get("/api/appointments", (req, res) => {
   }));
 });
 
-app.post("/api/appointments", async (req, res) => {
+app.post("/api/appointments", (req, res) => {
   try {
-    res.status(201).json(await service.saveAppointment(req.body || {}, req.session));
+    res.status(201).json(service.saveAppointment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare l'appuntamento");
   }
 });
 
-app.put("/api/appointments/:id", async (req, res) => {
+app.put("/api/appointments/:id", (req, res) => {
   try {
-    res.json(await service.saveAppointment({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(service.saveAppointment({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare l'appuntamento");
   }
 });
 
-app.delete("/api/appointments/:id", async (req, res) => {
-  try {
-    res.json(await service.deleteAppointment(req.params.id, req.session));
-  } catch (error) {
-    sendBadRequest(res, error, "Impossibile eliminare l'appuntamento");
-  }
+app.delete("/api/appointments/:id", (req, res) => {
+  res.json(service.deleteAppointment(req.params.id, req.session));
 });
 
 app.get("/api/catalog/services", (req, res) => {
   res.json(service.listServices(req.session));
 });
 
-app.post("/api/catalog/services", async (req, res) => {
+app.post("/api/catalog/services", (req, res) => {
   try {
-    res.status(201).json(await service.saveService(req.body || {}, req.session));
+    res.status(201).json(service.saveService(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il servizio");
   }
 });
 
-app.put("/api/catalog/services/:id", async (req, res) => {
+app.put("/api/catalog/services/:id", (req, res) => {
   try {
-    res.json(await service.saveService({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(service.saveService({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare il servizio");
   }
 });
 
-app.delete("/api/catalog/services/:id", async (req, res) => {
-  try { res.json(await service.deleteService(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare il servizio"); }
+app.delete("/api/catalog/services/:id", (req, res) => {
+  res.json(service.deleteService(req.params.id, req.session));
 });
 
 app.get("/api/catalog/staff", (req, res) => {
   res.json(service.listStaff(req.session));
 });
 
-app.post("/api/catalog/staff", async (req, res) => {
+app.post("/api/catalog/staff", (req, res) => {
   try {
-    res.status(201).json(await service.saveStaff(req.body || {}, req.session));
+    res.status(201).json(service.saveStaff(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare l'operatore");
   }
 });
 
-app.put("/api/catalog/staff/:id", async (req, res) => {
+app.put("/api/catalog/staff/:id", (req, res) => {
   try {
-    res.json(await service.saveStaff({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(service.saveStaff({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare l'operatore");
   }
 });
 
-app.delete("/api/catalog/staff/:id", async (req, res) => {
-  try { res.json(await service.deleteStaff(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare l'operatore"); }
+app.delete("/api/catalog/staff/:id", (req, res) => {
+  res.json(service.deleteStaff(req.params.id, req.session));
 });
 
 app.get("/api/shifts", (req, res) => {
   res.json(service.listShifts(req.query.view || "month", req.query.anchorDate || new Date().toISOString(), req.query.staffId || "", req.session));
 });
 
-app.post("/api/shifts", async (req, res) => {
+app.post("/api/shifts", (req, res) => {
   try {
-    res.status(201).json(await service.saveShift(req.body || {}, req.session));
+    res.status(201).json(service.saveShift(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il turno");
   }
 });
 
-app.put("/api/shifts/:id", async (req, res) => {
+app.put("/api/shifts/:id", (req, res) => {
   try {
-    res.json(await service.saveShift({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(service.saveShift({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare il turno");
   }
 });
 
-app.delete("/api/shifts/:id", async (req, res) => {
-  try { res.json(await service.deleteShift(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare il turno"); }
+app.delete("/api/shifts/:id", (req, res) => {
+  res.json(service.deleteShift(req.params.id, req.session));
 });
 
 app.get("/api/shifts/export", requirePlan("silver"), (req, res) => {
@@ -1655,24 +2450,24 @@ app.get("/api/shifts/templates", requirePlan("silver"), (req, res) => {
   res.json(service.listShiftTemplates(req.session));
 });
 
-app.post("/api/shifts/templates", requirePlan("silver"), async (req, res) => {
+app.post("/api/shifts/templates", requirePlan("silver"), (req, res) => {
   try {
-    res.status(201).json(await service.saveShiftTemplate(req.body || {}, req.session));
+    res.status(201).json(service.saveShiftTemplate(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare lo schema turni");
   }
 });
 
-app.put("/api/shifts/templates/:id", requirePlan("silver"), async (req, res) => {
+app.put("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
   try {
-    res.json(await service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare lo schema turni");
   }
 });
 
-app.delete("/api/shifts/templates/:id", requirePlan("silver"), async (req, res) => {
-  try { res.json(await service.deleteShiftTemplate(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare lo schema turni"); }
+app.delete("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
+  res.json(service.deleteShiftTemplate(req.params.id, req.session));
 });
 
 app.post("/api/shifts/templates/generate", requirePlan("silver"), (req, res) => {
@@ -1687,59 +2482,59 @@ app.get("/api/catalog/resources", (req, res) => {
   res.json(service.listResources(req.session));
 });
 
-app.post("/api/catalog/resources", async (req, res) => {
+app.post("/api/catalog/resources", (req, res) => {
   try {
-    res.status(201).json(await service.saveResource(req.body || {}, req.session));
+    res.status(201).json(service.saveResource(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare la risorsa");
   }
 });
 
-app.put("/api/catalog/resources/:id", async (req, res) => {
+app.put("/api/catalog/resources/:id", (req, res) => {
   try {
-    res.json(await service.saveResource({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(service.saveResource({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare la risorsa");
   }
 });
 
-app.delete("/api/catalog/resources/:id", async (req, res) => {
-  try { res.json(await service.deleteResource(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare la risorsa"); }
+app.delete("/api/catalog/resources/:id", (req, res) => {
+  res.json(service.deleteResource(req.params.id, req.session));
 });
 
 app.get("/api/inventory/items", (req, res) => {
   res.json(service.listInventoryItems(req.session));
 });
 
-app.post("/api/inventory/items", async (req, res) => {
+app.post("/api/inventory/items", (req, res) => {
   try {
-    res.status(201).json(await service.saveInventoryItem(req.body || {}, req.session));
+    res.status(201).json(service.saveInventoryItem(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare l'articolo");
   }
 });
 
-app.put("/api/inventory/items/:id", async (req, res) => {
+app.put("/api/inventory/items/:id", (req, res) => {
   try {
-    res.json(await service.saveInventoryItem({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(service.saveInventoryItem({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare l'articolo");
   }
 });
 
-app.delete("/api/inventory/items/:id", async (req, res) => {
-  try { res.json(await service.deleteInventoryItem(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare l'articolo"); }
+app.delete("/api/inventory/items/:id", (req, res) => {
+  res.json(service.deleteInventoryItem(req.params.id, req.session));
 });
 
 app.get("/api/inventory/movements", requirePlan("silver"), (req, res) => {
   res.json(service.listInventoryMovements(String(req.query.itemId || ""), req.session));
 });
 
-app.post("/api/inventory/movements", requirePlan("silver"), async (req, res) => {
+app.post("/api/inventory/movements", requirePlan("silver"), (req, res) => {
   try {
-    res.status(201).json(await service.createInventoryMovement(req.body || {}, req.session));
+    res.status(201).json(service.createInventoryMovement(req.body || {}, req.session));
   } catch (error) {
-    sendBadRequest(res, error, "Impossibile registrare il movimento");
+    res.status(400).send(error instanceof Error ? error.message : "Impossibile registrare il movimento");
   }
 });
 
@@ -1862,37 +2657,6 @@ app.get("/api/ai-gold/cockpit", requirePlan("gold"), async (req, res) => {
   }
 });
 
-app.get("/api/ai-gold/cockpit-360", requirePlan("gold"), async (req, res) => {
-  try {
-    const cockpit = service.getAiGoldCockpit({
-      startDate: req.query.startDate || "",
-      endDate: req.query.endDate || ""
-    }, req.session);
-    const enhanced = await assistantService.enhanceGoldPayloadWithExternalReadout(cockpit, req.session, "gold");
-    return res.json(cockpit360Contract({
-      cockpit,
-      enhanced,
-      tenantId: req.session?.tenantId || process.env.UNIVERSAL_CORE_TENANT_ID || "",
-      centerId: req.session?.centerId || ""
-    }));
-  } catch (error) {
-    return res.status(502).json({
-      ok: false,
-      schema_version: "cockpit_360_v1",
-      mode: "read_only_advisory",
-      code: "cockpit_360_e2e_unavailable",
-      message: error instanceof Error ? error.message : "Cockpit 360 non disponibile.",
-      guardrails: {
-        read_only: true,
-        automatic_execution_allowed: false,
-        operator_confirmation_required: true,
-        tenant_scoped: true,
-        source_data_mutated: false
-      }
-    });
-  }
-});
-
 app.get("/api/ai-gold/capabilities", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
@@ -2007,28 +2771,6 @@ app.get("/api/ai-gold/state/signals", requirePlan("gold"), (req, res) => {
   sendCoreliaSafe(res, () => ({}), () => service.getGoldState(req.session).signals || {});
 });
 
-// Gold's landing view is one tenant-scoped persisted read model.  It is
-// deliberately local and does not contact Nyra/Core; those calls remain opt-in
-// from explicit analysis actions, never a side effect of opening AI Gold.
-app.get("/api/ai-gold/overview", requirePlan("gold"), (req, res) => {
-  try {
-    const payload = service.getGoldOverviewReadModel(req.session);
-    const etag = service.getGoldOverviewEtag(req.session?.centerId, payload.eventSeq);
-    res.set("Cache-Control", "private, max-age=0, must-revalidate");
-    res.set("ETag", etag);
-    res.set("Vary", "Cookie");
-    if (String(req.headers["if-none-match"] || "") === etag) return res.status(304).end();
-    return res.json({ ...payload, etag });
-  } catch (error) {
-    return res.status(503).json({
-      goldEnabled: false,
-      sourceLayer: "persisted_gold_state_unavailable",
-      code: "gold_overview_unavailable",
-      message: error instanceof Error ? error.message : "Overview Gold temporaneamente non disponibile."
-    });
-  }
-});
-
 app.get("/api/corelia/capabilities", requirePlan("silver"), (req, res) => {
   sendCoreliaSafe(res, () => ({
     goldEnabled: false,
@@ -2116,7 +2858,7 @@ app.post("/api/ai-gold/onboarding/analyze", requirePlan("gold"), (req, res) => {
   }
 });
 
-app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), async (req, res) => {
+app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: import Gold temporaneamente limitato"));
   }
@@ -2135,15 +2877,10 @@ app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), async (req, res
         limit: GOLD_ONBOARDING_SYNC_RECORD_LIMIT
       });
     }
-    res.json(await service.confirmGoldOnboardingImport(req.body || {}, req.session));
+    res.json(service.confirmGoldOnboardingImport(req.body || {}, req.session));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Impossibile completare import Gold";
-    const status = error?.code === "persistence_conflict"
-      ? 409
-      : error?.code === "persistence_unavailable" || error?.code === "persistence_revision_missing"
-        ? 503
-        : 400;
-    res.status(status).json({
+    res.status(400).json({
       success: false,
       code: "gold_onboarding_confirm_failed",
       message
@@ -2238,10 +2975,10 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async
     return res.status(429).json(safeModePayload("Sistema sotto carico: generazione marketing temporaneamente limitata"));
   }
   try {
-    const generated = await service.generateAiMarketingAutopilotActions(req.session);
+    const generated = service.generateAiMarketingAutopilotActions(req.session);
     const enhanced = await assistantService.enhanceMarketingAutopilotActions(generated.actions || [], req.session);
     if (enhanced.actions?.length) {
-      await service.updateAiMarketingActionDrafts(enhanced.actions, req.session);
+      service.updateAiMarketingActionDrafts(enhanced.actions, req.session);
     }
     res.json({
       ...service.getAiMarketingAutopilot(req.session),
@@ -2253,9 +2990,9 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async
   }
 });
 
-app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), async (req, res) => {
+app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (req, res) => {
   try {
-    res.json(await service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
+    res.json(service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare l'azione marketing");
   }
@@ -2341,9 +3078,9 @@ app.get("/api/treatments", requirePlan("silver"), (req, res) => {
   res.json(service.listTreatments(req.query.clientId, req.session));
 });
 
-app.post("/api/treatments", requirePlan("silver"), async (req, res) => {
+app.post("/api/treatments", requirePlan("silver"), (req, res) => {
   try {
-    res.status(201).json(await service.createTreatment(req.body || {}, req.session));
+    res.status(201).json(service.createTreatment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il trattamento");
   }
@@ -2353,24 +3090,24 @@ app.get("/api/protocols", (req, res) => {
   res.json(service.listProtocols(req.query.clientId, req.session));
 });
 
-app.post("/api/protocols", async (req, res) => {
+app.post("/api/protocols", (req, res) => {
   try {
-    res.status(201).json(await service.saveProtocol(req.body || {}, req.session));
+    res.status(201).json(service.saveProtocol(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile salvare il protocollo");
   }
 });
 
-app.put("/api/protocols/:id", async (req, res) => {
+app.put("/api/protocols/:id", (req, res) => {
   try {
-    res.json(await service.saveProtocol({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(service.saveProtocol({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare il protocollo");
   }
 });
 
-app.delete("/api/protocols/:id", async (req, res) => {
-  try { res.json(await service.deleteProtocol(req.params.id, req.session)); } catch (error) { sendBadRequest(res, error, "Impossibile eliminare il protocollo"); }
+app.delete("/api/protocols/:id", (req, res) => {
+  res.json(service.deleteProtocol(req.params.id, req.session));
 });
 
 app.get("/api/payments", (req, res) => {
@@ -2405,25 +3142,25 @@ app.get("/api/payments/unlinked", (req, res) => {
   }));
 });
 
-app.post("/api/payments/cash-close", async (req, res) => {
+app.post("/api/payments/cash-close", (req, res) => {
   try {
-    res.json(await service.closeCashdesk(req.body || {}, req.session));
+    res.json(service.closeCashdesk(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile chiudere la cassa");
   }
 });
 
-app.post("/api/payments", async (req, res) => {
+app.post("/api/payments", (req, res) => {
   try {
-    res.status(201).json(await service.createPayment(req.body || {}, req.session));
+    res.status(201).json(service.createPayment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile registrare il pagamento");
   }
 });
 
-app.post("/api/sales", async (req, res) => {
+app.post("/api/sales", (req, res) => {
   try {
-    res.status(201).json(await service.createPayment(req.body || {}, req.session));
+    res.status(201).json(service.createPayment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile registrare la vendita");
   }
@@ -2552,11 +3289,7 @@ app.use((_req, res) => {
 const port = Number(process.env.PORT || 10000);
 
 async function bootstrap() {
-  const requireDurablePersistence = ["1", "true", "yes"].includes(String(process.env.SMARTDESK_REQUIRE_DURABLE_PERSISTENCE || "").trim().toLowerCase());
-  if (requireDurablePersistence && !process.env.DATABASE_URL) {
-    throw new Error("SMARTDESK_REQUIRE_DURABLE_PERSISTENCE richiede DATABASE_URL: avvio bloccato per evitare persistenza locale non durevole.");
-  }
-  const persistenceAdapter = process.env.DATABASE_URL
+  persistenceAdapter = process.env.DATABASE_URL
     ? new PostgresPersistenceAdapter(process.env.DATABASE_URL)
     : null;
 
@@ -2569,7 +3302,7 @@ async function bootstrap() {
   whatsappService = new WhatsappService();
   suiteAppKeyBridge = new SuiteAppKeyBridge();
 
-  app.listen(port, () => {
+  return app.listen(port, () => {
     console.log(`SkinHarmony Smart Desk live su http://localhost:${port}`);
     console.log(`[SmartDesk] Persistence: ${process.env.DATABASE_URL ? "Postgres (DATABASE_URL)" : "JSON locale"}`);
     console.log(`[SmartDesk] WhatsApp Twilio: ${whatsappService.isConfigured() ? "configurato" : "fallback copia"}`);
@@ -2578,7 +3311,18 @@ async function bootstrap() {
   });
 }
 
-bootstrap().catch((error) => {
-  console.error("[SmartDesk] Avvio fallito:", error);
-  process.exit(1);
-});
+if (require.main === module) {
+  bootstrap().catch((error) => {
+    console.error("[SmartDesk] Avvio fallito:", error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  app,
+  applySecurityHeaders,
+  bootstrap,
+  createCorsMiddleware,
+  createPersistenceCommitBarrier,
+  resolveAllowedOrigins
+};
