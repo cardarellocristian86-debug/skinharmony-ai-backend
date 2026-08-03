@@ -967,7 +967,12 @@ export function createCoreHandlers(config, options = {}) {
       session_id: args.session_id,
       agent_id: args.agent_id || "nyra",
     }, identity);
-    const requestBody = { ...args, ...(sharedContext ? { memory_context: sharedContext } : {}), tenant_id: identity.tenantId };
+    const requestBody = {
+      ...args,
+      ...(sharedContext ? { memory_context: sharedContext } : {}),
+      ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
+      tenant_id: identity.tenantId,
+    };
     const requestBinding = options.ownerBindingPurpose
       ? ownerRequestBinding(options.ownerBindingPurpose, requestBody)
       : undefined;
@@ -997,6 +1002,7 @@ export function createCoreHandlers(config, options = {}) {
           mode: "standard",
           owner_context: ownerContext(identity),
           ...(sharedContext ? { memory_context: sharedContext } : {}),
+          ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
           tenant_id: identity.tenantId,
         },
       });
@@ -1068,6 +1074,7 @@ export function createCoreHandlers(config, options = {}) {
           ? [branchId]
           : [...(Array.isArray(args.nyra_branches) ? args.nyra_branches : [])],
         ...(sharedContext ? { memory_context: sharedContext } : {}),
+        ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
         deep_branch_v2: deepBranchV2,
         tenant_id: identity.tenantId,
       },
@@ -1520,6 +1527,7 @@ export function createCoreHandlers(config, options = {}) {
         user_input: args.include_control_snapshot ? "Include control snapshot" : "Read readiness context",
         locale: "it",
         ...(sharedContext ? { memory_context: sharedContext } : {}),
+        ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
         tenant_id: identity.tenantId
         }
       }));
