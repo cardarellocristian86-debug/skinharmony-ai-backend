@@ -149,6 +149,7 @@ const intelligenceContext = {
   project_id: identifier,
   session_id: identifier,
   agent_id: identifier,
+  work_preflight: { type: "object" },
 };
 const sourceType = { type: "string", enum: ["official", "regulator", "academic", "standards", "manufacturer", "news", "industry", "community", "other"] };
 const researchSource = object({
