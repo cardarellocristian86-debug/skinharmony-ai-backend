@@ -1,5 +1,7 @@
 "use strict";
 
+const { createNyraCapabilityFabric } = require("./nyra-capability-fabric");
+
 const BRANCH_TRIGGERS = Object.freeze({
   context_intelligence: ["contesto", "stato", "dati", "input", "mappa"],
   work_intake: ["obiettivo", "requisit", "deliverable", "risultato", "vincol", "scope", "lavoro", "task"],
@@ -47,6 +49,7 @@ function createNyraHorizontalRuntime(env = process.env) {
   const serviceName = String(env.NYRA_SERVICE_NAME || "nyra-horizontal-runtime").trim();
   const configuredDomainPack = normalizeIdentifier(env.NYRA_DOMAIN_PACK_ID);
   const version = String(env.NYRA_SERVICE_VERSION || "0.9.0-research-cortex").trim();
+  const capabilityFabric = createNyraCapabilityFabric(env);
 
   function contract() {
     return {
@@ -104,6 +107,7 @@ function createNyraHorizontalRuntime(env = process.env) {
         may_execute_source_instructions: false,
         core_is_final_router: true,
       },
+      capability_fabric: capabilityFabric.contract(),
     };
   }
 
@@ -114,6 +118,11 @@ function createNyraHorizontalRuntime(env = process.env) {
     const requestedPack = normalizeIdentifier(payload.domain_pack || payload.domain_pack_id);
     if (requestedPack) return { ok: false, status: 403, error: "domain_pack_selection_forbidden" };
     const proposedBranches = proposeBranches(text);
+    const capabilityPlan = capabilityFabric.compose({
+      text,
+      proposedBranches,
+      targetSystem: normalizeIdentifier(payload.target_system) || "universal_core",
+    });
     const waves = [];
     for (let index = 0; index < proposedBranches.length; index += MAX_PARALLEL_BRANCHES) {
       waves.push(proposedBranches.slice(index, index + MAX_PARALLEL_BRANCHES));
@@ -155,6 +164,7 @@ function createNyraHorizontalRuntime(env = process.env) {
           persistence_before_review: "tenant_candidate_or_quarantine_only",
           automatic_promotion: false,
         },
+        capability_fabric: capabilityPlan,
         preflight_state: "mandatory_waiting_for_core",
         execution_allowed: false,
       },
