@@ -57,7 +57,9 @@ const governedPaths = new Set([
 ]);
 
 async function api(base, method, pathName, body, key = "test-admin-key") {
-  const requestBody = governedPaths.has(pathName) && body && typeof body === "object"
+  const requestIsGoverned = governedPaths.has(pathName)
+    || (pathName.startsWith("/v1/branches/") && pathName.endsWith("/analyze"));
+  const requestBody = requestIsGoverned && body && typeof body === "object"
     ? {
       ...body,
       work_preflight: body.work_preflight || workPreflightFor(
