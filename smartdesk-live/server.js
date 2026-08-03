@@ -2086,7 +2086,7 @@ app.get("/api/control-room/audit/export", requireAuth, controlRoomRateLimit, (re
   });
 });
 
-app.get("/api/demo/agent-workspace-governance", requireAuth, controlRoomRateLimit, (req, res) => {
+const handleAgentWorkspaceGovernanceDemo = (req, res) => {
   const demoPermissions = [
     "view_global_health",
     "view_own_tenant_health",
@@ -2106,6 +2106,7 @@ app.get("/api/demo/agent-workspace-governance", requireAuth, controlRoomRateLimi
     });
     return res.status(403).json(controlRoomErrorPayload(new Error("Permesso non autorizzato: demo governance"), 403));
   }
+
   const tenantId = service.getCenterId(req.session);
   const tenantName = service.getCenterName(req.session);
   const role = service.getControlRole(req.session);
@@ -2217,7 +2218,10 @@ app.get("/api/demo/agent-workspace-governance", requireAuth, controlRoomRateLimi
     }
     return res.status(400).json(controlRoomErrorPayload(error));
   });
-});
+};
+
+app.get("/api/demo/agent-workspace-governance", requireAuth, controlRoomRateLimit, handleAgentWorkspaceGovernanceDemo);
+app.get("/demo/agent-workspace-governance", requireAuth, controlRoomRateLimit, handleAgentWorkspaceGovernanceDemo);
 
 app.get("/api/reports/operational", (req, res) => {
   res.json(service.getOperationalReport({
