@@ -1721,7 +1721,7 @@ function countOperatorAppointmentsForDay(operatorName, date) {
 async function updateAppointment(id, patch, feedbackKey = "feedback.appointmentUpdated") {
   const current = state.appointments.find((item) => item.id === id);
   if (!current) return;
-  await safeJsonFetch(`${API_SERVER_URL}/appointments/${id}`, `/api/appointments/${id}`, {
+  await safeJsonFetch(`${API_SERVER_URL}/api/appointments/${id}`, `/api/appointments/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

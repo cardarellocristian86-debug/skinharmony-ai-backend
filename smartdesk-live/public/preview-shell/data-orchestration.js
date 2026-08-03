@@ -27,6 +27,25 @@ export function createDataOrchestrator(deps) {
     }
   }
 
+  const BOOTSTRAP_FETCH_KEYS = [
+    "center",
+    "settings",
+    "runtimeMeta",
+    "dashboard",
+    "clients",
+    "services",
+    "staff",
+    "assistant",
+    "goldCapabilities",
+    "goldDecisionContext"
+  ];
+  const DATA_TTL_MS = 120000;
+  const stateLoadState = {
+    lastLoad: Object.create(null),
+    inFlight: Object.create(null),
+    cache: Object.create(null)
+  };
+
   function isPreviewShell() {
     return typeof window !== "undefined" && String(window.location?.pathname || "").startsWith("/web-preview");
   }
@@ -270,11 +289,11 @@ export function createDataOrchestrator(deps) {
     },
     dashboard: async () => safeJsonFetch(`${API_SERVER_URL}/api/dashboard/stats`, "/api/dashboard/stats").catch(() => null),
     report: async () => safeJsonFetch(`${API_SERVER_URL}/api/reports/operational`, "/api/reports/operational").catch(() => null),
-    clients: async () => safeJsonFetch(`${API_SERVER_URL}/clients`, "/api/clients"),
-    appointments: async () => safeJsonFetch(`${API_SERVER_URL}/appointments`, "/api/appointments"),
+    clients: async () => safeJsonFetch(`${API_SERVER_URL}/api/clients`, "/api/clients"),
+    appointments: async () => safeJsonFetch(`${API_SERVER_URL}/api/appointments`, "/api/appointments"),
     services: async () => safeJsonFetch(`${API_SERVER_URL}/api/catalog/services`, "/api/catalog/services"),
     staff: async () => safeJsonFetch(`${API_SERVER_URL}/api/catalog/staff`, "/api/catalog/staff"),
-    inventoryItems: async () => safeJsonFetch(`${API_SERVER_URL}/api/inventory/items`, "/api/inventory"),
+    inventoryItems: async () => safeJsonFetch(`${API_SERVER_URL}/api/inventory/items`, "/api/inventory/items"),
     inventoryMovements: async () => safeJsonFetch(`${API_SERVER_URL}/api/inventory/movements`, null).catch(() => []),
     inventoryOverview: async () => safeJsonFetch(`${API_SERVER_URL}/api/inventory/overview`, null).catch(() => null),
     sales: async () => readJson("/api/payments", []),
@@ -464,15 +483,45 @@ export function createDataOrchestrator(deps) {
     await loadData(keys);
   }
 
-  async function loadData(keys = Object.keys(DATA_FETCHERS)) {
-    const entries = await Promise.all(keys.map(async (key) => {
-      try {
-        return [key, await DATA_FETCHERS[key]()];
-      } catch (_error) {
-        return [key, null];
+  function normalizeKeys(keys) {
+    return [...new Set((keys || []).filter((key) => Object.prototype.hasOwnProperty.call(DATA_FETCHERS, key)))];
+  }
+
+  function shouldRefreshKey(key, nowMs, force, ttlMs) {
+    if (force) return true;
+    const last = stateLoadState.lastLoad[key] || 0;
+    return nowMs - last > ttlMs;
+  }
+
+  async function loadData(keys = BOOTSTRAP_FETCH_KEYS, options = {}) {
+    const { force = false, ttlMs = DATA_TTL_MS } = options || {};
+    const nowMs = Date.now();
+    const normalized = normalizeKeys(keys);
+    const targetKeys = normalized.filter((key) => shouldRefreshKey(key, nowMs, force, ttlMs));
+
+    const entries = await Promise.all(targetKeys.map(async (key) => {
+      if (!stateLoadState.inFlight[key]) {
+        stateLoadState.inFlight[key] = (async () => {
+          try {
+            return [key, await DATA_FETCHERS[key](), null];
+          } catch (error) {
+            return [key, null, error];
+          }
+        })();
       }
+      return stateLoadState.inFlight[key];
     }));
-    entries.forEach(([key, value]) => applyLoadedData(key, value));
+
+    targetKeys.forEach((key) => delete stateLoadState.inFlight[key]);
+
+    entries.forEach(([key, value, error]) => {
+      stateLoadState.lastLoad[key] = nowMs;
+      if (error) {
+        return;
+      }
+      stateLoadState.cache[key] = value;
+      applyLoadedData(key, value);
+    });
   }
 
   function lazyModulesForCurrentView() {
@@ -508,8 +557,8 @@ export function createDataOrchestrator(deps) {
       staff: ["staff", "dashboard"],
       center: ["center", "dashboard"]
     };
-    const keys = [...new Set([...(instantByDomain[domain] || []), ...REFRESH_POLICY.lazy])];
-    await loadData(keys);
+    const keys = [...new Set(instantByDomain[domain] || [])];
+    await loadData(keys, { force: true });
   }
 
   async function runLazyRefresh() {

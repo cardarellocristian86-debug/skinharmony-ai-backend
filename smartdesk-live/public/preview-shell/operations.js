@@ -128,7 +128,7 @@ export function createSmartDeskOperations({
         packages: payload.packages || "",
         marketingConsent: true
       };
-      const url = id ? `${API_SERVER_URL}/clients/${id}` : `${API_SERVER_URL}/clients`;
+      const url = id ? `${API_SERVER_URL}/api/clients/${id}` : `${API_SERVER_URL}/api/clients`;
       await safeJsonFetch(url, id ? `/api/clients/${id}` : "/api/clients", {
         method: id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
@@ -139,8 +139,8 @@ export function createSmartDeskOperations({
     }
 
     if (entity === "service") {
-      const url = id ? `${API_SERVER_URL}/services/${id}` : `${API_SERVER_URL}/services`;
-      await safeJsonFetch(url, id ? `/api/services/${id}` : "/api/services", {
+      const url = id ? `${API_SERVER_URL}/api/catalog/services/${id}` : `${API_SERVER_URL}/api/catalog/services`;
+      await safeJsonFetch(url, id ? `/api/catalog/services/${id}` : "/api/catalog/services", {
         method: id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -150,8 +150,8 @@ export function createSmartDeskOperations({
     }
 
     if (entity === "staff") {
-      const url = id ? `${API_SERVER_URL}/staff/${id}` : `${API_SERVER_URL}/staff`;
-      await safeJsonFetch(url, id ? `/api/staff/${id}` : "/api/staff", {
+      const url = id ? `${API_SERVER_URL}/api/catalog/staff/${id}` : `${API_SERVER_URL}/api/catalog/staff`;
+      await safeJsonFetch(url, id ? `/api/catalog/staff/${id}` : "/api/catalog/staff", {
         method: id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -171,7 +171,7 @@ export function createSmartDeskOperations({
         durationMin: Number(payload.durationMin || 45),
         status: "confirmed"
       };
-      await safeJsonFetch(`${API_SERVER_URL}/appointments`, "/api/appointments", {
+      await safeJsonFetch(`${API_SERVER_URL}/api/appointments`, "/api/appointments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(normalizedAppointment)
@@ -196,7 +196,7 @@ export function createSmartDeskOperations({
   }
 
   async function deleteAppointment(id) {
-    await safeJsonFetch(`${API_SERVER_URL}/appointments/${id}`, `/api/appointments/${id}`, { method: "DELETE" });
+    await safeJsonFetch(`${API_SERVER_URL}/api/appointments/${id}`, `/api/appointments/${id}`, { method: "DELETE" });
     state.selectedAppointmentId = null;
     await refreshForUserEvent("appointment");
     renderView();
