@@ -28,6 +28,10 @@ import {
   signNyraDeepV2McpRequest,
 } from "./nyra-deep-v2-mcp-request.js";
 import { isCodexGoodModeDelegation } from "./auth.js";
+import {
+  AI_WORK_QUALITY_SCHEMA_VERSION,
+  mediateFailureObservation,
+} from "../../shared/ai-work-quality-failure-mediation.mjs";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
@@ -456,6 +460,102 @@ export function createCoreHandlers(config, options = {}) {
             contract_digest: event.contract_digest || null,
           },
         });
+      },
+    };
+  }
+
+  async function recordQualityFailureObservation(identity, response) {
+    const failure = response?.result?.failure_mediation || response?.failure_mediation;
+    if (!failure || !decisionLedger) return { recorded: false, reason: "unavailable" };
+    const context = await decisionLedger.startWork(identity, "core_action_mediation_evaluate", {
+      request: `quality_failure:${failure.code}`,
+      agent_id: identity.subject || identity.agentId || "connected_ai",
+      project_id: response?.result?.tenant_id || identity.tenantId,
+      session_id: failure.scope?.session_id || null,
+    });
+    const metadata = {
+      schema_version: AI_WORK_QUALITY_SCHEMA_VERSION,
+      failure_code: failure.code,
+      failure_class: failure.classification?.block_class || null,
+      failure_action: failure.action || null,
+      mediation_state: failure.mediation_state || null,
+      retry_allowed: failure.classification?.retry_allowed === true,
+      retry_exhausted: failure.classification?.retry_exhausted === true,
+      quarantine: failure.quarantine === true,
+      execution_allowed: false,
+    };
+    await decisionLedger.append(context, "quality_failure_observed", {
+      reason_codes: [failure.code],
+      reason_summary: `quality_failure:${failure.code}`,
+      decision_state: failure.mediation_state || null,
+      execution_allowed: false,
+      metadata,
+    });
+    if (failure.quarantine === true) {
+      await decisionLedger.append(context, "security_observation_quarantined", {
+        reason_codes: [failure.code],
+        reason_summary: `security_quarantine:${failure.code}`,
+        decision_state: "hard_block",
+        execution_allowed: false,
+        metadata,
+      });
+    }
+    if (failure.action === "manual_review") {
+      await decisionLedger.append(context, "quality_completion_rejected", {
+        reason_codes: [failure.code],
+        reason_summary: `quality_manual_review:${failure.code}`,
+        decision_state: "defer",
+        execution_allowed: false,
+        metadata,
+      });
+    }
+    await decisionLedger.finishWork(context, { result: { structuredContent: response } });
+    return { recorded: true, work_id: context.workId };
+  }
+
+  function applyQualityFailureMediation(args, response) {
+    const requestedFailureCode = args?.action?.failure_code
+      ?? args?.context?.failure_code
+      ?? args?.policy?.failure_code;
+    if (!requestedFailureCode) return response;
+
+    const action = args.action || {};
+    const context = args.context || {};
+    const policy = args.policy || {};
+    const failure = mediateFailureObservation({
+      code: requestedFailureCode,
+      scope: {
+        tenant_id: response?.result?.tenant_id || null,
+        repository: action.repository || context.repository || policy.repository,
+        branch: action.branch || action.ref || context.branch || context.ref || policy.branch || policy.ref,
+        surface: action.surface || context.surface || policy.surface,
+        work_id: action.work_id || context.work_id || policy.work_id,
+        session_id: action.session_id || context.session_id || policy.session_id,
+      },
+      worker_id: action.worker_id || context.worker_id || policy.worker_id,
+      verifier_id: action.verifier_id || context.verifier_id || policy.verifier_id,
+      attempt: action.attempt ?? context.attempt ?? policy.attempt,
+      attempt_limit: action.attempt_limit ?? context.attempt_limit ?? policy.attempt_limit,
+      summary: action.failure_summary || context.failure_summary || policy.failure_summary,
+    });
+    const result = response?.result && typeof response.result === "object" ? response.result : {};
+    return {
+      ...response,
+      result: {
+        ...result,
+        decision: failure.mediation_state === "hard_block" ? "blocked" : "attention",
+        execution_allowed: false,
+        failure_mediation: failure,
+        action_mediation: {
+          ...(result.action_mediation && typeof result.action_mediation === "object"
+            ? result.action_mediation
+            : {}),
+          state: failure.mediation_state,
+          blocked: failure.mediation_state === "hard_block",
+          execution_allowed: false,
+          failure_code: failure.code,
+          failure_action: failure.action,
+        },
       },
     };
   }
@@ -1509,10 +1609,15 @@ export function createCoreHandlers(config, options = {}) {
       method: "POST",
       body: { action: args.action, policy: args.policy, context: args.context },
     })),
-    core_action_mediation_evaluate: async (args, identity) => textResult(await coreRequest("/v1/action-mediation/evaluate", identity.tenantId, {
-      method: "POST",
-      body: { action: args.action, policy: args.policy, context: args.context },
-    })),
+    core_action_mediation_evaluate: async (args, identity) => {
+      const coreResponse = await coreRequest("/v1/action-mediation/evaluate", identity.tenantId, {
+        method: "POST",
+        body: { action: args.action, policy: args.policy, context: args.context },
+      });
+      const response = applyQualityFailureMediation(args, coreResponse);
+      const ledger = await recordQualityFailureObservation(identity, response);
+      return textResult({ ...response, quality_ledger: ledger });
+    },
     core_release_manifest_check: async (args, identity) => textResult(await coreRequest("/v1/releases/manifest/check", identity.tenantId, {
       method: "POST",
       body: { manifest: args.manifest },
