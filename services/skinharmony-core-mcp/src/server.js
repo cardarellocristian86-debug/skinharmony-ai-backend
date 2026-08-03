@@ -857,7 +857,7 @@ const app = createApp(config, {
     }
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
     try {
-      if (!requiresGenericWorkPreflight(toolName)) return { preflight: null, ledgerContext };
+      if (!requiresGenericWorkPreflight(toolName, args)) return { preflight: null, ledgerContext };
       const result = await coreHandlers.work_preflight({
         request: summarizeToolRequest(toolName, args),
         operation_type: toolName,

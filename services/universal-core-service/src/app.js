@@ -76,6 +76,11 @@ import {
   verifyAiWorkQualityObservation,
 } from "../../shared/ai-work-quality-failure.js";
 import {
+  validateWorkPreflightEnvelope,
+  workPreflightFailure,
+} from "../../shared/work-preflight-gate.mjs";
+import { mediateFailureObservation } from "../../shared/ai-work-quality-failure-mediation.mjs";
+import {
   analyzeScenarios,
   evaluateCounterfactuals,
   evaluateEvents,
@@ -1183,7 +1188,12 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-function createAuth(keyStore, audit, requiredScope, { allowProviderSetupService = false, tenantContextSigningSecret = "" } = {}) {
+function createAuth(keyStore, audit, requiredScope, {
+  allowProviderSetupService = false,
+  tenantContextSigningSecret = "",
+  requireWorkPreflight = false,
+  requireWorkPreflightExecution = false,
+} = {}) {
   return (req, res, next) => {
     const auth = keyStore.authenticate(readSecret(req));
     if (!auth.ok) {
@@ -1212,6 +1222,29 @@ function createAuth(keyStore, audit, requiredScope, { allowProviderSetupService 
 
     req.coreKey = auth.record;
     req.tenantId = tenantId || auth.record.tenant_id;
+    if (requireWorkPreflight) {
+      const gate = validateWorkPreflightEnvelope(req.body || {}, req.tenantId, {
+        requireGallery: true,
+        requireMemory: true,
+        requireExecution: requireWorkPreflightExecution,
+      });
+      if (!gate.ok) {
+        audit.append("core_work_preflight_gate_denied", {
+          tenant_id: req.tenantId,
+          key_id: auth.record.key_id,
+          path: req.path,
+          reason_codes: gate.errors,
+        });
+        const failure = workPreflightFailure(gate.errors);
+        return res.status(428).json({
+          ok: false,
+          error: failure.code,
+          reason_codes: failure.reason_codes,
+          execution_allowed: false,
+        });
+      }
+      req.workPreflight = gate.preflight;
+    }
     return next();
   };
 }
@@ -1799,10 +1832,33 @@ function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy =
   const crossTenant = context.cross_tenant === true || action.cross_tenant === true || policy.cross_tenant === true;
   const pii = context.contains_pii === true || action.contains_pii === true || policy.contains_pii === true;
   const missingAudit = context.audit_ready === false || action.audit_ready === false;
+  const requestedFailureCode = action.failure_code ?? context.failure_code ?? policy.failure_code;
+  const hasFailureObservation = requestedFailureCode !== undefined && requestedFailureCode !== null && String(requestedFailureCode).trim() !== "";
+  const failureObservation = hasFailureObservation
+    ? mediateFailureObservation({
+      code: requestedFailureCode,
+      scope: {
+        tenant_id: entitlement.tenant_id,
+        repository: action.repository || context.repository || policy.repository,
+        branch: action.branch || action.ref || context.branch || context.ref || policy.branch || policy.ref,
+        surface: action.surface || context.surface || policy.surface,
+        work_id: action.work_id || context.work_id || policy.work_id,
+        session_id: action.session_id || context.session_id || policy.session_id,
+      },
+      worker_id: action.worker_id || context.worker_id || policy.worker_id,
+      verifier_id: action.verifier_id || context.verifier_id || policy.verifier_id,
+      attempt: action.attempt ?? context.attempt ?? policy.attempt,
+      attempt_limit: action.attempt_limit ?? context.attempt_limit ?? policy.attempt_limit,
+      summary: action.failure_summary || context.failure_summary || policy.failure_summary,
+    })
+    : null;
 
   let mediation = "allow";
   const reasons = [];
-  if (crossTenant) {
+  if (failureObservation) {
+    mediation = failureObservation.mediation_state;
+    reasons.push(failureObservation.code);
+  } else if (crossTenant) {
     mediation = "block";
     reasons.push("cross_tenant_denied");
   } else if (destructive && !ownerConfirmed) {
@@ -1836,12 +1892,18 @@ function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy =
     decision: mediation === "block" ? "blocked" : mediation === "allow" ? "ready" : "attention",
     action_mediation: {
       state: mediation,
-      execution_allowed: mediation === "allow" || mediation === "rewrite" || mediation === "sandbox",
+      execution_allowed: failureObservation ? false : mediation === "allow" || mediation === "rewrite" || mediation === "sandbox",
       owner_confirmation_required: mediation === "confirm" || mediation === "rollback_required",
       sandbox_required: mediation === "sandbox",
       rollback_required: mediation === "rollback_required",
       rewrite_allowed: mediation === "rewrite",
-      blocked: mediation === "block",
+      blocked: mediation === "block" || mediation === "hard_block",
+      failure_code: failureObservation?.code || null,
+      failure_class: failureObservation?.classification?.block_class || null,
+      failure_action: failureObservation?.action || null,
+      retry_allowed: failureObservation?.classification?.retry_allowed === true,
+      retry_exhausted: failureObservation?.classification?.retry_exhausted === true,
+      quarantine: failureObservation?.quarantine === true,
       next_step:
         mediation === "allow"
           ? "execute_with_audit"
@@ -1862,6 +1924,7 @@ function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy =
       score: Math.max(0, Math.min(100, riskHint + (destructive ? 15 : 0) + (crossTenant ? 50 : 0))),
       reasons: reasons,
     },
+    failure_mediation: failureObservation,
     policy_flags: {
       missing_required_branches: missingBranches,
       sensitive_domain: sensitiveDomain,
@@ -6402,7 +6465,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, contract });
   });
 
-  app.post("/v1/customer-intelligence/readiness", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/customer-intelligence/readiness", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     const readiness = summarizeCustomerIntelligenceReadiness(req.body || {});
     audit.append("core_customer_intelligence_readiness_evaluated", {
       tenant_id: req.tenantId,
@@ -7176,7 +7239,7 @@ export function createUniversalCoreService(options = {}) {
     },
   );
 
-  app.post("/v1/decision", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/decision", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     const input = buildCoreInput(req, req.coreKey);
     if (!input.signals.length) {
       input.signals.push(normalizeSignal({ id: "core:no_signal", label: "Nessun segnale operativo fornito", normalized_score: 10, tags: ["system"] }));
@@ -7522,11 +7585,11 @@ export function createUniversalCoreService(options = {}) {
     });
   }
 
-  app.post("/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     return handleSemanticSelection(req, res);
   });
 
-  app.post("/api/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/api/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     return handleSemanticSelection(req, res);
   });
 
@@ -8562,7 +8625,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, ...response });
   });
 
-  app.post("/v1/nira/core-bridge", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/nira/core-bridge", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), async (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -9457,7 +9520,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/branches/:branch/analyze", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/branches/:branch/analyze", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     const branch = String(req.params.branch || "").trim();
     const resolution = resolveBranchesForKey(req.coreKey, [branch]);
     if (!resolution.selected_branches.includes(branch)) {
@@ -9566,7 +9629,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, result });
   });
 
-  app.post("/v1/action-mediation/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/action-mediation/evaluate", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {

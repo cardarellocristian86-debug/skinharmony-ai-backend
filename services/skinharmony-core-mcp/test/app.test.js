@@ -889,6 +889,80 @@ test("keeps native Core-governed controls outside generic shared-memory prefligh
   }
 });
 
+test("preserves the Gallery preflight envelope for Core action mediation", () => {
+  const mediationTool = TOOLS.find((tool) => tool.name === "core_action_mediation_evaluate");
+  assert.ok(mediationTool, "Core action mediation tool must be present");
+  assert.deepEqual(
+    mediationTool.inputSchema.properties.work_preflight,
+    { type: "object" },
+    "the dynamic capability router must not strip the mandatory preflight envelope",
+  );
+  assert.equal(mediationTool.inputSchema.required.includes("work_preflight"), true);
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_read", {
+      capability_id: "core_action_mediation_evaluate",
+    }),
+    true,
+  );
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_read", { capability_id: "core_health" }),
+    false,
+  );
+});
+
+test("injects mandatory server preflight into the compact action-mediation route", async () => {
+  let received;
+  const app = createApp(config, {
+    toolSurface: "compact",
+    handlers: {
+      core_capability_read: async (args) => {
+        received = args;
+        return { structuredContent: { ok: true }, content: [] };
+      },
+    },
+    beforeToolCall: async ({ toolName, args }) => requiresGenericWorkPreflight(toolName, args)
+      ? {
+          work_preflight: {
+            schema_version: "skinharmony_work_preflight_v1",
+            preflight_id: "preflight-server-issued",
+            tenant_id: "owner-private",
+            operational_surface: "tenant_work_gallery",
+          },
+        }
+      : { preflight: null },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": "mcp-action-mediation-preflight",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 31,
+        method: "tools/call",
+        params: {
+          name: "core_capability_read",
+          arguments: {
+            capability_id: "core_action_mediation_evaluate",
+            catalog_revision: "a".repeat(64),
+            arguments: { action: { type: "git.commit" } },
+          },
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(received.work_preflight.preflight_id, "preflight-server-issued");
+    assert.equal(received.work_preflight.tenant_id, "owner-private");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("uses Core OAuth scopes for every collaboration capability", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, {
     method: "POST",

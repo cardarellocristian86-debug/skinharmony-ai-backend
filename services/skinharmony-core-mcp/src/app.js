@@ -46,7 +46,11 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "orchestration_dtt_core_join",
 ]);
 
-export function requiresGenericWorkPreflight(toolName) {
+export function requiresGenericWorkPreflight(toolName, args = {}) {
+  if (
+    String(toolName || "") === "core_capability_read" &&
+    String(args?.capability_id || "") === "core_action_mediation_evaluate"
+  ) return true;
   return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(String(toolName || ""));
 }
 const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
@@ -898,11 +902,14 @@ export function createApp(config, options = {}) {
             throw error;
           }
         }
-        const preflight = requiresGenericWorkPreflight(tool.name)
+        const preflight = requiresGenericWorkPreflight(tool.name, args)
           ? (hookContext?.preflight ?? hookContext)
           : null;
         activeToolCall = { ...activeToolCall, hookContext, preflight };
-        const rawResult = await handlers[tool.name](args, callIdentity);
+        const handlerArgs = preflight?.work_preflight && !args.work_preflight
+          ? { ...args, work_preflight: preflight.work_preflight }
+          : args;
+        const rawResult = await handlers[tool.name](handlerArgs, callIdentity);
         const preflightResult = attachWorkPreflight(rawResult, preflight);
         const result = attachAgentPresence(preflightResult, agentPresence);
         if (typeof afterToolCall === "function") {

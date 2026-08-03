@@ -149,6 +149,7 @@ const intelligenceContext = {
   project_id: identifier,
   session_id: identifier,
   agent_id: identifier,
+  work_preflight: { type: "object" },
 };
 const sourceType = { type: "string", enum: ["official", "regulator", "academic", "standards", "manufacturer", "news", "industry", "community", "other"] };
 const researchSource = object({
@@ -677,7 +678,8 @@ export const TOOLS = [
     action: { type: "object", minProperties: 1, maxProperties: 100, additionalProperties: boundedJsonValue },
     policy: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
     context: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
-  }, ["action"]), ["core:read"]),
+    work_preflight: { type: "object" },
+  }, ["action", "work_preflight"]), ["core:read"]),
   tool("core_release_manifest_check", "Check release manifest", "Validate a bounded release manifest and rollback declaration through Core. It never merges or deploys.", object({
     manifest: object({
       version: { type: "string", minLength: 1, maxLength: 160 },
