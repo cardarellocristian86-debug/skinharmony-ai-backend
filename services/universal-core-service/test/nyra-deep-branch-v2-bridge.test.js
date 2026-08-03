@@ -73,11 +73,32 @@ async function start(app) {
   };
 }
 
+function workPreflightFor(tenantId = "codexai") {
+  return {
+    schema_version: "skinharmony_work_preflight_v1",
+    preflight_id: `preflight_nyra_v2_${tenantId}`,
+    mandatory: true,
+    tenant_id: tenantId,
+    operational_surface: "tenant_work_gallery",
+    tenant_work_gallery: {
+      schema_version: "tenant_work_gallery_v1",
+      tenant_id: tenantId,
+      available: true,
+      state: "ready",
+    },
+    memory_first: { status: "recalled" },
+    governance: { execution_allowed_by_preflight: true },
+  };
+}
+
 async function request(base, pathName, body, key) {
+  const requestBody = pathName === "/v1/nira/core-bridge" && !body.work_preflight
+    ? { ...body, work_preflight: workPreflightFor(body.tenant_id || "codexai") }
+    : body;
   const response = await fetch(`${base}${pathName}`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-    body: JSON.stringify(body),
+    body: JSON.stringify(requestBody),
   });
   const responseText = await response.text();
   let json;
