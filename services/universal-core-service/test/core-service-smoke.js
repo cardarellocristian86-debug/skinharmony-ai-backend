@@ -47,8 +47,17 @@ function workPreflightFor(tenantId) {
   };
 }
 
+const governedPaths = new Set([
+  "/v1/nira/core-bridge",
+  "/v1/decision",
+  "/v1/semantic-selection",
+  "/api/v1/semantic-selection",
+  "/v1/customer-intelligence/readiness",
+  "/v1/action-mediation/evaluate",
+]);
+
 async function api(base, method, pathName, body, key = "test-admin-key") {
-  const requestBody = pathName === "/v1/nira/core-bridge" && body && typeof body === "object"
+  const requestBody = governedPaths.has(pathName) && body && typeof body === "object"
     ? {
       ...body,
       work_preflight: body.work_preflight || workPreflightFor(
