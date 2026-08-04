@@ -399,7 +399,44 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
   }
 }
 
-const baseHandlers = {\n  web_compatibility_manifest: async (_args, identity) => ({\n    structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },\n    content: [{ type: "text", text: JSON.stringify({ ok: true, manifest: webCompatibilityManifest() }) }],\n  }),\n  web_compatibility_execute: async (args, identity) => {\n    const method = String(args.method || "GET").toUpperCase();\n    const hasBody = args.body !== undefined && args.body !== null;\n    const gate = await coreHandlers.core_gate_action({\n      action_label: "Execute allowlisted web compatibility request",\n      action_type: "web.compatibility.request",\n      target: String(args.url || "").slice(0, 512),\n      operation_class: "owner_confirmed_governed_action",\n      external_side_effect: hasBody || !["GET", "HEAD"].includes(method),\n      contains_customer_data: false,\n      contains_secret: false,\n      secret_value_transmitted: false,\n      cross_tenant: false,\n      configuration_changes: false,\n      destructive: false,\n      bypass_orchestrator: false,\n      provider_execution: false,\n      bounded_scope: true,\n      low_impact: true,\n      idempotent_or_compensable: true,\n      rollback_ready: true,\n      audit_ready: Boolean(decisionLedger),\n      target_authority_verified: true,\n      actor_authorized_for_target: true,\n      idempotency_key: args.idempotency_key || crypto.randomUUID(),\n    }, identity);\n    const authorization = gate?.structuredContent?.authorization || {};\n    if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");\n    const result = await webTransport.request({ url: args.url, method, headers: args.headers || {}, body: args.body });\n    const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };\n    return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };\n  },\n
+const baseHandlers = {
+  web_compatibility_manifest: async (_args, identity) => ({
+    structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
+    content: [{ type: "text", text: JSON.stringify({ ok: true, manifest: webCompatibilityManifest() }) }],
+  }),
+  web_compatibility_execute: async (args, identity) => {
+    const method = String(args.method || "GET").toUpperCase();
+    const hasBody = args.body !== undefined && args.body !== null;
+    const gate = await coreHandlers.core_gate_action({
+      action_label: "Execute allowlisted web compatibility request",
+      action_type: "web.compatibility.request",
+      target: String(args.url || "").slice(0, 512),
+      operation_class: "owner_confirmed_governed_action",
+      external_side_effect: hasBody || !["GET", "HEAD"].includes(method),
+      contains_customer_data: false,
+      contains_secret: false,
+      secret_value_transmitted: false,
+      cross_tenant: false,
+      configuration_changes: false,
+      destructive: false,
+      bypass_orchestrator: false,
+      provider_execution: false,
+      bounded_scope: true,
+      low_impact: true,
+      idempotent_or_compensable: true,
+      rollback_ready: true,
+      audit_ready: Boolean(decisionLedger),
+      target_authority_verified: true,
+      actor_authorized_for_target: true,
+      idempotency_key: args.idempotency_key || crypto.randomUUID(),
+    }, identity);
+    const authorization = gate?.structuredContent?.authorization || {};
+    if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");
+    const result = await webTransport.request({ url: args.url, method, headers: args.headers || {}, body: args.body });
+    const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };
+    return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+  },
+
   ...coreHandlers,
   work_preflight: async (args, identity) => {
     const result = await coreHandlers.work_preflight(args, identity);
