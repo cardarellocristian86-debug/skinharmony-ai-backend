@@ -1,18 +1,19 @@
 import crypto from "node:crypto";
 import express from "express";
 import { chromium } from "playwright";
-import { assertAllowedOrigin, assertScreenshotSize, parseAllowedOrigins } from "./security.js";
+import { assertPermittedWebTarget, assertScreenshotSize, parseAllowedOrigins } from "./security.js";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 const port = Number(process.env.PORT || 8795);
 const gatewayKey = String(process.env.BROWSER_GATEWAY_KEY || "").trim();
+const allowDynamicPublicOrigins = String(process.env.WEB_AGENT_DYNAMIC_PUBLIC_ORIGINS || "").trim().toLowerCase() === "true";
 let allowedOrigins;
 try {
   allowedOrigins = parseAllowedOrigins(process.env.WEB_AGENT_ALLOWED_ORIGINS);
 } catch (error) {
   // Keep health checks available while failing every browser execution closed.
-  allowedOrigins = null;
+  allowedOrigins = allowDynamicPublicOrigins ? [] : null;
 }
 const contexts = new Map();
 let browserPromise;
@@ -54,18 +55,31 @@ async function action(page, item) {
   fail("web_browser_action_not_allowed");
 }
 
-app.get("/healthz", (_req, res) => res.json({ ok: true, service: "skinharmony-browser-runtime", browser: "chromium_playwright" }));
+app.get("/healthz", (_req, res) => res.json({
+  ok: true,
+  service: "skinharmony-browser-runtime",
+  browser: "chromium_playwright",
+  dynamic_public_origins: allowDynamicPublicOrigins,
+}));
 
 app.post("/v1/browser/execute", async (req, res) => {
   if (!authorized(req)) return res.status(401).json({ ok: false, error: "browser_gateway_unauthorized" });
   let page;
   try {
-    const target = assertAllowedOrigin(req.body?.url, allowedOrigins);
+    const target = await assertPermittedWebTarget(req.body?.url, allowedOrigins, { allowDynamicPublicOrigins });
     const actions = Array.isArray(req.body?.actions) ? req.body.actions : [];
     if (actions.length > 40) fail("web_browser_actions_too_many");
     if (Buffer.byteLength(String(req.body?.javascript || ""), "utf8") > 100_000) fail("web_javascript_too_large");
     const pageContext = await contextFor(req.body?.tenant_id);
     page = await pageContext.newPage();
+    await page.route("**/*", async (route) => {
+      try {
+        await assertPermittedWebTarget(route.request().url(), allowedOrigins, { allowDynamicPublicOrigins });
+        await route.continue();
+      } catch {
+        await route.abort("blockedbyclient");
+      }
+    });
     await page.goto(target.href, { waitUntil: req.body?.wait_until || "domcontentloaded", timeout: 30_000 });
     const actionResults = [];
     for (const item of actions) actionResults.push(await action(page, item));
