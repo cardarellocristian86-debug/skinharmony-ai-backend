@@ -26,7 +26,13 @@ test("advertises explicit confirmation fields only on write tools", () => {
   assert(readTools.every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
 });
 
-test("routes semantic selection through the mandatory generic preflight", () => {\n  assert.equal(requiresGenericWorkPreflight("core_semantic_select"), true);\n  assert.equal(requiresGenericWorkPreflight("core_health"), false);\n  assert.equal(requiresGenericWorkPreflight("work_preflight"), false);\n});\n\ntest("does not expose client-selectable product packs on horizontal Core tools", () => {
+test("routes semantic selection through the mandatory generic preflight", () => {
+  assert.equal(requiresGenericWorkPreflight("core_semantic_select"), true);
+  assert.equal(requiresGenericWorkPreflight("core_health"), false);
+  assert.equal(requiresGenericWorkPreflight("work_preflight"), false);
+});
+
+test("does not expose client-selectable product packs on horizontal Core tools", () => {
   for (const name of ["work_preflight", "nyra_runtime_context", "nyra_interpret_request"]) {
     const definition = TOOLS.find((tool) => tool.name === name);
     assert(definition, `missing tool definition ${name}`);
