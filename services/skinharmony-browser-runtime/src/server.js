@@ -1,13 +1,19 @@
 import crypto from "node:crypto";
 import express from "express";
 import { chromium } from "playwright";
+import { assertAllowedOrigin, assertScreenshotSize, parseAllowedOrigins } from "./security.js";
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 const port = Number(process.env.PORT || 8795);
 const gatewayKey = String(process.env.BROWSER_GATEWAY_KEY || "").trim();
-const allowedOrigins = String(process.env.WEB_AGENT_ALLOWED_ORIGINS || "")
-  .split(",").map((value) => value.trim()).filter(Boolean).map((value) => new URL(value).origin);
+let allowedOrigins;
+try {
+  allowedOrigins = parseAllowedOrigins(process.env.WEB_AGENT_ALLOWED_ORIGINS);
+} catch (error) {
+  // Keep health checks available while failing every browser execution closed.
+  allowedOrigins = null;
+}
 const contexts = new Map();
 let browserPromise;
 
@@ -22,13 +28,6 @@ function authorized(req) {
   const provided = Buffer.from(String(req.headers["x-browser-gateway-key"] || ""), "utf8");
   const expected = Buffer.from(gatewayKey, "utf8");
   return gatewayKey && provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
-}
-
-function assertOrigin(url) {
-  const target = new URL(String(url || ""));
-  if (!["http:", "https:"].includes(target.protocol)) fail("web_url_scheme_not_allowed");
-  if (allowedOrigins.length && !allowedOrigins.includes(target.origin)) fail("web_origin_not_allowlisted", 403);
-  return target;
 }
 
 async function browser() {
@@ -61,7 +60,7 @@ app.post("/v1/browser/execute", async (req, res) => {
   if (!authorized(req)) return res.status(401).json({ ok: false, error: "browser_gateway_unauthorized" });
   let page;
   try {
-    const target = assertOrigin(req.body?.url);
+    const target = assertAllowedOrigin(req.body?.url, allowedOrigins);
     const actions = Array.isArray(req.body?.actions) ? req.body.actions : [];
     if (actions.length > 40) fail("web_browser_actions_too_many");
     if (Buffer.byteLength(String(req.body?.javascript || ""), "utf8") > 100_000) fail("web_javascript_too_large");
@@ -85,7 +84,9 @@ app.post("/v1/browser/execute", async (req, res) => {
           })) : [],
     }));
     const payload = { ok: true, schema_version: "web_browser_runtime_v1", browser: "chromium_playwright", state, action_results: actionResults, javascript: scriptResult };
-    if (req.body?.screenshot === true) payload.screenshot_base64 = (await page.screenshot({ type: "png" })).toString("base64");
+    if (req.body?.screenshot === true) {
+      payload.screenshot_base64 = assertScreenshotSize(await page.screenshot({ type: "png" })).toString("base64");
+    }
     return res.json(payload);
   } catch (error) {
     const status = Number(error.status || 500);
