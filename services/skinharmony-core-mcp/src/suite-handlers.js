@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { createSuiteClient, SuiteClientError } from "./suite-client.js";
 
 const CREDENTIAL_KEY = /(password|secret|token|cookie|authorization|api.?key|client_secret|access_token|refresh_token)/i;
@@ -68,6 +69,138 @@ function branchArchitecture(payload) {
 function runbookCatalog(payload) {
   const source = payload?.catalog || payload || {};
   return sanitizeSuiteValue(source) || {};
+}
+
+function publicReferenceUrl(value) {
+  const url = new URL(String(value || ""));
+  if (!/^https?:$/.test(url.protocol)) throw new Error("suite_web_ui_blueprint_url_scheme_not_allowed");
+  // Query strings can contain identifiers or signed links.  The reference is
+  // still fetched as supplied, but the Suite result never persists or echoes it.
+  url.username = "";
+  url.password = "";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function referenceFingerprint(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function boundedCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) ? Math.max(0, Math.min(Math.floor(count), 20_000)) : 0;
+}
+
+function safeUiStructure(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const regions = source.layout_regions || {};
+  const components = source.components || {};
+  const controls = components.controls || {};
+  const behavior = source.behavior_signals || {};
+  const headingSource = Array.isArray(source.hierarchy?.headings) ? source.hierarchy.headings : [];
+  return {
+    layout_regions: Object.fromEntries(["header", "navigation", "main", "section", "article", "aside", "footer"]
+      .map((key) => [key, boundedCount(regions[key])])),
+    hierarchy: {
+      headings: headingSource.slice(0, 6).map((entry) => ({
+        level: Math.max(1, Math.min(6, boundedCount(entry?.level))),
+        count: boundedCount(entry?.count),
+      })).filter((entry) => entry.level > 0 && entry.count > 0),
+      landmarks: boundedCount(source.hierarchy?.landmarks),
+    },
+    components: {
+      links: boundedCount(components.links), buttons: boundedCount(components.buttons), forms: boundedCount(components.forms),
+      controls: Object.fromEntries(["inputs", "textarea", "select", "buttons"].map((key) => [key, boundedCount(controls[key])])),
+      dialogs: boundedCount(components.dialogs), tabs: boundedCount(components.tabs), accordions: boundedCount(components.accordions),
+      tables: boundedCount(components.tables), lists: boundedCount(components.lists), cards_like: boundedCount(components.cards_like), media: boundedCount(components.media),
+    },
+    behavior_signals: {
+      client_scripts: boundedCount(behavior.client_scripts),
+      inline_forms: boundedCount(behavior.inline_forms),
+      has_search: behavior.has_search === true,
+      has_live_regions: behavior.has_live_regions === true,
+    },
+    complexity: { dom_elements: boundedCount(source.complexity?.dom_elements) },
+  };
+}
+
+const UI_STRUCTURE_SCRIPT = `(() => {
+  const count = (selector) => Math.min(document.querySelectorAll(selector).length, 9999);
+  const headings = [1, 2, 3, 4, 5, 6].map((level) => ({ level, count: count('h' + level) }))
+    .filter((entry) => entry.count > 0);
+  const controls = {
+    inputs: count('input'), textarea: count('textarea'), select: count('select'),
+    buttons: count('button, input[type="submit"], input[type="button"]'),
+  };
+  return {
+    layout_regions: {
+      header: count('header'), navigation: count('nav'), main: count('main'), section: count('section'),
+      article: count('article'), aside: count('aside'), footer: count('footer'),
+    },
+    hierarchy: { headings, landmarks: count('[role="banner"], [role="navigation"], [role="main"], [role="contentinfo"]') },
+    components: {
+      links: count('a[href]'), buttons: controls.buttons, forms: count('form'), controls,
+      dialogs: count('dialog, [role="dialog"]'), tabs: count('[role="tab"]'), accordions: count('details, [aria-expanded]'),
+      tables: count('table'), lists: count('ul, ol'), cards_like: count('article, [role="article"]'),
+      media: count('img, video, picture, svg'),
+    },
+    behavior_signals: {
+      client_scripts: Math.min(document.scripts.length, 9999),
+      inline_forms: count('form'), has_search: Boolean(document.querySelector('input[type="search"], [role="search"]')),
+      has_live_regions: Boolean(document.querySelector('[aria-live], [role="alert"], [role="status"]')),
+    },
+    complexity: { dom_elements: Math.min(document.getElementsByTagName('*').length, 20000) },
+  };
+})()`;
+
+async function createWebUiBlueprint(browserRuntime, args, identity) {
+  if (!browserRuntime?.execute) throw new Error("suite_web_ui_blueprint_browser_unavailable");
+  const references = await Promise.all(args.reference_urls.map(async (url) => {
+    const safeUrl = publicReferenceUrl(url);
+    const runtime = await browserRuntime.execute({
+      tenantId: identity.tenantId,
+      url,
+      actions: [],
+      javascript: UI_STRUCTURE_SCRIPT,
+      screenshot: false,
+      waitUntil: "domcontentloaded",
+    });
+    const structure = safeUiStructure(runtime?.javascript);
+    return {
+      reference_url: safeUrl,
+      origin: new URL(safeUrl).origin,
+      fingerprint: referenceFingerprint({ reference_url: safeUrl, structure }),
+      structure,
+    };
+  }));
+  const ownContentSlots = (args.own_content_slots || []).map((slot) => ({
+    slot_id: safeText(slot.slot_id, 80),
+    kind: slot.kind,
+    required: slot.required === true,
+  }));
+  return {
+    ok: true,
+    schema_version: "suite_web_ui_blueprint_v1",
+    tenant_id: identity.tenantId,
+    references,
+    own_content_contract: {
+      slots: ownContentSlots,
+      accepted_asset_kinds: ["own_image", "own_logo", "own_icon", "own_video"],
+      accepted_copy_kinds: ["own_heading", "own_body", "own_cta", "own_product_data"],
+    },
+    next_action: "Use this structure-only blueprint with first-party content and assets in a separate approved UI build request.",
+    guardrails: {
+      tenant_scoped: true,
+      proposal_only: true,
+      execution_allowed: false,
+      third_party_text_copied: false,
+      third_party_assets_copied: false,
+      third_party_code_copied: false,
+      screenshots_returned: false,
+      query_and_fragment_redacted: true,
+    },
+  };
 }
 
 export function createSuiteHandlers(config, options = {}) {
@@ -217,7 +350,12 @@ export function createSuiteHandlers(config, options = {}) {
       };
       return result(payload, `Suite runbook ${args.runbook_id} previewed; nothing was queued or executed.`);
     },
+
+    suite_web_ui_blueprint: async (args, identity) => {
+      const payload = await createWebUiBlueprint(options.browserRuntime, args, identity);
+      return result(payload, `Suite UI blueprint prepared from ${payload.references.length} reference page(s); no third-party content or code was copied.`);
+    },
   };
 }
 
-export const suiteHandlerInternals = Object.freeze({ branchArchitecture, normalizedCockpit, runbookCatalog, safeText });
+export const suiteHandlerInternals = Object.freeze({ branchArchitecture, normalizedCockpit, runbookCatalog, safeText, publicReferenceUrl, createWebUiBlueprint, safeUiStructure });

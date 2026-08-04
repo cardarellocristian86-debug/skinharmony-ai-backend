@@ -1063,6 +1063,7 @@ test("rejects tenant, URL and key injection on every Suite tool before handler e
     suite_decision_preview: { question: "What should we do?" },
     suite_runbook_catalog: {},
     suite_runbook_preview: { runbook_id: "customer_report", node_id: "node-a" },
+    suite_web_ui_blueprint: { reference_urls: ["https://example.test"] },
   };
   const handlers = Object.fromEntries(Object.keys(valid).map((name) => [name, async () => {
     called.push(name);

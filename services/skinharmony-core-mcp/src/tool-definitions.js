@@ -986,6 +986,15 @@ export const TOOLS = [
     outputSchema: suitePreviewOutputSchema,
     meta: { "openai/toolInvocation/invoking": "Previewing Suite runbook…", "openai/toolInvocation/invoked": "Runbook preview ready" },
   }),
+  tool("suite_web_ui_blueprint", "Create a Suite UI reference blueprint", "Analyze up to eight public reference pages in governed Chromium and return only a reusable UI structure blueprint. It never copies third-party HTML, CSS, text, images or code; provide only slots for first-party content and assets.", object({
+    reference_urls: { type: "array", minItems: 1, maxItems: 8, uniqueItems: true, items: { type: "string", format: "uri", maxLength: 8192 } },
+    own_content_slots: { type: "array", maxItems: 80, items: { type: "object", properties: {
+      slot_id: { type: "string", minLength: 1, maxLength: 80, pattern: "^[A-Za-z][A-Za-z0-9_-]*$" },
+      kind: { type: "string", enum: ["own_heading", "own_body", "own_cta", "own_product_data", "own_image", "own_logo", "own_icon", "own_video"] },
+      required: { type: "boolean" },
+    }, required: ["slot_id", "kind"], additionalProperties: false } },
+    idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+  }, ["reference_urls"]), ["core:govern"], false, true, { openWorld: true, meta: { "skinharmony/suiteWebUiBlueprint": true, "skinharmony/dedicatedCoreGate": true } }),
   tool("intelligence_workflow", "Run full Nyra Core intelligence workflow", "Run a memory-first workflow across scenarios, hypotheses, event probabilities, counterfactuals, decision ranking and optional outcome verification. It analyzes and explains but never executes.", { type: "object", properties: {
     ...intelligenceContext,
     workflow_id: identifier,

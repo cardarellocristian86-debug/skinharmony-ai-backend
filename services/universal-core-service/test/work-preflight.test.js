@@ -104,6 +104,18 @@ test("routes interactive web work to the governed Web Agent", () => {
   assert(result.tool_routing.prohibited_when_preferred_available.includes("unbounded_browser"));
 });
 
+test("routes reference-site UI cloning requests to the guarded Suite blueprint", () => {
+  const result = fixture({
+    requestText: "Clona la struttura UI di un sito di riferimento con immagini e testi miei",
+    targetSystem: "suite",
+    operationType: "suite_web_ui_blueprint",
+    toolName: "suite_web_ui_blueprint",
+  });
+  assert.equal(result.tool_routing.preferred_route.id, "suite_web_ui_blueprint");
+  assert.equal(result.tool_routing.required_tool, "suite_web_ui_blueprint");
+  assert(result.tool_routing.prohibited_when_preferred_available.includes("copy_third_party_html"));
+});
+
 test("fails closed when the tenant memory provider has not supplied context", () => {
   const result = fixture({ memoryContext: null, requestText: "Analizza il lavoro" });
   assert.equal(result.state, "memory_recall_required");

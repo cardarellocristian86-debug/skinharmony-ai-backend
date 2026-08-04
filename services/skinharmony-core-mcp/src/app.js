@@ -48,6 +48,7 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   // second, unrelated authorization path and can prevent the dedicated,
   // tenant-bound browser action from starting.
   "web_compatibility_execute",
+  "suite_web_ui_blueprint",
 ]);
 
 export function requiresGenericWorkPreflight(toolName, args = {}) {

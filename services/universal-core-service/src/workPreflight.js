@@ -113,6 +113,24 @@ function toolRoute(text, capabilities = [], toolName = "") {
     };
   }
 
+  if (/(clona(?:re)?\s+(?:la\s+)?(?:ui|struttura|pagina)|ui\s*(?:blueprint|reference|riferimento)|(?:struttura|layout)\s+(?:di\s+)?(?:un\s+)?sito|reference\s*(?:site|page)|sito\s+di\s+riferimento)/.test(value)) {
+    return {
+      ...connectedFirst,
+      capability: "suite_web_ui_blueprint",
+      preferred_route: {
+        id: "suite_web_ui_blueprint",
+        status: "available",
+        reason: "La richiesta richiede una blueprint UI strutturale tenant-scoped: Chromium analizza la struttura, mentre testi, asset e codice di terzi restano esclusi.",
+      },
+      required_tool: "suite_web_ui_blueprint",
+      prohibited_when_preferred_available: ["copy_third_party_html", "copy_third_party_text", "copy_third_party_assets", "unbounded_browser"],
+      fallback: {
+        id: "web_compatibility_execute",
+        allowed_only_if: ["ui_blueprint_not_available", "interactive_diagnostic_required"],
+      },
+    };
+  }
+
   if (/(\bweb\b|website|sito|pagina|browser|chromium|playwright|javascript|\bdom\b|cookie|service worker|screenshot|schermata|\bclick\b|\bfill\b|\btype\b|\bpress\b|form(?:\s|$)|modulo|naviga|apri.*(?:pagina|sito))/.test(value)) {
     return {
       ...connectedFirst,

@@ -165,7 +165,7 @@ const researchCortex = config.researchCortexRoot
       memoryFabric,
     })
   : null;
-const suiteHandlers = createSuiteHandlers(config);
+const suiteHandlers = createSuiteHandlers(config, { browserRuntime });
 
 function safeWebCompatibilityFailure(error) {
   const candidate = String(error?.code || error?.message || "web_compatibility_execution_failed")
@@ -414,6 +414,35 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
   }
 }
 
+async function governedSuiteWebUiBlueprint(args, identity) {
+  const gate = await coreHandlers.core_gate_action({
+    action_label: "Create a tenant-scoped Suite UI reference blueprint",
+    action_type: "suite.web_ui_blueprint",
+    target: String(args.reference_urls?.[0] || "").slice(0, 512),
+    operation_class: "owner_confirmed_governed_action",
+    external_side_effect: false,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: Boolean(decisionLedger),
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+    idempotency_key: args.idempotency_key || crypto.randomUUID(),
+  }, identity);
+  const authorization = gate?.structuredContent?.authorization || {};
+  if (authorization.allowed !== true) throw new Error("suite_web_ui_blueprint_core_gate_denied");
+  return suiteHandlers.suite_web_ui_blueprint(args, identity);
+}
+
 const baseHandlers = {
   web_compatibility_manifest: async (_args, identity) => ({
     structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
@@ -473,7 +502,6 @@ const baseHandlers = {
       throw failure;
     }
   },
-
   ...coreHandlers,
   work_preflight: async (args, identity) => {
     const result = await coreHandlers.work_preflight(args, identity);
@@ -484,6 +512,7 @@ const baseHandlers = {
   ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
   ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
   ...suiteHandlers,
+  suite_web_ui_blueprint: governedSuiteWebUiBlueprint,
   ...collaborationHandlers,
   ...(decisionLedger ? { decision_ledger_report: async (args, identity) => {
     const payload = { ok: true, report: await decisionLedger.report(identity.tenantId, args.days) };
