@@ -88,6 +88,28 @@ function toolRoute(text, capabilities = [], toolName = "") {
     ],
   };
 
+  // An explicit governed tool request is stronger evidence than incidental
+  // repository vocabulary in the surrounding work context (for example a PR
+  // number attached to a browser acceptance test).  Without this precedence,
+  // the GitHub route can incorrectly mask the requested browser capability.
+  if (toolName === "web_compatibility_execute" || /\bweb_compatibility_execute\b/.test(value)) {
+    return {
+      ...connectedFirst,
+      capability: "web_agent_browser",
+      preferred_route: {
+        id: "web_compatibility_execute",
+        status: "available",
+        reason: "È stata richiesta esplicitamente l'esecuzione nel browser Chromium governato.",
+      },
+      required_tool: "web_compatibility_execute",
+      prohibited_when_preferred_available: ["unbounded_browser", "manual_browser_authentication", "unscoped_web_fetch"],
+      fallback: {
+        id: "web_compatibility_manifest",
+        allowed_only_if: ["web_execution_not_authorized", "read_only_contract_required"],
+      },
+    };
+  }
+
   if (/(github|pull request|\bpr\b|repository|repo\b|commit|merge|branch)/.test(value)) {
     const available = hasCapability(capabilities, ["github", "pull_request", "repository"]);
     return {
