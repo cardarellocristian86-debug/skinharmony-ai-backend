@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canonicalizeWebUrl, createWebTransport, ingestStructuredWebResponse, webCompatibilityManifest } from "./web-agent-compatibility.js";
+import { canonicalizeWebUrl, createWebTransport, ingestStructuredWebResponse, webCompatibilityManifest } from "../src/web-agent-compatibility.js";
 
 test("preserves JSON-LD before model ingestion", () => {
   const result = ingestStructuredWebResponse({ url: "https://example.test/a", status: 200, headers: { "content-type": "text/html" }, body: '<title>Demo</title><script type="application/ld+json">{"@type":"Product","name":"X"}</script><p>Body</p>' });
