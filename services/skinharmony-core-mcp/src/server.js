@@ -167,6 +167,17 @@ const researchCortex = config.researchCortexRoot
   : null;
 const suiteHandlers = createSuiteHandlers(config);
 
+function safeWebCompatibilityFailure(error) {
+  const candidate = String(error?.code || error?.message || "web_compatibility_execution_failed")
+    .trim()
+    .toLowerCase();
+  // Do not propagate upstream text: gateway, database and network errors can
+  // include infrastructure details. Known bounded error identifiers remain
+  // actionable to an MCP client and preserve the existing fail-closed path.
+  if (/^[a-z][a-z0-9_]{2,119}$/.test(candidate)) return candidate;
+  return "web_compatibility_execution_failed";
+}
+
 function summarizeToolRequest(toolName, args = {}) {
   return String(
     args.request || args.message || args.action_label || args.title || args.query || args.description ||
@@ -409,9 +420,10 @@ const baseHandlers = {
     content: [{ type: "text", text: JSON.stringify({ ok: true, manifest: webCompatibilityManifest() }) }],
   }),
   web_compatibility_execute: async (args, identity) => {
-    const method = String(args.method || "GET").toUpperCase();
-    const hasBody = args.body !== undefined && args.body !== null;
-    const gate = await coreHandlers.core_gate_action({
+    try {
+      const method = String(args.method || "GET").toUpperCase();
+      const hasBody = args.body !== undefined && args.body !== null;
+      const gate = await coreHandlers.core_gate_action({
       action_label: "Execute allowlisted web compatibility request",
       action_type: "web.compatibility.request",
       target: String(args.url || "").slice(0, 512),
@@ -433,28 +445,33 @@ const baseHandlers = {
       target_authority_verified: true,
       actor_authorized_for_target: true,
       idempotency_key: args.idempotency_key || crypto.randomUUID(),
-    }, identity);
-    const authorization = gate?.structuredContent?.authorization || {};
-    if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");
-    const result = args.browser
-      ? await browserRuntime.execute({
+      }, identity);
+      const authorization = gate?.structuredContent?.authorization || {};
+      if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");
+      const result = args.browser
+        ? await browserRuntime.execute({
           tenantId: identity.tenantId,
           url: args.url,
           actions: args.browser.actions || [],
           javascript: args.javascript || "",
           screenshot: args.browser.screenshot === true,
           waitUntil: args.browser.wait_until || "domcontentloaded",
-        })
-      : await webTransport.request({
+          })
+        : await webTransport.request({
           url: args.url,
           method,
           headers: args.headers || {},
           body: args.body,
           javascript: args.javascript || "",
           javascriptTimeoutMs: args.javascript_timeout_ms,
-        });
-    const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };
-    return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+          });
+      const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    } catch (error) {
+      const failure = new Error(safeWebCompatibilityFailure(error));
+      failure.code = failure.message;
+      throw failure;
+    }
   },
 
   ...coreHandlers,
