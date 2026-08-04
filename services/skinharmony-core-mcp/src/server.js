@@ -34,7 +34,7 @@ import { createBrowserRuntime } from "./web-browser-runtime.js";
 
 const config = loadConfig();
 const webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowedOrigins });
-const browserRuntime = createBrowserRuntime({ wsEndpoint: config.webBrowserWsUrl, executablePath: config.webBrowserExecutablePath, allowedOrigins: config.webAgentAllowedOrigins });
+const browserRuntime = createBrowserRuntime({ wsEndpoint: config.webBrowserWsUrl, executablePath: config.webBrowserExecutablePath, gatewayUrl: config.webBrowserGatewayUrl, gatewayKey: config.webBrowserGatewayKey, allowedOrigins: config.webAgentAllowedOrigins });
 const hostNativeContinuityTools = new Set([
   "work_continuity_native_plan",
   "work_continuity_native_bind",
