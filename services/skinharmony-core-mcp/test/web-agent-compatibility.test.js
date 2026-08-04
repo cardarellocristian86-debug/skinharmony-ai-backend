@@ -61,3 +61,11 @@ test("rejects JavaScript that exceeds the bounded runtime", async () => {
     (error) => error.code === "web_javascript_too_large",
   );
 });
+
+test("fails closed when a full browser is not configured", async () => {
+  const { createBrowserRuntime } = await import("../src/web-browser-runtime.js");
+  await assert.rejects(
+    createBrowserRuntime().execute({ tenantId: "tenant", url: "https://example.test/" }),
+    (error) => error.code === "web_browser_not_configured",
+  );
+});
