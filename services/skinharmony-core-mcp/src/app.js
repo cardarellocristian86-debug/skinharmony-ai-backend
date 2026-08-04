@@ -733,6 +733,7 @@ export function createApp(config, options = {}) {
     const { id = null, method, params = {} } = req.body || {};
     let activeToolCall = null;
     let afterToolCallAttempted = false;
+    let toolExecutionStage = "";
     try {
       if (method === "initialize") {
         const sessionId = normalizeTransportSession(req.headers["mcp-session-id"]) || `mcp_${crypto.randomBytes(16).toString("hex")}`;
@@ -762,6 +763,7 @@ export function createApp(config, options = {}) {
         };
       }) } });
       if (method === "tools/call") {
+        toolExecutionStage = "request_validation";
         const tool = visibleTools.find((item) => item.name === params.name);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
@@ -817,6 +819,7 @@ export function createApp(config, options = {}) {
           throw presenceError;
         }
         const sessionId = transportPresence?.session_id || declaredSessionId || transportSessionId || serverIssuedSessionId;
+        toolExecutionStage = "presence_binding";
         const serverIssuedBootstrap = Boolean(serverIssuedSessionId);
         const hostNativeReporterAgentId = tool.name === "work_continuity_native_report"
           ? rawArgs.native_agent_id
@@ -898,6 +901,7 @@ export function createApp(config, options = {}) {
         };
         activeToolCall = { identity: callIdentity, toolName: tool.name, args, hookContext: null, preflight: null };
         let hookContext = null;
+        toolExecutionStage = "before_hook";
         if (typeof beforeToolCall === "function") {
           try {
             hookContext = await beforeToolCall({ identity: callIdentity, toolName: tool.name, args });
@@ -913,9 +917,11 @@ export function createApp(config, options = {}) {
         const handlerArgs = preflight?.work_preflight && !args.work_preflight
           ? { ...args, work_preflight: preflight.work_preflight }
           : args;
+        toolExecutionStage = "handler";
         const rawResult = await handlers[tool.name](handlerArgs, callIdentity);
         const preflightResult = attachWorkPreflight(rawResult, preflight);
         const result = attachAgentPresence(preflightResult, agentPresence);
+        toolExecutionStage = "after_hook";
         if (typeof afterToolCall === "function") {
           afterToolCallAttempted = true;
           try {
@@ -928,6 +934,9 @@ export function createApp(config, options = {}) {
       }
       return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
     } catch (error) {
+      if (method === "tools/call" && params?.name === "web_compatibility_execute" && toolExecutionStage) {
+        error.code = `web_compatibility_${toolExecutionStage}_failed`;
+      }
       if (["agent_presence_session_required", "agent_presence_conflict", "agent_presence_registration_required", "agent_presence_registration_failed"].includes(error.code)) {
         return res.status(error.code === "agent_presence_conflict" ? 409 : error.code === "agent_presence_registration_failed" ? 503 : 400).json({
           jsonrpc: "2.0",
