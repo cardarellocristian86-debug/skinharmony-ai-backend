@@ -27,6 +27,8 @@ function safeJson(value) {
 export function createBrowserRuntime({
   wsEndpoint = "",
   executablePath = "",
+  gatewayUrl = "",
+  gatewayKey = "",
   allowedOrigins = [],
   maxPages = 4,
 } = {}) {
@@ -68,6 +70,16 @@ export function createBrowserRuntime({
 
   return {
     async execute({ tenantId, url, actions = [], javascript = "", screenshot = false, waitUntil = "domcontentloaded" }) {
+      if (gatewayUrl) {
+        const response = await fetch(new URL("/v1/browser/execute", gatewayUrl), {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-browser-gateway-key": gatewayKey },
+          body: JSON.stringify({ tenant_id: tenantId, url, actions, javascript, screenshot, wait_until: waitUntil }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) fail(payload.error || "web_browser_gateway_failed");
+        return payload;
+      }
       const target = new URL(String(url || ""));
       if (!["http:", "https:"].includes(target.protocol)) fail("web_url_scheme_not_allowed");
       if (!allowed(target.href, allowedOrigins)) fail("web_origin_not_allowlisted");
