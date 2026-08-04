@@ -925,11 +925,22 @@ const app = createApp(config, {
       try {
         await registerAuthenticatedPresence(identity);
       } catch (error) {
+        if (toolName === "web_compatibility_execute") {
+          error.code = "web_compatibility_presence_registration_failed";
+        }
         if (!error?.code || error.code === "core_gate_denied") error.code = "agent_presence_registration_failed";
         throw error;
       }
     }
-    const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
+    let ledgerContext = null;
+    try {
+      ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
+    } catch (error) {
+      if (toolName === "web_compatibility_execute") {
+        error.code = "web_compatibility_ledger_start_failed";
+      }
+      throw error;
+    }
     try {
       if (!requiresGenericWorkPreflight(toolName, args)) return { preflight: null, ledgerContext };
       const result = await coreHandlers.work_preflight({
