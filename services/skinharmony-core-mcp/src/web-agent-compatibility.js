@@ -5,6 +5,10 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 const MAX_URL_LENGTH = 8_192;
 const MAX_BODY_BYTES = 2_000_000;
 
+function ensureAllowedOrigin(canonicalUrl, allowedOrigins) {
+  if (allowedOrigins.length && !allowedOrigins.includes(new URL(canonicalUrl).origin)) fail("web_origin_not_allowlisted");
+}
+
 function sha256(value) {
   return crypto.createHash("sha256").update(String(value), "utf8").digest("hex");
 }
@@ -76,8 +80,9 @@ export function createWebTransport({ fetchImpl = globalThis.fetch, allowedOrigin
   const jar = new Map();
   let runtime;
   const transport = {
-    async request({ url, method = "GET", headers = {}, body, followRedirect = true, javascript = "", includeRaw = false }) {
+    async request({ url, method = "GET", headers = {}, body, followRedirect = true, javascript = "", javascriptTimeoutMs, includeRaw = false }) {
       const identity = canonicalizeWebUrl(url);
+      ensureAllowedOrigin(identity.canonical_url, allowedOrigins);
       const verb = String(method).toUpperCase();
       if (!SAFE_METHODS.has(verb)) fail("web_method_not_allowed");
       if (body !== undefined && Buffer.byteLength(String(body), "utf8") > MAX_BODY_BYTES) fail("web_body_too_large");
@@ -93,7 +98,7 @@ export function createWebTransport({ fetchImpl = globalThis.fetch, allowedOrigin
       const responseBody = await response.text();
       const responseUrl = response.url || identity.canonical_url;
       const javascriptResult = javascript && runtime
-        ? await runtime.execute({ script: javascript, html: responseBody, url: responseUrl, cookie: requestHeaders.cookie || "" })
+        ? await runtime.execute({ script: javascript, html: responseBody, url: responseUrl, cookie: requestHeaders.cookie || "", timeoutMs: javascriptTimeoutMs })
         : null;
       return {
         ...ingestStructuredWebResponse({ url: responseUrl, status: response.status, headers: Object.fromEntries(response.headers || []), body: responseBody }),
