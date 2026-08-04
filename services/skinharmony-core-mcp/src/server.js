@@ -434,7 +434,7 @@ const baseHandlers = {
     }, identity);
     const authorization = gate?.structuredContent?.authorization || {};
     if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");
-    const result = await webTransport.request({ url: args.url, method, headers: args.headers || {}, body: args.body, javascript: args.javascript || "", javascript_timeout_ms: args.javascript_timeout_ms });
+    const result = await webTransport.request({ url: args.url, method, headers: args.headers || {}, body: args.body, javascript: args.javascript || "", javascriptTimeoutMs: args.javascript_timeout_ms });
     const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };
     return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
   },
