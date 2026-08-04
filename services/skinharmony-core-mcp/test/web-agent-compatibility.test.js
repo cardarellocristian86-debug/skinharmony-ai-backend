@@ -16,7 +16,7 @@ test("supports long URLs through a stable bounded reference", () => {
 
 test("carries cookies and executes POST through the governed transport", async () => {
   const calls = [];
-  const transport = createWebTransport({ fetchImpl: async (url, options) => {
+  const transport = createWebTransport({ allowedOrigins: ["https://example.test"], fetchImpl: async (url, options) => {
     calls.push({ url, options });
     return { url, status: 200, headers: { getSetCookie: () => ["sid=abc; Path=/"] , [Symbol.iterator]: function*(){ yield ["content-type", "text/html"]; } }, text: async () => '<script type="application/ld+json">{"ok":true}</script>' };
   }});
