@@ -40,7 +40,6 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "nyra_branch_catalog",
   "core_capability_catalog",
   "core_branch_registry",
-  "core_semantic_select",
   "core_capability_read",
   "core_capability_invoke",
   "orchestration_dtt_core_join",
