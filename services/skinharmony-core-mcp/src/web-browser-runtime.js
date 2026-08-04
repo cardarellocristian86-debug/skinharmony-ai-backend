@@ -83,7 +83,7 @@ export function createBrowserRuntime({
         for (const action of actions) actionResults.push(safeJson(await applyAction(page, action)));
         const scriptResult = javascript
           ? await page.evaluate(async (source) => {
-              return safeJson(await (0, eval)(source));
+              const value = await (0, eval)(source);\n              try { return JSON.parse(JSON.stringify(value)); } catch { return { type: typeof value }; }
             }, String(javascript))
           : null;
         const state = await page.evaluate(async () => ({
