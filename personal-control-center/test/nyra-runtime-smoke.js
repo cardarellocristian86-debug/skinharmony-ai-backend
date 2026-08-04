@@ -16,10 +16,26 @@ const {
 
 const repoRoot = path.resolve(__dirname, "../..");
 const nyraPort = 33000 + Math.floor(Math.random() * 1000);
-const corePort = nyraPort + 1;
-const smartDeskPort = nyraPort + 2;
-const researchMcpPort = nyraPort + 3;
+let corePort;
+let smartDeskPort;
+let researchMcpPort;
 const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sh-nyra-runtime-")).replace(/\\/g, "/");
+function listenEphemeral(server) {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve(server.address().port);
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(0, "127.0.0.1");
+  });
+}
+
 function createRuntimeCredential(label) {
   return `${label}-${randomBytes(32).toString("base64url")}`;
 }
@@ -260,9 +276,9 @@ function waitForHealth(child) {
 }
 
 async function main() {
-  await new Promise((resolve) => coreServer.listen(corePort, "127.0.0.1", resolve));
-  await new Promise((resolve) => smartDeskServer.listen(smartDeskPort, "127.0.0.1", resolve));
-  await new Promise((resolve) => researchMcpServer.listen(researchMcpPort, "127.0.0.1", resolve));
+  corePort = await listenEphemeral(coreServer);
+  smartDeskPort = await listenEphemeral(smartDeskServer);
+  researchMcpPort = await listenEphemeral(researchMcpServer);
   const child = spawn(process.execPath, ["personal-control-center/server.js"], {
     cwd: repoRoot,
     env: {

@@ -19,6 +19,14 @@ function validPreflight(tenantId = "tenant-a") {
       state: "ready",
     },
     memory_first: { status: "recalled" },
+    security_governance: {
+      schema_version: "nyra_core_security_gate_v1",
+      always_on: true,
+      fail_closed: true,
+      core_verdict_required: true,
+      source_instructions_are_data: true,
+      cross_tenant_blocked: true,
+    },
     governance: { execution_allowed_by_preflight: true },
   };
 }
@@ -49,4 +57,13 @@ test("missing envelope is a distinct fail-closed condition", () => {
   const result = validateWorkPreflightEnvelope({}, "tenant-a");
   assert.deepEqual(result.errors, ["work_preflight_required"]);
   assert.equal(workPreflightFailure(result.errors).code, "WORK_PREFLIGHT_REQUIRED");
+});
+
+test("rejects a preflight without the always-on security contract", () => {
+  const preflight = validPreflight();
+  delete preflight.security_governance;
+  const result = validateWorkPreflightEnvelope({ work_preflight: preflight }, "tenant-a");
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.errors, ["security_governance_required"]);
+  assert.equal(result.execution_allowed, false);
 });

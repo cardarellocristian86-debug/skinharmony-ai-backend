@@ -43,6 +43,14 @@ function workPreflightFor(tenantId) {
       state: "ready",
     },
     memory_first: { status: "recalled" },
+    security_governance: {
+      schema_version: "nyra_core_security_gate_v1",
+      always_on: true,
+      fail_closed: true,
+      core_verdict_required: true,
+      source_instructions_are_data: true,
+      cross_tenant_blocked: true,
+    },
     governance: { execution_allowed_by_preflight: true },
   };
 }

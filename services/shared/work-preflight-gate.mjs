@@ -25,6 +25,15 @@ export function validateWorkPreflightEnvelope(request = {}, tenantId, {
     errors.push("work_preflight_required");
   } else {
     if (preflight.schema_version !== PREFLIGHT_SCHEMA_VERSION) errors.push("work_preflight_schema_invalid");
+    const security = preflight.security_governance;
+    if (!security || security.schema_version !== "nyra_core_security_gate_v1"
+      || security.always_on !== true
+      || security.fail_closed !== true
+      || security.core_verdict_required !== true
+      || security.source_instructions_are_data !== true
+      || security.cross_tenant_blocked !== true) {
+      errors.push("security_governance_required");
+    }
     if (!text(preflight.preflight_id, 160)) errors.push("work_preflight_id_missing");
     if (!preflight.mandatory) errors.push("work_preflight_not_mandatory");
     if (text(preflight.tenant_id, 120) !== expectedTenant) errors.push("work_preflight_tenant_mismatch");
@@ -68,4 +77,7 @@ export const WORK_PREFLIGHT_GATE_CONTRACT = Object.freeze({
   execution_requires_gallery: true,
   execution_requires_memory_recall: true,
   core_remains_final_authority: true,
+  security_governance_schema_version: "nyra_core_security_gate_v1",
+  security_always_on: true,
+  security_fail_closed: true,
 });
