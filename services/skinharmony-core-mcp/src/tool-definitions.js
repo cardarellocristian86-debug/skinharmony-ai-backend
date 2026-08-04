@@ -1188,4 +1188,12 @@ export const TOOLS = [
   tool("message_post", "Post agent message", "Post a tenant-scoped message from a registered agent to another agent or all agents.", object({ from_agent_id: identifier, to_agent_id: { anyOf: [identifier, { const: "all" }] }, body: text(20_000), thread_id: { type: "string", maxLength: 80 }, idempotency_key: { type: "string", maxLength: 120 } }, ["from_agent_id", "body"]), ["core:govern"], false, true),
   tool("message_inbox", "Read agent inbox", "Read tenant-scoped messages addressed to one agent or all agents.", object({ agent_id: identifier, unread_only: { type: "boolean" }, limit: { type: "integer", minimum: 1, maximum: 100 } }, ["agent_id"]), ["core:read"]),
   tool("message_acknowledge", "Acknowledge agent message", "Mark one tenant-scoped agent message as read.", object({ message_id: text(80), agent_id: identifier }, ["message_id", "agent_id"]), ["core:govern"], false, true)
+,
+  tool("web_compatibility_manifest", "Read Web Agent Compatibility branches", "Read the governed web compatibility contract for browser transport, structured ingestion and long URL continuity.", object(), ["core:read"], true, true, { meta: { "skinharmony/webCompatibility": true } }),
+  tool("web_compatibility_execute", "Execute a governed web compatibility request", "Fetch an allowlisted web origin with cookie persistence, GET/POST support and JSON-LD preservation. Universal Core gates the request before transport and the result remains tenant-scoped.", object({
+    url: { type: "string", format: "uri", maxLength: 8192 },
+    method: { type: "string", enum: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] },
+    headers: { type: "object", maxProperties: 30, additionalProperties: { type: "string", maxLength: 2000 } },
+    body: { type: "string", maxLength: 2000000 },
+  }, ["url"], ["core:govern"], false, true, { openWorld: true, meta: { "skinharmony/webCompatibility": true, "skinharmony/dedicatedCoreGate": true } })),
 ];

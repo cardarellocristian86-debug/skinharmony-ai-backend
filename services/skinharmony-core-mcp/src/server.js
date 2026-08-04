@@ -28,9 +28,9 @@ import { createSuiteHandlers } from "./suite-handlers.js";
 import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
-import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
+import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";\nimport { createWebTransport, webCompatibilityManifest } from "./web-agent-compatibility.js";
 
-const config = loadConfig();
+const config = loadConfig();\nconst webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowedOrigins });
 const hostNativeContinuityTools = new Set([
   "work_continuity_native_plan",
   "work_continuity_native_bind",
@@ -399,7 +399,7 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
   }
 }
 
-const baseHandlers = {
+const baseHandlers = {\n  web_compatibility_manifest: async (_args, identity) => ({\n    structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },\n    content: [{ type: "text", text: JSON.stringify({ ok: true, manifest: webCompatibilityManifest() }) }],\n  }),\n  web_compatibility_execute: async (args, identity) => {\n    const method = String(args.method || "GET").toUpperCase();\n    const hasBody = args.body !== undefined && args.body !== null;\n    const gate = await coreHandlers.core_gate_action({\n      action_label: "Execute allowlisted web compatibility request",\n      action_type: "web.compatibility.request",\n      target: String(args.url || "").slice(0, 512),\n      operation_class: "owner_confirmed_governed_action",\n      external_side_effect: hasBody || !["GET", "HEAD"].includes(method),\n      contains_customer_data: false,\n      contains_secret: false,\n      secret_value_transmitted: false,\n      cross_tenant: false,\n      configuration_changes: false,\n      destructive: false,\n      bypass_orchestrator: false,\n      provider_execution: false,\n      bounded_scope: true,\n      low_impact: true,\n      idempotent_or_compensable: true,\n      rollback_ready: true,\n      audit_ready: Boolean(decisionLedger),\n      target_authority_verified: true,\n      actor_authorized_for_target: true,\n      idempotency_key: args.idempotency_key || crypto.randomUUID(),\n    }, identity);\n    const authorization = gate?.structuredContent?.authorization || {};\n    if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");\n    const result = await webTransport.request({ url: args.url, method, headers: args.headers || {}, body: args.body });\n    const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };\n    return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };\n  },\n
   ...coreHandlers,
   work_preflight: async (args, identity) => {
     const result = await coreHandlers.work_preflight(args, identity);

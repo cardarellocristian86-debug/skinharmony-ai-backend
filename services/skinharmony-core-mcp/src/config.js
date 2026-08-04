@@ -158,6 +158,9 @@ function optionalFullCommit(value, name) {
 export function loadConfig(env = process.env) {
   const environment = String(env.NODE_ENV || "development").trim().toLowerCase();
   const publicUrl = url(env.MCP_PUBLIC_URL || "http://localhost:8790", "MCP_PUBLIC_URL");
+  const webAgentAllowedOrigins = csv(env.WEB_AGENT_ALLOWED_ORIGINS).map((value) => {
+    try { return new URL(value).origin; } catch { throw new Error("WEB_AGENT_ALLOWED_ORIGINS contains an invalid URL"); }
+  });
   const auth0Issuer = url(env.AUTH0_ISSUER, "AUTH0_ISSUER");
   const auth0Audience = String(env.AUTH0_AUDIENCE || "").trim();
   const codexKeys = csv(env.CODEX_BEARER_KEYS);
