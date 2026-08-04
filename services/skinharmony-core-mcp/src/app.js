@@ -43,6 +43,11 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "core_capability_read",
   "core_capability_invoke",
   "orchestration_dtt_core_join",
+  // Web Compatibility has its own owner-confirmed Universal Core gate in the
+  // execution handler. Running the generic work preflight first creates a
+  // second, unrelated authorization path and can prevent the dedicated,
+  // tenant-bound browser action from starting.
+  "web_compatibility_execute",
 ]);
 
 export function requiresGenericWorkPreflight(toolName, args = {}) {
