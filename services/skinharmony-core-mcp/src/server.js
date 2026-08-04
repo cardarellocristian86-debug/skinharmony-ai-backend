@@ -30,9 +30,11 @@ import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
 import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
 import { createWebTransport, webCompatibilityManifest } from "./web-agent-compatibility.js";
+import { createBrowserRuntime } from "./web-browser-runtime.js";
 
 const config = loadConfig();
 const webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowedOrigins });
+const browserRuntime = createBrowserRuntime({ wsEndpoint: config.webBrowserWsUrl, executablePath: config.webBrowserExecutablePath, allowedOrigins: config.webAgentAllowedOrigins });
 const hostNativeContinuityTools = new Set([
   "work_continuity_native_plan",
   "work_continuity_native_bind",
@@ -434,7 +436,23 @@ const baseHandlers = {
     }, identity);
     const authorization = gate?.structuredContent?.authorization || {};
     if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");
-    const result = await webTransport.request({ url: args.url, method, headers: args.headers || {}, body: args.body, javascript: args.javascript || "", javascriptTimeoutMs: args.javascript_timeout_ms });
+    const result = args.browser
+      ? await browserRuntime.execute({
+          tenantId: identity.tenantId,
+          url: args.url,
+          actions: args.browser.actions || [],
+          javascript: args.javascript || "",
+          screenshot: args.browser.screenshot === true,
+          waitUntil: args.browser.wait_until || "domcontentloaded",
+        })
+      : await webTransport.request({
+          url: args.url,
+          method,
+          headers: args.headers || {},
+          body: args.body,
+          javascript: args.javascript || "",
+          javascriptTimeoutMs: args.javascript_timeout_ms,
+        });
     const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };
     return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
   },
