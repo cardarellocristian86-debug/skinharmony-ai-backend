@@ -303,6 +303,8 @@ export function loadConfig(env = process.env) {
     publicUrl,
     webAgentAllowedOrigins,
     webBrowserWsUrl: String(env.WEB_AGENT_BROWSER_WS_URL || "").trim(),
+    webBrowserGatewayUrl: url(env.WEB_AGENT_BROWSER_GATEWAY_URL, "WEB_AGENT_BROWSER_GATEWAY_URL"),
+    webBrowserGatewayKey: String(env.WEB_AGENT_BROWSER_GATEWAY_KEY || "").trim(),
     webBrowserExecutablePath: String(env.WEB_AGENT_BROWSER_EXECUTABLE_PATH || "").trim(),
     resource: `${publicUrl}/mcp`,
     auth0Issuer,
