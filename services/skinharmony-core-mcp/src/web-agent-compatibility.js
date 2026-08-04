@@ -70,7 +70,7 @@ function cookiePairs(setCookie) {
   return values.map((item) => String(item).split(";", 1)[0]).filter(Boolean);
 }
 
-export function createWebTransport({ fetchImpl = globalThis.fetch } = {}) {
+export function createWebTransport({ fetchImpl = globalThis.fetch, allowedOrigins = [] } = {}) {
   if (typeof fetchImpl !== "function") fail("web_fetch_unavailable");
   const jar = new Map();
   return {
