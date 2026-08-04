@@ -32,6 +32,7 @@ const branchIds = [
   "ai_orchestration",
   "execution_planning",
   "parallel_coordination",
+  "tenant_work_coordination",
   "quality_verification",
   "learning_memory",
   "adaptive_learning",

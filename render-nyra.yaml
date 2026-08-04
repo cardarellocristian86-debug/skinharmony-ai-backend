@@ -62,9 +62,9 @@ services:
       - key: NYRA_DEEP_BRANCH_V2_RUNTIME_MODE
         value: lazy
       - key: NYRA_DEEP_BRANCH_V2_MODE
-        value: shadow
+        value: active
       - key: NYRA_DEEP_BRANCH_V2_BRANCHES
-        value: context_intelligence,work_intake,research_evidence,decision_reasoning,planning_prioritization,risk_governance,delegated_authority,decision_provenance,relational_supervision,agent_orchestration,ai_orchestration,execution_planning,parallel_coordination,quality_verification,learning_memory,adaptive_learning,communication_explanation,software_intelligence,suite_domain,smartdesk_domain,analyzer_domain
+        value: context_intelligence,work_intake,research_evidence,decision_reasoning,planning_prioritization,risk_governance,delegated_authority,decision_provenance,relational_supervision,agent_orchestration,ai_orchestration,execution_planning,parallel_coordination,tenant_work_coordination,quality_verification,learning_memory,adaptive_learning,communication_explanation,software_intelligence,suite_domain,smartdesk_domain,analyzer_domain
       - key: NYRA_DEEP_BRANCH_V2_TENANT_ALLOWLIST
         value: codexai
       - key: NYRA_DEEP_BRANCH_V2_FEDERATION_ENABLED
@@ -77,10 +77,10 @@ services:
         value: "60000"
       - key: NYRA_DEEP_BRANCH_V2_REPLAY_STORE_PATH
         value: /var/data/runtime/nyra-learning/nyra_deep_v2_replay_store.json
-      # Operational evaluation stays off until the exact deployed artifact
-      # passes the signed Ed25519 evaluation.
+      # Operational evaluation remains advisory and requires an exact,
+      # tenant-scoped Ed25519 attestation issued by Universal Core.
       - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_ENABLED
-        value: "false"
+        value: "true"
       - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_TENANT_ALLOWLIST
         value: codexai
       - key: NYRA_DEEP_BRANCH_V2_CORE_ATTESTATION_KEY_ID_ALLOWLIST
@@ -89,6 +89,26 @@ services:
         sync: false
       - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_ATTESTATION_MAX_AGE_MS
         value: "60000"
+      # Policy Registry attestation uses a dedicated Core-to-Nyra channel and
+      # independent Ed25519 material. It never reuses Deep V2 or provider keys.
+      - key: NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED
+        value: "true"
+      - key: NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST
+        value: codexai
+      - key: NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY
+        generateValue: true
+      - key: NYRA_POLICY_REGISTRY_CORE_KEY_ID
+        value: universal-core-policy-registry-v1
+      - key: NYRA_POLICY_REGISTRY_NYRA_KEY_ID
+        value: nyra-policy-registry-v1
+      - key: NYRA_POLICY_REGISTRY_CORE_PUBLIC_KEY
+        sync: false
+      - key: NYRA_POLICY_REGISTRY_NYRA_PRIVATE_KEY
+        sync: false
+      - key: NYRA_POLICY_REGISTRY_ATTESTATION_MAX_AGE_MS
+        value: "300000"
+      - key: NYRA_POLICY_REGISTRY_REPLAY_STORE_PATH
+        value: /var/data/runtime/nyra-learning/nyra_policy_registry_attestation_replay.json
       - key: NYRA_RESEARCH_MCP_URL
         value: "https://skinharmony-core-mcp.onrender.com"
       - key: NYRA_SUITE_CORE_URL

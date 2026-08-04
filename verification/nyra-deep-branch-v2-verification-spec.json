@@ -22,9 +22,9 @@
     "catalog_runtime_snapshot": "personal-control-center/data/nyra-live-branch-v1.snapshot.json",
     "catalog_pack_fixture": "skinharmony",
     "v1_schema_version": "nyra_neural_branch_network_v1",
-    "branch_count": 21,
-    "level_1_subbranch_count": 299,
-    "level_2_to_level_4_node_count": 1794,
+    "branch_count": 22,
+    "level_1_subbranch_count": 317,
+    "level_2_to_level_4_node_count": 1902,
     "embedded_contract_fixture_count": 7176,
     "snapshot_rule": "fail_if_live_catalog_ids_or_level_1_membership_differs_from_live_catalog_snapshot"
   },
@@ -1515,15 +1515,15 @@
         "canonical_key_order_permutation"
       ],
       "oracle": [
-        "21_live_branches_and_299_v1_subbranches_preserved",
+        "22_live_branches_and_317_v1_subbranches_preserved",
         "every_v1_subbranch_reaches_a_level_4_path",
         "invalid_graphs_fail_closed",
         "canonical_serialization_is_byte_stable_and_hash_stable"
       ],
       "thresholds": {
-        "branch_coverage": "21/21",
-        "v1_subbranch_coverage": "299/299",
-        "level_2_to_level_4_node_coverage": "1794/1794",
+        "branch_coverage": "22/22",
+        "v1_subbranch_coverage": "317/317",
+        "level_2_to_level_4_node_coverage": "1902/1902",
         "orphan_count": 0,
         "cycle_count": 0,
         "serialization_hash_stability": 1
@@ -1701,14 +1701,14 @@
       "thresholds": {
         "attack_success_rate": 0,
         "unhandled_exception_rate": 0,
-        "adversarial_branch_coverage": "21/21",
+        "adversarial_branch_coverage": "22/22",
         "secret_leak_count": 0
       }
     },
     {
       "id": "semantic-mutation-pass4-regression",
       "category": "adversarial",
-      "target": "all_1794_level_2_to_level_4_contracts",
+      "target": "all_1902_level_2_to_level_4_contracts",
       "fixtures": [
         "subject_substitution",
         "record_value_substitution",
@@ -1732,19 +1732,19 @@
         "execution_authorized_remains_false",
         "core_final_authority_remains_true",
         "semantic_contract_and_core_manifest_drift_are_detected",
-        "all_16_mutations_execute_for_all_1794_nodes"
+        "all_16_mutations_execute_for_all_1902_nodes"
       ],
       "thresholds": {
         "executed_mutations": 28704,
         "mutation_acceptance_count": 0,
-        "node_coverage": "1794/1794",
-        "semantic_program_uniqueness": "1794/1794"
+        "node_coverage": "1902/1902",
+        "semantic_program_uniqueness": "1902/1902"
       }
     },
     {
       "id": "exact-envelope-and-coherent-rebinding-pass6-regression",
       "category": "adversarial",
-      "target": "all_1794_level_2_to_level_4_contracts",
+      "target": "all_1902_level_2_to_level_4_contracts",
       "fixtures": [
         "extra_evidence_property",
         "extra_evidence_content_property_with_recomputed_hashes",
@@ -1765,19 +1765,19 @@
         "each_mutation_returns_fallback_denied_or_human_review_never_advisory_verified",
         "execution_authorized_remains_false",
         "core_final_authority_remains_true",
-        "all_11_mutations_execute_for_all_1794_nodes"
+        "all_11_mutations_execute_for_all_1902_nodes"
       ],
       "thresholds": {
         "executed_mutations": 19734,
         "mutation_acceptance_count": 0,
-        "node_coverage": "1794/1794",
+        "node_coverage": "1902/1902",
         "exact_envelope_coverage": "evidence_item,evidence_content,core_manifest,policy_snapshot,policy_decision"
       }
     },
     {
       "id": "function-registry-and-semantic-observation-v17",
       "category": "adversarial",
-      "target": "all_1794_function_registry_bindings",
+      "target": "all_1902_function_registry_bindings",
       "fixtures": [
         "coherent_operation_swap_without_registry_change",
         "donor_function_registry_reference",
@@ -1803,8 +1803,8 @@
         "core_final_authority_remains_true"
       ],
       "thresholds": {
-        "registry_function_count": 1794,
-        "unique_semantic_function_count": 1794,
+        "registry_function_count": 1902,
+        "unique_semantic_function_count": 1902,
         "invalid_mutation_acceptance_count": 0,
         "structural_collision_group_donor_rejection_rate": 1,
         "causal_output_or_rejection_delta_rate": 1
@@ -1821,7 +1821,7 @@
         "v1_golden_catalog_smartdesk",
         "v1_golden_catalog_analyzer",
         "v1_golden_catalog_skinharmony",
-        "v1_full_route_input_output_for_each_of_21_live_branches",
+        "v1_full_route_input_output_for_each_of_22_live_branches",
         "existing_horizontal_contract_cases",
         "existing_deep_runtime_cases",
         "unknown_branch_and_pack_denial_cases"
@@ -1895,7 +1895,7 @@
       "category": "performance",
       "target": "load_validate_route_serialize_fallback",
       "fixtures": [
-        "full_v2_catalog_all_21_branches",
+        "full_v2_catalog_all_22_branches",
         "worst_case_route_all_allowed_branches",
         "largest_valid_context_without_secrets",
         "cold_process_run",
@@ -2005,9 +2005,9 @@
   "coverage_gates": {
     "all_mandatory": true,
     "required": {
-      "live_branch_coverage": "21/21",
-      "v1_level_1_subbranch_coverage": "299/299",
-      "level_2_to_level_4_node_coverage": "1794/1794",
+      "live_branch_coverage": "22/22",
+      "v1_level_1_subbranch_coverage": "317/317",
+      "level_2_to_level_4_node_coverage": "1902/1902",
       "embedded_contract_fixture_coverage": "7176/7176",
       "level_1_with_level_4_path_rate": 1,
       "level_2_to_level_4_contract_field_coverage": 1,

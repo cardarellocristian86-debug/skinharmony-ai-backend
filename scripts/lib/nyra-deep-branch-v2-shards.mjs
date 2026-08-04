@@ -30,7 +30,7 @@ export const MAX_RUNTIME_SHARDS_UNCOMPRESSED_BYTES = 128 * 1024 * 1024;
 const LEVEL4_NODE_TYPES = Object.freeze(["method", "strategy", "verifier", "metric"]);
 const NODES_PER_SUBBRANCH = 2 + LEVEL4_NODE_TYPES.length;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
-const V2_EXCLUDED_BRANCH_IDS = new Set(["tenant_work_coordination"]);
+const V2_EXCLUDED_BRANCH_IDS = new Set();
 
 export const RUNTIME_ARTIFACT_LIMITS = Object.freeze({
   schema_version: RUNTIME_LIMITS_SCHEMA_VERSION,

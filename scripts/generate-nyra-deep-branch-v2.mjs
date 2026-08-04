@@ -46,7 +46,7 @@ const V1_COMPATIBLE_IMPLEMENTATION_PIN = Object.freeze({
   core_branch_network_sha256:
     "28018fa5a628bff2732ef82b579a9b2411365de8645e90bee01916141495de0d",
 });
-const V2_EXCLUDED_BRANCH_IDS = new Set(["tenant_work_coordination"]);
+const V2_EXCLUDED_BRANCH_IDS = new Set();
 function parseArgs(argv) {
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {

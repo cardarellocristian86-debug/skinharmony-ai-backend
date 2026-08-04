@@ -27,10 +27,10 @@ const runtimePath = path.join(
 const researchPath = path.join(repoRoot, "research/NYRA_DEEP_BRANCH_V2_RESEARCH.md");
 
 const EXPECTED = Object.freeze({
-  branches: 21,
-  subbranches: 299,
-  nodes: 1794,
-  fixtures: 7176,
+  branches: 22,
+  subbranches: 317,
+  nodes: 1902,
+  fixtures: 7608,
   nodesPerSubbranch: 6,
   fixturesPerNode: 4,
   tenant: "codexai",
@@ -53,7 +53,7 @@ const V1_COMPATIBLE_IMPLEMENTATION_PIN = Object.freeze({
   core_branch_network_sha256:
     "28018fa5a628bff2732ef82b579a9b2411365de8645e90bee01916141495de0d",
 });
-const V2_EXCLUDED_BRANCH_IDS = new Set(["tenant_work_coordination"]);
+const V2_EXCLUDED_BRANCH_IDS = new Set();
 
 const FIXTURE_FAMILIES = Object.freeze([
   ["positive_tests", "positive", "ALLOW_ADVISORY"],
