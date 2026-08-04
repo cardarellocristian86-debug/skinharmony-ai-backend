@@ -1195,5 +1195,5 @@ export const TOOLS = [
     method: { type: "string", enum: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] },
     headers: { type: "object", maxProperties: 30, additionalProperties: { type: "string", maxLength: 2000 } },
     body: { type: "string", maxLength: 2000000 },
-  }, ["url"], ["core:govern"], false, true, { openWorld: true, meta: { "skinharmony/webCompatibility": true, "skinharmony/dedicatedCoreGate": true } }),
+  }, ["url"], ["core:govern"], false, true, { openWorld: true, meta: { "skinharmony/webCompatibility": true, "skinharmony/dedicatedCoreGate": true } })),
 ];
