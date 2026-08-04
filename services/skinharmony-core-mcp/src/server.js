@@ -28,9 +28,11 @@ import { createSuiteHandlers } from "./suite-handlers.js";
 import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
-import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";\nimport { createWebTransport, webCompatibilityManifest } from "./web-agent-compatibility.js";
+import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
+import { createWebTransport, webCompatibilityManifest } from "./web-agent-compatibility.js";
 
-const config = loadConfig();\nconst webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowedOrigins });
+const config = loadConfig();
+const webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowedOrigins });
 const hostNativeContinuityTools = new Set([
   "work_continuity_native_plan",
   "work_continuity_native_bind",
