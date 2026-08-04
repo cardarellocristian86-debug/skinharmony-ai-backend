@@ -2130,7 +2130,21 @@ export function createCoreHandlers(config, options = {}) {
         ["work.continuity.create", "work.continuity.start_or_resume"].includes(
           String(args.action_type || ""),
         );
-      const confirmationOptions = { allowOAuthTenantOwner: tenantWorkBootstrap };
+      // Public web observation is still owner-confirmed and request-bound, but
+      // an OAuth tenant owner must be able to authorize the exact browser
+      // actions that its connector exposes.  Keep this exception deliberately
+      // narrow: it grants no generic Core write or deployment authority.
+      const governedBrowserAction =
+        args.operation_class === "owner_confirmed_governed_action" &&
+        ["web.compatibility.request", "suite.web_ui_blueprint"].includes(String(args.action_type || "")) &&
+        args.cross_tenant !== true &&
+        args.contains_secret !== true &&
+        args.secret_value_transmitted !== true &&
+        args.configuration_changes !== true &&
+        args.destructive !== true &&
+        args.bypass_orchestrator !== true &&
+        args.provider_execution !== true;
+      const confirmationOptions = { allowOAuthTenantOwner: tenantWorkBootstrap || governedBrowserAction };
       const confirmed = hasExplicitVerifiedOwnerConfirmation(identity, confirmationOptions);
       const confirmationReference = verifiedConfirmationReference(identity, confirmationOptions);
       const boundedInternalCoordination =
@@ -2172,7 +2186,7 @@ export function createCoreHandlers(config, options = {}) {
               {
                 requestBinding: ownerRequestBinding("core_action_evaluator", requestBody),
                 actionEvaluatorGateway: true,
-                allowOAuthTenantOwner: tenantWorkBootstrap,
+                allowOAuthTenantOwner: confirmationOptions.allowOAuthTenantOwner,
               },
             ),
           } : {}),
