@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "express": "^5.2.1",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "playwright-core": "^1.62.1"
   }
 }
