@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { createJavaScriptRuntime } from "./web-js-runtime.js";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 const MAX_URL_LENGTH = 8_192;
@@ -73,8 +74,9 @@ function cookiePairs(setCookie) {
 export function createWebTransport({ fetchImpl = globalThis.fetch, allowedOrigins = [] } = {}) {
   if (typeof fetchImpl !== "function") fail("web_fetch_unavailable");
   const jar = new Map();
-  return {
-    async request({ url, method = "GET", headers = {}, body, followRedirect = true }) {
+  let runtime;
+  const transport = {
+    async request({ url, method = "GET", headers = {}, body, followRedirect = true, javascript = "", includeRaw = false }) {
       const identity = canonicalizeWebUrl(url);
       const verb = String(method).toUpperCase();
       if (!SAFE_METHODS.has(verb)) fail("web_method_not_allowed");
@@ -89,13 +91,39 @@ export function createWebTransport({ fetchImpl = globalThis.fetch, allowedOrigin
         const [key, value] = pair.split("=", 2); if (key && value) jar.set(key.trim(), value.trim());
       }
       const responseBody = await response.text();
+      const responseUrl = response.url || identity.canonical_url;
+      const javascriptResult = javascript && runtime
+        ? await runtime.execute({ script: javascript, html: responseBody, url: responseUrl, cookie: requestHeaders.cookie || "" })
+        : null;
       return {
-        ...ingestStructuredWebResponse({ url: response.url || identity.canonical_url, status: response.status, headers: Object.fromEntries(response.headers || []), body: responseBody }),
+        ...ingestStructuredWebResponse({ url: responseUrl, status: response.status, headers: Object.fromEntries(response.headers || []), body: responseBody }),
         request: { method: verb, cookie_sent: Boolean(requestHeaders.cookie), post_sent: ["POST", "PUT", "PATCH"].includes(verb) },
         cookies: { stored: [...jar.keys()], count: jar.size },
+        ...(javascriptResult ? { javascript: javascriptResult } : {}),
+        ...(includeRaw ? { raw_body: responseBody } : {}),
       };
     },
   };
+  runtime = createJavaScriptRuntime({
+    fetchImpl: async (input, init = {}) => {
+      const nested = await transport.request({
+        url: input,
+        method: init.method || "GET",
+        headers: init.headers || {},
+        body: init.body,
+        followRedirect: true,
+        includeRaw: true,
+      });
+      return {
+        status: nested.http.status,
+        url: nested.url.canonical_url,
+        headers: nested.http.headers || {},
+        text: nested.raw_body || "",
+      };
+    },
+  });
+  transport.executeJavaScript = (args) => runtime.execute(args);
+  return transport;
 }
 
 export function webCompatibilityManifest() {
