@@ -46,7 +46,13 @@ const smokeHarnessPath = path.join(
 const LEVEL4_NODE_TYPES = Object.freeze(["method", "strategy", "verifier", "metric"]);
 const NODES_PER_SUBBRANCH = 2 + LEVEL4_NODE_TYPES.length;
 const CORE_SKINHARMONY_CATALOG = nyraBranchCatalog("skinharmony");
-const V2_EXCLUDED_BRANCH_IDS = new Set(["tenant_work_coordination"]);
+// Keep verification aligned with generation and supervision: these V1
+// compatibility branches stay outside the frozen Deep V2 corpus until their
+// research coverage and fixtures are intentionally introduced.
+const V2_EXCLUDED_BRANCH_IDS = new Set([
+  "tenant_work_coordination",
+  "agent_change_interlock",
+]);
 const CORE_SKINHARMONY_V2_BRANCHES = CORE_SKINHARMONY_CATALOG.branches.filter(
   (branch) => !V2_EXCLUDED_BRANCH_IDS.has(branch.id),
 );

@@ -184,6 +184,7 @@ test("all live V2 shards are Core-opened, attested, and operationally evaluated 
   const branches = [...new Set(loaded.manifest.shards.map((shard) => shard.branch_id))];
   assert(branches.every((branchId) => CORE_BRANCH_IDS.has(branchId)));
   assert.equal(branches.includes("tenant_work_coordination"), false);
+  assert.equal(branches.includes("agent_change_interlock"), false);
 
   const keys = crypto.generateKeyPairSync("ed25519");
   const ledger = createNyraDeepV2EvidenceLedger({ secret: LEDGER_SECRET, now: () => NOW });
