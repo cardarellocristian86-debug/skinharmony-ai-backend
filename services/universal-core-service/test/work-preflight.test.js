@@ -91,6 +91,19 @@ test("routes GitHub to the connected app and prevents the previous CLI error", (
   assert.equal(result.tool_routing.release_policy.deploy_requires_owner_confirmation, true);
 });
 
+test("routes interactive web work to the governed Web Agent", () => {
+  const result = fixture({
+    requestText: "Apri una pagina dinamica, fai click sul form ed esegui JavaScript con screenshot",
+    targetSystem: "web",
+    operationType: "web_compatibility_execute",
+    toolName: "web_compatibility_execute",
+  });
+  assert.equal(result.tool_routing.preferred_route.id, "web_compatibility_execute");
+  assert.equal(result.tool_routing.preferred_route.status, "available");
+  assert.equal(result.tool_routing.required_tool, "web_compatibility_execute");
+  assert(result.tool_routing.prohibited_when_preferred_available.includes("unbounded_browser"));
+});
+
 test("fails closed when the tenant memory provider has not supplied context", () => {
   const result = fixture({ memoryContext: null, requestText: "Analizza il lavoro" });
   assert.equal(result.state, "memory_recall_required");

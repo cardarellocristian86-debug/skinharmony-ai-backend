@@ -113,6 +113,24 @@ function toolRoute(text, capabilities = [], toolName = "") {
     };
   }
 
+  if (/(\bweb\b|website|sito|pagina|browser|chromium|playwright|javascript|\bdom\b|cookie|service worker|screenshot|schermata|\bclick\b|\bfill\b|\btype\b|\bpress\b|form(?:\s|$)|modulo|naviga|apri.*(?:pagina|sito))/.test(value)) {
+    return {
+      ...connectedFirst,
+      capability: "web_agent_browser",
+      preferred_route: {
+        id: "web_compatibility_execute",
+        status: "available",
+        reason: "La richiesta richiede un browser Chromium governato con isolamento tenant, gate Core e audit.",
+      },
+      required_tool: "web_compatibility_execute",
+      prohibited_when_preferred_available: ["unbounded_browser", "manual_browser_authentication", "unscoped_web_fetch"],
+      fallback: {
+        id: "web_compatibility_manifest",
+        allowed_only_if: ["web_execution_not_authorized", "read_only_contract_required"],
+      },
+    };
+  }
+
   if (/(calendar|calendario|agenda|evento|riunione|meeting)/.test(value)) {
     return {
       ...connectedFirst,
