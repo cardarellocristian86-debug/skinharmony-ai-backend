@@ -452,12 +452,23 @@ const baseHandlers = {
     try {
       const method = String(args.method || "GET").toUpperCase();
       const hasBody = args.body !== undefined && args.body !== null;
+      const browserActions = args.browser?.actions || [];
+      // A plain page observation has no caller-provided script, mutation or
+      // interaction.  Treating it as a tenant-scoped read lets a connected AI
+      // verify a public page/DOM/screenshot before requesting owner approval
+      // for interactive browser work.  Any JS, form action, POST or click
+      // remains on the stricter owner-confirmed route below.
+      const observationOnly =
+        ["GET", "HEAD"].includes(method) &&
+        !hasBody &&
+        !String(args.javascript || "").trim() &&
+        Array.isArray(browserActions) && browserActions.length === 0;
       const gate = await coreHandlers.core_gate_action({
-      action_label: "Execute allowlisted web compatibility request",
-      action_type: "web.compatibility.request",
+      action_label: observationOnly ? "Observe a public web page" : "Execute governed web compatibility request",
+      action_type: observationOnly ? "web.compatibility.observe" : "web.compatibility.request",
       target: String(args.url || "").slice(0, 512),
-      operation_class: "owner_confirmed_governed_action",
-      external_side_effect: hasBody || !["GET", "HEAD"].includes(method),
+      operation_class: observationOnly ? "tenant_scoped_read" : "owner_confirmed_governed_action",
+      external_side_effect: observationOnly ? false : hasBody || !["GET", "HEAD"].includes(method),
       contains_customer_data: false,
       contains_secret: false,
       secret_value_transmitted: false,
@@ -476,12 +487,18 @@ const baseHandlers = {
       idempotency_key: args.idempotency_key || crypto.randomUUID(),
       }, identity);
       const authorization = gate?.structuredContent?.authorization || {};
-      if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");
+      if (authorization.allowed !== true) {
+        throw new Error(
+          authorization.confirmation_required === true && authorization.confirmation_satisfied !== true
+            ? "web_compatibility_owner_confirmation_required"
+            : "web_compatibility_core_gate_denied",
+        );
+      }
       const result = args.browser
         ? await browserRuntime.execute({
           tenantId: identity.tenantId,
           url: args.url,
-          actions: args.browser.actions || [],
+          actions: browserActions,
           javascript: args.javascript || "",
           screenshot: args.browser.screenshot === true,
           waitUntil: args.browser.wait_until || "domcontentloaded",
@@ -494,7 +511,13 @@ const baseHandlers = {
           javascript: args.javascript || "",
           javascriptTimeoutMs: args.javascript_timeout_ms,
           });
-      const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };
+      const payload = {
+        ok: true,
+        tenant_id: identity.tenantId,
+        execution_mode: observationOnly ? "tenant_scoped_observation" : "owner_confirmed_interaction",
+        core_gate: { allowed: true, decision_id: authorization.decision_id || null },
+        result,
+      };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     } catch (error) {
       const failure = new Error(safeWebCompatibilityFailure(error));
