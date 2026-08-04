@@ -105,6 +105,12 @@ export const CORRECTABLE_CODES = new Set([
   "HANDOFF_INCOMPLETE",
   "MEMORY_PROVENANCE_MISSING",
   "MODEL_UNCERTAINTY_TOO_HIGH",
+  // These codes are emitted only by the authenticated preflight gateway. A
+  // worker cannot repair them by inventing a replacement envelope: it must
+  // obtain a fresh server-issued preflight.
+  "WORK_PREFLIGHT_REQUIRED",
+  "WORK_PREFLIGHT_INVALID",
+  "WORK_CONTINUITY_RESUME_LOCK_UNSUPPORTED",
   ...Object.values(AI_WORK_FAILURE_DEFINITIONS)
     .filter((entry) => entry.disposition === AI_WORK_FAILURE_DISPOSITION.CORRECTABLE)
     .map((entry) => entry.code),

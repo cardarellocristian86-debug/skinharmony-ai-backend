@@ -1989,7 +1989,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           FROM core_continuity_works w LEFT JOIN LATERAL (
             SELECT * FROM core_continuity_capsules WHERE tenant_id=w.tenant_id AND work_id=w.work_id
             ORDER BY created_at DESC LIMIT 1
-          ) c ON true WHERE w.tenant_id=$1 AND w.work_id=$2 FOR UPDATE`, [context.tenantId, context.workId]);
+          ) c ON true WHERE w.tenant_id=$1 AND w.work_id=$2 FOR UPDATE OF w`, [context.tenantId, context.workId]);
         const state = result.rows[0];
         if (!state) throw new Error("continuity_work_not_found");
         if (!state.capsule_id) throw new Error("continuity_capsule_required");

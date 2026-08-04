@@ -44,9 +44,15 @@ const V1_COMPATIBLE_IMPLEMENTATION_PIN = Object.freeze({
   horizontal_runtime_sha256:
     "e8dcf80cbf618c3707dc5061aad593cbdd70f3afc52d363dc6059097d098f253",
   core_branch_network_sha256:
-    "28018fa5a628bff2732ef82b579a9b2411365de8645e90bee01916141495de0d",
+    "6029d12e05ab86df5155ff5ff3befb575387a5aa154f6635f14c5d5135f334b5",
 });
-const V2_EXCLUDED_BRANCH_IDS = new Set(["tenant_work_coordination"]);
+// These coordination branches remain available in the live V1 catalog, but
+// cannot enter the frozen Deep V2 corpus until their full research coverage
+// and generated fixtures have been explicitly added.
+const V2_EXCLUDED_BRANCH_IDS = new Set([
+  "tenant_work_coordination",
+  "agent_change_interlock",
+]);
 function parseArgs(argv) {
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
