@@ -111,6 +111,10 @@ test("Suite UI blueprint returns only structural browser evidence and redacts re
             hierarchy: { headings: [{ level: 1, count: 1 }], landmarks: 4 },
             components: { links: 12, buttons: 3, forms: 1, controls: { inputs: 2, textarea: 0, select: 0, buttons: 3 }, media: 5 },
             behavior_signals: { client_scripts: 8, has_search: false, has_live_regions: false },
+            navigation: [{ region: "header", items: 6, buttons: 1, list_groups: 1, nested_groups: 2, disclosure_controls: 1, mobile_toggle_present: true, copied_label: "Navigation" }],
+            ctas: [{ kind: "link", region: "main", action: "navigation", target_scope: "internal", has_accessible_name: true, has_icon: false, disabled: false, text_length: 12, copied_text: "Shop now" }],
+            page_sections: [{ kind: "section", region: "main", heading_level: 2, child_sections: 0, links: 2, buttons: 1, media: 1, copied_heading: "Hero" }],
+            forms: [{ region: "footer", inputs: 1, textareas: 0, selects: 0, required_controls: 1, submit_controls: 1, has_search: false, copied_action: "/subscribe" }],
             complexity: { dom_elements: 200 },
             forbidden_page_text: "Do not copy this page",
           },
@@ -131,6 +135,12 @@ test("Suite UI blueprint returns only structural browser evidence and redacts re
   assert.deepEqual(calls[0].actions, []);
   assert.equal(payload.references[0].reference_url, "https://example.test/landing");
   assert.equal(payload.references[0].structure.forbidden_page_text, undefined);
+  assert.equal(payload.references[0].structure.navigation[0].items, 6);
+  assert.equal(payload.references[0].structure.navigation[0].copied_label, undefined);
+  assert.equal(payload.references[0].structure.ctas[0].action, "navigation");
+  assert.equal(payload.references[0].structure.ctas[0].copied_text, undefined);
+  assert.equal(payload.references[0].structure.page_sections[0].heading_level, 2);
+  assert.equal(payload.references[0].structure.forms[0].submit_controls, 1);
   assert.equal(JSON.stringify(payload).includes("This must never leave"), false);
   assert.equal(JSON.stringify(payload).includes("never-returned"), false);
   assert.equal(payload.guardrails.third_party_code_copied, false);
