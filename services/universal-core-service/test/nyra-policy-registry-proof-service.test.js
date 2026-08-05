@@ -140,3 +140,19 @@ test("fails closed after challenge expiry and when env key material is incomplet
   assert.equal((await unavailable.status()).ready, false);
   await assert.rejects(unavailable.prepare(input), /policy_proof_unavailable/);
 });
+
+test("accepts Render-safe escaped PEM and base64 DER key material", async () => {
+  const core = crypto.generateKeyPairSync("ed25519");
+  const nyra = crypto.generateKeyPairSync("ed25519");
+  const pool = new FakePool();
+  const env = {
+    CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID: "core-policy-key-v1",
+    CORE_NYRA_POLICY_REGISTRY_NYRA_KEY_ID: "nyra-policy-key-v1",
+    CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY: core.privateKey.export({ type: "pkcs8", format: "pem" }).replaceAll("\n", "\\n"),
+    CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY: nyra.publicKey.export({ type: "spki", format: "der" }).toString("base64"),
+    CORE_NYRA_POLICY_REGISTRY_RECEIPT_SECRET: "r".repeat(64),
+    CORE_NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST: "codexai",
+  };
+  const service = createNyraPolicyRegistryProofService({ pool, env });
+  assert.equal((await service.status()).ready, true);
+});

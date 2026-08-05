@@ -30,6 +30,20 @@ function same(left, right) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function keyObject(value, kind) {
+  const raw = String(value || "").trim();
+  if (!raw) throw new Error("key_material_missing");
+  const normalized = raw.replaceAll("\\n", "\n").replaceAll("\\r", "\r").trim();
+  if (normalized.includes("-----BEGIN")) return kind === "private"
+    ? crypto.createPrivateKey(normalized)
+    : crypto.createPublicKey(normalized);
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(normalized)) throw new Error("key_material_encoding_invalid");
+  const der = Buffer.from(normalized.replaceAll("-", "+").replaceAll("_", "/"), "base64");
+  return kind === "private"
+    ? crypto.createPrivateKey({ key: der, format: "der", type: "pkcs8" })
+    : crypto.createPublicKey({ key: der, format: "der", type: "spki" });
+}
+
 export function createNyraPolicyRegistryProofService({ pool, env = process.env, now = () => Date.now() } = {}) {
   if (!pool?.query) throw new Error("policy_proof_postgres_required");
   const coreKeyId = String(env.CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID || "").trim();
@@ -39,9 +53,9 @@ export function createNyraPolicyRegistryProofService({ pool, env = process.env, 
   const ttlMs = Math.max(30_000, Math.min(900_000, Number(env.CORE_NYRA_POLICY_REGISTRY_PROOF_TTL_MS || 300_000)));
   let corePrivate; let corePublic; let nyraPublic; let configError = null;
   try {
-    corePrivate = crypto.createPrivateKey(String(env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY || ""));
+    corePrivate = keyObject(env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY, "private");
     corePublic = crypto.createPublicKey(corePrivate);
-    nyraPublic = crypto.createPublicKey(String(env.CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY || ""));
+    nyraPublic = keyObject(env.CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY, "public");
     if (corePrivate.asymmetricKeyType !== "ed25519" || nyraPublic.asymmetricKeyType !== "ed25519" ||
       !coreKeyId || !nyraKeyId || coreKeyId === nyraKeyId || secret.length < 32 || !allowlist.size) throw new Error("configuration_invalid");
   } catch (error) { configError = String(error?.message || "configuration_invalid"); }
