@@ -6,8 +6,8 @@ const SCHEMA_VERSION = "nyra_reliability_layer_v1";
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/iu;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
 const SOURCE_TYPES = new Set([
-  "chat", "web", "email", "pdf", "document", "mcp", "mcp_output", "ocr", "api",
-  "browser", "browser_dom", "browser_screenshot", "tool", "tool_output", "other", "unknown",
+  "chat", "web", "email", "pdf", "document", "mcp_output", "tool_output",
+  "browser_dom", "browser_screenshot", "other",
 ]);
 const DATA_LABELS = new Set(["public", "internal", "personal_data", "sensitive", "secret", "tool_output", "web", "email", "document", "chat", "untrusted"]);
 const ACTION_TYPES = new Set(["read", "write", "navigate", "click", "fill", "submit", "publish", "deploy", "delete", "payment", "external_message", "other"]);
@@ -303,7 +303,7 @@ export function wrapUntrustedContent(input = {}, { now = () => new Date().toISOS
   const source = object(input, "untrusted_content");
   const content = String(source.content ?? "");
   if (!content || Buffer.byteLength(content, "utf8") > MAX_CONTENT_BYTES) throw new Error("untrusted_content_invalid");
-  const sourceType = requireText(source.source_type || "unknown", "source_type", 32).toLowerCase();
+  const sourceType = requireText(source.source_type || "other", "source_type", 32).toLowerCase();
   if (!SOURCE_TYPES.has(sourceType)) throw new Error("untrusted_source_type_invalid");
   const sourceId = optionalText(source.source_id, "source_id", 160);
   const sourceUri = optionalText(source.source_uri, "source_uri", 2_000);
@@ -659,7 +659,7 @@ export function createNyraReliabilityRuntime({ store, now = () => new Date().toI
         status: "verified",
         source_ids: source_ids ? uniqueTexts(source_ids, "source_ids", 64) : current.source_ids,
         evidence_ids: evidence_ids ? uniqueTexts(evidence_ids, "evidence_ids", 64) : current.evidence_ids,
-        verifier_ids: [...new Set([...current.verifier_ids, requireText(verifier_id, "verifier_id", 160)])],
+        verifier_ids: [...new Set([...current.verifier_ids, requireText(authenticated_verifier_id || verifier_id, "verifier_id", 160)])],
         freshness: freshness ? normalizeClaim({ text: current.text, source_ids: current.source_ids, evidence_ids: current.evidence_ids, verifier_ids: current.verifier_ids, freshness }, tenantId, nowMs()).freshness : current.freshness,
       };
       const checked = normalizeClaim(next, tenantId, nowMs(), { allowVerified: true });

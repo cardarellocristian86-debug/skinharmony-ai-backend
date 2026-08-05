@@ -69,8 +69,10 @@ test("claim ledger persists, verifies independently and rejects contradictions",
     tenant_id: tenant,
     claim_id: claim.claim_id,
     verifier_id: "verifier",
+    authenticated_verifier_id: "trusted_verifier",
   });
   assert.equal(verified.status, "verified");
+  assert.ok(verified.verifier_ids.includes("trusted_verifier"));
   assert.equal((await rel.getClaim({ tenant_id: tenant, claim_id: "claim_test" })).status, "verified");
 
   await assert.rejects(() => rel.appendClaim({
