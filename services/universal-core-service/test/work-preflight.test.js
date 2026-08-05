@@ -91,6 +91,42 @@ test("routes GitHub to the connected app and prevents the previous CLI error", (
   assert.equal(result.tool_routing.release_policy.deploy_requires_owner_confirmation, true);
 });
 
+test("routes interactive web work to the governed Web Agent", () => {
+  const result = fixture({
+    requestText: "Apri una pagina dinamica, fai click sul form ed esegui JavaScript con screenshot",
+    targetSystem: "web",
+    operationType: "web_compatibility_execute",
+    toolName: "web_compatibility_execute",
+  });
+  assert.equal(result.tool_routing.preferred_route.id, "web_compatibility_execute");
+  assert.equal(result.tool_routing.preferred_route.status, "available");
+  assert.equal(result.tool_routing.required_tool, "web_compatibility_execute");
+  assert(result.tool_routing.prohibited_when_preferred_available.includes("unbounded_browser"));
+});
+
+test("explicit Web Agent tool selection wins over incidental PR context", () => {
+  const result = fixture({
+    requestText: "Verifica la PR 207 e attiva web_compatibility_execute su example.com",
+    targetSystem: "github",
+    operationType: "web_compatibility_execute",
+    toolName: "web_compatibility_execute",
+  });
+  assert.equal(result.tool_routing.preferred_route.id, "web_compatibility_execute");
+  assert.equal(result.tool_routing.required_tool, "web_compatibility_execute");
+});
+
+test("routes reference-site UI cloning requests to the guarded Suite blueprint", () => {
+  const result = fixture({
+    requestText: "Clona la struttura UI di un sito di riferimento con immagini e testi miei",
+    targetSystem: "suite",
+    operationType: "suite_web_ui_blueprint",
+    toolName: "suite_web_ui_blueprint",
+  });
+  assert.equal(result.tool_routing.preferred_route.id, "suite_web_ui_blueprint");
+  assert.equal(result.tool_routing.required_tool, "suite_web_ui_blueprint");
+  assert(result.tool_routing.prohibited_when_preferred_available.includes("copy_third_party_html"));
+});
+
 test("fails closed when the tenant memory provider has not supplied context", () => {
   const result = fixture({ memoryContext: null, requestText: "Analizza il lavoro" });
   assert.equal(result.state, "memory_recall_required");

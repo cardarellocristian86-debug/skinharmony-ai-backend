@@ -11,6 +11,8 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "core_semantic_select",
   "core_capability_read",
   "core_capability_invoke",
+  "web_compatibility_manifest",
+  "web_compatibility_execute",
 ]);
 
 const DIRECT_ONLY = new Set(COMPACT_MCP_TOOL_NAMES);

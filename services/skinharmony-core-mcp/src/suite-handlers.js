@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { createSuiteClient, SuiteClientError } from "./suite-client.js";
 
 const CREDENTIAL_KEY = /(password|secret|token|cookie|authorization|api.?key|client_secret|access_token|refresh_token)/i;
@@ -68,6 +69,232 @@ function branchArchitecture(payload) {
 function runbookCatalog(payload) {
   const source = payload?.catalog || payload || {};
   return sanitizeSuiteValue(source) || {};
+}
+
+function publicReferenceUrl(value) {
+  const url = new URL(String(value || ""));
+  if (!/^https?:$/.test(url.protocol)) throw new Error("suite_web_ui_blueprint_url_scheme_not_allowed");
+  // Query strings can contain identifiers or signed links.  The reference is
+  // still fetched as supplied, but the Suite result never persists or echoes it.
+  url.username = "";
+  url.password = "";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function referenceFingerprint(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function boundedCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) ? Math.max(0, Math.min(Math.floor(count), 20_000)) : 0;
+}
+
+function boundedEntries(value, maximum, mapper) {
+  return (Array.isArray(value) ? value : []).slice(0, maximum).map(mapper).filter(Boolean);
+}
+
+function oneOf(value, values, fallback) {
+  return values.includes(value) ? value : fallback;
+}
+
+function safeUiStructure(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const regions = source.layout_regions || {};
+  const components = source.components || {};
+  const controls = components.controls || {};
+  const behavior = source.behavior_signals || {};
+  const headingSource = Array.isArray(source.hierarchy?.headings) ? source.hierarchy.headings : [];
+  return {
+    layout_regions: Object.fromEntries(["header", "navigation", "main", "section", "article", "aside", "footer"]
+      .map((key) => [key, boundedCount(regions[key])])),
+    hierarchy: {
+      headings: headingSource.slice(0, 6).map((entry) => ({
+        level: Math.max(1, Math.min(6, boundedCount(entry?.level))),
+        count: boundedCount(entry?.count),
+      })).filter((entry) => entry.level > 0 && entry.count > 0),
+      landmarks: boundedCount(source.hierarchy?.landmarks),
+    },
+    components: {
+      links: boundedCount(components.links), buttons: boundedCount(components.buttons), forms: boundedCount(components.forms),
+      controls: Object.fromEntries(["inputs", "textarea", "select", "buttons"].map((key) => [key, boundedCount(controls[key])])),
+      dialogs: boundedCount(components.dialogs), tabs: boundedCount(components.tabs), accordions: boundedCount(components.accordions),
+      tables: boundedCount(components.tables), lists: boundedCount(components.lists), cards_like: boundedCount(components.cards_like), media: boundedCount(components.media),
+    },
+    behavior_signals: {
+      client_scripts: boundedCount(behavior.client_scripts),
+      inline_forms: boundedCount(behavior.inline_forms),
+      has_search: behavior.has_search === true,
+      has_live_regions: behavior.has_live_regions === true,
+    },
+    navigation: boundedEntries(source.navigation, 24, (entry) => ({
+      region: oneOf(entry?.region, ["header", "main", "footer", "aside", "other"], "other"),
+      items: boundedCount(entry?.items),
+      buttons: boundedCount(entry?.buttons),
+      list_groups: boundedCount(entry?.list_groups),
+      nested_groups: boundedCount(entry?.nested_groups),
+      disclosure_controls: boundedCount(entry?.disclosure_controls),
+      mobile_toggle_present: entry?.mobile_toggle_present === true,
+    })),
+    ctas: boundedEntries(source.ctas, 80, (entry) => ({
+      kind: oneOf(entry?.kind, ["link", "button", "submit"], "button"),
+      region: oneOf(entry?.region, ["header", "main", "footer", "aside", "other"], "other"),
+      action: oneOf(entry?.action, ["navigation", "submit", "command"], "command"),
+      target_scope: oneOf(entry?.target_scope, ["internal", "external", "fragment", "none"], "none"),
+      has_accessible_name: entry?.has_accessible_name === true,
+      has_icon: entry?.has_icon === true,
+      disabled: entry?.disabled === true,
+      text_length: Math.min(boundedCount(entry?.text_length), 500),
+    })),
+    page_sections: boundedEntries(source.page_sections, 60, (entry) => ({
+      kind: oneOf(entry?.kind, ["header", "navigation", "main", "section", "article", "aside", "footer", "other"], "other"),
+      region: oneOf(entry?.region, ["header", "main", "footer", "aside", "other"], "other"),
+      heading_level: Math.min(6, boundedCount(entry?.heading_level)),
+      child_sections: boundedCount(entry?.child_sections),
+      links: boundedCount(entry?.links),
+      buttons: boundedCount(entry?.buttons),
+      media: boundedCount(entry?.media),
+    })),
+    forms: boundedEntries(source.forms, 24, (entry) => ({
+      region: oneOf(entry?.region, ["header", "main", "footer", "aside", "other"], "other"),
+      inputs: boundedCount(entry?.inputs),
+      textareas: boundedCount(entry?.textareas),
+      selects: boundedCount(entry?.selects),
+      required_controls: boundedCount(entry?.required_controls),
+      submit_controls: boundedCount(entry?.submit_controls),
+      has_search: entry?.has_search === true,
+    })),
+    complexity: { dom_elements: boundedCount(source.complexity?.dom_elements) },
+  };
+}
+
+const UI_STRUCTURE_SCRIPT = `(() => {
+  const count = (selector) => Math.min(document.querySelectorAll(selector).length, 9999);
+  const regionOf = (element) => {
+    if (element.closest('header')) return 'header';
+    if (element.closest('main')) return 'main';
+    if (element.closest('footer')) return 'footer';
+    if (element.closest('aside')) return 'aside';
+    return 'other';
+  };
+  const targetScope = (element) => {
+    if (element.tagName !== 'A') return 'none';
+    const href = element.getAttribute('href') || '';
+    if (href.startsWith('#')) return 'fragment';
+    try { return new URL(href, location.href).origin === location.origin ? 'internal' : 'external'; } catch { return 'none'; }
+  };
+  const headings = [1, 2, 3, 4, 5, 6].map((level) => ({ level, count: count('h' + level) }))
+    .filter((entry) => entry.count > 0);
+  const controls = {
+    inputs: count('input'), textarea: count('textarea'), select: count('select'),
+    buttons: count('button, input[type="submit"], input[type="button"]'),
+  };
+  const navigation = [...document.querySelectorAll('nav, [role="navigation"]')].slice(0, 24).map((element) => ({
+    region: regionOf(element), items: element.querySelectorAll('a[href]').length,
+    buttons: element.querySelectorAll('button').length, list_groups: element.querySelectorAll('ul, ol').length,
+    nested_groups: element.querySelectorAll('ul ul, ul ol, ol ul, ol ol').length,
+    disclosure_controls: element.querySelectorAll('[aria-expanded], details > summary').length,
+    mobile_toggle_present: Boolean(element.querySelector('button[aria-controls], [aria-label*="menu" i], [class*="hamburger" i]')),
+  }));
+  const ctas = [...document.querySelectorAll('a[href], button, input[type="submit"], input[type="button"]')].slice(0, 80).map((element) => {
+    const isSubmit = element.matches('input[type="submit"], button[type="submit"]');
+    const isLink = element.tagName === 'A';
+    return {
+      kind: isSubmit ? 'submit' : (isLink ? 'link' : 'button'), region: regionOf(element),
+      action: isSubmit ? 'submit' : (isLink ? 'navigation' : 'command'), target_scope: targetScope(element),
+      has_accessible_name: Boolean((element.getAttribute('aria-label') || '').trim() || (element.textContent || '').trim()),
+      has_icon: Boolean(element.querySelector('svg, img, [role="img"]')), disabled: element.matches(':disabled, [aria-disabled="true"]'),
+      text_length: Math.min(((element.textContent || element.getAttribute('value') || '').trim()).length, 500),
+    };
+  });
+  const pageSections = [...document.querySelectorAll('header, nav, main, main section, main article, aside, footer')].slice(0, 60).map((element) => {
+    const tag = element.tagName.toLowerCase();
+    const heading = element.querySelector(':scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > h5, :scope > h6, h1, h2, h3, h4, h5, h6');
+    return {
+      kind: ['header', 'nav', 'main', 'section', 'article', 'aside', 'footer'].includes(tag) ? (tag === 'nav' ? 'navigation' : tag) : 'other',
+      region: regionOf(element), heading_level: heading ? Number(heading.tagName.slice(1)) : 0,
+      child_sections: element.querySelectorAll(':scope > section, :scope > article').length,
+      links: element.querySelectorAll('a[href]').length, buttons: element.querySelectorAll('button, input[type="submit"], input[type="button"]').length,
+      media: element.querySelectorAll('img, video, picture, svg').length,
+    };
+  });
+  const forms = [...document.querySelectorAll('form')].slice(0, 24).map((element) => ({
+    region: regionOf(element), inputs: element.querySelectorAll('input').length, textareas: element.querySelectorAll('textarea').length,
+    selects: element.querySelectorAll('select').length, required_controls: element.querySelectorAll('[required], [aria-required="true"]').length,
+    submit_controls: element.querySelectorAll('button[type="submit"], input[type="submit"]').length,
+    has_search: Boolean(element.querySelector('input[type="search"], [role="search"]')),
+  }));
+  return {
+    layout_regions: {
+      header: count('header'), navigation: count('nav'), main: count('main'), section: count('section'),
+      article: count('article'), aside: count('aside'), footer: count('footer'),
+    },
+    hierarchy: { headings, landmarks: count('[role="banner"], [role="navigation"], [role="main"], [role="contentinfo"]') },
+    components: {
+      links: count('a[href]'), buttons: controls.buttons, forms: count('form'), controls,
+      dialogs: count('dialog, [role="dialog"]'), tabs: count('[role="tab"]'), accordions: count('details, [aria-expanded]'),
+      tables: count('table'), lists: count('ul, ol'), cards_like: count('article, [role="article"]'),
+      media: count('img, video, picture, svg'),
+    },
+    behavior_signals: {
+      client_scripts: Math.min(document.scripts.length, 9999),
+      inline_forms: count('form'), has_search: Boolean(document.querySelector('input[type="search"], [role="search"]')),
+      has_live_regions: Boolean(document.querySelector('[aria-live], [role="alert"], [role="status"]')),
+    },
+    navigation, ctas, page_sections: pageSections, forms,
+    complexity: { dom_elements: Math.min(document.getElementsByTagName('*').length, 20000) },
+  };
+})()`;
+
+async function createWebUiBlueprint(browserRuntime, args, identity) {
+  if (!browserRuntime?.execute) throw new Error("suite_web_ui_blueprint_browser_unavailable");
+  const references = await Promise.all(args.reference_urls.map(async (url) => {
+    const safeUrl = publicReferenceUrl(url);
+    const runtime = await browserRuntime.execute({
+      tenantId: identity.tenantId,
+      url,
+      actions: [],
+      javascript: UI_STRUCTURE_SCRIPT,
+      screenshot: false,
+      waitUntil: "domcontentloaded",
+    });
+    const structure = safeUiStructure(runtime?.javascript);
+    return {
+      reference_url: safeUrl,
+      origin: new URL(safeUrl).origin,
+      fingerprint: referenceFingerprint({ reference_url: safeUrl, structure }),
+      structure,
+    };
+  }));
+  const ownContentSlots = (args.own_content_slots || []).map((slot) => ({
+    slot_id: safeText(slot.slot_id, 80),
+    kind: slot.kind,
+    required: slot.required === true,
+  }));
+  return {
+    ok: true,
+    schema_version: "suite_web_ui_blueprint_v1",
+    tenant_id: identity.tenantId,
+    references,
+    own_content_contract: {
+      slots: ownContentSlots,
+      accepted_asset_kinds: ["own_image", "own_logo", "own_icon", "own_video"],
+      accepted_copy_kinds: ["own_heading", "own_body", "own_cta", "own_product_data"],
+    },
+    next_action: "Use this structure-only blueprint with first-party content and assets in a separate approved UI build request.",
+    guardrails: {
+      tenant_scoped: true,
+      proposal_only: true,
+      execution_allowed: false,
+      third_party_text_copied: false,
+      third_party_assets_copied: false,
+      third_party_code_copied: false,
+      screenshots_returned: false,
+      query_and_fragment_redacted: true,
+    },
+  };
 }
 
 export function createSuiteHandlers(config, options = {}) {
@@ -217,7 +444,12 @@ export function createSuiteHandlers(config, options = {}) {
       };
       return result(payload, `Suite runbook ${args.runbook_id} previewed; nothing was queued or executed.`);
     },
+
+    suite_web_ui_blueprint: async (args, identity) => {
+      const payload = await createWebUiBlueprint(options.browserRuntime, args, identity);
+      return result(payload, `Suite UI blueprint prepared from ${payload.references.length} reference page(s); no third-party content or code was copied.`);
+    },
   };
 }
 
-export const suiteHandlerInternals = Object.freeze({ branchArchitecture, normalizedCockpit, runbookCatalog, safeText });
+export const suiteHandlerInternals = Object.freeze({ branchArchitecture, normalizedCockpit, runbookCatalog, safeText, publicReferenceUrl, createWebUiBlueprint, safeUiStructure });

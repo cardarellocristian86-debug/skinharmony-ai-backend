@@ -30,9 +30,11 @@ import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
 import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
 import { createWebTransport, webCompatibilityManifest } from "./web-agent-compatibility.js";
+import { createBrowserRuntime } from "./web-browser-runtime.js";
 
 const config = loadConfig();
 const webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowedOrigins });
+const browserRuntime = createBrowserRuntime({ wsEndpoint: config.webBrowserWsUrl, executablePath: config.webBrowserExecutablePath, gatewayUrl: config.webBrowserGatewayUrl, gatewayKey: config.webBrowserGatewayKey, allowedOrigins: config.webAgentAllowedOrigins });
 const hostNativeContinuityTools = new Set([
   "work_continuity_native_plan",
   "work_continuity_native_bind",
@@ -163,7 +165,18 @@ const researchCortex = config.researchCortexRoot
       memoryFabric,
     })
   : null;
-const suiteHandlers = createSuiteHandlers(config);
+const suiteHandlers = createSuiteHandlers(config, { browserRuntime });
+
+function safeWebCompatibilityFailure(error) {
+  const candidate = String(error?.code || error?.message || "web_compatibility_execution_failed")
+    .trim()
+    .toLowerCase();
+  // Do not propagate upstream text: gateway, database and network errors can
+  // include infrastructure details. Known bounded error identifiers remain
+  // actionable to an MCP client and preserve the existing fail-closed path.
+  if (/^[a-z][a-z0-9_]{2,119}$/.test(candidate)) return candidate;
+  return "web_compatibility_execution_failed";
+}
 
 function summarizeToolRequest(toolName, args = {}) {
   return String(
@@ -401,20 +414,61 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
   }
 }
 
+async function governedSuiteWebUiBlueprint(args, identity) {
+  const gate = await coreHandlers.core_gate_action({
+    action_label: "Create a tenant-scoped Suite UI reference blueprint",
+    action_type: "suite.web_ui_blueprint",
+    target: String(args.reference_urls?.[0] || "").slice(0, 512),
+    operation_class: "owner_confirmed_governed_action",
+    external_side_effect: false,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    configuration_changes: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    provider_execution: false,
+    bounded_scope: true,
+    low_impact: true,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: Boolean(decisionLedger),
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+    idempotency_key: args.idempotency_key || crypto.randomUUID(),
+  }, identity);
+  const authorization = gate?.structuredContent?.authorization || {};
+  if (authorization.allowed !== true) throw new Error("suite_web_ui_blueprint_core_gate_denied");
+  return suiteHandlers.suite_web_ui_blueprint(args, identity);
+}
+
 const baseHandlers = {
   web_compatibility_manifest: async (_args, identity) => ({
     structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
     content: [{ type: "text", text: JSON.stringify({ ok: true, manifest: webCompatibilityManifest() }) }],
   }),
   web_compatibility_execute: async (args, identity) => {
-    const method = String(args.method || "GET").toUpperCase();
-    const hasBody = args.body !== undefined && args.body !== null;
-    const gate = await coreHandlers.core_gate_action({
-      action_label: "Execute allowlisted web compatibility request",
-      action_type: "web.compatibility.request",
+    try {
+      const method = String(args.method || "GET").toUpperCase();
+      const hasBody = args.body !== undefined && args.body !== null;
+      const browserActions = args.browser?.actions || [];
+      // A plain page observation has no caller-provided script, mutation or
+      // interaction.  Treating it as a tenant-scoped read lets a connected AI
+      // verify a public page/DOM/screenshot before requesting owner approval
+      // for interactive browser work.  Any JS, form action, POST or click
+      // remains on the stricter owner-confirmed route below.
+      const observationOnly =
+        ["GET", "HEAD"].includes(method) &&
+        !hasBody &&
+        !String(args.javascript || "").trim() &&
+        Array.isArray(browserActions) && browserActions.length === 0;
+      const gate = await coreHandlers.core_gate_action({
+      action_label: observationOnly ? "Observe a public web page" : "Execute governed web compatibility request",
+      action_type: observationOnly ? "web.compatibility.observe" : "web.compatibility.request",
       target: String(args.url || "").slice(0, 512),
-      operation_class: "owner_confirmed_governed_action",
-      external_side_effect: hasBody || !["GET", "HEAD"].includes(method),
+      operation_class: observationOnly ? "tenant_scoped_read" : "owner_confirmed_governed_action",
+      external_side_effect: observationOnly ? false : hasBody || !["GET", "HEAD"].includes(method),
       contains_customer_data: false,
       contains_secret: false,
       secret_value_transmitted: false,
@@ -431,14 +485,46 @@ const baseHandlers = {
       target_authority_verified: true,
       actor_authorized_for_target: true,
       idempotency_key: args.idempotency_key || crypto.randomUUID(),
-    }, identity);
-    const authorization = gate?.structuredContent?.authorization || {};
-    if (authorization.allowed !== true) throw new Error("web_compatibility_core_gate_denied");
-    const result = await webTransport.request({ url: args.url, method, headers: args.headers || {}, body: args.body });
-    const payload = { ok: true, tenant_id: identity.tenantId, core_gate: { allowed: true, decision_id: authorization.decision_id || null }, result };
-    return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+      }, identity);
+      const authorization = gate?.structuredContent?.authorization || {};
+      if (authorization.allowed !== true) {
+        throw new Error(
+          authorization.confirmation_required === true && authorization.confirmation_satisfied !== true
+            ? "web_compatibility_owner_confirmation_required"
+            : "web_compatibility_core_gate_denied",
+        );
+      }
+      const result = args.browser
+        ? await browserRuntime.execute({
+          tenantId: identity.tenantId,
+          url: args.url,
+          actions: browserActions,
+          javascript: args.javascript || "",
+          screenshot: args.browser.screenshot === true,
+          waitUntil: args.browser.wait_until || "domcontentloaded",
+          })
+        : await webTransport.request({
+          url: args.url,
+          method,
+          headers: args.headers || {},
+          body: args.body,
+          javascript: args.javascript || "",
+          javascriptTimeoutMs: args.javascript_timeout_ms,
+          });
+      const payload = {
+        ok: true,
+        tenant_id: identity.tenantId,
+        execution_mode: observationOnly ? "tenant_scoped_observation" : "owner_confirmed_interaction",
+        core_gate: { allowed: true, decision_id: authorization.decision_id || null },
+        result,
+      };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    } catch (error) {
+      const failure = new Error(safeWebCompatibilityFailure(error));
+      failure.code = failure.message;
+      throw failure;
+    }
   },
-
   ...coreHandlers,
   work_preflight: async (args, identity) => {
     const result = await coreHandlers.work_preflight(args, identity);
@@ -449,6 +535,7 @@ const baseHandlers = {
   ...(memoryFabric ? createMemoryFabricHandlers(memoryFabric) : {}),
   ...(researchCortex ? createResearchHandlers(researchCortex) : {}),
   ...suiteHandlers,
+  suite_web_ui_blueprint: governedSuiteWebUiBlueprint,
   ...collaborationHandlers,
   ...(decisionLedger ? { decision_ledger_report: async (args, identity) => {
     const payload = { ok: true, report: await decisionLedger.report(identity.tenantId, args.days) };

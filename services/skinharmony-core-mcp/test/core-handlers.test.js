@@ -176,6 +176,39 @@ test("Core gate overwrites caller confirmation and tenant fields with verified i
   );
 });
 
+test("verified OAuth tenant owners can confirm only the governed browser routes", async () => {
+  const bodies = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ ok: true, authorization: { allowed: true } }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const owner = {
+    tenantId: "tenant-a", kind: "oauth", subject: "auth0|tenant-owner", role: "tenant_owner",
+    oauthOwnerElevated: true, ownerConfirmed: true, confirmationReference: "verified web confirmation",
+  };
+  await handlers.core_gate_action({
+    action_label: "Execute governed browser request", action_type: "web.compatibility.request",
+    operation_class: "owner_confirmed_governed_action", target: "https://example.com",
+    external_side_effect: false, contains_secret: false, cross_tenant: false,
+  }, owner);
+  await handlers.core_gate_action({
+    action_label: "Attempt unrelated write", action_type: "workspace.write_document",
+    operation_class: "owner_confirmed_governed_action", target: "workspace",
+    external_side_effect: false, contains_secret: false, cross_tenant: false,
+  }, owner);
+  assert.equal(bodies[0].owner_confirmed, true);
+  assert.equal(bodies[0].owner_context.owner_verified, true);
+  assert.equal(bodies[1].owner_confirmed, false);
+  assert.equal(bodies[1].owner_context.owner_verified, false);
+});
+
 test("bounded internal coordination never borrows owner identity or confirmation", async () => {
   let body;
   const handlers = createCoreHandlers({

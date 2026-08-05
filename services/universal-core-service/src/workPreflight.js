@@ -88,6 +88,28 @@ function toolRoute(text, capabilities = [], toolName = "") {
     ],
   };
 
+  // An explicit governed tool request is stronger evidence than incidental
+  // repository vocabulary in the surrounding work context (for example a PR
+  // number attached to a browser acceptance test).  Without this precedence,
+  // the GitHub route can incorrectly mask the requested browser capability.
+  if (toolName === "web_compatibility_execute" || /\bweb_compatibility_execute\b/.test(value)) {
+    return {
+      ...connectedFirst,
+      capability: "web_agent_browser",
+      preferred_route: {
+        id: "web_compatibility_execute",
+        status: "available",
+        reason: "È stata richiesta esplicitamente l'esecuzione nel browser Chromium governato.",
+      },
+      required_tool: "web_compatibility_execute",
+      prohibited_when_preferred_available: ["unbounded_browser", "manual_browser_authentication", "unscoped_web_fetch"],
+      fallback: {
+        id: "web_compatibility_manifest",
+        allowed_only_if: ["web_execution_not_authorized", "read_only_contract_required"],
+      },
+    };
+  }
+
   if (/(github|pull request|\bpr\b|repository|repo\b|commit|merge|branch)/.test(value)) {
     const available = hasCapability(capabilities, ["github", "pull_request", "repository"]);
     return {
@@ -109,6 +131,42 @@ function toolRoute(text, capabilities = [], toolName = "") {
         merge_requires_owner_confirmation: true,
         deploy_requires_core_verdict: "ALLOW",
         deploy_requires_owner_confirmation: true,
+      },
+    };
+  }
+
+  if (/(clona(?:re)?\s+(?:la\s+)?(?:ui|struttura|pagina)|ui\s*(?:blueprint|reference|riferimento)|(?:struttura|layout)\s+(?:di\s+)?(?:un\s+)?sito|reference\s*(?:site|page)|sito\s+di\s+riferimento)/.test(value)) {
+    return {
+      ...connectedFirst,
+      capability: "suite_web_ui_blueprint",
+      preferred_route: {
+        id: "suite_web_ui_blueprint",
+        status: "available",
+        reason: "La richiesta richiede una blueprint UI strutturale tenant-scoped: Chromium analizza la struttura, mentre testi, asset e codice di terzi restano esclusi.",
+      },
+      required_tool: "suite_web_ui_blueprint",
+      prohibited_when_preferred_available: ["copy_third_party_html", "copy_third_party_text", "copy_third_party_assets", "unbounded_browser"],
+      fallback: {
+        id: "web_compatibility_execute",
+        allowed_only_if: ["ui_blueprint_not_available", "interactive_diagnostic_required"],
+      },
+    };
+  }
+
+  if (/(\bweb\b|website|sito|pagina|browser|chromium|playwright|javascript|\bdom\b|cookie|service worker|screenshot|schermata|\bclick\b|\bfill\b|\btype\b|\bpress\b|form(?:\s|$)|modulo|naviga|apri.*(?:pagina|sito))/.test(value)) {
+    return {
+      ...connectedFirst,
+      capability: "web_agent_browser",
+      preferred_route: {
+        id: "web_compatibility_execute",
+        status: "available",
+        reason: "La richiesta richiede un browser Chromium governato con isolamento tenant, gate Core e audit.",
+      },
+      required_tool: "web_compatibility_execute",
+      prohibited_when_preferred_available: ["unbounded_browser", "manual_browser_authentication", "unscoped_web_fetch"],
+      fallback: {
+        id: "web_compatibility_manifest",
+        allowed_only_if: ["web_execution_not_authorized", "read_only_contract_required"],
       },
     };
   }

@@ -31,3 +31,41 @@ test("exposes bounded compatibility branches", () => {
   assert.deepEqual(webCompatibilityManifest().subbranches, ["browser_transport", "structured_ingest", "url_continuity"]);
 });
 
+
+test("executes bounded JavaScript against HTML and exposes controlled DOM/cookies", async () => {
+  const transport = createWebTransport({
+    allowedOrigins: ["https://example.test"],
+    fetchImpl: async (url, options) => ({
+      url,
+      status: 200,
+      headers: {
+        getSetCookie: () => ["sid=abc; Path=/"],
+        [Symbol.iterator]: function* () { yield ["content-type", "text/html"]; },
+      },
+      text: async () => "<title>Runtime</title><main id=\"app\">Hello</main>",
+    }),
+  });
+  const result = await transport.request({
+    url: "https://example.test/",
+    javascript: "document.cookie = 'agent=ready'; return { title: document.title, text: document.querySelector('#app').textContent, cookie: document.cookie };",
+  });
+  assert.equal(result.javascript.value.title, "Runtime");
+  assert.equal(result.javascript.value.text, "Hello");
+  assert.match(result.javascript.value.cookie, /agent=ready/);
+});
+
+test("rejects JavaScript that exceeds the bounded runtime", async () => {
+  const transport = createWebTransport({ fetchImpl: async () => ({ url: "https://example.test/", status: 200, headers: { [Symbol.iterator]: function*() {} }, text: async () => "" }) });
+  await assert.rejects(
+    transport.request({ url: "https://example.test/", javascript: "x".repeat(100001) }),
+    (error) => error.code === "web_javascript_too_large",
+  );
+});
+
+test("fails closed when a full browser is not configured", async () => {
+  const { createBrowserRuntime } = await import("../src/web-browser-runtime.js");
+  await assert.rejects(
+    createBrowserRuntime().execute({ tenantId: "tenant", url: "https://example.test/" }),
+    (error) => error.code === "web_browser_not_configured",
+  );
+});
