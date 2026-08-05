@@ -292,6 +292,12 @@ export function loadConfig(env = process.env) {
     300,
     "AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS",
   );
+  const environmentDelegationKey = String(env.MCP_ENVIRONMENT_DELEGATION_KEY || "").trim();
+  const environmentRoutingRequired = flag(env.MCP_ENVIRONMENT_ROUTING_REQUIRED, false);
+  const environmentDelegationReceiverEnabled = flag(env.MCP_ENVIRONMENT_DELEGATION_RECEIVER_ENABLED, false);
+  const stagingMcpUrl = url(env.MCP_STAGING_MCP_URL, "MCP_STAGING_MCP_URL");
+  if ((environmentRoutingRequired || environmentDelegationReceiverEnabled) && Buffer.byteLength(environmentDelegationKey, "utf8") < 32) throw new Error("MCP_ENVIRONMENT_DELEGATION_KEY must contain at least 32 bytes when environment routing is enabled");
+  if (environmentRoutingRequired && !stagingMcpUrl) throw new Error("MCP_STAGING_MCP_URL is required when environment routing is enabled");
   // Missing production prerequisites are reported by the local readiness
   // endpoint. Authentication itself still fails closed, while keeping the
   // process alive lets Render observe an explicit 503 and coded blocker.
@@ -302,6 +308,10 @@ export function loadConfig(env = process.env) {
     port: Number(env.PORT || 8790),
     publicUrl,
     resource: `${publicUrl}/mcp`,
+    environmentRoutingRequired,
+    environmentDelegationReceiverEnabled,
+    environmentDelegationKey,
+    stagingMcpUrl,
     auth0Issuer,
     auth0Audience,
     jwksUri: auth0Issuer ? `${auth0Issuer}/.well-known/jwks.json` : "",
