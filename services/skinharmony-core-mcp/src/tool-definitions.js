@@ -1044,6 +1044,11 @@ export const TOOLS = [
   }, ["record_id", "verdict", "rationale"]), ["core:govern"], false, false),
   tool("nyra_research_distillation_status", "Read Research Distillation status", "Read the tenant-bound Core mode, policy version, allowlist decision and shadow metrics. This never authorizes research or persistence.", object(), ["core:read"]),
   tool("nyra_research_airlock_status", "Read Research Airlock status", "Read the tenant-scoped Airlock readiness, PostgreSQL state backend, narrow Core/Nyra enforcement overlay, metrics and explicit ChatGPT host-tool boundary.", object(), ["core:read"]),
+  tool("nyra_research_airlock_bootstrap", "Start a public-only research Airlock", "Automatically issue and consume the short-lived Core plan capability for the authenticated tenant/session. The capability never leaves the server, is single-use and is bound to the exact tenant, project, work and session.", object({
+    work_binding: researchAirlockWorkBinding,
+    source_urls: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: { type: "string", format: "uri", maxLength: 2_048 } },
+    ttl_seconds: { type: "integer", minimum: 300, maximum: 3_600 },
+  }, ["work_binding", "source_urls"]), ["core:govern"], false, false, { ownerConfirmationRequired: false }),
   tool("nyra_research_airlock_plan", "Issue a public-only research plan", "Make this the first Nyra/Core work action in a fresh logical session. Universal Core validates exact HTTPS source URLs, computes the immutable plan digest and returns a short-lived single-use plan capability. Any earlier private or unclassified Nyra/Core tool use permanently prevents Airlock opening in that session.", object({
     work_binding: researchAirlockWorkBinding,
     source_urls: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: { type: "string", format: "uri", maxLength: 2_048 } },

@@ -39,6 +39,7 @@ const ALWAYS_ALLOWED_TOOLS = new Set([
 ]);
 const PREOPEN_SAFE_TOOLS = new Set([
   ...ALWAYS_ALLOWED_TOOLS,
+  "nyra_research_airlock_bootstrap",
   "nyra_research_airlock_plan",
   "nyra_research_airlock_open",
 ]);

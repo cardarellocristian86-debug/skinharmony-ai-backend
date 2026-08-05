@@ -26,6 +26,7 @@ test("MCP exposes the server-side Airlock FSM and binds the authenticated logica
   const planCapability = `rap_${"0".repeat(8)}-${"0".repeat(4)}-${"0".repeat(4)}-${"0".repeat(4)}-${"0".repeat(12)}.${"a".repeat(64)}`;
 
   await handlers.nyra_research_airlock_status({}, identity);
+  await handlers.nyra_research_airlock_bootstrap({ work_binding: supplied, source_urls: ["https://www.nist.gov/ai"] }, identity);
   await handlers.nyra_research_airlock_plan({ work_binding: supplied, source_urls: ["https://www.nist.gov/ai"] }, identity);
   await handlers.nyra_research_airlock_open({ work_binding: supplied, plan_capability: planCapability }, identity);
   await handlers.nyra_research_airlock_discover({ work_binding: supplied, url: "https://www.nist.gov/", method: "GET" }, identity);
@@ -35,6 +36,8 @@ test("MCP exposes the server-side Airlock FSM and binds the authenticated logica
 
   assert.deepEqual(calls.map((call) => new URL(call.url).pathname), [
     "/v1/research/airlock/status",
+    "/v1/research/airlock/plan",
+    "/v1/research/airlock/work",
     "/v1/research/airlock/plan",
     "/v1/research/airlock/work",
     "/v1/research/airlock/discover",
@@ -52,6 +55,7 @@ test("MCP exposes the server-side Airlock FSM and binds the authenticated logica
 test("Airlock definitions never accept raw documents or caller-claimed egress booleans", () => {
   const names = [
     "nyra_research_airlock_status",
+    "nyra_research_airlock_bootstrap",
     "nyra_research_airlock_plan",
     "nyra_research_airlock_open",
     "nyra_research_airlock_discover",
@@ -64,6 +68,9 @@ test("Airlock definitions never accept raw documents or caller-claimed egress bo
   const plan = TOOLS.find((tool) => tool.name === "nyra_research_airlock_plan");
   assert.equal(plan.inputSchema.properties.source_urls.items.format, "uri");
   assert.equal(plan.inputSchema.properties.plan_digest, undefined);
+  const bootstrap = TOOLS.find((tool) => tool.name === "nyra_research_airlock_bootstrap");
+  assert.equal(bootstrap.inputSchema.properties.plan_capability, undefined);
+  assert.equal(bootstrap._meta["skinharmony/ownerConfirmationRequired"], false);
   const open = TOOLS.find((tool) => tool.name === "nyra_research_airlock_open");
   assert.equal(open.inputSchema.properties.source_urls, undefined);
   assert.equal(open.inputSchema.properties.plan_digest, undefined);

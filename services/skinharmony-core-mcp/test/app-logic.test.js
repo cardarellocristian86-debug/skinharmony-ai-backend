@@ -25,6 +25,7 @@ test("advertises explicit confirmation fields only on write tools", () => {
       "core_capability_invoke",
       "orchestration_dtt_core_join",
       "ai_work_quality_observe",
+      "nyra_research_airlock_bootstrap",
       "nyra_research_airlock_plan",
       "nyra_research_airlock_open",
       "nyra_research_airlock_discover",
@@ -46,6 +47,7 @@ test("routes semantic selection through the mandatory generic preflight", () => 
 test("Airlock controls never invoke generic preflight before the public plan is open", () => {
   for (const name of [
     "nyra_research_airlock_status",
+    "nyra_research_airlock_bootstrap",
     "nyra_research_airlock_plan",
     "nyra_research_airlock_open",
     "nyra_research_airlock_discover",

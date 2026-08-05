@@ -44,6 +44,7 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "core_capability_invoke",
   "orchestration_dtt_core_join",
   "nyra_research_airlock_status",
+  "nyra_research_airlock_bootstrap",
   "nyra_research_airlock_plan",
   "nyra_research_airlock_open",
   "nyra_research_airlock_discover",
