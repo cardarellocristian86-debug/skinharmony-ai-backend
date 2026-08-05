@@ -198,6 +198,11 @@ const researchDistillationEnvelopeProperties = {
   max_cost: { type: "number", minimum: 0, maximum: 100 },
   retention_mode: { type: "string", enum: ["ephemeral", "candidate", "review_required"] },
 };
+const researchAirlockWorkBinding = object({
+  project_id: identifier,
+  work_id: identifier,
+  session_id: identifier,
+}, ["project_id", "work_id", "session_id"]);
 const nyraDeepV2RequestId = {
   type: "string",
   minLength: 1,
@@ -1038,6 +1043,35 @@ export const TOOLS = [
     rationale: text(2_000),
   }, ["record_id", "verdict", "rationale"]), ["core:govern"], false, false),
   tool("nyra_research_distillation_status", "Read Research Distillation status", "Read the tenant-bound Core mode, policy version, allowlist decision and shadow metrics. This never authorizes research or persistence.", object(), ["core:read"]),
+  tool("nyra_research_airlock_status", "Read Research Airlock status", "Read the tenant-scoped Airlock readiness, PostgreSQL state backend, narrow Core/Nyra enforcement overlay, metrics and explicit ChatGPT host-tool boundary.", object(), ["core:read"]),
+  tool("nyra_research_airlock_plan", "Issue a public-only research plan", "Make this the first Nyra/Core work action in a fresh logical session. Universal Core validates exact HTTPS source URLs, computes the immutable plan digest and returns a short-lived single-use plan capability. Any earlier private or unclassified Nyra/Core tool use permanently prevents Airlock opening in that session.", object({
+    work_binding: researchAirlockWorkBinding,
+    source_urls: { type: "array", minItems: 1, maxItems: 20, uniqueItems: true, items: { type: "string", format: "uri", maxLength: 2_048 } },
+  }, ["work_binding", "source_urls"]), ["core:govern"], false, false, { ownerConfirmationRequired: false }),
+  tool("nyra_research_airlock_open", "Open public-only research", "Consume the Core-issued single-use plan capability to atomically open an irreversible Research Airlock state machine. The exact source URLs and plan digest come only from the durable Core plan.", object({
+    work_binding: researchAirlockWorkBinding,
+    plan_capability: { type: "string", pattern: "^rap_[a-f0-9-]{36}\\.[a-f0-9]{64}$" },
+    ttl_seconds: { type: "integer", minimum: 300, maximum: 3_600 },
+  }, ["work_binding", "plan_capability"]), ["core:govern"], false, false, { ownerConfirmationRequired: false }),
+  tool("nyra_research_airlock_discover", "Fetch public evidence through Core", "Have Universal Core perform a fixed HTTPS GET or HEAD with DNS/IP pinning, redirect revalidation, strict limits and deterministic sanitization. Raw source bytes never return to the model.", object({
+    work_binding: researchAirlockWorkBinding,
+    url: { type: "string", format: "uri", maxLength: 2_048 },
+    method: { type: "string", enum: ["GET", "HEAD"] },
+  }, ["work_binding", "url"]), ["core:govern"], false, false, { ownerConfirmationRequired: false, openWorld: true, dedicatedCoreGate: true }),
+  tool("nyra_research_airlock_seal", "Seal public evidence", "Seal all verified evidence for one work. This irreversible transition closes Nyra/Core public discovery and issues one single-use private-entry capability.", object({
+    work_binding: researchAirlockWorkBinding,
+  }, ["work_binding"]), ["core:govern"], false, false, { ownerConfirmationRequired: false }),
+  tool("nyra_research_airlock_private_enter", "Enter private synthesis", "Consume the single-use private-entry capability. Core changes the work to PRIVATE_SYNTHESIS and returns only typed sanitized evidence with all Nyra/Core external tools denied.", object({
+    work_binding: researchAirlockWorkBinding,
+    private_entry_capability: { type: "string", pattern: "^rac_[a-f0-9-]{36}\\.[a-f0-9]{64}$" },
+  }, ["work_binding", "private_entry_capability"]), ["core:govern"], false, false, { ownerConfirmationRequired: false }),
+  tool("nyra_research_airlock_tool_authorize", "Authorize an Airlock tool", "Read server-side FSM state before a Nyra/Core tool action. External research tools are allowed only in DISCOVERY_OPEN and fail closed after evidence is sealed.", object({
+    work_binding: researchAirlockWorkBinding,
+    tool_name: identifier,
+  }, ["work_binding", "tool_name"]), ["core:govern"], false, false, { ownerConfirmationRequired: false }),
+  tool("nyra_research_airlock_complete", "Close private research", "Irreversibly close a PRIVATE_SYNTHESIS work while preserving PostgreSQL proof and audit metadata.", object({
+    work_binding: researchAirlockWorkBinding,
+  }, ["work_binding"]), ["core:govern"], false, false, { ownerConfirmationRequired: false }),
   tool("nyra_research_source_registry", "Read trusted research sources", "Read the Core-owned trusted source registry and branch bindings for this tenant. Use source ids from this registry when opening a workspace.", object(), ["core:read"]),
   tool("nyra_research_learning_pack", "Read a branch learning pack", "Read the empty-by-default, versioned learning pack for one Core branch. Verified knowledge is never synthesized by the MCP.", object({
     branch_id: identifier,

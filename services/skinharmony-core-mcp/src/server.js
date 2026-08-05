@@ -30,6 +30,7 @@ import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
 import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
 import { createWebTransport, webCompatibilityManifest } from "./web-agent-compatibility.js";
+import { researchAirlockToolMetadata } from "./research-airlock-reference-monitor.js";
 
 const config = loadConfig();
 const webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowedOrigins });
@@ -891,6 +892,21 @@ const app = createApp(config, {
         await registerAuthenticatedPresence(identity);
       } catch (error) {
         if (!error?.code || error.code === "core_gate_denied") error.code = "agent_presence_registration_failed";
+        throw error;
+      }
+    }
+    const presenceSessionId = String(identity.agentPresence?.session_id || "").trim();
+    if (presenceSessionId) {
+      const toolMetadata = researchAirlockToolMetadata(toolName, args, TOOLS);
+      const authorization = await coreHandlers.nyra_research_airlock_session_tool_authorize({
+        session_id: presenceSessionId,
+        ...toolMetadata,
+      }, identity);
+      const decision = authorization?.structuredContent?.decision;
+      if (decision?.verdict !== "ALLOW") {
+        const error = new Error(decision?.reason || "research_airlock_external_tool_closed");
+        error.code = decision?.reason || "research_airlock_external_tool_closed";
+        error.status = 403;
         throw error;
       }
     }

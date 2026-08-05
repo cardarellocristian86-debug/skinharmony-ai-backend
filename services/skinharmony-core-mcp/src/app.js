@@ -43,6 +43,14 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "core_capability_read",
   "core_capability_invoke",
   "orchestration_dtt_core_join",
+  "nyra_research_airlock_status",
+  "nyra_research_airlock_plan",
+  "nyra_research_airlock_open",
+  "nyra_research_airlock_discover",
+  "nyra_research_airlock_seal",
+  "nyra_research_airlock_private_enter",
+  "nyra_research_airlock_tool_authorize",
+  "nyra_research_airlock_complete",
 ]);
 
 export function requiresGenericWorkPreflight(toolName, args = {}) {
@@ -587,14 +595,44 @@ export function createApp(config, options = {}) {
         postgresMajorVersion,
       },
     });
-    const status = readiness.enforced && !readiness.ready ? 503 : 200;
+    let researchAirlock = { core_ready: false, mode: "unknown", state_backend: "unavailable" };
+    try {
+      const response = await (options.fetchImpl || globalThis.fetch)(`${config.universalCoreUrl}/healthz`, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(3_000),
+      });
+      const payload = await response.json();
+      researchAirlock = {
+        core_ready: response.ok && (
+          payload?.research_airlock?.ready === true
+          || (payload?.research_airlock?.mode === "shadow" && payload?.research_airlock?.operational_safe === true)
+        ),
+        mode: payload?.research_airlock?.mode || "unknown",
+        state_backend: payload?.research_airlock?.state_backend || "unavailable",
+        operational_safe: payload?.research_airlock?.operational_safe === true,
+        build_commit_sha: payload?.build?.commit_sha || null,
+      };
+    } catch {
+      researchAirlock = { core_ready: false, mode: "unavailable", state_backend: "unavailable" };
+    }
+    // Production MCP readiness must not depend on a mode value supplied by an
+    // unreachable upstream. Once deployed, Core Airlock is a hard dependency:
+    // unknown/unavailable is therefore unready, never an implicit opt-out.
+    const airlockRequired = readiness.environment === "production";
+    const combinedReady = readiness.ready && (!airlockRequired || researchAirlock.core_ready);
+    const status = readiness.enforced && !combinedReady ? 503 : 200;
     return res.status(status).json({
-    ok: !readiness.enforced || readiness.ready,
+    ok: !readiness.enforced || combinedReady,
     service: "skinharmony-core-mcp",
     version: SERVER_VERSION,
     build: readiness.build,
     mode: readiness.environment,
-    render_ready: readiness.ready,
+    render_ready: combinedReady,
+    research_airlock: {
+      ...researchAirlock,
+      production_required: airlockRequired,
+    },
     readiness: {
       enforced: readiness.enforced,
       ready: readiness.ready,

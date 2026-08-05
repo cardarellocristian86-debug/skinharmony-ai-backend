@@ -94,6 +94,12 @@ services:
         value: "true"
       - key: CORE_RESEARCH_DISTILLATION_MODE
         value: shadow
+      # Research Airlock v1 is a narrow enforcement overlay for
+      # research_evidence_intelligence/research_evidence only. It derives a
+      # domain-separated key from CORE_EVIDENCE_SIGNING_SECRET and requires
+      # PostgreSQL; switching this value to shadow is the fail-closed rollback.
+      - key: CORE_RESEARCH_AIRLOCK_MODE
+        value: enforced
       - key: CORE_RESEARCH_TENANT_ALLOWLIST
         value: codexai
       - key: CORE_RESEARCH_MAX_DOCUMENTS

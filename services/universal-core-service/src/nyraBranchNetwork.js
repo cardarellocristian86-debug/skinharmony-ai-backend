@@ -9,6 +9,7 @@ const branch = (id, label, triggers, subbranches, domainPacks = ["*"], options =
   subbranches: Object.freeze(subbranches.map((subbranch) => Object.freeze(subbranch))),
   work_phase: String(options.workPhase || "general"),
   core_branch_bindings: Object.freeze(Array.isArray(options.coreBranchBindings) ? options.coreBranchBindings : []),
+  enforcement_overlays: Object.freeze(Array.isArray(options.enforcementOverlays) ? options.enforcementOverlays : []),
 });
 
 const NYRA_BRANCHES = Object.freeze([
@@ -26,7 +27,11 @@ const NYRA_BRANCHES = Object.freeze([
     "fact_extraction", "contradiction_detection", "uncertainty_register", "provenance_capture", "missing_evidence",
     "dataset_relevance", "citation_constraints", "evidence_synthesis", "research_handoff", "claim_evidence_graph",
     "temporal_truth", "adversarial_source_review", "uncertainty_calibration", "knowledge_release_gate", "source_injection_defense",
-  ], ["*"], { workPhase: "research", coreBranchBindings: ["research_evidence_intelligence"] }),
+  ], ["*"], {
+    workPhase: "research",
+    coreBranchBindings: ["research_evidence_intelligence"],
+    enforcementOverlays: [{ id: "research_airlock_v1", mode: "enforced", scope: "nyra_core_research_tools_only" }],
+  }),
   branch("decision_reasoning", "Decision Reasoning", ["decidi", "scegli", "priorita", "opzioni", "strategia", "valuta"], [
     "intent_inference", "hypothesis_generation", "option_generation", "tradeoff_analysis", "priority_ranking",
     "causal_reasoning", "counterfactual_reasoning", "confidence_calibration", "decision_summary", "next_best_action",
@@ -197,6 +202,7 @@ export function nyraBranchCatalog(packId = "generic") {
       subbranch_count: item.subbranches.length,
       subbranches: [...item.subbranches],
       core_branch_bindings: [...item.core_branch_bindings],
+      enforcement_overlays: item.enforcement_overlays.map((overlay) => ({ ...overlay })),
     })),
   };
 }

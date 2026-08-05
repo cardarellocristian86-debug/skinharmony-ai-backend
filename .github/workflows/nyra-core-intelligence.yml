@@ -845,6 +845,12 @@ jobs:
         run: >-
           node --test
           services/skinharmony-core-mcp/test/work-continuity-postgres16.test.js
+      - name: Exercise PostgreSQL 16 Research Airlock replay gate
+        env:
+          RESEARCH_AIRLOCK_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/continuity_ci
+        run: >-
+          node --test
+          services/universal-core-service/test/research-airlock-postgres16.test.js
       - name: Test Universal Core from root install
         run: npm run core:service:test
       - name: Test Core MCP from root install

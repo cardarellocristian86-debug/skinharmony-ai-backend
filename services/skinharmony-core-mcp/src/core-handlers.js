@@ -1212,6 +1212,17 @@ export function createCoreHandlers(config, options = {}) {
     return error;
   }
 
+  function airlockBinding(input, identity) {
+    const binding = input && typeof input === "object" ? input : {};
+    const sessionId = String(identity.agentPresence?.session_id || binding.session_id || "").trim();
+    if (!sessionId) throw new Error("research_airlock_session_id_required");
+    return {
+      project_id: binding.project_id,
+      work_id: binding.work_id,
+      session_id: sessionId,
+    };
+  }
+
   const handlers = {
     core_health: async (_args, identity) => textResult({
       ...(await coreRequest("/healthz", identity.tenantId)),
@@ -1914,6 +1925,81 @@ export function createCoreHandlers(config, options = {}) {
     })),
     nyra_research_distillation_status: async (_args, identity) => textResult(
       await coreRequest("/v1/research/status", identity.tenantId),
+    ),
+    nyra_research_airlock_status: async (_args, identity) => textResult(
+      await coreRequest("/v1/research/airlock/status", identity.tenantId),
+    ),
+    nyra_research_airlock_plan: async (args, identity) => textResult(
+      await coreRequest("/v1/research/airlock/plan", identity.tenantId, {
+        method: "POST",
+        body: {
+          work_binding: airlockBinding(args.work_binding, identity),
+          source_urls: args.source_urls,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_airlock_open: async (args, identity) => textResult(
+      await coreRequest("/v1/research/airlock/work", identity.tenantId, {
+        method: "POST",
+        body: {
+          work_binding: airlockBinding(args.work_binding, identity),
+          plan_capability: args.plan_capability,
+          ttl_seconds: args.ttl_seconds,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_airlock_discover: async (args, identity) => textResult(
+      await coreRequest("/v1/research/airlock/discover", identity.tenantId, {
+        method: "POST",
+        body: {
+          work_binding: airlockBinding(args.work_binding, identity),
+          url: args.url,
+          method: args.method,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_airlock_seal: async (args, identity) => textResult(
+      await coreRequest("/v1/research/airlock/seal", identity.tenantId, {
+        method: "POST",
+        body: { work_binding: airlockBinding(args.work_binding, identity), tenant_id: identity.tenantId },
+      }),
+    ),
+    nyra_research_airlock_private_enter: async (args, identity) => textResult(
+      await coreRequest("/v1/research/airlock/private-entry", identity.tenantId, {
+        method: "POST",
+        body: {
+          work_binding: airlockBinding(args.work_binding, identity),
+          private_entry_capability: args.private_entry_capability,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_airlock_tool_authorize: async (args, identity) => textResult(
+      await coreRequest("/v1/research/airlock/tool-authorize", identity.tenantId, {
+        method: "POST",
+        body: { work_binding: airlockBinding(args.work_binding, identity), tool_name: args.tool_name, tenant_id: identity.tenantId },
+      }),
+    ),
+    nyra_research_airlock_session_tool_authorize: async (args, identity) => textResult(
+      await coreRequest("/v1/research/airlock/session-tool-authorize", identity.tenantId, {
+        method: "POST",
+        body: {
+          session_id: String(identity.agentPresence?.session_id || args.session_id || ""),
+          tool_name: args.tool_name,
+          transport_tool_name: args.transport_tool_name,
+          open_world: args.open_world === true,
+          tenant_id: identity.tenantId,
+        },
+      }),
+    ),
+    nyra_research_airlock_complete: async (args, identity) => textResult(
+      await coreRequest("/v1/research/airlock/complete", identity.tenantId, {
+        method: "POST",
+        body: { work_binding: airlockBinding(args.work_binding, identity), tenant_id: identity.tenantId },
+      }),
     ),
     nyra_research_source_registry: async (_args, identity) => textResult(
       await coreRequest("/v1/research/source-registry", identity.tenantId),

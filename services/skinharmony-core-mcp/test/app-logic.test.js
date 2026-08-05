@@ -21,7 +21,18 @@ test("advertises explicit confirmation fields only on write tools", () => {
   assert.equal(dynamicInvoke.inputSchema.properties.confirmation_reference.type, "string");
   assert.deepEqual(
     advisoryWrites.map((tool) => tool.name),
-    ["core_capability_invoke", "orchestration_dtt_core_join", "ai_work_quality_observe"],
+    [
+      "core_capability_invoke",
+      "orchestration_dtt_core_join",
+      "ai_work_quality_observe",
+      "nyra_research_airlock_plan",
+      "nyra_research_airlock_open",
+      "nyra_research_airlock_discover",
+      "nyra_research_airlock_seal",
+      "nyra_research_airlock_private_enter",
+      "nyra_research_airlock_tool_authorize",
+      "nyra_research_airlock_complete",
+    ],
   );
   assert(readTools.every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
 });
@@ -30,6 +41,19 @@ test("routes semantic selection through the mandatory generic preflight", () => 
   assert.equal(requiresGenericWorkPreflight("core_semantic_select"), true);
   assert.equal(requiresGenericWorkPreflight("core_health"), false);
   assert.equal(requiresGenericWorkPreflight("work_preflight"), false);
+});
+
+test("Airlock controls never invoke generic preflight before the public plan is open", () => {
+  for (const name of [
+    "nyra_research_airlock_status",
+    "nyra_research_airlock_plan",
+    "nyra_research_airlock_open",
+    "nyra_research_airlock_discover",
+    "nyra_research_airlock_seal",
+    "nyra_research_airlock_private_enter",
+    "nyra_research_airlock_tool_authorize",
+    "nyra_research_airlock_complete",
+  ]) assert.equal(requiresGenericWorkPreflight(name), false, `${name} must remain isolated from generic preflight`);
 });
 
 test("does not expose client-selectable product packs on horizontal Core tools", () => {
