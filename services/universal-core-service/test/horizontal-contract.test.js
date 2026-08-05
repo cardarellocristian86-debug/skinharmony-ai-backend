@@ -91,7 +91,7 @@ test("SkinHarmony brand keys resolve the combined pack while generic tenants rem
 test("Nyra network respects limits and exposes only explicit product branches", () => {
   const validation = validateNyraBranchNetwork();
   assert.equal(validation.ok, true);
-  assert.equal(validation.max_subbranches_per_branch, 20);
+  assert.equal(validation.max_subbranches_per_branch, 60);
   for (const packId of ["generic", "suite", "smartdesk", "analyzer", "skinharmony"]) {
     for (const item of nyraBranchCatalog(packId).branches) {
       assert(item.subbranch_count > 0);

@@ -16,6 +16,7 @@ export const branchTenantWorkCoordination = {
     "lease_renewal",
     "lease_release",
     "surface_overlap_detection",
+    "agent_change_interlock",
     "conflict_arbitration",
     "dependency_coordination",
     "regression_watch",

@@ -54,6 +54,7 @@ const CAPABILITY_NODES = Object.freeze([
   ["work", "continuity", "checkpoint_resume", ["resume", "checkpoint", "continuit", "riprendi"]],
   ["work", "continuity", "drift_detection", ["drift", "cambiamento", "regression", "deriva"]],
   ["work", "coordination", "parallel_handoff", ["parallelo", "handoff", "coordina", "agenti"]],
+  ["work", "coordination", "agent_change_interlock", ["interlock", "conflitto modifiche", "change intent", "reservation", "prenota modifica", "collisione agenti"]],
   ["work", "quality", "quality_gate", ["qualita", "test", "qa", "collaudo"]],
   ["research", "sources", "canonical_source_registry", ["fonti", "canoniche", "standard", "documentazione"]],
   ["research", "sources", "renewable_ingestion", ["aggiorna", "rinnovabile", "refresh", "versione"]],
