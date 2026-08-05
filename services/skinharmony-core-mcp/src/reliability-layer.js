@@ -142,7 +142,12 @@ export function createReliabilityHandlers(_config, { coreHandlers } = {}) {
       coreHandlers,
       "/v1/reliability/handoffs/consume",
       "POST",
-      args,
+      {
+        ...args,
+        // The receiver is derived from the authenticated MCP presence; a
+        // caller-supplied receiver must never select the consuming agent.
+        receiver_agent_id: bounded(identity?.agentPresence?.agent_id || identity?.agentId, 160),
+      },
       identity,
     ),
     nyra_reliability_completion_register: async (args = {}, identity) => bridge(

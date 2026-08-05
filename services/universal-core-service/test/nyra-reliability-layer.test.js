@@ -38,6 +38,21 @@ test("chat cannot promote a caller-declared verified claim", async () => {
   assert.equal(result.claim_gate.decision, "abstain_insufficient_evidence");
 });
 
+test("claim append cannot persist caller-declared verified status", async () => {
+  const rel = runtime();
+  const claim = await rel.appendClaim({
+    ...scope,
+    claim_id: "claim_caller_verified",
+    producer_id: "builder",
+    text: "Caller asserted this claim is verified.",
+    source_ids: ["caller_source"],
+    evidence_ids: ["caller_evidence"],
+    verifier_ids: ["caller_verifier"],
+    status: "verified",
+  });
+  assert.equal(claim.status, "unverified");
+});
+
 test("claim ledger persists, verifies independently and rejects contradictions", async () => {
   const rel = runtime();
   const claim = await rel.appendClaim({
@@ -148,6 +163,26 @@ test("completion cannot be finalized without independent postcondition evidence"
   assert.equal((await rel.finalizeCompletion({ tenant_id: tenant, completion_id: successful.completion_id })).status, "completed");
 });
 
+test("completion rejects evidence references not present in observed evidence", async () => {
+  const rel = runtime();
+  const completion = await rel.registerCompletion({
+    ...scope,
+    producer_id: "builder",
+    completion_id: "completion_evidence_binding",
+    result_digest: digest({ result: "ok" }),
+    postconditions: [{ id: "health_ok", description: "Health is ready" }],
+  });
+  const observed = [{ evidence_id: "observed", evidence_digest: digest("observed"), source: "independent verifier" }];
+  await assert.rejects(() => rel.verifyCompletion({
+    tenant_id: tenant,
+    completion_id: completion.completion_id,
+    verifier_id: "verifier",
+    postcondition_results: [{ id: "health_ok", passed: true, evidence_ids: ["not_observed"] }],
+    observed_evidence: observed,
+    evidence_digest: digest(observed),
+  }), /completion_evidence_reference_invalid/);
+});
+
 test("continuity and budget are idempotent and deterministic", async () => {
   const rel = runtime();
   const first = await rel.checkpoint({ ...scope, checkpoint: { cursor: "a" }, idempotency_key: "cp_1" });
@@ -187,4 +222,32 @@ test("browser contract requires trusted origin and DOM plus screenshot before an
     postcondition_results: [{ id: "saved", passed: true, evidence_digest: digest("saved") }],
   } });
   assert.equal(post.verified, true);
+});
+
+test("browser contract rejects duplicate postconditions that omit a required condition", async () => {
+  const rel = runtime();
+  const hash = digest({ selector: "#save" });
+  const contract = await rel.issueBrowserContract({
+    ...scope,
+    principal: "host_browser",
+    allowed_origins: ["https://example.com"],
+    allowed_actions: ["click"],
+    parameter_hash: hash,
+    precondition_digest: digest({ page: "edit" }),
+    postconditions: [
+      { id: "saved", description: "Saved indicator" },
+      { id: "toast", description: "Toast is visible" },
+    ],
+  });
+  await rel.observeBrowserContract({ tenant_id: tenant, contract_id: contract.contract_id, phase: "pre", observation: {
+    origin: "https://example.com", action: "click", parameter_hash: hash, dom_digest: digest("dom-before"), screenshot_digest: digest("shot-before"),
+  } });
+  const result = await rel.observeBrowserContract({ tenant_id: tenant, contract_id: contract.contract_id, phase: "post", observation: {
+    origin: "https://example.com", action: "click", parameter_hash: hash, dom_digest: digest("dom-after"), screenshot_digest: digest("shot-after"),
+    postcondition_results: [
+      { id: "saved", passed: true, evidence_digest: digest("saved") },
+      { id: "saved", passed: true, evidence_digest: digest("saved-again") },
+    ],
+  } });
+  assert.equal(result.state, "blocked_postconditions_unverified");
 });

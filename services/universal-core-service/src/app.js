@@ -5653,7 +5653,12 @@ export function createUniversalCoreService(options = {}) {
     catch (error) { return reliabilityFailure(res, error); }
   });
   app.post("/v1/reliability/claims/:claimId/verify", reliabilityWrite, async (req, res) => {
-    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.verifyClaim(reliabilityInput(req, { claim_id: req.params.claimId }))); }
+    try {
+      return reliabilitySuccess(res, await nyraReliabilityRuntime.verifyClaim(reliabilityInput(req, {
+        claim_id: req.params.claimId,
+        authenticated_verifier_id: `core-key:${req.coreKey.key_id}`,
+      })));
+    }
     catch (error) { return reliabilityFailure(res, error); }
   });
   app.post("/v1/reliability/actions", reliabilityWrite, async (req, res) => {
@@ -5677,7 +5682,12 @@ export function createUniversalCoreService(options = {}) {
     catch (error) { return reliabilityFailure(res, error); }
   });
   app.post("/v1/reliability/completions/:completionId/verify", reliabilityWrite, async (req, res) => {
-    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.verifyCompletion(reliabilityInput(req, { completion_id: req.params.completionId }))); }
+    try {
+      return reliabilitySuccess(res, await nyraReliabilityRuntime.verifyCompletion(reliabilityInput(req, {
+        completion_id: req.params.completionId,
+        authenticated_verifier_id: `core-key:${req.coreKey.key_id}`,
+      })));
+    }
     catch (error) { return reliabilityFailure(res, error); }
   });
   app.post("/v1/reliability/completions/:completionId/finalize", reliabilityWrite, async (req, res) => {

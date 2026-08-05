@@ -5,7 +5,10 @@ import path from "node:path";
 const SCHEMA_VERSION = "nyra_reliability_layer_v1";
 const DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/iu;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
-const SOURCE_TYPES = new Set(["chat", "web", "email", "document", "mcp", "ocr", "api", "browser", "tool", "unknown"]);
+const SOURCE_TYPES = new Set([
+  "chat", "web", "email", "pdf", "document", "mcp", "mcp_output", "ocr", "api",
+  "browser", "browser_dom", "browser_screenshot", "tool", "tool_output", "other", "unknown",
+]);
 const DATA_LABELS = new Set(["public", "internal", "personal_data", "sensitive", "secret", "tool_output", "web", "email", "document", "chat", "untrusted"]);
 const ACTION_TYPES = new Set(["read", "write", "navigate", "click", "fill", "submit", "publish", "deploy", "delete", "payment", "external_message", "other"]);
 const BROWSER_ACTIONS = new Set(["navigate", "read", "click", "fill", "select", "submit"]);
@@ -334,7 +337,7 @@ function publicUntrustedContent(boundary) {
   return value;
 }
 
-function normalizeClaim(input, tenantId, nowMs) {
+function normalizeClaim(input, tenantId, nowMs, { allowVerified = false } = {}) {
   const source = object(input, "claim");
   const text = requireText(source.text || source.claim, "claim_text", 8_000);
   const sourceIds = uniqueTexts(source.source_ids || [], "source_ids", 64);
@@ -344,8 +347,9 @@ function normalizeClaim(input, tenantId, nowMs) {
   const freshnessInput = source.freshness && typeof source.freshness === "object" && !Array.isArray(source.freshness) ? source.freshness : {};
   const checkedAt = freshnessInput.checked_at ? new Date(freshnessInput.checked_at).toISOString() : new Date(nowMs).toISOString();
   const expiresAt = freshnessInput.expires_at ? parseFuture(freshnessInput.expires_at, "freshness_expires_at", nowMs, 31_536_000_000) : null;
-  const status = String(source.status || "unverified").toLowerCase();
-  if (!["verified", "unverified", "contradicted"].includes(status)) throw new Error("claim_status_invalid");
+  const requestedStatus = String(source.status || "unverified").toLowerCase();
+  if (!["verified", "unverified", "contradicted"].includes(requestedStatus)) throw new Error("claim_status_invalid");
+  const status = requestedStatus === "verified" && !allowVerified ? "unverified" : requestedStatus;
   if (status === "contradicted" && contradictionIds.length < 1) throw new Error("claim_contradiction_evidence_required");
   const minimumSources = Number(source.minimum_source_count ?? 1);
   const minimumVerifiers = Number(source.minimum_verifier_count ?? 1);
@@ -643,7 +647,7 @@ export function createNyraReliabilityRuntime({ store, now = () => new Date().toI
     return result;
   }
 
-  async function verifyClaim({ tenant_id, claim_id, verifier_id, evidence_ids, source_ids, freshness } = {}) {
+  async function verifyClaim({ tenant_id, claim_id, verifier_id, authenticated_verifier_id, evidence_ids, source_ids, freshness } = {}) {
     const tenantId = requireText(tenant_id, "tenant_id", 120);
     const claimId = requireText(claim_id, "claim_id", 160);
     const result = await store.atomic({ tenant_id: tenantId, record_type: "claim", record_id: claimId, mutate: (current) => {
@@ -658,7 +662,7 @@ export function createNyraReliabilityRuntime({ store, now = () => new Date().toI
         verifier_ids: [...new Set([...current.verifier_ids, requireText(verifier_id, "verifier_id", 160)])],
         freshness: freshness ? normalizeClaim({ text: current.text, source_ids: current.source_ids, evidence_ids: current.evidence_ids, verifier_ids: current.verifier_ids, freshness }, tenantId, nowMs()).freshness : current.freshness,
       };
-      const checked = normalizeClaim(next, tenantId, nowMs());
+      const checked = normalizeClaim(next, tenantId, nowMs(), { allowVerified: true });
       const updated = { ...current, ...checked, status: "verified", revision: Number(current.revision || 1) + 1 };
       updated.claim_digest = digest(claimPayload(updated));
       return { record: { ...updated, record_type: "claim" }, result: clone(updated) };
@@ -825,9 +829,9 @@ export function createNyraReliabilityRuntime({ store, now = () => new Date().toI
     }});
   }
 
-  async function verifyCompletion({ tenant_id, completion_id, verifier_id, verifier_role = "independent_verifier", postcondition_results, observed_evidence, evidence_digest } = {}) {
+  async function verifyCompletion({ tenant_id, completion_id, verifier_id, authenticated_verifier_id, verifier_role = "independent_verifier", postcondition_results, observed_evidence, evidence_digest } = {}) {
     const tenantId = requireText(tenant_id, "tenant_id", 120);
-    const verifierId = requireText(verifier_id, "verifier_id", 160);
+    const verifierId = requireText(authenticated_verifier_id || verifier_id, "verifier_id", 160);
     const evidence = normalizeEvidence(observed_evidence);
     const expectedEvidenceDigest = digest(evidence);
     if (!digestMatches(evidence_digest, expectedEvidenceDigest)) throw new Error("completion_evidence_digest_invalid");
@@ -842,7 +846,16 @@ export function createNyraReliabilityRuntime({ store, now = () => new Date().toI
       if (current.status === "completed") throw new Error("completion_already_finalized");
       if (current.producer_id === verifierId) throw new Error("completion_independent_verifier_required");
       const requiredIds = current.postconditions.map((item) => item.id);
-      if (results.length !== requiredIds.length || requiredIds.some((id) => !results.some((item) => item.id === id))) throw new Error("completion_postcondition_set_invalid");
+      const resultIds = results.map((item) => item.id);
+      const observedEvidenceIds = new Set(evidence.map((item) => item.evidence_id));
+      if (
+        results.length !== requiredIds.length
+        || new Set(resultIds).size !== resultIds.length
+        || requiredIds.some((id) => !resultIds.includes(id))
+      ) throw new Error("completion_postcondition_set_invalid");
+      if (results.some((item) => item.evidence_ids.some((id) => !observedEvidenceIds.has(id)))) {
+        throw new Error("completion_evidence_reference_invalid");
+      }
       const passed = results.every((item) => item.passed && item.evidence_ids.length > 0);
       const attempt = { verifier_id: verifierId, verifier_role: requireText(verifier_role, "verifier_role", 120), evidence_digest: expectedEvidenceDigest, postcondition_results: results, verified_at: new Date(nowMs()).toISOString(), passed };
       const next = { ...current, verification_attempts: [...current.verification_attempts, attempt].slice(-16), status: passed ? "verified" : "rejected", verified_by: passed ? verifierId : null, observed_evidence_digest: passed ? expectedEvidenceDigest : null, record_type: "completion" };
@@ -1022,7 +1035,14 @@ export function createNyraReliabilityRuntime({ store, now = () => new Date().toI
       }
       if (normalizedPhase === "pre" && current.phases.some((item) => item.phase === "pre")) throw new Error("browser_pre_observation_replayed");
       if (normalizedPhase === "post" && !current.phases.some((item) => item.phase === "pre")) throw new Error("browser_precondition_observation_required");
-      if (normalizedPhase === "post" && (postconditionResults.length !== current.postconditions.length || !postconditionResults.every((item) => item.passed && current.postconditions.some((condition) => condition.id === item.id)))) {
+      const requiredPostconditionIds = current.postconditions.map((condition) => condition.id);
+      const observedPostconditionIds = postconditionResults.map((item) => item.id);
+      if (normalizedPhase === "post" && (
+        postconditionResults.length !== requiredPostconditionIds.length
+        || new Set(observedPostconditionIds).size !== observedPostconditionIds.length
+        || requiredPostconditionIds.some((id) => !observedPostconditionIds.includes(id))
+        || !postconditionResults.every((item) => item.passed)
+      )) {
         const blocked = { ok: false, state: "blocked_postconditions_unverified", execution_enabled: false, execution_authorized: false };
         return { record: { ...current, state: "blocked", phases: [...current.phases, { phase: normalizedPhase, action, parameter_hash: parameterHash, origin, dom_digest: domDigest, screenshot_digest: screenshotDigest, postcondition_results: postconditionResults }] }, result: blocked };
       }

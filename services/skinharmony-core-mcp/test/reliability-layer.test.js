@@ -40,9 +40,13 @@ test("MCP reliability bridge pins routes to Core and injects the authenticated s
   assert.equal(calls[0].request.body.session_id, "session_test");
   assert.equal(calls[0].request.body.tenant_id, undefined);
   assert.equal(calls[0].request.body.agent_id, "agent_test");
+  await handlers.nyra_reliability_handoff_consume({
+    envelope: { envelope_id: "handoff_test" },
+    receiver_agent_id: "caller_selected_agent",
+  }, identity);
+  assert.equal(calls.at(-1).request.body.receiver_agent_id, "agent_test");
   await assert.rejects(
     () => handlers.nyra_reliability_continuity_read({ work_id: "work_test", session_id: "other_session" }, identity),
     /reliability_session_scope_mismatch/,
   );
 });
-
