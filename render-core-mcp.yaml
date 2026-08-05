@@ -11,6 +11,15 @@ services:
         value: production
       - key: MCP_PUBLIC_URL
         value: https://skinharmony-core-mcp.onrender.com
+      # The single ChatGPT connector reaches both environments only through
+      # this gateway. Every tool call must name its target; staging is a
+      # signed server-to-server delegation, never a forwarded user OAuth token.
+      - key: MCP_ENVIRONMENT_ROUTING_REQUIRED
+        value: "true"
+      - key: MCP_STAGING_MCP_URL
+        value: https://skinharmony-core-mcp-staging.onrender.com
+      - key: MCP_ENVIRONMENT_DELEGATION_KEY
+        sync: false
       - key: AUTH0_ISSUER
         sync: false
       - key: AUTH0_AUDIENCE

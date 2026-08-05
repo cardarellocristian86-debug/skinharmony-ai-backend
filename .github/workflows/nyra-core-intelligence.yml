@@ -54,6 +54,12 @@ jobs:
         working-directory: .
         run: bash scripts/build-rust-extractor-render.sh
       - run: npm ci
+      # The staging dependency E2E test imports the MCP runtime directly.
+      # Install its declared dependencies explicitly; the Universal Core lock
+      # file alone cannot provide transitive packages such as pg.
+      - name: Install MCP dependencies for staging integration tests
+        working-directory: .
+        run: npm ci --prefix services/skinharmony-core-mcp
       - run: npm test
 
   core-mcp:

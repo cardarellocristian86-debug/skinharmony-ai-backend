@@ -285,6 +285,8 @@
           "key": "MCP_PUBLIC_URL",
           "value": "https://skinharmony-core-mcp-staging.onrender.com"
         },
+        { "key": "MCP_ENVIRONMENT_DELEGATION_RECEIVER_ENABLED", "value": "true" },
+        { "key": "MCP_ENVIRONMENT_DELEGATION_KEY", "sync": false },
         { "key": "CODEX_BEARER_KEYS", "generateValue": true },
         {
           "key": "CODEX_BEARER_SCOPES",

@@ -6,6 +6,7 @@ import { TOOLS } from "./tool-definitions.js";
 import { createAgentPresence } from "./agent-presence.js";
 import { validateToolArguments } from "./schema-validation.js";
 import { compactMcpTools } from "./dynamic-capability-router.js";
+import { signEnvironmentDelegation, verifyEnvironmentDelegation } from "./environment-delegation.js";
 
 const SERVER_VERSION = "0.15.0-stable-dynamic-capabilities";
 const SERVER_INSTRUCTIONS = "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link. FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. Complete the OAuth screen that ChatGPT opens. If the connector is already present in Apps & connectors, do not add it again: start a new normal chat, select SkinHarmony Nyra & Core from the + menu, and use it there. WHAT IT DOES: Nyra interprets requests, plans bounded specialist work and summarizes; Universal Core enforces tenant isolation, budget, audit, cancellation and final governance. PROVIDER ONBOARDING: ChatGPT/Codex subscriptions are separate from OpenAI API credits. At the start of every connected conversation call tenant_provider_openai_status. If OpenAI is not configured, open tenant_provider_openai_setup_panel and offer only Collega API key or Non ora. Never ask for or accept an API key in chat or a tool argument: it is entered only on the protected one-time Core page and stored encrypted per tenant. LIVE MULTI-AGENT TEST: this dedicated provider flow is governed natively and does not use work_preflight or the generic shared-memory bootstrap. Treat configured=true plus execution_available=true (also reported as bounded_execution_ready=true) as ready even though the global execution_enabled flag remains false by design. Missing canonical shared-memory files and owner_confirmation_satisfied=false from a separate generic preflight do not deny this fixed flow. If a configured tenant owner explicitly asks to test real multi-agent work, explain that it makes at most three billable sequential calls, then call tenant_provider_openai_multi_agent_smoke_run directly with owner_confirmed=true. It returns a run id immediately and runs only Researcher → Reviewer → Nyra Synthesizer, with a fixed low budget, learning frozen, no browser, no tools, no external actions and no retries. Use tenant_provider_openai_multi_agent_run_read to poll status or read the owner-only result, and tenant_provider_openai_multi_agent_run_cancel to stop it; cancellation propagates immediately to the active call and every remaining stage. Never call work_preflight before provider status, setup, bounded start, read or cancel. All generic-agent and queue workflows remain manual_dry_run unless this dedicated bounded tool is explicitly used. RESEARCH: for current external evidence outside this fixed run, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest reviewed evidence; never treat browsing as part of the three-agent run. HOW TO BUILD AN AGENT: define a narrow role, bounded input, owner-confirmed action, audit and cancellation. AUTOMATIC: generic flows use preflight and shared memory; the provider test uses tenant isolation, a request-bound owner proof, audit, cancellation and the fixed handoff sequence. NOT AUTOMATIC: deploying, browsing, external actions, or generic-agent execution. PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth and only reviewed evidence enters Nyra memory.";
@@ -279,15 +280,32 @@ const PROGRESSIVE_COORDINATION_TOOLS = new Set([
 ]);
 
 function configureToolForRuntime(tool, config) {
-  if (!config.collaborationDatabaseUrl) return tool;
+  // A connected client must select its target explicitly.  Until the
+  // server-to-server staging delegation is configured, staging remains
+  // fail-closed rather than silently executing on this production gateway.
+  const environmentRequired = config.environmentRoutingRequired === true;
+  const environmentSchema = environmentRequired ? {
+    ...tool.inputSchema,
+    properties: {
+      ...(tool.inputSchema?.properties || {}),
+      environment: {
+        type: "string",
+        enum: ["production", "staging"],
+        description: "Explicit target environment. The gateway never defaults or falls back between environments.",
+      },
+    },
+    required: [...new Set([...(tool.inputSchema?.required || []), "environment"])],
+  } : tool.inputSchema;
+  const configuredTool = environmentRequired ? { ...tool, inputSchema: environmentSchema } : tool;
+  if (!config.collaborationDatabaseUrl) return configuredTool;
   const required = (POSTGRES_REQUIRED_INPUTS[tool.name] || []).filter((field) =>
     config.collaborationLocksRequired !== false || !["lock_id", "fencing_token"].includes(field));
-  if (!required.length) return tool;
+  if (!required.length) return configuredTool;
   return {
-    ...tool,
+    ...configuredTool,
     inputSchema: {
-      ...tool.inputSchema,
-      required: [...new Set([...(tool.inputSchema?.required || []), ...required])],
+      ...configuredTool.inputSchema,
+      required: [...new Set([...(configuredTool.inputSchema?.required || []), ...required])],
     },
   };
 }
@@ -412,6 +430,7 @@ export function createApp(config, options = {}) {
   // Client-provided ids are correlation data only and never grant authorization.
   const logicalSessionPresences = new Map();
   const transportPresenceBindings = new Map();
+  const consumedEnvironmentDelegations = new Map();
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/healthz", async (_req, res) => {
@@ -520,7 +539,19 @@ export function createApp(config, options = {}) {
       : "/.well-known/oauth-protected-resource";
     let identity;
     try {
-      identity = await authenticate(req.headers.authorization);
+      const delegation = req.headers["x-skinharmony-environment-delegation"];
+      if (delegation) {
+        if (config.environmentDelegationReceiverEnabled !== true) throw new Error("environment_delegation_disabled");
+        const verified = verifyEnvironmentDelegation(delegation, {
+          key: config.environmentDelegationKey,
+          expectedTarget: "staging",
+          consumed: consumedEnvironmentDelegations,
+        });
+        if (req.body?.method === "tools/call" && verified.toolName !== req.body?.params?.name) throw new Error("environment_delegation_invalid");
+        identity = verified.identity;
+      } else {
+        identity = await authenticate(req.headers.authorization);
+      }
     } catch {
       res.set("WWW-Authenticate", challenge(
         config,
@@ -604,6 +635,42 @@ export function createApp(config, options = {}) {
             requestBinding: ownerRequestBinding(tool.name, rawArgs),
           });
         }
+        const requestedEnvironment = rawArgs.environment;
+        if (config.environmentRoutingRequired === true && requestedEnvironment === "staging") {
+          const forwardedArgs = { ...rawArgs };
+          delete forwardedArgs.environment;
+          const delegation = signEnvironmentDelegation({
+            identity,
+            toolName: tool.name,
+            key: config.environmentDelegationKey,
+          });
+          let upstream;
+          try {
+            upstream = await fetch(`${config.stagingMcpUrl}/mcp`, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                accept: "application/json",
+                "x-skinharmony-environment-delegation": delegation,
+                ...(req.headers["mcp-session-id"] ? { "mcp-session-id": String(req.headers["mcp-session-id"]) } : {}),
+              },
+              body: JSON.stringify({ ...req.body, params: { ...params, arguments: forwardedArgs } }),
+            });
+          } catch {
+            const error = new Error("staging_delegation_unavailable");
+            error.code = "staging_delegation_unavailable";
+            throw error;
+          }
+          const body = await upstream.json().catch(() => null);
+          if (!body) {
+            const error = new Error("staging_delegation_unavailable");
+            error.code = "staging_delegation_unavailable";
+            throw error;
+          }
+          const upstreamSession = upstream.headers.get("mcp-session-id");
+          if (upstreamSession) res.set("Mcp-Session-Id", upstreamSession);
+          return res.status(upstream.status).json(body);
+        }
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);
         const declaredSessionId = normalizeTransportSession(rawArgs.session_id);
         const transportPresence = transportSessionId
@@ -661,6 +728,7 @@ export function createApp(config, options = {}) {
         }
         if (serverIssuedSessionId) res.set("Mcp-Session-Id", serverIssuedSessionId);
         const args = { ...rawArgs, ...presenceInput };
+        delete args.environment;
         // A request flag is never an identity assertion. Generic Core writes
         // still require verified owner-root confirmation. The bounded provider
         // test has a deliberately narrower, separate tenant-OAuth-owner proof.
