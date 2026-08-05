@@ -85,7 +85,7 @@ export function assertAllowedOrigin(url, allowedOrigins) {
   return target;
 }
 
-export async function assertPermittedWebTarget(url, allowedOrigins, { allowDynamicPublicOrigins = false } = {}) {
+export async function assertPermittedWebTarget(url, allowedOrigins, { allowDynamicPublicOrigins = false, allowPrivateTestTargets = false } = {}) {
   const target = targetUrl(url);
   const staticallyAllowed = Array.isArray(allowedOrigins) && allowedOrigins.includes(target.origin);
   if (!staticallyAllowed && allowDynamicPublicOrigins !== true) {
@@ -94,7 +94,10 @@ export async function assertPermittedWebTarget(url, allowedOrigins, { allowDynam
   if (!staticallyAllowed && (!Array.isArray(allowedOrigins) || !allowedOrigins.length) && allowDynamicPublicOrigins !== true) {
     fail("web_allowed_origins_not_configured", 503);
   }
-  return assertPublicHost(target);
+  // This exists solely for the in-process acceptance fixture.  Production
+  // callers never set it, so loopback and private-network SSRF protection is
+  // unchanged in every deployed environment.
+  return allowPrivateTestTargets === true ? target : assertPublicHost(target);
 }
 
 export function assertScreenshotSize(screenshot) {

@@ -28,6 +28,7 @@ on:
       - "skinharmony-rust-extractor-governor/**"
       - "services/shared/**"
       - "services/skinharmony-core-mcp/**"
+      - "services/skinharmony-browser-runtime/**"
       - "services/universal-core-service/**"
       - "universal-core/**"
       - "verification/nyra-deep-branch-v2-verification-spec.json"
@@ -59,6 +60,7 @@ on:
       - "skinharmony-rust-extractor-governor/**"
       - "services/shared/**"
       - "services/skinharmony-core-mcp/**"
+      - "services/skinharmony-browser-runtime/**"
       - "services/universal-core-service/**"
       - "universal-core/**"
       - "verification/nyra-deep-branch-v2-verification-spec.json"
@@ -141,6 +143,23 @@ jobs:
       - name: Install Universal Core dependencies for integration tests
         run: npm ci --prefix ../universal-core-service
       - run: npm ci
+      - run: npm test
+
+  browser-gateway-acceptance:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/skinharmony-browser-runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/skinharmony-browser-runtime/package-lock.json
+      - run: npm ci
+      - name: Install pinned Chromium for browser acceptance
+        run: npx playwright install --with-deps chromium
       - run: npm test
 
   deployment-parity:

@@ -3,11 +3,12 @@ import express from "express";
 import { chromium } from "playwright";
 import { assertPermittedWebTarget, assertScreenshotSize, parseAllowedOrigins } from "./security.js";
 
-const app = express();
+export const app = express();
 app.use(express.json({ limit: "2mb" }));
 const port = Number(process.env.PORT || 8795);
 const gatewayKey = String(process.env.BROWSER_GATEWAY_KEY || "").trim();
 const allowDynamicPublicOrigins = String(process.env.WEB_AGENT_DYNAMIC_PUBLIC_ORIGINS || "").trim().toLowerCase() === "true";
+const allowPrivateTestTargets = process.env.NODE_ENV === "test";
 let allowedOrigins;
 try {
   allowedOrigins = parseAllowedOrigins(process.env.WEB_AGENT_ALLOWED_ORIGINS);
@@ -66,7 +67,7 @@ app.post("/v1/browser/execute", async (req, res) => {
   if (!authorized(req)) return res.status(401).json({ ok: false, error: "browser_gateway_unauthorized" });
   let page;
   try {
-    const target = await assertPermittedWebTarget(req.body?.url, allowedOrigins, { allowDynamicPublicOrigins });
+    const target = await assertPermittedWebTarget(req.body?.url, allowedOrigins, { allowDynamicPublicOrigins, allowPrivateTestTargets });
     const actions = Array.isArray(req.body?.actions) ? req.body.actions : [];
     if (actions.length > 40) fail("web_browser_actions_too_many");
     if (Buffer.byteLength(String(req.body?.javascript || ""), "utf8") > 100_000) fail("web_javascript_too_large");
@@ -74,7 +75,7 @@ app.post("/v1/browser/execute", async (req, res) => {
     page = await pageContext.newPage();
     await page.route("**/*", async (route) => {
       try {
-        await assertPermittedWebTarget(route.request().url(), allowedOrigins, { allowDynamicPublicOrigins });
+        await assertPermittedWebTarget(route.request().url(), allowedOrigins, { allowDynamicPublicOrigins, allowPrivateTestTargets });
         await route.continue();
       } catch {
         await route.abort("blockedbyclient");
@@ -110,4 +111,19 @@ app.post("/v1/browser/execute", async (req, res) => {
   }
 });
 
-app.listen(port, () => console.log(`[skinharmony-browser-runtime] listening on ${port}`));
+export async function closeBrowserRuntime() {
+  await Promise.all([...contexts.values()].map(async (contextPromise) => {
+    const context = await contextPromise.catch(() => null);
+    await context?.close().catch(() => {});
+  }));
+  contexts.clear();
+  if (browserPromise) {
+    const instance = await browserPromise.catch(() => null);
+    await instance?.close().catch(() => {});
+    browserPromise = undefined;
+  }
+}
+
+if (process.env.NODE_ENV !== "test") {
+  app.listen(port, () => console.log(`[skinharmony-browser-runtime] listening on ${port}`));
+}
