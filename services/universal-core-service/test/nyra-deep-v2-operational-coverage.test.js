@@ -26,7 +26,7 @@ const LEDGER_SECRET = crypto.randomBytes(32).toString("hex");
 const KEY_ID = "universal-core-nyra-v2-coverage";
 const CORE_SKINHARMONY_CATALOG = nyraBranchCatalog("skinharmony");
 const CORE_BRANCH_IDS = new Set(CORE_SKINHARMONY_CATALOG.branches.map((branch) => branch.id));
-const EXPECTED_V2_SUBBRANCH_COUNT = 317;
+const EXPECTED_V2_SUBBRANCH_COUNT = 326;
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");

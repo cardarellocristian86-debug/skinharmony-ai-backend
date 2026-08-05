@@ -3,7 +3,7 @@
 ## Scope, source of truth and decision rule
 
 This dossier analyses the catalogue returned by the authenticated `codexai` Render request
-`GET /v1/nira/branches` captured on 2026-07-23. It contains 22 branches and 317 subbranches.
+`GET /v1/nira/branches` captured on 2026-08-05. It contains 23 branches and 326 subbranches.
 Every live subbranch is represented below exactly once. The repository V1 catalogue was used only
 as a read-only equivalence check; the authenticated live response remains the source of truth.
 
@@ -213,7 +213,7 @@ independently testable operation than its specialized parent.
 | parallel_coordination | join_readiness | Final synthesis must wait until required lanes and conflicts are resolved. | coordinated_join_gate | Evaluate required outputs, barriers, conflicts, tests and supervisor statuses. | partial_join_risk_assessor | Identify what conclusions/actions would be unsafe with missing optional lanes. | Early join; forever wait on optional lane; unresolved conflict hidden. | Lane dependency graph, statuses/evidence, conflict resolution, acceptance criteria. | `release_readiness` gates product release; this gates coordination join. |
 | parallel_coordination | coordination_summary | Coordinator needs a traceable final picture of lanes and unresolved issues. | lane_state_summary_assembler | Assemble ownership, outputs, evidence, conflicts, decisions and blockers by revision. | coordination_summary_reconciler | Cross-check summary against lane registry and join-gate results. | Missing failed lane; obsolete artifact; invented consensus; secret leakage. | Lane registry, handoffs, evidence index, conflicts, join verdict, redaction policy. | Not a user-facing generic summary; it is coordinator control state. |
 
-## 11. `tenant_work_coordination` (18/18)
+## 11. `tenant_work_coordination` (19/19)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -227,6 +227,7 @@ independently testable operation than its specialized parent.
 | tenant_work_coordination | lease_release | Completed or abandoned work must promptly free coordinated surfaces. | bounded_surface_lease_release | Release the exact active lease with an auditable terminal reason. | lease_release_identity_check | Verify claimant/session or governed takeover authority before release. | Foreign release; partial hidden lease; repeated side effect; missing audit. | Lease record, signed presence, terminal task state or governed recovery record. | Release changes coordination state only and never deletes work artifacts. |
 | tenant_work_coordination | surface_overlap_detection | Concurrent sessions can collide on files, components or dependencies. | coordinated_surface_overlap_detection | Compare declared work surfaces and dependency edges before execution. | overlap_evidence_classifier | Classify exact, transitive and semantic overlap with evidence references. | Undeclared files; semantic collision missed; false positive; stale inventory. | File/component inventories, dependency graph, active leases, revisions, task contracts. | Detects overlap; conflict arbitration selects a governed resolution. |
 | tenant_work_coordination | conflict_arbitration | Detected overlap needs a deterministic proposal without agent self-preference. | core_bounded_conflict_arbitration | Propose wait, partition, handoff or takeover using leases, dependencies and priority evidence. | arbitration_authority_guard | Ensure the proposal cannot transfer ownership or bypass Core revalidation. | Latest-agent wins; silent takeover; priority fabrication; policy bypass. | Conflict report, lease lineage, task dependencies, work priority, Core policy context. | Universal Core remains the final arbiter of material resolution. |
+| tenant_work_coordination | agent_change_interlock | Simultaneous agents need a durable, semantic collision decision before changes reach an overlapping surface. | governed_agent_change_interlock | Bind canonical change intent, affected assets and active leases to a tenant-scoped interlock record. | interlock_scope_authority_check | Reject an interlock decision when tenant, work identity, asset scope or Core authorization is missing. | Name-only comparison; unbounded asset scope; stale lease; cross-tenant conflict data; silent execution. | Tenant/work/session binding, canonical intent digest, asset inventory, lease lineage, Core decision reference. | This parent routes to specialized interlock analysis; it does not grant write, merge, deploy or takeover authority. |
 | tenant_work_coordination | dependency_coordination | Work tasks must respect upstream outputs across sessions and branches. | tenant_dependency_coordination | Track typed dependency readiness and correlate handoffs to work and branch IDs. | dependency_handoff_check | Verify upstream artifact revision, provenance and acceptance before unblocking. | Boolean-only completion; wrong revision; cross-work dependency; cycle. | Dependency edges, artifact hashes, checkpoint/handoff, verification state, work IDs. | It coordinates dependencies but does not validate product correctness itself. |
 | tenant_work_coordination | regression_watch | Changes from one session can invalidate assumptions or results of another. | coordinated_regression_watch | Map changed surfaces to active tenant work and request targeted revalidation. | regression_impact_binding_check | Verify the observed change intersects a declared dependency or surface. | Global noisy alert; missed transitive change; stale base; fabricated regression. | Changed revision/diff, active work surfaces, dependency graph, prior test evidence. | Quality verification runs tests; this node identifies coordination impact. |
 | tenant_work_coordination | checkpoint_handoff | Paused or transferred work needs structured minimal state, not raw chat. | structured_checkpoint_handoff | Create a versioned capsule of status, outputs, blockers, evidence and next obligations. | handoff_capsule_integrity_check | Verify tenant/work/branch correlation, hashes, redaction and acknowledgement. | Chat-only handoff; secret leakage; stale capsule; missing blocker; authority transfer. | Work/task IDs, branch, artifact/evidence hashes, blockers, sender/recipient presence. | The capsule communicates state and cannot grant additional authority. |
@@ -236,7 +237,20 @@ independently testable operation than its specialized parent.
 | tenant_work_coordination | tenant_visibility_policy | Gallery reads must expose only minimum structured state within one tenant. | tenant_gallery_visibility_policy | Filter work, task, presence and lease views by authenticated tenant and role. | gallery_field_minimization_check | Reject cross-tenant rows, raw chat, secrets and unnecessary identity fields. | Enumeration; metadata leakage; default tenant; excessive transcript sharing. | Authenticated tenant, role/scope, record tenant IDs, field classification, redaction rules. | Visibility does not imply claim, lease or action permission. |
 | tenant_work_coordination | verified_memory_promotion | Coordination history must not become shared memory without verified provenance. | verified_coordination_memory_promotion | Propose a minimal reusable memory capsule from completed, verified work evidence. | memory_promotion_evidence_check | Require tenant binding, outcome verification, provenance, redaction and Core approval. | Raw chat promoted; unverified lesson; cross-tenant memory; stale/secret content. | Completed work, verified outcome/tests, source hashes, tenant scope, redaction, Core verdict. | Adaptive learning proposes lessons; Core controls durable memory promotion. |
 
-## 12. `quality_verification` (16/16)
+## 12. `agent_change_interlock` (8/8)
+
+| branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
+|---|---|---|---|---|---|---|---|---|---|
+| agent_change_interlock | change_intent_canonicalization | Agents describe the same intended change in incompatible language, obscuring collisions and safe commutativity. | canonical_change_intent_compiler | Produce a bounded canonical intent from declared objective, operation, assets and constraints without inventing scope. | intent_provenance_diff_check | Compare canonical fields to supplied structured intent and identify inferred or omitted material fields. | Goal drift; omitted asset; inferred permission; prompt-only identity; mutable digest. | Signed work context, declared change request, asset list, operation class, canonicalization diff, intent digest. | It normalizes intent only; scope authorization and conflict resolution remain governed elsewhere. |
+| agent_change_interlock | semantic_asset_conflict_graph | File paths alone miss conflicts across APIs, schemas, infrastructure and dependent runtime surfaces. | semantic_asset_conflict_graph_builder | Build an evidence-linked graph of declared assets, dependencies and semantic write surfaces for concurrent work. | asset_edge_evidence_validator | Require each material graph edge to reference an artifact, manifest, dependency record or verified analysis result. | Hidden dependency; guessed edge; cross-tenant edge; stale revision; wildcard asset expansion. | Repository revision, manifests, dependency evidence, declared paths/components, tenant/work binding, graph digest. | Surface overlap detects a collision; this node constructs the semantic relation evidence it consumes. |
+| agent_change_interlock | commutativity_assessment | Two bounded changes may be safely ordered or independent, but agents must not decide this from intuition alone. | governed_change_commutativity_assessor | Assess whether two canonical changes commute, require ordering or must be isolated using explicit surface and dependency evidence. | commutativity_counterexample_probe | Seek a concrete order-dependent state, API, schema or test outcome before claiming independence. | False independence; untested shared state; asymmetric rollback; policy bypass through reordering. | Two canonical intents, asset graph, dependency graph, test/contract evidence, rollback constraints, Core policy context. | Produces an advisory classification; Core and leases decide whether work may proceed. |
+| agent_change_interlock | cross_adapter_handoff | The same work can move between host-native clients, MCP and other adapters without preserving trusted coordination state. | cross_adapter_interlock_handoff | Transfer a minimal, tenant-scoped interlock capsule with work, intent, lease and evidence references across adapters. | handoff_receipt_binding_check | Verify issuer, audience, expiry, tenant and payload digest before a receiving adapter joins the interlock. | Forged handoff; audience mismatch; replay; raw chat leakage; authority escalation. | Signed receipt/fingerprint, sender and receiver identities, tenant/work IDs, expiry, capsule digest, redaction result. | Handoff preserves coordination state only and cannot create credentials or execution authority. |
+| agent_change_interlock | execution_receipt_revalidation | An approval or lease may change between planning and the actual write, merge or deploy attempt. | pre_execution_receipt_revalidator | Revalidate the exact Core receipt, scope digest, tenant, identity and expiry immediately before an external effect. | receipt_scope_replay_guard | Reject reused, expired or scope-mismatched receipts and record a non-sensitive rejection reason. | Replay; stale allow; target swap; tenant swap; mismatched actor; silent retry. | Core receipt fingerprint, request/scope digest, actor/tenant binding, expiry, latest decision and lease state. | This is a last-moment coordination check; Universal Core remains the final verdict issuer. |
+| agent_change_interlock | drift_reconciliation | Independent changes can make a prior conflict assessment stale while work is paused or handed off. | interlock_drift_reconciler | Compare the interlock baseline with current revisions, leases, dependencies and policy snapshot to require re-evaluation when material drift appears. | interlock_drift_materiality_check | Distinguish harmless metadata movement from changes that invalidate the original interlock evidence. | Baseline overwrite; stale comparison; unrelated change blocks work; drift hidden by cache. | Baseline/current digests, revision graph, lease states, policy snapshot fingerprints, affected asset set. | General work drift revalidation owns resume eligibility; this narrows it to an active interlock decision. |
+| agent_change_interlock | conflict_explanation | A blocked worker needs an actionable, factual explanation without Nyra silently changing Core's verdict. | bounded_interlock_conflict_explainer | Render a structured explanation of collision evidence, permitted analysis and required next condition from the interlock record. | explanation_fact_boundary_check | Mark supplied facts, deterministic inference and unknowns while omitting secrets and raw chat. | Generic explanation; invented remedy; verdict mutation; sensitive disclosure; bypass suggestion. | Interlock record, Core block code, allowed continuation scope, evidence references, redaction result. | Nyra explains and supervises only; remediation and authorization remain in their existing Core paths. |
+| agent_change_interlock | rollback_dependency_mapping | A change may appear reversible until dependent work, migrations or external effects make rollback unsafe. | rollback_dependency_mapper | Map rollback steps to affected dependencies, active work and required verification before a coordinated change is accepted. | rollback_precondition_verifier | Verify every material reversal dependency has an owner, state and testable trigger condition. | Partial rollback; dependency omission; destructive fallback; rollback claimed but unavailable. | Change plan, dependency graph, active leases, rollback steps, verification plan, environment scope. | Execution planning defines rollback; this node exposes coordination dependencies that can block concurrent work. |
+
+## 13. `quality_verification` (16/16)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -257,7 +271,7 @@ independently testable operation than its specialized parent.
 | quality_verification | release_readiness | Passing some tests is insufficient for governed release. | release_evidence_gate | Evaluate acceptance, tests, defects, performance, rollback, flags and policy verdict. | waiver_integrity_checker | Verify every exception has scope, owner, expiry and compensating control. | Green suite with blocker; missing rollback; unauthorized waiver; stale run. | Complete QA matrix, open defects, benchmarks, Core verdict, rollback/feature flags. | Knowledge release gate covers learned knowledge; this covers software/product release. |
 | quality_verification | quality_summary | Final QA state must be concise without hiding failures or uncertainty. | quality_evidence_summary | Assemble coverage, results, defects, waivers, residual risk and readiness verdict. | quality_summary_source_reconciler | Recompute totals/status from signed test artifacts. | Cherry-picked tests; “all pass” with skips; stale baseline; recommendation shown as Core allow. | Test manifest/results, coverage, defect/waiver register, benchmark, gate result. | Communication can adapt presentation; this remains authoritative QA record. |
 
-## 12. `learning_memory` (10/10)
+## 14. `learning_memory` (10/10)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -272,7 +286,7 @@ independently testable operation than its specialized parent.
 | learning_memory | memory_safety | Stored content can leak data, inject instructions or bias future decisions. | memory_admission_safety_filter | Screen provenance, sensitive data, injection and authority before recall eligibility. | recalled_instruction_quarantine | Prevent memory text from becoming executable instruction. | Prompt injection stored; secrets memorized; toxic pattern amplified; provenance stripped. | Candidate content, provenance, tenant, data classification, policy/verifier results. | Source injection defense handles external retrieval; this handles persisted memory. |
 | learning_memory | learning_summary | Reviewers need a traceable view of recalled lessons and unresolved gaps. | memory_use_summary | Record retrieved entries, match rationale, exclusions, gaps and influence on output. | memory_influence_trace_checker | Verify any cited memory actually contributed within allowed scope. | Hidden memory influence; stale entry omitted; cross-tenant identifier exposed. | Retrieval manifest, scores, validity filters, decision trace, redaction policy. | Adaptive learning summary covers a learning cycle; this covers current recall. |
 
-## 13. `adaptive_learning` (16/16)
+## 15. `adaptive_learning` (16/16)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -293,7 +307,7 @@ independently testable operation than its specialized parent.
 | adaptive_learning | verified_consolidation | Approved candidates need atomic versioned admission with rollback. | atomic_learning_consolidator | Commit approved knowledge/procedure/benchmark under feature flag and provenance. | consolidation_postcondition_verifier | Confirm active version, indexes, isolation and rollback reference after write. | Partial write; duplicate active version; cross-tenant index; flag bypass. | Supervisor/Core approval, candidate hash, tests, tenant scope, rollback and feature flag. | No free-weight training or auto-execution; consolidation is governed data change. |
 | adaptive_learning | learning_handoff | Learning outputs must transfer to Core/memory owners without losing approval state. | governed_learning_bundle | Package candidates, evidence, tests, decisions, rejected items and next actions. | learning_bundle_integrity_checker | Verify hashes, tenant scope and status consistency across bundle. | Rejected candidate presented approved; provenance lost; secret leak; stale version. | Complete learning cycle records, verdicts, artifacts, redaction policy, revision. | Software has a domain-specific learning handoff; this is universal. |
 
-## 14. `communication_explanation` (10/10)
+## 16. `communication_explanation` (10/10)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -308,7 +322,7 @@ independently testable operation than its specialized parent.
 | communication_explanation | uncertainty_disclosure | Material uncertainty must be understandable and decision-relevant. | decision_relevant_uncertainty_renderer | Explain uncertainty source, range, consequence and what would reduce it. | false_precision_detector | Flag unsupported decimals, categorical certainty and hidden ranges. | Boilerplate caveat; alarmism; probability misread; uncertainty omitted. | Uncertainty register/calibration, decision sensitivity, evidence gaps. | Research records/calibrates uncertainty; this communicates it. |
 | communication_explanation | localization | Content needs regional formats, legal conventions and cultural usability. | locale_convention_adapter | Adapt dates, units, currency and UI conventions without changing values. | localized_value_roundtrip_test | Convert localized values back and verify semantic equality. | Currency conversion invented; date ambiguity; decimal/unit error; legal assumption. | Target locale, canonical values/units, authoritative conversion if requested, glossary. | Language selection chooses language; localization handles conventions. |
 
-## 15. `software_intelligence` (20/20)
+## 17. `software_intelligence` (20/20)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -333,7 +347,7 @@ independently testable operation than its specialized parent.
 | software_intelligence | core_verdict | Dual-use analysis conclusions need an explicit Core allow/deny/confirm decision. | software_work_core_gate | Package authority, evidence, risks, policy and proposed next action for Core. | verdict_payload_completeness_checker | Reject gate requests missing artifact hash, scope or rollback. | Nyra self-authorizes; recommendation called verdict; payload changed after allow. | All branch outputs, exact action digest, Core policy, owner confirmation state. | Universal Core is the only verdict issuer. |
 | software_intelligence | learning_handoff | Verified software lessons must enter governed learning without artifact leakage. | software_learning_transfer_bundle | Package sanitized patterns, tests, provenance and scope for adaptive learning review. | artifact_specific_detail_minimizer | Remove secrets/protected bytes while retaining reusable causal signal. | Malware/code leakage; tenant-specific fact globalized; rejected finding included. | Verified findings, sanitization map, license/privacy review, tenant scope, verdict. | Adaptive `learning_handoff` receives and governs consolidation. |
 
-## 16. `suite_domain` (8/8)
+## 18. `suite_domain` (8/8)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -346,7 +360,7 @@ independently testable operation than its specialized parent.
 | suite_domain | site_isolation | Assets, configuration and content may cross sites/tenants. | multi_site_isolation_verifier | Test storage, cache, media, template and API isolation with paired sites. | media_url_tenant_swap_probe | Mutate asset identifiers/domains to detect cross-site access. | Shared media leak; cache collision; default site; test uses one tenant. | Two-site fixtures, auth, cache/storage namespaces, route/media test results. | General tenant isolation remains authoritative; this adds CMS surfaces. |
 | suite_domain | rollback_readiness | Site changes need fast restoration across content, template and routing state. | site_revision_rollback_gate | Verify immutable prior revisions, dependency compatibility and restoration rehearsal. | cache_rollback_consistency_probe | Confirm CDN/application caches converge to restored version. | Content restored but template not; cache stale; newer leads lost. | Revision/artifact hashes, route/template dependencies, backup, rehearsal, RTO. | General rollback readiness consumes this domain evidence. |
 
-## 17. `smartdesk_domain` (8/8)
+## 19. `smartdesk_domain` (8/8)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -359,7 +373,7 @@ independently testable operation than its specialized parent.
 | smartdesk_domain | node_isolation | Multiple operational nodes/locations must not share unauthorized data or commands. | location_node_isolation_verifier | Enforce tenant-plus-node scope through queries, cache, events and reports. | node_identifier_confusion_fuzzer | Swap path/body/token node IDs to expose precedence bugs. | Tenant isolation passes but node leaks; shared event topic; default node. | Two-node fixtures, roles, namespaces/topics, paired API/report tests. | More granular than tenant isolation. |
 | smartdesk_domain | handoff_readiness | Operational handoff must preserve transaction status and unresolved work. | shift_handoff_integrity_gate | Assemble open appointments, payments, stock exceptions and accountable recipients. | in_flight_transaction_handoff_probe | Detect transactions whose state can change during handoff snapshot. | Stale handoff; cash discrepancy hidden; PII overexposed; no acknowledgement. | Versioned operational snapshot, exception ledger, recipients/roles, acknowledgement. | Coordination handoff handles agent lanes; this handles business shifts. |
 
-## 18. `analyzer_domain` (17/17)
+## 20. `analyzer_domain` (17/17)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -381,7 +395,7 @@ independently testable operation than its specialized parent.
 | analyzer_domain | verified_outcome_learning | Outcome feedback can improve protocols only after attribution and verification. | analyzer_outcome_learning_candidate | Link follow-up outcome to protocol, baseline and confounders for governed learning. | intervention_outcome_attribution_check | Test whether other products/events make causal learning unsafe. | Anecdote learned; commercial bias; cross-subject mix; auto-policy change. | Baseline/follow-up, protocol adherence, confounders, outcome measure, consent/provenance. | Adaptive learning governs consolidation; this produces domain candidate. |
 | analyzer_domain | human_review_release | Sensitive or uncertain analyzer results need qualified review before release. | analyzer_report_review_gate | Route reports based on warnings, abstention, novelty and claim risk to authorized reviewer. | reviewed_report_hash_binder | Ensure released report exactly matches the reviewed revision. | Self-approval; wrong reviewer; report changed; urgent warning delayed. | Report hash, findings/confidence, triggers, reviewer authority, decision/time. | Core remains final release authority; this enforces domain human-review evidence. |
 
-## 19. `relational_supervision` (20/20)
+## 21. `relational_supervision` (20/20)
 
 All records in the three orchestration branches are proposal-only research candidates aligned with
 the advisory, no-effect contracts in `orchestration-capability-catalog.js`. They may assemble
@@ -411,7 +425,7 @@ authority for policy, joins, release and execution; no row authorizes automatic 
 | relational_supervision | core_join_readiness | Core cannot safely join outputs until required actors, evidence, conflicts and attestations are complete. | relational_join_evidence_assessor | Evaluate graph closure, required handoffs, verifier independence, unresolved conflicts and lease validity. | core_join_prerequisite_checker | Recompute every mandatory join prerequisite from signed source records. | Early join; optional actor blocks forever; stale attestation; hidden disagreement; partial artifact. | Task and relation graphs, handoff/artifact hashes, verifier results, conflict register, policy and lease state. | Consumes `fanin_reconciliation`, `artifact_verification` and router-verifier evidence; only Core issues the join verdict. |
 | relational_supervision | relational_health_summary | Operators and Core need a traceable relation-state snapshot without raw prompts, secrets or false authority. | relational_health_snapshot_assembler | Assemble topology, trust, communication, conflicts, load, repairs and join readiness by revision. | relational_summary_source_reconciler | Recompute summary fields and counts from signed graph, trace and verifier records. | Stale snapshot; failed actor omitted; PII leakage; recommendation rendered as ALLOW. | Relation graph, attestations, channel metrics, conflict and load reports, Core verdict state, redaction policy. | Summarizes catalog `trace_observability` evidence only; it cannot execute, release, join or modify policy. |
 
-## 20. `agent_orchestration` (20/20)
+## 22. `agent_orchestration` (20/20)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -436,7 +450,7 @@ authority for policy, joins, release and execution; no row authorizes automatic 
 | agent_orchestration | core_join | Core needs verified, provenance-preserving agent outputs and unresolved conflict state before a mission join. | agent_core_join_evidence_assembler | Package required artifacts, verifier results, task closure, budgets, leases and dissent into a signed join candidate. | join_artifact_integrity_checker | Recompute hashes, schemas, producer identities and acceptance results for every required output. | Partial join; self-verified artifact; stale revision; budget overrun hidden; dissent dropped. | Task DAG/status, artifact manifests, verifier evidence, conflict register, budget ledger and policy hash. | Uses `fanin_reconciliation` and `artifact_verification`; only Universal Core may authorize the join. |
 | agent_orchestration | verified_retirement | Agent teardown is unsafe until outputs, descendants, leases, memory and audit evidence are accounted for. | agent_retirement_evidence_assessor | Evaluate retirement readiness and propose revocation, state disposal and retained evidence by policy. | lease_revocation_state_cleanup_checker | Verify no active descendant, tool call, lease or uncommitted artifact depends on the agent. | Premature teardown; orphan child; memory retained; lease active; audit chain broken. | Final task/artifact state, descendants, leases, tool calls, memory namespaces, retention and teardown evidence. | Aligns with `agent_teardown` and lease management; retirement is not performed without Core authorization. |
 
-## 21. `ai_orchestration` (20/20)
+## 23. `ai_orchestration` (20/20)
 
 | branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
 |---|---|---|---|---|---|---|---|---|---|
@@ -617,22 +631,22 @@ The Research Agent rejected these expansions rather than emitting nominal nodes:
 A read-only verifier compared the stable ten-column registry against the authenticated live
 catalogue and then confirmed repository V1 equivalence with `nyraBranchCatalog("skinharmony")`.
 
-- Live branches: **22**
-- Live subbranches: **317**
-- Stable generator rows: **317**
-- Unique `(branch_id, subbranch_id)` pairs: **317**
+- Live branches: **23**
+- Live subbranches: **326**
+- Stable generator rows: **326**
+- Unique `(branch_id, subbranch_id)` pairs: **326**
 - Missing live subbranches: **0**
 - Duplicate live-subbranch rows in the stable registry: **0**
 - Duplicate specialized/micro capability IDs: **0**
-- Proposed specialized capabilities: **317**
-- Proposed independently testable micro-capabilities: **317**
+- Proposed specialized capabilities: **326**
+- Proposed independently testable micro-capabilities: **326**
 
 Per-branch stable-row counts: `context_intelligence=10`, `work_intake=14`,
 `research_evidence=20`, `decision_reasoning=10`, `planning_prioritization=15`,
 `risk_governance=12`, `delegated_authority=14`, `decision_provenance=14`,
 `relational_supervision=20`, `agent_orchestration=20`, `ai_orchestration=20`,
 `execution_planning=10`, `parallel_coordination=15`, `quality_verification=16`,
-`tenant_work_coordination=18`,
+`tenant_work_coordination=19`, `agent_change_interlock=8`,
 `learning_memory=10`, `adaptive_learning=16`, `communication_explanation=10`,
 `software_intelligence=20`, `suite_domain=8`, `smartdesk_domain=8`,
 `analyzer_domain=17`.

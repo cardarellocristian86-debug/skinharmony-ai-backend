@@ -33,6 +33,7 @@ const branchIds = [
   "execution_planning",
   "parallel_coordination",
   "tenant_work_coordination",
+  "agent_change_interlock",
   "quality_verification",
   "learning_memory",
   "adaptive_learning",
