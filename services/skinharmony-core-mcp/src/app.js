@@ -36,6 +36,9 @@ const SERVER_INSTRUCTIONS = [
 ].join(" ");
 
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
+  "nyra_reliability_read",
+  "nyra_reliability_content_check",
+  "nyra_reliability_chat_evaluate",
   "work_preflight",
   "core_health",
   "nyra_branch_catalog",

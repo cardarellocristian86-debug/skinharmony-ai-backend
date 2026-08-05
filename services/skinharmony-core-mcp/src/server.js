@@ -31,6 +31,7 @@ import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js"
 import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
 import { createWebTransport, webCompatibilityManifest } from "./web-agent-compatibility.js";
 import { researchAirlockToolMetadata } from "./research-airlock-reference-monitor.js";
+import { createReliabilityHandlers } from "./reliability-layer.js";
 
 const config = loadConfig();
 const webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowedOrigins });
@@ -156,6 +157,7 @@ const coreHandlers = createCoreHandlers(config, {
     },
   } : null,
 });
+const reliabilityHandlers = createReliabilityHandlers(config, { coreHandlers });
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
       govern,
@@ -873,7 +875,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
     }, identity);
   }
 });
-const handlers = { ...baseHandlers, ...dynamicHandlers };
+const handlers = { ...baseHandlers, ...reliabilityHandlers, ...dynamicHandlers };
 
 function isAgentPresenceBootstrapCall(toolName, args = {}) {
   return toolName === "agent_heartbeat" ||
