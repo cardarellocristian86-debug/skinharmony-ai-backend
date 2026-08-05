@@ -124,6 +124,9 @@ jobs:
       - name: Install Core MCP dependencies for continuity integration tests
         run: npm ci --prefix ../skinharmony-core-mcp
       - run: npm ci
+      - name: Install MCP dependencies for staging integration tests
+        working-directory: .
+        run: npm ci --prefix services/skinharmony-core-mcp
       - run: npm test
 
   core-mcp:
