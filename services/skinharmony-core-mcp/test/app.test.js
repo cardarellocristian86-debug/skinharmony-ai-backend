@@ -383,6 +383,10 @@ test("production on PostgreSQL 18 becomes ready after required runtimes initiali
     handlers,
     readiness,
     postgresMajorVersionProbe: postgresMajorProbe(180_004),
+    fetchImpl: async () => new Response(JSON.stringify({
+      research_airlock: { ready: true, mode: "enforced", state_backend: "postgresql" },
+      build: { commit_sha: "a".repeat(40) },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
   });
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
@@ -415,6 +419,77 @@ test("production on PostgreSQL 18 becomes ready after required runtimes initiali
     assert.equal(JSON.stringify(ready).includes("tenant-core-secret"), false);
     assert.equal(JSON.stringify(ready).includes("z".repeat(32)), false);
     assert.equal(JSON.stringify(ready).includes("postgres://"), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("production MCP health fails closed when enforced Core Airlock is unreachable", async () => {
+  const productionConfig = {
+    ...config,
+    environment: "production",
+    production: true,
+    runtimeBuildCommit: "a".repeat(40),
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    universalCoreKeys: {},
+    databaseUrl: "",
+    workContinuityAutoCaptureEnabled: false,
+    hostNativeAgentProtocolEnabled: false,
+    decisionLedgerRequired: false,
+  };
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({ content: [{ type: "text", text: "ok" }] })]));
+  const app = createApp(productionConfig, {
+    handlers,
+    fetchImpl: async () => { throw new Error("core_unreachable"); },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`);
+    const health = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(health.readiness.ready, true);
+    assert.equal(health.research_airlock.production_required, true);
+    assert.equal(health.research_airlock.core_ready, false);
+    assert.equal(health.render_ready, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("production MCP health accepts explicit fail-closed Core shadow rollback", async () => {
+  const productionConfig = {
+    ...config,
+    environment: "production",
+    production: true,
+    runtimeBuildCommit: "a".repeat(40),
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    universalCoreKeys: {},
+    databaseUrl: "",
+    workContinuityAutoCaptureEnabled: false,
+    hostNativeAgentProtocolEnabled: false,
+    decisionLedgerRequired: false,
+  };
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({ content: [{ type: "text", text: "ok" }] })]));
+  const app = createApp(productionConfig, {
+    handlers,
+    fetchImpl: async () => new Response(JSON.stringify({
+      research_airlock: { ready: false, operational_safe: true, mode: "shadow", state_backend: "unavailable" },
+      build: { commit_sha: "a".repeat(40) },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`);
+    const health = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(health.research_airlock.production_required, true);
+    assert.equal(health.research_airlock.mode, "shadow");
+    assert.equal(health.research_airlock.core_ready, true);
+    assert.equal(health.render_ready, true);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

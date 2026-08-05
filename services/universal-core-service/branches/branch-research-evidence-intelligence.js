@@ -29,5 +29,12 @@ export const branchResearchEvidenceIntelligence = {
       "claim_without_provenance", "fabricated_source", "stale_evidence_as_current", "cross_tenant_evidence_leak",
       "source_prompt_execution", "automatic_global_knowledge_promotion",
     ],
+    enforcement_overlays: [{
+      id: "research_airlock_v1",
+      mode: "enforced",
+      scope: "nyra_core_research_tools_only",
+      execution_authority_expanded: false,
+      rollback_mode: "shadow",
+    }],
   },
 };

@@ -44,11 +44,20 @@ for (const [address, prefix] of [
   ["100::", 64],
   ["2001:db8::", 32],
   ["2002::", 16],
-  ["64:ff9b:1::", 48],
   ["fc00::", 7],
   ["fe80::", 10],
   ["ff00::", 8],
 ]) NON_PUBLIC_NETWORKS.addSubnet(address, prefix, "ipv6");
+
+// Keep IPv4-embedding IPv6 ranges in a family-specific list. Node's BlockList
+// intentionally normalizes IPv4 through mapped IPv6, so mixing ::ffff/96 into
+// the general list would also classify every ordinary public IPv4 as blocked.
+const IPV6_TRANSLATION_NETWORKS = new net.BlockList();
+for (const [address, prefix] of [
+  ["64:ff9b::", 96],
+  ["64:ff9b:1::", 48],
+  ["::ffff:0:0", 96],
+]) IPV6_TRANSLATION_NETWORKS.addSubnet(address, prefix, "ipv6");
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -169,7 +178,7 @@ function registrySourceFor(source, url, sourceRegistry, branchId) {
   )) || null;
 }
 
-function normalizedSourceUrl(value) {
+export function normalizedPublicSourceUrl(value) {
   try {
     const url = new URL(String(value || "").trim());
     if (
@@ -190,10 +199,11 @@ function publicResolvedAddress(value) {
   const address = String(value || "").trim();
   const family = net.isIP(address);
   if (family === 0) return false;
+  if (family === 6 && IPV6_TRANSLATION_NETWORKS.check(address, "ipv6")) return false;
   return !NON_PUBLIC_NETWORKS.check(address, family === 4 ? "ipv4" : "ipv6");
 }
 
-async function resolvePublicAddresses(hostname, lookup) {
+export async function resolvePublicSourceAddresses(hostname, lookup) {
   let result;
   try {
     result = await lookup(hostname, { all: true, verbatim: true });
@@ -250,7 +260,7 @@ async function boundedIncomingMessageBytes(message, maximum) {
   });
 }
 
-function requestPinnedAddress({ url, address, headers, signal }) {
+function requestPinnedAddress({ url, address, headers, signal, method = "GET" }) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let request = null;
@@ -274,7 +284,7 @@ function requestPinnedAddress({ url, address, headers, signal }) {
         family: net.isIP(address),
         port: 443,
         path: `${url.pathname}${url.search}`,
-        method: "GET",
+        method,
         headers: { ...headers, Host: url.host },
         servername: url.hostname,
         rejectUnauthorized: true,
@@ -301,13 +311,26 @@ function requestPinnedAddress({ url, address, headers, signal }) {
   });
 }
 
-async function pinnedPublicHttpsFetch({ url, addresses, headers, signal, maxBytes }) {
+export async function pinnedPublicHttpsFetch({
+  url,
+  addresses,
+  headers,
+  signal,
+  maxBytes,
+  method = "GET",
+  allowRedirect = false,
+}) {
   let lastError = null;
   for (const address of addresses) {
     try {
-      const response = await requestPinnedAddress({ url, address, headers, signal });
+      const response = await requestPinnedAddress({ url, address, headers, signal, method });
       const status = Number(response.statusCode || 0);
       const contentType = headerValue(response.headers, "content-type");
+      if (allowRedirect && status >= 300 && status < 400) {
+        const location = headerValue(response.headers, "location");
+        response.resume?.();
+        return { ok: false, redirect: true, status, location, contentType, bytes: null };
+      }
       if (status < 200 || status >= 300) {
         response.resume?.();
         return { ok: false, status, contentType, bytes: null };
@@ -326,7 +349,7 @@ async function pinnedPublicHttpsFetch({ url, addresses, headers, signal, maxByte
   throw lastError || new Error("nyra_deep_v2_source_fetch_failed");
 }
 
-function safeContentType(value) {
+export function safePublicSourceContentType(value) {
   const contentType = String(value || "").toLowerCase().split(";", 1)[0].trim();
   return contentType.startsWith("text/")
     || contentType === "application/json"
@@ -430,7 +453,7 @@ export function createNyraDeepV2SourceVerifier({
 
   async function verifyOne(source, branchId) {
     const sourceId = String(source?.id || "").trim();
-    const url = normalizedSourceUrl(source?.url);
+    const url = normalizedPublicSourceUrl(source?.url);
     const excerpt = compactText(source?.excerpt, 1_200);
     if (!SOURCE_ID_PATTERN.test(sourceId)) return { ok: false, source_id: sourceId || null, reason: "nyra_deep_v2_source_id_invalid" };
     if (!url) return { ok: false, source_id: sourceId, reason: "nyra_deep_v2_source_url_rejected" };
@@ -444,7 +467,7 @@ export function createNyraDeepV2SourceVerifier({
     const timer = setTimeout(() => controller.abort(), boundedTimeout);
     const headers = { Accept: "text/html, text/plain, application/json, application/xml;q=0.8" };
     try {
-      const addresses = await resolvePublicAddresses(url.hostname, dnsLookup);
+      const addresses = await resolvePublicSourceAddresses(url.hostname, dnsLookup);
       let contentType = "";
       let bytes = null;
       if (fetchImpl) {
@@ -474,7 +497,7 @@ export function createNyraDeepV2SourceVerifier({
         contentType = String(response.contentType || "").toLowerCase();
         bytes = response.bytes;
       }
-      if (!safeContentType(contentType)) return { ok: false, source_id: sourceId, reason: "nyra_deep_v2_source_content_type_rejected" };
+      if (!safePublicSourceContentType(contentType)) return { ok: false, source_id: sourceId, reason: "nyra_deep_v2_source_content_type_rejected" };
       if (!Buffer.isBuffer(bytes)) return { ok: false, source_id: sourceId, reason: "nyra_deep_v2_source_fetch_rejected" };
       const body = bytes.toString("utf8");
       // The excerpt is user-reviewed, but it becomes evidence only after the

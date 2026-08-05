@@ -102,6 +102,15 @@ An unauthenticated MCP request must return `401` and a `WWW-Authenticate` header
 
 Enable Developer mode, create a developer app, and use `https://skinharmony-core-mcp.onrender.com/mcp` as the MCP URL. After Auth0 login, test health, Nyra interpretation, Core governance, tenant memory context/search, an explicit checkpoint and an AI handoff. Confirm that a second tenant cannot retrieve the first tenant's records.
 
+For external research that will later use private tenant context, start a fresh
+logical session and make `nyra_research_airlock_plan` its first Nyra/Core work
+action, then consume the returned capability with `nyra_research_airlock_open`.
+Public evidence must be fetched through
+`nyra_research_airlock_discover` before private entry; do not mix host Browse or
+Deep Research with the private phase. The Core health payload must report the
+Airlock `enforced`, ready and backed by PostgreSQL. See
+`docs/architecture/research-airlock-v1.md`.
+
 After a server deploy that changes tools or their metadata, open ChatGPT
 Settings, select the installed SkinHarmony app and choose **Refresh**. Keep the
 same MCP URL, OAuth configuration and tenant binding; do not recreate or

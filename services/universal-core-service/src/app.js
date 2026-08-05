@@ -112,6 +112,8 @@ import {
   createResearchDistillationRuntime,
   sourceRegistry as createResearchSourceRegistry,
 } from "./researchDistillationLayer.js";
+import { createResearchAirlockRuntime } from "./researchAirlock.js";
+import { createPostgresResearchAirlockStore } from "./researchAirlockStore.js";
 import {
   createUniversalSoftwareJobManager,
   issueSoftwareAuthorizationEnvelope,
@@ -1542,6 +1544,9 @@ function branchMaturityReport() {
       maturity,
       execution_default: maturity === "production" ? "confirm" : maturity === "advisory" ? "advisory_only" : "test_only",
       promotion_required: maturity === "production" ? [] : ["benchmark_pass", "owner_approval", "regression_test", "audit_sample"],
+      enforcement_overlays: Array.isArray(profile.guardrails?.enforcement_overlays)
+        ? profile.guardrails.enforcement_overlays.map((overlay) => ({ ...overlay }))
+        : [],
     };
   }
   return {
@@ -4528,6 +4533,29 @@ export function createUniversalCoreService(options = {}) {
     env: options.researchEnv || process.env,
     storageRoot,
   });
+  const researchAirlockMode = String(
+    options.researchAirlockMode
+      ?? process.env.CORE_RESEARCH_AIRLOCK_MODE
+      ?? "shadow",
+  ).trim().toLowerCase();
+  const researchAirlockShadowMonitor =
+    process.env.NODE_ENV === "production" && researchAirlockMode === "shadow";
+  const researchAirlockRuntime = options.researchAirlockRuntime || createResearchAirlockRuntime({
+    store: (researchAirlockMode === "enforced" || researchAirlockShadowMonitor) && governedAgentPostgresConfigured
+      ? createPostgresResearchAirlockStore({
+          connectionString: governedAgentDatabaseUrl,
+          pool: options.researchAirlockPostgresPool || null,
+        })
+      : null,
+    mode: researchAirlockMode,
+    shadowMonitorRequired: process.env.NODE_ENV === "production",
+    signingSecret: options.researchAirlockSigningSecret
+      ?? process.env.CORE_RESEARCH_AIRLOCK_SIGNING_SECRET
+      ?? process.env.CORE_EVIDENCE_SIGNING_SECRET
+      ?? "",
+    releaseCommitSha: BUILD_COMMIT_SHA,
+    transport: options.researchAirlockTransport,
+  });
   const governedAgentActivationStore = options.governedAgentActivationStore || createGovernedAgentActivationStore({
     root: path.join(storageRoot, "governed-agent-activations"),
   });
@@ -5666,7 +5694,25 @@ export function createUniversalCoreService(options = {}) {
       nyraPolicyRegistryStatus.ready === true &&
       (nyraPolicyRegistryMode !== "enforced" || nyraPolicyRegistryProofStatus.ready === true)
     );
-    const renderReady = productionBuildReady && hostNativeReady && nyraPolicyRegistryModeValid && nyraPolicyRegistryProductionReady;
+    let researchAirlockHealth;
+    try {
+      researchAirlockHealth = await researchAirlockRuntime.status("health_probe");
+    } catch (error) {
+      researchAirlockHealth = {
+        mode: researchAirlockRuntime.mode || "shadow",
+        ready: false,
+        state_backend: researchAirlockRuntime.store?.kind || "unavailable",
+        error: String(error?.message || "research_airlock_health_failed").slice(0, 160),
+      };
+    }
+    const researchAirlockProductionReady = !production
+      || researchAirlockHealth.ready === true
+      || (researchAirlockHealth.mode === "shadow" && researchAirlockHealth.operational_safe === true);
+    const renderReady = productionBuildReady
+      && hostNativeReady
+      && nyraPolicyRegistryModeValid
+      && nyraPolicyRegistryProductionReady
+      && researchAirlockProductionReady;
     res.status(renderReady ? 200 : 503).json({
       ok: true,
       service: SERVICE_NAME,
@@ -5682,6 +5728,11 @@ export function createUniversalCoreService(options = {}) {
       render_ready: renderReady,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
+      research_airlock: {
+        ...researchAirlockHealth,
+        ready: researchAirlockProductionReady && researchAirlockHealth.ready === true,
+        production_required: production && researchAirlockHealth.mode === "enforced",
+      },
       dynamic_task_tree: {
         state_backend: dynamicTaskTreeStateStore.kind || "injected",
         restart_durable: dynamicTaskTreeStateStore.restart_durable === true,
@@ -6139,6 +6190,115 @@ export function createUniversalCoreService(options = {}) {
   app.get("/v1/research/status", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
     const status = researchRuntime.status(req.tenantId);
     return res.json({ ok: true, tenant_id: req.tenantId, status });
+  });
+
+  app.get("/v1/research/airlock/status", coreAuth(SCOPES.READ_EVIDENCE), async (req, res) => {
+    try {
+      const status = await researchAirlockRuntime.status(req.tenantId);
+      return res.json({ ok: true, tenant_id: req.tenantId, status });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_status_failed");
+    }
+  });
+
+  app.post("/v1/research/airlock/plan", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
+    try {
+      const decision = await researchAirlockRuntime.createPlan(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
+      audit.append("core_research_airlock_plan_issued", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        work_id: req.body?.work_binding?.work_id || null,
+        plan_digest: decision.plan?.plan_digest || null,
+        source_url_digests: decision.plan?.source_url_digests || [],
+      });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, decision });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_plan_issue_failed");
+    }
+  });
+
+  app.post("/v1/research/airlock/work", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
+    try {
+      const work = await researchAirlockRuntime.createWork(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
+      audit.append("core_research_airlock_work_created", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        work_id: work.work_id,
+        state: work.state,
+      });
+      return res.status(201).json({ ok: true, tenant_id: req.tenantId, work });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_work_create_failed");
+    }
+  });
+
+  app.post("/v1/research/airlock/discover", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
+    try {
+      const decision = await researchAirlockRuntime.discover(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
+      audit.append("core_research_airlock_discovery_decision", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        verdict: decision.verdict,
+        reason: decision.reason || "research_airlock_fetch_verified",
+        work_id: req.body?.work_binding?.work_id || null,
+        fetch_id: decision.fetch_proof?.fetch_id || null,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, decision });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_discovery_failed");
+    }
+  });
+
+  app.post("/v1/research/airlock/seal", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
+    try {
+      const decision = await researchAirlockRuntime.seal(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
+      audit.append("core_research_airlock_evidence_sealed", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey.key_id,
+        work_id: req.body?.work_binding?.work_id || null,
+        capsule_id: decision.capsule?.capsule_id || null,
+      });
+      return res.json({ ok: true, tenant_id: req.tenantId, decision });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_seal_failed");
+    }
+  });
+
+  app.post("/v1/research/airlock/private-entry", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
+    try {
+      const decision = await researchAirlockRuntime.enterPrivate(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
+      audit.append("core_research_airlock_private_entry", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, work_id: req.body?.work_binding?.work_id || null, state: decision.state });
+      return res.json({ ok: true, tenant_id: req.tenantId, decision });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_private_entry_failed");
+    }
+  });
+
+  app.post("/v1/research/airlock/tool-authorize", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
+    try {
+      const decision = await researchAirlockRuntime.authorizeTool(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
+      return res.json({ ok: true, tenant_id: req.tenantId, decision });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_tool_authorization_failed");
+    }
+  });
+
+  app.post("/v1/research/airlock/session-tool-authorize", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
+    try {
+      const decision = await researchAirlockRuntime.authorizeSessionTool(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
+      return res.json({ ok: true, tenant_id: req.tenantId, decision });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_session_tool_authorization_failed");
+    }
+  });
+
+  app.post("/v1/research/airlock/complete", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
+    try {
+      const decision = await researchAirlockRuntime.complete(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
+      return res.json({ ok: true, tenant_id: req.tenantId, decision });
+    } catch (error) {
+      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_complete_failed");
+    }
   });
 
   app.get("/api/universal-core/research/status", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {

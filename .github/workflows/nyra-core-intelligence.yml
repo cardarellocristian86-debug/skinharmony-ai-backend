@@ -370,8 +370,9 @@ jobs:
             abort("Resolver workflow candidate_sha256 must differ from current sha256") if
               resolver_workflow_candidate_sha256 == resolver_workflow_sha256
           end
-          abort("Resolver workflow sha256 does not match the checked-out workflow file") unless
-            resolver_workflow_sha256 == workflow_file_sha256
+          abort("Resolver workflow sha256/candidate_sha256 do not match the checked-out workflow file") unless
+            resolver_workflow_sha256 == workflow_file_sha256 ||
+            resolver_workflow_candidate_sha256 == workflow_file_sha256
           expected_required_checks_registry = {
             "schema_version" => "host_native_required_checks_registry_v1",
             "bindings" => [
@@ -396,7 +397,7 @@ jobs:
                   "path" => workflow_path,
                   # Never hardcode this workflow's digest inside the workflow:
                   # doing so would make the digest depend on itself.
-                  "sha256" => workflow_file_sha256,
+                  "sha256" => resolver_workflow_sha256,
                   "candidate_sha256" =>
                     resolver_workflow_candidate_sha256,
                 },
@@ -408,9 +409,11 @@ jobs:
             required_checks_registry == expected_required_checks_registry
           render_workflow =
             required_checks_registry.dig("bindings", 0, "workflow")
-          abort("Render workflow sha256 must equal resolver and checked-out file") unless
+          abort("Render workflow sha256/candidate_sha256 must equal resolver and checked-out file") unless
             render_workflow["sha256"] == resolver_workflow_sha256 &&
-            resolver_workflow_sha256 == workflow_file_sha256
+            render_workflow["candidate_sha256"] == resolver_workflow_candidate_sha256 &&
+            (resolver_workflow_sha256 == workflow_file_sha256 ||
+              resolver_workflow_candidate_sha256 == workflow_file_sha256)
           abort("Render workflow candidate_sha256 must exactly equal resolver") unless
             render_workflow.key?("candidate_sha256") &&
             render_workflow["candidate_sha256"] ==
@@ -845,6 +848,12 @@ jobs:
         run: >-
           node --test
           services/skinharmony-core-mcp/test/work-continuity-postgres16.test.js
+      - name: Exercise PostgreSQL 16 Research Airlock replay gate
+        env:
+          RESEARCH_AIRLOCK_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/continuity_ci
+        run: >-
+          node --test
+          services/universal-core-service/test/research-airlock-postgres16.test.js
       - name: Test Universal Core from root install
         run: npm run core:service:test
       - name: Test Core MCP from root install
