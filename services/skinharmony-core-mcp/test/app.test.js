@@ -65,7 +65,7 @@ test("requires an explicit environment and delegates staging without forwarding 
       assert.deepEqual(health.inputSchema.properties.environment.enum, ["production", "staging"]);
       const missing = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "core_health", arguments: {} } }) }).then((response) => response.json());
       assert.equal(missing.error.code, -32602);
-      const delegated = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "core_health", arguments: { environment: "staging" } } }) }).then((response) => response.json());
+      const delegated = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "skinharmony_nyra_core.core_health", arguments: { environment: "staging" } } }) }).then((response) => response.json());
       assert.equal(delegated.result.content[0].text, "staging");
     }, { environmentRoutingRequired: true, environmentDelegationKey: "a".repeat(48), stagingMcpUrl: `http://127.0.0.1:${server.address().port}` });
   } finally {
@@ -937,6 +937,67 @@ test("production compact mode exposes only the stable connector surface", async 
       assert.equal(retiredTool.error.code, -32602);
       assert.equal(retiredTool.error.message, "Unknown tool");
     }
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("accepts only exact connector namespace aliases for visible registered tools", async () => {
+  const called = [];
+  const handlers = Object.fromEntries(COMPACT_MCP_TOOL_NAMES.map((name) => [
+    name,
+    async () => {
+      called.push(name);
+      return { structuredContent: { ok: true, tool: name }, content: [] };
+    },
+  ]));
+  const app = createApp(config, { handlers, toolSurface: "compact" });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const headers = {
+      authorization: "Bearer codex-key",
+      "content-type": "application/json",
+      "mcp-session-id": "connector-namespace-alias-test",
+    };
+    const aliasCalls = [
+      ["core_health", {}],
+      ["work_preflight", { request: "Verify connector namespace compatibility" }],
+      ["core_capability_catalog", {}],
+    ];
+    for (const [index, [name, args]] of aliasCalls.entries()) {
+      const body = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 300 + index,
+          method: "tools/call",
+          params: { name: `skinharmony_nyra_core.${name}`, arguments: args },
+        }),
+      }).then((response) => response.json());
+      assert.equal(body.result.structuredContent.tool, name);
+    }
+    for (const [index, name] of [
+      "skinharmony_nyra_core.not_registered",
+      "skinharmony_nyra_core_evil.core_health",
+      "skinharmony_nyra_core.skinharmony_nyra_core.core_health",
+    ].entries()) {
+      const body = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 320 + index,
+          method: "tools/call",
+          params: { name, arguments: {} },
+        }),
+      }).then((response) => response.json());
+      assert.equal(body.error.code, -32602);
+      assert.equal(body.error.message, "Unknown tool");
+    }
+    assert.deepEqual(called, ["core_health", "work_preflight", "core_capability_catalog"]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
