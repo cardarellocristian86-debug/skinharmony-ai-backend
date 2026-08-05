@@ -63,6 +63,44 @@ async function serve(run, configOverride = {}) {
   try { await run(`http://127.0.0.1:${server.address().port}`); } finally { await new Promise((resolve) => server.close(resolve)); }
 }
 
+test("requires an explicit environment and delegates staging without forwarding the bearer token", async () => {
+  const stagingHandlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({
+    content: [{ type: "text", text: tool.name === "core_health" ? "staging" : "ok" }],
+  })]));
+  const staging = createApp({
+    ...config,
+    environmentDelegationReceiverEnabled: true,
+    environmentDelegationKey: "a".repeat(48),
+  }, { handlers: stagingHandlers });
+  const stagingServer = staging.listen(0);
+  await new Promise((resolve) => stagingServer.once("listening", resolve));
+  const stagingUrl = `http://127.0.0.1:${stagingServer.address().port}`;
+  try {
+    await serve(async (base) => {
+      const headers = { authorization: "Bearer codex-key", "content-type": "application/json" };
+      const listed = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }).then((response) => response.json());
+      const health = listed.result.tools.find((tool) => tool.name === "core_health");
+      assert.deepEqual(health.inputSchema.properties.environment.enum, ["production", "staging"]);
+      assert.ok(health.inputSchema.required.includes("environment"));
+
+      const missing = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "core_health", arguments: {} } }) }).then((response) => response.json());
+      assert.equal(missing.error.code, -32602);
+
+      const production = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "core_health", arguments: { environment: "production" } } }) }).then((response) => response.json());
+      assert.equal(production.result.content[0].text, "ok");
+
+      const delegated = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "core_health", arguments: { environment: "staging" } } }) }).then((response) => response.json());
+      assert.equal(delegated.result.content[0].text, "staging");
+    }, {
+      environmentRoutingRequired: true,
+      environmentDelegationKey: "a".repeat(48),
+      stagingMcpUrl: stagingUrl,
+    });
+  } finally {
+    await new Promise((resolve) => stagingServer.close(resolve));
+  }
+});
+
 test("classifies verified connector identities by host", () => {
   assert.equal(inferClientType({ kind: "oauth" }), "chatgpt");
   assert.equal(inferClientType({ kind: "chatgpt" }), "chatgpt");
