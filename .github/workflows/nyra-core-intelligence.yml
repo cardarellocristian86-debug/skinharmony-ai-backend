@@ -397,7 +397,7 @@ jobs:
                   "path" => workflow_path,
                   # Never hardcode this workflow's digest inside the workflow:
                   # doing so would make the digest depend on itself.
-                  "sha256" => workflow_file_sha256,
+                  "sha256" => resolver_workflow_sha256,
                   "candidate_sha256" =>
                     resolver_workflow_candidate_sha256,
                 },
