@@ -1,4 +1,6 @@
-const MAX_SUBBRANCHES_PER_BRANCH = 20;
+// Catalog depth is not execution fan-out. Runtime routing remains bounded by
+// MAX_PARALLEL_BRANCHES and every opened branch still requires Core review.
+const MAX_SUBBRANCHES_PER_BRANCH = 60;
 const MAX_PARALLEL_BRANCHES = 6;
 
 const branch = (id, label, triggers, subbranches, domainPacks = ["*"], options = {}) => Object.freeze({
@@ -97,9 +99,17 @@ const NYRA_BRANCHES = Object.freeze([
   ], [
     "gallery_intake", "work_discovery", "session_presence", "work_branch_routing", "task_claim_coordination",
     "lease_acquisition", "lease_renewal", "lease_release", "surface_overlap_detection", "conflict_arbitration",
+    "agent_change_interlock",
     "dependency_coordination", "regression_watch", "checkpoint_handoff", "stale_session_recovery",
     "duplicate_action_prevention", "drift_revalidation", "tenant_visibility_policy", "verified_memory_promotion",
   ], ["*"], { workPhase: "coordination", coreBranchBindings: ["tenant_work_coordination"] }),
+  branch("agent_change_interlock", "Agent Change Interlock", [
+    "interlock", "conflitto modifiche", "change intent", "prenota modifica", "collisione agenti", "cross adapter",
+  ], [
+    "change_intent_canonicalization", "semantic_asset_conflict_graph", "commutativity_assessment",
+    "cross_adapter_handoff", "execution_receipt_revalidation", "drift_reconciliation",
+    "conflict_explanation", "rollback_dependency_mapping",
+  ], ["*"], { workPhase: "coordination", coreBranchBindings: ["tenant_work_coordination", "execution_coordination_intelligence"] }),
   branch("quality_verification", "Quality & Verification", ["test", "qualita", "verifica", "collaudo", "accettazione", "regression", "evidence", "qa"], [
     "acceptance_criteria", "test_scope", "happy_path", "negative_path", "boundary_cases", "security_checks",
     "tenant_isolation_checks", "regression_matrix", "performance_checks", "observability_checks", "evidence_capture",

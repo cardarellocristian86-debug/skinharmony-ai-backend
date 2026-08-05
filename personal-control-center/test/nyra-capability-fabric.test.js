@@ -37,3 +37,12 @@ test("untrusted source instructions never become executable actions", () => {
   assert.equal(plan.core_must_validate_and_open, true);
   assert(plan.selected_nodes.every((node) => node.state === "proposed_waiting_for_core"));
 });
+
+test("Agent Change Interlock is a Nyra advisory capability, never an execution grant", () => {
+  const fabric = createNyraCapabilityFabric({});
+  const plan = fabric.compose({ text: "coordina un change intent e previeni collisione agenti con un interlock" });
+  const interlock = plan.selected_nodes.find((node) => node.capability === "agent_change_interlock");
+  assert(interlock);
+  assert.equal(interlock.state, "proposed_waiting_for_core");
+  assert.equal(plan.execution_allowed, false);
+});

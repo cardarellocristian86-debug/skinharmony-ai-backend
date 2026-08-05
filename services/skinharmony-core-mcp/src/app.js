@@ -980,8 +980,14 @@ export function createApp(config, options = {}) {
           ? (hookContext?.preflight ?? hookContext)
           : null;
         activeToolCall = { ...activeToolCall, hookContext, preflight };
-        const handlerArgs = preflight?.work_preflight && !args.work_preflight
-          ? { ...args, work_preflight: preflight.work_preflight }
+        // The compact dynamic router accepts a preflight only at its wrapper
+        // boundary. Resolve the server-issued envelope across the two valid
+        // handler shapes and never inspect caller-supplied nested arguments.
+        const serverIssuedPreflight = preflight?.work_preflight
+          || preflight?.result?.work_preflight
+          || (preflight?.schema_version === "skinharmony_work_preflight_v1" ? preflight : null);
+        const handlerArgs = serverIssuedPreflight && !args.work_preflight
+          ? { ...args, work_preflight: serverIssuedPreflight }
           : args;
         const rawResult = await handlers[tool.name](handlerArgs, callIdentity);
         const preflightResult = attachWorkPreflight(rawResult, preflight);

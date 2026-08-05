@@ -1670,7 +1670,7 @@ export function createCoreHandlers(config, options = {}) {
       body: { action: args.action, policy: args.policy, context: args.context },
     })),
     core_action_mediation_evaluate: async (args, identity) => {
-      const coreResponse = await coreRequest("/v1/action-mediation/evaluate", identity.tenantId, {
+      const upstream = await coreRequest("/v1/action-mediation/evaluate", identity.tenantId, {
         method: "POST",
         body: {
           action: args.action,
@@ -1678,7 +1678,53 @@ export function createCoreHandlers(config, options = {}) {
           context: args.context,
           work_preflight: args.work_preflight,
         },
+        allowFailurePayload: true,
       });
+      if (!upstream.ok) {
+        const payload = upstream.payload && typeof upstream.payload === "object" ? upstream.payload : {};
+        const reasonCodes = Array.isArray(payload.reason_codes)
+          ? payload.reason_codes.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 20)
+          : [];
+        const blockCode = reasonCodes[0] || String(payload.error || "WORK_PREFLIGHT_INVALID");
+        const classification = classifyCoreBlock({ block_code: blockCode });
+        const contract = {
+          state: "BLOCK",
+          block_code: blockCode,
+          block_class: classification.blockClass,
+          blocked_reasons: reasonCodes.length ? reasonCodes : [blockCode],
+        };
+        const output = {
+          block_code: blockCode,
+          block_class: classification.blockClass,
+          recommended_actions: [{ blocked: true, reason_code: blockCode }],
+          selected_by_core: {
+            risk_band: "medium",
+            unmet_conditions: reasonCodes,
+            evidence_requirements: [],
+            allowed_alternatives: [],
+          },
+        };
+        const remediationResult = await openBlockedRemediation({
+          identity,
+          requestBody: {
+            ...(args.context && typeof args.context === "object" ? args.context : {}),
+            ...(args.action && typeof args.action === "object" ? args.action : {}),
+            request_id: `core_action_mediation_${crypto.randomUUID()}`,
+          },
+          authorization: { state: "BLOCK", confirmation_required: false },
+          contract,
+          output,
+        });
+        return textResult({
+          ok: false,
+          status: upstream.status,
+          error: String(payload.error || "WORK_PREFLIGHT_INVALID"),
+          reason_codes: reasonCodes,
+          execution_allowed: false,
+          ...(remediationResult?.statusPayload || {}),
+        });
+      }
+      const coreResponse = upstream.payload;
       const response = applyQualityFailureMediation(args, coreResponse);
       const ledger = await recordQualityFailureObservation(identity, response);
       return textResult({ ...response, quality_ledger: ledger });
