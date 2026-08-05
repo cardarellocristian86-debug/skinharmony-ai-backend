@@ -1229,6 +1229,19 @@ export function createCoreHandlers(config, options = {}) {
       tenant_id: identity.tenantId,
       mcp_identity: ownerBindingStatus(config, identity),
     }),
+    // Reliability bridge paths are fixed by the MCP layer below; this seam
+    // exists only so every request still uses the authenticated Core bearer,
+    // tenant context assertion and Core as the final authority.
+    core_reliability_request: async (args = {}, identity) => {
+      const route = String(args.path || "");
+      if (!/^\/v1\/reliability\/[a-z0-9/_:-]+$/u.test(route)) throw new Error("reliability_route_invalid");
+      const method = String(args.method || "GET").toUpperCase();
+      if (!["GET", "POST"].includes(method)) throw new Error("reliability_method_invalid");
+      return coreRequest(route, identity.tenantId, {
+        method,
+        ...(method === "POST" ? { body: args.body || {} } : {}),
+      });
+    },
     host_native_status: async (_args, identity) => textResult(
       await coreRequest("/v1/host-native/status", identity.tenantId),
     ),
