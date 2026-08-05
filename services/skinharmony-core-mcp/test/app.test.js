@@ -51,6 +51,28 @@ async function serve(run, configOverride = {}, optionsOverride = {}) {
   try { await run(`http://127.0.0.1:${server.address().port}`); } finally { await new Promise((resolve) => server.close(resolve)); }
 }
 
+test("requires an explicit environment and delegates staging without forwarding user bearer credentials", async () => {
+  const stagingHandlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({ content: [{ type: "text", text: tool.name === "core_health" ? "staging" : "ok" }] })]));
+  const staging = createApp({ ...config, environmentDelegationReceiverEnabled: true, environmentDelegationKey: "a".repeat(48) }, { handlers: stagingHandlers });
+  const server = staging.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    await serve(async (base) => {
+      const headers = { authorization: "Bearer codex-key", "content-type": "application/json" };
+      const listed = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }).then((response) => response.json());
+      const health = listed.result.tools.find((tool) => tool.name === "core_health");
+      assert.ok(health.inputSchema.required.includes("environment"));
+      assert.deepEqual(health.inputSchema.properties.environment.enum, ["production", "staging"]);
+      const missing = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "core_health", arguments: {} } }) }).then((response) => response.json());
+      assert.equal(missing.error.code, -32602);
+      const delegated = await fetch(`${base}/mcp`, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "core_health", arguments: { environment: "staging" } } }) }).then((response) => response.json());
+      assert.equal(delegated.result.content[0].text, "staging");
+    }, { environmentRoutingRequired: true, environmentDelegationKey: "a".repeat(48), stagingMcpUrl: `http://127.0.0.1:${server.address().port}` });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("classifies verified connector identities by host", () => {
   assert.equal(inferClientType({ kind: "oauth" }), "chatgpt");
   assert.equal(inferClientType({ kind: "chatgpt" }), "chatgpt");

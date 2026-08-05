@@ -16,6 +16,12 @@ services:
         value: production
       - key: MCP_PUBLIC_URL
         value: https://skinharmony-core-mcp.onrender.com
+      - key: MCP_ENVIRONMENT_ROUTING_REQUIRED
+        value: "true"
+      - key: MCP_STAGING_MCP_URL
+        value: https://skinharmony-core-mcp-staging.onrender.com
+      - key: MCP_ENVIRONMENT_DELEGATION_KEY
+        sync: false
       - key: AUTH0_ISSUER
         sync: false
       - key: AUTH0_AUDIENCE

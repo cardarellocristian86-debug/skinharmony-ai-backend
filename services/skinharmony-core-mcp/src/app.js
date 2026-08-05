@@ -17,6 +17,7 @@ import {
 import {
   normalizePostgresMajorVerification,
 } from "../../shared/postgres-major-version.js";
+import { signEnvironmentDelegation, verifyEnvironmentDelegation } from "./environment-delegation.js";
 
 const SERVER_VERSION = "0.16.0-governed-continuity-fabric";
 const SERVER_INSTRUCTIONS = [
@@ -562,15 +563,27 @@ function toolFailure(error) {
   };
 }
 
+function configureToolForRuntime(tool, config) {
+  if (config.environmentRoutingRequired !== true) return tool;
+  return {
+    ...tool,
+    inputSchema: {
+      ...tool.inputSchema,
+      properties: { ...(tool.inputSchema?.properties || {}), environment: { type: "string", enum: ["production", "staging"], description: "Explicit target environment; the gateway never defaults or falls back." } },
+      required: [...new Set([...(tool.inputSchema?.required || []), "environment"])],
+    },
+  };
+}
+
 export function createApp(config, options = {}) {
   const app = express();
   const authenticate = createAuthenticator(config, options);
   const handlers = options.handlers || {};
   const beforeToolCall = options.beforeToolCall;
   const afterToolCall = options.afterToolCall;
-  const availableTools = TOOLS.filter((tool) => typeof handlers[tool.name] === "function");
+  const availableTools = TOOLS.filter((tool) => typeof handlers[tool.name] === "function").map((tool) => configureToolForRuntime(tool, config));
   const visibleTools = options.toolSurface === "compact"
-    ? compactMcpTools(TOOLS, handlers)
+    ? compactMcpTools(availableTools, handlers).map((tool) => configureToolForRuntime(tool, config))
     : availableTools;
   // A host can rotate the MCP transport between tool calls from one logical chat.
   // Keep the transport binding for anti-switch protection, while correlating the
@@ -578,6 +591,7 @@ export function createApp(config, options = {}) {
   // Client-provided ids are correlation data only and never grant authorization.
   const logicalSessionPresences = new Map();
   const transportPresenceBindings = new Map();
+  const consumedEnvironmentDelegations = new Map();
   app.use(express.json({ limit: "1mb" }));
   app.use((_req, res, next) => {
     res.set("Access-Control-Expose-Headers", "Mcp-Session-Id, WWW-Authenticate");
@@ -753,7 +767,13 @@ export function createApp(config, options = {}) {
       : "/.well-known/oauth-protected-resource";
     let identity;
     try {
-      identity = await authenticate(req.headers.authorization);
+      const delegation = req.headers["x-skinharmony-environment-delegation"];
+      if (delegation) {
+        if (config.environmentDelegationReceiverEnabled !== true) throw new Error("environment_delegation_disabled");
+        const verified = verifyEnvironmentDelegation(delegation, { key: config.environmentDelegationKey, consumed: consumedEnvironmentDelegations });
+        if (req.body?.method === "tools/call" && verified.toolName !== req.body?.params?.name) throw new Error("environment_delegation_invalid");
+        identity = verified.identity;
+      } else identity = await authenticate(req.headers.authorization);
     } catch {
       res.set("WWW-Authenticate", challenge(
         config,
@@ -820,6 +840,21 @@ export function createApp(config, options = {}) {
             confirmationReference: rawArgs.confirmation_reference,
             requestBinding: ownerRequestBinding(tool.name, rawArgs),
           });
+        }
+        if (config.environmentRoutingRequired === true && rawArgs.environment === "staging") {
+          const forwardedArgs = { ...rawArgs };
+          delete forwardedArgs.environment;
+          let upstream;
+          try {
+            upstream = await fetch(`${config.stagingMcpUrl}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", "x-skinharmony-environment-delegation": signEnvironmentDelegation({ identity, toolName: tool.name, key: config.environmentDelegationKey }), ...(req.headers["mcp-session-id"] ? { "mcp-session-id": String(req.headers["mcp-session-id"]) } : {}) }, body: JSON.stringify({ ...req.body, params: { ...params, arguments: forwardedArgs } }) });
+          } catch {
+            const error = new Error("staging_delegation_unavailable"); error.code = "staging_delegation_unavailable"; throw error;
+          }
+          const body = await upstream.json().catch(() => null);
+          if (!body) { const error = new Error("staging_delegation_unavailable"); error.code = "staging_delegation_unavailable"; throw error; }
+          const upstreamSession = upstream.headers.get("mcp-session-id");
+          if (upstreamSession) res.set("Mcp-Session-Id", upstreamSession);
+          return res.status(upstream.status).json(body);
         }
         const transportSessionId = normalizeTransportSession(req.headers["mcp-session-id"]);
         const declaredSessionId = normalizeTransportSession(rawArgs.session_id);
@@ -903,6 +938,7 @@ export function createApp(config, options = {}) {
         }
         if (serverIssuedSessionId) res.set("Mcp-Session-Id", serverIssuedSessionId);
         const args = { ...rawArgs, ...presenceInput };
+        delete args.environment;
         // A request flag is never an identity assertion. Generic Core writes
         // still require verified owner-root confirmation; the two explicit
         // continuity bootstrap tools additionally accept a fresh, server-bound
