@@ -1929,6 +1929,32 @@ export function createCoreHandlers(config, options = {}) {
     nyra_research_airlock_status: async (_args, identity) => textResult(
       await coreRequest("/v1/research/airlock/status", identity.tenantId),
     ),
+    nyra_research_airlock_bootstrap: async (args, identity) => {
+      const binding = airlockBinding(args.work_binding, identity);
+      const issued = await coreRequest("/v1/research/airlock/plan", identity.tenantId, {
+        method: "POST",
+        body: { work_binding: binding, source_urls: args.source_urls, tenant_id: identity.tenantId },
+      });
+      const opened = await coreRequest("/v1/research/airlock/work", identity.tenantId, {
+        method: "POST",
+        body: {
+          work_binding: binding,
+          plan_capability: issued.plan_capability,
+          ttl_seconds: args.ttl_seconds,
+          tenant_id: identity.tenantId,
+        },
+      });
+      return textResult({
+        ok: true,
+        tenant_id: identity.tenantId,
+        bootstrap: {
+          state: opened.state,
+          work: opened,
+          plan: issued.plan,
+          capability: { issued: true, single_use: true, server_bound: true, exposed_to_model: false },
+        },
+      });
+    },
     nyra_research_airlock_plan: async (args, identity) => textResult(
       await coreRequest("/v1/research/airlock/plan", identity.tenantId, {
         method: "POST",
