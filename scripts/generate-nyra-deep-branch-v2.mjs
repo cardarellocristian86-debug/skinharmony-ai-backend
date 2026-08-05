@@ -40,11 +40,11 @@ const V1_SOURCE_PIN = Object.freeze({
 // changes. Keep those current bytes independently pinned so V2 generation
 // cannot silently absorb unrelated V1 drift.
 const V1_COMPATIBLE_IMPLEMENTATION_PIN = Object.freeze({
-  repository_commit: "c8c977ef1e830393d8cf55598923dc45e831784e",
+  repository_commit: "7cae0d3c10950e1088662995b0b80bb021f74deb",
   horizontal_runtime_sha256:
     "e8dcf80cbf618c3707dc5061aad593cbdd70f3afc52d363dc6059097d098f253",
   core_branch_network_sha256:
-    "28018fa5a628bff2732ef82b579a9b2411365de8645e90bee01916141495de0d",
+    "cc23d6380a8df7f570355d33f56c65004aed08e191cb443a7ef159717813f13d",
 });
 const V2_EXCLUDED_BRANCH_IDS = new Set();
 function parseArgs(argv) {
