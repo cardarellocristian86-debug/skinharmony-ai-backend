@@ -35,6 +35,18 @@ const SERVER_INSTRUCTIONS = [
   "PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth or the configured Codex bearer, and only redacted reviewed evidence enters memory.",
 ].join(" ");
 
+const CONNECTOR_TOOL_NAMESPACE = "skinharmony_nyra_core";
+
+function resolveConnectorToolName(value, tools = []) {
+  const requested = String(value || "");
+  const visibleNames = new Set(tools.map((tool) => tool.name));
+  if (visibleNames.has(requested)) return requested;
+  const prefix = `${CONNECTOR_TOOL_NAMESPACE}.`;
+  if (!requested.startsWith(prefix)) return null;
+  const candidate = requested.slice(prefix.length);
+  return visibleNames.has(candidate) ? candidate : null;
+}
+
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "nyra_reliability_read",
   "nyra_reliability_content_check",
@@ -774,7 +786,8 @@ export function createApp(config, options = {}) {
       if (delegation) {
         if (config.environmentDelegationReceiverEnabled !== true) throw new Error("environment_delegation_disabled");
         const verified = verifyEnvironmentDelegation(delegation, { key: config.environmentDelegationKey, consumed: consumedEnvironmentDelegations });
-        if (req.body?.method === "tools/call" && verified.toolName !== req.body?.params?.name) throw new Error("environment_delegation_invalid");
+        const delegatedToolName = resolveConnectorToolName(req.body?.params?.name, visibleTools);
+        if (req.body?.method === "tools/call" && verified.toolName !== delegatedToolName) throw new Error("environment_delegation_invalid");
         identity = verified.identity;
       } else identity = await authenticate(req.headers.authorization);
     } catch {
@@ -819,7 +832,8 @@ export function createApp(config, options = {}) {
         };
       }) } });
       if (method === "tools/call") {
-        const tool = visibleTools.find((item) => item.name === params.name);
+        const canonicalToolName = resolveConnectorToolName(params.name, visibleTools);
+        const tool = visibleTools.find((item) => item.name === canonicalToolName);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
@@ -849,7 +863,7 @@ export function createApp(config, options = {}) {
           delete forwardedArgs.environment;
           let upstream;
           try {
-            upstream = await fetch(`${config.stagingMcpUrl}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", "x-skinharmony-environment-delegation": signEnvironmentDelegation({ identity, toolName: tool.name, key: config.environmentDelegationKey }), ...(req.headers["mcp-session-id"] ? { "mcp-session-id": String(req.headers["mcp-session-id"]) } : {}) }, body: JSON.stringify({ ...req.body, params: { ...params, arguments: forwardedArgs } }) });
+            upstream = await fetch(`${config.stagingMcpUrl}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", "x-skinharmony-environment-delegation": signEnvironmentDelegation({ identity, toolName: tool.name, key: config.environmentDelegationKey }), ...(req.headers["mcp-session-id"] ? { "mcp-session-id": String(req.headers["mcp-session-id"]) } : {}) }, body: JSON.stringify({ ...req.body, params: { ...params, name: tool.name, arguments: forwardedArgs } }) });
           } catch {
             const error = new Error("staging_delegation_unavailable"); error.code = "staging_delegation_unavailable"; throw error;
           }
@@ -1053,4 +1067,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachWorkPreflight, buildIdentity, inferClientType, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, toolFailure, TOOLS };
+export { attachWorkPreflight, buildIdentity, inferClientType, resolveConnectorToolName, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, toolFailure, TOOLS };
