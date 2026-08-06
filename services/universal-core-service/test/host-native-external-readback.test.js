@@ -267,8 +267,8 @@ function strictFetch({
     const runMatch = /\/actions\/runs\/(\d+)$/.exec(url);
     if (runMatch) return jsonResponse(workflowById.get(Number(runMatch[1])));
     if (url === `${root}/pulls/42`) return jsonResponse(pullRequest());
-    if (url === `${root}/commits/${TARGET}`) return jsonResponse({ sha: TARGET });
-    if (url === `${root}/commits/${BASE}`) return jsonResponse({ sha: BASE });
+    if (url === `${root}/git/commits/${TARGET}`) return jsonResponse({ sha: TARGET });
+    if (url === `${root}/git/commits/${BASE}`) return jsonResponse({ sha: BASE });
     if (url === "https://service-a.onrender.com/healthz") {
       return jsonResponse(serviceHealth("service-a"));
     }
@@ -360,10 +360,10 @@ function strictStagingDeployFetch({
     if (url === "https://api.github.com/repos/owner/repo/git/ref/heads/agent/release") {
       return jsonResponse({ object: { sha: refSha } });
     }
-    if (url === "https://api.github.com/repos/owner/repo/commits/2222222222222222222222222222222222222222") {
+    if (url === "https://api.github.com/repos/owner/repo/git/commits/2222222222222222222222222222222222222222") {
       return jsonResponse({ sha: HEAD });
     }
-    if (url === "https://api.github.com/repos/owner/repo/commits/1111111111111111111111111111111111111111") {
+    if (url === "https://api.github.com/repos/owner/repo/git/commits/1111111111111111111111111111111111111111") {
       return jsonResponse({ sha: BASE });
     }
     if (url === "https://api.github.com/repos/owner/repo/pulls/42") {
@@ -401,7 +401,7 @@ function strictProtectedPushFetch({
     if (url === `${root}/git/ref/heads/main`) {
       return jsonResponse({ object: { sha: HEAD } });
     }
-    if (url === `${root}/commits/${HEAD}`) {
+    if (url === `${root}/git/commits/${HEAD}`) {
       return jsonResponse({ sha: HEAD });
     }
     if (url === "https://service-a.onrender.com/healthz") {
@@ -898,8 +898,8 @@ function successFetch({
     if (url === `${repositoryRoot}/git/ref/heads/release/v1`) {
       return jsonResponse({ object: { sha: TARGET } });
     }
-    if (url === `${repositoryRoot}/commits/${TARGET}`) return jsonResponse(target);
-    if (url === `${repositoryRoot}/commits/${BASE}`) return jsonResponse(rollback);
+    if (url === `${repositoryRoot}/git/commits/${TARGET}`) return jsonResponse(target);
+    if (url === `${repositoryRoot}/git/commits/${BASE}`) return jsonResponse(rollback);
     if (url.endsWith("/healthz")) {
       const origin = url.slice(0, -"/healthz".length);
       const service = ticket.release_manifest_binding.services.find(
@@ -952,8 +952,8 @@ test("external readback is tenant-scoped, uses fixed provider URLs, and proves e
   assert.deepEqual(calls.map((call) => call.url), [
     `https://api.github.com/repos/owner/repo/commits/${HEAD}/check-runs?per_page=100`,
     "https://api.github.com/repos/owner/repo/pulls/42",
-    `https://api.github.com/repos/owner/repo/commits/${TARGET}`,
-    `https://api.github.com/repos/owner/repo/commits/${BASE}`,
+    `https://api.github.com/repos/owner/repo/git/commits/${TARGET}`,
+    `https://api.github.com/repos/owner/repo/git/commits/${BASE}`,
     "https://service-b.onrender.com/healthz",
     "https://service-a.onrender.com/healthz",
   ]);
@@ -1003,6 +1003,63 @@ test("external readback is tenant-scoped, uses fixed provider URLs, and proves e
   const unsignedGithub = { ...readback.github };
   delete unsignedGithub.readback_digest;
   assert.equal(readback.github.readback_digest, hostNativeDigest(unsignedGithub));
+});
+
+test("post-action compact commit identity readback remains size-bounded", async (t) => {
+  const ticket = mergeTicket();
+  const repositoryRoot = "https://api.github.com/repos/owner/repo";
+  const targetUrl = `${repositoryRoot}/git/commits/${TARGET}`;
+  const rollbackUrl = `${repositoryRoot}/git/commits/${BASE}`;
+
+  await t.test("rejects an oversized declared target response", async () => {
+    const calls = [];
+    const fallback = successFetch({ ticket, calls });
+    const verifier = createHostNativeExternalReadbackVerifier({
+      fetchImpl: async (url, init) => {
+        if (url === targetUrl) {
+          calls.push({ url, init });
+          return jsonResponse({}, { headers: { "content-length": "256001" } });
+        }
+        return fallback(url, init);
+      },
+    });
+    await assert.rejects(
+      verifier({ ticket, target_commit: TARGET }),
+      /trusted_readback_response_too_large/,
+    );
+    assert.equal(calls.at(-1)?.url, targetUrl);
+  });
+
+  await t.test("rejects an oversized streamed rollback response", async () => {
+    const calls = [];
+    const fallback = successFetch({ ticket, calls });
+    const verifier = createHostNativeExternalReadbackVerifier({
+      fetchImpl: async (url, init) => {
+        if (url === rollbackUrl) {
+          calls.push({ url, init });
+          const body = new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(200_000));
+              controller.enqueue(new Uint8Array(60_001));
+              controller.close();
+            },
+          });
+          return new Response(body, {
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return fallback(url, init);
+      },
+    });
+    await assert.rejects(
+      verifier({ ticket, target_commit: TARGET }),
+      /trusted_readback_response_too_large/,
+    );
+    assert.deepEqual(calls.slice(-2).map((call) => call.url), [
+      targetUrl,
+      rollbackUrl,
+    ]);
+  });
 });
 
 test("private GitHub credentials remain isolated by tenant and never reach Render", async () => {
@@ -1308,6 +1365,10 @@ test("branch, target, rollback, and all Render health bindings are exact", async
   const readback = await verify({ ticket, target_commit: TARGET });
   assert.ok(calls.some((call) =>
     call.url === "https://api.github.com/repos/owner/repo/git/ref/heads/release/v1"));
+  assert.ok(calls.some((call) =>
+    call.url === `https://api.github.com/repos/owner/repo/git/commits/${TARGET}`));
+  assert.ok(calls.some((call) =>
+    call.url === `https://api.github.com/repos/owner/repo/git/commits/${BASE}`));
   assert.equal(readback.github.branch, "release/v1");
   assert.equal(readback.github.branch_commit, TARGET);
 
@@ -1460,8 +1521,8 @@ function releaseJoinFetch({
   healthOverrides = {},
 } = {}) {
   return async (url) => {
-    if (url.endsWith(`/commits/${HEAD}`)) {
-      return jsonResponse({ sha: HEAD, commit: { tree: { sha: treeSha } } });
+    if (url.endsWith(`/git/commits/${HEAD}`)) {
+      return jsonResponse({ sha: HEAD, tree: { sha: treeSha } });
     }
     if (url.endsWith(`/commits/${HEAD}/check-runs?per_page=100`)) {
       return jsonResponse(successfulChecks());
@@ -1497,8 +1558,8 @@ test("release-join resolver independently proves exact pre-merge GitHub state", 
     },
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
-      if (url.endsWith(`/commits/${HEAD}`)) {
-        return jsonResponse({ sha: HEAD, commit: { tree: { sha: TREE } } });
+      if (url.endsWith(`/git/commits/${HEAD}`)) {
+        return jsonResponse({ sha: HEAD, tree: { sha: TREE } });
       }
       if (url.endsWith(`/commits/${HEAD}/check-runs?per_page=100`)) {
         return jsonResponse(successfulChecks());
@@ -1533,7 +1594,7 @@ test("release-join resolver independently proves exact pre-merge GitHub state", 
     repository: "owner/repo",
   }]);
   assert.deepEqual(calls.map((call) => call.url), [
-    `https://api.github.com/repos/owner/repo/commits/${HEAD}`,
+    `https://api.github.com/repos/owner/repo/git/commits/${HEAD}`,
     `https://api.github.com/repos/owner/repo/commits/${HEAD}/check-runs?per_page=100`,
     "https://api.github.com/repos/owner/repo/pulls/42",
     "https://api.github.com/repos/owner/repo/pulls/42/files?per_page=100&page=1",
@@ -1565,6 +1626,65 @@ test("release-join resolver independently proves exact pre-merge GitHub state", 
     previous_live_attestations: resolution.previous_live_attestations,
     pre_action_readback_digest: resolution.pre_action_readback_digest,
     provider_execution: false,
+  });
+});
+
+test("release-join compact commit readback preserves fail-closed boundaries", async (t) => {
+  const compactCommitUrl =
+    `https://api.github.com/repos/owner/repo/git/commits/${HEAD}`;
+  const resolverFor = (responseFactory, calls) =>
+    createHostNativeReleaseJoinVerdictResolver({
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        return responseFactory();
+      },
+    });
+
+  await t.test("rejects the legacy repository-commit tree shape", async () => {
+    const calls = [];
+    const resolver = resolverFor(
+      () => jsonResponse({ sha: HEAD, commit: { tree: { sha: TREE } } }),
+      calls,
+    );
+    await assert.rejects(
+      resolver(releaseJoinRequest()),
+      /release_join_verdict_source_attestation_mismatch/,
+    );
+    assert.deepEqual(calls.map((call) => call.url), [compactCommitUrl]);
+  });
+
+  await t.test("rejects an oversized declared compact response", async () => {
+    const calls = [];
+    const resolver = resolverFor(
+      () => jsonResponse({}, { headers: { "content-length": "256001" } }),
+      calls,
+    );
+    await assert.rejects(
+      resolver(releaseJoinRequest()),
+      /trusted_readback_response_too_large/,
+    );
+    assert.deepEqual(calls.map((call) => call.url), [compactCommitUrl]);
+  });
+
+  await t.test("rejects an oversized streamed compact response", async () => {
+    const calls = [];
+    const resolver = resolverFor(() => {
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(200_000));
+          controller.enqueue(new Uint8Array(60_001));
+          controller.close();
+        },
+      });
+      return new Response(body, {
+        headers: { "content-type": "application/json" },
+      });
+    }, calls);
+    await assert.rejects(
+      resolver(releaseJoinRequest()),
+      /trusted_readback_response_too_large/,
+    );
+    assert.deepEqual(calls.map((call) => call.url), [compactCommitUrl]);
   });
 });
 
@@ -1680,8 +1800,8 @@ test("release-join resolver rejects untrusted, failed-check, or mismatched PR ev
   await t.test("failed required check", async () => {
     const resolver = createHostNativeReleaseJoinVerdictResolver({
       fetchImpl: async (url) => {
-        if (url.endsWith(`/commits/${HEAD}`)) {
-          return jsonResponse({ sha: HEAD, commit: { tree: { sha: TREE } } });
+        if (url.endsWith(`/git/commits/${HEAD}`)) {
+          return jsonResponse({ sha: HEAD, tree: { sha: TREE } });
         }
         if (url.includes("/check-runs")) {
           const checks = successfulChecks();
@@ -1714,8 +1834,8 @@ test("release-join resolver rejects untrusted, failed-check, or mismatched PR ev
     await t.test(name, async () => {
       const resolver = createHostNativeReleaseJoinVerdictResolver({
         fetchImpl: async (url) => {
-          if (url.endsWith(`/commits/${HEAD}`)) {
-            return jsonResponse({ sha: HEAD, commit: { tree: { sha: TREE } } });
+          if (url.endsWith(`/git/commits/${HEAD}`)) {
+            return jsonResponse({ sha: HEAD, tree: { sha: TREE } });
           }
           if (url.includes("/check-runs")) return jsonResponse(successfulChecks());
           if (url.endsWith("/pulls/42")) {

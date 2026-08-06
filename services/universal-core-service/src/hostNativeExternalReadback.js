@@ -605,9 +605,9 @@ export function createHostNativeExternalReadbackVerifier({
     } else {
       error("trusted_readback_action_invalid");
     }
-    const target = await getGithub(`/commits/${targetCommit}`);
+    const target = await getGithub(`/git/commits/${targetCommit}`);
     if (sha(target?.sha) !== targetCommit) error("trusted_readback_target_commit_mismatch");
-    const rollback = await getGithub(`/commits/${rollbackCommit}`);
+    const rollback = await getGithub(`/git/commits/${rollbackCommit}`);
     if (sha(rollback?.sha) !== rollbackCommit) error("trusted_readback_rollback_unavailable");
     const sourceServices = Array.isArray(binding?.services) ? binding.services : [];
     if (sourceServices.length < 1) error("trusted_readback_services_invalid");
@@ -736,8 +736,8 @@ export function createHostNativeReleaseJoinVerdictResolver({
     }
     const token = await resolveGithubToken(githubTokenResolver, { tenant_id: tenantId, repository });
     const getGithub = githubClient({ fetchImpl, token, repository, timeoutMs: boundedTimeout });
-    const commit = await getGithub(`/commits/${headCommit}`);
-    if (sha(commit?.sha) !== headCommit || sha(commit?.commit?.tree?.sha) !== treeSha) {
+    const commit = await getGithub(`/git/commits/${headCommit}`);
+    if (sha(commit?.sha) !== headCommit || sha(commit?.tree?.sha) !== treeSha) {
       error("release_join_verdict_source_attestation_mismatch");
     }
     await attestChecks({
