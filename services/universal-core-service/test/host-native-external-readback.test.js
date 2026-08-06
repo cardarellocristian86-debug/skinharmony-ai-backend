@@ -67,6 +67,23 @@ function mergeTicket({
     health_status: "healthy",
     health_contract_digest: service.health_contract_digest,
   }));
+  const releaseJoinResolution = {
+    schema_version: "host_native_release_join_resolution_v1",
+    trusted: true,
+    authority: "universal_core",
+    allowed: true,
+    verdict_id: "hnj_test",
+    tenant_id: tenantId,
+    work_id: "work-a",
+    intent_anchor_digest: "a".repeat(64),
+    repository,
+    checks_commit: HEAD,
+    evidence_digest: "b".repeat(64),
+    issued_at: VERIFIED_AT,
+    resolved_at: VERIFIED_AT,
+    previous_live_attestations: previousLiveAttestations,
+    provider_execution: false,
+  };
   return {
     tenant_id: tenantId,
     repository,
@@ -89,10 +106,9 @@ function mergeTicket({
       rollback: {
         target_commit: BASE,
       },
-      join_resolution: {
-        previous_live_attestations: previousLiveAttestations,
-      },
     },
+    release_join_resolution: releaseJoinResolution,
+    release_join_resolution_digest: hostNativeDigest(releaseJoinResolution),
   };
 }
 
@@ -328,7 +344,8 @@ function strictProtectedPushTicket() {
 function strictStagingDeployTicket() {
   const ticket = strictTicket();
   ticket.release_manifest_binding.services[0].environment = "staging";
-  ticket.release_manifest_binding.join_resolution.previous_live_attestations[0].environment = "staging";
+  ticket.release_join_resolution.previous_live_attestations[0].environment = "staging";
+  ticket.release_join_resolution_digest = hostNativeDigest(ticket.release_join_resolution);
   ticket.action = {
     kind: "render.deploy",
     repository: "owner/repo",
@@ -1003,6 +1020,71 @@ test("external readback is tenant-scoped, uses fixed provider URLs, and proves e
   const unsignedGithub = { ...readback.github };
   delete unsignedGithub.readback_digest;
   assert.equal(readback.github.readback_digest, hostNativeDigest(unsignedGithub));
+});
+
+test("external readback binds previous-live evidence from the persisted action ticket", async (t) => {
+  const persistedTicket = mergeTicket();
+  assert.equal(persistedTicket.release_manifest_binding.join_resolution, undefined);
+  assert.equal(
+    persistedTicket.release_join_resolution_digest,
+    hostNativeDigest(persistedTicket.release_join_resolution),
+  );
+
+  const readback = await createHostNativeExternalReadbackVerifier({
+    fetchImpl: successFetch({ ticket: persistedTicket }),
+  })({
+    ticket: persistedTicket,
+    target_commit: TARGET,
+  });
+  assert.equal(readback.services[0].rollback_commit, BASE);
+  assert.equal(readback.services[0].rollback_status, "previous_live_attested");
+
+  await t.test("missing persisted resolution fails closed", async () => {
+    const ticket = mergeTicket();
+    delete ticket.release_join_resolution;
+    delete ticket.release_join_resolution_digest;
+    await assert.rejects(
+      createHostNativeExternalReadbackVerifier({
+        fetchImpl: successFetch({ ticket }),
+      })({ ticket, target_commit: TARGET }),
+      /trusted_readback_render_health_mismatch/,
+    );
+  });
+
+  await t.test("legacy manifest-binding evidence cannot substitute", async () => {
+    const ticket = mergeTicket();
+    ticket.release_manifest_binding.join_resolution = {
+      previous_live_attestations:
+        ticket.release_join_resolution.previous_live_attestations,
+    };
+    delete ticket.release_join_resolution;
+    delete ticket.release_join_resolution_digest;
+    await assert.rejects(
+      createHostNativeExternalReadbackVerifier({
+        fetchImpl: successFetch({ ticket }),
+      })({ ticket, target_commit: TARGET }),
+      /trusted_readback_render_health_mismatch/,
+    );
+  });
+
+  for (const [name, mutate] of [
+    ["wrong prior commit", (entry) => { entry.live_commit = ALTERNATE; }],
+    ["wrong service identity", (entry) => { entry.service_id = "other-service"; }],
+    ["wrong environment", (entry) => { entry.environment = "staging"; }],
+    ["wrong origin", (entry) => { entry.origin = "https://other-service.onrender.com"; }],
+  ]) {
+    await t.test(name, async () => {
+      const ticket = mergeTicket();
+      mutate(ticket.release_join_resolution.previous_live_attestations[0]);
+      ticket.release_join_resolution_digest = hostNativeDigest(ticket.release_join_resolution);
+      await assert.rejects(
+        createHostNativeExternalReadbackVerifier({
+          fetchImpl: successFetch({ ticket }),
+        })({ ticket, target_commit: TARGET }),
+        /trusted_readback_render_health_mismatch/,
+      );
+    });
+  }
 });
 
 test("post-action compact commit identity readback remains size-bounded", async (t) => {

@@ -518,7 +518,7 @@ function healthAttestation({ service, origin, health, liveCommit, rollbackCommit
 }
 
 function expectedPrevious(ticket, service) {
-  const entries = ticket?.release_manifest_binding?.join_resolution?.previous_live_attestations;
+  const entries = ticket?.release_join_resolution?.previous_live_attestations;
   if (!Array.isArray(entries)) return null;
   return entries.find((entry) => (
     string(entry?.service_id) === string(service.service_id) &&
