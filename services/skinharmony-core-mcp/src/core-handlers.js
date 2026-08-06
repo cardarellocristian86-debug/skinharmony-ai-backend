@@ -1465,6 +1465,7 @@ export function createCoreHandlers(config, options = {}) {
       const gallery = await galleryContext(args, identity);
       const sharedContext = await memoryContext({
         query: args.request,
+        work_id: args.work_id,
         project_id: args.project_id,
         session_id: args.session_id,
         agent_id: args.agent_id || "connected_ai",
@@ -2183,6 +2184,7 @@ export function createCoreHandlers(config, options = {}) {
         args.operation_class === "bounded_internal_coordination_write";
       const sharedContext = await memoryContext({
         query: `${args.action_label || ""} ${args.action_type || ""}`.trim(),
+        work_id: args.work_id,
         project_id: args.project_id,
         session_id: args.session_id,
         agent_id: args.agent_id || "connected_ai",

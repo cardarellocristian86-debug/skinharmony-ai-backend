@@ -64,6 +64,7 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   await handlers.core_health({}, identity);
   await handlers.work_preflight({
     request: "publish GitHub PR",
+    work_id: "11111111-1111-4111-8111-111111111111",
     agent_id: "codex-test",
     client_type: "codex",
     session_id: "session-core-one",
@@ -77,7 +78,11 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   await handlers.research_plan({ question: "ricerca fonti", allowed_domains: ["example.org"], domain_pack: "analyzer" }, identity);
   await handlers.research_validate({ evidence_pack: { question: "ricerca", sources: [], claims: [] }, domain_pack: "analyzer" }, identity);
   await handlers.nyra_interpret_request({ message: "analizza", session_id: "s1", domain_pack: "analyzer", nyra_branches: ["context_intelligence"] }, identity);
-  await handlers.core_gate_action({ action_label: "deploy", action_type: "release" }, identity);
+  await handlers.core_gate_action({
+    action_label: "deploy",
+    action_type: "release",
+    work_id: "22222222-2222-4222-8222-222222222222",
+  }, identity);
   assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/runtime/hierarchy/evaluate", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/research/plan", "/v1/research/validate", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
   assert(calls.filter((_, index) => ![2, calls.length - 1].includes(index)).every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
   assert.equal(calls[2].init.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
@@ -112,8 +117,10 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   assert.equal(JSON.parse(calls[7].init.body).memory_context.revision, 7);
   assert.equal("core_runtime" in JSON.parse(calls[7].init.body), false);
   assert.equal(contextCalls.length, 4);
+  assert.equal(contextCalls[0].input.work_id, "11111111-1111-4111-8111-111111111111");
   assert.equal(contextCalls[2].input.query, "analizza");
   assert.equal(contextCalls[2].input.agent_id, "nyra");
+  assert.equal(contextCalls[3].input.work_id, "22222222-2222-4222-8222-222222222222");
 });
 
 test("Core gate overwrites caller confirmation and tenant fields with verified identity", async () => {

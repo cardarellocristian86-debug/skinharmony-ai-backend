@@ -176,7 +176,7 @@ function preparedEvidence({ ledger, attester, branchId, subbranchId, requestId }
   return { ingested, handoff };
 }
 
-test("all live V2 shards are Core-opened, attested, and operationally evaluated as an exact L2-to-L4 lineage", () => {
+test("all live V2 shards are Core-opened, attested, and operationally evaluated as an exact L2-to-L4 lineage", async () => {
   const loaded = nyraRuntime.loadCatalog({ forceReload: true, runtimeMode: "lazy" });
   assert.equal(loaded.ok, true, loaded.validation.errors.join("\n"));
   assert.equal(loaded.manifest.shards.length, EXPECTED_V2_SUBBRANCH_COUNT);
@@ -248,7 +248,7 @@ test("all live V2 shards are Core-opened, attested, and operationally evaluated 
       requestId: evaluationRequestId,
       nonce: crypto.randomBytes(32).toString("hex"),
     });
-    const prepared = attester.prepareOperational({
+    const prepared = await attester.prepareOperational({
       tenantId: TENANT_ID,
       requestId: evaluationRequestId,
       domainPackId: "skinharmony",

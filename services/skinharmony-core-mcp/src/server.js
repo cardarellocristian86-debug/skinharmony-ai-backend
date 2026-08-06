@@ -29,6 +29,7 @@ import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
 import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
+import { selectTenantMemoryContextProvider } from "./tenant-work-gallery-memory-context.js";
 
 const config = loadConfig();
 const hostNativeContinuityTools = new Set([
@@ -108,6 +109,10 @@ if (config.decisionLedgerRequired === true && decisionLedger) {
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
+const tenantMemoryContextProvider = selectTenantMemoryContextProvider({
+  memoryFabric,
+  workContinuityRuntime,
+});
 const collaborationRuntime = (config.agentWorkspaceRoot || config.collaborationDatabaseUrl)
   ? createCollaborationHandlers(config, { govern })
   : {};
@@ -119,7 +124,7 @@ if (config.mandatoryAgentPresenceEnabled === true && typeof registerAuthenticate
   throw new Error("mandatory_agent_presence_registry_unavailable");
 }
 const coreHandlers = createCoreHandlers(config, {
-  contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
+  contextProvider: tenantMemoryContextProvider,
   sharedMemoryBootstrap,
   decisionLedger,
   remediationStore: workContinuityRuntime?.remediationStore,

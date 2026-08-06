@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { createNyraDeepV2EvidenceLedger } from "../src/nyraDeepV2EvidenceLedger.js";
+import { createNyraDeepV2EvidenceLedger, nyraDeepV2CanonicalJson } from "../src/nyraDeepV2EvidenceLedger.js";
 import { createNyraDeepBranchV2Attester } from "../src/nyraDeepBranchV2Attestation.js";
 
 const TENANT = "codexai";
@@ -218,7 +218,7 @@ test("attester builds and Ed25519-signs a complete six-node L2-to-L4 evidence pa
   assert.equal(attester.verify(prepared.attestation, { tenantId: TENANT, requestId: REQUEST }).ok, true);
 });
 
-test("operational attestation hands verified evidence across MCP requests and drives all six nodes", () => {
+test("operational attestation hands verified evidence across MCP requests and drives all six nodes", async () => {
   const { ledger, attester, publicKey } = createHarness();
   const { ingestion } = ingestCompleteEvidence({ ledger, attester });
   const envelope = operationalEnvelope();
@@ -239,7 +239,7 @@ test("operational attestation hands verified evidence across MCP requests and dr
     }).ok,
     false
   );
-  const prepared = attester.prepareOperational({
+  const prepared = await attester.prepareOperational({
     tenantId: TENANT,
     requestId: envelope.request_id,
     domainPackId: "skinharmony",
@@ -261,6 +261,28 @@ test("operational attestation hands verified evidence across MCP requests and dr
   assert.equal(prepared.attestation.node_contexts.length, 6);
   assert.equal(attester.verifyOperational(prepared.attestation, { tenantId: TENANT, requestId: envelope.request_id }).ok, true);
 
+  const temporalBase = {
+    tenantId: TENANT,
+    requestId: envelope.request_id,
+    domainPackId: "skinharmony",
+    entitlementDomainPackId: envelope.entitlement_domain_pack,
+    branchId: BRANCH,
+    subbranchId: SUBBRANCH,
+    preflightId: envelope.preflight_id,
+    corePolicyHash: envelope.core_policy_hash,
+    envelopeBindingHash: federationRuntime.coreEnvelopeBindingHash(envelope),
+    issuedAt: envelope.issued_at,
+    expiresAt: envelope.expires_at,
+  };
+  assert.deepEqual(await attester.prepareOperational({
+    ...temporalBase,
+    observedAt: Date.parse(envelope.issued_at) - 1,
+  }), { ok: false, reason: "nyra_deep_v2_operational_input_invalid" });
+  assert.deepEqual(await attester.prepareOperational({
+    ...temporalBase,
+    observedAt: Date.parse(envelope.expires_at),
+  }), { ok: false, reason: "nyra_deep_v2_operational_input_invalid" });
+
   envelope.operational_attestation = prepared.attestation;
   envelope.signature = federationRuntime.signCoreEnvelope(envelope, FEDERATION_SERVICE_KEY);
   const federation = federationRuntime.createNyraDeepBranchV2Federation({
@@ -273,7 +295,7 @@ test("operational attestation hands verified evidence across MCP requests and dr
   assert.equal(result.evaluation.all_nodes_verified, true);
   assert.equal(result.evaluation.lineage.nodes.every((node) => node.state === "advisory_verified"), true);
 
-  const denied = attester.prepareOperational({
+  const denied = await attester.prepareOperational({
     tenantId: TENANT,
     requestId: envelope.request_id,
     domainPackId: "skinharmony",
@@ -304,7 +326,88 @@ test("operational attestation hands verified evidence across MCP requests and dr
   assert.equal(deniedPayload.policy_decisions.every((decision) => decision.decision === "DENY"), true);
 });
 
-test("each Core policy receipt DENY fails only its exact node while malformed receipts fail closed", () => {
+test("operational attestation prefers a remote signer and requires no local private key", async () => {
+  const keys = crypto.generateKeyPairSync("ed25519");
+  let calls = 0;
+  const verifyRemote = (attestation) => {
+    const unsigned = structuredClone(attestation);
+    delete unsigned.signature;
+    return crypto.verify(
+      null,
+      Buffer.from(
+        `nyra-deep-branch-v2-operational-attestation\u0000${nyraDeepV2CanonicalJson(unsigned)}`,
+        "utf8",
+      ),
+      keys.publicKey,
+      Buffer.from(String(attestation.signature || ""), "base64url"),
+    );
+  };
+  const remoteSigner = {
+    configured: true,
+    key_id: "universal-core-nyra-v2",
+    async signOperational({ attestation }) {
+      calls += 1;
+      const signed = structuredClone(attestation);
+      signed.signature = crypto.sign(
+        null,
+        Buffer.from(
+          `nyra-deep-branch-v2-operational-attestation\u0000${nyraDeepV2CanonicalJson(attestation)}`,
+          "utf8",
+        ),
+        keys.privateKey,
+      ).toString("base64url");
+      return { ok: true, attestation: signed };
+    },
+    verifyOperationalSignature: verifyRemote,
+  };
+  const ledger = createNyraDeepV2EvidenceLedger({
+    secret: crypto.randomBytes(32).toString("hex"),
+    now: () => NOW,
+  });
+  const attester = createNyraDeepBranchV2Attester({
+    ledger,
+    remoteSigner,
+    now: () => NOW,
+  });
+  const { ingestion } = ingestCompleteEvidence({ ledger, attester });
+  const envelope = operationalEnvelope();
+  const handoff = ledger.resolveEvidenceSession({
+    tenantId: TENANT,
+    branchId: BRANCH,
+    subbranchId: SUBBRANCH,
+    recordRefs: ingestion.evidence_refs.map((item) => item.record_ref),
+  });
+  const prepared = await attester.prepareOperational({
+    tenantId: TENANT,
+    requestId: envelope.request_id,
+    domainPackId: "skinharmony",
+    entitlementDomainPackId: envelope.entitlement_domain_pack,
+    branchId: BRANCH,
+    subbranchId: SUBBRANCH,
+    preflightId: envelope.preflight_id,
+    corePolicyHash: envelope.core_policy_hash,
+    envelopeBindingHash: federationRuntime.coreEnvelopeBindingHash(envelope),
+    issuedAt: envelope.issued_at,
+    expiresAt: envelope.expires_at,
+    observedAt: NOW,
+    evidenceRefs: ingestion,
+    evidenceSessionRef: handoff.evidence_session_ref,
+    corePolicyContext: operationalPolicyContext(ledger, attester, envelope),
+  });
+  assert.equal(prepared.ok, true);
+  assert.equal(calls, 1);
+  assert.equal(verifyRemote(prepared.attestation), true);
+  assert.equal(attester.verifyOperational(prepared.attestation, {
+    tenantId: TENANT,
+    requestId: envelope.request_id,
+  }).ok, true);
+  assert.deepEqual(attester.prepare(coreInput()), {
+    ok: false,
+    reason: "nyra_deep_v2_attester_legacy_signer_unavailable",
+  });
+});
+
+test("each Core policy receipt DENY fails only its exact node while malformed receipts fail closed", async () => {
   const { ledger, attester } = createHarness();
   const { ingestion } = ingestCompleteEvidence({ ledger, attester });
   const envelope = operationalEnvelope();
@@ -337,7 +440,7 @@ test("each Core policy receipt DENY fails only its exact node while malformed re
   assert.equal(requirements.requirements.length, 12);
 
   for (const deniedRequirement of requirements.requirements) {
-    const prepared = attester.prepareOperational({
+    const prepared = await attester.prepareOperational({
       ...common,
       corePolicyContext: operationalPolicyContext(ledger, attester, envelope, {
         deniedNodeId: deniedRequirement.node_id,
@@ -363,7 +466,7 @@ test("each Core policy receipt DENY fails only its exact node while malformed re
 
   const missingDecisionId = operationalPolicyContext(ledger, attester, envelope);
   delete missingDecisionId.policy_snapshots[0].decision_id;
-  const malformed = attester.prepareOperational({ ...common, corePolicyContext: missingDecisionId });
+  const malformed = await attester.prepareOperational({ ...common, corePolicyContext: missingDecisionId });
   assert.equal(malformed.ok, true);
   assert.equal(malformed.state, "operational_attestation_abstaining");
   for (const context of malformed.attestation.node_contexts) {
@@ -372,7 +475,7 @@ test("each Core policy receipt DENY fails only its exact node while malformed re
   }
 });
 
-test("strict Core policy receipts reject tampered scope, time, hash, duplicate ID, and receipt hash", () => {
+test("strict Core policy receipts reject tampered scope, time, hash, duplicate ID, and receipt hash", async () => {
   const { ledger, attester } = createHarness();
   const { ingestion } = ingestCompleteEvidence({ ledger, attester });
   const envelope = operationalEnvelope();
@@ -412,7 +515,7 @@ test("strict Core policy receipts reject tampered scope, time, hash, duplicate I
   for (const [name, mutate] of scenarios) {
     const bundle = operationalPolicyContext(ledger, attester, envelope);
     mutate(bundle);
-    const prepared = attester.prepareOperational({ ...common, corePolicyContext: bundle });
+    const prepared = await attester.prepareOperational({ ...common, corePolicyContext: bundle });
     assert.equal(prepared.ok, true, name);
     assert.equal(prepared.state, "operational_attestation_abstaining", name);
     for (const context of prepared.attestation.node_contexts) {
@@ -541,7 +644,7 @@ test("ledger and attestation reject tenant confusion and tampering", () => {
   assert.equal(attester.verify(tamperedEnvelope, { tenantId: TENANT, requestId: REQUEST }).ok, false);
 });
 
-test("serialized ledger and attestation never contain raw memory, text, or source URLs", () => {
+test("serialized ledger and attestation never contain raw memory, text, or source URLs", async () => {
   const { ledger, attester } = createHarness();
   const { ingestion } = ingestCompleteEvidence({ ledger, attester, includeSensitiveValues: true });
   const prepared = attester.prepare({
@@ -557,7 +660,7 @@ test("serialized ledger and attestation never contain raw memory, text, or sourc
     recordRefs: ingestion.evidence_refs.map((item) => item.record_ref),
   });
   assert.equal(handoff.ok, true);
-  const operational = attester.prepareOperational({
+  const operational = await attester.prepareOperational({
     tenantId: TENANT,
     requestId: envelope.request_id,
     domainPackId: "skinharmony",

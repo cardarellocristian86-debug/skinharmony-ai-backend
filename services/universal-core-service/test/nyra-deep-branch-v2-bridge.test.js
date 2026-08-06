@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createUniversalCoreService } from "../src/app.js";
+import { nyraDeepV2CanonicalJson } from "../src/nyraDeepV2EvidenceLedger.js";
 import { nyraDeepV2EvidencePackHash, nyraDeepV2StableJson } from "../src/nyraDeepV2McpRequest.js";
 
 const require = createRequire(import.meta.url);
@@ -214,7 +215,10 @@ test("Core opens a requested V2 branch and uses Core-validated evidence to evalu
   assert.equal(loaded.ok, true);
   const signer = crypto.generateKeyPairSync("ed25519");
   const publicKeyPem = signer.publicKey.export({ type: "spki", format: "pem" });
-  const privateKeyPem = signer.privateKey.export({ type: "pkcs8", format: "pem" });
+  const publicJwk = signer.publicKey.export({ format: "jwk" });
+  const remoteSignerTargetCommit = "50d9bb6a7b3a06eb93b6cf12ba3d726534b4476a";
+  const remoteSignerToken = crypto.randomBytes(32).toString("hex");
+  let remoteSignerCalls = 0;
   const federationEnvironment = {
     NYRA_DEEP_BRANCH_V2_ENABLED: "true",
     NYRA_DEEP_BRANCH_V2_MODE: "active",
@@ -244,8 +248,15 @@ test("Core opens a requested V2 branch and uses Core-validated evidence to evalu
     CORE_NYRA_DEEP_BRANCH_V2_OPERATIONAL_EVALUATION_TENANT_ALLOWLIST: tenantId,
     CORE_NYRA_DEEP_BRANCH_V2_LEDGER_SECRET: "nyra-deep-v2-operational-bridge-ledger-secret-0123456789",
     CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET: MCP_REQUEST_SECRET,
-    CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_PRIVATE_KEY: privateKeyPem,
     CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_KEY_ID: "universal-core-nyra-v2",
+    CORE_NYRA_DEEP_BRANCH_V2_REMOTE_SIGNER_URL: "skinharmony-core-staging-issuer:10000",
+    CORE_NYRA_DEEP_BRANCH_V2_REMOTE_SIGNER_ALLOWED_ORIGIN: "skinharmony-core-staging-issuer:10000",
+    CORE_NYRA_DEEP_BRANCH_V2_REMOTE_SIGNER_BEARER_TOKEN: remoteSignerToken,
+    CORE_NYRA_DEEP_BRANCH_V2_REMOTE_SIGNER_PUBLIC_JWKS: JSON.stringify({
+      keys: [{ ...publicJwk, kid: "universal-core-nyra-v2", use: "sig", alg: "EdDSA" }],
+    }),
+    CORE_NYRA_DEEP_BRANCH_V2_REMOTE_SIGNER_EXPECTED_SERVICE: "skinharmony-core-staging-issuer",
+    CORE_NYRA_DEEP_BRANCH_V2_REMOTE_SIGNER_TARGET_COMMIT: remoteSignerTargetCommit,
   };
   const federation = nyraFederationRuntime.createNyraDeepBranchV2Federation({ env: federationEnvironment });
   let sourceExcerptA = "Core reviewed official source A evidence excerpt.";
@@ -254,6 +265,26 @@ test("Core opens a requested V2 branch and uses Core-validated evidence to evalu
     storageRoot: path.join(os.tmpdir(), `nyra-v2-operational-bridge-${Date.now()}`),
     nyraDeepV2Env: coreEnvironment,
     nyraDeepBranchV2FetchImpl: federationFetch(federation),
+    nyraDeepV2RemoteSignerFetchImpl: async (_url, options) => {
+      remoteSignerCalls += 1;
+      const requestBody = JSON.parse(options.body);
+      const signedAttestation = structuredClone(requestBody.attestation);
+      signedAttestation.signature = crypto.sign(
+        null,
+        Buffer.from(
+          `nyra-deep-branch-v2-operational-attestation\u0000${nyraDeepV2CanonicalJson(requestBody.attestation)}`,
+          "utf8",
+        ),
+        signer.privateKey,
+      ).toString("base64url");
+      return new Response(JSON.stringify({
+        schema_version: "nyra_deep_branch_v2_sign_response_v1",
+        purpose: "nyra_deep_branch_v2_operational_attestation",
+        target_commit: remoteSignerTargetCommit,
+        key_id: "universal-core-nyra-v2",
+        attestation: signedAttestation,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
     nyraDeepV2SourceFetchImpl: async () => new Response(
       `<html><body>${sourceExcerptA} ${sourceExcerptB}</body></html>`,
       { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }
@@ -515,6 +546,7 @@ test("Core opens a requested V2 branch and uses Core-validated evidence to evalu
       Array.isArray(node.reason_codes) && node.reason_codes.some((reason) => String(reason).includes("policy"))
     )), true);
     assert.equal(deniedRuntime.execution_authorized, false);
+    assert.equal(remoteSignerCalls, 2);
   } finally {
     await server.close();
     if (previousAdminKey === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;

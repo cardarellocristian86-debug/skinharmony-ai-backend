@@ -17,6 +17,7 @@ import {
   NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_ISSUER,
   NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_SCHEMA_VERSION,
 } from "./nyraDeepBranchV2Attestation.js";
+import { createNyraDeepBranchV2RemoteSigner } from "./nyraDeepBranchV2RemoteSigner.js";
 import { createNyraDeepV2EvidenceLedger } from "./nyraDeepV2EvidenceLedger.js";
 import { createNyraDeepV2SourceVerifier } from "./nyraDeepV2SourceVerification.js";
 import {
@@ -4310,6 +4311,7 @@ export function createUniversalCoreService(options = {}) {
   let nyraDeepV2Ledger = options.nyraDeepV2EvidenceLedger || null;
   let nyraDeepV2Attester = options.nyraDeepV2Attester || null;
   let nyraDeepV2SourceVerifier = options.nyraDeepV2SourceVerifier || null;
+  let nyraDeepV2RemoteSigner = options.nyraDeepV2RemoteSigner || null;
   const nyraDeepV2StateRoot = String(
     options.nyraDeepV2StateRoot
       || ((options.storageRoot || process.env.CORE_SERVICE_STORAGE_ROOT)
@@ -4319,6 +4321,28 @@ export function createUniversalCoreService(options = {}) {
   const nyraDeepV2SourceRegistry = options.nyraDeepV2SourceRegistry
     || createResearchSourceRegistry(nyraBranchCatalog("skinharmony").branches);
   let nyraDeepV2IntegrationReason = null;
+  if (!nyraDeepV2RemoteSigner) {
+    try {
+      nyraDeepV2RemoteSigner = createNyraDeepBranchV2RemoteSigner({
+        env: nyraDeepV2Env,
+        fetchImpl: options.nyraDeepV2RemoteSignerFetchImpl || fetch,
+      });
+    } catch {
+      nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_remote_signer_configuration_invalid";
+    }
+  }
+  const nyraDeepV2RemoteSignerStatus = typeof nyraDeepV2RemoteSigner?.status === "function"
+    ? nyraDeepV2RemoteSigner.status()
+    : {
+      requested: Boolean(nyraDeepV2RemoteSigner),
+      configured: nyraDeepV2RemoteSigner?.configured === true,
+    };
+  if (
+    nyraDeepV2RemoteSignerStatus.requested === true
+    && nyraDeepV2RemoteSignerStatus.configured !== true
+  ) {
+    nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_remote_signer_configuration_invalid";
+  }
   if (!nyraDeepV2Ledger && nyraDeepV2LedgerSecret.length >= 32) {
     try {
       nyraDeepV2Ledger = createNyraDeepV2EvidenceLedger({
@@ -4334,12 +4358,23 @@ export function createUniversalCoreService(options = {}) {
   if (
     !nyraDeepV2Attester
     && nyraDeepV2Ledger
-    && nyraDeepV2AttestationPrivateKey
+    && (
+      nyraDeepV2RemoteSigner?.configured === true
+      || (
+        nyraDeepV2RemoteSignerStatus.requested !== true
+        && nyraDeepV2AttestationPrivateKey
+      )
+    )
   ) {
     try {
       nyraDeepV2Attester = createNyraDeepBranchV2Attester({
         ledger: nyraDeepV2Ledger,
-        signingPrivateKey: nyraDeepV2AttestationPrivateKey,
+        signingPrivateKey: nyraDeepV2RemoteSigner?.configured === true
+          ? null
+          : nyraDeepV2AttestationPrivateKey,
+        remoteSigner: nyraDeepV2RemoteSigner?.configured === true
+          ? nyraDeepV2RemoteSigner
+          : null,
         keyId: nyraDeepV2AttestationKeyId,
       });
     } catch {
@@ -5663,6 +5698,7 @@ export function createUniversalCoreService(options = {}) {
             raw_identifiers_retained: false,
           },
         attester_ready: Boolean(nyraDeepV2Attester),
+        remote_signer: nyraDeepV2RemoteSignerStatus,
         source_verifier_ready: Boolean(nyraDeepV2SourceVerifier),
         execution_authorized: false,
       },
@@ -9194,7 +9230,7 @@ export function createUniversalCoreService(options = {}) {
               || "nyra_deep_branch_v2_policy_receipt_unavailable",
           });
         }
-        const prepared = nyraDeepV2Attester.prepareOperational({
+        const prepared = await nyraDeepV2Attester.prepareOperational({
           tenantId: req.tenantId,
           requestId: coreRequestId,
           domainPackId: "skinharmony",

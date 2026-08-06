@@ -369,13 +369,15 @@ function validateSixNodeShard({ loaded, shard, branchId, subbranchId }) {
 
 /**
  * Creates a lazy-shard attester.  `ledger` must be created by
- * `createNyraDeepV2EvidenceLedger`; `signingPrivateKey` must be an Ed25519
- * private key (PEM or KeyObject).  It never evaluates/executes a Nyra node.
+ * `createNyraDeepV2EvidenceLedger`. Operational attestations prefer the
+ * purpose-bound remote signer; the Ed25519 private key remains supported only
+ * as the legacy in-process fallback. It never evaluates/executes a Nyra node.
  */
 export function createNyraDeepBranchV2Attester({
   ledger,
-  signingPrivateKey,
+  signingPrivateKey = null,
   signingPublicKey = null,
+  remoteSigner = null,
   keyId = "universal-core-nyra-v2",
   runtimeAdapter = runtime,
   now = () => Date.now(),
@@ -388,19 +390,34 @@ export function createNyraDeepBranchV2Attester({
   ) {
     throw new TypeError("nyra_deep_v2_attester_ledger_required");
   }
-  if (!signingPrivateKey) throw new TypeError("nyra_deep_v2_attester_private_key_required");
-  const privateKey = signingPrivateKey?.type === "private"
-    ? signingPrivateKey
-    : crypto.createPrivateKey(signingPrivateKey);
+  const remoteSignerReady = remoteSigner?.configured === true
+    && typeof remoteSigner.signOperational === "function"
+    && typeof remoteSigner.verifyOperationalSignature === "function";
+  if (!signingPrivateKey && !remoteSignerReady) {
+    throw new TypeError("nyra_deep_v2_attester_signer_required");
+  }
+  const privateKey = !signingPrivateKey
+    ? null
+    : signingPrivateKey?.type === "private"
+      ? signingPrivateKey
+      : crypto.createPrivateKey(signingPrivateKey);
   const publicKey = signingPublicKey
     ? signingPublicKey?.type === "public"
       ? signingPublicKey
       : crypto.createPublicKey(signingPublicKey)
-    : crypto.createPublicKey(privateKey);
-  if (privateKey.asymmetricKeyType !== "ed25519" || publicKey.asymmetricKeyType !== "ed25519") {
+    : privateKey
+      ? crypto.createPublicKey(privateKey)
+      : null;
+  if (
+    (privateKey && privateKey.asymmetricKeyType !== "ed25519")
+    || (publicKey && publicKey.asymmetricKeyType !== "ed25519")
+  ) {
     throw new TypeError("nyra_deep_v2_attester_ed25519_required");
   }
   const signerKeyId = safeString(keyId, 256) || "universal-core-nyra-v2";
+  if (remoteSignerReady && remoteSigner.key_id !== signerKeyId) {
+    throw new TypeError("nyra_deep_v2_attester_remote_key_id_mismatch");
+  }
 
   function loadShard(branchId, subbranchId, tenantId = "attestation") {
     const branch = safeString(branchId);
@@ -1087,6 +1104,7 @@ export function createNyraDeepBranchV2Attester({
       })),
     });
     envelope.package_hash = sha256(unsignedEnvelope(envelope));
+    if (!privateKey) return { ok: false, reason: "nyra_deep_v2_attester_legacy_signer_unavailable" };
     envelope.signature = ed25519Signature(privateKey, signedEnvelope(envelope));
     return { ok: true, attestation: envelope };
   }
@@ -1098,7 +1116,7 @@ export function createNyraDeepBranchV2Attester({
    * evaluator contexts from verified ledger records and static node contracts.
    * It never claims success when any evidence/policy atom is missing.
    */
-  function prepareOperational({
+  async function prepareOperational({
     tenantId,
     requestId,
     domainPackId = "skinharmony",
@@ -1138,6 +1156,8 @@ export function createNyraDeepBranchV2Attester({
       || !Number.isFinite(expires)
       || expires <= issued
       || expires - issued > 60_000
+      || observed < issued
+      || observed >= expires
       || !/^[a-f0-9]{32,128}$/i.test(attestationNonce)
     ) return { ok: false, reason: "nyra_deep_v2_operational_input_invalid" };
 
@@ -1206,7 +1226,22 @@ export function createNyraDeepBranchV2Attester({
       expires_at: new Date(expires).toISOString(),
       observed_at: Math.floor(observed),
     };
-    attestation.signature = operationalSignature(privateKey, attestation);
+    if (remoteSignerReady) {
+      const signed = await remoteSigner.signOperational({ attestation });
+      if (!signed?.ok || !isPlainObject(signed.attestation)) {
+        return {
+          ok: false,
+          reason: signed?.reason || "nyra_deep_v2_remote_signer_unavailable",
+        };
+      }
+      if (!remoteSigner.verifyOperationalSignature(signed.attestation)) {
+        return { ok: false, reason: "nyra_deep_v2_remote_signer_signature_invalid" };
+      }
+      Object.assign(attestation, signed.attestation);
+    } else {
+      if (!privateKey) return { ok: false, reason: "nyra_deep_v2_attester_legacy_signer_unavailable" };
+      attestation.signature = operationalSignature(privateKey, attestation);
+    }
     return {
       ok: true,
       state: allQualified ? "operational_attestation_ready" : "operational_attestation_abstaining",
@@ -1223,7 +1258,7 @@ export function createNyraDeepBranchV2Attester({
     if (attestation.package_hash !== sha256(unsignedEnvelope(attestation))) {
       return { ok: false, reason: "nyra_deep_v2_attestation_package_hash_invalid" };
     }
-    if (!verifyEd25519(publicKey, signedEnvelope(attestation), attestation.signature)) {
+    if (!publicKey || !verifyEd25519(publicKey, signedEnvelope(attestation), attestation.signature)) {
       return { ok: false, reason: "nyra_deep_v2_attestation_signature_invalid" };
     }
     if (tenantId && attestation.tenant_ref !== ledger.reference("tenant", tenantId)) {
@@ -1242,7 +1277,9 @@ export function createNyraDeepBranchV2Attester({
       || attestation.issuer !== NYRA_DEEP_BRANCH_V2_ATTESTATION_ISSUER
       || attestation.audience !== NYRA_DEEP_BRANCH_V2_ATTESTATION_AUDIENCE
       || attestation.key_id !== signerKeyId
-      || !verifyOperationalSignature(publicKey, attestation)
+      || !(remoteSignerReady
+        ? remoteSigner.verifyOperationalSignature(attestation)
+        : publicKey && verifyOperationalSignature(publicKey, attestation))
     ) return { ok: false, reason: "nyra_deep_v2_operational_signature_invalid" };
     if (tenantId && attestation.tenant_id !== tenantId) return { ok: false, reason: "nyra_deep_v2_operational_tenant_mismatch" };
     if (requestId && attestation.request_id !== requestId) return { ok: false, reason: "nyra_deep_v2_operational_request_mismatch" };
