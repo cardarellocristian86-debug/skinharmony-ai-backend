@@ -4,6 +4,10 @@ import { createCollaborationReceiptRuntime } from "./src/collaborationReceiptRun
 import { createMcpStagingIssuerRuntimeFromEnv } from "./src/issuerRuntime.js";
 import { fetchMcpStagingPrivateJwks } from "./src/privateJwksClient.js";
 import {
+  createNyraDeepV2OperationalSignerRuntime,
+  NYRA_DEEP_V2_OPERATIONAL_SIGNER_CONTRACT,
+} from "./src/nyraDeepV2OperationalSigner.js";
+import {
   createMcpStagingCredentialReceiptVerifier,
   createMcpStagingIssuerEvidenceVerifier,
   createMcpStagingOwnerConfirmationVerifier,
@@ -26,6 +30,8 @@ const SENSITIVE_ENV_KEYS = Object.freeze([
   "MCP_STAGING_ISSUER_NONCE_API_TOKEN",
   "MCP_STAGING_NYRA_JWKS_TOKEN",
   "MCP_STAGING_CORE_GATE_VERIFY_SECRET",
+  "MCP_STAGING_NYRA_DEEP_V2_SIGNING_SECRET",
+  "MCP_STAGING_NYRA_DEEP_V2_SIGNING_TOKEN",
 ]);
 const PUBLIC_ANCHOR_ENV_KEYS = Object.freeze([
   "MCP_STAGING_RECEIPT_AUTHORITY_PUBLIC_JWK",
@@ -88,6 +94,56 @@ function assertIndependentAnchors(runtimeKid, anchors) {
   if (new Set(kids).size !== kids.length) throw new Error("issuer_trust_anchors_not_independent");
 }
 
+function composeNyraDeepV2OperationalSigner({
+  runtime,
+  env,
+  replayStore,
+  targetCommit,
+  startupMode,
+  now,
+  logger,
+}) {
+  const signingSecret = env?.MCP_STAGING_NYRA_DEEP_V2_SIGNING_SECRET;
+  const authToken = env?.MCP_STAGING_NYRA_DEEP_V2_SIGNING_TOKEN;
+  if (signingSecret === undefined && authToken === undefined) return runtime;
+  if (signingSecret === undefined || authToken === undefined) {
+    throw new Error("nyra_deep_v2_signer_config_incomplete");
+  }
+  const signer = createNyraDeepV2OperationalSignerRuntime({
+    mode: env?.MCP_STAGING_ISSUER_MODE,
+    environment: env?.MCP_STAGING_ENVIRONMENT,
+    startupMode,
+    signingSecret,
+    authToken,
+    replayStore,
+    targetCommit,
+    now,
+    logger,
+  });
+  async function handle(req, res) {
+    const pathname = (() => {
+      try {
+        return new URL(req.url || "/", "http://issuer.invalid").pathname;
+      } catch {
+        return "/invalid";
+      }
+    })();
+    if (pathname === NYRA_DEEP_V2_OPERATIONAL_SIGNER_CONTRACT.endpoint ||
+        pathname === NYRA_DEEP_V2_OPERATIONAL_SIGNER_CONTRACT.jwks_endpoint) {
+      return signer.handle(req, res);
+    }
+    return runtime.handle(req, res);
+  }
+  return Object.freeze({
+    ...runtime,
+    nyraDeepV2OperationalSignerReady: true,
+    nyraDeepV2OperationalSignerJwk: signer.jwk,
+    nyraDeepV2OperationalSignerEndpoint: signer.endpoint,
+    nyraDeepV2OperationalSignerJwksEndpoint: signer.jwksEndpoint,
+    handle,
+  });
+}
+
 export function createMcpStagingIssuerServiceRuntime({
   env = process.env,
   now = Date.now,
@@ -139,7 +195,7 @@ export function createMcpStagingIssuerServiceRuntime({
           now,
         });
       }
-      return createCollaborationReceiptRuntime({
+      const runtime = createCollaborationReceiptRuntime({
         mode,
         signingSecret: env?.MCP_STAGING_ISSUER_SIGNING_SECRET,
         authToken: env?.MCP_STAGING_ISSUER_AUTH_TOKEN,
@@ -149,6 +205,15 @@ export function createMcpStagingIssuerServiceRuntime({
         ...(nyraPublicKey ? { nyraPublicKey } : {}),
         ...(coreGateVerifier ? { coreGateVerifier } : {}),
         now,
+      });
+      return composeNyraDeepV2OperationalSigner({
+        runtime,
+        env,
+        replayStore,
+        targetCommit,
+        startupMode,
+        now,
+        logger,
       });
     }
     const receiptAnchor = anchorFromEnv(env, "receipt", "MCP_STAGING_RECEIPT_AUTHORITY");
@@ -184,7 +249,15 @@ export function createMcpStagingIssuerServiceRuntime({
       now,
       targetCommit,
     });
-    return runtime;
+    return composeNyraDeepV2OperationalSigner({
+      runtime,
+      env,
+      replayStore,
+      targetCommit,
+      startupMode,
+      now,
+      logger,
+    });
   } finally {
     scrubIssuerEnvironment(env);
   }

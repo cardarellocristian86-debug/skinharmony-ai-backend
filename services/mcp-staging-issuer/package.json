@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check src/issuerRuntime.js && node --check src/collaborationReceiptRuntime.js && node --check src/privateJwksClient.js && node --check test/issuer-runtime.test.js && node --check test/collaboration-receipt-runtime.test.js && node --check test/private-jwks-client.test.js",
+    "check": "node --check server.js && node --check src/issuerRuntime.js && node --check src/collaborationReceiptRuntime.js && node --check src/privateJwksClient.js && node --check src/nyraDeepV2OperationalSigner.js && node --check test/issuer-runtime.test.js && node --check test/collaboration-receipt-runtime.test.js && node --check test/private-jwks-client.test.js && node --check test/nyra-deep-v2-operational-signer.test.js",
     "test": "node --test test/*.test.js"
   }
 }
