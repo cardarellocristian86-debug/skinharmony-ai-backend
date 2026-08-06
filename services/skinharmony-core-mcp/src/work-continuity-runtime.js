@@ -3425,6 +3425,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
       receipt.external_execution_allowed !== false ||
       receipt.host_execution_required !== true ||
       receipt.provider_execution !== false ||
+      (
+        receipt.previous_authorization_digest !== undefined &&
+        !/^[a-f0-9]{64}$/.test(String(receipt.previous_authorization_digest || ""))
+      ) ||
       receipt.readback_source !== "core_server_external_readback_v1" ||
       !["verified_completion", "reconciled_readback"].includes(receipt.outcome_source) ||
       issuedAt.getTime() > currentTime + 5 * 60 * 1_000 ||
@@ -3500,12 +3504,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
           row.core_join_record?.verdict,
           "persisted_core_join_verdict",
         );
+        const coreJoinClaim = requireObject(
+          row.core_join_record?.claim,
+          "persisted_core_join_claim",
+        );
         if (
           row.verdict_id !== receipt.core_join_verdict_id ||
           verdict.verdict_id !== row.verdict_id ||
-          digest(verdict) !== receipt.core_join_verdict_digest ||
+          verdict.claim_digest !== row.core_join_record.claim_digest ||
+          row.core_join_record.claim_digest !==
+            receipt.core_join_verdict_digest ||
           row.release_intent_digest !== receipt.release_intent_digest ||
-          row.evaluation_digest !== receipt.evidence_digest ||
+          coreJoinClaim.evaluation_digest !== row.evaluation_digest ||
+          row.core_join_record_digest !== receipt.evidence_digest ||
           row.release_intent.head_commit !== row.evaluation.target_commit ||
           receipt.github_readback?.checks_commit !== row.evaluation.target_commit ||
           receipt.github_readback?.checks_passed !== true ||
@@ -3546,7 +3557,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
               live?.health_status !== "healthy" ||
               live?.health_contract_digest !== expected.health_contract_digest ||
               live?.rollback_commit !== row.release_intent.rollback?.target_commit ||
-              live?.rollback_status !== "commit_available_manifest_bound" ||
+              live?.rollback_status !== "previous_live_attested" ||
               !/^[a-f0-9]{64}$/.test(String(live?.readback_digest || "")) ||
               (
                 expected.target_resolution === "exact_commit" &&

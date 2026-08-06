@@ -62,6 +62,7 @@ const MAX_DELEGATION_MS = 12 * 60 * 60 * 1_000;
 const DEFAULT_TICKET_TTL_MS = 10 * 60_000;
 const DEFAULT_RESERVATION_LEASE_MS = 5 * 60_000;
 const DEFAULT_CORE_JOIN_TTL_MS = 30 * 60_000;
+const MAX_FINALIZE_AUTHORIZATION_HISTORY = 16;
 
 function fail(code) {
   throw new Error(code);
@@ -1675,10 +1676,11 @@ export function createHostNativeGovernance({
       const nowValue = nowMillis(now);
       const current = readTicketRecord(tenantId, input.ticket_id);
       if (current.ticket.host_session_fingerprint !== text(input.host_session_fingerprint, "host_session_mismatch", 300)) fail("host_session_mismatch");
-      if (current.finalize_authorization) {
-        if (Date.parse(current.finalize_authorization.expires_at || 0) <= nowValue) {
-          fail("finalize_authorization_expired");
-        }
+      const previousAuthorization = current.finalize_authorization || null;
+      if (
+        previousAuthorization &&
+        Date.parse(previousAuthorization.expires_at || 0) > nowValue
+      ) {
         return clone(current.finalize_authorization);
       }
       if (
@@ -1702,7 +1704,19 @@ export function createHostNativeGovernance({
       verifyReadbackDigest(external);
       const github = external.github;
       const verifiedAt = Date.parse(external.verified_at);
-      if (!Number.isFinite(verifiedAt) || verifiedAt < Date.parse(current.reserved_at) || verifiedAt > nowValue + 60_000) {
+      const previousAuthorizationExpiresAt = previousAuthorization
+        ? Date.parse(previousAuthorization.expires_at || "")
+        : null;
+      if (
+        !Number.isFinite(verifiedAt) ||
+        verifiedAt < Date.parse(current.reserved_at) ||
+        verifiedAt > nowValue + 60_000 ||
+        (
+          previousAuthorization &&
+          (!Number.isFinite(previousAuthorizationExpiresAt) ||
+            verifiedAt <= previousAuthorizationExpiresAt)
+        )
+      ) {
         fail("trusted_readback_stale");
       }
       if (
@@ -1734,10 +1748,19 @@ export function createHostNativeGovernance({
         if (!record || record.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
         const receiptNow = nowMillis(now);
         if (record.finalize_authorization) {
-          if (Date.parse(record.finalize_authorization.expires_at || 0) <= receiptNow) {
-            fail("finalize_authorization_expired");
+          const storedExpiresAt = Date.parse(record.finalize_authorization.expires_at || 0);
+          if (storedExpiresAt > receiptNow) {
+            return record.finalize_authorization;
           }
-          return record.finalize_authorization;
+          if (
+            !previousAuthorization ||
+            record.finalize_authorization.authorization_digest !==
+              previousAuthorization.authorization_digest ||
+            !Number.isFinite(storedExpiresAt) ||
+            verifiedAt <= storedExpiresAt
+          ) {
+            fail("trusted_readback_stale");
+          }
         }
         const receiptUnsigned = {
           schema_version: "host_native_finalize_authorization_v1",
@@ -1775,6 +1798,12 @@ export function createHostNativeGovernance({
           readback_source: external.verifier_id,
           issued_at: iso(receiptNow),
           expires_at: iso(receiptNow + leaseMs),
+          ...(record.finalize_authorization
+            ? {
+              previous_authorization_digest:
+                record.finalize_authorization.authorization_digest,
+            }
+            : {}),
           host_policy_override: false,
           host_policy_must_allow: true,
           external_execution_allowed: false,
@@ -1787,6 +1816,22 @@ export function createHostNativeGovernance({
           authorization_digest,
           signature: hmac("hnf", signing, canonical({ ...receiptUnsigned, authorization_digest })),
         };
+        if (record.finalize_authorization) {
+          const historicalAuthorization = record.finalize_authorization;
+          const history = Array.isArray(record.finalize_authorization_history)
+            ? record.finalize_authorization_history
+            : [];
+          record.finalize_authorization_history = [
+            ...history,
+            {
+              authorization_digest: historicalAuthorization.authorization_digest,
+              external_readback_digest:
+                historicalAuthorization.external_readback_digest,
+              issued_at: historicalAuthorization.issued_at,
+              expires_at: historicalAuthorization.expires_at,
+            },
+          ].slice(-MAX_FINALIZE_AUTHORIZATION_HISTORY);
+        }
         record.finalize_authorization = receipt;
         return receipt;
       });
