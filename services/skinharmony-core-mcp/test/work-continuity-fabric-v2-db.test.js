@@ -7,10 +7,12 @@ import {
 } from "../src/work-continuity-runtime.js";
 import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  buildHostReleaseManifestV2,
   buildHostReleaseIntentV1,
   createHostNativeGovernance,
   createInMemoryHostNativeGovernanceStore,
   hostNativeDigest,
+  hostNativeGithubDiffDigest,
 } from "../../universal-core-service/src/hostNativeGovernance.js";
 
 function key(...parts) {
@@ -1837,8 +1839,8 @@ test("cross-chat resume preserves same-session plans and supersedes stale coordi
 });
 
 test("local closure becomes release-ready and external completion needs exact Core ticket bindings", async () => {
-  const instant = new Date("2026-07-29T13:30:00.000Z");
-  const clock = () => new Date(instant);
+  let clockMillis = Date.parse("2026-07-29T13:30:00.000Z");
+  const clock = () => new Date(clockMillis);
   const pool = new ContinuityPool(clock);
   const closureAttestationSecret =
     "continuity-closure-attestation-test-secret-0123456789";
@@ -1898,11 +1900,73 @@ test("local closure becomes release-ready and external completion needs exact Co
     });
     return requiredChecksPolicy;
   };
+  let externalReadbackCalls = 0;
+  const externalReadbackVerifier = async ({ ticket, target_commit }) => {
+    externalReadbackCalls += 1;
+    const binding = ticket.release_manifest_binding;
+    const githubUnsigned = {
+      repository: ticket.repository,
+      target_commit,
+      checks_commit: binding.verification.checks_commit,
+      checks_passed: true,
+      required_checks: [...binding.verification.required_checks],
+      observed_checks: binding.verification.required_checks.map((name) => ({
+        name,
+        head_commit: binding.verification.checks_commit,
+        status: "completed",
+        conclusion: "success",
+      })),
+      rollback_commit_available: true,
+    };
+    const services = binding.delivery.services.map((expected) => {
+      const unsigned = {
+        service_id: expected.service_id,
+        environment: expected.environment,
+        origin: expected.origin,
+        deployment_id: `${expected.service_id}:${target_commit}`,
+        live_commit: target_commit,
+        version: "0.16.0",
+        health_status: "healthy",
+        health_contract_digest: expected.health_contract_digest,
+        rollback_commit: binding.rollback.target_commit,
+        rollback_status: "previous_live_attested",
+      };
+      return { ...unsigned, readback_digest: hostNativeDigest(unsigned) };
+    });
+    return {
+      schema_version: "host_native_external_readback_v1",
+      trusted: true,
+      verifier_id: "core_server_external_readback_v1",
+      verified_at: clock().toISOString(),
+      github: {
+        ...githubUnsigned,
+        readback_digest: hostNativeDigest(githubUnsigned),
+      },
+      services,
+      external_side_effect: false,
+      provider_execution: false,
+    };
+  };
   const realCore = createHostNativeGovernance({
     store: createInMemoryHostNativeGovernanceStore(),
     signingSecret: "core-contract-test-signing-secret-0123456789abcdef",
     closureAttestationSigningSecret: closureAttestationSecret,
     requiredChecksPolicyResolver,
+    externalReadbackVerifier,
+    releaseJoinVerdictResolver: async (request) => ({
+      schema_version: "host_native_release_join_resolution_v1",
+      trusted: true,
+      authority: "universal_core",
+      allowed: true,
+      verdict_id: request.verdict_id,
+      tenant_id: request.tenant_id,
+      work_id: request.work_id,
+      repository: request.repository,
+      evidence_digest: request.evidence_digest,
+      issued_at: clock().toISOString(),
+      resolved_at: clock().toISOString(),
+      provider_execution: false,
+    }),
     now: () => clock().getTime(),
   });
   const corePlanRequest = {
@@ -2076,6 +2140,13 @@ test("local closure becomes release-ready and external completion needs exact Co
     },
     idempotency_key: "closure-wrong-base-branch",
   }), /continuity_release_base_branch_policy_mismatch/);
+  const releaseDiffDigest = hostNativeGithubDiffDigest({
+    repository: "owner/repo",
+    base_commit: "a".repeat(40),
+    head_commit: "e".repeat(40),
+    tree_sha: "b".repeat(40),
+    changed_files: ["services/skinharmony-core-mcp/src/server.js"],
+  });
   const evaluation = await runtime.evaluateClosure(identity, {
     work_id: work.work_id,
     plan_id: planId,
@@ -2085,7 +2156,7 @@ test("local closure becomes release-ready and external completion needs exact Co
       base_commit: "a".repeat(40),
       head_commit: "e".repeat(40),
       tree_sha: "b".repeat(40),
-      diff_digest: "c".repeat(64),
+      diff_digest: releaseDiffDigest,
       changed_files: ["services/skinharmony-core-mcp/src/server.js"],
       delivery: {
         method: "github_protected_push_auto_deploy",
@@ -2218,76 +2289,217 @@ test("local closure becomes release-ready and external completion needs exact Co
   assert.equal(pool.plans.get(key("tenant-a", planId)).status, "verified");
   assert.equal(pool.releaseJoins.size, 1);
 
-  const ticketId = "hnt_12345678-abcd";
+  const evaluationDigest = evaluation.evaluation_digest;
+  const releaseIntentDigest = releaseIntent.release_intent_digest;
+  const coreJoinRecordDigest = digest(coreJoinRecord);
+  const coreJoinClaimDigest = coreJoinRecord.claim_digest;
+  const verdictObjectDigest = digest(verdict);
+  assert.equal(new Set([
+    evaluationDigest,
+    releaseIntentDigest,
+    coreJoinRecordDigest,
+    verdictObjectDigest,
+  ]).size, 4);
+  assert.equal(new Set([
+    evaluationDigest,
+    releaseIntentDigest,
+    coreJoinRecordDigest,
+    verdictObjectDigest,
+    coreJoinClaimDigest,
+  ]).size, 5);
+  assert.equal(coreJoinRecord.claim.evaluation_digest, evaluationDigest);
+
+  const releaseManifest = buildHostReleaseManifestV2({
+    schema_version: "host_release_manifest_v2",
+    manifest_id: "closure-contract-manifest",
+    tenant_id: "tenant-a",
+    ...evaluation.core_join_material.release_intent_request,
+    verification: {
+      ...evaluation.core_join_material.release_intent_request.verification,
+      core_join_verdict_id: verdictId,
+    },
+  });
+  const delegation = await realCore.issueDelegation({
+    tenant_id: "tenant-a",
+    work_id: work.work_id,
+    intent_anchor_digest: work.intent_digest,
+    repository: "owner/repo",
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: `osf_${"a".repeat(64)}`,
+      consent_nonce: "closure-contract-owner-consent",
+      confirmation_reference: "bounded closure contract test",
+    },
+    audience: ["codex_native"],
+    allowed_branches: ["agent/native-work", "main"],
+    protected_branches: ["main"],
+    allowed_path_prefixes: ["services/skinharmony-core-mcp"],
+    allowed_actions: ["github.merge"],
+    budget: {
+      max_agents: 1,
+      max_parallel: 1,
+      max_commits: 1,
+      max_pushes: 1,
+      max_deploys: 1,
+      max_total_actions: 1,
+    },
+    release_policy: {
+      manifest_required_for_protected_push: true,
+      manifest_required_for_induced_deploy: true,
+      manifest_required_for_deploy: true,
+      independent_verifier_required: true,
+      rollback_required: true,
+      required_checks: ["core-mcp"],
+    },
+    expires_at: new Date(clockMillis + 60 * 60_000).toISOString(),
+    idempotency_key: "closure-contract-delegation",
+  });
   const liveCommit = "9".repeat(40);
+  const issuedTicket = await realCore.issueActionTicket({
+    tenant_id: "tenant-a",
+    delegation_id: delegation.delegation_id,
+    work_id: work.work_id,
+    intent_anchor_digest: work.intent_digest,
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: identity.agentPresence.session_fingerprint,
+    action: {
+      kind: "github.merge",
+      repository: "owner/repo",
+      head_branch: "agent/native-work",
+      base_branch: "main",
+      pull_request: 215,
+      head_commit: evaluation.target_commit,
+      expected_base_commit: "a".repeat(40),
+      merge_method: "merge",
+      checks_verified: true,
+      checks_commit: evaluation.target_commit,
+      changed_files: ["services/skinharmony-core-mcp/src/server.js"],
+      force: false,
+      delete_ref: false,
+      tags: false,
+      induced_effects: [{
+        service_id: "srv-core-mcp",
+        environment: "production",
+        trigger: "github_auto_deploy",
+      }],
+      provider_execution: false,
+    },
+    evidence_digest: coreJoinRecordDigest,
+    release_manifest: releaseManifest,
+    idempotency_key: "closure-contract-ticket",
+  });
+  const ticketId = issuedTicket.ticket.ticket_id;
+  const reservedTicket = await realCore.reserveActionTicket({
+    tenant_id: "tenant-a",
+    ticket_id: ticketId,
+    host_session_fingerprint: identity.agentPresence.session_fingerprint,
+    idempotency_key: "closure-contract-reserve",
+  });
+  await realCore.completeActionTicket({
+    tenant_id: "tenant-a",
+    ticket_id: ticketId,
+    reservation_id: reservedTicket.reservation_id,
+    host_session_fingerprint: identity.agentPresence.session_fingerprint,
+    outcome: "success",
+    result_digest: "5".repeat(64),
+    result_commit: liveCommit,
+    readback_digest: "6".repeat(64),
+    idempotency_key: "closure-contract-complete",
+  });
+  const initialAuthorization = await realCore.authorizeFinalize({
+    tenant_id: "tenant-a",
+    ticket_id: ticketId,
+    host_session_fingerprint: identity.agentPresence.session_fingerprint,
+  });
+  const exactAuthorizationReplay = await realCore.authorizeFinalize({
+    tenant_id: "tenant-a",
+    ticket_id: ticketId,
+    host_session_fingerprint: identity.agentPresence.session_fingerprint,
+  });
+  assert.deepEqual(exactAuthorizationReplay, initialAuthorization);
+  assert.equal(externalReadbackCalls, 1);
+  const lifecycleBeforeReattestation = {
+    ticket: await realCore.readActionTicket({ tenant_id: "tenant-a", ticket_id: ticketId }),
+    delegation: await realCore.readDelegation({
+      tenant_id: "tenant-a",
+      delegation_id: delegation.delegation_id,
+    }),
+    join: await realCore.readCoreJoinVerdict({
+      tenant_id: "tenant-a",
+      verdict_id: verdictId,
+    }),
+  };
+  clockMillis = Date.parse(initialAuthorization.expires_at) + 1;
+  const [authorization, concurrentAuthorization] = await Promise.all([
+    realCore.authorizeFinalize({
+      tenant_id: "tenant-a",
+      ticket_id: ticketId,
+      host_session_fingerprint: identity.agentPresence.session_fingerprint,
+    }),
+    realCore.authorizeFinalize({
+      tenant_id: "tenant-a",
+      ticket_id: ticketId,
+      host_session_fingerprint: identity.agentPresence.session_fingerprint,
+    }),
+  ]);
+  assert.deepEqual(concurrentAuthorization, authorization);
+  assert.notEqual(authorization.authorization_digest, initialAuthorization.authorization_digest);
+  assert.equal(
+    authorization.previous_authorization_digest,
+    initialAuthorization.authorization_digest,
+  );
+  assert.equal(externalReadbackCalls, 3);
+  const lifecycleAfterReattestation = {
+    ticket: await realCore.readActionTicket({ tenant_id: "tenant-a", ticket_id: ticketId }),
+    delegation: await realCore.readDelegation({
+      tenant_id: "tenant-a",
+      delegation_id: delegation.delegation_id,
+    }),
+    join: await realCore.readCoreJoinVerdict({
+      tenant_id: "tenant-a",
+      verdict_id: verdictId,
+    }),
+  };
+  assert.equal(lifecycleAfterReattestation.ticket.state, lifecycleBeforeReattestation.ticket.state);
+  assert.equal(lifecycleAfterReattestation.ticket.uses, lifecycleBeforeReattestation.ticket.uses);
+  assert.equal(
+    lifecycleAfterReattestation.ticket.reservation_id,
+    lifecycleBeforeReattestation.ticket.reservation_id,
+  );
+  assert.deepEqual(
+    lifecycleAfterReattestation.delegation.usage,
+    lifecycleBeforeReattestation.delegation.usage,
+  );
+  assert.equal(lifecycleAfterReattestation.join.state, lifecycleBeforeReattestation.join.state);
+  assert.equal(lifecycleAfterReattestation.join.uses, lifecycleBeforeReattestation.join.uses);
+  assert.deepEqual(lifecycleAfterReattestation.ticket.finalize_authorization_history, [{
+    authorization_digest: initialAuthorization.authorization_digest,
+    external_readback_digest: initialAuthorization.external_readback_digest,
+    issued_at: initialAuthorization.issued_at,
+    expires_at: initialAuthorization.expires_at,
+  }]);
+  assert.equal(authorization.evidence_digest, coreJoinRecordDigest);
+  assert.equal(authorization.release_intent_digest, releaseIntentDigest);
+  assert.equal(authorization.core_join_verdict_digest, coreJoinClaimDigest);
+  assert.equal(authorization.live_services[0].rollback_status, "previous_live_attested");
+
   const baseFinalize = {
     work_id: work.work_id,
     plan_id: planId,
     action_ticket_id: ticketId,
     idempotency_key: "closure-finalize",
   };
-  const readbackDigest = "3".repeat(64);
-  const unsignedAuthorization = {
-    schema_version: "host_native_finalize_authorization_v1",
-    trusted: true,
-    allowed: true,
-    decision: "ALLOW_FINALIZE",
-    decision_id: ticketId,
-    tenant_id: "tenant-a",
-    work_id: work.work_id,
-    repository: "owner/repo",
-    target_commit: liveCommit,
-    action_ticket_id: ticketId,
-    action_ticket_digest: "1".repeat(64),
-    release_manifest_digest: "2".repeat(64),
-    release_intent_digest: releaseIntent.release_intent_digest,
-    core_join_verdict_id: verdictId,
-    core_join_verdict_digest: digest(verdict),
-    core_join_resolution_digest: "4".repeat(64),
-    changed_files: ["services/skinharmony-core-mcp/src/server.js"],
-    predecessor: null,
-    predecessor_chain_digest: null,
-    evidence_digest: evaluation.evaluation_digest,
-    host_kind: "codex_native",
-    host_session_fingerprint: "d".repeat(64),
-    host_result_digest: "5".repeat(64),
-    host_readback_digest: "6".repeat(64),
-    external_readback_digest: readbackDigest,
-    readback_digest: readbackDigest,
-    result_commit_verified: true,
-    github_readback: {
-      checks_commit: "e".repeat(40),
-      checks_passed: true,
-      required_checks: ["core-mcp"],
-      rollback_commit_available: true,
-    },
-    live_services: [{
-      service_id: "srv-core-mcp",
-      environment: "production",
-      origin: "https://srv-core-mcp.onrender.com",
-      deployment_id: `srv-core-mcp:${liveCommit}`,
-      live_commit: liveCommit,
-      version: "0.16.0",
-      health_status: "healthy",
-      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
-      rollback_commit: "a".repeat(40),
-      rollback_status: "commit_available_manifest_bound",
-      readback_digest: "7".repeat(64),
-    }],
-    outcome_source: "verified_completion",
-    readback_source: "core_server_external_readback_v1",
-    issued_at: "2026-07-29T13:29:00.000Z",
-    expires_at: "2026-07-29T13:38:00.000Z",
-    host_policy_override: false,
-    host_policy_must_allow: true,
-    external_execution_allowed: false,
-    host_execution_required: true,
-    provider_execution: false,
-  };
-  const authorization = {
-    ...unsignedAuthorization,
-    authorization_digest: digest(unsignedAuthorization),
-    signature: `hnf_${"8".repeat(64)}`,
+  const redigestAuthorization = (receipt, changes, signatureSentinel) => {
+    const unsigned = { ...receipt, ...changes };
+    delete unsigned.authorization_digest;
+    delete unsigned.signature;
+    return {
+      ...unsigned,
+      authorization_digest: digest(unsigned),
+      signature: `hnf_${signatureSentinel.repeat(64)}`,
+    };
   };
 
   await assert.rejects(runtime.finalizeClosure(identity, {
@@ -2299,30 +2511,86 @@ test("local closure becomes release-ready and external completion needs exact Co
     },
   }, authorization), /continuity_finalize_fields_invalid/);
 
-  const forgedAuthorizationUnsigned = {
-    ...unsignedAuthorization,
-    evidence_digest: "f".repeat(64),
-  };
-  const forgedAuthorization = {
-    ...forgedAuthorizationUnsigned,
-    authorization_digest: digest(forgedAuthorizationUnsigned),
-    signature: `hnf_${"9".repeat(64)}`,
-  };
+  const forgedAuthorization = redigestAuthorization(
+    authorization,
+    { evidence_digest: evaluationDigest },
+    "9",
+  );
   await assert.rejects(
     runtime.finalizeClosure(identity, baseFinalize, forgedAuthorization),
     /continuity_external_release_authorization_mismatch/,
   );
 
-  const expiredAuthorizationUnsigned = {
-    ...unsignedAuthorization,
+  const wrongVerdictAuthorization = redigestAuthorization(
+    authorization,
+    { core_join_verdict_digest: verdictObjectDigest },
+    "b",
+  );
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-wrong-verdict-digest",
+    }, wrongVerdictAuthorization),
+    /continuity_external_release_authorization_mismatch/,
+  );
+
+  const wrongReleaseIntentAuthorization = redigestAuthorization(
+    authorization,
+    { release_intent_digest: coreJoinRecordDigest },
+    "c",
+  );
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-wrong-release-intent",
+    }, wrongReleaseIntentAuthorization),
+    /continuity_external_release_authorization_mismatch/,
+  );
+
+  const wrongRollbackAuthorization = redigestAuthorization(
+    authorization,
+    {
+      live_services: authorization.live_services.map((service) => ({
+        ...service,
+        rollback_status: "commit_available_manifest_bound",
+      })),
+    },
+    "d",
+  );
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-wrong-rollback-status",
+    }, wrongRollbackAuthorization),
+    /continuity_live_verification_required/,
+  );
+
+  const releaseJoinRow = [...pool.releaseJoins.values()][0];
+  const originalCoreJoinRecord = releaseJoinRow.core_join_record;
+  const originalCoreJoinRecordDigest = releaseJoinRow.core_join_record_digest;
+  const wrongEvaluationRecord = structuredClone(originalCoreJoinRecord);
+  wrongEvaluationRecord.claim.evaluation_digest = "0".repeat(64);
+  releaseJoinRow.core_join_record = wrongEvaluationRecord;
+  releaseJoinRow.core_join_record_digest = digest(wrongEvaluationRecord);
+  const wrongEvaluationAuthorization = redigestAuthorization(
+    authorization,
+    { evidence_digest: releaseJoinRow.core_join_record_digest },
+    "e",
+  );
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-wrong-evaluation-binding",
+    }, wrongEvaluationAuthorization),
+    /continuity_external_release_authorization_mismatch/,
+  );
+  releaseJoinRow.core_join_record = originalCoreJoinRecord;
+  releaseJoinRow.core_join_record_digest = originalCoreJoinRecordDigest;
+
+  const expiredAuthorization = redigestAuthorization(authorization, {
     issued_at: "2026-07-29T13:10:00.000Z",
     expires_at: "2026-07-29T13:20:00.000Z",
-  };
-  const expiredAuthorization = {
-    ...expiredAuthorizationUnsigned,
-    authorization_digest: digest(expiredAuthorizationUnsigned),
-    signature: `hnf_${"a".repeat(64)}`,
-  };
+  }, "a");
   await assert.rejects(
     runtime.finalizeClosure(identity, baseFinalize, expiredAuthorization),
     /continuity_trusted_core_closure_receipt_required/,

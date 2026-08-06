@@ -1952,18 +1952,21 @@ test("GitHub merge reconciliation rejects a mismatched observed commit", async (
   assert.equal(finalize.host_readback_digest, reconciliationReadbackDigest);
 });
 
-test("completed releases close after reservation expiry, replay receipt exactly, and stop at receipt expiry", async () => {
+test("completed releases re-attest after receipt expiry without replaying the action", async () => {
   let verifierCalls = 0;
+  let verifiedAtOverride = null;
+  let readbackTransform = (readback) => readback;
   let subject;
   subject = harness({
     ticketTtlMs: 60_000,
     externalReadbackVerifier: async ({ ticket, target_commit }) => {
       verifierCalls += 1;
-      return trustedExternalReadback(
+      const readback = trustedExternalReadback(
         ticket,
         target_commit,
-        new Date(subject.now()).toISOString(),
+        verifiedAtOverride || new Date(subject.now()).toISOString(),
       );
+      return readbackTransform(readback);
     },
   });
   const delegation = await subject.governance.issueDelegation(subject.delegationInput);
@@ -2017,17 +2020,147 @@ test("completed releases close after reservation expiry, replay receipt exactly,
   assert.deepEqual(replay, receipt);
   assert.equal(verifierCalls, 1);
   await assert.rejects(issueCommitTicket(subject.governance, delegation.delegation_id), /delegation_not_active/);
+  const lifecycleBeforeReattestation = {
+    ticket: await subject.governance.readActionTicket({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+    }),
+    delegation: await subject.governance.readDelegation({
+      tenant_id: "codexai",
+      delegation_id: delegation.delegation_id,
+    }),
+    join: await subject.governance.readCoreJoinVerdict({
+      tenant_id: "codexai",
+      verdict_id: issued.ticket.core_join_verdict_id,
+    }),
+  };
   subject.advance(Date.parse(receipt.expires_at) - subject.now() + 1);
+  readbackTransform = (readback) => redigestTrustedReadback({
+    ...readback,
+    services: readback.services.map((service) => ({
+      ...service,
+      live_commit: G("5"),
+    })),
+  });
   await assert.rejects(subject.governance.authorizeFinalize({
     tenant_id: "codexai",
     ticket_id: issued.ticket.ticket_id,
     host_session_fingerprint: issued.ticket.host_session_fingerprint,
-  }), /finalize_authorization_expired/);
-  const historical = await subject.governance.readActionTicket({
+  }), /trusted_readback_service_mismatch/);
+  let historical = await subject.governance.readActionTicket({
     tenant_id: "codexai",
     ticket_id: issued.ticket.ticket_id,
   });
   assert.deepEqual(historical.finalize_authorization, receipt);
+  assert.equal(historical.finalize_authorization_history, undefined);
+
+  readbackTransform = (readback) => readback;
+  verifiedAtOverride = receipt.issued_at;
+  await assert.rejects(subject.governance.authorizeFinalize({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+  }), /trusted_readback_stale/);
+  historical = await subject.governance.readActionTicket({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+  });
+  assert.deepEqual(historical.finalize_authorization, receipt);
+  assert.equal(historical.finalize_authorization_history, undefined);
+
+  verifiedAtOverride = null;
+  const reattested = await subject.governance.authorizeFinalize({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+  });
+  assert.notEqual(reattested.authorization_digest, receipt.authorization_digest);
+  assert.equal(reattested.previous_authorization_digest, receipt.authorization_digest);
+  assert.ok(Date.parse(reattested.issued_at) > Date.parse(receipt.expires_at));
+  const reattestedReplay = await subject.governance.authorizeFinalize({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+  });
+  assert.deepEqual(reattestedReplay, reattested);
+
+  subject.advance(Date.parse(reattested.expires_at) - subject.now() + 1);
+  const callsBeforeConcurrentReattestation = verifierCalls;
+  const [concurrentOne, concurrentTwo] = await Promise.all([
+    subject.governance.authorizeFinalize({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    }),
+    subject.governance.authorizeFinalize({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    }),
+  ]);
+  assert.deepEqual(concurrentTwo, concurrentOne);
+  assert.equal(
+    concurrentOne.previous_authorization_digest,
+    reattested.authorization_digest,
+  );
+  assert.equal(verifierCalls, callsBeforeConcurrentReattestation + 2);
+
+  let latest = concurrentOne;
+  const expectedHistoricalDigests = [
+    receipt.authorization_digest,
+    reattested.authorization_digest,
+  ];
+  for (let index = 0; index < 17; index += 1) {
+    subject.advance(Date.parse(latest.expires_at) - subject.now() + 1);
+    expectedHistoricalDigests.push(latest.authorization_digest);
+    latest = await subject.governance.authorizeFinalize({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    });
+  }
+  historical = await subject.governance.readActionTicket({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+  });
+  assert.deepEqual(historical.finalize_authorization, latest);
+  assert.equal(historical.finalize_authorization_history.length, 16);
+  assert.deepEqual(
+    historical.finalize_authorization_history.map((entry) => entry.authorization_digest),
+    expectedHistoricalDigests.slice(-16),
+  );
+  for (const entry of historical.finalize_authorization_history) {
+    assert.deepEqual(Object.keys(entry).sort(), [
+      "authorization_digest",
+      "expires_at",
+      "external_readback_digest",
+      "issued_at",
+    ]);
+  }
+  const lifecycleAfterReattestation = {
+    delegation: await subject.governance.readDelegation({
+      tenant_id: "codexai",
+      delegation_id: delegation.delegation_id,
+    }),
+    join: await subject.governance.readCoreJoinVerdict({
+      tenant_id: "codexai",
+      verdict_id: issued.ticket.core_join_verdict_id,
+    }),
+  };
+  assert.equal(historical.state, lifecycleBeforeReattestation.ticket.state);
+  assert.equal(historical.uses, lifecycleBeforeReattestation.ticket.uses);
+  assert.equal(historical.reservation_id, lifecycleBeforeReattestation.ticket.reservation_id);
+  assert.equal(historical.result_digest, lifecycleBeforeReattestation.ticket.result_digest);
+  assert.deepEqual(
+    lifecycleAfterReattestation.delegation.usage,
+    lifecycleBeforeReattestation.delegation.usage,
+  );
+  assert.equal(lifecycleAfterReattestation.join.state, lifecycleBeforeReattestation.join.state);
+  assert.equal(lifecycleAfterReattestation.join.uses, lifecycleBeforeReattestation.join.uses);
+  assert.equal(
+    lifecycleAfterReattestation.join.consumed_by_ticket_id,
+    lifecycleBeforeReattestation.join.consumed_by_ticket_id,
+  );
 
   const expired = harness({ reservationLeaseMs: 60_000 });
   const expiredDelegation =

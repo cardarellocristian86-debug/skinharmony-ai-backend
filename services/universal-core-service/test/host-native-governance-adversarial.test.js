@@ -20,10 +20,12 @@ const H = (value) => String(value).repeat(64);
 const G = (value) => String(value).repeat(40);
 const OWNER = `osf_${H("a")}`;
 const START = Date.parse("2026-07-29T10:00:00.000Z");
-const SIGNING_SECRET =
-  "host-native-adversarial-signing-secret-at-least-32-bytes";
-const CLOSURE_ATTESTATION_SECRET =
-  "host-native-adversarial-closure-attestation-secret-0123456789";
+const fixtureSigningMaterial = (label) => crypto
+  .createHash("sha256")
+  .update(`public-test-fixture:${label}`)
+  .digest("hex");
+const SIGNING_SECRET = fixtureSigningMaterial("governance-signing");
+const CLOSURE_ATTESTATION_SECRET = fixtureSigningMaterial("closure-attestation");
 
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable);
@@ -591,7 +593,7 @@ test("expired observation lease rejects all closure paths without mutating autho
   assert.deepEqual(after, before);
 });
 
-test("final receipt replays exactly only while fresh and remains persisted as expired evidence", async () => {
+test("final receipt replays while fresh and expired evidence is retained on re-attestation", async () => {
   let clockValue = START;
   let sequence = 0;
   const clock = () => clockValue;
@@ -646,16 +648,24 @@ test("final receipt replays exactly only while fresh and remains persisted as ex
   assert.equal(receipt.expires_at, reserved.reservation_expires_at);
 
   clockValue = Date.parse(receipt.expires_at) + 1;
-  await assert.rejects(governance.authorizeFinalize({
+  const successor = await governance.authorizeFinalize({
     tenant_id: "tenant-a",
     ticket_id: issued.ticket.ticket_id,
     host_session_fingerprint: issued.ticket.host_session_fingerprint,
-  }), /finalize_authorization_expired/);
-  assert.equal(externalReadbackCalls.length, 1);
+  });
+  assert.notEqual(successor.authorization_digest, receipt.authorization_digest);
+  assert.equal(successor.previous_authorization_digest, receipt.authorization_digest);
+  assert.equal(externalReadbackCalls.length, 2);
 
   const stored = await governance.readActionTicket({
     tenant_id: "tenant-a",
     ticket_id: issued.ticket.ticket_id,
   });
-  assert.deepEqual(stored.finalize_authorization, receipt);
+  assert.deepEqual(stored.finalize_authorization, successor);
+  assert.deepEqual(stored.finalize_authorization_history, [{
+    authorization_digest: receipt.authorization_digest,
+    external_readback_digest: receipt.external_readback_digest,
+    issued_at: receipt.issued_at,
+    expires_at: receipt.expires_at,
+  }]);
 });
