@@ -57,16 +57,40 @@ function mergeTicket({
     health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
   }],
 } = {}) {
-  const previousLiveAttestations = services.map((service) => ({
-    service_id: service.service_id,
-    environment: service.environment,
-    origin: service.origin,
-    health_path: "/healthz",
-    deployment_id: `previous-${service.service_id}`,
-    live_commit: BASE,
-    health_status: "healthy",
-    health_contract_digest: service.health_contract_digest,
-  }));
+  const previousLiveAttestations = services.map((service) => {
+    const unsigned = {
+      service_id: service.service_id,
+      environment: service.environment,
+      origin: service.origin,
+      health_path: "/healthz",
+      deployment_id: `previous-${service.service_id}`,
+      live_commit: BASE,
+      health_status: "healthy",
+      health_contract_digest: service.health_contract_digest,
+    };
+    return { ...unsigned, readback_digest: hostNativeDigest(unsigned) };
+  });
+  const sourceUnsigned = {
+    schema_version: "host_native_source_attestation_v1",
+    repository,
+    evidence_kind: "github_pull_request_files",
+    pull_request: 42,
+    base_commit: BASE,
+    head_commit: HEAD,
+    tree_sha: TREE,
+    changed_files: RELEASE_CHANGED_FILES,
+    diff_digest: hostNativeGithubDiffDigest({
+      repository,
+      base_commit: BASE,
+      head_commit: HEAD,
+      tree_sha: TREE,
+      changed_files: RELEASE_CHANGED_FILES,
+    }),
+  };
+  const sourceAttestation = {
+    ...sourceUnsigned,
+    attestation_digest: hostNativeDigest(sourceUnsigned),
+  };
   const releaseJoinResolution = {
     schema_version: "host_native_release_join_resolution_v1",
     trusted: true,
@@ -81,12 +105,22 @@ function mergeTicket({
     evidence_digest: "b".repeat(64),
     issued_at: VERIFIED_AT,
     resolved_at: VERIFIED_AT,
+    source_attestation: sourceAttestation,
     previous_live_attestations: previousLiveAttestations,
+    pre_action_readback_digest: hostNativeDigest({
+      source_attestation: sourceAttestation,
+      previous_live_attestations: previousLiveAttestations,
+    }),
     provider_execution: false,
   };
   return {
     tenant_id: tenantId,
+    work_id: "work-a",
+    intent_anchor_digest: "a".repeat(64),
     repository,
+    evidence_digest: "b".repeat(64),
+    core_join_verdict_id: "hnj_test",
+    provider_execution: false,
     action: {
       kind: "github.merge",
       pull_request: 42,
@@ -110,6 +144,30 @@ function mergeTicket({
     release_join_resolution: releaseJoinResolution,
     release_join_resolution_digest: hostNativeDigest(releaseJoinResolution),
   };
+}
+
+function refreshReleaseJoinSourceAttestation(ticket) {
+  const resolution = ticket.release_join_resolution;
+  const source = resolution.source_attestation;
+  try {
+    source.diff_digest = hostNativeGithubDiffDigest({
+      repository: source.repository,
+      base_commit: source.base_commit,
+      head_commit: source.head_commit,
+      tree_sha: source.tree_sha,
+      changed_files: source.changed_files,
+    });
+  } catch {
+    // Preserve the malformed signed shape so the verifier itself must reject it.
+  }
+  delete source.attestation_digest;
+  source.attestation_digest = hostNativeDigest(source);
+  resolution.pre_action_readback_digest = hostNativeDigest({
+    source_attestation: source,
+    previous_live_attestations: resolution.previous_live_attestations,
+  });
+  ticket.release_join_resolution_digest = hostNativeDigest(resolution);
+  return ticket;
 }
 
 function branchTicket(overrides = {}) {
@@ -463,6 +521,83 @@ test("strict required-check attestation pins app/workflow, accepts deterministic
   assert.match(first.github.checks_attestation_digest, /^[a-f0-9]{64}$/);
 });
 
+test("post-merge empty workflow association uses only the signed Core source attestation", async (t) => {
+  const emptyWorkflow = strictWorkflow({ pull_requests: [] });
+  const verify = (ticket = strictTicket(), extra = {}) => {
+    const verifier = createHostNativeExternalReadbackVerifier({
+      fetchImpl: strictFetch({
+        ticket,
+        workflowById: new Map([[700, emptyWorkflow]]),
+      }),
+      requiredChecksPolicyResolver: async () => STRICT_POLICY,
+      now: () => Date.parse(VERIFIED_AT),
+    });
+    return verifier({ ticket, target_commit: TARGET, ...extra });
+  };
+
+  const ticket = strictTicket();
+  const result = await verify(ticket);
+  assert.equal(result.github.pull_request, 42);
+  assert.equal(result.github.head_commit, HEAD);
+  assert.equal(result.github.expected_base_commit, BASE);
+  assert.equal(
+    ticket.release_join_resolution_digest,
+    hostNativeDigest(ticket.release_join_resolution),
+  );
+  assert.equal(
+    ticket.release_join_resolution.source_attestation.attestation_digest,
+    hostNativeDigest((({ attestation_digest: _digest, ...unsigned }) => unsigned)(
+      ticket.release_join_resolution.source_attestation,
+    )),
+  );
+
+  await t.test("missing persisted resolution fails closed", async () => {
+    const missing = strictTicket();
+    delete missing.release_join_resolution;
+    delete missing.release_join_resolution_digest;
+    await assert.rejects(verify(missing), /workflow_pull_request_mismatch/);
+  });
+
+  await t.test("caller-supplied source facts cannot substitute", async () => {
+    const missing = strictTicket();
+    const callerSource = structuredClone(
+      missing.release_join_resolution.source_attestation,
+    );
+    delete missing.release_join_resolution.source_attestation;
+    missing.release_join_resolution_digest = hostNativeDigest(
+      missing.release_join_resolution,
+    );
+    await assert.rejects(
+      verify(missing, { source_attestation: callerSource }),
+      /workflow_pull_request_mismatch/,
+    );
+  });
+
+  await t.test("resolution digest mismatch fails closed", async () => {
+    const mismatched = strictTicket();
+    mismatched.release_join_resolution_digest = "0".repeat(64);
+    await assert.rejects(verify(mismatched), /workflow_pull_request_mismatch/);
+  });
+
+  for (const [name, mutate] of [
+    ["repository", (source) => { source.repository = "attacker/repo"; }],
+    ["pull request", (source) => { source.pull_request = 99; }],
+    ["base commit", (source) => { source.base_commit = ALTERNATE; }],
+    ["head commit", (source) => { source.head_commit = ALTERNATE; }],
+    ["tree shape", (source) => { source.tree_sha = "not-a-commit"; }],
+    ["evidence kind", (source) => { source.evidence_kind = "github_compare_files"; }],
+    ["changed-file shape", (source) => { source.changed_files = [...source.changed_files, ...source.changed_files]; }],
+    ["unexpected branch field", (source) => { source.head_branch = "agent/release"; }],
+  ]) {
+    await t.test(`mismatched signed ${name} fails closed`, async () => {
+      const mismatched = strictTicket();
+      mutate(mismatched.release_join_resolution.source_attestation);
+      refreshReleaseJoinSourceAttestation(mismatched);
+      await assert.rejects(verify(mismatched), /workflow_pull_request_mismatch/);
+    });
+  }
+});
+
 test("staging Render deploy accepts only an exact same-repository pull-request attestation", async (t) => {
   const ticket = strictStagingDeployTicket();
   const verify = ({ workflow, pull, policy = STRICT_POLICY } = {}) => {
@@ -508,6 +643,13 @@ test("staging Render deploy accepts only an exact same-repository pull-request a
     await assert.rejects(
       verifier({ ticket, target_commit: HEAD }),
       /trusted_readback_branch_commit_mismatch/,
+    );
+  });
+
+  await t.test("empty workflow association cannot use the merge-only fallback", async () => {
+    await assert.rejects(
+      verify({ workflow: strictWorkflow({ pull_requests: [] }) }),
+      /workflow_pull_request_mismatch/,
     );
   });
 
@@ -764,6 +906,9 @@ test("protected push workflow digest rotation attests base/head and remains mono
 test("strict attestation binds the workflow run to the exact pull request and base", async (t) => {
   const cases = [
     ["number", { number: 999 }],
+    ["URL repository", { url: "https://api.github.com/repos/attacker/repo/pulls/42" }],
+    ["head ref", { head: { ref: "other-head", sha: HEAD } }],
+    ["head commit", { head: { ref: "agent/release", sha: ALTERNATE } }],
     ["base ref", { base: { ref: "weak-base", sha: BASE } }],
     ["base commit", { base: { ref: "main", sha: ALTERNATE } }],
   ];

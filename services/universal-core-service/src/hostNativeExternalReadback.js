@@ -297,6 +297,122 @@ async function resolvePolicy(resolver, scope, requiredChecks, action) {
   return validateRequiredChecksPolicy(policy, scope, requiredChecks, action);
 }
 
+function workflowPullRequestMatches(entry, {
+  repository,
+  action,
+  merge,
+}) {
+  let urlPath = null;
+  try {
+    urlPath = new URL(string(entry?.url || "https://invalid.example")).pathname;
+  } catch {
+    return false;
+  }
+  return (
+    Number(entry?.number) === Number(action.pull_request) &&
+    string(entry?.head?.ref) === string(merge ? action.head_branch : action.branch) &&
+    sha(entry?.head?.sha) === sha(merge ? action.head_commit : action.source_commit) &&
+    string(entry?.base?.ref) === string(action.base_branch) &&
+    sha(entry?.base?.sha) === sha(action.expected_base_commit) &&
+    urlPath === `/repos/${repository}/pulls/${Number(action.pull_request)}`
+  );
+}
+
+function validBranch(value) {
+  const branch = string(value);
+  return (
+    /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(branch) &&
+    !branch.endsWith("/") && !branch.includes("//") &&
+    !/(^|\/)\.\.($|\/)/.test(branch)
+  );
+}
+
+function signedMergeSourceAssociation(ticket, {
+  repository,
+  action,
+  checksCommit,
+  baseCommit,
+  policy,
+}) {
+  try {
+    const resolution = ticket?.release_join_resolution;
+    const source = resolution?.source_attestation;
+    const pullRequest = Number(action?.pull_request);
+    const headBranch = string(action?.head_branch);
+    const baseBranch = string(action?.base_branch);
+    const treeSha = sha(source?.tree_sha);
+    const changedFiles = stableStrings(source?.changed_files);
+    if (
+      action?.kind !== "github.merge" || !resolution || !source ||
+      !Number.isSafeInteger(pullRequest) || pullRequest < 1 ||
+      !validBranch(headBranch) || !validBranch(baseBranch) ||
+      baseBranch !== string(policy?.base_branch) ||
+      sha(action?.head_commit) !== checksCommit ||
+      sha(action?.expected_base_commit) !== baseCommit ||
+      resolution.schema_version !== "host_native_release_join_resolution_v1" ||
+      resolution.trusted !== true || resolution.allowed !== true ||
+      resolution.authority !== "universal_core" ||
+      resolution.provider_execution !== false || ticket?.provider_execution === true ||
+      string(resolution.tenant_id) !== string(ticket?.tenant_id) ||
+      string(resolution.work_id) !== string(ticket?.work_id) ||
+      string(resolution.intent_anchor_digest) !== string(ticket?.intent_anchor_digest) ||
+      string(resolution.repository) !== repository ||
+      sha(resolution.checks_commit) !== checksCommit ||
+      string(resolution.evidence_digest) !== string(ticket?.evidence_digest) ||
+      string(resolution.verdict_id) !== string(ticket?.core_join_verdict_id) ||
+      string(ticket?.release_join_resolution_digest) !== hostNativeDigest(resolution) ||
+      source.schema_version !== "host_native_source_attestation_v1" ||
+      string(source.repository) !== repository ||
+      source.evidence_kind !== "github_pull_request_files" ||
+      Number(source.pull_request) !== pullRequest ||
+      sha(source.base_commit) !== baseCommit ||
+      sha(source.head_commit) !== checksCommit ||
+      !treeSha || !Array.isArray(source.changed_files) || changedFiles.length < 1 ||
+      source.changed_files.length !== changedFiles.length ||
+      source.changed_files.some((value, index) => value !== changedFiles[index])
+    ) {
+      return null;
+    }
+    const sourceUnsigned = {
+      schema_version: "host_native_source_attestation_v1",
+      repository,
+      evidence_kind: "github_pull_request_files",
+      pull_request: pullRequest,
+      base_commit: baseCommit,
+      head_commit: checksCommit,
+      tree_sha: treeSha,
+      changed_files: changedFiles,
+      diff_digest: hostNativeGithubDiffDigest({
+        repository,
+        base_commit: baseCommit,
+        head_commit: checksCommit,
+        tree_sha: treeSha,
+        changed_files: changedFiles,
+      }),
+    };
+    if (
+      !sameStrings(Object.keys(source), [...Object.keys(sourceUnsigned), "attestation_digest"]) ||
+      string(source.diff_digest) !== sourceUnsigned.diff_digest ||
+      string(source.attestation_digest) !== hostNativeDigest(sourceUnsigned) ||
+      !Array.isArray(resolution.previous_live_attestations) ||
+      string(resolution.pre_action_readback_digest) !== hostNativeDigest({
+        source_attestation: source,
+        previous_live_attestations: resolution.previous_live_attestations,
+      })
+    ) {
+      return null;
+    }
+    return {
+      url: `${GITHUB_ORIGIN}/repos/${repository}/pulls/${pullRequest}`,
+      number: pullRequest,
+      head: { ref: headBranch, sha: checksCommit },
+      base: { ref: baseBranch, sha: baseCommit },
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function strictWorkflowEvidence({
   getGithub,
   selectedChecks,
@@ -307,6 +423,7 @@ async function strictWorkflowEvidence({
   baseCommit,
   workflowRunCache,
   workflowSourceCache,
+  ticket,
 }) {
   const workflowRunIds = new Set(selectedChecks.map((check) =>
     detailWorkflowRunId(check.details_url, repository),
@@ -338,15 +455,21 @@ async function strictWorkflowEvidence({
   if (!runMatches) error("workflow_run_mismatch");
   if (pullRequestEvidence) {
     const pull = Array.isArray(workflowRun.pull_requests) ? workflowRun.pull_requests : [];
-    const match = pull.some((entry) => (
-      Number(entry?.number) === Number(action.pull_request) &&
-      string(entry?.head?.ref) === string(merge ? action.head_branch : action.branch) &&
-      sha(entry?.head?.sha) === sha(merge ? action.head_commit : action.source_commit) &&
-      string(entry?.base?.ref) === string(action.base_branch) &&
-      sha(entry?.base?.sha) === sha(action.expected_base_commit) &&
-      string(new URL(string(entry?.url || "https://invalid.example")).pathname) ===
-        `/repos/${repository}/pulls/${Number(action.pull_request)}`
-    ));
+    let match = pull.some((entry) => workflowPullRequestMatches(entry, {
+      repository,
+      action,
+      merge,
+    }));
+    if (!match && merge && Array.isArray(workflowRun.pull_requests) && pull.length === 0) {
+      const association = signedMergeSourceAssociation(ticket, {
+        repository,
+        action,
+        checksCommit,
+        baseCommit,
+        policy,
+      });
+      match = workflowPullRequestMatches(association, { repository, action, merge });
+    }
     if (!match) error("workflow_pull_request_mismatch");
     if (stagingDeploy) {
       const pullRequest = await getGithub(`/pulls/${Number(action.pull_request)}`);
@@ -406,6 +529,7 @@ async function attestChecks({
   requiredChecksPolicyResolver,
   workflowRunCache,
   workflowSourceCache,
+  ticket = null,
 }) {
   const policy = await resolvePolicy(requiredChecksPolicyResolver, {
     tenant_id: tenantId,
@@ -441,6 +565,7 @@ async function attestChecks({
     baseCommit,
     workflowRunCache,
     workflowSourceCache,
+    ticket,
   });
   const strictObserved = observed_checks.map((entry, index) => ({
     ...entry,
@@ -572,6 +697,7 @@ export function createHostNativeExternalReadbackVerifier({
       requiredChecksPolicyResolver,
       workflowRunCache: workflow_run_cache,
       workflowSourceCache: workflow_source_cache,
+      ticket,
     });
     let mergeCommit = null;
     let branch = null;
