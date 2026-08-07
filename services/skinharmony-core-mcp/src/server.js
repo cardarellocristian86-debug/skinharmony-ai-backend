@@ -887,7 +887,16 @@ const app = createApp(config, {
   readiness: startupReadiness,
   postgresMajorVersionProbe,
   beforeToolCall: async ({ identity, toolName, args }) => {
-    if (config.mandatoryAgentPresenceEnabled === true && !isAgentPresenceBootstrapCall(toolName, args)) {
+    // Native reports are authenticated by the child transport binding plus the
+    // one-time assignment capability, exact task binding and lease in the
+    // continuity runtime. Re-registering that child in the generic presence
+    // registry first rejects a legitimate independently spawned child because
+    // its transport session is intentionally not the coordinator session.
+    // Keep mandatory presence for every other operation.
+    const nativeChildReport = toolName === "work_continuity_native_report";
+    if (config.mandatoryAgentPresenceEnabled === true &&
+        !nativeChildReport &&
+        !isAgentPresenceBootstrapCall(toolName, args)) {
       try {
         await registerAuthenticatedPresence(identity);
       } catch (error) {
@@ -917,6 +926,11 @@ const app = createApp(config, {
         request: summarizeToolRequest(toolName, args),
         operation_type: toolName,
         tool_name: toolName,
+        // Dynamic capabilities that require a preflight must receive the
+        // complete server-issued envelope. The compact response intentionally
+        // omits governance detail and therefore cannot satisfy Universal
+        // Core's preflight gate.
+        response_mode: "full",
         project_id: args.project_id,
         session_id: identity.agentPresence?.session_id || args.session_id,
         agent_id: identity.agentPresence?.agent_id || args.agent_id || args.from_agent_id || "connected_ai",

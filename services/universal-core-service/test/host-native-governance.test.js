@@ -186,6 +186,7 @@ function harness({
   store = createInMemoryHostNativeGovernanceStore(),
   signingSecret = "host-native-governance-test-signing-secret-at-least-32-bytes",
   externalReadbackVerifier,
+  unreservedEffectVerifier,
   releaseJoinVerdictResolver,
   renderServiceOriginResolver,
 } = {}) {
@@ -201,6 +202,7 @@ function harness({
       ? (async ({ ticket, target_commit }) =>
         trustedExternalReadback(ticket, target_commit, new Date(clock).toISOString()))
       : externalReadbackVerifier,
+    unreservedEffectVerifier: unreservedEffectVerifier || null,
     releaseJoinVerdictResolver: releaseJoinVerdictResolver === undefined
       ? (async (request) => trustedJoinResolution(request, clock))
       : releaseJoinVerdictResolver,
@@ -940,6 +942,94 @@ test("exact action ticket is signed, host-bounded, single-use, and completes onc
     result_commit: G("3"),
     readback_digest: H("b"),
   }), /not_completable/);
+});
+
+test("observed unreserved effects preserve causality and require an explicit Core exception", async () => {
+  const pushAction = {
+    kind: "git.push.branch",
+    repository: "owner/repo",
+    branch: "agent/native-work",
+    source_commit: G("3"),
+    expected_remote_commit: G("1"),
+    provider_execution: false,
+  };
+  const blocked = harness();
+  const delegation = await blocked.governance.issueDelegation(blocked.delegationInput);
+  const issued = await issueCommitTicket(blocked.governance, delegation.delegation_id, {
+    action: pushAction,
+    idempotency_key: "unreserved-issued-blocked",
+  });
+  const input = {
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    observed_outcome: "success",
+    observed_commit: G("3"),
+    readback_digest: H("a"),
+    verifier_evidence_digest: H("b"),
+    deviation_reason: "host action completed before reservation",
+    idempotency_key: "unreserved-observation-blocked",
+  };
+  const mismatchTicket = await issueCommitTicket(blocked.governance, delegation.delegation_id, {
+    action: pushAction,
+    idempotency_key: "unreserved-issued-mismatch",
+  });
+  await assert.rejects(blocked.governance.observeUnreservedActionEffect({
+    ...input,
+    ticket_id: mismatchTicket.ticket.ticket_id,
+    observed_commit: G("4"),
+    idempotency_key: "unreserved-wrong-commit",
+  }), /observed_commit_mismatch/);
+  const observed = await blocked.governance.observeUnreservedActionEffect(input);
+  assert.equal(observed.state, "observed_unreserved_effect");
+  assert.equal(observed.reservation_id, undefined);
+  assert.equal(observed.protocol_deviation.classification, "BLOCKED");
+  assert.equal(observed.protocol_deviation.continuation_authorized, false);
+  assert.equal(observed.protocol_deviation.reservation_id, null);
+  assert.match(observed.protocol_deviation.signature, /^hnue_[a-f0-9]{64}$/);
+  assert.deepEqual(await blocked.governance.observeUnreservedActionEffect(input), observed);
+  await assert.rejects(blocked.governance.reserveActionTicket({
+    tenant_id: "codexai", ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    idempotency_key: "retroactive-reservation",
+  }), /replayed/);
+  await assert.rejects(blocked.governance.observeUnreservedActionEffect({
+    ...input, idempotency_key: "unreserved-replay-with-new-key",
+  }), /unreserved_effect_not_eligible/);
+  await assert.rejects(blocked.governance.observeUnreservedActionEffect({
+    ...input, tenant_id: "other-tenant", idempotency_key: "unreserved-cross-tenant",
+  }), /action_ticket_not_found/);
+  await assert.rejects(blocked.governance.observeUnreservedActionEffect({
+    ...input, observed_at: "2020-01-01T00:00:00.000Z", idempotency_key: "unreserved-forged-time",
+  }), /unknown_field:observed_at/);
+
+  const exception = harness({
+    unreservedEffectVerifier: async ({ observed_commit, verifier_evidence_digest }) => ({
+      classification: observed_commit === G("3") && verifier_evidence_digest === H("b")
+        ? "RECONCILED_WITH_EXCEPTION" : "BLOCKED",
+      continuation_authorized: true,
+      reason: "independent verifier accepted the exact remote readback",
+    }),
+  });
+  const exceptionDelegation = await exception.governance.issueDelegation(exception.delegationInput);
+  const exceptionTicket = await issueCommitTicket(exception.governance, exceptionDelegation.delegation_id, {
+    action: pushAction,
+    idempotency_key: "unreserved-issued-exception",
+  });
+  const exceptionObserved = await exception.governance.observeUnreservedActionEffect({
+    ...input,
+    ticket_id: exceptionTicket.ticket.ticket_id,
+    host_session_fingerprint: exceptionTicket.ticket.host_session_fingerprint,
+    idempotency_key: "unreserved-observation-exception",
+  });
+  assert.equal(exceptionObserved.protocol_deviation.classification, "RECONCILED_WITH_EXCEPTION");
+  assert.equal(exceptionObserved.protocol_deviation.continuation_authorized, true);
+  const child = await issueCommitTicket(exception.governance, exceptionDelegation.delegation_id, {
+    action: { ...pushAction, source_commit: G("4") },
+    predecessor_ticket_id: exceptionTicket.ticket.ticket_id,
+    idempotency_key: "unreserved-exception-predecessor",
+  });
+  assert.equal(child.ticket.predecessor.ticket_id, exceptionTicket.ticket.ticket_id);
 });
 
 test("unknown host outcome must reconcile through readback before a final state", async () => {

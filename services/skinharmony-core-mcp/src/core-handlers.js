@@ -1456,6 +1456,27 @@ export function createCoreHandlers(config, options = {}) {
         throw attachTrustedHostNativeTicket(error, ticketRecord);
       }
     },
+    host_native_action_observe_unreserved: async (args, identity) => {
+      const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/observe-unreserved`;
+      const ticketRecord = await trustedHostNativeTicketRecord(args.ticket_id, identity, ["issued"]);
+      try {
+        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+          method: "POST",
+          useTenantGateway: true,
+          body: {
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            observed_outcome: args.observed_outcome,
+            observed_commit: args.observed_commit,
+            readback_digest: args.readback_digest,
+            verifier_evidence_digest: args.verifier_evidence_digest,
+            deviation_reason: args.deviation_reason,
+            idempotency_key: args.idempotency_key,
+          },
+        }), route);
+      } catch (error) {
+        throw attachTrustedHostNativeTicket(error, ticketRecord);
+      }
+    },
     host_native_action_closure_receipt: async (args, identity) => {
       const route =
         `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/authorize-finalize`;
