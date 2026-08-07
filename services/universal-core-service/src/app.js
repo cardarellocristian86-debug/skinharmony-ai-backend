@@ -176,6 +176,11 @@ import {
   createHostNativeExternalReadbackVerifier,
   createHostNativeReleaseJoinVerdictResolver,
 } from "./hostNativeExternalReadback.js";
+import {
+  createFileNyraReliabilityStore,
+  createNyraReliabilityRuntime,
+  createPostgresNyraReliabilityStore,
+} from "./nyraReliabilityLayer.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -4564,6 +4569,23 @@ export function createUniversalCoreService(options = {}) {
     ? createGovernedAgentPostgresQueueStore({ connectionString: governedAgentDatabaseUrl })
     : createGovernedAgentQueueStore({ root: path.join(storageRoot, "governed-agent-queue") }));
   const governedAgentDryRunRunner = options.governedAgentDryRunRunner || createGovernedAgentDryRunRunner({ queueStore: governedAgentQueueStore, audit });
+  const nyraReliabilityDatabasePool = options.nyraReliabilityPostgresPool || governedAgentPostgresVersionPool || null;
+  const nyraReliabilityStore = options.nyraReliabilityStore || (
+    nyraReliabilityDatabasePool
+      ? createPostgresNyraReliabilityStore({ pool: nyraReliabilityDatabasePool })
+      : createFileNyraReliabilityStore({ root: path.join(storageRoot, "nyra-reliability") })
+  );
+  const nyraReliabilitySigningSecret = String(
+    options.nyraReliabilitySigningSecret
+      ?? process.env.CORE_RELIABILITY_SIGNING_SECRET
+      ?? process.env.CORE_EVIDENCE_SIGNING_SECRET
+      ?? process.env.CORE_HOST_NATIVE_SIGNING_SECRET
+      ?? "",
+  ).trim();
+  const nyraReliabilityRuntime = options.nyraReliabilityRuntime || createNyraReliabilityRuntime({
+    store: nyraReliabilityStore,
+    signingSecret: nyraReliabilitySigningSecret,
+  });
   // Core never instantiates, accepts, or invokes a provider credential vault.
   // Native ChatGPT/Codex specialists are materialized by the host, not with an
   // API key or a provider runner.  Keep the legacy values explicitly null so
@@ -5590,6 +5612,123 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
+  const reliabilityRead = coreAuth(SCOPES.READ_DECISION);
+  const reliabilityWrite = coreAuth(SCOPES.WRITE_DECISION);
+  const reliabilityInput = (req, extra = {}) => ({
+    ...(req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {}),
+    ...extra,
+    tenant_id: req.tenantId,
+  });
+  const reliabilitySuccess = (res, result) => res.json({
+    ok: true,
+    tenant_id: result?.tenant_id || undefined,
+    reliability: result,
+    execution_enabled: false,
+    execution_authorized: false,
+  });
+  const reliabilityFailure = (res, error) => publicError(
+    res,
+    error?.message?.endsWith("_not_found") ? 404 : 400,
+    String(error?.message || "reliability_request_failed").slice(0, 160),
+  );
+
+  app.get("/v1/reliability/status", reliabilityRead, (_req, res) => reliabilitySuccess(res, nyraReliabilityRuntime.status()));
+  app.post("/v1/reliability/content/check", reliabilityRead, (req, res) => {
+    try {
+      const boundary = nyraReliabilityRuntime.wrapUntrustedContent(reliabilityInput(req));
+      const { content: _content, ...publicBoundary } = boundary;
+      return reliabilitySuccess(res, publicBoundary);
+    } catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/chat/evaluate", reliabilityRead, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.evaluateChat(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/claims", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.appendClaim(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.get("/v1/reliability/claims/:claimId", reliabilityRead, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.getClaim({ tenant_id: req.tenantId, claim_id: req.params.claimId })); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/claims/:claimId/verify", reliabilityWrite, async (req, res) => {
+    try {
+      return reliabilitySuccess(res, await nyraReliabilityRuntime.verifyClaim(reliabilityInput(req, {
+        claim_id: req.params.claimId,
+        authenticated_verifier_id: `core-key:${req.coreKey.key_id}`,
+      })));
+    }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/actions", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.issueActionEnvelope(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/actions/consume", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.consumeActionEnvelope(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/handoffs", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.issueHandoffEnvelope(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/handoffs/consume", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.consumeHandoffEnvelope(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/completions", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.registerCompletion(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/completions/:completionId/verify", reliabilityWrite, async (req, res) => {
+    try {
+      return reliabilitySuccess(res, await nyraReliabilityRuntime.verifyCompletion(reliabilityInput(req, {
+        completion_id: req.params.completionId,
+        authenticated_verifier_id: `core-key:${req.coreKey.key_id}`,
+      })));
+    }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/completions/:completionId/finalize", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.finalizeCompletion({ tenant_id: req.tenantId, completion_id: req.params.completionId })); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/continuity/checkpoint", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.checkpoint(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.get("/v1/reliability/continuity/:workId", reliabilityRead, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.getContinuity({ tenant_id: req.tenantId, work_id: req.params.workId })); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/continuity/replay", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.replayCapsule(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/budget/reserve", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.reserveBudget(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.get("/v1/reliability/budget", reliabilityRead, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.getBudget({ tenant_id: req.tenantId })); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/browser/contracts", reliabilityWrite, async (req, res) => {
+    try { return reliabilitySuccess(res, await nyraReliabilityRuntime.issueBrowserContract(reliabilityInput(req))); }
+    catch (error) { return reliabilityFailure(res, error); }
+  });
+  app.post("/v1/reliability/browser/contracts/:contractId/observe", reliabilityWrite, async (req, res) => {
+    try {
+      return reliabilitySuccess(res, await nyraReliabilityRuntime.observeBrowserContract({
+        tenant_id: req.tenantId,
+        contract_id: req.params.contractId,
+        phase: req.body?.phase,
+        observation: req.body?.observation,
+      }));
+    } catch (error) { return reliabilityFailure(res, error); }
+  });
+
   app.get("/healthz", async (req, res) => {
     const production = (process.env.NODE_ENV || "development") === "production";
     const productionBuildReady =
@@ -5708,11 +5847,17 @@ export function createUniversalCoreService(options = {}) {
     const researchAirlockProductionReady = !production
       || researchAirlockHealth.ready === true
       || (researchAirlockHealth.mode === "shadow" && researchAirlockHealth.operational_safe === true);
+    const nyraReliabilityStatus = nyraReliabilityRuntime.status();
+    const nyraReliabilityProductionReady = !production
+      || (nyraReliabilityStatus.state_backend === "postgresql"
+        && nyraReliabilityStatus.restart_durable === true
+        && nyraReliabilityStatus.distributed === true);
     const renderReady = productionBuildReady
       && hostNativeReady
       && nyraPolicyRegistryModeValid
       && nyraPolicyRegistryProductionReady
-      && researchAirlockProductionReady;
+      && researchAirlockProductionReady
+      && nyraReliabilityProductionReady;
     res.status(renderReady ? 200 : 503).json({
       ok: true,
       service: SERVICE_NAME,
@@ -5732,6 +5877,10 @@ export function createUniversalCoreService(options = {}) {
         ...researchAirlockHealth,
         ready: researchAirlockProductionReady && researchAirlockHealth.ready === true,
         production_required: production && researchAirlockHealth.mode === "enforced",
+      },
+      nyra_reliability: {
+        ...nyraReliabilityStatus,
+        production_ready: nyraReliabilityProductionReady,
       },
       dynamic_task_tree: {
         state_backend: dynamicTaskTreeStateStore.kind || "injected",
