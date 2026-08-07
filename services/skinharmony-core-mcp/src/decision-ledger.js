@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { Pool } from "pg";
 import { redactMemoryText } from "./cloud-memory-store.js";
+import { WORK_CONTINUITY_V2_SCHEMA_SQL } from "./work-continuity-v2.js";
 
 export const DECISION_LEDGER_SCHEMA_VERSION = "core_decision_ledger_v1";
 
@@ -147,7 +148,9 @@ export function createDecisionLedger(config, options = {}) {
   if (!config.databaseUrl && !options.pool) return null;
   const pool = options.pool || new Pool({ connectionString: config.databaseUrl, ssl: config.databaseSsl ? { rejectUnauthorized: false } : undefined, max: config.databasePoolMax || 5 });
   let ready;
-  const initialize = () => ready ||= pool.query(CREATE_SCHEMA_SQL);
+  const initialize = () => ready ||= pool.query(
+    `${CREATE_SCHEMA_SQL}\n${WORK_CONTINUITY_V2_SCHEMA_SQL}`,
+  );
 
   async function startWork(identity, toolName, args = {}) {
     await initialize();

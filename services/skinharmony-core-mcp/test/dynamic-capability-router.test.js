@@ -525,6 +525,12 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_create",
     "work_continuity_start_or_resume",
   ].includes(tool.name));
+  const dedicatedContinuityTools = WORK_CONTINUITY_TOOLS.filter((tool) => [
+    "work_continuity_create",
+    "work_continuity_start_or_resume",
+    "work_continuity_checkpoint",
+    "work_continuity_resume",
+  ].includes(tool.name));
   assert.deepEqual(bootstrapTools.map((tool) => tool.name), [
     "work_continuity_create",
     "work_continuity_start_or_resume",
@@ -533,12 +539,19 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     assert.equal(tool._meta["skinharmony/dedicatedCoreGate"], true);
     assert.equal(tool._meta["skinharmony/serverOwnedGovernance"], true);
   }
+  assert.deepEqual(dedicatedContinuityTools.map((tool) => tool.name), [
+    "work_continuity_create",
+    "work_continuity_checkpoint",
+    "work_continuity_resume",
+    "work_continuity_start_or_resume",
+  ]);
+  assert.equal(dedicatedContinuityTools.every((tool) =>
+    tool._meta?.["skinharmony/serverOwnedGovernance"] === true &&
+    tool._meta?.["skinharmony/dedicatedCoreGate"] === true), true);
   assert.equal(WORK_CONTINUITY_TOOLS
-    .filter((tool) => !bootstrapTools.includes(tool))
-    .some((tool) => tool._meta?.["skinharmony/serverOwnedGovernance"] === true), false);
-  assert.equal(WORK_CONTINUITY_TOOLS
-    .filter((tool) => !bootstrapTools.includes(tool))
-    .some((tool) => tool._meta?.["skinharmony/dedicatedCoreGate"] === true), false);
+    .filter((tool) => !dedicatedContinuityTools.includes(tool))
+    .some((tool) => tool._meta?.["skinharmony/serverOwnedGovernance"] === true ||
+      tool._meta?.["skinharmony/dedicatedCoreGate"] === true), false);
 
   for (const tool of bootstrapTools) {
     let genericGateCalls = 0;

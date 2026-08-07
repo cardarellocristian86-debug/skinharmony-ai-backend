@@ -139,10 +139,10 @@ export async function evaluateCoreRuntimeHierarchy(input, options = {}) {
   const v1 = runDigestV1Canonical(input);
   const supervisionPrefilter = applyCoreV2SupervisionPrefilter(input.supervision);
   const v7 = routeCoreV7(routingSignals(input, v1, options.routing), options.ownerMode);
-  const mustEscalate =
+  const baselineEscalation =
     v7.route === "V0" || ["protection", "critical", "blocked"].includes(v1.state) ||
-    v1.risk_score >= 65 || v1.confidence < 45 || v1.blocked_action_count > 0;
-  const v0 = mustEscalate ? runUniversalCore(input) : null;
+    v1.risk_score >= 65 || v1.confidence < 45 || v1.blocked_action_count > 0 ||
+    options.routing?.high_impact === true || input.evidence_state?.high_impact === true;
   let v2 = null;
   let parity = { attempted: false, matched: null, fallback: null };
   if (mode !== "disabled" && v7.route === "V2" && options.worker) {
@@ -150,11 +150,13 @@ export async function evaluateCoreRuntimeHierarchy(input, options = {}) {
     try {
       v2 = await options.worker.digest(input);
       const comparison = compareDigestParity(v1, v2);
-      parity = { attempted: true, matched: comparison.matched, deltas: comparison.deltas, fallback: comparison.matched ? null : "V1" };
+      parity = { attempted: true, matched: comparison.matched, deltas: comparison.deltas, fallback: comparison.matched ? null : "V0" };
     } catch {
-      parity = { attempted: true, matched: false, fallback: "V1", error: "core_runtime_v2_unavailable" };
+      parity = { attempted: true, matched: false, fallback: "V0", error: "core_runtime_v2_unavailable" };
     }
   }
+  const mustEscalate = baselineEscalation || (parity.attempted && parity.matched !== true);
+  const v0 = mustEscalate ? runUniversalCore(input) : null;
   const v2CanLead = mode === "active" && parity.matched === true && !mustEscalate;
   const selectedAuthority = mustEscalate ? "V0" : v2CanLead ? "V2" : "V1";
   return {
