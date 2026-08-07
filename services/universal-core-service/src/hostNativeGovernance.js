@@ -995,6 +995,7 @@ export function createHostNativeGovernance({
   releaseJoinVerdictResolver = null,
   renderServiceOriginResolver = null,
   requiredChecksPolicyResolver = null,
+  unreservedEffectVerifier = null,
   now = () => Date.now(),
   idFactory = () => crypto.randomBytes(16).toString("hex"),
   ticketTtlMs = DEFAULT_TICKET_TTL_MS,
@@ -1313,7 +1314,14 @@ export function createHostNativeGovernance({
       let predecessor = null;
       if (input.predecessor_ticket_id) {
         const parent = initial.tickets[String(input.predecessor_ticket_id)];
-        if (!parent || parent.ticket.tenant_id !== tenantId || parent.state !== "completed" && parent.state !== "reconciled") {
+        const parentMayContinue = parent && (
+          parent.state === "completed" ||
+          parent.state === "reconciled" ||
+          (parent.state === "observed_unreserved_effect" &&
+            parent.protocol_deviation?.classification === "RECONCILED_WITH_EXCEPTION" &&
+            parent.protocol_deviation?.continuation_authorized === true)
+        );
+        if (!parentMayContinue || parent.ticket.tenant_id !== tenantId) {
           fail("predecessor_ticket_invalid");
         }
         predecessor = {
@@ -1666,6 +1674,88 @@ export function createHostNativeGovernance({
         record.host_readback_digest = digest(input.readback_digest);
         record.reconciled_at = iso(nowValue);
         record.state = "reconciled";
+        return saveIdempotent(state, descriptor, record);
+      });
+    },
+
+    // This is deliberately not a reservation recovery path. It records an
+    // independently observed effect that occurred after a valid ticket was
+    // issued but before the host reserved it. The original ticket timestamps
+    // and reservation fields remain untouched; the default verdict is BLOCKED.
+    async observeUnreservedActionEffect(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "ticket_id", "host_session_fingerprint", "observed_outcome",
+        "observed_commit", "readback_digest", "verifier_evidence_digest",
+        "deviation_reason", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const initial = store.readState();
+      const replay = getIdempotent(initial, tenantId, "observeUnreservedActionEffect", input);
+      if (replay?.result) return replay.result;
+      const nowValue = nowMillis(now);
+      const initialRecord = initial.tickets[String(input.ticket_id || "")];
+      if (!initialRecord || initialRecord.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
+      if (initialRecord.ticket.host_session_fingerprint !== text(input.host_session_fingerprint, "host_session_mismatch", 300)) fail("host_session_mismatch");
+      if (initialRecord.state !== "issued" || initialRecord.reservation_id) fail("unreserved_effect_not_eligible");
+      if (Date.parse(initialRecord.ticket.expires_at) <= nowValue) fail("action_ticket_expired");
+      if (input.observed_outcome !== "success") fail("observed_outcome_invalid");
+      const observedCommit = commit(input.observed_commit);
+      const expectedCommit = initialRecord.ticket.action.source_commit || initialRecord.ticket.action.target_commit;
+      if (!expectedCommit || observedCommit !== commit(expectedCommit)) fail("observed_commit_mismatch");
+      const readbackDigest = digest(input.readback_digest);
+      const verifierEvidenceDigest = digest(input.verifier_evidence_digest);
+      const deviationReason = text(input.deviation_reason, "protocol_deviation_reason_invalid", 500);
+      if (!deviationReason) fail("protocol_deviation_reason_invalid");
+      let decision = { classification: "BLOCKED", continuation_authorized: false, reason: "unreserved_effect_verifier_unavailable" };
+      if (typeof unreservedEffectVerifier === "function") {
+        try {
+          decision = await unreservedEffectVerifier({
+            tenant_id: tenantId,
+            ticket: clone(initialRecord.ticket),
+            observed_commit: observedCommit,
+            readback_digest: readbackDigest,
+            verifier_evidence_digest: verifierEvidenceDigest,
+            deviation_reason: deviationReason,
+          }) || decision;
+        } catch {
+          decision = { classification: "BLOCKED", continuation_authorized: false, reason: "unreserved_effect_verifier_failed" };
+        }
+      }
+      const classification = text(decision.classification, "unreserved_effect_classification_invalid", 80);
+      if (!["RECONCILED_WITH_EXCEPTION", "REQUIRES_REMEDIATION", "BLOCKED"].includes(classification)) {
+        fail("unreserved_effect_classification_invalid");
+      }
+      const continuationAuthorized = classification === "RECONCILED_WITH_EXCEPTION" && decision.continuation_authorized === true;
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(state, tenantId, "observeUnreservedActionEffect", input);
+        if (descriptor?.result) return descriptor.result;
+        const record = state.tickets[String(input.ticket_id || "")];
+        if (!record || record.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
+        if (record.state !== "issued" || record.reservation_id) fail("unreserved_effect_not_eligible");
+        const receiptUnsigned = {
+          schema_version: "host_native_observed_unreserved_effect_v1",
+          receipt_id: makeId("hnue", { ticket_id: record.ticket.ticket_id, observed_commit: observedCommit, nowValue }),
+          ticket_id: record.ticket.ticket_id,
+          action_type: record.ticket.action.kind,
+          target: clone(record.ticket.action),
+          observed_at: iso(nowValue),
+          observed_outcome: "success",
+          observed_commit: observedCommit,
+          effect_digest: hostNativeDigest({ ticket_id: record.ticket.ticket_id, observed_commit: observedCommit, readback_digest: readbackDigest }),
+          readback_digest: readbackDigest,
+          verifier_evidence_digest: verifierEvidenceDigest,
+          reservation_id: null,
+          deviation_reason: deviationReason,
+          classification,
+          continuation_authorized: continuationAuthorized,
+          reason: text(decision.reason || "", "unreserved_effect_reason_invalid", 500),
+        };
+        const receipt = { ...receiptUnsigned, signature: hmac("hnue", signing, canonical(receiptUnsigned)) };
+        record.protocol_deviation = receipt;
+        record.observed_outcome = "success";
+        record.observed_commit = observedCommit;
+        record.host_readback_digest = readbackDigest;
+        record.state = "observed_unreserved_effect";
         return saveIdempotent(state, descriptor, record);
       });
     },

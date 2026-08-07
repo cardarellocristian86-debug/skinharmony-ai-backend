@@ -410,6 +410,20 @@ export const HOST_NATIVE_TOOLS = [
     ]),
   ),
   tool(
+    "host_native_action_observe_unreserved",
+    "Record observed unreserved host effect",
+    "Record, without creating a reservation, a verified host effect that occurred after ticket issuance but before reservation. Core defaults to BLOCKED and only an explicit exception verdict can authorize continuation.",
+    object({
+      ticket_id: actionTicketId,
+      observed_outcome: { type: "string", enum: ["success"] },
+      observed_commit: gitSha,
+      readback_digest: sha256,
+      verifier_evidence_digest: sha256,
+      deviation_reason: { type: "string", minLength: 1, maxLength: 500 },
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, ["ticket_id", "observed_outcome", "observed_commit", "readback_digest", "verifier_evidence_digest", "deviation_reason", "idempotency_key"]),
+  ),
+  tool(
     "host_native_action_closure_receipt",
     "Read trusted Core closure authorization",
     "Read a trusted closure receipt only after the one-shot action succeeded and its external effect was reconciled. It binds the actual observed commit, ticket, manifest and readback digests.",

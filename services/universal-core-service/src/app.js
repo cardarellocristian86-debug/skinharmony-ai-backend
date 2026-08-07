@@ -7443,6 +7443,31 @@ export function createUniversalCoreService(options = {}) {
   }
 
   app.post(
+    "/v1/host-native/actions/:ticketId/observe-unreserved",
+    coreAuth(SCOPES.AUTOMATION_CODEX),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const { tenant_id: _tenantId, ticket_id: _ticketId, ...input } = req.body || {};
+        const actionTicket = await hostNativeGovernance.observeUnreservedActionEffect({
+          ...input,
+          tenant_id: req.tenantId,
+          ticket_id: req.params.ticketId,
+        });
+        audit.append("core_host_native_action_observed_unreserved", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          ticket_id: req.params.ticketId,
+          classification: actionTicket.protocol_deviation?.classification || "BLOCKED",
+        });
+        return res.json({ ok: true, tenant_id: req.tenantId, action_ticket: actionTicket });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
     "/v1/host-native/actions/:ticketId/authorize-finalize",
     coreAuth(SCOPES.AUTOMATION_CODEX),
     async (req, res) => {
