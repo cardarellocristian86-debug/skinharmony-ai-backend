@@ -476,18 +476,10 @@ const baseHandlers = {
     },
     work_continuity_checkpoint: async (args, identity) => {
       await requireOwnerGovernance(identity, "work.continuity.checkpoint", args.work_id);
-      const payload = { ok: true, result: await workContinuityRuntime.checkpoint(identity, args) };
-      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
-    },
-    work_continuity_read: async (args, identity) => {
-      const payload = { ok: true, result: await workContinuityRuntime.read(identity, args) };
-      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
-    },
-    work_continuity_resume: async (args, identity) => {
       const gate = await coreHandlers.core_gate_action({
-        action_label: "Resume persistent Work Continuity work",
-        action_type: "work_continuity.resume",
-        target: `work_continuity_closure_finalize:${args.work_id}`,
+        action_label: "Create persistent Work Continuity checkpoint",
+        action_type: "work.continuity.checkpoint",
+        target: `work_continuity_checkpoint:${args.work_id}`,
         operation_class: "owner_confirmed_governed_action",
         external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
         idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
@@ -497,8 +489,43 @@ const baseHandlers = {
       }, identity);
       const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
         gate.structuredContent?.result?.authorization || {};
+      if (authorization.allowed !== true) throw new Error("work_continuity_checkpoint_not_authorized");
+      const payload = { ok: true, result: await workContinuityRuntime.checkpoint(identity, args) };
+      payload.dedicated_core_gate = {
+        authorized: true,
+        authority: "universal_core",
+        route: "/v1/action-evaluator",
+        server_owned: true,
+      };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    work_continuity_read: async (args, identity) => {
+      const payload = { ok: true, result: await workContinuityRuntime.read(identity, args) };
+      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+    },
+    work_continuity_resume: async (args, identity) => {
+      const gate = await coreHandlers.core_gate_action({
+        action_label: "Resume persistent Work Continuity work",
+        action_type: "work.continuity.resume",
+        target: `work_continuity_resume:${args.work_id}`,
+        operation_class: "owner_confirmed_governed_action",
+        external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
+        idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
+        target_authority_verified: true, actor_authorized_for_target: true,
+        owner_confirmed: identity.ownerConfirmed === true,
+        confirmation_reference: identity.confirmationReference,
+      }, identity);
+      const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
+        gate.structuredContent?.result?.authorization || {};
+      if (authorization.allowed !== true) throw new Error("work_continuity_resume_not_authorized");
       const payload = { ok: true, result: await workContinuityRuntime.resume(identity, args, authorization) };
       payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
+      payload.dedicated_core_gate = {
+        authorized: true,
+        authority: "universal_core",
+        route: "/v1/action-evaluator",
+        server_owned: true,
+      };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_verify_memory: async (args, identity) => {

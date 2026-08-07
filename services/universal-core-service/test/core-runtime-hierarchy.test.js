@@ -32,15 +32,24 @@ test("shadow V2 con parita mantiene V1 come autorita", async () => {
   assert.equal(result.execution_allowed, false);
 });
 
-test("mismatch o errore V2 ricade su V1", async () => {
+test("mismatch o errore V2 scala al giudice V0", async () => {
   const value = input();
   const canonical = runDigestV1Canonical(value);
   const mismatch = await evaluateCoreRuntimeHierarchy(value, { worker: { digest: async () => ({ ...canonical, risk_score: canonical.risk_score + 1 }) }, mode: "active", routing: { ambiguity: 1 } });
   assert.equal(mismatch.parity.matched, false);
-  assert.equal(mismatch.selected_authority, "V1");
+  assert.equal(mismatch.selected_authority, "V0");
   const failed = await evaluateCoreRuntimeHierarchy(value, { worker: { digest: async () => { throw new Error("secret detail"); } }, mode: "active", routing: { ambiguity: 1 } });
   assert.equal(failed.parity.error, "core_runtime_v2_unavailable");
+  assert.equal(failed.selected_authority, "V0");
   assert.equal(JSON.stringify(failed).includes("secret detail"), false);
+});
+
+test("high impact scala a V0 anche con digest a bassa criticita", async () => {
+  const result = await evaluateCoreRuntimeHierarchy(input(), {
+    mode: "active",
+    routing: { high_impact: true },
+  });
+  assert.equal(result.selected_authority, "V0");
 });
 
 test("rischio alto porta al giudice V0", async () => {
