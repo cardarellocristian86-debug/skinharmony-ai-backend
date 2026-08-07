@@ -382,6 +382,125 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       idempotency_key: `participant-client-lease-release-${runId}`,
     });
 
+    const replacementTransportIdentity = galleryIdentity(
+      tenantId, coordinator.subject, firstParticipant.session_id,
+      firstParticipant.agent_id, firstParticipant.client_type, "f",
+    );
+    await assert.rejects(runtime.join(replacementTransportIdentity, firstParticipant),
+      /idempotency_key_conflict/);
+    await assert.rejects(runtime.join(replacementTransportIdentity, {
+      ...firstParticipant,
+      idempotency_key: `participant-active-transport-conflict-${runId}`,
+    }), /continuity_session_conflict/);
+    const transportBoundLease = await runtime.acquireLease(firstParticipantIdentity, {
+      ...firstParticipant,
+      purpose: "Expire this lease when an expired session moves to a new transport.",
+      surfaces: [{ kind: "file", value: `services/transport-bound-${runId.slice(0, 8)}` }],
+      ttl_seconds: 3_600,
+      idempotency_key: `participant-transport-lease-${runId}`,
+    });
+    await pool.query(`UPDATE core_continuity_participants SET expires_at=now()-interval '1 second'
+      WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+    [tenantId, firstWork.work_id, firstParticipant.session_id]);
+    const transportRebound = await runtime.join(replacementTransportIdentity, {
+      ...firstParticipant,
+      ttl_seconds: 300,
+      idempotency_key: `participant-transport-rebound-${runId}`,
+    });
+    assert.equal(transportRebound.rebound_leases_expired, 1);
+    const transportState = await pool.query(`SELECT p.transport_session_fingerprint,l.status AS lease_status
+      FROM core_continuity_participants p JOIN core_continuity_leases l
+        ON l.tenant_id=p.tenant_id AND l.work_id=p.work_id AND l.session_id=p.session_id
+      WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.session_id=$3 AND l.lease_id=$4`,
+    [tenantId, firstWork.work_id, firstParticipant.session_id, transportBoundLease.lease.lease_id]);
+    assert.equal(transportState.rows[0].transport_session_fingerprint, "f".repeat(24));
+    assert.equal(transportState.rows[0].lease_status, "expired");
+    await assert.rejects(runtime.heartbeat(firstParticipantIdentity, {
+      ...firstParticipant,
+      ttl_seconds: 300,
+      idempotency_key: `participant-old-transport-heartbeat-${runId}`,
+    }), /continuity_participant_not_active/);
+    const reboundHeartbeat = {
+      ...firstParticipant,
+      ttl_seconds: 300,
+      idempotency_key: `participant-new-transport-heartbeat-${runId}`,
+    };
+    await runtime.heartbeat(replacementTransportIdentity, reboundHeartbeat);
+    await assert.rejects(runtime.heartbeat(firstParticipantIdentity, reboundHeartbeat),
+      /idempotency_key_conflict/);
+
+    const transportBranchInput = {
+      ...firstParticipant,
+      branch_key: `transport-${runId.slice(0, 12)}`,
+      title: "Transport-bound branch",
+      objective: "Prove branch idempotency cannot cross a signed transport.",
+      idempotency_key: `participant-transport-branch-${runId}`,
+    };
+    await runtime.openBranch(replacementTransportIdentity, transportBranchInput);
+    await assert.rejects(runtime.openBranch(firstParticipantIdentity, transportBranchInput),
+      /idempotency_key_conflict/);
+
+    const transportLeaseInput = {
+      ...firstParticipant,
+      purpose: "Prove lease idempotency cannot cross a signed transport.",
+      surfaces: [{ kind: "file", value: `services/transport-replay-${runId.slice(0, 8)}` }],
+      ttl_seconds: 300,
+      idempotency_key: `participant-transport-acquire-${runId}`,
+    };
+    const replacementLease = await runtime.acquireLease(
+      replacementTransportIdentity, transportLeaseInput,
+    );
+    await assert.rejects(runtime.acquireLease(firstParticipantIdentity, transportLeaseInput),
+      /idempotency_key_conflict/);
+    const transportRenewInput = {
+      ...firstParticipant,
+      lease_id: replacementLease.lease.lease_id,
+      ttl_seconds: 300,
+      idempotency_key: `participant-transport-renew-${runId}`,
+    };
+    await runtime.renewLease(replacementTransportIdentity, transportRenewInput);
+    await assert.rejects(runtime.renewLease(firstParticipantIdentity, transportRenewInput),
+      /idempotency_key_conflict/);
+    const transportReleaseInput = {
+      ...firstParticipant,
+      lease_id: replacementLease.lease.lease_id,
+      idempotency_key: `participant-transport-release-${runId}`,
+    };
+    await runtime.releaseLease(replacementTransportIdentity, transportReleaseInput);
+    await assert.rejects(runtime.releaseLease(firstParticipantIdentity, transportReleaseInput),
+      /idempotency_key_conflict/);
+
+    const transportMessageInput = {
+      ...firstParticipant,
+      message_type: "update",
+      subject: "Transport-bound replay",
+      payload: { transport_bound: true },
+      idempotency_key: `participant-transport-message-${runId}`,
+    };
+    await runtime.postMessage(replacementTransportIdentity, transportMessageInput);
+    await assert.rejects(runtime.postMessage(firstParticipantIdentity, transportMessageInput),
+      /idempotency_key_conflict/);
+
+    await pool.query(`UPDATE core_continuity_participants
+      SET transport_session_fingerprint=NULL,expires_at=now()-interval '1 second'
+      WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+    [tenantId, firstWork.work_id, firstParticipant.session_id]);
+    await assert.rejects(runtime.heartbeat(replacementTransportIdentity, {
+      ...firstParticipant,
+      ttl_seconds: 300,
+      idempotency_key: `participant-legacy-null-heartbeat-${runId}`,
+    }), /continuity_participant_not_active/);
+    await runtime.join(replacementTransportIdentity, {
+      ...firstParticipant,
+      ttl_seconds: 300,
+      idempotency_key: `participant-legacy-null-refresh-${runId}`,
+    });
+    const refreshedLegacyBinding = await pool.query(`SELECT transport_session_fingerprint
+      FROM core_continuity_participants
+      WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+    [tenantId, firstWork.work_id, firstParticipant.session_id]);
+    assert.equal(refreshedLegacyBinding.rows[0].transport_session_fingerprint, "f".repeat(24));
+
     const branchSession = `branch-promotion-${runId.slice(0, 10)}`;
     const branchIdentity = galleryIdentity(
       tenantId, "codex|branch-promotion", branchSession, "branch-promotion-agent", "codex", "5",
