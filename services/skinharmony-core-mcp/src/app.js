@@ -94,6 +94,7 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "core_capability_invoke",
   "host_native_delegation_issue",
   "host_native_delegation_revoke",
+  "host_native_action_closure_handoff_issue",
   "work_continuity_create",
   "work_continuity_start_or_resume",
   "core_block_remediation_resubmit",
@@ -962,7 +963,11 @@ export function createApp(config, options = {}) {
           identity.oauthOwnerElevated === true &&
           args.owner_confirmed === true;
         const codexGoodModeHostNativeDelegation =
-          ["host_native_delegation_issue", "host_native_delegation_revoke"].includes(tool.name) &&
+          [
+            "host_native_delegation_issue",
+            "host_native_delegation_revoke",
+            "host_native_action_closure_handoff_issue",
+          ].includes(tool.name) &&
           isCodexGoodModeDelegation(identity, config);
         const explicitOwnerConfirmation = (
           codexGoodModeHostNativeDelegation ||

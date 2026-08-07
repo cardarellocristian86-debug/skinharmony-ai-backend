@@ -1549,6 +1549,9 @@ test("native plan replay is deterministic and receipts preserve host policy boun
       agent_id: "codex-coordinator",
       client_type: "codex",
       session_fingerprint: "a".repeat(64),
+      host_transport_session_fingerprint: "1".repeat(64),
+      signature: `ags_${"a".repeat(32)}`,
+      transport_bound: true,
     },
   };
   const work = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
@@ -1571,9 +1574,27 @@ test("native plan replay is deterministic and receipts preserve host policy boun
   };
   const corePlan = corePlanFor(work, request);
   const planned = await runtime.planNativeAgents(identity, request, { corePlan });
-  const replay = await runtime.planNativeAgents(identity, request, { corePlan });
+  const rotatedTransportIdentity = {
+    ...identity,
+    agentPresence: {
+      ...identity.agentPresence,
+      host_transport_session_fingerprint: "2".repeat(64),
+    },
+  };
+  const replay = await runtime.planNativeAgents(
+    rotatedTransportIdentity,
+    request,
+    { corePlan },
+  );
   assert.equal(replay.plan.plan_id, planned.plan.plan_id);
   assert.equal(replay.idempotent_replay, true);
+  await assert.rejects(runtime.planNativeAgents({
+    ...rotatedTransportIdentity,
+    agentPresence: {
+      ...rotatedTransportIdentity.agentPresence,
+      session_fingerprint: "9".repeat(64),
+    },
+  }, request, { corePlan }), /idempotency_key_conflict/);
   assert.equal(planned.receipt.host_type, "codex_native");
   assert.equal(planned.receipt.coordinator_session_fingerprint, "a".repeat(64));
   assert.equal(planned.receipt.host_policy_override, false);
@@ -1615,6 +1636,9 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
       agent_id: "codex-coordinator",
       client_type: "codex",
       session_fingerprint: "b".repeat(64),
+      host_transport_session_fingerprint: "3".repeat(64),
+      signature: `ags_${"b".repeat(32)}`,
+      transport_bound: true,
     },
   };
   const work = await runtime.ensure(identity, {
@@ -1653,7 +1677,7 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
     }),
     /native_agent_assignment_signing_unavailable/,
   );
-  const bind = (taskId, agentId) => runtime.bindNativeAgent(identity, {
+  const bind = (taskId, agentId, coordinator = identity) => runtime.bindNativeAgent(coordinator, {
     work_id: work.work_id,
     plan_id: planned.plan.plan_id,
     task_id: taskId,
@@ -1661,7 +1685,25 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
     host_type: "codex_native",
     host_task_id: `/root/${taskId}`,
   });
-  const builderBinding = await bind("build", "codex-builder");
+  const rotatedTransportIdentity = {
+    ...identity,
+    agentPresence: {
+      ...identity.agentPresence,
+      host_transport_session_fingerprint: "4".repeat(64),
+    },
+  };
+  const builderBinding = await bind(
+    "build",
+    "codex-builder",
+    rotatedTransportIdentity,
+  );
+  await assert.rejects(bind("research", "different-logical-session", {
+    ...rotatedTransportIdentity,
+    agentPresence: {
+      ...rotatedTransportIdentity.agentPresence,
+      session_fingerprint: "c".repeat(64),
+    },
+  }), /native_agent_coordinator_session_mismatch/);
   await assert.rejects(bind("research", "codex-researcher"), /native_agent_parallel_limit_reached/);
 
   instant = new Date("2026-07-29T14:11:00.000Z");
@@ -1761,6 +1803,9 @@ test("cross-chat resume preserves same-session plans and supersedes stale coordi
       agent_id: "codex-coordinator",
       client_type: "codex",
       session_fingerprint: "c".repeat(64),
+      host_transport_session_fingerprint: "5".repeat(64),
+      signature: `ags_${"c".repeat(32)}`,
+      transport_bound: true,
     },
   };
   const work = await runtime.ensure(identity, {
@@ -1854,6 +1899,9 @@ test("local closure becomes release-ready and external completion needs exact Co
       agent_id: "codex-coordinator",
       client_type: "codex",
       session_fingerprint: "d".repeat(64),
+      host_transport_session_fingerprint: "6".repeat(64),
+      signature: `ags_${"d".repeat(32)}`,
+      transport_bound: true,
     },
   };
   const work = await runtime.ensure(identity, {
@@ -2596,13 +2644,430 @@ test("local closure becomes release-ready and external completion needs exact Co
     /continuity_trusted_core_closure_receipt_required/,
   );
 
-  const finalized = await runtime.finalizeClosure(identity, baseFinalize, authorization);
+  const legacyPool = new ContinuityPool(clock);
+  for (const property of [
+    "works", "bindings", "anchors", "events", "idempotency", "participants",
+    "branches", "leases", "plans", "nativeAgents", "evaluations",
+    "releaseJoins", "incidents", "capsules",
+  ]) {
+    legacyPool[property] = new Map(
+      [...pool[property]].map(([entryKey, value]) => [
+        entryKey,
+        structuredClone(value),
+      ]),
+    );
+  }
+  const legacyRuntime = createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: closureAttestationSecret,
+  }, { pool: legacyPool, now: clock });
+  const legacyFinalized = await legacyRuntime.finalizeClosure(identity, {
+    ...baseFinalize,
+    idempotency_key: "closure-finalize-v1-regression",
+  }, authorization);
+  assert.equal(legacyFinalized.completed, true);
+  assert.equal(legacyFinalized.final_receipt.host_type, "codex_native");
+  assert.equal(
+    legacyFinalized.final_receipt.authorization_digest,
+    authorization.authorization_digest,
+  );
+
+  const closureIdentity = {
+    ...identity,
+    agentPresence: {
+      ...identity.agentPresence,
+      agent_id: "chatgpt-successor",
+      client_type: "chatgpt",
+      session_fingerprint: "f".repeat(64),
+    },
+  };
+  const closureHandoff = await realCore.issueClosureHandoff({
+    tenant_id: "tenant-a",
+    ticket_id: ticketId,
+    work_id: work.work_id,
+    plan_id: planId,
+    result_commit: liveCommit,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint:
+      closureIdentity.agentPresence.session_fingerprint,
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: `osf_${"a".repeat(64)}`,
+      consent_nonce: "closure-contract-successor-consent",
+      confirmation_reference: "owner approved cross-host closure handoff",
+    },
+    idempotency_key: "closure-contract-handoff-issue",
+  });
+  const handoffAuthorization = await realCore.redeemClosureHandoff({
+    tenant_id: "tenant-a",
+    ticket_id: ticketId,
+    handoff_id: closureHandoff.handoff.handoff_id,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint:
+      closureIdentity.agentPresence.session_fingerprint,
+    idempotency_key: "closure-contract-handoff-redeem",
+  });
+  assert.equal(
+    handoffAuthorization.schema_version,
+    "host_native_finalize_authorization_v2",
+  );
+  assert.equal(handoffAuthorization.execution_host_kind, "codex_native");
+  assert.equal(handoffAuthorization.closure_host_kind, "chatgpt_native");
+  assert.equal(handoffAuthorization.local_plan_id, planId);
+  assert.equal(handoffAuthorization.local_plan_digest, planned.plan_digest);
+  const currentLiveCommit = "6".repeat(40);
+  const supersedingHeadCommit = "8".repeat(40);
+  const supersedingTreeSha = "7".repeat(40);
+  const supersedingChangedFiles = [
+    "services/skinharmony-core-mcp/src/work-continuity-runtime.js",
+  ];
+  const supersedingDiffDigest = hostNativeGithubDiffDigest({
+    repository: "owner/repo",
+    base_commit: liveCommit,
+    head_commit: supersedingHeadCommit,
+    tree_sha: supersedingTreeSha,
+    changed_files: supersedingChangedFiles,
+  });
+  const supersedingManifest = buildHostReleaseManifestV2({
+    schema_version: "host_release_manifest_v2",
+    manifest_id: "superseding-closure-contract-manifest",
+    tenant_id: "tenant-a",
+    work_id: "superseding-work",
+    intent_anchor_digest: "6".repeat(64),
+    repository: "owner/repo",
+    base_branch: "main",
+    delivery_branch: "main",
+    base_commit: liveCommit,
+    head_commit: supersedingHeadCommit,
+    tree_sha: supersedingTreeSha,
+    diff_digest: supersedingDiffDigest,
+    changed_files: supersedingChangedFiles,
+    verification: {
+      builder_agent_id: "superseding-builder",
+      verifier_agent_ids: ["superseding-verifier"],
+      required_checks: ["core-mcp"],
+      checks_commit: supersedingHeadCommit,
+      checks_digest: "6".repeat(64),
+      evidence_digest: "7".repeat(64),
+      core_join_verdict_id: `hnj_${"6".repeat(40)}`,
+    },
+    delivery: {
+      method: "github_protected_push_auto_deploy",
+      services: [{
+        service_id: "srv-core-mcp",
+        environment: "production",
+        expected_previous_commit: liveCommit,
+        target_commit: null,
+        target_resolution: "post_merge_readback",
+        health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      }],
+    },
+    rollback: {
+      mode: "forward_revert",
+      target_commit: liveCommit,
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      ready: true,
+    },
+  });
+  const supersedingService = {
+    ...supersedingManifest.delivery.services[0],
+    origin: "https://srv-core-mcp.onrender.com",
+  };
+  const supersedingBinding = {
+    ...supersedingManifest,
+    delivery: {
+      ...supersedingManifest.delivery,
+      services: [supersedingService],
+    },
+    services: [supersedingService],
+  };
+  const previousLiveUnsigned = {
+    service_id: supersedingService.service_id,
+    environment: supersedingService.environment,
+    origin: supersedingService.origin,
+    health_path: "/healthz",
+    deployment_id: "previous-srv-core-mcp",
+    live_commit: liveCommit,
+    health_status: "healthy",
+    health_contract_digest: supersedingService.health_contract_digest,
+  };
+  const previousLive = {
+    ...previousLiveUnsigned,
+    readback_digest: digest(previousLiveUnsigned),
+  };
+  const supersedingSourceUnsigned = {
+    schema_version: "host_native_source_attestation_v1",
+    repository: "owner/repo",
+    evidence_kind: "github_pull_request_files",
+    pull_request: 216,
+    base_commit: liveCommit,
+    head_commit: supersedingHeadCommit,
+    tree_sha: supersedingTreeSha,
+    changed_files: supersedingChangedFiles,
+    diff_digest: supersedingDiffDigest,
+  };
+  const supersedingSource = {
+    ...supersedingSourceUnsigned,
+    attestation_digest: digest(supersedingSourceUnsigned),
+  };
+  const supersedingResolution = {
+    schema_version: "host_native_release_join_resolution_v1",
+    trusted: true,
+    authority: "universal_core",
+    allowed: true,
+    verdict_id: supersedingManifest.verification.core_join_verdict_id,
+    tenant_id: "tenant-a",
+    work_id: "superseding-work",
+    intent_anchor_digest: "6".repeat(64),
+    repository: "owner/repo",
+    checks_commit: supersedingHeadCommit,
+    evidence_digest: "8".repeat(64),
+    issued_at: clock().toISOString(),
+    resolved_at: clock().toISOString(),
+    source_attestation: supersedingSource,
+    previous_live_attestations: [previousLive],
+    pre_action_readback_digest: digest({
+      source_attestation: supersedingSource,
+      previous_live_attestations: [previousLive],
+    }),
+    provider_execution: false,
+  };
+  const originalGithubReadback = {
+    ...handoffAuthorization.github_readback,
+    action_kind: "github.merge",
+    target_commit: liveCommit,
+    merge_commit: liveCommit,
+    expected_base_commit: releaseIntent.base_commit,
+    head_commit: releaseIntent.head_commit,
+    head_tree_sha: releaseIntent.tree_sha,
+    merge_parents: [releaseIntent.base_commit, releaseIntent.head_commit],
+    rollback_commit: releaseIntent.rollback.target_commit,
+    rollback_commit_available: true,
+  };
+  const supersedingGithubReadback = {
+    repository: "owner/repo",
+    action_kind: "github.merge",
+    target_commit: currentLiveCommit,
+    merge_commit: currentLiveCommit,
+    expected_base_commit: liveCommit,
+    head_commit: supersedingHeadCommit,
+    checks_commit: supersedingHeadCommit,
+    head_tree_sha: supersedingTreeSha,
+    merge_parents: [liveCommit, supersedingHeadCommit],
+    rollback_commit: liveCommit,
+    rollback_commit_available: true,
+    checks_passed: true,
+    required_checks: ["core-mcp"],
+    observed_checks: [{
+      name: "core-mcp",
+      head_commit: supersedingHeadCommit,
+      status: "completed",
+      conclusion: "success",
+    }],
+    readback_digest: "8".repeat(64),
+  };
+  const currentServiceUnsigned = {
+    ...handoffAuthorization.live_services[0],
+    origin: supersedingService.origin,
+    live_commit: currentLiveCommit,
+    rollback_commit: liveCommit,
+  };
+  delete currentServiceUnsigned.readback_digest;
+  const currentService = {
+    ...currentServiceUnsigned,
+    readback_digest: digest(currentServiceUnsigned),
+  };
+  const {
+    authorization_digest: _handoffAuthorizationDigest,
+    signature: _handoffAuthorizationSignature,
+    ...handoffAuthorizationUnsigned
+  } = handoffAuthorization;
+  const supersededUnsigned = {
+    ...handoffAuthorizationUnsigned,
+    schema_version: "host_native_finalize_authorization_v3",
+    decision: "ALLOW_FINALIZE_SUPERSEDED_RELEASE",
+    release_state: "superseded",
+    target_commit: liveCommit,
+    current_live_commit: currentLiveCommit,
+    execution_host_session_fingerprint: "9".repeat(64),
+    superseding_action_ticket_id: "hnt_successor-12345678",
+    superseding_action_ticket_digest: "1".repeat(64),
+    superseding_result_commit: currentLiveCommit,
+    superseding_release_manifest_digest: supersedingManifest.manifest_digest,
+    superseding_release_intent_digest:
+      buildHostReleaseIntentV1(supersedingManifest).release_intent_digest,
+    superseding_core_join_verdict_id:
+      supersedingManifest.verification.core_join_verdict_id,
+    superseding_core_join_verdict_digest: "2".repeat(64),
+    superseding_core_join_resolution_digest: digest(supersedingResolution),
+    superseding_evidence_digest: supersedingResolution.evidence_digest,
+    superseding_release_manifest_binding: supersedingBinding,
+    superseding_release_join_resolution: supersedingResolution,
+    superseding_host_result_digest: "3".repeat(64),
+    superseding_host_readback_digest: "4".repeat(64),
+    external_readback_digest: "5".repeat(64),
+    readback_digest: "5".repeat(64),
+    superseding_result_commit_verified: true,
+    github_readback: originalGithubReadback,
+    superseding_github_readback: supersedingGithubReadback,
+    live_services: [currentService],
+    superseding_outcome_source: "verified_completion",
+    readback_source: "core_server_superseded_external_readback_v1",
+  };
+  const supersededAuthorization = {
+    ...supersededUnsigned,
+    authorization_digest: digest(supersededUnsigned),
+    signature: `hnf_${"5".repeat(64)}`,
+  };
+  const clonePool = () => {
+    const copy = new ContinuityPool(clock);
+    for (const property of [
+      "works", "bindings", "anchors", "events", "idempotency", "participants",
+      "branches", "leases", "plans", "nativeAgents", "evaluations",
+      "releaseJoins", "incidents", "capsules",
+    ]) {
+      copy[property] = new Map(
+        [...pool[property]].map(([entryKey, value]) => [
+          entryKey,
+          structuredClone(value),
+        ]),
+      );
+    }
+    return copy;
+  };
+  const supersededFinalize = {
+    ...baseFinalize,
+    closure_handoff_id: closureHandoff.handoff.handoff_id,
+    idempotency_key: "closure-finalize-superseded-handoff",
+  };
+  const unboundClosureIdentity = structuredClone(closureIdentity);
+  unboundClosureIdentity.agentPresence.transport_bound = false;
+  await assert.rejects(
+    createWorkContinuityRuntime({
+      dttAgentIdentitySigningSecret: closureAttestationSecret,
+    }, { pool: clonePool(), now: clock }).finalizeClosure(
+      unboundClosureIdentity,
+      {
+        ...supersededFinalize,
+        idempotency_key: "closure-finalize-unbound-transport",
+      },
+      supersededAuthorization,
+    ),
+    /native_agent_coordinator_presence_required/,
+  );
+  const missingVerifiedResult = structuredClone(supersededAuthorization);
+  delete missingVerifiedResult.superseding_host_result_digest;
+  delete missingVerifiedResult.authorization_digest;
+  delete missingVerifiedResult.signature;
+  const missingVerifiedResultAuthorization = {
+    ...missingVerifiedResult,
+    authorization_digest: digest(missingVerifiedResult),
+    signature: `hnf_${"6".repeat(64)}`,
+  };
+  await assert.rejects(
+    createWorkContinuityRuntime({
+      dttAgentIdentitySigningSecret: closureAttestationSecret,
+    }, { pool: clonePool(), now: clock }).finalizeClosure(
+      closureIdentity,
+      {
+        ...supersededFinalize,
+        idempotency_key: "closure-finalize-missing-verified-result",
+      },
+      missingVerifiedResultAuthorization,
+    ),
+    /continuity_trusted_core_closure_receipt_required/,
+  );
+  const reconciledSuccessorUnsigned = {
+    ...missingVerifiedResult,
+    superseding_outcome_source: "reconciled_readback",
+  };
+  const reconciledSuccessorAuthorization = {
+    ...reconciledSuccessorUnsigned,
+    authorization_digest: digest(reconciledSuccessorUnsigned),
+    signature: `hnf_${"7".repeat(64)}`,
+  };
+  const reconciledFinalized = await createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: closureAttestationSecret,
+  }, { pool: clonePool(), now: clock }).finalizeClosure(
+    closureIdentity,
+    {
+      ...supersededFinalize,
+      idempotency_key: "closure-finalize-reconciled-successor",
+    },
+    reconciledSuccessorAuthorization,
+  );
+  assert.equal(reconciledFinalized.completed, true);
+  assert.equal(reconciledFinalized.release_state, "superseded");
+  const wrongPrevious = structuredClone(supersededAuthorization);
+  wrongPrevious.superseding_release_join_resolution
+    .previous_live_attestations[0].live_commit = "0".repeat(40);
+  const wrongPreviousUnsigned = { ...wrongPrevious };
+  delete wrongPreviousUnsigned.authorization_digest;
+  delete wrongPreviousUnsigned.signature;
+  wrongPrevious.authorization_digest = digest(wrongPreviousUnsigned);
+  await assert.rejects(
+    createWorkContinuityRuntime({
+      dttAgentIdentitySigningSecret: closureAttestationSecret,
+    }, { pool: clonePool(), now: clock }).finalizeClosure(
+      closureIdentity,
+      supersededFinalize,
+      wrongPrevious,
+    ),
+    /continuity_superseding_release_authorization_mismatch|continuity_superseding_previous_live_mismatch/,
+  );
+  const supersededPool = clonePool();
+  const supersededFinalized = await createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: closureAttestationSecret,
+  }, { pool: supersededPool, now: clock }).finalizeClosure(
+    closureIdentity,
+    supersededFinalize,
+    supersededAuthorization,
+  );
+  assert.equal(supersededFinalized.completed, true);
+  assert.equal(supersededFinalized.target_commit, liveCommit);
+  assert.equal(supersededFinalized.current_live_commit, currentLiveCommit);
+  assert.equal(supersededFinalized.release_state, "superseded");
+  assert.equal(
+    supersededFinalized.final_receipt.execution_session_fingerprint,
+    "9".repeat(64),
+  );
+  assert.equal(
+    supersededFinalized.final_receipt.closure_session_fingerprint,
+    closureIdentity.agentPresence.session_fingerprint,
+  );
+  assert.equal(
+    supersededPool.works.get(key("tenant-a", work.work_id)).status,
+    "completed",
+  );
+  const handoffFinalize = {
+    ...baseFinalize,
+    closure_handoff_id: closureHandoff.handoff.handoff_id,
+    idempotency_key: "closure-finalize-successor-handoff",
+  };
+  await assert.rejects(
+    runtime.finalizeClosure(identity, handoffFinalize, handoffAuthorization),
+    /continuity_trusted_core_closure_receipt_required/,
+  );
+  const finalized = await runtime.finalizeClosure(
+    closureIdentity,
+    handoffFinalize,
+    handoffAuthorization,
+  );
   assert.equal(finalized.completed, true);
   assert.equal(finalized.external_release, true);
   assert.equal(finalized.final_receipt.host_policy_override, false);
   assert.equal(finalized.final_receipt.host_policy_must_allow, true);
   assert.equal(finalized.final_receipt.action_ticket_id, ticketId);
-  assert.equal(finalized.final_receipt.authorization_digest, authorization.authorization_digest);
+  assert.equal(
+    finalized.final_receipt.authorization_digest,
+    handoffAuthorization.authorization_digest,
+  );
+  assert.equal(
+    finalized.final_receipt.closure_handoff_id,
+    closureHandoff.handoff.handoff_id,
+  );
+  assert.equal(finalized.final_receipt.host_type, "codex_native");
+  assert.equal(finalized.final_receipt.closure_host_type, "chatgpt_native");
   assert.equal(finalized.target_commit, liveCommit);
   assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "completed");
   assert.equal(pool.plans.get(key("tenant-a", planId)).status, "closed");

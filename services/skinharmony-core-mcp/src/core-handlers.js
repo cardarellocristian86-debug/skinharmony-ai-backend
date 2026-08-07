@@ -1467,6 +1467,57 @@ export function createCoreHandlers(config, options = {}) {
         },
       }));
     },
+    host_native_action_closure_handoff_issue: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const purpose = "host_native_action_closure_handoff_issue";
+      const requestBody = {
+        ticket_id: args.ticket_id,
+        ...(args.superseding_action_ticket_id ? {
+          superseding_action_ticket_id: args.superseding_action_ticket_id,
+        } : {}),
+        work_id: args.work_id,
+        plan_id: args.plan_id,
+        result_commit: args.result_commit,
+        closure_host_kind: hostNativeKind(identity),
+        closure_session_fingerprint: hostNativeSessionFingerprint(identity),
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          purpose,
+          args.idempotency_key,
+        ),
+      };
+      const route =
+        `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/closure-handoffs`;
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding(purpose, requestBody),
+          }),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_action_closure_handoff_redeem: async (args, identity) => {
+      const route =
+        `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}` +
+        `/closure-handoffs/${encodeURIComponent(args.closure_handoff_id)}/redeem`;
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          closure_host_kind: hostNativeKind(identity),
+          closure_session_fingerprint: hostNativeSessionFingerprint(identity),
+          idempotency_key: args.idempotency_key,
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
     work_preflight: async (args, identity) => {
       const coreRuntime = await runtimeHierarchyEvaluate(args, identity, args.operation_type || "work_preflight");
       const agentPresence = identity.agentPresence || createAgentPresence(config, identity, args);

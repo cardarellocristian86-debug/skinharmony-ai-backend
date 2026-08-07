@@ -62,6 +62,7 @@ const MAX_DELEGATION_MS = 12 * 60 * 60 * 1_000;
 const DEFAULT_TICKET_TTL_MS = 10 * 60_000;
 const DEFAULT_RESERVATION_LEASE_MS = 5 * 60_000;
 const DEFAULT_CORE_JOIN_TTL_MS = 30 * 60_000;
+const DEFAULT_CLOSURE_HANDOFF_TTL_MS = 2 * 60_000;
 const MAX_FINALIZE_AUTHORIZATION_HISTORY = 16;
 
 function fail(code) {
@@ -223,6 +224,7 @@ function emptyState() {
     schema_version: "host_native_governance_store_v1",
     delegations: {},
     tickets: {},
+    closure_handoffs: {},
     core_join_verdicts: {},
     owner_nonces: {},
     idempotency: {},
@@ -235,6 +237,7 @@ function normalizeState(input) {
     schema_version: "host_native_governance_store_v1",
     delegations: input.delegations && typeof input.delegations === "object" ? input.delegations : {},
     tickets: input.tickets && typeof input.tickets === "object" ? input.tickets : {},
+    closure_handoffs: input.closure_handoffs && typeof input.closure_handoffs === "object" ? input.closure_handoffs : {},
     core_join_verdicts: input.core_join_verdicts && typeof input.core_join_verdicts === "object" ? input.core_join_verdicts : {},
     owner_nonces: input.owner_nonces && typeof input.owner_nonces === "object" ? input.owner_nonces : {},
     idempotency: input.idempotency && typeof input.idempotency === "object" ? input.idempotency : {},
@@ -971,6 +974,11 @@ function ticketSignature(secret, ticket) {
   return hmac("hnt", secret, canonical(unsigned));
 }
 
+function closureHandoffSignature(secret, handoff) {
+  const { signature, ...unsigned } = handoff;
+  return hmac("hnh", secret, canonical(unsigned));
+}
+
 function verifyReadbackDigest(record) {
   const github = record?.github;
   const services = record?.services;
@@ -987,6 +995,37 @@ function verifyReadbackDigest(record) {
   }
 }
 
+function verifySupersededReadbackDigest(record) {
+  const originalGithub = record?.original_github;
+  const supersedingGithub = record?.superseding_github;
+  const services = record?.services;
+  if (
+    !record ||
+    record.schema_version !== "host_native_superseded_external_readback_v1" ||
+    record.trusted !== true ||
+    record.verifier_id !== "core_server_superseded_external_readback_v1" ||
+    record.external_side_effect !== false ||
+    record.provider_execution !== false ||
+    !originalGithub || !supersedingGithub || !Array.isArray(services)
+  ) {
+    fail("trusted_superseded_readback_invalid");
+  }
+  for (const github of [originalGithub, supersedingGithub]) {
+    const unsigned = { ...github };
+    delete unsigned.readback_digest;
+    if (github.readback_digest !== hostNativeDigest(unsigned)) {
+      fail("trusted_superseded_readback_github_digest_mismatch");
+    }
+  }
+  for (const service of services) {
+    const unsigned = { ...service };
+    delete unsigned.readback_digest;
+    if (service.readback_digest !== hostNativeDigest(unsigned)) {
+      fail("trusted_superseded_readback_service_mismatch");
+    }
+  }
+}
+
 export function createHostNativeGovernance({
   store: suppliedStore,
   signingSecret,
@@ -1000,6 +1039,7 @@ export function createHostNativeGovernance({
   ticketTtlMs = DEFAULT_TICKET_TTL_MS,
   reservationLeaseMs = DEFAULT_RESERVATION_LEASE_MS,
   coreJoinTtlMs = DEFAULT_CORE_JOIN_TTL_MS,
+  closureHandoffTtlMs = DEFAULT_CLOSURE_HANDOFF_TTL_MS,
 } = {}) {
   const store = requireStore(suppliedStore);
   const signing = String(signingSecret || "");
@@ -1009,6 +1049,10 @@ export function createHostNativeGovernance({
   const ticketTtl = Math.max(1_000, Math.min(60 * 60_000, Number(ticketTtlMs) || DEFAULT_TICKET_TTL_MS));
   const leaseMs = Math.max(1_000, Math.min(60 * 60_000, Number(reservationLeaseMs) || DEFAULT_RESERVATION_LEASE_MS));
   const coreJoinTtl = Math.max(1_000, Math.min(60 * 60_000, Number(coreJoinTtlMs) || DEFAULT_CORE_JOIN_TTL_MS));
+  const closureHandoffTtl = Math.max(
+    1_000,
+    Math.min(5 * 60_000, Number(closureHandoffTtlMs) || DEFAULT_CLOSURE_HANDOFF_TTL_MS),
+  );
 
   function makeId(prefix, seed) {
     const suffix = String(idFactory?.() || hostNativeDigest(seed).slice(0, 32)).replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 80);
@@ -1026,6 +1070,13 @@ export function createHostNativeGovernance({
     const record = store.readState().tickets[String(ticketId || "")];
     if (!record) fail("action_ticket_not_found");
     if (record.ticket.tenant_id !== tenantId) fail("cross_tenant_action_ticket_denied");
+    return clone(record);
+  }
+
+  function readClosureHandoffRecord(tenantId, handoffId) {
+    const record = store.readState().closure_handoffs[String(handoffId || "")];
+    if (!record) fail("closure_handoff_not_found");
+    if (record.handoff.tenant_id !== tenantId) fail("cross_tenant_closure_handoff_denied");
     return clone(record);
   }
 
@@ -1056,6 +1107,509 @@ export function createHostNativeGovernance({
       fail("required_checks_policy_mismatch");
     }
     return resolved;
+  }
+
+  function completedReleaseTicket(record) {
+    const ticket = record?.ticket;
+    if (!ticket || !safeEqual(ticket.signature, ticketSignature(signing, ticket))) {
+      fail("action_ticket_signature_invalid");
+    }
+    if (
+      !["completed", "reconciled"].includes(record.state) ||
+      (record.outcome !== "success" && record.observed_outcome !== "success") ||
+      record.uses !== 1
+    ) {
+      fail("successful_outcome_required");
+    }
+    if (!isReleaseAction(ticket.action?.kind)) fail("release_manifest_required");
+    if (!ticket.release_manifest_binding || !ticket.release_manifest_digest ||
+        !ticket.release_intent_digest || !ticket.core_join_verdict_id ||
+        !ticket.core_join_verdict_digest || !ticket.release_join_resolution_digest) {
+      fail("release_ticket_binding_invalid");
+    }
+    const resultCommit = commit(
+      record.result_commit || ticket.action.target_commit ||
+        ticket.release_manifest_binding.head_commit,
+    );
+    return { ticket, resultCommit };
+  }
+
+  function completedTicketCoreJoin(state, record) {
+    const ticket = record.ticket;
+    const coreJoin = state.core_join_verdicts[String(ticket.core_join_verdict_id || "")];
+    const verdict = coreJoin?.verdict;
+    const claim = coreJoin?.claim;
+    if (!coreJoin || !verdict || !claim || coreJoin.tenant_id !== ticket.tenant_id) {
+      fail("core_join_verdict_not_found");
+    }
+    const { signature, ...unsigned } = verdict;
+    if (
+      verdict.allowed !== true || verdict.provider_execution !== false ||
+      verdict.verdict_id !== ticket.core_join_verdict_id ||
+      verdict.claim_digest !== coreJoin.claim_digest ||
+      coreJoin.claim_digest !== ticket.core_join_verdict_digest ||
+      hostNativeDigest(claim) !== coreJoin.claim_digest ||
+      !safeEqual(signature, hmac("hnj", signing, canonical(unsigned))) ||
+      claim.tenant_id !== ticket.tenant_id || claim.work_id !== ticket.work_id ||
+      claim.repository !== ticket.repository ||
+      claim.release_intent_digest !== ticket.release_intent_digest ||
+      claim.checks?.commit !== ticket.release_manifest_binding.verification?.checks_commit
+    ) {
+      fail("core_join_verdict_binding_mismatch");
+    }
+    return coreJoin;
+  }
+
+  function verifiedMergeReleaseResolution(record) {
+    const { ticket, resultCommit } = completedReleaseTicket(record);
+    if (ticket.action?.kind !== "github.merge") {
+      fail("closure_handoff_superseding_merge_required");
+    }
+    const binding = ticket.release_manifest_binding;
+    const resolution = ticket.release_join_resolution;
+    const source = resolution?.source_attestation;
+    const attestations = resolution?.previous_live_attestations;
+    if (
+      !resolution || !source || !Array.isArray(attestations) ||
+      ticket.release_join_resolution_digest !== hostNativeDigest(resolution) ||
+      resolution.schema_version !== "host_native_release_join_resolution_v1" ||
+      resolution.trusted !== true || resolution.authority !== "universal_core" ||
+      resolution.allowed !== true || resolution.provider_execution !== false ||
+      resolution.verdict_id !== ticket.core_join_verdict_id ||
+      resolution.tenant_id !== ticket.tenant_id ||
+      resolution.work_id !== ticket.work_id ||
+      resolution.intent_anchor_digest !== ticket.intent_anchor_digest ||
+      resolution.repository !== ticket.repository ||
+      resolution.checks_commit !== binding.verification?.checks_commit ||
+      resolution.evidence_digest !== ticket.evidence_digest ||
+      source.schema_version !== "host_native_source_attestation_v1" ||
+      source.repository !== ticket.repository ||
+      source.evidence_kind !== "github_pull_request_files" ||
+      Number(source.pull_request) !== Number(ticket.action.pull_request) ||
+      source.base_commit !== binding.base_commit ||
+      source.head_commit !== binding.head_commit ||
+      source.tree_sha !== binding.tree_sha ||
+      source.diff_digest !== binding.diff_digest ||
+      !sameStrings(source.changed_files, binding.changed_files)
+    ) {
+      fail("closure_handoff_release_resolution_invalid");
+    }
+    const { attestation_digest: sourceDigest, ...sourceUnsigned } = source;
+    if (
+      sourceDigest !== hostNativeDigest(sourceUnsigned) ||
+      resolution.pre_action_readback_digest !== hostNativeDigest({
+        source_attestation: source,
+        previous_live_attestations: attestations,
+      })
+    ) {
+      fail("closure_handoff_release_resolution_invalid");
+    }
+    const services = binding.delivery?.services || [];
+    if (attestations.length !== services.length) {
+      fail("closure_handoff_previous_live_invalid");
+    }
+    const seen = new Set();
+    for (const expected of services) {
+      const key = `${expected.service_id}\u0000${expected.environment}`;
+      const attestation = attestations.find((entry) =>
+        entry?.service_id === expected.service_id &&
+        entry?.environment === expected.environment);
+      if (!attestation || seen.has(key)) fail("closure_handoff_previous_live_invalid");
+      seen.add(key);
+      const { readback_digest: readbackDigest, ...unsigned } = attestation;
+      if (
+        readbackDigest !== hostNativeDigest(unsigned) ||
+        attestation.origin !== expected.origin ||
+        attestation.health_path !== "/healthz" ||
+        attestation.live_commit !== expected.expected_previous_commit ||
+        attestation.health_status !== "healthy" ||
+        attestation.health_contract_digest !== expected.health_contract_digest
+      ) {
+        fail("closure_handoff_previous_live_invalid");
+      }
+    }
+    return { ticket, resultCommit, resolution, source, attestations };
+  }
+
+  function supersedingReleaseContext(state, originalRecord, supersedingTicketId) {
+    const original = verifiedMergeReleaseResolution(originalRecord);
+    const supersedingRecord = state.tickets[String(supersedingTicketId || "")];
+    if (!supersedingRecord) fail("superseding_action_ticket_not_found");
+    if (supersedingRecord.ticket?.tenant_id !== original.ticket.tenant_id) {
+      fail("cross_tenant_superseding_action_ticket_denied");
+    }
+    const superseding = verifiedMergeReleaseResolution(supersedingRecord);
+    completedTicketCoreJoin(state, originalRecord);
+    const supersedingCoreJoin = completedTicketCoreJoin(state, supersedingRecord);
+    const originalServices = original.ticket.release_manifest_binding.delivery.services;
+    const supersedingBinding = superseding.ticket.release_manifest_binding;
+    const supersedingServices = supersedingBinding.delivery.services;
+    if (
+      superseding.ticket.ticket_id === original.ticket.ticket_id ||
+      superseding.ticket.repository !== original.ticket.repository ||
+      superseding.resultCommit === original.resultCommit ||
+      supersedingBinding.base_commit !== original.resultCommit ||
+      superseding.ticket.action.expected_base_commit !== original.resultCommit ||
+      supersedingBinding.rollback?.target_commit !== original.resultCommit ||
+      supersedingServices.length !== originalServices.length ||
+      superseding.attestations.length !== originalServices.length
+    ) {
+      fail("closure_handoff_superseding_release_mismatch");
+    }
+    for (const originalService of originalServices) {
+      const expected = supersedingServices.find((service) =>
+        service.service_id === originalService.service_id &&
+        service.environment === originalService.environment);
+      const previous = superseding.attestations.find((entry) =>
+        entry.service_id === originalService.service_id &&
+        entry.environment === originalService.environment);
+      if (
+        !expected || !previous ||
+        expected.origin !== originalService.origin ||
+        expected.health_contract_digest !== originalService.health_contract_digest ||
+        expected.expected_previous_commit !== original.resultCommit ||
+        previous.origin !== originalService.origin ||
+        previous.live_commit !== original.resultCommit ||
+        previous.health_status !== "healthy" ||
+        previous.health_contract_digest !== originalService.health_contract_digest
+      ) {
+        fail("closure_handoff_superseding_release_mismatch");
+      }
+    }
+    return {
+      original,
+      superseding,
+      supersedingRecord,
+      supersedingCoreJoin,
+    };
+  }
+
+  async function trustedFinalizeReadback(record, nowValue, { notBefore, previousAuthorization = null } = {}) {
+    const { ticket, resultCommit } = completedReleaseTicket(record);
+    if (typeof externalReadbackVerifier !== "function") fail("trusted_readback_unavailable");
+    let external;
+    try {
+      external = await externalReadbackVerifier({ ticket, target_commit: resultCommit });
+    } catch (cause) {
+      if (String(cause?.message || "").startsWith("trusted_readback_")) throw cause;
+      fail("trusted_readback_invalid");
+    }
+    verifyReadbackDigest(external);
+    const github = external.github;
+    const verifiedAt = Date.parse(external.verified_at);
+    const reservedAt = Date.parse(record.reserved_at || "");
+    const explicitNotBefore = Date.parse(notBefore || "");
+    const previousExpiresAt = previousAuthorization
+      ? Date.parse(previousAuthorization.expires_at || "")
+      : null;
+    if (
+      !Number.isFinite(verifiedAt) || !Number.isFinite(reservedAt) ||
+      verifiedAt < reservedAt ||
+      (Number.isFinite(explicitNotBefore) && verifiedAt < explicitNotBefore) ||
+      verifiedAt > nowValue + 60_000 ||
+      (
+        previousAuthorization &&
+        (!Number.isFinite(previousExpiresAt) || verifiedAt <= previousExpiresAt)
+      )
+    ) {
+      fail("trusted_readback_stale");
+    }
+    if (
+      github.repository !== ticket.repository || github.target_commit !== resultCommit ||
+      github.checks_passed !== true ||
+      !sameStrings(
+        github.required_checks,
+        ticket.release_manifest_binding.verification.required_checks,
+      )
+    ) {
+      fail("trusted_readback_github_mismatch");
+    }
+    if (!Array.isArray(github.observed_checks) || github.observed_checks.some((check) => (
+      check?.status !== "completed" || check?.conclusion !== "success" ||
+      check?.head_commit !== ticket.release_manifest_binding.verification.checks_commit
+    ))) {
+      fail("trusted_readback_checks_not_ready");
+    }
+    const expectedServices = ticket.release_manifest_binding.delivery.services;
+    if (external.services.length !== expectedServices.length) {
+      fail("trusted_readback_service_set_mismatch");
+    }
+    for (const expected of expectedServices) {
+      const observed = external.services.find((service) =>
+        service.service_id === expected.service_id &&
+        service.environment === expected.environment);
+      if (
+        !observed || observed.origin !== expected.origin ||
+        observed.live_commit !== resultCommit ||
+        observed.health_contract_digest !== expected.health_contract_digest ||
+        observed.rollback_commit !== ticket.release_manifest_binding.rollback.target_commit ||
+        observed.rollback_status !== "previous_live_attested"
+      ) {
+        fail("trusted_readback_service_mismatch");
+      }
+    }
+    return { external, github, resultCommit };
+  }
+
+  async function trustedSupersededFinalizeReadback(
+    originalRecord,
+    supersedingContext,
+    nowValue,
+    { notBefore } = {},
+  ) {
+    if (typeof externalReadbackVerifier !== "function") {
+      fail("trusted_readback_unavailable");
+    }
+    const { original, superseding } = supersedingContext;
+    let external;
+    try {
+      external = await externalReadbackVerifier({
+        ticket: original.ticket,
+        target_commit: original.resultCommit,
+        superseding_ticket: superseding.ticket,
+        superseding_target_commit: superseding.resultCommit,
+      });
+    } catch (cause) {
+      if (String(cause?.message || "").startsWith("trusted_")) throw cause;
+      fail("trusted_superseded_readback_invalid");
+    }
+    verifySupersededReadbackDigest(external);
+    const verifiedAt = Date.parse(external.verified_at);
+    const explicitNotBefore = Date.parse(notBefore || "");
+    if (
+      !Number.isFinite(verifiedAt) ||
+      (Number.isFinite(explicitNotBefore) && verifiedAt < explicitNotBefore) ||
+      verifiedAt > nowValue + 60_000
+    ) {
+      fail("trusted_readback_stale");
+    }
+    for (const [github, release] of [
+      [external.original_github, original],
+      [external.superseding_github, superseding],
+    ]) {
+      if (
+        github.repository !== release.ticket.repository ||
+        github.action_kind !== "github.merge" ||
+        github.target_commit !== release.resultCommit ||
+        github.merge_commit !== release.resultCommit ||
+        github.checks_commit !==
+          release.ticket.release_manifest_binding.verification.checks_commit ||
+        github.checks_passed !== true ||
+        !sameStrings(
+          github.required_checks,
+          release.ticket.release_manifest_binding.verification.required_checks,
+        ) ||
+        !Array.isArray(github.observed_checks) ||
+        github.observed_checks.some((check) =>
+          check?.status !== "completed" || check?.conclusion !== "success" ||
+          check?.head_commit !==
+            release.ticket.release_manifest_binding.verification.checks_commit)
+      ) {
+        fail("trusted_superseded_readback_github_mismatch");
+      }
+    }
+    if (
+      external.original_github.rollback_commit !==
+        original.ticket.release_manifest_binding.rollback.target_commit ||
+      external.superseding_github.rollback_commit !== original.resultCommit
+    ) {
+      fail("trusted_superseded_readback_github_mismatch");
+    }
+    const expectedServices = superseding.ticket.release_manifest_binding.delivery.services;
+    if (external.services.length !== expectedServices.length) {
+      fail("trusted_superseded_readback_service_set_mismatch");
+    }
+    for (const expected of expectedServices) {
+      const observed = external.services.find((service) =>
+        service.service_id === expected.service_id &&
+        service.environment === expected.environment);
+      if (
+        !observed || observed.origin !== expected.origin ||
+        observed.live_commit !== superseding.resultCommit ||
+        observed.health_contract_digest !== expected.health_contract_digest ||
+        observed.rollback_commit !== original.resultCommit ||
+        observed.rollback_status !== "previous_live_attested"
+      ) {
+        fail("trusted_superseded_readback_service_mismatch");
+      }
+    }
+    return { external };
+  }
+
+  function finalizeAuthorizationV2(record, handoff, external, resultCommit, issuedAt) {
+    const ticket = record.ticket;
+    const handoffDigest = hostNativeDigest(handoff);
+    const receiptUnsigned = {
+      schema_version: "host_native_finalize_authorization_v2",
+      trusted: true,
+      allowed: true,
+      decision: "ALLOW_FINALIZE",
+      decision_id: ticket.ticket_id,
+      tenant_id: ticket.tenant_id,
+      work_id: ticket.work_id,
+      repository: ticket.repository,
+      target_commit: resultCommit,
+      action_ticket_id: ticket.ticket_id,
+      action_ticket_digest: hostNativeDigest(ticket),
+      release_manifest_digest: ticket.release_manifest_digest,
+      release_intent_digest: ticket.release_intent_digest,
+      core_join_verdict_id: ticket.core_join_verdict_id,
+      core_join_verdict_digest: ticket.core_join_verdict_digest,
+      core_join_resolution_digest: ticket.release_join_resolution_digest,
+      changed_files: ticket.release_manifest_binding.changed_files,
+      predecessor: ticket.predecessor || null,
+      predecessor_chain_digest: ticket.predecessor_chain_digest || null,
+      evidence_digest: ticket.evidence_digest,
+      core_plan_id: handoff.core_plan_id,
+      core_plan_digest: handoff.core_plan_digest,
+      local_plan_id: handoff.local_plan_id,
+      local_plan_digest: handoff.local_plan_digest,
+      closure_handoff_id: handoff.handoff_id,
+      closure_handoff_digest: handoffDigest,
+      execution_host_kind: handoff.execution_host_kind,
+      execution_host_session_fingerprint:
+        handoff.execution_host_session_fingerprint,
+      closure_host_kind: handoff.closure_host_kind,
+      closure_session_fingerprint: handoff.closure_session_fingerprint,
+      ...(record.result_digest ? { host_result_digest: record.result_digest } : {}),
+      host_readback_digest: record.host_readback_digest,
+      external_readback_digest: hostNativeDigest(external),
+      readback_digest: hostNativeDigest(external),
+      result_commit_verified: true,
+      github_readback: external.github,
+      live_services: external.services,
+      outcome_source: record.state === "reconciled"
+        ? "reconciled_readback"
+        : "verified_completion",
+      readback_source: external.verifier_id,
+      issued_at: iso(issuedAt),
+      expires_at: iso(Math.min(
+        Date.parse(handoff.expires_at),
+        issuedAt + leaseMs,
+      )),
+      host_policy_override: false,
+      host_policy_must_allow: true,
+      external_execution_allowed: false,
+      external_action_replay_allowed: false,
+      host_execution_required: true,
+      provider_execution: false,
+    };
+    const authorization_digest = hostNativeDigest(receiptUnsigned);
+    return {
+      ...receiptUnsigned,
+      authorization_digest,
+      signature: hmac(
+        "hnf",
+        signing,
+        canonical({ ...receiptUnsigned, authorization_digest }),
+      ),
+    };
+  }
+
+  function finalizeAuthorizationV3(
+    record,
+    handoff,
+    external,
+    supersedingContext,
+    issuedAt,
+  ) {
+    const ticket = record.ticket;
+    const { original, superseding, supersedingRecord } = supersedingContext;
+    const handoffDigest = hostNativeDigest(handoff);
+    const receiptUnsigned = {
+      schema_version: "host_native_finalize_authorization_v3",
+      trusted: true,
+      allowed: true,
+      decision: "ALLOW_FINALIZE_SUPERSEDED_RELEASE",
+      decision_id: ticket.ticket_id,
+      tenant_id: ticket.tenant_id,
+      work_id: ticket.work_id,
+      repository: ticket.repository,
+      release_state: "superseded",
+      target_commit: original.resultCommit,
+      current_live_commit: superseding.resultCommit,
+      action_ticket_id: ticket.ticket_id,
+      action_ticket_digest: hostNativeDigest(ticket),
+      release_manifest_digest: ticket.release_manifest_digest,
+      release_intent_digest: ticket.release_intent_digest,
+      core_join_verdict_id: ticket.core_join_verdict_id,
+      core_join_verdict_digest: ticket.core_join_verdict_digest,
+      core_join_resolution_digest: ticket.release_join_resolution_digest,
+      changed_files: ticket.release_manifest_binding.changed_files,
+      predecessor: ticket.predecessor || null,
+      predecessor_chain_digest: ticket.predecessor_chain_digest || null,
+      evidence_digest: ticket.evidence_digest,
+      core_plan_id: handoff.core_plan_id,
+      core_plan_digest: handoff.core_plan_digest,
+      local_plan_id: handoff.local_plan_id,
+      local_plan_digest: handoff.local_plan_digest,
+      closure_handoff_id: handoff.handoff_id,
+      closure_handoff_digest: handoffDigest,
+      execution_host_kind: handoff.execution_host_kind,
+      execution_host_session_fingerprint:
+        handoff.execution_host_session_fingerprint,
+      closure_host_kind: handoff.closure_host_kind,
+      closure_session_fingerprint: handoff.closure_session_fingerprint,
+      superseding_action_ticket_id: superseding.ticket.ticket_id,
+      superseding_action_ticket_digest: hostNativeDigest(superseding.ticket),
+      superseding_result_commit: superseding.resultCommit,
+      superseding_release_manifest_digest:
+        superseding.ticket.release_manifest_digest,
+      superseding_release_intent_digest: superseding.ticket.release_intent_digest,
+      superseding_core_join_verdict_id: superseding.ticket.core_join_verdict_id,
+      superseding_core_join_verdict_digest:
+        superseding.ticket.core_join_verdict_digest,
+      superseding_core_join_resolution_digest:
+        superseding.ticket.release_join_resolution_digest,
+      superseding_evidence_digest: superseding.ticket.evidence_digest,
+      superseding_release_manifest_binding: clone(
+        superseding.ticket.release_manifest_binding,
+      ),
+      superseding_release_join_resolution: clone(
+        superseding.ticket.release_join_resolution,
+      ),
+      ...(record.result_digest ? { host_result_digest: record.result_digest } : {}),
+      host_readback_digest: record.host_readback_digest,
+      ...(supersedingRecord.result_digest ? {
+        superseding_host_result_digest: supersedingRecord.result_digest,
+      } : {}),
+      superseding_host_readback_digest: supersedingRecord.host_readback_digest,
+      external_readback_digest: hostNativeDigest(external),
+      readback_digest: hostNativeDigest(external),
+      result_commit_verified: true,
+      superseding_result_commit_verified: true,
+      github_readback: external.original_github,
+      superseding_github_readback: external.superseding_github,
+      live_services: external.services,
+      outcome_source: record.state === "reconciled"
+        ? "reconciled_readback"
+        : "verified_completion",
+      superseding_outcome_source: supersedingRecord.state === "reconciled"
+        ? "reconciled_readback"
+        : "verified_completion",
+      readback_source: "core_server_superseded_external_readback_v1",
+      issued_at: iso(issuedAt),
+      expires_at: iso(Math.min(
+        Date.parse(handoff.expires_at),
+        issuedAt + leaseMs,
+      )),
+      host_policy_override: false,
+      host_policy_must_allow: true,
+      external_execution_allowed: false,
+      external_action_replay_allowed: false,
+      host_execution_required: true,
+      provider_execution: false,
+    };
+    const authorization_digest = hostNativeDigest(receiptUnsigned);
+    return {
+      ...receiptUnsigned,
+      authorization_digest,
+      signature: hmac(
+        "hnf",
+        signing,
+        canonical({ ...receiptUnsigned, authorization_digest }),
+      ),
+    };
   }
 
   const governance = {
@@ -1667,6 +2221,368 @@ export function createHostNativeGovernance({
         record.reconciled_at = iso(nowValue);
         record.state = "reconciled";
         return saveIdempotent(state, descriptor, record);
+      });
+    },
+
+    async issueClosureHandoff(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "ticket_id", "work_id", "plan_id", "result_commit",
+        "closure_host_kind", "closure_session_fingerprint",
+        "superseding_action_ticket_id", "owner_confirmation", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const initial = store.readState();
+      const replay = getIdempotent(initial, tenantId, "issueClosureHandoff", input);
+      if (replay?.result) return replay.result;
+      const current = initial.tickets[String(input.ticket_id || "")];
+      if (!current || current.ticket?.tenant_id !== tenantId) {
+        fail("action_ticket_not_found");
+      }
+      const { ticket, resultCommit } = completedReleaseTicket(current);
+      const suppliedResultCommit = commit(input.result_commit);
+      if (suppliedResultCommit !== resultCommit) fail("result_commit_mismatch");
+      if (text(input.work_id, "work_id_invalid", 240) !== ticket.work_id) {
+        fail("closure_handoff_work_mismatch");
+      }
+      const coreJoin = completedTicketCoreJoin(initial, current);
+      const supersedingContext = input.superseding_action_ticket_id
+        ? supersedingReleaseContext(
+          initial,
+          current,
+          text(
+            input.superseding_action_ticket_id,
+            "superseding_action_ticket_invalid",
+            240,
+          ),
+        )
+        : null;
+      const planId = text(input.plan_id, "plan_id_invalid", 240);
+      if (planId !== coreJoin.claim.local_plan_id) {
+        fail("closure_handoff_plan_mismatch");
+      }
+      const closureHostKind = text(
+        input.closure_host_kind,
+        "closure_host_kind_invalid",
+        120,
+      );
+      if (!["chatgpt_native", "codex_native"].includes(closureHostKind)) {
+        fail("closure_host_kind_invalid");
+      }
+      const closureSessionFingerprint = text(
+        input.closure_session_fingerprint,
+        "closure_session_invalid",
+        300,
+      ).toLowerCase();
+      if (!/^[a-f0-9]{16,64}$/.test(closureSessionFingerprint)) {
+        fail("closure_session_invalid");
+      }
+      if (closureSessionFingerprint === ticket.host_session_fingerprint) {
+        fail("successor_session_required");
+      }
+      const confirmation = checkOwnerConfirmation(input.owner_confirmation);
+      const nowValue = nowMillis(now);
+      const handoffId = makeId("hnh", {
+        ticket_id: ticket.ticket_id,
+        closure_host_kind: closureHostKind,
+        closure_session_fingerprint: closureSessionFingerprint,
+        issued_at: iso(nowValue),
+      });
+      const handoffUnsigned = {
+        schema_version: "host_native_closure_handoff_v1",
+        handoff_id: handoffId,
+        tenant_id: tenantId,
+        work_id: ticket.work_id,
+        repository: ticket.repository,
+        action_ticket_id: ticket.ticket_id,
+        action_ticket_digest: hostNativeDigest(ticket),
+        result_commit: resultCommit,
+        release_manifest_digest: ticket.release_manifest_digest,
+        release_intent_digest: ticket.release_intent_digest,
+        core_join_verdict_id: ticket.core_join_verdict_id,
+        core_join_verdict_digest: ticket.core_join_verdict_digest,
+        core_join_resolution_digest: ticket.release_join_resolution_digest,
+        evidence_digest: ticket.evidence_digest,
+        core_plan_id: coreJoin.claim.core_plan_id,
+        core_plan_digest: coreJoin.claim.core_plan_digest,
+        local_plan_id: coreJoin.claim.local_plan_id,
+        local_plan_digest: coreJoin.claim.local_plan_digest,
+        execution_host_kind: ticket.host_kind,
+        execution_host_session_fingerprint: ticket.host_session_fingerprint,
+        closure_host_kind: closureHostKind,
+        closure_session_fingerprint: closureSessionFingerprint,
+        owner_subject_fingerprint: confirmation.owner_subject_fingerprint,
+        issued_at: iso(nowValue),
+        expires_at: iso(nowValue + closureHandoffTtl),
+        max_uses: 1,
+        external_action_replay_allowed: false,
+        external_execution_allowed: false,
+        provider_execution: false,
+        ...(supersedingContext ? {
+          superseding_action_ticket_id:
+            supersedingContext.superseding.ticket.ticket_id,
+          superseding_action_ticket_digest: hostNativeDigest(
+            supersedingContext.superseding.ticket,
+          ),
+          superseding_result_commit: supersedingContext.superseding.resultCommit,
+          superseding_release_manifest_digest:
+            supersedingContext.superseding.ticket.release_manifest_digest,
+          superseding_release_intent_digest:
+            supersedingContext.superseding.ticket.release_intent_digest,
+          superseding_core_join_verdict_id:
+            supersedingContext.superseding.ticket.core_join_verdict_id,
+          superseding_core_join_verdict_digest:
+            supersedingContext.superseding.ticket.core_join_verdict_digest,
+          superseding_core_join_resolution_digest:
+            supersedingContext.superseding.ticket.release_join_resolution_digest,
+          superseding_evidence_digest:
+            supersedingContext.superseding.ticket.evidence_digest,
+        } : {}),
+      };
+      const handoff = {
+        ...handoffUnsigned,
+        signature: closureHandoffSignature(signing, handoffUnsigned),
+      };
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(
+          state,
+          tenantId,
+          "issueClosureHandoff",
+          input,
+        );
+        if (descriptor?.result) return descriptor.result;
+        const storedTicket = state.tickets[ticket.ticket_id];
+        if (
+          !storedTicket || storedTicket.ticket?.tenant_id !== tenantId ||
+          hostNativeDigest(storedTicket.ticket) !== handoff.action_ticket_digest ||
+          !["completed", "reconciled"].includes(storedTicket.state)
+        ) {
+          fail("closure_handoff_ticket_changed");
+        }
+        if (supersedingContext) {
+          const storedSuperseding = supersedingReleaseContext(
+            state,
+            storedTicket,
+            handoff.superseding_action_ticket_id,
+          );
+          if (
+            hostNativeDigest(storedSuperseding.superseding.ticket) !==
+              handoff.superseding_action_ticket_digest ||
+            storedSuperseding.superseding.resultCommit !==
+              handoff.superseding_result_commit
+          ) {
+            fail("closure_handoff_superseding_ticket_changed");
+          }
+        }
+        const nonce = ownerNonceKey(tenantId, confirmation);
+        if (state.owner_nonces[nonce]) fail("owner_confirmation_replayed");
+        state.owner_nonces[nonce] = {
+          closure_handoff_id: handoffId,
+          used_at: iso(nowValue),
+        };
+        const record = {
+          schema_version: "host_native_closure_handoff_record_v1",
+          state: "issued",
+          uses: 0,
+          handoff,
+        };
+        state.closure_handoffs[handoffId] = record;
+        return saveIdempotent(state, descriptor, record);
+      });
+    },
+
+    async readClosureHandoff({ tenant_id, handoff_id } = {}) {
+      return readClosureHandoffRecord(
+        text(tenant_id, "tenant_id_invalid", 160),
+        handoff_id,
+      );
+    },
+
+    async redeemClosureHandoff(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "ticket_id", "handoff_id", "closure_host_kind",
+        "closure_session_fingerprint", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const initial = store.readState();
+      const replay = getIdempotent(initial, tenantId, "redeemClosureHandoff", input);
+      if (replay?.result) return replay.result;
+      const handoffRecord = initial.closure_handoffs[String(input.handoff_id || "")];
+      if (!handoffRecord) fail("closure_handoff_not_found");
+      const handoff = handoffRecord.handoff;
+      if (handoff.tenant_id !== tenantId) fail("cross_tenant_closure_handoff_denied");
+      if (
+        handoffRecord.state !== "issued" || handoffRecord.uses !== 0 ||
+        handoff.max_uses !== 1
+      ) {
+        fail("closure_handoff_replayed");
+      }
+      if (!safeEqual(handoff.signature, closureHandoffSignature(signing, handoff))) {
+        fail("closure_handoff_signature_invalid");
+      }
+      const nowValue = nowMillis(now);
+      if (Date.parse(handoff.expires_at) <= nowValue) fail("closure_handoff_expired");
+      const ticketId = text(input.ticket_id, "action_ticket_invalid", 240);
+      const closureHostKind = text(
+        input.closure_host_kind,
+        "closure_host_kind_invalid",
+        120,
+      );
+      const closureSessionFingerprint = text(
+        input.closure_session_fingerprint,
+        "closure_session_invalid",
+        300,
+      ).toLowerCase();
+      if (
+        handoff.action_ticket_id !== ticketId ||
+        handoff.closure_host_kind !== closureHostKind ||
+        handoff.closure_session_fingerprint !== closureSessionFingerprint
+      ) {
+        fail("closure_handoff_successor_mismatch");
+      }
+      const current = initial.tickets[ticketId];
+      if (!current || current.ticket?.tenant_id !== tenantId) {
+        fail("action_ticket_not_found");
+      }
+      const { ticket, resultCommit } = completedReleaseTicket(current);
+      const coreJoin = completedTicketCoreJoin(initial, current);
+      const supersedingContext = handoff.superseding_action_ticket_id
+        ? supersedingReleaseContext(
+          initial,
+          current,
+          handoff.superseding_action_ticket_id,
+        )
+        : null;
+      if (
+        hostNativeDigest(ticket) !== handoff.action_ticket_digest ||
+        ticket.work_id !== handoff.work_id || ticket.repository !== handoff.repository ||
+        resultCommit !== handoff.result_commit ||
+        ticket.release_manifest_digest !== handoff.release_manifest_digest ||
+        ticket.release_intent_digest !== handoff.release_intent_digest ||
+        ticket.core_join_verdict_id !== handoff.core_join_verdict_id ||
+        ticket.core_join_verdict_digest !== handoff.core_join_verdict_digest ||
+        ticket.release_join_resolution_digest !==
+          handoff.core_join_resolution_digest ||
+        ticket.evidence_digest !== handoff.evidence_digest ||
+        ticket.host_kind !== handoff.execution_host_kind ||
+        ticket.host_session_fingerprint !==
+          handoff.execution_host_session_fingerprint ||
+        coreJoin.claim.core_plan_id !== handoff.core_plan_id ||
+        coreJoin.claim.core_plan_digest !== handoff.core_plan_digest ||
+        coreJoin.claim.local_plan_id !== handoff.local_plan_id ||
+        coreJoin.claim.local_plan_digest !== handoff.local_plan_digest
+      ) {
+        fail("closure_handoff_binding_mismatch");
+      }
+      if (supersedingContext && (
+        hostNativeDigest(supersedingContext.superseding.ticket) !==
+          handoff.superseding_action_ticket_digest ||
+        supersedingContext.superseding.resultCommit !==
+          handoff.superseding_result_commit ||
+        supersedingContext.superseding.ticket.release_manifest_digest !==
+          handoff.superseding_release_manifest_digest ||
+        supersedingContext.superseding.ticket.release_intent_digest !==
+          handoff.superseding_release_intent_digest ||
+        supersedingContext.superseding.ticket.core_join_verdict_id !==
+          handoff.superseding_core_join_verdict_id ||
+        supersedingContext.superseding.ticket.core_join_verdict_digest !==
+          handoff.superseding_core_join_verdict_digest ||
+        supersedingContext.superseding.ticket.release_join_resolution_digest !==
+          handoff.superseding_core_join_resolution_digest ||
+        supersedingContext.superseding.ticket.evidence_digest !==
+          handoff.superseding_evidence_digest
+      )) {
+        fail("closure_handoff_superseding_binding_mismatch");
+      }
+      const { external } = supersedingContext
+        ? await trustedSupersededFinalizeReadback(
+          current,
+          supersedingContext,
+          nowValue,
+          { notBefore: handoff.issued_at },
+        )
+        : await trustedFinalizeReadback(current, nowValue, {
+          notBefore: handoff.issued_at,
+        });
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(
+          state,
+          tenantId,
+          "redeemClosureHandoff",
+          input,
+        );
+        if (descriptor?.result) return descriptor.result;
+        const storedHandoffRecord = state.closure_handoffs[handoff.handoff_id];
+        const receiptNow = nowMillis(now);
+        if (
+          !storedHandoffRecord || storedHandoffRecord.state !== "issued" ||
+          storedHandoffRecord.uses !== 0
+        ) {
+          fail("closure_handoff_replayed");
+        }
+        if (!safeEqual(
+          storedHandoffRecord.handoff?.signature,
+          closureHandoffSignature(signing, storedHandoffRecord.handoff),
+        )) {
+          fail("closure_handoff_signature_invalid");
+        }
+        if (Date.parse(storedHandoffRecord.handoff.expires_at) <= receiptNow) {
+          fail("closure_handoff_expired");
+        }
+        const storedTicket = state.tickets[ticketId];
+        const storedCompletion = storedTicket
+          ? completedReleaseTicket(storedTicket)
+          : null;
+        if (
+          !storedTicket || !storedCompletion ||
+          hostNativeDigest(storedTicket.ticket) !== handoff.action_ticket_digest ||
+          storedCompletion.resultCommit !== handoff.result_commit
+        ) {
+          fail("closure_handoff_ticket_changed");
+        }
+        const storedCoreJoin = completedTicketCoreJoin(state, storedTicket);
+        if (
+          storedCoreJoin.claim.core_plan_id !== handoff.core_plan_id ||
+          storedCoreJoin.claim.core_plan_digest !== handoff.core_plan_digest ||
+          storedCoreJoin.claim.local_plan_id !== handoff.local_plan_id ||
+          storedCoreJoin.claim.local_plan_digest !== handoff.local_plan_digest
+        ) {
+          fail("closure_handoff_binding_mismatch");
+        }
+        const storedSupersedingContext = supersedingContext
+          ? supersedingReleaseContext(
+            state,
+            storedTicket,
+            storedHandoffRecord.handoff.superseding_action_ticket_id,
+          )
+          : null;
+        if (storedSupersedingContext && (
+          hostNativeDigest(storedSupersedingContext.superseding.ticket) !==
+            storedHandoffRecord.handoff.superseding_action_ticket_digest ||
+          storedSupersedingContext.superseding.resultCommit !==
+            storedHandoffRecord.handoff.superseding_result_commit
+        )) {
+          fail("closure_handoff_superseding_ticket_changed");
+        }
+        const authorization = storedSupersedingContext
+          ? finalizeAuthorizationV3(
+            storedTicket,
+            storedHandoffRecord.handoff,
+            external,
+            storedSupersedingContext,
+            receiptNow,
+          )
+          : finalizeAuthorizationV2(
+            storedTicket,
+            storedHandoffRecord.handoff,
+            external,
+            resultCommit,
+            receiptNow,
+          );
+        storedHandoffRecord.state = "consumed";
+        storedHandoffRecord.uses = 1;
+        storedHandoffRecord.consumed_at = iso(receiptNow);
+        storedHandoffRecord.finalize_authorization = authorization;
+        return saveIdempotent(state, descriptor, authorization);
       });
     },
 

@@ -398,6 +398,11 @@ export const WORK_CONTINUITY_TOOLS = [
         pattern: "^hnt_[A-Za-z0-9-]{8,160}$",
         maxLength: 164,
       },
+      closure_handoff_id: {
+        type: "string",
+        pattern: "^hnh_[A-Za-z0-9._-]{8,160}$",
+        maxLength: 164,
+      },
       idempotency_key: text(160),
     }, ["work_id", "plan_id", "action_ticket_id", "idempotency_key"]),
     false, { ownerConfirmationRequired: false, delegationAware: true }),

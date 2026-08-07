@@ -844,6 +844,39 @@ test("binds host-native delegation and action routes to OAuth owner and server p
           headers: { "content-type": "application/json" },
         });
       }
+      if (path.endsWith("/closure-handoffs")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          tenant_id: "tenant-a",
+          closure_handoff: {
+            state: "issued",
+            uses: 0,
+            handoff: {
+              handoff_id: "hnh_handoff-12345678",
+              closure_host_kind: "chatgpt_native",
+              closure_session_fingerprint: "a".repeat(64),
+            },
+          },
+        }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (path.endsWith("/redeem")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          tenant_id: "tenant-a",
+          finalize_authorization: {
+            schema_version: "host_native_finalize_authorization_v2",
+            trusted: true,
+            allowed: true,
+            closure_handoff_id: "hnh_handoff-12345678",
+          },
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       return new Response(JSON.stringify({
         ok: true,
         action_ticket: {
@@ -920,6 +953,21 @@ test("binds host-native delegation and action routes to OAuth owner and server p
   const closure = await handlers.host_native_action_closure_receipt({
     ticket_id: "hnt_ticket-12345678",
   }, identity);
+  const closureHandoff =
+    await handlers.host_native_action_closure_handoff_issue({
+      ticket_id: "hnt_ticket-12345678",
+      superseding_action_ticket_id: "hnt_successor-12345678",
+      work_id: "work-1",
+      plan_id: "11111111-1111-4111-8111-111111111111",
+      result_commit: "c".repeat(40),
+      idempotency_key: "closure-handoff-issue-12345678",
+    }, identity);
+  const handoffReceipt =
+    await handlers.host_native_action_closure_handoff_redeem({
+      ticket_id: "hnt_ticket-12345678",
+      closure_handoff_id: "hnh_handoff-12345678",
+      idempotency_key: "closure-handoff-redeem-12345678",
+    }, identity);
 
   assert.equal(delegation.structuredContent.dedicated_core_gate.authorized, true);
   assert.deepEqual(calls.map((call) => call.path), [
@@ -931,6 +979,8 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     "/v1/host-native/actions/hnt_ticket-12345678",
     "/v1/host-native/actions/hnt_ticket-12345678/reconcile",
     "/v1/host-native/actions/hnt_ticket-12345678/authorize-finalize",
+    "/v1/host-native/actions/hnt_ticket-12345678/closure-handoffs",
+    "/v1/host-native/actions/hnt_ticket-12345678/closure-handoffs/hnh_handoff-12345678/redeem",
   ]);
   assert.equal(calls[0].body.owner_confirmed, true);
   assert.equal(calls[0].body.owner_context.role, "tenant_owner");
@@ -964,6 +1014,25 @@ test("binds host-native delegation and action routes to OAuth owner and server p
   assert.equal(calls[6].body.observed_commit, "c".repeat(40));
   assert.equal(calls[7].body.host_session_fingerprint, "a".repeat(64));
   assert.equal(closure.structuredContent.finalize_authorization.trusted, true);
+  assert.equal(calls[8].body.closure_host_kind, "chatgpt_native");
+  assert.equal(calls[8].body.closure_session_fingerprint, "a".repeat(64));
+  assert.equal(calls[8].body.ticket_id, "hnt_ticket-12345678");
+  assert.equal(
+    calls[8].body.superseding_action_ticket_id,
+    "hnt_successor-12345678",
+  );
+  assert.equal(calls[8].body.owner_confirmed, true);
+  assert.equal(calls[8].body.owner_context.role, "tenant_owner");
+  assert.equal(calls[9].body.closure_host_kind, "chatgpt_native");
+  assert.equal(calls[9].body.closure_session_fingerprint, "a".repeat(64));
+  assert.equal(
+    closureHandoff.structuredContent.closure_handoff.handoff.handoff_id,
+    "hnh_handoff-12345678",
+  );
+  assert.equal(
+    handoffReceipt.structuredContent.finalize_authorization.schema_version,
+    "host_native_finalize_authorization_v2",
+  );
   assert.equal(calls[0].headers.authorization, "Bearer tenant-core-key");
   assert.equal(calls[0].headers["x-sh-tenant-id"], undefined);
   for (const call of calls.slice(1, 8)) {
@@ -976,6 +1045,10 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     assert.equal(tenantContext.tenant_id, "tenant-a");
     assert.match(tenantContext.assertion, /^mtc_[a-f0-9]{64}$/);
   }
+  assert.equal(calls[8].headers.authorization, "Bearer tenant-core-key");
+  assert.equal(calls[8].headers["x-sh-tenant-id"], undefined);
+  assert.equal(calls[9].headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
+  assert.equal(calls[9].headers["x-sh-tenant-id"], "tenant-a");
 
   const codexGoodModeDelegation = await handlers.host_native_delegation_issue({
     work_id: "work-1",

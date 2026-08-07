@@ -958,6 +958,126 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
       /^[a-f0-9]{64}$/,
     );
 
+    const closureSessionFingerprint = "d".repeat(32);
+    const closureHandoffBody = {
+      ticket_id: mergeTicketId,
+      work_id: "work-api-1",
+      plan_id: "local-plan-api-1",
+      result_commit: G("9"),
+      closure_host_kind: "chatgpt_native",
+      closure_session_fingerprint: closureSessionFingerprint,
+      idempotency_key: "api-closure-handoff-issue-1",
+      owner_confirmed: true,
+      confirmation_reference: "owner approved exact successor closure",
+    };
+    const closureHandoffOwnerContext = signedOwnerContext(
+      OWNER_CONTEXT_SIGNING_SECRET,
+      "tenant-host-native",
+      closureHandoffBody,
+      "host_native_action_closure_handoff_issue",
+    );
+    const pathSwappedHandoff = await request(
+      "POST",
+      "/v1/host-native/actions/hnt_path-swapped-12345678/closure-handoffs",
+      {
+        ...closureHandoffBody,
+        owner_context: closureHandoffOwnerContext,
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(pathSwappedHandoff.status, 400);
+    assert.equal(
+      pathSwappedHandoff.json.error,
+      "closure_handoff_ticket_mismatch",
+    );
+    const missingSupersedingBody = {
+      ...closureHandoffBody,
+      superseding_action_ticket_id: "hnt_missing-successor-12345678",
+      idempotency_key: "api-closure-handoff-missing-successor",
+    };
+    const missingSuperseding = await request(
+      "POST",
+      `/v1/host-native/actions/${mergeTicketId}/closure-handoffs`,
+      {
+        ...missingSupersedingBody,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          missingSupersedingBody,
+          "host_native_action_closure_handoff_issue",
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(missingSuperseding.status, 404);
+    assert.equal(
+      missingSuperseding.json.error,
+      "superseding_action_ticket_not_found",
+    );
+    const closureHandoff = await request(
+      "POST",
+      `/v1/host-native/actions/${mergeTicketId}/closure-handoffs`,
+      {
+        ...closureHandoffBody,
+        owner_context: closureHandoffOwnerContext,
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(closureHandoff.status, 201, JSON.stringify(closureHandoff.json));
+    const handoffRecord = closureHandoff.json.closure_handoff;
+    assert.equal(handoffRecord.state, "issued");
+    assert.equal(handoffRecord.uses, 0);
+    assert.equal(handoffRecord.handoff.execution_host_kind, "codex_native");
+    assert.equal(handoffRecord.handoff.closure_host_kind, "chatgpt_native");
+    assert.equal(
+      handoffRecord.handoff.closure_session_fingerprint,
+      closureSessionFingerprint,
+    );
+    assert.equal(handoffRecord.handoff.result_commit, G("9"));
+    assert.equal(handoffRecord.handoff.max_uses, 1);
+    assert.equal(handoffRecord.handoff.external_action_replay_allowed, false);
+    const handoffId = handoffRecord.handoff.handoff_id;
+    const wrongSuccessor = await request(
+      "POST",
+      `/v1/host-native/actions/${mergeTicketId}/closure-handoffs/${handoffId}/redeem`,
+      {
+        closure_host_kind: "chatgpt_native",
+        closure_session_fingerprint: "e".repeat(32),
+        idempotency_key: "api-closure-handoff-wrong-successor",
+      },
+      automationKey.json.key,
+    );
+    assert.equal(wrongSuccessor.status, 400);
+    assert.equal(wrongSuccessor.json.error, "closure_handoff_successor_mismatch");
+    const handoffFinalize = await request(
+      "POST",
+      `/v1/host-native/actions/${mergeTicketId}/closure-handoffs/${handoffId}/redeem`,
+      {
+        closure_host_kind: "chatgpt_native",
+        closure_session_fingerprint: closureSessionFingerprint,
+        idempotency_key: "api-closure-handoff-redeem-1",
+      },
+      automationKey.json.key,
+    );
+    assert.equal(handoffFinalize.status, 200, JSON.stringify(handoffFinalize.json));
+    assert.equal(
+      handoffFinalize.json.finalize_authorization.schema_version,
+      "host_native_finalize_authorization_v2",
+    );
+    assert.equal(
+      handoffFinalize.json.finalize_authorization.closure_handoff_id,
+      handoffId,
+    );
+    assert.equal(
+      handoffFinalize.json.finalize_authorization.execution_host_kind,
+      "codex_native",
+    );
+    assert.equal(
+      handoffFinalize.json.finalize_authorization.closure_host_kind,
+      "chatgpt_native",
+    );
+    assert.equal(handoffFinalize.json.finalize_authorization.target_commit, G("9"));
+
     const health = await request("GET", "/healthz");
     assert.equal(health.json.host_native_governance.route_ready, true);
     assert.equal(health.json.host_native_governance.store_backend, "file_atomic");

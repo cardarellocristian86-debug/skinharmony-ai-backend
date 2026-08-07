@@ -61,6 +61,10 @@ const actionTicketId = {
   type: "string",
   pattern: "^hnt_[a-zA-Z0-9-]{8,160}$",
 };
+const closureHandoffId = {
+  type: "string",
+  pattern: "^hnh_[a-zA-Z0-9._-]{8,160}$",
+};
 const object = (properties = {}, required = []) => ({
   type: "object",
   properties,
@@ -417,5 +421,29 @@ export const HOST_NATIVE_TOOLS = [
       ticket_id: actionTicketId,
     }, ["ticket_id"]),
     { readOnly: true },
+  ),
+  tool(
+    "host_native_action_closure_handoff_issue",
+    "Issue a successor-session closure handoff",
+    "After fresh owner confirmation, issue one Core-signed, short-lived and one-use handoff that lets the authenticated successor session finalize an already completed release ticket. It preserves the original execution-session binding and cannot replay an external action.",
+    object({
+      ticket_id: actionTicketId,
+      superseding_action_ticket_id: actionTicketId,
+      work_id: identifier,
+      plan_id: identifier,
+      result_commit: gitSha,
+      idempotency_key: {
+        type: "string",
+        minLength: 1,
+        maxLength: 160,
+      },
+    }, [
+      "ticket_id",
+      "work_id",
+      "plan_id",
+      "result_commit",
+      "idempotency_key",
+    ]),
+    { ownerConfirmationRequired: true },
   ),
 ];

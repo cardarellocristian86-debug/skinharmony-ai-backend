@@ -32,6 +32,8 @@ const IDEMPOTENT_METHODS = new Set([
   "reserveActionTicket",
   "completeActionTicket",
   "reconcileActionTicket",
+  "issueClosureHandoff",
+  "redeemClosureHandoff",
 ]);
 let testIdempotencySequence = 0;
 
@@ -124,6 +126,43 @@ function redigestTrustedReadback(readback) {
   };
 }
 
+function trustedSupersededExternalReadback(
+  originalTicket,
+  originalCommit,
+  supersedingTicket,
+  supersedingCommit,
+  verifiedAt,
+) {
+  const strictGithub = (ticket, targetCommit) => {
+    const readback = trustedExternalReadback(ticket, targetCommit, verifiedAt);
+    const unsigned = {
+      ...readback.github,
+      head_tree_sha: ticket.release_manifest_binding.tree_sha,
+      merge_parents: [
+        ticket.action.expected_base_commit,
+        ticket.action.head_commit,
+      ],
+    };
+    delete unsigned.readback_digest;
+    return { ...unsigned, readback_digest: hostNativeDigest(unsigned) };
+  };
+  return {
+    schema_version: "host_native_superseded_external_readback_v1",
+    trusted: true,
+    verifier_id: "core_server_superseded_external_readback_v1",
+    verified_at: verifiedAt,
+    original_github: strictGithub(originalTicket, originalCommit),
+    superseding_github: strictGithub(supersedingTicket, supersedingCommit),
+    services: trustedExternalReadback(
+      supersedingTicket,
+      supersedingCommit,
+      verifiedAt,
+    ).services,
+    external_side_effect: false,
+    provider_execution: false,
+  };
+}
+
 function trustedJoinResolution(request, clock) {
   const sourceUnsigned = {
     schema_version: "host_native_source_attestation_v1",
@@ -183,6 +222,7 @@ function harness({
   clockStart = "2026-07-29T10:00:00.000Z",
   ticketTtlMs,
   reservationLeaseMs,
+  closureHandoffTtlMs,
   store = createInMemoryHostNativeGovernanceStore(),
   signingSecret = "host-native-governance-test-signing-secret-at-least-32-bytes",
   externalReadbackVerifier,
@@ -198,8 +238,24 @@ function harness({
     now: () => clock,
     idFactory: () => `id-${++sequence}`,
     externalReadbackVerifier: externalReadbackVerifier === undefined
-      ? (async ({ ticket, target_commit }) =>
-        trustedExternalReadback(ticket, target_commit, new Date(clock).toISOString()))
+      ? (async ({
+        ticket,
+        target_commit,
+        superseding_ticket,
+        superseding_target_commit,
+      }) => superseding_ticket
+        ? trustedSupersededExternalReadback(
+          ticket,
+          target_commit,
+          superseding_ticket,
+          superseding_target_commit,
+          new Date(clock).toISOString(),
+        )
+        : trustedExternalReadback(
+          ticket,
+          target_commit,
+          new Date(clock).toISOString(),
+        ))
       : externalReadbackVerifier,
     releaseJoinVerdictResolver: releaseJoinVerdictResolver === undefined
       ? (async (request) => trustedJoinResolution(request, clock))
@@ -207,6 +263,7 @@ function harness({
     renderServiceOriginResolver: renderServiceOriginResolver || null,
     ...(ticketTtlMs === undefined ? {} : { ticketTtlMs }),
     ...(reservationLeaseMs === undefined ? {} : { reservationLeaseMs }),
+    ...(closureHandoffTtlMs === undefined ? {} : { closureHandoffTtlMs }),
   }));
   const delegationInput = {
     tenant_id: "codexai",
@@ -547,9 +604,13 @@ async function issueMergeTicket(governance, delegationId, overrides = {}) {
   });
 }
 
-async function prepareFinalizableMerge(subject) {
+async function prepareFinalizableMerge(subject, ticketOverrides = {}) {
   const delegation = await subject.governance.issueDelegation(subject.delegationInput);
-  const issued = await issueMergeTicket(subject.governance, delegation.delegation_id);
+  const issued = await issueMergeTicket(
+    subject.governance,
+    delegation.delegation_id,
+    ticketOverrides,
+  );
   const reserved = await subject.governance.reserveActionTicket({
     tenant_id: "codexai",
     ticket_id: issued.ticket.ticket_id,
@@ -566,6 +627,114 @@ async function prepareFinalizableMerge(subject) {
     readback_digest: H("b"),
   });
   return { delegation, issued, reserved, completed };
+}
+
+async function prepareSupersedingMerge(subject, overrides = {}) {
+  const intent = H("2");
+  const workId = "work-2";
+  const delegation = await subject.governance.issueDelegation({
+    ...subject.delegationInput,
+    work_id: workId,
+    intent_anchor_digest: intent,
+    owner_confirmation: {
+      ...subject.delegationInput.owner_confirmation,
+      consent_nonce: "owner-consent-nonce-superseding-release",
+    },
+    idempotency_key: "superseding-release-delegation",
+  });
+  const pending = buildHostReleaseManifestV2(mergeReleaseManifestInput({
+    manifest_id: "manifest-superseding-release",
+    work_id: workId,
+    intent_anchor_digest: intent,
+    base_commit: overrides.base_commit || G("4"),
+    head_commit: G("7"),
+    tree_sha: G("8"),
+    verification: {
+      ...releaseManifestInput().verification,
+      checks_commit: G("7"),
+    },
+    delivery: {
+      method: "github_protected_push_auto_deploy",
+      services: [{
+        service_id: "srv-core",
+        environment: "production",
+        expected_previous_commit: overrides.expected_previous_commit || G("4"),
+        target_commit: null,
+        target_resolution: "post_merge_readback",
+        health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      }],
+    },
+    rollback: {
+      mode: "forward_revert",
+      target_commit: overrides.rollback_commit || overrides.base_commit || G("4"),
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      ready: true,
+    },
+  }));
+  const join = await subject.governance.issueCoreJoinVerdict(
+    coreJoinInput(pending, {
+      local_plan_id: "local-plan-2",
+      local_plan_digest: H("8"),
+    }),
+  );
+  const manifest = manifestWithCoreJoin(pending, join.verdict.verdict_id);
+  const issued = await subject.governance.issueActionTicket({
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+    work_id: workId,
+    intent_anchor_digest: intent,
+    repository: "owner/repo",
+    host_kind: "chatgpt_native",
+    host_session_fingerprint: "7".repeat(32),
+    action: githubMergeAction({
+      pull_request: 43,
+      head_commit: G("7"),
+      expected_base_commit: overrides.expected_base_commit || G("4"),
+      checks_commit: G("7"),
+    }),
+    evidence_digest: H("6"),
+    release_manifest: manifest,
+    idempotency_key: `superseding-release-ticket-${
+      overrides.idempotency_suffix || "valid"
+    }`,
+  });
+  const reserved = await subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    idempotency_key: `superseding-release-reserve-${
+      overrides.idempotency_suffix || "valid"
+    }`,
+  });
+  if (overrides.reconciled) {
+    await subject.governance.reconcileActionTicket({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      reservation_id: reserved.reservation_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+      observed_outcome: "success",
+      observed_commit: G("9"),
+      readback_digest: H("8"),
+      idempotency_key: `superseding-release-reconcile-${
+        overrides.idempotency_suffix || "valid"
+      }`,
+    });
+  } else {
+    await subject.governance.completeActionTicket({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      reservation_id: reserved.reservation_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+      outcome: "success",
+      result_digest: H("7"),
+      result_commit: G("9"),
+      readback_digest: H("8"),
+      idempotency_key: `superseding-release-complete-${
+        overrides.idempotency_suffix || "valid"
+      }`,
+    });
+  }
+  return { delegation, issued, reserved };
 }
 
 test("host-native work plan has zero provider execution and requires host materialization", () => {
@@ -2639,4 +2808,529 @@ test("expired unreserved release ticket leaves budget and Core join available fo
     delegation_id: delegation.delegation_id,
   });
   assert.equal(chargedDelegation.usage.total_actions, 1);
+});
+
+test("owner-signed closure handoff preserves execution binding and redeems once across host types", async () => {
+  const subject = harness();
+  const executionSession = "1".repeat(32);
+  const closureSession = "2".repeat(32);
+  const { delegation, issued } = await prepareFinalizableMerge(subject, {
+    host_kind: "codex_native",
+    host_session_fingerprint: executionSession,
+  });
+  const ticketBefore = await subject.governance.readActionTicket({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+  });
+  const delegationBefore = await subject.governance.readDelegation({
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+  });
+  const coreJoinBefore = await subject.governance.readCoreJoinVerdict({
+    tenant_id: "codexai",
+    verdict_id: issued.ticket.core_join_verdict_id,
+  });
+  const issueInput = {
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    work_id: "work-1",
+    plan_id: "local-plan-1",
+    result_commit: G("4"),
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: closureSession,
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: OWNER,
+      consent_nonce: "closure-handoff-owner-consent-1",
+      confirmation_reference: "owner approved exact successor closure",
+    },
+    idempotency_key: "closure-handoff-issue-exact-1",
+  };
+  const handoffRecord = await subject.governance.issueClosureHandoff(issueInput);
+  assert.equal(handoffRecord.state, "issued");
+  assert.equal(handoffRecord.uses, 0);
+  assert.equal(handoffRecord.handoff.execution_host_kind, "codex_native");
+  assert.equal(
+    handoffRecord.handoff.execution_host_session_fingerprint,
+    executionSession,
+  );
+  assert.equal(handoffRecord.handoff.closure_host_kind, "chatgpt_native");
+  assert.equal(handoffRecord.handoff.closure_session_fingerprint, closureSession);
+  assert.equal(handoffRecord.handoff.local_plan_id, "local-plan-1");
+  assert.equal(handoffRecord.handoff.external_action_replay_allowed, false);
+  assert.equal(handoffRecord.handoff.max_uses, 1);
+  assert.deepEqual(
+    await subject.governance.issueClosureHandoff(issueInput),
+    handoffRecord,
+  );
+
+  const redeemInput = {
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    handoff_id: handoffRecord.handoff.handoff_id,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: closureSession,
+    idempotency_key: "closure-handoff-redeem-exact-1",
+  };
+  const receipt = await subject.governance.redeemClosureHandoff(redeemInput);
+  assert.equal(receipt.schema_version, "host_native_finalize_authorization_v2");
+  assert.equal(receipt.execution_host_kind, "codex_native");
+  assert.equal(receipt.execution_host_session_fingerprint, executionSession);
+  assert.equal(receipt.closure_host_kind, "chatgpt_native");
+  assert.equal(receipt.closure_session_fingerprint, closureSession);
+  assert.equal(receipt.closure_handoff_id, handoffRecord.handoff.handoff_id);
+  assert.equal(receipt.local_plan_id, "local-plan-1");
+  assert.equal(receipt.target_commit, G("4"));
+  assert.equal(receipt.result_commit_verified, true);
+  assert.equal(receipt.external_action_replay_allowed, false);
+  assert.deepEqual(
+    await subject.governance.redeemClosureHandoff(redeemInput),
+    receipt,
+  );
+  await assert.rejects(subject.governance.redeemClosureHandoff({
+    ...redeemInput,
+    idempotency_key: "closure-handoff-redeem-second-key",
+  }), /closure_handoff_replayed/);
+  const consumed = await subject.governance.readClosureHandoff({
+    tenant_id: "codexai",
+    handoff_id: handoffRecord.handoff.handoff_id,
+  });
+  assert.equal(consumed.state, "consumed");
+  assert.equal(consumed.uses, 1);
+  assert.deepEqual(
+    await subject.governance.readActionTicket({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+    }),
+    ticketBefore,
+  );
+  assert.deepEqual(
+    await subject.governance.readDelegation({
+      tenant_id: "codexai",
+      delegation_id: delegation.delegation_id,
+    }),
+    delegationBefore,
+  );
+  assert.deepEqual(
+    await subject.governance.readCoreJoinVerdict({
+      tenant_id: "codexai",
+      verdict_id: issued.ticket.core_join_verdict_id,
+    }),
+    coreJoinBefore,
+  );
+});
+
+test("closure handoff finalizes a directly superseded release from historical and current trusted readback", async () => {
+  const subject = harness();
+  const original = await prepareFinalizableMerge(subject, {
+    host_kind: "codex_native",
+    host_session_fingerprint: "a".repeat(32),
+  });
+  const superseding = await prepareSupersedingMerge(subject);
+  const originalBefore = await subject.governance.readActionTicket({
+    tenant_id: "codexai",
+    ticket_id: original.issued.ticket.ticket_id,
+  });
+  const supersedingBefore = await subject.governance.readActionTicket({
+    tenant_id: "codexai",
+    ticket_id: superseding.issued.ticket.ticket_id,
+  });
+  const handoff = await subject.governance.issueClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: original.issued.ticket.ticket_id,
+    superseding_action_ticket_id: superseding.issued.ticket.ticket_id,
+    work_id: "work-1",
+    plan_id: "local-plan-1",
+    result_commit: G("4"),
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "b".repeat(32),
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: OWNER,
+      consent_nonce: "closure-handoff-owner-consent-superseded",
+      confirmation_reference: "owner approved exact superseded closure",
+    },
+    idempotency_key: "closure-handoff-superseded-issue",
+  });
+  assert.equal(
+    handoff.handoff.superseding_action_ticket_id,
+    superseding.issued.ticket.ticket_id,
+  );
+  assert.equal(handoff.handoff.superseding_result_commit, G("9"));
+  const receipt = await subject.governance.redeemClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: original.issued.ticket.ticket_id,
+    handoff_id: handoff.handoff.handoff_id,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "b".repeat(32),
+    idempotency_key: "closure-handoff-superseded-redeem",
+  });
+  assert.equal(receipt.schema_version, "host_native_finalize_authorization_v3");
+  assert.equal(receipt.decision, "ALLOW_FINALIZE_SUPERSEDED_RELEASE");
+  assert.equal(receipt.release_state, "superseded");
+  assert.equal(receipt.target_commit, G("4"));
+  assert.equal(receipt.current_live_commit, G("9"));
+  assert.equal(receipt.github_readback.merge_commit, G("4"));
+  assert.deepEqual(receipt.github_readback.merge_parents, [G("1"), G("3")]);
+  assert.equal(receipt.superseding_github_readback.merge_commit, G("9"));
+  assert.deepEqual(
+    receipt.superseding_github_readback.merge_parents,
+    [G("4"), G("7")],
+  );
+  assert.equal(receipt.live_services[0].live_commit, G("9"));
+  assert.equal(receipt.live_services[0].rollback_commit, G("4"));
+  assert.equal(
+    receipt.superseding_release_join_resolution.previous_live_attestations[0]
+      .live_commit,
+    G("4"),
+  );
+  assert.deepEqual(
+    await subject.governance.readActionTicket({
+      tenant_id: "codexai",
+      ticket_id: original.issued.ticket.ticket_id,
+    }),
+    originalBefore,
+  );
+  assert.deepEqual(
+    await subject.governance.readActionTicket({
+      tenant_id: "codexai",
+      ticket_id: superseding.issued.ticket.ticket_id,
+    }),
+    supersedingBefore,
+  );
+});
+
+test("superseded closure handoff preserves a reconciled successor without a host result digest", async () => {
+  const subject = harness();
+  const original = await prepareFinalizableMerge(subject);
+  const superseding = await prepareSupersedingMerge(subject, {
+    reconciled: true,
+    idempotency_suffix: "reconciled",
+  });
+  const handoff = await subject.governance.issueClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: original.issued.ticket.ticket_id,
+    superseding_action_ticket_id: superseding.issued.ticket.ticket_id,
+    work_id: "work-1",
+    plan_id: "local-plan-1",
+    result_commit: G("4"),
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "e".repeat(32),
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: OWNER,
+      consent_nonce: "closure-handoff-owner-consent-reconciled-successor",
+      confirmation_reference: "owner approved reconciled successor closure",
+    },
+    idempotency_key: "closure-handoff-reconciled-successor-issue",
+  });
+  const receipt = await subject.governance.redeemClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: original.issued.ticket.ticket_id,
+    handoff_id: handoff.handoff.handoff_id,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "e".repeat(32),
+    idempotency_key: "closure-handoff-reconciled-successor-redeem",
+  });
+  assert.equal(receipt.superseding_outcome_source, "reconciled_readback");
+  assert.equal(receipt.superseding_host_result_digest, undefined);
+  const unsigned = { ...receipt };
+  delete unsigned.authorization_digest;
+  delete unsigned.signature;
+  assert.equal(receipt.authorization_digest, hostNativeDigest(unsigned));
+});
+
+test("superseded closure handoff rejects a non-direct successor and a production advance", async () => {
+  const direct = harness();
+  const original = await prepareFinalizableMerge(direct);
+  const nonDirect = await prepareSupersedingMerge(direct, {
+    base_commit: G("5"),
+    expected_base_commit: G("5"),
+    expected_previous_commit: G("5"),
+    rollback_commit: G("5"),
+    idempotency_suffix: "non-direct",
+  });
+  const baseIssue = {
+    tenant_id: "codexai",
+    ticket_id: original.issued.ticket.ticket_id,
+    superseding_action_ticket_id: nonDirect.issued.ticket.ticket_id,
+    work_id: "work-1",
+    plan_id: "local-plan-1",
+    result_commit: G("4"),
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "c".repeat(32),
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: OWNER,
+      consent_nonce: "closure-handoff-owner-consent-non-direct",
+      confirmation_reference: "owner requested non-direct closure",
+    },
+    idempotency_key: "closure-handoff-non-direct-issue",
+  };
+  await assert.rejects(
+    direct.governance.issueClosureHandoff(baseIssue),
+    /closure_handoff_superseding_release_mismatch/,
+  );
+
+  let currentClock = "2026-07-29T10:00:00.000Z";
+  const advanced = harness({
+    externalReadbackVerifier: async ({
+      ticket,
+      target_commit,
+      superseding_ticket,
+      superseding_target_commit,
+    }) => {
+      const readback = trustedSupersededExternalReadback(
+        ticket,
+        target_commit,
+        superseding_ticket,
+        superseding_target_commit,
+        currentClock,
+      );
+      const service = readback.services[0];
+      const unsigned = { ...service, live_commit: G("a") };
+      delete unsigned.readback_digest;
+      readback.services[0] = {
+        ...unsigned,
+        readback_digest: hostNativeDigest(unsigned),
+      };
+      return readback;
+    },
+  });
+  const advancedOriginal = await prepareFinalizableMerge(advanced);
+  const advancedSuccessor = await prepareSupersedingMerge(advanced);
+  const handoff = await advanced.governance.issueClosureHandoff({
+    ...baseIssue,
+    ticket_id: advancedOriginal.issued.ticket.ticket_id,
+    superseding_action_ticket_id: advancedSuccessor.issued.ticket.ticket_id,
+    closure_session_fingerprint: "d".repeat(32),
+    owner_confirmation: {
+      ...baseIssue.owner_confirmation,
+      consent_nonce: "closure-handoff-owner-consent-production-advanced",
+    },
+    idempotency_key: "closure-handoff-production-advanced-issue",
+  });
+  await assert.rejects(advanced.governance.redeemClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: advancedOriginal.issued.ticket.ticket_id,
+    handoff_id: handoff.handoff.handoff_id,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "d".repeat(32),
+    idempotency_key: "closure-handoff-production-advanced-redeem",
+  }), /trusted_superseded_readback_service_mismatch/);
+});
+
+test("closure handoff fails closed on binding drift and concurrent redemption", async () => {
+  const subject = harness();
+  const executionSession = "3".repeat(32);
+  const closureSession = "4".repeat(32);
+  const { issued } = await prepareFinalizableMerge(subject, {
+    host_kind: "codex_native",
+    host_session_fingerprint: executionSession,
+  });
+  const baseIssue = {
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    work_id: "work-1",
+    plan_id: "local-plan-1",
+    result_commit: G("4"),
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: closureSession,
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: OWNER,
+      consent_nonce: "closure-handoff-owner-consent-concurrent",
+      confirmation_reference: "owner approved concurrent redemption test",
+    },
+    idempotency_key: "closure-handoff-concurrent-issue",
+  };
+  await assert.rejects(subject.governance.issueClosureHandoff({
+    ...baseIssue,
+    plan_id: "different-local-plan",
+  }), /closure_handoff_plan_mismatch/);
+  await assert.rejects(subject.governance.issueClosureHandoff({
+    ...baseIssue,
+    result_commit: G("9"),
+  }), /result_commit_mismatch/);
+  const handoffRecord = await subject.governance.issueClosureHandoff(baseIssue);
+  await assert.rejects(subject.governance.redeemClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    handoff_id: handoffRecord.handoff.handoff_id,
+    closure_host_kind: "codex_native",
+    closure_session_fingerprint: closureSession,
+    idempotency_key: "closure-handoff-wrong-host",
+  }), /closure_handoff_successor_mismatch/);
+  const redemption = (key) => subject.governance.redeemClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    handoff_id: handoffRecord.handoff.handoff_id,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: closureSession,
+    idempotency_key: key,
+  });
+  const results = await Promise.allSettled([
+    redemption("closure-handoff-concurrent-a"),
+    redemption("closure-handoff-concurrent-b"),
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+  assert.match(
+    String(results.find((result) => result.status === "rejected")?.reason?.message),
+    /closure_handoff_replayed/,
+  );
+});
+
+test("closure handoff rejects cross-tenant access, expiry, and persisted binding tamper before readback", async () => {
+  let readbackCalls = 0;
+  const externalReadbackVerifier = async ({ ticket, target_commit }) => {
+    readbackCalls += 1;
+    return trustedExternalReadback(
+      ticket,
+      target_commit,
+      "2026-07-29T10:00:00.000Z",
+    );
+  };
+  const subject = harness({ externalReadbackVerifier });
+  const { issued } = await prepareFinalizableMerge(subject, {
+    host_kind: "codex_native",
+    host_session_fingerprint: "5".repeat(32),
+  });
+  const handoff = await subject.governance.issueClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    work_id: "work-1",
+    plan_id: "local-plan-1",
+    result_commit: G("4"),
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "6".repeat(32),
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: OWNER,
+      consent_nonce: "closure-handoff-owner-consent-security",
+      confirmation_reference: "owner approved security-bound handoff",
+    },
+    idempotency_key: "closure-handoff-security-issue",
+  });
+  await assert.rejects(subject.governance.readClosureHandoff({
+    tenant_id: "tenant-other",
+    handoff_id: handoff.handoff.handoff_id,
+  }), /cross_tenant_closure_handoff_denied/);
+  await assert.rejects(subject.governance.redeemClosureHandoff({
+    tenant_id: "tenant-other",
+    ticket_id: issued.ticket.ticket_id,
+    handoff_id: handoff.handoff.handoff_id,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "6".repeat(32),
+    idempotency_key: "closure-handoff-cross-tenant",
+  }), /cross_tenant_closure_handoff_denied/);
+  assert.equal(readbackCalls, 0);
+  subject.advance(2 * 60_000 + 1);
+  await assert.rejects(subject.governance.redeemClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    handoff_id: handoff.handoff.handoff_id,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "6".repeat(32),
+    idempotency_key: "closure-handoff-expired",
+  }), /closure_handoff_expired/);
+  assert.equal(readbackCalls, 0);
+
+  const tamperStore = createInMemoryHostNativeGovernanceStore();
+  const tamperedSubject = harness({
+    store: tamperStore,
+    externalReadbackVerifier,
+  });
+  const tamperedTicket = await prepareFinalizableMerge(tamperedSubject, {
+    host_kind: "codex_native",
+    host_session_fingerprint: "7".repeat(32),
+  });
+  const tamperedHandoff = await tamperedSubject.governance.issueClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: tamperedTicket.issued.ticket.ticket_id,
+    work_id: "work-1",
+    plan_id: "local-plan-1",
+    result_commit: G("4"),
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "8".repeat(32),
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: OWNER,
+      consent_nonce: "closure-handoff-owner-consent-tamper",
+      confirmation_reference: "owner approved tamper test handoff",
+    },
+    idempotency_key: "closure-handoff-tamper-issue",
+  });
+  tamperStore.mutate((state) => {
+    state.closure_handoffs[
+      tamperedHandoff.handoff.handoff_id
+    ].handoff.result_commit = G("8");
+    return null;
+  });
+  await assert.rejects(tamperedSubject.governance.redeemClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: tamperedTicket.issued.ticket.ticket_id,
+    handoff_id: tamperedHandoff.handoff.handoff_id,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "8".repeat(32),
+    idempotency_key: "closure-handoff-tamper-redeem",
+  }), /closure_handoff_signature_invalid/);
+  assert.equal(readbackCalls, 0);
+});
+
+test("closure handoff cannot cross its TTL while server-owned readback is running", async () => {
+  let subject;
+  subject = harness({
+    closureHandoffTtlMs: 1_000,
+    externalReadbackVerifier: async ({ ticket, target_commit }) => {
+      subject.advance(1_001);
+      return trustedExternalReadback(
+        ticket,
+        target_commit,
+        new Date(subject.now()).toISOString(),
+      );
+    },
+  });
+  const { issued } = await prepareFinalizableMerge(subject, {
+    host_kind: "codex_native",
+    host_session_fingerprint: "9".repeat(32),
+  });
+  const handoff = await subject.governance.issueClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    work_id: "work-1",
+    plan_id: "local-plan-1",
+    result_commit: G("4"),
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "a".repeat(32),
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: OWNER,
+      consent_nonce: "closure-handoff-owner-consent-slow-readback",
+      confirmation_reference: "owner approved slow-readback handoff test",
+    },
+    idempotency_key: "closure-handoff-slow-readback-issue",
+  });
+  await assert.rejects(subject.governance.redeemClosureHandoff({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    handoff_id: handoff.handoff.handoff_id,
+    closure_host_kind: "chatgpt_native",
+    closure_session_fingerprint: "a".repeat(32),
+    idempotency_key: "closure-handoff-slow-readback-redeem",
+  }), /closure_handoff_expired/);
+  const stillIssued = await subject.governance.readClosureHandoff({
+    tenant_id: "codexai",
+    handoff_id: handoff.handoff.handoff_id,
+  });
+  assert.equal(stillIssued.state, "issued");
+  assert.equal(stillIssued.uses, 0);
 });

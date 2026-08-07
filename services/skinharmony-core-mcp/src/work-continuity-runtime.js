@@ -1502,21 +1502,18 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   function nativeCoordinatorFingerprint(identity) {
     const presence = identity?.agentPresence;
+    const logicalFingerprint = String(presence?.session_fingerprint || "");
     const transportFingerprint = String(
       presence?.host_transport_session_fingerprint || "",
     );
+    const signature = String(presence?.signature || "");
     if (
       presence?.transport_bound === true &&
-      /^[a-f0-9]{16,64}$/i.test(transportFingerprint)
+      /^[a-f0-9]{16,64}$/i.test(logicalFingerprint) &&
+      /^[a-f0-9]{16,64}$/i.test(transportFingerprint) &&
+      /^ags_[a-f0-9]{32}$/.test(signature)
     ) {
-      return transportFingerprint;
-    }
-    const developmentFingerprint = String(presence?.session_fingerprint || "");
-    if (
-      process.env.NODE_ENV !== "production" &&
-      /^[a-f0-9]{16,64}$/i.test(developmentFingerprint)
-    ) {
-      return developmentFingerprint;
+      return logicalFingerprint;
     }
     throw new Error("native_agent_coordinator_presence_required");
   }
@@ -2614,6 +2611,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       "native_agent_plan",
       {
         input,
+        coordinator_session_fingerprint: coordinatorSessionFingerprint,
         core_plan_digest: options.corePlan ? digest(options.corePlan) : null,
       },
       async () => {
@@ -2740,6 +2738,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
       if (!plan) throw new Error("native_agent_plan_not_found");
       if (planResult.rows[0].status !== "planned") throw new Error("native_agent_plan_not_open");
       if (plan.host_type !== hostType) throw new Error("native_agent_host_scope_mismatch");
+      if (plan.coordinator_session_fingerprint !== coordinatorSessionFingerprint) {
+        throw new Error("native_agent_coordinator_session_mismatch");
+      }
       const task = plan.tasks.find((candidate) => candidate.task_id === taskId);
       if (!task) throw new Error("native_agent_task_not_found");
       const active = await client.query(`SELECT task_id,status
@@ -3367,6 +3368,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
   async function finalizeClosure(identity, input, authorization) {
     const allowedInputFields = new Set([
       "work_id", "plan_id", "action_ticket_id", "idempotency_key",
+      "closure_handoff_id",
       "agent_id", "client_type", "session_id",
     ]);
     if (Object.keys(input || {}).some((field) => !allowedInputFields.has(field))) {
@@ -3383,14 +3385,42 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("continuity_external_release_ticket_invalid");
     }
     const receipt = requireObject(authorization, "core_finalize_authorization");
-    const coordinatorSessionFingerprint = String(identity.agentPresence?.session_fingerprint || "");
-    if (!/^[a-f0-9]{16,64}$/i.test(coordinatorSessionFingerprint)) {
-      throw new Error("native_agent_coordinator_presence_required");
-    }
+    const coordinatorSessionFingerprint = nativeCoordinatorFingerprint(identity);
     const targetCommit = String(receipt.target_commit || "").toLowerCase();
     const issuedAt = dateValue(receipt.issued_at, "core_finalize_issued_at");
     const expiresAt = dateValue(receipt.expires_at, "core_finalize_expires_at");
     const currentTime = nowDate().getTime();
+    const handoffRequested = input.closure_handoff_id !== undefined;
+    const handoffReceipt = [
+      "host_native_finalize_authorization_v2",
+      "host_native_finalize_authorization_v3",
+    ].includes(receipt.schema_version);
+    const supersededReceipt =
+      receipt.schema_version === "host_native_finalize_authorization_v3";
+    const currentLiveCommit = supersededReceipt
+      ? String(receipt.current_live_commit || "").toLowerCase()
+      : targetCommit;
+    if (handoffRequested !== handoffReceipt) {
+      throw new Error("continuity_trusted_core_closure_receipt_required");
+    }
+    const currentClientType = String(identity.agentPresence?.client_type || "").toLowerCase();
+    const currentClosureHostKind = currentClientType === "codex"
+      ? "codex_native"
+      : currentClientType === "chatgpt"
+        ? "chatgpt_native"
+        : "";
+    const executionHostKind = handoffReceipt
+      ? String(receipt.execution_host_kind || "")
+      : String(receipt.host_kind || "");
+    const executionSessionFingerprint = handoffReceipt
+      ? String(receipt.execution_host_session_fingerprint || "")
+      : String(receipt.host_session_fingerprint || "");
+    const closureHostKind = handoffReceipt
+      ? String(receipt.closure_host_kind || "")
+      : executionHostKind;
+    const closureSessionFingerprint = handoffReceipt
+      ? String(receipt.closure_session_fingerprint || "")
+      : executionSessionFingerprint;
     const digestFields = [
       "action_ticket_digest",
       "release_manifest_digest",
@@ -3398,38 +3428,158 @@ export function createWorkContinuityRuntime(config, options = {}) {
       "core_join_verdict_digest",
       "core_join_resolution_digest",
       "evidence_digest",
-      "host_result_digest",
       "host_readback_digest",
       "external_readback_digest",
       "readback_digest",
       "authorization_digest",
     ];
+    if (handoffReceipt) {
+      digestFields.push(
+        "core_plan_digest",
+        "local_plan_digest",
+        "closure_handoff_digest",
+      );
+    }
+    if (supersededReceipt) {
+      digestFields.push(
+        "superseding_action_ticket_digest",
+        "superseding_release_manifest_digest",
+        "superseding_release_intent_digest",
+        "superseding_core_join_verdict_digest",
+        "superseding_core_join_resolution_digest",
+        "superseding_evidence_digest",
+        "superseding_host_readback_digest",
+      );
+    }
+    const hostResultDigestValid =
+      /^[a-f0-9]{64}$/.test(String(receipt.host_result_digest || ""));
+    const supersedingHostResultDigestValid =
+      /^[a-f0-9]{64}$/.test(String(receipt.superseding_host_result_digest || ""));
     if (
-      receipt.schema_version !== "host_native_finalize_authorization_v1" ||
+      ![
+        "host_native_finalize_authorization_v1",
+        "host_native_finalize_authorization_v2",
+        "host_native_finalize_authorization_v3",
+      ].includes(receipt.schema_version) ||
       receipt.trusted !== true ||
       receipt.allowed !== true ||
-      receipt.decision !== "ALLOW_FINALIZE" ||
+      receipt.decision !== (supersededReceipt
+        ? "ALLOW_FINALIZE_SUPERSEDED_RELEASE"
+        : "ALLOW_FINALIZE") ||
       receipt.decision_id !== actionTicketId ||
       receipt.tenant_id !== context.tenantId ||
       receipt.work_id !== context.workId ||
       receipt.action_ticket_id !== actionTicketId ||
       !/^[a-f0-9]{40}$/.test(targetCommit) ||
+      !/^[a-f0-9]{40}$/.test(currentLiveCommit) ||
       !/^hnj_[a-f0-9]{40}$/.test(String(receipt.core_join_verdict_id || "")) ||
       !/^hnf_[a-f0-9]{64}$/.test(String(receipt.signature || "")) ||
       digestFields.some((field) => !/^[a-f0-9]{64}$/.test(String(receipt[field] || ""))) ||
       receipt.result_commit_verified !== true ||
-      receipt.host_session_fingerprint !== coordinatorSessionFingerprint ||
-      !NATIVE_HOST_TYPES.has(String(receipt.host_kind || "")) ||
+      (
+        receipt.outcome_source === "verified_completion"
+          ? !hostResultDigestValid
+          : receipt.host_result_digest !== undefined && !hostResultDigestValid
+      ) ||
+      (
+        supersededReceipt && (
+          receipt.superseding_outcome_source === "verified_completion"
+            ? !supersedingHostResultDigestValid
+            : receipt.superseding_host_result_digest !== undefined &&
+              !supersedingHostResultDigestValid
+        )
+      ) ||
+      closureSessionFingerprint !== coordinatorSessionFingerprint ||
+      !NATIVE_HOST_TYPES.has(executionHostKind) ||
+      !NATIVE_HOST_TYPES.has(closureHostKind) ||
+      (handoffReceipt && closureHostKind !== currentClosureHostKind) ||
+      !/^[a-f0-9]{16,64}$/i.test(executionSessionFingerprint) ||
+      !/^[a-f0-9]{16,64}$/i.test(closureSessionFingerprint) ||
       receipt.host_policy_override !== false ||
       receipt.host_policy_must_allow !== true ||
       receipt.external_execution_allowed !== false ||
       receipt.host_execution_required !== true ||
       receipt.provider_execution !== false ||
       (
+        handoffReceipt && (
+          receipt.host_kind !== undefined ||
+          receipt.host_session_fingerprint !== undefined ||
+          receipt.previous_authorization_digest !== undefined ||
+          receipt.closure_handoff_id !== input.closure_handoff_id ||
+          !/^hnh_[A-Za-z0-9._-]{8,160}$/.test(
+            String(receipt.closure_handoff_id || ""),
+          ) ||
+          receipt.local_plan_id !== planId ||
+          !/^hnp_[a-f0-9]{40}$/.test(String(receipt.core_plan_id || "")) ||
+          executionSessionFingerprint === closureSessionFingerprint ||
+          receipt.external_action_replay_allowed !== false
+        )
+      ) ||
+      (
+        supersededReceipt && (
+          receipt.release_state !== "superseded" ||
+          currentLiveCommit === targetCommit ||
+          receipt.superseding_result_commit !== currentLiveCommit ||
+          receipt.superseding_result_commit_verified !== true ||
+          !/^hnt_[A-Za-z0-9-]{8,160}$/.test(
+            String(receipt.superseding_action_ticket_id || ""),
+          ) ||
+          receipt.superseding_action_ticket_id === actionTicketId ||
+          !/^hnj_[a-f0-9]{40}$/.test(
+            String(receipt.superseding_core_join_verdict_id || ""),
+          ) ||
+          !receipt.superseding_release_manifest_binding ||
+          !receipt.superseding_release_join_resolution ||
+          !receipt.superseding_github_readback ||
+          !["verified_completion", "reconciled_readback"].includes(
+            receipt.superseding_outcome_source,
+          )
+        )
+      ) ||
+      (
+        handoffReceipt && !supersededReceipt && [
+          "release_state",
+          "current_live_commit",
+          "superseding_action_ticket_id",
+          "superseding_action_ticket_digest",
+          "superseding_result_commit",
+          "superseding_release_manifest_digest",
+          "superseding_release_intent_digest",
+          "superseding_core_join_verdict_id",
+          "superseding_core_join_verdict_digest",
+          "superseding_core_join_resolution_digest",
+          "superseding_evidence_digest",
+          "superseding_release_manifest_binding",
+          "superseding_release_join_resolution",
+          "superseding_host_result_digest",
+          "superseding_host_readback_digest",
+          "superseding_result_commit_verified",
+          "superseding_github_readback",
+          "superseding_outcome_source",
+        ].some((field) => receipt[field] !== undefined)
+      ) ||
+      (
+        !handoffReceipt && [
+          "closure_handoff_id",
+          "closure_handoff_digest",
+          "execution_host_kind",
+          "execution_host_session_fingerprint",
+          "closure_host_kind",
+          "closure_session_fingerprint",
+          "core_plan_id",
+          "core_plan_digest",
+          "local_plan_id",
+          "local_plan_digest",
+          "external_action_replay_allowed",
+        ].some((field) => receipt[field] !== undefined)
+      ) ||
+      (
         receipt.previous_authorization_digest !== undefined &&
         !/^[a-f0-9]{64}$/.test(String(receipt.previous_authorization_digest || ""))
       ) ||
-      receipt.readback_source !== "core_server_external_readback_v1" ||
+      receipt.readback_source !== (supersededReceipt
+        ? "core_server_superseded_external_readback_v1"
+        : "core_server_external_readback_v1") ||
       !["verified_completion", "reconciled_readback"].includes(receipt.outcome_source) ||
       issuedAt.getTime() > currentTime + 5 * 60 * 1_000 ||
       expiresAt.getTime() <= currentTime ||
@@ -3448,6 +3598,161 @@ export function createWorkContinuityRuntime(config, options = {}) {
     ) {
       throw new Error("continuity_core_closure_receipt_integrity_failed");
     }
+    let supersedingMaterial = null;
+    if (supersededReceipt) {
+      const binding = requireObject(
+        receipt.superseding_release_manifest_binding,
+        "superseding_release_manifest_binding",
+      );
+      const resolution = requireObject(
+        receipt.superseding_release_join_resolution,
+        "superseding_release_join_resolution",
+      );
+      const source = requireObject(
+        resolution.source_attestation,
+        "superseding_source_attestation",
+      );
+      const delivery = requireObject(binding.delivery, "superseding_delivery");
+      const rollback = requireObject(binding.rollback, "superseding_rollback");
+      const verification = requireObject(
+        binding.verification,
+        "superseding_verification",
+      );
+      const services = Array.isArray(delivery.services) ? delivery.services : [];
+      const attestations = Array.isArray(resolution.previous_live_attestations)
+        ? resolution.previous_live_attestations
+        : [];
+      const sourceUnsigned = { ...source };
+      delete sourceUnsigned.attestation_digest;
+      const releaseIntentUnsigned = {
+        schema_version: "host_release_intent_v1",
+        tenant_id: binding.tenant_id,
+        work_id: binding.work_id,
+        intent_anchor_digest: binding.intent_anchor_digest,
+        repository: binding.repository,
+        base_branch: binding.base_branch,
+        delivery_branch: binding.delivery_branch,
+        base_commit: binding.base_commit,
+        head_commit: binding.head_commit,
+        tree_sha: binding.tree_sha,
+        diff_digest: binding.diff_digest,
+        changed_files: binding.changed_files,
+        delivery: {
+          ...delivery,
+          services: services.map(({ origin: _origin, ...service }) => service),
+        },
+        rollback,
+        verification: {
+          builder_agent_id: verification.builder_agent_id,
+          verifier_agent_ids: verification.verifier_agent_ids,
+          required_checks: verification.required_checks,
+          checks_commit: verification.checks_commit,
+          checks_digest: verification.checks_digest,
+          evidence_digest: verification.evidence_digest,
+        },
+      };
+      const github = requireObject(
+        receipt.superseding_github_readback,
+        "superseding_github_readback",
+      );
+      if (
+        binding.schema_version !== "host_release_manifest_v2" ||
+        binding.manifest_digest !== receipt.superseding_release_manifest_digest ||
+        binding.repository !== receipt.repository ||
+        binding.base_commit !== targetCommit ||
+        rollback.target_commit !== targetCommit ||
+        rollback.ready !== true ||
+        !Array.isArray(binding.services) ||
+        JSON.stringify([...binding.services].sort((left, right) =>
+          `${left?.service_id}:${left?.environment}`.localeCompare(
+            `${right?.service_id}:${right?.environment}`,
+          ))) !== JSON.stringify([...services].sort((left, right) =>
+          `${left?.service_id}:${left?.environment}`.localeCompare(
+            `${right?.service_id}:${right?.environment}`,
+          ))) ||
+        verification.core_join_verdict_id !==
+          receipt.superseding_core_join_verdict_id ||
+        verification.checks_commit !== binding.head_commit ||
+        digest(releaseIntentUnsigned) !==
+          receipt.superseding_release_intent_digest ||
+        resolution.schema_version !== "host_native_release_join_resolution_v1" ||
+        resolution.trusted !== true || resolution.authority !== "universal_core" ||
+        resolution.allowed !== true || resolution.provider_execution !== false ||
+        resolution.verdict_id !== receipt.superseding_core_join_verdict_id ||
+        resolution.tenant_id !== binding.tenant_id ||
+        resolution.work_id !== binding.work_id ||
+        resolution.intent_anchor_digest !== binding.intent_anchor_digest ||
+        resolution.repository !== binding.repository ||
+        resolution.checks_commit !== verification.checks_commit ||
+        resolution.evidence_digest !== receipt.superseding_evidence_digest ||
+        digest(resolution) !== receipt.superseding_core_join_resolution_digest ||
+        source.schema_version !== "host_native_source_attestation_v1" ||
+        source.repository !== binding.repository ||
+        source.evidence_kind !== "github_pull_request_files" ||
+        source.base_commit !== targetCommit ||
+        source.head_commit !== binding.head_commit ||
+        source.tree_sha !== binding.tree_sha ||
+        source.diff_digest !== binding.diff_digest ||
+        JSON.stringify([...(source.changed_files || [])].sort()) !==
+          JSON.stringify([...(binding.changed_files || [])].sort()) ||
+        source.attestation_digest !== digest(sourceUnsigned) ||
+        resolution.pre_action_readback_digest !== digest({
+          source_attestation: source,
+          previous_live_attestations: attestations,
+        }) ||
+        services.length < 1 || attestations.length !== services.length ||
+        github.repository !== receipt.repository ||
+        github.action_kind !== "github.merge" ||
+        github.target_commit !== currentLiveCommit ||
+        github.merge_commit !== currentLiveCommit ||
+        github.expected_base_commit !== targetCommit ||
+        github.head_commit !== binding.head_commit ||
+        github.checks_commit !== binding.head_commit ||
+        github.head_tree_sha !== binding.tree_sha ||
+        JSON.stringify(github.merge_parents) !==
+          JSON.stringify([targetCommit, binding.head_commit]) ||
+        github.rollback_commit !== targetCommit ||
+        github.rollback_commit_available !== true ||
+        github.checks_passed !== true
+      ) {
+        throw new Error("continuity_superseding_release_authorization_mismatch");
+      }
+      const serviceKeys = new Set();
+      for (const service of services) {
+        const key = `${service?.service_id}\u0000${service?.environment}`;
+        const previous = attestations.find((entry) =>
+          entry?.service_id === service?.service_id &&
+          entry?.environment === service?.environment);
+        const previousUnsigned = previous ? { ...previous } : null;
+        if (previousUnsigned) delete previousUnsigned.readback_digest;
+        if (
+          serviceKeys.has(key) || !previous ||
+          service.expected_previous_commit !== targetCommit ||
+          service.target_commit !== null ||
+          service.target_resolution !== "post_merge_readback" ||
+          rollback.health_contract_digest !== service.health_contract_digest ||
+          previous.origin !== service.origin ||
+          previous.live_commit !== targetCommit ||
+          previous.health_status !== "healthy" ||
+          previous.health_contract_digest !== service.health_contract_digest ||
+          previous.readback_digest !== digest(previousUnsigned)
+        ) {
+          throw new Error("continuity_superseding_previous_live_mismatch");
+        }
+        serviceKeys.add(key);
+      }
+      if (
+        !Array.isArray(github.observed_checks) ||
+        github.observed_checks.some((check) =>
+          check?.status !== "completed" || check?.conclusion !== "success" ||
+          check?.head_commit !== binding.head_commit) ||
+        JSON.stringify([...(github.required_checks || [])].sort()) !==
+          JSON.stringify([...(verification.required_checks || [])].sort())
+      ) {
+        throw new Error("continuity_superseding_checks_mismatch");
+      }
+      supersedingMaterial = { binding, resolution, services, attestations };
+    }
     return transaction(async (client) => withIdempotency(
       client,
       context,
@@ -3458,6 +3763,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         plan_id: planId,
         action_ticket_id: actionTicketId,
         authorization_digest: suppliedAuthorizationDigest,
+        ...(handoffReceipt
+          ? { closure_handoff_id: receipt.closure_handoff_id }
+          : {}),
       },
       async () => {
         await lockWorkRow(client, context);
@@ -3492,11 +3800,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
           throw new Error("native_agent_plan_not_release_ready");
         }
         if (
-          row.plan.host_type !== receipt.host_kind ||
+          row.plan.host_type !== executionHostKind ||
           row.plan.core_authority?.repository !== receipt.repository ||
           row.release_intent.repository !== receipt.repository ||
           row.release_intent.work_id !== context.workId ||
-          row.release_intent.tenant_id !== context.tenantId
+          row.release_intent.tenant_id !== context.tenantId ||
+          (
+            handoffReceipt && (
+              row.plan.core_authority?.plan_id !== receipt.core_plan_id ||
+              row.plan.core_authority?.plan_digest !== receipt.core_plan_digest
+            )
+          )
         ) {
           throw new Error("continuity_host_policy_scope_mismatch");
         }
@@ -3516,6 +3830,16 @@ export function createWorkContinuityRuntime(config, options = {}) {
             receipt.core_join_verdict_digest ||
           row.release_intent_digest !== receipt.release_intent_digest ||
           coreJoinClaim.evaluation_digest !== row.evaluation_digest ||
+          (
+            handoffReceipt && (
+              coreJoinClaim.core_plan_id !== receipt.core_plan_id ||
+              coreJoinClaim.core_plan_digest !== receipt.core_plan_digest ||
+              coreJoinClaim.local_plan_id !== receipt.local_plan_id ||
+              coreJoinClaim.local_plan_digest !== receipt.local_plan_digest ||
+              receipt.local_plan_id !== planId ||
+              receipt.local_plan_digest !== row.plan_digest
+            )
+          ) ||
           row.core_join_record_digest !== receipt.evidence_digest ||
           row.release_intent.head_commit !== row.evaluation.target_commit ||
           receipt.github_readback?.checks_commit !== row.evaluation.target_commit ||
@@ -3525,6 +3849,26 @@ export function createWorkContinuityRuntime(config, options = {}) {
             JSON.stringify([...(row.evaluation.required_checks || [])].sort())
         ) {
           throw new Error("continuity_external_release_authorization_mismatch");
+        }
+        if (supersededReceipt && (
+          receipt.github_readback?.repository !== receipt.repository ||
+          receipt.github_readback?.action_kind !== "github.merge" ||
+          receipt.github_readback?.target_commit !== targetCommit ||
+          receipt.github_readback?.merge_commit !== targetCommit ||
+          receipt.github_readback?.expected_base_commit !==
+            row.release_intent.base_commit ||
+          receipt.github_readback?.head_commit !== row.release_intent.head_commit ||
+          receipt.github_readback?.head_tree_sha !== row.release_intent.tree_sha ||
+          JSON.stringify(receipt.github_readback?.merge_parents) !==
+            JSON.stringify([
+              row.release_intent.base_commit,
+              row.release_intent.head_commit,
+            ]) ||
+          receipt.github_readback?.rollback_commit !==
+            row.release_intent.rollback?.target_commit ||
+          receipt.github_readback?.rollback_commit_available !== true
+        )) {
+          throw new Error("continuity_original_release_readback_mismatch");
         }
         const changedFiles = [...(row.release_intent.changed_files || [])].sort();
         if (
@@ -3545,21 +3889,43 @@ export function createWorkContinuityRuntime(config, options = {}) {
           `${left.service_id}:${left.environment}`.localeCompare(
             `${right.service_id}:${right.environment}`,
           ));
+        const supersedingServices = supersededReceipt
+          ? [...supersedingMaterial.services].sort((left, right) =>
+            `${left.service_id}:${left.environment}`.localeCompare(
+              `${right.service_id}:${right.environment}`,
+            ))
+          : [];
         if (
           !expectedServices.length ||
           liveServices.length !== expectedServices.length ||
           expectedServices.some((expected, index) => {
             const live = liveServices[index];
+            const superseding = supersededReceipt
+              ? supersedingServices[index]
+              : null;
             return (
               live?.service_id !== expected.service_id ||
               live?.environment !== expected.environment ||
-              live?.live_commit !== targetCommit ||
+              live?.live_commit !== currentLiveCommit ||
               live?.health_status !== "healthy" ||
               live?.health_contract_digest !== expected.health_contract_digest ||
-              live?.rollback_commit !== row.release_intent.rollback?.target_commit ||
+              live?.rollback_commit !== (supersededReceipt
+                ? targetCommit
+                : row.release_intent.rollback?.target_commit) ||
               live?.rollback_status !== "previous_live_attested" ||
               !/^[a-f0-9]{64}$/.test(String(live?.readback_digest || "")) ||
               (
+                supersededReceipt && (
+                  superseding?.service_id !== expected.service_id ||
+                  superseding?.environment !== expected.environment ||
+                  superseding?.origin !== live?.origin ||
+                  superseding?.health_contract_digest !==
+                    expected.health_contract_digest ||
+                  superseding?.expected_previous_commit !== targetCommit
+                )
+              ) ||
+              (
+                !supersededReceipt &&
                 expected.target_resolution === "exact_commit" &&
                 expected.target_commit !== targetCommit
               )
@@ -3571,7 +3937,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         const finalReceipt = await insertNativeReceipt(client, context, {
           plan_id: planId,
           receipt_type: "closure_finalized",
-          host_type: receipt.host_kind,
+          host_type: executionHostKind,
           coordinator_session_fingerprint: coordinatorSessionFingerprint,
           payload: {
             core_decision_id: receipt.decision_id,
@@ -3580,7 +3946,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
             readback_at: receipt.issued_at,
             health_ok: true,
             rollback_ready: true,
-            host_type: receipt.host_kind,
+            host_type: executionHostKind,
+            closure_host_type: closureHostKind,
+            execution_session_fingerprint: executionSessionFingerprint,
+            closure_session_fingerprint: closureSessionFingerprint,
             host_policy_allowed: true,
             closure_evaluation_id: row.evaluation_id,
             closure_evaluation_digest: row.evaluation_digest,
@@ -3596,6 +3965,34 @@ export function createWorkContinuityRuntime(config, options = {}) {
             external_readback_digest: receipt.external_readback_digest,
             authorization_digest: suppliedAuthorizationDigest,
             authorization_signature: receipt.signature,
+            ...(supersededReceipt ? {
+              release_state: "superseded",
+              current_live_commit: currentLiveCommit,
+              superseding_action_ticket_id:
+                receipt.superseding_action_ticket_id,
+              superseding_action_ticket_digest:
+                receipt.superseding_action_ticket_digest,
+              superseding_release_manifest_digest:
+                receipt.superseding_release_manifest_digest,
+              superseding_release_intent_digest:
+                receipt.superseding_release_intent_digest,
+              superseding_core_join_verdict_id:
+                receipt.superseding_core_join_verdict_id,
+              superseding_core_join_verdict_digest:
+                receipt.superseding_core_join_verdict_digest,
+              superseding_core_join_resolution_digest:
+                receipt.superseding_core_join_resolution_digest,
+              superseding_external_readback_digest:
+                receipt.external_readback_digest,
+            } : {}),
+            ...(handoffReceipt ? {
+              closure_handoff_id: receipt.closure_handoff_id,
+              closure_handoff_digest: receipt.closure_handoff_digest,
+              core_plan_id: receipt.core_plan_id,
+              core_plan_digest: receipt.core_plan_digest,
+              local_plan_id: receipt.local_plan_id,
+              local_plan_digest: receipt.local_plan_digest,
+            } : {}),
           },
         });
         await client.query(`UPDATE core_continuity_native_plans SET status='closed',closed_at=now()
@@ -3606,7 +4003,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
           WHERE tenant_id=$1 AND work_id=$2`,
         [context.tenantId, context.workId, digest({
           repository: receipt.repository,
-          commit_sha: targetCommit,
+          commit_sha: currentLiveCommit,
+          ...(supersededReceipt ? {
+            completed_release_commit: targetCommit,
+            release_state: "superseded",
+          } : {}),
           services: liveServices.map((service) => ({
             service_id: service.service_id,
             environment: service.environment,
@@ -3633,6 +4034,32 @@ export function createWorkContinuityRuntime(config, options = {}) {
           host_readback_digest: receipt.host_readback_digest,
           external_readback_digest: receipt.external_readback_digest,
           authorization_digest: suppliedAuthorizationDigest,
+          ...(supersededReceipt ? {
+            release_state: "superseded",
+            current_live_commit: currentLiveCommit,
+            superseding_action_ticket_id:
+              receipt.superseding_action_ticket_id,
+            superseding_action_ticket_digest:
+              receipt.superseding_action_ticket_digest,
+            superseding_release_manifest_digest:
+              receipt.superseding_release_manifest_digest,
+            superseding_release_intent_digest:
+              receipt.superseding_release_intent_digest,
+            superseding_core_join_verdict_id:
+              receipt.superseding_core_join_verdict_id,
+            superseding_core_join_verdict_digest:
+              receipt.superseding_core_join_verdict_digest,
+            superseding_core_join_resolution_digest:
+              receipt.superseding_core_join_resolution_digest,
+          } : {}),
+          ...(handoffReceipt ? {
+            closure_handoff_id: receipt.closure_handoff_id,
+            closure_handoff_digest: receipt.closure_handoff_digest,
+            execution_host_kind: executionHostKind,
+            execution_session_fingerprint: executionSessionFingerprint,
+            closure_host_kind: closureHostKind,
+            closure_session_fingerprint: closureSessionFingerprint,
+          } : {}),
           final_receipt_digest: finalReceipt.payload_digest,
         });
         return {
@@ -3643,8 +4070,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
           completed: true,
           external_release: true,
           target_commit: targetCommit,
+          ...(supersededReceipt ? {
+            release_state: "superseded",
+            current_live_commit: currentLiveCommit,
+            superseding_action_ticket_id:
+              receipt.superseding_action_ticket_id,
+          } : {}),
           core_decision_id: receipt.decision_id,
           action_ticket_id: actionTicketId,
+          ...(handoffReceipt ? {
+            closure_handoff_id: receipt.closure_handoff_id,
+          } : {}),
           release_manifest_digest: receipt.release_manifest_digest,
           release_intent_digest: receipt.release_intent_digest,
           external_readback_digest: receipt.external_readback_digest,

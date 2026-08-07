@@ -670,7 +670,12 @@ export function createHostNativeExternalReadbackVerifier({
   const boundedTimeout = Math.max(100, Math.min(60_000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
   const workflow_run_cache = createBoundedCache(workflowRunCacheMaximumEntries);
   const workflow_source_cache = createBoundedCache(workflowSourceCacheMaximumEntries);
-  const verify = async ({ ticket, target_commit }) => {
+  const verifySingle = async ({
+    ticket,
+    target_commit,
+    include_services = true,
+    strict_merge_graph = false,
+  }) => {
     const tenantId = string(ticket?.tenant_id);
     const repository = repositoryPath(ticket?.repository);
     const action = ticket?.action || {};
@@ -703,6 +708,8 @@ export function createHostNativeExternalReadbackVerifier({
     let branch = null;
     let branchCommit = null;
     let merged = null;
+    let headTreeSha = null;
+    let mergeParents = null;
     if (action.kind === "github.merge") {
       const pull = await getGithub(`/pulls/${Number(action.pull_request)}`);
       if (!validateMergePullRequest(pull, action, repository, targetCommit, { merged: true })) {
@@ -733,12 +740,33 @@ export function createHostNativeExternalReadbackVerifier({
     }
     const target = await getGithub(`/git/commits/${targetCommit}`);
     if (sha(target?.sha) !== targetCommit) error("trusted_readback_target_commit_mismatch");
+    if (action.kind === "github.merge" && strict_merge_graph) {
+      const head = targetCommit === checksCommit
+        ? target
+        : await getGithub(`/git/commits/${checksCommit}`);
+      const parents = Array.isArray(target?.parents)
+        ? target.parents.map((entry) => sha(entry?.sha))
+        : [];
+      if (
+        sha(head?.sha) !== checksCommit ||
+        sha(head?.tree?.sha) !== sha(binding?.tree_sha) ||
+        parents.length !== 2 ||
+        parents[0] !== sha(action.expected_base_commit) ||
+        parents[1] !== sha(action.head_commit)
+      ) {
+        error("trusted_readback_github_merge_graph_mismatch");
+      }
+      headTreeSha = sha(head.tree.sha);
+      mergeParents = parents;
+    }
     const rollback = await getGithub(`/git/commits/${rollbackCommit}`);
     if (sha(rollback?.sha) !== rollbackCommit) error("trusted_readback_rollback_unavailable");
     const sourceServices = Array.isArray(binding?.services) ? binding.services : [];
-    if (sourceServices.length < 1) error("trusted_readback_services_invalid");
+    if (include_services && sourceServices.length < 1) {
+      error("trusted_readback_services_invalid");
+    }
     const services = [];
-    for (const service of sourceServices) {
+    for (const service of include_services ? sourceServices : []) {
       const origin = originForHealth(service?.origin);
       const prior = expectedPrevious(ticket, service);
       if (
@@ -787,6 +815,10 @@ export function createHostNativeExternalReadbackVerifier({
       observed_checks: checks.observed_checks,
       rollback_commit: rollbackCommit,
       rollback_commit_available: true,
+      ...(strict_merge_graph ? {
+        head_tree_sha: headTreeSha,
+        merge_parents: mergeParents,
+      } : {}),
       ...(checks.required_checks_policy_digest ? {
         required_checks_policy_digest: checks.required_checks_policy_digest,
         checks_attestation_digest: checks.checks_attestation_digest,
@@ -800,6 +832,38 @@ export function createHostNativeExternalReadbackVerifier({
       verified_at: isoNow(now),
       github: { ...githubUnsigned, readback_digest: hostNativeDigest(githubUnsigned) },
       services,
+      external_side_effect: false,
+      provider_execution: false,
+    };
+  };
+  const verify = async ({
+    ticket,
+    target_commit,
+    superseding_ticket,
+    superseding_target_commit,
+  } = {}) => {
+    if (!superseding_ticket) {
+      return verifySingle({ ticket, target_commit });
+    }
+    const original = await verifySingle({
+      ticket,
+      target_commit,
+      include_services: false,
+      strict_merge_graph: true,
+    });
+    const superseding = await verifySingle({
+      ticket: superseding_ticket,
+      target_commit: superseding_target_commit,
+      strict_merge_graph: true,
+    });
+    return {
+      schema_version: "host_native_superseded_external_readback_v1",
+      trusted: true,
+      verifier_id: "core_server_superseded_external_readback_v1",
+      verified_at: superseding.verified_at,
+      original_github: original.github,
+      superseding_github: superseding.github,
+      services: superseding.services,
       external_side_effect: false,
       provider_execution: false,
     };

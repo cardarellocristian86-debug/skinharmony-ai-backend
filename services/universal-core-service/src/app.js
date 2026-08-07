@@ -7411,6 +7411,95 @@ export function createUniversalCoreService(options = {}) {
     },
   );
 
+  app.post(
+    "/v1/host-native/actions/:ticketId/closure-handoffs",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        if (req.body?.ticket_id !== req.params.ticketId) {
+          throw new Error("closure_handoff_ticket_mismatch");
+        }
+        const ownerConfirmation = verifyHostNativeOwnerConfirmation(
+          req,
+          "host_native_action_closure_handoff_issue",
+        );
+        if (!ownerConfirmation.confirmation_reference) {
+          throw new Error("confirmation_reference_invalid");
+        }
+        const {
+          tenant_id: _tenantId,
+          ticket_id: _ticketId,
+          owner_context: _ownerContext,
+          owner_confirmed: _ownerConfirmed,
+          confirmation_reference: _confirmationReference,
+          ...input
+        } = req.body || {};
+        const closureHandoff = await hostNativeGovernance.issueClosureHandoff({
+          ...input,
+          tenant_id: req.tenantId,
+          ticket_id: req.params.ticketId,
+          owner_confirmation: ownerConfirmation,
+        });
+        audit.append("core_host_native_closure_handoff_issued", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          ticket_id: req.params.ticketId,
+          handoff_id: closureHandoff.handoff.handoff_id,
+          execution_host_kind: closureHandoff.handoff.execution_host_kind,
+          closure_host_kind: closureHandoff.handoff.closure_host_kind,
+          expires_at: closureHandoff.handoff.expires_at,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          closure_handoff: closureHandoff,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/actions/:ticketId/closure-handoffs/:handoffId/redeem",
+    coreAuth(SCOPES.AUTOMATION_CODEX),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const {
+          tenant_id: _tenantId,
+          ticket_id: _ticketId,
+          handoff_id: _handoffId,
+          ...input
+        } = req.body || {};
+        const finalizeAuthorization =
+          await hostNativeGovernance.redeemClosureHandoff({
+            ...input,
+            tenant_id: req.tenantId,
+            ticket_id: req.params.ticketId,
+            handoff_id: req.params.handoffId,
+          });
+        audit.append("core_host_native_closure_handoff_redeemed", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          ticket_id: req.params.ticketId,
+          handoff_id: req.params.handoffId,
+          target_commit: finalizeAuthorization.target_commit,
+          execution_host_kind: finalizeAuthorization.execution_host_kind,
+          closure_host_kind: finalizeAuthorization.closure_host_kind,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          finalize_authorization: finalizeAuthorization,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
   for (const [suffix, method] of [
     ["reserve", "reserveActionTicket"],
     ["complete", "completeActionTicket"],

@@ -132,6 +132,9 @@ function mergeTicket({
     },
     release_manifest_binding: {
       base_commit: BASE,
+      head_commit: HEAD,
+      tree_sha: TREE,
+      changed_files: RELEASE_CHANGED_FILES,
       verification: {
         required_checks: ["deployment-parity", "unit-tests"],
         checks_commit: HEAD,
@@ -144,6 +147,82 @@ function mergeTicket({
     release_join_resolution: releaseJoinResolution,
     release_join_resolution_digest: hostNativeDigest(releaseJoinResolution),
   };
+}
+
+function supersedingMergeTicket() {
+  const ticket = structuredClone(mergeTicket());
+  const supersedingHead = "6".repeat(40);
+  const supersedingTarget = "7".repeat(40);
+  const supersedingTree = "8".repeat(40);
+  ticket.work_id = "work-b";
+  ticket.intent_anchor_digest = "c".repeat(64);
+  ticket.evidence_digest = "d".repeat(64);
+  ticket.core_join_verdict_id = "hnj_successor";
+  ticket.action = {
+    ...ticket.action,
+    pull_request: 43,
+    head_commit: supersedingHead,
+    expected_base_commit: TARGET,
+    checks_commit: supersedingHead,
+  };
+  ticket.release_manifest_binding = {
+    ...ticket.release_manifest_binding,
+    base_commit: TARGET,
+    head_commit: supersedingHead,
+    tree_sha: supersedingTree,
+    verification: {
+      ...ticket.release_manifest_binding.verification,
+      checks_commit: supersedingHead,
+    },
+    services: ticket.release_manifest_binding.services.map((service) => ({
+      ...service,
+      expected_previous_commit: TARGET,
+    })),
+    rollback: { target_commit: TARGET },
+  };
+  const sourceUnsigned = {
+    ...ticket.release_join_resolution.source_attestation,
+    pull_request: 43,
+    base_commit: TARGET,
+    head_commit: supersedingHead,
+    tree_sha: supersedingTree,
+    diff_digest: hostNativeGithubDiffDigest({
+      repository: ticket.repository,
+      base_commit: TARGET,
+      head_commit: supersedingHead,
+      tree_sha: supersedingTree,
+      changed_files: RELEASE_CHANGED_FILES,
+    }),
+  };
+  delete sourceUnsigned.attestation_digest;
+  const sourceAttestation = {
+    ...sourceUnsigned,
+    attestation_digest: hostNativeDigest(sourceUnsigned),
+  };
+  const previousLiveAttestations =
+    ticket.release_join_resolution.previous_live_attestations.map((entry) => {
+      const unsigned = { ...entry, live_commit: TARGET };
+      delete unsigned.readback_digest;
+      return { ...unsigned, readback_digest: hostNativeDigest(unsigned) };
+    });
+  ticket.release_join_resolution = {
+    ...ticket.release_join_resolution,
+    verdict_id: ticket.core_join_verdict_id,
+    work_id: ticket.work_id,
+    intent_anchor_digest: ticket.intent_anchor_digest,
+    checks_commit: supersedingHead,
+    evidence_digest: ticket.evidence_digest,
+    source_attestation: sourceAttestation,
+    previous_live_attestations: previousLiveAttestations,
+    pre_action_readback_digest: hostNativeDigest({
+      source_attestation: sourceAttestation,
+      previous_live_attestations: previousLiveAttestations,
+    }),
+  };
+  ticket.release_join_resolution_digest = hostNativeDigest(
+    ticket.release_join_resolution,
+  );
+  return { ticket, supersedingHead, supersedingTarget, supersedingTree };
 }
 
 function refreshReleaseJoinSourceAttestation(ticket) {
@@ -1165,6 +1244,127 @@ test("external readback is tenant-scoped, uses fixed provider URLs, and proves e
   const unsignedGithub = { ...readback.github };
   delete unsignedGithub.readback_digest;
   assert.equal(readback.github.readback_digest, hostNativeDigest(unsignedGithub));
+});
+
+test("superseded readback revalidates both exact merge graphs and only current Render", async () => {
+  const original = mergeTicket();
+  const {
+    ticket: superseding,
+    supersedingHead,
+    supersedingTarget,
+    supersedingTree,
+  } = supersedingMergeTicket();
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    const root = "https://api.github.com/repos/owner/repo";
+    if (url === `${root}/commits/${HEAD}/check-runs?per_page=100`) {
+      return jsonResponse(successfulChecks(HEAD));
+    }
+    if (url === `${root}/commits/${supersedingHead}/check-runs?per_page=100`) {
+      return jsonResponse(successfulChecks(supersedingHead));
+    }
+    if (url === `${root}/pulls/42`) return jsonResponse(pullRequest());
+    if (url === `${root}/pulls/43`) {
+      return jsonResponse(pullRequest("owner/repo", {
+        merge_commit_sha: supersedingTarget,
+        head: {
+          sha: supersedingHead,
+          ref: "agent/release",
+          repo: { full_name: "owner/repo" },
+        },
+        base: {
+          sha: TARGET,
+          ref: "main",
+          repo: { full_name: "owner/repo" },
+        },
+      }));
+    }
+    if (url === `${root}/git/commits/${BASE}`) {
+      return jsonResponse({ sha: BASE });
+    }
+    if (url === `${root}/git/commits/${HEAD}`) {
+      return jsonResponse({ sha: HEAD, tree: { sha: TREE } });
+    }
+    if (url === `${root}/git/commits/${TARGET}`) {
+      return jsonResponse({
+        sha: TARGET,
+        parents: [{ sha: BASE }, { sha: HEAD }],
+      });
+    }
+    if (url === `${root}/git/commits/${supersedingHead}`) {
+      return jsonResponse({
+        sha: supersedingHead,
+        tree: { sha: supersedingTree },
+      });
+    }
+    if (url === `${root}/git/commits/${supersedingTarget}`) {
+      return jsonResponse({
+        sha: supersedingTarget,
+        parents: [{ sha: TARGET }, { sha: supersedingHead }],
+      });
+    }
+    if (url === "https://service-a.onrender.com/healthz") {
+      return jsonResponse(serviceHealth("service-a", {
+        build: {
+          build_id: "build-service-a-superseding",
+          commit_sha: supersedingTarget,
+          commit_verifiable: true,
+        },
+      }));
+    }
+    throw new Error(`unexpected URL: ${url}`);
+  };
+  const verify = createHostNativeExternalReadbackVerifier({
+    fetchImpl,
+    now: () => Date.parse(VERIFIED_AT),
+  });
+  const readback = await verify({
+    ticket: original,
+    target_commit: TARGET,
+    superseding_ticket: superseding,
+    superseding_target_commit: supersedingTarget,
+  });
+  assert.equal(
+    readback.schema_version,
+    "host_native_superseded_external_readback_v1",
+  );
+  assert.equal(
+    readback.verifier_id,
+    "core_server_superseded_external_readback_v1",
+  );
+  assert.deepEqual(readback.original_github.merge_parents, [BASE, HEAD]);
+  assert.equal(readback.original_github.head_tree_sha, TREE);
+  assert.deepEqual(
+    readback.superseding_github.merge_parents,
+    [TARGET, supersedingHead],
+  );
+  assert.equal(readback.superseding_github.head_tree_sha, supersedingTree);
+  assert.equal(readback.services[0].live_commit, supersedingTarget);
+  assert.equal(readback.services[0].rollback_commit, TARGET);
+  assert.equal(
+    calls.filter((call) => call.url.endsWith(".onrender.com/healthz")).length,
+    1,
+  );
+
+  const badParents = createHostNativeExternalReadbackVerifier({
+    fetchImpl: async (url, init) => {
+      const response = await fetchImpl(url, init);
+      if (url.endsWith(`/git/commits/${supersedingTarget}`)) {
+        return jsonResponse({
+          sha: supersedingTarget,
+          parents: [{ sha: BASE }, { sha: supersedingHead }],
+        });
+      }
+      return response;
+    },
+  });
+  await assert.rejects(badParents({
+    ticket: original,
+    target_commit: TARGET,
+    superseding_ticket: superseding,
+    superseding_target_commit: supersedingTarget,
+  }), /trusted_readback_github_merge_graph_mismatch/);
 });
 
 test("external readback binds previous-live evidence from the persisted action ticket", async (t) => {

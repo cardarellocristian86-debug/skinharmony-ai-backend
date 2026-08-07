@@ -693,19 +693,44 @@ const baseHandlers = {
       });
     },
     work_continuity_closure_finalize: async (args, identity) => {
-      const coreReceipt = await coreHandlers.host_native_action_closure_receipt({
-        ticket_id: args.action_ticket_id,
-      }, identity);
+      const coreReceipt = args.closure_handoff_id
+        ? await coreHandlers.host_native_action_closure_handoff_redeem({
+          ticket_id: args.action_ticket_id,
+          closure_handoff_id: args.closure_handoff_id,
+          idempotency_key: `closure-handoff-redeem-${crypto.createHash("sha256")
+            .update(JSON.stringify({
+              tenant_id: identity.tenantId,
+              work_id: args.work_id,
+              plan_id: args.plan_id,
+              action_ticket_id: args.action_ticket_id,
+              closure_handoff_id: args.closure_handoff_id,
+              finalize_idempotency_key: args.idempotency_key,
+            }))
+            .digest("hex")}`,
+        }, identity)
+        : await coreHandlers.host_native_action_closure_receipt({
+          ticket_id: args.action_ticket_id,
+        }, identity);
       const authorization = coreReceipt?.structuredContent?.finalize_authorization;
+      const expectedSchemas = args.closure_handoff_id
+        ? new Set([
+          "host_native_finalize_authorization_v2",
+          "host_native_finalize_authorization_v3",
+        ])
+        : new Set(["host_native_finalize_authorization_v1"]);
       if (
         coreReceipt?.structuredContent?.tenant_id !== identity.tenantId ||
-        authorization?.schema_version !== "host_native_finalize_authorization_v1" ||
+        !expectedSchemas.has(authorization?.schema_version) ||
         authorization?.trusted !== true ||
         authorization?.allowed !== true ||
         !/^hnf_[a-f0-9]{64}$/.test(String(authorization?.signature || "")) ||
         authorization.tenant_id !== identity.tenantId ||
         authorization.work_id !== args.work_id ||
-        authorization.action_ticket_id !== args.action_ticket_id
+        authorization.action_ticket_id !== args.action_ticket_id ||
+        (
+          args.closure_handoff_id &&
+          authorization.closure_handoff_id !== args.closure_handoff_id
+        )
       ) {
         throw new Error("continuity_trusted_core_closure_receipt_required");
       }
