@@ -3254,6 +3254,46 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
+  app.get("/readiness", (_req, res) => {
+    res.json({
+      ok: true,
+      service: SERVICE_NAME,
+      version: SERVICE_VERSION,
+      ready: true,
+      dependencies: {
+        storage_root_configured: Boolean(storageRoot),
+        key_store_configured: Boolean(keyStore),
+        setup_token_store_configured: Boolean(setupTokens),
+        snapshots_configured: Boolean(snapshots),
+        reviews_configured: Boolean(reviews),
+        evidence_configured: Boolean(evidence),
+        software_jobs_configured: Boolean(softwareJobs),
+      },
+      runtime: {
+        core_runtime_mode: coreRuntimeMode,
+        dtt_configured: Boolean(dttRuntime),
+        research_runtime_configured: Boolean(researchRuntime),
+      },
+    });
+  });
+
+  app.get("/capabilities", (_req, res) => {
+    res.json({
+      ok: true,
+      service: SERVICE_NAME,
+      version: SERVICE_VERSION,
+      capabilities: [
+        { id: "healthz", name: "Health probe", description: "Liveness probe at /healthz", enabled: true },
+        { id: "readiness", name: "Readiness probe", description: "Readiness probe at /readiness", enabled: true },
+        { id: "capabilities", name: "Capability manifest", description: "Service capability manifest at /capabilities", enabled: true },
+        { id: "scopes", name: "Scope catalog", description: "Runtime and tenant scopes at /v1/scopes", enabled: true },
+        { id: "runtime_status", name: "Runtime status", description: "Runtime hierarchy status at /v1/runtime/hierarchy/status", enabled: true },
+        { id: "runtime_utilization", name: "Runtime utilization", description: "Runtime utilization at /v1/runtime/utilization", enabled: true },
+        { id: "runtime_dtt_status", name: "Runtime thought-tree status", description: "DTT status at /v1/runtime/dtt/status", enabled: true },
+      ],
+    });
+  });
+
   app.get("/v1/scopes", (req, res) => {
     res.json({ ok: true, scopes: Object.values(SCOPES), presets: KEY_PRESETS });
   });

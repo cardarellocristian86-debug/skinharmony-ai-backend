@@ -130,6 +130,36 @@ export function createApp(config, options = {}) {
     }
   }));
 
+  app.get("/readiness", (_req, res) => {
+    const readiness = {
+      ok: true,
+      service: "skinharmony-core-mcp",
+      version: SERVER_VERSION,
+      ready: true,
+      dependencies: {
+        auth_configured: Boolean(config.auth0Issuer || config.codexKeys.length),
+        core_configured: Boolean(config.universalCoreKey || Object.keys(config.universalCoreKeys || {}).length),
+        shared_memory_configured: Boolean(config.sharedMemoryRoot),
+        database_configured: Boolean(config.databaseUrl),
+        decision_ledger_required: config.decisionLedgerRequired === true,
+      },
+    };
+    return res.json(readiness);
+  });
+
+  app.get("/capabilities", (_req, res) => res.json({
+    ok: true,
+    service: "skinharmony-core-mcp",
+    version: SERVER_VERSION,
+    capabilities: [
+      { id: "healthz", name: "Health probe", description: "Liveness probe at /healthz", enabled: true },
+      { id: "readiness", name: "Readiness probe", description: "Readiness state at /readiness", enabled: true },
+      { id: "capabilities", name: "Capability manifest", description: "Service capability manifest at /capabilities", enabled: true },
+      { id: "well_known_resource", name: "OAuth protected resource metadata", description: "/.well-known/oauth-protected-resource", enabled: true },
+      { id: "mcp_jsonrpc", name: "MCP JSON-RPC", description: "/mcp endpoint", enabled: true },
+    ],
+  }));
+
   const protectedResourceMetadata = (_req, res) => res.json({
     resource: config.resource,
     authorization_servers: config.authorizationServers || (config.auth0Issuer ? [config.auth0Issuer] : []),

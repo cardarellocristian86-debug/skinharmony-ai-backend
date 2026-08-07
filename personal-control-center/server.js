@@ -242,7 +242,7 @@ app.use((req, res, next) => {
   res.setHeader("Referrer-Policy", "no-referrer");
   if (req.path.startsWith("/api/")) res.setHeader("Cache-Control", "no-store");
 
-  if (req.path === "/healthz") {
+  if (req.path === "/healthz" || req.path === "/readiness" || req.path === "/capabilities") {
     next();
     return;
   }
@@ -286,6 +286,45 @@ app.get("/healthz", (_req, res) => {
     auth_configured: basicCredentialsConfigured() || nyraBearerKeys().length > 0,
     storage_persistent: Boolean(nyraStorageRoot),
     suite_bridge_configured: suiteBridgeKeyConfigured(),
+  });
+});
+
+app.get("/readiness", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "skinharmony-nyra-core",
+    version: NYRA_SERVICE_VERSION,
+    ready: true,
+    dependencies: {
+      storage_root_configured: Boolean(nyraStorageRoot),
+      core_bridge_configured: Boolean(process.env.NYRA_CORE_URL && process.env.NYRA_CORE_KEY),
+      suite_bridge_configured: suiteBridgeKeyConfigured(),
+      finance_history_configured: (() => {
+        try {
+          return fs.existsSync(resolveStoragePath(nyraFinanceHistoryPath));
+        } catch {
+          return false;
+        }
+      })(),
+      analyzer_scopes_configured: analyzerScopedKeys().length > 0,
+    },
+    tenant_scope: { codexai: true },
+  });
+});
+
+app.get("/capabilities", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "skinharmony-nyra-core",
+    version: NYRA_SERVICE_VERSION,
+    capabilities: [
+      { id: "healthz", name: "Health probe", description: "Liveness probe at /healthz", enabled: true },
+      { id: "readiness", name: "Readiness probe", description: "Readiness state at /readiness", enabled: true },
+      { id: "capabilities", name: "Capability manifest", description: "Service capability manifest at /capabilities", enabled: true },
+      { id: "analyzer", name: "Analyzer payload ingestion", description: "Financial and strategy analyzer endpoints", enabled: true },
+      { id: "decision_journey", name: "Decision journey", description: "Decision journey APIs", enabled: true },
+      { id: "memory", name: "Portfolio memory", description: "In-memory runtime artifact APIs", enabled: true },
+    ],
   });
 });
 

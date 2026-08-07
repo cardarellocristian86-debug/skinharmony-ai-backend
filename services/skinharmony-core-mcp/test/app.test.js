@@ -36,6 +36,12 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.deepEqual(pathResource, resource);
   const oauth = await fetch(`${base}/.well-known/oauth-authorization-server`).then((r) => r.json());
   assert.deepEqual(oauth.code_challenge_methods_supported, ["S256"]);
+  const readiness = await fetch(`${base}/readiness`).then((r) => r.json());
+  assert.equal(readiness.ready, true);
+  assert.equal(readiness.ok, true);
+  const capabilities = await fetch(`${base}/capabilities`).then((r) => r.json());
+  assert.equal(capabilities.ok, true);
+  assert(capabilities.capabilities.some((capability) => capability.id === "mcp_jsonrpc"));
 }));
 
 test("returns RFC 9728 challenge when bearer is absent", async () => serve(async (base) => {
