@@ -887,7 +887,16 @@ const app = createApp(config, {
   readiness: startupReadiness,
   postgresMajorVersionProbe,
   beforeToolCall: async ({ identity, toolName, args }) => {
-    if (config.mandatoryAgentPresenceEnabled === true && !isAgentPresenceBootstrapCall(toolName, args)) {
+    // Native reports are authenticated by the child transport binding plus the
+    // one-time assignment capability, exact task binding and lease in the
+    // continuity runtime. Re-registering that child in the generic presence
+    // registry first rejects a legitimate independently spawned child because
+    // its transport session is intentionally not the coordinator session.
+    // Keep mandatory presence for every other operation.
+    const nativeChildReport = toolName === "work_continuity_native_report";
+    if (config.mandatoryAgentPresenceEnabled === true &&
+        !nativeChildReport &&
+        !isAgentPresenceBootstrapCall(toolName, args)) {
       try {
         await registerAuthenticatedPresence(identity);
       } catch (error) {
