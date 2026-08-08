@@ -92,6 +92,7 @@ const memoryScopeProperties = {
   limit: { type: "integer", minimum: 1, maximum: 50 },
 };
 const probability = { type: "number", minimum: 0, maximum: 1 };
+const runtimeEvidenceState = object({ high_impact: { type: "boolean" } });
 const score = { type: "number", minimum: 0, maximum: 100 };
 const evidenceItem = {
   type: "object",
@@ -555,6 +556,7 @@ export const TOOLS = [
       signals: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: true } },
       data_quality: { type: "object", additionalProperties: true },
       context: { type: "object", additionalProperties: true },
+      evidence_state: runtimeEvidenceState,
     }, additionalProperties: false },
   }, ["request"]), ["core:read"], true, true, { outputSchema: object({ ok: { type: "boolean" }, tenant_id: { type: "string" }, core_runtime: coreRuntimeOutputSchema }, ["ok", "tenant_id", "core_runtime"]) }),
   tool("work_preflight", "Open Tenant Work Gallery and route work", "Use this as the first step for generic Nyra/Core work. It opens the authenticated tenant's PostgreSQL Tenant Work Gallery as the operational surface, recalls canonical tenant memory, exposes current work/presence/branch/lease counts, resumes an existing Work Identity when one is already anchored, or reports the owner-governed bootstrap required for a new one. It opens Nyra/Core branches, builds a bounded host-native task graph and returns fail-closed governance gates. Host-native children are created only by ChatGPT/Codex and require no provider API key. The optional provider workflow remains separate. Never ask the user for a separate Gallery or shared-memory loading prompt.", object({
@@ -592,7 +594,7 @@ export const TOOLS = [
       uniqueItems: true,
       items: { type: "string", minLength: 3, maxLength: 253 },
     },
-    core_input: { type: "object", properties: { signals: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: true } }, data_quality: { type: "object", additionalProperties: true }, context: { type: "object", additionalProperties: true } }, additionalProperties: false },
+    core_input: { type: "object", properties: { signals: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: true } }, data_quality: { type: "object", additionalProperties: true }, context: { type: "object", additionalProperties: true }, evidence_state: runtimeEvidenceState }, additionalProperties: false },
   }, ["request"]), ["core:read"], true, true, { outputSchema: workPreflightOutputSchema, meta: { "openai/toolInvocation/invoking": "Preparo Nyra…", "openai/toolInvocation/invoked": "Nyra è pronta." } }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
   tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
