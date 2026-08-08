@@ -154,8 +154,10 @@ test("rejects receipt, binding, public-key, readback, and pinned-evidence tamper
     {
       name: "receipt signature",
       mutate(value) {
-        const signature = value.receipt.signature.value_base64url;
-        value.receipt.signature.value_base64url = `${signature.slice(0, -1)}${signature.endsWith("A") ? "B" : "A"}`;
+        const tampered = Buffer.from(value.receipt.signature.value_base64url, "base64url");
+        assert.equal(tampered.length, 64);
+        tampered[0] ^= 0x01;
+        value.receipt.signature.value_base64url = tampered.toString("base64url");
       },
       error: /bra_genesis_receipt_signature_invalid/,
     },
