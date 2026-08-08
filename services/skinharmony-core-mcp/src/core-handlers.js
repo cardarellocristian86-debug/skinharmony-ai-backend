@@ -985,18 +985,35 @@ export function createCoreHandlers(config, options = {}) {
 
   function hierarchyInput(args = {}, identity, operation = "advisory_work") {
     const supplied = args.core_input && typeof args.core_input === "object" && !Array.isArray(args.core_input) ? args.core_input : {};
+    const suppliedEvidenceState = supplied.evidence_state && typeof supplied.evidence_state === "object" && !Array.isArray(supplied.evidence_state)
+      ? supplied.evidence_state
+      : null;
+    const topLevelEvidenceState = args.evidence_state && typeof args.evidence_state === "object" && !Array.isArray(args.evidence_state)
+      ? args.evidence_state
+      : null;
+    const evidenceState = suppliedEvidenceState || topLevelEvidenceState;
     const request = String(args.request || args.message || args.question || args.decision || operation).slice(0, 12_000);
     const signals = Array.isArray(supplied.signals) && supplied.signals.length
       ? supplied.signals
       : [{ id: "mcp_runtime_request", label: operation, severity: 20, reversibility_hint: 80, risk_hint: 20 }];
-    return { ...supplied, request, signals, context: { ...(supplied.context || {}), tenant_id: identity.tenantId } };
+    return {
+      ...supplied,
+      ...(evidenceState ? { evidence_state: evidenceState } : {}),
+      request,
+      signals,
+      context: { ...(supplied.context || {}), tenant_id: identity.tenantId },
+    };
   }
 
   async function runtimeHierarchyEvaluate(args, identity, operation) {
     const started = Date.now();
+    const input = hierarchyInput(args, identity, operation);
     const payload = await coreRequest("/v1/runtime/hierarchy/evaluate", identity.tenantId, {
       method: "POST",
-      body: { core_input: hierarchyInput(args, identity, operation) },
+      body: {
+        core_input: input,
+        ...(input.evidence_state?.high_impact === true ? { routing: { high_impact: true } } : {}),
+      },
     });
     return compactCoreRuntime({ ...payload, latency_ms: Date.now() - started });
   }
