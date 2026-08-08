@@ -1757,7 +1757,7 @@ function releaseJoinFetch({
     if (url.endsWith("/pulls/42")) {
       return jsonResponse(pullRequest("owner/repo", { merged: false }));
     }
-    if (url.endsWith("/pulls/42/files?per_page=100&page=1")) {
+    if (url.endsWith("/pulls/42/files?per_page=10&page=1")) {
       return jsonResponse(files);
     }
     if (url === "https://service-a.onrender.com/healthz") {
@@ -1794,7 +1794,7 @@ test("release-join resolver independently proves exact pre-merge GitHub state", 
       if (url.endsWith("/pulls/42")) {
         return jsonResponse(pullRequest("owner/repo", { merged: false }));
       }
-      if (url.endsWith("/pulls/42/files?per_page=100&page=1")) {
+      if (url.endsWith("/pulls/42/files?per_page=10&page=1")) {
         return jsonResponse([{
           filename: RELEASE_CHANGED_FILES[0],
           status: "modified",
@@ -1824,7 +1824,7 @@ test("release-join resolver independently proves exact pre-merge GitHub state", 
     `https://api.github.com/repos/owner/repo/git/commits/${HEAD}`,
     `https://api.github.com/repos/owner/repo/commits/${HEAD}/check-runs?per_page=100`,
     "https://api.github.com/repos/owner/repo/pulls/42",
-    "https://api.github.com/repos/owner/repo/pulls/42/files?per_page=100&page=1",
+    "https://api.github.com/repos/owner/repo/pulls/42/files?per_page=10&page=1",
     "https://service-a.onrender.com/healthz",
   ]);
   assert.ok(calls
@@ -1960,7 +1960,7 @@ test("release-join source scope and previous-live evidence fail closed", async (
   await t.test("PR file pagination cannot hide a later path", async () => {
     const firstPage = [
       { filename: RELEASE_CHANGED_FILES[0], status: "modified" },
-      ...Array.from({ length: 99 }, (_, index) => ({
+      ...Array.from({ length: 9 }, (_, index) => ({
         filename: `services/generated/file-${index}.js`,
         status: "added",
       })),
@@ -1968,10 +1968,10 @@ test("release-join source scope and previous-live evidence fail closed", async (
     const baseFetch = releaseJoinFetch();
     const resolver = createHostNativeReleaseJoinVerdictResolver({
       fetchImpl: async (url, init) => {
-        if (url.endsWith("/pulls/42/files?per_page=100&page=1")) {
+        if (url.endsWith("/pulls/42/files?per_page=10&page=1")) {
           return jsonResponse(firstPage);
         }
-        if (url.endsWith("/pulls/42/files?per_page=100&page=2")) {
+        if (url.endsWith("/pulls/42/files?per_page=10&page=2")) {
           return jsonResponse([{
             filename: ".github/workflows/later-hidden.yml",
             status: "added",
