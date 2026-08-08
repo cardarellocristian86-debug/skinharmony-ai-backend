@@ -658,3 +658,56 @@ test("semantic selection builds candidates from the server catalog and never aut
   assert.equal(result.structuredContent.execution_authorized, false);
   assert.deepEqual(result.structuredContent.candidate_capability_ids, ["nyra_dynamic_read"]);
 });
+
+test("binds Core branch analysis only to the outer server-issued preflight", async () => {
+  const tool = TOOLS.find((candidate) => candidate.name === "core_branch_analyze");
+  assert.ok(tool);
+  let received;
+  const handlers = {
+    [tool.name]: async (args) => {
+      received = args;
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  const catalogRevision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const serverPreflight = {
+    schema_version: "skinharmony_work_preflight_v1",
+    preflight_id: "preflight-server-issued-branch",
+    tenant_id: "tenant-a",
+    operational_surface: "tenant_work_gallery",
+  };
+
+  await router.core_capability_read({
+    capability_id: tool.name,
+    catalog_revision: catalogRevision,
+    arguments: {
+      branch: "context_intelligence",
+      request: "Analyze the bounded tenant context",
+    },
+    work_preflight: serverPreflight,
+  }, identity);
+
+  assert.deepEqual(received.work_preflight, serverPreflight);
+  await assert.rejects(
+    router.core_capability_read({
+      capability_id: tool.name,
+      catalog_revision: catalogRevision,
+      arguments: {
+        branch: "context_intelligence",
+        request: "Analyze the bounded tenant context",
+        work_preflight: {
+          schema_version: "skinharmony_work_preflight_v1",
+          preflight_id: "caller-forged-preflight",
+          tenant_id: "tenant-b",
+        },
+      },
+      work_preflight: serverPreflight,
+    }, identity),
+    /dynamic_capability_reserved_argument/,
+  );
+});

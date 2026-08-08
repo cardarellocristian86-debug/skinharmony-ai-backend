@@ -1640,6 +1640,7 @@ export function createCoreHandlers(config, options = {}) {
           request: args.request,
           ...(args.signals ? { signals: args.signals } : {}),
           ...(args.context ? { context: args.context } : {}),
+          ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
         },
       },
     )),
