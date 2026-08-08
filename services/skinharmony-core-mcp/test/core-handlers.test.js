@@ -403,10 +403,16 @@ test("runtime hierarchy is tenant-scoped, redacts V2 fallback details, and never
 
   const result = await handlers.core_runtime_hierarchy_evaluate({
     request: "high-risk decision",
-    core_input: { context: { tenant_id: "forged-tenant" }, signals: [{ id: "risk", severity: 100 }] },
+    core_input: {
+      context: { tenant_id: "forged-tenant" },
+      signals: [{ id: "risk", severity: 100 }],
+      evidence_state: { high_impact: true },
+    },
   }, { tenantId: "tenant-a" });
   const runtime = result.structuredContent.core_runtime;
   assert.equal(calls[0].body.core_input.context.tenant_id, "tenant-a");
+  assert.deepEqual(calls[0].body.core_input.evidence_state, { high_impact: true });
+  assert.deepEqual(calls[0].body.routing, { high_impact: true });
   assert.equal(calls[0].authorization, "Bearer tenant-a-key");
   assert.equal(runtime.selected_authority, "V0");
   assert.equal(runtime.parity.fallback, "V1");
