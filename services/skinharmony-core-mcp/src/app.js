@@ -67,10 +67,15 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "nyra_research_airlock_complete",
 ]);
 
+const GENERIC_PREFLIGHT_CAPABILITIES = new Set([
+  "core_action_mediation_evaluate",
+  "core_branch_analyze",
+]);
+
 export function requiresGenericWorkPreflight(toolName, args = {}) {
   if (
     String(toolName || "") === "core_capability_read" &&
-    String(args?.capability_id || "") === "core_action_mediation_evaluate"
+    GENERIC_PREFLIGHT_CAPABILITIES.has(String(args?.capability_id || ""))
   ) return true;
   return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(String(toolName || ""));
 }
@@ -1000,7 +1005,7 @@ export function createApp(config, options = {}) {
         const serverIssuedPreflight = preflight?.work_preflight
           || preflight?.result?.work_preflight
           || (preflight?.schema_version === "skinharmony_work_preflight_v1" ? preflight : null);
-        const handlerArgs = serverIssuedPreflight && !args.work_preflight
+        const handlerArgs = serverIssuedPreflight
           ? { ...args, work_preflight: serverIssuedPreflight }
           : args;
         const rawResult = await handlers[tool.name](handlerArgs, callIdentity);

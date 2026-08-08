@@ -1590,3 +1590,41 @@ test("write guard gives a fresh OAuth tenant owner a request-bound continuity bo
   assert.match(calls[0].owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
   assert.equal("internal_owner_assertion_scope" in calls[0], false);
 });
+
+test("forwards the server-issued preflight for Core branch analysis without leaking the tenant credential", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({
+        path: new URL(url).pathname,
+        body: JSON.parse(init.body),
+        authorization: init.headers.authorization,
+      });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  const serverPreflight = {
+    schema_version: "skinharmony_work_preflight_v1",
+    preflight_id: "preflight-server-issued-branch",
+    tenant_id: "tenant-a",
+    operational_surface: "tenant_work_gallery",
+  };
+
+  await handlers.core_branch_analyze({
+    branch: "context_intelligence",
+    request: "Analyze the bounded tenant context",
+    work_preflight: serverPreflight,
+  }, { tenantId: "tenant-a" });
+
+  assert.deepEqual(calls.map((call) => call.path), ["/v1/branches/context_intelligence/analyze"]);
+  assert.deepEqual(calls[0].body.work_preflight, serverPreflight);
+  assert.equal("tenant_id" in calls[0].body, false);
+  assert.equal(calls[0].authorization, "Bearer tenant-a-key");
+  assert.equal(JSON.stringify(calls[0].body).includes("tenant-a-key"), false);
+});

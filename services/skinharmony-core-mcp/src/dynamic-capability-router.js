@@ -27,6 +27,7 @@ const FORBIDDEN_ARGUMENT_KEYS = new Set([
   "authorization",
   "api_key",
   "client_secret",
+  "work_preflight",
 ]);
 const CAPABILITY_ID = /^[a-z][a-z0-9_]{1,95}$/;
 const CATALOG_VERSION = "core_dynamic_capabilities_v1";

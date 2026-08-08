@@ -612,6 +612,7 @@ export const TOOLS = [
     request: text(20_000),
     signals: { type: "array", maxItems: 100, items: { type: "object", maxProperties: 50, additionalProperties: boundedJsonValue } },
     context: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
+    work_preflight: { type: "object" },
   }, ["branch", "request"]), ["core:read"]),
   tool("core_control_plane_read", "Read Core control plane", "Read one tenant-scoped governance view. Key secrets and administrative bootstrap data are never returned by this connector.", object({
     view: { type: "string", enum: ["tenant_status", "entitlements", "domain_pack", "overview", "dashboard", "ecosystem_pulse", "connector_manifest", "customer_intelligence_contract"] },

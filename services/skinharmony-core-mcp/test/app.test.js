@@ -1782,3 +1782,67 @@ test("retires the OpenAI setup resource from the MCP surface", async () => serve
   assert.equal(read.error.code, -32602);
   assert.equal(read.error.message, "Unknown resource");
 }));
+
+test("binds Core branch analysis to a server-issued preflight and overwrites a caller-supplied envelope", async () => {
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_read", { capability_id: "core_branch_analyze" }),
+    true,
+  );
+  let received;
+  const serverPreflight = {
+    schema_version: "skinharmony_work_preflight_v1",
+    preflight_id: "preflight-server-issued-branch",
+    tenant_id: "owner-private",
+    operational_surface: "tenant_work_gallery",
+  };
+  const app = createApp(config, {
+    handlers: {
+      core_branch_analyze: async (args) => {
+        received = args;
+        return { structuredContent: { ok: true }, content: [] };
+      },
+    },
+    beforeToolCall: async ({ toolName, args }) => {
+      assert.equal(toolName, "core_branch_analyze");
+      assert.equal(requiresGenericWorkPreflight(toolName, args), true);
+      return { work_preflight: serverPreflight };
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": "mcp-branch-preflight-binding",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 91,
+        method: "tools/call",
+        params: {
+          name: "core_branch_analyze",
+          arguments: {
+            branch: "context_intelligence",
+            request: "Analyze the bounded tenant context",
+            work_preflight: {
+              schema_version: "skinharmony_work_preflight_v1",
+              preflight_id: "caller-forged-preflight",
+              tenant_id: "tenant-b",
+            },
+          },
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.error, undefined);
+    assert.equal(received.work_preflight.preflight_id, serverPreflight.preflight_id);
+    assert.equal(received.work_preflight.tenant_id, "owner-private");
+    assert.notEqual(received.work_preflight.preflight_id, "caller-forged-preflight");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
