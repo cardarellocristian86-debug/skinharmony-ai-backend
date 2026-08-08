@@ -76,6 +76,48 @@ function applyTenantMemberRole(identity, config) {
   return { ...identity, role: identity.role || "member" };
 }
 
+function isoFromEpoch(seconds) {
+  return new Date(Number(seconds) * 1_000).toISOString();
+}
+
+function canonicalWorkRole(role) {
+  if (role === "team_manager") return "team_manager";
+  if (role === "tenant_owner" || role === "super_admin") return role;
+  return "member";
+}
+
+function attachAuthenticatedTenantMembership(identity, { role, teamIds = [], managedTeamIds = [], issuedAt, expiresAt }) {
+  if (!identity?.tenantId || !identity?.subject || !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || expiresAt <= issuedAt) {
+    throw new Error("authenticated_tenant_membership_invalid");
+  }
+  return {
+    ...identity,
+    authenticatedTenantMembership: Object.freeze({
+      schema_version: "tenant_membership_binding_v1",
+      authenticated: true,
+      tenant_id: identity.tenantId,
+      subject: identity.subject,
+      role: canonicalWorkRole(role),
+      team_ids: [...new Set(teamIds)],
+      managed_team_ids: [...new Set(managedTeamIds)],
+      assigned_work_ids: [],
+      issued_at: isoFromEpoch(issuedAt),
+      expires_at: isoFromEpoch(expiresAt),
+    }),
+  };
+}
+
+function attachCodexTenantMembership(identity, config) {
+  // A static bearer becomes a Work owner only after the existing, server-side
+  // Good Mode policy has verified its configured key, tenant and emergency stop.
+  if (!isCodexGoodModeDelegation(identity, config)) return identity;
+  const issuedAt = Math.floor(Date.now() / 1_000);
+  const ttl = Number(config.codexTenantMembershipTtlSeconds || 300);
+  return attachAuthenticatedTenantMembership(identity, {
+    role: "tenant_owner", issuedAt, expiresAt: issuedAt + ttl,
+  });
+}
+
 function elevateOAuthOwner(identity, proof, config, consumed) {
   if (identity?.kind !== "oauth" || identity?.oauthOwnerBound !== true) throw new Error("owner_binding_required");
   if (proof?.confirmed !== true) throw new Error("owner_confirmation_required");
@@ -154,6 +196,9 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
   const supportDelegation = membershipRole === "support_delegate";
   const supportDelegationExpiresAt = String(membership?.expiresAt || "").trim();
   const supportDelegationExpiry = Date.parse(supportDelegationExpiresAt);
+  if (!supportDelegation && membership?.expiresAt && (!Number.isFinite(supportDelegationExpiry) || supportDelegationExpiry <= Date.now())) {
+    throw new Error("tenant_membership_expired");
+  }
   if (supportDelegation && (
     !Number.isFinite(supportDelegationExpiry)
     || supportDelegationExpiry <= Date.now()
@@ -169,7 +214,7 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
     ? `chatgpt_${crypto.createHash("sha256").update(`self-service-tenant\u0000${subject}`).digest("hex").slice(0, 32)}`
     : claimedTenantId);
   if (!tenantId) throw new Error("jwt_tenant_missing");
-  return {
+  const identity = {
     kind: "oauth",
     subject,
     ...(payload.azp || payload.client_id ? { clientId: String(payload.azp || payload.client_id) } : {}),
@@ -186,8 +231,20 @@ export async function verifyAuth0Jwt(token, config, cache = new JwksCache()) {
     ...(tenantRole ? { tenantRole } : {}),
     ...(Number.isFinite(Number(payload.auth_time || payload.iat)) ? { authenticatedAt: Number(payload.auth_time || payload.iat) } : {}),
     ...(Number.isFinite(Number(payload.iat)) ? { tokenIssuedAt: Number(payload.iat) } : {}),
-    scopes: tokenScopes(payload)
+    scopes: tokenScopes(payload),
   };
+  // V2 receives only an envelope derived here, after JWT verification and
+  // server-side owner/membership resolution. A tenant claim alone grants none.
+  if (!ownerTenantId && !memberTenantId && !selfServiceTenant) return identity;
+  const issuedAt = Number.isFinite(Number(payload.iat)) ? Number(payload.iat) : now;
+  const tokenExpiry = Number(payload.exp);
+  const configuredExpiry = membership?.expiresAt ? Math.floor(Date.parse(membership.expiresAt) / 1_000) : tokenExpiry;
+  const expiresAt = Math.min(tokenExpiry, configuredExpiry);
+  return attachAuthenticatedTenantMembership(identity, {
+    role: ownerTenantId ? "tenant_owner" : (membershipRole || "member"),
+    teamIds: membership?.teamIds || [], managedTeamIds: membership?.managedTeamIds || [],
+    issuedAt, expiresAt,
+  });
 }
 
 export function createAuthenticator(config, options = {}) {
@@ -199,7 +256,7 @@ export function createAuthenticator(config, options = {}) {
     if (!match) throw new Error("bearer_required");
     const token = match[1].trim();
     if (config.codexKeys.some((key) => safeEqual(key, token))) {
-      return applyOwnerRoot({ kind: "codex", subject: "codex", tenantId: config.defaultTenantId, scopes: config.codexScopes }, config);
+      return attachCodexTenantMembership(applyOwnerRoot({ kind: "codex", subject: "codex", tenantId: config.defaultTenantId, scopes: config.codexScopes }, config), config);
     }
     if (!config.auth0Issuer) throw new Error("bearer_invalid");
     return applyTenantMemberRole(applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config), config);

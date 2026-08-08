@@ -1296,6 +1296,30 @@ export function createCoreHandlers(config, options = {}) {
         },
       }), route);
     },
+    generic_work_core_join_issue: async (args, identity) => {
+      const route = "/v1/work-continuity/generic-core-join";
+      const { tenant_id: _callerTenantId, authenticated_tenant_id: _callerAuthenticatedTenantId,
+        secret: _secret, signing_secret: _signingSecret, verifier_secret: _verifierSecret, ...body } = args || {};
+      const response = await coreRequest(route, identity.tenantId, {
+        method: "POST", useTenantGateway: true, body,
+      });
+      const verdict = response?.verdict;
+      const hash = /^[a-f0-9]{64}$/i;
+      if (!response || response.ok !== true || !verdict || typeof verdict !== "object" || Array.isArray(verdict) ||
+          verdict.schema_version !== "generic_work_core_join_v1" ||
+          !/^gwcj_[a-f0-9]{40}$/i.test(String(verdict.verdict_id || "")) ||
+          String(verdict.tenant_id || "") !== String(identity.tenantId || "") ||
+          !verdict.work_id || !verdict.adapter || !hash.test(String(verdict.acceptance_criteria_digest || "")) ||
+          !hash.test(String(verdict.task_state_digest || "")) || !hash.test(String(verdict.evidence_digest || "")) ||
+          !hash.test(String(verdict.independent_verifier_receipt_digest || "")) ||
+          !hash.test(String(verdict.idempotency_digest || "")) || !hash.test(String(verdict.verdict_digest || "")) ||
+          verdict.authority !== "universal_core" || verdict.decision !== "GENERIC_WORK_CORE_JOIN_ELIGIBLE" ||
+          verdict.execution_authorized !== false || verdict.host_action_authorized !== false ||
+          typeof verdict.signature !== "string" || verdict.signature.length < 16) {
+        throw new Error("generic_work_core_join_response_invalid");
+      }
+      return dedicatedCoreTextResult({ ok: true, generic_core_join_verdict: verdict }, route);
+    },
     host_native_delegation_issue: async (args, identity) => {
       const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
       const ttlSeconds = Number(args.ttl_seconds);

@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ARCHIVE_STATUSES, CLOSURE_ADAPTERS, WORK_CONTINUITY_V2_SCHEMA_SQL, classifyStaleWork, derivePriority, deriveProgress, finalizeGenericClosure, resolveWorkRequest } from "../src/work-continuity-v2.js";
+import { ARCHIVE_STATUSES, CLOSURE_ADAPTERS, WORK_CONTINUITY_V2_SCHEMA_SQL, canActorAccessWork, classifyStaleWork, deriveActorAcl, derivePriority, deriveProgress, finalizeGenericClosure, resolveWorkRequest } from "../src/work-continuity-v2.js";
 
 test("schema V2 is additive and preserves archive states", () => {
   assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL, /CREATE TABLE IF NOT EXISTS tenant_work/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL, /objective text/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL, /CREATE TABLE IF NOT EXISTS tenant_work_code_sequence/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL, /required boolean NOT NULL DEFAULT true/);
+  assert.match(WORK_CONTINUITY_V2_SCHEMA_SQL, /weight integer NOT NULL DEFAULT 1/);
   assert(ARCHIVE_STATUSES.has("ARCHIVED"));
   assert(CLOSURE_ADAPTERS.includes("generic"));
   assert(CLOSURE_ADAPTERS.includes("software_git"));
@@ -28,7 +32,8 @@ test("resolver hides invisible conflicts and requires a decision for ambiguity",
   ];
   const result = resolveWorkRequest("scenario evaluation", works, { tenant_id: "t", user_id: "u" });
   assert.equal(result.requires_owner_decision, true);
-  assert.deepEqual(result.candidates[1], { invisible_conflict: true });
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.hidden_conflict, true);
 });
 
 test("resolver denies cross-tenant candidates and permits authorized Team Manager visibility", () => {
@@ -46,10 +51,27 @@ test("expired presence classifies an operational work as stale without mutating 
   assert.equal(result.classification, "STALE");
 });
 
+test("ACL helpers are tenant-bound and deterministic", () => {
+  const actor = deriveActorAcl({ tenant_id: "t", user_id: "u", team_ids: ["b", "a", "a"] });
+  assert.deepEqual(actor.team_ids, ["a", "b"]);
+  assert.equal(canActorAccessWork({ tenant_id: "t", owner_user_id: "u", visibility_scope: "private" }, actor), true);
+  assert.equal(canActorAccessWork({ tenant_id: "other", visibility_scope: "tenant" }, actor), false);
+});
+
+test("stale classification identifies unfinished completion, abandonment, and unknown state", () => {
+  assert.equal(classifyStaleWork({ status: "COMPLETED" }).classification, "COMPLETED_BUT_UNCLOSED");
+  assert.equal(classifyStaleWork({ status: "ACTIVE", updated_at: "2026-01-01T00:00:00.000Z" }, "2026-02-02T00:00:00.000Z").classification, "ABANDONED");
+  assert.equal(classifyStaleWork({ status: "ACTIVE" }).classification, "UNKNOWN");
+});
+
 test("generic closure requires independent verification and Core Join, then produces a report", () => {
   const work = { tenant_id: "t", work_id: "w", work_code: "NYRA-20260807-0001", work_name: "Research", work_type: "research", progress_bp: 10000 };
-  assert.throws(() => finalizeGenericClosure(work, { adapter: "research" }), /work_closure_gate_unsatisfied/);
-  const closed = finalizeGenericClosure(work, { adapter: "research", independent_verification: true, core_join_received: true, core_join_digest: "a".repeat(64), final_evidence_digest: "b".repeat(64) });
+  assert.throws(() => finalizeGenericClosure(work, { adapter: "research", independent_verification: true, core_join_received: true }), /work_closure_verified_context_required/);
+  const closed = finalizeGenericClosure(work, { adapter: "research", server_verified_closure_context: {
+    schema_version: "work_closure_context_v1", server_verified: true,
+    independent_verification: { passed: true }, core_join: { received: true, digest: "a".repeat(64) },
+    final_evidence_digest: "b".repeat(64),
+  } });
   assert.equal(closed.work.status, "COMPLETED");
   assert.equal(closed.archive_status, "ARCHIVED");
   assert.equal(closed.final_report.final_status, "COMPLETED");

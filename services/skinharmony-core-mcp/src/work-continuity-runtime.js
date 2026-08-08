@@ -21,6 +21,7 @@ export const WORK_EVENT_TYPES = new Set([
   "incident_recorded", "incident_runbook_verified", "incident_runbook_quarantined",
   "native_plan_superseded", "native_agent_lease_expired",
   "core_join_issued", "closure_finalized",
+  "generic_core_join_issued", "generic_closure_finalized", "work_archived",
   "quality_failure_observed", "security_observation_quarantined", "quality_evidence_verified", "quality_completion_rejected",
 ]);
 
@@ -1602,12 +1603,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return result;
   }
 
-  async function ensure(identity, input, options = {}) {
+  async function ensureWithClient(client, identity, input, options = {}) {
     const tenantId = tenant(identity.tenantId);
     const workId = input.work_id ? uuid(input.work_id, "work_id") : crypto.randomUUID();
     const context = { tenantId, workId, actor: actorFor(identity, input) };
-    return transaction(async (client) => {
-      const projectId = identifier(input.project_id, "project_id", 64);
+    const projectId = identifier(input.project_id, "project_id", 64);
       const sessionId = identifier(input.session_id, "session_id", 64);
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [
         tenantId,
@@ -1753,12 +1753,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
         initial_message_redacted: true,
         immutable: true,
       });
-      return { schema_version: WORK_CONTINUITY_SCHEMA_VERSION, tenant_id: tenantId, work_id: workId,
+    return { schema_version: WORK_CONTINUITY_SCHEMA_VERSION, tenant_id: tenantId, work_id: workId,
         project_id: projectId,
         fabric_schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
         architecture_version: 1, architecture_digest: architectureDigest,
         intent_digest: intent.intent_digest, event, intent_event: intentEvent };
-    });
+  }
+
+  async function ensure(identity, input, options = {}) {
+    return transaction((client) => ensureWithClient(client, identity, input, options));
   }
 
   async function create(identity, input) {
@@ -4544,6 +4547,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     initialize,
     create,
     ensure,
+    ensureWithClient,
     readIntent,
     listWorks,
     recordChange,

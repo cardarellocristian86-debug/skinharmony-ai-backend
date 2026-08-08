@@ -14,6 +14,7 @@ import {
   coreJoinIdempotencyKey,
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
+import { createWorkContinuityV2Store, deriveAuthenticatedTenantWorkAcl } from "./work-continuity-v2-store.js";
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
 import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
 import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
@@ -67,6 +68,14 @@ const decisionLedger = createDecisionLedger(config, {
 const workContinuityRuntime = createWorkContinuityRuntime(config, {
   pool: primaryDatabasePool,
 });
+const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store({
+  pool: primaryDatabasePool,
+  legacyRuntime: workContinuityRuntime,
+  verifierReceiptSigningSecret: config.dttAgentIdentitySigningSecret,
+  coreJoinVerifier: config.genericWorkCoreJoinPublicKey && config.genericWorkCoreJoinKeyId ? {
+    publicKey: config.genericWorkCoreJoinPublicKey, keyId: config.genericWorkCoreJoinKeyId,
+  } : null,
+}) : null;
 const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
   pool: primaryDatabasePool,
 });
@@ -88,7 +97,10 @@ const continuityRequired =
   config.hostNativeAgentProtocolEnabled === true;
 if (continuityRequired && workContinuityRuntime) {
   void Promise.resolve()
-    .then(() => workContinuityRuntime.initialize())
+    .then(async () => {
+      await workContinuityRuntime.initialize();
+      await workContinuityV2Store?.initialize();
+    })
     .then(() => {
       startupReadiness.continuityInitialized = true;
     })
@@ -129,6 +141,12 @@ const coreHandlers = createCoreHandlers(config, {
   tenantWorkGallery: workContinuityRuntime ? {
     load: async (identity, input = {}) => {
       requireTenantWorkCapability(identity, "read");
+      if (workContinuityV2Store) {
+        return workContinuityV2Store.preflightGallery(withTenantWorkAcl(identity), {
+          project_id: input.project_id,
+          limit: 20,
+        });
+      }
       return workContinuityRuntime.gallery(identity, {
         project_id: input.project_id,
         status: "active",
@@ -402,6 +420,12 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
   }
 }
 
+function withTenantWorkAcl(identity) {
+  // `authenticatedTenantMembership` is populated only by the authenticated MCP
+  // identity layer. Tool arguments and legacy convenience flags are never read.
+  return { ...identity, tenant_work_acl: deriveAuthenticatedTenantWorkAcl(identity) };
+}
+
 const baseHandlers = {
   web_compatibility_manifest: async (_args, identity) => ({
     structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
@@ -629,6 +653,52 @@ const baseHandlers = {
     },
     work_continuity_intent_read: continuityMethod("readIntent"),
     work_continuity_work_catalog: continuityMethod("listWorks"),
+    work_continuity_v2_create: async (args, identity) => {
+      if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+      await requireOwnerGovernance(identity, "work.continuity.v2.create", args.project_id);
+      const aclIdentity = withTenantWorkAcl(identity);
+      const result = await workContinuityV2Store.createNewWork(aclIdentity, args);
+      return continuityTextResult({ ok: true, result, legacy_work_id: result.legacy_work_id,
+        dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/action-evaluator", server_owned: true } });
+    },
+    work_continuity_v2_read: async (args, identity) => continuityTextResult({ ok: true,
+      result: await workContinuityV2Store.readWork(withTenantWorkAcl(identity), args) }),
+    tenant_work_gallery_list_v2: async (args, identity) => continuityTextResult({ ok: true,
+      result: await workContinuityV2Store.listWorks(withTenantWorkAcl(identity), args) }),
+    tenant_work_open_review: async (args, identity) => continuityTextResult({ ok: true,
+      result: await workContinuityV2Store.openWorkReview(withTenantWorkAcl(identity), args) }),
+    tenant_work_task_record: async (args, identity) => {
+      requireTenantWorkCapability(identity, "operate");
+      return continuityTextResult({ ok: true, result: await workContinuityV2Store.recordTask(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_evidence_record: async (args, identity) => {
+      requireTenantWorkCapability(identity, "review_candidate");
+      return continuityTextResult({ ok: true, result: await workContinuityV2Store.recordEvidence(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_stale_reconcile_dry_run: async (args, identity) => continuityTextResult({ ok: true,
+      result: await workContinuityV2Store.reconcileStaleDryRun(withTenantWorkAcl(identity), args) }),
+    work_continuity_generic_core_join: async (args, identity) => {
+      const aclIdentity = withTenantWorkAcl(identity);
+      const request = await workContinuityV2Store.buildGenericCoreJoinRequest(aclIdentity, args);
+      const response = await coreHandlers.generic_work_core_join_issue(request, identity);
+      const verdict = response?.structuredContent?.generic_core_join_verdict;
+      if (response?.structuredContent?.dedicated_core_gate?.authorized !== true ||
+          verdict?.decision !== "GENERIC_WORK_CORE_JOIN_ELIGIBLE" || verdict?.execution_authorized !== false ||
+          verdict?.tenant_id !== identity.tenantId || verdict?.work_id !== args.work_id) {
+        throw new Error("generic_work_core_join_invalid");
+      }
+      if (!workContinuityV2Store.verifyCoreJoinVerdict?.(verdict)) throw new Error("generic_work_core_join_signature_invalid");
+      const result = await workContinuityV2Store.persistCoreJoin({ ...aclIdentity, coreJoinTrusted: true }, {
+        work_id: args.work_id, core_join_digest: verdict.verdict_digest, core_join_context: verdict,
+      });
+      return continuityTextResult({ ok: true, result, generic_core_join_verdict: verdict,
+        dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work/core-join-verdicts", server_owned: true } });
+    },
+    work_continuity_generic_closure_evaluate: async (args, identity) => continuityTextResult({ ok: true,
+      result: await workContinuityV2Store.evaluateGenericClosure(withTenantWorkAcl(identity), args) }),
+    work_continuity_generic_closure_finalize: async (args, identity) => continuityTextResult({ ok: true,
+      result: await workContinuityV2Store.finalizeGenericClosure(withTenantWorkAcl(identity), args),
+      dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work/core-join-verdicts", server_owned: true } }),
     work_continuity_native_plan: async (args, identity) => {
       const intent = await workContinuityRuntime.readIntent(identity, {
         work_id: args.work_id,
