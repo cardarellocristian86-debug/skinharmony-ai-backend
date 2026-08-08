@@ -831,8 +831,13 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
     tool._meta["skinharmony/ownerConfirmationRequired"] === false
     || tool.inputSchema.properties.confirmation_reference?.type === "string"));
   const preflight = body.result.tools.find((tool) => tool.name === "work_preflight");
+  const hierarchyEvaluate = body.result.tools.find((tool) => tool.name === "core_runtime_hierarchy_evaluate");
   assert(preflight);
+  assert(hierarchyEvaluate);
   assert(preflight.outputSchema?.properties?.core_runtime);
+  for (const tool of [preflight, hierarchyEvaluate]) {
+    assert.equal(tool.inputSchema.properties.core_input.properties.evidence_state.properties.high_impact.type, "boolean");
+  }
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
   assert.equal(preflight._meta["openai/outputTemplate"], undefined);
   assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
