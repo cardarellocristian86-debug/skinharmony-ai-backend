@@ -12,6 +12,11 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const GITHUB_ORIGIN = "https://api.github.com";
 const RENDER_ORIGIN = /^https:\/\/[a-z0-9][a-z0-9-]*\.onrender\.com$/;
 const SHA = /^[a-f0-9]{40}$/;
+const GITHUB_PULL_FILES_PAGE_SIZE = 10;
+const MAX_PULL_REQUEST_FILES = 2_000;
+const MAX_PULL_REQUEST_FILE_PAGES = Math.ceil(
+  MAX_PULL_REQUEST_FILES / GITHUB_PULL_FILES_PAGE_SIZE,
+);
 
 function error(code) {
   throw new Error(code);
@@ -885,15 +890,24 @@ export function createHostNativeReleaseJoinVerdictResolver({
       error("release_join_verdict_pull_request_mismatch");
     }
     const files = [];
-    for (let page = 1; page <= 100; page += 1) {
-      const response = await getGithub(`/pulls/${Number(action.pull_request)}/files?per_page=100&page=${page}`);
+    let fileEntries = 0;
+    for (let page = 1; page <= MAX_PULL_REQUEST_FILE_PAGES; page += 1) {
+      const response = await getGithub(
+        `/pulls/${Number(action.pull_request)}/files?per_page=${GITHUB_PULL_FILES_PAGE_SIZE}&page=${page}`,
+      );
       if (!Array.isArray(response)) error("release_join_verdict_changed_files_mismatch");
       for (const item of response) {
+        fileEntries += 1;
+        if (fileEntries > MAX_PULL_REQUEST_FILES) {
+          error("release_join_verdict_changed_files_mismatch");
+        }
         if (string(item?.filename)) files.push(string(item.filename));
         if (string(item?.previous_filename)) files.push(string(item.previous_filename));
       }
-      if (response.length < 100) break;
-      if (page === 100) error("release_join_verdict_changed_files_mismatch");
+      if (response.length < GITHUB_PULL_FILES_PAGE_SIZE) break;
+      if (page === MAX_PULL_REQUEST_FILE_PAGES) {
+        error("release_join_verdict_changed_files_mismatch");
+      }
     }
     if (!sourceFilesEqual(files, source.changed_files)) {
       error("release_join_verdict_changed_files_mismatch");
