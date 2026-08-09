@@ -8,6 +8,15 @@ const {
   createPersistentReplayGuard,
 } = require("./lib/nyra-deep-branch-v2-federation");
 const { createNyraPolicyRegistryAttester } = require("./lib/nyra-policy-registry-attestation");
+const {
+  compileIntent,
+  detectIntentDrift,
+  synthesizeDecisionPath,
+  analyzeProjectImpact,
+  buildWorkRebasePlan,
+  generateCausalScenarios,
+  buildContinuityBrief,
+} = require("./nyra-causal-semantics");
 const { spawn, execFileSync } = require("child_process");
 const express = require("express");
 const { loadEnv } = require("../mail/load_env");
@@ -4490,11 +4499,31 @@ app.post("/api/nyra/runtime/interpret", async (req, res) => {
     });
     return;
   }
+  const humanRequest = String(
+    req.body?.request || req.body?.message || req.body?.text || req.body?.query || "",
+  ).trim();
+  const causalSemanticInput = humanRequest ? {
+    ...(req.body || {}),
+    request: humanRequest,
+    // This endpoint is an interpreter, not an approval authority. Caller
+    // booleans cannot satisfy owner/Core approval for a strategic change.
+    owner_approved: false,
+  } : null;
+  const causalSemantics = humanRequest ? {
+    intent_compilation: compileIntent(causalSemanticInput),
+    intent_drift: detectIntentDrift(causalSemanticInput),
+    decision_path: synthesizeDecisionPath(causalSemanticInput),
+    project_impact: analyzeProjectImpact(causalSemanticInput),
+    work_rebase_plan: buildWorkRebasePlan(causalSemanticInput),
+    causal_scenarios: generateCausalScenarios(causalSemanticInput),
+    continuity_brief: buildContinuityBrief(causalSemanticInput),
+  } : null;
   res.json({
     ok: true,
     service: NYRA_SERVICE_NAME,
     runtime: nyraHorizontalRuntime.contract(),
     local_interpretation: prepared.local_interpretation,
+    causal_semantics: causalSemantics,
     core_router: core.data,
     execution_allowed: false,
   });

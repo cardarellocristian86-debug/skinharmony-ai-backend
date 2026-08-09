@@ -144,6 +144,23 @@ function hmac(prefix, secret, value) {
     .digest("hex")}`;
 }
 
+// Causal Continuity deliberately shares the already-provisioned host-native
+// governance signing domain.  The caller supplies a purpose label so one
+// signature cannot be replayed as another Core artifact.
+export function createHostNativeDomainSigner({ signingSecret } = {}) {
+  const signing = text(signingSecret, "host_native_signing_secret_missing", 8_000);
+  if (Buffer.byteLength(signing, "utf8") < 32) fail("host_native_signing_secret_missing");
+  return Object.freeze({
+    sign(value, { purpose } = {}) {
+      return hmac("hnc", signing, canonical({ purpose: text(purpose, "signing_purpose_missing", 160), value }));
+    },
+    verify(value, signature, { purpose } = {}) {
+      const expected = hmac("hnc", signing, canonical({ purpose: text(purpose, "signing_purpose_missing", 160), value }));
+      return safeEqual(String(signature || ""), expected);
+    },
+  });
+}
+
 function safeEqual(left, right) {
   const a = Buffer.from(String(left || ""));
   const b = Buffer.from(String(right || ""));

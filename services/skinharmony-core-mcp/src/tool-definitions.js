@@ -423,6 +423,16 @@ const dttNodeInput = object({
     estimated_cost_micros: { type: "integer", minimum: 0, maximum: 1_000_000_000 },
     estimated_time_ms: { type: "integer", minimum: 0, maximum: 3_600_000 },
   }),
+  verification_policy: object({
+    required_approvals: { type: "integer", minimum: 2, maximum: 64 },
+    allowed_verifier_ids: {
+      type: "array",
+      minItems: 2,
+      maxItems: 64,
+      uniqueItems: true,
+      items: { type: "string", minLength: 1, maxLength: 160 },
+    },
+  }, ["required_approvals", "allowed_verifier_ids"]),
 }, ["node_id", "kind", "task"]);
 const dttEvidenceInput = object({
   schema_version: { const: "verification_evidence_contract_v1" },
@@ -786,21 +796,7 @@ export const TOOLS = [
       type: "array",
       minItems: 1,
       maxItems: 200,
-      items: object({
-        node_id: identifier,
-        kind: { type: "string", enum: ["analysis", "research", "decision", "agent", "ai_model", "tool", "human_gate", "verification", "join", "rollback"] },
-        task: text(4_000),
-        parent_node_id: identifier,
-        dependencies: { type: "array", maxItems: 30, uniqueItems: true, items: identifier },
-        fallback_node_id: identifier,
-        depth: { type: "integer", minimum: 0, maximum: 16 },
-        retry_policy: object({ max_attempts: { type: "integer", minimum: 0, maximum: 10 } }),
-        budget: object({
-          estimated_tokens: { type: "integer", minimum: 0, maximum: 2_000_000 },
-          estimated_cost_micros: { type: "integer", minimum: 0, maximum: 1_000_000_000 },
-          estimated_time_ms: { type: "integer", minimum: 0, maximum: 3_600_000 },
-        }),
-      }, ["node_id", "kind", "task"]),
+      items: dttNodeInput,
     },
   }, ["objective", "nodes"]), ["core:read"], true, true),
   tool("orchestration_dtt_read", "Read a Dynamic Task Tree", "Read the current tenant-bound DTT v2 state. This exposes audit state only and never invokes a model, tool, agent or external action.", object({

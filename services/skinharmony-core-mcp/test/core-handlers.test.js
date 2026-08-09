@@ -1628,3 +1628,26 @@ test("forwards the server-issued preflight for Core branch analysis without leak
   assert.equal(calls[0].authorization, "Bearer tenant-a-key");
   assert.equal(JSON.stringify(calls[0].body).includes("tenant-a-key"), false);
 });
+
+test("exposes one non-tool causal Core transport that preserves the verified DTT context header", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  assert.equal(Object.keys(handlers).includes("causalCoreRequest"), false);
+  await handlers.causalCoreRequest("/v1/causal/projects/resolve?alias=repo", "tenant-a", {
+    additionalHeaders: { "x-sh-dtt-agent-context": "dac_verified_context" },
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.headers.authorization, "Bearer tenant-a-key");
+  assert.equal(calls[0].init.headers["x-sh-dtt-agent-context"], "dac_verified_context");
+});
