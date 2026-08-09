@@ -40,7 +40,9 @@ function parseOauthOwnerTenantBindings(value, name) {
   return result;
 }
 
-const OAUTH_TENANT_MEMBERSHIP_ROLES = new Set(["member", "reviewer", "operator", "support_delegate"]);
+const OAUTH_TENANT_MEMBERSHIP_ROLES = new Set([
+  "member", "reviewer", "operator", "support_delegate", "team_manager", "super_admin",
+]);
 
 function parseOauthTenantMemberships(value, name) {
   const parsed = jsonObject(value, name);
@@ -59,19 +61,37 @@ function parseOauthTenantMemberships(value, name) {
     if (!OAUTH_TENANT_MEMBERSHIP_ROLES.has(role)) {
       throw new Error(`${name} contains an invalid membership role`);
     }
+    const teamIds = Array.isArray(membershipValue.team_ids) ? membershipValue.team_ids.map((item) => String(item || "").trim()) : [];
+    const managedTeamIds = Array.isArray(membershipValue.managed_team_ids) ? membershipValue.managed_team_ids.map((item) => String(item || "").trim()) : [];
+    if ([...teamIds, ...managedTeamIds].some((item) => !/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,127}$/.test(item))) {
+      throw new Error(`${name} contains an invalid team id`);
+    }
+    const expiresAt = String(membershipValue.expires_at || "").trim();
+    if (expiresAt && !Number.isFinite(Date.parse(expiresAt))) throw new Error(`${name} contains an invalid expires_at`);
+    if (role === "team_manager" && !managedTeamIds.length) {
+      throw new Error(`${name} team_manager requires managed_team_ids`);
+    }
     if (role === "support_delegate") {
       const delegationId = String(membershipValue.delegation_id || "").trim();
-      const expiresAt = String(membershipValue.expires_at || "").trim();
       if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{1,119}$/.test(delegationId)) {
         throw new Error(`${name} support delegation requires a valid delegation_id`);
       }
       if (!Number.isFinite(Date.parse(expiresAt))) {
         throw new Error(`${name} support delegation requires a valid expires_at`);
       }
-      result[subject] = { tenantId, role, delegationId, expiresAt };
+      result[subject] = {
+        tenantId, role, delegationId, expiresAt,
+        ...(teamIds.length ? { teamIds } : {}),
+        ...(managedTeamIds.length ? { managedTeamIds } : {}),
+      };
       continue;
     }
-    result[subject] = { tenantId, role };
+    result[subject] = {
+      tenantId, role,
+      ...(expiresAt ? { expiresAt } : {}),
+      ...(teamIds.length ? { teamIds } : {}),
+      ...(managedTeamIds.length ? { managedTeamIds } : {}),
+    };
   }
   return result;
 }
@@ -249,6 +269,8 @@ export function loadConfig(env = process.env) {
   const selfServiceTenantsEnabled = flag(env.MCP_SELF_SERVICE_TENANTS_ENABLED, false);
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
   const databaseUrl = String(env.DATABASE_URL || "").trim();
+  const genericWorkCoreJoinPublicKey = String(env.GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY || "").trim();
+  const genericWorkCoreJoinKeyId = String(env.GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID || "").trim();
   // Collaboration state must never silently share the service's existing
   // DATABASE_URL. It is intentionally opt-in and has a distinct Render secret.
   const collaborationDatabaseUrl = String(env.MCP_COLLABORATION_DATABASE_URL || "").trim();
@@ -344,6 +366,8 @@ export function loadConfig(env = process.env) {
     tenantOwnerRoles: csv(env.MCP_TENANT_OWNER_ROLES || "tenant_owner,tenant_admin,owner_root"),
     sharedMemoryRoot,
     databaseUrl,
+    genericWorkCoreJoinPublicKey,
+    genericWorkCoreJoinKeyId,
     collaborationDatabaseUrl,
     decisionLedgerRequired,
     coreBlockRemediationMode,

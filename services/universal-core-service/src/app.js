@@ -176,6 +176,13 @@ import {
   createHostNativeExternalReadbackVerifier,
   createHostNativeReleaseJoinVerdictResolver,
 } from "./hostNativeExternalReadback.js";
+import {
+  createGenericWorkCoreJoinAuthority,
+  createLocalGenericWorkCoreJoinSigner,
+  createGenericWorkCoreJoinVerdictVerifier,
+  genericWorkCoreJoinDigest,
+} from "./genericWorkCoreJoin.js";
+import { createPostgresGenericWorkCoreJoinStore } from "./genericWorkCoreJoinStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -4586,6 +4593,36 @@ export function createUniversalCoreService(options = {}) {
     process.env.CORE_HOST_NATIVE_SIGNING_SECRET ??
     "",
   ).trim();
+  const genericWorkCoreJoinPostgresPool = options.genericWorkCoreJoinPostgresPool
+    || governedAgentPostgresVersionPool;
+  const genericWorkCoreJoinStore = options.genericWorkCoreJoinStore
+    || (governedAgentPostgresConfigured && genericWorkCoreJoinPostgresPool
+      ? createPostgresGenericWorkCoreJoinStore({ pool: genericWorkCoreJoinPostgresPool })
+      : null);
+  const genericWorkCoreJoinPrivateKey = String(options.genericWorkCoreJoinEd25519PrivateKey ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_ED25519_PRIVATE_KEY ?? "").trim();
+  const genericWorkCoreJoinKeyId = String(options.genericWorkCoreJoinEd25519KeyId ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID ?? "").trim();
+  const genericWorkCoreJoinSigner = options.genericWorkCoreJoinSigner || (genericWorkCoreJoinPrivateKey && genericWorkCoreJoinKeyId ? createLocalGenericWorkCoreJoinSigner({ privateKey: genericWorkCoreJoinPrivateKey, keyId: genericWorkCoreJoinKeyId }) : null);
+  let genericWorkCoreJoinStoreState = genericWorkCoreJoinStore ? "initializing" : "unavailable";
+  let genericWorkCoreJoinStoreError = null;
+  const genericWorkCoreJoinStoreInitialization = genericWorkCoreJoinStore?.initialize
+    ? Promise.resolve().then(() => genericWorkCoreJoinStore.initialize()).then(() => { genericWorkCoreJoinStoreState = "ready"; }).catch((error) => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = String(error?.message || "initialization_failed").slice(0, 120); })
+    : Promise.resolve().then(() => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = "initialize_unavailable"; });
+  const genericWorkCoreJoinAuthority = genericWorkCoreJoinSigner && dttAgentIdentitySecret &&
+    genericWorkCoreJoinStore?.restart_durable === true
+    ? createGenericWorkCoreJoinAuthority({
+        signer: genericWorkCoreJoinSigner,
+        store: genericWorkCoreJoinStore,
+        verifyIndependentVerifierReceipt: (receipt) => {
+          const { signature, ...unsigned } = receipt || {};
+          const expected = crypto.createHmac("sha256", dttAgentIdentitySecret)
+            .update(`generic_work_verifier_receipt_v1\0${genericWorkCoreJoinDigest(unsigned)}`).digest("base64url");
+          const left = Buffer.from(String(signature || ""));
+          const right = Buffer.from(expected);
+          return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
+        },
+      })
+    : null;
+  const genericWorkCoreJoinVerifier = genericWorkCoreJoinAuthority ? createGenericWorkCoreJoinVerdictVerifier({ publicKey: genericWorkCoreJoinSigner.public_key, keyId: genericWorkCoreJoinSigner.key_id }) : null;
   const hostNativeResolverConfigurationValid =
     options.hostNativeResolverConfigurationValid !== false;
   const hostNativeResolverConfigurationError = hostNativeResolverConfigurationValid
@@ -5728,6 +5765,19 @@ export function createUniversalCoreService(options = {}) {
       render_ready: renderReady,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
+      generic_work_core_join: {
+        state: genericWorkCoreJoinAuthority ? genericWorkCoreJoinStoreState : "durability_or_signing_unavailable",
+        ready: Boolean(genericWorkCoreJoinAuthority) && genericWorkCoreJoinStoreState === "ready",
+        backend: genericWorkCoreJoinStore?.kind || "unavailable",
+        restart_durable: genericWorkCoreJoinStore?.restart_durable === true,
+        distributed: genericWorkCoreJoinStore?.distributed === true,
+        algorithm: genericWorkCoreJoinAuthority?.signer_metadata.algorithm || null,
+        key_id: genericWorkCoreJoinAuthority?.signer_metadata.key_id || null,
+        public_key_fingerprint: genericWorkCoreJoinAuthority?.signer_metadata.public_key_fingerprint || null,
+        custody: genericWorkCoreJoinAuthority?.signer_metadata.custody || null,
+        initialization_error: genericWorkCoreJoinStoreError,
+        host_action_authorized: false,
+      },
       research_airlock: {
         ...researchAirlockHealth,
         ready: researchAirlockProductionReady && researchAirlockHealth.ready === true,
@@ -7260,6 +7310,36 @@ export function createUniversalCoreService(options = {}) {
     },
   );
 
+  const issueGenericWorkCoreJoin = async (req, res) => {
+      if (!isMcpTenantGatewayRecord(req.coreKey)) return publicError(res, 403, "core_join_mcp_gateway_required");
+      const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
+      if (!assertedTenantId || assertedTenantId !== req.tenantId) return publicError(res, 403, "tenant_scope_denied");
+      if (!genericWorkCoreJoinAuthority) return publicError(res, 503, "generic_work_core_join_durable_store_unavailable");
+      try {
+        await genericWorkCoreJoinStoreInitialization;
+        if (genericWorkCoreJoinStoreState !== "ready") return publicError(res, 503, "generic_work_core_join_durable_store_unavailable");
+        const { tenant_id: _tenantId, ...input } = req.body || {};
+        const verdict = await genericWorkCoreJoinAuthority.issue({ ...input, tenant_id: req.tenantId });
+        genericWorkCoreJoinVerifier.verify({ verdict, expected: { tenant_id: req.tenantId, work_id: verdict.work_id, adapter: verdict.adapter, idempotency_digest: verdict.idempotency_digest } });
+        audit.append("core_generic_work_core_join_issued", { tenant_id: req.tenantId, key_id: req.coreKey.key_id,
+          work_id: verdict.work_id, verdict_id: verdict.verdict_id, adapter: verdict.adapter });
+        return res.status(201).json({ ok: true, verdict });
+      } catch (error) {
+        return publicError(res, 409, String(error?.message || "generic_work_core_join_denied"));
+      }
+    };
+
+  app.post(
+    "/v1/work-continuity/generic-core-join",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
+    issueGenericWorkCoreJoin,
+  );
+  app.post(
+    "/v1/work/core-join-verdicts",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
+    issueGenericWorkCoreJoin,
+  );
+
   app.get(
     "/v1/host-native/core-join-verdicts/:verdictId",
     coreAuth(SCOPES.READ_DECISION),
@@ -7495,6 +7575,7 @@ export function createUniversalCoreService(options = {}) {
       }
     },
   );
+
 
   app.post("/v1/nyra-policy-registry/activate", coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }), async (req, res) => {
     try {

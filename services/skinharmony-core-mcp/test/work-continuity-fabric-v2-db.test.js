@@ -1537,6 +1537,19 @@ test("first Work Identity fails closed without owner creation authorization", as
   assert.equal(pool.works.size, 1);
 });
 
+test("ensureWithClient preserves the legacy create contract inside a caller-owned transaction", async () => {
+  const pool = new ContinuityPool(() => new Date("2026-08-08T10:00:00.000Z"));
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const created = await runtime.ensureWithClient(pool, { tenantId: "tenant-a", subject: "owner-subject" }, {
+    ...initialInput,
+    session_id: "shared-transaction-session",
+    work_id: "55555555-5555-4555-8555-555555555555",
+  }, { creationAuthorized: true });
+  assert.equal(created.work_id, "55555555-5555-4555-8555-555555555555");
+  assert.equal(pool.works.size, 1);
+  assert.equal(pool.events.get(key("tenant-a", created.work_id)).length, 2);
+});
+
 test("native plan replay is deterministic and receipts preserve host policy boundaries", async () => {
   const instant = new Date("2026-07-29T13:00:00.000Z");
   const clock = () => new Date(instant);

@@ -524,16 +524,21 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
   const bootstrapTools = WORK_CONTINUITY_TOOLS.filter((tool) => [
     "work_continuity_create",
     "work_continuity_start_or_resume",
+    "work_continuity_v2_create",
   ].includes(tool.name));
   const dedicatedContinuityTools = WORK_CONTINUITY_TOOLS.filter((tool) => [
     "work_continuity_create",
     "work_continuity_start_or_resume",
     "work_continuity_checkpoint",
     "work_continuity_resume",
+    "work_continuity_v2_create",
+    "work_continuity_generic_core_join",
+    "work_continuity_generic_closure_finalize",
   ].includes(tool.name));
   assert.deepEqual(bootstrapTools.map((tool) => tool.name), [
     "work_continuity_create",
     "work_continuity_start_or_resume",
+    "work_continuity_v2_create",
   ]);
   for (const tool of bootstrapTools) {
     assert.equal(tool._meta["skinharmony/dedicatedCoreGate"], true);
@@ -544,6 +549,9 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_checkpoint",
     "work_continuity_resume",
     "work_continuity_start_or_resume",
+    "work_continuity_v2_create",
+    "work_continuity_generic_core_join",
+    "work_continuity_generic_closure_finalize",
   ]);
   assert.equal(dedicatedContinuityTools.every((tool) =>
     tool._meta?.["skinharmony/serverOwnedGovernance"] === true &&
@@ -596,7 +604,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
         architecture: {},
         next_action: "Start the approved work",
       }
-      : {
+      : tool.name === "work_continuity_start_or_resume" ? {
         project_id: "client-project",
         session_id: "owner-session",
         initial_message: "Create the client work",
@@ -604,6 +612,21 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
         objective: "Track the work",
         architecture: {},
         next_action: "Start the approved work",
+      } : {
+        intent_type: "CREATE_WORK",
+        request_id: "owner-work-bootstrap-request",
+        review_id: "66666666-6666-4666-8666-666666666666",
+        review_digest: "a".repeat(64),
+        project_id: "client-project",
+        session_id: "owner-session",
+        work_name: "Approved V2 work",
+        work_type: "generic",
+        idea: "Create the client work",
+        objective: "Track the work",
+        architecture: {},
+        next_action: "Start the approved work",
+        acceptance_criteria: ["The work is independently verified"],
+        tasks: [{ title: "Perform the work", weight: 10_000, required: true }],
       };
     const args = {
       capability_id: tool.name,

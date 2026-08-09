@@ -281,6 +281,59 @@ test("binds multiple OAuth subjects to one shared tenant with bounded member rol
   assert.equal(identityB.selfServiceTenant, undefined);
 });
 
+test("emits authenticated Work membership envelopes only from verified server bindings", async () => {
+  const owner = auth0Fixture({ sub: "oauth|owner", iat: Math.floor(Date.now() / 1000) });
+  const manager = auth0Fixture({ sub: "oauth|manager", iat: Math.floor(Date.now() / 1000) });
+  const admin = auth0Fixture({ sub: "oauth|admin", iat: Math.floor(Date.now() / 1000) });
+  const config = {
+    ...owner.config, codexKeys: [], godModeEnabled: false,
+    oauthOwnerTenantBindings: { "oauth|owner": "tenant-a" },
+    oauthTenantMemberships: {
+      "oauth|manager": { tenantId: "tenant-a", role: "team_manager", teamIds: ["team-a"], managedTeamIds: ["team-a"] },
+      "oauth|admin": { tenantId: "tenant-a", role: "super_admin", teamIds: [], managedTeamIds: [] },
+    },
+  };
+  const ownerIdentity = await createAuthenticator(config, { jwksCache: owner.cache })(`Bearer ${owner.token}`);
+  const managerIdentity = await createAuthenticator({ ...config, ...manager.config }, { jwksCache: manager.cache })(`Bearer ${manager.token}`);
+  const adminIdentity = await createAuthenticator({ ...config, ...admin.config }, { jwksCache: admin.cache })(`Bearer ${admin.token}`);
+  for (const identity of [ownerIdentity, managerIdentity, adminIdentity]) {
+    assert.equal(identity.authenticatedTenantMembership.schema_version, "tenant_membership_binding_v1");
+    assert.equal(identity.authenticatedTenantMembership.authenticated, true);
+    assert.equal(identity.authenticatedTenantMembership.tenant_id, "tenant-a");
+    assert.equal(identity.authenticatedTenantMembership.subject, identity.subject);
+    assert.ok(Date.parse(identity.authenticatedTenantMembership.expires_at) > Date.now());
+  }
+  assert.equal(ownerIdentity.authenticatedTenantMembership.role, "tenant_owner");
+  assert.deepEqual(managerIdentity.authenticatedTenantMembership.managed_team_ids, ["team-a"]);
+  assert.equal(adminIdentity.authenticatedTenantMembership.role, "super_admin");
+});
+
+test("rejects expired static memberships and does not derive Work authority from spoofed OAuth claims", async () => {
+  const fixture = auth0Fixture({ sub: "oauth|member", "https://skinharmony.it/role": "super_admin" });
+  const base = { ...fixture.config, codexKeys: [], godModeEnabled: false };
+  const member = await createAuthenticator({ ...base, oauthTenantMemberships: {
+    "oauth|member": { tenantId: "tenant-a", role: "member", teamIds: [], managedTeamIds: [] },
+  } }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`);
+  assert.equal(member.authenticatedTenantMembership.role, "member");
+  await assert.rejects(createAuthenticator({ ...base, oauthTenantMemberships: {
+    "oauth|member": { tenantId: "tenant-a", role: "member", expiresAt: "2000-01-01T00:00:00.000Z" },
+  } }, { jwksCache: fixture.cache })(`Bearer ${fixture.token}`), /tenant_membership_expired/);
+});
+
+test("Codex receives Work owner authority only from verified Good Mode", async () => {
+  const bound = await createAuthenticator({
+    codexKeys: ["bound"], codexScopes: ["core:read"], auth0Issuer: "", defaultTenantId: "tenant-a",
+    supportedScopes: ["core:read"], godModeEnabled: true, godModeEmergencyStop: false,
+    godModeTenantIds: ["tenant-a"], godModeCodexEnabled: true,
+  })("Bearer bound");
+  assert.equal(bound.authenticatedTenantMembership.role, "tenant_owner");
+  const unbound = await createAuthenticator({
+    codexKeys: ["unbound"], codexScopes: ["core:read"], auth0Issuer: "", defaultTenantId: "tenant-a",
+    godModeEnabled: false, godModeEmergencyStop: false, godModeTenantIds: ["tenant-a"], godModeCodexEnabled: true,
+  })("Bearer unbound");
+  assert.equal(unbound.authenticatedTenantMembership, undefined);
+});
+
 test("a tenant membership cannot elevate to owner", async () => {
   const now = Math.floor(Date.now() / 1000);
   const fixture = auth0Fixture({

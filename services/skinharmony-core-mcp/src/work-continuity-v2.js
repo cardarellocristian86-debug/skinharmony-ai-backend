@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS tenant_work (
   work_code varchar(128) NOT NULL,
   work_name text NOT NULL,
   work_type varchar(80) NOT NULL,
+  objective text,
+  next_action text,
+  acceptance_criteria jsonb NOT NULL DEFAULT '[]'::jsonb,
   project_id varchar(128),
   owner_user_id varchar(128), created_by_user_id varchar(128), team_id varchar(128),
   assigned_user_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -22,11 +25,12 @@ CREATE TABLE IF NOT EXISTS tenant_work (
   agent_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
   visibility_scope varchar(32) NOT NULL DEFAULT 'private',
   created_at timestamptz NOT NULL DEFAULT now(), started_at timestamptz, updated_at timestamptz NOT NULL DEFAULT now(),
-  closed_at timestamptz, cancelled_at timestamptz,
+  closed_at timestamptz, cancelled_at timestamptz, archived_at timestamptz,
   status varchar(24) NOT NULL DEFAULT 'PLANNED',
   progress_bp integer NOT NULL DEFAULT 0 CHECK (progress_bp BETWEEN 0 AND 10000),
   progress_version varchar(64) NOT NULL DEFAULT 'work_progress_v1', progress_source varchar(64) NOT NULL DEFAULT 'server_derived',
   priority varchar(8) NOT NULL DEFAULT 'P2', priority_score integer NOT NULL DEFAULT 0,
+  priority_version varchar(64) NOT NULL DEFAULT 'work_priority_v1',
   intent_digest char(64), parent_work_id uuid, successor_work_id uuid, superseded_by_work_id uuid,
   closure_type varchar(64), closure_reason text, final_evidence_digest char(64),
   PRIMARY KEY (tenant_id, work_id), UNIQUE (tenant_id, work_code),
@@ -37,15 +41,26 @@ CREATE TABLE IF NOT EXISTS tenant_work (
 CREATE INDEX IF NOT EXISTS tenant_work_operational_idx ON tenant_work (tenant_id, status, priority_score DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS tenant_work_project_idx ON tenant_work (tenant_id, project_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS tenant_work_code_sequence (
+  tenant_id varchar(64) NOT NULL,
+  project_id varchar(128) NOT NULL,
+  code_date date NOT NULL,
+  next_sequence integer NOT NULL DEFAULT 1 CHECK (next_sequence > 0),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, project_id, code_date)
+);
+
 CREATE TABLE IF NOT EXISTS tenant_work_task (
   tenant_id varchar(64) NOT NULL, task_id uuid NOT NULL, work_id uuid NOT NULL, title text NOT NULL,
-  weight integer NOT NULL DEFAULT 1 CHECK (weight > 0), status varchar(24) NOT NULL DEFAULT 'planned',
+  weight integer NOT NULL DEFAULT 1 CHECK (weight > 0), required boolean NOT NULL DEFAULT true,
+  status varchar(24) NOT NULL DEFAULT 'planned',
   acceptance_verified boolean NOT NULL DEFAULT false, completed_at timestamptz,
   PRIMARY KEY (tenant_id, task_id), FOREIGN KEY (tenant_id, work_id) REFERENCES tenant_work(tenant_id, work_id)
 );
 CREATE TABLE IF NOT EXISTS tenant_work_evidence (
   tenant_id varchar(64) NOT NULL, evidence_id uuid NOT NULL, work_id uuid NOT NULL, kind varchar(80) NOT NULL,
-  digest char(64) NOT NULL, required boolean NOT NULL DEFAULT true, independently_verified boolean NOT NULL DEFAULT false,
+  digest char(64) NOT NULL, weight integer NOT NULL DEFAULT 1 CHECK (weight > 0),
+  required boolean NOT NULL DEFAULT true, independently_verified boolean NOT NULL DEFAULT false,
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, evidence_id), FOREIGN KEY (tenant_id, work_id) REFERENCES tenant_work(tenant_id, work_id)
 );
@@ -76,13 +91,40 @@ function clampBp(value) {
   return Math.max(0, Math.min(10000, Math.floor(Number(value) || 0)));
 }
 
+export function deriveActorAcl(actor = {}) {
+  const tenant_id = String(actor.tenant_id || "");
+  const user_id = String(actor.user_id || "");
+  const team_ids = [...new Set(Array.isArray(actor.team_ids) ? actor.team_ids.map(String).filter(Boolean) : [])].sort();
+  const is_super_admin = actor.is_super_admin === true;
+  const is_tenant_owner = actor.is_tenant_owner === true;
+  const is_team_manager = actor.is_team_manager === true || Array.isArray(actor.managed_team_ids);
+  const managed_team_ids = [...new Set(Array.isArray(actor.managed_team_ids) ? actor.managed_team_ids.map(String).filter(Boolean) : [])].sort();
+  return { tenant_id, user_id, team_ids, managed_team_ids, is_super_admin, is_tenant_owner, is_team_manager };
+}
+
+export function canActorAccessWork(work = {}, actor = {}) {
+  const acl = deriveActorAcl(actor);
+  if (!acl.tenant_id || String(work.tenant_id || "") !== acl.tenant_id) return false;
+  if (acl.is_super_admin || acl.is_tenant_owner) return true;
+  if (!acl.user_id) return false;
+  const assigned = Array.isArray(work.assigned_user_ids) ? work.assigned_user_ids.map(String) : [];
+  const supervisors = Array.isArray(work.supervising_user_ids) ? work.supervising_user_ids.map(String) : [];
+  if ([work.owner_user_id, work.created_by_user_id, ...assigned, ...supervisors].map(String).includes(acl.user_id)) return true;
+  if (work.visibility_scope === "tenant" || work.visibility_scope === "shared") return true;
+  return work.visibility_scope === "team" && (acl.team_ids.includes(String(work.team_id || "")) ||
+    (acl.is_team_manager && acl.managed_team_ids.includes(String(work.team_id || ""))));
+}
+
+export function galleryScopeForActor(actor = {}) {
+  const acl = deriveActorAcl(actor);
+  if (acl.is_super_admin) return "SUPER_ADMIN";
+  if (acl.is_tenant_owner) return "TENANT_GALLERY";
+  if (acl.is_team_manager) return "TEAM_GALLERY";
+  return "MY_GALLERY";
+}
+
 function authorized(work, actor = {}) {
-  if (actor.is_super_admin || actor.is_tenant_owner) return true;
-  const userId = String(actor.user_id || "");
-  if (!userId) return false;
-  return work.owner_user_id === userId || work.created_by_user_id === userId ||
-    work.assigned_user_ids?.includes(userId) || work.supervising_user_ids?.includes(userId) ||
-    work.visibility_scope === "tenant" || (work.visibility_scope === "team" && actor.team_ids?.includes(work.team_id));
+  return canActorAccessWork(work, actor);
 }
 
 export function deriveProgress(tasks = [], evidence = [], closure = {}) {
@@ -128,33 +170,60 @@ export function resolveWorkRequest(request, works, actor, options = {}) {
   const second = candidates[1];
   const ambiguous = Boolean(top && second && top.score >= MIN_OVERLAP_SCORE && Math.abs(top.score - second.score) < 10);
   const selected = top && top.score >= MIN_OVERLAP_SCORE && !ambiguous ? top : null;
+  const visibleCandidates = candidates.filter((item) => item.visible).slice(0, 5).map((item) => ({
+    work_id: item.work.work_id, work_code: item.work.work_code, work_name: item.work.work_name,
+    status: item.work.status, score: item.score, reasons: item.reasons,
+  }));
+  const hiddenConflict = candidates.some((item) => !item.visible && item.score >= MIN_OVERLAP_SCORE);
   return {
     classification: selected ? "CONTINUE_EXISTING" : candidates.some((item) => item.score >= MIN_OVERLAP_SCORE) ? "POSSIBLE_DUPLICATE" : "NO_CONFLICT",
     selected_work_id: selected?.visible ? selected.work.work_id : null,
     requires_owner_decision: Boolean(ambiguous || (!selected && candidates.some((item) => item.score >= 25))),
-    candidates: candidates.slice(0, 5).map((item) => item.visible ? { work_id: item.work.work_id, work_code: item.work.work_code, work_name: item.work.work_name, status: item.work.status, score: item.score, reasons: item.reasons } : { invisible_conflict: item.score >= MIN_OVERLAP_SCORE }),
+    candidates: visibleCandidates,
+    hidden_conflict: hiddenConflict,
   };
 }
 
 export function classifyStaleWork(work, now = new Date()) {
   const at = new Date(now).getTime();
   if (work.successor_work_id || work.superseded_by_work_id || work.status === "SUPERSEDED") return { classification: "SUPERSEDED", reasons: ["successor_or_superseded_relation"] };
+  if (work.status === "COMPLETED" && !work.closed_at) return { classification: "COMPLETED_BUT_UNCLOSED", reasons: ["completed_without_closed_at"] };
   if (work.status === "COMPLETED" && work.closed_at) return { classification: "ACTIVE_VALID", reasons: ["closed"] };
+  if (["CANCELLED", "ARCHIVED"].includes(work.status)) return { classification: "ACTIVE_VALID", reasons: ["terminal_status"] };
+  const updatedAt = new Date(work.updated_at || work.created_at || "").getTime();
+  if (!Number.isFinite(updatedAt)) return { classification: "UNKNOWN", reasons: ["work_timestamp_missing"] };
   const effectiveParticipants = (work.participants || []).filter((item) => item.active === true && new Date(item.expires_at).getTime() > at);
   const effectiveLeases = (work.leases || []).filter((item) => item.status === "active" && new Date(item.expires_at).getTime() > at);
-  const ageMs = at - new Date(work.updated_at || work.created_at || at).getTime();
+  const ageMs = at - updatedAt;
+  if (ageMs < 0) return { classification: "UNKNOWN", reasons: ["work_timestamp_in_future"] };
+  if (OPERATIONAL_STATUSES.has(work.status) && !effectiveParticipants.length && !effectiveLeases.length && ageMs > 30 * 24 * 60 * 60 * 1000) return { classification: "ABANDONED", reasons: ["no_effective_presence_or_lease", "abandoned_update"] };
   if (OPERATIONAL_STATUSES.has(work.status) && !effectiveParticipants.length && !effectiveLeases.length && ageMs > 24 * 60 * 60 * 1000) return { classification: "STALE", reasons: ["no_effective_presence_or_lease", "stale_update"] };
   if (work.status === "BLOCKED") return { classification: "BLOCKED_VALID", reasons: ["persisted_blocker"] };
   return { classification: "ACTIVE_VALID", reasons: ["effective_presence_or_recent_update"] };
 }
 
-export function finalizeGenericClosure(work, input = {}) {
-  if (work.status === "COMPLETED" && work.closure_receipt && work.final_report) {
-    return { work, receipt: work.closure_receipt, final_report: work.final_report, archive_status: "ARCHIVED", idempotent_replay: true };
+function verifiedClosureContext(input = {}) {
+  const context = input.server_verified_closure_context;
+  if (!context || typeof context !== "object" || Array.isArray(context) ||
+      context.schema_version !== "work_closure_context_v1" ||
+      context.server_verified !== true ||
+      context.independent_verification?.passed !== true ||
+      context.core_join?.received !== true ||
+      !/^[a-f0-9]{64}$/i.test(String(context.core_join?.digest || "")) ||
+      !/^[a-f0-9]{64}$/i.test(String(context.final_evidence_digest || ""))) {
+    throw new Error("work_closure_verified_context_required");
   }
+  return context;
+}
+
+export function buildGenericClosureArtifacts(work, input = {}) {
+  const context = verifiedClosureContext(input);
   if (!CLOSURE_ADAPTERS.includes(input.adapter)) throw new Error("work_closure_adapter_invalid");
-  if (input.independent_verification !== true || input.core_join_received !== true || !input.final_evidence_digest) throw new Error("work_closure_gate_unsatisfied");
-  const receipt = { receipt_id: crypto.randomUUID(), work_id: work.work_id, adapter: input.adapter, core_join_digest: input.core_join_digest, final_evidence_digest: input.final_evidence_digest, issued_at: new Date().toISOString() };
+  const receipt = {
+    receipt_id: crypto.randomUUID(), work_id: work.work_id, adapter: input.adapter,
+    core_join_digest: context.core_join.digest, final_evidence_digest: context.final_evidence_digest,
+    issued_at: new Date().toISOString(),
+  };
   const receipt_digest = digest(receipt);
   const closed_at = new Date().toISOString();
   const final_report = {
@@ -162,9 +231,16 @@ export function finalizeGenericClosure(work, input = {}) {
     tenant_id: work.tenant_id, project_id: work.project_id, owner_user_id: work.owner_user_id, team_id: work.team_id,
     intent_digest: work.intent_digest, created_at: work.created_at, started_at: work.started_at, closed_at,
     final_status: "COMPLETED", progress_bp: work.progress_bp, priority: work.priority, objective: work.objective,
-    acceptance_criteria: input.acceptance_criteria || [], evidence_summary: input.evidence_summary || [], core_join_digest: input.core_join_digest,
-    closure_receipt: { ...receipt, receipt_digest }, final_evidence_digest: input.final_evidence_digest,
+    acceptance_criteria: work.acceptance_criteria || [], evidence_summary: context.evidence_summary || [], core_join_digest: context.core_join.digest,
+    closure_receipt: { ...receipt, receipt_digest }, final_evidence_digest: context.final_evidence_digest,
   };
-  const closure_receipt = { ...receipt, receipt_digest };
-  return { work: { ...work, status: "COMPLETED", closed_at, final_evidence_digest: input.final_evidence_digest, closure_type: input.adapter, closure_reason: input.closure_reason || "acceptance_criteria_verified", closure_receipt, final_report }, receipt: closure_receipt, final_report, archive_status: "ARCHIVED", idempotent_replay: false };
+  return { receipt: { ...receipt, receipt_digest }, final_report, closed_at };
+}
+
+export function finalizeGenericClosure(work, input = {}) {
+  if (work.status === "COMPLETED" && work.closure_receipt && work.final_report) {
+    return { work, receipt: work.closure_receipt, final_report: work.final_report, archive_status: "ARCHIVED", idempotent_replay: true };
+  }
+  const { receipt, final_report, closed_at } = buildGenericClosureArtifacts(work, input);
+  return { work: { ...work, status: "COMPLETED", closed_at, final_evidence_digest: receipt.final_evidence_digest, closure_type: input.adapter, closure_reason: input.closure_reason || "acceptance_criteria_verified", closure_receipt: receipt, final_report }, receipt, final_report, archive_status: "ARCHIVED", idempotent_replay: false };
 }
