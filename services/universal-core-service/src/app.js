@@ -9024,6 +9024,7 @@ export function createUniversalCoreService(options = {}) {
         tenant_id: req.tenantId,
         tree_id: req.params.treeId,
         node_id: req.params.nodeId,
+        idempotency_key: req.body?.idempotency_key,
         outcome: req.body?.outcome,
         evidence: outcomeEvidence,
       });
@@ -9034,10 +9035,14 @@ export function createUniversalCoreService(options = {}) {
         node_id: outcome.node_id,
         state: outcome.state,
       });
-      return res.json({ ok: true, tenant_id: req.tenantId, ...outcome });
+      return res.json({ ...outcome, ok: true, tenant_id: req.tenantId });
     } catch (error) {
       const code = error.message || "dynamic_task_tree_outcome_invalid";
-      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : code === "node_terminal" ? 409 : 400, code);
+      return publicError(res, code === "task_tree_not_found" ? 404
+        : code === "cross_tenant_task_tree_denied" ? 403
+          : /^(?:node_terminal|outcome_idempotency_key_conflict|dynamic_task_tree_revision_conflict)$/.test(code) ? 409
+            : code === "dynamic_task_tree_state_corrupt" ? 500
+              : 400, code);
     }
   });
 

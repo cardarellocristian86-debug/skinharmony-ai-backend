@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
   buildDynamicTaskTreeContract,
   createDynamicTaskTreeRuntime,
 } from "../src/dynamicTaskTree.js";
+import { createFileDynamicTaskTreeStateStore } from "../src/dynamicTaskTreeStateStore.js";
 import { buildVerificationEvidenceContract } from "../src/verificationEvidenceContract.js";
 
 const identityReceipts = new Map([
@@ -232,11 +235,11 @@ test("DTT handles retry, fallback, cancellation propagation, tenant isolation an
   const runtime = createDynamicTaskTreeRuntime({ resolve_verifier_identity: resolveVerifierIdentity, resolve_evidence_artifact: () => ({ verified: true, registry_id: "test-registry" }) });
   const tree = await runtime.create({ tenant_id: "tenant-a", objective: "recover safely", nodes });
   const retry = await runtime.recordOutcome({
-    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "research", outcome: "failed",
+    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "research", idempotency_key: "retry-1", outcome: "failed",
   });
   assert.equal(retry.state, "retry_proposed");
   const fallback = await runtime.recordOutcome({
-    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "research", outcome: "failed",
+    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "research", idempotency_key: "retry-2", outcome: "failed",
   });
   assert.equal(fallback.state, "fallback_proposed");
   assert.equal(fallback.fallback_node_id, "fallback");
@@ -265,12 +268,13 @@ test("DTT handles retry, fallback, cancellation propagation, tenant isolation an
     core_verdict: { allowed: true, authority: "universal_core", verdict_reference: "v1" },
   }), /task_tree_not_verified/);
   await assert.rejects(runtime.recordOutcome({
-    tenant_id: "tenant-a", tree_id: joinedTree.tree_id, node_id: "only", outcome: "verified", evidence: {},
+    tenant_id: "tenant-a", tree_id: joinedTree.tree_id, node_id: "only", idempotency_key: "join-invalid", outcome: "verified", evidence: {},
   }), /verification_evidence_required/);
   await runtime.recordOutcome({
     tenant_id: "tenant-a",
     tree_id: joinedTree.tree_id,
     node_id: "only",
+    idempotency_key: "join-valid",
     outcome: "verified",
     evidence: evidenceFor(joinedTree, "only"),
   });
@@ -282,6 +286,136 @@ test("DTT handles retry, fallback, cancellation propagation, tenant isolation an
   });
   assert.equal(joined.status, "core_joined");
   assert.equal(joined.execution_authorized, false);
+});
+
+test("DTT outcome receipts survive restart and serialize cross-runtime CAS replays", async () => {
+  const root = path.join(os.tmpdir(), `dtt-outcome-replay-${Date.now()}-${Math.random()}`);
+  const runtimeA = createDynamicTaskTreeRuntime({
+    state_store: createFileDynamicTaskTreeStateStore({ root }),
+  });
+  const tree = await runtimeA.create({
+    tenant_id: "tenant-a",
+    objective: "Make outcome replay durable",
+    nodes: [
+      { node_id: "primary", kind: "analysis", task: "Record once", retry_policy: { max_attempts: 10 } },
+      { node_id: "secondary", kind: "analysis", task: "Use an independent key scope", retry_policy: { max_attempts: 10 } },
+    ],
+  });
+  const runtimeB = createDynamicTaskTreeRuntime({
+    state_store: createFileDynamicTaskTreeStateStore({ root }),
+  });
+  const idempotencyKey = "lost-response-sensitive-key";
+  const request = {
+    tenant_id: "tenant-a",
+    tree_id: tree.tree_id,
+    node_id: "primary",
+    idempotency_key: idempotencyKey,
+    outcome: "failed",
+    evidence: { failure_reference: "stable-evidence-marker" },
+  };
+  const [first, concurrentReplay] = await Promise.all([
+    runtimeA.recordOutcome(request),
+    runtimeB.recordOutcome(request),
+  ]);
+  assert.deepEqual(concurrentReplay, first);
+  assert.equal(first.attempt, 1);
+
+  const afterRestart = createDynamicTaskTreeRuntime({
+    state_store: createFileDynamicTaskTreeStateStore({ root }),
+  });
+  assert.deepEqual(await afterRestart.recordOutcome(request), first);
+  const visible = await afterRestart.get({ tenant_id: "tenant-a", tree_id: tree.tree_id });
+  assert.equal(visible.nodes.find((node) => node.node_id === "primary").attempts, 1);
+  assert.equal(Object.hasOwn(visible, "outcome_idempotency"), false);
+
+  const storedRecord = createFileDynamicTaskTreeStateStore({ root }).load({ tree_id: tree.tree_id });
+  assert.equal(storedRecord.revision, 2);
+  const receiptJson = JSON.stringify(storedRecord.tree.outcome_idempotency);
+  assert.equal(receiptJson.includes(idempotencyKey), false);
+  assert.equal(receiptJson.includes("stable-evidence-marker"), false);
+
+  await assert.rejects(afterRestart.recordOutcome({
+    ...request,
+    evidence: { failure_reference: "changed-evidence" },
+  }), /outcome_idempotency_key_conflict/);
+  await assert.rejects(afterRestart.recordOutcome({
+    ...request,
+    outcome: "verified",
+  }), /outcome_idempotency_key_conflict/);
+
+  const independent = await afterRestart.recordOutcome({
+    ...request,
+    node_id: "secondary",
+  });
+  assert.equal(independent.attempt, 1);
+  await assert.rejects(afterRestart.recordOutcome({
+    ...request,
+    tenant_id: "tenant-b",
+  }), /cross_tenant_task_tree_denied/);
+
+  const corruptStore = createFileDynamicTaskTreeStateStore({ root });
+  const corruptRecord = corruptStore.load({ tree_id: tree.tree_id });
+  const receiptKey = Object.keys(corruptRecord.tree.outcome_idempotency)[0];
+  const originalReceipt = structuredClone(corruptRecord.tree.outcome_idempotency[receiptKey]);
+  corruptRecord.tree.outcome_idempotency[receiptKey].result = {
+    tree_id: "forged-tree",
+    node_id: "forged-node",
+    state: "verified",
+    next: "dependency_scheduler",
+    execution_authorized: true,
+    tenant_id: "tenant-forged",
+    ok: false,
+  };
+  corruptStore.save({ tree: corruptRecord.tree, expected_revision: corruptRecord.revision });
+  const corruptRuntime = createDynamicTaskTreeRuntime({
+    state_store: createFileDynamicTaskTreeStateStore({ root }),
+  });
+  await assert.rejects(corruptRuntime.recordOutcome(request), /dynamic_task_tree_state_corrupt/);
+
+  const nullRecord = corruptStore.load({ tree_id: tree.tree_id });
+  nullRecord.tree.outcome_idempotency[receiptKey] = null;
+  corruptStore.save({ tree: nullRecord.tree, expected_revision: nullRecord.revision });
+  await assert.rejects(corruptRuntime.recordOutcome(request), /dynamic_task_tree_state_corrupt/);
+  assert.equal(
+    corruptStore.load({ tree_id: tree.tree_id }).tree.nodes.find((node) => node.node_id === "primary").attempts,
+    1,
+  );
+
+  const incompatibleRecord = corruptStore.load({ tree_id: tree.tree_id });
+  incompatibleRecord.tree.outcome_idempotency[receiptKey] = {
+    ...originalReceipt,
+    result: {
+      tree_id: tree.tree_id,
+      node_id: "primary",
+      state: "verified",
+      next: "dependency_scheduler",
+      execution_authorized: false,
+    },
+  };
+  corruptStore.save({ tree: incompatibleRecord.tree, expected_revision: incompatibleRecord.revision });
+  await assert.rejects(corruptRuntime.recordOutcome(request), /dynamic_task_tree_state_corrupt/);
+});
+
+test("DTT outcome idempotency keys are mandatory bounded strings", async () => {
+  const runtime = createDynamicTaskTreeRuntime();
+  const tree = await runtime.create({
+    tenant_id: "tenant-a",
+    objective: "Reject ambiguous outcome keys",
+    nodes: [{ node_id: "analysis", kind: "analysis", task: "Remain unchanged", retry_policy: { max_attempts: 2 } }],
+  });
+  const original = await runtime.get({ tenant_id: "tenant-a", tree_id: tree.tree_id });
+  for (const idempotency_key of [undefined, null, 42, ["key"], {}, " ", "x".repeat(201)]) {
+    await assert.rejects(runtime.recordOutcome({
+      tenant_id: "tenant-a",
+      tree_id: tree.tree_id,
+      node_id: "analysis",
+      idempotency_key,
+      outcome: "failed",
+      evidence: {},
+    }), /idempotency_key_invalid/);
+  }
+  const unchanged = await runtime.get({ tenant_id: "tenant-a", tree_id: tree.tree_id });
+  assert.deepEqual(unchanged, original);
 });
 
 test("DTT fails closed on forged provenance, self-verification, duplicate voters and dissent", async () => {
@@ -299,7 +433,7 @@ test("DTT fails closed on forged provenance, self-verification, duplicate voters
     const { runtime, tree } = await createVerificationTree();
     const wrongTenant = evidenceFor(tree, "verify", { tenantId: "tenant-b" });
     await assert.rejects(runtime.recordOutcome({
-      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", outcome: "verified", evidence: wrongTenant,
+      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", idempotency_key: "wrong-tenant", outcome: "verified", evidence: wrongTenant,
     }), /verification_evidence_scope_mismatch/);
   }
   {
@@ -357,6 +491,7 @@ test("DTT fails closed on forged provenance, self-verification, duplicate voters
       tenant_id: "tenant-a",
       tree_id: tree.tree_id,
       node_id: "verify",
+      idempotency_key: "fabricated",
       outcome: "verified",
       evidence: fabricatedQuorum,
     }), /verifier_identity_unverified/);
@@ -371,7 +506,7 @@ test("DTT fails closed on forged provenance, self-verification, duplicate voters
       requiredApprovals: 1,
     });
     await assert.rejects(runtime.recordOutcome({
-      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", outcome: "verified", evidence: singleVerifier,
+      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", idempotency_key: "single", outcome: "verified", evidence: singleVerifier,
     }), /evidence_quorum_invalid/);
   }
   {
@@ -403,7 +538,7 @@ test("DTT fails closed on forged provenance, self-verification, duplicate voters
       ],
     }), dissent);
     await assert.rejects(runtime.recordOutcome({
-      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", outcome: "verified", evidence: dissent,
+      tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", idempotency_key: "dissent", outcome: "verified", evidence: dissent,
     }), /verification_evidence_quorum_unsatisfied/);
   }
 });
@@ -419,6 +554,7 @@ test("DTT Core join revalidates attested evidence and requires a verification no
     tenant_id: "tenant-a",
     tree_id: analysisTree.tree_id,
     node_id: "analysis",
+    idempotency_key: "analysis-verified",
     outcome: "verified",
     evidence: evidenceFor(analysisTree, "analysis", {
       votes: [{
@@ -443,7 +579,7 @@ test("DTT Core join revalidates attested evidence and requires a verification no
   const evidence = evidenceFor(tree, "verify");
   evidence.claim = "Tampered claim";
   await assert.rejects(tamperRuntime.recordOutcome({
-    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", outcome: "verified", evidence,
+    tenant_id: "tenant-a", tree_id: tree.tree_id, node_id: "verify", idempotency_key: "tamper", outcome: "verified", evidence,
   }), /evidence_digest_invalid/);
 });
 
@@ -462,10 +598,20 @@ test("DTT quarantines hostile outcome and join envelopes without raw persistence
     tenant_id: "tenant-a",
     tree_id: failedTree.tree_id,
     node_id: "analysis",
+    idempotency_key: "hostile",
     outcome: "failed",
     evidence: { nested: { output: hostileOutcome } },
   });
   assert.equal(outcome.state, "quarantined");
+  const replayedOutcome = await runtime.recordOutcome({
+    tenant_id: "tenant-a",
+    tree_id: failedTree.tree_id,
+    node_id: "analysis",
+    idempotency_key: "hostile",
+    outcome: "failed",
+    evidence: { nested: { output: hostileOutcome } },
+  });
+  assert.deepEqual(replayedOutcome, outcome);
   const guardedTree = await runtime.get({ tenant_id: "tenant-a", tree_id: failedTree.tree_id });
   assert.equal(guardedTree.nodes[0].status, "quarantined");
   assert.equal(JSON.stringify(guardedTree).includes(hostileOutcome), false);
@@ -485,6 +631,7 @@ test("DTT quarantines hostile outcome and join envelopes without raw persistence
     tenant_id: "tenant-a",
     tree_id: joinTree.tree_id,
     node_id: "verify",
+    idempotency_key: "join-hostile",
     outcome: "verified",
     evidence: evidenceFor(joinTree, "verify"),
   });

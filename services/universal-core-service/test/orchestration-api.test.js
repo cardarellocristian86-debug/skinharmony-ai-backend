@@ -218,13 +218,34 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
     assert.equal(unchanged.json.nodes.length, 2);
     assert(unchanged.json.nodes.some((node) => node.node_id === "verify"));
 
-    const researchOutcome = await request(base, "POST", `/v1/orchestration/dtt/${tree.json.tree_id}/nodes/research/outcomes`, {
+    const missingOutcomeKey = await request(base, "POST", `/v1/orchestration/dtt/${tree.json.tree_id}/nodes/research/outcomes`, {
       outcome: "verified",
       evidence: evidenceFor(tree.json, "research", 1),
     }, key);
+    assert.equal(missingOutcomeKey.status, 400);
+    assert.equal(missingOutcomeKey.json.error, "idempotency_key_invalid");
+    const researchOutcomeRequest = {
+      idempotency_key: "research-verified-1",
+      outcome: "verified",
+      evidence: evidenceFor(tree.json, "research", 1),
+    };
+    const researchOutcome = await request(base, "POST", `/v1/orchestration/dtt/${tree.json.tree_id}/nodes/research/outcomes`, researchOutcomeRequest, key);
     assert.equal(researchOutcome.status, 200);
     assert.equal(researchOutcome.json.state, "verified");
+    const researchReplay = await request(base, "POST", `/v1/orchestration/dtt/${tree.json.tree_id}/nodes/research/outcomes`, researchOutcomeRequest, key);
+    assert.equal(researchReplay.status, 200);
+    assert.deepEqual(researchReplay.json, researchOutcome.json);
+    const researchConflict = await request(base, "POST", `/v1/orchestration/dtt/${tree.json.tree_id}/nodes/research/outcomes`, {
+      ...researchOutcomeRequest,
+      evidence: { changed: true },
+    }, key);
+    assert.equal(researchConflict.status, 409);
+    assert.equal(researchConflict.json.error, "outcome_idempotency_key_conflict");
+    const afterResearch = await request(base, "GET", `/v1/orchestration/dtt/${tree.json.tree_id}`, undefined, key);
+    assert.equal(Object.hasOwn(afterResearch.json, "outcome_idempotency"), false);
+    assert.equal(afterResearch.json.nodes.find((node) => node.node_id === "research").attempts, 1);
     const verificationOutcome = await request(base, "POST", `/v1/orchestration/dtt/${tree.json.tree_id}/nodes/verify/outcomes`, {
+      idempotency_key: "verification-verified-1",
       outcome: "verified",
       evidence: evidenceFor(tree.json, "verify", 2),
     }, key);
@@ -273,6 +294,7 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
     }, key);
     assert.equal(retryTree.status, 200);
     const retry = await request(base, "POST", `/v1/orchestration/dtt/${retryTree.json.tree_id}/nodes/attempt/outcomes`, {
+      idempotency_key: "retry-failed-1",
       outcome: "failed",
       evidence: { failure_reference: "first-attempt" },
     }, key);
@@ -281,6 +303,7 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
     assert.equal(retryState.status, 200);
     assert.equal(retryState.json.nodes[0].state, "retry_proposed");
     const fallback = await request(base, "POST", `/v1/orchestration/dtt/${retryTree.json.tree_id}/nodes/attempt/outcomes`, {
+      idempotency_key: "retry-failed-2",
       outcome: "failed",
       evidence: { failure_reference: "second-attempt" },
     }, key);
@@ -306,6 +329,43 @@ test("orchestration API is tenant-bound, paged and proposal-only", async () => {
       otherTenantKey,
     );
     assert.equal(crossTenantRead.status, 403);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;
+    else process.env.CORE_SERVICE_ADMIN_KEY = previousAdmin;
+  }
+});
+
+test("DTT outcome API reports persisted receipt corruption as an internal failure", async () => {
+  const previousAdmin = process.env.CORE_SERVICE_ADMIN_KEY;
+  process.env.CORE_SERVICE_ADMIN_KEY = "orchestration-corruption-admin";
+  const { app } = createUniversalCoreService({
+    storageRoot: path.join(os.tmpdir(), `core-orchestration-corruption-${Date.now()}-${Math.random()}`),
+    dynamicTaskTreeRuntime: {
+      recordOutcome: async () => { throw new Error("dynamic_task_tree_state_corrupt"); },
+    },
+  });
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const generated = await request(base, "POST", "/v1/keys/generate", {
+      tenant_id: "tenant-orchestration",
+      preset: "codex_automation",
+    }, "orchestration-corruption-admin");
+    const response = await request(
+      base,
+      "POST",
+      "/v1/orchestration/dtt/dtt_aaaaaaaaaaaaaaaaaaaaaaaa/nodes/analysis/outcomes",
+      { idempotency_key: "corrupt-receipt", outcome: "failed", evidence: {} },
+      generated.json.key,
+    );
+    assert.equal(response.status, 500);
+    assert.deepEqual(response.json, {
+      ok: false,
+      error: "dynamic_task_tree_state_corrupt",
+      message: "dynamic_task_tree_state_corrupt",
+    });
   } finally {
     await new Promise((resolve) => server.close(resolve));
     if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;
@@ -371,7 +431,7 @@ test("DTT join reconciles a durable joined tree after consume failure and restar
       first.base,
       "POST",
       `/v1/orchestration/dtt/${tree.json.tree_id}/nodes/verify/outcomes`,
-      { outcome: "verified", evidence: evidenceFor(tree.json, "verify", 2) },
+      { idempotency_key: "restart-verified-1", outcome: "verified", evidence: evidenceFor(tree.json, "verify", 2) },
       key,
     );
     assert.equal(outcome.status, 200);
@@ -402,6 +462,24 @@ test("DTT join reconciles a durable joined tree after consume failure and restar
     first = null;
 
     second = await start(createFileDynamicTaskTreeJoinVerdictStore({ root: ledgerRoot }));
+    const outcomeReplay = await request(
+      second.base,
+      "POST",
+      `/v1/orchestration/dtt/${tree.json.tree_id}/nodes/verify/outcomes`,
+      { idempotency_key: "restart-verified-1", outcome: "verified", evidence: evidenceFor(tree.json, "verify", 2) },
+      key,
+    );
+    assert.equal(outcomeReplay.status, 200);
+    assert.deepEqual(outcomeReplay.json, outcome.json);
+    const replayedTree = await request(
+      second.base,
+      "GET",
+      `/v1/orchestration/dtt/${tree.json.tree_id}`,
+      undefined,
+      key,
+    );
+    assert.equal(Object.hasOwn(replayedTree.json, "outcome_idempotency"), false);
+    assert.equal(replayedTree.json.nodes[0].attempts, 1);
     const recovered = await request(
       second.base,
       "POST",
@@ -576,7 +654,7 @@ test("signed assigned agents complete artifact registry, draft, quorum, outcome 
     }
     const outcome = await request(
       base, "POST", `/v1/orchestration/dtt/${tree.json.tree_id}/nodes/verify/outcomes`,
-      { outcome: "verified", evidence_draft: draft.json, votes }, key,
+      { idempotency_key: "signed-verified-1", outcome: "verified", evidence_draft: draft.json, votes }, key,
     );
     assert.equal(outcome.status, 200);
     const joined = await request(
