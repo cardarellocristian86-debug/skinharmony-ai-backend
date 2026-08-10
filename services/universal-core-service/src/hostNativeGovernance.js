@@ -655,7 +655,22 @@ function normalizeManifest(input, { allowDigest = false } = {}) {
     },
   };
   if (result.verification.checks_commit !== result.head_commit) fail("checks_commit_mismatch");
-  if (result.rollback.target_commit !== result.base_commit) fail("rollback_previous_commit_mismatch");
+  if (!["forward_revert", "redeploy_previous_commit"].includes(result.rollback.mode)) {
+    fail("rollback_mode_unsupported");
+  }
+  if (
+    result.rollback.mode === "forward_revert" &&
+    result.rollback.target_commit !== result.base_commit
+  ) {
+    fail("rollback_previous_commit_mismatch");
+  }
+  if (
+    result.rollback.mode === "redeploy_previous_commit" &&
+    result.delivery.services.some((service) =>
+      service.expected_previous_commit !== result.rollback.target_commit)
+  ) {
+    fail("rollback_previous_commit_mismatch");
+  }
   if (result.rollback.health_contract_digest !== HOST_NATIVE_HEALTH_CONTRACT_DIGEST) {
     fail("rollback_health_contract_unsupported");
   }

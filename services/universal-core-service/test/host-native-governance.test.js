@@ -735,6 +735,67 @@ test("release manifest v2 uses canonical digest and rejects signed booleans, mut
   })), /rollback_health_contract_unsupported/);
 });
 
+test("rollback modes bind the target to the real prior live commit without base substitution", () => {
+  const baseCommit = "d0a8ee6ddb1f22f4164c995abd1f4e9f3e508f1e";
+  const previousLiveCommit = "3a0370875a0adc090a3e8c71e363dd36725e1808";
+  const targetCommit = "7d722fc258756ca8f4bb52105a3abe9ca8493828";
+  const services = ["srv-core", "srv-core-mcp"].map((service_id) => ({
+    service_id,
+    environment: "production",
+    expected_previous_commit: previousLiveCommit,
+    target_commit: targetCommit,
+    target_resolution: "exact_commit",
+    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  }));
+  const realRollback = releaseManifestInput({
+    base_commit: baseCommit,
+    head_commit: targetCommit,
+    tree_sha: "8fdff25c0e14f50b73b1b01ef0d232b54923d1a9",
+    verification: {
+      ...releaseManifestInput().verification,
+      checks_commit: targetCommit,
+    },
+    delivery: { method: "manual_render_deploy", services },
+    rollback: {
+      mode: "redeploy_previous_commit",
+      target_commit: previousLiveCommit,
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      ready: true,
+    },
+  });
+  const normalized = buildHostReleaseManifestV2(realRollback);
+  assert.equal(normalized.base_commit, baseCommit);
+  assert.equal(normalized.rollback.target_commit, previousLiveCommit);
+
+  assert.throws(() => buildHostReleaseManifestV2(releaseManifestInput({
+    rollback: {
+      ...releaseManifestInput().rollback,
+      mode: "caller_selected_commit",
+    },
+  })), /rollback_mode_unsupported/);
+
+  assert.throws(() => buildHostReleaseManifestV2(releaseManifestInput({
+    ...realRollback,
+    rollback: { ...realRollback.rollback, target_commit: baseCommit },
+  })), /rollback_previous_commit_mismatch/);
+
+  assert.throws(() => buildHostReleaseManifestV2(releaseManifestInput({
+    ...realRollback,
+    delivery: {
+      ...realRollback.delivery,
+      services: [
+        services[0],
+        { ...services[1], expected_previous_commit: G("2") },
+      ],
+    },
+  })), /rollback_previous_commit_mismatch/);
+
+  assert.throws(() => buildHostReleaseManifestV2(releaseManifestInput({
+    ...realRollback,
+    rollback: { ...realRollback.rollback, target_commit: G("f") },
+  })), /rollback_previous_commit_mismatch/);
+});
+
 test("release intent is canonical, excludes verdict identity, and binds the complete release", () => {
   const manifest = buildHostReleaseManifestV2(releaseManifestInput());
   const intent = deriveHostReleaseIntentV1(manifest);
