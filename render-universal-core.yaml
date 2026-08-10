@@ -41,6 +41,27 @@ services:
           type: web
           name: skinharmony-core-mcp
           envVarKey: CORE_OWNER_CONTEXT_SIGNING_SECRET
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_URL
+        sync: false
+      - key: CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE
+        sync: false
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_HEALTH_URL
+        sync: false
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ALLOWED_URLS_JSON
+        sync: false
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TOKEN
+        sync: false
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PUBLIC_KEY
+        sync: false
+      - key: CORE_GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID
+        sync: false
+      - key: CORE_GENERIC_WORK_CORE_JOIN_ED25519_TRUST_REGISTRY_JSON
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: GENERIC_WORK_CORE_JOIN_ED25519_TRUST_REGISTRY_JSON
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REQUIRED
+        value: "true"
       - key: DTT_AGENT_IDENTITY_SIGNING_SECRET
         fromService:
           type: web

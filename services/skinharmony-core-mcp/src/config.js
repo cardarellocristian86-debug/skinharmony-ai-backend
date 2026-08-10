@@ -175,6 +175,58 @@ function optionalFullCommit(value, name) {
   return commit;
 }
 
+export const GENERIC_WORK_CORE_JOIN_TRUST_REGISTRY_SCHEMA_VERSION = "generic_work_core_join_trust_registry_v1";
+
+export function parseGenericWorkCoreJoinTrustRegistry(value, {
+  requireActive = true,
+  legacyPublicKey = "",
+  legacyKeyId = "",
+} = {}) {
+  if (String(legacyPublicKey || "").trim() || String(legacyKeyId || "").trim()) {
+    throw new Error("generic_work_core_join_trust_registry_mixed_legacy_ambiguous");
+  }
+  let registry;
+  try { registry = typeof value === "string" ? JSON.parse(value) : value; } catch {
+    throw new Error("generic_work_core_join_trust_registry_invalid_json");
+  }
+  if (!registry || Array.isArray(registry) || typeof registry !== "object" ||
+      Object.keys(registry).sort().join("\0") !== ["keys", "revision", "schema_version"].sort().join("\0") ||
+      registry.schema_version !== GENERIC_WORK_CORE_JOIN_TRUST_REGISTRY_SCHEMA_VERSION ||
+      !registry.keys || Array.isArray(registry.keys) || typeof registry.keys !== "object") {
+    throw new Error("generic_work_core_join_trust_registry_invalid");
+  }
+  if (typeof registry.revision !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(registry.revision)) {
+    throw new Error("generic_work_core_join_trust_registry_revision_required");
+  }
+  const keys = {};
+  let activeCount = 0;
+  for (const [keyId, rawEntry] of Object.entries(registry.keys)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(keyId) || !rawEntry || Array.isArray(rawEntry) ||
+        typeof rawEntry !== "object" || !["active", "retired", "revoked"].includes(rawEntry.status)) {
+      throw new Error("generic_work_core_join_trust_registry_key_invalid");
+    }
+    const allowedFields = rawEntry.status === "revoked" ? ["public_key", "status"] : ["public_key", "status"];
+    if (Object.keys(rawEntry).some((field) => !allowedFields.includes(field)) ||
+        (rawEntry.status !== "revoked" && (typeof rawEntry.public_key !== "string" || !rawEntry.public_key.trim())) ||
+        (rawEntry.public_key !== undefined && typeof rawEntry.public_key !== "string")) {
+      throw new Error("generic_work_core_join_trust_registry_key_invalid");
+    }
+    if (rawEntry.status === "active") activeCount += 1;
+    keys[keyId] = Object.freeze({
+      status: rawEntry.status,
+      ...(typeof rawEntry.public_key === "string" && rawEntry.public_key.trim()
+        ? { public_key: rawEntry.public_key.trim() } : {}),
+    });
+  }
+  if (activeCount > 1) throw new Error("generic_work_core_join_trust_registry_multiple_active_keys");
+  if (requireActive && activeCount !== 1) throw new Error("generic_work_core_join_trust_registry_active_key_required");
+  return Object.freeze({
+    schema_version: GENERIC_WORK_CORE_JOIN_TRUST_REGISTRY_SCHEMA_VERSION,
+    revision: registry.revision,
+    keys: Object.freeze(keys),
+  });
+}
+
 export function loadConfig(env = process.env) {
   const environment = String(env.NODE_ENV || "development").trim().toLowerCase();
   const publicUrl = url(env.MCP_PUBLIC_URL || "http://localhost:8790", "MCP_PUBLIC_URL");
@@ -271,6 +323,30 @@ export function loadConfig(env = process.env) {
   const databaseUrl = String(env.DATABASE_URL || "").trim();
   const genericWorkCoreJoinPublicKey = String(env.GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY || "").trim();
   const genericWorkCoreJoinKeyId = String(env.GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID || "").trim();
+  const genericWorkCoreJoinTrustRegistryRaw = String(env.GENERIC_WORK_CORE_JOIN_ED25519_TRUST_REGISTRY_JSON || "").trim();
+  const legacyGenericWorkCoreJoinConfigured = Boolean(genericWorkCoreJoinPublicKey || genericWorkCoreJoinKeyId);
+  if (!genericWorkCoreJoinTrustRegistryRaw && legacyGenericWorkCoreJoinConfigured &&
+      !(genericWorkCoreJoinPublicKey && genericWorkCoreJoinKeyId)) {
+    throw new Error("generic_work_core_join_legacy_key_configuration_incomplete");
+  }
+  const genericWorkCoreJoinTrustRegistry = genericWorkCoreJoinTrustRegistryRaw
+    ? parseGenericWorkCoreJoinTrustRegistry(genericWorkCoreJoinTrustRegistryRaw, {
+        requireActive: true,
+        legacyPublicKey: genericWorkCoreJoinPublicKey,
+        legacyKeyId: genericWorkCoreJoinKeyId,
+      })
+    : null;
+  const genericWorkCoreJoinTrustedPublicKeys = genericWorkCoreJoinTrustRegistry
+    ? Object.fromEntries(Object.entries(genericWorkCoreJoinTrustRegistry.keys)
+      .filter(([, entry]) => entry.status === "active" || entry.status === "retired")
+      .map(([keyId, entry]) => [keyId, entry.public_key]))
+    : genericWorkCoreJoinPublicKey && genericWorkCoreJoinKeyId
+      ? { [genericWorkCoreJoinKeyId]: genericWorkCoreJoinPublicKey } : {};
+  const genericWorkCoreJoinRevokedKeyIds = genericWorkCoreJoinTrustRegistry
+    ? Object.entries(genericWorkCoreJoinTrustRegistry.keys)
+      .filter(([, entry]) => entry.status === "revoked").map(([keyId]) => keyId)
+    : [];
+  const genericWorkCoreJoinTrustRegistryRevision = genericWorkCoreJoinTrustRegistry?.revision || "legacy_single_key_v1";
   // Collaboration state must never silently share the service's existing
   // DATABASE_URL. It is intentionally opt-in and has a distinct Render secret.
   const collaborationDatabaseUrl = String(env.MCP_COLLABORATION_DATABASE_URL || "").trim();
@@ -368,6 +444,10 @@ export function loadConfig(env = process.env) {
     databaseUrl,
     genericWorkCoreJoinPublicKey,
     genericWorkCoreJoinKeyId,
+    genericWorkCoreJoinTrustRegistry,
+    genericWorkCoreJoinTrustedPublicKeys: Object.freeze({ ...genericWorkCoreJoinTrustedPublicKeys }),
+    genericWorkCoreJoinRevokedKeyIds: Object.freeze([...genericWorkCoreJoinRevokedKeyIds]),
+    genericWorkCoreJoinTrustRegistryRevision,
     collaborationDatabaseUrl,
     decisionLedgerRequired,
     coreBlockRemediationMode,

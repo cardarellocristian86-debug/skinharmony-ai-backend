@@ -7,6 +7,7 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const VERDICT_FIELDS = ["acceptance_criteria_digest", "adapter", "authority", "decision", "evidence_digest", "execution_authorized", "host_action_authorized", "idempotency_digest", "independent_verifier_receipt_digest", "issued_at", "key_id", "schema_version", "signature", "signature_algorithm", "task_state_digest", "tenant_id", "verdict_digest", "verdict_id", "work_id"];
+const VERDICT_KEY_RESOLVERS = new WeakMap();
 function fail(code) { throw new Error(code); }
 function exact(value, fields, code) { if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== [...fields].sort().join("\0")) fail(code); }
 function id(value, code) { if (typeof value !== "string" || !ID.test(value)) fail(code); return value; }
@@ -24,9 +25,115 @@ function requestMaterial(input) { exact(input, ["acceptance_criteria", "adapter"
 function verifyReceipt(value, expected, now, verifier) { exact(value, ["acceptance_criteria_digest", "adapter", "evidence_digest", "expires_at", "issued_at", "nonce", "schema_version", "session_id", "signature", "task_state_digest", "tenant_id", "verification_digest", "verifier_identity", "work_id"], "independent_verifier_receipt_invalid"); if (value.schema_version !== GENERIC_WORK_INDEPENDENT_VERIFIER_RECEIPT_SCHEMA_VERSION || !ADAPTERS.has(value.adapter)) fail("independent_verifier_receipt_invalid"); for (const field of ["tenant_id", "work_id", "verifier_identity", "session_id", "nonce"]) id(value[field], "independent_verifier_receipt_invalid"); for (const field of ["acceptance_criteria_digest", "task_state_digest", "evidence_digest", "verification_digest"]) digest(value[field], "independent_verifier_receipt_invalid"); if (typeof value.signature !== "string" || value.signature.length < 16) fail("independent_verifier_receipt_invalid"); const issued = timestamp(value.issued_at, "independent_verifier_receipt_invalid"); const expires = timestamp(value.expires_at, "independent_verifier_receipt_invalid"); if (!(issued < expires) || expires <= now) fail("independent_verifier_receipt_expired"); for (const field of ["tenant_id", "work_id", "adapter", "acceptance_criteria_digest", "task_state_digest", "evidence_digest"]) if (value[field] !== expected[field]) fail(`independent_verifier_${field}_mismatch`); if (value.verifier_identity === expected.requester_identity || value.session_id === expected.requester_session_id) fail("independent_verifier_not_distinct"); let trusted = false; try { trusted = verifier(Object.freeze(structuredClone(value))) === true; } catch {} if (!trusted) fail("independent_verifier_receipt_untrusted"); return { digest: genericWorkCoreJoinDigest(value), nonce: value.nonce }; }
 
 export function verifyGenericWorkCoreJoinVerdict({ verdict, expected, publicKey: verifierPublicKey, expectedKeyId } = {}) { exact(verdict, VERDICT_FIELDS, "generic_work_core_join_verdict_invalid"); if (verdict.schema_version !== GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION || verdict.authority !== "universal_core" || verdict.decision !== "GENERIC_WORK_CORE_JOIN_ELIGIBLE" || verdict.execution_authorized !== false || verdict.host_action_authorized !== false || verdict.signature_algorithm !== "ed25519") fail("generic_work_core_join_verdict_invalid"); for (const field of ["tenant_id", "work_id", "verdict_id", "key_id"]) id(verdict[field], "generic_work_core_join_verdict_invalid"); if (!ADAPTERS.has(verdict.adapter)) fail("generic_work_core_join_verdict_invalid"); for (const field of ["acceptance_criteria_digest", "task_state_digest", "evidence_digest", "independent_verifier_receipt_digest", "idempotency_digest", "verdict_digest"]) digest(verdict[field], "generic_work_core_join_verdict_invalid"); timestamp(verdict.issued_at, "generic_work_core_join_verdict_invalid"); const { signature, verdict_digest, ...unsigned } = verdict; if (verdict_digest !== genericWorkCoreJoinDigest(unsigned)) fail("generic_work_core_join_verdict_digest_invalid"); if (verdict.key_id !== id(expectedKeyId, "generic_work_core_join_key_id_mismatch")) fail("generic_work_core_join_key_id_mismatch"); if (typeof signature !== "string" || !/^[A-Za-z0-9_-]+$/.test(signature) || !crypto.verify(null, payload(verdict_digest), publicKey(verifierPublicKey), Buffer.from(signature, "base64url"))) fail("generic_work_core_join_signature_invalid"); exact(expected, ["adapter", "idempotency_digest", "tenant_id", "work_id"], "generic_work_core_join_context_invalid"); for (const field of ["tenant_id", "work_id", "adapter", "idempotency_digest"]) if (verdict[field] !== expected[field]) fail(`generic_work_core_join_${field}_mismatch`); return true; }
-export function createGenericWorkCoreJoinVerdictVerifier({ publicKey: verifierPublicKey, keyId } = {}) { const pinned = publicKey(verifierPublicKey); id(keyId, "generic_work_core_join_verifier_unavailable"); return Object.freeze({ schema_version: GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION, key_id: keyId, verify: ({ verdict, expected } = {}) => verifyGenericWorkCoreJoinVerdict({ verdict, expected, publicKey: pinned, expectedKeyId: keyId }) }); }
-export function createLocalGenericWorkCoreJoinSigner({ privateKey: material, keyId } = {}) { const signer = privateKey(material); const verifier = crypto.createPublicKey(signer); const resolvedKeyId = id(keyId, "generic_work_core_join_signing_unavailable"); return Object.freeze({ algorithm: "Ed25519", key_id: resolvedKeyId, public_key: verifier, public_key_fingerprint: publicKeyFingerprint(verifier), custody: "local_process_key", signDigest: (value) => crypto.sign(null, payload(digest(value, "generic_work_core_join_verdict_digest_invalid")), signer).toString("base64url") }); }
-function normalizeSigner(value) { if (!value || value.algorithm !== "Ed25519" || typeof value.signDigest !== "function") fail("generic_work_core_join_signing_unavailable"); const verifier = publicKey(value.public_key); const fingerprint = digest(value.public_key_fingerprint || publicKeyFingerprint(verifier), "generic_work_core_join_signing_unavailable"); if (fingerprint !== publicKeyFingerprint(verifier)) fail("generic_work_core_join_signing_unavailable"); return { ...value, key_id: id(value.key_id, "generic_work_core_join_signing_unavailable"), public_key: verifier, public_key_fingerprint: fingerprint }; }
+export function createGenericWorkCoreJoinVerdictVerifier({ publicKey: verifierPublicKey, keyId } = {}) {
+  const pinned = publicKey(verifierPublicKey);
+  const activeKeyId = id(keyId, "generic_work_core_join_verifier_unavailable");
+  const registryResolver = VERDICT_KEY_RESOLVERS.get(pinned);
+  return Object.freeze({
+    schema_version: GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION,
+    key_id: activeKeyId,
+    verify: ({ verdict, expected } = {}) => {
+      const verdictKeyId = id(verdict?.key_id, "generic_work_core_join_key_untrusted");
+      const resolved = registryResolver
+        ? registryResolver(verdictKeyId)
+        : verdictKeyId === activeKeyId ? pinned : null;
+      if (!resolved) fail("generic_work_core_join_key_untrusted");
+      return verifyGenericWorkCoreJoinVerdict({ verdict, expected, publicKey: resolved, expectedKeyId: verdictKeyId });
+    },
+  });
+}
+export function createLocalGenericWorkCoreJoinSigner({ privateKey: material, keyId } = {}) {
+  const signer = privateKey(material);
+  const verifier = crypto.createPublicKey(signer);
+  const resolvedKeyId = id(keyId, "generic_work_core_join_signing_unavailable");
+  return Object.freeze({
+    algorithm: "Ed25519",
+    key_id: resolvedKeyId,
+    public_key: verifier,
+    public_key_fingerprint: publicKeyFingerprint(verifier),
+    custody: "local_process_key",
+    trust_registry_revision: "legacy_single_key_v1",
+    signDigest: (value) => crypto.sign(null, payload(digest(value, "generic_work_core_join_verdict_digest_invalid")), signer).toString("base64url"),
+    resolvePublicKey: (requestedKeyId) => requestedKeyId === resolvedKeyId ? verifier : null,
+  });
+}
+function normalizeSigner(value) {
+  if (!value || value.algorithm !== "Ed25519" || typeof value.signDigest !== "function") fail("generic_work_core_join_signing_unavailable");
+  const verifier = publicKey(value.public_key);
+  const fingerprint = digest(value.public_key_fingerprint || publicKeyFingerprint(verifier), "generic_work_core_join_signing_unavailable");
+  if (fingerprint !== publicKeyFingerprint(verifier)) fail("generic_work_core_join_signing_unavailable");
+  const resolvedKeyId = id(value.key_id, "generic_work_core_join_signing_unavailable");
+  const suppliedResolver = typeof value.resolvePublicKey === "function" ? value.resolvePublicKey.bind(value) : null;
+  const resolveSynchronously = (requestedKeyId) => {
+    try {
+      const resolved = suppliedResolver
+        ? suppliedResolver(requestedKeyId)
+        : requestedKeyId === resolvedKeyId ? verifier : null;
+      if (resolved && typeof resolved.then === "function") return null;
+      return resolved === null || resolved === undefined ? null : publicKey(resolved);
+    } catch { return null; }
+  };
+  VERDICT_KEY_RESOLVERS.set(verifier, resolveSynchronously);
+  return {
+    ...value,
+    key_id: resolvedKeyId,
+    public_key: verifier,
+    public_key_fingerprint: fingerprint,
+    trust_registry_revision: String(value.trust_registry_revision || "legacy_single_key_v1"),
+    async resolvePublicKey(requestedKeyId) {
+      const trustedKeyId = id(requestedKeyId, "generic_work_core_join_key_untrusted");
+      const resolved = suppliedResolver
+        ? await suppliedResolver(trustedKeyId)
+        : trustedKeyId === resolvedKeyId ? verifier : null;
+      return resolved === null || resolved === undefined ? null : publicKey(resolved);
+    },
+  };
+}
+async function verifyVerdictWithSignerRegistry(signer, verdict, expected) {
+  let verifierPublicKey = null;
+  try { verifierPublicKey = await signer.resolvePublicKey(verdict?.key_id); } catch {}
+  if (!verifierPublicKey) fail("generic_work_core_join_key_untrusted");
+  verifyGenericWorkCoreJoinVerdict({
+    verdict,
+    expected,
+    publicKey: verifierPublicKey,
+    expectedKeyId: verdict.key_id,
+  });
+}
 
 /** Server-side evidence gate only. It never authorizes a host action. */
-export function createGenericWorkCoreJoinAuthority({ signer: suppliedSigner, signingPrivateKey, signingKeyId, now = () => Date.now(), verifyIndependentVerifierReceipt, store } = {}) { const signer = normalizeSigner(suppliedSigner || createLocalGenericWorkCoreJoinSigner({ privateKey: signingPrivateKey, keyId: signingKeyId })); if (typeof now !== "function" || typeof verifyIndependentVerifierReceipt !== "function" || !store || typeof store.read !== "function" || typeof store.record !== "function") fail("generic_work_core_join_dependency_unavailable"); return Object.freeze({ signer_metadata: Object.freeze({ algorithm: signer.algorithm, key_id: signer.key_id, public_key_fingerprint: signer.public_key_fingerprint, custody: signer.custody || "external" }), async issue(input = {}) { const material = requestMaterial(input); const key = { tenant_id: material.tenant_id, work_id: material.work_id, adapter: material.adapter, idempotency_digest: material.idempotency_digest }; const prior = await store.read(key); if (prior) { if (prior.request_canonical !== material.request_canonical) fail("generic_work_core_join_idempotency_conflict"); verifyGenericWorkCoreJoinVerdict({ verdict: prior.verdict, expected: key, publicKey: signer.public_key, expectedKeyId: signer.key_id }); return Object.freeze(structuredClone(prior.verdict)); } const nowValue = now(); if (!Number.isFinite(nowValue)) fail("clock_invalid"); const verified = verifyReceipt(material.independent_verifier_receipt, material, nowValue, verifyIndependentVerifierReceipt); const unsigned = { schema_version: GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION, verdict_id: `gwcj_${genericWorkCoreJoinDigest({ ...key, receipt_digest: verified.digest }).slice(0, 40)}`, tenant_id: material.tenant_id, work_id: material.work_id, adapter: material.adapter, acceptance_criteria_digest: material.acceptance_criteria_digest, task_state_digest: material.task_state_digest, evidence_digest: material.evidence_digest, independent_verifier_receipt_digest: verified.digest, idempotency_digest: material.idempotency_digest, issued_at: new Date(nowValue).toISOString(), authority: "universal_core", decision: "GENERIC_WORK_CORE_JOIN_ELIGIBLE", execution_authorized: false, host_action_authorized: false, key_id: signer.key_id, signature_algorithm: "ed25519" }; const verdict_digest = genericWorkCoreJoinDigest(unsigned); const signature = signer.signDigest(verdict_digest); if (typeof signature !== "string" || !/^[A-Za-z0-9_-]+$/.test(signature)) fail("generic_work_core_join_signature_invalid"); const verdict = { ...unsigned, verdict_digest, signature }; const recorded = await store.record({ ...key, request_canonical: material.request_canonical, request_digest: material.request_digest, independent_verifier_receipt_digest: verified.digest, verifier_nonce: verified.nonce, verdict }); if (recorded.request_canonical !== material.request_canonical) fail("generic_work_core_join_idempotency_conflict"); verifyGenericWorkCoreJoinVerdict({ verdict: recorded.verdict, expected: key, publicKey: signer.public_key, expectedKeyId: signer.key_id }); return Object.freeze(structuredClone(recorded.verdict)); } }); }
+export function createGenericWorkCoreJoinAuthority({ signer: suppliedSigner, signingPrivateKey, signingKeyId, now = () => Date.now(), verifyIndependentVerifierReceipt, store } = {}) {
+  const signer = normalizeSigner(suppliedSigner || createLocalGenericWorkCoreJoinSigner({ privateKey: signingPrivateKey, keyId: signingKeyId }));
+  if (typeof now !== "function" || typeof verifyIndependentVerifierReceipt !== "function" || !store || typeof store.read !== "function" || typeof store.record !== "function") fail("generic_work_core_join_dependency_unavailable");
+  return Object.freeze({
+    signer_metadata: Object.freeze({
+      algorithm: signer.algorithm,
+      key_id: signer.key_id,
+      public_key_fingerprint: signer.public_key_fingerprint,
+      custody: signer.custody || "external",
+      trust_registry_revision: signer.trust_registry_revision,
+    }),
+    async issue(input = {}) {
+      const material = requestMaterial(input);
+      const key = { tenant_id: material.tenant_id, work_id: material.work_id, adapter: material.adapter, idempotency_digest: material.idempotency_digest };
+      const prior = await store.read(key);
+      if (prior) {
+        if (prior.request_canonical !== material.request_canonical) fail("generic_work_core_join_idempotency_conflict");
+        await verifyVerdictWithSignerRegistry(signer, prior.verdict, key);
+        return Object.freeze(structuredClone(prior.verdict));
+      }
+      const nowValue = now();
+      if (!Number.isFinite(nowValue)) fail("clock_invalid");
+      const verified = verifyReceipt(material.independent_verifier_receipt, material, nowValue, verifyIndependentVerifierReceipt);
+      const unsigned = { schema_version: GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION, verdict_id: `gwcj_${genericWorkCoreJoinDigest({ ...key, receipt_digest: verified.digest }).slice(0, 40)}`, tenant_id: material.tenant_id, work_id: material.work_id, adapter: material.adapter, acceptance_criteria_digest: material.acceptance_criteria_digest, task_state_digest: material.task_state_digest, evidence_digest: material.evidence_digest, independent_verifier_receipt_digest: verified.digest, idempotency_digest: material.idempotency_digest, issued_at: new Date(nowValue).toISOString(), authority: "universal_core", decision: "GENERIC_WORK_CORE_JOIN_ELIGIBLE", execution_authorized: false, host_action_authorized: false, key_id: signer.key_id, signature_algorithm: "ed25519" };
+      const verdict_digest = genericWorkCoreJoinDigest(unsigned);
+      const signature = await signer.signDigest(verdict_digest, key);
+      if (typeof signature !== "string" || !/^[A-Za-z0-9_-]+$/.test(signature)) fail("generic_work_core_join_signature_invalid");
+      const verdict = { ...unsigned, verdict_digest, signature };
+      const recorded = await store.record({ ...key, request_canonical: material.request_canonical, request_digest: material.request_digest, independent_verifier_receipt_digest: verified.digest, verifier_nonce: verified.nonce, verdict });
+      if (recorded.request_canonical !== material.request_canonical) fail("generic_work_core_join_idempotency_conflict");
+      await verifyVerdictWithSignerRegistry(signer, recorded.verdict, key);
+      return Object.freeze(structuredClone(recorded.verdict));
+    },
+  });
+}

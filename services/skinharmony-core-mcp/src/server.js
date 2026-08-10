@@ -72,9 +72,11 @@ const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store(
   pool: primaryDatabasePool,
   legacyRuntime: workContinuityRuntime,
   verifierReceiptSigningSecret: config.dttAgentIdentitySigningSecret,
-  coreJoinVerifier: config.genericWorkCoreJoinPublicKey && config.genericWorkCoreJoinKeyId ? {
-    publicKey: config.genericWorkCoreJoinPublicKey, keyId: config.genericWorkCoreJoinKeyId,
-  } : null,
+  coreJoinVerifier: config.genericWorkCoreJoinTrustRegistry
+    ? { trustRegistry: config.genericWorkCoreJoinTrustRegistry }
+    : config.genericWorkCoreJoinPublicKey && config.genericWorkCoreJoinKeyId
+      ? { publicKey: config.genericWorkCoreJoinPublicKey, keyId: config.genericWorkCoreJoinKeyId }
+      : null,
 }) : null;
 const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
   pool: primaryDatabasePool,

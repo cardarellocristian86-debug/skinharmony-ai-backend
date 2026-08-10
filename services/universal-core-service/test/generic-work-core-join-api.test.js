@@ -18,6 +18,10 @@ const HOST_SECRET = "generic-work-core-join-host-secret-0123456789";
 const digest = (value) => genericWorkCoreJoinDigest({ value });
 const KEYS = crypto.generateKeyPairSync("ed25519");
 const PRIVATE_KEY = KEYS.privateKey.export({ type: "pkcs8", format: "pem" });
+const PUBLIC_KEY = KEYS.publicKey.export({ type: "spki", format: "pem" });
+const REMOTE_SIGNER_URL = "https://generic-work-core-join-signer.example/sign";
+const REMOTE_SIGNER_HEALTH_URL = "https://generic-work-core-join-signer.example/health";
+const REMOTE_SIGNER_REGISTRY = JSON.stringify({ schema_version: "generic_work_core_join_trust_registry_v1", revision: "generic-work-core-join-api-remote-v1", keys: { "generic-work-core-join-api-key": { status: "active", public_key: PUBLIC_KEY } } });
 
 function tenantContext() {
   const issued_at = new Date().toISOString();
@@ -104,7 +108,7 @@ test("generic Core Join fails closed when durable initialization fails", async (
 test("production configuration without a durable generic join store fails closed", async () => {
   const previous = process.env.NODE_ENV; const previousEvidence = process.env.CORE_EVIDENCE_SIGNING_SECRET;
   process.env.NODE_ENV = "production"; process.env.CORE_EVIDENCE_SIGNING_SECRET = "generic-work-core-join-evidence-secret-0123456789";
-  try { await withService({}, async (request) => {
+  try { await withService({ genericWorkCoreJoinEd25519PrivateKey: "", genericWorkCoreJoinSignerMode: "remote", genericWorkCoreJoinRemoteSignerUrl: REMOTE_SIGNER_URL, genericWorkCoreJoinRemoteSignerHealthUrl: REMOTE_SIGNER_HEALTH_URL, genericWorkCoreJoinRemoteSignerAllowedUrlsJson: JSON.stringify([REMOTE_SIGNER_URL, REMOTE_SIGNER_HEALTH_URL]), genericWorkCoreJoinRemoteSignerToken: "generic-work-core-join-api-test-token", genericWorkCoreJoinTrustRegistryJson: REMOTE_SIGNER_REGISTRY }, async (request) => {
     const response = await request("/v1/work-continuity/generic-core-join", body());
     assert.equal(response.status, 503);
     assert.equal(response.json.error, "generic_work_core_join_durable_store_unavailable");
