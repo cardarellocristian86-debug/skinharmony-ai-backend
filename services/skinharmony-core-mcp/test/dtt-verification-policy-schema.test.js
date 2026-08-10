@@ -4,6 +4,7 @@ import { TOOLS } from "../src/tool-definitions.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 
 const plan = TOOLS.find((item) => item.name === "orchestration_dtt_plan");
+const WORK_ID = "11111111-1111-4111-8111-111111111111";
 const node = {
   node_id: "verify_release",
   kind: "verification",
@@ -16,15 +17,21 @@ const node = {
 
 test("DTT plan accepts an explicit two-verifier quorum policy", () => {
   assert(plan, "orchestration_dtt_plan must be in the MCP catalog");
-  assert.deepEqual(validateToolArguments(plan.inputSchema, { objective: "Verify release", nodes: [node] }), []);
+  assert.deepEqual(validateToolArguments(plan.inputSchema, {
+    work_id: WORK_ID,
+    objective: "Verify release",
+    nodes: [node],
+  }), []);
 });
 
 test("DTT plan keeps non-verification nodes compatible and rejects undersized verifier allowlists", () => {
   assert.deepEqual(validateToolArguments(plan.inputSchema, {
+    work_id: WORK_ID,
     objective: "Analyze release",
     nodes: [{ node_id: "analyze_release", kind: "analysis", task: "Analyze release" }],
   }), []);
   const oneVerifierErrors = validateToolArguments(plan.inputSchema, {
+    work_id: WORK_ID,
     objective: "Verify release",
     nodes: [{ ...node, verification_policy: { required_approvals: 2, allowed_verifier_ids: ["verification_agent_a"] } }],
   });

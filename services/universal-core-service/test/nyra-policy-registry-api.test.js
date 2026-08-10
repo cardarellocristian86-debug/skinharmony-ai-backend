@@ -366,6 +366,14 @@ function operationBody(kind, overrides = {}) {
   return { ...body, ...overrides };
 }
 
+function createUnexpectedQueryPool() {
+  return {
+    async query() {
+      throw new Error("policy_registry_test_pool_query_unexpected");
+    },
+  };
+}
+
 async function startFixture({
   proofRequired = true,
   coordinatorReady = true,
@@ -506,7 +514,7 @@ async function startFixture({
     nyraPolicyRegistryCompilerTrustCatalogDigest: TRUST_CATALOG_DIGEST,
     nyraPolicyRegistryCompilerProvenanceVerifier: compilerVerifier,
     nyraPolicyRegistryCoreSignerMode: "remote",
-    nyraPolicyRegistryPostgresPool: {},
+    nyraPolicyRegistryPostgresPool: createUnexpectedQueryPool(),
     nyraPolicyRegistryCoreSigner: signer,
     nyraPolicyRegistryProofService: proofService,
     nyraPolicyRegistryStore: registryStore,
@@ -1116,7 +1124,7 @@ test("unknown signer configuration errors cannot reflect secrets in health or au
     nyraPolicyRegistryCompilerTrustCatalogDigest: TRUST_CATALOG_DIGEST,
     nyraPolicyRegistryCompilerProvenanceVerifier: staticCompilerVerifier(),
     nyraPolicyRegistryCoreSignerMode: "remote",
-    nyraPolicyRegistryPostgresPool: {},
+    nyraPolicyRegistryPostgresPool: createUnexpectedQueryPool(),
     nyraPolicyRegistryStore: {
       async status() { return { backend: "postgresql", ready: true, restart_durable: true, distributed: true }; },
       evaluate() { return { verdict: "DENY", snapshot_present: false }; },
