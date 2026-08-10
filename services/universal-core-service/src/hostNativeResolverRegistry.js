@@ -274,7 +274,7 @@ export function loadHostNativeResolverRegistryFromEnvironment(environment = proc
     resolver: null,
   };
   const render = parseRenderBindings(env) || {
-    state: "default_service_slug",
+    state: "project_scope_fallback_required",
     binding_count: 0,
     resolver: null,
   };

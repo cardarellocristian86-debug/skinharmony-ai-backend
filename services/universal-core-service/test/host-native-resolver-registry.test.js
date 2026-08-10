@@ -64,7 +64,7 @@ test("empty resolver registry keeps public/default mode without inventing creden
   assert.equal(registry.configuration_valid, true);
   assert.equal(registry.github.state, "not_configured");
   assert.equal(registry.github.resolver, null);
-  assert.equal(registry.render.state, "default_service_slug");
+  assert.equal(registry.render.state, "project_scope_fallback_required");
   assert.equal(registry.render.resolver, null);
   assert.equal(registry.required_checks.state, "not_configured");
   assert.equal(registry.required_checks.resolver, null);

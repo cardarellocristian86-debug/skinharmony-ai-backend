@@ -189,6 +189,10 @@ import { createCausalContinuityRuntime } from "./causalContinuityRuntime.js";
 import { registerCausalContinuityRoutes } from "./causalContinuityRoutes.js";
 import { causalDigest, CausalContinuityError } from "./causalContinuityCanonical.js";
 import {
+  createFailClosedRenderOriginResolver,
+  createProjectScopeRenderOriginResolver,
+} from "./projectScopeRenderOriginResolver.js";
+import {
   buildCausalBranchResult,
   extendCausalBranchRegistry,
   validateCausalBranchInvocation,
@@ -4773,6 +4777,32 @@ export function createUniversalCoreService(options = {}) {
         options.hostNativeResolverConfigurationError ||
         "host_native_resolver_registry_invalid",
       ).slice(0, 160);
+  const hostNativeProjectScopeRenderOriginResolver =
+    options.hostNativeProjectScopeRenderOriginResolver ||
+    (nyraPolicyRegistryPostgresPool
+      ? createProjectScopeRenderOriginResolver({
+          pool: nyraPolicyRegistryPostgresPool,
+          maxAgeMs:
+            options.hostNativeRenderScopeMaxAgeMs ??
+            process.env.CORE_HOST_NATIVE_RENDER_SCOPE_MAX_AGE_MS,
+        })
+      : null);
+  // Always provide a fail-closed resolver. Without an exact environment or
+  // verified Project Scope binding, host-native governance must not consume a
+  // caller/manifest origin or synthesize a service-slug origin.
+  const hostNativeRenderServiceOriginResolver =
+    createFailClosedRenderOriginResolver({
+      environmentResolver: options.hostNativeRenderServiceOriginResolver || null,
+      projectScopeResolver: hostNativeProjectScopeRenderOriginResolver,
+    });
+  const hostNativeRenderServiceOriginResolverState =
+    typeof options.hostNativeRenderServiceOriginResolver === "function"
+      ? (hostNativeProjectScopeRenderOriginResolver
+          ? "exact_registry_then_project_scope"
+          : "exact_registry_only")
+      : (hostNativeProjectScopeRenderOriginResolver
+          ? "project_scope_only"
+          : "fail_closed_unavailable");
   let hostNativeGovernance = options.hostNativeGovernance || null;
   let hostNativeGovernanceState = hostNativeGovernance ? "ready" : "disabled";
   const hostNativeRequiredChecksPolicyResolver =
@@ -4848,7 +4878,7 @@ export function createUniversalCoreService(options = {}) {
           signingSecret: hostNativeSigningSecret,
           externalReadbackVerifier: hostNativeExternalReadbackVerifier,
           releaseJoinVerdictResolver: hostNativeReleaseJoinVerdictResolver,
-          renderServiceOriginResolver: options.hostNativeRenderServiceOriginResolver || null,
+          renderServiceOriginResolver: hostNativeRenderServiceOriginResolver,
           requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
           closureAttestationSigningSecret: dttAgentIdentitySecret,
         });
@@ -6142,8 +6172,7 @@ export function createUniversalCoreService(options = {}) {
           options.hostNativeGithubCredentialResolverState || "not_configured",
         github_credential_binding_count:
           Number(options.hostNativeGithubCredentialBindingCount || 0),
-        render_origin_resolver_state:
-          options.hostNativeRenderServiceOriginResolverState || "default_service_slug",
+        render_origin_resolver_state: hostNativeRenderServiceOriginResolverState,
         render_origin_binding_count:
           Number(options.hostNativeRenderServiceOriginBindingCount || 0),
         required_checks_policy_resolver_state:
@@ -7433,8 +7462,7 @@ export function createUniversalCoreService(options = {}) {
         options.hostNativeGithubCredentialResolverState || "not_configured",
       github_credential_binding_count:
         Number(options.hostNativeGithubCredentialBindingCount || 0),
-      render_origin_resolver_state:
-        options.hostNativeRenderServiceOriginResolverState || "default_service_slug",
+      render_origin_resolver_state: hostNativeRenderServiceOriginResolverState,
       render_origin_binding_count:
         Number(options.hostNativeRenderServiceOriginBindingCount || 0),
       required_checks_policy_resolver_state:

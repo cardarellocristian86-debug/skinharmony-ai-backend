@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { Pool } from "pg";
 import { causalDigest, CausalContinuityError, requireText, requireUuid } from "./causalContinuityCanonical.js";
 import { createCausalContinuityMigrator } from "./causalContinuityMigration.js";
+import { createProjectScopeRenderOriginIndexMigrator } from "./projectScopeRenderOriginMigration.js";
 
 function rowOrNotFound(result) {
   if (!result.rows[0]) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
@@ -96,29 +97,62 @@ function galleryIntegrityValid({ binding, event, outbox, context, previous }) {
     envelope.change_id === binding.change_id && binding.obligation_ids.every((id) => contextObligations.has(id));
 }
 
+export async function rollbackCausalContinuityMigrations({
+  baseMigrator,
+  renderOriginIndexMigrator,
+} = {}) {
+  if (!baseMigrator?.rollback || !renderOriginIndexMigrator?.rollback) {
+    throw new CausalContinuityError("CAUSAL_MIGRATOR_REQUIRED");
+  }
+  // The additive migration owns named indexes on base tables. Verify and
+  // remove those objects before the base down migration can drop their tables;
+  // otherwise an index-name hijack would evade the 002 ownership guard.
+  const renderOriginIndexes = await renderOriginIndexMigrator.rollback();
+  const base = await baseMigrator.rollback();
+  return { ...base, project_scope_render_origin_indexes: renderOriginIndexes };
+}
+
 export function createPostgresCausalContinuityStore({ pool, connectionString, now = () => new Date() } = {}) {
   if (!pool && !connectionString) throw new CausalContinuityError("CAUSAL_DATABASE_REQUIRED");
   const ownsPool = !pool;
   const db = pool || new Pool({ connectionString, max: 6, idleTimeoutMillis: 10_000 });
   const migrator = createCausalContinuityMigrator({ pool: db });
+  const renderOriginIndexMigrator = createProjectScopeRenderOriginIndexMigrator({ pool: db });
   let initialized = false;
 
   async function initialize() {
     const migration = await migrator.apply();
+    const renderOriginIndexes = await renderOriginIndexMigrator.apply();
     initialized = true;
-    return migration;
+    return { ...migration, project_scope_render_origin_indexes: renderOriginIndexes };
   }
 
   async function health() {
     const probe = await db.query("SELECT current_setting('server_version_num')::int AS version_num, clock_timestamp() AS database_now");
     const readback = await migrator.readback();
+    const renderOriginIndexes = await renderOriginIndexMigrator.readback();
     return {
       ok: initialized && readback.migration?.application_state === "COMPLETED",
       initialized,
       database_time: probe.rows[0]?.database_now,
       postgres_major: Math.floor(Number(probe.rows[0]?.version_num || 0) / 10_000),
       migration: readback.migration,
+      project_scope_render_origin_indexes: renderOriginIndexes,
     };
+  }
+
+  async function migrationReadback() {
+    return {
+      ...(await migrator.readback()),
+      project_scope_render_origin_indexes: await renderOriginIndexMigrator.readback(),
+    };
+  }
+
+  async function migrationRollback() {
+    return rollbackCausalContinuityMigrations({
+      baseMigrator: migrator,
+      renderOriginIndexMigrator,
+    });
   }
 
   async function readProject({ tenant_id, project_id, alias }, client = db) {
@@ -1413,7 +1447,7 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
   }
 
   return {
-    initialize, health, migrationReadback: migrator.readback, migrationRollback: migrator.rollback,
+    initialize, health, migrationReadback, migrationRollback,
     readProject, createProject, bindScope, readScope, saveState, currentState,
     createGenesis, readGenesis, proposeRevision, approveRevision, listRevisions,
     bindWork, readWork, createChange, readChange, listChanges, transitionChange, createObligation, bindActionLease, readObligation, listObligations, listTemporalChecks, readCapsuleSupport, updateTemporalCheck, updateObligation, transitionObligation,
@@ -1422,7 +1456,10 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
     createGalleryBinding, claimGalleryProjection, completeGalleryProjection, failGalleryProjection,
     readGalleryCausalView, metricsSnapshot, verifyGalleryBinding,
     readFeatureFlag, setFeatureFlag, runProjectOperation,
-    async close() { if (ownsPool) await db.end(); },
+    async close() {
+      await Promise.all([migrator.close(), renderOriginIndexMigrator.close()]);
+      if (ownsPool) await db.end();
+    },
     now,
   };
 }
