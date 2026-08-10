@@ -40,6 +40,34 @@ function object(properties, required = []) {
   return { type: "object", properties, required, additionalProperties: false };
 }
 
+function executionTransition(idField, nonExecutionStates) {
+  const baseProperties = {
+    [idField]: identifier,
+    target_state: { type: "string", enum: [...nonExecutionStates, "EXECUTED"] },
+    reason: { type: "string", minLength: 1, maxLength: 2000 },
+    lease_id: identifier,
+    context_digest: digest,
+    execution_evidence_digest: digest,
+    idempotency_key: identifier,
+  };
+  const baseRequired = [idField, "target_state", "reason", "idempotency_key"];
+  return {
+    type: "object",
+    properties: baseProperties,
+    required: baseRequired,
+    additionalProperties: false,
+    anyOf: [
+      object({ ...baseProperties, target_state: { type: "string", enum: nonExecutionStates } }, baseRequired),
+      object({ ...baseProperties, target_state: { const: "EXECUTED" } }, [
+        ...baseRequired,
+        "lease_id",
+        "context_digest",
+        "execution_evidence_digest",
+      ]),
+    ],
+  };
+}
+
 function tool(name, title, description, inputSchema, readOnly) {
   return {
     name,
@@ -68,10 +96,12 @@ const definitions = [
   ["work_bind_intent", "Bind Work to intent", "Bind a Work identity to one project state and approved intent revision.", object({ project_id: identifier, work_id: identifier, intent_revision_id: identifier, base_state_digest: digest, legacy_binding_state: identifier, provenance: { type: "object", additionalProperties: true }, idempotency_key: identifier }, ["project_id", "work_id", "intent_revision_id", "idempotency_key"]), false],
   ["change_create", "Create causal change", "Create a semantic Change under an existing Work identity.", object({ project_id: identifier, work_id: identifier, base_state_digest: digest, parent_change_id: identifier, alias: identifier, reason: { type: "string", minLength: 1, maxLength: 8000 }, scope: { type: "object", additionalProperties: true }, expected_effects: stringList, forbidden_effects: stringList, expected_target_state: { type: "object", additionalProperties: true }, idempotency_key: identifier }, ["project_id", "work_id", "base_state_digest", "reason", "idempotency_key"]), false],
   ["change_read", "Read causal change", "Read a Change and its state transitions.", object({ change_id: identifier }, ["change_id"]), true],
+  ["change_transition", "Transition causal change", "Transition a Change through the authoritative state machine. Execution requires an exact consumed context and evidence digest.", executionTransition("change_id", ["MODELED", "REMEDIATING"]), false],
   ["causal_context_issue", "Issue causal context", "Ask Universal Core to issue an expiring, anti-replay Causal Context Envelope.", object({ project_id: identifier, project_state_digest: digest, work_id: identifier, change_id: identifier, obligation_ids: { ...stringList, minItems: 1 }, gallery_ticket_ids: stringList, delegated_from: object({ parent_context_digest: digest, delegated_actor_id: identifier }, ["parent_context_digest", "delegated_actor_id"]), environment: identifier, authority_scope: stringList, risk_budget: { type: "object", additionalProperties: { type: "number" } }, inherited_constraints: stringList, expires_at: dateTime, lease_id: identifier, enforcement_mode: { type: "string", enum: ["SHADOW", "ENFORCE_NEW_WORK", "ENFORCE_ALL_COMPATIBLE"] }, idempotency_key: identifier }, ["project_id", "project_state_digest", "work_id", "change_id", "obligation_ids", "environment", "expires_at", "lease_id", "idempotency_key"]), false],
   ["causal_context_validate", "Validate causal context", "Validate and optionally consume a Core-issued Causal Context Envelope without trusting caller identity fields.", object({ envelope: { type: "object", additionalProperties: true }, signature: { anyOf: [{ type: "string", pattern: "^hnc_[a-f0-9]{64}$" }, object({ key_id: identifier, digest }, ["key_id", "digest"])] }, consume: { type: "boolean" }, expected_environment: identifier, required_authority: identifier }, ["envelope", "signature"]), false],
   ["causal_obligation_create", "Create causal obligation", "Create an evidence-bound causal obligation before governed execution.", object({ change_id: identifier, claim: { type: "string", minLength: 1, maxLength: 10000 }, owner_id: identifier, delegated_owners: stringList, expected_effects: stringList, forbidden_effects: stringList, evidence_contract: evidenceContract, assurance_level: { type: "string", enum: ["CAL-0", "CAL-1", "CAL-2", "CAL-3", "CAL-4"] }, verification_horizons: verificationHorizons, rollback_plan: { type: "object", additionalProperties: true }, residual_obligations: stringList, next_verification_at: dateTime, idempotency_key: identifier }, ["change_id", "claim", "evidence_contract", "assurance_level", "rollback_plan", "idempotency_key"]), false],
   ["causal_obligation_read", "Read causal obligation", "Read a causal obligation and its durable state.", object({ obligation_id: identifier }, ["obligation_id"]), true],
+  ["causal_obligation_transition", "Transition causal obligation", "Transition an obligation through the authoritative state machine. Execution requires an exact consumed context and evidence digest.", executionTransition("obligation_id", ["MODELED", "REMEDIATING", "ESCALATED"]), false],
   ["causal_observation_record", "Record reality observation", "Record a tenant-bound observation with provenance, freshness and an evidence digest.", object({ obligation_id: identifier, source: identifier, observer_identity: identifier, source_provenance: { type: "object", additionalProperties: true }, independence, baseline: { type: "object", additionalProperties: true }, freshness_seconds: { type: "integer", minimum: 0 }, observed_at: dateTime, evidence_digest: digest, causal_relation: identifier, confidence: { type: "number", minimum: 0, maximum: 1 }, contradiction_status: { type: "string", enum: ["NONE", "POTENTIAL", "CONFIRMED"] }, idempotency_key: identifier }, ["obligation_id", "source", "evidence_digest", "confidence", "idempotency_key"]), false],
   ["causal_reconcile", "Reconcile causal outcome", "Reconcile intent, prediction, action, observations and residual risks.", object({ obligation_id: identifier, achieved_assurance_level: { type: "string", enum: ["CAL-0", "CAL-1", "CAL-2", "CAL-3", "CAL-4"] }, verdict: { type: "string", enum: ["VERIFIED_PROVISIONAL", "VERIFIED_FINAL", "PARTIAL", "CONTRADICTED", "HARMFUL", "UNKNOWN"] }, intent: { type: "object", additionalProperties: true }, prediction: { type: "object", additionalProperties: true }, action: { type: "object", additionalProperties: true }, baseline: { type: "object", additionalProperties: true }, result: { type: "object", additionalProperties: true }, alternative_causes: stringList, side_effects: stringList, forbidden_effects: stringList, residual_risks: stringList, open_obligation_ids: stringList, idempotency_key: identifier }, ["obligation_id", "achieved_assurance_level", "verdict", "idempotency_key"]), false],
   ["causal_close", "Close causal obligation", "Request provisional or final closure; Core alone evaluates the Evidence Contract and assurance level.", object({ obligation_id: identifier, reconciliation_id: identifier, final: { type: "boolean" }, temporal_checks_satisfied: { type: "boolean" }, temporal_checks: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } }, idempotency_key: identifier }, ["obligation_id", "reconciliation_id", "final", "idempotency_key"]), false],
@@ -108,10 +138,12 @@ export const CAUSAL_CONTINUITY_ROUTES = Object.freeze({
   work_bind_intent: { method: "POST", path: "/v1/causal/works/bind" },
   change_create: { method: "POST", path: "/v1/causal/changes" },
   change_read: { method: "GET", path: "/v1/causal/changes/read" },
+  change_transition: { method: "POST", path: "/v1/causal/changes/transition" },
   causal_context_issue: { method: "POST", path: "/v1/causal/contexts/issue" },
   causal_context_validate: { method: "POST", path: "/v1/causal/contexts/validate" },
   causal_obligation_create: { method: "POST", path: "/v1/causal/obligations" },
   causal_obligation_read: { method: "GET", path: "/v1/causal/obligations/read" },
+  causal_obligation_transition: { method: "POST", path: "/v1/causal/obligations/transition" },
   causal_observation_record: { method: "POST", path: "/v1/causal/observations" },
   causal_reconcile: { method: "POST", path: "/v1/causal/reconciliations" },
   causal_close: { method: "POST", path: "/v1/causal/closures" },

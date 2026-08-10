@@ -10,6 +10,7 @@ const CONTEXT = {
   actor_role: "owner",
   authority_scope: ["causal:write", "causal:change:execute", "causal:obligation:execute", "intent:approve:strategic"],
   owner_confirmed: true,
+  provenance: { session_fingerprint: "a".repeat(24) },
 };
 
 function signer() {
@@ -30,11 +31,13 @@ async function fixture({ withSigner = true } = {}) {
     ].sort((a, b) => `${a.kind}:${a.value}`.localeCompare(`${b.kind}:${b.value}`));
     const persisted_authority_scope = [...CONTEXT.authority_scope].sort();
     const authorityProof = { schema_version: "persisted_lease_authority_v1", tenant_id: request.tenant_id,
-      lease_id: request.lease_id, actor_id: request.actor_id, purpose: "causal_context_issue", surfaces, persisted_authority_scope };
+      lease_id: request.lease_id, actor_id: request.actor_id, purpose: "causal_context_issue", surfaces, persisted_authority_scope,
+      policy_session_fingerprint: request.actor_session_fingerprint };
     return { valid: true, readback_verified: true, active: true, replayed: false, consumed: false, revoked: false,
       tenant_id: request.tenant_id, project_id: request.project_id, work_id: request.work_id, change_id: request.change_id,
       obligation_ids: request.obligation_ids, lease_id: request.lease_id, purpose: "causal_context_issue", surfaces,
       persisted_authority_scope, authority_source: "persisted_lease_policy_v1",
+      policy_session_fingerprint: request.actor_session_fingerprint,
       authority_binding_digest: causalDigest(authorityProof), expires_at: "2026-08-09T12:10:00.000Z" };
   };
   const runtime = createCausalContinuityRuntime({ store, now, contextSigner: withSigner ? signer() : undefined, verifyActionLease });
@@ -282,6 +285,55 @@ test("context authority cannot exceed actor or verified lease and lease replay i
     (error) => error.code === "LEASE_AUTHORITY_UNPROVEN",
   );
   assert.equal(f.store.state.leases.has(`${CONTEXT.tenant_id}\u0000lease-wrong-project`), false);
+});
+
+test("causal lease is bound to the verified actor session and blocks same-agent cross-session replay", async () => {
+  const f = await fixture();
+  const boundFingerprint = "a".repeat(24);
+  const verifier = async (request, { tampered = false } = {}) => {
+    const surfaces = [
+      { kind: "causal_project", value: request.project_id }, { kind: "causal_change", value: request.change_id },
+      ...request.obligation_ids.map((value) => ({ kind: "causal_obligation", value })),
+    ].sort((a, b) => `${a.kind}:${a.value}`.localeCompare(`${b.kind}:${b.value}`));
+    const persisted_authority_scope = [...CONTEXT.authority_scope].sort();
+    const proof = {
+      schema_version: "persisted_lease_authority_v1", tenant_id: request.tenant_id, lease_id: request.lease_id,
+      actor_id: request.actor_id, purpose: "causal_context_issue", surfaces, persisted_authority_scope,
+      policy_session_fingerprint: boundFingerprint,
+    };
+    return {
+      valid: true, readback_verified: true, active: true, replayed: false, consumed: false, revoked: false,
+      tenant_id: request.tenant_id, project_id: request.project_id, work_id: request.work_id, change_id: request.change_id,
+      obligation_ids: request.obligation_ids, lease_id: request.lease_id, purpose: "causal_context_issue", surfaces,
+      persisted_authority_scope, policy_session_fingerprint: boundFingerprint,
+      authority_source: "persisted_lease_policy_v1",
+      authority_binding_digest: tampered ? "f".repeat(64) : causalDigest(proof), expires_at: "2026-08-09T12:10:00.000Z",
+    };
+  };
+  const runtime = createCausalContinuityRuntime({ store: f.store, now: f.now, contextSigner: signer(), verifyActionLease: verifier });
+  const base = {
+    project_id: f.project.project_id, project_state_digest: f.snapshot.state_digest, work_id: f.work.work_id,
+    change_id: f.change.change_id, obligation_ids: [f.obligation.obligation_id], environment: "staging",
+    lease_id: "lease-session-bound", expires_at: "2026-08-09T12:05:00.000Z", idempotency_key: "context-session-bound",
+  };
+  await assert.rejects(
+    () => runtime.causal_context_issue({ ...CONTEXT, provenance: { session_fingerprint: "b".repeat(24) } }, {
+      ...base, policy_session_fingerprint: boundFingerprint,
+    }),
+    (error) => error.code === "LEASE_AUTHORITY_UNPROVEN",
+  );
+  await assert.rejects(
+    () => runtime.causal_context_issue({ ...CONTEXT, provenance: {} }, { ...base, idempotency_key: "context-missing-session" }),
+    (error) => error.code === "ACTOR_SESSION_FINGERPRINT_REQUIRED",
+  );
+  const tamperedRuntime = createCausalContinuityRuntime({
+    store: f.store, now: f.now, contextSigner: signer(), verifyActionLease: (request) => verifier(request, { tampered: true }),
+  });
+  await assert.rejects(
+    () => tamperedRuntime.causal_context_issue(CONTEXT, { ...base, idempotency_key: "context-session-digest-tamper" }),
+    (error) => error.code === "LEASE_AUTHORITY_UNPROVEN",
+  );
+  assert.equal(f.store.state.leases?.size || 0, 0);
 });
 
 test("atomic consume rechecks project state and rejects different authenticated session", async () => {

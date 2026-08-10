@@ -8,8 +8,11 @@ Status: builder evidence only; not a release, live verification, or mission acce
 - Work ID: `52cf629b-ec5d-4a5b-ab84-08eb35afd8ea`
 - Integration plan ID: `5977e8f7-1110-507f-91ff-21de0008c498`
 - Integration task: `causal_integration_benchmark_builder`
-- Isolated branch baseline: `19eb2b42b1a116f146b7c3264a0a1fdd036e3066`
-- Observed live/main baseline during this task: `3a0370875a0adc090a3e8c71e363dd36725e1808`
+- Benchmark contract plan ID: `c12d4b41-e960-5c2b-ac04-5997c98d3d58`
+- Benchmark contract task: `causal_benchmark_contract_builder`
+- Isolated branch merge base: `3a0370875a0adc090a3e8c71e363dd36725e1808`
+- Isolated working-tree HEAD: `70782ceae1e05c2d723b5e1eccd0ae2381f90911`
+- Observed live/main baseline: `3a0370875a0adc090a3e8c71e363dd36725e1808`
 
 The lane intentionally was not rebased while concurrent causal-continuity surfaces were being written. A controlled rebase and complete integration rerun are required.
 
@@ -30,31 +33,26 @@ Universal Core's causal route adapter maps authenticated platform scopes to expl
 
 ## Bounded benchmark evidence
 
-The benchmark separates an in-memory deterministic fingerprint fixture from the production PostgreSQL bounded-query contract. It does not claim that the in-memory fixture avoids scanning its event map.
+The hardened benchmark executes the documented fixed-seed workload: 100 projects, 1,000 Works, 10,000 Changes, 10,000 obligations, and 100,000 hash-chained events. It reads and discards one 200-event project window at a time. The production PostgreSQL query probe separately proves a tenant/project/cursor-scoped `ORDER BY sequence_number DESC LIMIT $4` query returns exactly 200 rows without application full-history materialization.
 
-Measured fixture:
+Memory is a cold RSS delta in an isolated `--expose-gc` process. Each already-read 200-event project window is explicitly collected before the next project; this measures the bounded-resume design rather than retaining all project histories in the benchmark process. The append comparison invokes the public legacy Work Continuity append and causal append paths imported from the same checkout, hashes both source files, warms each path equally, and computes the measured p95 regression. It does not use a synthetic pass flag.
 
-- ledger events: 10,000
-- scope resources: 32
-- context validations: 1,000
-- requested and returned production-query rows: 200
-- production SQL contract: tenant/project/cursor scoped, `ORDER BY sequence_number DESC LIMIT $4`
-- application full-history materialization in production query probe: not observed
-- in-memory fixture scans map before slicing: yes, explicitly reported
-- ledger head: `b6b59967a553ef5a2a677b45ccd379d59b6a947165925aaf92cc86f3a2336923`
-- capsule digest: `01762e6a4069fa43c67f524f18a7d9e78893d50b02eb3fa56ec6f2de6e35c7aa`
-- context digest: `7a242ac3f2067e8c9539653c27e06fbf247c284c899d9e29b0c769a0c8fd9225`
-- deterministic fingerprint: `4324e810fb18d724f78f5c5abaedb66aca0aba5a1c6e68b31d192dbd6606086d`
+Two independent CLI runs were green and produced the same deterministic fingerprint, `145042e332f0a75e76a588f15acaa39c0048a1ef49ac3cf9ae56d6abbd5cd10d`:
 
-One local timing sample, informative rather than deterministic:
+| Gate | Threshold | Run 1 | Run 2 |
+| --- | ---: | ---: | ---: |
+| Context validation p95, 1,000 samples | < 25 ms | 0.040459 ms | 0.039458 ms |
+| Capsule resume p95, 100 projects / 200 events | < 250 ms | 0.042000 ms | 0.041791 ms |
+| Cold 100-project RSS delta | < 64 MiB | 29.734 MiB | 29.344 MiB |
+| Same-checkout legacy append p95 regression | <= 15% | -94.942% | -95.374% |
 
-- ledger generation: 73.164 ms
-- bounded timeline: 0.452 ms
-- capsule build: 8.526 ms
-- resume: 0.112 ms
-- 1,000 context validations: 22.341 ms total; 0.022341 ms mean
+Additional measured readback:
 
-The benchmark test runs two 2,500-event fixtures and asserts equal deterministic fingerprints, a bounded 200-row SQL result, and the exact SQL limit/cursor contract.
+- all seven gates were `true` in both runs;
+- ledger generation was 859.105 ms and 858.108 ms respectively;
+- 100,000 events were generated, 20,000 bounded rows were read across all resumes, and peak materialization was 200 event rows;
+- the production query contract returned 200 rows with one query and verified tenant, project, cursor, descending order, and limit bindings;
+- the contract test itself performs two full workload runs and passed in 1.899 seconds locally.
 
 ## Test evidence
 

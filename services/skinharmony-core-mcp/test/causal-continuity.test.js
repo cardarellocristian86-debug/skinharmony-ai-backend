@@ -3,7 +3,7 @@ import test from "node:test";
 import { CAUSAL_CONTINUITY_ROUTES, CAUSAL_CONTINUITY_TOOLS, buildGalleryProjection, createCausalContinuityHandlers, verifyGalleryBinding } from "../src/causal-continuity.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 
-const MINIMUM_CAPABILITIES = ["project_identity_resolve", "project_identity_create", "project_scope_read", "project_scope_bind", "project_state_snapshot", "project_state_verify", "genesis_intent_read", "genesis_intent_create", "intent_revision_propose", "intent_revision_approve", "intent_revision_impact", "project_decision_path_read", "work_bind_intent", "change_create", "change_read", "causal_context_issue", "causal_context_validate", "causal_obligation_create", "causal_obligation_read", "causal_observation_record", "causal_reconcile", "causal_close", "causal_reopen", "continuity_capsule_build", "continuity_capsule_resume", "project_timeline_read", "gallery_binding_project", "gallery_projection_claim", "gallery_projection_complete", "gallery_projection_fail", "gallery_causal_view_read", "causal_metrics_snapshot", "gallery_binding_verify", "causal_rollout_read", "causal_rollout_set"];
+const MINIMUM_CAPABILITIES = ["project_identity_resolve", "project_identity_create", "project_scope_read", "project_scope_bind", "project_state_snapshot", "project_state_verify", "genesis_intent_read", "genesis_intent_create", "intent_revision_propose", "intent_revision_approve", "intent_revision_impact", "project_decision_path_read", "work_bind_intent", "change_create", "change_read", "change_transition", "causal_context_issue", "causal_context_validate", "causal_obligation_create", "causal_obligation_read", "causal_obligation_transition", "causal_observation_record", "causal_reconcile", "causal_close", "causal_reopen", "continuity_capsule_build", "continuity_capsule_resume", "project_timeline_read", "gallery_binding_project", "gallery_projection_claim", "gallery_projection_complete", "gallery_projection_fail", "gallery_causal_view_read", "causal_metrics_snapshot", "gallery_binding_verify", "causal_rollout_read", "causal_rollout_set"];
 const agentPresence = { agent_id: "agent-a", session_id: "session-a", session_fingerprint: "fingerprint-a", signature: "signature-a", opaque_agent_id: "opaque-a", actor_provenance: "actor-a", client_type: "codex" };
 function binding(overrides = {}) { return { tenant_id: "tenant-a", project_id: "project-a", project_state_digest: "a".repeat(64), genesis_intent_id: "genesis-a", intent_revision_id: "revision-a", work_id: "work-a", change_id: "change-a", obligation_ids: ["obligation-a"], core_event_sequence: 42, context_digest: "b".repeat(64), ...overrides }; }
 
@@ -37,6 +37,8 @@ test("handler route map exactly covers Core routes and sends writes in the body"
   assert.deepEqual(calls[2], ["/v1/causal/gallery/projections/claim", "tenant-a", { method: "POST", body: { project_id: "project-a", limit: 5 }, additionalHeaders: { "x-sh-dtt-agent-context": "signed-agent-context" } }]);
   await handlers.gallery_causal_view_read({ project_id: "project-a", view: "evidence", limit: 10 }, { tenantId: "tenant-a", agentPresence });
   assert.deepEqual(calls[3], ["/v1/causal/gallery/views?project_id=project-a&view=evidence&limit=10", "tenant-a", { method: "GET", additionalHeaders: { "x-sh-dtt-agent-context": "signed-agent-context" } }]);
+  await handlers.change_transition({ change_id: "change-a", target_state: "MODELED", reason: "Modeled", idempotency_key: "transition-a" }, { tenantId: "tenant-a", agentPresence });
+  assert.deepEqual(calls[4], ["/v1/causal/changes/transition", "tenant-a", { method: "POST", body: { change_id: "change-a", target_state: "MODELED", reason: "Modeled", idempotency_key: "transition-a" }, additionalHeaders: { "x-sh-dtt-agent-context": "signed-agent-context" } }]);
 });
 
 test("Gallery verification blocks missing, mismatched, and cross-tenant bindings", () => {
@@ -81,6 +83,35 @@ test("strict MCP schemas round-trip the actual Core runtime shapes", () => {
     verification_horizons: [{ horizon: "delayed", due_at: "2026-08-10T12:00:00.000Z" }], rollback_plan: { mode: "feature-flag" }, idempotency_key: "obligation-a",
   };
   assert.deepEqual(validateToolArguments(schema("causal_obligation_create"), obligation), []);
+  const executedChange = {
+    change_id: "33333333-3333-4333-8333-333333333333",
+    target_state: "EXECUTED",
+    reason: "Execution observed",
+    lease_id: "lease-a",
+    context_digest: "c".repeat(64),
+    execution_evidence_digest: "d".repeat(64),
+    idempotency_key: "change-transition-a",
+  };
+  assert.deepEqual(validateToolArguments(schema("change_transition"), executedChange), []);
+  assert(validateToolArguments(schema("change_transition"), {
+    ...executedChange,
+    execution_evidence_digest: undefined,
+  }).some((item) => item.code === "any_of"));
+  assert.deepEqual(validateToolArguments(schema("change_transition"), {
+    change_id: executedChange.change_id,
+    target_state: "MODELED",
+    reason: "Model complete",
+    idempotency_key: "change-modeled-a",
+  }), []);
+  assert.deepEqual(validateToolArguments(schema("causal_obligation_transition"), {
+    obligation_id: "44444444-4444-4444-8444-444444444444",
+    target_state: "EXECUTED",
+    reason: "Action observed",
+    lease_id: "lease-a",
+    context_digest: "c".repeat(64),
+    execution_evidence_digest: "d".repeat(64),
+    idempotency_key: "obligation-transition-a",
+  }), []);
   for (const value of ["EXECUTOR", "INDEPENDENT_SYSTEM", "INDEPENDENT_HUMAN", "FORMAL"]) {
     assert.deepEqual(validateToolArguments(schema("causal_observation_record"), { obligation_id: "44444444-4444-4444-8444-444444444444", source: "readback", independence: value, evidence_digest: "e".repeat(64), confidence: 1, idempotency_key: `observation-${value}` }), []);
   }

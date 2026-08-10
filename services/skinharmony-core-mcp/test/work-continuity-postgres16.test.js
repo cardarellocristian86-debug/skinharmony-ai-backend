@@ -37,6 +37,7 @@ function galleryIdentity(tenantId, subject, sessionId, agentId, clientType = "co
       signature: `ags_${hex.repeat(32)}`,
       transport_bound: true,
       host_transport_session_fingerprint: hex.repeat(24),
+      session_fingerprint: hex.repeat(24),
     },
   };
 }

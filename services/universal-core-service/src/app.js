@@ -1301,6 +1301,107 @@ export function causalRouteAuthenticatedScopes(requiredScope, keyRecord = {}) {
   return [...new Set(mapped.filter(Boolean))].sort();
 }
 
+export function createPostgresCausalActionLeaseVerifier(pool) {
+  if (!pool || typeof pool.query !== "function") {
+    throw new TypeError("causal_action_lease_pool_required");
+  }
+  return async (input) => {
+    if (Object.prototype.hasOwnProperty.call(input, "policy_session_fingerprint")) return null;
+    const requestingSessionFingerprint = String(input.actor_session_fingerprint || "");
+    if (!/^[a-f0-9]{16,64}$/i.test(requestingSessionFingerprint)) return null;
+    const leaseResult = await pool.query(
+      `SELECT l.lease_id,l.tenant_id,l.work_id,l.purpose,l.status,l.expires_at,
+              l.policy_authority_scope,l.policy_authority_source,l.policy_authority_binding_digest,
+              l.policy_session_fingerprint,
+              w.project_uuid,p.agent_id,
+              coalesce(jsonb_agg(jsonb_build_object('kind',s.surface_kind,'value',s.surface_value)
+                ORDER BY s.surface_kind,s.surface_value)
+                FILTER (WHERE s.surface_kind IS NOT NULL),'[]'::jsonb) AS surfaces
+         FROM core_continuity_leases l
+         JOIN core_continuity_works w
+           ON w.tenant_id=l.tenant_id AND w.work_id=l.work_id
+         JOIN core_continuity_participants p
+           ON p.tenant_id=l.tenant_id AND p.work_id=l.work_id AND p.session_id=l.session_id
+         LEFT JOIN core_continuity_lease_surfaces s
+           ON s.tenant_id=l.tenant_id AND s.work_id=l.work_id AND s.lease_id=l.lease_id
+        WHERE l.tenant_id=$1 AND l.work_id=$2 AND l.lease_id=$3
+          AND l.status='active' AND l.expires_at>now()
+          AND l.policy_session_fingerprint=$6
+          AND p.status='active' AND p.expires_at>now()
+          AND p.agent_id=$4 AND w.project_uuid=$5
+        GROUP BY l.lease_id,l.tenant_id,l.work_id,l.purpose,l.status,l.expires_at,
+          l.policy_authority_scope,l.policy_authority_source,l.policy_authority_binding_digest,
+          l.policy_session_fingerprint,w.project_uuid,p.agent_id`,
+      [input.tenant_id, input.work_id, input.lease_id, input.actor_id, input.project_id, requestingSessionFingerprint],
+    );
+    const lease = leaseResult.rows[0];
+    if (!lease) return null;
+    const surfaces = Array.isArray(lease.surfaces) ? lease.surfaces : [];
+    const valuesFor = (kind) => surfaces
+      .filter((surface) => surface?.kind === kind)
+      .map((surface) => String(surface.value || "").toLowerCase())
+      .sort();
+    const expectedObligations = [...new Set((input.obligation_ids || []).map((value) => String(value).toLowerCase()))].sort();
+    const projectSurfaces = valuesFor("causal_project");
+    const changeSurfaces = valuesFor("causal_change");
+    const obligationSurfaces = valuesFor("causal_obligation");
+    if (surfaces.length !== 2 + expectedObligations.length ||
+        projectSurfaces.length !== 1 || projectSurfaces[0] !== String(input.project_id).toLowerCase() ||
+        changeSurfaces.length !== 1 || changeSurfaces[0] !== String(input.change_id).toLowerCase() ||
+        JSON.stringify(obligationSurfaces) !== JSON.stringify(expectedObligations)) {
+      return null;
+    }
+    const bindingResult = await pool.query(
+      `SELECT c.change_id,array_agg(o.obligation_id ORDER BY o.obligation_id) AS obligation_ids
+         FROM core_changes c
+         JOIN core_causal_obligations o
+           ON o.tenant_id=c.tenant_id AND o.project_id=c.project_id
+          AND o.work_id=c.work_id AND o.change_id=c.change_id
+        WHERE c.tenant_id=$1 AND c.project_id=$2 AND c.work_id=$3 AND c.change_id=$4
+          AND o.obligation_id=ANY($5::uuid[])
+        GROUP BY c.change_id`,
+      [input.tenant_id, input.project_id, input.work_id, input.change_id, input.obligation_ids],
+    );
+    const binding = bindingResult.rows[0];
+    if (!binding || binding.obligation_ids.length !== input.obligation_ids.length) return null;
+    const persistedAuthorityScope = Array.isArray(lease.policy_authority_scope)
+      ? [...lease.policy_authority_scope].map(String).sort()
+      : [];
+    const authorityProof = {
+      schema_version: "persisted_lease_authority_v1", tenant_id: lease.tenant_id, lease_id: lease.lease_id,
+      actor_id: lease.agent_id, purpose: lease.purpose, surfaces,
+      persisted_authority_scope: persistedAuthorityScope,
+      policy_session_fingerprint: requestingSessionFingerprint,
+    };
+    if (lease.policy_session_fingerprint !== requestingSessionFingerprint ||
+        lease.policy_authority_binding_digest !== causalDigest(authorityProof)) return null;
+    return {
+      valid: true,
+      readback_verified: true,
+      active: lease.status === "active",
+      replayed: false,
+      consumed: false,
+      revoked: false,
+      tenant_id: lease.tenant_id,
+      project_id: lease.project_uuid,
+      work_id: lease.work_id,
+      change_id: binding.change_id,
+      obligation_ids: binding.obligation_ids,
+      lease_id: lease.lease_id,
+      actor_id: lease.agent_id,
+      purpose: lease.purpose,
+      status: lease.status,
+      surfaces,
+      persisted_authority_scope: persistedAuthorityScope,
+      policy_session_fingerprint: lease.policy_session_fingerprint,
+      authority_source: lease.policy_authority_source,
+      authority_binding_digest: lease.policy_authority_binding_digest,
+      expires_at: lease.expires_at,
+      provenance: "core_continuity_lease_postgres_readback_v1",
+    };
+  };
+}
+
 function snapshotStore(storageRoot) {
   const dir = path.join(storageRoot, "snapshots");
   ensureDir(dir);
@@ -4776,54 +4877,9 @@ export function createUniversalCoreService(options = {}) {
     }
   }
   const causalActionLeaseVerifier = options.causalActionLeaseVerifier
-    || (nyraPolicyRegistryPostgresPool ? async (input) => {
-      const leaseResult = await nyraPolicyRegistryPostgresPool.query(
-        `SELECT l.lease_id,l.tenant_id,l.work_id,l.status,l.expires_at,
-                w.project_uuid,p.agent_id
-           FROM core_continuity_leases l
-           JOIN core_continuity_works w
-             ON w.tenant_id=l.tenant_id AND w.work_id=l.work_id
-           JOIN core_continuity_participants p
-             ON p.tenant_id=l.tenant_id AND p.work_id=l.work_id AND p.session_id=l.session_id
-          WHERE l.tenant_id=$1 AND l.work_id=$2 AND l.lease_id=$3
-            AND l.status='active' AND l.expires_at>now()
-            AND p.status='active' AND p.expires_at>now()
-            AND p.agent_id=$4 AND w.project_uuid=$5`,
-        [input.tenant_id, input.work_id, input.lease_id, input.actor_id, input.project_id],
-      );
-      const lease = leaseResult.rows[0];
-      if (!lease) return null;
-      const bindingResult = await nyraPolicyRegistryPostgresPool.query(
-        `SELECT c.change_id,array_agg(o.obligation_id ORDER BY o.obligation_id) AS obligation_ids
-           FROM core_changes c
-           JOIN core_causal_obligations o
-             ON o.tenant_id=c.tenant_id AND o.project_id=c.project_id
-            AND o.work_id=c.work_id AND o.change_id=c.change_id
-          WHERE c.tenant_id=$1 AND c.project_id=$2 AND c.work_id=$3 AND c.change_id=$4
-            AND o.obligation_id=ANY($5::uuid[])
-          GROUP BY c.change_id`,
-        [input.tenant_id, input.project_id, input.work_id, input.change_id, input.obligation_ids],
-      );
-      const binding = bindingResult.rows[0];
-      if (!binding || binding.obligation_ids.length !== input.obligation_ids.length) return null;
-      return {
-        valid: true,
-        readback_verified: true,
-        active: true,
-        replayed: false,
-        consumed: false,
-        revoked: false,
-        tenant_id: lease.tenant_id,
-        project_id: lease.project_uuid,
-        work_id: lease.work_id,
-        change_id: binding.change_id,
-        obligation_ids: binding.obligation_ids,
-        lease_id: lease.lease_id,
-        authority_scope: input.authority_scope,
-        expires_at: lease.expires_at,
-        provenance: "core_continuity_lease_postgres_readback_v1",
-      };
-    } : null);
+    || (nyraPolicyRegistryPostgresPool
+      ? createPostgresCausalActionLeaseVerifier(nyraPolicyRegistryPostgresPool)
+      : null);
   const causalContinuityRuntime = options.causalContinuityRuntime
     || (causalContinuityStore && causalContextSigner
       ? createCausalContinuityRuntime({

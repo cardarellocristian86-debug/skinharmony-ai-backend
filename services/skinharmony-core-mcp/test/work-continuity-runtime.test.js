@@ -15,6 +15,7 @@ import {
   WORK_CONTINUITY_TOOLS,
   tenantWorkCoordinationActionType,
 } from "../src/work-continuity-tools.js";
+import { validateToolArguments } from "../src/schema-validation.js";
 
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -29,6 +30,7 @@ function galleryIdentity(subject, sessionId, agentId) {
       signature: `ags_${"a".repeat(32)}`,
       transport_bound: true,
       host_transport_session_fingerprint: "b".repeat(24),
+      session_fingerprint: "c".repeat(24),
     },
   };
 }
@@ -243,6 +245,17 @@ test("work gallery normalizes bounded surfaces and detects file ancestry overlap
   ), false);
   assert.throws(() => normalizeSurfaces([{ kind: "file", value: "../secret" }]),
     /continuity_lease_surface_invalid/);
+  assert.deepEqual(normalizeSurfaces([
+    { kind: "causal_project", value: "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA" },
+    { kind: "causal_change", value: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+    { kind: "causal_obligation", value: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+  ]), [
+    { kind: "causal_change", value: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+    { kind: "causal_obligation", value: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+    { kind: "causal_project", value: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+  ]);
+  assert.throws(() => normalizeSurfaces([{ kind: "causal_change", value: "change-alias" }]),
+    /continuity_lease_surface_invalid/);
 });
 
 test("work gallery schema is tenant/work scoped and uses temporary leases", () => {
@@ -259,6 +272,10 @@ test("work gallery schema is tenant/work scoped and uses temporary leases", () =
   assert.match(runtime.schemaSql, /to_actor_subject varchar\(200\)/);
   assert.match(runtime.schemaSql, /ADD COLUMN IF NOT EXISTS to_actor_subject/);
   assert.match(runtime.schemaSql, /WHERE status='active'/);
+  assert.match(runtime.schemaSql, /policy_authority_scope jsonb NOT NULL DEFAULT '\[\]'::jsonb/);
+  assert.match(runtime.schemaSql, /ADD COLUMN IF NOT EXISTS policy_authority_source/);
+  assert.match(runtime.schemaSql, /ADD COLUMN IF NOT EXISTS policy_authority_binding_digest/);
+  assert.match(runtime.schemaSql, /ADD COLUMN IF NOT EXISTS policy_session_fingerprint/);
   assert.doesNotMatch(runtime.schemaSql, /owner_id/);
   for (const event of [
     "participant_joined", "lease_acquired", "lease_renewed", "lease_released",
@@ -343,8 +360,157 @@ test("work gallery tools preserve read/write and bounded tenant-collaboration bo
   }
   assert.deepEqual(
     tools.tenant_work_lease_acquire.inputSchema.properties.surfaces.items.properties.kind.enum,
-    ["file", "component", "dependency"],
+    ["file", "component", "dependency", "causal_project", "causal_change", "causal_obligation"],
   );
+  assert.equal(tools.tenant_work_lease_acquire.inputSchema.properties.authority_scope, undefined);
+  const injectedAuthority = validateToolArguments(tools.tenant_work_lease_acquire.inputSchema, {
+    work_id: WORK_ID,
+    session_id: "schema-session",
+    agent_id: "schema-agent",
+    client_type: "codex",
+    purpose: "causal_context_issue",
+    surfaces: [
+      { kind: "causal_project", value: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      { kind: "causal_change", value: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+      { kind: "causal_obligation", value: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+    ],
+    authority_scope: ["core:govern"],
+    idempotency_key: "schema-causal-lease",
+  });
+  assert(injectedAuthority.some((item) => item.path.endsWith(".authority_scope") && item.code === "additional_property"));
+});
+
+test("causal lease persists only server-authored authority proof while legacy leases remain compatible", async () => {
+  const projectId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const changeId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const obligationId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
+      if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) return { rows: [{ work_id: WORK_ID }] };
+      if (/SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject/.test(sql)) return { rows: [{
+        session_id: "causal-session", agent_id: "causal-agent", client_type: "codex", branch_id: null,
+        status: "active", expires_at: "2030-01-01T00:00:00.000Z", actor_subject: "oauth|causal",
+      }] };
+      if (/SELECT project_uuid FROM core_continuity_works/.test(sql)) return { rows: [{ project_uuid: projectId }] };
+      if (/UPDATE core_continuity_leases/.test(sql) && /status='expired'/.test(sql)) return { rows: [] };
+      if (/FROM core_continuity_leases l/.test(sql) && /l.session_id<>\$3/.test(sql)) return { rows: [] };
+      if (/INSERT INTO core_continuity_leases/.test(sql)) return { rows: [{
+        lease_id: params[2], session_id: params[3], branch_id: params[4], purpose: params[5], status: "active",
+        acquired_at: "2026-08-09T20:00:00.000Z", renewed_at: "2026-08-09T20:00:00.000Z",
+        expires_at: "2026-08-09T20:05:00.000Z", policy_authority_scope: JSON.parse(params[8]),
+        policy_authority_source: params[9], policy_authority_binding_digest: params[10],
+        policy_session_fingerprint: params[11],
+      }] };
+      if (/SELECT sequence_number,event_hash FROM core_continuity_events/.test(sql)) return { rows: [] };
+      return { rows: [] };
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const surfaces = normalizeSurfaces([
+    { kind: "causal_project", value: projectId },
+    { kind: "causal_change", value: changeId },
+    { kind: "causal_obligation", value: obligationId },
+  ]);
+  const result = await runtime.acquireLease(
+    galleryIdentity("oauth|causal", "causal-session", "causal-agent"),
+    {
+      work_id: WORK_ID,
+      session_id: "causal-session",
+      agent_id: "causal-agent",
+      client_type: "codex",
+      purpose: "causal_context_issue",
+      surfaces,
+      ttl_seconds: 300,
+      idempotency_key: "causal-authority-proof",
+    },
+  );
+  const persisted = result.lease.policy_authority_scope;
+  assert(persisted.includes("causal:change:execute"));
+  assert(persisted.includes("causal:outcome:reconcile"));
+  assert(persisted.includes("causal:obligation:close"));
+  assert.equal(persisted.includes("core:govern"), false);
+  assert.equal(persisted.includes("intent:approve:strategic"), false);
+  assert.equal(persisted.includes("causal:close"), false);
+  assert.equal(result.lease.policy_authority_source, "persisted_lease_policy_v1");
+  assert.equal(result.lease.policy_authority_binding_digest, digest({
+    schema_version: "persisted_lease_authority_v1",
+    tenant_id: "tenant-a",
+    lease_id: result.lease.lease_id,
+    actor_id: "causal-agent",
+    purpose: "causal_context_issue",
+    surfaces,
+    persisted_authority_scope: persisted,
+    policy_session_fingerprint: "c".repeat(24),
+  }));
+  assert.equal(result.lease.policy_session_fingerprint, "c".repeat(24));
+  const insert = calls.find((call) => /INSERT INTO core_continuity_leases/.test(call.sql));
+  assert.match(insert.sql, /policy_authority_scope/);
+  assert.equal(insert.params.length, 12);
+
+  await assert.rejects(runtime.acquireLease(
+    galleryIdentity("oauth|causal", "causal-session", "causal-agent"),
+    {
+      work_id: WORK_ID,
+      session_id: "causal-session",
+      agent_id: "causal-agent",
+      client_type: "codex",
+      purpose: "causal_context_issue",
+      surfaces,
+      authority_scope: ["core:govern"],
+      ttl_seconds: 300,
+      idempotency_key: "caller-authority-injection",
+    },
+  ), /continuity_lease_authority_scope_forbidden/);
+
+  await assert.rejects(runtime.acquireLease(
+    galleryIdentity("oauth|causal", "causal-session", "causal-agent"),
+    {
+      work_id: WORK_ID,
+      session_id: "causal-session",
+      agent_id: "causal-agent",
+      client_type: "codex",
+      purpose: "causal_context_issue",
+      surfaces: [...surfaces, { kind: "file", value: "services/core" }],
+      ttl_seconds: 300,
+      idempotency_key: "causal-mixed-surface",
+    },
+  ), /continuity_causal_lease_contract_invalid/);
+
+  const legacy = await runtime.acquireLease(
+    galleryIdentity("oauth|causal", "causal-session", "causal-agent"),
+    {
+      work_id: WORK_ID,
+      session_id: "causal-session",
+      agent_id: "causal-agent",
+      client_type: "codex",
+      purpose: "edit legacy component",
+      surfaces: [{ kind: "file", value: "services/core" }],
+      ttl_seconds: 300,
+      idempotency_key: "legacy-surface-compatible",
+    },
+  );
+  assert.deepEqual(legacy.lease.policy_authority_scope, []);
+  assert.equal(legacy.lease.policy_authority_source, "legacy_work_lease_v1");
+  assert.equal(legacy.lease.policy_authority_binding_digest, null);
+  assert.equal(legacy.lease.policy_session_fingerprint, null);
+
+  const missingFingerprintIdentity = galleryIdentity("oauth|causal", "causal-session", "causal-agent");
+  delete missingFingerprintIdentity.agentPresence.session_fingerprint;
+  await assert.rejects(runtime.acquireLease(missingFingerprintIdentity, {
+    work_id: WORK_ID, session_id: "causal-session", agent_id: "causal-agent", client_type: "codex",
+    purpose: "causal_context_issue", surfaces, ttl_seconds: 300, idempotency_key: "causal-missing-session",
+  }), /continuity_causal_lease_session_fingerprint_required/);
+
+  await assert.rejects(runtime.acquireLease(
+    galleryIdentity("oauth|causal", "causal-session", "causal-agent"),
+    { work_id: WORK_ID, session_id: "causal-session", agent_id: "causal-agent", client_type: "codex",
+      purpose: "causal_context_issue", surfaces, policy_session_fingerprint: "f".repeat(24),
+      ttl_seconds: 300, idempotency_key: "caller-session-injection" },
+  ), /continuity_lease_authority_scope_forbidden/);
 });
 
 test("Gallery mutations lock the work before participant rows", async () => {

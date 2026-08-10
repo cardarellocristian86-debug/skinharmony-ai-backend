@@ -468,13 +468,15 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
     }
     const requestedAuthority = sortedUnique(input.authority_scope || actor.authority_scope, "authority_scope", { maxItems: 100, maxLength: 240 });
     if (!isSubset(requestedAuthority, actor.authority_scope)) throw new CausalContinuityError("AUTHORITY_SCOPE_VIOLATION");
+    const actorSessionFingerprint = requireText(actor.provenance?.session_fingerprint, "actor_session_fingerprint", 64);
     if (typeof verifyActionLease !== "function") throw new CausalContinuityError("LEASE_VERIFIER_UNAVAILABLE");
     const lease_id = requireText(input.lease_id, "lease_id", 240);
     let lease;
     try {
       lease = await verifyActionLease({
         tenant_id: prepared.tenant_id, project_id, work_id: work.work_id, change_id: change.change_id,
-        obligation_ids, lease_id, actor_id: actor.actor_id, authority_scope: requestedAuthority,
+        obligation_ids, lease_id, actor_id: actor.actor_id, actor_session_fingerprint: actorSessionFingerprint,
+        authority_scope: requestedAuthority,
       });
     } catch {
       throw new CausalContinuityError("LEASE_INVALID");
@@ -491,6 +493,7 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
     const authorityProof = {
       schema_version: "persisted_lease_authority_v1", tenant_id: prepared.tenant_id, lease_id,
       actor_id: actor.actor_id, purpose: lease.purpose, surfaces: leaseSurfaces, persisted_authority_scope: persistedAuthority,
+      policy_session_fingerprint: actorSessionFingerprint,
     };
     let leaseExpiresAt;
     try { leaseExpiresAt = iso(lease.expires_at, "lease_expires_at"); } catch { throw new CausalContinuityError("LEASE_INVALID"); }
@@ -499,7 +502,7 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
       : null;
     if (lease.valid !== true || lease.readback_verified !== true || lease.active !== true || lease.replayed === true || lease.consumed === true || lease.revoked === true ||
         lease.tenant_id !== prepared.tenant_id || lease.project_id !== project_id || lease.work_id !== work.work_id || lease.change_id !== change.change_id ||
-        lease.lease_id !== lease_id || !isSubset(obligation_ids, leaseObligations) ||
+        lease.lease_id !== lease_id || lease.policy_session_fingerprint !== actorSessionFingerprint || !isSubset(obligation_ids, leaseObligations) ||
         lease.purpose !== "causal_context_issue" || lease.authority_source !== "persisted_lease_policy_v1" ||
         authorityBindingDigest !== causalDigest(authorityProof) ||
         requiredSurfaces.some((surface) => !surfaceSet.has(`${surface.kind}:${surface.value}`)) ||
