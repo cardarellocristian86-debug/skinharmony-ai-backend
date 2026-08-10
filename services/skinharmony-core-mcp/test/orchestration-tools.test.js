@@ -56,6 +56,7 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-b
   await handlers.orchestration_dtt_outcome_record({
     tree_id: "dtt_test",
     node_id: "verify",
+    idempotency_key: "outcome-verify-v1",
     outcome: "verified",
     evidence: { schema_version: "verification_evidence_contract_v1" },
   }, identity);
@@ -86,6 +87,7 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-b
   assert.equal("tenant_id" in JSON.parse(calls[1].init.body), false);
   assert.equal("tenant_id" in JSON.parse(calls[2].init.body), false);
   assert.equal("tenant_id" in JSON.parse(calls[4].init.body), false);
+  assert.equal(JSON.parse(calls[6].init.body).idempotency_key, "outcome-verify-v1");
   assert.equal("authority" in JSON.parse(calls[9].init.body), false);
   assert.equal("verdict_reference" in JSON.parse(calls[9].init.body), false);
 
@@ -117,4 +119,11 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-b
     TOOLS.find((item) => item.name === "orchestration_dtt_cancel").annotations.destructiveHint,
     true,
   );
+  const outcomeDefinition = TOOLS.find((item) => item.name === "orchestration_dtt_outcome_record");
+  assert(outcomeDefinition.inputSchema.required.includes("idempotency_key"));
+  assert.deepEqual(outcomeDefinition.inputSchema.properties.idempotency_key, {
+    type: "string",
+    minLength: 1,
+    maxLength: 200,
+  });
 });

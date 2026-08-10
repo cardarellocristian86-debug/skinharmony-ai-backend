@@ -1928,6 +1928,7 @@ export function createCoreHandlers(config, options = {}) {
       {
         method: "POST",
         body: {
+          idempotency_key: args.idempotency_key,
           outcome: args.outcome,
           evidence: args.evidence,
           evidence_draft: args.evidence_draft,

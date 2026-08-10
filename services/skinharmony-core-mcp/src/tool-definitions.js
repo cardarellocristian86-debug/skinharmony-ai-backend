@@ -820,9 +820,10 @@ export const TOOLS = [
     replacement_nodes: { type: "array", maxItems: 200, items: dttNodeInput },
     reason: text(500),
   }, ["tree_id", "prune_node_ids", "reason"]), ["core:read"], true, true),
-  tool("orchestration_dtt_outcome_record", "Record a DTT node outcome", "Record a tenant-bound verified or failed node outcome in the non-executive DTT runtime. Core stores the transition for audit; this never invokes agents, models, tools or external actions.", object({
+  tool("orchestration_dtt_outcome_record", "Record a DTT node outcome", "Record a tenant-bound verified or failed node outcome in the non-executive DTT runtime. The required idempotency key makes retries durable without authorizing execution; Core stores the transition for audit and never invokes agents, models, tools or external actions.", object({
     tree_id: dttReference,
     node_id: dttReference,
+    idempotency_key: { type: "string", minLength: 1, maxLength: 200 },
     outcome: { type: "string", enum: ["verified", "failed"] },
     evidence: {
       anyOf: [
@@ -835,7 +836,7 @@ export const TOOLS = [
     },
     evidence_draft: dttEvidenceDraftInput,
     votes: { type: "array", minItems: 1, maxItems: 64, items: dttVoteInput },
-  }, ["tree_id", "node_id", "outcome"]), ["core:govern"], false, true),
+  }, ["tree_id", "node_id", "idempotency_key", "outcome"]), ["core:govern"], false, true),
   tool("orchestration_dtt_evidence_prepare", "Prepare a DTT evidence draft", "Deterministically compute a tenant/tree/node-bound evidence digest from claim, artifacts and provenance. It performs no execution and lets independent agents request signed attestations without client-side cryptography.", object({
     tree_id: dttReference,
     node_id: dttReference,
