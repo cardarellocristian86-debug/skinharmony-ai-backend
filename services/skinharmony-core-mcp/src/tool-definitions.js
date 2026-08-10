@@ -415,6 +415,7 @@ const skinScore = object({ key: { type: "string", enum: ["skin_tone_brightness",
 const scalpMetrics = object({ density_index: score, shaft_caliber_index: score, miniaturization_index: score, single_unit_percent: score, double_triple_unit_percent: score, empty_ostia_percent: score, broken_hair_percent: score, desquamation_percent: score, sebum_plug_percent: score, redness_percent: score, ostium_diameter_index: score, ostium_diameter_pixels: { type: "number", minimum: 0 }, ostia_count: { type: "integer", minimum: 0 }, confidence: probability });
 const scalpAcquisition = object({ device_model: { type: "string", maxLength: 120 }, magnification: { type: "string", maxLength: 40 }, capture_protocol_id: identifier, polarization: { type: "string", enum: ["polarized", "non_polarized", "mixed", "unknown"] }, focus_score: score, illumination_score: score, zone_coverage_score: score });
 const dttReference = { type: "string", minLength: 1, maxLength: 160, pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]*$" };
+const dttWorkId = { type: "string", format: "uuid" };
 const dttNodeInput = object({
   node_id: dttReference,
   kind: { type: "string", enum: ["analysis", "research", "decision", "agent", "ai_model", "tool", "human_gate", "verification", "join", "rollback"] },
@@ -441,8 +442,9 @@ const dttNodeInput = object({
   }, ["required_approvals", "allowed_verifier_ids"]),
 }, ["node_id", "kind", "task"]);
 const dttEvidenceInput = object({
-  schema_version: { const: "verification_evidence_contract_v1" },
+  schema_version: { const: "verification_evidence_contract_v2" },
   tenant_id: { type: "string", minLength: 1, maxLength: 120 },
+  work_id: dttWorkId,
   tree_id: dttReference,
   node_id: dttReference,
   claim: text(4_000),
@@ -454,16 +456,19 @@ const dttEvidenceInput = object({
       artifact_id: { type: "string", minLength: 1, maxLength: 160 },
       content_digest: { type: "string", minLength: 1, maxLength: 256 },
       source_reference: text(1_000),
+      registry_verified: { type: "boolean" },
+      registry_id: { anyOf: [{ type: "string", maxLength: 160 }, { type: "null" }] },
     }, ["artifact_id", "content_digest", "source_reference"]),
   },
   provenance: object({
     tenant_id: { type: "string", minLength: 1, maxLength: 120 },
+    work_id: dttWorkId,
     tree_id: dttReference,
     node_id: dttReference,
     producer_id: { type: "string", minLength: 1, maxLength: 160 },
     source_type: { type: "string", minLength: 1, maxLength: 120 },
     source_reference: text(1_000),
-  }, ["tenant_id", "tree_id", "node_id", "producer_id", "source_type", "source_reference"]),
+  }, ["tenant_id", "work_id", "tree_id", "node_id", "producer_id", "source_type", "source_reference"]),
   evidence_digest: { type: "string", pattern: "^evd_[a-f0-9]{64}$" },
   attestations: {
     type: "array",
@@ -476,16 +481,30 @@ const dttEvidenceInput = object({
       identity_receipt: text(4_000),
       assignment_id: { type: "string", pattern: "^dtta_[a-f0-9]{32}$" },
       attestation_id: { type: "string", pattern: "^att_[a-f0-9]{64}$" },
-      scheme: { const: "sha256_vote_integrity_v1" },
+      scheme: { const: "sha256_work_bound_vote_integrity_v2" },
+      identity_verified: { type: "boolean" },
+      independence_key: { anyOf: [{ type: "string", maxLength: 160 }, { type: "null" }] },
     }, ["verifier_id", "decision", "rationale", "identity_receipt", "assignment_id", "attestation_id", "scheme"]),
   },
   quorum: object({
     required_approvals: { type: "integer", minimum: 1, maximum: 64 },
     dissent_policy: { const: "block" },
+    approvals: { type: "integer", minimum: 0, maximum: 64 },
+    dissents: { type: "integer", minimum: 0, maximum: 64 },
+    satisfied: { type: "boolean" },
   }, ["required_approvals", "dissent_policy"]),
+  identity_verification: object({
+    mode: { const: "core_server_side_receipt_resolver" },
+    verified_identities: { type: "integer", minimum: 0, maximum: 64 },
+    required_identities: { type: "integer", minimum: 0, maximum: 64 },
+    satisfied: { type: "boolean" },
+  }, ["mode", "verified_identities", "required_identities", "satisfied"]),
+  contract_satisfied: { type: "boolean" },
+  execution_authorized: { const: false },
 }, [
   "schema_version",
   "tenant_id",
+  "work_id",
   "tree_id",
   "node_id",
   "claim",
@@ -494,10 +513,12 @@ const dttEvidenceInput = object({
   "evidence_digest",
   "attestations",
   "quorum",
+  "execution_authorized",
 ]);
 const dttEvidenceDraftInput = object({
-  schema_version: { const: "verification_evidence_draft_v1" },
+  schema_version: { const: "verification_evidence_draft_v2" },
   tenant_id: { type: "string", minLength: 1, maxLength: 120 },
+  work_id: dttWorkId,
   tree_id: dttReference,
   node_id: dttReference,
   claim: text(4_000),
@@ -508,7 +529,11 @@ const dttEvidenceDraftInput = object({
     required_approvals: { type: "integer", minimum: 1, maximum: 64 },
     dissent_policy: { const: "block" },
   }, ["required_approvals", "dissent_policy"]),
-}, ["schema_version", "tenant_id", "tree_id", "node_id", "claim", "artifacts", "provenance", "evidence_digest", "quorum"]);
+  execution_authorized: { const: false },
+}, [
+  "schema_version", "tenant_id", "work_id", "tree_id", "node_id", "claim", "artifacts",
+  "provenance", "evidence_digest", "quorum", "execution_authorized",
+]);
 const dttVoteInput = object({
   verifier_id: { type: "string", minLength: 1, maxLength: 160 },
   decision: { type: "string", enum: ["approve", "dissent"] },
@@ -788,7 +813,8 @@ export const TOOLS = [
     },
     unresolved_conflicts: { type: "array", maxItems: 30, uniqueItems: true, items: text(500) },
   }, ["objective", "actors", "relations"]), ["core:read"], true, true),
-  tool("orchestration_dtt_plan", "Plan a governed Dynamic Task Tree", "Compile a deterministic tenant-bound DTT v2 proposal with explicit node, depth, fan-out, parallel, time, token and cost limits. It never runs agents, models or tools and always requires a Universal Core join.", object({
+  tool("orchestration_dtt_plan", "Plan a governed Dynamic Task Tree", "Compile a deterministic tenant-and-Work-bound DTT v3 proposal with explicit node, depth, fan-out, parallel, time, token and cost limits. It never runs agents, models or tools and always requires a Universal Core join.", object({
+    work_id: dttWorkId,
     objective: text(4_000),
     limits: object({
       max_nodes: { type: "integer", minimum: 1, maximum: 2_000 },
@@ -805,22 +831,26 @@ export const TOOLS = [
       maxItems: 200,
       items: dttNodeInput,
     },
-  }, ["objective", "nodes"]), ["core:read"], true, true),
-  tool("orchestration_dtt_read", "Read a Dynamic Task Tree", "Read the current tenant-bound DTT v2 state. This exposes audit state only and never invokes a model, tool, agent or external action.", object({
+  }, ["work_id", "objective", "nodes"]), ["core:read"], true, true),
+  tool("orchestration_dtt_read", "Read a Dynamic Task Tree", "Read the current tenant-and-Work-bound DTT v3 state. This exposes audit state only and never invokes a model, tool, agent or external action.", object({
+    work_id: dttWorkId,
     tree_id: dttReference,
-  }, ["tree_id"]), ["core:read"], true, true),
+  }, ["work_id", "tree_id"]), ["core:read"], true, true),
   tool("orchestration_dtt_expansion_propose", "Propose DTT expansion", "Validate and return a bounded expansion proposal for Core review. The proposal is not applied and authorizes no execution.", object({
+    work_id: dttWorkId,
     tree_id: dttReference,
     parent_node_id: dttReference,
     nodes: { type: "array", minItems: 1, maxItems: 200, items: dttNodeInput },
-  }, ["tree_id", "parent_node_id", "nodes"]), ["core:read"], true, true),
+  }, ["work_id", "tree_id", "parent_node_id", "nodes"]), ["core:read"], true, true),
   tool("orchestration_dtt_replan_propose", "Propose DTT replan", "Validate a prune-and-replace DTT proposal for Core review. It does not mutate the tree and authorizes no execution.", object({
+    work_id: dttWorkId,
     tree_id: dttReference,
     prune_node_ids: { type: "array", minItems: 1, maxItems: 200, uniqueItems: true, items: dttReference },
     replacement_nodes: { type: "array", maxItems: 200, items: dttNodeInput },
     reason: text(500),
-  }, ["tree_id", "prune_node_ids", "reason"]), ["core:read"], true, true),
-  tool("orchestration_dtt_outcome_record", "Record a DTT node outcome", "Record a tenant-bound verified or failed node outcome in the non-executive DTT runtime. The required idempotency key makes retries durable without authorizing execution; Core stores the transition for audit and never invokes agents, models, tools or external actions.", object({
+  }, ["work_id", "tree_id", "prune_node_ids", "reason"]), ["core:read"], true, true),
+  tool("orchestration_dtt_outcome_record", "Record a DTT node outcome", "Record a tenant-and-Work-bound verified or failed node outcome in the non-executive DTT runtime. The required idempotency key makes retries durable without authorizing execution; Core stores the transition for audit and never invokes agents, models, tools or external actions.", object({
+    work_id: dttWorkId,
     tree_id: dttReference,
     node_id: dttReference,
     idempotency_key: { type: "string", minLength: 1, maxLength: 200 },
@@ -836,8 +866,9 @@ export const TOOLS = [
     },
     evidence_draft: dttEvidenceDraftInput,
     votes: { type: "array", minItems: 1, maxItems: 64, items: dttVoteInput },
-  }, ["tree_id", "node_id", "idempotency_key", "outcome"]), ["core:govern"], false, true),
-  tool("orchestration_dtt_evidence_prepare", "Prepare a DTT evidence draft", "Deterministically compute a tenant/tree/node-bound evidence digest from claim, artifacts and provenance. It performs no execution and lets independent agents request signed attestations without client-side cryptography.", object({
+  }, ["work_id", "tree_id", "node_id", "idempotency_key", "outcome"]), ["core:govern"], false, true),
+  tool("orchestration_dtt_evidence_prepare", "Prepare a DTT evidence draft", "Deterministically compute a tenant/Work/tree/node-bound evidence digest from claim, artifacts and provenance. It performs no execution and lets independent agents request signed attestations without client-side cryptography.", object({
+    work_id: dttWorkId,
     tree_id: dttReference,
     node_id: dttReference,
     claim: text(4_000),
@@ -848,35 +879,41 @@ export const TOOLS = [
       source_reference: text(1_000),
     }, ["producer_id", "source_type", "source_reference"]),
     required_approvals: { type: "integer", minimum: 1, maximum: 64 },
-  }, ["tree_id", "node_id", "claim", "artifacts", "provenance", "required_approvals"]), ["core:read"], true, true),
-  tool("orchestration_dtt_agent_attest", "Attest DTT evidence as the current agent", "Request a short-lived Core-signed identity receipt bound to the authenticated agent presence, tenant, tree, node, evidence digest and vote. Each independent verifier must call this tool from its own registered session before a verified outcome can satisfy quorum.", object({
+  }, ["work_id", "tree_id", "node_id", "claim", "artifacts", "provenance", "required_approvals"]), ["core:read"], true, true),
+  tool("orchestration_dtt_agent_attest", "Attest DTT evidence as the current agent", "Request a short-lived Core-signed identity receipt bound to the authenticated agent presence, tenant, Work, tree, node, evidence digest and vote. Each independent verifier must call this tool from its own registered session before a verified outcome can satisfy quorum.", object({
+    work_id: dttWorkId,
     tree_id: dttReference,
     node_id: dttReference,
     evidence_digest: { type: "string", pattern: "^evd_[a-f0-9]{64}$" },
     decision: { type: "string", enum: ["approve", "dissent"] },
     rationale: text(1_000),
     assignment_id: { type: "string", pattern: "^dtta_[a-f0-9]{32}$" },
-  }, ["tree_id", "node_id", "evidence_digest", "decision", "rationale", "assignment_id"]), ["core:govern"], false, true),
-  tool("orchestration_dtt_verifier_assign_self", "Assign the current agent as DTT verifier", "Ask Core to persist a verifier assignment for the current authenticated agent lifecycle and logical session on one tenant-bound DTT node. The returned assignment is required before this agent can attest.", object({
+  }, ["work_id", "tree_id", "node_id", "evidence_digest", "decision", "rationale", "assignment_id"]), ["core:govern"], false, true),
+  tool("orchestration_dtt_verifier_assign_self", "Assign the current agent as DTT verifier", "Ask Core to persist a verifier assignment for the current authenticated agent lifecycle and logical session on one tenant-and-Work-bound DTT node. The returned assignment is required before this agent can attest.", object({
+    work_id: dttWorkId,
     tree_id: dttReference,
     node_id: dttReference,
-  }, ["tree_id", "node_id"]), ["core:govern"], false, true),
-  tool("orchestration_dtt_artifact_register", "Register immutable DTT evidence", "Send bounded evidence content to Core for hashing. Core stores only tenant-bound immutable artifact id, digest and source metadata, never the raw content; drafts and joins must resolve the exact returned tuple.", object({
+  }, ["work_id", "tree_id", "node_id"]), ["core:govern"], false, true),
+  tool("orchestration_dtt_artifact_register", "Register immutable DTT evidence", "Send bounded evidence content to Core for hashing. Core stores only tenant-and-Work-bound immutable artifact id, digest and source metadata, never the raw content; drafts and joins must resolve the exact returned tuple.", object({
+    work_id: dttWorkId,
     artifact_id: { type: "string", minLength: 1, maxLength: 160 },
     content: text(200_000),
     source_reference: text(1_000),
     registry_reference: text(1_000),
-  }, ["artifact_id", "content", "source_reference", "registry_reference"]), ["core:govern"], false, true),
-  tool("orchestration_dtt_cancel", "Cancel a Dynamic Task Tree", "Propagate a tenant-bound kill signal across every non-terminal DTT node. This changes only audit/runtime state and never invokes an external action.", object({
+  }, ["work_id", "artifact_id", "content", "source_reference", "registry_reference"]), ["core:govern"], false, true),
+  tool("orchestration_dtt_cancel", "Cancel a Dynamic Task Tree", "Propagate a tenant-and-Work-bound kill signal across every non-terminal DTT node. This changes only audit/runtime state and never invokes an external action.", object({
+    work_id: dttWorkId,
     tree_id: dttReference,
     reason: text(500),
-  }, ["tree_id", "reason"]), ["core:govern"], false, true, { destructive: true }),
-  tool("orchestration_dtt_retry_fallback_read", "Read DTT retry and fallback state", "Read retry and fallback proposals from the current tenant-bound DTT state. Proposals authorize no execution.", object({
+  }, ["work_id", "tree_id", "reason"]), ["core:govern"], false, true, { destructive: true }),
+  tool("orchestration_dtt_retry_fallback_read", "Read DTT retry and fallback state", "Read retry and fallback proposals from the current tenant-and-Work-bound DTT state. Proposals authorize no execution.", object({
+    work_id: dttWorkId,
     tree_id: dttReference,
-  }, ["tree_id"]), ["core:read"], true, true),
-  tool("orchestration_dtt_core_join", "Join a verified DTT through Core", "Request the Universal Core endpoint to join a fully verified tenant-bound tree. The caller cannot nominate the authority; Core produces the authority field and the join never executes an agent, model, tool or external action.", object({
+  }, ["work_id", "tree_id"]), ["core:read"], true, true),
+  tool("orchestration_dtt_core_join", "Join a verified DTT through Core", "Request the Universal Core endpoint to join a fully verified tenant-and-Work-bound tree. The caller cannot nominate the authority; Core produces the authority field and the join never executes an agent, model, tool or external action.", object({
+    work_id: dttWorkId,
     tree_id: dttReference,
-  }, ["tree_id"]), ["core:govern"], false, true, { ownerConfirmationRequired: false }),
+  }, ["work_id", "tree_id"]), ["core:govern"], false, true, { ownerConfirmationRequired: false }),
   tool("nyra_interpret_request", "Interpret a Nyra request", "Use this when a request needs Nyra routing, bounded cognition, dialogue validation or owner protection. It returns a compact fast result by default; choose deep for scenarios and hypotheses, or full only for diagnostics. Universal Core remains final authority and execution stays disabled.", object({ message: text(), session_id: identifier, project_id: identifier, agent_id: identifier, response_mode: { type: "string", enum: ["fast", "deep", "full"] }, nyra_branches: { type: "array", maxItems: 64, items: identifier }, available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } } }, ["message"]), ["core:read"]),
   tool("nyra_fetch_analysis", "Fetch Nyra analysis details", "Use this after nyra_interpret_request when the compact result indicates that deeper or diagnostic details are relevant. Results are tenant-scoped and expire after five minutes; execution remains disabled.", object({ analysis_id: { type: "string", pattern: "^nyra_[a-f0-9]{24}$" }, response_mode: { type: "string", enum: ["deep", "full"] }, session_id: identifier, agent_id: identifier }, ["analysis_id"]), ["core:read"]),
   tool("core_gate_action", "Evaluate and authorize a scoped action", "Ask Universal Core to evaluate an action and, only for supported fail-closed operation classes, return a scoped authorization. This tool never executes the action.", { type: "object", required: ["action_label", "action_type"], properties: { action_label: text(500), action_type: text(120), operation_class: text(120), target_commit: { type: "string", pattern: "^[a-fA-F0-9]{40}$" }, read_only: { type: "boolean" }, dry_run: { type: "boolean" }, external_side_effect: { type: "boolean" }, contains_customer_data: { type: "boolean" }, contains_secret: { type: "boolean" }, cross_tenant: { type: "boolean" }, destructive: { type: "boolean" }, verified_outcome: { type: "boolean" }, bypass_orchestrator: { type: "boolean" }, rollback_ready: { type: "boolean" }, audit_ready: { type: "boolean" }, configuration_changes: { type: "boolean" } }, additionalProperties: true }, ["core:govern"], false, true),

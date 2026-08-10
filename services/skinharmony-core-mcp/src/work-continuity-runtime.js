@@ -38,6 +38,55 @@ function gallerySecurityError(code) {
   throw error;
 }
 
+function dttWorkBindingError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+const DTT_WORK_ACL_DENIALS = new Set([
+  "work_acl_denied",
+  "tenant_work_not_found",
+  "legacy_work_not_found",
+  "work_id_invalid",
+  "tenant_identity_required",
+  "work_actor_identity_required",
+  "work_server_acl_required",
+  "work_server_acl_subject_mismatch",
+  "work_server_acl_tenant_mismatch",
+]);
+
+export async function authorizeDttExactWorkRead({
+  store,
+  identity,
+  tenant_id,
+  work_id,
+} = {}) {
+  if (typeof store?.readWork !== "function") {
+    throw dttWorkBindingError("dtt_work_binding_unavailable");
+  }
+  const tenantId = tenant(tenant_id);
+  const workId = uuid(work_id, "work_id");
+  let result;
+  try {
+    result = await store.readWork(identity, { work_id: workId });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if (DTT_WORK_ACL_DENIALS.has(reason) || reason.startsWith("tenant_work_membership_")) {
+      throw dttWorkBindingError("dtt_work_acl_denied");
+    }
+    throw dttWorkBindingError("dtt_work_binding_unavailable");
+  }
+  if (
+    result?.schema_version !== "work_continuity_v2"
+    || String(result?.work?.tenant_id || "") !== tenantId
+    || String(result?.work?.work_id || "").toLowerCase() !== workId.toLowerCase()
+  ) {
+    throw dttWorkBindingError("dtt_work_acl_denied");
+  }
+  return Object.freeze({ tenant_id: tenantId, work_id: workId });
+}
+
 export function assertGalleryParticipantBinding(identity = {}, input = {}) {
   const presence = identity.agentPresence;
   if (
@@ -75,7 +124,7 @@ function tenant(value) {
 
 function uuid(value, name = "id") {
   const id = String(value || "");
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
     throw new Error(`${name}_invalid`);
   }
   return id;
@@ -2175,6 +2224,72 @@ export function createWorkContinuityRuntime(config, options = {}) {
       agentId || null, clientType || null, transportSessionFingerprint]);
     if (!result.rows[0]) throw new Error("continuity_participant_not_active");
     return result.rows[0];
+  }
+
+  async function resolveDttWorkLeaseBinding(identity, input = {}) {
+    await initialize();
+    const context = workContext(identity, input);
+    const presence = identity?.agentPresence || {};
+    const binding = assertGalleryParticipantBinding(identity, {
+      session_id: presence.session_id,
+      agent_id: presence.agent_id,
+      client_type: presence.client_type,
+    });
+    if (
+      !/^[a-f0-9]{16,160}$/i.test(String(presence.session_fingerprint || ""))
+      || !/^ai_[a-f0-9]{16,160}$/i.test(String(presence.opaque_agent_id || ""))
+      || !/^ap_[a-f0-9]{16,160}$/i.test(String(presence.actor_provenance || ""))
+    ) {
+      throw new Error("dtt_work_signed_presence_required");
+    }
+    const result = await pool.query(`SELECT
+        p.session_id,p.agent_id,p.client_type,p.expires_at AS participant_expires_at,
+        p.transport_session_fingerprint,l.lease_id,l.expires_at AS lease_expires_at
+      FROM core_continuity_participants p
+      JOIN core_continuity_leases l
+        ON l.tenant_id=p.tenant_id AND l.work_id=p.work_id AND l.session_id=p.session_id
+      WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.session_id=$3 AND p.actor_subject=$4
+        AND p.agent_id=$5 AND p.client_type=$6 AND p.transport_session_fingerprint=$7
+        AND p.status='active' AND p.expires_at>now()
+        AND l.status='active' AND l.expires_at>now()
+      ORDER BY l.expires_at,l.lease_id
+      LIMIT 1`, [
+      context.tenantId,
+      context.workId,
+      binding.sessionId,
+      context.actorSubject,
+      binding.agentId,
+      binding.clientType,
+      binding.transportSessionFingerprint,
+    ]);
+    const row = result.rows[0];
+    if (!row) throw new Error("dtt_work_active_lease_required");
+    const leaseExpiresAt = dateValue(row.lease_expires_at, "dtt_work_lease_expires_at");
+    const participantExpiresAt = dateValue(
+      row.participant_expires_at,
+      "dtt_work_participant_expires_at",
+    );
+    if (leaseExpiresAt.getTime() <= nowDate().getTime()
+        || participantExpiresAt.getTime() <= nowDate().getTime()) {
+      throw new Error("dtt_work_active_lease_required");
+    }
+    return Object.freeze({
+      schema_version: "dtt_work_lease_binding_v1",
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      lease_id: uuid(row.lease_id, "dtt_work_lease_id"),
+      expires_at: leaseExpiresAt.toISOString(),
+      participant_expires_at: participantExpiresAt.toISOString(),
+      session_id: binding.sessionId,
+      agent_id: binding.agentId,
+      client_type: binding.clientType,
+      session_fingerprint: String(presence.session_fingerprint).toLowerCase(),
+      host_transport_session_fingerprint: binding.transportSessionFingerprint,
+      presence_signature: String(presence.signature),
+      opaque_agent_id: String(presence.opaque_agent_id),
+      actor_provenance: String(presence.actor_provenance),
+      execution_authorized: false,
+    });
   }
 
   async function expireLeases(client, context) {
@@ -4717,6 +4832,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     resolveIncident,
     remediationStore,
     gallery,
+    resolveDttWorkLeaseBinding,
     join,
     heartbeat,
     openBranch,

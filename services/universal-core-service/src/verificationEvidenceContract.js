@@ -1,15 +1,19 @@
 import crypto from "node:crypto";
 
-const SCHEMA_VERSION = "verification_evidence_contract_v1";
+const SCHEMA_VERSION = "verification_evidence_contract_v2";
+const DRAFT_SCHEMA_VERSION = "verification_evidence_draft_v2";
 const DECISIONS = new Set(["approve", "dissent"]);
-
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
-}
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function requireText(value, field, max = 500) {
   const normalized = String(value || "").trim();
   if (!normalized || normalized.length > max) throw new Error(`${field}_invalid`);
+  return normalized;
+}
+
+function requireUuid(value, field = "work_id") {
+  const normalized = requireText(value, field, 36).toLowerCase();
+  if (!UUID_PATTERN.test(normalized)) throw new Error(`${field}_invalid`);
   return normalized;
 }
 
@@ -40,24 +44,27 @@ function normalizeArtifacts(artifacts) {
   return normalized;
 }
 
-function normalizeProvenance(provenance, { tenantId, treeId, nodeId }) {
+function normalizeProvenance(provenance, { tenantId, workId, treeId, nodeId }) {
   const normalized = {
     tenant_id: requireText(provenance?.tenant_id, "provenance_tenant_id", 120),
+    work_id: requireUuid(provenance?.work_id, "provenance_work_id"),
     tree_id: requireText(provenance?.tree_id, "provenance_tree_id", 160),
     node_id: requireText(provenance?.node_id, "provenance_node_id", 120),
     producer_id: requireText(provenance?.producer_id, "provenance_producer_id", 160),
     source_type: requireText(provenance?.source_type, "provenance_source_type", 120),
     source_reference: requireText(provenance?.source_reference, "provenance_source_reference", 1_000),
   };
-  if (normalized.tenant_id !== tenantId || normalized.tree_id !== treeId || normalized.node_id !== nodeId) {
+  if (normalized.tenant_id !== tenantId || normalized.work_id !== workId
+      || normalized.tree_id !== treeId || normalized.node_id !== nodeId) {
     throw new Error("evidence_provenance_scope_mismatch");
   }
   return normalized;
 }
 
-function evidencePayload({ tenantId, treeId, nodeId, claim, artifacts, provenance }) {
+function evidencePayload({ tenantId, workId, treeId, nodeId, claim, artifacts, provenance }) {
   return {
     tenant_id: tenantId,
+    work_id: workId,
     tree_id: treeId,
     node_id: nodeId,
     claim,
@@ -66,8 +73,9 @@ function evidencePayload({ tenantId, treeId, nodeId, claim, artifacts, provenanc
   };
 }
 
-function attestationId({ evidenceDigest, verifierId, decision, rationale, identityReceipt, assignmentId }) {
+function attestationId({ workId, evidenceDigest, verifierId, decision, rationale, identityReceipt, assignmentId }) {
   return digest("att", {
+    work_id: workId,
     evidence_digest: evidenceDigest,
     verifier_id: verifierId,
     decision,
@@ -77,10 +85,21 @@ function attestationId({ evidenceDigest, verifierId, decision, rationale, identi
   });
 }
 
+function exactVerifiedResolution(resolution, expected, mismatchCode) {
+  if (!resolution || typeof resolution !== "object" || Array.isArray(resolution)
+      || resolution.verified !== true) return false;
+  if (resolution.execution_authorized !== false
+      || Object.entries(expected).some(([field, value]) => String(resolution[field] || "") !== value)) {
+    throw new Error(mismatchCode);
+  }
+  return true;
+}
+
 function normalizeAttestations(attestations, {
   evidenceDigest,
   producerId,
   tenantId,
+  workId,
   treeId,
   nodeId,
   resolveVerifierIdentity,
@@ -98,6 +117,7 @@ function normalizeAttestations(attestations, {
     if (!DECISIONS.has(decision)) throw new Error("attestation_decision_invalid");
     if (verifierId === producerId) throw new Error("self_verification_denied");
     const expected = attestationId({
+      workId,
       evidenceDigest,
       verifierId,
       decision,
@@ -113,6 +133,7 @@ function normalizeAttestations(attestations, {
     if (resolveVerifierIdentity) {
       const resolution = resolveVerifierIdentity({
         tenant_id: tenantId,
+        work_id: workId,
         tree_id: treeId,
         node_id: nodeId,
         verifier_id: verifierId,
@@ -120,13 +141,19 @@ function normalizeAttestations(attestations, {
         evidence_digest: evidenceDigest,
         decision,
         rationale,
+        assignment_id: assignmentId,
       });
       if (resolution && typeof resolution.then === "function") throw new Error("async_verifier_identity_resolver_denied");
-      identityVerified = resolution === true || resolution?.verified === true;
+      identityVerified = exactVerifiedResolution(resolution, {
+        tenant_id: tenantId,
+        work_id: workId,
+        tree_id: treeId,
+        node_id: nodeId,
+        verifier_id: verifierId,
+        evidence_digest: evidenceDigest,
+        assignment_id: assignmentId,
+      }, "verifier_identity_scope_mismatch");
       independenceKey = String(resolution?.independence_key || resolution?.session_fingerprint || "").trim();
-      if (identityVerified && String(resolution?.assignment_id || "") !== assignmentId) {
-        throw new Error("verifier_assignment_receipt_mismatch");
-      }
     }
     if (requireVerifiedIdentities && !identityVerified) throw new Error("verifier_identity_unverified");
     if (requireVerifiedIdentities && !independenceKey) throw new Error("verifier_independence_unverified");
@@ -137,7 +164,7 @@ function normalizeAttestations(attestations, {
       identity_receipt: identityReceipt,
       assignment_id: assignmentId,
       attestation_id: expected,
-      scheme: "sha256_vote_integrity_v1",
+      scheme: "sha256_work_bound_vote_integrity_v2",
       identity_verified: identityVerified,
       independence_key: independenceKey || null,
     };
@@ -156,7 +183,9 @@ function normalizeAttestations(attestations, {
 }
 
 export function buildVerificationEvidenceContract({
+  schema_version,
   tenant_id,
+  work_id,
   tree_id,
   node_id,
   claim,
@@ -165,8 +194,14 @@ export function buildVerificationEvidenceContract({
   votes,
   required_approvals = 1,
 } = {}) {
+  if (schema_version !== undefined
+      && schema_version !== DRAFT_SCHEMA_VERSION
+      && schema_version !== SCHEMA_VERSION) {
+    throw new Error("verification_evidence_legacy_denied");
+  }
   const draft = prepareVerificationEvidenceDraft({
     tenant_id,
+    work_id,
     tree_id,
     node_id,
     claim,
@@ -175,6 +210,7 @@ export function buildVerificationEvidenceContract({
     required_approvals,
   });
   const tenantId = draft.tenant_id;
+  const workId = draft.work_id;
   const treeId = draft.tree_id;
   const nodeId = draft.node_id;
   const normalizedClaim = draft.claim;
@@ -195,6 +231,7 @@ export function buildVerificationEvidenceContract({
       identity_receipt: requireText(vote?.identity_receipt, "identity_receipt", 4_000),
       assignment_id: requireText(vote?.assignment_id, "assignment_id", 160),
       attestation_id: attestationId({
+        workId,
         evidenceDigest,
         verifierId,
         decision,
@@ -202,12 +239,13 @@ export function buildVerificationEvidenceContract({
         identityReceipt: requireText(vote?.identity_receipt, "identity_receipt", 4_000),
         assignmentId: requireText(vote?.assignment_id, "assignment_id", 160),
       }),
-      scheme: "sha256_vote_integrity_v1",
+      scheme: "sha256_work_bound_vote_integrity_v2",
     };
   });
   return validateVerificationEvidenceContract({
     schema_version: SCHEMA_VERSION,
     tenant_id: tenantId,
+    work_id: workId,
     tree_id: treeId,
     node_id: nodeId,
     claim: normalizedClaim,
@@ -216,8 +254,10 @@ export function buildVerificationEvidenceContract({
     evidence_digest: evidenceDigest,
     attestations,
     quorum: { required_approvals: required, dissent_policy: "block" },
+    execution_authorized: false,
   }, {
     tenant_id: tenantId,
+    work_id: workId,
     tree_id: treeId,
     node_id: nodeId,
     minimum_approvals: required,
@@ -227,6 +267,7 @@ export function buildVerificationEvidenceContract({
 
 export function prepareVerificationEvidenceDraft({
   tenant_id,
+  work_id,
   tree_id,
   node_id,
   claim,
@@ -235,13 +276,20 @@ export function prepareVerificationEvidenceDraft({
   required_approvals = 1,
 } = {}) {
   const tenantId = requireText(tenant_id, "tenant_id", 120);
+  const workId = requireUuid(work_id);
   const treeId = requireText(tree_id, "tree_id", 160);
   const nodeId = requireText(node_id, "node_id", 120);
   const normalizedClaim = requireText(claim, "evidence_claim", 4_000);
   const normalizedArtifacts = normalizeArtifacts(artifacts);
-  const normalizedProvenance = normalizeProvenance(provenance, { tenantId, treeId, nodeId });
+  const normalizedProvenance = normalizeProvenance(provenance, {
+    tenantId,
+    workId,
+    treeId,
+    nodeId,
+  });
   const evidenceDigest = digest("evd", evidencePayload({
     tenantId,
+    workId,
     treeId,
     nodeId,
     claim: normalizedClaim,
@@ -251,8 +299,9 @@ export function prepareVerificationEvidenceDraft({
   const required = Number(required_approvals);
   if (!Number.isInteger(required) || required < 1 || required > 64) throw new Error("required_approvals_invalid");
   return {
-    schema_version: "verification_evidence_draft_v1",
+    schema_version: DRAFT_SCHEMA_VERSION,
     tenant_id: tenantId,
+    work_id: workId,
     tree_id: treeId,
     node_id: nodeId,
     claim: normalizedClaim,
@@ -266,6 +315,7 @@ export function prepareVerificationEvidenceDraft({
 
 export function validateVerificationEvidenceContract(evidence, {
   tenant_id,
+  work_id,
   tree_id,
   node_id,
   minimum_approvals = 1,
@@ -276,21 +326,38 @@ export function validateVerificationEvidenceContract(evidence, {
     throw new Error("verification_evidence_required");
   }
   const tenantId = requireText(tenant_id, "tenant_id", 120);
+  const workId = requireUuid(work_id);
   const treeId = requireText(tree_id, "tree_id", 160);
   const nodeId = requireText(node_id, "node_id", 120);
   if (evidence.schema_version !== SCHEMA_VERSION) throw new Error("verification_evidence_schema_invalid");
-  if (evidence.tenant_id !== tenantId || evidence.tree_id !== treeId || evidence.node_id !== nodeId) {
+  if (evidence.tenant_id !== tenantId || evidence.work_id !== workId
+      || evidence.tree_id !== treeId || evidence.node_id !== nodeId) {
     throw new Error("verification_evidence_scope_mismatch");
   }
+  if (evidence.execution_authorized !== false) throw new Error("verification_evidence_execution_denied");
   const claim = requireText(evidence.claim, "evidence_claim", 4_000);
   const artifacts = normalizeArtifacts(evidence.artifacts);
-  const provenance = normalizeProvenance(evidence.provenance, { tenantId, treeId, nodeId });
-  const expectedDigest = digest("evd", evidencePayload({ tenantId, treeId, nodeId, claim, artifacts, provenance }));
+  const provenance = normalizeProvenance(evidence.provenance, {
+    tenantId,
+    workId,
+    treeId,
+    nodeId,
+  });
+  const expectedDigest = digest("evd", evidencePayload({
+    tenantId,
+    workId,
+    treeId,
+    nodeId,
+    claim,
+    artifacts,
+    provenance,
+  }));
   if (evidence.evidence_digest !== expectedDigest) throw new Error("evidence_digest_invalid");
   const attestations = normalizeAttestations(evidence.attestations, {
     evidenceDigest: expectedDigest,
     producerId: provenance.producer_id,
     tenantId,
+    workId,
     treeId,
     nodeId,
     resolveVerifierIdentity: typeof resolve_verifier_identity === "function" ? resolve_verifier_identity : null,
@@ -311,6 +378,7 @@ export function validateVerificationEvidenceContract(evidence, {
   return {
     schema_version: SCHEMA_VERSION,
     tenant_id: tenantId,
+    work_id: workId,
     tree_id: treeId,
     node_id: nodeId,
     claim,
@@ -332,6 +400,7 @@ export function validateVerificationEvidenceContract(evidence, {
       satisfied: identitiesSatisfied,
     },
     contract_satisfied: quorumSatisfied && identitiesSatisfied,
+    execution_authorized: false,
   };
 }
 
@@ -348,12 +417,19 @@ export async function validateVerificationEvidenceContractAsync(evidence, option
     const resolution = typeof artifactResolver === "function"
       ? await artifactResolver({
         tenant_id: structurallyValid.tenant_id,
+        work_id: structurallyValid.work_id,
         artifact_id: artifact.artifact_id,
         content_digest: artifact.content_digest,
         source_reference: artifact.source_reference,
       })
       : false;
-    const verified = resolution === true || resolution?.verified === true;
+    const verified = exactVerifiedResolution(resolution, {
+      tenant_id: structurallyValid.tenant_id,
+      work_id: structurallyValid.work_id,
+      artifact_id: artifact.artifact_id,
+      content_digest: artifact.content_digest,
+      source_reference: artifact.source_reference,
+    }, "evidence_artifact_scope_mismatch");
     if (options.require_registered_artifacts === true && !verified) {
       throw new Error("evidence_artifact_unregistered");
     }
@@ -371,6 +447,7 @@ export async function validateVerificationEvidenceContractAsync(evidence, option
     const resolution = typeof resolver === "function"
       ? await resolver({
         tenant_id: structurallyValid.tenant_id,
+        work_id: structurallyValid.work_id,
         tree_id: structurallyValid.tree_id,
         node_id: structurallyValid.node_id,
         verifier_id: attestation.verifier_id,
@@ -381,11 +458,16 @@ export async function validateVerificationEvidenceContractAsync(evidence, option
         assignment_id: attestation.assignment_id,
       })
       : false;
-    const verified = resolution === true || resolution?.verified === true;
+    const verified = exactVerifiedResolution(resolution, {
+      tenant_id: structurallyValid.tenant_id,
+      work_id: structurallyValid.work_id,
+      tree_id: structurallyValid.tree_id,
+      node_id: structurallyValid.node_id,
+      verifier_id: attestation.verifier_id,
+      evidence_digest: structurallyValid.evidence_digest,
+      assignment_id: attestation.assignment_id,
+    }, "verifier_identity_scope_mismatch");
     const independenceKey = String(resolution?.independence_key || resolution?.session_fingerprint || "").trim();
-    if (String(resolution?.assignment_id || "") !== attestation.assignment_id) {
-      throw new Error("verifier_assignment_receipt_mismatch");
-    }
     if (options.require_verified_identities === true && !verified) throw new Error("verifier_identity_unverified");
     if (options.require_verified_identities === true && !independenceKey) {
       throw new Error("verifier_independence_unverified");
@@ -411,3 +493,4 @@ export async function validateVerificationEvidenceContractAsync(evidence, option
 }
 
 export const VERIFICATION_EVIDENCE_SCHEMA_VERSION = SCHEMA_VERSION;
+export const VERIFICATION_EVIDENCE_DRAFT_SCHEMA_VERSION = DRAFT_SCHEMA_VERSION;

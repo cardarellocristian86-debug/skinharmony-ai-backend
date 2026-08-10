@@ -98,6 +98,35 @@ test("initialization sends one additive schema statement to the injected pool", 
   assert.equal(calls[0], ADDITIVE_SCHEMA_SQL);
 });
 
+test("exact Work ACL reads accept RFC UUIDv8 identifiers", async () => {
+  const workId = "11111111-1111-8111-8111-111111111111";
+  const pool = {
+    async query(sql) {
+      if (sql === ADDITIVE_SCHEMA_SQL) return { rows: [] };
+      if (/SELECT \* FROM tenant_work WHERE tenant_id=\$1 AND work_id=\$2/.test(sql)) {
+        return { rows: [{
+          tenant_id: "tenant-a",
+          work_id: workId,
+          owner_user_id: "user-a",
+          created_by_user_id: "user-a",
+          assigned_user_ids: [],
+          supervising_user_ids: [],
+          agent_ids: [],
+          visibility_scope: "private",
+        }] };
+      }
+      return { rows: [] };
+    },
+  };
+  const store = createWorkContinuityV2Store({ pool });
+  const result = await store.readWork({
+    tenantId: "tenant-a",
+    subject: "user-a",
+    tenant_work_acl: acl(),
+  }, { work_id: workId });
+  assert.equal(result.work.work_id, workId);
+});
+
 test("Generic Core Join requires a canonical Ed25519 verdict under the pinned key id", () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
   const unsigned = {

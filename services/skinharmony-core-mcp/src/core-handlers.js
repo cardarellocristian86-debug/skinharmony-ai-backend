@@ -36,6 +36,11 @@ import {
   AI_WORK_QUALITY_SCHEMA_VERSION,
   mediateFailureObservation,
 } from "../../shared/ai-work-quality-failure-mediation.mjs";
+import {
+  DTT_WORK_CONTEXT_HEADER,
+  canonicalDttWorkContextBody,
+  issueDttWorkContext,
+} from "../../shared/dtt-work-context.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
@@ -422,6 +427,7 @@ export function createCoreHandlers(config, options = {}) {
   const contextProvider = options.contextProvider;
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
   const tenantWorkGallery = options.tenantWorkGallery;
+  const resolveDttWorkBinding = options.resolveDttWorkBinding;
   const decisionLedger = options.decisionLedger || null;
   const remediationStore = options.remediationStore || createCoreBlockRemediationStore(config, {
     root: options.coreBlockRemediationRoot || config.sharedMemoryRoot || config.agentWorkspaceRoot,
@@ -648,6 +654,7 @@ export function createCoreHandlers(config, options = {}) {
     additionalHeaders = {},
     useTenantGateway = false,
     allowFailurePayload = false,
+    dttWorkContext = null,
   } = {}) {
     const sanitizedBody = sanitizeCoreBody(body);
     const headers = { accept: "application/json" };
@@ -674,10 +681,28 @@ export function createCoreHandlers(config, options = {}) {
       }
       headers["x-sh-tenant-context"] = context;
     }
+    if (dttWorkContext) {
+      if (useTenantGateway !== true) throw new Error("dtt_work_context_tenant_gateway_required");
+      headers[DTT_WORK_CONTEXT_HEADER] = issueDttWorkContext({
+        secret: config.dttAgentIdentitySigningSecret,
+        tenant_id: tenantId,
+        work_id: dttWorkContext.work_id,
+        lease_binding: dttWorkContext.lease_binding,
+        agent_presence: dttWorkContext.agent_presence,
+        method,
+        path,
+        body: sanitizedBody,
+      });
+    }
+    const serializedBody = sanitizedBody === undefined
+      ? undefined
+      : dttWorkContext
+        ? canonicalDttWorkContextBody(sanitizedBody)
+        : JSON.stringify(sanitizedBody);
     const response = await fetchImpl(`${config.universalCoreUrl}${path}`, {
       method,
       headers,
-      body: sanitizedBody === undefined ? undefined : JSON.stringify(sanitizedBody)
+      body: serializedBody,
     });
     const payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
     if (!response.ok) {
@@ -694,6 +719,29 @@ export function createCoreHandlers(config, options = {}) {
       throw error;
     }
     return payload;
+  }
+
+  async function dttCoreRequest(path, args, identity, request = {}) {
+    if (typeof resolveDttWorkBinding !== "function") {
+      throw new Error("dtt_work_binding_unavailable");
+    }
+    const workId = String(args?.work_id || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(workId)) {
+      throw new Error("dtt_work_id_invalid");
+    }
+    const leaseBinding = await resolveDttWorkBinding(identity, workId);
+    if (!leaseBinding || leaseBinding.execution_authorized !== false) {
+      throw new Error("dtt_work_active_lease_required");
+    }
+    return coreRequest(path, identity.tenantId, {
+      ...request,
+      useTenantGateway: true,
+      dttWorkContext: {
+        work_id: workId,
+        lease_binding: leaseBinding,
+        agent_presence: identity.agentPresence,
+      },
+    });
   }
 
   async function openBlockedRemediation({
@@ -1883,9 +1931,10 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_plan: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_plan: async (args, identity) => textResult(await dttCoreRequest(
       "/v1/orchestration/dtt/plan",
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1895,13 +1944,15 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_read: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_read: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}`,
-      identity.tenantId,
+      args,
+      identity,
     )),
-    orchestration_dtt_expansion_propose: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_expansion_propose: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/expansion-proposals`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1910,9 +1961,10 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_replan_propose: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_replan_propose: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/replan-proposals`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1922,9 +1974,10 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_outcome_record: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_outcome_record: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/outcomes`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1936,9 +1989,10 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_evidence_prepare: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_evidence_prepare: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/evidence-drafts`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1955,11 +2009,13 @@ export function createCoreHandlers(config, options = {}) {
       const context = issueDttAgentContext({
         secret: config.dttAgentIdentitySigningSecret,
         tenant_id: identity.tenantId,
+        work_id: args.work_id,
         agent_presence: identity.agentPresence,
       });
-      return textResult(await coreRequest(
+      return textResult(await dttCoreRequest(
         `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/attestations`,
-        identity.tenantId,
+        args,
+        identity,
         {
           method: "POST",
           body: {
@@ -1978,17 +2034,20 @@ export function createCoreHandlers(config, options = {}) {
       const context = issueDttAgentContext({
         secret: config.dttAgentIdentitySigningSecret,
         tenant_id: identity.tenantId,
+        work_id: args.work_id,
         agent_presence: identity.agentPresence,
       });
-      return textResult(await coreRequest(
+      return textResult(await dttCoreRequest(
         `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/verifier-assignments`,
-        identity.tenantId,
+        args,
+        identity,
         { method: "POST", body: {}, additionalHeaders: { "x-sh-dtt-agent-context": context } },
       ));
     },
-    orchestration_dtt_artifact_register: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_artifact_register: async (args, identity) => textResult(await dttCoreRequest(
       "/v1/orchestration/evidence/artifacts",
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1999,21 +2058,24 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_cancel: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_cancel: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/cancel`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: { reason: args.reason },
       },
     )),
-    orchestration_dtt_retry_fallback_read: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_retry_fallback_read: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/retry-fallback`,
-      identity.tenantId,
+      args,
+      identity,
     )),
-    orchestration_dtt_core_join: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_core_join: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/core-join`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {},

@@ -11,6 +11,7 @@ import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 import { createDecisionLedger } from "./decision-ledger.js";
 import {
+  authorizeDttExactWorkRead,
   coreJoinIdempotencyKey,
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
@@ -139,11 +140,56 @@ const {
 if (config.mandatoryAgentPresenceEnabled === true && typeof registerAuthenticatedPresence !== "function") {
   throw new Error("mandatory_agent_presence_registry_unavailable");
 }
+
+async function resolveDttWorkBinding(identity, workId) {
+  requireTenantWorkCapability(identity, "read");
+  if (typeof workContinuityRuntime?.resolveDttWorkLeaseBinding !== "function"
+      || typeof workContinuityV2Store?.readWork !== "function") {
+    throw new Error("dtt_work_binding_unavailable");
+  }
+  try {
+    await authorizeDttExactWorkRead({
+      store: workContinuityV2Store,
+      identity: withTenantWorkAcl(identity),
+      tenant_id: identity.tenantId,
+      work_id: workId,
+    });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if (reason === "dtt_work_binding_unavailable" || reason === "dtt_work_acl_denied") {
+      throw error;
+    }
+    const denied = new Error("dtt_work_acl_denied");
+    denied.code = "dtt_work_acl_denied";
+    throw denied;
+  }
+  try {
+    return await workContinuityRuntime.resolveDttWorkLeaseBinding(identity, {
+      work_id: workId,
+    });
+  } catch (error) {
+    if ([
+      "dtt_work_active_lease_required",
+      "dtt_work_signed_presence_required",
+      "gallery_signed_presence_required",
+      "gallery_participant_presence_mismatch",
+      "tenant_work_membership_required",
+      "work_id_invalid",
+    ].includes(String(error?.code || error?.message || ""))) {
+      throw error;
+    }
+    const unavailable = new Error("dtt_work_binding_unavailable");
+    unavailable.code = "dtt_work_binding_unavailable";
+    throw unavailable;
+  }
+}
+
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
   decisionLedger,
   remediationStore: workContinuityRuntime?.remediationStore,
+  resolveDttWorkBinding,
   tenantWorkGallery: workContinuityRuntime ? {
     load: async (identity, input = {}) => {
       requireTenantWorkCapability(identity, "read");
@@ -160,23 +206,12 @@ const coreHandlers = createCoreHandlers(config, {
       });
     },
     verifyActiveLease: async (identity, workId) => {
-      requireTenantWorkCapability(identity, "read");
-      const state = await workContinuityRuntime.read(identity, { work_id: workId });
-      const sessionId = String(identity.agentPresence?.session_id || "");
-      const agentId = String(identity.agentPresence?.agent_id || identity.subject || identity.agentId || "");
-      const participant = state.participants.find((item) => String(item.session_id) === sessionId &&
-        String(item.agent_id) === agentId && item.active === true);
-      const lease = state.leases.find((item) => String(item.session_id) === sessionId &&
-        item.status === "active" && Date.parse(item.expires_at) > Date.now());
-      if (!participant || !lease) return null;
-      return {
-        lease_id: lease.lease_id,
-        session_id: sessionId,
-        agent_id: agentId,
-        session_fingerprint: identity.agentPresence?.session_fingerprint || null,
-        expires_at: lease.expires_at,
-        surfaces: lease.surfaces || [],
-      };
+      try {
+        return await resolveDttWorkBinding(identity, workId);
+      } catch (error) {
+        if (error?.message === "dtt_work_active_lease_required") return null;
+        throw error;
+      }
     },
   } : null,
 });
