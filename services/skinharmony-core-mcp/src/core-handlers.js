@@ -985,18 +985,39 @@ export function createCoreHandlers(config, options = {}) {
 
   function hierarchyInput(args = {}, identity, operation = "advisory_work") {
     const supplied = args.core_input && typeof args.core_input === "object" && !Array.isArray(args.core_input) ? args.core_input : {};
+    // high_impact is escalation-only. The bridge derives the effective value
+    // from bounded evidence, signals and operation semantics; a caller cannot
+    // use false or a routing object to suppress V0 or grant execution.
+    const { evidence_state: suppliedEvidenceState, routing: _callerRouting, ...boundedSupplied } = supplied;
     const request = String(args.request || args.message || args.question || args.decision || operation).slice(0, 12_000);
     const signals = Array.isArray(supplied.signals) && supplied.signals.length
       ? supplied.signals
       : [{ id: "mcp_runtime_request", label: operation, severity: 20, reversibility_hint: 80, risk_hint: 20 }];
-    return { ...supplied, request, signals, context: { ...(supplied.context || {}), tenant_id: identity.tenantId } };
+    const evidenceEscalation = suppliedEvidenceState?.high_impact === true || args.evidence_state?.high_impact === true;
+    const signalEscalation = signals.some((signal) => [
+      signal?.severity, signal?.severity_hint, signal?.normalized_score, signal?.risk_hint,
+    ].some((value) => typeof value === "number" && Number.isFinite(value) && value >= 85 && value <= 100));
+    const operationEscalation = /(publish|pubblica|merge|deploy|rilasc|release|send|invia|delete|cancell|payment|pagament|write|scriv|update|modific)/i
+      .test(`${request} ${operation}`);
+    const highImpact = evidenceEscalation || signalEscalation || operationEscalation;
+    return {
+      ...boundedSupplied,
+      request,
+      signals,
+      evidence_state: { high_impact: highImpact },
+      context: { ...(supplied.context || {}), tenant_id: identity.tenantId },
+    };
   }
 
   async function runtimeHierarchyEvaluate(args, identity, operation) {
     const started = Date.now();
+    const input = hierarchyInput(args, identity, operation);
     const payload = await coreRequest("/v1/runtime/hierarchy/evaluate", identity.tenantId, {
       method: "POST",
-      body: { core_input: hierarchyInput(args, identity, operation) },
+      body: {
+        core_input: input,
+        ...(input.evidence_state.high_impact ? { routing: { high_impact: true } } : {}),
+      },
     });
     return compactCoreRuntime({ ...payload, latency_ms: Date.now() - started });
   }

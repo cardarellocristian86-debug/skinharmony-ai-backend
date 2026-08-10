@@ -52,6 +52,14 @@ test("high impact scala a V0 anche con digest a bassa criticita", async () => {
   assert.equal(result.selected_authority, "V0");
 });
 
+test("high impact evidence in the received hierarchy input scales to V0", async () => {
+  const result = await evaluateCoreRuntimeHierarchy(input({
+    evidence_state: { high_impact: true },
+  }), { mode: "active" });
+  assert.equal(result.selected_authority, "V0");
+  assert.equal(result.execution_allowed, false);
+});
+
 test("rischio alto porta al giudice V0", async () => {
   const value = input({ signals: [{ ...input().signals[0], normalized_score: 92, risk_hint: 95 }] });
   const result = await evaluateCoreRuntimeHierarchy(value, { mode: "shadow" });
