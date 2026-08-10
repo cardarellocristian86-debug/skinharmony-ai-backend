@@ -209,6 +209,21 @@ const BUILD_COMMIT_SHA =
   String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim().toLowerCase() ||
   null;
 const BUILD_COMMIT_VERIFIABLE = /^[a-f0-9]{40}$/.test(BUILD_COMMIT_SHA || "");
+const DEFAULT_CAUSAL_INITIALIZATION_LIVENESS_MS = 30 * 60 * 1_000;
+const MAX_CAUSAL_INITIALIZATION_LIVENESS_MS = 60 * 60 * 1_000;
+
+export function boundedCausalInitializationLivenessMs(value) {
+  const requested = Number(value ?? DEFAULT_CAUSAL_INITIALIZATION_LIVENESS_MS);
+  return Math.min(
+    Math.max(
+      Number.isFinite(requested)
+        ? requested
+        : DEFAULT_CAUSAL_INITIALIZATION_LIVENESS_MS,
+      1,
+    ),
+    MAX_CAUSAL_INITIALIZATION_LIVENESS_MS,
+  );
+}
 const PROVIDER_SETUP_LINK_ISSUER_KIND = "provider_setup_link";
 const PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN = /^osf_[a-f0-9]{64}$/;
 const TRUSTED_PROVIDER_SETUP_ORIGIN = "https://skinharmony-universal-core.onrender.com";
@@ -4898,6 +4913,11 @@ export function createUniversalCoreService(options = {}) {
       : null);
   let causalContinuityState = causalContinuityStore ? "initializing" : "disabled";
   let causalContinuityInitializationError = null;
+  let causalContinuityInitializationStartedAtMs = null;
+  const causalContinuityInitializationLivenessMs =
+    boundedCausalInitializationLivenessMs(
+      options.causalContinuityInitializationLivenessMs,
+  );
   let causalContextSigner = options.causalContextSigner || null;
   if (!causalContextSigner && hostNativeSigningSecret.length >= 32) {
     try {
@@ -4919,6 +4939,7 @@ export function createUniversalCoreService(options = {}) {
       })
       : null);
   if (causalContinuityRuntime) {
+    causalContinuityInitializationStartedAtMs = performance.now();
     void Promise.resolve(causalContinuityRuntime.initialize())
       .then(() => { causalContinuityState = "ready"; })
       .catch((error) => {
@@ -5876,7 +5897,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/healthz", async (req, res) => {
+  const serveHealth = async (_req, res, { strictReadiness = false } = {}) => {
     const production = (process.env.NODE_ENV || "development") === "production";
     const productionBuildReady =
       !production ||
@@ -6015,17 +6036,31 @@ export function createUniversalCoreService(options = {}) {
     }
     const causalContinuityProductionRequired = production
       && governedAgentPostgresConfigured
-      && !hasInjectedPostgresVersionProbe;
+      && (
+        !hasInjectedPostgresVersionProbe
+        || Boolean(options.causalContinuityStore || options.causalContinuityRuntime)
+      );
     const causalContinuityProductionReady = !causalContinuityProductionRequired
       || (Boolean(causalContinuityRuntime) && causalContinuityHealth.ok === true);
-    const renderReady = productionBuildReady
+    const nonCausalProductionReady = productionBuildReady
       && hostNativeReady
       && nyraPolicyRegistryModeValid
       && nyraPolicyRegistryProductionReady
-      && researchAirlockProductionReady
+      && researchAirlockProductionReady;
+    const renderReady = nonCausalProductionReady
       && causalContinuityProductionReady;
-    res.status(renderReady ? 200 : 503).json({
-      ok: true,
+    const causalInitializationDegraded = production
+      && causalContinuityProductionRequired
+      && Boolean(causalContinuityRuntime)
+      && causalContinuityState === "initializing"
+      && causalContinuityInitializationStartedAtMs !== null
+      && performance.now() - causalContinuityInitializationStartedAtMs
+        <= causalContinuityInitializationLivenessMs
+      && nonCausalProductionReady;
+    const healthStatusReady = renderReady
+      || (!strictReadiness && causalInitializationDegraded);
+    res.status(healthStatusReady ? 200 : 503).json({
+      ok: !production || renderReady,
       service: SERVICE_NAME,
       version: SERVICE_VERSION,
       build: {
@@ -6037,6 +6072,7 @@ export function createUniversalCoreService(options = {}) {
       health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
       mode: process.env.NODE_ENV || "development",
       render_ready: renderReady,
+      liveness_degraded: causalInitializationDegraded,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
       generic_work_core_join: {
@@ -6197,7 +6233,10 @@ export function createUniversalCoreService(options = {}) {
       owner_context_signing_configured: Boolean(ownerContextSigningSecret),
       uptime_seconds: Math.round(process.uptime()),
     });
-  });
+  };
+
+  app.get("/healthz", (req, res) => serveHealth(req, res));
+  app.get("/readyz", (req, res) => serveHealth(req, res, { strictReadiness: true }));
 
   app.get("/v1/scopes", (req, res) => {
     res.json({ ok: true, scopes: Object.values(SCOPES), presets: KEY_PRESETS });

@@ -675,10 +675,17 @@ export function createHostNativeExternalReadbackVerifier({
   const boundedTimeout = Math.max(100, Math.min(60_000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
   const workflow_run_cache = createBoundedCache(workflowRunCacheMaximumEntries);
   const workflow_source_cache = createBoundedCache(workflowSourceCacheMaximumEntries);
-  const verify = async ({ ticket, target_commit }) => {
+  const verify = async ({ ticket, target_commit, verification_scope = "full_release" }) => {
     const tenantId = string(ticket?.tenant_id);
     const repository = repositoryPath(ticket?.repository);
     const action = ticket?.action || {};
+    if (!["full_release", "github_merge_and_checks_only"].includes(verification_scope)) {
+      error("trusted_readback_verification_scope_invalid");
+    }
+    const mergeOnly = verification_scope === "github_merge_and_checks_only";
+    if (mergeOnly && action.kind !== "github.merge") {
+      error("trusted_readback_verification_scope_invalid");
+    }
     const binding = ticket?.release_manifest_binding || {};
     const targetCommit = sha(target_commit);
     const checksCommit = sha(binding?.verification?.checks_commit || action.checks_commit);
@@ -741,9 +748,9 @@ export function createHostNativeExternalReadbackVerifier({
     const rollback = await getGithub(`/git/commits/${rollbackCommit}`);
     if (sha(rollback?.sha) !== rollbackCommit) error("trusted_readback_rollback_unavailable");
     const sourceServices = Array.isArray(binding?.services) ? binding.services : [];
-    if (sourceServices.length < 1) error("trusted_readback_services_invalid");
+    if (!mergeOnly && sourceServices.length < 1) error("trusted_readback_services_invalid");
     const services = [];
-    for (const service of sourceServices) {
+    for (const service of mergeOnly ? [] : sourceServices) {
       const origin = originForHealth(service?.origin);
       const prior = expectedPrevious(ticket, service);
       if (
@@ -802,6 +809,7 @@ export function createHostNativeExternalReadbackVerifier({
       schema_version: "host_native_external_readback_v1",
       trusted: true,
       verifier_id: "core_server_external_readback_v1",
+      verification_scope,
       verified_at: isoNow(now),
       github: { ...githubUnsigned, readback_digest: hostNativeDigest(githubUnsigned) },
       services,

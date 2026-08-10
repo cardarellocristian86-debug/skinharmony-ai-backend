@@ -300,7 +300,7 @@ function joinResolution(request, clock) {
   };
 }
 
-function trustedExternalReadback(ticket, targetCommit, clock) {
+function trustedExternalReadback(ticket, targetCommit, clock, verificationScope = "full_release") {
   const binding = ticket.release_manifest_binding;
   const action = ticket.action;
   const requiredChecks = [...binding.verification.required_checks];
@@ -331,7 +331,9 @@ function trustedExternalReadback(ticket, targetCommit, clock) {
     rollback_commit: binding.rollback.target_commit,
     rollback_commit_available: true,
   };
-  const services = binding.services.map((expected) => {
+  const services = (verificationScope === "github_merge_and_checks_only"
+    ? []
+    : binding.services).map((expected) => {
     const unsigned = {
       service_id: expected.service_id,
       environment: expected.environment,
@@ -351,6 +353,7 @@ function trustedExternalReadback(ticket, targetCommit, clock) {
     schema_version: "host_native_external_readback_v1",
     trusted: true,
     verifier_id: "core_server_external_readback_v1",
+    verification_scope: verificationScope,
     verified_at: new Date(clock()).toISOString(),
     github: {
       ...githubUnsigned,
@@ -368,6 +371,7 @@ function governanceFactory({
   idFactory,
   reservationLeaseMs = 120_000,
   externalReadbackCalls = null,
+  externalReadbackScopeOverride = null,
   renderResolverCalls = null,
 } = {}) {
   return createHostNativeGovernance({
@@ -378,9 +382,17 @@ function governanceFactory({
     idFactory,
     reservationLeaseMs,
     releaseJoinVerdictResolver: async (request) => joinResolution(request, clock),
-    externalReadbackVerifier: async ({ ticket, target_commit }) => {
-      if (externalReadbackCalls) externalReadbackCalls.push(ticket.ticket_id);
-      return trustedExternalReadback(ticket, target_commit, clock);
+    externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) => {
+      if (externalReadbackCalls) externalReadbackCalls.push({
+        ticket_id: ticket.ticket_id,
+        verification_scope,
+      });
+      return trustedExternalReadback(
+        ticket,
+        target_commit,
+        clock,
+        externalReadbackScopeOverride || verification_scope,
+      );
     },
     renderServiceOriginResolver: async (scope) => {
       if (renderResolverCalls) renderResolverCalls.push(scope);
@@ -645,6 +657,13 @@ test("final receipt replays while fresh and expired evidence is retained on re-a
   });
   assert.deepEqual(replay, receipt);
   assert.equal(externalReadbackCalls.length, 1);
+  assert.equal(
+    externalReadbackCalls[0].verification_scope,
+    "github_merge_and_checks_only",
+  );
+  assert.equal(receipt.verification_scope, "github_merge_and_checks_only");
+  assert.equal(receipt.services_verified, false);
+  assert.deepEqual(receipt.live_services, []);
   assert.equal(receipt.expires_at, reserved.reservation_expires_at);
 
   clockValue = Date.parse(receipt.expires_at) + 1;
@@ -668,4 +687,45 @@ test("final receipt replays while fresh and expired evidence is retained on re-a
     issued_at: receipt.issued_at,
     expires_at: receipt.expires_at,
   }]);
+});
+
+test("merge finalization rejects a verifier that returns the wrong scope", async () => {
+  let clockValue = START;
+  let sequence = 0;
+  const governance = governanceFactory({
+    clock: () => clockValue,
+    idFactory: () => `scope-${++sequence}`,
+    externalReadbackScopeOverride: "full_release",
+  });
+  const delegation = await governance.issueDelegation(delegationInput(clockValue));
+  const pending = pendingManifest();
+  const join = await governance.issueCoreJoinVerdict(coreJoinInput(pending, "scope-join"));
+  const issued = await issueReleaseTicket(governance, {
+    delegationId: delegation.delegation_id,
+    manifest: bindJoin(pending, join.verdict.verdict_id),
+    session: "scope-session",
+    idempotencyKey: "scope-ticket",
+  });
+  const reserved = await governance.reserveActionTicket({
+    tenant_id: "tenant-a",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    idempotency_key: "scope-reserve",
+  });
+  await governance.completeActionTicket({
+    tenant_id: "tenant-a",
+    ticket_id: issued.ticket.ticket_id,
+    reservation_id: reserved.reservation_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    outcome: "success",
+    result_digest: H("7"),
+    result_commit: G("4"),
+    readback_digest: H("8"),
+    idempotency_key: "scope-complete",
+  });
+  await assert.rejects(governance.authorizeFinalize({
+    tenant_id: "tenant-a",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+  }), /trusted_readback_github_mismatch/);
 });
