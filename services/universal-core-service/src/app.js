@@ -7126,10 +7126,12 @@ export function createUniversalCoreService(options = {}) {
         error: "policy_registry_coordinator_unavailable",
       };
     }
-    const nyraPolicyRegistryEvaluationProductionReady = !production || (
-      nyraPolicyRegistryStatus.backend === "postgresql" &&
-      nyraPolicyRegistryStatus.ready === true
-    );
+    const nyraPolicyRegistryEvaluationProductionReady =
+      !nyraPolicyRegistryEvaluationEnabled ||
+      !production || (
+        nyraPolicyRegistryStatus.backend === "postgresql" &&
+        nyraPolicyRegistryStatus.ready === true
+      );
     const nyraPolicyRegistryStoreProvenanceReady =
       nyraPolicyRegistryStatus.backend === "postgresql" &&
       nyraPolicyRegistryStatus.restart_durable === true &&

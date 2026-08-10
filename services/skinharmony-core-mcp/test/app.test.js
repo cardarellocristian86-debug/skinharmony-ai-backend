@@ -416,6 +416,10 @@ test("Generic Join health pins upstream key identity and gates Render only when 
           genericWorkCoreJoin.required = scenario.upstreamRequired ?? scenario.required;
         }
         return new Response(JSON.stringify({
+          ok: true,
+          render_ready: true,
+          liveness_degraded: false,
+          build: { commit_sha: "b".repeat(40), commit_verifiable: true },
           research_airlock: { ready: true, mode: "enforced", state_backend: "postgresql" },
           generic_work_core_join: genericWorkCoreJoin,
         }), { status: 200, headers: { "content-type": "application/json" } });
@@ -722,6 +726,7 @@ test("production MCP health rejects unauthorized, invalid, and non-bootstrap Cor
   };
   const app = createApp(productionConfig, {
     handlers,
+    policyRegistryHealthCacheTtlMs: 50,
     fetchImpl: async () => {
       fetchCount += 1;
       if (responseCase === "unauthorized") {
@@ -744,7 +749,8 @@ test("production MCP health rejects unauthorized, invalid, and non-bootstrap Cor
   await new Promise((resolve) => server.once("listening", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    for (const currentCase of ["unauthorized", "invalid", "failed"]) {
+    for (const [caseIndex, currentCase] of ["unauthorized", "invalid", "failed"].entries()) {
+      if (caseIndex > 0) await new Promise((resolve) => setTimeout(resolve, 75));
       responseCase = currentCase;
       const response = await fetch(`${base}/healthz`);
       const health = await response.json();

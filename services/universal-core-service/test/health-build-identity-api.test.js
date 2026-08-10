@@ -75,6 +75,9 @@ async function readHealth(options = {}) {
 function causalProductionOptions(initialize, overrides = {}) {
   return {
     governedAgentPostgresVersionProbe: postgresMajorProbe(180_004),
+    // This fixture isolates causal bootstrap liveness. Policy Registry remains
+    // explicitly code-dark, so its production store cannot mask that signal.
+    nyraPolicyRegistryEnforcementMode: "disabled",
     nyraPolicyRegistryStore: {
       status: async () => ({
         configured: true,

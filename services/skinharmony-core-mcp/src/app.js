@@ -1257,7 +1257,11 @@ export function createApp(config, options = {}) {
         postgresMajorVersion,
       },
     });
-    const upstreamHealth = await probeUniversalCoreHealth();
+    // Readiness is an admission gate, so it must not accept a cached liveness
+    // observation.  The public liveness probe keeps the bounded cache used by
+    // Policy Registry tool discovery, while /readyz forces the same bounded,
+    // single-flight and deadline-protected upstream probe to refresh.
+    const upstreamHealth = await probeUniversalCoreHealth({ force: strictReadiness });
     const payload = upstreamHealth.payload;
     const validPayload = payload !== null
       && typeof payload === "object"
