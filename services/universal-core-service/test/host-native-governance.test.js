@@ -189,6 +189,8 @@ function harness({
   unreservedEffectVerifier,
   releaseJoinVerdictResolver,
   renderServiceOriginResolver,
+  bootstrapReleaseExceptionStore,
+  bootstrapDeadlockVerdictResolver,
 } = {}) {
   let clock = Date.parse(clockStart);
   let sequence = 0;
@@ -203,6 +205,8 @@ function harness({
         trustedExternalReadback(ticket, target_commit, new Date(clock).toISOString()))
       : externalReadbackVerifier,
     unreservedEffectVerifier: unreservedEffectVerifier || null,
+    bootstrapReleaseExceptionStore: bootstrapReleaseExceptionStore || null,
+    bootstrapDeadlockVerdictResolver: bootstrapDeadlockVerdictResolver || null,
     releaseJoinVerdictResolver: releaseJoinVerdictResolver === undefined
       ? (async (request) => trustedJoinResolution(request, clock))
       : releaseJoinVerdictResolver,
@@ -569,6 +573,116 @@ async function prepareFinalizableMerge(subject) {
   });
   return { delegation, issued, reserved, completed };
 }
+
+function bootstrapReleaseExceptionStore({ expiresAt = "2026-07-29T11:00:00.000Z", verifyError = null, consumeError = null, candidateExceptionId = null } = {}) {
+  const calls = { verify: [], consume: [] };
+  return {
+    calls,
+    async verifyAndRecord({ receipt, expected }) {
+      calls.verify.push({ receipt, expected });
+      if (verifyError) throw new Error(verifyError);
+      return { candidate: {
+        exception_id: candidateExceptionId || expected.bootstrap_deadlock_verdict.exception_id,
+        receipt_digest: H("b"),
+        tenant_id: expected.tenant_id,
+        work_id: expected.work_id,
+        repository: expected.repository,
+        pr_number: expected.pr_number,
+        head_sha: expected.head_sha,
+        allowed_action: expected.action,
+        expires_at: expiresAt,
+      } };
+    },
+    async consume(input) {
+      calls.consume.push(input);
+      if (consumeError) throw new Error(consumeError);
+      return { consumed: true };
+    },
+  };
+}
+
+function bootstrapDeadlockVerdictResolver({ expiresAt = "2026-07-29T11:00:00.000Z", classification = "BOOTSTRAP_DEADLOCK_VERIFIED", active = true, digestOverride = null, exceptionIdOverride = null, error = null } = {}) {
+  const calls = [];
+  return Object.assign(async (input) => {
+    calls.push(input);
+    if (error) throw new Error(error);
+    return {
+      classification,
+      active,
+      expires_at: expiresAt,
+      exception_id: exceptionIdOverride || input.exception_id,
+      core_policy_verdict_digest: digestOverride || input.core_policy_verdict_digest,
+    };
+  }, { calls });
+}
+
+test("bootstrap receipt is server-verified, ticket-bound, and consumed only at merge reservation", async () => {
+  const bootstrapStore = bootstrapReleaseExceptionStore();
+  const deadlockResolver = bootstrapDeadlockVerdictResolver();
+  const subject = harness({ bootstrapReleaseExceptionStore: bootstrapStore, bootstrapDeadlockVerdictResolver: deadlockResolver, releaseJoinVerdictResolver: null });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const manifest = buildHostReleaseManifestV2(mergeReleaseManifestInput());
+  const issued = await subject.governance.issueActionTicket({
+    tenant_id: "codexai", delegation_id: delegation.delegation_id, work_id: "work-1", intent_anchor_digest: H("1"), repository: "owner/repo",
+    host_kind: "codex_native", host_session_fingerprint: "bootstrap-merge-session", action: githubMergeAction(), evidence_digest: H("6"), release_manifest: manifest,
+    bootstrap_release_exception_receipt: { opaque: "external-signed-receipt", exception_id: "bootstrap-exception-1", core_policy_verdict_digest: H("c") },
+  });
+  assert.equal(bootstrapStore.calls.verify.length, 1);
+  assert.equal(deadlockResolver.calls.length, 1);
+  assert.equal(bootstrapStore.calls.verify[0].expected.bootstrap_deadlock_verdict.classification, "BOOTSTRAP_DEADLOCK_VERIFIED");
+  assert.equal(issued.ticket.bootstrap_release_exception_candidate.exception_id, "bootstrap-exception-1");
+  assert.equal(issued.ticket.core_join_verdict_id, undefined);
+  const reserved = await subject.governance.reserveActionTicket({ tenant_id: "codexai", ticket_id: issued.ticket.ticket_id, host_session_fingerprint: issued.ticket.host_session_fingerprint });
+  assert.equal(reserved.state, "reserved");
+  assert.equal(bootstrapStore.calls.consume.length, 1);
+  assert.equal(bootstrapStore.calls.consume[0].action_ticket_id, issued.ticket.ticket_id);
+  await assert.rejects(subject.governance.reserveActionTicket({ tenant_id: "codexai", ticket_id: issued.ticket.ticket_id, host_session_fingerprint: issued.ticket.host_session_fingerprint }), /replayed/);
+});
+
+test("bootstrap receipt fails closed for missing store, deny, expiry, replay, and non-merge actions", async () => {
+  const resolver = bootstrapDeadlockVerdictResolver();
+  const receipt = { exception_id: "bootstrap-exception-1", core_policy_verdict_digest: H("c") };
+  const missing = harness({ bootstrapDeadlockVerdictResolver: resolver }); const missingDelegation = await missing.governance.issueDelegation(missing.delegationInput);
+  await assert.rejects(issueMergeTicket(missing.governance, missingDelegation.delegation_id, { bootstrap_release_exception_receipt: receipt }), /bootstrap_release_exception_store_unavailable/);
+  const deniedStore = bootstrapReleaseExceptionStore({ verifyError: "bootstrap_release_exception_denied" });
+  const denied = harness({ bootstrapReleaseExceptionStore: deniedStore, bootstrapDeadlockVerdictResolver: resolver }); const deniedDelegation = await denied.governance.issueDelegation(denied.delegationInput);
+  await assert.rejects(issueMergeTicket(denied.governance, deniedDelegation.delegation_id, { bootstrap_release_exception_receipt: receipt }), /bootstrap_release_exception_denied/);
+  const expiredStore = bootstrapReleaseExceptionStore({ expiresAt: "2026-07-29T09:00:00.000Z" });
+  const expired = harness({ bootstrapReleaseExceptionStore: expiredStore, bootstrapDeadlockVerdictResolver: resolver }); const expiredDelegation = await expired.governance.issueDelegation(expired.delegationInput);
+  await assert.rejects(issueMergeTicket(expired.governance, expiredDelegation.delegation_id, { bootstrap_release_exception_receipt: receipt }), /bootstrap_release_exception_denied/);
+  const replayStore = bootstrapReleaseExceptionStore({ consumeError: "bootstrap_release_exception_replayed" });
+  const replay = harness({ bootstrapReleaseExceptionStore: replayStore, bootstrapDeadlockVerdictResolver: resolver, releaseJoinVerdictResolver: null }); const replayDelegation = await replay.governance.issueDelegation(replay.delegationInput);
+  const replayTicket = await replay.governance.issueActionTicket({ tenant_id: "codexai", delegation_id: replayDelegation.delegation_id, work_id: "work-1", intent_anchor_digest: H("1"), repository: "owner/repo", host_kind: "codex_native", host_session_fingerprint: "bootstrap-replay-session", action: githubMergeAction(), evidence_digest: H("6"), release_manifest: buildHostReleaseManifestV2(mergeReleaseManifestInput()), bootstrap_release_exception_receipt: receipt });
+  await assert.rejects(replay.governance.reserveActionTicket({ tenant_id: "codexai", ticket_id: replayTicket.ticket.ticket_id, host_session_fingerprint: replayTicket.ticket.host_session_fingerprint }), /bootstrap_release_exception_replayed/);
+  const nonMerge = harness({ bootstrapReleaseExceptionStore: bootstrapReleaseExceptionStore(), bootstrapDeadlockVerdictResolver: resolver }); const nonMergeDelegation = await nonMerge.governance.issueDelegation(nonMerge.delegationInput);
+  await assert.rejects(issueCommitTicket(nonMerge.governance, nonMergeDelegation.delegation_id, { bootstrap_release_exception_receipt: receipt }), /bootstrap_release_exception_action_not_allowed/);
+});
+
+test("bootstrap receipt requires a live, scope-bound server-resolved deadlock verdict", async () => {
+  const receipt = { exception_id: "bootstrap-exception-1", core_policy_verdict_digest: H("d") };
+  const request = async (subject) => {
+    const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+    return issueMergeTicket(subject.governance, delegation.delegation_id, { bootstrap_release_exception_receipt: receipt });
+  };
+  await assert.rejects(request(harness({ bootstrapReleaseExceptionStore: bootstrapReleaseExceptionStore() })), /bootstrap_deadlock_verdict_unavailable/);
+  for (const resolver of [
+    bootstrapDeadlockVerdictResolver({ classification: "NORMAL_RELEASE" }),
+    bootstrapDeadlockVerdictResolver({ active: false }),
+    bootstrapDeadlockVerdictResolver({ expiresAt: "2026-07-29T09:00:00.000Z" }),
+    bootstrapDeadlockVerdictResolver({ digestOverride: H("e") }),
+    bootstrapDeadlockVerdictResolver({ exceptionIdOverride: "bootstrap-exception-other" }),
+    bootstrapDeadlockVerdictResolver({ error: "bootstrap_deadlock_verdict_denied" }),
+  ]) {
+    await assert.rejects(request(harness({ bootstrapReleaseExceptionStore: bootstrapReleaseExceptionStore(), bootstrapDeadlockVerdictResolver: resolver })), /bootstrap_deadlock_verdict_denied/);
+  }
+  await assert.rejects(
+    request(harness({
+      bootstrapReleaseExceptionStore: bootstrapReleaseExceptionStore({ candidateExceptionId: "bootstrap-exception-other" }),
+      bootstrapDeadlockVerdictResolver: bootstrapDeadlockVerdictResolver(),
+    })),
+    /bootstrap_release_exception_denied/,
+  );
+});
 
 test("host-native work plan has zero provider execution and requires host materialization", () => {
   const plan = buildHostNativeWorkPlan({
