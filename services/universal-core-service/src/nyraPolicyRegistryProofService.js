@@ -1,11 +1,12 @@
 import crypto from "node:crypto";
 
-const ATTESTATION_SCHEMA = "nyra_policy_activation_attestation_v2";
-const RECEIPT_SCHEMA = "core_policy_activation_receipt_v2";
-const ATTESTATION_CONTEXT = "nyra-policy-activation-attestation-v2\0";
-const RECEIPT_CONTEXT = "core-policy-activation-receipt-v2\0";
-const ATTESTATION_SIGNING_PURPOSE = "nyra-policy-activation-attestation-v2";
-const RECEIPT_SIGNING_PURPOSE = "core-policy-activation-receipt-v2";
+const ATTESTATION_SCHEMA = "nyra_policy_activation_attestation_v3";
+const RECEIPT_SCHEMA = "core_policy_activation_receipt_v3";
+const PROOF_SCHEMA = "nyra_policy_registry_proof_v3";
+const ATTESTATION_CONTEXT = "nyra-policy-activation-attestation-v3\0";
+const RECEIPT_CONTEXT = "core-policy-activation-receipt-v3\0";
+const ATTESTATION_SIGNING_PURPOSE = "nyra-policy-activation-attestation-v3";
+const RECEIPT_SIGNING_PURPOSE = "core-policy-activation-receipt-v3";
 const ACTIONS = new Set(["policy.snapshot.activate", "policy.snapshot.rollback"]);
 const STORE_ACTION = Object.freeze({
   "policy.snapshot.activate": "activate_policy_snapshot",
@@ -13,16 +14,22 @@ const STORE_ACTION = Object.freeze({
 });
 const ENVELOPE_FIELDS = Object.freeze([
   "schema_version", "tenant_id", "work_id", "preflight_id", "intent_digest",
-  "operation_id", "action", "snapshot_digest", "domain_pack_id",
+  "operation_id", "action", "snapshot_digest", "compiler_provenance_digest", "domain_pack_id",
   "owner_approval_hash", "nonce", "issued_at", "expires_at", "core_key_id",
   "nyra_key_id", "core_public_key_fingerprint", "nyra_public_key_fingerprint",
 ]);
 const RECEIPT_PAYLOAD_FIELDS = Object.freeze([
   "schema_version", "receipt_id", "tenant_id", "operation_id", "action",
   "work_id", "preflight_id", "intent_digest", "domain_pack_id",
-  "snapshot_digest", "owner_approval_hash", "nonce", "issued_at", "expires_at",
+  "snapshot_digest", "compiler_provenance_digest", "owner_approval_hash", "nonce", "issued_at", "expires_at",
   "issuer_role", "single_use", "core_key_id", "nyra_key_id",
   "core_public_key_fingerprint", "nyra_public_key_fingerprint",
+]);
+const COMPILER_PROVENANCE_VERIFICATION_FIELDS = Object.freeze([
+  "ok", "record_integrity_verified", "derivation_reverified", "tenant_id",
+  "domain_pack_id", "snapshot_digest", "compiler_provenance_digest",
+  "compiler_build_commit", "catalog_digest", "trust_catalog_digest",
+  "execution_authorized", "error",
 ]);
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/;
 const SHA = /^[a-f0-9]{64}$/;
@@ -106,6 +113,7 @@ function proofBindingFromEnvelope(envelope) {
     intent_digest: envelope.intent_digest,
     domain_pack_id: envelope.domain_pack_id,
     snapshot_digest: envelope.snapshot_digest,
+    compiler_provenance_digest: envelope.compiler_provenance_digest,
     owner_approval_hash: envelope.owner_approval_hash,
     core_key_id: envelope.core_key_id,
     nyra_key_id: envelope.nyra_key_id,
@@ -129,6 +137,11 @@ function normalizeBinding(binding = {}) {
     intent_digest: required(binding.intent_digest ?? binding.intentDigest, SHA, "policy_proof_intent_invalid"),
     domain_pack_id: required(binding.domain_pack_id ?? binding.domainPackId, ID, "policy_proof_domain_invalid"),
     snapshot_digest: required(binding.snapshot_digest ?? binding.snapshotDigest, SHA, "policy_proof_snapshot_invalid"),
+    compiler_provenance_digest: required(
+      binding.compiler_provenance_digest ?? binding.compilerProvenanceDigest,
+      SHA,
+      "policy_proof_compiler_provenance_invalid",
+    ),
     owner_approval_hash: required(binding.owner_approval_hash ?? binding.ownerApprovalHash, SHA, "policy_proof_owner_invalid"),
     core_key_id: required(binding.core_key_id ?? binding.coreKeyId, ID, "policy_proof_core_key_invalid"),
     nyra_key_id: required(binding.nyra_key_id ?? binding.nyraKeyId, ID, "policy_proof_nyra_key_invalid"),
@@ -156,15 +169,44 @@ function bindingMatchesReceipt(binding, payload) {
   return [
     "tenant_id", "operation_id", "action", "work_id", "preflight_id",
     "intent_digest", "domain_pack_id", "snapshot_digest", "owner_approval_hash",
+    "compiler_provenance_digest",
     "core_key_id", "nyra_key_id", "core_public_key_fingerprint",
     "nyra_public_key_fingerprint",
   ].every((field) => payload[field] === binding[field]);
+}
+
+function compilerProvenanceVerified(verifier, record, snapshot, binding) {
+  try {
+    const expectedBinding = {
+      tenant_id: binding.tenant_id,
+      domain_pack_id: binding.domain_pack_id,
+      snapshot_digest: binding.snapshot_digest,
+      compiler_provenance_digest: binding.compiler_provenance_digest,
+    };
+    const outcome = verifier.verifyPersistedRecord(record, expectedBinding);
+    return exactFields(outcome, COMPILER_PROVENANCE_VERIFICATION_FIELDS) &&
+      outcome.ok === true && outcome.record_integrity_verified === true &&
+      outcome.derivation_reverified === false && outcome.execution_authorized === false &&
+      outcome.error === null && outcome.tenant_id === expectedBinding.tenant_id &&
+      outcome.domain_pack_id === expectedBinding.domain_pack_id &&
+      outcome.snapshot_digest === expectedBinding.snapshot_digest &&
+      outcome.compiler_provenance_digest === expectedBinding.compiler_provenance_digest &&
+      snapshot?.tenant_id === outcome.tenant_id &&
+      snapshot?.domain_pack_id === outcome.domain_pack_id &&
+      snapshot?.snapshot_digest === outcome.snapshot_digest &&
+      /^[a-f0-9]{40}$/.test(String(outcome.compiler_build_commit || "")) &&
+      SHA.test(String(outcome.catalog_digest || "")) &&
+      SHA.test(String(outcome.trust_catalog_digest || ""));
+  } catch {
+    return false;
+  }
 }
 
 export function createNyraPolicyRegistryProofService({
   pool,
   env = process.env,
   signer,
+  compilerProvenanceVerifier,
   now = () => Date.now(),
 } = {}) {
   if (!pool?.query) throw new Error("policy_proof_postgres_required");
@@ -184,6 +226,10 @@ export function createNyraPolicyRegistryProofService({
   let configError = null;
   let signerProbeVerified = false;
   try {
+    if (!compilerProvenanceVerifier ||
+      typeof compilerProvenanceVerifier.verifyPersistedRecord !== "function") {
+      throw new Error("policy_proof_compiler_provenance_verifier_invalid");
+    }
     if (!signer || signer.algorithm !== "Ed25519" || typeof signer.signPayload !== "function" ||
       typeof signer.probe !== "function" || typeof signer.health !== "function" ||
       signer.key_id !== coreKeyId || signer.public_key?.type !== "public" ||
@@ -215,22 +261,30 @@ export function createNyraPolicyRegistryProofService({
       "key_material_encoding_invalid",
       "key_material_missing",
       "nyra_public_key_required",
+      "policy_proof_compiler_provenance_verifier_invalid",
     ]).has(code) ? code : "configuration_invalid";
   }
   const schemaSql = `CREATE TABLE IF NOT EXISTS nyra_policy_registry_proofs (
     tenant_id TEXT NOT NULL, operation_id TEXT NOT NULL, request_digest TEXT NOT NULL,
     owner_approval_hash TEXT NOT NULL, envelope JSONB NOT NULL, core_signature TEXT NOT NULL,
     nyra_attestation JSONB, receipt JSONB, status TEXT NOT NULL DEFAULT 'prepared',
+    proof_schema_version TEXT, compiler_provenance_digest TEXT,
     expires_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY(tenant_id,operation_id), UNIQUE(tenant_id,owner_approval_hash)
   )`;
+  const migrationSql = `ALTER TABLE nyra_policy_registry_proofs
+    ADD COLUMN IF NOT EXISTS proof_schema_version TEXT,
+    ADD COLUMN IF NOT EXISTS compiler_provenance_digest TEXT`;
   let schemaReady = false;
   let schemaInFlight = null;
 
   async function ensureSchema() {
     if (schemaReady) return;
     if (schemaInFlight) return schemaInFlight;
-    const current = Promise.resolve().then(() => pool.query(schemaSql));
+    const current = Promise.resolve().then(async () => {
+      await pool.query(schemaSql);
+      await pool.query(migrationSql);
+    });
     schemaInFlight = current;
     try {
       await current;
@@ -288,9 +342,25 @@ export function createNyraPolicyRegistryProofService({
       intent_digest: required(input.intent_digest, SHA, "policy_proof_intent_invalid"),
       operation_id: required(input.operation_id, ID, "policy_proof_operation_invalid"),
       snapshot_digest: required(input.snapshot_digest, SHA, "policy_proof_snapshot_invalid"),
+      compiler_provenance_digest: required(
+        input.compiler_provenance_digest,
+        SHA,
+        "policy_proof_compiler_provenance_invalid",
+      ),
       domain_pack_id: required(input.domain_pack_id, ID, "policy_proof_domain_invalid"),
       owner_approval_hash: required(input.owner_approval_hash, SHA, "policy_proof_owner_invalid"),
     };
+  }
+
+  function assertCurrentProofRow(row, expectedCompilerProvenanceDigest) {
+    if (row?.proof_schema_version !== PROOF_SCHEMA || row?.compiler_provenance_digest == null) {
+      throw new Error("policy_proof_legacy_schema_unsupported");
+    }
+    if (!SHA.test(String(row.compiler_provenance_digest || "")) ||
+      (expectedCompilerProvenanceDigest !== undefined &&
+        row.compiler_provenance_digest !== expectedCompilerProvenanceDigest)) {
+      throw new Error("policy_proof_state_invalid");
+    }
   }
 
   async function prepare(input) {
@@ -306,6 +376,7 @@ export function createNyraPolicyRegistryProofService({
       operation_id: value.operation_id,
       action: value.action,
       snapshot_digest: value.snapshot_digest,
+      compiler_provenance_digest: value.compiler_provenance_digest,
       domain_pack_id: value.domain_pack_id,
       owner_approval_hash: value.owner_approval_hash,
       nonce: crypto.randomBytes(24).toString("base64url"),
@@ -321,19 +392,24 @@ export function createNyraPolicyRegistryProofService({
     let inserted;
     try {
       inserted = await pool.query(`INSERT INTO nyra_policy_registry_proofs
-        (tenant_id,operation_id,request_digest,owner_approval_hash,envelope,core_signature,expires_at)
-        VALUES($1,$2,$3,$4,$5::jsonb,$6,$7) ON CONFLICT(tenant_id,operation_id) DO NOTHING`,
+        (tenant_id,operation_id,request_digest,owner_approval_hash,envelope,core_signature,expires_at,
+          proof_schema_version,compiler_provenance_digest)
+        VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9) ON CONFLICT(tenant_id,operation_id) DO NOTHING`,
       [value.tenant_id, value.operation_id, requestDigest, value.owner_approval_hash,
-        JSON.stringify(envelope), coreSignature, envelope.expires_at]);
+        JSON.stringify(envelope), coreSignature, envelope.expires_at, PROOF_SCHEMA,
+        value.compiler_provenance_digest]);
     } catch (error) {
       if (error?.code === "23505") throw new Error("policy_proof_owner_replayed");
       throw new Error("policy_proof_unavailable");
     }
     const selected = await pool.query(
-      "SELECT request_digest,envelope,core_signature,status FROM nyra_policy_registry_proofs WHERE tenant_id=$1 AND operation_id=$2",
+      `SELECT request_digest,envelope,core_signature,status,proof_schema_version,compiler_provenance_digest
+        FROM nyra_policy_registry_proofs WHERE tenant_id=$1 AND operation_id=$2`,
       [value.tenant_id, value.operation_id],
     );
-    if (!selected.rowCount || selected.rows[0].request_digest !== requestDigest) {
+    if (!selected.rowCount) throw new Error("policy_proof_idempotency_conflict");
+    assertCurrentProofRow(selected.rows[0], value.compiler_provenance_digest);
+    if (selected.rows[0].request_digest !== requestDigest) {
       throw new Error("policy_proof_idempotency_conflict");
     }
     return {
@@ -363,13 +439,16 @@ export function createNyraPolicyRegistryProofService({
     const tenantId = required(tenant_id, ID, "policy_proof_tenant_invalid");
     const operationId = required(operation_id, ID, "policy_proof_operation_invalid");
     const selected = await pool.query(
-      "SELECT envelope,core_signature,status,receipt,expires_at FROM nyra_policy_registry_proofs WHERE tenant_id=$1 AND operation_id=$2",
+      `SELECT envelope,core_signature,status,receipt,expires_at,proof_schema_version,
+        compiler_provenance_digest FROM nyra_policy_registry_proofs WHERE tenant_id=$1 AND operation_id=$2`,
       [tenantId, operationId],
     );
     const row = selected.rows[0];
     if (!row) throw new Error("policy_proof_not_found");
+    assertCurrentProofRow(row, row.envelope?.compiler_provenance_digest);
     if (row.status !== "prepared") {
       if (!row.receipt) throw new Error("policy_proof_state_invalid");
+      verifyReceipt(row.receipt, proofBindingFromEnvelope(row.envelope), { allowExpired: true });
       return { ...row.receipt, idempotent_replay: true };
     }
     const binding = normalizeBinding(proofBindingFromEnvelope(row.envelope));
@@ -389,6 +468,7 @@ export function createNyraPolicyRegistryProofService({
       intent_digest: binding.intent_digest,
       domain_pack_id: binding.domain_pack_id,
       snapshot_digest: binding.snapshot_digest,
+      compiler_provenance_digest: binding.compiler_provenance_digest,
       owner_approval_hash: binding.owner_approval_hash,
       nonce: row.envelope.nonce,
       issued_at: new Date(now()).toISOString(),
@@ -406,14 +486,19 @@ export function createNyraPolicyRegistryProofService({
       mac: mac(payload),
     };
     const updated = await pool.query(`UPDATE nyra_policy_registry_proofs SET status='issued',nyra_attestation=$3::jsonb,
-      receipt=$4::jsonb,updated_at=NOW() WHERE tenant_id=$1 AND operation_id=$2 AND status='prepared'`,
-    [tenantId, operationId, JSON.stringify(attestation), JSON.stringify(receipt)]);
+      receipt=$4::jsonb,updated_at=NOW() WHERE tenant_id=$1 AND operation_id=$2 AND status='prepared'
+        AND proof_schema_version=$5 AND compiler_provenance_digest=$6`,
+    [tenantId, operationId, JSON.stringify(attestation), JSON.stringify(receipt), PROOF_SCHEMA,
+      binding.compiler_provenance_digest]);
     if (updated.rowCount !== 1) {
       const replay = await pool.query(
-        "SELECT receipt FROM nyra_policy_registry_proofs WHERE tenant_id=$1 AND operation_id=$2",
+        `SELECT receipt,envelope,proof_schema_version,compiler_provenance_digest
+          FROM nyra_policy_registry_proofs WHERE tenant_id=$1 AND operation_id=$2`,
         [tenantId, operationId],
       );
+      assertCurrentProofRow(replay.rows[0], binding.compiler_provenance_digest);
       if (!replay.rows[0]?.receipt) throw new Error("policy_proof_cas_conflict");
+      verifyReceipt(replay.rows[0].receipt, binding, { allowExpired: true });
       return { ...replay.rows[0].receipt, idempotent_replay: true };
     }
     return { ...receipt, idempotent_replay: false };
@@ -444,7 +529,7 @@ export function createNyraPolicyRegistryProofService({
     return payload;
   }
 
-  function verifyActivationSnapshot(snapshot, suppliedBinding = {}) {
+  function verifyActivationSnapshot(snapshot, compilerProvenance, suppliedBinding = {}) {
     const attestation = suppliedBinding.activation_attestation ||
       suppliedBinding.persisted_attestation?.policy_registry_attestation;
     const binding = normalizeBinding(
@@ -454,6 +539,12 @@ export function createNyraPolicyRegistryProofService({
     const valid = snapshot?.snapshot_digest === binding.snapshot_digest &&
       binding.tenant_id === snapshot?.tenant_id &&
       bindingMatchesEnvelope(binding, envelope) &&
+      compilerProvenanceVerified(
+        compilerProvenanceVerifier,
+        compilerProvenance,
+        snapshot,
+        binding,
+      ) &&
       envelope?.core_key_id === coreKeyId && envelope?.nyra_key_id === nyraKeyId &&
       envelope?.core_public_key_fingerprint === coreFingerprint &&
       envelope?.nyra_public_key_fingerprint === nyraFingerprint &&
@@ -464,10 +555,13 @@ export function createNyraPolicyRegistryProofService({
       signature_verified: true,
       tenant_id: binding.tenant_id,
       snapshot_digest: snapshot.snapshot_digest,
+      compiler_provenance_digest: binding.compiler_provenance_digest,
+      compiler_provenance_bound: true,
       verified_roles: ["core", "nyra"],
       independent_key_count: 2,
       binding,
       policy_registry_attestation: attestation,
+      execution_authorized: false,
     };
   }
 
@@ -475,9 +569,18 @@ export function createNyraPolicyRegistryProofService({
     await ready();
     const binding = normalizeBinding(suppliedBinding);
     const payload = verifyReceipt(receipt, binding);
+    const selected = await pool.query(
+      `SELECT proof_schema_version,compiler_provenance_digest FROM nyra_policy_registry_proofs
+        WHERE tenant_id=$1 AND operation_id=$2`,
+      [payload.tenant_id, payload.operation_id],
+    );
+    if (!selected.rowCount) throw new Error("policy_proof_not_found");
+    assertCurrentProofRow(selected.rows[0], binding.compiler_provenance_digest);
     const updated = await pool.query(`UPDATE nyra_policy_registry_proofs SET status='consumed',updated_at=NOW()
-      WHERE tenant_id=$1 AND operation_id=$2 AND status='issued' AND receipt->>'receipt_id'=$3`,
-    [payload.tenant_id, payload.operation_id, payload.receipt_id]);
+      WHERE tenant_id=$1 AND operation_id=$2 AND status='issued' AND receipt->>'receipt_id'=$3
+        AND proof_schema_version=$4 AND compiler_provenance_digest=$5`,
+    [payload.tenant_id, payload.operation_id, payload.receipt_id, PROOF_SCHEMA,
+      binding.compiler_provenance_digest]);
     if (updated.rowCount !== 1) throw new Error("policy_activation_core_receipt_replayed");
     return {
       ok: true,
@@ -487,6 +590,7 @@ export function createNyraPolicyRegistryProofService({
       issuer_role: "universal_core",
       ...binding,
       consumption_id: `pcc_${crypto.createHash("sha256").update(payload.receipt_id).digest("hex")}`,
+      execution_authorized: false,
     };
   }
 
@@ -495,11 +599,13 @@ export function createNyraPolicyRegistryProofService({
     const tenantId = required(tenant_id, ID, "policy_proof_tenant_invalid");
     const operationId = required(operation_id, ID, "policy_proof_operation_invalid");
     const selected = await pool.query(
-      "SELECT status,receipt,envelope,nyra_attestation FROM nyra_policy_registry_proofs WHERE tenant_id=$1 AND operation_id=$2",
+      `SELECT status,receipt,envelope,nyra_attestation,proof_schema_version,compiler_provenance_digest
+        FROM nyra_policy_registry_proofs WHERE tenant_id=$1 AND operation_id=$2`,
       [tenantId, operationId],
     );
     if (!selected.rowCount) throw new Error("policy_proof_not_found");
     const row = selected.rows[0];
+    assertCurrentProofRow(row, row.envelope?.compiler_provenance_digest);
     const binding = normalizeBinding(proofBindingFromEnvelope(row.envelope));
     return {
       tenant_id: tenantId,
@@ -509,6 +615,8 @@ export function createNyraPolicyRegistryProofService({
       receipt: row.receipt || null,
       activation_attestation: row.nyra_attestation || null,
       consumed: row.status === "consumed",
+      compiler_provenance_digest: row.compiler_provenance_digest,
+      execution_authorized: false,
     };
   }
 
@@ -526,6 +634,7 @@ export function createNyraPolicyRegistryProofService({
       issuer_role: "universal_core",
       ...state.binding,
       consumption_id: `pcc_${crypto.createHash("sha256").update(state.receipt.receipt_id).digest("hex")}`,
+      execution_authorized: false,
     };
   }
 
@@ -545,6 +654,10 @@ export function createNyraPolicyRegistryProofService({
           ready: true,
           backend: "postgresql",
           algorithm: "Ed25519+HMAC-SHA256",
+          proof_schema_version: PROOF_SCHEMA,
+          attestation_schema_version: ATTESTATION_SCHEMA,
+          receipt_schema_version: RECEIPT_SCHEMA,
+          compiler_provenance_binding_required: true,
           core_key_id: coreKeyId,
           nyra_key_id: nyraKeyId,
           core_public_key_fingerprint: coreFingerprint,
@@ -561,6 +674,10 @@ export function createNyraPolicyRegistryProofService({
         return {
           ready: false,
           backend: "postgresql",
+          proof_schema_version: PROOF_SCHEMA,
+          attestation_schema_version: ATTESTATION_SCHEMA,
+          receipt_schema_version: RECEIPT_SCHEMA,
+          compiler_provenance_binding_required: true,
           error: configError || signerHealth?.reason || "policy_proof_signer_unavailable",
           signer: {
             ready: false,
@@ -578,6 +695,7 @@ export {
   ACTIONS,
   ATTESTATION_SCHEMA,
   ENVELOPE_FIELDS,
+  PROOF_SCHEMA,
   RECEIPT_SCHEMA,
   STORE_ACTION,
   canonical,

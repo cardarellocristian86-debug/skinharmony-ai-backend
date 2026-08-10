@@ -17,6 +17,44 @@ const DATABASE_URL = String(process.env.POLICY_REGISTRY_DATABASE_URL ||
 const NOW = new Date("2026-08-03T12:00:00.000Z");
 const PG16 = { skip: DATABASE_URL ? false : "PostgreSQL integration URL not configured" };
 
+function compilerProvenanceDigest(snapshotDigest) {
+  return crypto.createHash("sha256").update(`compiler-provenance:${snapshotDigest}`).digest("hex");
+}
+
+function compilerProvenance(snapshot) {
+  return {
+    schema_version: "nyra_policy_compiler_provenance_v1",
+    tenant_id: snapshot.tenant_id,
+    domain_pack_id: snapshot.domain_pack_id,
+    snapshot_digest: snapshot.snapshot_digest,
+    execution_authorized: false,
+    provenance_digest: compilerProvenanceDigest(snapshot.snapshot_digest),
+  };
+}
+
+function verifyCompilerProvenanceRecord(record, binding) {
+  const ok = record?.tenant_id === binding.tenant_id &&
+    record?.domain_pack_id === binding.domain_pack_id &&
+    record?.snapshot_digest === binding.snapshot_digest &&
+    record?.provenance_digest === binding.compiler_provenance_digest &&
+    record?.execution_authorized === false &&
+    !Object.hasOwn(record || {}, "compiler_input");
+  return {
+    ok,
+    record_integrity_verified: ok,
+    derivation_reverified: false,
+    execution_authorized: false,
+    tenant_id: record?.tenant_id,
+    domain_pack_id: record?.domain_pack_id,
+    snapshot_digest: record?.snapshot_digest,
+    compiler_provenance_digest: record?.provenance_digest,
+    compiler_build_commit: "1".repeat(40),
+    catalog_digest: "2".repeat(64),
+    trust_catalog_digest: "3".repeat(64),
+    error: null,
+  };
+}
+
 function tenant(label) {
   return `policy-registry-pg16-${label}-${process.pid}-${crypto.randomUUID()}`;
 }
@@ -70,8 +108,11 @@ function fixture(tenantId) {
 
 function options(pool, tenantId, snapshot, consumed = { count: 0 }) {
   return { pool,
-    verifyActivationSnapshot: (value, binding) => ({ ok: true, signature_verified: true,
+    verifyCompilerProvenanceRecord,
+    verifyActivationSnapshot: (value, provenance, binding) => ({ ok: true, signature_verified: true,
       tenant_id: binding.tenant_id, snapshot_digest: value.snapshot_digest,
+      compiler_provenance_digest: provenance.provenance_digest,
+      compiler_provenance_bound: true, execution_authorized: false,
       verified_roles: ["core", "nyra"], independent_key_count: 2,
       jsonb_proof: ["roundtrip", { valid: true }] }),
     consumeCoreReceipt: async (_receipt, binding) => {
@@ -100,11 +141,13 @@ function proofBinding(tenantId, operationId, snapshotDigest, action = "policy.sn
     nyra_key_id: "nyra-policy-pg16-v2",
     core_public_key_fingerprint: "a".repeat(64),
     nyra_public_key_fingerprint: "b".repeat(64),
+    compiler_provenance_digest: compilerProvenanceDigest(snapshotDigest),
   };
 }
 
 function activation(tenantId, snapshot, operationId = `activate-${crypto.randomUUID()}`) {
   return { tenant_id: tenantId, operation_id: operationId, snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
     activation_attestation: { schema_version: "pg16-test-attestation-v2" },
     proof_binding: proofBinding(tenantId, operationId, snapshot.snapshot_digest),
     core_receipt: { ticket_id: `ticket-${crypto.randomUUID()}`, nested: { one_use: true } },
@@ -132,11 +175,16 @@ test("Policy Registry PostgreSQL 16 preserves JSONB and state across store resta
     const storeOptions = options(pool, tenantId, snapshot);
     const store = createPostgresNyraPolicyRegistryStore(storeOptions);
     assert.equal((await store.activate(activation(tenantId, snapshot))).activated, true);
-    const raw = await pool.query("SELECT active_snapshot, active_attestation, history FROM nyra_policy_registry_state WHERE tenant_id=$1", [tenantId]);
+    const raw = await pool.query(`SELECT active_snapshot, active_attestation,
+      active_compiler_provenance, history
+      FROM nyra_policy_registry_state WHERE tenant_id=$1`, [tenantId]);
     assert.equal(raw.rowCount, 1);
     assert.equal(raw.rows[0].active_snapshot.snapshot_digest, snapshot.snapshot_digest);
     assert.deepEqual(raw.rows[0].active_attestation.jsonb_proof, ["roundtrip", { valid: true }]);
+    assert.equal(raw.rows[0].active_compiler_provenance.provenance_digest,
+      compilerProvenanceDigest(snapshot.snapshot_digest));
     assert.deepEqual(raw.rows[0].history, []);
+    assert.equal(JSON.stringify(raw.rows[0]).includes("compiler_input"), false);
 
     const restarted = createPostgresNyraPolicyRegistryStore(storeOptions);
     const result = await restarted.evaluate({ tenant_id: tenantId, action,
@@ -144,7 +192,10 @@ test("Policy Registry PostgreSQL 16 preserves JSONB and state across store resta
       domain_pack_id: "generic", satisfied_gates: ["core_allow"], now: NOW });
     assert.equal(result.verdict, "ALLOW");
     assert.equal(result.snapshot_verified, true);
-    assert.equal((await restarted.status()).restart_durable, true);
+    const status = await restarted.status();
+    assert.equal(status.restart_durable, true);
+    assert.equal(status.compiler_provenance_persistence, true);
+    assert.equal(status.compiler_input_persisted, false);
 
     await pool.query("INSERT INTO nyra_policy_registry_state(tenant_id) VALUES($1) ON CONFLICT (tenant_id) DO NOTHING", [sentinel]);
     await cleanup(pool, [tenantId]);

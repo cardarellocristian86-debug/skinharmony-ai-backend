@@ -22,6 +22,7 @@ import { createNyraDeepV2SourceVerifier } from "./nyraDeepV2SourceVerification.j
 import { createNyraPolicyRegistryStore, createPostgresNyraPolicyRegistryStore } from "./nyraPolicyRegistryStore.js";
 import { validatePolicySnapshot } from "./nyraPolicyRegistry.js";
 import { createNyraPolicyRegistryProofService } from "./nyraPolicyRegistryProofService.js";
+import { createNyraPolicyRegistryCompilerProvenanceVerifier } from "./nyraPolicyRegistryCompilerProvenance.js";
 import {
   createNyraPolicyRegistryClient,
   createNyraPolicyRegistryCoordinator,
@@ -319,6 +320,81 @@ const MAX_NYRA_BRANCH_REQUESTS = 64;
 
 function isPlainRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validPolicyCompilerTrustCatalog(value) {
+  const exact = (record, fields) => isPlainRecord(record) &&
+    Object.getPrototypeOf(record) === Object.prototype &&
+    Object.keys(record).sort().join("\0") === [...fields].sort().join("\0");
+  const id = /^[a-z0-9][a-z0-9._/-]{1,159}$/;
+  const sha = /^[a-f0-9]{64}$/;
+  const sortedUnique = (values, pattern, maximum) => Array.isArray(values) &&
+    values.length >= 1 && values.length <= maximum &&
+    values.every((item, index) => typeof item === "string" && pattern.test(item) &&
+      (index === 0 || values[index - 1] < item));
+  if (!exact(value, [
+    "schema_version", "issuers", "trusted_core_pack_digests", "known_core_branch_ids",
+    "known_nyra_branch_ids", "known_domain_pack_ids",
+  ]) || value.schema_version !== "nyra_policy_pack_trust_catalog_v1" ||
+    !Array.isArray(value.issuers) || value.issuers.length < 2 || value.issuers.length > 32 ||
+    !sortedUnique(value.trusted_core_pack_digests, sha, 64) ||
+    !sortedUnique(value.known_core_branch_ids, id, 256) ||
+    !sortedUnique(value.known_nyra_branch_ids, id, 256) ||
+    !sortedUnique(value.known_domain_pack_ids, id, 256)) return false;
+  const issuerIds = new Set();
+  const keyIds = new Set();
+  const fingerprints = new Set();
+  const roles = new Set();
+  let previous = null;
+  for (const issuer of value.issuers) {
+    if (!exact(issuer, [
+      "issuer_id", "key_id", "role", "algorithm", "public_key", "public_key_fingerprint",
+    ]) || !id.test(issuer.issuer_id) || !id.test(issuer.key_id) ||
+      !["core", "nyra"].includes(issuer.role) || issuer.algorithm !== "Ed25519" ||
+      typeof issuer.public_key !== "string" || !issuer.public_key ||
+      /PRIVATE KEY|BEGIN RSA|BEGIN EC/.test(issuer.public_key) ||
+      !sha.test(issuer.public_key_fingerprint)) return false;
+    const order = `${issuer.issuer_id}\0${issuer.key_id}`;
+    if ((previous !== null && previous >= order) || issuerIds.has(issuer.issuer_id) ||
+      keyIds.has(issuer.key_id) || fingerprints.has(issuer.public_key_fingerprint)) return false;
+    previous = order;
+    issuerIds.add(issuer.issuer_id);
+    keyIds.add(issuer.key_id);
+    fingerprints.add(issuer.public_key_fingerprint);
+    roles.add(issuer.role);
+  }
+  return roles.has("core") && roles.has("nyra") && fingerprints.size >= 2;
+}
+
+function validPolicyCompilerStatus(value, expectedCatalogDigest, expectedTrustCatalogDigest) {
+  const fields = [
+    "schema_version", "ready", "clock_ready", "mode", "compiler_algorithm",
+    "verification_algorithm", "traversal_budget", "compiler_build_commit",
+    "catalog_digest", "trust_catalog_digest", "issuer_count", "independent_key_count",
+    "trusted_core_pack_digest_count", "known_core_branch_count", "known_nyra_branch_count",
+    "known_domain_pack_count", "execution_authorized", "error",
+  ];
+  const bounded = (input, minimum, maximum) =>
+    Number.isInteger(input) && input >= minimum && input <= maximum;
+  return isPlainRecord(value) && Object.getPrototypeOf(value) === Object.prototype &&
+    Object.keys(value).sort().join("\0") === fields.sort().join("\0") &&
+    value.schema_version === "nyra_policy_compiler_provenance_status_v1" &&
+    value.ready === true && value.clock_ready === true &&
+    value.mode === "core_deterministic_recompile" &&
+    value.compiler_algorithm === "nyra_policy_registry_v1" &&
+    value.verification_algorithm === "sha256_canonical_json+ed25519" &&
+    bounded(value.traversal_budget, 1, 256) &&
+    /^[a-f0-9]{40}$/.test(value.compiler_build_commit) &&
+    value.catalog_digest === expectedCatalogDigest &&
+    value.trust_catalog_digest === expectedTrustCatalogDigest &&
+    bounded(value.issuer_count, 2, 32) &&
+    bounded(value.independent_key_count, 2, 32) &&
+    value.independent_key_count === value.issuer_count &&
+    bounded(value.trusted_core_pack_digest_count, 1, 64) &&
+    bounded(value.known_core_branch_count, 1, 256) &&
+    bounded(value.known_nyra_branch_count, 1, 256) &&
+    bounded(value.known_domain_pack_count, 1, 256) &&
+    value.execution_authorized === false && value.error === null;
 }
 
 function nyraDeepV2Fallback({
@@ -4511,7 +4587,6 @@ export function createUniversalCoreService(options = {}) {
   const nyraPolicyRegistryDatabaseUrl = String(
     options.nyraPolicyRegistryDatabaseUrl ?? process.env.GOVERNED_AGENT_DATABASE_URL ?? "",
   ).trim();
-  const nyraPolicyRegistryProofEnv = options.nyraPolicyRegistryProofEnv || process.env;
   const nyraPolicyRegistryProofProduction = String(process.env.NODE_ENV || "") === "production";
   const nyraPolicyRegistryProofEnabledFlag = strictGenericWorkCoreJoinBoolean(
     options.nyraPolicyRegistryProofEnabled ?? process.env.CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED,
@@ -4532,6 +4607,171 @@ export function createUniversalCoreService(options = {}) {
       ?? process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE
       ?? "disabled",
   );
+  const nyraPolicyRegistryCompilerEnabledFlag = strictGenericWorkCoreJoinBoolean(
+    options.nyraPolicyRegistryCompilerProvenanceEnabled ??
+      process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED,
+    false,
+    "policy_registry_compiler_enabled_flag_invalid",
+  );
+  const nyraPolicyRegistryCompilerRequiredFlag = strictGenericWorkCoreJoinBoolean(
+    options.nyraPolicyRegistryCompilerProvenanceRequired ??
+      process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED,
+    false,
+    "policy_registry_compiler_required_flag_invalid",
+  );
+  const nyraPolicyRegistryCompilerEnabled = nyraPolicyRegistryCompilerEnabledFlag.value;
+  const nyraPolicyRegistryCompilerRequired = nyraPolicyRegistryCompilerRequiredFlag.valid
+    ? nyraPolicyRegistryCompilerRequiredFlag.value
+    : true;
+  const nyraPolicyRegistryCompilerMode = String(
+    options.nyraPolicyRegistryCompilerProvenanceMode ??
+      process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE ??
+      "disabled",
+  );
+  const nyraPolicyRegistryCompilerModeValid = ["disabled", "core_deterministic_recompile"]
+    .includes(nyraPolicyRegistryCompilerMode);
+  const nyraPolicyRegistryCompilerProductionInjectionPresent =
+    nyraPolicyRegistryProofProduction && [
+      "nyraPolicyRegistryCompilerProvenanceEnabled",
+      "nyraPolicyRegistryCompilerProvenanceRequired",
+      "nyraPolicyRegistryCompilerProvenanceMode",
+      "nyraPolicyRegistryCompilerProvenanceVerifier",
+      "nyraPolicyRegistryCompilerTrustCatalog",
+      "nyraPolicyRegistryCompilerTrustCatalogJson",
+      "nyraPolicyRegistryCompilerNow",
+      "nyraPolicyRegistryCompilerTraversalBudget",
+      "nyraPolicyRegistryCompilerCatalogDigest",
+      "nyraPolicyRegistryCompilerTrustCatalogDigest",
+    ].some((field) => Object.hasOwn(options, field));
+  let nyraPolicyRegistryCompilerConfigurationError =
+    !nyraPolicyRegistryCompilerEnabledFlag.valid
+      ? nyraPolicyRegistryCompilerEnabledFlag.error
+      : !nyraPolicyRegistryCompilerRequiredFlag.valid
+        ? nyraPolicyRegistryCompilerRequiredFlag.error
+        : !nyraPolicyRegistryCompilerModeValid
+          ? "policy_registry_compiler_mode_invalid"
+          : nyraPolicyRegistryCompilerRequired && !nyraPolicyRegistryCompilerEnabled
+            ? "policy_registry_compiler_required_without_enabled"
+            : nyraPolicyRegistryCompilerEnabled &&
+                nyraPolicyRegistryCompilerMode !== "core_deterministic_recompile"
+              ? "policy_registry_compiler_mode_binding_invalid"
+              : !nyraPolicyRegistryCompilerEnabled && nyraPolicyRegistryCompilerMode !== "disabled"
+                ? "policy_registry_compiler_mode_binding_invalid"
+                : nyraPolicyRegistryCompilerEnabled &&
+                    nyraPolicyRegistryCompilerProductionInjectionPresent
+                  ? "policy_registry_compiler_production_injection_forbidden"
+                  : null;
+  let nyraPolicyRegistryCompilerProvenanceVerifier = null;
+  let nyraPolicyRegistryCompilerStatus = null;
+  let nyraPolicyRegistryExpectedCatalogDigest = null;
+  let nyraPolicyRegistryExpectedTrustCatalogDigest = null;
+  if (nyraPolicyRegistryCompilerEnabled && nyraPolicyRegistryCompilerConfigurationError === null) {
+    try {
+      const catalogDigest = nyraPolicyRegistryProofProduction
+        ? process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_CATALOG_DIGEST
+        : options.nyraPolicyRegistryCompilerCatalogDigest ??
+          process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_CATALOG_DIGEST;
+      const trustCatalogDigest = nyraPolicyRegistryProofProduction
+        ? process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_DIGEST
+        : options.nyraPolicyRegistryCompilerTrustCatalogDigest ??
+          process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_DIGEST;
+      if (!/^[a-f0-9]{64}$/.test(String(catalogDigest || ""))) {
+        throw new Error("policy_registry_compiler_catalog_digest_invalid");
+      }
+      if (!/^[a-f0-9]{64}$/.test(String(trustCatalogDigest || ""))) {
+        throw new Error("policy_registry_compiler_trust_catalog_digest_invalid");
+      }
+      nyraPolicyRegistryExpectedCatalogDigest = String(catalogDigest);
+      nyraPolicyRegistryExpectedTrustCatalogDigest = String(trustCatalogDigest);
+      const injectedVerifier = !nyraPolicyRegistryProofProduction
+        ? options.nyraPolicyRegistryCompilerProvenanceVerifier
+        : null;
+      if (injectedVerifier) {
+        nyraPolicyRegistryCompilerProvenanceVerifier = injectedVerifier;
+      } else {
+        let trustCatalog;
+        if (!nyraPolicyRegistryProofProduction &&
+          Object.hasOwn(options, "nyraPolicyRegistryCompilerTrustCatalog")) {
+          trustCatalog = options.nyraPolicyRegistryCompilerTrustCatalog;
+        } else {
+          const rawCatalog = String(
+            !nyraPolicyRegistryProofProduction &&
+              Object.hasOwn(options, "nyraPolicyRegistryCompilerTrustCatalogJson")
+              ? options.nyraPolicyRegistryCompilerTrustCatalogJson
+              : process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_JSON || "",
+          );
+          if (!rawCatalog || Buffer.byteLength(rawCatalog, "utf8") > 524_288) {
+            throw new Error("policy_registry_compiler_trust_catalog_json_invalid");
+          }
+          try { trustCatalog = JSON.parse(rawCatalog); } catch {
+            throw new Error("policy_registry_compiler_trust_catalog_json_invalid");
+          }
+        }
+        if (!validPolicyCompilerTrustCatalog(trustCatalog)) {
+          throw new Error("policy_registry_compiler_trust_catalog_invalid");
+        }
+        const rawTraversalBudget = !nyraPolicyRegistryProofProduction
+          ? options.nyraPolicyRegistryCompilerTraversalBudget ??
+            process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET ?? 256
+          : process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET ?? 256;
+        const traversalBudget = typeof rawTraversalBudget === "number"
+          ? rawTraversalBudget
+          : /^(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|25[0-6])$/.test(String(rawTraversalBudget))
+            ? Number(rawTraversalBudget)
+            : null;
+        if (!Number.isInteger(traversalBudget) || traversalBudget < 1 || traversalBudget > 256) {
+          throw new Error("policy_registry_compiler_traversal_budget_invalid");
+        }
+        if (!BUILD_COMMIT_VERIFIABLE) {
+          throw new Error("policy_registry_compiler_build_commit_unavailable");
+        }
+        nyraPolicyRegistryCompilerProvenanceVerifier =
+          createNyraPolicyRegistryCompilerProvenanceVerifier({
+            trust_catalog: trustCatalog,
+            build_commit: BUILD_COMMIT_SHA,
+            traversal_budget: traversalBudget,
+            now: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCompilerNow
+              ? options.nyraPolicyRegistryCompilerNow
+              : () => Date.now(),
+          });
+      }
+      if (!nyraPolicyRegistryCompilerProvenanceVerifier ||
+        typeof nyraPolicyRegistryCompilerProvenanceVerifier.verify !== "function" ||
+        typeof nyraPolicyRegistryCompilerProvenanceVerifier.verifyPersistedRecord !== "function" ||
+        typeof nyraPolicyRegistryCompilerProvenanceVerifier.status !== "function") {
+        throw new Error("policy_registry_compiler_verifier_invalid");
+      }
+      nyraPolicyRegistryCompilerStatus = nyraPolicyRegistryCompilerProvenanceVerifier.status();
+      if (typeof nyraPolicyRegistryCompilerStatus?.then === "function" ||
+        !validPolicyCompilerStatus(
+          nyraPolicyRegistryCompilerStatus,
+          nyraPolicyRegistryExpectedCatalogDigest,
+          nyraPolicyRegistryExpectedTrustCatalogDigest,
+        )) {
+        throw new Error("policy_registry_compiler_status_invalid");
+      }
+    } catch (error) {
+      nyraPolicyRegistryCompilerProvenanceVerifier = null;
+      nyraPolicyRegistryCompilerStatus = null;
+      const safeCompilerConfigurationErrors = new Set([
+        "policy_registry_compiler_catalog_digest_invalid",
+        "policy_registry_compiler_trust_catalog_digest_invalid",
+        "policy_registry_compiler_build_commit_unavailable",
+        "policy_registry_compiler_trust_catalog_json_invalid",
+        "policy_registry_compiler_trust_catalog_invalid",
+        "policy_registry_compiler_traversal_budget_invalid",
+        "policy_registry_compiler_verifier_invalid",
+        "policy_registry_compiler_status_invalid",
+      ]);
+      const code = String(error?.message || "");
+      nyraPolicyRegistryCompilerConfigurationError = safeCompilerConfigurationErrors.has(code)
+        ? code
+        : "policy_registry_compiler_configuration_invalid";
+    }
+  }
+  const nyraPolicyRegistryCompilerReady = nyraPolicyRegistryCompilerEnabled &&
+    nyraPolicyRegistryCompilerConfigurationError === null &&
+    nyraPolicyRegistryCompilerStatus?.ready === true;
   let nyraPolicyRegistryProofConfigurationError = !nyraPolicyRegistryProofEnabledFlag.valid
     ? nyraPolicyRegistryProofEnabledFlag.error
     : !nyraPolicyRegistryProofRequiredFlag.valid
@@ -4543,6 +4783,36 @@ export function createUniversalCoreService(options = {}) {
           : nyraPolicyRegistryProofEnabled && nyraPolicyRegistryCoreSignerMode !== "remote"
             ? "policy_registry_core_signer_remote_required"
             : null;
+  if (nyraPolicyRegistryProofEnabled &&
+    (!nyraPolicyRegistryCompilerEnabled || !nyraPolicyRegistryCompilerRequired)) {
+    nyraPolicyRegistryProofConfigurationError ||=
+      "policy_registry_proof_compiler_provenance_required";
+  }
+  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryCompilerConfigurationError) {
+    nyraPolicyRegistryProofConfigurationError ||= nyraPolicyRegistryCompilerConfigurationError;
+  }
+  if (nyraPolicyRegistryProofEnabled && !nyraPolicyRegistryCompilerReady) {
+    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_compiler_unavailable";
+  }
+  const nyraPolicyRegistryProductionInjectionPresent = nyraPolicyRegistryProofProduction && [
+    "nyraPolicyRegistryPostgresPool",
+    "nyraPolicyRegistryProofService",
+    "nyraPolicyRegistryStore",
+    "nyraPolicyRegistryClient",
+    "nyraPolicyRegistryCoordinator",
+    "nyraPolicyRegistryCoreSigner",
+    "nyraPolicyRegistryCoreSignerConfig",
+    "nyraPolicyRegistryCoreSignerFetch",
+    "nyraPolicyRegistryFetch",
+    "nyraPolicyRegistryProofEnv",
+    "nyraPolicyRegistryClientEnv",
+  ].some((field) => Object.hasOwn(options, field));
+  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProductionInjectionPresent) {
+    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_production_injection_forbidden";
+  }
+  const nyraPolicyRegistryProofEnv = nyraPolicyRegistryProofProduction
+    ? process.env
+    : options.nyraPolicyRegistryProofEnv || process.env;
   const nyraPolicyRegistryPrivateMaterialPresent = Boolean(
     process.env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY ||
     nyraPolicyRegistryProofEnv.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY,
@@ -4558,26 +4828,11 @@ export function createUniversalCoreService(options = {}) {
     nyraPolicyRegistryProofConfigurationError ||=
       "policy_registry_core_signer_target_commit_mismatch";
   }
-  const nyraPolicyRegistryProductionInjectionPresent = nyraPolicyRegistryProofProduction && [
-    "nyraPolicyRegistryPostgresPool",
-    "nyraPolicyRegistryProofService",
-    "nyraPolicyRegistryStore",
-    "nyraPolicyRegistryClient",
-    "nyraPolicyRegistryCoordinator",
-    "nyraPolicyRegistryCoreSigner",
-    "nyraPolicyRegistryCoreSignerConfig",
-    "nyraPolicyRegistryCoreSignerFetch",
-    "nyraPolicyRegistryFetch",
-    "nyraPolicyRegistryProofEnv",
-    "nyraPolicyRegistryClientEnv",
-  ].some((field) => options[field] !== undefined);
-  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProductionInjectionPresent) {
-    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_production_injection_forbidden";
-  }
   // An injected PostgreSQL version probe is a fully controlled test/host seam.
   // Do not open implicit network pools behind it; callers that need database
   // behavior can still provide the explicit pool options above.
-  const hasInjectedPostgresVersionProbe = Boolean(options.governedAgentPostgresVersionProbe);
+  const hasInjectedPostgresVersionProbe = nyraPolicyRegistryProofConfigurationError === null &&
+    Boolean(options.governedAgentPostgresVersionProbe);
   const nyraPolicyRegistryPostgresPool = nyraPolicyRegistryProofConfigurationError === null
     ? ((!nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryPostgresPool) ||
       (!hasInjectedPostgresVersionProbe && /^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
@@ -4652,6 +4907,7 @@ export function createUniversalCoreService(options = {}) {
             pool: nyraPolicyRegistryPostgresPool,
             env: nyraPolicyRegistryProofEnv,
             signer: nyraPolicyRegistryCoreSigner,
+            compilerProvenanceVerifier: nyraPolicyRegistryCompilerProvenanceVerifier,
           });
     }
   }
@@ -4669,12 +4925,15 @@ export function createUniversalCoreService(options = {}) {
     }),
     activate: async () => { throw new Error("policy_registry_unavailable"); },
     rollback: async () => { throw new Error("policy_registry_unavailable"); },
+    resolveRollbackTarget: async () => { throw new Error("policy_registry_unavailable"); },
     reconcile: async () => { throw new Error("policy_registry_unavailable"); },
     status: async () => ({
       configured: false,
       backend: "unavailable",
       restart_durable: false,
       distributed: false,
+      compiler_provenance_persistence: false,
+      compiler_input_persisted: false,
       state: "unavailable",
       ready: false,
       reason: "policy_registry_unavailable",
@@ -4692,13 +4951,17 @@ export function createUniversalCoreService(options = {}) {
           verifyActivationSnapshot: allowPolicyRegistryInjection && options.verifyNyraPolicyRegistryActivationSnapshot
             ? options.verifyNyraPolicyRegistryActivationSnapshot
             : nyraPolicyRegistryProofService?.verifyActivationSnapshot,
+          verifyCompilerProvenanceRecord:
+            nyraPolicyRegistryCompilerProvenanceVerifier?.verifyPersistedRecord,
         })
-      : nyraPolicyRegistryProofEnabled
+      : nyraPolicyRegistryProofEnabled || nyraPolicyRegistryCompilerConfigurationError
         ? unavailablePolicyRegistry
         : createNyraPolicyRegistryStore({
             filePath: path.join(storageRoot, "nyra-policy-registry.json"),
             consumeCoreReceipt: options.consumeNyraPolicyRegistryCoreReceipt,
             verifyActivationSnapshot: options.verifyNyraPolicyRegistryActivationSnapshot,
+            verifyCompilerProvenanceRecord:
+              nyraPolicyRegistryCompilerProvenanceVerifier?.verifyPersistedRecord,
           });
   const nyraPolicyRegistryClient = nyraPolicyRegistryProofEnabled &&
     nyraPolicyRegistryProofConfigurationError === null
@@ -4720,6 +4983,7 @@ export function createUniversalCoreService(options = {}) {
         proofService: nyraPolicyRegistryProofService,
         registryStore: nyraPolicyRegistry,
         nyraClient: nyraPolicyRegistryClient,
+        compilerProvenanceVerifier: nyraPolicyRegistryCompilerProvenanceVerifier,
       })
     : null;
   const reviews = reviewStore(storageRoot);
@@ -6812,6 +7076,24 @@ export function createUniversalCoreService(options = {}) {
     const hostNativeReady =
       hostNativeRuntimeReady && hostNativeProductionReadinessReady;
     const nyraPolicyRegistryStatus = await nyraPolicyRegistry.status();
+    let nyraPolicyRegistryCompilerCurrentStatus = nyraPolicyRegistryCompilerStatus;
+    if (nyraPolicyRegistryCompilerProvenanceVerifier) {
+      try {
+        const refreshed = nyraPolicyRegistryCompilerProvenanceVerifier.status();
+        nyraPolicyRegistryCompilerCurrentStatus = refreshed &&
+          typeof refreshed.then !== "function" ? refreshed : null;
+      } catch {
+        nyraPolicyRegistryCompilerCurrentStatus = null;
+      }
+    }
+    const nyraPolicyRegistryCompilerRuntimeReady =
+      nyraPolicyRegistryCompilerEnabled &&
+      nyraPolicyRegistryCompilerConfigurationError === null &&
+      validPolicyCompilerStatus(
+        nyraPolicyRegistryCompilerCurrentStatus,
+        nyraPolicyRegistryExpectedCatalogDigest,
+        nyraPolicyRegistryExpectedTrustCatalogDigest,
+      );
     const nyraPolicyRegistryProofStatus = nyraPolicyRegistryProofService
       ? await nyraPolicyRegistryProofService.status()
       : {
@@ -6848,16 +7130,30 @@ export function createUniversalCoreService(options = {}) {
       nyraPolicyRegistryStatus.backend === "postgresql" &&
       nyraPolicyRegistryStatus.ready === true
     );
-    const nyraPolicyRegistryProofLifecycleReady =
-      nyraPolicyRegistryProofActivationEnabled &&
-      nyraPolicyRegistryProofConfigurationError === null &&
+    const nyraPolicyRegistryStoreProvenanceReady =
       nyraPolicyRegistryStatus.backend === "postgresql" &&
       nyraPolicyRegistryStatus.restart_durable === true &&
       nyraPolicyRegistryStatus.distributed === true &&
+      nyraPolicyRegistryStatus.compiler_provenance_persistence === true &&
+      nyraPolicyRegistryStatus.compiler_input_persisted === false;
+    const nyraPolicyRegistryProofV3Ready =
       nyraPolicyRegistryProofStatus.ready === true &&
+      nyraPolicyRegistryProofStatus.proof_schema_version === "nyra_policy_registry_proof_v3" &&
+      nyraPolicyRegistryProofStatus.attestation_schema_version ===
+        "nyra_policy_activation_attestation_v3" &&
+      nyraPolicyRegistryProofStatus.receipt_schema_version ===
+        "core_policy_activation_receipt_v3" &&
+      nyraPolicyRegistryProofStatus.compiler_provenance_binding_required === true;
+    const nyraPolicyRegistryProofLifecycleReady =
+      nyraPolicyRegistryProofActivationEnabled &&
+      nyraPolicyRegistryProofConfigurationError === null &&
+      nyraPolicyRegistryCompilerRuntimeReady &&
+      nyraPolicyRegistryStoreProvenanceReady &&
+      nyraPolicyRegistryProofV3Ready &&
       nyraPolicyRegistryCoordinatorStatus.ready === true &&
       nyraPolicyRegistryCoordinatorStatus.e2e_verified === true;
     const nyraPolicyRegistryProductionReady = nyraPolicyRegistryEvaluationProductionReady &&
+      (!nyraPolicyRegistryCompilerRequired || nyraPolicyRegistryCompilerRuntimeReady) &&
       (!nyraPolicyRegistryProofRequired || nyraPolicyRegistryProofLifecycleReady);
     let researchAirlockHealth;
     try {
@@ -6941,6 +7237,7 @@ export function createUniversalCoreService(options = {}) {
     const nonCausalProductionReady = productionBuildReady
       && hostNativeReady
       && nyraPolicyRegistryModeValid
+      && nyraPolicyRegistryCompilerConfigurationError === null
       && nyraPolicyRegistryProofConfigurationError === null
       && nyraPolicyRegistryProductionReady
       && researchAirlockProductionReady
@@ -7071,8 +7368,51 @@ export function createUniversalCoreService(options = {}) {
         backend: nyraPolicyRegistryStatus.backend || "unavailable",
         restart_durable: nyraPolicyRegistryStatus.restart_durable === true,
         distributed: nyraPolicyRegistryStatus.distributed === true,
+        compiler_provenance_persistence:
+          nyraPolicyRegistryStatus.compiler_provenance_persistence === true,
+        compiler_input_persisted: nyraPolicyRegistryStatus.compiler_input_persisted === true,
         state: nyraPolicyRegistryStatus.state || (nyraPolicyRegistryStatus.ready === false ? "unavailable" : "ready"),
         ready: nyraPolicyRegistryProductionReady,
+        compiler_provenance: {
+          enabled: nyraPolicyRegistryCompilerEnabled,
+          required: nyraPolicyRegistryCompilerRequired,
+          mode: nyraPolicyRegistryCompilerMode,
+          configuration_valid: nyraPolicyRegistryCompilerConfigurationError === null,
+          configured: Boolean(nyraPolicyRegistryCompilerProvenanceVerifier),
+          ready: nyraPolicyRegistryCompilerRuntimeReady,
+          state: !nyraPolicyRegistryCompilerEnabled
+            ? (nyraPolicyRegistryCompilerConfigurationError ? "configuration_invalid" : "disabled")
+            : nyraPolicyRegistryCompilerConfigurationError
+              ? "configuration_invalid"
+              : nyraPolicyRegistryCompilerRuntimeReady ? "ready" : "unavailable",
+          render_gate_required: nyraPolicyRegistryCompilerRequired ||
+            !nyraPolicyRegistryCompilerEnabledFlag.valid ||
+            !nyraPolicyRegistryCompilerRequiredFlag.valid ||
+            !nyraPolicyRegistryCompilerModeValid ||
+            nyraPolicyRegistryCompilerConfigurationError !== null,
+          schema_version: nyraPolicyRegistryCompilerCurrentStatus?.schema_version || null,
+          provenance_schema_version: "nyra_policy_compiler_provenance_v1",
+          compiler_algorithm:
+            nyraPolicyRegistryCompilerCurrentStatus?.compiler_algorithm || null,
+          verification_algorithm:
+            nyraPolicyRegistryCompilerCurrentStatus?.verification_algorithm || null,
+          traversal_budget:
+            Number.isInteger(nyraPolicyRegistryCompilerCurrentStatus?.traversal_budget)
+              ? nyraPolicyRegistryCompilerCurrentStatus.traversal_budget
+              : null,
+          compiler_build_commit:
+            nyraPolicyRegistryCompilerCurrentStatus?.compiler_build_commit || null,
+          catalog_digest: nyraPolicyRegistryCompilerCurrentStatus?.catalog_digest || null,
+          trust_catalog_digest:
+            nyraPolicyRegistryCompilerCurrentStatus?.trust_catalog_digest || null,
+          compiler_input_persisted:
+            nyraPolicyRegistryStatus.compiler_input_persisted === true,
+          execution_authorized: false,
+          error: nyraPolicyRegistryCompilerConfigurationError ||
+            (nyraPolicyRegistryCompilerEnabled && !nyraPolicyRegistryCompilerRuntimeReady
+              ? "policy_registry_compiler_unavailable"
+              : null),
+        },
         proof_lifecycle: {
           enabled: nyraPolicyRegistryProofEnabled,
           required: nyraPolicyRegistryProofRequired,
@@ -7085,7 +7425,8 @@ export function createUniversalCoreService(options = {}) {
               : nyraPolicyRegistryProofLifecycleReady ? "ready" : "unavailable",
           ready: nyraPolicyRegistryProofLifecycleReady,
           render_gate_required: nyraPolicyRegistryProofRequired ||
-            !nyraPolicyRegistryProofRequiredFlag.valid,
+            !nyraPolicyRegistryProofRequiredFlag.valid ||
+            nyraPolicyRegistryProofConfigurationError !== null,
           error: nyraPolicyRegistryProofConfigurationError,
         },
         proof: nyraPolicyRegistryProofStatus,
@@ -8896,6 +9237,7 @@ export function createUniversalCoreService(options = {}) {
     activate: Object.freeze([
       "tenant_id", "work_id", "operation_id", "domain_pack_id", "work_preflight",
       "owner_confirmed", "confirmation_reference", "owner_context", "snapshot",
+      "compiler_input",
     ]),
     rollback: Object.freeze([
       "tenant_id", "work_id", "operation_id", "domain_pack_id", "work_preflight",
@@ -8907,9 +9249,9 @@ export function createUniversalCoreService(options = {}) {
     ]),
   });
   const policyRegistryRoutePurpose = Object.freeze({
-    activate: "nyra_policy_registry_snapshot_activate_v2",
-    rollback: "nyra_policy_registry_snapshot_rollback_v2",
-    reconcile: "nyra_policy_registry_snapshot_reconcile_v2",
+    activate: "nyra_policy_registry_snapshot_activate_v3",
+    rollback: "nyra_policy_registry_snapshot_rollback_v3",
+    reconcile: "nyra_policy_registry_snapshot_reconcile_v3",
   });
 
   function exactPolicyRegistryRouteBody(req, kind) {
@@ -8952,6 +9294,74 @@ export function createUniversalCoreService(options = {}) {
         now: new Date(),
       });
       if (!validation.ok) throw new Error("policy_registry_snapshot_invalid");
+      if (!isPlainRecord(body.compiler_input) ||
+        !nyraPolicyRegistryCompilerProvenanceVerifier ||
+        !nyraPolicyRegistryCompilerReady) {
+        throw new Error("policy_registry_compiler_unavailable");
+      }
+      const compilerProvenance =
+        nyraPolicyRegistryCompilerProvenanceVerifier.verify({
+          tenant_id: req.tenantId,
+          domain_pack_id: body.domain_pack_id,
+          snapshot: body.snapshot,
+          compiler_input: body.compiler_input,
+        });
+      const compilerVerification =
+        nyraPolicyRegistryCompilerProvenanceVerifier.verifyPersistedRecord(
+          compilerProvenance,
+          {
+            tenant_id: req.tenantId,
+            domain_pack_id: body.domain_pack_id,
+            snapshot_digest: body.snapshot.snapshot_digest,
+            compiler_provenance_digest: compilerProvenance?.provenance_digest,
+          },
+        );
+      const compilerVerificationFields = [
+        "ok", "record_integrity_verified", "derivation_reverified", "tenant_id",
+        "domain_pack_id", "snapshot_digest", "compiler_provenance_digest",
+        "compiler_build_commit", "catalog_digest", "trust_catalog_digest",
+        "execution_authorized", "error",
+      ];
+      const compilerVerificationKeys = isPlainRecord(compilerVerification)
+        ? Reflect.ownKeys(compilerVerification)
+        : [];
+      const compilerVerificationExact = isPlainRecord(compilerVerification) &&
+        Object.getPrototypeOf(compilerVerification) === Object.prototype &&
+        compilerVerificationKeys.length === compilerVerificationFields.length &&
+        compilerVerificationKeys.every((key) => typeof key === "string") &&
+        compilerVerificationFields.every((field) => {
+          const descriptor = Object.getOwnPropertyDescriptor(compilerVerification, field);
+          return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+        });
+      if (!compilerVerificationExact ||
+        compilerVerification.ok !== true ||
+        compilerVerification.record_integrity_verified !== true ||
+        compilerVerification.derivation_reverified !== false ||
+        compilerVerification.tenant_id !== req.tenantId ||
+        compilerVerification.domain_pack_id !== body.domain_pack_id ||
+        compilerVerification.snapshot_digest !== body.snapshot.snapshot_digest ||
+        compilerVerification.compiler_provenance_digest !==
+          compilerProvenance?.provenance_digest ||
+        compilerVerification.compiler_build_commit !==
+          compilerProvenance?.compiler_build_commit ||
+        compilerVerification.compiler_build_commit !==
+          nyraPolicyRegistryCompilerStatus?.compiler_build_commit ||
+        (nyraPolicyRegistryProofProduction &&
+          compilerVerification.compiler_build_commit !== BUILD_COMMIT_SHA) ||
+        compilerVerification.catalog_digest !== compilerProvenance?.catalog_digest ||
+        compilerVerification.catalog_digest !== nyraPolicyRegistryExpectedCatalogDigest ||
+        compilerVerification.catalog_digest !==
+          nyraPolicyRegistryCompilerStatus?.catalog_digest ||
+        compilerVerification.trust_catalog_digest !==
+          compilerProvenance?.trust_catalog_digest ||
+        compilerVerification.trust_catalog_digest !==
+          nyraPolicyRegistryExpectedTrustCatalogDigest ||
+        compilerVerification.trust_catalog_digest !==
+          nyraPolicyRegistryCompilerStatus?.trust_catalog_digest ||
+        compilerVerification.execution_authorized !== false ||
+        compilerVerification.error !== null) {
+        throw new Error("policy_compiler_provenance_invalid");
+      }
     }
     return body;
   }
@@ -8995,8 +9405,13 @@ export function createUniversalCoreService(options = {}) {
     const snapshotDigest = kind === "activate"
       ? String(body.snapshot?.snapshot_digest || "")
       : kind === "rollback" ? String(body.target_snapshot_digest || "") : null;
+    const compilerInputDigest = kind === "activate"
+      ? crypto.createHash("sha256")
+          .update(JSON.stringify(stableCanonical(body.compiler_input)))
+          .digest("hex")
+      : null;
     const authorizationDigest = crypto.createHash("sha256")
-      .update(`nyra-policy-registry-core-authorization-v1\0${JSON.stringify(stableCanonical({
+      .update(`nyra-policy-registry-core-authorization-v2\0${JSON.stringify(stableCanonical({
         tenant_id: req.tenantId,
         work_id: req.workId,
         preflight_id: req.workPreflight.preflight_id,
@@ -9004,6 +9419,7 @@ export function createUniversalCoreService(options = {}) {
         action,
         domain_pack_id: body.domain_pack_id || null,
         snapshot_digest: snapshotDigest,
+        compiler_input_digest: compilerInputDigest,
         authorization,
       }))}`)
       .digest("hex");
@@ -9028,6 +9444,25 @@ export function createUniversalCoreService(options = {}) {
     ["policy_registry_snapshot_not_pure", [400, "policy_registry_snapshot_not_pure"]],
     ["policy_registry_snapshot_invalid", [400, "policy_registry_snapshot_invalid"]],
     ["policy_registry_authorization_digest_invalid", [400, "policy_registry_authorization_digest_invalid"]],
+    ["policy_compiler_input_invalid", [400, "policy_compiler_input_invalid"]],
+    ["policy_compiler_input_oversize", [400, "policy_compiler_input_oversize"]],
+    ["policy_compiler_input_leaf_invalid", [400, "policy_compiler_input_leaf_invalid"]],
+    ["policy_compiler_input_pack_invalid", [400, "policy_compiler_input_pack_invalid"]],
+    ["policy_compiler_input_pack_status_invalid", [400, "policy_compiler_input_pack_status_invalid"]],
+    ["policy_compiler_input_signature_invalid", [400, "policy_compiler_input_signature_invalid"]],
+    ["policy_compiler_input_noncanonical", [400, "policy_compiler_input_noncanonical"]],
+    ["policy_compiler_constraints_invalid", [400, "policy_compiler_constraints_invalid"]],
+    ["policy_compiler_verify_input_invalid", [400, "policy_compiler_verify_input_invalid"]],
+    ["policy_compiler_tenant_invalid", [400, "policy_compiler_tenant_invalid"]],
+    ["policy_compiler_domain_invalid", [400, "policy_compiler_domain_invalid"]],
+    ["policy_compiler_domain_untrusted", [400, "policy_compiler_domain_untrusted"]],
+    ["policy_compiler_snapshot_invalid", [400, "policy_compiler_snapshot_invalid"]],
+    ["policy_compiler_snapshot_mismatch", [400, "policy_compiler_snapshot_mismatch"]],
+    ["policy_compiler_pack_set_mismatch", [400, "policy_compiler_pack_set_mismatch"]],
+    ["policy_compiler_root_unverified", [400, "policy_compiler_root_unverified"]],
+    ["policy_compiler_signature_quorum_invalid", [400, "policy_compiler_signature_quorum_invalid"]],
+    ["policy_compiler_provenance_invalid", [400, "policy_compiler_provenance_invalid"]],
+    ["nyra_policy_compiler_provenance_invalid", [400, "policy_compiler_provenance_invalid"]],
     ["policy_proof_binding_invalid", [400, "policy_proof_binding_invalid"]],
     ["policy_proof_attestation_invalid", [400, "policy_proof_attestation_invalid"]],
     ["policy_activation_core_receipt_invalid", [400, "policy_activation_core_receipt_invalid"]],
@@ -9044,6 +9479,10 @@ export function createUniversalCoreService(options = {}) {
     ["policy_registry_concurrent_mutation", [409, "policy_registry_concurrent_mutation"]],
     ["policy_registry_reconciliation_required", [409, "policy_registry_reconciliation_required"]],
     ["policy_registry_cas_conflict", [409, "policy_registry_cas_conflict"]],
+    ["policy_registry_state_corrupt", [409, "policy_registry_state_corrupt"]],
+    ["policy_registry_compiler_provenance_missing", [409, "policy_registry_compiler_provenance_missing"]],
+    ["policy_registry_compiler_provenance_invalid", [409, "policy_registry_compiler_provenance_invalid"]],
+    ["policy_rollback_compiler_provenance_missing", [409, "policy_rollback_compiler_provenance_missing"]],
     ["policy_proof_reconciliation_not_ready", [409, "policy_proof_reconciliation_not_ready"]],
   ]);
 
@@ -9053,6 +9492,9 @@ export function createUniversalCoreService(options = {}) {
     if (configured) return { status: configured[0], code: configured[1] };
     const infrastructure = new Set([
       "policy_registry_coordinator_unavailable",
+      "policy_registry_compiler_unavailable",
+      "policy_compiler_unavailable",
+      "policy_compiler_clock_unavailable",
       "policy_registry_unavailable",
       "policy_registry_postgres_required",
       "policy_registry_postgres_unavailable",
@@ -9105,7 +9547,9 @@ export function createUniversalCoreService(options = {}) {
   function policyRegistryPublicResult(kind, result, req, operationId) {
     if (!isPlainRecord(result)) throw new Error("policy_registry_result_binding_invalid");
     const snapshotDigest = String(result.snapshot_digest || "");
-    if (!/^[a-f0-9]{64}$/.test(snapshotDigest)) {
+    const compilerProvenanceDigest = String(result.compiler_provenance_digest || "");
+    if (!/^[a-f0-9]{64}$/.test(snapshotDigest) ||
+      !/^[a-f0-9]{64}$/.test(compilerProvenanceDigest)) {
       throw new Error("policy_registry_result_binding_invalid");
     }
     const successField = kind === "activate"
@@ -9120,6 +9564,7 @@ export function createUniversalCoreService(options = {}) {
       operation_id: operationId,
       preflight_id: req.workPreflight.preflight_id,
       snapshot_digest: snapshotDigest,
+      compiler_provenance_digest: compilerProvenanceDigest,
       [successField]: true,
       idempotent_replay: result.idempotent_replay === true,
       proof_status: "consumed",
@@ -9152,6 +9597,7 @@ export function createUniversalCoreService(options = {}) {
           preflight_id: req.workPreflight.preflight_id,
           domain_pack_id: body.domain_pack_id,
           snapshot: body.snapshot,
+          compiler_input: body.compiler_input,
           owner_subject_fingerprint: governed.owner.owner_subject_fingerprint,
           owner_binding_hash: String(body.owner_context.binding_hash || ""),
           confirmation_reference: governed.owner.confirmation_reference,
@@ -9167,6 +9613,7 @@ export function createUniversalCoreService(options = {}) {
           operation_id: body.operation_id,
           preflight_id: req.workPreflight.preflight_id,
           snapshot_digest: result.snapshot_digest,
+          compiler_provenance_digest: result.compiler_provenance_digest,
           idempotent_replay: result.idempotent_replay,
         });
         return res.json({
@@ -9220,6 +9667,7 @@ export function createUniversalCoreService(options = {}) {
           operation_id: body.operation_id,
           preflight_id: req.workPreflight.preflight_id,
           snapshot_digest: result.snapshot_digest,
+          compiler_provenance_digest: result.compiler_provenance_digest,
           activation_generation: result.activation_generation,
           idempotent_replay: result.idempotent_replay,
         });
@@ -9264,6 +9712,7 @@ export function createUniversalCoreService(options = {}) {
           operation_id: body.operation_id,
           preflight_id: req.workPreflight.preflight_id,
           snapshot_digest: result.snapshot_digest,
+          compiler_provenance_digest: result.compiler_provenance_digest,
           idempotent_replay: result.idempotent_replay,
         });
         return res.json({

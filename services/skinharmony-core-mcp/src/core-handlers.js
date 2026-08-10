@@ -53,12 +53,29 @@ const POLICY_REGISTRY_WORK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab
 const POLICY_REGISTRY_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/;
 const POLICY_REGISTRY_DOMAIN_PACK_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/;
 const POLICY_REGISTRY_SHA256 = /^[a-f0-9]{64}$/;
+const POLICY_REGISTRY_PACK_ID = /^[a-z0-9][a-z0-9._/-]{1,159}$/;
+const POLICY_REGISTRY_PACK_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const POLICY_REGISTRY_PACK_REFERENCE = /^[a-z0-9][a-z0-9._/-]{1,159}@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const POLICY_REGISTRY_SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
+const POLICY_REGISTRY_COMPILER_INPUT_LIMIT_BYTES = 512 * 1024;
+const POLICY_REGISTRY_SNAPSHOT_LIMIT_BYTES = 512 * 1024;
+const POLICY_REGISTRY_REQUEST_LIMIT_BYTES = 1_572_864;
 const POLICY_REGISTRY_RESPONSE_LIMIT_BYTES = 128 * 1024;
 const POLICY_REGISTRY_CORE_TIMEOUT_MS = 3_000;
 const POLICY_REGISTRY_FORBIDDEN_CALLER_FIELDS = new Set([
   "authenticated_tenant_id", "work_preflight", "owner_context",
   "proof", "receipt", "attestation", "intent", "keys", "key_material",
   "activation_attestation", "policy_registry_attestation", "core_receipt",
+  "compiler_provenance", "compiler_provenance_digest", "compiler_build_commit",
+  "catalog_digest", "trust_catalog_digest", "trust_catalog", "trusted_issuers",
+  "compiler_now",
+]);
+const POLICY_REGISTRY_FORBIDDEN_CONSTRAINT_CONTROL_FIELDS = new Set([
+  "authority", "authorization", "issuer", "issuer_key_id", "key_id",
+  "trust_mode", "trust_catalog", "trust_catalog_digest", "trusted_issuer", "trusted_issuers",
+  "compiler_algorithm", "compiler_build_commit", "compiler_now", "compiler_provenance",
+  "compiler_provenance_digest", "verification_algorithm", "catalog_digest", "traversal_budget",
+  "signature_quorum", "signature_threshold", "required_signatures", "signing_key_id",
 ]);
 const POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS = new Set([
   "policy_registry_owner_confirmation_required",
@@ -72,6 +89,24 @@ const POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS = new Set([
   "policy_registry_snapshot_not_pure",
   "policy_registry_snapshot_invalid",
   "policy_registry_authorization_digest_invalid",
+  "policy_compiler_input_invalid",
+  "policy_compiler_input_oversize",
+  "policy_compiler_input_leaf_invalid",
+  "policy_compiler_input_pack_invalid",
+  "policy_compiler_input_pack_status_invalid",
+  "policy_compiler_input_signature_invalid",
+  "policy_compiler_input_noncanonical",
+  "policy_compiler_constraints_invalid",
+  "policy_compiler_verify_input_invalid",
+  "policy_compiler_tenant_invalid",
+  "policy_compiler_domain_invalid",
+  "policy_compiler_domain_untrusted",
+  "policy_compiler_snapshot_invalid",
+  "policy_compiler_snapshot_mismatch",
+  "policy_compiler_pack_set_mismatch",
+  "policy_compiler_root_unverified",
+  "policy_compiler_signature_quorum_invalid",
+  "policy_compiler_provenance_invalid",
   "policy_proof_binding_invalid",
   "policy_proof_attestation_invalid",
   "policy_activation_core_receipt_invalid",
@@ -88,8 +123,15 @@ const POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS = new Set([
   "policy_registry_concurrent_mutation",
   "policy_registry_reconciliation_required",
   "policy_registry_cas_conflict",
+  "policy_registry_state_corrupt",
+  "policy_registry_compiler_provenance_missing",
+  "policy_registry_compiler_provenance_invalid",
+  "policy_rollback_compiler_provenance_missing",
   "policy_proof_reconciliation_not_ready",
   "policy_registry_coordinator_unavailable",
+  "policy_registry_compiler_unavailable",
+  "policy_compiler_unavailable",
+  "policy_compiler_clock_unavailable",
   "policy_registry_unavailable",
   "policy_registry_postgres_required",
   "policy_registry_postgres_unavailable",
@@ -110,21 +152,21 @@ const POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS = new Set([
 const POLICY_REGISTRY_ROUTES = Object.freeze({
   activate: Object.freeze({
     path: "/v1/nyra-policy-registry/activate",
-    purpose: "nyra_policy_registry_snapshot_activate_v2",
+    purpose: "nyra_policy_registry_snapshot_activate_v3",
     action: "policy.snapshot.activate",
     responseField: "activation",
     successField: "activated",
   }),
   rollback: Object.freeze({
     path: "/v1/nyra-policy-registry/rollback",
-    purpose: "nyra_policy_registry_snapshot_rollback_v2",
+    purpose: "nyra_policy_registry_snapshot_rollback_v3",
     action: "policy.snapshot.rollback",
     responseField: "rollback",
     successField: "rolled_back",
   }),
   reconcile: Object.freeze({
     path: "/v1/nyra-policy-registry/reconcile",
-    purpose: "nyra_policy_registry_snapshot_reconcile_v2",
+    purpose: "nyra_policy_registry_snapshot_reconcile_v3",
     action: "policy.snapshot.reconcile",
     responseField: "reconciliation",
     successField: "reconciled",
@@ -1579,8 +1621,216 @@ export function createCoreHandlers(config, options = {}) {
     };
   }
 
+  function policyRegistryExactRecord(value, fields) {
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype) return false;
+    const keys = Reflect.ownKeys(value);
+    return keys.length === fields.length && keys.every((key) => typeof key === "string") &&
+      fields.every((field) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, field);
+        return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+      });
+  }
+
+  function assertPolicyRegistryPlainJson(value, code, {
+    maxDepth = 64,
+    maxNodes = 100_000,
+  } = {}, state = { seen: new Set(), nodes: 0 }, depth = 0) {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value) || Object.is(value, -0)) throw new Error(code);
+      return;
+    }
+    if (typeof value !== "object" || state.seen.has(value) || depth >= maxDepth ||
+      (Array.isArray(value)
+        ? Object.getPrototypeOf(value) !== Array.prototype
+        : Object.getPrototypeOf(value) !== Object.prototype)) {
+      throw new Error(code);
+    }
+    state.nodes += 1;
+    if (state.nodes > maxNodes) throw new Error(code);
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string" && key !== "length")) throw new Error(code);
+    if (Array.isArray(value)) {
+      const enumerableKeys = Object.keys(value);
+      if (enumerableKeys.length !== value.length ||
+        enumerableKeys.some((key, index) => key !== String(index)) ||
+        keys.some((key) => key !== "length" && !enumerableKeys.includes(key))) {
+        throw new Error(code);
+      }
+    }
+    state.seen.add(value);
+    for (const key of keys) {
+      if (Array.isArray(value) && key === "length") continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new Error(code);
+      assertPolicyRegistryPlainJson(descriptor.value, code, { maxDepth, maxNodes }, state, depth + 1);
+    }
+    state.seen.delete(value);
+  }
+
+  function policyRegistryCanonicalBytes(value) {
+    return Buffer.byteLength(JSON.stringify(stableCanonical(value)), "utf8");
+  }
+
+  function policyRegistryExactText(value, pattern, max) {
+    return typeof value === "string" && value === value.trim() && value.length > 0 &&
+      value.length <= max && (!pattern || pattern.test(value));
+  }
+
+  function policyRegistryUniqueTextList(value, { min = 0, max = 256, pattern = null } = {}) {
+    if (!Array.isArray(value) || value.length < min || value.length > max) return false;
+    const seen = new Set();
+    for (const item of value) {
+      if (!policyRegistryExactText(item, pattern, 200) || seen.has(item)) return false;
+      seen.add(item);
+    }
+    return true;
+  }
+
+  function validatePolicyRegistryCompilerPack(pack, identity, domainPackId) {
+    const packFields = [
+      "schema_version", "pack_id", "version", "status", "scope", "parent_refs", "bindings",
+      "privacy", "policy", "tests", "sources", "freshness_sla_days", "provenance",
+      "valid_from", "expires_at", "rollback_to", "compatibility", "trust_mode", "signatures",
+      "artifact_digest",
+    ];
+    const scopeFields = ["kind", "value", "tenant_id"];
+    const bindingFields = ["core_branch_ids", "nyra_branch_ids", "domain_pack_ids"];
+    const policyFields = [
+      "allow_mode", "allow_actions", "deny_actions", "required_gates", "constraints",
+    ];
+    const scopeKinds = new Set([
+      "core", "global", "sector", "tenant", "environment", "work_type", "action", "policy",
+    ]);
+    const tenantScopedKinds = new Set(["tenant", "environment", "work_type", "action", "policy"]);
+    if (!policyRegistryExactRecord(pack, packFields) ||
+      pack.schema_version !== "nyra_policy_pack_v1" ||
+      !POLICY_REGISTRY_PACK_ID.test(pack.pack_id) ||
+      !POLICY_REGISTRY_PACK_VERSION.test(pack.version) || pack.status !== "active" ||
+      !policyRegistryExactRecord(pack.scope, scopeFields) || !scopeKinds.has(pack.scope.kind) ||
+      !policyRegistryExactText(pack.scope.value, null, 160) ||
+      (tenantScopedKinds.has(pack.scope.kind)
+        ? !policyRegistryExactText(pack.scope.tenant_id, null, 120) ||
+          pack.scope.tenant_id !== identity.tenantId
+        : pack.scope.tenant_id !== null) ||
+      !Array.isArray(pack.parent_refs) || pack.parent_refs.length > 8 ||
+      !policyRegistryExactRecord(pack.bindings, bindingFields) ||
+      !policyRegistryUniqueTextList(pack.bindings.core_branch_ids, { min: 1 }) ||
+      !policyRegistryUniqueTextList(pack.bindings.nyra_branch_ids, { min: 1 }) ||
+      !policyRegistryUniqueTextList(pack.bindings.domain_pack_ids, { min: 1 }) ||
+      !pack.bindings.domain_pack_ids.includes(domainPackId) ||
+      !policyRegistryExactRecord(pack.privacy, ["raw_customer_data_allowed", "data_classification"]) ||
+      pack.privacy.raw_customer_data_allowed !== false ||
+      !policyRegistryExactText(pack.privacy.data_classification, null, 80) ||
+      !policyRegistryExactRecord(pack.policy, policyFields) ||
+      !new Set(["inherit", "restrict"]).has(pack.policy.allow_mode) ||
+      !policyRegistryUniqueTextList(pack.policy.allow_actions, { max: 4_096 }) ||
+      !policyRegistryUniqueTextList(pack.policy.deny_actions, { max: 4_096 }) ||
+      !policyRegistryUniqueTextList(pack.policy.required_gates, { max: 4_096 }) ||
+      !pack.policy.constraints || typeof pack.policy.constraints !== "object" ||
+      Array.isArray(pack.policy.constraints) ||
+      !Array.isArray(pack.tests) || pack.tests.length < 2 || pack.tests.length > 32 ||
+      !Array.isArray(pack.sources) || pack.sources.length < 1 || pack.sources.length > 16 ||
+      !Number.isInteger(pack.freshness_sla_days) || pack.freshness_sla_days < 1 ||
+      pack.freshness_sla_days > 3_650 ||
+      !policyRegistryExactText(pack.valid_from, null, 64) ||
+      !policyRegistryExactText(pack.expires_at, null, 64) ||
+      !Number.isFinite(Date.parse(pack.valid_from)) || !Number.isFinite(Date.parse(pack.expires_at)) ||
+      Date.parse(pack.valid_from) >= Date.parse(pack.expires_at) ||
+      !new Set(["compiled_core", "signed_bundle"]).has(pack.trust_mode) ||
+      !Array.isArray(pack.signatures) || pack.signatures.length > 4 ||
+      !POLICY_REGISTRY_SHA256.test(pack.artifact_digest)) {
+      throw new Error("policy_compiler_input_pack_invalid");
+    }
+    for (const parent of pack.parent_refs) {
+      if (!policyRegistryExactRecord(parent, ["pack_id", "version", "digest"]) ||
+        !POLICY_REGISTRY_PACK_ID.test(parent.pack_id) ||
+        !POLICY_REGISTRY_PACK_VERSION.test(parent.version) ||
+        !POLICY_REGISTRY_SHA256.test(parent.digest)) {
+        throw new Error("policy_compiler_input_pack_invalid");
+      }
+    }
+    const testOutcomes = new Set(pack.tests.map((entry) => entry?.expected));
+    if (!testOutcomes.has("ALLOW") || !testOutcomes.has("DENY")) {
+      throw new Error("policy_compiler_input_pack_invalid");
+    }
+    for (const source of pack.sources) {
+      if (!policyRegistryExactRecord(source, ["source_id", "url", "claim", "reviewed_at"]) ||
+        !POLICY_REGISTRY_PACK_ID.test(source.source_id) ||
+        !policyRegistryExactText(source.url, /^https:\/\//, 2_000) ||
+        !policyRegistryExactText(source.claim, null, 1_200) ||
+        !policyRegistryExactText(source.reviewed_at, /^\d{4}-\d{2}-\d{2}$/, 32)) {
+        throw new Error("policy_compiler_input_pack_invalid");
+      }
+    }
+    const issuers = new Set();
+    for (const signature of pack.signatures) {
+      if (!policyRegistryExactRecord(signature, ["issuer_id", "algorithm", "signature"]) ||
+        !POLICY_REGISTRY_PACK_ID.test(signature.issuer_id) || signature.algorithm !== "Ed25519" ||
+        !POLICY_REGISTRY_SIGNATURE.test(signature.signature) || issuers.has(signature.issuer_id)) {
+        throw new Error("policy_compiler_input_signature_invalid");
+      }
+      const decoded = Buffer.from(signature.signature, "base64url");
+      if (decoded.length !== 64 || decoded.toString("base64url") !== signature.signature) {
+        throw new Error("policy_compiler_input_signature_invalid");
+      }
+      issuers.add(signature.issuer_id);
+    }
+    if (pack.trust_mode === "compiled_core"
+      ? pack.scope.kind !== "core" || pack.signatures.length !== 0
+      : pack.signatures.length < 2) {
+      throw new Error("policy_compiler_input_signature_invalid");
+    }
+    assertPolicyRegistryPlainJson(pack.policy.constraints, "policy_compiler_constraints_invalid", {
+      maxDepth: 16,
+      maxNodes: 4_096,
+    });
+    if (policyRegistryCanonicalBytes(pack.policy.constraints) > 65_536) {
+      throw new Error("policy_compiler_constraints_invalid");
+    }
+  }
+
+  function validatePolicyRegistryCompilerInput(compilerInput, identity, domainPackId) {
+    assertPolicyRegistryPlainJson(compilerInput, "policy_compiler_input_invalid");
+    if (policyRegistryCanonicalBytes(compilerInput) > POLICY_REGISTRY_COMPILER_INPUT_LIMIT_BYTES) {
+      throw new Error("policy_compiler_input_oversize");
+    }
+    if (!policyRegistryExactRecord(compilerInput, ["schema_version", "leaf_pack_ids", "packs"]) ||
+      compilerInput.schema_version !== "nyra_policy_compiler_input_v1" ||
+      !Array.isArray(compilerInput.leaf_pack_ids) || compilerInput.leaf_pack_ids.length < 1 ||
+      compilerInput.leaf_pack_ids.length > 16 || !Array.isArray(compilerInput.packs) ||
+      compilerInput.packs.length < 1 || compilerInput.packs.length > 64) {
+      throw new Error("policy_compiler_input_invalid");
+    }
+    let previousLeaf = null;
+    for (const reference of compilerInput.leaf_pack_ids) {
+      if (!POLICY_REGISTRY_PACK_REFERENCE.test(reference) ||
+        (previousLeaf !== null && previousLeaf >= reference)) {
+        throw new Error("policy_compiler_input_leaf_invalid");
+      }
+      previousLeaf = reference;
+    }
+    let previousPack = null;
+    const packReferences = new Set();
+    for (const pack of compilerInput.packs) {
+      validatePolicyRegistryCompilerPack(pack, identity, domainPackId);
+      const reference = `${pack.pack_id}@${pack.version}`;
+      if (previousPack !== null && previousPack >= reference) {
+        throw new Error("policy_compiler_input_noncanonical");
+      }
+      previousPack = reference;
+      packReferences.add(reference);
+    }
+    if (compilerInput.leaf_pack_ids.some((reference) => !packReferences.has(reference))) {
+      throw new Error("policy_compiler_input_leaf_invalid");
+    }
+    const forbidden = policyRegistryForbiddenField(compilerInput, "$.compiler_input");
+    if (forbidden) throw new Error("policy_registry_caller_fields_invalid");
+    return compilerInput;
+  }
+
   function policyRegistryForbiddenField(value, path = "$") {
-    if (path === "$.policy.constraints") return null;
     if (!value || typeof value !== "object") return null;
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
@@ -1589,10 +1839,14 @@ export function createCoreHandlers(config, options = {}) {
       }
       return null;
     }
+    const insideConstraints = path === "$.policy.constraints" ||
+      path.startsWith("$.policy.constraints.") ||
+      /^\$\.compiler_input\.packs\[\d+\]\.policy\.constraints(?:\.|$)/.test(path);
     for (const [key, child] of Object.entries(value)) {
       if (
         POLICY_REGISTRY_FORBIDDEN_CALLER_FIELDS.has(key) ||
-        /(?:^|_)(?:secret|private_key|signing_key|proof|receipt|attestation)(?:$|_)/i.test(key)
+        /(?:^|_)(?:secret|private_key|signing_key|proof|receipt|attestation)(?:$|_)/i.test(key) ||
+        (insideConstraints && POLICY_REGISTRY_FORBIDDEN_CONSTRAINT_CONTROL_FIELDS.has(key))
       ) return `${path}.${key}`;
       const nested = policyRegistryForbiddenField(child, `${path}.${key}`);
       if (nested) return nested;
@@ -1640,7 +1894,8 @@ export function createCoreHandlers(config, options = {}) {
       snapshot.tenant_id !== identity.tenantId ||
       snapshot.domain_pack_id !== domainPackId ||
       snapshot.immutable !== true ||
-      !POLICY_REGISTRY_SHA256.test(String(snapshot.snapshot_digest || ""))
+      !POLICY_REGISTRY_SHA256.test(String(snapshot.snapshot_digest || "")) ||
+      policyRegistryCanonicalBytes(snapshot) > POLICY_REGISTRY_SNAPSHOT_LIMIT_BYTES
     ) throw new Error("policy_registry_snapshot_invalid");
     const forbidden = policyRegistryForbiddenField(snapshot);
     if (forbidden) throw new Error("policy_registry_snapshot_not_pure");
@@ -1670,6 +1925,7 @@ export function createCoreHandlers(config, options = {}) {
       String(result.work_id || "").toLowerCase() !== String(args.work_id).toLowerCase() ||
       result.operation_id !== args.operation_id || result.preflight_id !== preflight.preflight_id ||
       !POLICY_REGISTRY_SHA256.test(String(result.snapshot_digest || "")) ||
+      !POLICY_REGISTRY_SHA256.test(String(result.compiler_provenance_digest || "")) ||
       result[contract.successField] !== true || typeof result.idempotent_replay !== "boolean" ||
       result.proof_status !== "consumed" || result.execution_authorized !== false ||
       result.provider_execution_authorized !== false || result.caller_authority !== false
@@ -1687,6 +1943,7 @@ export function createCoreHandlers(config, options = {}) {
       operation_id: args.operation_id,
       preflight_id: preflight.preflight_id,
       snapshot_digest: result.snapshot_digest,
+      compiler_provenance_digest: result.compiler_provenance_digest,
       [contract.successField]: true,
       idempotent_replay: result.idempotent_replay,
       proof_status: "consumed",
@@ -1727,7 +1984,7 @@ export function createCoreHandlers(config, options = {}) {
     const allowedFields = new Set([
       "work_id", "operation_id", "owner_confirmed", "confirmation_reference",
       "agent_id", "client_type", "session_id", "work_preflight",
-      ...(kind === "activate" ? ["domain_pack_id", "snapshot"] : []),
+      ...(kind === "activate" ? ["domain_pack_id", "snapshot", "compiler_input"] : []),
       ...(kind === "rollback" ? ["domain_pack_id", "target_snapshot_digest"] : []),
     ]);
     if (!args || typeof args !== "object" || Array.isArray(args) ||
@@ -1741,12 +1998,15 @@ export function createCoreHandlers(config, options = {}) {
     if (args.owner_confirmed !== true || identity?.ownerConfirmed !== true) {
       throw new Error("owner_confirmation_required");
     }
-    const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
     const preflight = validatePolicyRegistryPreflight(args.work_preflight, identity, contract, domainPackId);
-    if (kind === "activate") validatePolicyRegistrySnapshot(args.snapshot, identity, domainPackId);
+    if (kind === "activate") {
+      validatePolicyRegistrySnapshot(args.snapshot, identity, domainPackId);
+      validatePolicyRegistryCompilerInput(args.compiler_input, identity, domainPackId);
+    }
     if (kind === "rollback" && !POLICY_REGISTRY_SHA256.test(String(args.target_snapshot_digest || ""))) {
       throw new Error("policy_registry_request_invalid");
     }
+    const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
     const requestBody = {
       tenant_id: identity.tenantId,
       work_id: workId,
@@ -1761,6 +2021,7 @@ export function createCoreHandlers(config, options = {}) {
         operationId,
       ),
       ...(kind === "activate" ? { snapshot: args.snapshot } : {}),
+      ...(kind === "activate" ? { compiler_input: args.compiler_input } : {}),
       ...(kind === "rollback" ? { target_snapshot_digest: args.target_snapshot_digest } : {}),
     };
     const body = {
@@ -1770,6 +2031,10 @@ export function createCoreHandlers(config, options = {}) {
         requestBinding: ownerRequestBinding(contract.purpose, requestBody),
       }),
     };
+    if (Buffer.byteLength(canonicalDttWorkContextBody(body), "utf8") >
+      POLICY_REGISTRY_REQUEST_LIMIT_BYTES) {
+      throw new Error("policy_registry_request_too_large");
+    }
     const payload = await dttCoreRequest(contract.path, { work_id: workId }, identity, {
       method: "POST",
       body,

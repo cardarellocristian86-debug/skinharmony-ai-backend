@@ -161,6 +161,14 @@ services:
         value: "false"
       - key: CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED
         value: "false"
+      - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED
+        value: "false"
+      - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED
+        value: "false"
+      - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE
+        value: disabled
+      - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET
+        value: "256"
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE
         value: disabled
       - key: CORE_NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST

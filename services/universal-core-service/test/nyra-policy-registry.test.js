@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -46,6 +47,59 @@ function recalculateSnapshotDigest(snapshot) {
   };
 }
 
+function compilerProvenanceDigest(snapshotDigest) {
+  return crypto.createHash("sha256").update(`compiler-provenance:${snapshotDigest}`).digest("hex");
+}
+
+function compilerProvenance(snapshot, tenantId = snapshot.tenant_id, domainPackId = snapshot.domain_pack_id) {
+  return {
+    schema_version: "nyra_policy_compiler_provenance_v1",
+    tenant_id: tenantId,
+    domain_pack_id: domainPackId,
+    snapshot_digest: snapshot.snapshot_digest,
+    execution_authorized: false,
+    provenance_digest: compilerProvenanceDigest(snapshot.snapshot_digest),
+  };
+}
+
+function verifyCompilerProvenanceRecord(record, binding) {
+  const ok = record?.tenant_id === binding.tenant_id &&
+    record?.domain_pack_id === binding.domain_pack_id &&
+    record?.snapshot_digest === binding.snapshot_digest &&
+    record?.provenance_digest === binding.compiler_provenance_digest &&
+    record?.execution_authorized === false &&
+    !Object.hasOwn(record || {}, "compiler_input");
+  return {
+    ok,
+    record_integrity_verified: ok,
+    derivation_reverified: false,
+    execution_authorized: false,
+    tenant_id: record?.tenant_id,
+    domain_pack_id: record?.domain_pack_id,
+    snapshot_digest: record?.snapshot_digest,
+    compiler_provenance_digest: record?.provenance_digest,
+    compiler_build_commit: "1".repeat(40),
+    catalog_digest: "2".repeat(64),
+    trust_catalog_digest: "3".repeat(64),
+    error: null,
+  };
+}
+
+function verifiedActivation(value, provenance, binding, extra = {}) {
+  return {
+    ok: true,
+    signature_verified: true,
+    tenant_id: binding.tenant_id,
+    snapshot_digest: value.snapshot_digest,
+    compiler_provenance_digest: provenance.provenance_digest,
+    compiler_provenance_bound: true,
+    execution_authorized: false,
+    verified_roles: ["core", "nyra"],
+    independent_key_count: 2,
+    ...extra,
+  };
+}
+
 function registryProofBinding({ operationId, snapshotDigest, action = "policy.snapshot.activate", overrides = {} }) {
   return {
     tenant_id: "codexai",
@@ -62,6 +116,7 @@ function registryProofBinding({ operationId, snapshotDigest, action = "policy.sn
     nyra_key_id: "nyra-policy-key-v2",
     core_public_key_fingerprint: "c".repeat(64),
     nyra_public_key_fingerprint: "d".repeat(64),
+    compiler_provenance_digest: compilerProvenanceDigest(snapshotDigest),
     ...overrides,
   };
 }
@@ -86,11 +141,13 @@ class FakePolicyRegistryPgPool {
     this.schemaAttempts = 0;
     this.healthFailures = 0;
     this.healthProbeAttempts = 0;
+    this.queries = [];
   }
   async query(sql, params = []) { return this.#query(sql, params); }
   async connect() { return { query: (sql, params = []) => this.#query(sql, params), release() {} }; }
   async #query(sql, params) {
     const q = String(sql).replace(/\s+/g, " ").trim();
+    this.queries.push(q);
     if (q.startsWith("CREATE TABLE")) {
       this.schemaAttempts += 1;
       if (this.schemaFailures > 0) {
@@ -109,10 +166,17 @@ class FakePolicyRegistryPgPool {
       return { rowCount: 1, rows: [{ "?column?": 1 }] };
     }
     if (q.startsWith("INSERT INTO nyra_policy_registry_state")) {
-      if (!this.states.has(params[0])) this.states.set(params[0], { revision: 0, active_snapshot: null, active_attestation: null, history: [], state_status: "ready" });
+      if (!this.states.has(params[0])) this.states.set(params[0], {
+        revision: 0,
+        active_snapshot: null,
+        active_attestation: null,
+        active_compiler_provenance: null,
+        history: [],
+        state_status: "ready",
+      });
       return { rowCount: 1, rows: [] };
     }
-    if (q.startsWith("SELECT request_digest")) {
+    if (q.startsWith("SELECT operation, request_digest")) {
       const row = this.operations.get(`${params[0]}:${params[1]}`);
       return { rowCount: row ? 1 : 0, rows: row ? [structuredClone(row)] : [] };
     }
@@ -130,22 +194,32 @@ class FakePolicyRegistryPgPool {
       const row = this.states.get(params[0]);
       return { rowCount: row ? 1 : 0, rows: row ? [structuredClone(row)] : [] };
     }
+    if (q.startsWith("SELECT history")) {
+      const row = this.states.get(params[0]);
+      return { rowCount: row ? 1 : 0, rows: row ? [structuredClone(row)] : [] };
+    }
+    if (q.startsWith("UPDATE nyra_policy_registry_state SET state_status='corrupt'")) {
+      const row = this.states.get(params[0]);
+      if (row) row.state_status = "corrupt";
+      return { rowCount: row ? 1 : 0, rows: [] };
+    }
     if (q.startsWith("UPDATE nyra_policy_registry_state")) {
       const row = this.states.get(params[0]);
-      if (!row || Number(row.revision) !== Number(params[4])) return { rowCount: 0, rows: [] };
+      if (!row || Number(row.revision) !== Number(params[5])) return { rowCount: 0, rows: [] };
       this.states.set(params[0], {
         revision: Number(row.revision) + 1,
         active_snapshot: JSON.parse(params[1]),
         active_attestation: JSON.parse(params[2]),
-        history: JSON.parse(params[3]),
+        active_compiler_provenance: JSON.parse(params[3]),
+        history: JSON.parse(params[4]),
         state_status: "ready",
       });
       return { rowCount: 1, rows: [] };
     }
     if (q.startsWith("INSERT INTO nyra_policy_registry_operations")) {
       this.operations.set(`${params[0]}:${params[1]}`, {
-        request_digest: params[2], receipt_digest: params[3], status: "pending",
-        proposed_state: JSON.parse(params[4]), result: {},
+        operation: params[2], request_digest: params[3], receipt_digest: params[4], status: "pending",
+        proposed_state: JSON.parse(params[5]), result: {},
       });
       return { rowCount: 1, rows: [] };
     }
@@ -432,10 +506,11 @@ test("registry activation is Core-receipt-bound, atomic, idempotent and deny-onl
     operationId: "activate-00000001",
     snapshotDigest: snapshot.snapshot_digest,
   });
-  assert.throws(() => createNyraPolicyRegistryStore().activate({
+  assert.throws(() => createNyraPolicyRegistryStore({ verifyCompilerProvenanceRecord }).activate({
     tenant_id: "codexai",
     operation_id: "unsigned-activation",
     snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
     activation_attestation: { proof: "missing-verifier" },
     proof_binding: registryProofBinding({
       operationId: "unsigned-activation",
@@ -447,14 +522,8 @@ test("registry activation is Core-receipt-bound, atomic, idempotent and deny-onl
     now: NOW,
   }), /policy_snapshot_signature_quorum_invalid/);
   const store = createNyraPolicyRegistryStore({
-    verifyActivationSnapshot: (value, binding) => ({
-      ok: true,
-      signature_verified: true,
-      tenant_id: binding.tenant_id,
-      snapshot_digest: value.snapshot_digest,
-      verified_roles: ["core", "nyra"],
-      independent_key_count: 2,
-    }),
+    verifyActivationSnapshot: verifiedActivation,
+    verifyCompilerProvenanceRecord,
     consumeCoreReceipt: (receipt, binding) => {
       if (consumed.has(receipt.id)) throw new Error("core_receipt_replayed");
       consumed.add(receipt.id);
@@ -473,6 +542,7 @@ test("registry activation is Core-receipt-bound, atomic, idempotent and deny-onl
     tenant_id: "codexai",
     operation_id: "activate-00000001",
     snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
     activation_attestation: { proof: "activation-1" },
     proof_binding: firstBinding,
     core_receipt: { id: "receipt-00000001" },
@@ -486,6 +556,7 @@ test("registry activation is Core-receipt-bound, atomic, idempotent and deny-onl
     tenant_id: "codexai",
     operation_id: "activate-00000001",
     snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
     activation_attestation: { proof: "activation-1" },
     proof_binding: firstBinding,
     core_receipt: { id: "receipt-00000001" },
@@ -499,6 +570,7 @@ test("registry activation is Core-receipt-bound, atomic, idempotent and deny-onl
     tenant_id: "codexai",
     operation_id: "activate-00000001",
     snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
     activation_attestation: { proof: "activation-1" },
     proof_binding: firstBinding,
     core_receipt: { id: "different-receipt" },
@@ -529,6 +601,7 @@ test("registry activation is Core-receipt-bound, atomic, idempotent and deny-onl
     tenant_id: "codexai",
     operation_id: "activate-00000002",
     snapshot: secondSnapshot,
+    compiler_provenance: compilerProvenance(secondSnapshot),
     activation_attestation: { proof: "activation-2" },
     proof_binding: secondBinding,
     core_receipt: { id: "receipt-00000002" },
@@ -543,6 +616,26 @@ test("registry activation is Core-receipt-bound, atomic, idempotent and deny-onl
     action: "policy.snapshot.rollback",
     overrides: { owner_approval_hash: "1".repeat(64), intent_digest: "2".repeat(64) },
   });
+  const resolved = store.resolveRollbackTarget({
+    tenant_id: "codexai",
+    target_snapshot_digest: snapshot.snapshot_digest,
+    core_branch_id: "nyra_policy_registry",
+    nyra_branch_id: "risk_governance",
+    domain_pack_id: "generic",
+    now: NOW,
+  });
+  assert.deepEqual(Object.keys(resolved).sort(), ["attestation", "compiler_provenance", "snapshot"]);
+  assert.equal(resolved.compiler_provenance.provenance_digest,
+    compilerProvenanceDigest(snapshot.snapshot_digest));
+  resolved.compiler_provenance.provenance_digest = "0".repeat(64);
+  assert.equal(store.resolveRollbackTarget({
+    tenant_id: "codexai",
+    target_snapshot_digest: snapshot.snapshot_digest,
+    core_branch_id: "nyra_policy_registry",
+    nyra_branch_id: "risk_governance",
+    domain_pack_id: "generic",
+    now: NOW,
+  }).compiler_provenance.provenance_digest, compilerProvenanceDigest(snapshot.snapshot_digest));
   assert.equal(store.rollback({
     tenant_id: "codexai",
     operation_id: "rollback-00000001",
@@ -555,6 +648,8 @@ test("registry activation is Core-receipt-bound, atomic, idempotent and deny-onl
     domain_pack_id: "generic",
     now: NOW,
   }).rolled_back, true);
+  assert.equal(store.status().compiler_provenance_persistence, true);
+  assert.equal(store.status().compiler_input_persisted, false);
   assert.equal(store.evaluate({
     tenant_id: "codexai",
     action: "new.action",
@@ -584,6 +679,137 @@ test("registry activation is Core-receipt-bound, atomic, idempotent and deny-onl
   }).reasons, ["policy_snapshot_missing"]);
 });
 
+test("file registry preserves exact compiler provenance across restart without compiler input", () => {
+  const snapshot = compilePolicySnapshot({
+    tenant_id: "codexai",
+    leaf_pack_ids: ["tenant/codexai/action/new-action@1.0.0"],
+    packs: [corePack, activate(candidate())],
+    trusted_issuers: trustedIssuers,
+    trusted_core_pack_digests: [policyPackDigest(corePack)],
+    domain_pack_id: "generic",
+    now: NOW,
+  });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-policy-store-provenance-"));
+  const filePath = path.join(directory, "registry.json");
+  const operationId = "file-restart-activate-000001";
+  const binding = registryProofBinding({ operationId, snapshotDigest: snapshot.snapshot_digest });
+  const options = {
+    filePath,
+    verifyActivationSnapshot: verifiedActivation,
+    verifyCompilerProvenanceRecord,
+    consumeCoreReceipt: (receipt, supplied) => registryConsumption(supplied, receipt.id),
+  };
+  try {
+    const store = createNyraPolicyRegistryStore(options);
+    assert.equal(store.activate({
+      tenant_id: "codexai",
+      operation_id: operationId,
+      snapshot,
+      compiler_provenance: compilerProvenance(snapshot),
+      compiler_input: { marker: "must-never-be-persisted" },
+      activation_attestation: { proof: "file-restart" },
+      proof_binding: binding,
+      core_receipt: { id: "file-restart-receipt" },
+      core_branch_id: "nyra_policy_registry",
+      nyra_branch_id: "risk_governance",
+      domain_pack_id: "generic",
+      now: NOW,
+    }).activated, true);
+    const persisted = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    assert.equal(JSON.stringify(persisted).includes("compiler_input"), false);
+    assert.deepEqual(Object.keys(persisted.tenants.codexai.active).sort(),
+      ["attestation", "compiler_provenance", "snapshot"]);
+    const restarted = createNyraPolicyRegistryStore(options);
+    const evaluated = restarted.evaluate({
+      tenant_id: "codexai",
+      action: "new.action",
+      core_branch_id: "nyra_policy_registry",
+      nyra_branch_id: "risk_governance",
+      domain_pack_id: "generic",
+      satisfied_gates: ["core_allow"],
+      now: NOW,
+    });
+    assert.equal(evaluated.verdict, "ALLOW");
+    assert.equal(evaluated.snapshot_verified, true);
+    assert.equal(restarted.status().restart_durable, true);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("registry rejects non-exact compiler provenance verification outcomes before proof or receipt use", () => {
+  const snapshot = compilePolicySnapshot({
+    tenant_id: "codexai",
+    leaf_pack_ids: ["tenant/codexai/action/new-action@1.0.0"],
+    packs: [corePack, activate(candidate())],
+    trusted_issuers: trustedIssuers,
+    trusted_core_pack_digests: [policyPackDigest(corePack)],
+    domain_pack_id: "generic",
+    now: NOW,
+  });
+  const record = compilerProvenance(snapshot);
+  const persistedBinding = {
+    tenant_id: "codexai",
+    domain_pack_id: "generic",
+    snapshot_digest: snapshot.snapshot_digest,
+    compiler_provenance_digest: record.provenance_digest,
+  };
+  const exact = verifyCompilerProvenanceRecord(record, persistedBinding);
+  let getterCalls = 0;
+  const accessor = { ...exact };
+  Object.defineProperty(accessor, "ok", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      return true;
+    },
+  });
+  const cases = [
+    { name: "minimal", outcome: {
+      ok: true,
+      record_integrity_verified: true,
+      derivation_reverified: false,
+      execution_authorized: false,
+    } },
+    { name: "extra", outcome: { ...exact, extra_authority: true } },
+    { name: "prototype", outcome: Object.assign(Object.create({ inherited: true }), exact) },
+    { name: "getter", outcome: accessor },
+  ];
+  for (const scenario of cases) {
+    let proofCalls = 0;
+    let receiptCalls = 0;
+    const operationId = `provenance-outcome-${scenario.name}-000001`;
+    const store = createNyraPolicyRegistryStore({
+      verifyCompilerProvenanceRecord: () => scenario.outcome,
+      verifyActivationSnapshot: () => {
+        proofCalls += 1;
+        throw new Error("proof_must_not_run");
+      },
+      consumeCoreReceipt: () => {
+        receiptCalls += 1;
+        throw new Error("receipt_must_not_run");
+      },
+    });
+    assert.throws(() => store.activate({
+      tenant_id: "codexai",
+      operation_id: operationId,
+      snapshot,
+      compiler_provenance: record,
+      activation_attestation: { proof: scenario.name },
+      proof_binding: registryProofBinding({ operationId, snapshotDigest: snapshot.snapshot_digest }),
+      core_receipt: { id: `receipt-${scenario.name}` },
+      core_branch_id: "nyra_policy_registry",
+      nyra_branch_id: "risk_governance",
+      domain_pack_id: "generic",
+      now: NOW,
+    }), /policy_registry_compiler_provenance_invalid/, scenario.name);
+    assert.equal(proofCalls, 0, scenario.name);
+    assert.equal(receiptCalls, 0, scenario.name);
+  }
+  assert.equal(getterCalls, 0);
+});
+
 test("PostgreSQL registry persists activation, request-bound replay and restart evaluation", async () => {
   const snapshot = compilePolicySnapshot({
     tenant_id: "codexai",
@@ -598,10 +824,8 @@ test("PostgreSQL registry persists activation, request-bound replay and restart 
   const consumed = new Set();
   const options = {
     pool,
-    verifyActivationSnapshot: (value, binding) => ({
-      ok: true, signature_verified: true, tenant_id: binding.tenant_id,
-      snapshot_digest: value.snapshot_digest, verified_roles: ["core", "nyra"], independent_key_count: 2,
-    }),
+    verifyActivationSnapshot: verifiedActivation,
+    verifyCompilerProvenanceRecord,
     consumeCoreReceipt: (receipt, binding) => {
       if (consumed.has(receipt.id)) throw new Error("core_receipt_replayed");
       consumed.add(receipt.id);
@@ -611,6 +835,8 @@ test("PostgreSQL registry persists activation, request-bound replay and restart 
   const store = createPostgresNyraPolicyRegistryStore(options);
   const input = {
     tenant_id: "codexai", operation_id: "pg-activate-000001", snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
+    compiler_input: { marker: "must-never-be-persisted" },
     activation_attestation: { proof: "pg-activation-1" },
     proof_binding: registryProofBinding({
       operationId: "pg-activate-000001",
@@ -620,6 +846,9 @@ test("PostgreSQL registry persists activation, request-bound replay and restart 
     nyra_branch_id: "risk_governance", domain_pack_id: "generic", now: NOW,
   };
   assert.equal((await store.activate(input)).activated, true);
+  assert.equal(JSON.stringify([...pool.states.values(), ...pool.operations.values()])
+    .includes("compiler_input"), false);
+  assert.equal(pool.queries.some((query) => query.includes("compiler_input")), false);
   assert.equal((await store.activate(input)).idempotent_replay, true);
   await assert.rejects(store.activate({ ...input, core_receipt: { id: "changed-receipt" } }), /policy_operation_idempotency_conflict/);
   const restarted = createPostgresNyraPolicyRegistryStore(options);
@@ -630,6 +859,78 @@ test("PostgreSQL registry persists activation, request-bound replay and restart 
   assert.equal(evaluated.verdict, "ALLOW");
   assert.equal(evaluated.snapshot_verified, true);
   assert.equal((await restarted.status()).ready, true);
+  assert.equal((await restarted.status()).compiler_provenance_persistence, true);
+  assert.equal((await restarted.status()).compiler_input_persisted, false);
+});
+
+test("PostgreSQL registry resolves rollback provenance only from exact durable history", async () => {
+  const snapshot = compilePolicySnapshot({
+    tenant_id: "codexai",
+    leaf_pack_ids: ["tenant/codexai/action/new-action@1.0.0"],
+    packs: [corePack, activate(candidate())],
+    trusted_issuers: trustedIssuers,
+    trusted_core_pack_digests: [policyPackDigest(corePack)],
+    domain_pack_id: "generic",
+    now: NOW,
+  });
+  const pool = new FakePolicyRegistryPgPool();
+  const options = {
+    pool,
+    verifyActivationSnapshot: verifiedActivation,
+    verifyCompilerProvenanceRecord,
+    consumeCoreReceipt: (receipt, binding) => registryConsumption(binding, receipt.id),
+  };
+  const store = createPostgresNyraPolicyRegistryStore(options);
+  for (const suffix of ["one", "two"]) {
+    const operationId = `pg-history-${suffix}-000001`;
+    await store.activate({
+      tenant_id: "codexai",
+      operation_id: operationId,
+      snapshot,
+      compiler_provenance: compilerProvenance(snapshot),
+      activation_attestation: { proof: suffix },
+      proof_binding: registryProofBinding({ operationId, snapshotDigest: snapshot.snapshot_digest }),
+      core_receipt: { id: `pg-history-receipt-${suffix}` },
+      core_branch_id: "nyra_policy_registry",
+      nyra_branch_id: "risk_governance",
+      domain_pack_id: "generic",
+      now: NOW,
+    });
+  }
+  const resolved = await createPostgresNyraPolicyRegistryStore(options).resolveRollbackTarget({
+    tenant_id: "codexai",
+    target_snapshot_digest: snapshot.snapshot_digest,
+    core_branch_id: "nyra_policy_registry",
+    nyra_branch_id: "risk_governance",
+    domain_pack_id: "generic",
+    now: NOW,
+  });
+  assert.deepEqual(Object.keys(resolved).sort(), ["attestation", "compiler_provenance", "snapshot"]);
+  assert.equal(resolved.compiler_provenance.provenance_digest,
+    compilerProvenanceDigest(snapshot.snapshot_digest));
+  const rollbackOperationId = "pg-history-rollback-000001";
+  const rollbackBinding = registryProofBinding({
+    operationId: rollbackOperationId,
+    snapshotDigest: snapshot.snapshot_digest,
+    action: "policy.snapshot.rollback",
+  });
+  const rolledBack = await store.rollback({
+    tenant_id: "codexai",
+    operation_id: rollbackOperationId,
+    target_snapshot_digest: snapshot.snapshot_digest,
+    activation_attestation: { proof: "rollback" },
+    proof_binding: rollbackBinding,
+    core_receipt: { id: "pg-history-rollback-receipt" },
+    core_branch_id: "nyra_policy_registry",
+    nyra_branch_id: "risk_governance",
+    domain_pack_id: "generic",
+    now: NOW,
+  });
+  assert.equal(rolledBack.rolled_back, true);
+  assert.equal(rolledBack.activation_generation, 3);
+  assert.equal(pool.states.get("codexai").active_compiler_provenance.provenance_digest,
+    compilerProvenanceDigest(snapshot.snapshot_digest));
+  assert.equal(JSON.stringify(pool.states.get("codexai")).includes("compiler_input"), false);
 });
 
 test("PostgreSQL registry retries transient schema initialization safely", async () => {
@@ -679,6 +980,98 @@ test("PostgreSQL registry integrity corruption cannot be cleared by a backend pr
   assert.equal(pool.healthProbeAttempts, probesBeforeStatus);
 });
 
+test("PostgreSQL registry denies legacy provenance-free state, rollback and v2 reconcile without backfill", async () => {
+  const snapshot = compilePolicySnapshot({
+    tenant_id: "codexai",
+    leaf_pack_ids: ["tenant/codexai/action/new-action@1.0.0"],
+    packs: [corePack, activate(candidate())],
+    trusted_issuers: trustedIssuers,
+    trusted_core_pack_digests: [policyPackDigest(corePack)],
+    domain_pack_id: "generic",
+    now: NOW,
+  });
+  const legacyBinding = registryProofBinding({
+    operationId: "legacy-activate-000001",
+    snapshotDigest: snapshot.snapshot_digest,
+  });
+  delete legacyBinding.compiler_provenance_digest;
+  const legacyEntry = {
+    snapshot: structuredClone(snapshot),
+    attestation: {
+      binding: structuredClone(legacyBinding),
+      policy_registry_attestation: { proof: "legacy-v2" },
+    },
+  };
+  const pool = new FakePolicyRegistryPgPool();
+  pool.states.set("codexai", {
+    revision: 1,
+    active_snapshot: structuredClone(snapshot),
+    active_attestation: structuredClone(legacyEntry.attestation),
+    active_compiler_provenance: null,
+    history: [structuredClone(legacyEntry)],
+    state_status: "ready",
+  });
+  let consumeCalls = 0;
+  const store = createPostgresNyraPolicyRegistryStore({
+    pool,
+    verifyActivationSnapshot: verifiedActivation,
+    verifyCompilerProvenanceRecord,
+    consumeCoreReceipt: (_receipt, binding) => {
+      consumeCalls += 1;
+      return registryConsumption(binding, "legacy-must-not-consume");
+    },
+  });
+  const evaluated = await store.evaluate({
+    tenant_id: "codexai",
+    action: "new.action",
+    core_branch_id: "nyra_policy_registry",
+    nyra_branch_id: "risk_governance",
+    domain_pack_id: "generic",
+    now: NOW,
+  });
+  assert.deepEqual(evaluated.reasons, ["policy_registry_compiler_provenance_missing"]);
+  await assert.rejects(store.resolveRollbackTarget({
+    tenant_id: "codexai",
+    target_snapshot_digest: snapshot.snapshot_digest,
+    core_branch_id: "nyra_policy_registry",
+    nyra_branch_id: "risk_governance",
+    domain_pack_id: "generic",
+    now: NOW,
+  }), /policy_rollback_compiler_provenance_missing/);
+
+  const newBinding = registryProofBinding({
+    operationId: "legacy-replacement-000001",
+    snapshotDigest: snapshot.snapshot_digest,
+  });
+  await assert.rejects(store.activate({
+    tenant_id: "codexai",
+    operation_id: "legacy-replacement-000001",
+    snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
+    activation_attestation: { proof: "replacement" },
+    proof_binding: newBinding,
+    core_receipt: { id: "legacy-replacement-receipt" },
+    core_branch_id: "nyra_policy_registry",
+    nyra_branch_id: "risk_governance",
+    domain_pack_id: "generic",
+    now: NOW,
+  }), /policy_registry_compiler_provenance_missing/);
+  assert.equal(consumeCalls, 0);
+
+  const v2Binding = structuredClone(newBinding);
+  delete v2Binding.compiler_provenance_digest;
+  await assert.rejects(store.reconcile({
+    tenant_id: "codexai",
+    operation_id: newBinding.operation_id,
+    operation: "activate_policy_snapshot",
+    snapshot_digest: snapshot.snapshot_digest,
+    core_receipt: { id: "legacy-v2-reconcile" },
+    consumption_proof: registryConsumption(newBinding, "legacy-v2-reconcile"),
+    proof_binding: v2Binding,
+  }), /policy_proof_binding_invalid/);
+  assert.equal((await store.status()).state, "ready");
+});
+
 test("PostgreSQL registry latches persisted snapshot, binding and quorum tamper as corrupt", async () => {
   const snapshot = compilePolicySnapshot({
     tenant_id: "codexai",
@@ -709,6 +1102,16 @@ test("PostgreSQL registry latches persisted snapshot, binding and quorum tamper 
       mutate() {},
       quorumReady: false,
     },
+    {
+      name: "compiler-provenance",
+      mutate(row) { row.active_compiler_provenance.snapshot_digest = "9".repeat(64); },
+      quorumReady: true,
+    },
+    {
+      name: "compiler-provenance-deleted-after-v3-binding",
+      mutate(row) { row.active_compiler_provenance = null; },
+      quorumReady: true,
+    },
   ];
 
   for (const scenario of cases) {
@@ -720,6 +1123,7 @@ test("PostgreSQL registry latches persisted snapshot, binding and quorum tamper 
         binding: structuredClone(binding),
         policy_registry_attestation: { proof: `persisted-${scenario.name}` },
       },
+      active_compiler_provenance: compilerProvenance(snapshot),
       history: [],
       state_status: "ready",
     };
@@ -727,14 +1131,19 @@ test("PostgreSQL registry latches persisted snapshot, binding and quorum tamper 
     pool.states.set("codexai", row);
     const store = createPostgresNyraPolicyRegistryStore({
       pool,
-      verifyActivationSnapshot: (value, supplied) => ({
-        ok: scenario.quorumReady,
-        signature_verified: scenario.quorumReady,
-        tenant_id: supplied.tenant_id,
-        snapshot_digest: value.snapshot_digest,
-        verified_roles: scenario.quorumReady ? ["core", "nyra"] : ["core"],
-        independent_key_count: scenario.quorumReady ? 2 : 1,
-      }),
+      verifyActivationSnapshot: (value, provenance, supplied) => verifiedActivation(
+        value,
+        provenance,
+        supplied,
+        {
+          ok: scenario.quorumReady,
+          signature_verified: scenario.quorumReady,
+          compiler_provenance_bound: scenario.quorumReady,
+          verified_roles: scenario.quorumReady ? ["core", "nyra"] : ["core"],
+          independent_key_count: scenario.quorumReady ? 2 : 1,
+        },
+      ),
+      verifyCompilerProvenanceRecord,
     });
     const input = {
       tenant_id: "codexai",
@@ -770,13 +1179,11 @@ test("PostgreSQL registry fails closed while a consumed-receipt boundary is pend
     now: NOW,
   });
   const pool = new FakePolicyRegistryPgPool();
-  const verifyActivationSnapshot = (value, binding) => ({
-    ok: true, signature_verified: true, tenant_id: binding.tenant_id,
-    snapshot_digest: value.snapshot_digest, verified_roles: ["core", "nyra"], independent_key_count: 2,
-  });
+  const verifyActivationSnapshot = verifiedActivation;
   const coreReceipt = { id: "pg-receipt-crash-000001" };
   const input = {
     tenant_id: "codexai", operation_id: "pg-activate-crash-000001", snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
     activation_attestation: { proof: "pg-crash-activation" },
     proof_binding: registryProofBinding({
       operationId: "pg-activate-crash-000001",
@@ -786,7 +1193,7 @@ test("PostgreSQL registry fails closed while a consumed-receipt boundary is pend
     nyra_branch_id: "risk_governance", domain_pack_id: "generic", now: NOW,
   };
   const interrupted = createPostgresNyraPolicyRegistryStore({
-    pool, verifyActivationSnapshot,
+    pool, verifyActivationSnapshot, verifyCompilerProvenanceRecord,
     consumeCoreReceipt: () => { throw new Error("simulated_receipt_boundary_interruption"); },
   });
   await assert.rejects(interrupted.activate(input), /simulated_receipt_boundary_interruption/);
@@ -797,7 +1204,11 @@ test("PostgreSQL registry fails closed while a consumed-receipt boundary is pend
     input.proof_binding,
     "crash-recovery-000001",
   );
-  const restarted = createPostgresNyraPolicyRegistryStore({ pool, verifyActivationSnapshot });
+  const restarted = createPostgresNyraPolicyRegistryStore({
+    pool,
+    verifyActivationSnapshot,
+    verifyCompilerProvenanceRecord,
+  });
   const reconciled = await restarted.reconcile({
     tenant_id: "codexai", operation_id: input.operation_id,
     operation: "activate_policy_snapshot", snapshot_digest: snapshot.snapshot_digest,
@@ -810,6 +1221,151 @@ test("PostgreSQL registry fails closed while a consumed-receipt boundary is pend
     nyra_branch_id: "risk_governance", domain_pack_id: "generic",
     satisfied_gates: ["core_allow"], now: NOW,
   })).verdict, "ALLOW");
+});
+
+test("PostgreSQL registry revalidates and latches tampered proposed provenance before reconciliation", async () => {
+  const snapshot = compilePolicySnapshot({
+    tenant_id: "codexai",
+    leaf_pack_ids: ["tenant/codexai/action/new-action@1.0.0"],
+    packs: [corePack, activate(candidate())],
+    trusted_issuers: trustedIssuers,
+    trusted_core_pack_digests: [policyPackDigest(corePack)],
+    domain_pack_id: "generic",
+    now: NOW,
+  });
+  const pool = new FakePolicyRegistryPgPool();
+  const operationId = "pg-proposed-tamper-000001";
+  const binding = registryProofBinding({
+    operationId,
+    snapshotDigest: snapshot.snapshot_digest,
+  });
+  const receipt = { id: "pg-proposed-tamper-receipt" };
+  const input = {
+    tenant_id: "codexai",
+    operation_id: operationId,
+    snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
+    activation_attestation: { proof: "proposed-tamper" },
+    proof_binding: binding,
+    core_receipt: receipt,
+    core_branch_id: "nyra_policy_registry",
+    nyra_branch_id: "risk_governance",
+    domain_pack_id: "generic",
+    now: NOW,
+  };
+  const interrupted = createPostgresNyraPolicyRegistryStore({
+    pool,
+    verifyActivationSnapshot: verifiedActivation,
+    verifyCompilerProvenanceRecord,
+    consumeCoreReceipt: () => { throw new Error("simulated_boundary_interruption"); },
+  });
+  await assert.rejects(interrupted.activate(input), /simulated_boundary_interruption/);
+  const pending = pool.operations.get(`codexai:${operationId}`);
+  pending.proposed_state.active_compiler_provenance.snapshot_digest = "0".repeat(64);
+
+  const restarted = createPostgresNyraPolicyRegistryStore({
+    pool,
+    verifyActivationSnapshot: verifiedActivation,
+    verifyCompilerProvenanceRecord,
+  });
+  await assert.rejects(restarted.reconcile({
+    tenant_id: "codexai",
+    operation_id: operationId,
+    operation: "activate_policy_snapshot",
+    snapshot_digest: snapshot.snapshot_digest,
+    core_receipt: receipt,
+    consumption_proof: registryConsumption(binding, "proposed-tamper-reconcile"),
+    proof_binding: binding,
+    core_branch_id: "nyra_policy_registry",
+    nyra_branch_id: "risk_governance",
+    domain_pack_id: "generic",
+    now: NOW,
+  }), /policy_registry_compiler_provenance_invalid/);
+  assert.equal(pool.states.get("codexai").state_status, "corrupt");
+  const status = await restarted.status();
+  assert.equal(status.state, "corrupt");
+  assert.equal(status.ready, false);
+});
+
+test("PostgreSQL registry never finalizes tampered proposed public results", async () => {
+  const snapshot = compilePolicySnapshot({
+    tenant_id: "codexai",
+    leaf_pack_ids: ["tenant/codexai/action/new-action@1.0.0"],
+    packs: [corePack, activate(candidate())],
+    trusted_issuers: trustedIssuers,
+    trusted_core_pack_digests: [policyPackDigest(corePack)],
+    domain_pack_id: "generic",
+    now: NOW,
+  });
+  const cases = [
+    { name: "tenant", mutate(result) { result.tenant_id = "other-tenant"; } },
+    { name: "digest", mutate(result) { result.snapshot_digest = "0".repeat(64); } },
+    { name: "success", mutate(result) { result.activated = false; } },
+    { name: "extra", mutate(result) { result.extra = "smuggled"; } },
+    { name: "authority", mutate(result) { result.execution_authorized = true; } },
+  ];
+  for (const scenario of cases) {
+    const pool = new FakePolicyRegistryPgPool();
+    const operationId = `pg-public-result-${scenario.name}-000001`;
+    const binding = registryProofBinding({ operationId, snapshotDigest: snapshot.snapshot_digest });
+    const receipt = { id: `pg-public-result-${scenario.name}-receipt` };
+    const input = {
+      tenant_id: "codexai",
+      operation_id: operationId,
+      snapshot,
+      compiler_provenance: compilerProvenance(snapshot),
+      activation_attestation: { proof: scenario.name },
+      proof_binding: binding,
+      core_receipt: receipt,
+      core_branch_id: "nyra_policy_registry",
+      nyra_branch_id: "risk_governance",
+      domain_pack_id: "generic",
+      now: NOW,
+    };
+    const interrupted = createPostgresNyraPolicyRegistryStore({
+      pool,
+      verifyActivationSnapshot: verifiedActivation,
+      verifyCompilerProvenanceRecord,
+      consumeCoreReceipt: () => { throw new Error("simulated_public_result_boundary"); },
+    });
+    await assert.rejects(interrupted.activate(input), /simulated_public_result_boundary/);
+    const pending = pool.operations.get(`codexai:${operationId}`);
+    scenario.mutate(pending.proposed_state.public_result);
+    const finalizeWritesBefore = pool.queries.filter((query) =>
+      query.includes("SET revision=revision+1")).length;
+    let receiptCalls = 0;
+    const restarted = createPostgresNyraPolicyRegistryStore({
+      pool,
+      verifyActivationSnapshot: verifiedActivation,
+      verifyCompilerProvenanceRecord,
+      consumeCoreReceipt: () => {
+        receiptCalls += 1;
+        throw new Error("receipt_must_not_run");
+      },
+    });
+    await assert.rejects(restarted.reconcile({
+      tenant_id: "codexai",
+      operation_id: operationId,
+      operation: "activate_policy_snapshot",
+      snapshot_digest: snapshot.snapshot_digest,
+      core_receipt: receipt,
+      consumption_proof: registryConsumption(binding, `public-result-${scenario.name}`),
+      proof_binding: binding,
+      core_branch_id: "nyra_policy_registry",
+      nyra_branch_id: "risk_governance",
+      domain_pack_id: "generic",
+      now: NOW,
+    }), /policy_registry_state_corrupt/, scenario.name);
+    const persisted = pool.states.get("codexai");
+    assert.equal(persisted.state_status, "corrupt", scenario.name);
+    assert.equal(Number(persisted.revision), 0, scenario.name);
+    assert.equal(persisted.active_snapshot, null, scenario.name);
+    assert.equal(pool.operations.get(`codexai:${operationId}`).status, "pending", scenario.name);
+    assert.equal(pool.queries.filter((query) => query.includes("SET revision=revision+1")).length,
+      finalizeWritesBefore, scenario.name);
+    assert.equal(receiptCalls, 0, scenario.name);
+    assert.equal((await restarted.status()).state, "corrupt", scenario.name);
+  }
 });
 
 test("PostgreSQL registry serializes concurrent activation replay for one tenant operation", async () => {
@@ -826,14 +1382,13 @@ test("PostgreSQL registry serializes concurrent activation replay for one tenant
   const proof = registryConsumption(proofBinding, "concurrent-000001");
   const options = {
     pool,
-    verifyActivationSnapshot: (value, binding) => ({
-      ok: true, signature_verified: true, tenant_id: binding.tenant_id,
-      snapshot_digest: value.snapshot_digest, verified_roles: ["core", "nyra"], independent_key_count: 2,
-    }),
+    verifyActivationSnapshot: verifiedActivation,
+    verifyCompilerProvenanceRecord,
     consumeCoreReceipt: async () => proof,
   };
   const input = {
     tenant_id: "codexai", operation_id: "pg-concurrent-000001", snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
     activation_attestation: { proof: "pg-concurrent-activation" },
     proof_binding: proofBinding,
     core_receipt: { id: "pg-concurrent-receipt-000001" }, core_branch_id: "nyra_policy_registry",

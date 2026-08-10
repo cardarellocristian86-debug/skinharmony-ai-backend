@@ -18,11 +18,14 @@ const TENANT_SECRET = "policy-registry-tenant-context-secret-0123456789012345678
 const OWNER_SECRET = "policy-registry-owner-context-secret-01234567890123456789";
 const WORK_SECRET = "policy-registry-dtt-work-secret-01234567890123456789";
 const OWNER_SUBJECT = `osf_${"a".repeat(64)}`;
+const CATALOG_DIGEST = "7".repeat(64);
+const TRUST_CATALOG_DIGEST = "8".repeat(64);
+const PROVENANCE_DIGEST = "9".repeat(64);
 
 const PURPOSE = Object.freeze({
-  activate: "nyra_policy_registry_snapshot_activate_v2",
-  rollback: "nyra_policy_registry_snapshot_rollback_v2",
-  reconcile: "nyra_policy_registry_snapshot_reconcile_v2",
+  activate: "nyra_policy_registry_snapshot_activate_v3",
+  rollback: "nyra_policy_registry_snapshot_rollback_v3",
+  reconcile: "nyra_policy_registry_snapshot_reconcile_v3",
 });
 
 function stable(value) {
@@ -99,6 +102,122 @@ function recalculateSnapshotDigest(snapshot) {
     snapshot_digest: crypto.createHash("sha256")
       .update(JSON.stringify(stable(body)))
       .digest("hex"),
+  };
+}
+
+function compilerInput(overrides = {}) {
+  return {
+    schema_version: "nyra_policy_compiler_input_v1",
+    leaf_pack_ids: ["tenant/policy-registry@1.0.0"],
+    packs: [{ test_fixture: "public-policy-pack-bundle" }],
+    ...overrides,
+  };
+}
+
+function compilerStatus(overrides = {}) {
+  return {
+    schema_version: "nyra_policy_compiler_provenance_status_v1",
+    ready: true,
+    clock_ready: true,
+    mode: "core_deterministic_recompile",
+    compiler_algorithm: "nyra_policy_registry_v1",
+    verification_algorithm: "sha256_canonical_json+ed25519",
+    traversal_budget: 256,
+    compiler_build_commit: "a".repeat(40),
+    catalog_digest: CATALOG_DIGEST,
+    trust_catalog_digest: TRUST_CATALOG_DIGEST,
+    issuer_count: 2,
+    independent_key_count: 2,
+    trusted_core_pack_digest_count: 1,
+    known_core_branch_count: 1,
+    known_nyra_branch_count: 1,
+    known_domain_pack_count: 1,
+    execution_authorized: false,
+    error: null,
+    ...overrides,
+  };
+}
+
+function proofLifecycleStatus(overrides = {}) {
+  return {
+    ready: true,
+    backend: "postgresql",
+    proof_schema_version: "nyra_policy_registry_proof_v3",
+    attestation_schema_version: "nyra_policy_activation_attestation_v3",
+    receipt_schema_version: "core_policy_activation_receipt_v3",
+    compiler_provenance_binding_required: true,
+    ...overrides,
+  };
+}
+
+function staticCompilerVerifier(overrides = {}) {
+  return {
+    status() { return compilerStatus(overrides); },
+    verify(input) { return compilerProvenance(input.snapshot); },
+    verifyPersistedRecord(_record, binding) {
+      return compilerRecordVerification({ snapshot_digest: binding.snapshot_digest });
+    },
+  };
+}
+
+function compilerProvenance(snapshot) {
+  return {
+    schema_version: "nyra_policy_compiler_provenance_v1",
+    tenant_id: TENANT,
+    domain_pack_id: "generic",
+    snapshot_digest: snapshot.snapshot_digest,
+    provenance_digest: PROVENANCE_DIGEST,
+    compiler_build_commit: "a".repeat(40),
+    catalog_digest: CATALOG_DIGEST,
+    trust_catalog_digest: TRUST_CATALOG_DIGEST,
+    execution_authorized: false,
+  };
+}
+
+function compilerRecordVerification(snapshot, overrides = {}) {
+  return {
+    ok: true,
+    record_integrity_verified: true,
+    derivation_reverified: false,
+    tenant_id: TENANT,
+    domain_pack_id: "generic",
+    snapshot_digest: snapshot.snapshot_digest,
+    compiler_provenance_digest: PROVENANCE_DIGEST,
+    compiler_build_commit: "a".repeat(40),
+    catalog_digest: CATALOG_DIGEST,
+    trust_catalog_digest: TRUST_CATALOG_DIGEST,
+    execution_authorized: false,
+    error: null,
+    ...overrides,
+  };
+}
+
+function trustCatalogFixture(overrides = {}) {
+  return {
+    schema_version: "nyra_policy_pack_trust_catalog_v1",
+    issuers: [
+      {
+        issuer_id: "core-issuer",
+        key_id: "core-key",
+        role: "core",
+        algorithm: "Ed25519",
+        public_key: "ZmFrZS1wdWJsaWMta2V5LWNvcmU=",
+        public_key_fingerprint: "1".repeat(64),
+      },
+      {
+        issuer_id: "nyra-issuer",
+        key_id: "nyra-key",
+        role: "nyra",
+        algorithm: "Ed25519",
+        public_key: "ZmFrZS1wdWJsaWMta2V5LW55cmE=",
+        public_key_fingerprint: "2".repeat(64),
+      },
+    ],
+    trusted_core_pack_digests: ["3".repeat(64)],
+    known_core_branch_ids: ["nyra_policy_registry"],
+    known_nyra_branch_ids: ["risk_governance"],
+    known_domain_pack_ids: ["generic"],
+    ...overrides,
   };
 }
 
@@ -235,7 +354,12 @@ function operationBody(kind, overrides = {}) {
     confirmation_reference: `${kind}-owner-confirmation-0001`,
   };
   const body = kind === "activate"
-    ? { ...common, domain_pack_id: "generic", snapshot: policySnapshot() }
+    ? {
+        ...common,
+        domain_pack_id: "generic",
+        snapshot: policySnapshot(),
+        compiler_input: compilerInput(),
+      }
     : kind === "rollback"
       ? { ...common, domain_pack_id: "generic", target_snapshot_digest: "2".repeat(64) }
       : common;
@@ -245,7 +369,8 @@ function operationBody(kind, overrides = {}) {
 async function startFixture({
   proofRequired = true,
   coordinatorReady = true,
-  proofStatus = async () => ({ ready: true, backend: "postgresql" }),
+  compilerReady = true,
+  proofStatus = async () => proofLifecycleStatus(),
 } = {}) {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-api-"));
   const calls = {
@@ -256,8 +381,13 @@ async function startFixture({
     activate: [],
     rollback: [],
     reconcile: [],
+    compilerVerify: [],
+    compilerRecordVerify: [],
   };
   let activationError = null;
+  let compilerError = null;
+  let compilerRecordVerificationOverrides = {};
+  let compilerRecordVerificationTransform = (value) => value;
   const coordinator = {
     async status() {
       calls.status += 1;
@@ -281,6 +411,7 @@ async function startFixture({
         work_id: input.work_id,
         preflight_id: input.preflight_id,
         intent_digest: "3".repeat(64),
+        compiler_provenance_digest: PROVENANCE_DIGEST,
         proof_status: "consumed",
         idempotent_replay: calls.activate.length > 1,
         receipt: { signature: "must-not-leak" },
@@ -298,6 +429,7 @@ async function startFixture({
         activation_generation: 2,
         idempotent_replay: false,
         proof_status: "consumed",
+        compiler_provenance_digest: PROVENANCE_DIGEST,
       };
     },
     async reconcile(input) {
@@ -307,15 +439,25 @@ async function startFixture({
         snapshot_digest: "4".repeat(64),
         idempotent_replay: true,
         proof_status: "consumed",
+        compiler_provenance_digest: PROVENANCE_DIGEST,
       };
     },
   };
   const registryStore = {
     evaluate: () => ({ verdict: "DENY", reasons: ["policy_snapshot_missing"], snapshot_present: false }),
     async status() {
-      return { configured: true, backend: "postgresql", restart_durable: true, distributed: true, state: "ready", ready: true };
+      return {
+        configured: true,
+        backend: "postgresql",
+        restart_durable: true,
+        distributed: true,
+        compiler_provenance_persistence: true,
+        compiler_input_persisted: false,
+        state: "ready",
+        ready: true,
+      };
     },
-    async activate() {}, async rollback() {}, async reconcile() {},
+    async activate() {}, async rollback() {}, async resolveRollbackTarget() {}, async reconcile() {},
   };
   const proofService = { status: proofStatus };
   const client = { async probe() { return true; }, status() { return { ready: true, upstream_verified: true }; } };
@@ -323,6 +465,31 @@ async function startFixture({
     algorithm: "Ed25519", custody: "external_remote_signer", key_id: "core-key",
     public_key: crypto.generateKeyPairSync("ed25519").publicKey,
     async signPayload() {}, async probe() { return true; }, health() { return { signer_state: "ready" }; },
+  };
+  const compilerVerifier = {
+    status() {
+      return compilerStatus({
+        ready: compilerReady,
+        clock_ready: compilerReady,
+        error: compilerReady ? null : "policy_compiler_clock_unavailable",
+      });
+    },
+    verify(input) {
+      calls.compilerVerify.push(structuredClone(input));
+      if (compilerError) throw compilerError;
+      return compilerProvenance(input.snapshot);
+    },
+    verifyPersistedRecord(record, binding) {
+      calls.compilerRecordVerify.push({
+        record: structuredClone(record),
+        binding: structuredClone(binding),
+      });
+      if (compilerError) throw compilerError;
+      return compilerRecordVerificationTransform(compilerRecordVerification(
+        { snapshot_digest: binding.snapshot_digest },
+        compilerRecordVerificationOverrides,
+      ));
+    },
   };
   const { app } = createUniversalCoreService({
     storageRoot,
@@ -332,6 +499,12 @@ async function startFixture({
     dttAgentIdentitySigningSecret: WORK_SECRET,
     nyraPolicyRegistryProofEnabled: true,
     nyraPolicyRegistryProofRequired: proofRequired,
+    nyraPolicyRegistryCompilerProvenanceEnabled: true,
+    nyraPolicyRegistryCompilerProvenanceRequired: true,
+    nyraPolicyRegistryCompilerProvenanceMode: "core_deterministic_recompile",
+    nyraPolicyRegistryCompilerCatalogDigest: CATALOG_DIGEST,
+    nyraPolicyRegistryCompilerTrustCatalogDigest: TRUST_CATALOG_DIGEST,
+    nyraPolicyRegistryCompilerProvenanceVerifier: compilerVerifier,
     nyraPolicyRegistryCoreSignerMode: "remote",
     nyraPolicyRegistryPostgresPool: {},
     nyraPolicyRegistryCoreSigner: signer,
@@ -358,6 +531,13 @@ async function startFixture({
   return {
     storageRoot, calls, coordinator, base, server, send,
     setActivationError(error) { activationError = error; },
+    setCompilerError(error) { compilerError = error; },
+    setCompilerRecordVerificationOverrides(overrides = {}) {
+      compilerRecordVerificationOverrides = overrides;
+    },
+    setCompilerRecordVerificationTransform(transform = (value) => value) {
+      compilerRecordVerificationTransform = transform;
+    },
   };
 }
 
@@ -372,6 +552,23 @@ test("Policy Registry routes bind gateway, DTT Work, stable owner approval and f
     const health = await healthResponse.json();
     assert.equal(health.nyra_policy_registry.proof_lifecycle.ready, true);
     assert.equal(health.nyra_policy_registry.proof_e2e.e2e_verified, true);
+    assert.equal(health.nyra_policy_registry.compiler_provenance.ready, true);
+    assert.equal(health.nyra_policy_registry.compiler_provenance.required, true);
+    assert.equal(health.nyra_policy_registry.compiler_provenance.compiler_input_persisted, false);
+    assert.equal(health.nyra_policy_registry.compiler_provenance_persistence, true);
+    assert.equal(health.nyra_policy_registry.compiler_input_persisted, false);
+    assert.equal(health.nyra_policy_registry.proof.proof_schema_version,
+      "nyra_policy_registry_proof_v3");
+    assert.deepEqual(
+      Object.keys(health.nyra_policy_registry.compiler_provenance).sort(),
+      [
+        "enabled", "required", "mode", "configuration_valid", "configured", "ready",
+        "state", "render_gate_required", "schema_version", "provenance_schema_version",
+        "compiler_algorithm", "verification_algorithm", "traversal_budget",
+        "compiler_build_commit", "catalog_digest", "trust_catalog_digest",
+        "compiler_input_persisted", "execution_authorized", "error",
+      ].sort(),
+    );
     assert.equal(fixture.calls.activate.length, 0);
 
     const baseBody = operationBody("activate");
@@ -383,9 +580,15 @@ test("Policy Registry routes bind gateway, DTT Work, stable owner approval and f
     assert.equal(first.json.authorization.provider_execution_authorized, false);
     assert.equal(first.json.activation.execution_authorized, false);
     assert.equal(first.json.activation.caller_authority, false);
+    assert.equal(first.json.activation.compiler_provenance_digest, PROVENANCE_DIGEST);
     assert.equal(Object.hasOwn(first.json.activation, "receipt"), false);
     assert.equal(Object.hasOwn(first.json.activation, "activation_attestation"), false);
     assert.equal(JSON.stringify(first.json).includes("must-not-leak"), false);
+    assert.equal(JSON.stringify(first.json).includes("public-policy-pack-bundle"), false);
+    assert.equal(fixture.calls.compilerVerify.length, 1);
+    assert.equal(fixture.calls.compilerVerify[0].tenant_id, TENANT);
+    assert.deepEqual(fixture.calls.compilerVerify[0].compiler_input, firstBody.compiler_input);
+    assert.equal(Object.hasOwn(fixture.calls.activate[0], "compiler_provenance"), false);
     const secondBody = withOwner("activate", baseBody, { issuedAt: new Date().toISOString() });
     const second = await fixture.send("activate", secondBody);
     assert.equal(second.status, 200, JSON.stringify(second.json));
@@ -403,19 +606,44 @@ test("Policy Registry routes bind gateway, DTT Work, stable owner approval and f
     });
     assert.equal(approval(fixture.calls.activate[0]), approval(fixture.calls.activate[1]));
 
+    const changedCompilerBase = operationBody("activate", {
+      compiler_input: compilerInput({
+        packs: [{ test_fixture: "changed-public-policy-pack-bundle" }],
+      }),
+    });
+    const changedCompiler = await fixture.send(
+      "activate",
+      withOwner("activate", changedCompilerBase),
+    );
+    assert.equal(changedCompiler.status, 200, JSON.stringify(changedCompiler.json));
+    assert.notEqual(
+      fixture.calls.activate[0].authorization_digest,
+      fixture.calls.activate[2].authorization_digest,
+    );
+    assert.notEqual(approval(fixture.calls.activate[0]), approval(fixture.calls.activate[2]));
+
     const rollbackBody = operationBody("rollback");
     const rollback = await fixture.send("rollback", withOwner("rollback", rollbackBody));
     assert.equal(rollback.status, 200, JSON.stringify(rollback.json));
     assert.equal(fixture.calls.rollback[0].work_id, WORK_A);
+    assert.equal(rollback.json.rollback.compiler_provenance_digest, PROVENANCE_DIGEST);
 
     const reconcileBody = operationBody("reconcile");
     const reconciliation = await fixture.send("reconcile", withOwner("reconcile", reconcileBody));
     assert.equal(reconciliation.status, 200, JSON.stringify(reconciliation.json));
+    assert.equal(reconciliation.json.reconciliation.compiler_provenance_digest, PROVENANCE_DIGEST);
     assert.deepEqual(fixture.calls.reconcile[0], {
       tenant_id: TENANT,
       operation_id: "reconcile-operation-0001",
       expected_work_id: WORK_A,
     });
+    const auditLog = fs.readFileSync(
+      path.join(fixture.storageRoot, "audit", "events.jsonl"),
+      "utf8",
+    );
+    assert.equal(auditLog.includes("public-policy-pack-bundle"), false);
+    assert.equal(auditLog.includes("must-not-leak"), false);
+    assert.equal(auditLog.includes(PROVENANCE_DIGEST), true);
   } finally {
     await new Promise((resolve) => fixture.server.close(resolve));
   }
@@ -462,6 +690,30 @@ test("Policy Registry denies caller trust fields, cross-Work and owner tamper be
     const callerReconcile = await fixture.send("reconcile", withOwner("reconcile", callerReconcileBase));
     assert.equal(callerReconcile.status, 400);
     assert.equal(fixture.calls.reconcile.length, 0);
+
+    for (const forbidden of [
+      { compiler_input: compilerInput() },
+      { compiler_provenance: { forged: true } },
+      { compiler_provenance_digest: "f".repeat(64) },
+      { trust_catalog: { forged: true } },
+      { traversal_budget: 1 },
+    ]) {
+      const rollbackBase = operationBody("rollback", forbidden);
+      const denied = await fixture.send("rollback", withOwner("rollback", rollbackBase));
+      assert.equal(denied.status, 400, JSON.stringify(denied.json));
+      assert.equal(denied.json.error, "policy_registry_request_schema_invalid");
+    }
+    assert.equal(fixture.calls.rollback.length, 0);
+
+    const reconcileCompilerBase = operationBody("reconcile", {
+      compiler_provenance_digest: "f".repeat(64),
+    });
+    const reconcileCompiler = await fixture.send(
+      "reconcile",
+      withOwner("reconcile", reconcileCompilerBase),
+    );
+    assert.equal(reconcileCompiler.status, 400);
+    assert.equal(fixture.calls.reconcile.length, 0);
   } finally {
     await new Promise((resolve) => fixture.server.close(resolve));
   }
@@ -497,6 +749,143 @@ test("structurally forged snapshots are denied before proof, outbound or persist
   }
 });
 
+test("invalid compiler bundles and snapshot mismatches stop before proof, Nyra or store", async () => {
+  const fixture = await startFixture();
+  try {
+    const cases = [
+      ["policy_compiler_input_invalid", 400],
+      ["policy_compiler_snapshot_mismatch", 400],
+      ["policy_compiler_clock_unavailable", 503],
+    ];
+    for (const [code, status] of cases) {
+      const body = operationBody("activate", {
+        operation_id: `activate-${code}`,
+        compiler_input: compilerInput({
+          packs: [{ forged_provenance_or_trust: "malicious-public-bundle" }],
+        }),
+      });
+      fixture.setCompilerError(new Error(code));
+      const before = {
+        status: fixture.calls.status,
+        proof: fixture.calls.proof,
+        outbound: fixture.calls.outbound,
+        persist: fixture.calls.persist,
+        activate: fixture.calls.activate.length,
+      };
+      const response = await fixture.send("activate", withOwner("activate", body));
+      assert.equal(response.status, status, JSON.stringify(response.json));
+      assert.equal(response.json.error, code);
+      assert.equal(fixture.calls.status, before.status);
+      assert.equal(fixture.calls.proof, before.proof);
+      assert.equal(fixture.calls.outbound, before.outbound);
+      assert.equal(fixture.calls.persist, before.persist);
+      assert.equal(fixture.calls.activate.length, before.activate);
+      assert.equal(JSON.stringify(response.json).includes("malicious-public-bundle"), false);
+    }
+    fixture.setCompilerError(null);
+  } finally {
+    await new Promise((resolve) => fixture.server.close(resolve));
+  }
+});
+
+test("compiler verification echoes are pinned before authorization or coordinator side effects", async () => {
+  const fixture = await startFixture();
+  try {
+    const cases = [
+      { compiler_build_commit: "b".repeat(40) },
+      { catalog_digest: "c".repeat(64) },
+      { trust_catalog_digest: "d".repeat(64) },
+      {
+        compiler_build_commit: "b".repeat(40),
+        catalog_digest: "c".repeat(64),
+        trust_catalog_digest: "d".repeat(64),
+      },
+    ];
+    for (const [index, overrides] of cases.entries()) {
+      fixture.setCompilerRecordVerificationOverrides(overrides);
+      const body = operationBody("activate", {
+        operation_id: `activate-forged-compiler-echo-${index}`,
+      });
+      const before = {
+        status: fixture.calls.status,
+        proof: fixture.calls.proof,
+        outbound: fixture.calls.outbound,
+        persist: fixture.calls.persist,
+        activate: fixture.calls.activate.length,
+      };
+      const response = await fixture.send("activate", withOwner("activate", body));
+      assert.equal(response.status, 400, JSON.stringify(response.json));
+      assert.equal(response.json.error, "policy_compiler_provenance_invalid");
+      assert.equal(fixture.calls.status, before.status);
+      assert.equal(fixture.calls.proof, before.proof);
+      assert.equal(fixture.calls.outbound, before.outbound);
+      assert.equal(fixture.calls.persist, before.persist);
+      assert.equal(fixture.calls.activate.length, before.activate);
+    }
+  } finally {
+    await new Promise((resolve) => fixture.server.close(resolve));
+  }
+});
+
+test("compiler verification outcome requires plain own enumerable data descriptors", async () => {
+  const fixture = await startFixture();
+  let getterCalls = 0;
+  try {
+    const cases = [
+      (value) => Object.assign(Object.create({ forged_authority: true }), value),
+      (value) => {
+        Object.defineProperty(value, "compiler_build_commit", {
+          enumerable: true,
+          configurable: true,
+          get() {
+            getterCalls += 1;
+            return "a".repeat(40);
+          },
+        });
+        return value;
+      },
+      (value) => {
+        Object.defineProperty(value, "catalog_digest", {
+          ...Object.getOwnPropertyDescriptor(value, "catalog_digest"),
+          enumerable: false,
+        });
+        return value;
+      },
+      (value) => {
+        Object.defineProperty(value, Symbol("forged_authority"), {
+          enumerable: true,
+          value: true,
+        });
+        return value;
+      },
+    ];
+    for (const [index, transform] of cases.entries()) {
+      fixture.setCompilerRecordVerificationTransform(transform);
+      const body = operationBody("activate", {
+        operation_id: `activate-non-data-compiler-outcome-${index}`,
+      });
+      const before = {
+        status: fixture.calls.status,
+        proof: fixture.calls.proof,
+        outbound: fixture.calls.outbound,
+        persist: fixture.calls.persist,
+        activate: fixture.calls.activate.length,
+      };
+      const response = await fixture.send("activate", withOwner("activate", body));
+      assert.equal(response.status, 400, JSON.stringify(response.json));
+      assert.equal(response.json.error, "policy_compiler_provenance_invalid");
+      assert.equal(fixture.calls.status, before.status);
+      assert.equal(fixture.calls.proof, before.proof);
+      assert.equal(fixture.calls.outbound, before.outbound);
+      assert.equal(fixture.calls.persist, before.persist);
+      assert.equal(fixture.calls.activate.length, before.activate);
+    }
+    assert.equal(getterCalls, 0);
+  } finally {
+    await new Promise((resolve) => fixture.server.close(resolve));
+  }
+});
+
 test("Policy Registry response and audit use a closed error classifier", async () => {
   const fixture = await startFixture();
   const reflectedSecret = "super-private-service-key-value";
@@ -515,6 +904,19 @@ test("Policy Registry response and audit use a closed error classifier", async (
 });
 
 test("Policy Registry readiness gates only required mode while configuration errors always fail", async () => {
+  const codeDark = await appHealth({
+    storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-code-dark-health-")),
+    nyraPolicyRegistryProofEnabled: false,
+    nyraPolicyRegistryProofRequired: false,
+    nyraPolicyRegistryCoreSignerMode: "disabled",
+    nyraPolicyRegistryCompilerProvenanceEnabled: false,
+    nyraPolicyRegistryCompilerProvenanceRequired: false,
+    nyraPolicyRegistryCompilerProvenanceMode: "disabled",
+  });
+  assert.equal(codeDark.status, 200);
+  assert.equal(codeDark.json.nyra_policy_registry.compiler_provenance.state, "disabled");
+  assert.equal(codeDark.json.nyra_policy_registry.compiler_provenance.render_gate_required, false);
+
   const optional = await startFixture({ proofRequired: false, coordinatorReady: false });
   try {
     const response = await fetch(`${optional.base}/healthz`);
@@ -538,6 +940,38 @@ test("Policy Registry readiness gates only required mode while configuration err
   } finally {
     await new Promise((resolve) => required.server.close(resolve));
   }
+
+  const compilerUnavailable = await startFixture({
+    proofRequired: false,
+    coordinatorReady: false,
+    compilerReady: false,
+  });
+  try {
+    const response = await fetch(`${compilerUnavailable.base}/healthz`);
+    const health = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(health.render_ready, false);
+    assert.equal(health.nyra_policy_registry.compiler_provenance.required, true);
+    assert.equal(health.nyra_policy_registry.compiler_provenance.ready, false);
+    assert.equal(health.nyra_policy_registry.compiler_provenance.render_gate_required, true);
+  } finally {
+    await new Promise((resolve) => compilerUnavailable.server.close(resolve));
+  }
+
+  const proofWithoutCompiler = await appHealth({
+    storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-proof-no-compiler-")),
+    nyraPolicyRegistryProofEnabled: true,
+    nyraPolicyRegistryProofRequired: false,
+    nyraPolicyRegistryCoreSignerMode: "remote",
+    nyraPolicyRegistryCompilerProvenanceEnabled: false,
+    nyraPolicyRegistryCompilerProvenanceRequired: false,
+    nyraPolicyRegistryCompilerProvenanceMode: "disabled",
+  });
+  assert.equal(proofWithoutCompiler.status, 503);
+  assert.equal(
+    proofWithoutCompiler.json.nyra_policy_registry.proof_lifecycle.error,
+    "policy_registry_proof_compiler_provenance_required",
+  );
 });
 
 test("required lifecycle health follows refreshed proof availability", async () => {
@@ -547,7 +981,7 @@ test("required lifecycle health follows refreshed proof availability", async () 
     proofRequired: true,
     proofStatus: async () => {
       proofStatusCalls += 1;
-      return { ready: proofReady, backend: "postgresql" };
+      return proofLifecycleStatus({ ready: proofReady });
     },
   });
   try {
@@ -581,6 +1015,93 @@ async function appHealth(options) {
   }
 }
 
+test("compiler flags, mode, catalog JSON, digests and status fail closed before runtime init", async () => {
+  const base = () => ({
+    storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-compiler-config-")),
+    nyraPolicyRegistryProofEnabled: false,
+    nyraPolicyRegistryProofRequired: false,
+    nyraPolicyRegistryCoreSignerMode: "disabled",
+    nyraPolicyRegistryCompilerProvenanceEnabled: true,
+    nyraPolicyRegistryCompilerProvenanceRequired: true,
+    nyraPolicyRegistryCompilerProvenanceMode: "core_deterministic_recompile",
+    nyraPolicyRegistryCompilerCatalogDigest: CATALOG_DIGEST,
+    nyraPolicyRegistryCompilerTrustCatalogDigest: TRUST_CATALOG_DIGEST,
+    nyraPolicyRegistryCompilerProvenanceVerifier: staticCompilerVerifier(),
+  });
+  const cases = [
+    [{ nyraPolicyRegistryCompilerProvenanceEnabled: "TRUE" },
+      "policy_registry_compiler_enabled_flag_invalid"],
+    [{ nyraPolicyRegistryCompilerProvenanceRequired: "TRUE" },
+      "policy_registry_compiler_required_flag_invalid"],
+    [{
+      nyraPolicyRegistryCompilerProvenanceEnabled: false,
+      nyraPolicyRegistryCompilerProvenanceRequired: true,
+      nyraPolicyRegistryCompilerProvenanceMode: "disabled",
+    }, "policy_registry_compiler_required_without_enabled"],
+    [{ nyraPolicyRegistryCompilerProvenanceMode: "CORE_DETERMINISTIC_RECOMPILE" },
+      "policy_registry_compiler_mode_invalid"],
+    [{ nyraPolicyRegistryCompilerProvenanceMode: "disabled" },
+      "policy_registry_compiler_mode_binding_invalid"],
+    [{ nyraPolicyRegistryCompilerCatalogDigest: "A".repeat(64) },
+      "policy_registry_compiler_catalog_digest_invalid"],
+    [{ nyraPolicyRegistryCompilerTrustCatalogDigest: "0" },
+      "policy_registry_compiler_trust_catalog_digest_invalid"],
+    [{
+      nyraPolicyRegistryCompilerCatalogDigest: "6".repeat(64),
+      nyraPolicyRegistryCompilerProvenanceVerifier: staticCompilerVerifier(),
+    }, "policy_registry_compiler_status_invalid"],
+    [{
+      nyraPolicyRegistryCompilerProvenanceVerifier:
+        staticCompilerVerifier({ extra_authority: true }),
+    }, "policy_registry_compiler_status_invalid"],
+    [{
+      nyraPolicyRegistryCompilerProvenanceVerifier:
+        staticCompilerVerifier({ independent_key_count: 3 }),
+    }, "policy_registry_compiler_status_invalid"],
+  ];
+  for (const [overrides, expected] of cases) {
+    const health = await appHealth({ ...base(), ...overrides });
+    assert.equal(health.status, 503, `${expected}:${JSON.stringify(health.json)}`);
+    assert.equal(health.json.render_ready, false);
+    assert.equal(health.json.nyra_policy_registry.compiler_provenance.error, expected);
+  }
+
+  const catalogCases = [
+    ["{", "policy_registry_compiler_trust_catalog_json_invalid"],
+    [JSON.stringify({ schema_version: "forged" }),
+      "policy_registry_compiler_trust_catalog_invalid"],
+    [JSON.stringify(trustCatalogFixture({
+      issuers: [
+        {
+          ...trustCatalogFixture().issuers[0],
+          public_key: "-----BEGIN PRIVATE KEY-----private-material-----END PRIVATE KEY-----",
+        },
+        trustCatalogFixture().issuers[1],
+      ],
+    })), "policy_registry_compiler_trust_catalog_invalid"],
+  ];
+  for (const [catalogJson, expected] of catalogCases) {
+    const options = base();
+    delete options.nyraPolicyRegistryCompilerProvenanceVerifier;
+    options.nyraPolicyRegistryCompilerTrustCatalogJson = catalogJson;
+    const health = await appHealth(options);
+    assert.equal(health.status, 503);
+    assert.equal(health.json.nyra_policy_registry.compiler_provenance.error, expected);
+    assert.equal(JSON.stringify(health.json).includes("private-material"), false);
+  }
+
+  const traversal = base();
+  delete traversal.nyraPolicyRegistryCompilerProvenanceVerifier;
+  traversal.nyraPolicyRegistryCompilerTrustCatalog = trustCatalogFixture();
+  traversal.nyraPolicyRegistryCompilerTraversalBudget = "0256";
+  const traversalHealth = await appHealth(traversal);
+  assert.equal(traversalHealth.status, 503);
+  assert.equal(
+    traversalHealth.json.nyra_policy_registry.compiler_provenance.error,
+    "policy_registry_compiler_traversal_budget_invalid",
+  );
+});
+
 test("unknown signer configuration errors cannot reflect secrets in health or audit", async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-config-error-"));
   const reflectedSecret = "signer-super-private-service-token";
@@ -588,6 +1109,12 @@ test("unknown signer configuration errors cannot reflect secrets in health or au
     storageRoot,
     nyraPolicyRegistryProofEnabled: true,
     nyraPolicyRegistryProofRequired: false,
+    nyraPolicyRegistryCompilerProvenanceEnabled: true,
+    nyraPolicyRegistryCompilerProvenanceRequired: true,
+    nyraPolicyRegistryCompilerProvenanceMode: "core_deterministic_recompile",
+    nyraPolicyRegistryCompilerCatalogDigest: CATALOG_DIGEST,
+    nyraPolicyRegistryCompilerTrustCatalogDigest: TRUST_CATALOG_DIGEST,
+    nyraPolicyRegistryCompilerProvenanceVerifier: staticCompilerVerifier(),
     nyraPolicyRegistryCoreSignerMode: "remote",
     nyraPolicyRegistryPostgresPool: {},
     nyraPolicyRegistryStore: {
@@ -611,102 +1138,111 @@ test("unknown signer configuration errors cannot reflect secrets in health or au
   assert.equal(audit.includes(reflectedSecret), false);
 });
 
-test("production proof is code-dark when disabled and rejects unpinned signer or private material with zero initialization", async () => {
+test("production compiler is code-dark when disabled and rejects dependency injection with zero initialization", async () => {
   const previousNodeEnv = process.env.NODE_ENV;
   const previousDatabase = process.env.GOVERNED_AGENT_DATABASE_URL;
-  const previousPrivate = process.env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY;
-  const previousTargetCommit = process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT;
   const previousEvidenceSecret = process.env.CORE_EVIDENCE_SIGNING_SECRET;
   process.env.NODE_ENV = "production";
   process.env.CORE_EVIDENCE_SIGNING_SECRET = "e".repeat(64);
   delete process.env.GOVERNED_AGENT_DATABASE_URL;
-  delete process.env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY;
-  delete process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT;
   try {
-    const codeDark = await appHealth({
+    let codeDarkGetterCalls = 0;
+    const codeDarkOptions = {
       storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-production-code-dark-")),
       nyraPolicyRegistryProofEnabled: false,
       nyraPolicyRegistryProofRequired: false,
       nyraPolicyRegistryCoreSignerMode: "disabled",
-    });
+      nyraPolicyRegistryCompilerProvenanceEnabled: false,
+      nyraPolicyRegistryCompilerProvenanceRequired: false,
+      nyraPolicyRegistryCompilerProvenanceMode: "disabled",
+    };
+    for (const field of [
+      "nyraPolicyRegistryCompilerProvenanceVerifier",
+      "nyraPolicyRegistryCompilerTrustCatalog",
+      "nyraPolicyRegistryCompilerTrustCatalogJson",
+      "nyraPolicyRegistryCompilerNow",
+      "nyraPolicyRegistryCompilerTraversalBudget",
+      "nyraPolicyRegistryCompilerCatalogDigest",
+      "nyraPolicyRegistryCompilerTrustCatalogDigest",
+      "nyraPolicyRegistryPostgresPool",
+      "nyraPolicyRegistryCoreSigner",
+      "nyraPolicyRegistryProofService",
+      "nyraPolicyRegistryClient",
+      "nyraPolicyRegistryCoordinator",
+    ]) {
+      Object.defineProperty(codeDarkOptions, field, {
+        enumerable: true,
+        get() { codeDarkGetterCalls += 1; throw new Error("must_not_read_code_dark"); },
+      });
+    }
+    const codeDark = await appHealth(codeDarkOptions);
     assert.equal(codeDark.json.nyra_policy_registry.proof_lifecycle.state, "disabled");
     assert.equal(codeDark.json.nyra_policy_registry.proof_lifecycle.error, null);
+    assert.equal(codeDark.json.nyra_policy_registry.compiler_provenance.state, "disabled");
+    assert.equal(codeDark.json.nyra_policy_registry.compiler_provenance.error, null);
+    assert.equal(codeDarkGetterCalls, 0);
 
-    const missingPin = await appHealth({
-      storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-production-no-pin-")),
+    let injectionGetterCalls = 0;
+    const injectionOptions = {
+      storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-production-di-")),
       nyraPolicyRegistryProofEnabled: true,
       nyraPolicyRegistryProofRequired: true,
       nyraPolicyRegistryCoreSignerMode: "remote",
-    });
-    assert.equal(missingPin.status, 503);
+      nyraPolicyRegistryCompilerProvenanceEnabled: true,
+      nyraPolicyRegistryCompilerProvenanceRequired: true,
+      nyraPolicyRegistryCompilerProvenanceMode: "core_deterministic_recompile",
+    };
+    for (const field of [
+      "nyraPolicyRegistryCompilerProvenanceVerifier",
+      "nyraPolicyRegistryCompilerTrustCatalog",
+      "nyraPolicyRegistryCompilerNow",
+      "nyraPolicyRegistryPostgresPool",
+      "nyraPolicyRegistryCoreSigner",
+      "nyraPolicyRegistryProofService",
+      "nyraPolicyRegistryStore",
+      "nyraPolicyRegistryClient",
+      "nyraPolicyRegistryCoordinator",
+    ]) {
+      Object.defineProperty(injectionOptions, field, {
+        enumerable: true,
+        get() { injectionGetterCalls += 1; throw new Error("must_not_initialize_production_di"); },
+      });
+    }
+    const injectionDenied = await appHealth(injectionOptions);
+    assert.equal(injectionDenied.status, 503);
     assert.equal(
-      missingPin.json.nyra_policy_registry.proof_lifecycle.error,
-      "policy_registry_core_signer_target_commit_mismatch",
+      injectionDenied.json.nyra_policy_registry.compiler_provenance.error,
+      "policy_registry_compiler_production_injection_forbidden",
     );
-    assert.equal(missingPin.json.nyra_policy_registry.proof_e2e.e2e_verified, false);
+    assert.equal(injectionDenied.json.nyra_policy_registry.proof_e2e.e2e_verified, false);
+    assert.equal(injectionGetterCalls, 0);
 
-    const buildCommit = String(
-      process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "",
-    ).trim().toLowerCase();
-    const mismatchTarget = buildCommit === "f".repeat(40) ? "a".repeat(40) : "f".repeat(40);
-    process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT = mismatchTarget;
-    let mismatchCalls = 0;
-    const mismatchNever = () => { mismatchCalls += 1; throw new Error("must_not_run"); };
-    const mismatch = await appHealth({
-      storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-production-pin-mismatch-")),
+    let invalidModeCalls = 0;
+    const invalidModeOptions = {
+      storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-production-mode-")),
       nyraPolicyRegistryProofEnabled: true,
       nyraPolicyRegistryProofRequired: true,
       nyraPolicyRegistryCoreSignerMode: "remote",
-      nyraPolicyRegistryPostgresPool: { query: mismatchNever, connect: mismatchNever },
-      nyraPolicyRegistryCoreSigner: { probe: mismatchNever, health: mismatchNever },
-      nyraPolicyRegistryProofService: { status: mismatchNever },
-      nyraPolicyRegistryStore: { status: mismatchNever, evaluate: mismatchNever },
-      nyraPolicyRegistryClient: { status: mismatchNever, probe: mismatchNever },
-      nyraPolicyRegistryCoordinator: { status: mismatchNever },
+      nyraPolicyRegistryCompilerProvenanceEnabled: true,
+      nyraPolicyRegistryCompilerProvenanceRequired: true,
+      nyraPolicyRegistryCompilerProvenanceMode: "CORE_DETERMINISTIC_RECOMPILE",
+    };
+    Object.defineProperty(invalidModeOptions, "nyraPolicyRegistryPostgresPool", {
+      enumerable: true,
+      get() { invalidModeCalls += 1; throw new Error("must_not_initialize_invalid_config"); },
     });
-    assert.equal(mismatch.status, 503);
+    const invalidMode = await appHealth(invalidModeOptions);
+    assert.equal(invalidMode.status, 503);
     assert.equal(
-      mismatch.json.nyra_policy_registry.proof_lifecycle.error,
-      "policy_registry_core_signer_target_commit_mismatch",
+      invalidMode.json.nyra_policy_registry.compiler_provenance.error,
+      "policy_registry_compiler_mode_invalid",
     );
-    assert.equal(mismatch.json.nyra_policy_registry.proof_e2e.e2e_verified, false);
-    assert.equal(mismatchCalls, 0);
-    assert.equal(JSON.stringify(mismatch.json).includes(mismatchTarget), false);
-
-    process.env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY = "private-material-must-not-be-read";
-    let calls = 0;
-    const never = () => { calls += 1; throw new Error("must_not_run"); };
-    const privateDenied = await appHealth({
-      storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-production-private-")),
-      nyraPolicyRegistryProofEnabled: true,
-      nyraPolicyRegistryProofRequired: true,
-      nyraPolicyRegistryCoreSignerMode: "remote",
-      nyraPolicyRegistryPostgresPool: { query: never, connect: never },
-      nyraPolicyRegistryCoreSigner: { probe: never, health: never },
-      nyraPolicyRegistryProofService: { status: never },
-      nyraPolicyRegistryStore: { status: never, evaluate: never },
-      nyraPolicyRegistryClient: { status: never, probe: never },
-      nyraPolicyRegistryCoordinator: { status: never },
-    });
-    assert.equal(privateDenied.status, 503);
-    assert.equal(
-      privateDenied.json.nyra_policy_registry.proof_lifecycle.error,
-      "policy_registry_core_private_key_forbidden",
-    );
-    assert.equal(calls, 0);
-    assert.equal(JSON.stringify(privateDenied.json).includes("private-material"), false);
+    assert.equal(invalidModeCalls, 0);
   } finally {
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;
     if (previousDatabase === undefined) delete process.env.GOVERNED_AGENT_DATABASE_URL;
     else process.env.GOVERNED_AGENT_DATABASE_URL = previousDatabase;
-    if (previousPrivate === undefined) delete process.env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY;
-    else process.env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY = previousPrivate;
-    if (previousTargetCommit === undefined) {
-      delete process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT;
-    } else {
-      process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT = previousTargetCommit;
-    }
     if (previousEvidenceSecret === undefined) delete process.env.CORE_EVIDENCE_SIGNING_SECRET;
     else process.env.CORE_EVIDENCE_SIGNING_SECRET = previousEvidenceSecret;
   }

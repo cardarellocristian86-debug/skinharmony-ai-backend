@@ -12,6 +12,7 @@ const {
   SCHEMA_VERSION,
   SIGN_REQUEST_SCHEMA_VERSION,
   SIGN_RESPONSE_SCHEMA_VERSION,
+  createFileReplayStore,
   createNyraPolicyRegistryAttester,
   createNyraPolicyRegistryLocalTestSigner,
   createNyraPolicyRegistryRemoteSigner,
@@ -56,6 +57,7 @@ function fixture(overrides = {}) {
     operation_id: "operation-12345678",
     action: "policy.snapshot.activate",
     snapshot_digest: "b".repeat(64),
+    compiler_provenance_digest: "d".repeat(64),
     domain_pack_id: "generic-policy",
     owner_approval_hash: "c".repeat(64),
     nonce: crypto.randomBytes(24).toString("base64url"),
@@ -85,7 +87,7 @@ async function createReady(value, options = {}) {
   return attester;
 }
 
-test("uses the exact v2 envelope and adds a locally verified independent Nyra signature", async () => {
+test("uses the exact v3 envelope and adds a locally verified independent Nyra signature", async () => {
   const value = fixture();
   assert.deepEqual(Object.keys(value.envelope).sort(), [...ENVELOPE_FIELDS].sort());
   const attester = await createReady(value);
@@ -96,6 +98,7 @@ test("uses the exact v2 envelope and adds a locally verified independent Nyra si
   assert.equal(crypto.verify(null, payloadBytes(value.envelope), value.nyra.publicKey,
     Buffer.from(result.nyra_signature, "base64url")), true);
   assert.equal(result.envelope.owner_approval_hash, value.envelope.owner_approval_hash);
+  assert.equal(result.envelope.compiler_provenance_digest, value.envelope.compiler_provenance_digest);
   assert.notEqual(result.core_signature, result.nyra_signature);
 });
 
@@ -110,6 +113,17 @@ test("persists tenant-scoped replay and returns the same signature after restart
   const signature = crypto.sign(null, payloadBytes(divergent), value.core.privateKey).toString("base64url");
   await assert.rejects(restarted.attest({ envelope: divergent, core_signature: signature }),
     /nyra_policy_attestation_nonce_reused/);
+});
+
+test("legacy v2 file replay state is unsupported after the v3 cutover", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-policy-v2-replay-"));
+  const replayPath = path.join(directory, "replay.json");
+  fs.writeFileSync(replayPath, JSON.stringify({
+    schema_version: "nyra_policy_attestation_replay_v2",
+    entries: {},
+  }));
+  const store = createFileReplayStore(replayPath);
+  await assert.rejects(store.initialize(), /nyra_policy_attestation_replay_store_invalid/);
 });
 
 test("fails closed for tampering, foreign tenant, expiry and every cross-binding field", async () => {
@@ -127,6 +141,7 @@ test("fails closed for tampering, foreign tenant, expiry and every cross-binding
     operation_id: "operation-other-123",
     action: "policy.snapshot.rollback",
     snapshot_digest: "d".repeat(64),
+    compiler_provenance_digest: "e".repeat(64),
     domain_pack_id: "other-policy",
     owner_approval_hash: "d".repeat(64),
   };
@@ -142,6 +157,25 @@ test("fails closed for tampering, foreign tenant, expiry and every cross-binding
     issued_at: new Date(NOW - 120_000).toISOString(), expires_at: new Date(NOW - 1).toISOString() };
   const expiredSignature = crypto.sign(null, payloadBytes(expired), value.core.privateKey).toString("base64url");
   await assert.rejects(attester.attest({ envelope: expired, core_signature: expiredSignature }), /expired/);
+});
+
+test("rejects v2 envelopes and compiler provenance digest tampering", async () => {
+  const value = fixture();
+  const attester = await createReady(value);
+  const v2 = { ...value.envelope, schema_version: "nyra_policy_activation_attestation_v2" };
+  const v2Signature = crypto.sign(null, payloadBytes(v2), value.core.privateKey).toString("base64url");
+  await assert.rejects(attester.attest({ envelope: v2, core_signature: v2Signature }),
+    /nyra_policy_attestation_envelope_invalid/);
+
+  const missing = { ...value.envelope };
+  delete missing.compiler_provenance_digest;
+  const missingSignature = crypto.sign(null, payloadBytes(missing), value.core.privateKey).toString("base64url");
+  await assert.rejects(attester.attest({ envelope: missing, core_signature: missingSignature }),
+    /nyra_policy_attestation_envelope_schema_invalid/);
+
+  const tampered = { ...value.envelope, compiler_provenance_digest: "e".repeat(64) };
+  await assert.rejects(attester.attest({ envelope: tampered, core_signature: value.coreSignature }),
+    /nyra_policy_attestation_core_signature_invalid/);
 });
 
 test("rejects unknown actions, extra envelope fields, and extra request fields", async () => {
@@ -480,6 +514,8 @@ test("startup probe is single-purpose and writes zero replay records", async () 
   };
   const attester = await createReady(value, { replayStore });
   assert.equal(attester.status().ready, true);
+  assert.equal(attester.status().attestation_schema_version, SCHEMA_VERSION);
+  assert.equal(attester.status().compiler_provenance_binding_required, true);
   assert.equal(records, 0);
 });
 

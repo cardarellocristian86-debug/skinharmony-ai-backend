@@ -39,6 +39,10 @@ const CONNECTOR_TOOL_NAMESPACE = "skinharmony_nyra_core";
 const GENERIC_WORK_CORE_JOIN_TOOL = "work_continuity_generic_core_join";
 const GENERIC_WORK_CORE_JOIN_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const SHA256_HEX = /^[a-f0-9]{64}$/;
+const BUILD_COMMIT_HEX = /^[a-f0-9]{40}$/;
+const MCP_DEFAULT_REQUEST_LIMIT_BYTES = 1024 * 1024;
+const MCP_POLICY_ACTIVATE_REQUEST_LIMIT_BYTES = 2 * 1024 * 1024;
+const MCP_JSON_BODY_BYTES = Symbol("mcp_json_body_bytes");
 export const POLICY_REGISTRY_LIFECYCLE_TOOLS = new Set([
   "nyra_policy_registry_activate",
   "nyra_policy_registry_rollback",
@@ -46,6 +50,100 @@ export const POLICY_REGISTRY_LIFECYCLE_TOOLS = new Set([
 ]);
 const POLICY_REGISTRY_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const POLICY_REGISTRY_UPSTREAM_PATH = "/api/nyra/policy-registry/attestations";
+const POLICY_REGISTRY_HEALTH_BUILD_FIELDS = Object.freeze([
+  "build_id", "commit_sha", "commit_verifiable",
+]);
+const POLICY_REGISTRY_HEALTH_REGISTRY_FIELDS = Object.freeze([
+  "configuration_valid", "evaluation", "enforcement", "configured", "backend",
+  "restart_durable", "distributed", "compiler_provenance_persistence",
+  "compiler_input_persisted", "state", "ready", "compiler_provenance",
+  "proof_lifecycle", "proof", "proof_e2e",
+]);
+const POLICY_REGISTRY_HEALTH_COMPILER_FIELDS = Object.freeze([
+  "enabled", "required", "mode", "configuration_valid", "configured", "ready", "state",
+  "render_gate_required", "schema_version", "provenance_schema_version", "compiler_algorithm",
+  "verification_algorithm", "traversal_budget", "compiler_build_commit", "catalog_digest",
+  "trust_catalog_digest", "compiler_input_persisted", "execution_authorized", "error",
+]);
+const POLICY_REGISTRY_HEALTH_PROOF_LIFECYCLE_FIELDS = Object.freeze([
+  "enabled", "required", "mode", "configuration_valid", "state", "ready",
+  "render_gate_required", "error",
+]);
+const POLICY_REGISTRY_HEALTH_PROOF_FIELDS = Object.freeze([
+  "ready", "backend", "algorithm", "proof_schema_version", "attestation_schema_version",
+  "receipt_schema_version", "compiler_provenance_binding_required", "core_key_id", "nyra_key_id",
+  "core_public_key_fingerprint", "nyra_public_key_fingerprint", "signer",
+]);
+const POLICY_REGISTRY_HEALTH_SIGNER_FIELDS = Object.freeze([
+  "ready", "state", "custody", "target_commit",
+]);
+const POLICY_REGISTRY_HEALTH_E2E_FIELDS = Object.freeze([
+  "ready", "proof", "store", "compiler_provenance", "upstream", "e2e_verified",
+]);
+const POLICY_REGISTRY_HEALTH_STORE_FIELDS = Object.freeze([
+  "ready", "backend", "restart_durable", "distributed",
+  "compiler_provenance_persistence", "compiler_input_persisted",
+]);
+const POLICY_REGISTRY_HEALTH_E2E_COMPILER_FIELDS = Object.freeze([
+  "ready", "schema_version", "status_schema_version", "mode", "compiler_algorithm",
+  "compiler_input_persisted", "execution_authorized",
+]);
+const POLICY_REGISTRY_HEALTH_UPSTREAM_FIELDS = Object.freeze([
+  "configured", "ready", "state", "origin", "path", "redirect_policy",
+  "upstream_verified", "probe_attempts", "operation_in_flight", "last_success_at",
+  "last_failure_at", "last_failure",
+]);
+
+function ownEnumerableDataValue(value, field) {
+  try {
+    if (!value || typeof value !== "object") return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, field);
+    return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value")
+      ? descriptor.value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function exactOwnEnumerableDataRecord(value, fields) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype) return null;
+    const keys = Reflect.ownKeys(value);
+    if (keys.length !== fields.length || keys.some((key) =>
+      typeof key !== "string" || !fields.includes(key))) return null;
+    const record = {};
+    for (const field of fields) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) return null;
+      record[field] = descriptor.value;
+    }
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+function mcpRequestTooLargeError() {
+  const error = new Error("Request body too large");
+  error.type = "entity.too.large";
+  error.status = 413;
+  return error;
+}
+
+function oversizedMcpRequestTargetsPolicyActivate(buffer) {
+  try {
+    const body = JSON.parse(buffer.toString("utf8"));
+    if (!body || typeof body !== "object" || Array.isArray(body) ||
+      body.method !== "tools/call" || !body.params ||
+      typeof body.params !== "object" || Array.isArray(body.params)) return false;
+    return resolveConnectorToolName(body.params.name, TOOLS) ===
+      "nyra_policy_registry_activate";
+  } catch {
+    return false;
+  }
+}
 
 function exactHttpsOrigin(value) {
   try {
@@ -91,13 +189,56 @@ export function buildPolicyRegistryLifecycleHealth(config = {}, options = {}, up
     agent_presence_signing_independent: config.agentSignatureSecretReused !== true,
   };
   const localReady = Object.values(local).every(Boolean);
-  const registry = upstream?.payload?.nyra_policy_registry;
-  const lifecycle = registry?.proof_lifecycle;
-  const proof = registry?.proof;
-  const e2e = registry?.proof_e2e;
-  const e2eProof = e2e?.proof;
-  const e2eStore = e2e?.store;
-  const e2eUpstream = e2e?.upstream;
+  const responseOk = ownEnumerableDataValue(upstream, "responseOk") === true;
+  const payload = ownEnumerableDataValue(upstream, "payload");
+  const build = exactOwnEnumerableDataRecord(
+    ownEnumerableDataValue(payload, "build"),
+    POLICY_REGISTRY_HEALTH_BUILD_FIELDS,
+  );
+  const registry = exactOwnEnumerableDataRecord(
+    ownEnumerableDataValue(payload, "nyra_policy_registry"),
+    POLICY_REGISTRY_HEALTH_REGISTRY_FIELDS,
+  );
+  const compiler = exactOwnEnumerableDataRecord(
+    registry?.compiler_provenance,
+    POLICY_REGISTRY_HEALTH_COMPILER_FIELDS,
+  );
+  const lifecycle = exactOwnEnumerableDataRecord(
+    registry?.proof_lifecycle,
+    POLICY_REGISTRY_HEALTH_PROOF_LIFECYCLE_FIELDS,
+  );
+  const proof = exactOwnEnumerableDataRecord(
+    registry?.proof,
+    POLICY_REGISTRY_HEALTH_PROOF_FIELDS,
+  );
+  const proofSigner = exactOwnEnumerableDataRecord(
+    proof?.signer,
+    POLICY_REGISTRY_HEALTH_SIGNER_FIELDS,
+  );
+  const e2e = exactOwnEnumerableDataRecord(
+    registry?.proof_e2e,
+    POLICY_REGISTRY_HEALTH_E2E_FIELDS,
+  );
+  const e2eProof = exactOwnEnumerableDataRecord(
+    e2e?.proof,
+    POLICY_REGISTRY_HEALTH_PROOF_FIELDS,
+  );
+  const e2eProofSigner = exactOwnEnumerableDataRecord(
+    e2eProof?.signer,
+    POLICY_REGISTRY_HEALTH_SIGNER_FIELDS,
+  );
+  const e2eStore = exactOwnEnumerableDataRecord(
+    e2e?.store,
+    POLICY_REGISTRY_HEALTH_STORE_FIELDS,
+  );
+  const e2eCompiler = exactOwnEnumerableDataRecord(
+    e2e?.compiler_provenance,
+    POLICY_REGISTRY_HEALTH_E2E_COMPILER_FIELDS,
+  );
+  const e2eUpstream = exactOwnEnumerableDataRecord(
+    e2e?.upstream,
+    POLICY_REGISTRY_HEALTH_UPSTREAM_FIELDS,
+  );
   const keyIdsValid = POLICY_REGISTRY_KEY_ID.test(String(proof?.core_key_id || "")) &&
     POLICY_REGISTRY_KEY_ID.test(String(proof?.nyra_key_id || "")) &&
     proof.core_key_id !== proof.nyra_key_id;
@@ -105,30 +246,81 @@ export function buildPolicyRegistryLifecycleHealth(config = {}, options = {}, up
     SHA256_HEX.test(String(proof?.nyra_public_key_fingerprint || "")) &&
     proof.core_public_key_fingerprint !== proof.nyra_public_key_fingerprint;
   const proofMatchesE2e = e2eProof?.ready === true &&
+    e2eProof?.backend === proof?.backend && e2eProof?.algorithm === proof?.algorithm &&
     e2eProof?.core_key_id === proof?.core_key_id && e2eProof?.nyra_key_id === proof?.nyra_key_id &&
     e2eProof?.core_public_key_fingerprint === proof?.core_public_key_fingerprint &&
-    e2eProof?.nyra_public_key_fingerprint === proof?.nyra_public_key_fingerprint;
-  const registryReady = upstream?.responseOk === true &&
+    e2eProof?.nyra_public_key_fingerprint === proof?.nyra_public_key_fingerprint &&
+    e2eProof?.proof_schema_version === proof?.proof_schema_version &&
+    e2eProof?.attestation_schema_version === proof?.attestation_schema_version &&
+    e2eProof?.receipt_schema_version === proof?.receipt_schema_version &&
+    e2eProof?.compiler_provenance_binding_required === true &&
+    e2eProofSigner?.ready === true && e2eProofSigner?.state === "ready" &&
+    e2eProofSigner?.custody === "external_remote_signer" &&
+    e2eProofSigner?.target_commit === proofSigner?.target_commit;
+  const buildConsistent = BUILD_COMMIT_HEX.test(String(build?.commit_sha || "")) &&
+    build?.commit_verifiable === true && compiler?.compiler_build_commit === build.commit_sha &&
+    proofSigner?.target_commit === build.commit_sha;
+  const registryReady = responseOk &&
     registry?.configuration_valid === true && registry?.evaluation === "active" &&
     registry?.enforcement === "mandatory" && registry?.configured === true &&
     registry?.backend === "postgresql" && registry?.restart_durable === true &&
-    registry?.distributed === true && registry?.state === "ready" && registry?.ready === true;
+    registry?.distributed === true && registry?.compiler_provenance_persistence === true &&
+    registry?.compiler_input_persisted === false && registry?.state === "ready" &&
+    registry?.ready === true;
+  const compilerReady = compiler?.enabled === true && compiler?.required === true &&
+    compiler?.mode === "core_deterministic_recompile" &&
+    compiler?.configuration_valid === true && compiler?.configured === true &&
+    compiler?.ready === true && compiler?.state === "ready" &&
+    compiler?.render_gate_required === true &&
+    compiler?.schema_version === "nyra_policy_compiler_provenance_status_v1" &&
+    compiler?.provenance_schema_version === "nyra_policy_compiler_provenance_v1" &&
+    compiler?.compiler_algorithm === "nyra_policy_registry_v1" &&
+    compiler?.verification_algorithm === "sha256_canonical_json+ed25519" &&
+    Number.isInteger(compiler?.traversal_budget) && compiler.traversal_budget >= 1 &&
+    compiler.traversal_budget <= 256 && BUILD_COMMIT_HEX.test(String(compiler?.compiler_build_commit || "")) &&
+    SHA256_HEX.test(String(compiler?.catalog_digest || "")) &&
+    SHA256_HEX.test(String(compiler?.trust_catalog_digest || "")) &&
+    compiler?.compiler_input_persisted === false && compiler?.execution_authorized === false &&
+    compiler?.error === null && buildConsistent;
   const proofReady = lifecycle?.enabled === true && lifecycle?.required === true &&
     lifecycle?.mode === "remote" &&
     lifecycle?.configuration_valid === true && lifecycle?.state === "ready" &&
-    lifecycle?.ready === true && lifecycle?.render_gate_required === true &&
+    lifecycle?.ready === true && lifecycle?.render_gate_required === true && lifecycle?.error === null &&
     proof?.ready === true && proof?.backend === "postgresql" &&
-    proof?.algorithm === "Ed25519+HMAC-SHA256" && proof?.signer?.ready === true &&
-    proof?.signer?.state === "ready" && proof?.signer?.custody === "external_remote_signer" &&
-    /^[a-f0-9]{40}$/.test(String(proof?.signer?.target_commit || "")) &&
+    proof?.algorithm === "Ed25519+HMAC-SHA256" && proofSigner?.ready === true &&
+    proofSigner?.state === "ready" && proofSigner?.custody === "external_remote_signer" &&
+    BUILD_COMMIT_HEX.test(String(proofSigner?.target_commit || "")) &&
+    proof?.proof_schema_version === "nyra_policy_registry_proof_v3" &&
+    proof?.attestation_schema_version === "nyra_policy_activation_attestation_v3" &&
+    proof?.receipt_schema_version === "core_policy_activation_receipt_v3" &&
+    proof?.compiler_provenance_binding_required === true &&
     keyIdsValid && fingerprintsValid;
+  const e2eCompilerReady = e2eCompiler?.ready === true &&
+    e2eCompiler?.schema_version === "nyra_policy_compiler_provenance_v1" &&
+    e2eCompiler?.status_schema_version === "nyra_policy_compiler_provenance_status_v1" &&
+    e2eCompiler?.mode === "core_deterministic_recompile" &&
+    e2eCompiler?.compiler_algorithm === "nyra_policy_registry_v1" &&
+    e2eCompiler?.compiler_input_persisted === false &&
+    e2eCompiler?.execution_authorized === false &&
+    e2eCompiler.schema_version === compiler?.provenance_schema_version &&
+    e2eCompiler.status_schema_version === compiler?.schema_version &&
+    e2eCompiler.mode === compiler?.mode &&
+    e2eCompiler.compiler_algorithm === compiler?.compiler_algorithm;
   const e2eReady = e2e?.ready === true && e2e?.e2e_verified === true && proofMatchesE2e &&
     e2eStore?.ready === true && e2eStore?.backend === "postgresql" &&
     e2eStore?.restart_durable === true && e2eStore?.distributed === true &&
+    e2eStore?.compiler_provenance_persistence === true &&
+    e2eStore?.compiler_input_persisted === false && e2eCompilerReady &&
     e2eUpstream?.configured === true && e2eUpstream?.ready === true &&
     e2eUpstream?.state === "ready" && exactHttpsOrigin(e2eUpstream?.origin) &&
     e2eUpstream?.path === POLICY_REGISTRY_UPSTREAM_PATH &&
-    e2eUpstream?.redirect_policy === "error" && e2eUpstream?.upstream_verified === true;
+    e2eUpstream?.redirect_policy === "error" && e2eUpstream?.upstream_verified === true &&
+    Number.isInteger(e2eUpstream?.probe_attempts) && e2eUpstream.probe_attempts >= 1 &&
+    e2eUpstream?.operation_in_flight === false &&
+    Number.isFinite(Date.parse(String(e2eUpstream?.last_success_at || ""))) &&
+    (e2eUpstream?.last_failure_at === null ||
+      Number.isFinite(Date.parse(String(e2eUpstream.last_failure_at)))) &&
+    e2eUpstream?.last_failure === null;
   let state = "disabled";
   let reason = "nyra_policy_registry_lifecycle_disabled";
   let ready = false;
@@ -138,7 +330,7 @@ export function buildPolicyRegistryLifecycleHealth(config = {}, options = {}, up
   } else if (enabled && !localReady) {
     state = "local_prerequisites_unavailable";
     reason = "nyra_policy_registry_lifecycle_local_prerequisites_unavailable";
-  } else if (enabled && upstream?.responseOk !== true) {
+  } else if (enabled && !responseOk) {
     state = "upstream_unavailable";
     reason = "nyra_policy_registry_lifecycle_upstream_unavailable";
   } else if (enabled && !registryReady) {
@@ -147,6 +339,9 @@ export function buildPolicyRegistryLifecycleHealth(config = {}, options = {}, up
   } else if (enabled && !proofReady) {
     state = "proof_not_ready";
     reason = "nyra_policy_registry_lifecycle_proof_not_ready";
+  } else if (enabled && !compilerReady) {
+    state = "compiler_not_ready";
+    reason = "nyra_policy_registry_lifecycle_compiler_not_ready";
   } else if (enabled && !e2eReady) {
     state = "e2e_not_ready";
     reason = "nyra_policy_registry_lifecycle_e2e_not_ready";
@@ -167,8 +362,10 @@ export function buildPolicyRegistryLifecycleHealth(config = {}, options = {}, up
     reason,
     local,
     upstream_ready: registryReady,
+    compiler_ready: compilerReady,
     proof_ready: proofReady,
     e2e_ready: e2eReady,
+    build_consistent: buildConsistent,
     key_ids_distinct: keyIdsValid,
     public_key_fingerprints_distinct: fingerprintsValid,
     execution_authorized: false,
@@ -1007,7 +1204,42 @@ export function createApp(config, options = {}) {
   const logicalSessionPresences = new Map();
   const transportPresenceBindings = new Map();
   const consumedEnvironmentDelegations = new Map();
-  app.use(express.json({ limit: "1mb" }));
+  app.use(express.json({
+    limit: MCP_POLICY_ACTIVATE_REQUEST_LIMIT_BYTES,
+    verify(req, _res, buffer) {
+      const bytes = buffer.byteLength;
+      if (bytes > MCP_DEFAULT_REQUEST_LIMIT_BYTES &&
+        !oversizedMcpRequestTargetsPolicyActivate(buffer)) {
+        throw mcpRequestTooLargeError();
+      }
+      req[MCP_JSON_BODY_BYTES] = bytes;
+    },
+  }));
+  app.use((error, req, res, next) => {
+    if (error?.type !== "entity.too.large") return next(error);
+    if (Object.hasOwn(error, "body")) delete error.body;
+    req.body = undefined;
+    return res.status(413).json({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32602, message: "Request body too large" },
+    });
+  });
+  app.use((req, res, next) => {
+    const bytes = Number(req[MCP_JSON_BODY_BYTES] || 0);
+    const requestedTool = req.body?.method === "tools/call"
+      ? resolveConnectorToolName(req.body?.params?.name, TOOLS)
+      : null;
+    const maximum = requestedTool === "nyra_policy_registry_activate"
+      ? MCP_POLICY_ACTIVATE_REQUEST_LIMIT_BYTES
+      : MCP_DEFAULT_REQUEST_LIMIT_BYTES;
+    if (bytes <= maximum) return next();
+    return res.status(413).json({
+      jsonrpc: "2.0",
+      id: req.body?.id ?? null,
+      error: { code: -32602, message: "Request body too large" },
+    });
+  });
   app.use((_req, res, next) => {
     res.set("Access-Control-Expose-Headers", "Mcp-Session-Id, WWW-Authenticate");
     next();

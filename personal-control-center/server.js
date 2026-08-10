@@ -445,6 +445,7 @@ app.post(NYRA_POLICY_REGISTRY_ATTESTATION_PATH, authorizeExactNyraPolicyRegistry
       operation_id: attestation.envelope.operation_id,
       action: attestation.envelope.action,
       snapshot_digest: attestation.envelope.snapshot_digest,
+      compiler_provenance_digest: attestation.envelope.compiler_provenance_digest,
       idempotent_replay: attestation.idempotent_replay,
     });
     res.json({ ok: true, attestation });

@@ -10,8 +10,8 @@ const TARGET_COMMIT = /^[a-f0-9]{40}$/;
 const PATH = /^\/(?:[A-Za-z0-9._~!$&'()*+,;=:@-]+\/?){1,24}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const PURPOSES = new Set([
-  "nyra-policy-activation-attestation-v2",
-  "core-policy-activation-receipt-v2",
+  "nyra-policy-activation-attestation-v3",
+  "core-policy-activation-receipt-v3",
   "nyra-policy-registry-core-signer-probe-v1",
 ]);
 const RESPONSE_FIELDS = Object.freeze([

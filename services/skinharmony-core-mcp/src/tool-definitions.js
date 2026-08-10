@@ -603,6 +603,27 @@ const policyRegistryDomainPackId = {
   pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$",
 };
 const policyRegistrySha256 = { type: "string", pattern: "^[a-f0-9]{64}$" };
+const policyRegistryPackId = {
+  type: "string",
+  minLength: 2,
+  maxLength: 160,
+  pattern: "^[a-z0-9][a-z0-9._/-]{1,159}$",
+};
+const policyRegistryPackVersion = {
+  type: "string",
+  minLength: 5,
+  maxLength: 64,
+  pattern: "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+};
+const policyRegistryPackReferenceId = {
+  type: "string",
+  minLength: 8,
+  maxLength: 225,
+  pattern: "^[a-z0-9][a-z0-9._/-]{1,159}@\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+};
+const policyRegistryPlainJson = {
+  type: ["object", "array", "string", "number", "boolean", "null"],
+};
 const policyRegistryStringList = {
   type: "array",
   maxItems: 4_096,
@@ -610,8 +631,8 @@ const policyRegistryStringList = {
   items: { type: "string", minLength: 1, maxLength: 200 },
 };
 const policyRegistryPackReference = object({
-  pack_id: { type: "string", minLength: 2, maxLength: 160, pattern: "^[a-z0-9][a-z0-9._/-]{1,159}$" },
-  version: { type: "string", minLength: 1, maxLength: 64 },
+  pack_id: policyRegistryPackId,
+  version: policyRegistryPackVersion,
   digest: policyRegistrySha256,
 }, ["pack_id", "version", "digest"]);
 const policyRegistrySnapshot = object({
@@ -670,6 +691,95 @@ const policyRegistryOwnerProperties = {
     description: "Opaque audit reference for the explicit owner confirmation; never include secrets.",
   },
 };
+const policyRegistryCompilerBindingList = {
+  type: "array",
+  minItems: 1,
+  maxItems: 256,
+  uniqueItems: true,
+  items: { type: "string", minLength: 1, maxLength: 200 },
+};
+const policyRegistryCompilerPack = object({
+  schema_version: { const: "nyra_policy_pack_v1" },
+  pack_id: policyRegistryPackId,
+  version: policyRegistryPackVersion,
+  status: { const: "active" },
+  scope: object({
+    kind: { type: "string", enum: ["core", "global", "sector", "tenant", "environment", "work_type", "action", "policy"] },
+    value: { type: "string", minLength: 1, maxLength: 160 },
+    tenant_id: { type: ["string", "null"], maxLength: 120 },
+  }, ["kind", "value", "tenant_id"]),
+  parent_refs: {
+    type: "array",
+    maxItems: 8,
+    items: policyRegistryPackReference,
+  },
+  bindings: object({
+    core_branch_ids: policyRegistryCompilerBindingList,
+    nyra_branch_ids: policyRegistryCompilerBindingList,
+    domain_pack_ids: policyRegistryCompilerBindingList,
+  }, ["core_branch_ids", "nyra_branch_ids", "domain_pack_ids"]),
+  privacy: object({
+    raw_customer_data_allowed: { const: false },
+    data_classification: { type: "string", minLength: 1, maxLength: 80 },
+  }, ["raw_customer_data_allowed", "data_classification"]),
+  policy: object({
+    allow_mode: { type: "string", enum: ["inherit", "restrict"] },
+    allow_actions: policyRegistryStringList,
+    deny_actions: policyRegistryStringList,
+    required_gates: policyRegistryStringList,
+    constraints: { type: "object", maxProperties: 4_096, additionalProperties: true },
+  }, ["allow_mode", "allow_actions", "deny_actions", "required_gates", "constraints"]),
+  tests: { type: "array", minItems: 2, maxItems: 32, items: policyRegistryPlainJson },
+  sources: {
+    type: "array",
+    minItems: 1,
+    maxItems: 16,
+    items: object({
+      source_id: policyRegistryPackId,
+      url: { type: "string", minLength: 8, maxLength: 2_000, pattern: "^https://" },
+      claim: { type: "string", minLength: 1, maxLength: 1_200 },
+      reviewed_at: { type: "string", minLength: 1, maxLength: 32 },
+    }, ["source_id", "url", "claim", "reviewed_at"]),
+  },
+  freshness_sla_days: { type: "integer", minimum: 1, maximum: 3_650 },
+  provenance: policyRegistryPlainJson,
+  valid_from: { type: "string", minLength: 20, maxLength: 64 },
+  expires_at: { type: "string", minLength: 20, maxLength: 64 },
+  rollback_to: policyRegistryPlainJson,
+  compatibility: policyRegistryPlainJson,
+  trust_mode: { type: "string", enum: ["compiled_core", "signed_bundle"] },
+  signatures: {
+    type: "array",
+    maxItems: 4,
+    items: object({
+      issuer_id: policyRegistryPackId,
+      algorithm: { const: "Ed25519" },
+      signature: { type: "string", minLength: 86, maxLength: 86, pattern: "^[A-Za-z0-9_-]{86}$" },
+    }, ["issuer_id", "algorithm", "signature"]),
+  },
+  artifact_digest: policyRegistrySha256,
+}, [
+  "schema_version", "pack_id", "version", "status", "scope", "parent_refs", "bindings",
+  "privacy", "policy", "tests", "sources", "freshness_sla_days", "provenance",
+  "valid_from", "expires_at", "rollback_to", "compatibility", "trust_mode", "signatures",
+  "artifact_digest",
+]);
+const policyRegistryCompilerInput = object({
+  schema_version: { const: "nyra_policy_compiler_input_v1" },
+  leaf_pack_ids: {
+    type: "array",
+    minItems: 1,
+    maxItems: 16,
+    uniqueItems: true,
+    items: policyRegistryPackReferenceId,
+  },
+  packs: {
+    type: "array",
+    minItems: 1,
+    maxItems: 64,
+    items: policyRegistryCompilerPack,
+  },
+}, ["schema_version", "leaf_pack_ids", "packs"]);
 const policyRegistryToolOptions = {
   exactInputSchema: true,
   ownerConfirmationRequired: true,
@@ -731,13 +841,14 @@ export const TOOLS = [
     },
     core_input: { type: "object", properties: { signals: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: true } }, data_quality: { type: "object", additionalProperties: true }, context: { type: "object", additionalProperties: true }, evidence_state: runtimeEvidenceState }, additionalProperties: false },
   }, ["request"]), ["core:read"], true, true, { outputSchema: workPreflightOutputSchema, meta: { "openai/toolInvocation/invoking": "Preparo Nyra…", "openai/toolInvocation/invoked": "Nyra è pronta." } }),
-  tool("nyra_policy_registry_activate", "Activate a governed Nyra policy snapshot", "Request activation of one immutable, tenant-bound Policy Registry snapshot. Universal Core remains the final authority; the connector cannot execute provider workflows or accept caller-supplied proof, identity, preflight, receipt, attestation or key material.", object({
+  tool("nyra_policy_registry_activate", "Activate a governed Nyra policy snapshot", "Request activation of one immutable, tenant-bound Policy Registry snapshot plus the exact active signed pack set used for Universal Core's deterministic recompile. Universal Core remains the final authority; the connector cannot execute provider workflows or accept caller-supplied proof, compiler authority, identity, preflight, receipt, attestation or key material.", object({
     work_id: policyRegistryUuid,
     operation_id: policyRegistryOperationId,
     domain_pack_id: policyRegistryDomainPackId,
     snapshot: policyRegistrySnapshot,
+    compiler_input: policyRegistryCompilerInput,
     ...policyRegistryOwnerProperties,
-  }, ["work_id", "operation_id", "domain_pack_id", "snapshot", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, policyRegistryToolOptions),
+  }, ["work_id", "operation_id", "domain_pack_id", "snapshot", "compiler_input", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, policyRegistryToolOptions),
   tool("nyra_policy_registry_rollback", "Roll back a governed Nyra policy snapshot", "Request rollback to one exact previously activated snapshot digest. Universal Core remains the final authority; caller-supplied proof, identity, preflight, receipt, attestation and key material are rejected.", object({
     work_id: policyRegistryUuid,
     operation_id: policyRegistryOperationId,

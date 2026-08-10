@@ -22,6 +22,7 @@ test("Nyra server binds the exact Policy Registry path to dedicated auth and hea
   assert.match(source, /x-nyra-policy-registry-service-key/);
   assert.match(source, /NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY/);
   assert.match(source, /policy_registry_attestation: policyRegistryAttestation/);
+  assert.match(source, /compiler_provenance_digest: attestation\.envelope\.compiler_provenance_digest/);
   assert.match(source, /await nyraPolicyRegistryAttester\.attest/);
   assert.match(source, /render_gate_required/);
   assert.match(source, /nyra_policy_attestation_replay_store_unavailable/);
@@ -182,12 +183,16 @@ test("dedicated Nyra S2S route authenticates, signs and reports readiness", {
     assert.equal(health.policy_registry_attestation.custody, "local_test_seam");
     assert.equal(health.policy_registry_attestation.replay_backend, "file");
     assert.equal(health.policy_registry_attestation.distributed, false);
+    assert.equal(health.policy_registry_attestation.attestation_schema_version,
+      "nyra_policy_activation_attestation_v3");
+    assert.equal(health.policy_registry_attestation.compiler_provenance_binding_required, true);
     const now = Date.now();
     const envelope = {
       schema_version: SCHEMA_VERSION, tenant_id: "codexai", work_id: "work-route-1234",
       preflight_id: "preflight-route-1234", intent_digest: "a".repeat(64),
       operation_id: "operation-route-1234", action: "policy.snapshot.activate",
-      snapshot_digest: "b".repeat(64), domain_pack_id: "generic-policy",
+      snapshot_digest: "b".repeat(64), compiler_provenance_digest: "d".repeat(64),
+      domain_pack_id: "generic-policy",
       owner_approval_hash: "c".repeat(64),
       nonce: crypto.randomBytes(24).toString("base64url"),
       issued_at: new Date(now - 1_000).toISOString(), expires_at: new Date(now + 60_000).toISOString(),

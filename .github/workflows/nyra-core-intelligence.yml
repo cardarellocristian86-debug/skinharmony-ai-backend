@@ -281,12 +281,22 @@ jobs:
             nyra_env["NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY"] == {
               "key" => "NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY", "generateValue" => true,
             }
-          forbidden_policy_registry_keys = Array(nyra["envVars"]).filter_map do |entry|
-            key = String(entry["key"])
-            key if key.match?(/NYRA_POLICY_REGISTRY.*PRIVATE_KEY/)
+          forbidden_policy_registry_private_keys = [mcp, core, nyra].flat_map do |service|
+            Array(service["envVars"]).filter_map do |entry|
+              key = String(entry["key"])
+              "#{service["name"]}:#{key}" if key.match?(/POLICY_REGISTRY.*PRIVATE_KEY/)
+            end
           end
-          abort("Nyra Policy Registry Blueprint contains private key material") unless
-            forbidden_policy_registry_keys.empty?
+          abort("Policy Registry Blueprints contain private key material: #{forbidden_policy_registry_private_keys.join(', ')}") unless
+            forbidden_policy_registry_private_keys.empty?
+          forbidden_policy_registry_compiler_peers = [mcp, nyra].flat_map do |service|
+            Array(service["envVars"]).filter_map do |entry|
+              key = String(entry["key"])
+              "#{service["name"]}:#{key}" if key.match?(/POLICY_REGISTRY.*(?:COMPILER|TRUST)/)
+            end
+          end
+          abort("MCP/Nyra Blueprints must not receive Policy Registry compiler or trust inputs: #{forbidden_policy_registry_compiler_peers.join(', ')}") unless
+            forbidden_policy_registry_compiler_peers.empty?
           abort("Production Nyra Policy Registry must not fall back to a file replay store") if
             nyra_env.key?("NYRA_POLICY_REGISTRY_REPLAY_STORE_PATH")
           policy_registry_mcp_contract = {
@@ -306,6 +316,10 @@ jobs:
             "CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE" => "advisory_evaluate",
             "CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED" => "false",
             "CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED" => "false",
+            "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED" => "false",
+            "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED" => "false",
+            "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE" => "disabled",
+            "CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET" => "256",
             "CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE" => "disabled",
             "CORE_NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST" => "codexai",
             "CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID" => "universal-core-policy-registry-v1",
@@ -332,6 +346,39 @@ jobs:
             abort("#{key}: Policy Registry Core Blueprint contract changed") unless
               Array(core["envVars"]).count { |entry| entry["key"] == key } == 1 &&
               core_env.dig(key, "value") == expected
+          end
+          policy_registry_compiler_code_dark =
+            core_env.dig(
+              "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED", "value"
+            ) == "false" &&
+            core_env.dig(
+              "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED", "value"
+            ) == "false" &&
+            core_env.dig(
+              "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE", "value"
+            ) == "disabled"
+          if policy_registry_compiler_code_dark
+            %w[
+              CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_JSON
+              CORE_NYRA_POLICY_REGISTRY_COMPILER_CATALOG_DIGEST
+              CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_DIGEST
+            ].each do |key|
+              abort("#{key}: must be absent while compiler provenance is code-dark") if
+                Array(core["envVars"]).any? { |entry| entry["key"] == key }
+            end
+          end
+          if core_env.dig("CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED", "value") == "true"
+            compiler_activation_contract = {
+              "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED" => "true",
+              "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED" => "true",
+              "CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE" =>
+                "core_deterministic_recompile",
+            }
+            compiler_activation_contract.each do |key, expected|
+              abort("#{key}: proof activation requires compiler provenance") unless
+                Array(core["envVars"]).count { |entry| entry["key"] == key } == 1 &&
+                core_env.dig(key, "value") == expected
+            end
           end
           %w[
             CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ORIGIN
@@ -375,12 +422,6 @@ jobs:
                 "envVarKey" => "NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY",
               },
             }
-          forbidden_policy_core_keys = Array(core["envVars"]).filter_map do |entry|
-            key = String(entry["key"])
-            key if key.match?(/CORE_NYRA_POLICY_REGISTRY.*PRIVATE_KEY/)
-          end
-          abort("Core Policy Registry Blueprint contains private key material") unless
-            forbidden_policy_core_keys.empty?
           generic_join_mcp_contract = {
             "GENERIC_WORK_CORE_JOIN_ENABLED" => {
               "key" => "GENERIC_WORK_CORE_JOIN_ENABLED", "value" => "false",
@@ -950,6 +991,24 @@ jobs:
         run: npm run nyra:deep-v2:runtime:verify
       - name: Test shared service contracts
         run: node --test services/shared/test/*.test.js
+      - name: Test Core Policy Registry compiler provenance integration
+        run: >-
+          node --test
+          services/universal-core-service/test/nyra-policy-registry-compiler-provenance.test.js
+          services/universal-core-service/test/nyra-policy-registry-api.test.js
+          services/universal-core-service/test/nyra-policy-registry-coordinator.test.js
+          services/universal-core-service/test/nyra-policy-registry-proof-service.test.js
+          services/universal-core-service/test/nyra-policy-registry.test.js
+      - name: Test Policy Registry MCP configuration bridge and readiness
+        run: >-
+          node --test
+          services/skinharmony-core-mcp/test/config.test.js
+          services/skinharmony-core-mcp/test/policy-registry-lifecycle-bridge.test.js
+          services/skinharmony-core-mcp/test/policy-registry-lifecycle-readiness.test.js
+      - name: Test host-native resolver registry
+        run: >-
+          node --test
+          services/universal-core-service/test/host-native-resolver-registry.test.js
       - name: Behaviorally prove host-native zero-provider execution
         env:
           # A configured provider credential must never activate the native path.

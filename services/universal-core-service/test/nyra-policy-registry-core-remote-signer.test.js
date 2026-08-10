@@ -96,8 +96,8 @@ test("remote signer binds exact request, target commit and locally verifies Ed25
 
   assert.equal(await signer.probe(), true);
   assert.equal(signer.health().signer_state, "ready");
-  const payload = Buffer.from("receipt-v2-payload");
-  const signature = await signer.signPayload(payload, "core-policy-activation-receipt-v2");
+  const payload = Buffer.from("receipt-v3-payload");
+  const signature = await signer.signPayload(payload, "core-policy-activation-receipt-v3");
   assert.equal(crypto.verify(null, payload, keys.publicKey, Buffer.from(signature, "base64url")), true);
   assert.equal(calls, 2);
   assert.equal(JSON.stringify(signer.health()).includes(TOKEN), false);
@@ -116,7 +116,7 @@ test("remote signer rejects private/RSA keys and exact response drift", async ()
     return jsonResponse(url, validSignerResponse(request, ed.privateKey, { target_commit: "c".repeat(40) }));
   }, { keys: ed });
   await assert.rejects(
-    signer.signPayload(Buffer.from("payload"), "core-policy-activation-receipt-v2"),
+    signer.signPayload(Buffer.from("payload"), "core-policy-activation-receipt-v3"),
     /policy_registry_core_signer_target_commit_mismatch/,
   );
   assert.equal(signer.health().signer_state, "rejected");
@@ -180,8 +180,22 @@ test("unknown transport errors are closed and never reflect service tokens", asy
     throw new Error(`upstream leaked ${TOKEN}`);
   }, { keys });
   await assert.rejects(
-    signer.signPayload(Buffer.from("payload"), "nyra-policy-activation-attestation-v2"),
+    signer.signPayload(Buffer.from("payload"), "nyra-policy-activation-attestation-v3"),
     /policy_registry_core_signer_unavailable/,
   );
   assert.equal(JSON.stringify(signer.health()).includes(TOKEN), false);
+});
+
+test("v2 attestation and receipt signing purposes are unsupported after the v3 cutover", async () => {
+  const keys = crypto.generateKeyPairSync("ed25519");
+  let calls = 0;
+  const { signer } = setup(async () => {
+    calls += 1;
+    throw new Error("outbound_not_expected");
+  }, { keys });
+  await assert.rejects(signer.signPayload(Buffer.from("payload"),
+    "nyra-policy-activation-attestation-v2"), /policy_registry_core_signer_purpose_invalid/);
+  await assert.rejects(signer.signPayload(Buffer.from("payload"),
+    "core-policy-activation-receipt-v2"), /policy_registry_core_signer_purpose_invalid/);
+  assert.equal(calls, 0);
 });

@@ -4,8 +4,8 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const SCHEMA_VERSION = "nyra_policy_activation_attestation_v2";
-const SIGNING_CONTEXT = "nyra-policy-activation-attestation-v2\0";
+const SCHEMA_VERSION = "nyra_policy_activation_attestation_v3";
+const SIGNING_CONTEXT = "nyra-policy-activation-attestation-v3\0";
 const SIGN_REQUEST_SCHEMA_VERSION = "nyra_policy_registry_sign_request_v1";
 const SIGN_RESPONSE_SCHEMA_VERSION = "nyra_policy_registry_sign_response_v1";
 const PROBE_CONTEXT = "nyra-policy-registry-signer-probe-v1\0";
@@ -15,7 +15,7 @@ const ACTIONS = new Set([
 ]);
 const ENVELOPE_FIELDS = Object.freeze([
   "schema_version", "tenant_id", "work_id", "preflight_id", "intent_digest",
-  "operation_id", "action", "snapshot_digest", "domain_pack_id",
+  "operation_id", "action", "snapshot_digest", "compiler_provenance_digest", "domain_pack_id",
   "owner_approval_hash", "nonce", "issued_at", "expires_at", "core_key_id",
   "nyra_key_id", "core_public_key_fingerprint", "nyra_public_key_fingerprint",
 ]);
@@ -329,10 +329,10 @@ function createFileReplayStore(filePath) {
   const resolved = path.resolve(String(filePath || ""));
   const lockPath = `${resolved}.lock`;
   function load() {
-    if (!fs.existsSync(resolved)) return { schema_version: "nyra_policy_attestation_replay_v2", entries: {} };
+    if (!fs.existsSync(resolved)) return { schema_version: "nyra_policy_attestation_replay_v3", entries: {} };
     try {
       const parsed = JSON.parse(fs.readFileSync(resolved, "utf8"));
-      if (parsed?.schema_version === "nyra_policy_attestation_replay_v2" && plainRecord(parsed.entries)) return parsed;
+      if (parsed?.schema_version === "nyra_policy_attestation_replay_v3" && plainRecord(parsed.entries)) return parsed;
     } catch { /* fail closed below */ }
     fail("nyra_policy_attestation_replay_store_invalid");
   }
@@ -451,6 +451,7 @@ function validateEnvelope(envelope, config, now) {
     !TENANT_ID.test(String(envelope.work_id || "")) || !TENANT_ID.test(String(envelope.preflight_id || "")) ||
     !SHA256.test(String(envelope.intent_digest || "")) || !TENANT_ID.test(String(envelope.operation_id || "")) ||
     !ACTIONS.has(String(envelope.action || "")) || !SHA256.test(String(envelope.snapshot_digest || "")) ||
+    !SHA256.test(String(envelope.compiler_provenance_digest || "")) ||
     !TENANT_ID.test(String(envelope.domain_pack_id || "")) || !SHA256.test(String(envelope.owner_approval_hash || "")) ||
     !NONCE.test(String(envelope.nonce || ""))) fail("nyra_policy_attestation_envelope_invalid");
   if (!config.tenantAllowlist.includes(envelope.tenant_id)) fail("nyra_policy_attestation_tenant_denied");
@@ -630,6 +631,8 @@ function createNyraPolicyRegistryAttester({
       restart_durable: replayStore?.restart_durable === true,
       distributed: replayStore?.distributed === true,
       algorithm: enabled ? "Ed25519" : null,
+      attestation_schema_version: SCHEMA_VERSION,
+      compiler_provenance_binding_required: true,
       custody: signer?.custody || (enabled ? "unavailable" : "disabled"),
       signer_service: signer?.service || null,
       signer_target_commit: signer?.target_commit || null,

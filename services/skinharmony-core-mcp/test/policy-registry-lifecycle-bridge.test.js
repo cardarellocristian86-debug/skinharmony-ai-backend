@@ -67,6 +67,79 @@ function snapshot() {
   };
 }
 
+function compilerInput() {
+  const common = {
+    schema_version: "nyra_policy_pack_v1",
+    version: "1.0.0",
+    status: "active",
+    bindings: {
+      core_branch_ids: ["nyra_policy_registry"],
+      nyra_branch_ids: ["risk_governance"],
+      domain_pack_ids: ["generic"],
+    },
+    privacy: { raw_customer_data_allowed: false, data_classification: "policy_metadata_only" },
+    tests: [{ id: "allow", expected: "ALLOW" }, { id: "deny", expected: "DENY" }],
+    freshness_sla_days: 365,
+    provenance: { builder: "fixture" },
+    valid_from: "2026-08-01T00:00:00.000Z",
+    expires_at: "2027-08-01T00:00:00.000Z",
+    rollback_to: null,
+    compatibility: {},
+  };
+  const corePack = {
+    ...common,
+    pack_id: "core/invariants",
+    scope: { kind: "core", value: "universal-core", tenant_id: null },
+    parent_refs: [],
+    policy: {
+      allow_mode: "inherit",
+      allow_actions: [],
+      deny_actions: ["cross_tenant_access"],
+      required_gates: ["core_allow"],
+      constraints: {},
+    },
+    sources: [{
+      source_id: "nist_zero_trust",
+      url: "https://csrc.nist.gov/pubs/sp/800/207/final",
+      claim: "Core policy evidence",
+      reviewed_at: "2026-08-01",
+    }],
+    trust_mode: "compiled_core",
+    signatures: [],
+    artifact_digest: "a".repeat(64),
+  };
+  const leafPack = {
+    ...common,
+    pack_id: "tenant/tenant-a/action/policy",
+    scope: { kind: "action", value: "policy.snapshot.activate", tenant_id: TENANT },
+    parent_refs: [{ pack_id: corePack.pack_id, version: corePack.version, digest: "a".repeat(64) }],
+    policy: {
+      allow_mode: "restrict",
+      allow_actions: ["policy.snapshot.activate"],
+      deny_actions: [],
+      required_gates: ["owner_confirmation"],
+      constraints: {},
+    },
+    sources: [{
+      source_id: "cedar_authorization",
+      url: "https://docs.cedarpolicy.com/auth/authorization.html",
+      claim: "Tenant policy evidence",
+      reviewed_at: "2026-08-01",
+    }],
+    trust_mode: "signed_bundle",
+    signatures: [
+      { issuer_id: "core", algorithm: "Ed25519", signature: Buffer.alloc(64, 1).toString("base64url") },
+      { issuer_id: "nyra", algorithm: "Ed25519", signature: Buffer.alloc(64, 2).toString("base64url") },
+    ],
+    artifact_digest: "b".repeat(64),
+  };
+  return {
+    schema_version: "nyra_policy_compiler_input_v1",
+    leaf_pack_ids: [`${leafPack.pack_id}@${leafPack.version}`],
+    packs: [corePack, leafPack],
+  };
+}
+
 function presence() {
   return {
     transport_bound: true,
@@ -156,6 +229,7 @@ function validCoreResponse(kind, operationId, preflightId) {
       operation_id: operationId,
       preflight_id: preflightId,
       snapshot_digest: "f".repeat(64),
+      compiler_provenance_digest: "7".repeat(64),
       [success]: true,
       idempotent_replay: false,
       proof_status: "consumed",
@@ -185,7 +259,9 @@ function args(kind = "activate") {
     confirmation_reference: "caller-reference-is-not-authority",
     work_preflight: preflight(kind),
   };
-  if (kind === "activate") return { ...common, domain_pack_id: "generic", snapshot: snapshot() };
+  if (kind === "activate") {
+    return { ...common, domain_pack_id: "generic", snapshot: snapshot(), compiler_input: compilerInput() };
+  }
   if (kind === "rollback") return { ...common, domain_pack_id: "generic", target_snapshot_digest: "8".repeat(64) };
   return common;
 }
@@ -225,13 +301,18 @@ test("Policy Registry bridge preserves only the dedicated domain and binds owner
   assert.equal(calls.length, 1);
   assert.equal(new URL(calls[0].url).pathname, "/v1/nyra-policy-registry/activate");
   assert.deepEqual(Object.keys(calls[0].body).sort(), [
-    "confirmation_reference", "domain_pack_id", "operation_id", "owner_confirmed",
+    "compiler_input", "confirmation_reference", "domain_pack_id", "operation_id", "owner_confirmed",
     "owner_context", "snapshot", "tenant_id", "work_id", "work_preflight",
   ]);
   assert.equal(calls[0].body.tenant_id, TENANT);
   assert.equal(calls[0].body.domain_pack_id, "generic");
   assert.equal(calls[0].body.owner_context.owner_verified, true);
   assert.match(calls[0].body.owner_context.binding_hash, /^[a-f0-9]{64}$/);
+  const { owner_context: _ownerContext, ...ownerBoundBody } = calls[0].body;
+  const expectedOwnerBinding = crypto.createHash("sha256")
+    .update(`nyra_policy_registry_snapshot_activate_v3\0${JSON.stringify(stable(ownerBoundBody))}`)
+    .digest("hex");
+  assert.equal(calls[0].body.owner_context.binding_hash, expectedOwnerBinding);
   assert.equal(calls[0].init.redirect, "error");
   assert.equal(calls[0].init.headers.authorization, `Bearer ${GATEWAY_KEY}`);
   const verified = verifyDttWorkContext({
@@ -244,7 +325,19 @@ test("Policy Registry bridge preserves only the dedicated domain and binds owner
     body: calls[0].body,
   });
   assert.equal(verified.work_id, WORK_ID);
+  const tampered = structuredClone(calls[0].body);
+  tampered.compiler_input.packs[1].artifact_digest = "c".repeat(64);
+  assert.throws(() => verifyDttWorkContext({
+    token: calls[0].init.headers[DTT_WORK_CONTEXT_HEADER],
+    secret: DTT_SECRET,
+    expected_tenant_id: TENANT,
+    expected_work_id: WORK_ID,
+    method: "POST",
+    path: "/v1/nyra-policy-registry/activate",
+    body: tampered,
+  }), /dtt_work_context_request_mismatch/);
   assert.equal(result.structuredContent.activation.execution_authorized, false);
+  assert.equal(result.structuredContent.activation.compiler_provenance_digest, "7".repeat(64));
   assert.equal(result.structuredContent.dedicated_core_gate.provider_execution, false);
 });
 
@@ -275,6 +368,96 @@ test("Policy Registry bridge denies forged caller authority, preflight, snapshot
     built.handlers.nyra_policy_registry_activate({ ...args(), snapshot: impure }, identity()),
     /policy_registry_snapshot_invalid|policy_registry_snapshot_not_pure/,
   );
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate({ ...args(), compiler_provenance: {} }, identity()),
+    /policy_registry_caller_fields_invalid/,
+  );
+  const callerTrust = compilerInput();
+  callerTrust.packs[1].provenance = { proof: "forged" };
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate({ ...args(), compiler_input: callerTrust }, identity()),
+    /policy_registry_caller_fields_invalid/,
+  );
+  const snapshotConstraintSecret = snapshot();
+  snapshotConstraintSecret.policy.constraints.nested = {
+    signing_key: "raw-secret-must-not-cross-the-bridge",
+  };
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate({ ...args(), snapshot: snapshotConstraintSecret }, identity()),
+    /policy_registry_snapshot_not_pure/,
+  );
+  const compilerConstraintAuthority = compilerInput();
+  compilerConstraintAuthority.packs[1].policy.constraints.nested = {
+    compiler_algorithm: "caller-selected",
+    proof: { receipt: "forged" },
+  };
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate({
+      ...args(),
+      compiler_input: compilerConstraintAuthority,
+    }, identity()),
+    /policy_registry_caller_fields_invalid/,
+  );
+  const noncanonical = compilerInput();
+  noncanonical.packs.reverse();
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate({ ...args(), compiler_input: noncanonical }, identity()),
+    /policy_compiler_input_noncanonical/,
+  );
+  const oversized = compilerInput();
+  oversized.packs[1].provenance = { padding: "x".repeat(525_000) };
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate({ ...args(), compiler_input: oversized }, identity()),
+    /policy_compiler_input_oversize/,
+  );
+  const forgedPrototype = compilerInput();
+  forgedPrototype.packs[1] = Object.assign(Object.create(null), forgedPrototype.packs[1]);
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate({ ...args(), compiler_input: forgedPrototype }, identity()),
+    /policy_compiler_input_invalid/,
+  );
+  let accessorRead = false;
+  const forgedAccessor = compilerInput();
+  Object.defineProperty(forgedAccessor.packs[1], "provenance", {
+    enumerable: true,
+    get() { accessorRead = true; return {}; },
+  });
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate({ ...args(), compiler_input: forgedAccessor }, identity()),
+    /policy_compiler_input_invalid/,
+  );
+  assert.equal(accessorRead, false);
+  const sparse = compilerInput();
+  sparse.packs = [sparse.packs[0], , sparse.packs[1]];
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate({ ...args(), compiler_input: sparse }, identity()),
+    /policy_compiler_input_invalid/,
+  );
+  const oversizedSnapshot = snapshot();
+  oversizedSnapshot.policy.constraints.padding = "x".repeat(525_000);
+  delete oversizedSnapshot.snapshot_digest;
+  oversizedSnapshot.snapshot_digest = crypto.createHash("sha256")
+    .update(JSON.stringify(stable(oversizedSnapshot)))
+    .digest("hex");
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate({ ...args(), snapshot: oversizedSnapshot }, identity()),
+    /policy_registry_snapshot_invalid/,
+  );
+  const oversizedOutbound = args();
+  oversizedOutbound.work_preflight = { ...preflight("activate"), padding: "x".repeat(1_600_000) };
+  await assert.rejects(
+    built.handlers.nyra_policy_registry_activate(oversizedOutbound, identity()),
+    /policy_registry_request_too_large/,
+  );
+  for (const kind of ["rollback", "reconcile"]) {
+    await assert.rejects(
+      built.handlers[`nyra_policy_registry_${kind}`]({
+        ...args(kind),
+        compiler_provenance_digest: "f".repeat(64),
+      }, identity()),
+      /policy_registry_caller_fields_invalid/,
+    );
+  }
   assert.equal(fetchCalls, 0);
   assert.equal(built.leaseCalls(), 0);
 
@@ -299,6 +482,7 @@ test("Policy Registry bridge projects safe fields and propagates bounded Core er
   const leaked = validCoreResponse("rollback", "rollback-operation-0001", "preflight-policy-rollback-0001");
   leaked.secret = "do-not-return";
   leaked.rollback.receipt = { signature: "do-not-return" };
+  leaked.rollback.compiler_provenance = { compiler_input: "do-not-return" };
   const { handlers } = fixture(async () => new Response(JSON.stringify(leaked), {
     status: 200,
     headers: { "content-type": "application/json; charset=utf-8" },
@@ -306,6 +490,32 @@ test("Policy Registry bridge projects safe fields and propagates bounded Core er
   const result = await handlers.nyra_policy_registry_rollback(args("rollback"), identity());
   assert.equal(JSON.stringify(result).includes("do-not-return"), false);
   assert.equal(result.structuredContent.rollback.activation_generation, 2);
+  assert.equal(result.structuredContent.rollback.compiler_provenance_digest, "7".repeat(64));
+
+  const missingDigest = validCoreResponse(
+    "activate",
+    "activate-operation-0001",
+    "preflight-policy-activate-0001",
+  );
+  delete missingDigest.activation.compiler_provenance_digest;
+  const invalidResponse = fixture(async () => new Response(JSON.stringify(missingDigest), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  }));
+  await assert.rejects(
+    invalidResponse.handlers.nyra_policy_registry_activate(args("activate"), identity()),
+    /policy_registry_core_response_invalid/,
+  );
+
+  const compilerRejected = fixture(async () => new Response(JSON.stringify({
+    ok: false,
+    error: "policy_compiler_input_invalid",
+  }), { status: 400, headers: { "content-type": "application/json" } }));
+  await assert.rejects(
+    compilerRejected.handlers.nyra_policy_registry_activate(args("activate"), identity()),
+    (error) => error.code === "policy_compiler_input_invalid" &&
+      error.status === 400 && error.statusCode === 400,
+  );
 
   const conflict = fixture(async () => new Response(JSON.stringify({
     ok: false,
@@ -335,6 +545,17 @@ test("Policy Registry bridge projects safe fields and propagates bounded Core er
     (error) => error.code === "core_request_failed" &&
       error.message === "core_request_failed:503:unknown" &&
       !error.message.includes("secret_material"),
+  );
+
+  const dynamicCompilerError = fixture(async () => new Response(JSON.stringify({
+    ok: false,
+    error: "policy_pack_invalid:tenant-secret-reference",
+  }), { status: 400, headers: { "content-type": "application/json" } }));
+  await assert.rejects(
+    dynamicCompilerError.handlers.nyra_policy_registry_activate(args("activate"), identity()),
+    (error) => error.code === "core_request_failed" &&
+      error.message === "core_request_failed:400:unknown" &&
+      !error.message.includes("tenant-secret-reference"),
   );
 });
 

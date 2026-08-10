@@ -14,13 +14,56 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const BASE64URL_SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 const TARGET_COMMIT = /^[a-f0-9]{40}$/;
+const COMPILER_PROVENANCE_SCHEMA = "nyra_policy_compiler_provenance_v1";
+const COMPILER_PROVENANCE_STATUS_SCHEMA = "nyra_policy_compiler_provenance_status_v1";
+const COMPILER_MODE = "core_deterministic_recompile";
+const COMPILER_ALGORITHM = "nyra_policy_registry_v1";
+const PROOF_SCHEMA = "nyra_policy_registry_proof_v3";
+const RECEIPT_SCHEMA = "core_policy_activation_receipt_v3";
+const VERIFICATION_ALGORITHM = "sha256_canonical_json+ed25519";
+const NYRA_HEALTH_FIELDS = Object.freeze([
+  "ok", "service", "version", "runtime_kind", "domain_pack_resolution",
+  "auth_required", "auth_configured", "storage_persistent", "suite_bridge_configured",
+  "deep_branch_v2_federation", "policy_registry_attestation",
+]);
 const POLICY_HEALTH_FIELDS = Object.freeze([
   "enabled", "required", "mode", "configuration_valid", "configured", "ready", "state",
   "render_gate_required", "service_key_configured", "signer_state", "replay_state",
   "replay_backend", "restart_durable", "distributed", "algorithm", "custody",
   "signer_service", "signer_target_commit", "signer_purpose", "core_key_id", "nyra_key_id",
   "core_public_key_fingerprint", "nyra_public_key_fingerprint", "error",
+  "attestation_schema_version", "compiler_provenance_binding_required",
 ]);
+const COMPILER_PROVENANCE_FIELDS = Object.freeze([
+  "schema_version", "compiler_mode", "compiler_algorithm", "tenant_id",
+  "domain_pack_id", "snapshot_digest", "leaf_pack_digests",
+  "ordered_pack_evidence", "core_root_digest", "catalog_digest",
+  "trust_catalog_digest", "compiler_build_commit", "validity", "resolution",
+  "execution_authorized", "provenance_digest",
+]);
+const COMPILER_STATUS_FIELDS = Object.freeze([
+  "schema_version", "ready", "clock_ready", "mode", "compiler_algorithm",
+  "verification_algorithm", "traversal_budget", "compiler_build_commit",
+  "catalog_digest", "trust_catalog_digest", "issuer_count", "independent_key_count",
+  "trusted_core_pack_digest_count", "known_core_branch_count", "known_nyra_branch_count",
+  "known_domain_pack_count", "execution_authorized", "error",
+]);
+const COMPILER_RECORD_VERIFICATION_FIELDS = Object.freeze([
+  "ok", "record_integrity_verified", "derivation_reverified", "tenant_id",
+  "domain_pack_id", "snapshot_digest", "compiler_provenance_digest",
+  "compiler_build_commit", "catalog_digest", "trust_catalog_digest",
+  "execution_authorized", "error",
+]);
+const PROOF_BINDING_FIELDS = Object.freeze([
+  "tenant_id", "operation_id", "action", "operation", "work_id", "preflight_id",
+  "intent_digest", "domain_pack_id", "snapshot_digest", "compiler_provenance_digest",
+  "owner_approval_hash", "core_key_id", "nyra_key_id", "core_public_key_fingerprint",
+  "nyra_public_key_fingerprint",
+]);
+const PROOF_OPERATIONS = Object.freeze({
+  "policy.snapshot.activate": "activate_policy_snapshot",
+  "policy.snapshot.rollback": "rollback_policy_snapshot",
+});
 const CLIENT_ERRORS = new Set([
   "policy_registry_nyra_busy",
   "policy_registry_nyra_challenge_invalid",
@@ -290,7 +333,18 @@ export function createNyraPolicyRegistryClient({
 
   function validateHealth(body) {
     const policy = body?.policy_registry_attestation;
-    if (body?.ok !== true || body?.service !== config.expected.service ||
+    if (!exactRecord(body, NYRA_HEALTH_FIELDS) || body.ok !== true ||
+      body.service !== config.expected.service ||
+      typeof body.version !== "string" || body.version.length < 1 || body.version.length > 120 ||
+      body.version !== body.version.trim() ||
+      body.runtime_kind !== "horizontal_neural_branch_runtime" ||
+      body.domain_pack_resolution !== "universal_core_key_metadata_only" ||
+      typeof body.auth_required !== "boolean" || typeof body.auth_configured !== "boolean" ||
+      typeof body.storage_persistent !== "boolean" ||
+      typeof body.suite_bridge_configured !== "boolean" ||
+      !body.deep_branch_v2_federation ||
+      typeof body.deep_branch_v2_federation !== "object" ||
+      Array.isArray(body.deep_branch_v2_federation) ||
       !exactRecord(policy, POLICY_HEALTH_FIELDS) || policy.enabled !== true ||
       policy.required !== config.required || policy.mode !== "remote" ||
       policy.configuration_valid !== true || policy.configured !== true || policy.ready !== true ||
@@ -306,6 +360,8 @@ export function createNyraPolicyRegistryClient({
       policy.nyra_key_id !== config.expected.nyra_key_id ||
       policy.core_public_key_fingerprint !== config.expected.core_public_key_fingerprint ||
       policy.nyra_public_key_fingerprint !== config.expected.nyra_public_key_fingerprint ||
+      policy.attestation_schema_version !== ATTESTATION_SCHEMA ||
+      policy.compiler_provenance_binding_required !== true ||
       policy.error !== null) {
       throw new Error("policy_registry_nyra_health_binding_invalid");
     }
@@ -418,7 +474,7 @@ export function derivePolicyRegistryOwnerApprovalHash({
     throw new Error("policy_registry_owner_binding_invalid");
   }
   return crypto.createHash("sha256")
-    .update(`nyra-policy-registry-owner-approval-v2\0${canonical({
+    .update(`nyra-policy-registry-owner-approval-v3\0${canonical({
       tenant_id: tenantId,
       work_id: workId,
       operation_id: operationId,
@@ -433,18 +489,109 @@ export function derivePolicyRegistryOwnerApprovalHash({
 
 function intentDigest(input) {
   return crypto.createHash("sha256")
-    .update(`nyra-policy-registry-intent-v1\0${canonical(input)}`)
+    .update(`nyra-policy-registry-intent-v2\0${canonical(input)}`)
     .digest("hex");
+}
+
+function compilerStatusReady(status) {
+  const boundedIntegerValue = (value, minimum, maximum) =>
+    Number.isInteger(value) && value >= minimum && value <= maximum;
+  return exactRecord(status, COMPILER_STATUS_FIELDS) && status.ready === true &&
+    status.clock_ready === true &&
+    status.schema_version === COMPILER_PROVENANCE_STATUS_SCHEMA &&
+    status.mode === COMPILER_MODE &&
+    status.compiler_algorithm === COMPILER_ALGORITHM &&
+    status.verification_algorithm === VERIFICATION_ALGORITHM &&
+    Number.isInteger(status.traversal_budget) && status.traversal_budget >= 1 &&
+    status.traversal_budget <= 256 && TARGET_COMMIT.test(status.compiler_build_commit) &&
+    SHA256.test(status.catalog_digest) && SHA256.test(status.trust_catalog_digest) &&
+    boundedIntegerValue(status.issuer_count, 2, 32) &&
+    boundedIntegerValue(status.independent_key_count, 2, 32) &&
+    status.independent_key_count === status.issuer_count &&
+    boundedIntegerValue(status.trusted_core_pack_digest_count, 1, 64) &&
+    boundedIntegerValue(status.known_core_branch_count, 1, 256) &&
+    boundedIntegerValue(status.known_nyra_branch_count, 1, 256) &&
+    boundedIntegerValue(status.known_domain_pack_count, 1, 256) &&
+    status.execution_authorized === false &&
+    status.error === null;
+}
+
+function validateProofBinding(binding) {
+  if (!exactRecord(binding, PROOF_BINDING_FIELDS) ||
+    !ID.test(String(binding.tenant_id || "")) ||
+    !ID.test(String(binding.operation_id || "")) ||
+    !ID.test(String(binding.work_id || "")) ||
+    !ID.test(String(binding.preflight_id || "")) ||
+    !ID.test(String(binding.domain_pack_id || "")) ||
+    !ID.test(String(binding.core_key_id || "")) ||
+    !ID.test(String(binding.nyra_key_id || "")) ||
+    binding.core_key_id === binding.nyra_key_id ||
+    PROOF_OPERATIONS[binding.action] !== binding.operation ||
+    !SHA256.test(String(binding.intent_digest || "")) ||
+    !SHA256.test(String(binding.snapshot_digest || "")) ||
+    !SHA256.test(String(binding.compiler_provenance_digest || "")) ||
+    !SHA256.test(String(binding.owner_approval_hash || "")) ||
+    !SHA256.test(String(binding.core_public_key_fingerprint || "")) ||
+    !SHA256.test(String(binding.nyra_public_key_fingerprint || "")) ||
+    binding.core_public_key_fingerprint === binding.nyra_public_key_fingerprint) {
+    throw new Error("policy_proof_legacy_schema_unsupported");
+  }
+  return binding;
+}
+
+function validateCompilerRecordVerification(result, record) {
+  if (!exactRecord(result, COMPILER_RECORD_VERIFICATION_FIELDS) ||
+    result.ok !== true || result.record_integrity_verified !== true ||
+    result.derivation_reverified !== false || result.execution_authorized !== false ||
+    result.error !== null || result.tenant_id !== record.tenant_id ||
+    result.domain_pack_id !== record.domain_pack_id ||
+    result.snapshot_digest !== record.snapshot_digest ||
+    result.compiler_provenance_digest !== record.provenance_digest ||
+    result.compiler_build_commit !== record.compiler_build_commit ||
+    result.catalog_digest !== record.catalog_digest ||
+    result.trust_catalog_digest !== record.trust_catalog_digest) {
+    throw new Error("policy_compiler_provenance_invalid");
+  }
+  return result;
+}
+
+function validateCompilerProvenance(record, {
+  tenant_id,
+  domain_pack_id,
+  snapshot_digest,
+} = {}) {
+  const provenanceBody = record && typeof record === "object" && !Array.isArray(record)
+    ? { ...record }
+    : null;
+  if (provenanceBody) delete provenanceBody.provenance_digest;
+  const expectedDigest = provenanceBody
+    ? crypto.createHash("sha256").update(canonical(provenanceBody)).digest("hex")
+    : null;
+  if (!exactRecord(record, COMPILER_PROVENANCE_FIELDS) ||
+    record.schema_version !== COMPILER_PROVENANCE_SCHEMA ||
+    record.compiler_mode !== COMPILER_MODE ||
+    record.compiler_algorithm !== COMPILER_ALGORITHM ||
+    record.tenant_id !== tenant_id || record.domain_pack_id !== domain_pack_id ||
+    record.snapshot_digest !== snapshot_digest ||
+    !SHA256.test(String(record.provenance_digest || "")) ||
+    record.provenance_digest !== expectedDigest ||
+    record.execution_authorized !== false) {
+    throw new Error("policy_compiler_provenance_invalid");
+  }
+  return record;
 }
 
 export function createNyraPolicyRegistryCoordinator({
   proofService,
   registryStore,
   nyraClient,
+  compilerProvenanceVerifier,
 } = {}) {
   if (!proofService?.prepare || !proofService?.issue || !proofService?.reconcile ||
     !registryStore?.activate || !registryStore?.rollback || !registryStore?.reconcile ||
-    !nyraClient?.attest || !nyraClient?.probe) {
+    !registryStore?.resolveRollbackTarget || !nyraClient?.attest || !nyraClient?.probe ||
+    !compilerProvenanceVerifier?.verify || !compilerProvenanceVerifier?.verifyPersistedRecord ||
+    !compilerProvenanceVerifier?.status) {
     throw new Error("policy_registry_coordinator_dependencies_invalid");
   }
 
@@ -456,6 +603,7 @@ export function createNyraPolicyRegistryCoordinator({
     preflight_id,
     domain_pack_id,
     snapshot_digest,
+    compiler_provenance_digest,
     authorization_digest,
     owner_subject_fingerprint,
     owner_binding_hash,
@@ -464,6 +612,9 @@ export function createNyraPolicyRegistryCoordinator({
   }) {
     if (!SHA256.test(String(authorization_digest || ""))) {
       throw new Error("policy_registry_authorization_digest_invalid");
+    }
+    if (!SHA256.test(String(compiler_provenance_digest || ""))) {
+      throw new Error("policy_compiler_provenance_invalid");
     }
     const ownerApprovalHash = derivePolicyRegistryOwnerApprovalHash({
       tenantId: tenant_id,
@@ -483,6 +634,7 @@ export function createNyraPolicyRegistryCoordinator({
       preflight_id,
       domain_pack_id,
       snapshot_digest,
+      compiler_provenance_digest,
       owner_approval_hash: ownerApprovalHash,
       authorization_digest,
       owner_request_binding_digest: crypto.createHash("sha256")
@@ -498,8 +650,30 @@ export function createNyraPolicyRegistryCoordinator({
       intent_digest: derivedIntentDigest,
       domain_pack_id,
       snapshot_digest,
+      compiler_provenance_digest,
       owner_approval_hash: ownerApprovalHash,
     });
+    if (challenge?.schema_version !== ATTESTATION_SCHEMA ||
+      challenge?.envelope?.schema_version !== ATTESTATION_SCHEMA) {
+      throw new Error("policy_proof_legacy_schema_unsupported");
+    }
+    const proofBinding = validateProofBinding(proofBindingFromEnvelope(challenge.envelope));
+    const expectedBinding = {
+      tenant_id,
+      operation_id,
+      action,
+      operation: PROOF_OPERATIONS[action],
+      work_id,
+      preflight_id,
+      intent_digest: derivedIntentDigest,
+      domain_pack_id,
+      snapshot_digest,
+      compiler_provenance_digest,
+      owner_approval_hash: ownerApprovalHash,
+    };
+    if (Object.entries(expectedBinding).some(([field, value]) => proofBinding[field] !== value)) {
+      throw new Error("policy_proof_binding_invalid");
+    }
     const activationAttestation = await nyraClient.attest(challenge);
     const receipt = await proofService.issue({
       tenant_id,
@@ -510,7 +684,7 @@ export function createNyraPolicyRegistryCoordinator({
     return {
       activationAttestation,
       receipt: stableReceipt,
-      proofBinding: proofBindingFromEnvelope(challenge.envelope),
+      proofBinding,
     };
   }
 
@@ -523,15 +697,43 @@ export function createNyraPolicyRegistryCoordinator({
       now: input.now || new Date(),
     });
     if (!validation.ok) throw new Error("policy_registry_snapshot_invalid");
+    const compilerStatus = await compilerProvenanceVerifier.status();
+    if (!compilerStatusReady(compilerStatus)) {
+      throw new Error("policy_compiler_unavailable");
+    }
+    const compilerProvenance = validateCompilerProvenance(
+      await compilerProvenanceVerifier.verify({
+        tenant_id: input.tenant_id,
+        domain_pack_id: input.domain_pack_id,
+        snapshot: input.snapshot,
+        compiler_input: input.compiler_input,
+      }),
+      {
+        tenant_id: input.tenant_id,
+        domain_pack_id: input.domain_pack_id,
+        snapshot_digest: input.snapshot.snapshot_digest,
+      },
+    );
+    validateCompilerRecordVerification(
+      await compilerProvenanceVerifier.verifyPersistedRecord(compilerProvenance, {
+        tenant_id: input.tenant_id,
+        domain_pack_id: input.domain_pack_id,
+        snapshot_digest: input.snapshot.snapshot_digest,
+        compiler_provenance_digest: compilerProvenance.provenance_digest,
+      }),
+      compilerProvenance,
+    );
     const proof = await proofForMutation({
       ...input,
       action: "policy.snapshot.activate",
       snapshot_digest: input.snapshot.snapshot_digest,
+      compiler_provenance_digest: compilerProvenance.provenance_digest,
     });
     const result = await registryStore.activate({
       tenant_id: input.tenant_id,
       operation_id: input.operation_id,
       snapshot: input.snapshot,
+      compiler_provenance: compilerProvenance,
       core_receipt: proof.receipt,
       activation_attestation: proof.activationAttestation,
       proof_binding: proof.proofBinding,
@@ -546,15 +748,46 @@ export function createNyraPolicyRegistryCoordinator({
       work_id: proof.proofBinding.work_id,
       preflight_id: proof.proofBinding.preflight_id,
       intent_digest: proof.proofBinding.intent_digest,
+      compiler_provenance_digest: proof.proofBinding.compiler_provenance_digest,
       proof_status: "consumed",
     };
   }
 
   async function rollback(input) {
+    if (Object.hasOwn(input, "compiler_input") || Object.hasOwn(input, "compiler_provenance") ||
+      Object.hasOwn(input, "compiler_provenance_digest")) {
+      throw new Error("policy_registry_rollback_caller_provenance_denied");
+    }
+    const target = await registryStore.resolveRollbackTarget({
+      tenant_id: input.tenant_id,
+      target_snapshot_digest: input.target_snapshot_digest,
+      domain_pack_id: input.domain_pack_id,
+      core_branch_id: input.core_branch_id,
+      nyra_branch_id: input.nyra_branch_id,
+      now: input.now,
+    });
+    if (!exactRecord(target, ["snapshot", "attestation", "compiler_provenance"]) ||
+      target.snapshot?.snapshot_digest !== input.target_snapshot_digest) {
+      throw new Error("policy_registry_rollback_target_invalid");
+    }
+    const validation = validatePolicySnapshot(target.snapshot, {
+      tenant_id: input.tenant_id,
+      core_branch_id: input.core_branch_id,
+      nyra_branch_id: input.nyra_branch_id,
+      domain_pack_id: input.domain_pack_id,
+      now: input.now || new Date(),
+    });
+    if (!validation.ok) throw new Error("policy_registry_rollback_target_invalid");
+    const compilerProvenance = validateCompilerProvenance(target.compiler_provenance, {
+      tenant_id: input.tenant_id,
+      domain_pack_id: input.domain_pack_id,
+      snapshot_digest: input.target_snapshot_digest,
+    });
     const proof = await proofForMutation({
       ...input,
       action: "policy.snapshot.rollback",
       snapshot_digest: input.target_snapshot_digest,
+      compiler_provenance_digest: compilerProvenance.provenance_digest,
     });
     const result = await registryStore.rollback({
       tenant_id: input.tenant_id,
@@ -574,13 +807,20 @@ export function createNyraPolicyRegistryCoordinator({
       work_id: proof.proofBinding.work_id,
       preflight_id: proof.proofBinding.preflight_id,
       intent_digest: proof.proofBinding.intent_digest,
+      compiler_provenance_digest: proof.proofBinding.compiler_provenance_digest,
       proof_status: "consumed",
     };
   }
 
   async function reconcile({ tenant_id, operation_id, expected_work_id }) {
     const state = await proofService.reconcile({ tenant_id, operation_id });
-    if (!expected_work_id || state.binding.work_id !== expected_work_id) {
+    const proofBinding = validateProofBinding(state?.binding);
+    if (proofBinding.tenant_id !== tenant_id || proofBinding.operation_id !== operation_id ||
+      (Object.hasOwn(state, "tenant_id") && state.tenant_id !== tenant_id) ||
+      (Object.hasOwn(state, "operation_id") && state.operation_id !== operation_id)) {
+      throw new Error("policy_proof_reconciliation_scope_invalid");
+    }
+    if (!expected_work_id || proofBinding.work_id !== expected_work_id) {
       throw new Error("policy_proof_work_binding_invalid");
     }
     if (!state.receipt || !["issued", "consumed"].includes(state.status)) {
@@ -592,18 +832,19 @@ export function createNyraPolicyRegistryCoordinator({
     const result = await registryStore.reconcile({
       tenant_id,
       operation_id,
-      operation: state.binding.operation,
-      snapshot_digest: state.binding.snapshot_digest,
+      operation: proofBinding.operation,
+      snapshot_digest: proofBinding.snapshot_digest,
       core_receipt: state.receipt,
       consumption_proof: consumptionProof,
-      proof_binding: state.binding,
+      proof_binding: proofBinding,
     });
     return {
       ...result,
-      operation_id: state.binding.operation_id,
-      work_id: state.binding.work_id,
-      preflight_id: state.binding.preflight_id,
-      intent_digest: state.binding.intent_digest,
+      operation_id: proofBinding.operation_id,
+      work_id: proofBinding.work_id,
+      preflight_id: proofBinding.preflight_id,
+      intent_digest: proofBinding.intent_digest,
+      compiler_provenance_digest: proofBinding.compiler_provenance_digest,
       proof_status: "consumed",
     };
   }
@@ -613,23 +854,46 @@ export function createNyraPolicyRegistryCoordinator({
     rollback,
     reconcile,
     status: async () => {
-      const [proof, store, upstreamProbe] = await Promise.all([
+      const [proof, store, compilerStatus, upstreamProbe] = await Promise.all([
         proofService.status(),
         registryStore.status(),
+        compilerProvenanceVerifier.status(),
         nyraClient.probe(),
       ]);
       const upstream = nyraClient.status();
+      const proofReady = proof.ready === true && proof.proof_schema_version === PROOF_SCHEMA &&
+        proof.attestation_schema_version === ATTESTATION_SCHEMA &&
+        proof.receipt_schema_version === RECEIPT_SCHEMA &&
+        proof.compiler_provenance_binding_required === true;
+      const compilerReady = compilerStatusReady(compilerStatus);
+      const storeReady = store.ready === true && store.backend === "postgresql" &&
+        store.restart_durable === true && store.distributed === true &&
+        store.compiler_provenance_persistence === true &&
+        store.compiler_input_persisted === false;
       return {
-        ready: proof.ready === true && store.ready === true && upstreamProbe === true && upstream.ready === true,
+        ready: proofReady && storeReady && compilerReady &&
+          upstreamProbe === true && upstream.ready === true,
         proof,
         store: {
           ready: store.ready === true,
           backend: store.backend,
           restart_durable: store.restart_durable === true,
           distributed: store.distributed === true,
+          compiler_provenance_persistence: store.compiler_provenance_persistence === true,
+          compiler_input_persisted: store.compiler_input_persisted === true,
+        },
+        compiler_provenance: {
+          ready: compilerReady,
+          schema_version: COMPILER_PROVENANCE_SCHEMA,
+          status_schema_version: compilerStatus?.schema_version || null,
+          mode: compilerStatus?.mode || null,
+          compiler_algorithm: compilerStatus?.compiler_algorithm || null,
+          compiler_input_persisted: store.compiler_input_persisted === true,
+          execution_authorized: false,
         },
         upstream,
-        e2e_verified: upstreamProbe === true && upstream.upstream_verified === true,
+        e2e_verified: proofReady && storeReady && compilerReady && upstreamProbe === true &&
+          upstream.ready === true && upstream.upstream_verified === true,
       };
     },
   };
