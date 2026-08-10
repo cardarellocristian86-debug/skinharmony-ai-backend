@@ -75,6 +75,38 @@ test("ledger records an expiring support delegation without expanding its author
   assert.equal(metadata.owner, undefined);
 });
 
+test("ledger binds causal lineage only after a successful Universal Core result", async () => {
+  const pool = fakePool();
+  const ledger = createDecisionLedger({ databaseUrl: "postgres://unused" }, { pool });
+  const claimed = {
+    work_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    change_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    context_digest: "c".repeat(64),
+  };
+  const context = await ledger.startWork(
+    { tenantId: "tenant-a", subject: "codex", kind: "codex" },
+    "causal_context_validate",
+    { causal_context: claimed },
+  );
+  assert.equal(context.governedWorkId, null);
+  const firstEventInsert = pool.calls.find((call) => /INSERT INTO core_decision_events/.test(call.sql));
+  assert.deepEqual(firstEventInsert.params.slice(23, 26), [null, null, null]);
+
+  const verified = {
+    work_id: "11111111-1111-4111-8111-111111111111",
+    change_id: "22222222-2222-4222-8222-222222222222",
+    context_digest: "d".repeat(64),
+  };
+  await ledger.finishWork(context, {
+    result: { structuredContent: { ok: true, result: { valid: true, ...verified } } },
+  });
+  assert.equal(context.governedWorkId, verified.work_id);
+  assert.equal(context.causalChangeId, verified.change_id);
+  assert.equal(context.causalContextDigest, verified.context_digest);
+  const update = pool.calls.find((call) => /UPDATE core_ai_work_sessions SET status/.test(call.sql));
+  assert.deepEqual(update.params.slice(5, 8), [verified.work_id, verified.change_id, verified.context_digest]);
+});
+
 test("ledger reports are always filtered by authenticated tenant", async () => {
   const pool = fakePool();
   const ledger = createDecisionLedger({ databaseUrl: "postgres://unused" }, { pool });

@@ -32,6 +32,11 @@ import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js"
 import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
 import { createWebTransport, webCompatibilityManifest } from "./web-agent-compatibility.js";
 import { researchAirlockToolMetadata } from "./research-airlock-reference-monitor.js";
+import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
+import {
+  CAUSAL_CONTINUITY_TOOLS,
+  createCausalContinuityHandlers,
+} from "./causal-continuity.js";
 
 const config = loadConfig();
 const webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowedOrigins });
@@ -48,6 +53,7 @@ TOOLS.push(...WORK_CONTINUITY_TOOLS.filter((tool) =>
 TOOLS.push(...NYRA_NATIVE_TEAM_TOOLS);
 TOOLS.push(...NYRA_AUTOPILOT_TOOLS);
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...HOST_NATIVE_TOOLS);
+TOOLS.push(...CAUSAL_CONTINUITY_TOOLS);
 
 const primaryDatabasePool = config.databaseUrl
   ? new Pool({
@@ -173,6 +179,14 @@ const coreHandlers = createCoreHandlers(config, {
       };
     },
   } : null,
+});
+const causalContinuityHandlers = createCausalContinuityHandlers({
+  coreRequest: coreHandlers.causalCoreRequest,
+  issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
+    secret: config.dttAgentIdentitySigningSecret,
+    tenant_id,
+    agent_presence,
+  }),
 });
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
@@ -465,6 +479,7 @@ const baseHandlers = {
   },
 
   ...coreHandlers,
+  ...causalContinuityHandlers,
   work_preflight: async (args, identity) => {
     const result = await coreHandlers.work_preflight(args, identity);
     await ensureContinuity(identity, args, "work_preflight", result, { resumeExisting: true });

@@ -58,6 +58,7 @@ export function assertGalleryParticipantBinding(identity = {}, input = {}) {
     sessionId: identifier(presence.session_id, "session_id"),
     agentId: identifier(presence.agent_id, "agent_id"),
     clientType: safeText(presence.client_type || "other", 40),
+    sessionFingerprint: String(presence.session_fingerprint || ""),
     acl: [...GALLERY_PARTICIPANT_ACL],
   };
 }
@@ -89,7 +90,18 @@ function positiveInteger(value, fallback, maximum) {
   return parsed;
 }
 
-const SURFACE_KINDS = new Set(["file", "component", "dependency"]);
+const LEGACY_SURFACE_KINDS = new Set(["file", "component", "dependency"]);
+const CAUSAL_SURFACE_KINDS = new Set(["causal_project", "causal_change", "causal_obligation"]);
+const SURFACE_KINDS = new Set([...LEGACY_SURFACE_KINDS, ...CAUSAL_SURFACE_KINDS]);
+const CAUSAL_CONTEXT_LEASE_AUTHORITY_SCOPES = new Set([
+  "causal:change:execute",
+  "causal:evidence:produce",
+  "causal:obligation:execute",
+  "causal:obligation:close",
+  "causal:outcome:reconcile",
+  "causal:write",
+]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function normalizeSurfaces(surfaces) {
   if (!Array.isArray(surfaces) || surfaces.length < 1 || surfaces.length > 100) {
@@ -106,11 +118,57 @@ export function normalizeSurfaces(surfaces) {
       if (!value || value.split("/").some((part) => part === "." || part === "..")) {
         throw new Error("continuity_lease_surface_invalid");
       }
+    } else if (CAUSAL_SURFACE_KINDS.has(kind)) {
+      value = value.toLowerCase();
+      if (!UUID_PATTERN.test(value)) throw new Error("continuity_lease_surface_invalid");
     }
     return { kind, value };
   });
   const unique = new Map(normalized.map((surface) => [`${surface.kind}\u0000${surface.value}`, surface]));
   return [...unique.values()].sort((a, b) => `${a.kind}:${a.value}`.localeCompare(`${b.kind}:${b.value}`));
+}
+
+function causalLeasePolicy({ tenantId, actorId, leaseId, purpose, surfaces, sessionFingerprint }) {
+  const causal = surfaces.filter((surface) => CAUSAL_SURFACE_KINDS.has(surface.kind));
+  if (!causal.length) {
+    return {
+      authorityScope: [],
+      authoritySource: "legacy_work_lease_v1",
+      authorityBindingDigest: null,
+      policySessionFingerprint: null,
+      causal: false,
+    };
+  }
+  if (causal.length !== surfaces.length || String(purpose || "").trim() !== "causal_context_issue") {
+    throw new Error("continuity_causal_lease_contract_invalid");
+  }
+  const count = (kind) => causal.filter((surface) => surface.kind === kind).length;
+  if (count("causal_project") !== 1 || count("causal_change") !== 1 || count("causal_obligation") < 1) {
+    throw new Error("continuity_causal_lease_contract_invalid");
+  }
+  if (!/^[a-f0-9]{16,64}$/i.test(String(sessionFingerprint || ""))) {
+    throw new Error("continuity_causal_lease_session_fingerprint_required");
+  }
+  // The lease authority is a static Core policy for this exact purpose and is
+  // never copied from an MCP argument or a DTT receipt.
+  const persistedAuthorityScope = [...CAUSAL_CONTEXT_LEASE_AUTHORITY_SCOPES].sort();
+  const authorityProof = {
+    schema_version: "persisted_lease_authority_v1",
+    tenant_id: tenantId,
+    lease_id: leaseId,
+    actor_id: actorId,
+    purpose: "causal_context_issue",
+    surfaces,
+    persisted_authority_scope: persistedAuthorityScope,
+    policy_session_fingerprint: sessionFingerprint,
+  };
+  return {
+    authorityScope: persistedAuthorityScope,
+    authoritySource: "persisted_lease_policy_v1",
+    authorityBindingDigest: digest(authorityProof),
+    policySessionFingerprint: sessionFingerprint,
+    causal: true,
+  };
 }
 
 export function surfacesOverlap(left, right) {
@@ -1192,12 +1250,24 @@ CREATE TABLE IF NOT EXISTS core_continuity_leases (
   status varchar(40) NOT NULL DEFAULT 'active', acquired_at timestamptz NOT NULL DEFAULT now(),
   renewed_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL,
   released_at timestamptz, created_by varchar(120) NOT NULL,
+  policy_authority_scope jsonb NOT NULL DEFAULT '[]'::jsonb,
+  policy_authority_source varchar(80) NOT NULL DEFAULT 'legacy_work_lease_v1',
+  policy_authority_binding_digest char(64),
+  policy_session_fingerprint varchar(64),
   PRIMARY KEY (tenant_id, work_id, lease_id),
   FOREIGN KEY (tenant_id, work_id, session_id)
     REFERENCES core_continuity_participants(tenant_id, work_id, session_id),
   FOREIGN KEY (tenant_id, work_id, branch_id)
     REFERENCES core_continuity_branches(tenant_id, work_id, branch_id)
 );
+ALTER TABLE core_continuity_leases
+  ADD COLUMN IF NOT EXISTS policy_authority_scope jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE core_continuity_leases
+  ADD COLUMN IF NOT EXISTS policy_authority_source varchar(80) NOT NULL DEFAULT 'legacy_work_lease_v1';
+ALTER TABLE core_continuity_leases
+  ADD COLUMN IF NOT EXISTS policy_authority_binding_digest char(64);
+ALTER TABLE core_continuity_leases
+  ADD COLUMN IF NOT EXISTS policy_session_fingerprint varchar(64);
 CREATE INDEX IF NOT EXISTS core_continuity_leases_active_idx
   ON core_continuity_leases (tenant_id, work_id, expires_at DESC) WHERE status='active';
 
@@ -2358,13 +2428,20 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function acquireLease(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType, sessionFingerprint } = assertGalleryParticipantBinding(identity, input);
+    if (Object.prototype.hasOwnProperty.call(input, "authority_scope") ||
+        Object.prototype.hasOwnProperty.call(input, "policy_session_fingerprint")) {
+      throw new Error("continuity_lease_authority_scope_forbidden");
+    }
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
       GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
     const surfaces = normalizeSurfaces(input.surfaces);
+    const causalLeaseRequest = surfaces.some((surface) => CAUSAL_SURFACE_KINDS.has(surface.kind))
+      ? { ...input, _verified_policy_session_fingerprint: sessionFingerprint }
+      : input;
     return transaction(async (client) => withIdempotency(
-      client, context, input.idempotency_key, "lease_acquire", input, async () => {
+      client, context, input.idempotency_key, "lease_acquire", causalLeaseRequest, async () => {
         await lockGalleryWork(client, context);
         const participant = await requireParticipant(client, context, sessionId, {
           agentId,
@@ -2372,6 +2449,24 @@ export function createWorkContinuityRuntime(config, options = {}) {
         });
         if (branchId && branchId !== participant.branch_id) {
           throw new Error("continuity_participant_branch_locked");
+        }
+        const leaseId = crypto.randomUUID();
+        const policy = causalLeasePolicy({
+          tenantId: context.tenantId,
+          actorId: context.actor,
+          leaseId,
+          purpose: input.purpose,
+          surfaces,
+          sessionFingerprint,
+        });
+        const causalProject = surfaces.find((surface) => surface.kind === "causal_project");
+        if (causalProject) {
+          const projectBinding = await client.query(`SELECT project_uuid FROM core_continuity_works
+            WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId]);
+          if (!projectBinding.rows[0]?.project_uuid ||
+              String(projectBinding.rows[0].project_uuid).toLowerCase() !== causalProject.value) {
+            throw new Error("continuity_causal_project_binding_mismatch");
+          }
         }
         await expireLeases(client, context);
         const active = await client.query(`SELECT l.lease_id,l.session_id,l.branch_id,l.purpose,l.expires_at,
@@ -2404,13 +2499,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
             work_id: context.workId, acquired: false, blocked_reason: "continuity_lease_overlap",
             conflicts, event };
         }
-        const leaseId = crypto.randomUUID();
         const lease = await client.query(`INSERT INTO core_continuity_leases
-          (tenant_id,work_id,lease_id,session_id,branch_id,purpose,expires_at,created_by)
-          VALUES ($1,$2,$3,$4,$5,$6,now()+($7::int*interval '1 second'),$8)
-          RETURNING lease_id,session_id,branch_id,purpose,status,acquired_at,renewed_at,expires_at`,
+          (tenant_id,work_id,lease_id,session_id,branch_id,purpose,expires_at,created_by,
+           policy_authority_scope,policy_authority_source,policy_authority_binding_digest,policy_session_fingerprint)
+          VALUES ($1,$2,$3,$4,$5,$6,now()+($7::int*interval '1 second'),$8,$9::jsonb,$10,$11,$12)
+          RETURNING lease_id,session_id,branch_id,purpose,status,acquired_at,renewed_at,expires_at,
+            policy_authority_scope,policy_authority_source,policy_authority_binding_digest,policy_session_fingerprint`,
         [context.tenantId, context.workId, leaseId, sessionId, branchId || participant.branch_id,
-          safeText(input.purpose, 2_000), ttlSeconds, context.actor]);
+          safeText(input.purpose, 2_000), ttlSeconds, context.actor, JSON.stringify(policy.authorityScope),
+          policy.authoritySource, policy.authorityBindingDigest, policy.policySessionFingerprint]);
         for (const surface of surfaces) {
           await client.query(`INSERT INTO core_continuity_lease_surfaces
             (tenant_id,work_id,lease_id,surface_kind,surface_value) VALUES ($1,$2,$3,$4,$5)`,
@@ -2419,6 +2516,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         const event = await appendEvent(client, context, "lease_acquired", {
           lease_id: leaseId, session_id: sessionId, branch_id: lease.rows[0].branch_id,
           surfaces, expires_at: lease.rows[0].expires_at,
+          policy_authority_source: policy.authoritySource,
+          policy_authority_binding_digest: policy.authorityBindingDigest,
+          policy_session_fingerprint: policy.policySessionFingerprint,
         });
         return { schema_version: "tenant_work_gallery_v1", tenant_id: context.tenantId,
           work_id: context.workId, acquired: true, lease: { ...lease.rows[0], surfaces }, event };

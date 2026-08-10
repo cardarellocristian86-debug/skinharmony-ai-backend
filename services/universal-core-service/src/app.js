@@ -170,6 +170,7 @@ import {
   buildHostReleaseIntentV1,
   createFileHostNativeGovernanceStore,
   createHostNativeGovernance,
+  createHostNativeDomainSigner,
   validateHostReleaseManifestV2,
 } from "./hostNativeGovernance.js";
 import {
@@ -183,6 +184,20 @@ import {
   genericWorkCoreJoinDigest,
 } from "./genericWorkCoreJoin.js";
 import { createPostgresGenericWorkCoreJoinStore } from "./genericWorkCoreJoinStore.js";
+import { createPostgresCausalContinuityStore } from "./causalContinuityStore.js";
+import { createCausalContinuityRuntime } from "./causalContinuityRuntime.js";
+import { registerCausalContinuityRoutes } from "./causalContinuityRoutes.js";
+import { causalDigest, CausalContinuityError } from "./causalContinuityCanonical.js";
+import {
+  createFailClosedRenderOriginResolver,
+  createProjectScopeRenderOriginResolver,
+} from "./projectScopeRenderOriginResolver.js";
+import {
+  buildCausalBranchResult,
+  extendCausalBranchRegistry,
+  validateCausalBranchInvocation,
+} from "./causalBranchContract.js";
+import { createCausalBranchEnforcer } from "./causalBranchEnforcement.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -1257,6 +1272,137 @@ function createAuth(keyStore, audit, requiredScope, {
       req.workPreflight = gate.preflight;
     }
     return next();
+  };
+}
+
+const CAUSAL_WRITE_TRANSPORT_SCOPES = Object.freeze([
+  "causal:write",
+  "causal:authorize",
+  "causal:approve",
+  "causal:evidence",
+  "causal:reconcile",
+  "causal:close",
+  "causal:reopen",
+  "causal:intent:propose",
+  "causal:intent:approve",
+  "causal:change:create",
+  "causal:change:execute",
+  "causal:evidence:produce",
+  "causal:outcome:reconcile",
+  "causal:obligation:close",
+  "causal:rollout",
+  "gallery:project",
+  "core:govern",
+]);
+
+export function causalRouteAuthenticatedScopes(requiredScope, keyRecord = {}) {
+  const required = String(requiredScope || "").trim();
+  const platformScopes = Array.isArray(keyRecord.allowed_scopes) ? keyRecord.allowed_scopes : [];
+  const mapped = required === "causal:read"
+    ? ["causal:read"]
+    : [required, ...CAUSAL_WRITE_TRANSPORT_SCOPES];
+  if (platformScopes.includes(SCOPES.OWNER_ASSERTION)) mapped.push("intent:approve:strategic");
+  return [...new Set(mapped.filter(Boolean))].sort();
+}
+
+export function createPostgresCausalActionLeaseVerifier(pool) {
+  if (!pool || typeof pool.query !== "function") {
+    throw new TypeError("causal_action_lease_pool_required");
+  }
+  return async (input) => {
+    if (Object.prototype.hasOwnProperty.call(input, "policy_session_fingerprint")) return null;
+    const requestingSessionFingerprint = String(input.actor_session_fingerprint || "");
+    if (!/^[a-f0-9]{16,64}$/i.test(requestingSessionFingerprint)) return null;
+    const leaseResult = await pool.query(
+      `SELECT l.lease_id,l.tenant_id,l.work_id,l.purpose,l.status,l.expires_at,
+              l.policy_authority_scope,l.policy_authority_source,l.policy_authority_binding_digest,
+              l.policy_session_fingerprint,
+              w.project_uuid,p.agent_id,
+              coalesce(jsonb_agg(jsonb_build_object('kind',s.surface_kind,'value',s.surface_value)
+                ORDER BY s.surface_kind,s.surface_value)
+                FILTER (WHERE s.surface_kind IS NOT NULL),'[]'::jsonb) AS surfaces
+         FROM core_continuity_leases l
+         JOIN core_continuity_works w
+           ON w.tenant_id=l.tenant_id AND w.work_id=l.work_id
+         JOIN core_continuity_participants p
+           ON p.tenant_id=l.tenant_id AND p.work_id=l.work_id AND p.session_id=l.session_id
+         LEFT JOIN core_continuity_lease_surfaces s
+           ON s.tenant_id=l.tenant_id AND s.work_id=l.work_id AND s.lease_id=l.lease_id
+        WHERE l.tenant_id=$1 AND l.work_id=$2 AND l.lease_id=$3
+          AND l.status='active' AND l.expires_at>now()
+          AND l.policy_session_fingerprint=$6
+          AND p.status='active' AND p.expires_at>now()
+          AND p.agent_id=$4 AND w.project_uuid=$5
+        GROUP BY l.lease_id,l.tenant_id,l.work_id,l.purpose,l.status,l.expires_at,
+          l.policy_authority_scope,l.policy_authority_source,l.policy_authority_binding_digest,
+          l.policy_session_fingerprint,w.project_uuid,p.agent_id`,
+      [input.tenant_id, input.work_id, input.lease_id, input.actor_id, input.project_id, requestingSessionFingerprint],
+    );
+    const lease = leaseResult.rows[0];
+    if (!lease) return null;
+    const surfaces = Array.isArray(lease.surfaces) ? lease.surfaces : [];
+    const valuesFor = (kind) => surfaces
+      .filter((surface) => surface?.kind === kind)
+      .map((surface) => String(surface.value || "").toLowerCase())
+      .sort();
+    const expectedObligations = [...new Set((input.obligation_ids || []).map((value) => String(value).toLowerCase()))].sort();
+    const projectSurfaces = valuesFor("causal_project");
+    const changeSurfaces = valuesFor("causal_change");
+    const obligationSurfaces = valuesFor("causal_obligation");
+    if (surfaces.length !== 2 + expectedObligations.length ||
+        projectSurfaces.length !== 1 || projectSurfaces[0] !== String(input.project_id).toLowerCase() ||
+        changeSurfaces.length !== 1 || changeSurfaces[0] !== String(input.change_id).toLowerCase() ||
+        JSON.stringify(obligationSurfaces) !== JSON.stringify(expectedObligations)) {
+      return null;
+    }
+    const bindingResult = await pool.query(
+      `SELECT c.change_id,array_agg(o.obligation_id ORDER BY o.obligation_id) AS obligation_ids
+         FROM core_changes c
+         JOIN core_causal_obligations o
+           ON o.tenant_id=c.tenant_id AND o.project_id=c.project_id
+          AND o.work_id=c.work_id AND o.change_id=c.change_id
+        WHERE c.tenant_id=$1 AND c.project_id=$2 AND c.work_id=$3 AND c.change_id=$4
+          AND o.obligation_id=ANY($5::uuid[])
+        GROUP BY c.change_id`,
+      [input.tenant_id, input.project_id, input.work_id, input.change_id, input.obligation_ids],
+    );
+    const binding = bindingResult.rows[0];
+    if (!binding || binding.obligation_ids.length !== input.obligation_ids.length) return null;
+    const persistedAuthorityScope = Array.isArray(lease.policy_authority_scope)
+      ? [...lease.policy_authority_scope].map(String).sort()
+      : [];
+    const authorityProof = {
+      schema_version: "persisted_lease_authority_v1", tenant_id: lease.tenant_id, lease_id: lease.lease_id,
+      actor_id: lease.agent_id, purpose: lease.purpose, surfaces,
+      persisted_authority_scope: persistedAuthorityScope,
+      policy_session_fingerprint: requestingSessionFingerprint,
+    };
+    if (lease.policy_session_fingerprint !== requestingSessionFingerprint ||
+        lease.policy_authority_binding_digest !== causalDigest(authorityProof)) return null;
+    return {
+      valid: true,
+      readback_verified: true,
+      active: lease.status === "active",
+      replayed: false,
+      consumed: false,
+      revoked: false,
+      tenant_id: lease.tenant_id,
+      project_id: lease.project_uuid,
+      work_id: lease.work_id,
+      change_id: binding.change_id,
+      obligation_ids: binding.obligation_ids,
+      lease_id: lease.lease_id,
+      actor_id: lease.agent_id,
+      purpose: lease.purpose,
+      status: lease.status,
+      surfaces,
+      persisted_authority_scope: persistedAuthorityScope,
+      policy_session_fingerprint: lease.policy_session_fingerprint,
+      authority_source: lease.policy_authority_source,
+      authority_binding_digest: lease.policy_authority_binding_digest,
+      expires_at: lease.expires_at,
+      provenance: "core_continuity_lease_postgres_readback_v1",
+    };
   };
 }
 
@@ -4631,6 +4777,32 @@ export function createUniversalCoreService(options = {}) {
         options.hostNativeResolverConfigurationError ||
         "host_native_resolver_registry_invalid",
       ).slice(0, 160);
+  const hostNativeProjectScopeRenderOriginResolver =
+    options.hostNativeProjectScopeRenderOriginResolver ||
+    (nyraPolicyRegistryPostgresPool
+      ? createProjectScopeRenderOriginResolver({
+          pool: nyraPolicyRegistryPostgresPool,
+          maxAgeMs:
+            options.hostNativeRenderScopeMaxAgeMs ??
+            process.env.CORE_HOST_NATIVE_RENDER_SCOPE_MAX_AGE_MS,
+        })
+      : null);
+  // Always provide a fail-closed resolver. Without an exact environment or
+  // verified Project Scope binding, host-native governance must not consume a
+  // caller/manifest origin or synthesize a service-slug origin.
+  const hostNativeRenderServiceOriginResolver =
+    createFailClosedRenderOriginResolver({
+      environmentResolver: options.hostNativeRenderServiceOriginResolver || null,
+      projectScopeResolver: hostNativeProjectScopeRenderOriginResolver,
+    });
+  const hostNativeRenderServiceOriginResolverState =
+    typeof options.hostNativeRenderServiceOriginResolver === "function"
+      ? (hostNativeProjectScopeRenderOriginResolver
+          ? "exact_registry_then_project_scope"
+          : "exact_registry_only")
+      : (hostNativeProjectScopeRenderOriginResolver
+          ? "project_scope_only"
+          : "fail_closed_unavailable");
   let hostNativeGovernance = options.hostNativeGovernance || null;
   let hostNativeGovernanceState = hostNativeGovernance ? "ready" : "disabled";
   const hostNativeRequiredChecksPolicyResolver =
@@ -4706,7 +4878,7 @@ export function createUniversalCoreService(options = {}) {
           signingSecret: hostNativeSigningSecret,
           externalReadbackVerifier: hostNativeExternalReadbackVerifier,
           releaseJoinVerdictResolver: hostNativeReleaseJoinVerdictResolver,
-          renderServiceOriginResolver: options.hostNativeRenderServiceOriginResolver || null,
+          renderServiceOriginResolver: hostNativeRenderServiceOriginResolver,
           requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
           closureAttestationSigningSecret: dttAgentIdentitySecret,
         });
@@ -4720,6 +4892,56 @@ export function createUniversalCoreService(options = {}) {
       }
     }
   }
+  const causalContinuityStore = options.causalContinuityStore
+    || (nyraPolicyRegistryPostgresPool
+      ? createPostgresCausalContinuityStore({ pool: nyraPolicyRegistryPostgresPool })
+      : null);
+  let causalContinuityState = causalContinuityStore ? "initializing" : "disabled";
+  let causalContinuityInitializationError = null;
+  let causalContextSigner = options.causalContextSigner || null;
+  if (!causalContextSigner && hostNativeSigningSecret.length >= 32) {
+    try {
+      causalContextSigner = createHostNativeDomainSigner({ signingSecret: hostNativeSigningSecret });
+    } catch {
+      causalContinuityState = "signer_unavailable";
+    }
+  }
+  const causalActionLeaseVerifier = options.causalActionLeaseVerifier
+    || (nyraPolicyRegistryPostgresPool
+      ? createPostgresCausalActionLeaseVerifier(nyraPolicyRegistryPostgresPool)
+      : null);
+  const causalContinuityRuntime = options.causalContinuityRuntime
+    || (causalContinuityStore && causalContextSigner
+      ? createCausalContinuityRuntime({
+        store: causalContinuityStore,
+        contextSigner: causalContextSigner,
+        verifyActionLease: causalActionLeaseVerifier,
+      })
+      : null);
+  if (causalContinuityRuntime) {
+    void Promise.resolve(causalContinuityRuntime.initialize())
+      .then(() => { causalContinuityState = "ready"; })
+      .catch((error) => {
+        causalContinuityState = "initialization_failed";
+        causalContinuityInitializationError = String(error?.code || error?.message || "causal_initialization_failed").slice(0, 160);
+        audit.append("core_causal_continuity_unavailable", { reason: causalContinuityInitializationError });
+      });
+  } else if (causalContinuityStore && causalContinuityState === "initializing") {
+    causalContinuityState = "signer_unavailable";
+  }
+  const causalRouteRuntime = causalContinuityRuntime ? {
+    invoke(capability, identity, input) {
+      if (causalContinuityState !== "ready") throw new CausalContinuityError("CAUSAL_RUNTIME_NOT_READY");
+      return causalContinuityRuntime.invoke(capability, identity, input);
+    },
+  } : null;
+  const causalBranchEnforcer = causalContinuityRuntime && causalContinuityStore && dttAgentIdentityReceiptService?.configured
+    ? createCausalBranchEnforcer({
+        store: causalContinuityStore,
+        runtime: causalContinuityRuntime,
+        resolveAgentContext: (token, tenantId) => dttAgentIdentityReceiptService.verifyContext(token, tenantId),
+      })
+    : null;
   const tenantProviderSetupLinks = null;
   const tenantOpenAiMultiAgentRunner = null;
 
@@ -4994,6 +5216,33 @@ export function createUniversalCoreService(options = {}) {
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
   app.use(express.urlencoded({ extended: false, limit: "8kb" }));
+  if (causalRouteRuntime) {
+    registerCausalContinuityRoutes({
+      app,
+      authFor: (requiredScope) => {
+        const authenticate = coreAuth(
+          requiredScope === "causal:read" ? SCOPES.READ_DECISION : SCOPES.WRITE_DECISION,
+        );
+        return (req, res, next) => authenticate(req, res, (error) => {
+          if (error) return next(error);
+          // The platform key is authenticated above. Expose only a derived,
+          // causal-domain authority view to the route adapter; never accept
+          // causal authority fields from the request or DTT caller payload.
+          req.coreKey = {
+            ...req.coreKey,
+            scopes: causalRouteAuthenticatedScopes(requiredScope, req.coreKey),
+          };
+          return next();
+        });
+      },
+      runtime: causalRouteRuntime,
+      resolveAgentContext: (token, tenantId) => {
+        if (!dttAgentIdentityReceiptService?.configured) throw new Error("dtt_agent_identity_not_ready");
+        return dttAgentIdentityReceiptService.verifyContext(token, tenantId);
+      },
+      audit: (event) => audit.append("core_causal_continuity_invoked", event),
+    });
+  }
   mountDttAgentIdentityReceiptRoutes({
     app,
     auth: coreAuth(SCOPES.WRITE_DECISION),
@@ -5745,11 +5994,36 @@ export function createUniversalCoreService(options = {}) {
     const researchAirlockProductionReady = !production
       || researchAirlockHealth.ready === true
       || (researchAirlockHealth.mode === "shadow" && researchAirlockHealth.operational_safe === true);
+    let causalContinuityHealth = {
+      ok: false,
+      state: causalContinuityState,
+      error: causalContinuityInitializationError,
+    };
+    if (causalContinuityRuntime && causalContinuityState === "ready") {
+      try {
+        causalContinuityHealth = {
+          ...(await causalContinuityRuntime.health()),
+          state: causalContinuityState,
+        };
+      } catch (error) {
+        causalContinuityHealth = {
+          ok: false,
+          state: "health_failed",
+          error: String(error?.code || error?.message || "causal_health_failed").slice(0, 160),
+        };
+      }
+    }
+    const causalContinuityProductionRequired = production
+      && governedAgentPostgresConfigured
+      && !hasInjectedPostgresVersionProbe;
+    const causalContinuityProductionReady = !causalContinuityProductionRequired
+      || (Boolean(causalContinuityRuntime) && causalContinuityHealth.ok === true);
     const renderReady = productionBuildReady
       && hostNativeReady
       && nyraPolicyRegistryModeValid
       && nyraPolicyRegistryProductionReady
-      && researchAirlockProductionReady;
+      && researchAirlockProductionReady
+      && causalContinuityProductionReady;
     res.status(renderReady ? 200 : 503).json({
       ok: true,
       service: SERVICE_NAME,
@@ -5782,6 +6056,11 @@ export function createUniversalCoreService(options = {}) {
         ...researchAirlockHealth,
         ready: researchAirlockProductionReady && researchAirlockHealth.ready === true,
         production_required: production && researchAirlockHealth.mode === "enforced",
+      },
+      causal_continuity: {
+        ...causalContinuityHealth,
+        production_required: causalContinuityProductionRequired,
+        feature_flag_default: "SHADOW",
       },
       dynamic_task_tree: {
         state_backend: dynamicTaskTreeStateStore.kind || "injected",
@@ -5893,8 +6172,7 @@ export function createUniversalCoreService(options = {}) {
           options.hostNativeGithubCredentialResolverState || "not_configured",
         github_credential_binding_count:
           Number(options.hostNativeGithubCredentialBindingCount || 0),
-        render_origin_resolver_state:
-          options.hostNativeRenderServiceOriginResolverState || "default_service_slug",
+        render_origin_resolver_state: hostNativeRenderServiceOriginResolverState,
         render_origin_binding_count:
           Number(options.hostNativeRenderServiceOriginBindingCount || 0),
         required_checks_policy_resolver_state:
@@ -6156,7 +6434,12 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/nira/branches", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const current = resolveDomainPackForKey(req.coreKey);
-    const catalog = nyraBranchCatalog(current.id);
+    const rawCatalog = nyraBranchCatalog(current.id);
+    const catalog = {
+      ...rawCatalog,
+      branches: extendCausalBranchRegistry(rawCatalog.branches),
+      causal_context_schema_version: "causal_context_envelope_v1",
+    };
     audit.append("core_nyra_branch_catalog_read", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -7179,8 +7462,7 @@ export function createUniversalCoreService(options = {}) {
         options.hostNativeGithubCredentialResolverState || "not_configured",
       github_credential_binding_count:
         Number(options.hostNativeGithubCredentialBindingCount || 0),
-      render_origin_resolver_state:
-        options.hostNativeRenderServiceOriginResolverState || "default_service_slug",
+      render_origin_resolver_state: hostNativeRenderServiceOriginResolverState,
       render_origin_binding_count:
         Number(options.hostNativeRenderServiceOriginBindingCount || 0),
       required_checks_policy_resolver_state:
@@ -8305,7 +8587,7 @@ export function createUniversalCoreService(options = {}) {
     const resolution = resolveBranchesForKey(req.coreKey);
     res.json({
       ok: true,
-      branches: branchRegistry(),
+      branches: extendCausalBranchRegistry(branchRegistry()),
       groups: deterministicBranchGroups(),
       taxonomy: deterministicBranchTaxonomy(),
       packages: BRANCH_PACKAGES,
@@ -8346,7 +8628,9 @@ export function createUniversalCoreService(options = {}) {
       branch_package: resolution,
       groups: deterministicBranchGroups(),
       taxonomy: deterministicBranchTaxonomy(),
-      branches: Object.fromEntries(resolution.selected_branches.map((id) => [id, branchRegistry()[id]]).filter(([, value]) => Boolean(value))),
+      branches: extendCausalBranchRegistry(Object.fromEntries(
+        resolution.selected_branches.map((id) => [id, branchRegistry()[id]]).filter(([, value]) => Boolean(value)),
+      )),
     });
   });
 
@@ -10001,7 +10285,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/branches/:branch/analyze", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
+  app.post("/v1/branches/:branch/analyze", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), async (req, res) => {
     const branch = String(req.params.branch || "").trim();
     const resolution = resolveBranchesForKey(req.coreKey, [branch]);
     if (!resolution.selected_branches.includes(branch)) {
@@ -10013,6 +10297,48 @@ export function createUniversalCoreService(options = {}) {
     payload.core_input.context.tenant_id = req.tenantId;
     payload.core_input.constraints = safeConstraints(payload.core_input.constraints, req.coreKey, false);
     const output = runUniversalCore(payload.core_input);
+    const causalContract = extendCausalBranchRegistry({ [branch]: branchRegistry()[branch] || {} })[branch];
+    const causalResult = buildCausalBranchResult({
+      context: req.body?.causal_context,
+      contract: causalContract,
+      input_state_digest: req.body?.causal_context?.project_state_digest || null,
+      output_digest: causalDigest(output),
+      decision: output.state || "ADVISORY",
+      evidence: [],
+      residual_risks: payload.warnings || [],
+      obligation_state: "OBSERVING",
+      causal_assurance_level: "CAL-1",
+    });
+    const causalValidation = validateCausalBranchInvocation({
+      context: req.body?.causal_context,
+      contract: causalContract,
+      output: causalResult,
+      authenticatedTenantId: req.tenantId,
+    });
+    let causalEnforcement = {
+      schema_version: "causal_branch_enforcement_v1",
+      rollout: { mode: "SHADOW", version: null, source: "causal_runtime_unavailable" },
+      structural: causalValidation,
+      authoritative_context: { valid: false, code: "CAUSAL_RUNTIME_NOT_READY" },
+      enforcement_required: false,
+      allowed: true,
+      shadow_would_allow: false,
+      code: "CAUSAL_BRANCH_SHADOW_OBSERVED",
+    };
+    if (causalBranchEnforcer) {
+      causalEnforcement = await causalBranchEnforcer({
+        tenant_id: req.tenantId,
+        project_id: req.body?.project_id,
+        context: req.body?.causal_context,
+        signature: req.body?.causal_signature,
+        agent_context_token: String(req.get("x-sh-dtt-agent-context") || "").trim(),
+        authority_scope: Array.isArray(req.coreKey?.scopes)
+          ? req.coreKey.scopes
+          : Array.isArray(req.coreKey?.allowed_scopes) ? req.coreKey.allowed_scopes : [],
+        contract: causalContract,
+        output: causalResult,
+      });
+    }
     audit.append("core_branch_analyzed", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -10020,7 +10346,17 @@ export function createUniversalCoreService(options = {}) {
       state: output.state,
       risk: output.risk?.band,
       production_status: payload.profile.production_status,
+      causal_rollout_mode: causalEnforcement.rollout.mode,
+      causal_context_verified: causalEnforcement.authoritative_context.valid === true,
+      causal_allowed: causalEnforcement.allowed,
     });
+    if (!causalEnforcement.allowed) {
+      return res.status(409).json({
+        ok: false,
+        error: "causal_branch_context_blocked",
+        causal_continuity: causalEnforcement,
+      });
+    }
     res.json({
       ok: true,
       tenant_id: req.tenantId,
@@ -10029,6 +10365,14 @@ export function createUniversalCoreService(options = {}) {
       branch_output: payload.branch_output,
       warnings: payload.warnings,
       output,
+      causal_continuity: {
+        rollout_mode: causalEnforcement.rollout.mode,
+        contract: causalContract,
+        result: causalResult,
+        validation: causalValidation,
+        enforcement: causalEnforcement,
+        execution_authorized: false,
+      },
       guardrail: {
         destructive_automation: false,
         execution_allowed: false,

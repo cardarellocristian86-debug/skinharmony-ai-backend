@@ -2751,6 +2751,15 @@ export function createCoreHandlers(config, options = {}) {
       });
     }
   };
+  // Internal gateway seam for adapters that must reuse the exact Core URL,
+  // bearer selection, tenant-context binding and response validation above.
+  // Non-enumerable keeps it off the MCP tool handler surface.
+  Object.defineProperty(handlers, "causalCoreRequest", {
+    value: coreRequest,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
   return handlers;
 }
 

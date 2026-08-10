@@ -17,6 +17,7 @@ function identity(overrides = {}) {
       signature: `ags_${"a".repeat(32)}`,
       transport_bound: true,
       host_transport_session_fingerprint: "b".repeat(24),
+      session_fingerprint: "c".repeat(24),
     },
     ...overrides,
   };
@@ -33,6 +34,7 @@ test("Gallery participants require transport-bound server-signed presence", () =
     sessionId: "gallery-session",
     agentId: "gallery-worker",
     clientType: "codex",
+    sessionFingerprint: "c".repeat(24),
     acl: ["gallery.read", "gallery.coordinate"],
   });
   for (const agentPresence of [

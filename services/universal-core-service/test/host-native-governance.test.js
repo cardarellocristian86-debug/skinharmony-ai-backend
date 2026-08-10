@@ -12,12 +12,24 @@ import {
   buildHostReleaseManifestV2,
   createFileHostNativeGovernanceStore,
   createHostNativeGovernance,
+  createHostNativeDomainSigner,
   createInMemoryHostNativeGovernanceStore,
   deriveHostReleaseIntentV1,
   hostNativeDigest,
   hostNativeGithubDiffDigest,
   validateHostReleaseManifestV2,
 } from "../src/hostNativeGovernance.js";
+
+test("host-native domain signer binds causal envelopes to their exact purpose and payload", async () => {
+  const signer = createHostNativeDomainSigner({
+    signingSecret: "host-native-causal-domain-test-secret-0123456789",
+  });
+  const envelope = { schema_version: "causal_context_envelope_v1", work_id: "work-a" };
+  const signature = await signer.sign(envelope, { purpose: "causal_context_envelope_v1" });
+  assert.equal(await signer.verify(envelope, signature, { purpose: "causal_context_envelope_v1" }), true);
+  assert.equal(await signer.verify({ ...envelope, work_id: "work-b" }, signature, { purpose: "causal_context_envelope_v1" }), false);
+  assert.equal(await signer.verify(envelope, signature, { purpose: "other-purpose" }), false);
+});
 
 const H = (value) => String(value).repeat(64);
 const G = (value) => String(value).repeat(40);

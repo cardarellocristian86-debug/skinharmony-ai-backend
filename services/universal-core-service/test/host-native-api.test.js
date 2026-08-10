@@ -548,6 +548,17 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
     dttAgentIdentitySigningSecret: CLOSURE_ATTESTATION_SECRET,
     hostNativeRequiredChecksPolicyResolver: async () =>
       API_REQUIRED_CHECKS_POLICY,
+    // Server-side exact binding: release manifests are no longer permitted to
+    // supply or synthesize their own Render origin.
+    hostNativeRenderServiceOriginResolver: async ({
+      tenant_id, repository, service_id, environment,
+    }) => {
+      if (
+        tenant_id !== "tenant-host-native" || repository !== "owner/repo" ||
+        service_id !== "srv-core" || environment !== "production"
+      ) throw new Error("origin_not_bound");
+      return "https://srv-core.onrender.com";
+    },
     hostNativeExternalReadbackVerifier: async ({ ticket, target_commit }) =>
       trustedExternalReadback(ticket, target_commit),
     hostNativeReleaseJoinVerdictResolver: async (request) =>
@@ -969,7 +980,11 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
     );
     assert.equal(
       health.json.host_native_governance.render_service_origin_resolver_configured,
-      false,
+      true,
+    );
+    assert.equal(
+      health.json.host_native_governance.render_origin_resolver_state,
+      "exact_registry_only",
     );
     assert.equal(health.json.host_native_governance.caller_supplied_github_token_allowed, false);
     assert.equal(health.json.host_native_governance.provider_execution, false);
