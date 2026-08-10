@@ -4,7 +4,10 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createUniversalCoreService } from "../src/app.js";
+import {
+  boundedCausalInitializationLivenessMs,
+  createUniversalCoreService,
+} from "../src/app.js";
 import {
   createPostgresMajorVersionProbe,
 } from "../../shared/postgres-major-version.js";
@@ -69,6 +72,60 @@ async function readHealth(options = {}) {
   }
 }
 
+function causalProductionOptions(initialize, overrides = {}) {
+  return {
+    governedAgentPostgresVersionProbe: postgresMajorProbe(180_004),
+    nyraPolicyRegistryStore: {
+      status: async () => ({
+        configured: true,
+        backend: "postgresql",
+        restart_durable: true,
+        distributed: true,
+        state: "ready",
+        ready: true,
+      }),
+    },
+    researchAirlockRuntime: {
+      mode: "enforced",
+      store: { kind: "test_persistent" },
+      status: async () => ({
+        mode: "enforced",
+        ready: true,
+        operational_safe: true,
+        state_backend: "test_persistent",
+      }),
+    },
+    causalContinuityStore: {},
+    causalContinuityRuntime: {
+      initialize,
+      health: async () => ({ ok: true, backend: "test_persistent" }),
+      invoke: async () => ({ ok: true }),
+    },
+    ...overrides,
+  };
+}
+
+async function freshUniversalCoreService(label) {
+  const moduleUrl = new URL("../src/app.js", import.meta.url);
+  moduleUrl.searchParams.set("health-build-fixture", `${label}-${Date.now()}-${Math.random()}`);
+  return (await import(moduleUrl.href)).createUniversalCoreService;
+}
+
+async function startHealthService(options, createService = createUniversalCoreService) {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "causal-health-"));
+  const { app } = createService({ storageRoot, ...options });
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    server,
+    base: `http://127.0.0.1:${server.address().port}`,
+    async close() {
+      await new Promise((resolve) => server.close(resolve));
+      fs.rmSync(storageRoot, { recursive: true, force: true });
+    },
+  };
+}
+
 test("health exposes a non-secret build identity and commit-verification state", async () => {
   const ownerContextSigningSecret = "health-owner-context-signing-secret";
   const { app } = createUniversalCoreService({
@@ -88,6 +145,13 @@ test("health exposes a non-secret build identity and commit-verification state",
     assert.equal(health.owner_context_signing_configured, true);
     assert.equal(JSON.stringify(health).includes(ownerContextSigningSecret), false);
   } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test("causal initialization liveness window has a 30-minute default and 60-minute hard maximum", () => {
+  assert.equal(boundedCausalInitializationLivenessMs(undefined), 30 * 60 * 1_000);
+  assert.equal(boundedCausalInitializationLivenessMs(61 * 60 * 1_000), 60 * 60 * 1_000);
+  assert.equal(boundedCausalInitializationLivenessMs(0), 1);
+  assert.equal(boundedCausalInitializationLivenessMs(Number.POSITIVE_INFINITY), 30 * 60 * 1_000);
 });
 
 test("production host-native readiness requires gateway, separated signing, DTT, and PostgreSQL", async () => {
@@ -253,5 +317,154 @@ test("development host-native health does not enforce production prerequisites",
       health.host_native_governance.production_readiness_reasons,
       [],
     );
+  });
+});
+
+test("production liveness tolerates only causal initialization while readiness stays strict", async () => {
+  await withEnv({
+    NODE_ENV: "production",
+    CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(32),
+    CORE_HOST_NATIVE_GOVERNANCE_ENABLED: "false",
+    GOVERNED_AGENT_DATABASE_URL: "postgresql://core.test/governance",
+    CORE_SERVICE_BUILD_ID: undefined,
+    RENDER_GIT_COMMIT: undefined,
+    GIT_COMMIT: "a".repeat(40),
+  }, async () => {
+    const createService = await freshUniversalCoreService("valid-initialization");
+    let finishInitialization;
+    const initializing = new Promise((resolve) => { finishInitialization = resolve; });
+    const service = await startHealthService(
+      causalProductionOptions(() => initializing),
+      createService,
+    );
+    try {
+      const healthResponse = await fetch(`${service.base}/healthz`);
+      const health = await healthResponse.json();
+      assert.equal(healthResponse.status, 200);
+      assert.equal(health.ok, false);
+      assert.equal(health.render_ready, false);
+      assert.equal(health.liveness_degraded, true);
+      assert.equal(health.causal_continuity.state, "initializing");
+      assert.equal(health.build.build_id, "a".repeat(40));
+      assert.equal(health.build.commit_sha, health.build.build_id);
+      assert.equal(health.build.commit_verifiable, true);
+
+      const pendingReadyResponse = await fetch(`${service.base}/readyz`);
+      const pendingReady = await pendingReadyResponse.json();
+      assert.equal(pendingReadyResponse.status, 503);
+      assert.equal(pendingReady.ok, false);
+      assert.equal(pendingReady.render_ready, false);
+
+      finishInitialization();
+      await new Promise((resolve) => setImmediate(resolve));
+      const readyResponse = await fetch(`${service.base}/readyz`);
+      const ready = await readyResponse.json();
+      assert.equal(readyResponse.status, 200);
+      assert.equal(ready.ok, true);
+      assert.equal(ready.render_ready, true);
+      assert.equal(ready.liveness_degraded, false);
+      assert.equal(ready.causal_continuity.state, "ready");
+    } finally {
+      await service.close();
+    }
+  });
+});
+
+test("production liveness remains fail-closed for causal failure and invalid build", async () => {
+  await withEnv({
+    NODE_ENV: "production",
+    CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(32),
+    CORE_HOST_NATIVE_GOVERNANCE_ENABLED: "false",
+    GOVERNED_AGENT_DATABASE_URL: "postgresql://core.test/governance",
+    CORE_SERVICE_BUILD_ID: undefined,
+    RENDER_GIT_COMMIT: undefined,
+    GIT_COMMIT: "a".repeat(40),
+  }, async () => {
+    const createService = await freshUniversalCoreService("valid-failures");
+    const failed = await startHealthService(
+      causalProductionOptions(async () => { throw new Error("causal_bootstrap_failed"); }),
+      createService,
+    );
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      const response = await fetch(`${failed.base}/healthz`);
+      const health = await response.json();
+      assert.equal(response.status, 503);
+      assert.equal(health.ok, false);
+      assert.equal(health.render_ready, false);
+      assert.equal(health.liveness_degraded, false);
+      assert.equal(health.causal_continuity.state, "initialization_failed");
+    } finally {
+      await failed.close();
+    }
+
+    const neverFinishes = new Promise(() => {});
+    const createInvalidBuildService = await withEnv({
+      GIT_COMMIT: "invalid-build",
+    }, () => freshUniversalCoreService("invalid-build"));
+    const invalidBuild = await startHealthService(
+      causalProductionOptions(() => neverFinishes),
+      createInvalidBuildService,
+    );
+    try {
+      const response = await fetch(`${invalidBuild.base}/healthz`);
+      const health = await response.json();
+      assert.equal(response.status, 503);
+      assert.equal(health.ok, false);
+      assert.equal(health.render_ready, false);
+      assert.equal(health.liveness_degraded, false);
+      assert.equal(health.build.commit_verifiable, false);
+      assert.equal(health.build.build_id, "invalid-build");
+      assert.equal(health.build.commit_sha, health.build.build_id);
+    } finally {
+      await invalidBuild.close();
+    }
+
+    const unsafeAirlock = await startHealthService(
+      causalProductionOptions(() => neverFinishes, {
+        researchAirlockRuntime: {
+          mode: "enforced",
+          store: { kind: "test_persistent" },
+          status: async () => ({
+            mode: "enforced",
+            ready: false,
+            operational_safe: false,
+            state_backend: "test_persistent",
+          }),
+        },
+      }),
+      createService,
+    );
+    try {
+      const response = await fetch(`${unsafeAirlock.base}/healthz`);
+      const health = await response.json();
+      assert.equal(response.status, 503);
+      assert.equal(health.ok, false);
+      assert.equal(health.render_ready, false);
+      assert.equal(health.liveness_degraded, false);
+      assert.equal(health.research_airlock.ready, false);
+    } finally {
+      await unsafeAirlock.close();
+    }
+
+    const boundedInitialization = await startHealthService(
+      causalProductionOptions(
+        () => neverFinishes,
+        { causalContinuityInitializationLivenessMs: 20 },
+      ),
+      createService,
+    );
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 35));
+      const response = await fetch(`${boundedInitialization.base}/healthz`);
+      const health = await response.json();
+      assert.equal(response.status, 503);
+      assert.equal(health.ok, false);
+      assert.equal(health.render_ready, false);
+      assert.equal(health.liveness_degraded, false);
+      assert.equal(health.causal_continuity.state, "initializing");
+    } finally {
+      await boundedInitialization.close();
+    }
   });
 });

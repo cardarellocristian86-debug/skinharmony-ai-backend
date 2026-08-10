@@ -655,7 +655,22 @@ function normalizeManifest(input, { allowDigest = false } = {}) {
     },
   };
   if (result.verification.checks_commit !== result.head_commit) fail("checks_commit_mismatch");
-  if (result.rollback.target_commit !== result.base_commit) fail("rollback_previous_commit_mismatch");
+  if (!["forward_revert", "redeploy_previous_commit"].includes(result.rollback.mode)) {
+    fail("rollback_mode_unsupported");
+  }
+  if (
+    result.rollback.mode === "forward_revert" &&
+    result.rollback.target_commit !== result.base_commit
+  ) {
+    fail("rollback_previous_commit_mismatch");
+  }
+  if (
+    result.rollback.mode === "redeploy_previous_commit" &&
+    result.delivery.services.some((service) =>
+      service.expected_previous_commit !== result.rollback.target_commit)
+  ) {
+    fail("rollback_previous_commit_mismatch");
+  }
   if (result.rollback.health_contract_digest !== HOST_NATIVE_HEALTH_CONTRACT_DIGEST) {
     fail("rollback_health_contract_unsupported");
   }
@@ -1004,6 +1019,44 @@ function verifyReadbackDigest(record) {
   }
 }
 
+function verifiedFinalizeAuthorization(record, {
+  signing,
+  nowValue,
+  tenantId,
+  workId,
+  repository,
+  targetCommit,
+} = {}) {
+  const receipt = record?.finalize_authorization;
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    fail("predecessor_finalize_authorization_required");
+  }
+  const { signature, authorization_digest, ...unsigned } = receipt;
+  const signed = { ...unsigned, authorization_digest };
+  const issuedAt = Date.parse(receipt.issued_at || "");
+  const expiresAt = Date.parse(receipt.expires_at || "");
+  if (
+    receipt.schema_version !== "host_native_finalize_authorization_v1" ||
+    receipt.trusted !== true || receipt.allowed !== true ||
+    receipt.decision !== "ALLOW_FINALIZE" ||
+    receipt.result_commit_verified !== true ||
+    receipt.tenant_id !== tenantId || receipt.work_id !== workId ||
+    receipt.repository !== repository || receipt.target_commit !== targetCommit ||
+    receipt.action_ticket_id !== record.ticket?.ticket_id ||
+    receipt.decision_id !== record.ticket?.ticket_id ||
+    receipt.host_policy_override !== false || receipt.host_policy_must_allow !== true ||
+    receipt.provider_execution !== false ||
+    !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) ||
+    issuedAt > nowValue || expiresAt <= nowValue || issuedAt >= expiresAt ||
+    !/^[a-f0-9]{64}$/.test(String(authorization_digest || "")) ||
+    hostNativeDigest(unsigned) !== authorization_digest ||
+    !safeEqual(signature, hmac("hnf", signing, canonical(signed)))
+  ) {
+    fail("predecessor_finalize_authorization_invalid");
+  }
+  return receipt;
+}
+
 export function createHostNativeGovernance({
   store: suppliedStore,
   signingSecret,
@@ -1341,10 +1394,24 @@ export function createHostNativeGovernance({
         if (!parentMayContinue || parent.ticket.tenant_id !== tenantId) {
           fail("predecessor_ticket_invalid");
         }
+        let finalizeAuthorization = null;
+        if (action.kind === "render.deploy") {
+          finalizeAuthorization = verifiedFinalizeAuthorization(parent, {
+            signing,
+            nowValue,
+            tenantId,
+            workId: delegation.grant.work_id,
+            repository: delegation.grant.repository,
+            targetCommit: commit(action.target_commit),
+          });
+        }
         predecessor = {
           ticket_id: parent.ticket.ticket_id,
           ticket_digest: hostNativeDigest(parent.ticket),
-          result_commit: parent.result_commit || null,
+          result_commit: finalizeAuthorization?.target_commit || parent.result_commit || null,
+          ...(finalizeAuthorization ? {
+            finalize_authorization_digest: finalizeAuthorization.authorization_digest,
+          } : {}),
         };
       }
       if (isReleaseAction(action.kind)) {
@@ -1803,7 +1870,16 @@ export function createHostNativeGovernance({
       if (typeof externalReadbackVerifier !== "function") fail("trusted_readback_unavailable");
       const targetCommit = commit(current.result_commit || current.ticket.action.target_commit || current.ticket.release_manifest_binding.head_commit);
       let external;
-      try { external = await externalReadbackVerifier({ ticket: current.ticket, target_commit: targetCommit }); }
+      const verificationScope = current.ticket.action.kind === "github.merge"
+        ? "github_merge_and_checks_only"
+        : "full_release";
+      try {
+        external = await externalReadbackVerifier({
+          ticket: current.ticket,
+          target_commit: targetCommit,
+          verification_scope: verificationScope,
+        });
+      }
       catch (cause) {
         if (String(cause?.message || "").startsWith("trusted_readback_")) throw cause;
         fail("trusted_readback_invalid");
@@ -1827,9 +1903,18 @@ export function createHostNativeGovernance({
         fail("trusted_readback_stale");
       }
       if (
+        external.verification_scope !== verificationScope ||
         github.repository !== current.ticket.repository || github.target_commit !== targetCommit ||
+        github.action_kind !== current.ticket.action.kind ||
         github.checks_passed !== true || !sameStrings(github.required_checks, current.ticket.release_manifest_binding.verification.required_checks)
       ) {
+        fail("trusted_readback_github_mismatch");
+      }
+      if (verificationScope === "github_merge_and_checks_only" && (
+        github.merged !== true || github.merge_commit !== targetCommit ||
+        github.head_commit !== current.ticket.action.head_commit ||
+        github.expected_base_commit !== current.ticket.action.expected_base_commit
+      )) {
         fail("trusted_readback_github_mismatch");
       }
       if (!Array.isArray(github.observed_checks) || github.observed_checks.some((check) => (
@@ -1839,8 +1924,13 @@ export function createHostNativeGovernance({
         fail("trusted_readback_checks_not_ready");
       }
       const expectedServices = current.ticket.release_manifest_binding.delivery.services;
-      if (external.services.length !== expectedServices.length) fail("trusted_readback_service_set_mismatch");
-      for (const expected of expectedServices) {
+      if (
+        verificationScope === "github_merge_and_checks_only" && external.services.length !== 0
+      ) fail("trusted_readback_verification_scope_invalid");
+      if (
+        verificationScope === "full_release" && external.services.length !== expectedServices.length
+      ) fail("trusted_readback_service_set_mismatch");
+      for (const expected of verificationScope === "full_release" ? expectedServices : []) {
         const observed = external.services.find((service) =>
           service.service_id === expected.service_id && service.environment === expected.environment);
         if (!observed || observed.origin !== expected.origin || observed.live_commit !== targetCommit ||
@@ -1899,6 +1989,8 @@ export function createHostNativeGovernance({
           external_readback_digest: hostNativeDigest(external),
           readback_digest: hostNativeDigest(external),
           result_commit_verified: true,
+          verification_scope: verificationScope,
+          services_verified: verificationScope === "full_release",
           github_readback: github,
           live_services: external.services,
           outcome_source: record.state === "reconciled" ? "reconciled_readback" : "verified_completion",

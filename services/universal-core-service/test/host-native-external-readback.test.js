@@ -1167,6 +1167,45 @@ test("external readback is tenant-scoped, uses fixed provider URLs, and proves e
   assert.equal(readback.github.readback_digest, hostNativeDigest(unsignedGithub));
 });
 
+test("merge-only verification proves GitHub and checks without reading or claiming Render health", async () => {
+  const ticket = mergeTicket({
+    services: [{
+      service_id: "service-a",
+      environment: "production",
+      origin: "https://service-a.onrender.com",
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+    }],
+  });
+  const calls = [];
+  const verify = createHostNativeExternalReadbackVerifier({
+    fetchImpl: successFetch({ ticket, calls }),
+    now: () => Date.parse(VERIFIED_AT),
+  });
+  const readback = await verify({
+    ticket,
+    target_commit: TARGET,
+    verification_scope: "github_merge_and_checks_only",
+  });
+
+  assert.equal(readback.verification_scope, "github_merge_and_checks_only");
+  assert.deepEqual(readback.services, []);
+  assert.equal(readback.github.merged, true);
+  assert.equal(readback.github.merge_commit, TARGET);
+  assert.equal(calls.some(({ url }) => url.endsWith("/healthz")), false);
+});
+
+test("merge-only verification scope is rejected for non-merge actions", async () => {
+  const ticket = branchTicket();
+  const verify = createHostNativeExternalReadbackVerifier({
+    fetchImpl: successFetch({ ticket }),
+  });
+  await assert.rejects(verify({
+    ticket,
+    target_commit: TARGET,
+    verification_scope: "github_merge_and_checks_only",
+  }), /trusted_readback_verification_scope_invalid/);
+});
+
 test("external readback binds previous-live evidence from the persisted action ticket", async (t) => {
   const persistedTicket = mergeTicket();
   assert.equal(persistedTicket.release_manifest_binding.join_resolution, undefined);

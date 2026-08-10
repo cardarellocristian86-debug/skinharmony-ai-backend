@@ -327,7 +327,7 @@ function signedClosureAttestation(body) {
   };
 }
 
-function trustedExternalReadback(ticket, targetCommit) {
+function trustedExternalReadback(ticket, targetCommit, verificationScope = "full_release") {
   const binding = ticket.release_manifest_binding;
   const action = ticket.action;
   const requiredChecks = [...binding.verification.required_checks];
@@ -420,7 +420,9 @@ function trustedExternalReadback(ticket, targetCommit) {
     rollback_commit: binding.rollback.target_commit,
     rollback_commit_available: true,
   };
-  const services = binding.services.map((service) => {
+  const services = (verificationScope === "github_merge_and_checks_only"
+    ? []
+    : binding.services).map((service) => {
     const unsigned = {
       service_id: service.service_id,
       environment: service.environment,
@@ -440,6 +442,7 @@ function trustedExternalReadback(ticket, targetCommit) {
     schema_version: "host_native_external_readback_v1",
     trusted: true,
     verifier_id: "core_server_external_readback_v1",
+    verification_scope: verificationScope,
     verified_at: new Date().toISOString(),
     github: { ...githubUnsigned, readback_digest: hostNativeDigest(githubUnsigned) },
     services,
@@ -559,8 +562,9 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
       ) throw new Error("origin_not_bound");
       return "https://srv-core.onrender.com";
     },
-    hostNativeExternalReadbackVerifier: async ({ ticket, target_commit }) =>
-      trustedExternalReadback(ticket, target_commit),
+    hostNativeExternalReadbackVerifier: async ({
+      ticket, target_commit, verification_scope,
+    }) => trustedExternalReadback(ticket, target_commit, verification_scope),
     hostNativeReleaseJoinVerdictResolver: async (request) =>
       trustedReleaseJoinResolution(request),
   }, async (request) => {
@@ -964,6 +968,12 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
     assert.equal(finalize.json.finalize_authorization.target_commit, G("9"));
     assert.equal(finalize.json.finalize_authorization.action_ticket_id, mergeTicketId);
     assert.equal(finalize.json.finalize_authorization.result_commit_verified, true);
+    assert.equal(
+      finalize.json.finalize_authorization.verification_scope,
+      "github_merge_and_checks_only",
+    );
+    assert.equal(finalize.json.finalize_authorization.services_verified, false);
+    assert.deepEqual(finalize.json.finalize_authorization.live_services, []);
     assert.match(
       finalize.json.finalize_authorization.external_readback_digest,
       /^[a-f0-9]{64}$/,
