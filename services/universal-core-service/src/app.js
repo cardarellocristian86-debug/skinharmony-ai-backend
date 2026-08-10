@@ -186,7 +186,11 @@ import {
   createLocalGenericWorkCoreJoinSigner,
   createGenericWorkCoreJoinVerdictVerifier,
   genericWorkCoreJoinDigest,
+  genericWorkCoreJoinInfrastructureCode,
+  genericWorkCoreJoinSignerInfrastructureCode,
+  genericWorkCoreJoinStoreInfrastructureCode,
 } from "./genericWorkCoreJoin.js";
+import { createGenericWorkCoreJoinRemoteSigner } from "./genericWorkCoreJoinRemoteSigner.js";
 import { createPostgresGenericWorkCoreJoinStore } from "./genericWorkCoreJoinStore.js";
 import { createPostgresCausalContinuityStore } from "./causalContinuityStore.js";
 import { createCausalContinuityRuntime } from "./causalContinuityRuntime.js";
@@ -4764,29 +4768,177 @@ export function createUniversalCoreService(options = {}) {
     || (governedAgentPostgresConfigured && genericWorkCoreJoinPostgresPool
       ? createPostgresGenericWorkCoreJoinStore({ pool: genericWorkCoreJoinPostgresPool })
       : null);
+  const genericWorkCoreJoinProduction = String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
   const genericWorkCoreJoinPrivateKey = String(options.genericWorkCoreJoinEd25519PrivateKey ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_ED25519_PRIVATE_KEY ?? "").trim();
   const genericWorkCoreJoinKeyId = String(options.genericWorkCoreJoinEd25519KeyId ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID ?? "").trim();
-  const genericWorkCoreJoinSigner = options.genericWorkCoreJoinSigner || (genericWorkCoreJoinPrivateKey && genericWorkCoreJoinKeyId ? createLocalGenericWorkCoreJoinSigner({ privateKey: genericWorkCoreJoinPrivateKey, keyId: genericWorkCoreJoinKeyId }) : null);
+  const genericWorkCoreJoinRemoteSignerMode = String(options.genericWorkCoreJoinSignerMode ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE ?? "").trim().toLowerCase();
+  const genericWorkCoreJoinRemoteSignerConfig = options.genericWorkCoreJoinRemoteSignerConfig || {
+    origin: options.genericWorkCoreJoinRemoteSignerOrigin ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ORIGIN,
+    path: options.genericWorkCoreJoinRemoteSignerPath ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PATH,
+    service: options.genericWorkCoreJoinRemoteSignerService ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE,
+    targetCommit: options.genericWorkCoreJoinRemoteSignerTargetCommit ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TARGET_COMMIT,
+    purpose: options.genericWorkCoreJoinRemoteSignerPurpose ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PURPOSE,
+    keyId: options.genericWorkCoreJoinRemoteSignerKeyId ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID ?? genericWorkCoreJoinKeyId,
+    serviceToken: options.genericWorkCoreJoinRemoteSignerServiceToken ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN,
+    publicKey: options.genericWorkCoreJoinRemoteSignerPublicKey ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY,
+    jwks: options.genericWorkCoreJoinRemoteSignerJwks ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_JWKS,
+    fetchImpl: options.genericWorkCoreJoinRemoteSignerFetch,
+    timeoutMs: options.genericWorkCoreJoinRemoteSignerTimeoutMs,
+    maxResponseBytes: options.genericWorkCoreJoinRemoteSignerMaxResponseBytes,
+  };
+  const genericWorkCoreJoinRemoteSignerRequested = genericWorkCoreJoinRemoteSignerMode === "remote"
+    || options.genericWorkCoreJoinRemoteSignerConfig !== undefined
+    || [
+      genericWorkCoreJoinRemoteSignerConfig.origin,
+      genericWorkCoreJoinRemoteSignerConfig.path,
+      genericWorkCoreJoinRemoteSignerConfig.service,
+      genericWorkCoreJoinRemoteSignerConfig.targetCommit,
+      genericWorkCoreJoinRemoteSignerConfig.purpose,
+      genericWorkCoreJoinRemoteSignerConfig.serviceToken,
+      genericWorkCoreJoinRemoteSignerConfig.publicKey,
+      genericWorkCoreJoinRemoteSignerConfig.jwks,
+    ].some((value) => value !== undefined && value !== null && value !== "");
+  const genericWorkCoreJoinSemanticCodes = new Set([
+    "acceptance_criteria_invalid",
+    "acceptance_criteria_invalid_duplicate",
+    "acceptance_criterion_invalid",
+    "adapter_unsupported",
+    "clock_invalid",
+    "evidence_duplicate",
+    "evidence_invalid",
+    "generic_work_core_join_adapter_mismatch",
+    "generic_work_core_join_context_invalid",
+    "generic_work_core_join_denied",
+    "generic_work_core_join_idempotency_conflict",
+    "generic_work_core_join_idempotency_digest_mismatch",
+    "generic_work_core_join_input_invalid",
+    "generic_work_core_join_key_id_mismatch",
+    "generic_work_core_join_nonce_replayed",
+    "generic_work_core_join_request_invalid",
+    "generic_work_core_join_tenant_id_mismatch",
+    "generic_work_core_join_verdict_digest_invalid",
+    "generic_work_core_join_verdict_invalid",
+    "generic_work_core_join_work_id_mismatch",
+    "idempotency_digest_invalid",
+    "independent_verifier_acceptance_criteria_digest_mismatch",
+    "independent_verifier_adapter_mismatch",
+    "independent_verifier_evidence_digest_mismatch",
+    "independent_verifier_not_distinct",
+    "independent_verifier_receipt_expired",
+    "independent_verifier_receipt_invalid",
+    "independent_verifier_receipt_untrusted",
+    "independent_verifier_task_state_digest_mismatch",
+    "independent_verifier_tenant_id_mismatch",
+    "independent_verifier_work_id_mismatch",
+    "requester_identity_invalid",
+    "requester_session_invalid",
+    "task_state_invalid",
+    "task_state_invalid_duplicate",
+    "tenant_id_invalid",
+    "work_id_invalid",
+  ]);
+  const genericWorkCoreJoinSignerRejectedCodes = new Set([
+    "generic_work_core_join_signature_invalid",
+    "generic_work_core_join_signer_digest_mismatch",
+    "generic_work_core_join_signer_key_id_mismatch",
+    "generic_work_core_join_signer_purpose_mismatch",
+    "generic_work_core_join_signer_redirect_denied",
+    "generic_work_core_join_signer_response_invalid",
+    "generic_work_core_join_signer_response_too_large",
+    "generic_work_core_join_signer_service_mismatch",
+    "generic_work_core_join_signer_signature_invalid",
+    "generic_work_core_join_signer_target_commit_mismatch",
+  ]);
+  const genericWorkCoreJoinSafeReason = (value, fallback) => {
+    const code = String(value?.message || value || "").trim();
+    return genericWorkCoreJoinInfrastructureCode(code) || (genericWorkCoreJoinSemanticCodes.has(code) ? code : fallback);
+  };
+  const genericWorkCoreJoinSafeCustody = (value) => {
+    const custody = String(value || "").trim();
+    return /^(?:local_process_key|external_remote_signer|external_kms|kms|hsm)$/.test(custody)
+      ? custody
+      : custody
+        ? "external"
+        : null;
+  };
+  const genericWorkCoreJoinSafeSignerState = (value, fallback = "invalid") => {
+    const state = String(value || "").trim();
+    return new Set(["configured", "forbidden", "invalid", "ready", "rejected", "unavailable", "unconfigured"]).has(state)
+      ? state
+      : fallback;
+  };
+  let genericWorkCoreJoinSigner = null;
+  let genericWorkCoreJoinSignerState = "unconfigured";
+  let genericWorkCoreJoinSignerReason = "generic_work_core_join_signer_unconfigured";
+  let genericWorkCoreJoinSignerCustody = null;
+  let genericWorkCoreJoinSignerFailureLatched = false;
+  let genericWorkCoreJoinIssueSequence = 0;
+  let genericWorkCoreJoinSignerFailureSequence = 0;
+  let genericWorkCoreJoinSignerRecoverySequence = 0;
+  try {
+    if (options.genericWorkCoreJoinSigner) {
+      genericWorkCoreJoinSigner = options.genericWorkCoreJoinSigner;
+    } else if (genericWorkCoreJoinRemoteSignerRequested) {
+      genericWorkCoreJoinSigner = createGenericWorkCoreJoinRemoteSigner(genericWorkCoreJoinRemoteSignerConfig);
+    } else if (genericWorkCoreJoinPrivateKey && genericWorkCoreJoinKeyId && !genericWorkCoreJoinProduction) {
+      genericWorkCoreJoinSigner = createLocalGenericWorkCoreJoinSigner({ privateKey: genericWorkCoreJoinPrivateKey, keyId: genericWorkCoreJoinKeyId });
+    } else if (genericWorkCoreJoinPrivateKey || genericWorkCoreJoinKeyId) {
+      genericWorkCoreJoinSignerCustody = "local_process_key";
+      genericWorkCoreJoinSignerState = "forbidden";
+      genericWorkCoreJoinSignerReason = genericWorkCoreJoinProduction
+        ? "generic_work_core_join_local_signer_forbidden"
+        : "generic_work_core_join_signing_unavailable";
+    }
+    if (genericWorkCoreJoinSigner) {
+      genericWorkCoreJoinSignerCustody = genericWorkCoreJoinSafeCustody(genericWorkCoreJoinSigner.custody || "external");
+      if (genericWorkCoreJoinProduction && genericWorkCoreJoinSignerCustody === "local_process_key") {
+        genericWorkCoreJoinSigner = null;
+        genericWorkCoreJoinSignerState = "forbidden";
+        genericWorkCoreJoinSignerReason = "generic_work_core_join_local_signer_forbidden";
+      } else if (genericWorkCoreJoinProduction && !["external_remote_signer", "external_kms", "kms", "hsm"].includes(genericWorkCoreJoinSignerCustody)) {
+        genericWorkCoreJoinSigner = null;
+        genericWorkCoreJoinSignerState = "invalid";
+        genericWorkCoreJoinSignerReason = "generic_work_core_join_external_signer_required";
+      } else {
+        const signerHealth = typeof genericWorkCoreJoinSigner.health === "function"
+          ? genericWorkCoreJoinSigner.health()
+          : null;
+        genericWorkCoreJoinSignerState = genericWorkCoreJoinSafeSignerState(signerHealth?.signer_state || genericWorkCoreJoinSigner.signer_state || "configured");
+        genericWorkCoreJoinSignerReason = genericWorkCoreJoinSafeReason(signerHealth?.reason || genericWorkCoreJoinSigner.signer_reason, null);
+      }
+    }
+  } catch (error) {
+    genericWorkCoreJoinSigner = null;
+    genericWorkCoreJoinSignerState = "invalid";
+    genericWorkCoreJoinSignerReason = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_signer_configuration_invalid");
+    genericWorkCoreJoinSignerCustody = genericWorkCoreJoinRemoteSignerRequested ? "external_remote_signer" : genericWorkCoreJoinSignerCustody;
+  }
   let genericWorkCoreJoinStoreState = genericWorkCoreJoinStore ? "initializing" : "unavailable";
   let genericWorkCoreJoinStoreError = null;
   const genericWorkCoreJoinStoreInitialization = genericWorkCoreJoinStore?.initialize
-    ? Promise.resolve().then(() => genericWorkCoreJoinStore.initialize()).then(() => { genericWorkCoreJoinStoreState = "ready"; }).catch((error) => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = String(error?.message || "initialization_failed").slice(0, 120); })
+    ? Promise.resolve().then(() => genericWorkCoreJoinStore.initialize()).then(() => { genericWorkCoreJoinStoreState = "ready"; }).catch((error) => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_store_initialization_failed"); })
     : Promise.resolve().then(() => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = "initialize_unavailable"; });
-  const genericWorkCoreJoinAuthority = genericWorkCoreJoinSigner && dttAgentIdentitySecret &&
-    genericWorkCoreJoinStore?.restart_durable === true
-    ? createGenericWorkCoreJoinAuthority({
-        signer: genericWorkCoreJoinSigner,
-        store: genericWorkCoreJoinStore,
-        verifyIndependentVerifierReceipt: (receipt) => {
-          const { signature, ...unsigned } = receipt || {};
-          const expected = crypto.createHmac("sha256", dttAgentIdentitySecret)
-            .update(`generic_work_verifier_receipt_v1\0${genericWorkCoreJoinDigest(unsigned)}`).digest("base64url");
-          const left = Buffer.from(String(signature || ""));
-          const right = Buffer.from(expected);
-          return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
-        },
-      })
-    : null;
+  let genericWorkCoreJoinAuthority = null;
+  if (genericWorkCoreJoinSigner && dttAgentIdentitySecret && genericWorkCoreJoinStore?.restart_durable === true) {
+    try {
+      genericWorkCoreJoinAuthority = createGenericWorkCoreJoinAuthority({
+          signer: genericWorkCoreJoinSigner,
+          store: genericWorkCoreJoinStore,
+          verifyIndependentVerifierReceipt: (receipt) => {
+            const { signature, ...unsigned } = receipt || {};
+            const expected = crypto.createHmac("sha256", dttAgentIdentitySecret)
+              .update(`generic_work_verifier_receipt_v1\0${genericWorkCoreJoinDigest(unsigned)}`).digest("base64url");
+            const left = Buffer.from(String(signature || ""));
+            const right = Buffer.from(expected);
+            return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
+          },
+        });
+    } catch (error) {
+      genericWorkCoreJoinAuthority = null;
+      genericWorkCoreJoinSignerState = "invalid";
+      genericWorkCoreJoinSignerReason = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_signer_configuration_invalid");
+    }
+  }
   const genericWorkCoreJoinVerifier = genericWorkCoreJoinAuthority ? createGenericWorkCoreJoinVerdictVerifier({ publicKey: genericWorkCoreJoinSigner.public_key, keyId: genericWorkCoreJoinSigner.key_id }) : null;
   const hostNativeResolverConfigurationValid =
     options.hostNativeResolverConfigurationValid !== false;
@@ -6172,6 +6324,34 @@ export function createUniversalCoreService(options = {}) {
       );
     const causalContinuityProductionReady = !causalContinuityProductionRequired
       || (Boolean(causalContinuityRuntime) && causalContinuityHealth.ok === true);
+    let genericWorkCoreJoinCurrentSignerState = genericWorkCoreJoinSignerState;
+    let genericWorkCoreJoinCurrentSignerReason = genericWorkCoreJoinSignerReason;
+    if (!genericWorkCoreJoinSignerFailureLatched && typeof genericWorkCoreJoinSigner?.health === "function") {
+      try {
+        const signerHealth = genericWorkCoreJoinSigner.health();
+        genericWorkCoreJoinCurrentSignerState = genericWorkCoreJoinSafeSignerState(signerHealth?.signer_state || genericWorkCoreJoinSignerState, genericWorkCoreJoinSignerState);
+        genericWorkCoreJoinCurrentSignerReason = genericWorkCoreJoinSafeReason(signerHealth?.reason, genericWorkCoreJoinSignerReason);
+      } catch {
+        genericWorkCoreJoinCurrentSignerState = "unavailable";
+        genericWorkCoreJoinCurrentSignerReason = "generic_work_core_join_signer_health_unavailable";
+      }
+    }
+    const genericWorkCoreJoinSignerReady = genericWorkCoreJoinCurrentSignerState === "ready";
+    const genericWorkCoreJoinReason = !genericWorkCoreJoinSigner
+      ? genericWorkCoreJoinCurrentSignerReason
+      : !dttAgentIdentitySecret
+        ? "generic_work_core_join_verifier_unavailable"
+        : genericWorkCoreJoinStore?.restart_durable !== true
+          ? "generic_work_core_join_durable_store_unavailable"
+          : genericWorkCoreJoinStoreState === "failed"
+            ? genericWorkCoreJoinStoreError || "generic_work_core_join_durable_store_unavailable"
+            : genericWorkCoreJoinStoreState !== "ready"
+              ? "generic_work_core_join_store_initializing"
+              : !genericWorkCoreJoinSignerReady
+                ? genericWorkCoreJoinCurrentSignerReason || (genericWorkCoreJoinCurrentSignerState === "configured"
+                  ? "generic_work_core_join_signer_not_yet_verified"
+                  : "generic_work_core_join_signer_unavailable")
+                : null;
     const nonCausalProductionReady = productionBuildReady
       && hostNativeReady
       && nyraPolicyRegistryModeValid
@@ -6206,15 +6386,26 @@ export function createUniversalCoreService(options = {}) {
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
       generic_work_core_join: {
-        state: genericWorkCoreJoinAuthority ? genericWorkCoreJoinStoreState : "durability_or_signing_unavailable",
-        ready: Boolean(genericWorkCoreJoinAuthority) && genericWorkCoreJoinStoreState === "ready",
+        state: !genericWorkCoreJoinAuthority
+          ? "durability_or_signing_unavailable"
+          : genericWorkCoreJoinStoreState !== "ready"
+            ? genericWorkCoreJoinStoreState
+            : genericWorkCoreJoinSignerReady
+              ? "ready"
+              : genericWorkCoreJoinCurrentSignerState === "configured"
+                ? "signer_not_yet_verified"
+                : "signer_unavailable",
+        ready: Boolean(genericWorkCoreJoinAuthority) && genericWorkCoreJoinStoreState === "ready" && genericWorkCoreJoinSignerReady,
+        store_state: genericWorkCoreJoinStoreState,
+        signer_state: genericWorkCoreJoinCurrentSignerState,
+        reason: genericWorkCoreJoinReason,
         backend: genericWorkCoreJoinStore?.kind || "unavailable",
         restart_durable: genericWorkCoreJoinStore?.restart_durable === true,
         distributed: genericWorkCoreJoinStore?.distributed === true,
         algorithm: genericWorkCoreJoinAuthority?.signer_metadata.algorithm || null,
         key_id: genericWorkCoreJoinAuthority?.signer_metadata.key_id || null,
         public_key_fingerprint: genericWorkCoreJoinAuthority?.signer_metadata.public_key_fingerprint || null,
-        custody: genericWorkCoreJoinAuthority?.signer_metadata.custody || null,
+        custody: genericWorkCoreJoinAuthority?.signer_metadata.custody || genericWorkCoreJoinSignerCustody,
         initialization_error: genericWorkCoreJoinStoreError,
         host_action_authorized: false,
       },
@@ -7761,22 +7952,56 @@ export function createUniversalCoreService(options = {}) {
     },
   );
 
+  const genericWorkCoreJoinUnavailableCode = () => {
+    if (!genericWorkCoreJoinSigner) {
+      return genericWorkCoreJoinSafeReason(genericWorkCoreJoinSignerReason, "generic_work_core_join_signing_unavailable");
+    }
+    if (!dttAgentIdentitySecret) return "generic_work_core_join_verifier_unavailable";
+    if (genericWorkCoreJoinStore?.restart_durable !== true) return "generic_work_core_join_durable_store_unavailable";
+    return "generic_work_core_join_signing_unavailable";
+  };
+  const genericWorkCoreJoinFailureStatus = (code) => genericWorkCoreJoinInfrastructureCode(code) ? 503 : 409;
+
   const issueGenericWorkCoreJoin = async (req, res) => {
       if (!isMcpTenantGatewayRecord(req.coreKey)) return publicError(res, 403, "core_join_mcp_gateway_required");
       const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
       if (!assertedTenantId || assertedTenantId !== req.tenantId) return publicError(res, 403, "tenant_scope_denied");
-      if (!genericWorkCoreJoinAuthority) return publicError(res, 503, "generic_work_core_join_durable_store_unavailable");
+      if (!genericWorkCoreJoinAuthority) return publicError(res, 503, genericWorkCoreJoinUnavailableCode());
+      const issueSequence = ++genericWorkCoreJoinIssueSequence;
       try {
         await genericWorkCoreJoinStoreInitialization;
         if (genericWorkCoreJoinStoreState !== "ready") return publicError(res, 503, "generic_work_core_join_durable_store_unavailable");
         const { tenant_id: _tenantId, ...input } = req.body || {};
-        const verdict = await genericWorkCoreJoinAuthority.issue({ ...input, tenant_id: req.tenantId });
+        const issuance = await genericWorkCoreJoinAuthority.issueDetailed({ ...input, tenant_id: req.tenantId });
+        const verdict = issuance.verdict;
         genericWorkCoreJoinVerifier.verify({ verdict, expected: { tenant_id: req.tenantId, work_id: verdict.work_id, adapter: verdict.adapter, idempotency_digest: verdict.idempotency_digest } });
+        if (issuance.fresh_signature_verified === true && issuance.durable_record_verified === true) {
+          genericWorkCoreJoinSignerRecoverySequence = Math.max(genericWorkCoreJoinSignerRecoverySequence, issueSequence);
+          if (issueSequence > genericWorkCoreJoinSignerFailureSequence) {
+            genericWorkCoreJoinSignerFailureLatched = false;
+            genericWorkCoreJoinSignerState = "ready";
+            genericWorkCoreJoinSignerReason = null;
+          }
+        }
         audit.append("core_generic_work_core_join_issued", { tenant_id: req.tenantId, key_id: req.coreKey.key_id,
           work_id: verdict.work_id, verdict_id: verdict.verdict_id, adapter: verdict.adapter });
         return res.status(201).json({ ok: true, verdict });
       } catch (error) {
-        return publicError(res, 409, String(error?.message || "generic_work_core_join_denied"));
+        const code = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_denied");
+        if (genericWorkCoreJoinStoreInfrastructureCode(code)) {
+          genericWorkCoreJoinStoreState = "failed";
+          genericWorkCoreJoinStoreError = code;
+        }
+        const signerCode = genericWorkCoreJoinSignerInfrastructureCode(code);
+        if (signerCode) {
+          genericWorkCoreJoinSignerFailureSequence = Math.max(genericWorkCoreJoinSignerFailureSequence, issueSequence);
+          if (issueSequence > genericWorkCoreJoinSignerRecoverySequence) {
+            genericWorkCoreJoinSignerFailureLatched = true;
+            genericWorkCoreJoinSignerState = genericWorkCoreJoinSignerRejectedCodes.has(signerCode) ? "rejected" : "unavailable";
+            genericWorkCoreJoinSignerReason = signerCode;
+          }
+        }
+        return publicError(res, genericWorkCoreJoinFailureStatus(code), code);
       }
     };
 
