@@ -41,6 +41,12 @@ import {
   canonicalDttWorkContextBody,
   issueDttWorkContext,
 } from "../../shared/dtt-work-context.js";
+import {
+  GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER,
+  GENERIC_WORK_CORE_JOIN_LEASE_BINDING_VERSION,
+  canonicalGenericWorkCoreJoinContextBody,
+  issueGenericWorkCoreJoinContext,
+} from "../../shared/generic-work-core-join-context.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
@@ -428,6 +434,8 @@ export function createCoreHandlers(config, options = {}) {
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
   const tenantWorkGallery = options.tenantWorkGallery;
   const resolveDttWorkBinding = options.resolveDttWorkBinding;
+  const resolveGenericWorkCoreJoinBinding = options.resolveGenericWorkCoreJoinBinding;
+  const genericWorkCoreJoinVerifierMetadata = options.genericWorkCoreJoinVerifierMetadata || null;
   const decisionLedger = options.decisionLedger || null;
   const remediationStore = options.remediationStore || createCoreBlockRemediationStore(config, {
     root: options.coreBlockRemediationRoot || config.sharedMemoryRoot || config.agentWorkspaceRoot,
@@ -655,6 +663,7 @@ export function createCoreHandlers(config, options = {}) {
     useTenantGateway = false,
     allowFailurePayload = false,
     dttWorkContext = null,
+    genericWorkCoreJoinContext = null,
   } = {}) {
     const sanitizedBody = sanitizeCoreBody(body);
     const headers = { accept: "application/json" };
@@ -694,11 +703,30 @@ export function createCoreHandlers(config, options = {}) {
         body: sanitizedBody,
       });
     }
+    if (genericWorkCoreJoinContext) {
+      if (dttWorkContext) throw new Error("generic_work_core_join_context_ambiguous");
+      if (useTenantGateway !== true) {
+        throw new Error("generic_work_core_join_context_tenant_gateway_required");
+      }
+      headers[GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER] = issueGenericWorkCoreJoinContext({
+        secret: config.dttAgentIdentitySigningSecret,
+        tenant_id: tenantId,
+        work_id: genericWorkCoreJoinContext.work_id,
+        lease_binding: genericWorkCoreJoinContext.lease_binding,
+        agent_presence: genericWorkCoreJoinContext.agent_presence,
+        verifier: genericWorkCoreJoinContext.verifier,
+        method,
+        path,
+        body: sanitizedBody,
+      });
+    }
     const serializedBody = sanitizedBody === undefined
       ? undefined
-      : dttWorkContext
-        ? canonicalDttWorkContextBody(sanitizedBody)
-        : JSON.stringify(sanitizedBody);
+      : genericWorkCoreJoinContext
+        ? canonicalGenericWorkCoreJoinContextBody(sanitizedBody)
+        : dttWorkContext
+          ? canonicalDttWorkContextBody(sanitizedBody)
+          : JSON.stringify(sanitizedBody);
     const response = await fetchImpl(`${config.universalCoreUrl}${path}`, {
       method,
       headers,
@@ -740,6 +768,42 @@ export function createCoreHandlers(config, options = {}) {
         work_id: workId,
         lease_binding: leaseBinding,
         agent_presence: identity.agentPresence,
+      },
+    });
+  }
+
+  async function genericWorkCoreJoinCoreRequest(path, args, identity, request = {}) {
+    if (!genericWorkCoreJoinVerifierMetadata) {
+      throw new Error("generic_work_core_join_verifier_unavailable");
+    }
+    if (typeof resolveGenericWorkCoreJoinBinding !== "function") {
+      throw new Error("generic_work_core_join_work_binding_unavailable");
+    }
+    const workId = String(args?.work_id || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(workId)) {
+      throw new Error("generic_work_core_join_work_id_invalid");
+    }
+    const leaseBinding = await resolveGenericWorkCoreJoinBinding(identity, workId);
+    if (
+      leaseBinding?.schema_version !== GENERIC_WORK_CORE_JOIN_LEASE_BINDING_VERSION
+      || leaseBinding?.tenant_id !== identity.tenantId
+      || String(leaseBinding?.work_id || "").toLowerCase() !== workId
+      || leaseBinding?.execution_authorized !== false
+    ) {
+      throw new Error("generic_work_core_join_active_lease_required");
+    }
+    const requestBody = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+      ? { ...request.body, work_id: workId }
+      : request.body;
+    return coreRequest(path, identity.tenantId, {
+      ...request,
+      body: requestBody,
+      useTenantGateway: true,
+      genericWorkCoreJoinContext: {
+        work_id: workId,
+        lease_binding: leaseBinding,
+        agent_presence: identity.agentPresence,
+        verifier: genericWorkCoreJoinVerifierMetadata,
       },
     });
   }
@@ -1369,16 +1433,18 @@ export function createCoreHandlers(config, options = {}) {
       const route = "/v1/work-continuity/generic-core-join";
       const { tenant_id: _callerTenantId, authenticated_tenant_id: _callerAuthenticatedTenantId,
         secret: _secret, signing_secret: _signingSecret, verifier_secret: _verifierSecret, ...body } = args || {};
-      const response = await coreRequest(route, identity.tenantId, {
-        method: "POST", useTenantGateway: true, body,
+      const response = await genericWorkCoreJoinCoreRequest(route, body, identity, {
+        method: "POST", body,
       });
       const verdict = response?.verdict;
+      const expectedWorkId = String(body.work_id || "").trim().toLowerCase();
       const hash = /^[a-f0-9]{64}$/i;
       if (!response || response.ok !== true || !verdict || typeof verdict !== "object" || Array.isArray(verdict) ||
           verdict.schema_version !== "generic_work_core_join_v1" ||
           !/^gwcj_[a-f0-9]{40}$/i.test(String(verdict.verdict_id || "")) ||
           String(verdict.tenant_id || "") !== String(identity.tenantId || "") ||
-          !verdict.work_id || !verdict.adapter || !hash.test(String(verdict.acceptance_criteria_digest || "")) ||
+          String(verdict.work_id || "").toLowerCase() !== expectedWorkId ||
+          !verdict.adapter || !hash.test(String(verdict.acceptance_criteria_digest || "")) ||
           !hash.test(String(verdict.task_state_digest || "")) || !hash.test(String(verdict.evidence_digest || "")) ||
           !hash.test(String(verdict.independent_verifier_receipt_digest || "")) ||
           !hash.test(String(verdict.idempotency_digest || "")) || !hash.test(String(verdict.verdict_digest || "")) ||

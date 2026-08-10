@@ -183,7 +183,7 @@ test("remote signer requires a credential-free HTTPS endpoint and one pinned inl
   assert.throws(() => createGenericWorkCoreJoinRemoteSigner(config({ jwks: undefined })), /generic_work_core_join_signer_pinned_key_required/);
   assert.throws(() => createGenericWorkCoreJoinRemoteSigner(config({ publicKey: PUBLIC_KEY })), /generic_work_core_join_signer_pinned_key_required/);
   const publicJwk = JWKS.keys[0];
-  for (const accepted of [KEYS.publicKey, PUBLIC_KEY, publicJwk]) {
+  for (const accepted of [KEYS.publicKey, PUBLIC_KEY, publicJwk, JSON.stringify(publicJwk)]) {
     const inline = createGenericWorkCoreJoinRemoteSigner(config({ jwks: undefined, publicKey: accepted }));
     assert.match(inline.public_key_fingerprint, /^[a-f0-9]{64}$/);
   }
@@ -194,6 +194,7 @@ test("remote signer requires a credential-free HTTPS endpoint and one pinned inl
     { key: KEYS.privateKey },
     { key: PRIVATE_KEY, format: "pem" },
     privateJwk,
+    JSON.stringify(privateJwk),
   ]) {
     assert.throws(() => createGenericWorkCoreJoinRemoteSigner(config({ jwks: undefined, publicKey: rejected })), /generic_work_core_join_signer_public_key_invalid/);
   }

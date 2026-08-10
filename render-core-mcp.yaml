@@ -90,6 +90,17 @@ services:
         generateValue: true
       - key: DTT_AGENT_IDENTITY_SIGNING_SECRET
         generateValue: true
+      # Generic Work Core Join remains code-dark until the public verifier pin,
+      # durable shared store and Universal Core signer all pass their gates.
+      # This service holds verifier material only; never add a private key here.
+      - key: GENERIC_WORK_CORE_JOIN_ENABLED
+        value: "false"
+      - key: GENERIC_WORK_CORE_JOIN_REQUIRED
+        value: "false"
+      - key: GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID
+        value: generic-work-core-join-production-v1
+      - key: GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY
+        sync: false
       # Dedicated MCP→Core Deep V2 request signature. Universal Core consumes
       # the same generated value through an internal Render reference. It is
       # an internal continuity signature, not a model-provider credential.

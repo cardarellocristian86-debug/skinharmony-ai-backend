@@ -46,6 +46,43 @@ services:
           type: web
           name: skinharmony-core-mcp
           envVarKey: DTT_AGENT_IDENTITY_SIGNING_SECRET
+      # Generic Work Core Join is deliberately code-dark. Activation requires
+      # a separately reviewed flag/mode change after the remote signer and
+      # distributed store are live; residual public config cannot activate it.
+      - key: CORE_GENERIC_WORK_CORE_JOIN_ENABLED
+        value: "false"
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REQUIRED
+        value: "false"
+      - key: CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE
+        value: disabled
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ORIGIN
+        sync: false
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PATH
+        value: /v1/sign
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE
+        value: universal-core-service
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PURPOSE
+        value: generic_work_core_join_v1
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN
+        sync: false
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TIMEOUT_MS
+        value: "1500"
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_MAX_RESPONSE_BYTES
+        value: "4096"
+      - key: CORE_GENERIC_WORK_CORE_JOIN_SIGNER_PROBE_TIMEOUT_MS
+        value: "2000"
+      - key: CORE_GENERIC_WORK_CORE_JOIN_SIGNER_PROBE_COOLDOWN_MS
+        value: "5000"
       - key: CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
         fromService:
           type: web

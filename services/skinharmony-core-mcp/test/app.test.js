@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -18,6 +19,7 @@ import {
 import {
   createPostgresMajorVersionProbe,
 } from "../../shared/postgres-major-version.js";
+import { createGenericWorkCoreJoinVerifier } from "../src/work-continuity-v2-store.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -304,6 +306,144 @@ test("cannot force Render readiness with the legacy boolean", async () => {
     assert(health.readiness.reasons.includes("universal_core_not_configured"));
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("does not advertise Generic Work Core Join until explicitly enabled", async () => {
+  const genericTool = WORK_CONTINUITY_TOOLS.find(
+    (tool) => tool.name === "work_continuity_generic_core_join",
+  );
+  const existingIndex = TOOLS.findIndex((tool) => tool.name === genericTool.name);
+  if (existingIndex < 0) TOOLS.push(genericTool);
+  const handlers = {
+    work_continuity_generic_core_join: async () => ({
+      structuredContent: { ok: true },
+      content: [{ type: "text", text: "ok" }],
+    }),
+  };
+  const disabledApp = createApp({ ...config, genericWorkCoreJoinEnabled: false }, { handlers });
+  const incompleteApp = createApp({ ...config, genericWorkCoreJoinEnabled: true }, { handlers });
+  const enabledApp = createApp({
+    ...config,
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinConfigurationValid: true,
+  }, { handlers });
+  if (existingIndex < 0) TOOLS.splice(TOOLS.indexOf(genericTool), 1);
+
+  for (const [app, expectedVisible] of [
+    [disabledApp, false],
+    [incompleteApp, false],
+    [enabledApp, true],
+  ]) {
+    const server = app.listen(0);
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+      const body = await response.json();
+      assert.equal(
+        body.result.tools.some((tool) => tool.name === genericTool.name),
+        expectedVisible,
+      );
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+});
+
+test("Generic Join health pins upstream key identity and gates Render only when required", async () => {
+  const { publicKey } = crypto.generateKeyPairSync("ed25519");
+  const verifier = createGenericWorkCoreJoinVerifier({
+    publicKey: publicKey.export({ type: "spki", format: "pem" }),
+    keyId: "core-key-20260810",
+  });
+  const productionConfig = {
+    ...config,
+    environment: "production",
+    production: true,
+    runtimeBuildCommit: "a".repeat(40),
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    universalCoreKeys: {},
+    databaseUrl: "",
+    workContinuityAutoCaptureEnabled: false,
+    hostNativeAgentProtocolEnabled: false,
+    decisionLedgerRequired: false,
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinConfigurationValid: true,
+  };
+  const scenarios = [
+    { required: false, fingerprint: "f".repeat(64), status: 200, renderReady: true,
+      joinReady: false, reason: "generic_work_core_join_public_key_fingerprint_mismatch" },
+    { required: false, fingerprint: verifier.public_key_fingerprint, upstreamRequired: true,
+      status: 200, renderReady: true, joinReady: false,
+      reason: "generic_work_core_join_upstream_not_ready" },
+    { required: false, fingerprint: verifier.public_key_fingerprint, omitUpstreamRequired: true,
+      status: 200, renderReady: true, joinReady: false,
+      reason: "generic_work_core_join_upstream_not_ready" },
+    { required: true, fingerprint: "f".repeat(64), status: 503, renderReady: false,
+      joinReady: false, reason: "generic_work_core_join_public_key_fingerprint_mismatch" },
+    { required: true, fingerprint: verifier.public_key_fingerprint, upstreamEnabled: false,
+      upstreamConfigurationValid: false, upstreamAlgorithm: "RSA", status: 503, renderReady: false,
+      joinReady: false, reason: "generic_work_core_join_upstream_not_ready" },
+    { required: true, fingerprint: verifier.public_key_fingerprint, upstreamRequired: false,
+      status: 503, renderReady: false, joinReady: false,
+      reason: "generic_work_core_join_upstream_not_ready" },
+    { required: true, fingerprint: verifier.public_key_fingerprint, status: 200, renderReady: true,
+      joinReady: true, reason: null },
+  ];
+  for (const scenario of scenarios) {
+    const app = createApp({
+      ...productionConfig,
+      genericWorkCoreJoinRequired: scenario.required,
+    }, {
+      handlers: {},
+      readiness: { genericWorkCoreJoinStoreInitialized: true },
+      genericWorkCoreJoin: { storeConfigured: true, verifier },
+      fetchImpl: async () => {
+        const genericWorkCoreJoin = {
+          enabled: scenario.upstreamEnabled ?? true,
+          configuration_valid: scenario.upstreamConfigurationValid ?? true,
+          algorithm: scenario.upstreamAlgorithm ?? "Ed25519",
+          ready: true,
+          key_id: verifier.key_id,
+          public_key_fingerprint: scenario.fingerprint,
+        };
+        if (scenario.omitUpstreamRequired !== true) {
+          genericWorkCoreJoin.required = scenario.upstreamRequired ?? scenario.required;
+        }
+        return new Response(JSON.stringify({
+          research_airlock: { ready: true, mode: "enforced", state_backend: "postgresql" },
+          generic_work_core_join: genericWorkCoreJoin,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const server = app.listen(0);
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`);
+      const health = await response.json();
+      assert.equal(response.status, scenario.status);
+      assert.equal(health.render_ready, scenario.renderReady);
+      assert.equal(health.generic_work_core_join.enabled, true);
+      assert.equal(health.generic_work_core_join.required, scenario.required);
+      assert.equal(health.generic_work_core_join.ready, scenario.joinReady);
+      assert.equal(health.generic_work_core_join.reason, scenario.reason);
+      assert.equal(health.generic_work_core_join.key_id, verifier.key_id);
+      assert.equal(
+        health.generic_work_core_join.public_key_fingerprint,
+        verifier.public_key_fingerprint,
+      );
+      assert.equal(
+        JSON.stringify(health).includes(publicKey.export({ type: "spki", format: "pem" })),
+        false,
+      );
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   }
 });
 

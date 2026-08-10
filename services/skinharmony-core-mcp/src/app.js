@@ -36,6 +36,9 @@ const SERVER_INSTRUCTIONS = [
 ].join(" ");
 
 const CONNECTOR_TOOL_NAMESPACE = "skinharmony_nyra_core";
+const GENERIC_WORK_CORE_JOIN_TOOL = "work_continuity_generic_core_join";
+const GENERIC_WORK_CORE_JOIN_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
+const SHA256_HEX = /^[a-f0-9]{64}$/;
 
 function resolveConnectorToolName(value, tools = []) {
   const requested = String(value || "");
@@ -78,6 +81,112 @@ export function requiresGenericWorkPreflight(toolName, args = {}) {
     GENERIC_PREFLIGHT_CAPABILITIES.has(String(args?.capability_id || ""))
   ) return true;
   return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(String(toolName || ""));
+}
+
+export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstream = {}) {
+  const enabled = config.genericWorkCoreJoinEnabled === true;
+  const required = config.genericWorkCoreJoinRequired === true;
+  const configurationCodes = new Set([
+    "generic_work_core_join_enabled_flag_invalid",
+    "generic_work_core_join_required_flag_invalid",
+    "generic_work_core_join_required_without_enabled",
+  ]);
+  const configuredError = String(config.genericWorkCoreJoinConfigurationError || "");
+  const configurationError = configurationCodes.has(configuredError)
+    ? configuredError
+    : (enabled || required) && config.genericWorkCoreJoinConfigurationValid !== true
+      ? "generic_work_core_join_configuration_invalid"
+      : required && !enabled
+      ? "generic_work_core_join_required_without_enabled"
+      : null;
+  const suppliedMetadata = options.genericWorkCoreJoin?.verifier?.metadata;
+  const verifierMetadata = suppliedMetadata &&
+    GENERIC_WORK_CORE_JOIN_KEY_ID.test(String(suppliedMetadata.key_id || "")) &&
+    SHA256_HEX.test(String(suppliedMetadata.public_key_fingerprint || "")) &&
+    options.genericWorkCoreJoin?.verifier?.algorithm === "Ed25519"
+    ? {
+        ...suppliedMetadata,
+        algorithm: options.genericWorkCoreJoin.verifier.algorithm,
+      }
+    : null;
+  const storeConfigured = options.genericWorkCoreJoin?.storeConfigured === true;
+  const storeInitialized = options.readiness?.genericWorkCoreJoinStoreInitialized === true;
+  const storeInitializationFailed =
+    options.readiness?.genericWorkCoreJoinStoreInitializationFailed === true;
+  const coreHealth = upstream?.payload?.generic_work_core_join;
+  const upstreamKeyId = GENERIC_WORK_CORE_JOIN_KEY_ID.test(String(coreHealth?.key_id || ""))
+    ? String(coreHealth.key_id)
+    : null;
+  const upstreamFingerprint = SHA256_HEX.test(String(coreHealth?.public_key_fingerprint || ""))
+    ? String(coreHealth.public_key_fingerprint)
+    : null;
+  const upstreamReady = upstream?.responseOk === true
+    && coreHealth?.enabled === true
+    && coreHealth?.configuration_valid === true
+    && coreHealth?.algorithm === "Ed25519"
+    && coreHealth?.required === required
+    && coreHealth?.ready === true;
+  const keyIdMatches = Boolean(verifierMetadata && upstreamKeyId === verifierMetadata.key_id);
+  const fingerprintMatches = Boolean(
+    verifierMetadata && upstreamFingerprint === verifierMetadata.public_key_fingerprint,
+  );
+  let state = "disabled";
+  let reason = "generic_work_core_join_disabled";
+  let ready = false;
+  if (configurationError) {
+    state = "configuration_invalid";
+    reason = configurationError;
+  } else if (enabled && !storeConfigured) {
+    state = "store_unavailable";
+    reason = "generic_work_core_join_store_unavailable";
+  } else if (enabled && storeInitializationFailed) {
+    state = "store_unavailable";
+    reason = "generic_work_core_join_store_unavailable";
+  } else if (enabled && !storeInitialized) {
+    state = "initializing";
+    reason = "generic_work_core_join_store_initializing";
+  } else if (enabled && !verifierMetadata) {
+    state = "verifier_unavailable";
+    reason = "generic_work_core_join_verifier_unavailable";
+  } else if (enabled && upstream?.responseOk !== true) {
+    state = "upstream_unavailable";
+    reason = "generic_work_core_join_upstream_unavailable";
+  } else if (enabled && !upstreamReady) {
+    state = "upstream_not_ready";
+    reason = "generic_work_core_join_upstream_not_ready";
+  } else if (enabled && !keyIdMatches) {
+    state = "trust_mismatch";
+    reason = "generic_work_core_join_key_id_mismatch";
+  } else if (enabled && !fingerprintMatches) {
+    state = "trust_mismatch";
+    reason = "generic_work_core_join_public_key_fingerprint_mismatch";
+  } else if (enabled) {
+    state = "ready";
+    reason = null;
+    ready = true;
+  }
+  return Object.freeze({
+    enabled,
+    required,
+    configuration_valid: configurationError === null,
+    configuration_error: configurationError,
+    configured: enabled && configurationError === null && storeConfigured && Boolean(verifierMetadata),
+    ready,
+    usable: ready,
+    state,
+    reason,
+    store_configured: storeConfigured,
+    store_initialized: storeInitialized,
+    store_initialization_failed: storeInitializationFailed,
+    verifier_configured: Boolean(verifierMetadata),
+    algorithm: verifierMetadata?.algorithm || null,
+    key_id: verifierMetadata?.key_id || null,
+    public_key_fingerprint: verifierMetadata?.public_key_fingerprint || null,
+    upstream_ready: upstreamReady,
+    upstream_key_id_matches: keyIdMatches,
+    upstream_public_key_fingerprint_matches: fingerprintMatches,
+    host_action_authorized: false,
+  });
 }
 const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "agent_heartbeat",
@@ -534,6 +643,13 @@ const TOOL_FAILURE_STATUS_BY_CODE = Object.freeze({
   owner_confirmation_required: 403,
   idempotency_key_required: 422,
   continuity_capture_not_authorized: 403,
+  generic_work_core_join_disabled: 503,
+  generic_work_core_join_store_unavailable: 503,
+  generic_work_core_join_store_initializing: 503,
+  generic_work_core_join_verifier_unavailable: 503,
+  generic_work_core_join_upstream_unavailable: 503,
+  generic_work_core_join_response_invalid: 502,
+  generic_work_core_join_signature_invalid: 502,
 });
 
 function inferredToolFailureStatus(code) {
@@ -598,7 +714,13 @@ export function createApp(config, options = {}) {
   const handlers = options.handlers || {};
   const beforeToolCall = options.beforeToolCall;
   const afterToolCall = options.afterToolCall;
-  const availableTools = TOOLS.filter((tool) => typeof handlers[tool.name] === "function").map((tool) => configureToolForRuntime(tool, config));
+  const availableTools = TOOLS.filter((tool) =>
+    typeof handlers[tool.name] === "function" &&
+    (tool.name !== GENERIC_WORK_CORE_JOIN_TOOL || (
+      config.genericWorkCoreJoinEnabled === true &&
+      config.genericWorkCoreJoinConfigurationValid === true
+    ))
+  ).map((tool) => configureToolForRuntime(tool, config));
   const visibleTools = options.toolSurface === "compact"
     ? compactMcpTools(availableTools, handlers).map((tool) => configureToolForRuntime(tool, config))
     : availableTools;
@@ -633,6 +755,7 @@ export function createApp(config, options = {}) {
       mode: "unknown",
       state_backend: "unavailable",
     };
+    let upstreamHealth = { responseOk: false, payload: null };
     try {
       const response = await (options.fetchImpl || globalThis.fetch)(`${config.universalCoreUrl}/healthz`, {
         method: "GET",
@@ -669,6 +792,7 @@ export function createApp(config, options = {}) {
         && payload.causal_continuity?.production_required === true
         && payload.causal_continuity?.state === "initializing"
         && airlockSafe;
+      upstreamHealth = { responseOk: response.ok, payload };
       researchAirlock = {
         core_ready: coreReady,
         upstream_bootstrap_initializing: upstreamBootstrapInitializing,
@@ -685,14 +809,22 @@ export function createApp(config, options = {}) {
         state_backend: "unavailable",
       };
     }
+    const genericWorkCoreJoin = buildGenericWorkCoreJoinHealth(
+      config,
+      options,
+      upstreamHealth,
+    );
     // Production MCP readiness must not depend on a mode value supplied by an
     // unreachable upstream. Once deployed, Core Airlock is a hard dependency:
     // unknown/unavailable is therefore unready, never an implicit opt-out.
     const airlockRequired = readiness.environment === "production";
-    const combinedReady = readiness.ready && (!airlockRequired || researchAirlock.core_ready);
+    const combinedReady = readiness.ready
+      && (!airlockRequired || researchAirlock.core_ready)
+      && (!genericWorkCoreJoin.required || genericWorkCoreJoin.ready);
     const degradedLivenessReady = readiness.ready
       && airlockRequired
-      && researchAirlock.upstream_bootstrap_initializing === true;
+      && researchAirlock.upstream_bootstrap_initializing === true
+      && (!genericWorkCoreJoin.required || genericWorkCoreJoin.ready);
     const healthReady = combinedReady
       || (!strictReadiness && degradedLivenessReady);
     const status = readiness.enforced && !healthReady ? 503 : 200;
@@ -707,6 +839,7 @@ export function createApp(config, options = {}) {
       ...researchAirlock,
       production_required: airlockRequired,
     },
+    generic_work_core_join: genericWorkCoreJoin,
     readiness: {
       enforced: readiness.enforced,
       ready: readiness.ready,

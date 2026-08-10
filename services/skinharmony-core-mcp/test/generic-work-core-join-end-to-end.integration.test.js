@@ -15,10 +15,16 @@ import {
 import { createUniversalCoreService as createApp } from "../../universal-core-service/src/app.js";
 import { genericWorkCoreJoinDigest } from "../../universal-core-service/src/genericWorkCoreJoin.js";
 import { createMemoryGenericWorkCoreJoinStore } from "../../universal-core-service/src/genericWorkCoreJoinStore.js";
+import {
+  GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER,
+  canonicalGenericWorkCoreJoinContextBody,
+  issueGenericWorkCoreJoinContext,
+} from "../../shared/generic-work-core-join-context.js";
 
 const TENANT = "tenant-generic-e2e";
 const OTHER_TENANT = "tenant-generic-other";
 const WORK_ID = "77777777-7777-4777-8777-777777777777";
+const LEASE_ID = "88888888-8888-4888-8888-888888888888";
 const ADAPTER = "research";
 const GATEWAY_KEY = "generic-e2e-tenant-gateway-key-0123456789";
 const CONTEXT_SECRET = "generic-e2e-context-signing-secret-0123456789";
@@ -37,6 +43,40 @@ function tenantContext(tenantId) {
     .update(`mcp-tenant-context\0${canonical}`).digest("hex")}`;
   return Buffer.from(JSON.stringify({ version: "mcp_tenant_context_v1", tenant_id: tenantId,
     issued_at, assertion })).toString("base64url");
+}
+
+function agentPresence() {
+  return {
+    transport_bound: true,
+    agent_id: "agent-generic-e2e",
+    session_id: "session-generic-e2e",
+    session_fingerprint: "a".repeat(24),
+    host_transport_session_fingerprint: "b".repeat(24),
+    signature: `ags_${"c".repeat(32)}`,
+    opaque_agent_id: `ai_${"d".repeat(24)}`,
+    actor_provenance: `ap_${"e".repeat(32)}`,
+    client_type: "codex",
+  };
+}
+
+function leaseBinding(tenantId, presence = agentPresence()) {
+  return {
+    schema_version: "generic_work_core_join_lease_binding_v1",
+    tenant_id: tenantId,
+    work_id: WORK_ID,
+    lease_id: LEASE_ID,
+    expires_at: new Date(Date.now() + 120_000).toISOString(),
+    participant_expires_at: new Date(Date.now() + 120_000).toISOString(),
+    session_id: presence.session_id,
+    agent_id: presence.agent_id,
+    client_type: presence.client_type,
+    session_fingerprint: presence.session_fingerprint,
+    host_transport_session_fingerprint: presence.host_transport_session_fingerprint,
+    presence_signature: presence.signature,
+    opaque_agent_id: presence.opaque_agent_id,
+    actor_provenance: presence.actor_provenance,
+    execution_authorized: false,
+  };
 }
 
 function genericJoinRequest() {
@@ -190,6 +230,13 @@ test("Generic Work Core Join crosses Universal Core, MCP bridge and V2 persisten
   const keys = crypto.generateKeyPairSync("ed25519");
   const privateKey = keys.privateKey.export({ type: "pkcs8", format: "pem" });
   const publicKey = keys.publicKey.export({ type: "spki", format: "pem" });
+  const publicKeyFingerprint = crypto.createHash("sha256")
+    .update(keys.publicKey.export({ type: "spki", format: "der" }))
+    .digest("hex");
+  const verifierMetadata = Object.freeze({
+    key_id: KEY_ID,
+    public_key_fingerprint: publicKeyFingerprint,
+  });
   const durableStore = createMemoryGenericWorkCoreJoinStore();
   durableStore.restart_durable = true;
   durableStore.distributed = true;
@@ -201,6 +248,7 @@ test("Generic Work Core Join crosses Universal Core, MCP bridge and V2 persisten
     tenantContextSigningSecret: CONTEXT_SECRET,
     dttAgentIdentitySigningSecret: DTT_SECRET,
     hostNativeSigningSecret: HOST_SECRET,
+    genericWorkCoreJoinEnabled: true,
     genericWorkCoreJoinStore: durableStore,
     genericWorkCoreJoinEd25519PrivateKey: privateKey,
     genericWorkCoreJoinEd25519KeyId: KEY_ID,
@@ -210,6 +258,17 @@ test("Generic Work Core Join crosses Universal Core, MCP bridge and V2 persisten
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const request = genericJoinRequest();
   const postCanonical = async (tenantId, payload) => {
+    const workContext = issueGenericWorkCoreJoinContext({
+      secret: DTT_SECRET,
+      tenant_id: tenantId,
+      work_id: WORK_ID,
+      lease_binding: leaseBinding(tenantId),
+      agent_presence: agentPresence(),
+      verifier: verifierMetadata,
+      method: "POST",
+      path: "/v1/work-continuity/generic-core-join",
+      body: payload,
+    });
     const response = await fetch(`${baseUrl}/v1/work-continuity/generic-core-join`, {
       method: "POST",
       headers: {
@@ -217,8 +276,9 @@ test("Generic Work Core Join crosses Universal Core, MCP bridge and V2 persisten
         "content-type": "application/json",
         "x-sh-tenant-id": tenantId,
         "x-sh-tenant-context": tenantContext(tenantId),
+        [GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER]: workContext,
       },
-      body: JSON.stringify(payload),
+      body: canonicalGenericWorkCoreJoinContextBody(payload),
     });
     return { status: response.status, body: await response.json() };
   };
@@ -243,9 +303,14 @@ test("Generic Work Core Join crosses Universal Core, MCP bridge and V2 persisten
     assert.match(verdict.signature, /^[A-Za-z0-9_-]+$/);
     assert.equal(verifyGenericCoreJoinVerdict(verdict, { publicKey, keyId: KEY_ID }), true);
 
+    const bridgeIdentity = { tenantId: TENANT, agentPresence: agentPresence() };
     const handlers = createCoreHandlers({ universalCoreUrl: baseUrl, tenantGatewayKey: GATEWAY_KEY,
-      tenantContextSigningSecret: CONTEXT_SECRET }, { fetchImpl: fetch });
-    const bridged = await handlers.generic_work_core_join_issue(request, { tenantId: TENANT });
+      tenantContextSigningSecret: CONTEXT_SECRET, dttAgentIdentitySigningSecret: DTT_SECRET }, {
+      fetchImpl: fetch,
+      genericWorkCoreJoinVerifierMetadata: verifierMetadata,
+      resolveGenericWorkCoreJoinBinding: async () => leaseBinding(TENANT, bridgeIdentity.agentPresence),
+    });
+    const bridged = await handlers.generic_work_core_join_issue(request, bridgeIdentity);
     assert.equal(bridged.structuredContent.ok, true);
     assert.deepEqual(bridged.structuredContent.generic_core_join_verdict, verdict);
     assert.equal(bridged.structuredContent.generic_core_join_verdict.host_action_authorized, false);
@@ -260,11 +325,14 @@ test("Generic Work Core Join crosses Universal Core, MCP bridge and V2 persisten
     assert.notEqual(crossTenant.body.ok, true);
 
     const malformedHandlers = createCoreHandlers({ universalCoreUrl: baseUrl,
-      tenantGatewayKey: GATEWAY_KEY, tenantContextSigningSecret: CONTEXT_SECRET }, {
+      tenantGatewayKey: GATEWAY_KEY, tenantContextSigningSecret: CONTEXT_SECRET,
+      dttAgentIdentitySigningSecret: DTT_SECRET }, {
+      genericWorkCoreJoinVerifierMetadata: verifierMetadata,
+      resolveGenericWorkCoreJoinBinding: async () => leaseBinding(TENANT, bridgeIdentity.agentPresence),
       fetchImpl: async () => new Response(JSON.stringify({ ok: true, verdict: { ...verdict, work_id: null } }),
         { status: 201, headers: { "content-type": "application/json" } }),
     });
-    await assert.rejects(() => malformedHandlers.generic_work_core_join_issue(request, { tenantId: TENANT }),
+    await assert.rejects(() => malformedHandlers.generic_work_core_join_issue(request, bridgeIdentity),
       /generic_work_core_join_response_invalid/);
 
     const pool = new VerdictPersistencePool();

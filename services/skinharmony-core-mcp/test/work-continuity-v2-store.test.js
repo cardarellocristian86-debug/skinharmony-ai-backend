@@ -9,6 +9,7 @@ import {
   canContributeEvidence,
   canRead,
   canRecordTask,
+  createGenericWorkCoreJoinVerifier,
   createWorkContinuityV2Store,
   deriveAuthenticatedTenantWorkAcl,
   verifyGenericCoreJoinVerdict,
@@ -127,16 +128,91 @@ test("exact Work ACL reads accept RFC UUIDv8 identifiers", async () => {
   assert.equal(result.work.work_id, workId);
 });
 
-test("Generic Core Join requires a canonical Ed25519 verdict under the pinned key id", () => {
+test("Generic Core Join requires the exact v1 contract, canonical signature and request binding", () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
   const unsigned = {
-    schema_version: "generic_work_core_join_v2", tenant_id: "tenant-a", work_id: "work-001",
-    adapter: "research", idempotency_digest: "a".repeat(64), key_id: "core-20260808", signature_algorithm: "ed25519",
+    schema_version: "generic_work_core_join_v1",
+    verdict_id: `gwcj_${"1".repeat(40)}`,
+    tenant_id: "tenant-a",
+    work_id: "11111111-1111-4111-8111-111111111111",
+    adapter: "research",
+    acceptance_criteria_digest: "1".repeat(64),
+    task_state_digest: "2".repeat(64),
+    evidence_digest: "3".repeat(64),
+    independent_verifier_receipt_digest: "4".repeat(64),
+    idempotency_digest: "5".repeat(64),
+    issued_at: "2026-08-10T12:00:00.000Z",
+    authority: "universal_core",
+    decision: "GENERIC_WORK_CORE_JOIN_ELIGIBLE",
+    execution_authorized: false,
+    host_action_authorized: false,
+    key_id: "core-20260808",
+    signature_algorithm: "ed25519",
   };
   const verdict_digest = crypto.createHash("sha256").update(JSON.stringify(Object.fromEntries(Object.keys(unsigned).sort().map((key) => [key, unsigned[key]])))).digest("hex");
   const signature = crypto.sign(null, Buffer.from(`generic_work_core_join_v1\0${verdict_digest}`), privateKey).toString("base64url");
   const verdict = { ...unsigned, verdict_digest, signature };
-  assert.equal(verifyGenericCoreJoinVerdict(verdict, { publicKey: publicKey.export({ format: "pem", type: "spki" }), keyId: "core-20260808" }), true);
-  assert.equal(verifyGenericCoreJoinVerdict({ ...verdict, work_id: "work-002" }, { publicKey: publicKey.export({ format: "pem", type: "spki" }), keyId: "core-20260808" }), false);
-  assert.equal(verifyGenericCoreJoinVerdict(verdict, { publicKey: publicKey.export({ format: "pem", type: "spki" }), keyId: "other" }), false);
+  const verifierInput = {
+    publicKey: publicKey.export({ format: "pem", type: "spki" }),
+    keyId: "core-20260808",
+  };
+  const expected = {
+    tenant_id: unsigned.tenant_id,
+    work_id: unsigned.work_id,
+    adapter: unsigned.adapter,
+    idempotency_digest: unsigned.idempotency_digest,
+  };
+  assert.equal(verifyGenericCoreJoinVerdict(verdict, { ...verifierInput, expected }), true);
+  assert.equal(verifyGenericCoreJoinVerdict({ ...verdict, schema_version: "generic_work_core_join_v2" }, verifierInput), false);
+  assert.equal(verifyGenericCoreJoinVerdict({ ...verdict, unexpected: true }, verifierInput), false);
+  assert.equal(verifyGenericCoreJoinVerdict({ ...verdict, signature: `${signature}=` }, verifierInput), false);
+  assert.equal(verifyGenericCoreJoinVerdict(verdict, {
+    ...verifierInput,
+    expected: { ...expected, adapter: "document" },
+  }), false);
+  assert.equal(verifyGenericCoreJoinVerdict(verdict, { ...verifierInput, keyId: "other" }), false);
+});
+
+test("Generic Core Join verifier accepts only pinned public Ed25519 PEM or public JWK", () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+  const keyId = "core-key-20260810";
+  const publicPem = publicKey.export({ format: "pem", type: "spki" });
+  const verifier = createGenericWorkCoreJoinVerifier({ publicKey: publicPem, keyId });
+  const fingerprint = crypto.createHash("sha256")
+    .update(publicKey.export({ format: "der", type: "spki" }))
+    .digest("hex");
+  assert.deepEqual(verifier.metadata, {
+    key_id: keyId,
+    public_key_fingerprint: fingerprint,
+  });
+  assert.equal(verifier.schema_version, "generic_work_core_join_v1");
+  assert.equal(verifier.algorithm, "Ed25519");
+
+  const publicJwk = { ...publicKey.export({ format: "jwk" }), alg: "EdDSA", use: "sig", kid: keyId };
+  assert.equal(
+    createGenericWorkCoreJoinVerifier({ publicKey: JSON.stringify(publicJwk), keyId })
+      .public_key_fingerprint,
+    fingerprint,
+  );
+  for (const input of [
+    privateKey.export({ format: "pem", type: "pkcs8" }),
+    privateKey.export({ format: "jwk" }),
+    crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "pem", type: "spki" }),
+  ]) {
+    assert.throws(
+      () => createGenericWorkCoreJoinVerifier({ publicKey: input, keyId }),
+      /generic_work_core_join_verifier_unavailable/,
+    );
+  }
+  assert.throws(
+    () => createGenericWorkCoreJoinVerifier({ publicKey: publicPem, keyId: "x" }),
+    /generic_work_core_join_verifier_unavailable/,
+  );
+  assert.throws(
+    () => createGenericWorkCoreJoinVerifier({
+      publicKey: { ...publicJwk, kid: "different-key" },
+      keyId,
+    }),
+    /generic_work_core_join_verifier_unavailable/,
+  );
 });

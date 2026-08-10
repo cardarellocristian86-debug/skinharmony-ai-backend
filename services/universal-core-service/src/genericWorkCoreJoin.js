@@ -8,17 +8,23 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const SIGNER_INFRASTRUCTURE_CODES = new Set([
+  "generic_work_core_join_disabled",
   "generic_work_core_join_dependency_unavailable",
+  "generic_work_core_join_enabled_flag_invalid",
   "generic_work_core_join_external_signer_required",
   "generic_work_core_join_local_signer_forbidden",
+  "generic_work_core_join_required_flag_invalid",
+  "generic_work_core_join_required_without_enabled",
   "generic_work_core_join_signature_invalid",
   "generic_work_core_join_signer_configuration_invalid",
   "generic_work_core_join_signer_digest_invalid",
   "generic_work_core_join_signer_digest_mismatch",
   "generic_work_core_join_signer_health_unavailable",
+  "generic_work_core_join_signer_injection_forbidden",
   "generic_work_core_join_signer_jwks_invalid",
   "generic_work_core_join_signer_key_id_invalid",
   "generic_work_core_join_signer_key_id_mismatch",
+  "generic_work_core_join_signer_mode_invalid",
   "generic_work_core_join_signer_not_yet_verified",
   "generic_work_core_join_signer_origin_invalid",
   "generic_work_core_join_signer_path_invalid",
@@ -46,6 +52,7 @@ const SIGNER_INFRASTRUCTURE_CODES = new Set([
 ]);
 const STORE_INFRASTRUCTURE_CODES = new Set([
   "generic_work_core_join_durable_store_unavailable",
+  "generic_work_core_join_distributed_store_unavailable",
   "generic_work_core_join_postgres_unavailable",
   "generic_work_core_join_store_initialization_failed",
   "generic_work_core_join_store_initializing",
@@ -73,6 +80,7 @@ export function genericWorkCoreJoinDigest(value) { return crypto.createHash("sha
 function privateKey(value) { try { const key = crypto.createPrivateKey(value); if (key.asymmetricKeyType !== "ed25519") fail("generic_work_core_join_signing_unavailable"); return key; } catch { fail("generic_work_core_join_signing_unavailable"); } }
 function publicKey(value) { try { let key; if (value instanceof crypto.KeyObject) { if (value.type !== "public") fail("generic_work_core_join_verifier_unavailable"); key = value; } else if (typeof value === "string") { const pem = value.trim(); if (!/^-----BEGIN PUBLIC KEY-----\r?\n[\s\S]+\r?\n-----END PUBLIC KEY-----$/.test(pem)) fail("generic_work_core_join_verifier_unavailable"); key = crypto.createPublicKey(pem); } else if (plainRecord(value)) { const fields = Object.keys(value); if (!fields.includes("crv") || !fields.includes("kty") || !fields.includes("x") || fields.some((field) => !["alg", "crv", "kid", "kty", "use", "x"].includes(field)) || value.kty !== "OKP" || value.crv !== "Ed25519" || (value.alg !== undefined && value.alg !== "EdDSA") || (value.use !== undefined && value.use !== "sig") || (value.kid !== undefined && !ID.test(value.kid)) || typeof value.x !== "string" || value.x.length !== 43 || !BASE64URL.test(value.x) || Buffer.from(value.x, "base64url").byteLength !== 32 || Buffer.from(value.x, "base64url").toString("base64url") !== value.x) fail("generic_work_core_join_verifier_unavailable"); key = crypto.createPublicKey({ key: value, format: "jwk" }); } else { fail("generic_work_core_join_verifier_unavailable"); } if (key.type !== "public" || key.asymmetricKeyType !== "ed25519") fail("generic_work_core_join_verifier_unavailable"); return key; } catch { fail("generic_work_core_join_verifier_unavailable"); } }
 export function genericWorkCoreJoinSignaturePayload(verdictDigest) { return Buffer.from(`${GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION}\0${digest(verdictDigest, "generic_work_core_join_verdict_digest_invalid")}`, "utf8"); }
+export function verifyGenericWorkCoreJoinDigestSignature({ digest: verdictDigest, signature, publicKey: verifierPublicKey } = {}) { const signatureBytes = decodeGenericWorkCoreJoinEd25519Signature(signature, "generic_work_core_join_signer_signature_invalid"); if (!crypto.verify(null, genericWorkCoreJoinSignaturePayload(verdictDigest), publicKey(verifierPublicKey), signatureBytes)) fail("generic_work_core_join_signer_signature_invalid"); return true; }
 function publicKeyFingerprint(key) { return crypto.createHash("sha256").update(key.export({ type: "spki", format: "der" })).digest("hex"); }
 function collection(entries, fields, code, entryCode) { if (!Array.isArray(entries) || entries.length < 1 || entries.length > 4096) fail(code); const ids = new Set(); for (const entry of entries) { exact(entry, fields, entryCode); const entryId = id(entry[fields[0]], entryCode); if (ids.has(entryId)) fail(`${code}_duplicate`); ids.add(entryId); for (const field of fields.slice(1)) digest(entry[field], entryCode); } return genericWorkCoreJoinDigest(entries); }
 function evidence(entries) { if (!Array.isArray(entries) || entries.length < 1 || entries.length > 4096) fail("evidence_invalid"); const unique = new Set(entries.map((entry) => digest(entry, "evidence_invalid"))); if (unique.size !== entries.length) fail("evidence_duplicate"); return genericWorkCoreJoinDigest([...unique].sort()); }

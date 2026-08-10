@@ -242,6 +242,73 @@ jobs:
           end
 
           core_env = Array(core["envVars"]).to_h { |entry| [entry["key"], entry] }
+          generic_join_mcp_contract = {
+            "GENERIC_WORK_CORE_JOIN_ENABLED" => {
+              "key" => "GENERIC_WORK_CORE_JOIN_ENABLED", "value" => "false",
+            },
+            "GENERIC_WORK_CORE_JOIN_REQUIRED" => {
+              "key" => "GENERIC_WORK_CORE_JOIN_REQUIRED", "value" => "false",
+            },
+            "GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID" => {
+              "key" => "GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID",
+              "value" => "generic-work-core-join-production-v1",
+            },
+            "GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY" => {
+              "key" => "GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY", "sync" => false,
+            },
+          }
+          generic_join_mcp_contract.each do |key, expected|
+            abort("#{key}: Generic Join MCP Blueprint contract changed") unless
+              Array(mcp["envVars"]).count { |entry| entry["key"] == key } == 1 &&
+              mcp_env[key] == expected
+          end
+          generic_join_core_values = {
+            "CORE_GENERIC_WORK_CORE_JOIN_ENABLED" => "false",
+            "CORE_GENERIC_WORK_CORE_JOIN_REQUIRED" => "false",
+            "CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE" => "disabled",
+            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PATH" => "/v1/sign",
+            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE" => "universal-core-service",
+            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PURPOSE" => "generic_work_core_join_v1",
+            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TIMEOUT_MS" => "1500",
+            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_MAX_RESPONSE_BYTES" => "4096",
+            "CORE_GENERIC_WORK_CORE_JOIN_SIGNER_PROBE_TIMEOUT_MS" => "2000",
+            "CORE_GENERIC_WORK_CORE_JOIN_SIGNER_PROBE_COOLDOWN_MS" => "5000",
+          }
+          generic_join_core_values.each do |key, expected|
+            abort("#{key}: Generic Join Core Blueprint contract changed") unless
+              Array(core["envVars"]).count { |entry| entry["key"] == key } == 1 &&
+              core_env.dig(key, "value") == expected
+          end
+          %w[
+            CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ORIGIN
+            CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN
+          ].each do |key|
+            abort("#{key}: must remain a manually provisioned value") unless
+              core_env[key] == { "key" => key, "sync" => false }
+          end
+          {
+            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID" =>
+              "GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID",
+            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY" =>
+              "GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY",
+          }.each do |key, producer_key|
+            abort("#{key}: must remain pinned to the MCP public verifier material") unless
+              core_env[key] == {
+                "key" => key,
+                "fromService" => {
+                  "type" => "web",
+                  "name" => "skinharmony-core-mcp",
+                  "envVarKey" => producer_key,
+                },
+              }
+          end
+          generic_join_keys = Array(mcp["envVars"]) + Array(core["envVars"])
+          forbidden_generic_join_keys = generic_join_keys.filter_map do |entry|
+            key = String(entry["key"])
+            key if key.match?(/GENERIC_WORK_CORE_JOIN.*(?:PRIVATE_KEY|TARGET_COMMIT)/)
+          end
+          abort("Generic Join Blueprint contains private key or static target commit") unless
+            forbidden_generic_join_keys.empty?
           shared_security_keys = %w[
             CORE_MCP_TENANT_GATEWAY_KEY
             CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET

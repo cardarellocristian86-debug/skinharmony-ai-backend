@@ -56,6 +56,8 @@ const DTT_WORK_ACL_DENIALS = new Set([
   "work_server_acl_tenant_mismatch",
 ]);
 
+const GENERIC_WORK_CORE_JOIN_ACL_DENIALS = new Set(DTT_WORK_ACL_DENIALS);
+
 export async function authorizeDttExactWorkRead({
   store,
   identity,
@@ -83,6 +85,38 @@ export async function authorizeDttExactWorkRead({
     || String(result?.work?.work_id || "").toLowerCase() !== workId.toLowerCase()
   ) {
     throw dttWorkBindingError("dtt_work_acl_denied");
+  }
+  return Object.freeze({ tenant_id: tenantId, work_id: workId });
+}
+
+export async function authorizeGenericWorkCoreJoinExactWorkRead({
+  store,
+  identity,
+  tenant_id,
+  work_id,
+} = {}) {
+  if (typeof store?.readWork !== "function") {
+    throw dttWorkBindingError("generic_work_core_join_work_binding_unavailable");
+  }
+  const tenantId = tenant(tenant_id);
+  const workId = uuid(work_id, "work_id");
+  let result;
+  try {
+    result = await store.readWork(identity, { work_id: workId });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if (GENERIC_WORK_CORE_JOIN_ACL_DENIALS.has(reason)
+        || reason.startsWith("tenant_work_membership_")) {
+      throw dttWorkBindingError("generic_work_core_join_work_acl_denied");
+    }
+    throw dttWorkBindingError("generic_work_core_join_work_binding_unavailable");
+  }
+  if (
+    result?.schema_version !== "work_continuity_v2"
+    || String(result?.work?.tenant_id || "") !== tenantId
+    || String(result?.work?.work_id || "").toLowerCase() !== workId.toLowerCase()
+  ) {
+    throw dttWorkBindingError("generic_work_core_join_work_acl_denied");
   }
   return Object.freeze({ tenant_id: tenantId, work_id: workId });
 }
@@ -2288,6 +2322,29 @@ export function createWorkContinuityRuntime(config, options = {}) {
       presence_signature: String(presence.signature),
       opaque_agent_id: String(presence.opaque_agent_id),
       actor_provenance: String(presence.actor_provenance),
+      execution_authorized: false,
+    });
+  }
+
+  async function resolveGenericWorkCoreJoinLeaseBinding(identity, input = {}) {
+    let binding;
+    try {
+      binding = await resolveDttWorkLeaseBinding(identity, input);
+    } catch (error) {
+      const reason = String(error?.code || error?.message || "");
+      const mapped = new Map([
+        ["dtt_work_active_lease_required", "generic_work_core_join_active_lease_required"],
+        ["dtt_work_signed_presence_required", "generic_work_core_join_signed_presence_required"],
+        ["gallery_signed_presence_required", "generic_work_core_join_signed_presence_required"],
+        ["gallery_participant_presence_mismatch", "generic_work_core_join_principal_mismatch"],
+        ["tenant_work_membership_required", "generic_work_core_join_work_acl_denied"],
+        ["work_id_invalid", "generic_work_core_join_work_id_invalid"],
+      ]).get(reason) || "generic_work_core_join_work_binding_unavailable";
+      throw dttWorkBindingError(mapped);
+    }
+    return Object.freeze({
+      ...binding,
+      schema_version: "generic_work_core_join_lease_binding_v1",
       execution_authorized: false,
     });
   }
@@ -4833,6 +4890,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     remediationStore,
     gallery,
     resolveDttWorkLeaseBinding,
+    resolveGenericWorkCoreJoinLeaseBinding,
     join,
     heartbeat,
     openBranch,

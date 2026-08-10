@@ -177,6 +177,18 @@ function resolvePinnedPublicKey({ publicKey: inlinePublicKey, jwks, keyId }) {
   const hasJwks = jwks !== undefined && jwks !== null && jwks !== "";
   if (hasPublicKey === hasJwks) fail("generic_work_core_join_signer_pinned_key_required");
   if (!hasPublicKey) return parseInlineJwks(jwks, keyId);
+  if (typeof inlinePublicKey === "string" && inlinePublicKey.startsWith("{")) {
+    let parsed;
+    try {
+      parsed = JSON.parse(inlinePublicKey);
+    } catch {
+      fail("generic_work_core_join_signer_public_key_invalid");
+    }
+    return publicKeyFromJwk(
+      validatePublicJwk(parsed, keyId, "generic_work_core_join_signer_public_key_invalid"),
+      "generic_work_core_join_signer_public_key_invalid",
+    );
+  }
   if (plainRecord(inlinePublicKey)) {
     return publicKeyFromJwk(validatePublicJwk(inlinePublicKey, keyId, "generic_work_core_join_signer_public_key_invalid"), "generic_work_core_join_signer_public_key_invalid");
   }

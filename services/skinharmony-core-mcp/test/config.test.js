@@ -110,6 +110,47 @@ test("keeps host-native continuity opt-in independent from legacy environment va
   assert.equal(Object.hasOwn(enabled, "openaiApiKey"), false);
 });
 
+test("Generic Work Core Join uses strict explicit enablement and requirement flags", () => {
+  const disabled = loadConfig({});
+  assert.equal(disabled.genericWorkCoreJoinEnabled, false);
+  assert.equal(disabled.genericWorkCoreJoinRequired, false);
+  assert.equal(disabled.genericWorkCoreJoinConfigurationValid, true);
+
+  const enabled = loadConfig({
+    GENERIC_WORK_CORE_JOIN_ENABLED: "true",
+    GENERIC_WORK_CORE_JOIN_REQUIRED: "true",
+  });
+  assert.equal(enabled.genericWorkCoreJoinEnabled, true);
+  assert.equal(enabled.genericWorkCoreJoinRequired, true);
+
+  const explicitlyOptional = loadConfig({
+    GENERIC_WORK_CORE_JOIN_ENABLED: "true",
+    GENERIC_WORK_CORE_JOIN_REQUIRED: "false",
+  });
+  assert.equal(explicitlyOptional.genericWorkCoreJoinEnabled, true);
+  assert.equal(explicitlyOptional.genericWorkCoreJoinRequired, false);
+
+  for (const [name, value, error] of [
+    ["GENERIC_WORK_CORE_JOIN_ENABLED", "1", "generic_work_core_join_enabled_flag_invalid"],
+    ["GENERIC_WORK_CORE_JOIN_ENABLED", "yes", "generic_work_core_join_enabled_flag_invalid"],
+    ["GENERIC_WORK_CORE_JOIN_ENABLED", "TRUE", "generic_work_core_join_enabled_flag_invalid"],
+    ["GENERIC_WORK_CORE_JOIN_ENABLED", " true ", "generic_work_core_join_enabled_flag_invalid"],
+    ["GENERIC_WORK_CORE_JOIN_REQUIRED", "enabled", "generic_work_core_join_required_flag_invalid"],
+  ]) {
+    const invalid = loadConfig({ [name]: value });
+    assert.equal(invalid.genericWorkCoreJoinEnabled, false);
+    assert.equal(invalid.genericWorkCoreJoinRequired, true);
+    assert.equal(invalid.genericWorkCoreJoinConfigurationValid, false);
+    assert.equal(invalid.genericWorkCoreJoinConfigurationError, error);
+  }
+  const contradictory = loadConfig({ GENERIC_WORK_CORE_JOIN_REQUIRED: "true" });
+  assert.equal(contradictory.genericWorkCoreJoinConfigurationValid, false);
+  assert.equal(
+    contradictory.genericWorkCoreJoinConfigurationError,
+    "generic_work_core_join_required_without_enabled",
+  );
+});
+
 test("accepts a strong independent agent-presence signing secret by UTF-8 byte length", () => {
   const signatureSecret = "é".repeat(16);
   const independent = loadConfig({

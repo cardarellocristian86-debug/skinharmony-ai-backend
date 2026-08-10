@@ -76,6 +76,18 @@ VALUES ('20260808_work_continuity_v2_runtime') ON CONFLICT DO NOTHING;
 
 const HASH = /^[a-f0-9]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION = "generic_work_core_join_v1";
+const GENERIC_WORK_CORE_JOIN_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
+const GENERIC_WORK_CORE_JOIN_ID = GENERIC_WORK_CORE_JOIN_KEY_ID;
+const GENERIC_WORK_CORE_JOIN_ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const GENERIC_WORK_CORE_JOIN_BASE64URL = /^[A-Za-z0-9_-]+$/;
+const GENERIC_WORK_CORE_JOIN_VERDICT_FIELDS = Object.freeze([
+  "acceptance_criteria_digest", "adapter", "authority", "decision", "evidence_digest",
+  "execution_authorized", "host_action_authorized", "idempotency_digest",
+  "independent_verifier_receipt_digest", "issued_at", "key_id", "schema_version",
+  "signature", "signature_algorithm", "task_state_digest", "tenant_id", "verdict_digest",
+  "verdict_id", "work_id",
+]);
 
 function fail(code) { throw new Error(code); }
 function text(value, code, max = 8_000) {
@@ -109,6 +121,146 @@ function stable(value) {
 }
 function objectDigest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
+
+function plainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function exactObjectKeys(value, fields) {
+  return plainRecord(value) &&
+    Object.keys(value).sort().join("\0") === [...fields].sort().join("\0");
+}
+
+function parseGenericWorkCoreJoinPublicKey(value) {
+  let material = value;
+  if (typeof material === "string") {
+    const textValue = material.trim();
+    if (/^-----BEGIN PUBLIC KEY-----\r?\n[\s\S]+\r?\n-----END PUBLIC KEY-----$/.test(textValue)) {
+      material = textValue;
+    } else {
+      try { material = JSON.parse(textValue); } catch { fail("generic_work_core_join_verifier_unavailable"); }
+    }
+  }
+  try {
+    let key;
+    if (typeof material === "string") {
+      key = crypto.createPublicKey(material);
+    } else {
+      if (!plainRecord(material)) fail("generic_work_core_join_verifier_unavailable");
+      const fields = Object.keys(material);
+      if (!fields.includes("crv") || !fields.includes("kty") || !fields.includes("x") ||
+          fields.some((field) => !["alg", "crv", "kid", "kty", "use", "x"].includes(field)) ||
+          material.kty !== "OKP" || material.crv !== "Ed25519" ||
+          (material.alg !== undefined && material.alg !== "EdDSA") ||
+          (material.use !== undefined && material.use !== "sig") ||
+          (material.kid !== undefined && !GENERIC_WORK_CORE_JOIN_KEY_ID.test(material.kid)) ||
+          typeof material.x !== "string" || material.x.length !== 43 ||
+          !GENERIC_WORK_CORE_JOIN_BASE64URL.test(material.x)) {
+        fail("generic_work_core_join_verifier_unavailable");
+      }
+      const publicBytes = Buffer.from(material.x, "base64url");
+      if (publicBytes.byteLength !== 32 || publicBytes.toString("base64url") !== material.x) {
+        fail("generic_work_core_join_verifier_unavailable");
+      }
+      key = crypto.createPublicKey({ key: material, format: "jwk" });
+    }
+    if (key.type !== "public" || key.asymmetricKeyType !== "ed25519") {
+      fail("generic_work_core_join_verifier_unavailable");
+    }
+    return key;
+  } catch {
+    fail("generic_work_core_join_verifier_unavailable");
+  }
+}
+
+function decodeGenericWorkCoreJoinSignature(value) {
+  if (typeof value !== "string" || value.length !== 86 ||
+      !GENERIC_WORK_CORE_JOIN_BASE64URL.test(value)) return null;
+  const bytes = Buffer.from(value, "base64url");
+  return bytes.byteLength === 64 && bytes.toString("base64url") === value ? bytes : null;
+}
+
+function validGenericWorkCoreJoinTimestamp(value) {
+  if (typeof value !== "string" || !GENERIC_WORK_CORE_JOIN_ISO_TIMESTAMP.test(value)) return false;
+  try { return new Date(value).toISOString() === value; } catch { return false; }
+}
+
+function genericWorkCoreJoinExpectedValid(expected) {
+  return exactObjectKeys(expected, ["adapter", "idempotency_digest", "tenant_id", "work_id"]) &&
+    GENERIC_WORK_CORE_JOIN_ID.test(expected.tenant_id) &&
+    GENERIC_WORK_CORE_JOIN_ID.test(expected.work_id) &&
+    CLOSURE_ADAPTERS.includes(expected.adapter) && HASH.test(expected.idempotency_digest);
+}
+
+export function createGenericWorkCoreJoinVerifier({ publicKey, keyId } = {}) {
+  if (typeof keyId !== "string" || !GENERIC_WORK_CORE_JOIN_KEY_ID.test(keyId)) {
+    fail("generic_work_core_join_verifier_unavailable");
+  }
+  const keyMaterial = typeof publicKey === "string" && !publicKey.trim()
+    ? null
+    : publicKey;
+  const key = parseGenericWorkCoreJoinPublicKey(keyMaterial);
+  if (plainRecord(keyMaterial) && keyMaterial.kid !== undefined && keyMaterial.kid !== keyId) {
+    fail("generic_work_core_join_verifier_unavailable");
+  }
+  if (typeof keyMaterial === "string" && !keyMaterial.trim().startsWith("-----BEGIN PUBLIC KEY-----")) {
+    let jwk;
+    try { jwk = JSON.parse(keyMaterial); } catch { jwk = null; }
+    if (plainRecord(jwk) && jwk.kid !== undefined && jwk.kid !== keyId) {
+      fail("generic_work_core_join_verifier_unavailable");
+    }
+  }
+  const metadata = Object.freeze({
+    key_id: keyId,
+    public_key_fingerprint: crypto.createHash("sha256")
+      .update(key.export({ type: "spki", format: "der" }))
+      .digest("hex"),
+  });
+  const verify = (verdict, expected) => {
+    if (!exactObjectKeys(verdict, GENERIC_WORK_CORE_JOIN_VERDICT_FIELDS) ||
+        verdict.schema_version !== GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION ||
+        verdict.authority !== "universal_core" ||
+        verdict.decision !== "GENERIC_WORK_CORE_JOIN_ELIGIBLE" ||
+        verdict.execution_authorized !== false || verdict.host_action_authorized !== false ||
+        verdict.signature_algorithm !== "ed25519" || verdict.key_id !== keyId ||
+        !GENERIC_WORK_CORE_JOIN_ID.test(verdict.tenant_id) ||
+        !GENERIC_WORK_CORE_JOIN_ID.test(verdict.work_id) ||
+        !GENERIC_WORK_CORE_JOIN_ID.test(verdict.verdict_id) ||
+        !GENERIC_WORK_CORE_JOIN_ID.test(verdict.key_id) ||
+        !CLOSURE_ADAPTERS.includes(verdict.adapter) ||
+        !validGenericWorkCoreJoinTimestamp(verdict.issued_at)) return false;
+    for (const field of ["acceptance_criteria_digest", "task_state_digest", "evidence_digest",
+      "independent_verifier_receipt_digest", "idempotency_digest", "verdict_digest"]) {
+      if (!HASH.test(verdict[field])) return false;
+    }
+    const signatureBytes = decodeGenericWorkCoreJoinSignature(verdict.signature);
+    if (!signatureBytes) return false;
+    const { signature: _signature, verdict_digest: verdictDigest, ...unsigned } = verdict;
+    if (objectDigest(unsigned) !== verdictDigest) return false;
+    if (expected !== undefined) {
+      if (!genericWorkCoreJoinExpectedValid(expected)) return false;
+      for (const field of ["tenant_id", "work_id", "adapter", "idempotency_digest"]) {
+        if (verdict[field] !== expected[field]) return false;
+      }
+    }
+    try {
+      return crypto.verify(
+        null,
+        Buffer.from(`${GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION}\0${verdictDigest}`, "utf8"),
+        key,
+        signatureBytes,
+      );
+    } catch { return false; }
+  };
+  return Object.freeze({
+    schema_version: GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION,
+    algorithm: "Ed25519",
+    ...metadata,
+    metadata,
+    verify,
+  });
 }
 function deterministicWorkId(tenantId, reviewId, requestDigest) {
   const bytes = crypto.createHash("sha256")
@@ -274,12 +426,76 @@ function mapV2StatusToLegacy(status) {
   return "blocked";
 }
 
-export function verifyGenericCoreJoinVerdict(verdict, { publicKey, keyId } = {}) {
-  if (!publicKey || !keyId || !verdict || verdict.signature_algorithm !== "ed25519" || verdict.key_id !== keyId ||
-      !HASH.test(String(verdict.verdict_digest || "")) || typeof verdict.signature !== "string") return false;
-  const { signature, verdict_digest, ...unsigned } = verdict;
-  if (objectDigest(unsigned) !== verdict.verdict_digest) return false;
-  try { return crypto.verify(null, Buffer.from(`generic_work_core_join_v1\0${verdict.verdict_digest}`), crypto.createPublicKey(publicKey), Buffer.from(signature, "base64url")); } catch { return false; }
+export function verifyGenericCoreJoinVerdict(verdict, { publicKey, keyId, expected } = {}) {
+  try {
+    return createGenericWorkCoreJoinVerifier({ publicKey, keyId }).verify(verdict, expected);
+  } catch { return false; }
+}
+
+function genericWorkCoreJoinMcpError(code, status, retryable = false) {
+  const error = new Error(code);
+  error.code = code;
+  error.status = status;
+  error.retryable = retryable;
+  return error;
+}
+
+export function createGenericWorkCoreJoinMcpCoordinator({
+  enabled = false,
+  store,
+  readiness = {},
+  issueCore,
+} = {}) {
+  const currentReadiness = () => typeof readiness === "function" ? readiness() || {} : readiness || {};
+  return async ({ args = {}, identity = {}, aclIdentity } = {}) => {
+    if (enabled !== true) {
+      throw genericWorkCoreJoinMcpError("generic_work_core_join_disabled", 503);
+    }
+    if (!store || typeof store.buildGenericCoreJoinRequest !== "function" ||
+        typeof store.verifyCoreJoinVerdict !== "function" ||
+        typeof store.persistCoreJoin !== "function") {
+      throw genericWorkCoreJoinMcpError("generic_work_core_join_store_unavailable", 503, true);
+    }
+    const state = currentReadiness();
+    if (state.initializationFailed === true) {
+      throw genericWorkCoreJoinMcpError("generic_work_core_join_store_unavailable", 503, true);
+    }
+    if (state.initialized !== true) {
+      throw genericWorkCoreJoinMcpError("generic_work_core_join_store_initializing", 503, true);
+    }
+    if (!store.coreJoinVerifierMetadata ||
+        !GENERIC_WORK_CORE_JOIN_KEY_ID.test(String(store.coreJoinVerifierMetadata.key_id || "")) ||
+        !HASH.test(String(store.coreJoinVerifierMetadata.public_key_fingerprint || ""))) {
+      throw genericWorkCoreJoinMcpError("generic_work_core_join_verifier_unavailable", 503, true);
+    }
+    if (typeof issueCore !== "function") {
+      throw genericWorkCoreJoinMcpError("generic_work_core_join_upstream_unavailable", 503, true);
+    }
+    const request = await store.buildGenericCoreJoinRequest(aclIdentity, args);
+    const expected = {
+      tenant_id: String(identity.tenantId || ""),
+      work_id: request?.work_id,
+      adapter: request?.adapter,
+      idempotency_digest: request?.idempotency_digest,
+    };
+    if (!genericWorkCoreJoinExpectedValid(expected) || request?.tenant_id !== expected.tenant_id) {
+      throw genericWorkCoreJoinMcpError("generic_work_core_join_local_request_invalid", 503, true);
+    }
+    const response = await issueCore(request, identity);
+    const verdict = response?.structuredContent?.generic_core_join_verdict;
+    if (response?.structuredContent?.dedicated_core_gate?.authorized !== true || !verdict) {
+      throw genericWorkCoreJoinMcpError("generic_work_core_join_response_invalid", 502, true);
+    }
+    if (!store.verifyCoreJoinVerdict(verdict, expected)) {
+      throw genericWorkCoreJoinMcpError("generic_work_core_join_signature_invalid", 502, true);
+    }
+    const result = await store.persistCoreJoin({ ...aclIdentity, coreJoinTrusted: true }, {
+      work_id: expected.work_id,
+      core_join_digest: verdict.verdict_digest,
+      core_join_context: verdict,
+    });
+    return Object.freeze({ request, verdict, result });
+  };
 }
 
 export function createWorkContinuityV2Store({
@@ -291,6 +507,11 @@ export function createWorkContinuityV2Store({
   failureInjector = null,
 } = {}) {
   if (!pool || typeof pool.query !== "function") fail("work_v2_pool_required");
+  const resolvedCoreJoinVerifier = coreJoinVerifier && typeof coreJoinVerifier.verify === "function"
+    ? coreJoinVerifier
+    : coreJoinVerifier
+      ? createGenericWorkCoreJoinVerifier(coreJoinVerifier)
+      : null;
   let ready;
   const initialize = () => ready ||= pool.query(ADDITIVE_SCHEMA_SQL);
   const query = (...args) => pool.query(...args);
@@ -723,7 +944,7 @@ export function createWorkContinuityV2Store({
     await initialize();
     const actor = actorFromIdentity(identity);
     if (actor.core_join_trusted !== true) fail("core_join_trust_required");
-    if (!coreJoinVerifier || !verifyGenericCoreJoinVerdict(core_join_context, coreJoinVerifier)) fail("generic_core_join_signature_invalid");
+    if (!resolvedCoreJoinVerifier || !resolvedCoreJoinVerifier.verify(core_join_context)) fail("generic_core_join_signature_invalid");
     const workId = uuid(work_id);
     await transaction(async (client) => {
       const work = await loadWork(client, actor, workId, true);
@@ -905,7 +1126,10 @@ export function createWorkContinuityV2Store({
     readWork, listWorks, preflightGallery, openWorkReview,
     recordTask, recordEvidence, persistCoreJoin, refreshDerived, reconcileStaleDryRun,
     evaluateGenericClosure, buildGenericCoreJoinRequest, finalizeGenericClosure,
-    verifyCoreJoinVerdict: (verdict) => Boolean(coreJoinVerifier && verifyGenericCoreJoinVerdict(verdict, coreJoinVerifier)) });
+    coreJoinVerifierMetadata: resolvedCoreJoinVerifier?.metadata || null,
+    verifyCoreJoinVerdict: (verdict, expected) => Boolean(
+      resolvedCoreJoinVerifier && resolvedCoreJoinVerifier.verify(verdict, expected)),
+  });
 }
 
 export { ADDITIVE_SCHEMA_SQL, actorFromIdentity };
