@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import { once } from "node:events";
 import os from "node:os";
@@ -6,6 +7,13 @@ import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
 import { createUniversalCoreService } from "../src/app.js";
+
+const remoteKeyPair = crypto.generateKeyPairSync("ed25519");
+const remoteKeyId = "admin-control-room-remote-key";
+const remotePublicKey = remoteKeyPair.publicKey.export({ type: "spki", format: "pem" });
+const remoteSignerUrl = "https://admin-control-room-signer.example/sign";
+const remoteSignerHealthUrl = "https://admin-control-room-signer.example/health";
+const remoteTrustRegistry = JSON.stringify({ schema_version: "generic_work_core_join_trust_registry_v1", revision: "admin-control-room-remote-v1", keys: { [remoteKeyId]: { status: "active", public_key: remotePublicKey } } });
 
 const serviceRoot = path.resolve(import.meta.dirname, "..");
 const uiRoot = path.join(serviceRoot, "admin-ui");
@@ -84,6 +92,14 @@ test("admin assets are routed under /admin and emit the strict browser security 
     CORE_ADMIN_BOOTSTRAP_PASSWORD: "A-long-bootstrap-password-2026",
     CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(48),
     NODE_ENV: "production",
+    CORE_GENERIC_WORK_CORE_JOIN_ED25519_PRIVATE_KEY: "",
+    CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE: "remote",
+    CORE_GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID: remoteKeyId,
+    CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_URL: remoteSignerUrl,
+    CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_HEALTH_URL: remoteSignerHealthUrl,
+    CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ALLOWED_URLS_JSON: JSON.stringify([remoteSignerUrl, remoteSignerHealthUrl]),
+    CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TOKEN: "admin-control-room-test-token",
+    CORE_GENERIC_WORK_CORE_JOIN_ED25519_TRUST_REGISTRY_JSON: remoteTrustRegistry,
   }, async () => {
     const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "core-admin-assets-test-"));
     const { app } = createUniversalCoreService({ storageRoot });

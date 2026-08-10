@@ -274,12 +274,30 @@ function mapV2StatusToLegacy(status) {
   return "blocked";
 }
 
-export function verifyGenericCoreJoinVerdict(verdict, { publicKey, keyId } = {}) {
-  if (!publicKey || !keyId || !verdict || verdict.signature_algorithm !== "ed25519" || verdict.key_id !== keyId ||
+function resolveGenericCoreJoinPublicKey(verdictKeyId, verifier = {}) {
+  if (typeof verdictKeyId !== "string") return null;
+  if (Object.prototype.hasOwnProperty.call(verifier, "trustRegistry")) {
+    const registry = verifier.trustRegistry;
+    if (!registry || registry.schema_version !== "generic_work_core_join_trust_registry_v1" ||
+        typeof registry.revision !== "string" || !registry.revision ||
+        !registry.keys || Array.isArray(registry.keys) || typeof registry.keys !== "object") return null;
+    const entries = Object.values(registry.keys);
+    if (entries.filter((entry) => entry?.status === "active").length !== 1) return null;
+    const entry = registry.keys[verdictKeyId];
+    if (!entry || entry.status === "revoked" || !["active", "retired"].includes(entry.status) ||
+        typeof entry.public_key !== "string" || !entry.public_key.trim()) return null;
+    return entry.public_key;
+  }
+  return verifier.keyId === verdictKeyId ? verifier.publicKey || null : null;
+}
+
+export function verifyGenericCoreJoinVerdict(verdict, verifier = {}) {
+  const resolvedPublicKey = resolveGenericCoreJoinPublicKey(verdict?.key_id, verifier);
+  if (!resolvedPublicKey || !verdict || verdict.signature_algorithm !== "ed25519" ||
       !HASH.test(String(verdict.verdict_digest || "")) || typeof verdict.signature !== "string") return false;
   const { signature, verdict_digest, ...unsigned } = verdict;
   if (objectDigest(unsigned) !== verdict.verdict_digest) return false;
-  try { return crypto.verify(null, Buffer.from(`generic_work_core_join_v1\0${verdict.verdict_digest}`), crypto.createPublicKey(publicKey), Buffer.from(signature, "base64url")); } catch { return false; }
+  try { return crypto.verify(null, Buffer.from(`generic_work_core_join_v1\0${verdict.verdict_digest}`), crypto.createPublicKey(resolvedPublicKey), Buffer.from(signature, "base64url")); } catch { return false; }
 }
 
 export function createWorkContinuityV2Store({

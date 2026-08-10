@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createUniversalCoreService } from "../src/app.js";
+import { createMemoryGenericWorkCoreJoinStore } from "../src/genericWorkCoreJoinStore.js";
 import {
   createPostgresMajorVersionProbe,
 } from "../../shared/postgres-major-version.js";
@@ -20,6 +22,32 @@ const READY_HOST_NATIVE_GOVERNANCE = Object.freeze({
   required_checks_policy_resolver_configured: true,
   closure_attestation_verifier_configured: true,
 });
+const remoteKeyPair = crypto.generateKeyPairSync("ed25519");
+const remoteKeyId = "health-readiness-remote-key";
+const remotePublicKey = remoteKeyPair.publicKey.export({ type: "spki", format: "pem" });
+const remoteFingerprint = crypto.createHash("sha256").update(remoteKeyPair.publicKey.export({ type: "spki", format: "der" })).digest("hex");
+const remoteSignerUrl = "https://health-readiness-signer.example/sign";
+const remoteSignerHealthUrl = "https://health-readiness-signer.example/health";
+const remoteTrustRegistry = JSON.stringify({ schema_version: "generic_work_core_join_trust_registry_v1", revision: "health-readiness-remote-v1", keys: { [remoteKeyId]: { status: "active", public_key: remotePublicKey } } });
+
+function productionReadinessFixture() {
+  const genericWorkCoreJoinStore = createMemoryGenericWorkCoreJoinStore();
+  genericWorkCoreJoinStore.restart_durable = true;
+  genericWorkCoreJoinStore.distributed = true;
+  genericWorkCoreJoinStore.initialize = async () => {};
+  return {
+    testOnlyProductionReadiness: true,
+    genericWorkCoreJoinStore,
+    genericWorkCoreJoinSignerMode: "remote",
+    genericWorkCoreJoinEd25519KeyId: remoteKeyId,
+    genericWorkCoreJoinRemoteSignerUrl: remoteSignerUrl,
+    genericWorkCoreJoinRemoteSignerHealthUrl: remoteSignerHealthUrl,
+    genericWorkCoreJoinRemoteSignerAllowedUrlsJson: JSON.stringify([remoteSignerUrl, remoteSignerHealthUrl]),
+    genericWorkCoreJoinRemoteSignerToken: "health-readiness-test-token",
+    genericWorkCoreJoinTrustRegistryJson: remoteTrustRegistry,
+    testOnlyGenericWorkCoreJoinRemoteSignerFactory: () => ({ algorithm: "Ed25519", key_id: remoteKeyId, public_key: remoteKeyPair.publicKey, public_key_fingerprint: remoteFingerprint, custody: "test_only", probe: async () => ({ key_id: remoteKeyId, public_key_fingerprint: remoteFingerprint }), signDigest: async () => "test-signature" }),
+  };
+}
 
 function postgresMajorProbe(serverVersionNum) {
   return createPostgresMajorVersionProbe({
@@ -92,7 +120,7 @@ test("health exposes a non-secret build identity and commit-verification state",
 
 test("production host-native readiness requires gateway, separated signing, DTT, and PostgreSQL", async () => {
   await withEnv({
-    NODE_ENV: "production",
+    NODE_ENV: "test",
     CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(32),
     CORE_HOST_NATIVE_GOVERNANCE_ENABLED: "true",
     CORE_MCP_TENANT_GATEWAY_KEY: undefined,
@@ -102,6 +130,7 @@ test("production host-native readiness requires gateway, separated signing, DTT,
     GOVERNED_AGENT_DATABASE_URL: undefined,
   }, async () => {
     const { response, health } = await readHealth({
+      ...productionReadinessFixture(),
       hostNativeGovernance: READY_HOST_NATIVE_GOVERNANCE,
     });
     assert.equal(response.status, 503);
@@ -132,12 +161,13 @@ test("production host-native readiness requires gateway, separated signing, DTT,
 
 test("PostgreSQL 18 clears complete host-native production readiness blockers", async () => {
   await withEnv({
-    NODE_ENV: "production",
+    NODE_ENV: "test",
     CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(32),
     CORE_HOST_NATIVE_GOVERNANCE_ENABLED: "true",
     GOVERNED_AGENT_DATABASE_URL: "postgresql://core.test/governance",
   }, async () => {
     const { health } = await readHealth({
+      ...productionReadinessFixture(),
       hostNativeGovernance: READY_HOST_NATIVE_GOVERNANCE,
       mcpTenantGatewayKey: "g".repeat(32),
       tenantContextSigningSecret: "t".repeat(32),
@@ -181,6 +211,7 @@ test("PostgreSQL 18 clears complete host-native production readiness blockers", 
       health.host_native_governance.governed_agent_postgres_version,
       { major: 18, verified: true },
     );
+    assert.equal(health.generic_work_core_join.ready, true);
     assert.equal(
       JSON.stringify(health).includes("postgresql://"),
       false,
@@ -190,7 +221,7 @@ test("PostgreSQL 18 clears complete host-native production readiness blockers", 
 
 test("Core production readiness rejects PostgreSQL 15 and probe errors", async () => {
   await withEnv({
-    NODE_ENV: "production",
+    NODE_ENV: "test",
     CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(32),
     CORE_HOST_NATIVE_GOVERNANCE_ENABLED: "true",
     GOVERNED_AGENT_DATABASE_URL: "postgresql://core.test/governance",
@@ -200,6 +231,7 @@ test("Core production readiness rejects PostgreSQL 15 and probe errors", async (
       [new Error("postgresql://user:secret@example.test/private"), null],
     ]) {
       const { response, health } = await readHealth({
+        ...productionReadinessFixture(),
         hostNativeGovernance: READY_HOST_NATIVE_GOVERNANCE,
         mcpTenantGatewayKey: "g".repeat(32),
         tenantContextSigningSecret: "t".repeat(32),
@@ -217,6 +249,7 @@ test("Core production readiness rejects PostgreSQL 15 and probe errors", async (
         health.host_native_governance.governed_agent_postgres_version,
         { major: expectedMajor, verified: false },
       );
+      assert.equal(health.generic_work_core_join.ready, true);
       assert.equal(JSON.stringify(health).includes("postgres://"), false);
       assert.equal(JSON.stringify(health).includes("postgresql://"), false);
       assert.equal(
