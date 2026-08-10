@@ -38,7 +38,7 @@ const hostTaskId = {
 const stateHashes = object({ repository_hash: hash, policy_hash: hash, live_state_hash: hash },
   ["repository_hash", "policy_hash", "live_state_hash"]);
 const leaseSurface = object({
-  kind: { type: "string", enum: ["file", "component", "dependency"] },
+  kind: { type: "string", enum: ["file", "component", "dependency", "causal_project", "causal_change", "causal_obligation"] },
   value: { type: "string", minLength: 1, maxLength: 500 },
 }, ["kind", "value"]);
 
@@ -179,7 +179,7 @@ export const WORK_CONTINUITY_TOOLS = [
       title: text(240), objective: text(4_000), idempotency_key: coordinationIdempotencyKey,
     }, ["work_id", "session_id", "agent_id", "branch_key", "title", "objective", "idempotency_key"]), false, { boundedCollaboration: true }),
   tool("tenant_work_lease_acquire", "Acquire bounded work lease",
-    "Acquire a temporary lease over files, components or dependencies after transactional overlap detection.",
+    "Acquire a temporary lease over legacy work surfaces or an exact causal project/change/obligation set after transactional overlap detection. Causal authority is assigned only by server policy.",
     object({
       work_id: uuid, branch_id: uuid, purpose: text(2_000),
       surfaces: { type: "array", minItems: 1, maxItems: 100, items: leaseSurface },

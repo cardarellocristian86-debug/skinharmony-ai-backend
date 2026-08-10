@@ -1914,12 +1914,29 @@ test("local closure becomes release-ready and external completion needs exact Co
     return requiredChecksPolicy;
   };
   let externalReadbackCalls = 0;
-  const externalReadbackVerifier = async ({ ticket, target_commit }) => {
+  const externalReadbackVerifier = async ({
+    ticket,
+    target_commit,
+    verification_scope,
+  }) => {
     externalReadbackCalls += 1;
+    assert.equal(verification_scope, "github_merge_and_checks_only");
     const binding = ticket.release_manifest_binding;
+    const action = ticket.action;
     const githubUnsigned = {
+      api_origin: "https://api.github.com",
       repository: ticket.repository,
+      action_kind: action.kind,
+      head_branch: action.head_branch,
+      base_branch: action.base_branch,
+      pull_request: action.pull_request,
+      merged: true,
+      head_commit: action.head_commit,
+      expected_base_commit: action.expected_base_commit,
+      merge_commit: target_commit,
       target_commit,
+      branch: action.base_branch,
+      branch_commit: null,
       checks_commit: binding.verification.checks_commit,
       checks_passed: true,
       required_checks: [...binding.verification.required_checks],
@@ -1929,33 +1946,20 @@ test("local closure becomes release-ready and external completion needs exact Co
         status: "completed",
         conclusion: "success",
       })),
+      rollback_commit: binding.rollback.target_commit,
       rollback_commit_available: true,
     };
-    const services = binding.delivery.services.map((expected) => {
-      const unsigned = {
-        service_id: expected.service_id,
-        environment: expected.environment,
-        origin: expected.origin,
-        deployment_id: `${expected.service_id}:${target_commit}`,
-        live_commit: target_commit,
-        version: "0.16.0",
-        health_status: "healthy",
-        health_contract_digest: expected.health_contract_digest,
-        rollback_commit: binding.rollback.target_commit,
-        rollback_status: "previous_live_attested",
-      };
-      return { ...unsigned, readback_digest: hostNativeDigest(unsigned) };
-    });
     return {
       schema_version: "host_native_external_readback_v1",
       trusted: true,
       verifier_id: "core_server_external_readback_v1",
+      verification_scope,
       verified_at: clock().toISOString(),
       github: {
         ...githubUnsigned,
         readback_digest: hostNativeDigest(githubUnsigned),
       },
-      services,
+      services: [],
       external_side_effect: false,
       provider_execution: false,
     };
@@ -2496,7 +2500,9 @@ test("local closure becomes release-ready and external completion needs exact Co
   assert.equal(authorization.evidence_digest, coreJoinRecordDigest);
   assert.equal(authorization.release_intent_digest, releaseIntentDigest);
   assert.equal(authorization.core_join_verdict_digest, coreJoinClaimDigest);
-  assert.equal(authorization.live_services[0].rollback_status, "previous_live_attested");
+  assert.equal(authorization.verification_scope, "github_merge_and_checks_only");
+  assert.equal(authorization.services_verified, false);
+  assert.deepEqual(authorization.live_services, []);
 
   const baseFinalize = {
     work_id: work.work_id,
@@ -2609,16 +2615,12 @@ test("local closure becomes release-ready and external completion needs exact Co
     /continuity_trusted_core_closure_receipt_required/,
   );
 
-  const finalized = await runtime.finalizeClosure(identity, baseFinalize, authorization);
-  assert.equal(finalized.completed, true);
-  assert.equal(finalized.external_release, true);
-  assert.equal(finalized.final_receipt.host_policy_override, false);
-  assert.equal(finalized.final_receipt.host_policy_must_allow, true);
-  assert.equal(finalized.final_receipt.action_ticket_id, ticketId);
-  assert.equal(finalized.final_receipt.authorization_digest, authorization.authorization_digest);
-  assert.equal(finalized.target_commit, liveCommit);
-  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "completed");
-  assert.equal(pool.plans.get(key("tenant-a", planId)).status, "closed");
+  await assert.rejects(
+    runtime.finalizeClosure(identity, baseFinalize, authorization),
+    /continuity_live_verification_required/,
+  );
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "release_ready");
+  assert.equal(pool.plans.get(key("tenant-a", planId)).status, "verified");
 });
 
 test("continuity runtime exposes no parallel delegation authority", () => {

@@ -615,7 +615,7 @@ export function createApp(config, options = {}) {
     next();
   });
 
-  app.get("/healthz", async (_req, res) => {
+  const serveHealth = async (_req, res, { strictReadiness = false } = {}) => {
     const postgresMajorVersion = await resolvePostgresMajorVersion(
       config,
       options,
@@ -627,7 +627,12 @@ export function createApp(config, options = {}) {
         postgresMajorVersion,
       },
     });
-    let researchAirlock = { core_ready: false, mode: "unknown", state_backend: "unavailable" };
+    let researchAirlock = {
+      core_ready: false,
+      upstream_bootstrap_initializing: false,
+      mode: "unknown",
+      state_backend: "unavailable",
+    };
     try {
       const response = await (options.fetchImpl || globalThis.fetch)(`${config.universalCoreUrl}/healthz`, {
         method: "GET",
@@ -635,25 +640,62 @@ export function createApp(config, options = {}) {
         signal: AbortSignal.timeout(3_000),
       });
       const payload = await response.json();
+      const validPayload = payload !== null
+        && typeof payload === "object"
+        && typeof payload.ok === "boolean"
+        && typeof payload.render_ready === "boolean"
+        && payload.build !== null
+        && typeof payload.build === "object"
+        && payload.research_airlock !== null
+        && typeof payload.research_airlock === "object";
+      const airlockSafe = validPayload && (
+        payload.research_airlock.ready === true
+        || (
+          payload.research_airlock.mode === "shadow"
+          && payload.research_airlock.operational_safe === true
+        )
+      );
+      const coreReady = response.ok
+        && validPayload
+        && payload.ok === true
+        && payload.render_ready === true
+        && airlockSafe;
+      const upstreamBootstrapInitializing = response.status === 200
+        && validPayload
+        && payload.ok === false
+        && payload.render_ready === false
+        && payload.liveness_degraded === true
+        && payload.build.commit_verifiable === true
+        && payload.causal_continuity?.production_required === true
+        && payload.causal_continuity?.state === "initializing"
+        && airlockSafe;
       researchAirlock = {
-        core_ready: response.ok && (
-          payload?.research_airlock?.ready === true
-          || (payload?.research_airlock?.mode === "shadow" && payload?.research_airlock?.operational_safe === true)
-        ),
+        core_ready: coreReady,
+        upstream_bootstrap_initializing: upstreamBootstrapInitializing,
         mode: payload?.research_airlock?.mode || "unknown",
         state_backend: payload?.research_airlock?.state_backend || "unavailable",
         operational_safe: payload?.research_airlock?.operational_safe === true,
         build_commit_sha: payload?.build?.commit_sha || null,
       };
     } catch {
-      researchAirlock = { core_ready: false, mode: "unavailable", state_backend: "unavailable" };
+      researchAirlock = {
+        core_ready: false,
+        upstream_bootstrap_initializing: false,
+        mode: "unavailable",
+        state_backend: "unavailable",
+      };
     }
     // Production MCP readiness must not depend on a mode value supplied by an
     // unreachable upstream. Once deployed, Core Airlock is a hard dependency:
     // unknown/unavailable is therefore unready, never an implicit opt-out.
     const airlockRequired = readiness.environment === "production";
     const combinedReady = readiness.ready && (!airlockRequired || researchAirlock.core_ready);
-    const status = readiness.enforced && !combinedReady ? 503 : 200;
+    const degradedLivenessReady = readiness.ready
+      && airlockRequired
+      && researchAirlock.upstream_bootstrap_initializing === true;
+    const healthReady = combinedReady
+      || (!strictReadiness && degradedLivenessReady);
+    const status = readiness.enforced && !healthReady ? 503 : 200;
     return res.status(status).json({
     ok: !readiness.enforced || combinedReady,
     service: "skinharmony-core-mcp",
@@ -749,7 +791,10 @@ export function createApp(config, options = {}) {
       emergency_stop: config.godModeEmergencyStop === true
     }
   });
-  });
+  };
+
+  app.get("/healthz", (req, res) => serveHealth(req, res));
+  app.get("/readyz", (req, res) => serveHealth(req, res, { strictReadiness: true }));
 
   const protectedResourceMetadata = (_req, res) => res.json({
     // Keep one canonical OAuth resource/audience across versioned transport

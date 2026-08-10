@@ -98,15 +98,23 @@ CREATE TABLE IF NOT EXISTS core_ai_work_sessions (
   request_type varchar(120) NOT NULL, request_summary text NOT NULL,
   input_hash char(64) NOT NULL, status varchar(40) NOT NULL DEFAULT 'started',
   preflight_id varchar(120), decision_id varchar(120),
+  governed_work_id uuid, causal_change_id uuid, causal_context_digest char(64),
   started_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz,
   PRIMARY KEY (tenant_id, work_id)
 );
 CREATE INDEX IF NOT EXISTS core_ai_work_sessions_tenant_started_idx ON core_ai_work_sessions (tenant_id, started_at DESC);
+ALTER TABLE core_ai_work_sessions ADD COLUMN IF NOT EXISTS governed_work_id uuid;
+ALTER TABLE core_ai_work_sessions ADD COLUMN IF NOT EXISTS causal_change_id uuid;
+ALTER TABLE core_ai_work_sessions ADD COLUMN IF NOT EXISTS causal_context_digest char(64);
+CREATE INDEX IF NOT EXISTS core_ai_work_sessions_governed_work_idx
+  ON core_ai_work_sessions (tenant_id, governed_work_id, started_at DESC)
+  WHERE governed_work_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS core_decision_events (
   tenant_id varchar(64) NOT NULL, event_id uuid NOT NULL, work_id uuid NOT NULL,
   sequence_number bigint NOT NULL, event_type varchar(80) NOT NULL, occurred_at timestamptz NOT NULL DEFAULT now(),
   agent_id varchar(120), tool_name varchar(120), preflight_id varchar(120), decision_id varchar(120),
+  governed_work_id uuid, causal_change_id uuid, causal_context_digest char(64),
   core_version varchar(120), policy_version varchar(120), risk_band varchar(24), risk_score numeric(7,3),
   control_level varchar(40), decision_state varchar(80), execution_allowed boolean NOT NULL DEFAULT false,
   reason_codes jsonb NOT NULL DEFAULT '[]'::jsonb, reason_summary text NOT NULL DEFAULT '',
@@ -117,6 +125,12 @@ CREATE TABLE IF NOT EXISTS core_decision_events (
 );
 CREATE INDEX IF NOT EXISTS core_decision_events_tenant_time_idx ON core_decision_events (tenant_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS core_decision_events_tenant_type_idx ON core_decision_events (tenant_id, event_type, occurred_at DESC);
+ALTER TABLE core_decision_events ADD COLUMN IF NOT EXISTS governed_work_id uuid;
+ALTER TABLE core_decision_events ADD COLUMN IF NOT EXISTS causal_change_id uuid;
+ALTER TABLE core_decision_events ADD COLUMN IF NOT EXISTS causal_context_digest char(64);
+CREATE INDEX IF NOT EXISTS core_decision_events_governed_work_idx
+  ON core_decision_events (tenant_id, governed_work_id, sequence_number)
+  WHERE governed_work_id IS NOT NULL;
 
 CREATE OR REPLACE FUNCTION core_decision_events_append_only() RETURNS trigger AS $$
 BEGIN RAISE EXCEPTION 'core_decision_events_append_only'; END;
@@ -152,19 +166,55 @@ export function createDecisionLedger(config, options = {}) {
     `${CREATE_SCHEMA_SQL}\n${WORK_CONTINUITY_V2_SCHEMA_SQL}`,
   );
 
+  const causalTools = new Set([
+    "project_identity_resolve", "project_identity_create", "project_scope_read", "project_scope_bind",
+    "project_state_snapshot", "project_state_verify", "genesis_intent_read", "genesis_intent_create",
+    "intent_revision_propose", "intent_revision_approve", "intent_revision_impact", "project_decision_path_read",
+    "work_bind_intent", "change_create", "change_read", "causal_context_issue", "causal_context_validate",
+    "causal_obligation_create", "causal_obligation_read", "causal_observation_record", "causal_reconcile",
+    "causal_close", "causal_reopen", "continuity_capsule_build", "continuity_capsule_resume",
+    "project_timeline_read", "gallery_binding_project", "gallery_projection_claim", "gallery_projection_complete",
+    "gallery_projection_fail", "gallery_causal_view_read", "causal_metrics_snapshot", "gallery_binding_verify",
+    "causal_rollout_read", "causal_rollout_set",
+  ]);
+
+  function verifiedCausalBinding(toolName, result) {
+    if (!causalTools.has(toolName)) return null;
+    const payload = result?.structuredContent;
+    if (!payload || payload.ok !== true || !payload.result || typeof payload.result !== "object") return null;
+    const trusted = payload.result;
+    const sources = [trusted.envelope, trusted.outcome_receipt, trusted.binding, trusted.capsule, trusted]
+      .filter((item) => item && typeof item === "object");
+    const first = (field) => sources.map((item) => item[field]).find((value) => value !== undefined && value !== null);
+    const workCandidate = String(first("work_id") || "").trim().toLowerCase();
+    const changeCandidate = String(first("change_id") || "").trim().toLowerCase();
+    const digestCandidate = String(first("context_digest") || "").trim().toLowerCase();
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    return {
+      governedWorkId: uuid.test(workCandidate) ? workCandidate : null,
+      causalChangeId: uuid.test(changeCandidate) ? changeCandidate : null,
+      causalContextDigest: /^[a-f0-9]{64}$/.test(digestCandidate) ? digestCandidate : null,
+    };
+  }
+
   async function startWork(identity, toolName, args = {}) {
     await initialize();
     const tenantId = tenant(identity.tenantId);
     const workId = crypto.randomUUID();
     const traceId = crypto.randomUUID();
+    // Request fields are claims until the Universal Core handler returns a
+    // successful causal result. Never persist them as authoritative lineage.
+    const governedWorkId = null;
+    const causalChangeId = null;
+    const causalContextDigest = null;
     const summary = safeText(args.request || args.message || args.action_label || args.question || args.title || `MCP ${toolName}`, 2_000);
     await pool.query(`INSERT INTO core_ai_work_sessions
-      (tenant_id,work_id,trace_id,project_id,session_id,agent_id,agent_type,provider,model,client_application,request_type,request_summary,input_hash)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      (tenant_id,work_id,trace_id,project_id,session_id,agent_id,agent_type,provider,model,client_application,request_type,request_summary,input_hash,governed_work_id,causal_change_id,causal_context_digest)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     [tenantId, workId, traceId, args.project_id || null, args.session_id || null, args.agent_id || identity.subject || "connected_ai",
       identity.kind || "connected_ai", identity.issuer || null, safeText(args.model, 160) || null, identity.clientId || null,
-      safeText(toolName, 120), summary, hash({ toolName, args: stable(args), tenantId })]);
-    const context = { tenantId, workId, traceId, toolName, agentId: args.agent_id || identity.subject || "connected_ai" };
+      safeText(toolName, 120), summary, hash({ toolName, args: stable(args), tenantId }), governedWorkId, causalChangeId, causalContextDigest]);
+    const context = { tenantId, workId, traceId, toolName, agentId: args.agent_id || identity.subject || "connected_ai", governedWorkId, causalChangeId, causalContextDigest };
     await append(context, "work_received", {
       reason_summary: summary,
       metadata: {
@@ -191,6 +241,9 @@ export function createDecisionLedger(config, options = {}) {
       const occurredAt = new Date().toISOString();
       const payload = {
         tenant_id: context.tenantId, work_id: context.workId, sequence_number: sequence, event_type: eventType,
+        governed_work_id: context.governedWorkId || null,
+        causal_change_id: context.causalChangeId || null,
+        causal_context_digest: context.causalContextDigest || null,
         occurred_at: occurredAt, tool_name: context.toolName, decision_id: input.decision_id || null,
         reason_codes: input.reason_codes || [], reason_summary: safeText(input.reason_summary, 2_000),
         preflight_id: input.preflight_id || null, core_version: input.core_version || null,
@@ -204,13 +257,14 @@ export function createDecisionLedger(config, options = {}) {
       await client.query(`INSERT INTO core_decision_events
         (tenant_id,event_id,work_id,sequence_number,event_type,occurred_at,agent_id,tool_name,preflight_id,decision_id,
          core_version,policy_version,risk_band,risk_score,control_level,decision_state,execution_allowed,reason_codes,
-         reason_summary,evidence_refs,metadata,previous_event_hash,event_hash)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20::jsonb,$21::jsonb,$22,$23)`,
+         reason_summary,evidence_refs,metadata,previous_event_hash,event_hash,governed_work_id,causal_change_id,causal_context_digest)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20::jsonb,$21::jsonb,$22,$23,$24,$25,$26)`,
       [context.tenantId, crypto.randomUUID(), context.workId, sequence, eventType, occurredAt, context.agentId, context.toolName,
         input.preflight_id || null, input.decision_id || null, input.core_version || null, input.policy_version || null,
         input.risk_band || null, input.risk_score ?? null, input.control_level || null, input.decision_state || null,
         input.execution_allowed === true, JSON.stringify(input.reason_codes || []), safeText(input.reason_summary, 2_000),
-        JSON.stringify(input.evidence_refs || []), JSON.stringify(input.metadata || {}), payload.previous_event_hash, eventHash]);
+        JSON.stringify(input.evidence_refs || []), JSON.stringify(input.metadata || {}), payload.previous_event_hash, eventHash,
+        context.governedWorkId || null, context.causalChangeId || null, context.causalContextDigest || null]);
       if (client.query !== pool.query) await client.query("COMMIT");
       return { schema_version: DECISION_LEDGER_SCHEMA_VERSION, work_id: context.workId, trace_id: context.traceId, sequence_number: sequence, event_type: eventType, event_hash: eventHash };
     } catch (error) {
@@ -220,6 +274,12 @@ export function createDecisionLedger(config, options = {}) {
   }
 
   async function finishWork(context, { result, error, preflight, args = {} } = {}) {
+    const verifiedBinding = error ? null : verifiedCausalBinding(context.toolName, result);
+    if (verifiedBinding) {
+      context.governedWorkId = verifiedBinding.governedWorkId;
+      context.causalChangeId = verifiedBinding.causalChangeId;
+      context.causalContextDigest = verifiedBinding.causalContextDigest;
+    }
     const type = classifyLedgerEvent(context.toolName, result, error);
     const metadata = extractDecisionMetadata(result);
     metadata.preflight_id ||= preflight?.work_preflight?.preflight_id || preflight?.preflight_id || null;
@@ -242,8 +302,10 @@ export function createDecisionLedger(config, options = {}) {
         });
       }
     }
-    await pool.query(`UPDATE core_ai_work_sessions SET status=$3, completed_at=now(), preflight_id=$4, decision_id=$5
-      WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId, error ? "failed" : "completed", metadata.preflight_id, metadata.decision_id]);
+    await pool.query(`UPDATE core_ai_work_sessions SET status=$3, completed_at=now(), preflight_id=$4, decision_id=$5,
+        governed_work_id=$6,causal_change_id=$7,causal_context_digest=$8
+      WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId, error ? "failed" : "completed", metadata.preflight_id, metadata.decision_id,
+      context.governedWorkId || null, context.causalChangeId || null, context.causalContextDigest || null]);
     return event;
   }
 

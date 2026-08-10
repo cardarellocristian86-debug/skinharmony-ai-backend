@@ -12,12 +12,24 @@ import {
   buildHostReleaseManifestV2,
   createFileHostNativeGovernanceStore,
   createHostNativeGovernance,
+  createHostNativeDomainSigner,
   createInMemoryHostNativeGovernanceStore,
   deriveHostReleaseIntentV1,
   hostNativeDigest,
   hostNativeGithubDiffDigest,
   validateHostReleaseManifestV2,
 } from "../src/hostNativeGovernance.js";
+
+test("host-native domain signer binds causal envelopes to their exact purpose and payload", async () => {
+  const signer = createHostNativeDomainSigner({
+    signingSecret: "host-native-causal-domain-test-secret-0123456789",
+  });
+  const envelope = { schema_version: "causal_context_envelope_v1", work_id: "work-a" };
+  const signature = await signer.sign(envelope, { purpose: "causal_context_envelope_v1" });
+  assert.equal(await signer.verify(envelope, signature, { purpose: "causal_context_envelope_v1" }), true);
+  assert.equal(await signer.verify({ ...envelope, work_id: "work-b" }, signature, { purpose: "causal_context_envelope_v1" }), false);
+  assert.equal(await signer.verify(envelope, signature, { purpose: "other-purpose" }), false);
+});
 
 const H = (value) => String(value).repeat(64);
 const G = (value) => String(value).repeat(40);
@@ -49,7 +61,14 @@ function withTestIdempotency(governance) {
   });
 }
 
-function trustedExternalReadback(ticket, targetCommit, verifiedAt) {
+function trustedExternalReadback(
+  ticket,
+  targetCommit,
+  verifiedAt,
+  verificationScope = ticket?.action?.kind === "github.merge"
+    ? "github_merge_and_checks_only"
+    : "full_release",
+) {
   const binding = ticket.release_manifest_binding;
   const action = ticket.action;
   const requiredChecks = [...binding.verification.required_checks];
@@ -81,7 +100,9 @@ function trustedExternalReadback(ticket, targetCommit, verifiedAt) {
     rollback_commit: binding.rollback.target_commit,
     rollback_commit_available: true,
   };
-  const services = binding.services.map((expected) => {
+  const services = (verificationScope === "github_merge_and_checks_only"
+    ? []
+    : binding.services).map((expected) => {
     const unsigned = {
       service_id: expected.service_id,
       environment: expected.environment,
@@ -101,6 +122,7 @@ function trustedExternalReadback(ticket, targetCommit, verifiedAt) {
     schema_version: "host_native_external_readback_v1",
     trusted: true,
     verifier_id: "core_server_external_readback_v1",
+    verification_scope: verificationScope,
     verified_at: verifiedAt,
     github: { ...githubUnsigned, readback_digest: hostNativeDigest(githubUnsigned) },
     services,
@@ -201,8 +223,13 @@ function harness({
     now: () => clock,
     idFactory: () => `id-${++sequence}`,
     externalReadbackVerifier: externalReadbackVerifier === undefined
-      ? (async ({ ticket, target_commit }) =>
-        trustedExternalReadback(ticket, target_commit, new Date(clock).toISOString()))
+      ? (async ({ ticket, target_commit, verification_scope }) =>
+        trustedExternalReadback(
+          ticket,
+          target_commit,
+          new Date(clock).toISOString(),
+          verification_scope,
+        ))
       : externalReadbackVerifier,
     unreservedEffectVerifier: unreservedEffectVerifier || null,
     bootstrapReleaseExceptionStore: bootstrapReleaseExceptionStore || null,
@@ -820,6 +847,67 @@ test("release manifest v2 uses canonical digest and rejects signed booleans, mut
       health_contract_digest: H("a"),
     },
   })), /rollback_health_contract_unsupported/);
+});
+
+test("rollback modes bind the target to the real prior live commit without base substitution", () => {
+  const baseCommit = "d0a8ee6ddb1f22f4164c995abd1f4e9f3e508f1e";
+  const previousLiveCommit = "3a0370875a0adc090a3e8c71e363dd36725e1808";
+  const targetCommit = "7d722fc258756ca8f4bb52105a3abe9ca8493828";
+  const services = ["srv-core", "srv-core-mcp"].map((service_id) => ({
+    service_id,
+    environment: "production",
+    expected_previous_commit: previousLiveCommit,
+    target_commit: targetCommit,
+    target_resolution: "exact_commit",
+    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  }));
+  const realRollback = releaseManifestInput({
+    base_commit: baseCommit,
+    head_commit: targetCommit,
+    tree_sha: "8fdff25c0e14f50b73b1b01ef0d232b54923d1a9",
+    verification: {
+      ...releaseManifestInput().verification,
+      checks_commit: targetCommit,
+    },
+    delivery: { method: "manual_render_deploy", services },
+    rollback: {
+      mode: "redeploy_previous_commit",
+      target_commit: previousLiveCommit,
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      ready: true,
+    },
+  });
+  const normalized = buildHostReleaseManifestV2(realRollback);
+  assert.equal(normalized.base_commit, baseCommit);
+  assert.equal(normalized.rollback.target_commit, previousLiveCommit);
+
+  assert.throws(() => buildHostReleaseManifestV2(releaseManifestInput({
+    rollback: {
+      ...releaseManifestInput().rollback,
+      mode: "caller_selected_commit",
+    },
+  })), /rollback_mode_unsupported/);
+
+  assert.throws(() => buildHostReleaseManifestV2(releaseManifestInput({
+    ...realRollback,
+    rollback: { ...realRollback.rollback, target_commit: baseCommit },
+  })), /rollback_previous_commit_mismatch/);
+
+  assert.throws(() => buildHostReleaseManifestV2(releaseManifestInput({
+    ...realRollback,
+    delivery: {
+      ...realRollback.delivery,
+      services: [
+        services[0],
+        { ...services[1], expected_previous_commit: G("2") },
+      ],
+    },
+  })), /rollback_previous_commit_mismatch/);
+
+  assert.throws(() => buildHostReleaseManifestV2(releaseManifestInput({
+    ...realRollback,
+    rollback: { ...realRollback.rollback, target_commit: G("f") },
+  })), /rollback_previous_commit_mismatch/);
 });
 
 test("release intent is canonical, excludes verdict identity, and binds the complete release", () => {
@@ -1916,7 +2004,9 @@ test("GitHub draft, ready and protected merge are exact bounded actions", async 
   assert.equal(finalize.host_readback_digest, completionReadbackDigest);
   assert.match(finalize.external_readback_digest, /^[a-f0-9]{64}$/);
   assert.equal(finalize.result_commit_verified, true);
-  assert.equal(finalize.live_services[0].live_commit, G("4"));
+  assert.equal(finalize.verification_scope, "github_merge_and_checks_only");
+  assert.equal(finalize.services_verified, false);
+  assert.deepEqual(finalize.live_services, []);
   assert.match(finalize.signature, /^hnf_[a-f0-9]{64}$/);
   await assert.rejects(mergeSubject.governance.completeActionTicket({
     tenant_id: "codexai",
@@ -2092,6 +2182,162 @@ test("optional predecessor chain is commit-bound and carried into the final rele
   assert.equal(receipt.predecessor_chain_digest, merge.ticket.predecessor_chain_digest);
 });
 
+test("Render deploy predecessor requires a current trusted merge finalization bound into the chain", async () => {
+  const subject = harness();
+  const merge = await prepareFinalizableMerge(subject);
+  const deployManifest = await bindCoreJoinVerdict(
+    subject.governance,
+    buildHostReleaseManifestV2(releaseManifestInput({
+      delivery: {
+        method: "manual_render_deploy",
+        services: [{
+          service_id: "srv-core",
+          environment: "production",
+          expected_previous_commit: G("1"),
+          target_commit: G("4"),
+          target_resolution: "exact_commit",
+          health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        }],
+      },
+    })),
+  );
+  const deployRequest = {
+    tenant_id: "codexai",
+    delegation_id: merge.delegation.delegation_id,
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: "post-merge-render-deploy",
+    predecessor_ticket_id: merge.issued.ticket.ticket_id,
+    action: {
+      kind: "render.deploy",
+      repository: "owner/repo",
+      branch: "main",
+      service_id: "srv-core",
+      environment: "production",
+      target_commit: G("4"),
+      expected_live_commit: G("1"),
+      trigger: "manual",
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      rollback_commit: G("1"),
+      provider_execution: false,
+    },
+    evidence_digest: H("7"),
+    release_manifest: deployManifest,
+  };
+
+  await assert.rejects(
+    subject.governance.issueActionTicket(deployRequest),
+    /predecessor_finalize_authorization_required/,
+  );
+  const mergeReceipt = await subject.governance.authorizeFinalize({
+    tenant_id: "codexai",
+    ticket_id: merge.issued.ticket.ticket_id,
+    host_session_fingerprint: merge.issued.ticket.host_session_fingerprint,
+  });
+  assert.equal(mergeReceipt.verification_scope, "github_merge_and_checks_only");
+  assert.equal(mergeReceipt.services_verified, false);
+  assert.deepEqual(mergeReceipt.live_services, []);
+
+  const deploy = await subject.governance.issueActionTicket(deployRequest);
+  assert.equal(
+    deploy.ticket.predecessor.finalize_authorization_digest,
+    mergeReceipt.authorization_digest,
+  );
+  assert.equal(
+    deploy.ticket.predecessor_chain_digest,
+    hostNativeDigest(deploy.ticket.predecessor),
+  );
+});
+
+test("Render deploy predecessor rejects stale, tampered, and target-mismatched finalize receipts", async (t) => {
+  async function prepared({ tamper, advance = 0, targetCommit = G("4") } = {}) {
+    const store = createInMemoryHostNativeGovernanceStore();
+    const subject = harness({ store });
+    const merge = await prepareFinalizableMerge(subject);
+    await subject.governance.authorizeFinalize({
+      tenant_id: "codexai",
+      ticket_id: merge.issued.ticket.ticket_id,
+      host_session_fingerprint: merge.issued.ticket.host_session_fingerprint,
+    });
+    if (tamper) store.mutate((state) => tamper(
+      state.tickets[merge.issued.ticket.ticket_id].finalize_authorization,
+    ));
+    if (advance) subject.advance(advance);
+    const manifest = await bindCoreJoinVerdict(
+      subject.governance,
+      buildHostReleaseManifestV2(releaseManifestInput({
+        head_commit: targetCommit,
+        verification: {
+          ...releaseManifestInput().verification,
+          checks_commit: targetCommit,
+        },
+        delivery: {
+          method: "manual_render_deploy",
+          services: [{
+            service_id: "srv-core",
+            environment: "production",
+            expected_previous_commit: G("1"),
+            target_commit: targetCommit,
+            target_resolution: "exact_commit",
+            health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+          }],
+        },
+      })),
+    );
+    return {
+      subject,
+      request: {
+        tenant_id: "codexai",
+        delegation_id: merge.delegation.delegation_id,
+        work_id: "work-1",
+        intent_anchor_digest: H("1"),
+        repository: "owner/repo",
+        host_kind: "codex_native",
+        host_session_fingerprint: "attacked-render-deploy",
+        predecessor_ticket_id: merge.issued.ticket.ticket_id,
+        action: {
+          kind: "render.deploy",
+          repository: "owner/repo",
+          branch: "main",
+          service_id: "srv-core",
+          environment: "production",
+          target_commit: targetCommit,
+          expected_live_commit: G("1"),
+          provider_execution: false,
+        },
+        evidence_digest: H("7"),
+        release_manifest: manifest,
+      },
+    };
+  }
+
+  await t.test("expired receipt", async () => {
+    const item = await prepared({ advance: 5 * 60_000 + 1 });
+    await assert.rejects(
+      item.subject.governance.issueActionTicket(item.request),
+      /predecessor_finalize_authorization_invalid/,
+    );
+  });
+  await t.test("tampered receipt digest", async () => {
+    const item = await prepared({
+      tamper: (receipt) => { receipt.authorization_digest = H("f"); },
+    });
+    await assert.rejects(
+      item.subject.governance.issueActionTicket(item.request),
+      /predecessor_finalize_authorization_invalid/,
+    );
+  });
+  await t.test("target mismatch", async () => {
+    const item = await prepared({ targetCommit: G("5") });
+    await assert.rejects(
+      item.subject.governance.issueActionTicket(item.request),
+      /predecessor_finalize_authorization_invalid/,
+    );
+  });
+});
+
 test("GitHub merge reconciliation rejects a mismatched observed commit", async () => {
   const subject = harness();
   const delegation = await subject.governance.issueDelegation(subject.delegationInput);
@@ -2163,12 +2409,13 @@ test("completed releases re-attest after receipt expiry without replaying the ac
   let subject;
   subject = harness({
     ticketTtlMs: 60_000,
-    externalReadbackVerifier: async ({ ticket, target_commit }) => {
+    externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) => {
       verifierCalls += 1;
       const readback = trustedExternalReadback(
         ticket,
         target_commit,
         verifiedAtOverride || new Date(subject.now()).toISOString(),
+        verification_scope,
       );
       return readbackTransform(readback);
     },
@@ -2241,16 +2488,13 @@ test("completed releases re-attest after receipt expiry without replaying the ac
   subject.advance(Date.parse(receipt.expires_at) - subject.now() + 1);
   readbackTransform = (readback) => redigestTrustedReadback({
     ...readback,
-    services: readback.services.map((service) => ({
-      ...service,
-      live_commit: G("5"),
-    })),
+    github: { ...readback.github, merge_commit: G("5") },
   });
   await assert.rejects(subject.governance.authorizeFinalize({
     tenant_id: "codexai",
     ticket_id: issued.ticket.ticket_id,
     host_session_fingerprint: issued.ticket.host_session_fingerprint,
-  }), /trusted_readback_service_mismatch/);
+  }), /trusted_readback_github_mismatch/);
   let historical = await subject.governance.readActionTicket({
     tenant_id: "codexai",
     ticket_id: issued.ticket.ticket_id,
@@ -2442,50 +2686,49 @@ test("finalize ignores caller attestations and fails closed on unavailable or mi
       }),
     },
     {
-      name: "wrong live commit",
-      expected: /trusted_readback_service_mismatch/,
+      name: "wrong merge commit",
+      expected: /trusted_readback_github_mismatch/,
       mutate: (readback) => redigestTrustedReadback({
         ...readback,
-        services: [{ ...readback.services[0], live_commit: G("5") }],
+        github: { ...readback.github, merge_commit: G("5") },
       }),
     },
     {
-      name: "wrong Render origin",
-      expected: /trusted_readback_service_mismatch/,
+      name: "wrong merge head",
+      expected: /trusted_readback_github_mismatch/,
       mutate: (readback) => redigestTrustedReadback({
         ...readback,
-        services: [{
-          ...readback.services[0],
-          origin: "https://attacker.onrender.com",
-        }],
+        github: { ...readback.github, head_commit: G("5") },
       }),
     },
     {
-      name: "wrong health contract",
-      expected: /trusted_readback_service_mismatch/,
+      name: "wrong merge base",
+      expected: /trusted_readback_github_mismatch/,
       mutate: (readback) => redigestTrustedReadback({
         ...readback,
-        services: [{
-          ...readback.services[0],
-          health_contract_digest: H("a"),
-        }],
+        github: { ...readback.github, expected_base_commit: G("5") },
       }),
     },
     {
-      name: "rollback not ready",
-      expected: /trusted_readback_service_mismatch/,
-      mutate: (readback) => redigestTrustedReadback({
-        ...readback,
-        services: [{
-          ...readback.services[0],
-          rollback_status: "unavailable",
-        }],
-      }),
+      name: "merge-only readback claims Render service",
+      expected: /trusted_readback_verification_scope_invalid/,
+      mutate: (readback) => {
+        const unsigned = {
+          service_id: "srv-core",
+          environment: "production",
+          origin: "https://srv-core.onrender.com",
+          live_commit: G("4"),
+        };
+        return {
+          ...readback,
+          services: [{ ...unsigned, readback_digest: hostNativeDigest(unsigned) }],
+        };
+      },
     },
     {
-      name: "missing service",
-      expected: /trusted_readback_service_set_mismatch/,
-      mutate: (readback) => ({ ...readback, services: [] }),
+      name: "wrong verification scope",
+      expected: /trusted_readback_github_mismatch/,
+      mutate: (readback) => ({ ...readback, verification_scope: "full_release" }),
     },
     {
       name: "forged digest",
@@ -2513,11 +2756,12 @@ test("finalize ignores caller attestations and fails closed on unavailable or mi
   for (const scenario of cases) {
     let subject;
     subject = harness({
-      externalReadbackVerifier: async ({ ticket, target_commit }) => scenario.mutate(
+      externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) => scenario.mutate(
         trustedExternalReadback(
           ticket,
           target_commit,
           new Date(subject.now()).toISOString(),
+          verification_scope,
         ),
       ),
     });
@@ -2586,8 +2830,13 @@ test("file store recovers a reserved release without re-execution and persists r
     closureAttestationSigningSecret: CLOSURE_ATTESTATION_SECRET,
     now: () => clock,
     idFactory: () => `recovery-${++sequence}`,
-    externalReadbackVerifier: async ({ ticket, target_commit }) =>
-      trustedExternalReadback(ticket, target_commit, new Date(clock).toISOString()),
+    externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) =>
+      trustedExternalReadback(
+        ticket,
+        target_commit,
+        new Date(clock).toISOString(),
+        verification_scope,
+      ),
     releaseJoinVerdictResolver: async (request) =>
       trustedJoinResolution(request, clock),
   }));
