@@ -77,13 +77,36 @@ function options(pool, tenantId, snapshot, consumed = { count: 0 }) {
     consumeCoreReceipt: async (_receipt, binding) => {
       consumed.count += 1;
       return { ok: true, consumed: true, single_use: true, signature_verified: true,
-        issuer_role: "universal_core", tenant_id: tenantId, action: binding.operation,
-        snapshot_digest: snapshot.snapshot_digest, consumption_id: `consumption-${crypto.randomUUID()}` };
+        issuer_role: "universal_core", ...binding,
+        consumption_id: `consumption-${crypto.randomUUID()}` };
     } };
+}
+
+function proofBinding(tenantId, operationId, snapshotDigest, action = "policy.snapshot.activate") {
+  return {
+    tenant_id: tenantId,
+    operation_id: operationId,
+    action,
+    operation: action === "policy.snapshot.activate"
+      ? "activate_policy_snapshot"
+      : "rollback_policy_snapshot",
+    work_id: crypto.randomUUID(),
+    preflight_id: `preflight-${crypto.randomUUID()}`,
+    intent_digest: crypto.randomBytes(32).toString("hex"),
+    domain_pack_id: "generic",
+    snapshot_digest: snapshotDigest,
+    owner_approval_hash: crypto.randomBytes(32).toString("hex"),
+    core_key_id: "core-policy-pg16-v2",
+    nyra_key_id: "nyra-policy-pg16-v2",
+    core_public_key_fingerprint: "a".repeat(64),
+    nyra_public_key_fingerprint: "b".repeat(64),
+  };
 }
 
 function activation(tenantId, snapshot, operationId = `activate-${crypto.randomUUID()}`) {
   return { tenant_id: tenantId, operation_id: operationId, snapshot,
+    activation_attestation: { schema_version: "pg16-test-attestation-v2" },
+    proof_binding: proofBinding(tenantId, operationId, snapshot.snapshot_digest),
     core_receipt: { ticket_id: `ticket-${crypto.randomUUID()}`, nested: { one_use: true } },
     core_branch_id: "nyra_policy_registry", nyra_branch_id: "risk_governance",
     domain_pack_id: "generic", now: NOW };

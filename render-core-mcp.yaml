@@ -101,6 +101,14 @@ services:
         value: generic-work-core-join-production-v1
       - key: GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY
         sync: false
+      # Policy Registry mutations remain code-dark until Universal Core reports
+      # the exact enforced, distributed and cryptographically verified E2E
+      # health contract. MCP holds no Policy Registry signer, proof or Nyra S2S
+      # secret; it forwards only authenticated Work and owner contexts.
+      - key: NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED
+        value: "false"
+      - key: NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED
+        value: "false"
       # Dedicated MCP→Core Deep V2 request signature. Universal Core consumes
       # the same generated value through an internal Render reference. It is
       # an internal continuity signature, not a model-provider credential.

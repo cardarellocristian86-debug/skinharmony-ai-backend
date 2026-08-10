@@ -586,6 +586,101 @@ const entityGraphRelation = object({
   attributes: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
 }, ["id", "from", "to", "relation_type"]);
 
+const policyRegistryUuid = {
+  type: "string",
+  pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+};
+const policyRegistryOperationId = {
+  type: "string",
+  minLength: 3,
+  maxLength: 256,
+  pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$",
+};
+const policyRegistryDomainPackId = {
+  type: "string",
+  minLength: 3,
+  maxLength: 256,
+  pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$",
+};
+const policyRegistrySha256 = { type: "string", pattern: "^[a-f0-9]{64}$" };
+const policyRegistryStringList = {
+  type: "array",
+  maxItems: 4_096,
+  uniqueItems: true,
+  items: { type: "string", minLength: 1, maxLength: 200 },
+};
+const policyRegistryPackReference = object({
+  pack_id: { type: "string", minLength: 2, maxLength: 160, pattern: "^[a-z0-9][a-z0-9._/-]{1,159}$" },
+  version: { type: "string", minLength: 1, maxLength: 64 },
+  digest: policyRegistrySha256,
+}, ["pack_id", "version", "digest"]);
+const policyRegistrySnapshot = object({
+  schema_version: { const: "nyra_policy_registry_v1" },
+  tenant_id: { type: "string", minLength: 1, maxLength: 120 },
+  domain_pack_id: policyRegistryDomainPackId,
+  ancestry: {
+    type: "array",
+    minItems: 1,
+    maxItems: 4_096,
+    items: object({
+      ...policyRegistryPackReference.properties,
+      scope: object({
+        kind: { type: "string", enum: ["core", "global", "sector", "tenant", "environment", "work_type", "action", "policy"] },
+        value: { type: "string", minLength: 1, maxLength: 160 },
+        tenant_id: { type: ["string", "null"], maxLength: 120 },
+      }, ["kind", "value", "tenant_id"]),
+    }, ["pack_id", "version", "digest", "scope"]),
+  },
+  leaf_packs: { type: "array", minItems: 1, maxItems: 4_096, items: policyRegistryPackReference },
+  policy: object({
+    allow_actions: policyRegistryStringList,
+    deny_actions: policyRegistryStringList,
+    required_gates: policyRegistryStringList,
+    constraints: { type: "object", maxProperties: 500, additionalProperties: true },
+  }, ["allow_actions", "deny_actions", "required_gates", "constraints"]),
+  bindings: object({
+    core_branch_ids: policyRegistryStringList,
+    nyra_branch_ids: policyRegistryStringList,
+    domain_pack_ids: policyRegistryStringList,
+  }, ["core_branch_ids", "nyra_branch_ids", "domain_pack_ids"]),
+  sources: policyRegistryStringList,
+  validity: object({
+    valid_from: { type: "string", minLength: 20, maxLength: 40 },
+    expires_at: { type: "string", minLength: 20, maxLength: 40 },
+  }, ["valid_from", "expires_at"]),
+  resolution: object({
+    logical_depth: { type: "integer", minimum: 1, maximum: 4_096 },
+    traversal_budget: { type: "integer", minimum: 1, maximum: 4_096 },
+    traversed: { type: "integer", minimum: 1, maximum: 4_096 },
+    catalog_depth_policy: { const: "no_static_ceiling" },
+    runtime_policy: { const: "bounded_fail_closed" },
+  }, ["logical_depth", "traversal_budget", "traversed", "catalog_depth_policy", "runtime_policy"]),
+  immutable: { const: true },
+  snapshot_digest: policyRegistrySha256,
+}, [
+  "schema_version", "tenant_id", "domain_pack_id", "ancestry", "leaf_packs", "policy",
+  "bindings", "sources", "validity", "resolution", "immutable", "snapshot_digest",
+]);
+const policyRegistryOwnerProperties = {
+  owner_confirmed: { type: "boolean", const: true },
+  confirmation_reference: {
+    type: "string",
+    minLength: 1,
+    maxLength: 240,
+    description: "Opaque audit reference for the explicit owner confirmation; never include secrets.",
+  },
+};
+const policyRegistryToolOptions = {
+  exactInputSchema: true,
+  ownerConfirmationRequired: true,
+  destructive: true,
+  meta: {
+    "skinharmony/dedicatedCoreGate": true,
+    "skinharmony/externalSideEffect": false,
+    "skinharmony/providerExecution": false,
+  },
+};
+
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
   tool("core_runtime_hierarchy_status", "Read Universal Core runtime hierarchy", "Use this when you need the live V7/V0/V1/V2 hierarchy mode and worker status. It is tenant-scoped, read-only and never authorizes execution.", object(), ["core:read"], true, true, { outputSchema: { type: "object", properties: { ok: { type: "boolean" }, tenant_id: { type: "string" }, runtime: { type: "object", additionalProperties: true } }, required: ["ok", "tenant_id"], additionalProperties: true } }),
@@ -636,6 +731,28 @@ export const TOOLS = [
     },
     core_input: { type: "object", properties: { signals: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: true } }, data_quality: { type: "object", additionalProperties: true }, context: { type: "object", additionalProperties: true }, evidence_state: runtimeEvidenceState }, additionalProperties: false },
   }, ["request"]), ["core:read"], true, true, { outputSchema: workPreflightOutputSchema, meta: { "openai/toolInvocation/invoking": "Preparo Nyra…", "openai/toolInvocation/invoked": "Nyra è pronta." } }),
+  tool("nyra_policy_registry_activate", "Activate a governed Nyra policy snapshot", "Request activation of one immutable, tenant-bound Policy Registry snapshot. Universal Core remains the final authority; the connector cannot execute provider workflows or accept caller-supplied proof, identity, preflight, receipt, attestation or key material.", object({
+    work_id: policyRegistryUuid,
+    operation_id: policyRegistryOperationId,
+    domain_pack_id: policyRegistryDomainPackId,
+    snapshot: policyRegistrySnapshot,
+    ...policyRegistryOwnerProperties,
+  }, ["work_id", "operation_id", "domain_pack_id", "snapshot", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, policyRegistryToolOptions),
+  tool("nyra_policy_registry_rollback", "Roll back a governed Nyra policy snapshot", "Request rollback to one exact previously activated snapshot digest. Universal Core remains the final authority; caller-supplied proof, identity, preflight, receipt, attestation and key material are rejected.", object({
+    work_id: policyRegistryUuid,
+    operation_id: policyRegistryOperationId,
+    domain_pack_id: policyRegistryDomainPackId,
+    target_snapshot_digest: policyRegistrySha256,
+    ...policyRegistryOwnerProperties,
+  }, ["work_id", "operation_id", "domain_pack_id", "target_snapshot_digest", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, policyRegistryToolOptions),
+  tool("nyra_policy_registry_reconcile", "Reconcile a governed Nyra policy operation", "Reconcile one exact in-progress Policy Registry operation after a fail-closed interruption. This never authorizes provider execution and accepts no caller-supplied proof or authority context.", object({
+    work_id: policyRegistryUuid,
+    operation_id: policyRegistryOperationId,
+    ...policyRegistryOwnerProperties,
+  }, ["work_id", "operation_id", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, {
+    ...policyRegistryToolOptions,
+    destructive: false,
+  }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
   tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
   tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded connector capabilities by functional group. The catalog never accepts arbitrary paths, never exposes admin/bootstrap/secret surfaces and leaves Universal Core as final authority.", object({

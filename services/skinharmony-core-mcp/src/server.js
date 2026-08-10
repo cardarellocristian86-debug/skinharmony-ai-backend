@@ -1105,6 +1105,12 @@ function isAgentPresenceBootstrapCall(toolName, args = {}) {
       args?.capability_id === "agent_heartbeat");
 }
 
+const POLICY_REGISTRY_PREFLIGHT_OPERATION = Object.freeze({
+  nyra_policy_registry_activate: "policy.snapshot.activate",
+  nyra_policy_registry_rollback: "policy.snapshot.rollback",
+  nyra_policy_registry_reconcile: "policy.snapshot.reconcile",
+});
+
 const app = createApp(config, {
   handlers,
   toolSurface: "compact",
@@ -1152,13 +1158,14 @@ const app = createApp(config, {
       if (!requiresGenericWorkPreflight(toolName, args)) return { preflight: null, ledgerContext };
       const result = await coreHandlers.work_preflight({
         request: summarizeToolRequest(toolName, args),
-        operation_type: toolName,
+        operation_type: POLICY_REGISTRY_PREFLIGHT_OPERATION[toolName] || toolName,
         tool_name: toolName,
         // Dynamic capabilities that require a preflight must receive the
         // complete server-issued envelope. The compact response intentionally
         // omits governance detail and therefore cannot satisfy Universal
         // Core's preflight gate.
         response_mode: "full",
+        work_id: args.work_id,
         project_id: args.project_id,
         session_id: identity.agentPresence?.session_id || args.session_id,
         agent_id: identity.agentPresence?.agent_id || args.agent_id || args.from_agent_id || "connected_ai",

@@ -20,7 +20,13 @@ import {
 import { createNyraDeepV2EvidenceLedger } from "./nyraDeepV2EvidenceLedger.js";
 import { createNyraDeepV2SourceVerifier } from "./nyraDeepV2SourceVerification.js";
 import { createNyraPolicyRegistryStore, createPostgresNyraPolicyRegistryStore } from "./nyraPolicyRegistryStore.js";
+import { validatePolicySnapshot } from "./nyraPolicyRegistry.js";
 import { createNyraPolicyRegistryProofService } from "./nyraPolicyRegistryProofService.js";
+import {
+  createNyraPolicyRegistryClient,
+  createNyraPolicyRegistryCoordinator,
+} from "./nyraPolicyRegistryCoordinator.js";
+import { createNyraPolicyRegistryCoreRemoteSigner } from "./nyraPolicyRegistryCoreRemoteSigner.js";
 import {
   createNyraDeepV2McpRequestVerifier,
   nyraDeepV2EvidencePackHash,
@@ -4505,34 +4511,217 @@ export function createUniversalCoreService(options = {}) {
   const nyraPolicyRegistryDatabaseUrl = String(
     options.nyraPolicyRegistryDatabaseUrl ?? process.env.GOVERNED_AGENT_DATABASE_URL ?? "",
   ).trim();
+  const nyraPolicyRegistryProofEnv = options.nyraPolicyRegistryProofEnv || process.env;
+  const nyraPolicyRegistryProofProduction = String(process.env.NODE_ENV || "") === "production";
+  const nyraPolicyRegistryProofEnabledFlag = strictGenericWorkCoreJoinBoolean(
+    options.nyraPolicyRegistryProofEnabled ?? process.env.CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED,
+    false,
+    "policy_registry_proof_enabled_flag_invalid",
+  );
+  const nyraPolicyRegistryProofRequiredFlag = strictGenericWorkCoreJoinBoolean(
+    options.nyraPolicyRegistryProofRequired ?? process.env.CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED,
+    false,
+    "policy_registry_proof_required_flag_invalid",
+  );
+  const nyraPolicyRegistryProofEnabled = nyraPolicyRegistryProofEnabledFlag.value;
+  const nyraPolicyRegistryProofRequired = nyraPolicyRegistryProofRequiredFlag.valid
+    ? nyraPolicyRegistryProofRequiredFlag.value
+    : true;
+  const nyraPolicyRegistryCoreSignerMode = String(
+    options.nyraPolicyRegistryCoreSignerMode
+      ?? process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE
+      ?? "disabled",
+  );
+  let nyraPolicyRegistryProofConfigurationError = !nyraPolicyRegistryProofEnabledFlag.valid
+    ? nyraPolicyRegistryProofEnabledFlag.error
+    : !nyraPolicyRegistryProofRequiredFlag.valid
+      ? nyraPolicyRegistryProofRequiredFlag.error
+      : nyraPolicyRegistryProofRequired && !nyraPolicyRegistryProofEnabled
+        ? "policy_registry_proof_required_without_enabled"
+        : !["disabled", "remote"].includes(nyraPolicyRegistryCoreSignerMode)
+          ? "policy_registry_core_signer_mode_invalid"
+          : nyraPolicyRegistryProofEnabled && nyraPolicyRegistryCoreSignerMode !== "remote"
+            ? "policy_registry_core_signer_remote_required"
+            : null;
+  const nyraPolicyRegistryPrivateMaterialPresent = Boolean(
+    process.env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY ||
+    nyraPolicyRegistryProofEnv.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY,
+  );
+  if (nyraPolicyRegistryPrivateMaterialPresent) {
+    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_core_private_key_forbidden";
+  }
+  const nyraPolicyRegistryCoreSignerTargetCommit =
+    process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT;
+  if (nyraPolicyRegistryProofProduction && nyraPolicyRegistryProofEnabled &&
+    (!BUILD_COMMIT_VERIFIABLE ||
+      nyraPolicyRegistryCoreSignerTargetCommit !== BUILD_COMMIT_SHA)) {
+    nyraPolicyRegistryProofConfigurationError ||=
+      "policy_registry_core_signer_target_commit_mismatch";
+  }
+  const nyraPolicyRegistryProductionInjectionPresent = nyraPolicyRegistryProofProduction && [
+    "nyraPolicyRegistryPostgresPool",
+    "nyraPolicyRegistryProofService",
+    "nyraPolicyRegistryStore",
+    "nyraPolicyRegistryClient",
+    "nyraPolicyRegistryCoordinator",
+    "nyraPolicyRegistryCoreSigner",
+    "nyraPolicyRegistryCoreSignerConfig",
+    "nyraPolicyRegistryCoreSignerFetch",
+    "nyraPolicyRegistryFetch",
+    "nyraPolicyRegistryProofEnv",
+    "nyraPolicyRegistryClientEnv",
+  ].some((field) => options[field] !== undefined);
+  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProductionInjectionPresent) {
+    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_production_injection_forbidden";
+  }
   // An injected PostgreSQL version probe is a fully controlled test/host seam.
   // Do not open implicit network pools behind it; callers that need database
   // behavior can still provide the explicit pool options above.
   const hasInjectedPostgresVersionProbe = Boolean(options.governedAgentPostgresVersionProbe);
-  const nyraPolicyRegistryPostgresPool = options.nyraPolicyRegistryPostgresPool ||
-    (!hasInjectedPostgresVersionProbe && /^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
-      ? new pg.Pool({ connectionString: nyraPolicyRegistryDatabaseUrl })
-      : null);
-  const nyraPolicyRegistryProofService = options.nyraPolicyRegistryProofService ||
-    (nyraPolicyRegistryPostgresPool
-      ? createNyraPolicyRegistryProofService({
+  const nyraPolicyRegistryPostgresPool = nyraPolicyRegistryProofConfigurationError === null
+    ? ((!nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryPostgresPool) ||
+      (!hasInjectedPostgresVersionProbe && /^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
+        ? new pg.Pool({ connectionString: nyraPolicyRegistryDatabaseUrl })
+        : null))
+    : null;
+  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProofProduction && !nyraPolicyRegistryPostgresPool) {
+    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_postgres_required";
+  }
+  const nyraPolicyRegistryProofActivationEnabled = nyraPolicyRegistryProofEnabled &&
+    nyraPolicyRegistryProofConfigurationError === null;
+  let nyraPolicyRegistryCoreSigner = null;
+  if (nyraPolicyRegistryProofActivationEnabled) {
+    try {
+      nyraPolicyRegistryCoreSigner = !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCoreSigner
+        ? options.nyraPolicyRegistryCoreSigner
+        : createNyraPolicyRegistryCoreRemoteSigner({
+            origin: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ORIGIN,
+            path: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PATH,
+            service: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE,
+            targetCommit: nyraPolicyRegistryCoreSignerTargetCommit,
+            keyId: nyraPolicyRegistryProofEnv.CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID,
+            serviceToken: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN,
+            publicKey: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ED25519_PUBLIC_KEY,
+            fetchImpl: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCoreSignerFetch
+              ? options.nyraPolicyRegistryCoreSignerFetch
+              : globalThis.fetch,
+            timeoutMs: optionalGenericWorkCoreJoinInteger(
+              process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TIMEOUT_MS,
+            ),
+            maxResponseBytes: optionalGenericWorkCoreJoinInteger(
+              process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MAX_RESPONSE_BYTES,
+            ),
+            probeCooldownMs: optionalGenericWorkCoreJoinInteger(
+              process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PROBE_COOLDOWN_MS,
+            ),
+          });
+      if (nyraPolicyRegistryProofProduction &&
+        nyraPolicyRegistryCoreSigner?.custody !== "external_remote_signer") {
+        throw new Error("policy_registry_external_core_signer_required");
+      }
+    } catch (error) {
+      nyraPolicyRegistryCoreSigner = null;
+      const code = String(error?.message || "");
+      const safeSignerConfigurationErrors = new Set([
+        "policy_registry_core_signer_key_id_invalid",
+        "policy_registry_core_signer_origin_invalid",
+        "policy_registry_core_signer_path_invalid",
+        "policy_registry_core_signer_probe_cooldown_invalid",
+        "policy_registry_core_signer_public_key_invalid",
+        "policy_registry_core_signer_response_limit_invalid",
+        "policy_registry_core_signer_service_invalid",
+        "policy_registry_core_signer_service_token_required",
+        "policy_registry_core_signer_target_commit_invalid",
+        "policy_registry_core_signer_timeout_invalid",
+        "policy_registry_core_signer_transport_unavailable",
+        "policy_registry_external_core_signer_required",
+      ]);
+      nyraPolicyRegistryProofConfigurationError ||= safeSignerConfigurationErrors.has(code)
+        ? code
+        : "policy_registry_core_signer_configuration_invalid";
+    }
+  }
+  let nyraPolicyRegistryProofService = null;
+  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProofConfigurationError === null) {
+    if (!nyraPolicyRegistryPostgresPool) {
+      nyraPolicyRegistryProofConfigurationError = "policy_registry_postgres_required";
+    } else {
+      nyraPolicyRegistryProofService = !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryProofService
+        ? options.nyraPolicyRegistryProofService
+        : createNyraPolicyRegistryProofService({
+            pool: nyraPolicyRegistryPostgresPool,
+            env: nyraPolicyRegistryProofEnv,
+            signer: nyraPolicyRegistryCoreSigner,
+          });
+    }
+  }
+  const unavailablePolicyRegistry = Object.freeze({
+    kind: "unavailable",
+    restart_durable: false,
+    distributed: false,
+    evaluate: () => ({
+      verdict: "DENY",
+      reasons: ["policy_registry_unavailable"],
+      snapshot_digest: null,
+      snapshot_present: false,
+      snapshot_verified: false,
+      fail_closed: true,
+    }),
+    activate: async () => { throw new Error("policy_registry_unavailable"); },
+    rollback: async () => { throw new Error("policy_registry_unavailable"); },
+    reconcile: async () => { throw new Error("policy_registry_unavailable"); },
+    status: async () => ({
+      configured: false,
+      backend: "unavailable",
+      restart_durable: false,
+      distributed: false,
+      state: "unavailable",
+      ready: false,
+      reason: "policy_registry_unavailable",
+    }),
+  });
+  const allowPolicyRegistryInjection = !nyraPolicyRegistryProofProduction;
+  const nyraPolicyRegistry = allowPolicyRegistryInjection && options.nyraPolicyRegistryStore
+    ? options.nyraPolicyRegistryStore
+    : nyraPolicyRegistryPostgresPool
+      ? createPostgresNyraPolicyRegistryStore({
           pool: nyraPolicyRegistryPostgresPool,
-          env: options.nyraPolicyRegistryProofEnv || process.env,
+          consumeCoreReceipt: allowPolicyRegistryInjection && options.consumeNyraPolicyRegistryCoreReceipt
+            ? options.consumeNyraPolicyRegistryCoreReceipt
+            : nyraPolicyRegistryProofService?.consume,
+          verifyActivationSnapshot: allowPolicyRegistryInjection && options.verifyNyraPolicyRegistryActivationSnapshot
+            ? options.verifyNyraPolicyRegistryActivationSnapshot
+            : nyraPolicyRegistryProofService?.verifyActivationSnapshot,
         })
-      : null);
-  const nyraPolicyRegistry = options.nyraPolicyRegistryStore || (nyraPolicyRegistryPostgresPool
-    ? createPostgresNyraPolicyRegistryStore({
-        pool: nyraPolicyRegistryPostgresPool,
-        consumeCoreReceipt: options.consumeNyraPolicyRegistryCoreReceipt ||
-          nyraPolicyRegistryProofService?.consume,
-        verifyActivationSnapshot: options.verifyNyraPolicyRegistryActivationSnapshot ||
-          nyraPolicyRegistryProofService?.verifyActivationSnapshot,
+      : nyraPolicyRegistryProofEnabled
+        ? unavailablePolicyRegistry
+        : createNyraPolicyRegistryStore({
+            filePath: path.join(storageRoot, "nyra-policy-registry.json"),
+            consumeCoreReceipt: options.consumeNyraPolicyRegistryCoreReceipt,
+            verifyActivationSnapshot: options.verifyNyraPolicyRegistryActivationSnapshot,
+          });
+  const nyraPolicyRegistryClient = nyraPolicyRegistryProofEnabled &&
+    nyraPolicyRegistryProofConfigurationError === null
+    ? (!nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryClient) ||
+      createNyraPolicyRegistryClient({
+        env: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryClientEnv
+          ? options.nyraPolicyRegistryClientEnv
+          : process.env,
+        fetchImpl: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryFetch
+          ? options.nyraPolicyRegistryFetch
+          : globalThis.fetch,
       })
-    : createNyraPolicyRegistryStore({
-        filePath: path.join(storageRoot, "nyra-policy-registry.json"),
-        consumeCoreReceipt: options.consumeNyraPolicyRegistryCoreReceipt,
-        verifyActivationSnapshot: options.verifyNyraPolicyRegistryActivationSnapshot,
-      }));
+    : null;
+  const nyraPolicyRegistryCoordinator = nyraPolicyRegistryProofEnabled &&
+    nyraPolicyRegistryProofConfigurationError === null && nyraPolicyRegistryProofService &&
+    nyraPolicyRegistryClient
+    ? (!nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCoordinator) ||
+      createNyraPolicyRegistryCoordinator({
+        proofService: nyraPolicyRegistryProofService,
+        registryStore: nyraPolicyRegistry,
+        nyraClient: nyraPolicyRegistryClient,
+      })
+    : null;
   const reviews = reviewStore(storageRoot);
   const evidence = evidenceStore(storageRoot);
   // Deep Branch V2 has Core-only trust material. Missing or invalid material
@@ -6625,12 +6814,51 @@ export function createUniversalCoreService(options = {}) {
     const nyraPolicyRegistryStatus = await nyraPolicyRegistry.status();
     const nyraPolicyRegistryProofStatus = nyraPolicyRegistryProofService
       ? await nyraPolicyRegistryProofService.status()
-      : { ready: false, backend: "unavailable", error: "policy_proof_not_configured" };
-    const nyraPolicyRegistryProductionReady = !production || (
+      : {
+          ready: false,
+          backend: "unavailable",
+          error: nyraPolicyRegistryProofConfigurationError || "policy_proof_not_configured",
+        };
+    const nyraPolicyRegistryClientStatus = () => nyraPolicyRegistryClient?.status?.() || {
+      configured: false,
+      ready: false,
+      state: nyraPolicyRegistryProofEnabled ? "unavailable" : "disabled",
+      upstream_verified: false,
+      last_failure: nyraPolicyRegistryProofConfigurationError || null,
+    };
+    let nyraPolicyRegistryCoordinatorStatus;
+    try {
+      nyraPolicyRegistryCoordinatorStatus = nyraPolicyRegistryCoordinator
+        ? await nyraPolicyRegistryCoordinator.status()
+        : {
+            ready: false,
+            e2e_verified: false,
+            upstream: nyraPolicyRegistryClientStatus(),
+            error: "policy_registry_coordinator_not_configured",
+          };
+    } catch {
+      nyraPolicyRegistryCoordinatorStatus = {
+        ready: false,
+        e2e_verified: false,
+        upstream: nyraPolicyRegistryClientStatus(),
+        error: "policy_registry_coordinator_unavailable",
+      };
+    }
+    const nyraPolicyRegistryEvaluationProductionReady = !production || (
       nyraPolicyRegistryStatus.backend === "postgresql" &&
-      nyraPolicyRegistryStatus.ready === true &&
-      (nyraPolicyRegistryMode !== "enforced" || nyraPolicyRegistryProofStatus.ready === true)
+      nyraPolicyRegistryStatus.ready === true
     );
+    const nyraPolicyRegistryProofLifecycleReady =
+      nyraPolicyRegistryProofActivationEnabled &&
+      nyraPolicyRegistryProofConfigurationError === null &&
+      nyraPolicyRegistryStatus.backend === "postgresql" &&
+      nyraPolicyRegistryStatus.restart_durable === true &&
+      nyraPolicyRegistryStatus.distributed === true &&
+      nyraPolicyRegistryProofStatus.ready === true &&
+      nyraPolicyRegistryCoordinatorStatus.ready === true &&
+      nyraPolicyRegistryCoordinatorStatus.e2e_verified === true;
+    const nyraPolicyRegistryProductionReady = nyraPolicyRegistryEvaluationProductionReady &&
+      (!nyraPolicyRegistryProofRequired || nyraPolicyRegistryProofLifecycleReady);
     let researchAirlockHealth;
     try {
       researchAirlockHealth = await researchAirlockRuntime.status("health_probe");
@@ -6713,6 +6941,7 @@ export function createUniversalCoreService(options = {}) {
     const nonCausalProductionReady = productionBuildReady
       && hostNativeReady
       && nyraPolicyRegistryModeValid
+      && nyraPolicyRegistryProofConfigurationError === null
       && nyraPolicyRegistryProductionReady
       && researchAirlockProductionReady
       && genericWorkCoreJoinConfigurationError === null
@@ -6830,7 +7059,8 @@ export function createUniversalCoreService(options = {}) {
         execution_authorized: false,
       },
       nyra_policy_registry: {
-        configuration_valid: nyraPolicyRegistryModeValid,
+        configuration_valid: nyraPolicyRegistryModeValid &&
+          nyraPolicyRegistryProofConfigurationError === null,
         evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
         enforcement: nyraPolicyRegistryMode === "enforced"
           ? "mandatory"
@@ -6843,7 +7073,23 @@ export function createUniversalCoreService(options = {}) {
         distributed: nyraPolicyRegistryStatus.distributed === true,
         state: nyraPolicyRegistryStatus.state || (nyraPolicyRegistryStatus.ready === false ? "unavailable" : "ready"),
         ready: nyraPolicyRegistryProductionReady,
+        proof_lifecycle: {
+          enabled: nyraPolicyRegistryProofEnabled,
+          required: nyraPolicyRegistryProofRequired,
+          mode: nyraPolicyRegistryCoreSignerMode,
+          configuration_valid: nyraPolicyRegistryProofConfigurationError === null,
+          state: !nyraPolicyRegistryProofEnabled
+            ? (nyraPolicyRegistryProofConfigurationError ? "configuration_invalid" : "disabled")
+            : nyraPolicyRegistryProofConfigurationError
+              ? "configuration_invalid"
+              : nyraPolicyRegistryProofLifecycleReady ? "ready" : "unavailable",
+          ready: nyraPolicyRegistryProofLifecycleReady,
+          render_gate_required: nyraPolicyRegistryProofRequired ||
+            !nyraPolicyRegistryProofRequiredFlag.valid,
+          error: nyraPolicyRegistryProofConfigurationError,
+        },
         proof: nyraPolicyRegistryProofStatus,
+        proof_e2e: nyraPolicyRegistryCoordinatorStatus,
       },
       governed_agent_runner: {
         mode: "manual_dry_run",
@@ -8646,100 +8892,399 @@ export function createUniversalCoreService(options = {}) {
       }
     },
   );
+  const policyRegistryRouteContract = Object.freeze({
+    activate: Object.freeze([
+      "tenant_id", "work_id", "operation_id", "domain_pack_id", "work_preflight",
+      "owner_confirmed", "confirmation_reference", "owner_context", "snapshot",
+    ]),
+    rollback: Object.freeze([
+      "tenant_id", "work_id", "operation_id", "domain_pack_id", "work_preflight",
+      "owner_confirmed", "confirmation_reference", "owner_context", "target_snapshot_digest",
+    ]),
+    reconcile: Object.freeze([
+      "tenant_id", "work_id", "operation_id", "work_preflight", "owner_confirmed",
+      "confirmation_reference", "owner_context",
+    ]),
+  });
+  const policyRegistryRoutePurpose = Object.freeze({
+    activate: "nyra_policy_registry_snapshot_activate_v2",
+    rollback: "nyra_policy_registry_snapshot_rollback_v2",
+    reconcile: "nyra_policy_registry_snapshot_reconcile_v2",
+  });
 
-
-  app.post("/v1/nyra-policy-registry/activate", coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }), async (req, res) => {
-    try {
-      const result = await nyraPolicyRegistry.activate({
+  function exactPolicyRegistryRouteBody(req, kind) {
+    const body = req.body;
+    const fields = policyRegistryRouteContract[kind];
+    if (!isPlainRecord(body) || !fields ||
+      Object.keys(body).sort().join("\0") !== [...fields].sort().join("\0")) {
+      throw new Error("policy_registry_request_schema_invalid");
+    }
+    if (body.tenant_id !== req.tenantId || body.work_id !== req.workId) {
+      throw new Error("policy_registry_request_scope_invalid");
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/.test(String(body.operation_id || "")) ||
+      body.owner_confirmed !== true ||
+      !String(body.confirmation_reference || "").trim()) {
+      throw new Error("policy_registry_request_invalid");
+    }
+    if (kind !== "reconcile" &&
+      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/.test(String(body.domain_pack_id || ""))) {
+      throw new Error("policy_registry_request_invalid");
+    }
+    const action = `policy.snapshot.${kind}`;
+    if (req.workPreflight?.request?.operation_type !== action ||
+      (kind !== "reconcile" && req.workPreflight?.domain_pack?.id !== body.domain_pack_id)) {
+      throw new Error("policy_registry_preflight_binding_invalid");
+    }
+    if (kind === "activate" && (
+      !isPlainRecord(body.snapshot) ||
+      Object.hasOwn(body.snapshot, "policy_registry_attestation") ||
+      Object.hasOwn(body.snapshot, "activation_attestation")
+    )) {
+      throw new Error("policy_registry_snapshot_not_pure");
+    }
+    if (kind === "activate") {
+      const validation = validatePolicySnapshot(body.snapshot, {
         tenant_id: req.tenantId,
-        operation_id: req.body?.operation_id,
-        snapshot: req.body?.snapshot,
-        core_receipt: req.body?.core_receipt,
         core_branch_id: "nyra_policy_registry",
         nyra_branch_id: "risk_governance",
-        domain_pack_id: req.body?.domain_pack_id,
+        domain_pack_id: body.domain_pack_id,
+        now: new Date(),
       });
-      audit.append("core_nyra_policy_registry_activated", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        snapshot_digest: result.snapshot_digest,
-        idempotent_replay: result.idempotent_replay,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, activation: result });
-    } catch (error) {
-      audit.append("core_nyra_policy_registry_activation_rejected", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        reason: String(error?.message || "policy_registry_activation_failed").slice(0, 160),
-      });
-      return publicError(res, 409, String(error?.message || "policy_registry_activation_failed").slice(0, 160));
+      if (!validation.ok) throw new Error("policy_registry_snapshot_invalid");
     }
-  });
+    return body;
+  }
 
-  app.post("/v1/nyra-policy-registry/rollback", coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }), async (req, res) => {
-    try {
-      const result = await nyraPolicyRegistry.rollback({
-        tenant_id: req.tenantId,
-        operation_id: req.body?.operation_id,
-        target_snapshot_digest: req.body?.target_snapshot_digest,
-        core_receipt: req.body?.core_receipt,
-        core_branch_id: "nyra_policy_registry",
-        nyra_branch_id: "risk_governance",
-        domain_pack_id: req.body?.domain_pack_id,
-      });
-      audit.append("core_nyra_policy_registry_rolled_back", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        snapshot_digest: result.snapshot_digest,
-        activation_generation: result.activation_generation,
-        idempotent_replay: result.idempotent_replay,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, rollback: result });
-    } catch (error) {
-      audit.append("core_nyra_policy_registry_rollback_rejected", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        reason: String(error?.message || "policy_registry_rollback_failed").slice(0, 160),
-      });
-      return publicError(res, 409, String(error?.message || "policy_registry_rollback_failed").slice(0, 160));
+  function authorizePolicyRegistryMutation(req, kind, body) {
+    if (!nyraPolicyRegistryCoordinator) throw new Error("policy_registry_coordinator_unavailable");
+    const purpose = policyRegistryRoutePurpose[kind];
+    const owner = verifyHostNativeOwnerConfirmation(req, purpose);
+    const action = `policy.snapshot.${kind}`;
+    const authorization = buildActionAuthorization({
+      state: "attention",
+      risk_band: "high",
+      control_level: "confirm",
+      recommended_actions: [{ blocked: false }],
+    }, {
+      action_type: action,
+      operation_class: "policy_registry_snapshot_mutation",
+      authenticated_tenant_id: req.tenantId,
+      tenant_id: req.tenantId,
+      owner_confirmed: true,
+      request_bound_owner_confirmation: owner.request_bound === true,
+      owner_context_verified: owner.verified === true,
+      work_preflight_ready: Boolean(req.workPreflight?.preflight_id),
+      external_side_effect: false,
+      configuration_changes: true,
+      provider_execution: false,
+      contains_secret: false,
+      secret_value_transmitted: false,
+      cross_tenant: false,
+      bypass_orchestrator: false,
+      destructive: false,
+      rollback_ready: true,
+      audit_ready: true,
+      confirmation_reference: owner.confirmation_reference,
+    });
+    if (authorization.allowed !== true ||
+      authorization.scope !== "policy_registry_snapshot_mutation" ||
+      authorization.confirmation_satisfied !== true) {
+      throw new Error("policy_registry_core_authorization_denied");
     }
-  });
+    const snapshotDigest = kind === "activate"
+      ? String(body.snapshot?.snapshot_digest || "")
+      : kind === "rollback" ? String(body.target_snapshot_digest || "") : null;
+    const authorizationDigest = crypto.createHash("sha256")
+      .update(`nyra-policy-registry-core-authorization-v1\0${JSON.stringify(stableCanonical({
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        preflight_id: req.workPreflight.preflight_id,
+        operation_id: body.operation_id,
+        action,
+        domain_pack_id: body.domain_pack_id || null,
+        snapshot_digest: snapshotDigest,
+        authorization,
+      }))}`)
+      .digest("hex");
+    return {
+      owner,
+      authorization,
+      authorizationDigest,
+      ownerRequestBinding: ownerRequestBinding(purpose, body),
+    };
+  }
 
-  app.post("/v1/nyra-policy-registry/reconcile", coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }), async (req, res) => {
-    try {
-      if (!nyraPolicyRegistryProofService) throw new Error("policy_proof_unavailable");
-      const serverConsumptionProof = await nyraPolicyRegistryProofService.reconcileConsumption({
-        tenant_id: req.tenantId,
-        operation_id: req.body?.operation_id,
-        operation: req.body?.operation,
-        snapshot_digest: req.body?.snapshot_digest,
-      });
-      const result = await nyraPolicyRegistry.reconcile({
-        tenant_id: req.tenantId,
-        operation_id: req.body?.operation_id,
-        operation: req.body?.operation,
-        snapshot_digest: req.body?.snapshot_digest,
-        core_receipt: req.body?.core_receipt,
-        // Never trust a caller-supplied consumption proof. Reconciliation is
-        // derived from the tenant-bound one-use receipt state in PostgreSQL.
-        consumption_proof: serverConsumptionProof,
-      });
-      audit.append("core_nyra_policy_registry_reconciled", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        snapshot_digest: result.snapshot_digest,
-        idempotent_replay: result.idempotent_replay,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, reconciliation: result });
-    } catch (error) {
-      audit.append("core_nyra_policy_registry_reconciliation_rejected", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        reason: String(error?.message || "policy_registry_reconciliation_failed").slice(0, 160),
-      });
-      return publicError(res, 409, String(error?.message || "policy_registry_reconciliation_failed").slice(0, 160));
+  const policyRegistrySafeRouteErrors = new Map([
+    ["verified_owner_confirmation_required", [403, "policy_registry_owner_confirmation_required"]],
+    ["policy_registry_owner_binding_invalid", [403, "policy_registry_owner_confirmation_required"]],
+    ["policy_registry_core_authorization_denied", [403, "policy_registry_core_authorization_denied"]],
+    ["policy_registry_request_scope_invalid", [403, "policy_registry_request_scope_invalid"]],
+    ["policy_proof_tenant_denied", [403, "policy_proof_tenant_denied"]],
+    ["policy_proof_work_binding_invalid", [403, "policy_proof_work_binding_invalid"]],
+    ["policy_registry_request_schema_invalid", [400, "policy_registry_request_schema_invalid"]],
+    ["policy_registry_request_invalid", [400, "policy_registry_request_invalid"]],
+    ["policy_registry_preflight_binding_invalid", [400, "policy_registry_preflight_binding_invalid"]],
+    ["policy_registry_snapshot_not_pure", [400, "policy_registry_snapshot_not_pure"]],
+    ["policy_registry_snapshot_invalid", [400, "policy_registry_snapshot_invalid"]],
+    ["policy_registry_authorization_digest_invalid", [400, "policy_registry_authorization_digest_invalid"]],
+    ["policy_proof_binding_invalid", [400, "policy_proof_binding_invalid"]],
+    ["policy_proof_attestation_invalid", [400, "policy_proof_attestation_invalid"]],
+    ["policy_activation_core_receipt_invalid", [400, "policy_activation_core_receipt_invalid"]],
+    ["policy_snapshot_signature_quorum_invalid", [400, "policy_snapshot_signature_quorum_invalid"]],
+    ["policy_proof_not_found", [404, "policy_proof_not_found"]],
+    ["policy_proof_consumption_not_found", [404, "policy_proof_consumption_not_found"]],
+    ["policy_rollback_snapshot_not_found", [404, "policy_rollback_snapshot_not_found"]],
+    ["policy_proof_idempotency_conflict", [409, "policy_proof_idempotency_conflict"]],
+    ["policy_proof_owner_replayed", [409, "policy_proof_owner_replayed"]],
+    ["policy_proof_cas_conflict", [409, "policy_proof_cas_conflict"]],
+    ["policy_activation_core_receipt_replayed", [409, "policy_activation_core_receipt_replayed"]],
+    ["policy_operation_idempotency_conflict", [409, "policy_operation_idempotency_conflict"]],
+    ["policy_operation_binding_invalid", [409, "policy_operation_binding_invalid"]],
+    ["policy_registry_concurrent_mutation", [409, "policy_registry_concurrent_mutation"]],
+    ["policy_registry_reconciliation_required", [409, "policy_registry_reconciliation_required"]],
+    ["policy_registry_cas_conflict", [409, "policy_registry_cas_conflict"]],
+    ["policy_proof_reconciliation_not_ready", [409, "policy_proof_reconciliation_not_ready"]],
+  ]);
+
+  function classifiedPolicyRegistryRouteError(error) {
+    const internal = String(error?.message || "");
+    const configured = policyRegistrySafeRouteErrors.get(internal);
+    if (configured) return { status: configured[0], code: configured[1] };
+    const infrastructure = new Set([
+      "policy_registry_coordinator_unavailable",
+      "policy_registry_unavailable",
+      "policy_registry_postgres_required",
+      "policy_registry_postgres_unavailable",
+      "policy_proof_unavailable",
+      "policy_proof_signer_unavailable",
+      "policy_registry_nyra_busy",
+      "policy_registry_nyra_client_unavailable",
+      "policy_registry_nyra_redirect_denied",
+      "policy_registry_nyra_rejected",
+      "policy_registry_nyra_response_binding_invalid",
+      "policy_registry_nyra_response_json_invalid",
+      "policy_registry_nyra_response_too_large",
+      "policy_registry_nyra_timeout",
+      "policy_registry_nyra_unavailable",
+      "policy_registry_result_binding_invalid",
+    ]);
+    return infrastructure.has(internal)
+      ? { status: 503, code: internal }
+      : { status: 503, code: "policy_registry_operation_failed" };
+  }
+
+  function policyRegistryRouteError(res, error) {
+    const classified = classifiedPolicyRegistryRouteError(error);
+    return publicError(res, classified.status, classified.code);
+  }
+
+  function policyRegistryPublicAuthorization(authorization) {
+    return {
+      allowed: authorization.allowed === true,
+      state: authorization.state,
+      scope: authorization.scope,
+      confirmation_satisfied: authorization.confirmation_satisfied === true,
+      core_final_authority: true,
+      caller_authority: false,
+      provider_execution_authorized: false,
+    };
+  }
+
+  async function requirePolicyRegistryCoordinatorReady() {
+    if (!nyraPolicyRegistryProofActivationEnabled || !nyraPolicyRegistryCoordinator) {
+      throw new Error("policy_registry_coordinator_unavailable");
     }
-  });
+    let current;
+    try { current = await nyraPolicyRegistryCoordinator.status(); } catch { current = null; }
+    if (current?.ready !== true || current?.e2e_verified !== true) {
+      throw new Error("policy_registry_coordinator_unavailable");
+    }
+  }
+
+  function policyRegistryPublicResult(kind, result, req, operationId) {
+    if (!isPlainRecord(result)) throw new Error("policy_registry_result_binding_invalid");
+    const snapshotDigest = String(result.snapshot_digest || "");
+    if (!/^[a-f0-9]{64}$/.test(snapshotDigest)) {
+      throw new Error("policy_registry_result_binding_invalid");
+    }
+    const successField = kind === "activate"
+      ? "activated"
+      : kind === "rollback" ? "rolled_back" : "reconciled";
+    if (result[successField] !== true || result.proof_status !== "consumed") {
+      throw new Error("policy_registry_result_binding_invalid");
+    }
+    const projected = {
+      tenant_id: req.tenantId,
+      work_id: req.workId,
+      operation_id: operationId,
+      preflight_id: req.workPreflight.preflight_id,
+      snapshot_digest: snapshotDigest,
+      [successField]: true,
+      idempotent_replay: result.idempotent_replay === true,
+      proof_status: "consumed",
+      execution_authorized: false,
+      provider_execution_authorized: false,
+      caller_authority: false,
+    };
+    if (/^[a-f0-9]{64}$/.test(String(result.intent_digest || ""))) {
+      projected.intent_digest = result.intent_digest;
+    }
+    if (Number.isSafeInteger(result.activation_generation) && result.activation_generation >= 0) {
+      projected.activation_generation = result.activation_generation;
+    }
+    return projected;
+  }
+
+  app.post(
+    "/v1/nyra-policy-registry/activate",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }),
+    dttWorkAuth,
+    async (req, res) => {
+      try {
+        const body = exactPolicyRegistryRouteBody(req, "activate");
+        const governed = authorizePolicyRegistryMutation(req, "activate", body);
+        await requirePolicyRegistryCoordinatorReady();
+        const result = await nyraPolicyRegistryCoordinator.activate({
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          operation_id: body.operation_id,
+          preflight_id: req.workPreflight.preflight_id,
+          domain_pack_id: body.domain_pack_id,
+          snapshot: body.snapshot,
+          owner_subject_fingerprint: governed.owner.owner_subject_fingerprint,
+          owner_binding_hash: String(body.owner_context.binding_hash || ""),
+          confirmation_reference: governed.owner.confirmation_reference,
+          owner_request_binding: governed.ownerRequestBinding,
+          authorization_digest: governed.authorizationDigest,
+          core_branch_id: "nyra_policy_registry",
+          nyra_branch_id: "risk_governance",
+        });
+        audit.append("core_nyra_policy_registry_activated", {
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          key_id: req.coreKey.key_id,
+          operation_id: body.operation_id,
+          preflight_id: req.workPreflight.preflight_id,
+          snapshot_digest: result.snapshot_digest,
+          idempotent_replay: result.idempotent_replay,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          activation: policyRegistryPublicResult("activate", result, req, body.operation_id),
+          authorization: policyRegistryPublicAuthorization(governed.authorization),
+        });
+      } catch (error) {
+        const classified = classifiedPolicyRegistryRouteError(error);
+        audit.append("core_nyra_policy_registry_activation_rejected", {
+          tenant_id: req.tenantId,
+          work_id: req.workId || null,
+          key_id: req.coreKey.key_id,
+          reason: classified.code,
+        });
+        return policyRegistryRouteError(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/nyra-policy-registry/rollback",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }),
+    dttWorkAuth,
+    async (req, res) => {
+      try {
+        const body = exactPolicyRegistryRouteBody(req, "rollback");
+        const governed = authorizePolicyRegistryMutation(req, "rollback", body);
+        await requirePolicyRegistryCoordinatorReady();
+        const result = await nyraPolicyRegistryCoordinator.rollback({
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          operation_id: body.operation_id,
+          preflight_id: req.workPreflight.preflight_id,
+          domain_pack_id: body.domain_pack_id,
+          target_snapshot_digest: body.target_snapshot_digest,
+          owner_subject_fingerprint: governed.owner.owner_subject_fingerprint,
+          owner_binding_hash: String(body.owner_context.binding_hash || ""),
+          confirmation_reference: governed.owner.confirmation_reference,
+          owner_request_binding: governed.ownerRequestBinding,
+          authorization_digest: governed.authorizationDigest,
+          core_branch_id: "nyra_policy_registry",
+          nyra_branch_id: "risk_governance",
+        });
+        audit.append("core_nyra_policy_registry_rolled_back", {
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          key_id: req.coreKey.key_id,
+          operation_id: body.operation_id,
+          preflight_id: req.workPreflight.preflight_id,
+          snapshot_digest: result.snapshot_digest,
+          activation_generation: result.activation_generation,
+          idempotent_replay: result.idempotent_replay,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          rollback: policyRegistryPublicResult("rollback", result, req, body.operation_id),
+          authorization: policyRegistryPublicAuthorization(governed.authorization),
+        });
+      } catch (error) {
+        const classified = classifiedPolicyRegistryRouteError(error);
+        audit.append("core_nyra_policy_registry_rollback_rejected", {
+          tenant_id: req.tenantId,
+          work_id: req.workId || null,
+          key_id: req.coreKey.key_id,
+          reason: classified.code,
+        });
+        return policyRegistryRouteError(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/nyra-policy-registry/reconcile",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }),
+    dttWorkAuth,
+    async (req, res) => {
+      try {
+        const body = exactPolicyRegistryRouteBody(req, "reconcile");
+        const governed = authorizePolicyRegistryMutation(req, "reconcile", body);
+        await requirePolicyRegistryCoordinatorReady();
+        const result = await nyraPolicyRegistryCoordinator.reconcile({
+          tenant_id: req.tenantId,
+          operation_id: body.operation_id,
+          expected_work_id: req.workId,
+        });
+        audit.append("core_nyra_policy_registry_reconciled", {
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          key_id: req.coreKey.key_id,
+          operation_id: body.operation_id,
+          preflight_id: req.workPreflight.preflight_id,
+          snapshot_digest: result.snapshot_digest,
+          idempotent_replay: result.idempotent_replay,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          reconciliation: policyRegistryPublicResult("reconcile", result, req, body.operation_id),
+          authorization: policyRegistryPublicAuthorization(governed.authorization),
+        });
+      } catch (error) {
+        const classified = classifiedPolicyRegistryRouteError(error);
+        audit.append("core_nyra_policy_registry_reconciliation_rejected", {
+          tenant_id: req.tenantId,
+          work_id: req.workId || null,
+          key_id: req.coreKey.key_id,
+          reason: classified.code,
+        });
+        return policyRegistryRouteError(res, error);
+      }
+    },
+  );
 
     app.post("/v1/decision", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     const input = buildCoreInput(req, req.coreKey);

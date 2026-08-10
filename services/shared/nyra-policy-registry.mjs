@@ -127,8 +127,28 @@ const PACK_STATUSES = new Set([
 const SIGNED_STATUSES = new Set(["signed", "canary", "active"]);
 const ID_PATTERN = /^[a-z0-9][a-z0-9._/-]{1,159}$/;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const DEFAULT_TRAVERSAL_BUDGET = 256;
 const MAX_TRAVERSAL_BUDGET = 4_096;
+const SNAPSHOT_FIELDS = Object.freeze([
+  "schema_version", "tenant_id", "domain_pack_id", "ancestry", "leaf_packs",
+  "policy", "bindings", "sources", "validity", "resolution", "immutable",
+  "snapshot_digest",
+]);
+const SNAPSHOT_ANCESTRY_FIELDS = Object.freeze(["pack_id", "version", "digest", "scope"]);
+const SNAPSHOT_SCOPE_FIELDS = Object.freeze(["kind", "value", "tenant_id"]);
+const SNAPSHOT_LEAF_FIELDS = Object.freeze(["pack_id", "version", "digest"]);
+const SNAPSHOT_POLICY_FIELDS = Object.freeze([
+  "allow_actions", "deny_actions", "required_gates", "constraints",
+]);
+const SNAPSHOT_BINDING_FIELDS = Object.freeze([
+  "core_branch_ids", "nyra_branch_ids", "domain_pack_ids",
+]);
+const SNAPSHOT_VALIDITY_FIELDS = Object.freeze(["valid_from", "expires_at"]);
+const SNAPSHOT_RESOLUTION_FIELDS = Object.freeze([
+  "logical_depth", "traversal_budget", "traversed", "catalog_depth_policy",
+  "runtime_policy",
+]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -153,6 +173,167 @@ function canonical(value) {
 
 function sha256(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function isExactPlainObject(value, fields) {
+  if (!isPlainObject(value)) return false;
+  const keys = Reflect.ownKeys(value);
+  return keys.length === fields.length && keys.every((key) => typeof key === "string") &&
+    fields.every((field) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, field);
+      return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+    });
+}
+
+function isPlainArray(value) {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return false;
+  const keys = Object.keys(value);
+  const keySet = new Set(keys);
+  return keys.length === value.length && keys.every((key, index) => key === String(index)) &&
+    Reflect.ownKeys(value).every((key) => key === "length" || keySet.has(key));
+}
+
+function isNormalizedText(value, max = 200) {
+  return typeof value === "string" && value.length > 0 && value.length <= max &&
+    value === value.trim();
+}
+
+function isSortedUniqueTextArray(value, { nonempty = false, max = 200, pattern = null } = {}) {
+  if (!isPlainArray(value) || (nonempty && value.length === 0)) return false;
+  return value.every((item, index) => isNormalizedText(item, max) &&
+    (!pattern || pattern.test(item)) &&
+    (index === 0 || value[index - 1] < item));
+}
+
+function isPlainJson(value, seen = new Set()) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (!Array.isArray(value) && !isPlainObject(value)) return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  let valid;
+  if (Array.isArray(value)) {
+    valid = isPlainArray(value) && value.every((item) => isPlainJson(item, seen));
+  } else {
+    const keys = Reflect.ownKeys(value);
+    valid = keys.every((key) => {
+      if (typeof key !== "string") return false;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value") &&
+        isPlainJson(descriptor.value, seen);
+    });
+  }
+  seen.delete(value);
+  return valid;
+}
+
+function isExactIsoTimestamp(value) {
+  if (!isNormalizedText(value, 64)) return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function isCompiledSnapshotShape(snapshot) {
+  if (!isExactPlainObject(snapshot, SNAPSHOT_FIELDS) ||
+    snapshot.schema_version !== POLICY_REGISTRY_SCHEMA_VERSION ||
+    !isNormalizedText(snapshot.tenant_id, 120) ||
+    !isNormalizedText(snapshot.domain_pack_id, 80) ||
+    snapshot.immutable !== true ||
+    !SHA256_PATTERN.test(snapshot.snapshot_digest)) {
+    return false;
+  }
+
+  if (!isPlainArray(snapshot.ancestry) || snapshot.ancestry.length === 0 ||
+    !isPlainArray(snapshot.leaf_packs) || snapshot.leaf_packs.length === 0 ||
+    !isSortedUniqueTextArray(snapshot.sources, { nonempty: true, max: 160, pattern: ID_PATTERN }) ||
+    snapshot.sources.some((sourceId) =>
+      !NYRA_POLICY_PRIMARY_SOURCES.some((source) => source.source_id === sourceId))) {
+    return false;
+  }
+
+  const ancestryRefs = new Map();
+  let previousScopeIndex = -1;
+  let coreScopePresent = false;
+  for (const entry of snapshot.ancestry) {
+    if (!isExactPlainObject(entry, SNAPSHOT_ANCESTRY_FIELDS) ||
+      !ID_PATTERN.test(entry.pack_id) || !VERSION_PATTERN.test(entry.version) ||
+      !SHA256_PATTERN.test(entry.digest) ||
+      !isExactPlainObject(entry.scope, SNAPSHOT_SCOPE_FIELDS) ||
+      !POLICY_SCOPE_ORDER.includes(entry.scope.kind) ||
+      !isNormalizedText(entry.scope.value, 160)) {
+      return false;
+    }
+    const scopeIndex = POLICY_SCOPE_ORDER.indexOf(entry.scope.kind);
+    if (scopeIndex < previousScopeIndex) return false;
+    previousScopeIndex = scopeIndex;
+    if (entry.scope.kind === "core") coreScopePresent = true;
+    const tenantScoped = ["tenant", "environment", "work_type", "action", "policy"]
+      .includes(entry.scope.kind);
+    if (tenantScoped
+      ? entry.scope.tenant_id !== snapshot.tenant_id
+      : entry.scope.tenant_id !== null) {
+      return false;
+    }
+    const reference = `${entry.pack_id}@${entry.version}`;
+    if (ancestryRefs.has(reference)) return false;
+    ancestryRefs.set(reference, entry.digest);
+  }
+  if (!coreScopePresent) return false;
+
+  let previousLeaf = null;
+  for (const leaf of snapshot.leaf_packs) {
+    if (!isExactPlainObject(leaf, SNAPSHOT_LEAF_FIELDS) ||
+      !ID_PATTERN.test(leaf.pack_id) || !VERSION_PATTERN.test(leaf.version) ||
+      !SHA256_PATTERN.test(leaf.digest)) {
+      return false;
+    }
+    const reference = `${leaf.pack_id}@${leaf.version}`;
+    if ((previousLeaf !== null && previousLeaf >= reference) ||
+      ancestryRefs.get(reference) !== leaf.digest) {
+      return false;
+    }
+    previousLeaf = reference;
+  }
+
+  if (!isExactPlainObject(snapshot.policy, SNAPSHOT_POLICY_FIELDS) ||
+    !isSortedUniqueTextArray(snapshot.policy.allow_actions) ||
+    !isSortedUniqueTextArray(snapshot.policy.deny_actions) ||
+    !isSortedUniqueTextArray(snapshot.policy.required_gates) ||
+    !isPlainObject(snapshot.policy.constraints) || !isPlainJson(snapshot.policy.constraints)) {
+    return false;
+  }
+
+  if (!isExactPlainObject(snapshot.bindings, SNAPSHOT_BINDING_FIELDS) ||
+    !isSortedUniqueTextArray(snapshot.bindings.core_branch_ids, { nonempty: true }) ||
+    !isSortedUniqueTextArray(snapshot.bindings.nyra_branch_ids, { nonempty: true }) ||
+    !isSortedUniqueTextArray(snapshot.bindings.domain_pack_ids, { nonempty: true }) ||
+    !snapshot.bindings.domain_pack_ids.includes(snapshot.domain_pack_id)) {
+    return false;
+  }
+
+  if (!isExactPlainObject(snapshot.validity, SNAPSHOT_VALIDITY_FIELDS) ||
+    !isExactIsoTimestamp(snapshot.validity.valid_from) ||
+    !isExactIsoTimestamp(snapshot.validity.expires_at) ||
+    Date.parse(snapshot.validity.valid_from) >= Date.parse(snapshot.validity.expires_at)) {
+    return false;
+  }
+
+  return isExactPlainObject(snapshot.resolution, SNAPSHOT_RESOLUTION_FIELDS) &&
+    Number.isInteger(snapshot.resolution.logical_depth) &&
+    snapshot.resolution.logical_depth === snapshot.ancestry.length &&
+    Number.isInteger(snapshot.resolution.traversal_budget) &&
+    snapshot.resolution.traversal_budget >= 1 &&
+    snapshot.resolution.traversal_budget <= MAX_TRAVERSAL_BUDGET &&
+    Number.isInteger(snapshot.resolution.traversed) &&
+    snapshot.resolution.traversed >= snapshot.resolution.logical_depth &&
+    snapshot.resolution.traversed <= snapshot.resolution.traversal_budget &&
+    snapshot.resolution.catalog_depth_policy === "no_static_ceiling" &&
+    snapshot.resolution.runtime_policy === "bounded_fail_closed";
 }
 
 function requireText(value, field, max = 200) {
@@ -246,7 +427,8 @@ export function validatePolicyPack(pack, {
   const errors = [];
   try {
     if (!pack || typeof pack !== "object") throw new Error("pack_object_required");
-    normalizeId(pack.pack_id, "pack_id");
+    const packId = normalizeId(pack.pack_id, "pack_id");
+    if (pack.pack_id !== packId) throw new Error("pack_id_invalid");
     if (!VERSION_PATTERN.test(String(pack.version || ""))) throw new Error("pack_version_invalid");
     if (pack.schema_version !== POLICY_PACK_SCHEMA_VERSION) throw new Error("pack_schema_version_invalid");
     if (!PACK_STATUSES.has(pack.status)) throw new Error("pack_status_invalid");
@@ -265,7 +447,17 @@ export function validatePolicyPack(pack, {
     uniqueText(pack.policy.deny_actions, "deny_action");
     uniqueText(pack.policy.required_gates, "required_gate");
     if (!["inherit", "restrict"].includes(pack.policy.allow_mode)) throw new Error("allow_mode_invalid");
+    if (!Array.isArray(pack.parent_refs)) throw new Error("parent_refs_invalid");
+    for (const parent of pack.parent_refs) {
+      const parentPackId = normalizeId(parent?.pack_id, "parent_pack_id");
+      if (parent?.pack_id !== parentPackId) throw new Error("parent_pack_id_invalid");
+      if (!VERSION_PATTERN.test(String(parent?.version || ""))) throw new Error("parent_version_invalid");
+      if (!SHA256_PATTERN.test(String(parent?.digest || ""))) throw new Error("parent_digest_invalid");
+    }
     const sources = normalizeSourceRefs(pack.sources);
+    if (sources.some((source, index) => pack.sources[index]?.source_id !== source.source_id)) {
+      throw new Error("source_id_invalid");
+    }
     const freshnessSlaDays = Number(pack.freshness_sla_days);
     if (!Number.isInteger(freshnessSlaDays) || freshnessSlaDays < 1 || freshnessSlaDays > 3_650) {
       throw new Error("freshness_sla_days_invalid");
@@ -539,6 +731,9 @@ export function compilePolicySnapshot({
   if (!coreBranchIds?.size || !nyraBranchIds?.size || !domainPackIds?.size) {
     throw new Error("policy_binding_intersection_empty");
   }
+  const sourceIds = [...new Set(ordered
+    .flatMap((pack) => pack.sources.map((source) => source.source_id)))].sort();
+  if (!sourceIds.length) throw new Error("policy_snapshot_sources_required");
   const snapshotBase = {
     schema_version: POLICY_REGISTRY_SCHEMA_VERSION,
     tenant_id: tenantId,
@@ -564,7 +759,7 @@ export function compilePolicySnapshot({
       nyra_branch_ids: [...(nyraBranchIds || new Set())].sort(),
       domain_pack_ids: [...(domainPackIds || new Set())].sort(),
     },
-    sources: [...new Set(ordered.flatMap((pack) => pack.sources.map((source) => source.source_id)))].sort(),
+    sources: sourceIds,
     validity: {
       valid_from: new Date(Math.max(...ordered.map((pack) => Date.parse(pack.valid_from)))).toISOString(),
       expires_at: new Date(Math.min(...ordered.map((pack) => Date.parse(pack.expires_at)))).toISOString(),
@@ -639,11 +834,12 @@ export function validatePolicySnapshot(snapshot, {
   const coreBranchId = requireText(core_branch_id, "core_branch_id", 160);
   const nyraBranchId = requireText(nyra_branch_id, "nyra_branch_id", 160);
   if (snapshot?.tenant_id !== tenantId) reasons.push("cross_tenant_snapshot_denied");
-  const snapshotBody = snapshot && typeof snapshot === "object" ? clone(snapshot) : null;
+  const compiledShape = isCompiledSnapshotShape(snapshot);
+  const snapshotBody = compiledShape ? clone(snapshot) : null;
   const claimedDigest = snapshotBody?.snapshot_digest || null;
   if (snapshotBody) delete snapshotBody.snapshot_digest;
   const computedDigest = snapshotBody ? sha256(canonical(snapshotBody)) : null;
-  if (!snapshot?.immutable || !claimedDigest || claimedDigest !== computedDigest) reasons.push("invalid_policy_snapshot");
+  if (!compiledShape || claimedDigest !== computedDigest) reasons.push("invalid_policy_snapshot");
   const validFrom = Date.parse(snapshot?.validity?.valid_from);
   const expiresAt = Date.parse(snapshot?.validity?.expires_at);
   if (

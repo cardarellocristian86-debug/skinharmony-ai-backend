@@ -49,6 +49,87 @@ import {
 } from "../../shared/generic-work-core-join-context.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
+const POLICY_REGISTRY_WORK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const POLICY_REGISTRY_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/;
+const POLICY_REGISTRY_DOMAIN_PACK_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/;
+const POLICY_REGISTRY_SHA256 = /^[a-f0-9]{64}$/;
+const POLICY_REGISTRY_RESPONSE_LIMIT_BYTES = 128 * 1024;
+const POLICY_REGISTRY_CORE_TIMEOUT_MS = 3_000;
+const POLICY_REGISTRY_FORBIDDEN_CALLER_FIELDS = new Set([
+  "authenticated_tenant_id", "work_preflight", "owner_context",
+  "proof", "receipt", "attestation", "intent", "keys", "key_material",
+  "activation_attestation", "policy_registry_attestation", "core_receipt",
+]);
+const POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS = new Set([
+  "policy_registry_owner_confirmation_required",
+  "policy_registry_core_authorization_denied",
+  "policy_registry_request_scope_invalid",
+  "policy_proof_tenant_denied",
+  "policy_proof_work_binding_invalid",
+  "policy_registry_request_schema_invalid",
+  "policy_registry_request_invalid",
+  "policy_registry_preflight_binding_invalid",
+  "policy_registry_snapshot_not_pure",
+  "policy_registry_snapshot_invalid",
+  "policy_registry_authorization_digest_invalid",
+  "policy_proof_binding_invalid",
+  "policy_proof_attestation_invalid",
+  "policy_activation_core_receipt_invalid",
+  "policy_snapshot_signature_quorum_invalid",
+  "policy_proof_not_found",
+  "policy_proof_consumption_not_found",
+  "policy_rollback_snapshot_not_found",
+  "policy_proof_idempotency_conflict",
+  "policy_proof_owner_replayed",
+  "policy_proof_cas_conflict",
+  "policy_activation_core_receipt_replayed",
+  "policy_operation_idempotency_conflict",
+  "policy_operation_binding_invalid",
+  "policy_registry_concurrent_mutation",
+  "policy_registry_reconciliation_required",
+  "policy_registry_cas_conflict",
+  "policy_proof_reconciliation_not_ready",
+  "policy_registry_coordinator_unavailable",
+  "policy_registry_unavailable",
+  "policy_registry_postgres_required",
+  "policy_registry_postgres_unavailable",
+  "policy_proof_unavailable",
+  "policy_proof_signer_unavailable",
+  "policy_registry_nyra_busy",
+  "policy_registry_nyra_client_unavailable",
+  "policy_registry_nyra_redirect_denied",
+  "policy_registry_nyra_rejected",
+  "policy_registry_nyra_response_binding_invalid",
+  "policy_registry_nyra_response_json_invalid",
+  "policy_registry_nyra_response_too_large",
+  "policy_registry_nyra_timeout",
+  "policy_registry_nyra_unavailable",
+  "policy_registry_result_binding_invalid",
+  "policy_registry_operation_failed",
+]);
+const POLICY_REGISTRY_ROUTES = Object.freeze({
+  activate: Object.freeze({
+    path: "/v1/nyra-policy-registry/activate",
+    purpose: "nyra_policy_registry_snapshot_activate_v2",
+    action: "policy.snapshot.activate",
+    responseField: "activation",
+    successField: "activated",
+  }),
+  rollback: Object.freeze({
+    path: "/v1/nyra-policy-registry/rollback",
+    purpose: "nyra_policy_registry_snapshot_rollback_v2",
+    action: "policy.snapshot.rollback",
+    responseField: "rollback",
+    successField: "rolled_back",
+  }),
+  reconcile: Object.freeze({
+    path: "/v1/nyra-policy-registry/reconcile",
+    purpose: "nyra_policy_registry_snapshot_reconcile_v2",
+    action: "policy.snapshot.reconcile",
+    responseField: "reconciliation",
+    successField: "reconciled",
+  }),
+});
 const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
   preview: "nyra_v2_preview",
   requirements: "nyra_v2_requirements",
@@ -451,6 +532,10 @@ export function createCoreHandlers(config, options = {}) {
   const workQualityRank = Object.freeze({ observe: 0, draft: 1, sandbox_active: 2, scoped_active: 3, privileged: 4 });
   const qualityRank = workQualityRank[workQualityMode] ?? 0;
   const remediationLedgerContexts = new Map();
+  const policyRegistryCoreTimeoutMs = Math.min(Math.max(
+    Number(options.policyRegistryCoreTimeoutMs || POLICY_REGISTRY_CORE_TIMEOUT_MS),
+    10,
+  ), POLICY_REGISTRY_CORE_TIMEOUT_MS);
 
   function isWorkQualityRemediation(remediation) {
     return Boolean(AI_WORK_FAILURE_DEFINITIONS[String(remediation?.original_decision?.block_code || "")]);
@@ -650,9 +735,14 @@ export function createCoreHandlers(config, options = {}) {
     return selected;
   }
 
-  function sanitizeCoreBody(body) {
+  function sanitizeCoreBody(body, { preservePolicyRegistryDomainPackId = false } = {}) {
     return body && typeof body === "object" && !Array.isArray(body)
-      ? (({ domain_pack: _domainPack, domain_pack_id: _domainPackId, ...rest }) => rest)(body)
+      ? (({ domain_pack: _domainPack, domain_pack_id: domainPackId, ...rest }) => ({
+          ...rest,
+          ...(preservePolicyRegistryDomainPackId && domainPackId !== undefined
+            ? { domain_pack_id: domainPackId }
+            : {}),
+        }))(body)
       : body;
   }
 
@@ -664,8 +754,12 @@ export function createCoreHandlers(config, options = {}) {
     allowFailurePayload = false,
     dttWorkContext = null,
     genericWorkCoreJoinContext = null,
+    preservePolicyRegistryDomainPackId = false,
+    strictTransport = false,
+    timeoutMs = POLICY_REGISTRY_CORE_TIMEOUT_MS,
+    maxResponseBytes = POLICY_REGISTRY_RESPONSE_LIMIT_BYTES,
   } = {}) {
-    const sanitizedBody = sanitizeCoreBody(body);
+    const sanitizedBody = sanitizeCoreBody(body, { preservePolicyRegistryDomainPackId });
     const headers = { accept: "application/json" };
     if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
     const gatewayKey = configuredTenantGatewayKey();
@@ -727,22 +821,129 @@ export function createCoreHandlers(config, options = {}) {
         : dttWorkContext
           ? canonicalDttWorkContextBody(sanitizedBody)
           : JSON.stringify(sanitizedBody);
-    const response = await fetchImpl(`${config.universalCoreUrl}${path}`, {
-      method,
-      headers,
-      body: serializedBody,
-    });
-    const payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
+    const endpoint = `${config.universalCoreUrl}${path}`;
+    let response;
+    let payload;
+    if (!strictTransport) {
+      response = await fetchImpl(endpoint, {
+        method,
+        headers,
+        body: serializedBody,
+      });
+      payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
+    } else {
+      const controller = new AbortController();
+      const boundedTimeout = Number.isFinite(timeoutMs)
+        ? Math.max(1, Math.min(Number(timeoutMs), POLICY_REGISTRY_CORE_TIMEOUT_MS))
+        : POLICY_REGISTRY_CORE_TIMEOUT_MS;
+      const boundedResponseBytes = Number.isFinite(maxResponseBytes)
+        ? Math.max(1, Math.min(Number(maxResponseBytes), POLICY_REGISTRY_RESPONSE_LIMIT_BYTES))
+        : POLICY_REGISTRY_RESPONSE_LIMIT_BYTES;
+      const transportError = (code, status = 502) => {
+        const error = new Error(code);
+        error.code = code;
+        error.status = status;
+        error.statusCode = status;
+        Object.defineProperty(error, "policyRegistryTransportError", { value: true });
+        return error;
+      };
+      let reader = null;
+      let timeout;
+      const operation = (async () => {
+        const strictResponse = await fetchImpl(endpoint, {
+          method,
+          headers,
+          body: serializedBody,
+          redirect: "error",
+          signal: controller.signal,
+        });
+        if (strictResponse?.redirected === true || (strictResponse?.url && strictResponse.url !== endpoint)) {
+          throw transportError("policy_registry_core_redirect_denied");
+        }
+        const contentType = String(strictResponse?.headers?.get?.("content-type") || "").trim().toLowerCase();
+        if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(contentType)) {
+          throw transportError("policy_registry_core_content_type_invalid");
+        }
+        const rawLength = strictResponse?.headers?.get?.("content-length");
+        if (rawLength !== null && rawLength !== undefined && rawLength !== "") {
+          if (!/^\d+$/.test(String(rawLength))) {
+            throw transportError("policy_registry_core_content_length_invalid");
+          }
+          const declaredLength = Number(rawLength);
+          if (!Number.isSafeInteger(declaredLength) || declaredLength > boundedResponseBytes) {
+            throw transportError("policy_registry_core_response_too_large");
+          }
+        }
+        const chunks = [];
+        let received = 0;
+        if (strictResponse?.body && typeof strictResponse.body.getReader === "function") {
+          reader = strictResponse.body.getReader();
+          while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            const chunk = Buffer.from(part.value);
+            received += chunk.byteLength;
+            if (received > boundedResponseBytes) {
+              void reader.cancel().catch(() => {});
+              throw transportError("policy_registry_core_response_too_large");
+            }
+            chunks.push(chunk);
+          }
+        } else if (typeof strictResponse?.arrayBuffer === "function") {
+          const bytes = Buffer.from(await strictResponse.arrayBuffer());
+          received = bytes.byteLength;
+          if (received > boundedResponseBytes) {
+            throw transportError("policy_registry_core_response_too_large");
+          }
+          chunks.push(bytes);
+        } else {
+          throw transportError("policy_registry_core_response_json_invalid");
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(Buffer.concat(chunks, received).toString("utf8"));
+        } catch {
+          throw transportError("policy_registry_core_response_json_invalid");
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw transportError("policy_registry_core_response_json_invalid");
+        }
+        return { response: strictResponse, payload: parsed };
+      })();
+      const deadline = new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          if (reader) void reader.cancel().catch(() => {});
+          reject(transportError("policy_registry_core_timeout", 504));
+        }, boundedTimeout);
+      });
+      try {
+        ({ response, payload } = await Promise.race([operation, deadline]));
+      } catch (error) {
+        if (error?.policyRegistryTransportError === true) throw error;
+        const wrapped = new Error("policy_registry_core_unavailable");
+        wrapped.code = "policy_registry_core_unavailable";
+        wrapped.status = 503;
+        wrapped.statusCode = 503;
+        throw wrapped;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
     if (!response.ok) {
       if (allowFailurePayload) {
         return { ok: false, status: response.status, payload };
       }
-      const upstreamCode = typeof payload.error === "string" &&
+      const candidateUpstreamCode = typeof payload.error === "string" &&
         /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/.test(payload.error)
         ? payload.error
         : "unknown";
+      const upstreamCode = strictTransport && !POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS.has(candidateUpstreamCode)
+        ? "unknown"
+        : candidateUpstreamCode;
       const error = new Error(`core_request_failed:${response.status}:${upstreamCode}`);
       error.code = upstreamCode === "unknown" ? "core_request_failed" : upstreamCode;
+      error.status = response.status;
       error.statusCode = response.status;
       throw error;
     }
@@ -760,6 +961,28 @@ export function createCoreHandlers(config, options = {}) {
     const leaseBinding = await resolveDttWorkBinding(identity, workId);
     if (!leaseBinding || leaseBinding.execution_authorized !== false) {
       throw new Error("dtt_work_active_lease_required");
+    }
+    if (request.strictTransport === true) {
+      const presence = identity?.agentPresence;
+      const expiresAt = Date.parse(String(leaseBinding.expires_at || ""));
+      const participantExpiresAt = Date.parse(String(leaseBinding.participant_expires_at || ""));
+      if (
+        leaseBinding.schema_version !== "dtt_work_lease_binding_v1" ||
+        leaseBinding.tenant_id !== identity.tenantId ||
+        String(leaseBinding.work_id || "").toLowerCase() !== workId ||
+        !POLICY_REGISTRY_WORK_ID.test(String(leaseBinding.lease_id || "").toLowerCase()) ||
+        !Number.isFinite(expiresAt) || expiresAt <= Date.now() ||
+        !Number.isFinite(participantExpiresAt) || participantExpiresAt <= Date.now() ||
+        !presence || presence.transport_bound !== true ||
+        leaseBinding.session_id !== presence.session_id ||
+        leaseBinding.agent_id !== presence.agent_id ||
+        leaseBinding.client_type !== presence.client_type ||
+        leaseBinding.session_fingerprint !== presence.session_fingerprint ||
+        leaseBinding.host_transport_session_fingerprint !== presence.host_transport_session_fingerprint ||
+        leaseBinding.presence_signature !== presence.signature ||
+        leaseBinding.opaque_agent_id !== presence.opaque_agent_id ||
+        leaseBinding.actor_provenance !== presence.actor_provenance
+      ) throw new Error("dtt_work_active_lease_required");
     }
     return coreRequest(path, identity.tenantId, {
       ...request,
@@ -1356,12 +1579,222 @@ export function createCoreHandlers(config, options = {}) {
     };
   }
 
+  function policyRegistryForbiddenField(value, path = "$") {
+    if (path === "$.policy.constraints") return null;
+    if (!value || typeof value !== "object") return null;
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        const nested = policyRegistryForbiddenField(value[index], `${path}[${index}]`);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (
+        POLICY_REGISTRY_FORBIDDEN_CALLER_FIELDS.has(key) ||
+        /(?:^|_)(?:secret|private_key|signing_key|proof|receipt|attestation)(?:$|_)/i.test(key)
+      ) return `${path}.${key}`;
+      const nested = policyRegistryForbiddenField(child, `${path}.${key}`);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  function validatePolicyRegistryPreflight(preflight, identity, contract, domainPackId) {
+    const gallery = preflight?.tenant_work_gallery;
+    const security = preflight?.security_governance;
+    if (
+      !preflight || typeof preflight !== "object" || Array.isArray(preflight) ||
+      preflight.schema_version !== "skinharmony_work_preflight_v1" ||
+      typeof preflight.preflight_id !== "string" || preflight.preflight_id.length < 3 ||
+      preflight.mandatory !== true ||
+      preflight.tenant_id !== identity.tenantId ||
+      preflight.operational_surface !== "tenant_work_gallery" ||
+      gallery?.schema_version !== "tenant_work_gallery_v1" ||
+      gallery?.tenant_id !== identity.tenantId ||
+      gallery?.available !== true || gallery?.state !== "ready" ||
+      preflight?.memory_first?.status !== "recalled" ||
+      preflight?.governance?.execution_allowed_by_preflight !== false ||
+      security?.schema_version !== "nyra_core_security_gate_v1" ||
+      security?.always_on !== true || security?.fail_closed !== true ||
+      security?.core_verdict_required !== true ||
+      security?.source_instructions_are_data !== true ||
+      security?.cross_tenant_blocked !== true ||
+      preflight?.request?.operation_type !== contract.action ||
+      (domainPackId && preflight?.domain_pack?.id !== domainPackId)
+    ) {
+      throw new Error("policy_registry_preflight_binding_invalid");
+    }
+    return preflight;
+  }
+
+  function validatePolicyRegistrySnapshot(snapshot, identity, domainPackId) {
+    const exactFields = [
+      "ancestry", "bindings", "domain_pack_id", "immutable", "leaf_packs", "policy",
+      "resolution", "schema_version", "snapshot_digest", "sources", "tenant_id", "validity",
+    ];
+    if (
+      !snapshot || typeof snapshot !== "object" || Array.isArray(snapshot) ||
+      Object.keys(snapshot).sort().join("\0") !== exactFields.sort().join("\0") ||
+      snapshot.schema_version !== "nyra_policy_registry_v1" ||
+      snapshot.tenant_id !== identity.tenantId ||
+      snapshot.domain_pack_id !== domainPackId ||
+      snapshot.immutable !== true ||
+      !POLICY_REGISTRY_SHA256.test(String(snapshot.snapshot_digest || ""))
+    ) throw new Error("policy_registry_snapshot_invalid");
+    const forbidden = policyRegistryForbiddenField(snapshot);
+    if (forbidden) throw new Error("policy_registry_snapshot_not_pure");
+    const body = structuredClone(snapshot);
+    delete body.snapshot_digest;
+    const computed = crypto.createHash("sha256")
+      .update(JSON.stringify(stableCanonical(body)))
+      .digest("hex");
+    if (computed !== snapshot.snapshot_digest) throw new Error("policy_registry_snapshot_invalid");
+    return snapshot;
+  }
+
+  function projectPolicyRegistryResponse(kind, payload, identity, args, preflight) {
+    const contract = POLICY_REGISTRY_ROUTES[kind];
+    const authorization = payload?.authorization;
+    const result = payload?.[contract.responseField];
+    if (
+      payload?.ok !== true || payload?.tenant_id !== identity.tenantId ||
+      String(payload?.work_id || "").toLowerCase() !== String(args.work_id).toLowerCase() ||
+      !authorization || typeof authorization !== "object" || Array.isArray(authorization) ||
+      authorization.allowed !== true || authorization.scope !== "policy_registry_snapshot_mutation" ||
+      typeof authorization.state !== "string" || authorization.confirmation_satisfied !== true ||
+      authorization.core_final_authority !== true || authorization.caller_authority !== false ||
+      authorization.provider_execution_authorized !== false ||
+      !result || typeof result !== "object" || Array.isArray(result) ||
+      result.tenant_id !== identity.tenantId ||
+      String(result.work_id || "").toLowerCase() !== String(args.work_id).toLowerCase() ||
+      result.operation_id !== args.operation_id || result.preflight_id !== preflight.preflight_id ||
+      !POLICY_REGISTRY_SHA256.test(String(result.snapshot_digest || "")) ||
+      result[contract.successField] !== true || typeof result.idempotent_replay !== "boolean" ||
+      result.proof_status !== "consumed" || result.execution_authorized !== false ||
+      result.provider_execution_authorized !== false || result.caller_authority !== false
+    ) throw new Error("policy_registry_core_response_invalid");
+    if (result.intent_digest !== undefined && !POLICY_REGISTRY_SHA256.test(String(result.intent_digest))) {
+      throw new Error("policy_registry_core_response_invalid");
+    }
+    if (result.activation_generation !== undefined &&
+      (!Number.isSafeInteger(result.activation_generation) || result.activation_generation < 0)) {
+      throw new Error("policy_registry_core_response_invalid");
+    }
+    const projectedResult = {
+      tenant_id: identity.tenantId,
+      work_id: String(args.work_id).toLowerCase(),
+      operation_id: args.operation_id,
+      preflight_id: preflight.preflight_id,
+      snapshot_digest: result.snapshot_digest,
+      [contract.successField]: true,
+      idempotent_replay: result.idempotent_replay,
+      proof_status: "consumed",
+      execution_authorized: false,
+      provider_execution_authorized: false,
+      caller_authority: false,
+      ...(result.intent_digest ? { intent_digest: result.intent_digest } : {}),
+      ...(result.activation_generation !== undefined
+        ? { activation_generation: result.activation_generation }
+        : {}),
+    };
+    return {
+      ok: true,
+      tenant_id: identity.tenantId,
+      work_id: String(args.work_id).toLowerCase(),
+      [contract.responseField]: projectedResult,
+      authorization: {
+        allowed: true,
+        state: authorization.state,
+        scope: "policy_registry_snapshot_mutation",
+        confirmation_satisfied: true,
+        core_final_authority: true,
+        caller_authority: false,
+        provider_execution_authorized: false,
+      },
+      execution_authorized: false,
+      provider_execution_authorized: false,
+      caller_authority: false,
+    };
+  }
+
+  async function policyRegistryLifecycle(kind, args, identity) {
+    const contract = POLICY_REGISTRY_ROUTES[kind];
+    if (!contract) throw new Error("policy_registry_operation_invalid");
+    const workId = String(args?.work_id || "").trim().toLowerCase();
+    const operationId = String(args?.operation_id || "").trim();
+    const domainPackId = kind === "reconcile" ? null : String(args?.domain_pack_id || "").trim();
+    const allowedFields = new Set([
+      "work_id", "operation_id", "owner_confirmed", "confirmation_reference",
+      "agent_id", "client_type", "session_id", "work_preflight",
+      ...(kind === "activate" ? ["domain_pack_id", "snapshot"] : []),
+      ...(kind === "rollback" ? ["domain_pack_id", "target_snapshot_digest"] : []),
+    ]);
+    if (!args || typeof args !== "object" || Array.isArray(args) ||
+      Object.keys(args).some((field) => !allowedFields.has(field))) {
+      throw new Error("policy_registry_caller_fields_invalid");
+    }
+    if (!POLICY_REGISTRY_WORK_ID.test(workId) || !POLICY_REGISTRY_OPERATION_ID.test(operationId) ||
+      (domainPackId && !POLICY_REGISTRY_DOMAIN_PACK_ID.test(domainPackId))) {
+      throw new Error("policy_registry_request_invalid");
+    }
+    if (args.owner_confirmed !== true || identity?.ownerConfirmed !== true) {
+      throw new Error("owner_confirmation_required");
+    }
+    const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+    const preflight = validatePolicyRegistryPreflight(args.work_preflight, identity, contract, domainPackId);
+    if (kind === "activate") validatePolicyRegistrySnapshot(args.snapshot, identity, domainPackId);
+    if (kind === "rollback" && !POLICY_REGISTRY_SHA256.test(String(args.target_snapshot_digest || ""))) {
+      throw new Error("policy_registry_request_invalid");
+    }
+    const requestBody = {
+      tenant_id: identity.tenantId,
+      work_id: workId,
+      operation_id: operationId,
+      ...(domainPackId ? { domain_pack_id: domainPackId } : {}),
+      work_preflight: preflight,
+      owner_confirmed: true,
+      confirmation_reference: hostNativeConfirmationReference(
+        identity,
+        ownerMode,
+        contract.purpose,
+        operationId,
+      ),
+      ...(kind === "activate" ? { snapshot: args.snapshot } : {}),
+      ...(kind === "rollback" ? { target_snapshot_digest: args.target_snapshot_digest } : {}),
+    };
+    const body = {
+      ...requestBody,
+      owner_context: ownerContext(identity, {
+        hostNativeOwner: true,
+        requestBinding: ownerRequestBinding(contract.purpose, requestBody),
+      }),
+    };
+    const payload = await dttCoreRequest(contract.path, { work_id: workId }, identity, {
+      method: "POST",
+      body,
+      preservePolicyRegistryDomainPackId: kind !== "reconcile",
+      strictTransport: true,
+      timeoutMs: policyRegistryCoreTimeoutMs,
+    });
+    return dedicatedCoreTextResult(
+      projectPolicyRegistryResponse(kind, payload, identity, { ...args, work_id: workId, operation_id: operationId }, preflight),
+      contract.path,
+    );
+  }
+
   const handlers = {
     core_health: async (_args, identity) => textResult({
       ...(await coreRequest("/healthz", identity.tenantId)),
       tenant_id: identity.tenantId,
       mcp_identity: ownerBindingStatus(config, identity),
     }),
+    nyra_policy_registry_activate: async (args, identity) =>
+      policyRegistryLifecycle("activate", args, identity),
+    nyra_policy_registry_rollback: async (args, identity) =>
+      policyRegistryLifecycle("rollback", args, identity),
+    nyra_policy_registry_reconcile: async (args, identity) =>
+      policyRegistryLifecycle("reconcile", args, identity),
     host_native_status: async (_args, identity) => textResult(
       await coreRequest("/v1/host-native/status", identity.tenantId),
     ),

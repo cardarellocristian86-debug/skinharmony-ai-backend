@@ -153,18 +153,52 @@ services:
       # becomes mandatory only after a signed, quorum-approved snapshot exists.
       - key: CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE
         value: advisory_evaluate
-      # Dedicated Policy Registry proof material. Core keeps only its private
-      # signing key and Nyra's public key; the two key pairs are independent.
+      # Policy Registry activation remains code-dark until the external Core
+      # signer, Nyra attester and distributed PostgreSQL proof path are pinned
+      # and independently verified. Core holds public verification material
+      # only; never add an in-process/private signing key here.
+      - key: CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED
+        value: "false"
+      - key: CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED
+        value: "false"
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE
+        value: disabled
       - key: CORE_NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST
         value: codexai
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID
         value: universal-core-policy-registry-v1
       - key: CORE_NYRA_POLICY_REGISTRY_NYRA_KEY_ID
         value: nyra-policy-registry-v1
-      - key: CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ORIGIN
+        sync: false
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PATH
+        value: /v1/policy-registry/sign
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE
+        value: universal-core-policy-registry-signer
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
+        sync: false
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
+        sync: false
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ED25519_PUBLIC_KEY
+        sync: false
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TIMEOUT_MS
+        value: "1500"
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MAX_RESPONSE_BYTES
+        value: "4096"
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PROBE_COOLDOWN_MS
+        value: "5000"
+      - key: CORE_NYRA_POLICY_REGISTRY_CORE_PUBLIC_KEY_FINGERPRINT
         sync: false
       - key: CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY
-        sync: false
+        fromService:
+          type: web
+          name: skinharmony-nyra-core
+          envVarKey: NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT
+        fromService:
+          type: web
+          name: skinharmony-nyra-core
+          envVarKey: NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT
       - key: CORE_NYRA_POLICY_REGISTRY_RECEIPT_SECRET
         generateValue: true
       - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SERVICE_KEY
@@ -174,6 +208,25 @@ services:
           envVarKey: NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY
       - key: CORE_NYRA_POLICY_REGISTRY_PROOF_TTL_MS
         value: "300000"
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_ORIGIN
+        value: https://skinharmony-nyra-core.onrender.com
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_TIMEOUT_MS
+        value: "2500"
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_MAX_RESPONSE_BYTES
+        value: "65536"
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_PROBE_COOLDOWN_MS
+        value: "5000"
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SERVICE
+        value: nyra-horizontal-runtime
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE
+        value: nyra-policy-registry-signer
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
+        fromService:
+          type: web
+          name: skinharmony-nyra-core
+          envVarKey: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PURPOSE
+        value: nyra.policy_registry.attestation
       - key: CORE_NYRA_DEEP_BRANCH_V2_ENABLED
         value: "true"
       - key: CORE_NYRA_DEEP_BRANCH_V2_MODE

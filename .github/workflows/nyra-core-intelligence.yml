@@ -17,6 +17,7 @@ on:
       - "personal-control-center/data/nyra-deep-branch-v2.shards/**"
       - "personal-control-center/lib/nyra-deep-branch-v2*.js"
       - "personal-control-center/lib/nyra-horizontal-runtime.js"
+      - "personal-control-center/lib/nyra-policy-registry-attestation.js"
       - "personal-control-center/public/**"
       - "personal-control-center/server.js"
       - "personal-control-center/test/nyra-*"
@@ -48,6 +49,7 @@ on:
       - "personal-control-center/data/nyra-deep-branch-v2.shards/**"
       - "personal-control-center/lib/nyra-deep-branch-v2*.js"
       - "personal-control-center/lib/nyra-horizontal-runtime.js"
+      - "personal-control-center/lib/nyra-policy-registry-attestation.js"
       - "personal-control-center/public/**"
       - "personal-control-center/server.js"
       - "personal-control-center/test/nyra-*"
@@ -202,9 +204,12 @@ jobs:
             .find { |service| service["name"] == "skinharmony-core-mcp" }
           core = load_blueprint.call("render-universal-core.yaml")
             .find { |service| service["name"] == "skinharmony-universal-core" }
+          nyra = load_blueprint.call("render-nyra.yaml")
+            .find { |service| service["name"] == "skinharmony-nyra-core" }
           abort("MCP Render service missing") unless mcp
           abort("Universal Core Render service missing") unless core
-          [mcp, core].each do |service|
+          abort("Nyra Render service missing") unless nyra
+          [mcp, core, nyra].each do |service|
             abort("#{service["name"]}: checksPass auto-deploy required") unless service["autoDeployTrigger"] == "checksPass"
             abort("#{service["name"]}: health check must remain /healthz") unless service["healthCheckPath"] == "/healthz"
             abort("#{service["name"]}: exact GitHub repository required") unless
@@ -242,6 +247,140 @@ jobs:
           end
 
           core_env = Array(core["envVars"]).to_h { |entry| [entry["key"], entry] }
+          nyra_env = Array(nyra["envVars"]).to_h { |entry| [entry["key"], entry] }
+          policy_registry_nyra_values = {
+            "NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED" => "false",
+            "NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED" => "false",
+            "NYRA_POLICY_REGISTRY_SIGNER_MODE" => "disabled",
+            "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PATH" => "/v1/policy-registry/sign",
+            "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE" => "nyra-policy-registry-signer",
+            "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PURPOSE" => "nyra.policy_registry.attestation",
+            "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_KEY_ID" => "nyra-policy-registry-v1",
+            "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TIMEOUT_MS" => "1500",
+            "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_MAX_RESPONSE_BYTES" => "4096",
+          }
+          policy_registry_nyra_values.each do |key, expected|
+            abort("#{key}: Nyra Policy Registry Blueprint contract changed") unless
+              Array(nyra["envVars"]).count { |entry| entry["key"] == key } == 1 &&
+              nyra_env.dig(key, "value") == expected
+          end
+          %w[
+            NYRA_POLICY_REGISTRY_CORE_PUBLIC_KEY
+            NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY
+            NYRA_POLICY_REGISTRY_CORE_PUBLIC_KEY_FINGERPRINT
+            NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT
+            NYRA_POLICY_REGISTRY_DATABASE_URL
+            NYRA_POLICY_REGISTRY_REMOTE_SIGNER_ORIGIN
+            NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT
+            NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE_TOKEN
+          ].each do |key|
+            abort("#{key}: must remain manually provisioned") unless
+              nyra_env[key] == { "key" => key, "sync" => false }
+          end
+          abort("Nyra Policy Registry S2S secret must remain generated") unless
+            nyra_env["NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY"] == {
+              "key" => "NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY", "generateValue" => true,
+            }
+          forbidden_policy_registry_keys = Array(nyra["envVars"]).filter_map do |entry|
+            key = String(entry["key"])
+            key if key.match?(/NYRA_POLICY_REGISTRY.*PRIVATE_KEY/)
+          end
+          abort("Nyra Policy Registry Blueprint contains private key material") unless
+            forbidden_policy_registry_keys.empty?
+          abort("Production Nyra Policy Registry must not fall back to a file replay store") if
+            nyra_env.key?("NYRA_POLICY_REGISTRY_REPLAY_STORE_PATH")
+          policy_registry_mcp_contract = {
+            "NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED" => {
+              "key" => "NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED", "value" => "false",
+            },
+            "NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED" => {
+              "key" => "NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED", "value" => "false",
+            },
+          }
+          policy_registry_mcp_contract.each do |key, expected|
+            abort("#{key}: Policy Registry MCP Blueprint contract changed") unless
+              Array(mcp["envVars"]).count { |entry| entry["key"] == key } == 1 &&
+              mcp_env[key] == expected
+          end
+          policy_registry_core_values = {
+            "CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE" => "advisory_evaluate",
+            "CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED" => "false",
+            "CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED" => "false",
+            "CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE" => "disabled",
+            "CORE_NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST" => "codexai",
+            "CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID" => "universal-core-policy-registry-v1",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_KEY_ID" => "nyra-policy-registry-v1",
+            "CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PATH" => "/v1/policy-registry/sign",
+            "CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE" =>
+              "universal-core-policy-registry-signer",
+            "CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TIMEOUT_MS" => "1500",
+            "CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MAX_RESPONSE_BYTES" => "4096",
+            "CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PROBE_COOLDOWN_MS" => "5000",
+            "CORE_NYRA_POLICY_REGISTRY_PROOF_TTL_MS" => "300000",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_ORIGIN" =>
+              "https://skinharmony-nyra-core.onrender.com",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_TIMEOUT_MS" => "2500",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_MAX_RESPONSE_BYTES" => "65536",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_PROBE_COOLDOWN_MS" => "5000",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_SERVICE" => "nyra-horizontal-runtime",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE" =>
+              "nyra-policy-registry-signer",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PURPOSE" =>
+              "nyra.policy_registry.attestation",
+          }
+          policy_registry_core_values.each do |key, expected|
+            abort("#{key}: Policy Registry Core Blueprint contract changed") unless
+              Array(core["envVars"]).count { |entry| entry["key"] == key } == 1 &&
+              core_env.dig(key, "value") == expected
+          end
+          %w[
+            CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ORIGIN
+            CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
+            CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
+            CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ED25519_PUBLIC_KEY
+            CORE_NYRA_POLICY_REGISTRY_CORE_PUBLIC_KEY_FINGERPRINT
+          ].each do |key|
+            abort("#{key}: must remain manually provisioned") unless
+              core_env[key] == { "key" => key, "sync" => false }
+          end
+          {
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY" =>
+              "NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT" =>
+              "NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT" =>
+              "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT",
+          }.each do |key, producer_key|
+            abort("#{key}: must remain pinned to Nyra's verified public contract") unless
+              core_env[key] == {
+                "key" => key,
+                "fromService" => {
+                  "type" => "web",
+                  "name" => "skinharmony-nyra-core",
+                  "envVarKey" => producer_key,
+                },
+              }
+          end
+          abort("Policy Registry receipt secret must remain server generated") unless
+            core_env["CORE_NYRA_POLICY_REGISTRY_RECEIPT_SECRET"] == {
+              "key" => "CORE_NYRA_POLICY_REGISTRY_RECEIPT_SECRET",
+              "generateValue" => true,
+            }
+          abort("Policy Registry Nyra S2S key must remain service-bound") unless
+            core_env["CORE_NYRA_POLICY_REGISTRY_NYRA_SERVICE_KEY"] == {
+              "key" => "CORE_NYRA_POLICY_REGISTRY_NYRA_SERVICE_KEY",
+              "fromService" => {
+                "type" => "web",
+                "name" => "skinharmony-nyra-core",
+                "envVarKey" => "NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY",
+              },
+            }
+          forbidden_policy_core_keys = Array(core["envVars"]).filter_map do |entry|
+            key = String(entry["key"])
+            key if key.match?(/CORE_NYRA_POLICY_REGISTRY.*PRIVATE_KEY/)
+          end
+          abort("Core Policy Registry Blueprint contains private key material") unless
+            forbidden_policy_core_keys.empty?
           generic_join_mcp_contract = {
             "GENERIC_WORK_CORE_JOIN_ENABLED" => {
               "key" => "GENERIC_WORK_CORE_JOIN_ENABLED", "value" => "false",
@@ -924,6 +1063,23 @@ jobs:
         run: >-
           node --test
           services/universal-core-service/test/research-airlock-postgres16.test.js
+      - name: Exercise PostgreSQL 16 Core Policy Registry proof and lifecycle gate
+        env:
+          POLICY_REGISTRY_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/continuity_ci
+        run: >-
+          node --test
+          services/universal-core-service/test/nyra-policy-registry-postgres16.test.js
+      - name: Test Nyra Policy Registry attestation and exact S2S route
+        run: >-
+          node --test
+          personal-control-center/test/nyra-policy-registry-attestation.test.js
+          personal-control-center/test/nyra-policy-registry-attestation-route.test.js
+      - name: Exercise PostgreSQL 16 Nyra Policy Registry replay gate
+        env:
+          NYRA_POLICY_REGISTRY_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/continuity_ci
+        run: >-
+          node --test
+          personal-control-center/test/nyra-policy-registry-attestation-postgres16.test.js
       - name: Test Universal Core from root install
         run: npm run core:service:test
       - name: Test Core MCP from root install

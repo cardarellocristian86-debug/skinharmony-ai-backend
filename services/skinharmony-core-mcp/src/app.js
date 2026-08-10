@@ -39,6 +39,142 @@ const CONNECTOR_TOOL_NAMESPACE = "skinharmony_nyra_core";
 const GENERIC_WORK_CORE_JOIN_TOOL = "work_continuity_generic_core_join";
 const GENERIC_WORK_CORE_JOIN_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const SHA256_HEX = /^[a-f0-9]{64}$/;
+export const POLICY_REGISTRY_LIFECYCLE_TOOLS = new Set([
+  "nyra_policy_registry_activate",
+  "nyra_policy_registry_rollback",
+  "nyra_policy_registry_reconcile",
+]);
+const POLICY_REGISTRY_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
+const POLICY_REGISTRY_UPSTREAM_PATH = "/api/nyra/policy-registry/attestations";
+
+function exactHttpsOrigin(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    return parsed.protocol === "https:" && !parsed.username && !parsed.password &&
+      !parsed.search && !parsed.hash && ["", "/"].includes(parsed.pathname) &&
+      parsed.origin === String(value || "").replace(/\/$/, "");
+  } catch {
+    return false;
+  }
+}
+
+export function buildPolicyRegistryLifecycleHealth(config = {}, options = {}, upstream = {}) {
+  const enabled = config.policyRegistryLifecycleEnabled === true;
+  const required = config.policyRegistryLifecycleRequired === true;
+  const configuredError = String(config.policyRegistryLifecycleConfigurationError || "");
+  const knownConfigurationErrors = new Set([
+    "nyra_policy_registry_lifecycle_enabled_flag_invalid",
+    "nyra_policy_registry_lifecycle_required_flag_invalid",
+    "nyra_policy_registry_lifecycle_required_without_enabled",
+    "nyra_policy_registry_lifecycle_core_origin_invalid",
+  ]);
+  const configurationError = knownConfigurationErrors.has(configuredError)
+    ? configuredError
+    : (enabled || required) && config.policyRegistryLifecycleConfigurationValid !== true
+      ? "nyra_policy_registry_lifecycle_configuration_invalid"
+      : required && !enabled
+        ? "nyra_policy_registry_lifecycle_required_without_enabled"
+        : enabled && config.policyRegistryLifecycleCoreOriginValid !== true
+          ? "nyra_policy_registry_lifecycle_core_origin_invalid"
+          : null;
+  const strong = (value) => Buffer.byteLength(String(value || "").trim(), "utf8") >= 32;
+  const local = {
+    host_native_enabled: config.hostNativeAgentProtocolEnabled === true,
+    mandatory_presence_enabled: config.mandatoryAgentPresenceEnabled === true,
+    continuity_configured: Boolean(String(config.databaseUrl || "").trim()),
+    continuity_initialized: options.readiness?.continuityInitialized === true,
+    tenant_gateway_configured: strong(config.tenantGatewayKey),
+    tenant_context_signing_configured: strong(config.tenantContextSigningSecret),
+    owner_context_signing_configured: strong(config.ownerContextSigningSecret),
+    dtt_identity_signing_configured: strong(config.dttAgentIdentitySigningSecret),
+    agent_presence_signing_configured: strong(config.agentSignatureSecret),
+    agent_presence_signing_independent: config.agentSignatureSecretReused !== true,
+  };
+  const localReady = Object.values(local).every(Boolean);
+  const registry = upstream?.payload?.nyra_policy_registry;
+  const lifecycle = registry?.proof_lifecycle;
+  const proof = registry?.proof;
+  const e2e = registry?.proof_e2e;
+  const e2eProof = e2e?.proof;
+  const e2eStore = e2e?.store;
+  const e2eUpstream = e2e?.upstream;
+  const keyIdsValid = POLICY_REGISTRY_KEY_ID.test(String(proof?.core_key_id || "")) &&
+    POLICY_REGISTRY_KEY_ID.test(String(proof?.nyra_key_id || "")) &&
+    proof.core_key_id !== proof.nyra_key_id;
+  const fingerprintsValid = SHA256_HEX.test(String(proof?.core_public_key_fingerprint || "")) &&
+    SHA256_HEX.test(String(proof?.nyra_public_key_fingerprint || "")) &&
+    proof.core_public_key_fingerprint !== proof.nyra_public_key_fingerprint;
+  const proofMatchesE2e = e2eProof?.ready === true &&
+    e2eProof?.core_key_id === proof?.core_key_id && e2eProof?.nyra_key_id === proof?.nyra_key_id &&
+    e2eProof?.core_public_key_fingerprint === proof?.core_public_key_fingerprint &&
+    e2eProof?.nyra_public_key_fingerprint === proof?.nyra_public_key_fingerprint;
+  const registryReady = upstream?.responseOk === true &&
+    registry?.configuration_valid === true && registry?.evaluation === "active" &&
+    registry?.enforcement === "mandatory" && registry?.configured === true &&
+    registry?.backend === "postgresql" && registry?.restart_durable === true &&
+    registry?.distributed === true && registry?.state === "ready" && registry?.ready === true;
+  const proofReady = lifecycle?.enabled === true && lifecycle?.required === true &&
+    lifecycle?.mode === "remote" &&
+    lifecycle?.configuration_valid === true && lifecycle?.state === "ready" &&
+    lifecycle?.ready === true && lifecycle?.render_gate_required === true &&
+    proof?.ready === true && proof?.backend === "postgresql" &&
+    proof?.algorithm === "Ed25519+HMAC-SHA256" && proof?.signer?.ready === true &&
+    proof?.signer?.state === "ready" && proof?.signer?.custody === "external_remote_signer" &&
+    /^[a-f0-9]{40}$/.test(String(proof?.signer?.target_commit || "")) &&
+    keyIdsValid && fingerprintsValid;
+  const e2eReady = e2e?.ready === true && e2e?.e2e_verified === true && proofMatchesE2e &&
+    e2eStore?.ready === true && e2eStore?.backend === "postgresql" &&
+    e2eStore?.restart_durable === true && e2eStore?.distributed === true &&
+    e2eUpstream?.configured === true && e2eUpstream?.ready === true &&
+    e2eUpstream?.state === "ready" && exactHttpsOrigin(e2eUpstream?.origin) &&
+    e2eUpstream?.path === POLICY_REGISTRY_UPSTREAM_PATH &&
+    e2eUpstream?.redirect_policy === "error" && e2eUpstream?.upstream_verified === true;
+  let state = "disabled";
+  let reason = "nyra_policy_registry_lifecycle_disabled";
+  let ready = false;
+  if (configurationError) {
+    state = "configuration_invalid";
+    reason = configurationError;
+  } else if (enabled && !localReady) {
+    state = "local_prerequisites_unavailable";
+    reason = "nyra_policy_registry_lifecycle_local_prerequisites_unavailable";
+  } else if (enabled && upstream?.responseOk !== true) {
+    state = "upstream_unavailable";
+    reason = "nyra_policy_registry_lifecycle_upstream_unavailable";
+  } else if (enabled && !registryReady) {
+    state = "registry_not_ready";
+    reason = "nyra_policy_registry_lifecycle_registry_not_ready";
+  } else if (enabled && !proofReady) {
+    state = "proof_not_ready";
+    reason = "nyra_policy_registry_lifecycle_proof_not_ready";
+  } else if (enabled && !e2eReady) {
+    state = "e2e_not_ready";
+    reason = "nyra_policy_registry_lifecycle_e2e_not_ready";
+  } else if (enabled) {
+    state = "ready";
+    reason = null;
+    ready = true;
+  }
+  return Object.freeze({
+    enabled,
+    required,
+    configuration_valid: configurationError === null,
+    configuration_error: configurationError,
+    configured: enabled && configurationError === null && localReady,
+    ready,
+    usable: ready,
+    state,
+    reason,
+    local,
+    upstream_ready: registryReady,
+    proof_ready: proofReady,
+    e2e_ready: e2eReady,
+    key_ids_distinct: keyIdsValid,
+    public_key_fingerprints_distinct: fingerprintsValid,
+    execution_authorized: false,
+    provider_execution_authorized: false,
+  });
+}
 
 function resolveConnectorToolName(value, tools = []) {
   const requested = String(value || "");
@@ -208,6 +344,7 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "core_capability_invoke",
   "host_native_delegation_issue",
   "host_native_delegation_revoke",
+  ...POLICY_REGISTRY_LIFECYCLE_TOOLS,
   "work_continuity_create",
   "work_continuity_start_or_resume",
   "core_block_remediation_resubmit",
@@ -650,6 +787,14 @@ const TOOL_FAILURE_STATUS_BY_CODE = Object.freeze({
   generic_work_core_join_upstream_unavailable: 503,
   generic_work_core_join_response_invalid: 502,
   generic_work_core_join_signature_invalid: 502,
+  policy_registry_core_timeout: 504,
+  policy_registry_core_unavailable: 503,
+  policy_registry_core_redirect_denied: 502,
+  policy_registry_core_content_type_invalid: 502,
+  policy_registry_core_content_length_invalid: 502,
+  policy_registry_core_response_too_large: 502,
+  policy_registry_core_response_json_invalid: 502,
+  policy_registry_core_response_invalid: 502,
 });
 
 function inferredToolFailureStatus(code) {
@@ -666,7 +811,8 @@ function toolFailure(error) {
   const core = raw.match(/^core_request_failed:(\d{3}):([a-zA-Z0-9_-]+)$/);
   const mappedStatus = TOOL_FAILURE_STATUS_BY_CODE[raw];
   const status = Number(
-    error?.status ?? (core ? core[1] : mappedStatus ?? inferredToolFailureStatus(raw) ?? 500),
+    error?.status ?? error?.statusCode ??
+      (core ? core[1] : mappedStatus ?? inferredToolFailureStatus(raw) ?? 500),
   );
   const code = core?.[2] || (/^[a-zA-Z0-9_-]{3,80}$/.test(raw) ? raw : "tool_execution_failed");
   const retryable = error?.retryable === true ||
@@ -697,7 +843,8 @@ function toolFailure(error) {
 }
 
 function configureToolForRuntime(tool, config) {
-  if (config.environmentRoutingRequired !== true) return tool;
+  if (config.environmentRoutingRequired !== true ||
+    POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name)) return tool;
   return {
     ...tool,
     inputSchema: {
@@ -714,16 +861,145 @@ export function createApp(config, options = {}) {
   const handlers = options.handlers || {};
   const beforeToolCall = options.beforeToolCall;
   const afterToolCall = options.afterToolCall;
+  const policyRegistryLocallyEligible = config.policyRegistryLifecycleEnabled === true &&
+    config.policyRegistryLifecycleConfigurationValid === true &&
+    config.policyRegistryLifecycleCoreOriginValid === true;
   const availableTools = TOOLS.filter((tool) =>
     typeof handlers[tool.name] === "function" &&
     (tool.name !== GENERIC_WORK_CORE_JOIN_TOOL || (
       config.genericWorkCoreJoinEnabled === true &&
       config.genericWorkCoreJoinConfigurationValid === true
-    ))
+    )) &&
+    (!POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name) || policyRegistryLocallyEligible)
   ).map((tool) => configureToolForRuntime(tool, config));
-  const visibleTools = options.toolSurface === "compact"
+  const baseVisibleTools = options.toolSurface === "compact"
     ? compactMcpTools(availableTools, handlers).map((tool) => configureToolForRuntime(tool, config))
     : availableTools;
+  const upstreamHealthCacheTtlMs = Math.min(Math.max(
+    Number(options.policyRegistryHealthCacheTtlMs || 2_000),
+    50,
+  ), 5_000);
+  const upstreamHealthTimeoutMs = Math.min(Math.max(
+    Number(options.policyRegistryHealthTimeoutMs || 3_000),
+    10,
+  ), 3_000);
+  let upstreamHealthCache = { responseOk: false, payload: null, checkedAt: 0, expiresAt: 0 };
+  let upstreamHealthInFlight = null;
+
+  async function probeUniversalCoreHealth({ force = false } = {}) {
+    const now = Date.now();
+    if (!force && upstreamHealthCache.expiresAt > now) return upstreamHealthCache;
+    if (upstreamHealthInFlight) return upstreamHealthInFlight;
+    const endpoint = `${config.universalCoreUrl}/healthz`;
+    const controller = new AbortController();
+    let reader = null;
+    let timer;
+    const upstreamOperation = (async () => {
+        const response = await (options.fetchImpl || globalThis.fetch)(endpoint, {
+          method: "GET",
+          headers: { accept: "application/json" },
+          redirect: "error",
+          signal: controller.signal,
+        });
+        if (!response || response.redirected === true || (response.url && response.url !== endpoint)) {
+          throw new Error("core_health_redirect_denied");
+        }
+        const contentType = String(response.headers?.get?.("content-type") || "").trim().toLowerCase();
+        if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(contentType)) {
+          throw new Error("core_health_content_type_invalid");
+        }
+        const maximumBytes = 256 * 1024;
+        const rawLength = response.headers?.get?.("content-length");
+        if (rawLength !== null && rawLength !== undefined && rawLength !== "") {
+          if (!/^\d+$/.test(String(rawLength))) throw new Error("core_health_content_length_invalid");
+          const declaredLength = Number(rawLength);
+          if (!Number.isSafeInteger(declaredLength) || declaredLength > maximumBytes) {
+            throw new Error("core_health_response_too_large");
+          }
+        }
+        const chunks = [];
+        let received = 0;
+        if (response.body && typeof response.body.getReader === "function") {
+          reader = response.body.getReader();
+          while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            const chunk = Buffer.from(part.value);
+            received += chunk.byteLength;
+            if (received > maximumBytes) {
+              void reader.cancel().catch(() => {});
+              throw new Error("core_health_response_too_large");
+            }
+            chunks.push(chunk);
+          }
+        } else if (typeof response.arrayBuffer === "function") {
+          const bytes = Buffer.from(await response.arrayBuffer());
+          received = bytes.byteLength;
+          if (received > maximumBytes) throw new Error("core_health_response_too_large");
+          chunks.push(bytes);
+        } else {
+          throw new Error("core_health_response_invalid");
+        }
+        const payload = JSON.parse(Buffer.concat(chunks, received).toString("utf8"));
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+          throw new Error("core_health_response_invalid");
+        }
+        return {
+          responseOk: response.ok === true,
+          payload,
+        };
+    })();
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        if (reader) void reader.cancel().catch(() => {});
+        reject(new Error("core_health_timeout"));
+      }, upstreamHealthTimeoutMs);
+    });
+    const operation = (async () => {
+      try {
+        const result = await Promise.race([upstreamOperation, deadline]);
+        const checkedAt = Date.now();
+        upstreamHealthCache = {
+          ...result,
+          checkedAt,
+          expiresAt: checkedAt + upstreamHealthCacheTtlMs,
+        };
+      } catch {
+        const checkedAt = Date.now();
+        upstreamHealthCache = {
+          responseOk: false,
+          payload: null,
+          checkedAt,
+          expiresAt: checkedAt + Math.min(upstreamHealthCacheTtlMs, 500),
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+      return upstreamHealthCache;
+    })();
+    upstreamHealthInFlight = operation;
+    try {
+      return await operation;
+    } finally {
+      if (upstreamHealthInFlight === operation) upstreamHealthInFlight = null;
+    }
+  }
+
+  function policyRegistryHealth(upstream = upstreamHealthCache) {
+    return buildPolicyRegistryLifecycleHealth(config, options, upstream);
+  }
+
+  async function visibleToolsForRequest({ forcePolicyProbe = false } = {}) {
+    if (!policyRegistryLocallyEligible) {
+      return baseVisibleTools.filter((tool) => !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name));
+    }
+    const upstream = await probeUniversalCoreHealth({ force: forcePolicyProbe });
+    const lifecycle = policyRegistryHealth(upstream);
+    return lifecycle.ready
+      ? baseVisibleTools
+      : baseVisibleTools.filter((tool) => !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name));
+  }
   // A host can rotate the MCP transport between tool calls from one logical chat.
   // Keep the transport binding for anti-switch protection, while correlating the
   // server-signed presence through the explicitly declared logical session id.
@@ -749,87 +1025,73 @@ export function createApp(config, options = {}) {
         postgresMajorVersion,
       },
     });
-    let researchAirlock = {
+    const upstreamHealth = await probeUniversalCoreHealth();
+    const payload = upstreamHealth.payload;
+    const validPayload = payload !== null
+      && typeof payload === "object"
+      && typeof payload.ok === "boolean"
+      && typeof payload.render_ready === "boolean"
+      && payload.build !== null
+      && typeof payload.build === "object"
+      && payload.research_airlock !== null
+      && typeof payload.research_airlock === "object";
+    const airlockSafe = validPayload && (
+      payload.research_airlock.ready === true
+      || (payload.research_airlock.mode === "shadow" && payload.research_airlock.operational_safe === true)
+    );
+    const coreReady = upstreamHealth.responseOk
+      && validPayload
+      && payload.ok === true
+      && payload.render_ready === true
+      && airlockSafe;
+    const upstreamBootstrapInitializing = upstreamHealth.responseOk
+      && validPayload
+      && payload.ok === false
+      && payload.render_ready === false
+      && payload.liveness_degraded === true
+      && payload.build.commit_verifiable === true
+      && payload.causal_continuity?.production_required === true
+      && payload.causal_continuity?.state === "initializing"
+      && airlockSafe;
+    const researchAirlock = validPayload ? {
+      core_ready: coreReady,
+      upstream_bootstrap_initializing: upstreamBootstrapInitializing,
+      mode: payload?.research_airlock?.mode || "unknown",
+      state_backend: payload?.research_airlock?.state_backend || "unavailable",
+      operational_safe: payload?.research_airlock?.operational_safe === true,
+      build_commit_sha: payload?.build?.commit_sha || null,
+    } : {
       core_ready: false,
       upstream_bootstrap_initializing: false,
-      mode: "unknown",
+      mode: "unavailable",
       state_backend: "unavailable",
     };
-    let upstreamHealth = { responseOk: false, payload: null };
-    try {
-      const response = await (options.fetchImpl || globalThis.fetch)(`${config.universalCoreUrl}/healthz`, {
-        method: "GET",
-        headers: { accept: "application/json" },
-        signal: AbortSignal.timeout(3_000),
-      });
-      const payload = await response.json();
-      const validPayload = payload !== null
-        && typeof payload === "object"
-        && typeof payload.ok === "boolean"
-        && typeof payload.render_ready === "boolean"
-        && payload.build !== null
-        && typeof payload.build === "object"
-        && payload.research_airlock !== null
-        && typeof payload.research_airlock === "object";
-      const airlockSafe = validPayload && (
-        payload.research_airlock.ready === true
-        || (
-          payload.research_airlock.mode === "shadow"
-          && payload.research_airlock.operational_safe === true
-        )
-      );
-      const coreReady = response.ok
-        && validPayload
-        && payload.ok === true
-        && payload.render_ready === true
-        && airlockSafe;
-      const upstreamBootstrapInitializing = response.status === 200
-        && validPayload
-        && payload.ok === false
-        && payload.render_ready === false
-        && payload.liveness_degraded === true
-        && payload.build.commit_verifiable === true
-        && payload.causal_continuity?.production_required === true
-        && payload.causal_continuity?.state === "initializing"
-        && airlockSafe;
-      upstreamHealth = { responseOk: response.ok, payload };
-      researchAirlock = {
-        core_ready: coreReady,
-        upstream_bootstrap_initializing: upstreamBootstrapInitializing,
-        mode: payload?.research_airlock?.mode || "unknown",
-        state_backend: payload?.research_airlock?.state_backend || "unavailable",
-        operational_safe: payload?.research_airlock?.operational_safe === true,
-        build_commit_sha: payload?.build?.commit_sha || null,
-      };
-    } catch {
-      researchAirlock = {
-        core_ready: false,
-        upstream_bootstrap_initializing: false,
-        mode: "unavailable",
-        state_backend: "unavailable",
-      };
-    }
     const genericWorkCoreJoin = buildGenericWorkCoreJoinHealth(
       config,
       options,
       upstreamHealth,
     );
+    const policyRegistryLifecycle = policyRegistryHealth(upstreamHealth);
     // Production MCP readiness must not depend on a mode value supplied by an
     // unreachable upstream. Once deployed, Core Airlock is a hard dependency:
     // unknown/unavailable is therefore unready, never an implicit opt-out.
     const airlockRequired = readiness.environment === "production";
     const combinedReady = readiness.ready
       && (!airlockRequired || researchAirlock.core_ready)
-      && (!genericWorkCoreJoin.required || genericWorkCoreJoin.ready);
+      && (!genericWorkCoreJoin.required || genericWorkCoreJoin.ready)
+      && (!policyRegistryLifecycle.required || policyRegistryLifecycle.ready);
+    const requiredLifecycleUnavailable = policyRegistryLifecycle.required
+      && !policyRegistryLifecycle.ready;
     const degradedLivenessReady = readiness.ready
       && airlockRequired
       && researchAirlock.upstream_bootstrap_initializing === true
-      && (!genericWorkCoreJoin.required || genericWorkCoreJoin.ready);
+      && (!genericWorkCoreJoin.required || genericWorkCoreJoin.ready)
+      && (!policyRegistryLifecycle.required || policyRegistryLifecycle.ready);
     const healthReady = combinedReady
       || (!strictReadiness && degradedLivenessReady);
-    const status = readiness.enforced && !healthReady ? 503 : 200;
+    const status = (readiness.enforced && !healthReady) || requiredLifecycleUnavailable ? 503 : 200;
     return res.status(status).json({
-    ok: !readiness.enforced || combinedReady,
+    ok: (!readiness.enforced || combinedReady) && !requiredLifecycleUnavailable,
     service: "skinharmony-core-mcp",
     version: SERVER_VERSION,
     build: readiness.build,
@@ -840,6 +1102,7 @@ export function createApp(config, options = {}) {
       production_required: airlockRequired,
     },
     generic_work_core_join: genericWorkCoreJoin,
+    nyra_policy_registry_lifecycle: policyRegistryLifecycle,
     readiness: {
       enforced: readiness.enforced,
       ready: readiness.ready,
@@ -966,7 +1229,7 @@ export function createApp(config, options = {}) {
       if (delegation) {
         if (config.environmentDelegationReceiverEnabled !== true) throw new Error("environment_delegation_disabled");
         const verified = verifyEnvironmentDelegation(delegation, { key: config.environmentDelegationKey, consumed: consumedEnvironmentDelegations });
-        const delegatedToolName = resolveConnectorToolName(req.body?.params?.name, visibleTools);
+        const delegatedToolName = resolveConnectorToolName(req.body?.params?.name, baseVisibleTools);
         if (req.body?.method === "tools/call" && verified.toolName !== delegatedToolName) throw new Error("environment_delegation_invalid");
         identity = verified.identity;
       } else identity = await authenticate(req.headers.authorization);
@@ -981,6 +1244,14 @@ export function createApp(config, options = {}) {
       return res.status(401).json({ jsonrpc: "2.0", id: req.body?.id ?? null, error: { code: -32001, message: "Unauthorized" } });
     }
     const { id = null, method, params = {} } = req.body || {};
+    const requestedBaseTool = method === "tools/call"
+      ? resolveConnectorToolName(params.name, baseVisibleTools)
+      : null;
+    const requestVisibleTools = ["tools/list", "tools/call"].includes(method)
+      ? await visibleToolsForRequest({
+          forcePolicyProbe: POLICY_REGISTRY_LIFECYCLE_TOOLS.has(requestedBaseTool),
+        })
+      : baseVisibleTools;
     let activeToolCall = null;
     let afterToolCallAttempted = false;
     try {
@@ -992,7 +1263,7 @@ export function createApp(config, options = {}) {
       if (method === "notifications/initialized") return res.status(202).end();
       if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: { resources: [] } });
       if (method === "resources/read") return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown resource" } });
-      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: visibleTools.map(({ scopes, ...tool }) => {
+      if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: requestVisibleTools.map(({ scopes, ...tool }) => {
         const schemes = securitySchemes(scopes);
         const genericPreflightRequired = requiresGenericWorkPreflight(tool.name);
         return {
@@ -1012,8 +1283,8 @@ export function createApp(config, options = {}) {
         };
       }) } });
       if (method === "tools/call") {
-        const canonicalToolName = resolveConnectorToolName(params.name, visibleTools);
-        const tool = visibleTools.find((item) => item.name === canonicalToolName);
+        const canonicalToolName = resolveConnectorToolName(params.name, requestVisibleTools);
+        const tool = requestVisibleTools.find((item) => item.name === canonicalToolName);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });

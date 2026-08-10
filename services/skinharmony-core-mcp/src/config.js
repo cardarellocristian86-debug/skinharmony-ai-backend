@@ -305,6 +305,43 @@ export function loadConfig(env = process.env) {
         : null;
   const genericWorkCoreJoinPublicKey = String(env.GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY || "").trim();
   const genericWorkCoreJoinKeyId = String(env.GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID || "").trim();
+  const policyRegistryLifecycleEnabledFlag = strictFlag(
+    env.NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED,
+    false,
+    "NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED",
+  );
+  const policyRegistryLifecycleRequiredFlag = strictFlag(
+    env.NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED,
+    false,
+    "NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED",
+  );
+  const policyRegistryLifecycleEnabled = policyRegistryLifecycleEnabledFlag.valid
+    ? policyRegistryLifecycleEnabledFlag.value
+    : false;
+  const policyRegistryLifecycleRequired = policyRegistryLifecycleEnabledFlag.valid &&
+    policyRegistryLifecycleRequiredFlag.valid
+    ? policyRegistryLifecycleRequiredFlag.value
+    : true;
+  let policyRegistryLifecycleCoreOriginValid = false;
+  try {
+    const parsedCoreOrigin = new URL(universalCoreUrl);
+    policyRegistryLifecycleCoreOriginValid = parsedCoreOrigin.protocol === "https:" &&
+      !parsedCoreOrigin.username && !parsedCoreOrigin.password &&
+      !parsedCoreOrigin.search && !parsedCoreOrigin.hash &&
+      ["", "/"].includes(parsedCoreOrigin.pathname) &&
+      parsedCoreOrigin.origin === universalCoreUrl;
+  } catch {
+    policyRegistryLifecycleCoreOriginValid = false;
+  }
+  const policyRegistryLifecycleConfigurationError = !policyRegistryLifecycleEnabledFlag.valid
+    ? policyRegistryLifecycleEnabledFlag.error
+    : !policyRegistryLifecycleRequiredFlag.valid
+      ? policyRegistryLifecycleRequiredFlag.error
+      : policyRegistryLifecycleRequired && !policyRegistryLifecycleEnabled
+        ? "nyra_policy_registry_lifecycle_required_without_enabled"
+        : policyRegistryLifecycleEnabled && !policyRegistryLifecycleCoreOriginValid
+          ? "nyra_policy_registry_lifecycle_core_origin_invalid"
+          : null;
   // Collaboration state must never silently share the service's existing
   // DATABASE_URL. It is intentionally opt-in and has a distinct Render secret.
   const collaborationDatabaseUrl = String(env.MCP_COLLABORATION_DATABASE_URL || "").trim();
@@ -406,6 +443,12 @@ export function loadConfig(env = process.env) {
     genericWorkCoreJoinConfigurationError,
     genericWorkCoreJoinPublicKey,
     genericWorkCoreJoinKeyId,
+    policyRegistryLifecycleEnabled,
+    policyRegistryLifecycleRequired,
+    policyRegistryLifecycleConfigurationValid:
+      policyRegistryLifecycleConfigurationError === null,
+    policyRegistryLifecycleConfigurationError,
+    policyRegistryLifecycleCoreOriginValid,
     collaborationDatabaseUrl,
     decisionLedgerRequired,
     coreBlockRemediationMode,
