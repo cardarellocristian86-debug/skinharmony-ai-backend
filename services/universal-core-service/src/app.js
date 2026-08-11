@@ -112,7 +112,10 @@ import {
   createResearchDistillationRuntime,
   sourceRegistry as createResearchSourceRegistry,
 } from "./researchDistillationLayer.js";
-import { createResearchAirlockRuntime } from "./researchAirlock.js";
+import {
+  createResearchAirlockRuntime,
+  RESEARCH_AIRLOCK_POLICY_VERSION,
+} from "./researchAirlock.js";
 import { createPostgresResearchAirlockStore } from "./researchAirlockStore.js";
 import {
   createUniversalSoftwareJobManager,
@@ -200,6 +203,7 @@ import {
   createFailClosedRenderOriginResolver,
   createProjectScopeRenderOriginResolver,
 } from "./projectScopeRenderOriginResolver.js";
+import { loadHostNativeResolverRegistryFromEnvironment } from "./hostNativeResolverRegistry.js";
 import {
   buildCausalBranchResult,
   extendCausalBranchRegistry,
@@ -273,6 +277,10 @@ const BOOTSTRAP_DEADLOCK_FAILURE_CODE_MAP = Object.freeze({
 const BUILD_COMMIT_VERIFIABLE = /^[a-f0-9]{40}$/.test(BUILD_COMMIT_SHA || "");
 const DEFAULT_CAUSAL_INITIALIZATION_LIVENESS_MS = 30 * 60 * 1_000;
 const MAX_CAUSAL_INITIALIZATION_LIVENESS_MS = 60 * 60 * 1_000;
+const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 1_500;
+const MAX_HEALTH_PROBE_TIMEOUT_MS = 2_500;
+const RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_SCHEMA = "research_airlock_bootstrap_guard_v1";
+const RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_PURPOSE = "causal_initialization_liveness";
 
 export function boundedCausalInitializationLivenessMs(value) {
   const requested = Number(value ?? DEFAULT_CAUSAL_INITIALIZATION_LIVENESS_MS);
@@ -285,6 +293,70 @@ export function boundedCausalInitializationLivenessMs(value) {
     ),
     MAX_CAUSAL_INITIALIZATION_LIVENESS_MS,
   );
+}
+
+export function boundedHealthProbeTimeoutMs(value) {
+  const requested = Number(value ?? DEFAULT_HEALTH_PROBE_TIMEOUT_MS);
+  return Math.min(
+    Math.max(
+      Number.isFinite(requested) ? requested : DEFAULT_HEALTH_PROBE_TIMEOUT_MS,
+      1,
+    ),
+    MAX_HEALTH_PROBE_TIMEOUT_MS,
+  );
+}
+
+function buildResearchAirlockBootstrapGuard({
+  buildCommitSha,
+  causalProductionRequired,
+  causalState,
+  initializationElapsedMs,
+  livenessWindowMs,
+  mode,
+  runtimeReady,
+  store,
+}) {
+  const backend = String(store?.kind || "unavailable");
+  const restartDurable = store?.restart_durable === true;
+  const distributed = store?.distributed === true;
+  const normalizedMode = String(mode || "unknown");
+  const structurallySafe = backend === "postgresql" && restartDurable && distributed;
+  const elapsed = Math.max(0, Math.floor(Number(initializationElapsedMs)));
+  const windowMs = Math.floor(Number(livenessWindowMs));
+  const modeSafe = normalizedMode === "enforced" && runtimeReady === true;
+  if (!BUILD_COMMIT_VERIFIABLE
+    || !/^[a-f0-9]{40}$/.test(BUILD_ID)
+    || BUILD_ID !== buildCommitSha
+    || causalProductionRequired !== true
+    || causalState !== "initializing"
+    || !Number.isSafeInteger(elapsed)
+    || !Number.isSafeInteger(windowMs)
+    || windowMs < 1
+    || elapsed > windowMs
+    || !structurallySafe
+    || !modeSafe) {
+    return null;
+  }
+  const payload = {
+    schema_version: RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_SCHEMA,
+    purpose: RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_PURPOSE,
+    policy_version: RESEARCH_AIRLOCK_POLICY_VERSION,
+    static_guard_ready: true,
+    mode: normalizedMode,
+    store_backend: backend,
+    restart_durable: restartDurable,
+    distributed,
+    accepting_new_work: false,
+    runtime_verified: false,
+    build_commit_sha: buildCommitSha,
+    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+    causal_state: causalState,
+    causal_production_required: true,
+    liveness_window_ms: windowMs,
+    initialization_elapsed_ms: elapsed,
+    readiness_verified: false,
+  };
+  return Object.freeze({ ...payload, guard_digest: causalDigest(payload) });
 }
 const PROVIDER_SETUP_LINK_ISSUER_KIND = "provider_setup_link";
 const PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN = /^osf_[a-f0-9]{64}$/;
@@ -4437,6 +4509,98 @@ function claimShieldCheck(payload = {}) {
 }
 
 export function createUniversalCoreService(options = {}) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new Error("core_service_options_invalid");
+  }
+  const optionsPrototype = Object.getPrototypeOf(options);
+  if (optionsPrototype !== Object.prototype && optionsPrototype !== null) {
+    throw new Error("core_service_options_prototype_invalid");
+  }
+  if (Object.getOwnPropertySymbols(options).length > 0) {
+    throw new Error("core_service_options_symbol_invalid");
+  }
+  const normalizedOptions = Object.create(null);
+  for (const [name, descriptor] of Object.entries(
+    Object.getOwnPropertyDescriptors(options),
+  )) {
+    if (!("value" in descriptor) || descriptor.get || descriptor.set) {
+      throw new Error("core_service_options_accessor_invalid");
+    }
+    Object.defineProperty(normalizedOptions, name, {
+      value: descriptor.value,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
+  }
+  options = Object.freeze(normalizedOptions);
+  const internallyOwnedPostgresPools = new Set();
+  let serverResolverRegistry = null;
+  try {
+    serverResolverRegistry = loadHostNativeResolverRegistryFromEnvironment(process.env);
+  } catch {
+    serverResolverRegistry = null;
+  }
+  const hasOwnOption = (name) => Object.prototype.hasOwnProperty.call(options, name);
+  // A degraded production liveness receipt is meaningful only when the
+  // authority-bearing components were built by this service from its host
+  // configuration. Object properties supplied through test/integration seams
+  // can exercise normal behavior, but can never attest bootstrap provenance.
+  const causalBootstrapConstructionProvenance = Object.freeze({
+    host_native: ![
+      "hostNativeGovernance", "hostNativeGovernanceEnabled",
+      "hostNativeGovernanceStore", "hostNativeExternalReadbackVerifier",
+      "hostNativeReleaseJoinVerdictResolver", "hostNativeSigningSecret",
+      "hostNativeResolverConfigurationValid", "hostNativeResolverConfigurationError",
+      "hostNativeRequiredChecksPolicyResolver",
+      "hostNativeRequiredChecksPolicyResolverState",
+      "hostNativeRequiredChecksPolicyBindingCount",
+      "hostNativeRenderServiceOriginResolver",
+      "hostNativeRenderServiceOriginResolverState",
+      "hostNativeRenderServiceOriginBindingCount",
+      "hostNativeProjectScopeRenderOriginResolver",
+      "hostNativeGithubTokenResolver", "hostNativeGithubCredentialResolverState",
+      "hostNativeGithubCredentialBindingCount", "hostNativeReadbackFetchImpl",
+      "bootstrapAuthorityTrustPinJson", "bootstrapReleaseExceptionStore",
+      "bootstrapRequiredChecksReadback",
+      "bootstrapReleasePreparationBaseBranchResolver",
+      "bootstrapReleasePreparationService",
+      "mcpTenantGatewayKey", "tenantContextSigningSecret",
+      "ownerContextSigningSecret",
+    ].some(hasOwnOption),
+    research_airlock: ![
+      "researchAirlockRuntime", "researchAirlockPostgresPool",
+      "researchAirlockMode", "researchAirlockSigningSecret",
+      "researchAirlockTransport",
+    ].some(hasOwnOption),
+    policy_registry: ![
+      "nyraPolicyRegistryStore", "nyraPolicyRegistryPostgresPool",
+      "nyraPolicyRegistryDatabaseUrl", "nyraPolicyRegistryProofService",
+      "nyraPolicyRegistryProofEnv", "nyraPolicyRegistryEnforcementMode",
+      "consumeNyraPolicyRegistryCoreReceipt",
+      "verifyNyraPolicyRegistryActivationSnapshot",
+    ].some(hasOwnOption),
+    causal_runtime: ![
+      "causalContinuityStore", "causalContinuityRuntime",
+      "causalContextSigner", "causalActionLeaseVerifier",
+      "governedAgentPostgresVersionProbe", "governedAgentPostgresVersionPool",
+    ].some(hasOwnOption),
+    dtt_identity: ![
+      "dttAgentIdentitySigningSecret", "dttAgentIdentityPostgresPool",
+      "dttAgentIdentityReceiptStore", "dttAgentIdentityReceiptService",
+      "dttVerificationTrustStore", "dynamicTaskTreePostgresPool",
+      "resolveDttVerifierIdentity",
+    ].some(hasOwnOption),
+    resolver_registry: Boolean(
+      serverResolverRegistry?.configuration_valid === true
+      && serverResolverRegistry.github?.state === "exact_registry_ready"
+      && typeof serverResolverRegistry.github?.resolver === "function"
+      && serverResolverRegistry.render?.state === "exact_registry_ready"
+      && typeof serverResolverRegistry.render?.resolver === "function"
+      && serverResolverRegistry.required_checks?.state === "exact_registry_ready"
+      && typeof serverResolverRegistry.required_checks?.resolver === "function"
+    ),
+  });
   const storageRoot = options.storageRoot || process.env.CORE_SERVICE_STORAGE_ROOT || DEFAULT_STORAGE_ROOT;
   ensureDir(storageRoot);
 
@@ -4542,6 +4706,9 @@ export function createUniversalCoreService(options = {}) {
     (!hasInjectedPostgresVersionProbe && /^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
       ? new pg.Pool({ connectionString: nyraPolicyRegistryDatabaseUrl })
       : null);
+  if (nyraPolicyRegistryPostgresPool && !options.nyraPolicyRegistryPostgresPool) {
+    internallyOwnedPostgresPools.add(nyraPolicyRegistryPostgresPool);
+  }
   const nyraPolicyRegistryProofService = options.nyraPolicyRegistryProofService ||
     (nyraPolicyRegistryPostgresPool
       ? createNyraPolicyRegistryProofService({
@@ -4705,6 +4872,9 @@ export function createUniversalCoreService(options = {}) {
     || (!hasInjectedPostgresVersionProbe && dttAgentIdentitySecret && governedAgentDatabaseUrl
       ? new pg.Pool({ connectionString: governedAgentDatabaseUrl })
       : null);
+  if (dttAgentIdentityPostgresPool && !options.dttAgentIdentityPostgresPool) {
+    internallyOwnedPostgresPools.add(dttAgentIdentityPostgresPool);
+  }
   const governedAgentPostgresVersionPool =
     options.governedAgentPostgresVersionProbe
       ? null
@@ -4718,6 +4888,12 @@ export function createUniversalCoreService(options = {}) {
               idleTimeoutMillis: 10_000,
             })
           : null);
+  if (governedAgentPostgresVersionPool
+    && !options.governedAgentPostgresVersionPool
+    && !options.dynamicTaskTreePostgresPool
+    && governedAgentPostgresVersionPool !== dttAgentIdentityPostgresPool) {
+    internallyOwnedPostgresPools.add(governedAgentPostgresVersionPool);
+  }
   const governedAgentPostgresVersionProbe =
     options.governedAgentPostgresVersionProbe
     || (governedAgentPostgresVersionPool
@@ -5095,7 +5271,8 @@ export function createUniversalCoreService(options = {}) {
     }
     : null;
   const hostNativeResolverConfigurationValid =
-    options.hostNativeResolverConfigurationValid !== false;
+    options.hostNativeResolverConfigurationValid !== false
+    && serverResolverRegistry?.configuration_valid !== false;
   const hostNativeResolverConfigurationError = hostNativeResolverConfigurationValid
     ? null
     : String(
@@ -5115,13 +5292,21 @@ export function createUniversalCoreService(options = {}) {
   // Always provide a fail-closed resolver. Without an exact environment or
   // verified Project Scope binding, host-native governance must not consume a
   // caller/manifest origin or synthesize a service-slug origin.
+  const serverOwnedRenderServiceOriginResolver =
+    serverResolverRegistry?.render?.resolver || null;
   const hostNativeRenderServiceOriginResolver =
     createFailClosedRenderOriginResolver({
-      environmentResolver: options.hostNativeRenderServiceOriginResolver || null,
+      environmentResolver: serverOwnedRenderServiceOriginResolver
+        || options.hostNativeRenderServiceOriginResolver
+        || null,
       projectScopeResolver: hostNativeProjectScopeRenderOriginResolver,
     });
   const hostNativeRenderServiceOriginResolverState =
-    typeof options.hostNativeRenderServiceOriginResolver === "function"
+    typeof serverOwnedRenderServiceOriginResolver === "function"
+      ? (hostNativeProjectScopeRenderOriginResolver
+          ? "exact_registry_then_project_scope"
+          : "exact_registry_only")
+      : typeof options.hostNativeRenderServiceOriginResolver === "function"
       ? (hostNativeProjectScopeRenderOriginResolver
           ? "exact_registry_then_project_scope"
           : "exact_registry_only")
@@ -5131,7 +5316,13 @@ export function createUniversalCoreService(options = {}) {
   let hostNativeGovernance = options.hostNativeGovernance || null;
   let hostNativeGovernanceState = hostNativeGovernance ? "ready" : "disabled";
   const hostNativeRequiredChecksPolicyResolver =
-    options.hostNativeRequiredChecksPolicyResolver || null;
+    serverResolverRegistry?.required_checks?.resolver
+    || options.hostNativeRequiredChecksPolicyResolver
+    || null;
+  const hostNativeGithubTokenResolver =
+    serverResolverRegistry?.github?.resolver
+    || options.hostNativeGithubTokenResolver
+    || null;
   if (
     hostNativeGovernanceEnabled &&
     hostNativeGovernance &&
@@ -5178,7 +5369,7 @@ export function createUniversalCoreService(options = {}) {
           options.hostNativeExternalReadbackVerifier ||
           createHostNativeExternalReadbackVerifier({
             fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
-            githubTokenResolver: options.hostNativeGithubTokenResolver || null,
+            githubTokenResolver: hostNativeGithubTokenResolver,
             requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
             timeoutMs: Number(
               options.hostNativeReadbackTimeoutMs ??
@@ -5190,7 +5381,7 @@ export function createUniversalCoreService(options = {}) {
           options.hostNativeReleaseJoinVerdictResolver ||
           createHostNativeReleaseJoinVerdictResolver({
             fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
-            githubTokenResolver: options.hostNativeGithubTokenResolver || null,
+            githubTokenResolver: hostNativeGithubTokenResolver,
             requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
             timeoutMs: Number(
               options.hostNativeReadbackTimeoutMs ??
@@ -6302,6 +6493,65 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
+  const healthProbeTimeoutMs = boundedHealthProbeTimeoutMs(options.healthProbeTimeoutMs);
+  const healthProbeFlights = new Map();
+  let healthProbeGeneration = 0;
+  const boundedSingleFlightHealthProbe = async (name, run) => {
+    let state = healthProbeFlights.get(name);
+    if (!state) {
+      state = { active: null, orphan: null };
+      healthProbeFlights.set(name, state);
+    }
+    let entry = state.active;
+    if (!entry) {
+      const generation = ++healthProbeGeneration;
+      const promise = Promise.resolve()
+        .then(run)
+        .then(
+          (value) => ({ ok: true, value }),
+          (error) => ({
+            ok: false,
+            error: String(error?.code || error?.message || `${name}_failed`).slice(0, 160),
+          }),
+        );
+      entry = { generation, promise };
+      state.active = entry;
+      promise.then(() => {
+        if (healthProbeFlights.get(name) !== state) return;
+        if (state.active?.generation === generation) state.active = null;
+        if (state.orphan?.generation === generation) state.orphan = null;
+        if (!state.active && !state.orphan) {
+          healthProbeFlights.delete(name);
+        }
+      });
+    }
+    let timer;
+    try {
+      const result = await Promise.race([
+        entry.promise,
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve({
+            ok: false,
+            timed_out: true,
+            error: `${name}_timeout`,
+          }), healthProbeTimeoutMs);
+        }),
+      ]);
+      if (result.timed_out === true
+        && healthProbeFlights.get(name) === state
+        && state.active?.generation === entry.generation
+        && !state.orphan) {
+        // Permit one recovery attempt without allowing an attacker or a stuck
+        // dependency to create an unbounded chain of unresolved promises.
+        state.orphan = entry;
+        state.active = null;
+      }
+      return result;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   const serveHealth = async (_req, res, { strictReadiness = false } = {}) => {
     const production = (process.env.NODE_ENV || "development") === "production";
     const productionBuildReady =
@@ -6320,26 +6570,178 @@ export function createUniversalCoreService(options = {}) {
       );
     const hostNativeProductionReadinessRequired =
       production && hostNativeGovernanceEnabled;
+    const causalContinuityProductionRequired = production
+      && governedAgentPostgresConfigured
+      && (
+        !hasInjectedPostgresVersionProbe
+        || Boolean(options.causalContinuityStore || options.causalContinuityRuntime)
+      );
+    const causalInitializationElapsedMs = causalContinuityInitializationStartedAtMs === null
+      ? null
+      : Math.max(0, Math.floor(performance.now() - causalContinuityInitializationStartedAtMs));
+    const causalInitializationWindowOpen = production
+      && causalContinuityProductionRequired
+      && Boolean(causalContinuityRuntime)
+      && causalContinuityState === "initializing"
+      && causalInitializationElapsedMs !== null
+      && causalInitializationElapsedMs <= causalContinuityInitializationLivenessMs;
+    const researchAirlockBootstrapGuard = causalInitializationWindowOpen
+      ? buildResearchAirlockBootstrapGuard({
+          buildCommitSha: BUILD_COMMIT_SHA,
+          causalProductionRequired: causalContinuityProductionRequired,
+          causalState: causalContinuityState,
+          initializationElapsedMs: causalInitializationElapsedMs,
+          livenessWindowMs: causalContinuityInitializationLivenessMs,
+          mode: researchAirlockRuntime.mode,
+          runtimeReady: researchAirlockRuntime.ready,
+          store: researchAirlockRuntime.store,
+        })
+      : null;
+    const hostNativeBootstrapPrerequisitesReady = hostNativeProductionReadinessRequired
+      && hostNativeGovernanceEnabled
+      && hostNativeRuntimeReady
+      && hostNativeGovernanceState === "ready"
+      // Host-native governance is intentionally the server-owned atomic file
+      // store in production. Its authority comes from the independently
+      // verified readback/signing/resolver gates below, not from pretending the
+      // store is distributed. Research Airlock remains separately constrained
+      // to its PostgreSQL distributed store by the signed bootstrap guard.
+      && hostNativeGovernance?.storage?.kind === "file_atomic"
+      && hostNativeGovernance?.storage?.restart_durable === true
+      && hostNativeGovernance?.render_service_origin_resolver_configured === true
+      && mcpTenantGatewayConfigured
+      && hostNativeSigningSecret.length >= 32
+      && Boolean(tenantContextSigningSecret)
+      && Boolean(ownerContextSigningSecret)
+      && Boolean(dttAgentIdentitySecret)
+      && dttVerifierIdentityResolverConfigured
+      && governedAgentPostgresConfigured
+      && Boolean(nyraPolicyRegistryPostgresPool)
+      && typeof hostNativeRequiredChecksPolicyResolver === "function"
+      && hostNativeRenderServiceOriginResolverState !== "fail_closed_unavailable"
+      && options.researchAirlockRuntime === undefined;
+    const policyProofBootstrapReady = nyraPolicyRegistryMode === "advisory_evaluate"
+      || (
+        nyraPolicyRegistryMode === "enforced"
+        && nyraPolicyRegistryProofService?.configuration_ready === true
+      );
+    const policyRegistryBootstrapReady = Boolean(nyraPolicyRegistryPostgresPool)
+      && options.nyraPolicyRegistryStore === undefined;
+    const causalBootstrapLivenessReady = !strictReadiness
+      && causalInitializationWindowOpen
+      && causalBootstrapConstructionProvenance.host_native
+      && causalBootstrapConstructionProvenance.research_airlock
+      && causalBootstrapConstructionProvenance.policy_registry
+      && causalBootstrapConstructionProvenance.causal_runtime
+      && causalBootstrapConstructionProvenance.dtt_identity
+      && causalBootstrapConstructionProvenance.resolver_registry
+      && productionBuildReady
+      && hostNativeBootstrapPrerequisitesReady
+      && nyraPolicyRegistryModeValid
+      && nyraPolicyRegistryMode !== "disabled"
+      && policyProofBootstrapReady
+      && policyRegistryBootstrapReady
+      && Boolean(researchAirlockBootstrapGuard);
+
     let governedAgentPostgresVersion =
       normalizePostgresMajorVerification(null);
-    if (
-      hostNativeProductionReadinessRequired &&
-      governedAgentPostgresConfigured
-    ) {
+    let nyraPolicyRegistryStatus;
+    let nyraPolicyRegistryProofStatus;
+    let researchAirlockHealth;
+    let causalContinuityHealth = {
+      ok: false,
+      state: causalContinuityState,
+      error: causalContinuityInitializationError,
+    };
+    if (causalBootstrapLivenessReady) {
+      nyraPolicyRegistryStatus = {
+        configured: true,
+        backend: "postgresql",
+        restart_durable: true,
+        distributed: true,
+        state: "probe_deferred_during_causal_initialization",
+        ready: false,
+      };
+      nyraPolicyRegistryProofStatus = {
+        ready: false,
+        backend: nyraPolicyRegistryProofService ? "postgresql" : "unavailable",
+        state: "probe_deferred_during_causal_initialization",
+      };
+      researchAirlockHealth = {
+        policy_version: RESEARCH_AIRLOCK_POLICY_VERSION,
+        mode: researchAirlockRuntime.mode || "unknown",
+        ready: false,
+        operational_safe: false,
+        accepting_new_work: false,
+        state_backend: researchAirlockRuntime.store?.kind || "unavailable",
+        restart_durable: researchAirlockRuntime.store?.restart_durable === true,
+        distributed: researchAirlockRuntime.store?.distributed === true,
+        bootstrap_guard: researchAirlockBootstrapGuard,
+      };
+    } else {
       const probe = governedAgentPostgresVersionProbe;
-      const check = typeof probe === "function"
+      const postgresCheck = typeof probe === "function"
         ? probe
         : typeof probe?.check === "function"
           ? () => probe.check()
           : null;
-      if (check) {
-        try {
-          governedAgentPostgresVersion =
-            normalizePostgresMajorVerification(await check());
-        } catch {
-          governedAgentPostgresVersion =
-            normalizePostgresMajorVerification(null);
-        }
+      const [postgresResult, policyResult, proofResult, airlockResult, causalResult] = await Promise.all([
+        hostNativeProductionReadinessRequired && governedAgentPostgresConfigured && postgresCheck
+          ? boundedSingleFlightHealthProbe("postgres_major", postgresCheck)
+          : Promise.resolve({ ok: true, value: normalizePostgresMajorVerification(null) }),
+        boundedSingleFlightHealthProbe("nyra_policy_registry", () => nyraPolicyRegistry.status()),
+        nyraPolicyRegistryProofService
+          ? boundedSingleFlightHealthProbe("nyra_policy_registry_proof", () => nyraPolicyRegistryProofService.status())
+          : Promise.resolve({ ok: true, value: { ready: false, backend: "unavailable", error: "policy_proof_not_configured" } }),
+        boundedSingleFlightHealthProbe("research_airlock", () => researchAirlockRuntime.status("health_probe")),
+        causalContinuityRuntime && causalContinuityState === "ready"
+          ? boundedSingleFlightHealthProbe("causal_continuity", () => causalContinuityRuntime.health())
+          : Promise.resolve({ ok: true, value: causalContinuityHealth }),
+      ]);
+      if (postgresResult.ok) {
+        governedAgentPostgresVersion = normalizePostgresMajorVerification(postgresResult.value);
+      }
+      nyraPolicyRegistryStatus = policyResult.ok && policyResult.value && typeof policyResult.value === "object"
+        ? policyResult.value
+        : {
+            configured: true,
+            backend: policyRegistryBootstrapReady ? "postgresql" : "unavailable",
+            restart_durable: policyRegistryBootstrapReady,
+            distributed: policyRegistryBootstrapReady,
+            state: policyResult.timed_out ? "probe_timeout" : "unavailable",
+            ready: false,
+            error: policyResult.error,
+          };
+      nyraPolicyRegistryProofStatus = proofResult.ok && proofResult.value && typeof proofResult.value === "object"
+        ? proofResult.value
+        : {
+            ready: false,
+            backend: nyraPolicyRegistryProofService ? "postgresql" : "unavailable",
+            state: proofResult.timed_out ? "probe_timeout" : "unavailable",
+            error: proofResult.error,
+          };
+      researchAirlockHealth = airlockResult.ok && airlockResult.value && typeof airlockResult.value === "object"
+        ? airlockResult.value
+        : {
+            mode: researchAirlockRuntime.mode || "shadow",
+            ready: false,
+            operational_safe: false,
+            accepting_new_work: false,
+            state_backend: researchAirlockRuntime.store?.kind || "unavailable",
+            state: airlockResult.timed_out ? "probe_timeout" : "unavailable",
+            error: airlockResult.error,
+          };
+      if (causalResult.ok && causalResult.value && typeof causalResult.value === "object") {
+        causalContinuityHealth = {
+          ...causalResult.value,
+          state: causalContinuityState,
+        };
+      } else {
+        causalContinuityHealth = {
+          ok: false,
+          state: causalResult.timed_out ? "health_timeout" : "health_failed",
+          error: causalResult.error,
+        };
       }
     }
     const hostNativeProductionReadinessReasons = [];
@@ -6397,54 +6799,14 @@ export function createUniversalCoreService(options = {}) {
       hostNativeProductionReadinessReasons.length === 0;
     const hostNativeReady =
       hostNativeRuntimeReady && hostNativeProductionReadinessReady;
-    const nyraPolicyRegistryStatus = await nyraPolicyRegistry.status();
-    const nyraPolicyRegistryProofStatus = nyraPolicyRegistryProofService
-      ? await nyraPolicyRegistryProofService.status()
-      : { ready: false, backend: "unavailable", error: "policy_proof_not_configured" };
     const nyraPolicyRegistryProductionReady = !production || (
       nyraPolicyRegistryStatus.backend === "postgresql" &&
       nyraPolicyRegistryStatus.ready === true &&
       (nyraPolicyRegistryMode !== "enforced" || nyraPolicyRegistryProofStatus.ready === true)
     );
-    let researchAirlockHealth;
-    try {
-      researchAirlockHealth = await researchAirlockRuntime.status("health_probe");
-    } catch (error) {
-      researchAirlockHealth = {
-        mode: researchAirlockRuntime.mode || "shadow",
-        ready: false,
-        state_backend: researchAirlockRuntime.store?.kind || "unavailable",
-        error: String(error?.message || "research_airlock_health_failed").slice(0, 160),
-      };
-    }
     const researchAirlockProductionReady = !production
       || researchAirlockHealth.ready === true
       || (researchAirlockHealth.mode === "shadow" && researchAirlockHealth.operational_safe === true);
-    let causalContinuityHealth = {
-      ok: false,
-      state: causalContinuityState,
-      error: causalContinuityInitializationError,
-    };
-    if (causalContinuityRuntime && causalContinuityState === "ready") {
-      try {
-        causalContinuityHealth = {
-          ...(await causalContinuityRuntime.health()),
-          state: causalContinuityState,
-        };
-      } catch (error) {
-        causalContinuityHealth = {
-          ok: false,
-          state: "health_failed",
-          error: String(error?.code || error?.message || "causal_health_failed").slice(0, 160),
-        };
-      }
-    }
-    const causalContinuityProductionRequired = production
-      && governedAgentPostgresConfigured
-      && (
-        !hasInjectedPostgresVersionProbe
-        || Boolean(options.causalContinuityStore || options.causalContinuityRuntime)
-      );
     const causalContinuityProductionReady = !causalContinuityProductionRequired
       || (Boolean(causalContinuityRuntime) && causalContinuityHealth.ok === true);
     const nonCausalProductionReady = productionBuildReady
@@ -6454,14 +6816,7 @@ export function createUniversalCoreService(options = {}) {
       && researchAirlockProductionReady;
     const renderReady = nonCausalProductionReady
       && causalContinuityProductionReady;
-    const causalInitializationDegraded = production
-      && causalContinuityProductionRequired
-      && Boolean(causalContinuityRuntime)
-      && causalContinuityState === "initializing"
-      && causalContinuityInitializationStartedAtMs !== null
-      && performance.now() - causalContinuityInitializationStartedAtMs
-        <= causalContinuityInitializationLivenessMs
-      && nonCausalProductionReady;
+    const causalInitializationDegraded = causalBootstrapLivenessReady;
     const healthStatusReady = renderReady
       || (!strictReadiness && causalInitializationDegraded);
     res.status(healthStatusReady ? 200 : 503).json({
@@ -6477,6 +6832,8 @@ export function createUniversalCoreService(options = {}) {
       health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
       mode: process.env.NODE_ENV || "development",
       render_ready: renderReady,
+      readiness: renderReady,
+      readiness_verified: renderReady,
       liveness_degraded: causalInitializationDegraded,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
@@ -11035,5 +11392,17 @@ export function createUniversalCoreService(options = {}) {
 
   app.use((req, res) => publicError(res, 404, "route_not_found"));
 
-  return { app, storageRoot, coreRuntime };
+  async function shutdown() {
+    const tasks = [];
+    if (causalBootstrapConstructionProvenance.research_airlock
+      && typeof researchAirlockRuntime?.store?.close === "function") {
+      tasks.push(Promise.resolve().then(() => researchAirlockRuntime.store.close()));
+    }
+    for (const pool of internallyOwnedPostgresPools) {
+      if (typeof pool?.end === "function") tasks.push(Promise.resolve().then(() => pool.end()));
+    }
+    await Promise.allSettled(tasks);
+  }
+
+  return { app, storageRoot, coreRuntime, shutdown };
 }
