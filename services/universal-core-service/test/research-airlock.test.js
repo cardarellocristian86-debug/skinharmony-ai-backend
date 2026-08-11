@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createResearchAirlockRuntime } from "../src/researchAirlock.js";
-import { createMemoryResearchAirlockStore } from "../src/researchAirlockStore.js";
+import {
+  createMemoryResearchAirlockStore,
+  createPostgresResearchAirlockStore,
+} from "../src/researchAirlockStore.js";
 
 const SECRET = "research-airlock-test-evidence-secret-32-bytes";
 const TENANT = "tenant-alpha";
@@ -35,6 +38,42 @@ function runtime({ body, now, transportImpl } = {}) {
     releaseCommitSha: "b".repeat(40),
   });
 }
+
+test("PostgreSQL Airlock schema initialization is single-flight under concurrent metrics", async () => {
+  const statements = [];
+  let releaseFirst;
+  const firstQueryGate = new Promise((resolve) => { releaseFirst = resolve; });
+  let first = true;
+  const pool = {
+    async query(statement) {
+      const sql = String(statement).replace(/\s+/g, " ").trim();
+      statements.push(sql);
+      if (first) {
+        first = false;
+        await firstQueryGate;
+      }
+      if (/GROUP BY state/.test(sql) || /GROUP BY verdict/.test(sql)) return { rows: [] };
+      if (/tainted_at IS NOT NULL/.test(sql)) return { rows: [{ count: 0 }] };
+      if (/count\(\*\)::int AS issued/.test(sql)) {
+        return { rows: [{ issued: 0, consumed: 0, expired_unconsumed: 0 }] };
+      }
+      return { rows: [] };
+    },
+  };
+  const store = createPostgresResearchAirlockStore({
+    connectionString: "postgresql://airlock.test/database",
+    pool,
+  });
+  const left = store.metrics("tenant-a");
+  const right = store.metrics("tenant-b");
+  releaseFirst();
+  await Promise.all([left, right]);
+
+  const ddl = statements.filter((statement) => /^(CREATE|ALTER) /.test(statement));
+  assert.ok(ddl.length > 10);
+  assert.equal(ddl.length, new Set(ddl).size, "concurrent callers must share one schema initialization");
+  assert.equal(statements.filter((statement) => /GROUP BY state/.test(statement)).length, 2);
+});
 
 async function open(target, work = WORK, extra = {}) {
   const plan = await target.createPlan(

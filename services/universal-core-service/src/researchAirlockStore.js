@@ -72,9 +72,9 @@ export function createPostgresResearchAirlockStore({ connectionString, pool = nu
     query_timeout: 5_000,
   });
   let initialized = false;
+  let initializationPromise = null;
 
-  async function init() {
-    if (initialized) return;
+  async function initializeSchema() {
     await db.query(`CREATE TABLE IF NOT EXISTS research_airlock_work (
       tenant_id TEXT NOT NULL,
       project_id TEXT NOT NULL,
@@ -189,6 +189,16 @@ export function createPostgresResearchAirlockStore({ connectionString, pool = nu
     await db.query("CREATE INDEX IF NOT EXISTS research_airlock_fetch_work_idx ON research_airlock_fetch (tenant_id, project_id, work_id, session_id, created_at)");
     await db.query("CREATE INDEX IF NOT EXISTS research_airlock_event_work_idx ON research_airlock_event (tenant_id, project_id, work_id, session_id, created_at)");
     initialized = true;
+  }
+
+  async function init() {
+    if (initialized) return;
+    if (!initializationPromise) {
+      initializationPromise = initializeSchema().finally(() => {
+        initializationPromise = null;
+      });
+    }
+    await initializationPromise;
   }
 
   async function transaction(work, callback) {
