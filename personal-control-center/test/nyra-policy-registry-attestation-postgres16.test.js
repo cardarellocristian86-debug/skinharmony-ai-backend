@@ -25,7 +25,8 @@ test("PostgreSQL 16 replay is distributed, restart-durable and atomic", PG16, as
     assert.equal(Math.floor(Number(version.rows[0].server_version_num) / 10_000), 16);
     const first = createPostgresReplayStore(firstPool);
     const second = createPostgresReplayStore(secondPool);
-    await Promise.all([first.initialize(), second.initialize()]);
+    await first.initialize();
+    await second.initialize();
     const input = {
       tenantId,
       nonce: crypto.randomBytes(24).toString("base64url"),
