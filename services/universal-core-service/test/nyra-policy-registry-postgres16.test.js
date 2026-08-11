@@ -218,7 +218,7 @@ test("Policy Registry PostgreSQL 16 serializes multi-connection replay with CAS"
     const storeOptions = options(pool, tenantId, snapshot, consumed);
     const input = activation(tenantId, snapshot, `race-${crypto.randomUUID()}`);
     const stores = Array.from({ length: 6 }, () => createPostgresNyraPolicyRegistryStore(storeOptions));
-    for (const store of stores) await store.ready();
+    for (const store of stores) assert.equal((await store.status()).ready, true);
     const results = await Promise.all(stores.map((store) => store.activate(input)));
     assert.equal(results.filter((item) => item.idempotent_replay === false).length, 1);
     assert.equal(results.filter((item) => item.idempotent_replay === true).length, 5);
