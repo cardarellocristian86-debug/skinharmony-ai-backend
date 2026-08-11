@@ -11,7 +11,9 @@ services:
     numInstances: 1
     buildCommand: npm ci && bash scripts/build-rust-extractor-render.sh
     startCommand: npm run core:service
-    healthCheckPath: /healthz
+    # Render needs process liveness during rollout. Governed dependency
+    # readiness remains available at /healthz and /readyz.
+    healthCheckPath: /livez
     # A merge/push to the linked main branch deploys only after repository CI
     # checks pass. This trigger does not replace Core or host authorization.
     autoDeployTrigger: checksPass

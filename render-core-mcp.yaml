@@ -7,7 +7,9 @@ services:
     branch: main
     buildCommand: npm ci
     startCommand: npm run core:mcp
-    healthCheckPath: /healthz
+    # Render needs process liveness during rollout. Governed dependency
+    # readiness remains available at /healthz and /readyz.
+    healthCheckPath: /livez
     # A merge/push to the linked main branch deploys only after repository CI
     # checks pass. This trigger does not replace Core or host authorization.
     autoDeployTrigger: checksPass
