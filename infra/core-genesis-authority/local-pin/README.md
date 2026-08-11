@@ -53,4 +53,6 @@ node install-trust-key.mjs /secure/path/public-trust-bundle.json
 
 The database URL must not be supplied on the command line, placed in this repository, copied into the bundle, or loaded from a local `.env` file. The script has no HTTP route and does not accept a PIN or private key. It validates the exact public-bundle schema, rejects private-material fields, verifies the canonical P-256 SPKI fingerprint and derived `authority_key_id`, runs the additive store initialization, and refuses installation when a different tenant key is already `ACTIVE`.
 
+For `local_pin`, `provider_attestation_digest` is explicitly `null`. This is an owner-held, unattested local software signer and it must not claim a provider attestation digest.
+
 A successful invocation prints only a public installation receipt and digest. Subsequent Universal Core operation resolves the pinned public trust key from PostgreSQL; it does not rerun the genesis installer and never receives Local-PIN private material. Rotation or replacement requires a separately governed trust-key procedure rather than editing the existing record.
