@@ -97,6 +97,10 @@ services:
           type: web
           name: skinharmony-core-mcp
           envVarKey: DATABASE_URL
+      # Owner-managed public pin to a trust key installed offline. This service
+      # never receives private material and cannot install or rotate trust keys.
+      - key: CORE_BOOTSTRAP_AUTHORITY_TRUST_PIN_JSON
+        sync: false
       - key: CORE_EVIDENCE_SIGNING_SECRET
         sync: false
       # Core host-native routes remain fail-closed in code. Production opts in

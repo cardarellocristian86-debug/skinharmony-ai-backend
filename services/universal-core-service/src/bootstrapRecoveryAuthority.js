@@ -4,9 +4,18 @@ export const BRA_TRUST_BUNDLE_SCHEMA_VERSION = "bra_trust_bundle_v1";
 export const BRA_GENESIS_RECEIPT_SCHEMA_VERSION = "bra_genesis_receipt_v1";
 export const BRA_INDEPENDENT_READBACK_SCHEMA_VERSION = "bra_independent_readback_v1";
 export const CORE_GENESIS_RECORD_CANDIDATE_SCHEMA_VERSION = "core_genesis_record_candidate_v1";
+export const BRA_TRUST_BUNDLE_SCHEMA_VERSION_V2 = "bra_trust_bundle_v2";
+export const BRA_GENESIS_RECEIPT_SCHEMA_VERSION_V2 = "bra_genesis_receipt_v2";
+export const BRA_INDEPENDENT_READBACK_SCHEMA_VERSION_V2 = "bra_independent_readback_v2";
+export const CORE_GENESIS_RECORD_CANDIDATE_SCHEMA_VERSION_V2 = "core_genesis_record_candidate_v2";
 
 const ED25519 = "Ed25519";
+const ECDSA_P256_SHA256 = "ECDSA-P256-SHA256";
+const LOCAL_PIN_PROVIDER = "local_pin";
+const LOCAL_PIN_CUSTODY_CLASS = "owner_local_encrypted";
+const LOCAL_PIN_ATTESTATION_STATUS = "UNATTESTED_LOCAL_SOFTWARE";
 const RECEIPT_SIGNATURE_CONTEXT = "bra-genesis-receipt-v1\0";
+const RECEIPT_SIGNATURE_CONTEXT_V2 = "bra-genesis-receipt-v2\0";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{6,126}[A-Za-z0-9]$/;
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
@@ -15,6 +24,9 @@ const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
 const TARGET_COMMIT_PATTERN = /^[a-f0-9]{40}$/;
 const RELEASE_INTENT_PATTERN = /^[a-z][a-z0-9_]{2,127}$/;
+const AUTHORITY_PROVIDER_PATTERN = /^(?:apple_secure_enclave|windows_tpm|pkcs11_hsm|cloud_kms|hashicorp_vault|enterprise_external)$/;
+const CUSTODY_CLASS_PATTERN = /^(?:hardware_non_exportable|external_hsm|cloud_kms_managed|enterprise_external)$/;
+const P256_HALF_ORDER = Buffer.from("7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8", "hex");
 const CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const CANONICAL_BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const CANONICAL_BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -71,6 +83,64 @@ const EXPECTED_FIELDS = [
   "target_commit",
   "tenant_id",
   "trust_bundle_digest",
+];
+const TRUST_BUNDLE_FIELDS_V2 = [
+  "algorithm",
+  "approvals",
+  "authority_provider",
+  "created_at",
+  "custody_class",
+  "key_id",
+  "provider_attestation_digest",
+  "public_key_sha256",
+  "public_key_spki_base64",
+  "schema_version",
+];
+const LOCAL_PIN_TRUST_BUNDLE_FIELDS_V2 = [
+  ...TRUST_BUNDLE_FIELDS_V2,
+  "attestation_status",
+];
+const RECEIPT_FIELDS_V2 = [
+  "algorithm",
+  "authority_provider",
+  "base_branch",
+  "custody_class",
+  "independent_readback",
+  "independent_readback_digest",
+  "issued_at",
+  "key_id",
+  "release_intent",
+  "repository",
+  "schema_version",
+  "signature",
+  "target_commit",
+  "tenant_id",
+  "trust_bundle_digest",
+];
+const LOCAL_PIN_RECEIPT_FIELDS_V2 = [
+  ...RECEIPT_FIELDS_V2,
+  "attestation_status",
+];
+const READBACK_FIELDS_V2 = [
+  "algorithm",
+  "authority_provider",
+  "base_branch",
+  "custody_class",
+  "key_id",
+  "observed_at",
+  "observer_id",
+  "provider_attestation_digest",
+  "public_key_sha256",
+  "release_intent",
+  "repository",
+  "schema_version",
+  "target_commit",
+  "tenant_id",
+  "trust_bundle_digest",
+];
+const LOCAL_PIN_READBACK_FIELDS_V2 = [
+  ...READBACK_FIELDS_V2,
+  "attestation_status",
 ];
 
 function fail(code) {
@@ -343,7 +413,7 @@ function bindReceipt({ trustBundle, receipt, expected, trustBundleDigest, readba
  * control plane. A valid result is evidence for a later Core decision and is
  * deliberately never an execution authorization.
  */
-export function verifyBootstrapRecoveryAuthority(input = {}) {
+function verifyBootstrapRecoveryAuthorityV1(input = {}) {
   assertDataOnly(input);
   exactFields(
     input,
@@ -398,4 +468,285 @@ export function verifyBootstrapRecoveryAuthority(input = {}) {
     observed_at: receipt.independent_readback.observed_at,
     issued_at: receipt.issued_at,
   };
+}
+
+function validateApprovalsV2(trustBundle) {
+  const createdAt = canonicalTimestamp(trustBundle.created_at, "bra_trust_bundle_timestamp_invalid");
+  if (!Array.isArray(trustBundle.approvals) || trustBundle.approvals.length !== 2) {
+    fail("bra_approval_quorum_invalid");
+  }
+  const requiredRoles = ["platform_owner", "security_owner"];
+  const approvals = trustBundle.approvals.map((approval, index) => {
+    exactFields(approval, APPROVAL_FIELDS, "bra_approval_schema_invalid");
+    if (approval.role !== requiredRoles[index]) fail("bra_approval_roles_invalid");
+    exactString(approval.approver_id, OPAQUE_ID_PATTERN, "bra_approver_id_invalid");
+    exactString(approval.approval_digest, SHA256_PATTERN, "bra_approval_digest_invalid");
+    return {
+      ...approval,
+      approvedAt: canonicalTimestamp(approval.approved_at, "bra_approval_timestamp_invalid"),
+    };
+  });
+  if (
+    approvals[0].approver_id === approvals[1].approver_id
+    || approvals[0].approval_digest === approvals[1].approval_digest
+  ) fail("bra_approvals_not_distinct");
+  if (!(createdAt < approvals[0].approvedAt && approvals[0].approvedAt < approvals[1].approvedAt)) {
+    fail("bra_timestamp_order_invalid");
+  }
+  return { createdAt, approvals };
+}
+
+function decodeP256Signature(value) {
+  exactString(value, CANONICAL_BASE64URL_PATTERN, "bra_signature_encoding_invalid");
+  const decoded = Buffer.from(value, "base64url");
+  if (decoded.length !== 64 || decoded.toString("base64url") !== value) {
+    fail("bra_signature_encoding_invalid");
+  }
+  if (Buffer.compare(decoded.subarray(32), P256_HALF_ORDER) > 0) {
+    fail("bra_signature_not_canonical");
+  }
+  return decoded;
+}
+
+function validateProviderSpecificV2(value) {
+  if (value.authority_provider === LOCAL_PIN_PROVIDER) {
+    if (value.custody_class !== LOCAL_PIN_CUSTODY_CLASS ||
+        value.attestation_status !== LOCAL_PIN_ATTESTATION_STATUS) {
+      fail("bra_local_pin_attestation_invalid");
+    }
+    return;
+  }
+  exactString(value.authority_provider, AUTHORITY_PROVIDER_PATTERN, "bra_authority_provider_invalid");
+  exactString(value.custody_class, CUSTODY_CLASS_PATTERN, "bra_custody_class_invalid");
+}
+
+function validateTrustBundleV2(trustBundle) {
+  const localPin = trustBundle?.authority_provider === LOCAL_PIN_PROVIDER;
+  exactFields(
+    trustBundle,
+    localPin ? LOCAL_PIN_TRUST_BUNDLE_FIELDS_V2 : TRUST_BUNDLE_FIELDS_V2,
+    "bra_trust_bundle_schema_invalid",
+  );
+  if (trustBundle.schema_version !== BRA_TRUST_BUNDLE_SCHEMA_VERSION_V2) {
+    fail("bra_trust_bundle_schema_invalid");
+  }
+  if (trustBundle.algorithm !== ECDSA_P256_SHA256) fail("bra_algorithm_not_supported");
+  validateProviderSpecificV2(trustBundle);
+  exactString(trustBundle.key_id, KEY_ID_PATTERN, "bra_key_id_invalid");
+  exactString(trustBundle.public_key_sha256, SHA256_PATTERN, "bra_public_key_digest_invalid");
+  exactString(
+    trustBundle.provider_attestation_digest,
+    SHA256_PATTERN,
+    "bra_provider_attestation_digest_invalid",
+  );
+  const { createdAt, approvals } = validateApprovalsV2(trustBundle);
+  const publicKeyDer = decodeCanonicalBase64(
+    trustBundle.public_key_spki_base64,
+    "bra_public_key_encoding_invalid",
+  );
+  let publicKey;
+  try {
+    publicKey = crypto.createPublicKey({ key: publicKeyDer, format: "der", type: "spki" });
+  } catch {
+    fail("bra_public_key_invalid");
+  }
+  if (
+    publicKey.asymmetricKeyType !== "ec"
+    || publicKey.asymmetricKeyDetails?.namedCurve !== "prime256v1"
+  ) fail("bra_algorithm_not_supported");
+  const canonicalDer = publicKey.export({ format: "der", type: "spki" });
+  if (!Buffer.isBuffer(canonicalDer) || !canonicalDer.equals(publicKeyDer)) {
+    fail("bra_public_key_encoding_invalid");
+  }
+  assertEqual(
+    crypto.createHash("sha256").update(publicKeyDer).digest("hex"),
+    trustBundle.public_key_sha256,
+    "bra_public_key_digest_mismatch",
+  );
+  return {
+    publicKey,
+    createdAt,
+    securityApprovedAt: approvals[1].approvedAt,
+  };
+}
+
+function validateReadbackV2(readback) {
+  const localPin = readback?.authority_provider === LOCAL_PIN_PROVIDER;
+  exactFields(
+    readback,
+    localPin ? LOCAL_PIN_READBACK_FIELDS_V2 : READBACK_FIELDS_V2,
+    "bra_readback_schema_invalid",
+  );
+  if (readback.schema_version !== BRA_INDEPENDENT_READBACK_SCHEMA_VERSION_V2) {
+    fail("bra_readback_schema_invalid");
+  }
+  if (readback.algorithm !== ECDSA_P256_SHA256) fail("bra_algorithm_not_supported");
+  validateProviderSpecificV2(readback);
+  exactString(readback.key_id, KEY_ID_PATTERN, "bra_key_id_invalid");
+  exactString(readback.public_key_sha256, SHA256_PATTERN, "bra_public_key_digest_invalid");
+  exactString(
+    readback.provider_attestation_digest,
+    SHA256_PATTERN,
+    "bra_provider_attestation_digest_invalid",
+  );
+  exactString(readback.trust_bundle_digest, SHA256_PATTERN, "bra_trust_bundle_digest_invalid");
+  exactString(readback.observer_id, OPAQUE_ID_PATTERN, "bra_readback_observer_invalid");
+  validateBinding(readback);
+  return canonicalTimestamp(readback.observed_at, "bra_readback_timestamp_invalid");
+}
+
+function validateReceiptV2(receipt) {
+  const localPin = receipt?.authority_provider === LOCAL_PIN_PROVIDER;
+  exactFields(
+    receipt,
+    localPin ? LOCAL_PIN_RECEIPT_FIELDS_V2 : RECEIPT_FIELDS_V2,
+    "bra_genesis_receipt_schema_invalid",
+  );
+  if (receipt.schema_version !== BRA_GENESIS_RECEIPT_SCHEMA_VERSION_V2) {
+    fail("bra_genesis_receipt_schema_invalid");
+  }
+  if (receipt.algorithm !== ECDSA_P256_SHA256) fail("bra_algorithm_not_supported");
+  validateProviderSpecificV2(receipt);
+  exactString(receipt.key_id, KEY_ID_PATTERN, "bra_key_id_invalid");
+  exactString(receipt.trust_bundle_digest, SHA256_PATTERN, "bra_trust_bundle_digest_invalid");
+  exactString(receipt.independent_readback_digest, SHA256_PATTERN, "bra_readback_digest_invalid");
+  validateBinding(receipt);
+  const issuedAt = canonicalTimestamp(receipt.issued_at, "bra_genesis_receipt_timestamp_invalid");
+  exactFields(receipt.signature, SIGNATURE_FIELDS, "bra_signature_schema_invalid");
+  if (receipt.signature.algorithm !== ECDSA_P256_SHA256) fail("bra_algorithm_not_supported");
+  exactString(receipt.signature.key_id, KEY_ID_PATTERN, "bra_key_id_invalid");
+  const signatureBytes = decodeP256Signature(receipt.signature.value_base64url);
+  const observedAt = validateReadbackV2(receipt.independent_readback);
+  return { issuedAt, observedAt, signatureBytes };
+}
+
+function bindReceiptV2({ trustBundle, receipt, expected, trustBundleDigest, readbackDigest }) {
+  const bindingFields = ["tenant_id", "repository", "base_branch", "target_commit", "release_intent"];
+  for (const field of bindingFields) {
+    assertEqual(receipt[field], expected[field], `bra_${field}_mismatch`);
+    assertEqual(receipt.independent_readback[field], receipt[field], `bra_readback_${field}_mismatch`);
+  }
+  assertEqual(trustBundle.key_id, expected.key_id, "bra_key_id_mismatch");
+  assertEqual(receipt.key_id, trustBundle.key_id, "bra_key_id_mismatch");
+  assertEqual(receipt.signature.key_id, trustBundle.key_id, "bra_key_id_mismatch");
+  assertEqual(receipt.independent_readback.key_id, trustBundle.key_id, "bra_key_id_mismatch");
+  assertEqual(receipt.algorithm, trustBundle.algorithm, "bra_algorithm_mismatch");
+  assertEqual(receipt.independent_readback.algorithm, trustBundle.algorithm, "bra_algorithm_mismatch");
+  assertEqual(receipt.authority_provider, trustBundle.authority_provider, "bra_authority_provider_mismatch");
+  assertEqual(receipt.custody_class, trustBundle.custody_class, "bra_custody_class_mismatch");
+  assertEqual(
+    receipt.independent_readback.authority_provider,
+    trustBundle.authority_provider,
+    "bra_authority_provider_mismatch",
+  );
+  assertEqual(
+    receipt.independent_readback.custody_class,
+    trustBundle.custody_class,
+    "bra_custody_class_mismatch",
+  );
+  if (trustBundle.authority_provider === LOCAL_PIN_PROVIDER) {
+    assertEqual(
+      receipt.attestation_status,
+      trustBundle.attestation_status,
+      "bra_local_pin_attestation_mismatch",
+    );
+    assertEqual(
+      receipt.independent_readback.attestation_status,
+      trustBundle.attestation_status,
+      "bra_readback_attestation_status_mismatch",
+    );
+  }
+  assertEqual(receipt.trust_bundle_digest, trustBundleDigest, "bra_trust_bundle_digest_mismatch");
+  assertEqual(
+    receipt.independent_readback.trust_bundle_digest,
+    trustBundleDigest,
+    "bra_trust_bundle_digest_mismatch",
+  );
+  assertEqual(expected.trust_bundle_digest, trustBundleDigest, "bra_trust_bundle_not_pinned");
+  assertEqual(
+    receipt.independent_readback.public_key_sha256,
+    trustBundle.public_key_sha256,
+    "bra_readback_public_key_mismatch",
+  );
+  assertEqual(
+    receipt.independent_readback.provider_attestation_digest,
+    trustBundle.provider_attestation_digest,
+    "bra_readback_attestation_mismatch",
+  );
+  assertEqual(receipt.independent_readback_digest, readbackDigest, "bra_readback_digest_mismatch");
+  assertEqual(expected.independent_readback_digest, readbackDigest, "bra_readback_not_pinned");
+}
+
+function verifyBootstrapRecoveryAuthorityV2(input) {
+  const { trust_bundle: trustBundle, genesis_receipt: receipt, expected } = input;
+  validateExpected(expected);
+  const trust = validateTrustBundleV2(trustBundle);
+  const receiptState = validateReceiptV2(receipt);
+  const trustBundleDigest = braSha256(trustBundle);
+  const readbackDigest = braSha256(receipt.independent_readback);
+  bindReceiptV2({ trustBundle, receipt, expected, trustBundleDigest, readbackDigest });
+  const approvalIds = new Set(trustBundle.approvals.map((approval) => approval.approver_id));
+  if (approvalIds.has(receipt.independent_readback.observer_id)) fail("bra_readback_not_independent");
+  if (!(trust.securityApprovedAt < receiptState.observedAt && receiptState.observedAt < receiptState.issuedAt)) {
+    fail("bra_timestamp_order_invalid");
+  }
+  const signaturePayload = Buffer.from(
+    `${RECEIPT_SIGNATURE_CONTEXT_V2}${braCanonicalJson(unsignedReceipt(receipt))}`,
+    "utf8",
+  );
+  let signatureValid = false;
+  try {
+    signatureValid = crypto.verify(
+      "sha256",
+      signaturePayload,
+      { key: trust.publicKey, dsaEncoding: "ieee-p1363" },
+      receiptState.signatureBytes,
+    );
+  } catch {
+    signatureValid = false;
+  }
+  if (!signatureValid) fail("bra_genesis_receipt_signature_invalid");
+  return {
+    schema_version: CORE_GENESIS_RECORD_CANDIDATE_SCHEMA_VERSION_V2,
+    verification_status: "verified_non_authorizing",
+    execution_authorized: false,
+    tenant_id: receipt.tenant_id,
+    repository: receipt.repository,
+    base_branch: receipt.base_branch,
+    target_commit: receipt.target_commit,
+    release_intent: receipt.release_intent,
+    key_id: trustBundle.key_id,
+    algorithm: trustBundle.algorithm,
+    authority_provider: trustBundle.authority_provider,
+    custody_class: trustBundle.custody_class,
+    ...(trustBundle.authority_provider === LOCAL_PIN_PROVIDER
+      ? { attestation_status: trustBundle.attestation_status }
+      : {}),
+    public_key_sha256: trustBundle.public_key_sha256,
+    provider_attestation_digest: trustBundle.provider_attestation_digest,
+    trust_bundle_digest: trustBundleDigest,
+    independent_readback_digest: readbackDigest,
+    genesis_receipt_digest: braSha256(receipt),
+    approved_roles: trustBundle.approvals.map((approval) => approval.role),
+    approval_digests: trustBundle.approvals.map((approval) => approval.approval_digest),
+    created_at: trustBundle.created_at,
+    observed_at: receipt.independent_readback.observed_at,
+    issued_at: receipt.issued_at,
+  };
+}
+
+export function verifyBootstrapRecoveryAuthority(input = {}) {
+  assertDataOnly(input);
+  exactFields(
+    input,
+    ["trust_bundle", "genesis_receipt", "expected"],
+    "bra_verification_request_schema_invalid",
+  );
+  if (input.trust_bundle.schema_version === BRA_TRUST_BUNDLE_SCHEMA_VERSION) {
+    return verifyBootstrapRecoveryAuthorityV1(input);
+  }
+  if (input.trust_bundle.schema_version === BRA_TRUST_BUNDLE_SCHEMA_VERSION_V2) {
+    return verifyBootstrapRecoveryAuthorityV2(input);
+  }
+  fail("bra_trust_bundle_schema_invalid");
 }

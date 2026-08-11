@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: SkinHarmony external KMS-backed Generic Work Core Join signer
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: production
+    AllowedPattern: "^[a-z0-9-]{2,32}$"
+  LogicalSignerKeyId:
+    Type: String
+    Default: generic-work-core-join-prod-v1
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{1,159}$"
+  GenesisLifecycleAdminRoleArn:
+    Type: String
+    Description: Standing lifecycle role; cannot sign, create grants, or change the key policy
+    AllowedPattern: "^arn:[A-Za-z0-9-]+:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$"
+  GenesisPolicyCustodianRoleArn:
+    Type: String
+    Description: Separately governed MFA-bound break-glass role allowed only to update the key policy
+    AllowedPattern: "^arn:[A-Za-z0-9-]+:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$"
+
+Resources:
+  SignerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Runtime identity for the purpose-bounded Generic Work Core Join signer
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AWSXRayDaemonWriteAccess
+      Tags:
+        - Key: skh:authority
+          Value: generic-work-core-join
+
+  SigningKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub SkinHarmony Generic Work Core Join ${EnvironmentName} Ed25519 signing key
+      Enabled: true
+      KeySpec: ECC_NIST_EDWARDS25519
+      KeyUsage: SIGN_VERIFY
+      MultiRegion: false
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DedicatedGenesisAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Ref GenesisLifecycleAdminRoleArn
+            Action:
+              - kms:CancelKeyDeletion
+              - kms:CreateAlias
+              - kms:DeleteAlias
+              - kms:DescribeKey
+              - kms:DisableKey
+              - kms:EnableKey
+              - kms:GetKeyPolicy
+              - kms:GetKeyRotationStatus
+              - kms:GetPublicKey
+              - kms:ListGrants
+              - kms:ListKeyPolicies
+              - kms:ListResourceTags
+              - kms:ScheduleKeyDeletion
+              - kms:TagResource
+              - kms:UntagResource
+              - kms:UpdateAlias
+              - kms:UpdateKeyDescription
+            Resource: "*"
+          - Sid: MfaBoundPolicyCustodian
+            Effect: Allow
+            Principal:
+              AWS: !Ref GenesisPolicyCustodianRoleArn
+            Action: kms:PutKeyPolicy
+            Resource: "*"
+            Condition:
+              Bool:
+                aws:MultiFactorAuthPresent: "true"
+          - Sid: SignerRuntimeUseOnly
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt SignerRole.Arn
+            Action:
+              - kms:GetPublicKey
+              - kms:Sign
+            Resource: "*"
+      Tags:
+        - Key: skh:authority
+          Value: generic-work-core-join
+        - Key: skh:environment
+          Value: !Ref EnvironmentName
+
+  SigningKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/skinharmony-${EnvironmentName}-generic-work-core-join
+      TargetKeyId: !Ref SigningKey
+
+  SignerAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Bearer credential accepted only by the Generic Work Core Join signer
+      GenerateSecretString:
+        SecretStringTemplate: '{"schema_version":"generic_work_core_join_signer_auth_v1"}'
+        GenerateStringKey: token
+        PasswordLength: 64
+        ExcludePunctuation: true
+      Tags:
+        - Key: skh:authority
+          Value: generic-work-core-join
+
+  SignerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub skinharmony-${EnvironmentName}-generic-work-core-join-signer
+      Description: Purpose-bounded external signer; private key remains in AWS KMS
+      CodeUri: .
+      Handler: src/handler.handler
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 10
+      ReservedConcurrentExecutions: 4
+      Tracing: Active
+      Role: !GetAtt SignerRole.Arn
+      Environment:
+        Variables:
+          SIGNER_LOGICAL_KEY_ID: !Ref LogicalSignerKeyId
+          SIGNER_KMS_KEY_ARN: !GetAtt SigningKey.Arn
+          SIGNER_AUTH_SECRET_ARN: !Ref SignerAuthSecret
+      Events:
+        Sign:
+          Type: HttpApi
+          Properties:
+            Path: /v1/generic-work-core-join/sign
+            Method: POST
+        Probe:
+          Type: HttpApi
+          Properties:
+            Path: /v1/generic-work-core-join/health
+            Method: POST
+
+  SignerSecretReadPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: generic-work-core-join-read-current-auth-secret
+      Roles:
+        - !Ref SignerRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadCurrentSignerCredential
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !Ref SignerAuthSecret
+
+  SignerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/skinharmony-${EnvironmentName}-generic-work-core-join-signer
+      RetentionInDays: 365
+
+Outputs:
+  SignEndpoint:
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/v1/generic-work-core-join/sign
+  HealthEndpoint:
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/v1/generic-work-core-join/health
+  KmsSigningKeyArn:
+    Value: !GetAtt SigningKey.Arn
+  LogicalSignerKeyId:
+    Value: !Ref LogicalSignerKeyId
+  SignerAuthSecretArn:
+    Value: !Ref SignerAuthSecret

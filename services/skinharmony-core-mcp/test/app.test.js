@@ -33,6 +33,86 @@ const config = {
   supportedScopes: ["core:read", "core:govern"]
 };
 
+function canonicalHealthDigest(value) {
+  const normalize = (item) => {
+    if (item === null || typeof item === "string" || typeof item === "boolean") return item;
+    if (typeof item === "number" && Number.isFinite(item)) return Object.is(item, -0) ? 0 : item;
+    if (Array.isArray(item)) return item.map(normalize);
+    return Object.fromEntries(Object.keys(item).sort().map((key) => [key, normalize(item[key])]));
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(normalize(value))).digest("hex");
+}
+
+function coreHealthResponse(payload, {
+  status = 200,
+  url = "https://core.example.test/healthz",
+  redirected = false,
+  contentType = "application/json",
+  contentLength,
+  body,
+} = {}) {
+  const headers = { "content-type": contentType };
+  if (contentLength !== undefined) headers["content-length"] = String(contentLength);
+  const response = new Response(body ?? JSON.stringify(payload), {
+    status,
+    headers,
+  });
+  Object.defineProperty(response, "url", { value: url });
+  Object.defineProperty(response, "redirected", { value: redirected });
+  return response;
+}
+
+function guardedCausalBootstrapPayload(overrides = {}) {
+  const payload = {
+    ok: false,
+    service: "universal-core-service",
+    mode: "production",
+    render_ready: false,
+    readiness: false,
+    readiness_verified: false,
+    liveness_degraded: true,
+    health_contract_version: CORE_HEALTH_CONTRACT_VERSION,
+    health_contract_digest: CORE_HEALTH_CONTRACT_DIGEST,
+    build: { build_id: "b".repeat(40), commit_sha: "b".repeat(40), commit_verifiable: true },
+    research_airlock: {
+      ready: false,
+      operational_safe: false,
+      accepting_new_work: false,
+      policy_version: "nyra_core_research_airlock_policy_v1",
+      mode: "enforced",
+      state_backend: "postgresql",
+      restart_durable: true,
+      distributed: true,
+    },
+    causal_continuity: { ok: false, state: "initializing", production_required: true },
+    ...overrides,
+  };
+  const guardPayload = {
+    schema_version: "research_airlock_bootstrap_guard_v1",
+    purpose: "causal_initialization_liveness",
+    policy_version: payload.research_airlock.policy_version,
+    static_guard_ready: true,
+    mode: payload.research_airlock.mode,
+    store_backend: payload.research_airlock.state_backend,
+    restart_durable: payload.research_airlock.restart_durable,
+    distributed: payload.research_airlock.distributed,
+    accepting_new_work: false,
+    runtime_verified: false,
+    build_commit_sha: payload.build.commit_sha,
+    health_contract_digest: payload.health_contract_digest,
+    causal_state: payload.causal_continuity.state,
+    causal_production_required: payload.causal_continuity.production_required,
+    liveness_window_ms: 30 * 60 * 1_000,
+    initialization_elapsed_ms: 1_000,
+    readiness_verified: false,
+  };
+  payload.research_airlock.bootstrap_guard = {
+    ...guardPayload,
+    guard_digest: canonicalHealthDigest(guardPayload),
+  };
+  return payload;
+}
+
 function postgresMajorProbe(serverVersionNum) {
   return createPostgresMajorVersionProbe({
     query: async () => {
@@ -652,21 +732,14 @@ test("production MCP health allows explicit Core causal bootstrap while readyz s
   let coreReady = false;
   const app = createApp(productionConfig, {
     handlers,
-    fetchImpl: async () => new Response(JSON.stringify(coreReady ? {
+    fetchImpl: async () => coreHealthResponse(coreReady ? {
       ok: true,
       render_ready: true,
       liveness_degraded: false,
       research_airlock: { ready: true, mode: "enforced", state_backend: "postgresql" },
       causal_continuity: { ok: true, state: "ready", production_required: true },
       build: { commit_sha: "b".repeat(40), commit_verifiable: true },
-    } : {
-      ok: false,
-      render_ready: false,
-      liveness_degraded: true,
-      research_airlock: { ready: true, mode: "enforced", state_backend: "postgresql" },
-      causal_continuity: { ok: false, state: "initializing", production_required: true },
-      build: { commit_sha: "b".repeat(40), commit_verifiable: true },
-    }), { status: 200, headers: { "content-type": "application/json" } }),
+    } : guardedCausalBootstrapPayload()),
   });
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
@@ -679,6 +752,7 @@ test("production MCP health allows explicit Core causal bootstrap while readyz s
     assert.equal(health.render_ready, false);
     assert.equal(health.research_airlock.core_ready, false);
     assert.equal(health.research_airlock.upstream_bootstrap_initializing, true);
+    assert.equal(health.research_airlock.bootstrap_guard_verified, true);
 
     const pendingReadyResponse = await fetch(`${base}/readyz`);
     const pendingReady = await pendingReadyResponse.json();
@@ -760,6 +834,118 @@ test("production MCP health rejects unauthorized, invalid, and non-bootstrap Cor
       assert.equal(health.research_airlock.core_ready, false, currentCase);
     }
     assert.equal(fetchCount, 3);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("production MCP rejects tampered, redirected, cross-bound, or readiness-claiming bootstrap guards", async () => {
+  const productionConfig = {
+    ...config,
+    environment: "production",
+    production: true,
+    runtimeBuildCommit: "a".repeat(40),
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    universalCoreKeys: {},
+    databaseUrl: "",
+    workContinuityAutoCaptureEnabled: false,
+    hostNativeAgentProtocolEnabled: false,
+    decisionLedgerRequired: false,
+  };
+  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({ content: [{ type: "text", text: "ok" }] })]));
+  let currentResponse;
+  const app = createApp(productionConfig, {
+    handlers,
+    fetchImpl: async () => currentResponse,
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const cases = [];
+    {
+      const payload = guardedCausalBootstrapPayload();
+      payload.research_airlock.bootstrap_guard.guard_digest = "0".repeat(64);
+      cases.push(["digest_tamper", coreHealthResponse(payload)]);
+    }
+    {
+      const payload = guardedCausalBootstrapPayload();
+      payload.research_airlock.mode = "shadow";
+      cases.push(["cross_binding", coreHealthResponse(payload)]);
+    }
+    {
+      const payload = guardedCausalBootstrapPayload();
+      payload.research_airlock.ready = true;
+      cases.push(["readiness_claim", coreHealthResponse(payload)]);
+    }
+    {
+      const payload = guardedCausalBootstrapPayload();
+      delete payload.readiness_verified;
+      cases.push(["readiness_verified_omitted", coreHealthResponse(payload)]);
+    }
+    {
+      const payload = guardedCausalBootstrapPayload();
+      payload.readiness_verified = true;
+      cases.push(["readiness_verified_tampered", coreHealthResponse(payload)]);
+    }
+    {
+      const payload = guardedCausalBootstrapPayload();
+      const guard = payload.research_airlock.bootstrap_guard;
+      guard.readiness_verified = true;
+      const { guard_digest: _digest, ...unsigned } = guard;
+      guard.guard_digest = canonicalHealthDigest(unsigned);
+      cases.push(["readiness_verified_cross_binding", coreHealthResponse(payload)]);
+    }
+    {
+      const payload = guardedCausalBootstrapPayload();
+      payload.research_airlock.runtime_ready = true;
+      cases.push(["runtime_claim", coreHealthResponse(payload)]);
+    }
+    {
+      const payload = guardedCausalBootstrapPayload();
+      payload.research_airlock.bootstrap_guard.extra = true;
+      cases.push(["schema_extension", coreHealthResponse(payload)]);
+    }
+    {
+      const payload = guardedCausalBootstrapPayload();
+      payload.build.build_id = "c".repeat(40);
+      cases.push(["build_identity_mismatch", coreHealthResponse(payload)]);
+    }
+    {
+      const payload = guardedCausalBootstrapPayload();
+      payload.causal_continuity.error = "initialization_failed";
+      cases.push(["initialization_error", coreHealthResponse(payload)]);
+    }
+    {
+      const payload = guardedCausalBootstrapPayload();
+      payload.research_airlock.bootstrap_guard.initialization_elapsed_ms = 31 * 60 * 1_000;
+      cases.push(["elapsed_window_tamper", coreHealthResponse(payload)]);
+    }
+    cases.push(["redirect", coreHealthResponse(guardedCausalBootstrapPayload(), { redirected: true })]);
+    cases.push(["cross_origin", coreHealthResponse(guardedCausalBootstrapPayload(), { url: "https://evil.example.test/healthz" })]);
+    cases.push(["http_origin", coreHealthResponse(guardedCausalBootstrapPayload(), { url: "http://core.example.test/healthz" })]);
+    cases.push(["jsonp_media_type", coreHealthResponse(guardedCausalBootstrapPayload(), { contentType: "application/jsonp" })]);
+    cases.push(["plus_json_not_allowlisted", coreHealthResponse(guardedCausalBootstrapPayload(), { contentType: "application/problem+json" })]);
+    cases.push(["declared_oversize", coreHealthResponse(guardedCausalBootstrapPayload(), { contentLength: 70_000 })]);
+    cases.push(["stream_oversize_without_length", coreHealthResponse(null, {
+      body: `${" ".repeat(70_000)}${JSON.stringify(guardedCausalBootstrapPayload())}`,
+    })]);
+    cases.push(["stream_oversize_forged_length", coreHealthResponse(null, {
+      body: `${" ".repeat(70_000)}${JSON.stringify(guardedCausalBootstrapPayload())}`,
+      contentLength: 1,
+    })]);
+
+    for (const [name, response] of cases) {
+      currentResponse = response;
+      const healthResponse = await fetch(`${base}/healthz`);
+      const health = await healthResponse.json();
+      assert.equal(healthResponse.status, 503, name);
+      assert.equal(health.ok, false, name);
+      assert.equal(health.render_ready, false, name);
+      assert.equal(health.research_airlock.upstream_bootstrap_initializing, false, name);
+      assert.equal(health.research_airlock.bootstrap_guard_verified, false, name);
+    }
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

@@ -43,6 +43,10 @@ const BUILD_COMMIT_HEX = /^[a-f0-9]{40}$/;
 const MCP_DEFAULT_REQUEST_LIMIT_BYTES = 1024 * 1024;
 const MCP_POLICY_ACTIVATE_REQUEST_LIMIT_BYTES = 2 * 1024 * 1024;
 const MCP_JSON_BODY_BYTES = Symbol("mcp_json_body_bytes");
+const RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_SCHEMA = "research_airlock_bootstrap_guard_v1";
+const RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_PURPOSE = "causal_initialization_liveness";
+const RESEARCH_AIRLOCK_POLICY_VERSION = "nyra_core_research_airlock_policy_v1";
+const MAX_CORE_HEALTH_RESPONSE_BYTES = 64 * 1024;
 export const POLICY_REGISTRY_LIFECYCLE_TOOLS = new Set([
   "nyra_policy_registry_activate",
   "nyra_policy_registry_rollback",
@@ -154,6 +158,109 @@ function exactHttpsOrigin(value) {
   } catch {
     return false;
   }
+}
+
+function canonicalHealthValue(value) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return Object.is(value, -0) ? 0 : value;
+  if (Array.isArray(value)) return value.map(canonicalHealthValue);
+  if (!value || typeof value !== "object") throw new Error("health_canonical_value_invalid");
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, canonicalHealthValue(value[key])]),
+  );
+}
+
+function canonicalHealthDigest(value) {
+  return crypto.createHash("sha256")
+    .update(JSON.stringify(canonicalHealthValue(value)))
+    .digest("hex");
+}
+
+function exactKeys(value, expected) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function sameDigest(left, right) {
+  if (!/^[a-f0-9]{64}$/.test(String(left || "")) || !/^[a-f0-9]{64}$/.test(String(right || ""))) return false;
+  return crypto.timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
+}
+
+function verifyResearchAirlockBootstrapGuard({ payload, responseUrl, responseRedirected, configuredCoreUrl }) {
+  const guard = payload?.research_airlock?.bootstrap_guard;
+  if (!exactKeys(guard, [
+    "accepting_new_work", "build_commit_sha", "causal_production_required", "causal_state",
+    "distributed", "guard_digest", "health_contract_digest", "initialization_elapsed_ms",
+    "liveness_window_ms", "mode", "policy_version", "purpose", "readiness_verified",
+    "restart_durable", "runtime_verified", "schema_version", "static_guard_ready", "store_backend",
+  ])) return false;
+  let expectedHealthUrl;
+  let observedUrl;
+  try {
+    const configured = new URL(configuredCoreUrl);
+    if (configured.protocol !== "https:" || configured.username || configured.password) return false;
+    expectedHealthUrl = new URL("/healthz", configured);
+    observedUrl = new URL(responseUrl);
+  } catch {
+    return false;
+  }
+  if (responseRedirected !== false
+    || observedUrl.protocol !== "https:"
+    || observedUrl.origin !== expectedHealthUrl.origin
+    || observedUrl.pathname !== expectedHealthUrl.pathname
+    || observedUrl.search !== ""
+    || observedUrl.hash !== "") return false;
+  if (guard.schema_version !== RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_SCHEMA
+    || guard.purpose !== RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_PURPOSE
+    || guard.policy_version !== RESEARCH_AIRLOCK_POLICY_VERSION
+    || guard.static_guard_ready !== true
+    || guard.mode !== "enforced"
+    || guard.store_backend !== "postgresql"
+    || guard.restart_durable !== true
+    || guard.distributed !== true
+    || guard.accepting_new_work !== false
+    || guard.runtime_verified !== false
+    || guard.readiness_verified !== false
+    || payload.mode !== "production"
+    || guard.build_commit_sha !== payload.build?.commit_sha
+    || guard.build_commit_sha !== payload.build?.build_id
+    || guard.health_contract_digest !== payload.health_contract_digest
+    || guard.health_contract_digest !== HOST_NATIVE_HEALTH_CONTRACT_DIGEST
+    || !/^[a-f0-9]{40}$/.test(guard.build_commit_sha)
+    || payload.build?.commit_verifiable !== true
+    || payload.readiness_verified !== false
+    || guard.readiness_verified !== payload.readiness_verified
+    || payload.readiness !== false
+    || payload.ok !== false
+    || payload.render_ready !== false
+    || payload.liveness_degraded !== true
+    || guard.causal_state !== payload.causal_continuity?.state
+    || guard.causal_state !== "initializing"
+    || guard.causal_production_required !== true
+    || payload.causal_continuity?.production_required !== true
+    || payload.causal_continuity?.error != null
+    || guard.mode !== payload.research_airlock?.mode
+    || guard.policy_version !== payload.research_airlock?.policy_version
+    || guard.store_backend !== payload.research_airlock?.state_backend
+    || guard.restart_durable !== payload.research_airlock?.restart_durable
+    || guard.distributed !== payload.research_airlock?.distributed
+    || !Number.isSafeInteger(guard.liveness_window_ms)
+    || guard.liveness_window_ms < 1
+    || guard.liveness_window_ms > 60 * 60 * 1_000
+    || !Number.isSafeInteger(guard.initialization_elapsed_ms)
+    || guard.initialization_elapsed_ms < 0
+    || guard.initialization_elapsed_ms > guard.liveness_window_ms
+    || payload.research_airlock?.ready !== false
+    || payload.research_airlock?.operational_safe !== false
+    || payload.research_airlock?.accepting_new_work !== false
+    || Object.hasOwn(payload.research_airlock, "runtime")
+    || Object.hasOwn(payload.research_airlock, "runtime_ready")
+    || Object.hasOwn(payload.research_airlock, "readiness")
+  ) return false;
+  const { guard_digest: digest, ...unsigned } = guard;
+  return sameDigest(digest, canonicalHealthDigest(unsigned));
 }
 
 export function buildPolicyRegistryLifecycleHealth(config = {}, options = {}, upstream = {}) {
@@ -1080,18 +1187,26 @@ export function createApp(config, options = {}) {
     Number(options.policyRegistryHealthTimeoutMs || 3_000),
     10,
   ), 3_000);
-  let upstreamHealthCache = { responseOk: false, payload: null, checkedAt: 0, expiresAt: 0 };
+  let upstreamHealthCache = {
+    responseOk: false,
+    responseStatus: null,
+    responseUrl: null,
+    responseRedirected: null,
+    payload: null,
+    checkedAt: 0,
+    expiresAt: 0,
+  };
   let upstreamHealthInFlight = null;
 
   async function probeUniversalCoreHealth({ force = false } = {}) {
     const now = Date.now();
     if (!force && upstreamHealthCache.expiresAt > now) return upstreamHealthCache;
     if (upstreamHealthInFlight) return upstreamHealthInFlight;
-    const endpoint = `${config.universalCoreUrl}/healthz`;
     const controller = new AbortController();
     let reader = null;
     let timer;
     const upstreamOperation = (async () => {
+        const endpoint = new URL("/healthz", config.universalCoreUrl).toString();
         const response = await (options.fetchImpl || globalThis.fetch)(endpoint, {
           method: "GET",
           headers: { accept: "application/json" },
@@ -1105,7 +1220,7 @@ export function createApp(config, options = {}) {
         if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(contentType)) {
           throw new Error("core_health_content_type_invalid");
         }
-        const maximumBytes = 256 * 1024;
+        const maximumBytes = MAX_CORE_HEALTH_RESPONSE_BYTES;
         const rawLength = response.headers?.get?.("content-length");
         if (rawLength !== null && rawLength !== undefined && rawLength !== "") {
           if (!/^\d+$/.test(String(rawLength))) throw new Error("core_health_content_length_invalid");
@@ -1143,6 +1258,9 @@ export function createApp(config, options = {}) {
         }
         return {
           responseOk: response.ok === true,
+          responseStatus: response.status,
+          responseUrl: response.url,
+          responseRedirected: response.redirected,
           payload,
         };
     })();
@@ -1166,6 +1284,9 @@ export function createApp(config, options = {}) {
         const checkedAt = Date.now();
         upstreamHealthCache = {
           responseOk: false,
+          responseStatus: null,
+          responseUrl: null,
+          responseRedirected: null,
           payload: null,
           checkedAt,
           expiresAt: checkedAt + Math.min(upstreamHealthCacheTtlMs, 500),
@@ -1280,6 +1401,14 @@ export function createApp(config, options = {}) {
       && payload.ok === true
       && payload.render_ready === true
       && airlockSafe;
+    const bootstrapGuardVerified = upstreamHealth.responseStatus === 200
+      && validPayload
+      && verifyResearchAirlockBootstrapGuard({
+        payload,
+        responseUrl: upstreamHealth.responseUrl,
+        responseRedirected: upstreamHealth.responseRedirected,
+        configuredCoreUrl: config.universalCoreUrl,
+      });
     const upstreamBootstrapInitializing = upstreamHealth.responseOk
       && validPayload
       && payload.ok === false
@@ -1288,7 +1417,7 @@ export function createApp(config, options = {}) {
       && payload.build.commit_verifiable === true
       && payload.causal_continuity?.production_required === true
       && payload.causal_continuity?.state === "initializing"
-      && airlockSafe;
+      && bootstrapGuardVerified;
     const researchAirlock = validPayload ? {
       core_ready: coreReady,
       upstream_bootstrap_initializing: upstreamBootstrapInitializing,
@@ -1296,11 +1425,13 @@ export function createApp(config, options = {}) {
       state_backend: payload?.research_airlock?.state_backend || "unavailable",
       operational_safe: payload?.research_airlock?.operational_safe === true,
       build_commit_sha: payload?.build?.commit_sha || null,
+      bootstrap_guard_verified: bootstrapGuardVerified,
     } : {
       core_ready: false,
       upstream_bootstrap_initializing: false,
       mode: "unavailable",
       state_backend: "unavailable",
+      bootstrap_guard_verified: false,
     };
     const genericWorkCoreJoin = buildGenericWorkCoreJoinHealth(
       config,

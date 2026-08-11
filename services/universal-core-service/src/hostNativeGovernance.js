@@ -1066,6 +1066,8 @@ export function createHostNativeGovernance({
   renderServiceOriginResolver = null,
   requiredChecksPolicyResolver = null,
   unreservedEffectVerifier = null,
+  bootstrapReleaseExceptionStore = null,
+  bootstrapDeadlockVerdictResolver = null,
   now = () => Date.now(),
   idFactory = () => crypto.randomBytes(16).toString("hex"),
   ticketTtlMs = DEFAULT_TICKET_TTL_MS,
@@ -1376,11 +1378,15 @@ export function createHostNativeGovernance({
       if (!delegation.grant.audience.includes(host_kind)) fail("host_not_allowed");
       const host_session_fingerprint = text(input.host_session_fingerprint, "host_session_invalid", 300);
       ensureActionBound(action, delegation);
+      if (input.bootstrap_release_exception_receipt !== undefined && action.kind !== "github.merge") {
+        fail("bootstrap_release_exception_action_not_allowed");
+      }
       const evidence_digest = digest(input.evidence_digest);
       let release_manifest = null;
       let release_intent_digest = null;
       let release_join_resolution = null;
       let coreJoin = null;
+      let bootstrapReleaseExceptionCandidate = null;
       let predecessor = null;
       if (input.predecessor_ticket_id) {
         const parent = initial.tickets[String(input.predecessor_ticket_id)];
@@ -1442,6 +1448,76 @@ export function createHostNativeGovernance({
           const actual = induced.map((service) => `${service?.service_id}\u0000${service?.environment}`).sort();
           if (!sameStrings(expected, actual)) fail("induced_effect_mismatch");
         }
+        if (input.bootstrap_release_exception_receipt !== undefined) {
+          if (!bootstrapReleaseExceptionStore || typeof bootstrapReleaseExceptionStore.verifyAndRecord !== "function") {
+            fail("bootstrap_release_exception_store_unavailable");
+          }
+          if (typeof bootstrapDeadlockVerdictResolver !== "function") {
+            fail("bootstrap_deadlock_verdict_unavailable");
+          }
+          const bootstrapExceptionId = text(
+            input.bootstrap_release_exception_receipt?.exception_id,
+            "bootstrap_release_exception_id_invalid",
+            240,
+          );
+          const corePolicyVerdictDigest = digest(
+            input.bootstrap_release_exception_receipt?.core_policy_verdict_digest,
+          );
+          let bootstrapDeadlockVerdict;
+          try {
+            bootstrapDeadlockVerdict = await bootstrapDeadlockVerdictResolver({
+              tenant_id: tenantId,
+              work_id: delegation.grant.work_id,
+              repository: delegation.grant.repository,
+              pr_number: action.pull_request,
+              head_sha: action.head_commit,
+              action: "github.merge",
+              exception_id: bootstrapExceptionId,
+              core_policy_verdict_digest: corePolicyVerdictDigest,
+            });
+          } catch (error) {
+            fail(String(error?.message || "bootstrap_deadlock_verdict_denied"));
+          }
+          if (!bootstrapDeadlockVerdict || typeof bootstrapDeadlockVerdict !== "object" ||
+              Array.isArray(bootstrapDeadlockVerdict) ||
+              bootstrapDeadlockVerdict.classification !== "BOOTSTRAP_DEADLOCK_VERIFIED" ||
+              bootstrapDeadlockVerdict.active !== true ||
+              bootstrapDeadlockVerdict.exception_id !== bootstrapExceptionId ||
+              bootstrapDeadlockVerdict.core_policy_verdict_digest !== corePolicyVerdictDigest ||
+              Date.parse(bootstrapDeadlockVerdict.expires_at || "") <= nowValue) {
+            fail("bootstrap_deadlock_verdict_denied");
+          }
+          let verified;
+          try {
+            verified = await bootstrapReleaseExceptionStore.verifyAndRecord({
+              receipt: input.bootstrap_release_exception_receipt,
+              expected: {
+                tenant_id: tenantId,
+                work_id: delegation.grant.work_id,
+                repository: delegation.grant.repository,
+                pr_number: action.pull_request,
+                head_sha: action.head_commit,
+                action: "github.merge",
+                required_checks: release_manifest.verification.required_checks,
+                required_checks_digest: release_manifest.verification.checks_digest,
+                required_checks_policy_digest: await resolveCoreJoinRequiredChecksPolicyDigest(input, release_manifest),
+                bootstrap_deadlock_verdict: clone(bootstrapDeadlockVerdict),
+              },
+            });
+          } catch (error) {
+            fail(String(error?.message || "bootstrap_release_exception_denied"));
+          }
+          const candidate = verified?.candidate;
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate) ||
+              candidate.tenant_id !== tenantId || candidate.work_id !== delegation.grant.work_id ||
+              candidate.repository !== delegation.grant.repository || candidate.pr_number !== action.pull_request ||
+              candidate.exception_id !== bootstrapExceptionId ||
+              candidate.head_sha !== action.head_commit || candidate.allowed_action !== "github.merge" ||
+              !candidate.receipt_digest || Date.parse(candidate.expires_at || "") <= nowValue) {
+            fail("bootstrap_release_exception_denied");
+          }
+          bootstrapReleaseExceptionCandidate = clone(candidate);
+        }
         if (action.kind === "git.push.protected") {
           if (action.branch !== release_manifest.delivery_branch || action.source_commit !== release_manifest.head_commit ||
               action.expected_remote_commit !== release_manifest.base_commit) fail("release_manifest_action_mismatch");
@@ -1478,6 +1554,25 @@ export function createHostNativeGovernance({
             ticket_id: parent.ticket.ticket_id,
             ticket_digest: hostNativeDigest(parent.ticket),
             result_commit: parent.result_commit || action.target_commit,
+          };
+        } else if (bootstrapReleaseExceptionCandidate) {
+          const resolvedServices = [];
+          for (const service of release_manifest.delivery.services) {
+            let origin = service.origin;
+            if (typeof renderServiceOriginResolver === "function") {
+              origin = await renderServiceOriginResolver({
+                tenant_id: tenantId,
+                repository: delegation.grant.repository,
+                service_id: service.service_id,
+                environment: service.environment,
+              });
+            }
+            origin = validRenderOrigin(origin || `https://${service.service_id}.onrender.com`);
+            resolvedServices.push({ ...service, origin });
+          }
+          release_manifest = {
+            ...release_manifest,
+            delivery: { ...release_manifest.delivery, services: resolvedServices },
           };
         } else {
           coreJoin = initial.core_join_verdicts[release_manifest.verification.core_join_verdict_id];
@@ -1558,7 +1653,7 @@ export function createHostNativeGovernance({
         if (!currentDelegation || !delegationActive(currentDelegation, nowValue)) fail("delegation_not_active");
         let releaseJoin = null;
         let supersededTicket = null;
-        if (isReleaseAction(action.kind) && action.kind !== "render.observe") {
+        if (isReleaseAction(action.kind) && action.kind !== "render.observe" && !bootstrapReleaseExceptionCandidate) {
           releaseJoin = state.core_join_verdicts[release_manifest.verification.core_join_verdict_id];
           if (!releaseJoin || releaseJoin.state !== "active") fail("core_join_verdict_consumed");
           const joinExpiresAt = Date.parse(releaseJoin.verdict?.expires_at || "");
@@ -1625,10 +1720,14 @@ export function createHostNativeGovernance({
             release_manifest_digest: release_manifest.manifest_digest,
             release_manifest_binding: ticketReleaseBinding(release_manifest),
             release_intent_digest,
-            core_join_verdict_id: coreJoin?.verdict_id,
-            core_join_verdict_digest: coreJoin?.claim_digest,
-            release_join_resolution,
-            release_join_resolution_digest: hostNativeDigest(release_join_resolution),
+            ...(bootstrapReleaseExceptionCandidate ? {
+              bootstrap_release_exception_candidate: bootstrapReleaseExceptionCandidate,
+            } : {
+              core_join_verdict_id: coreJoin?.verdict_id,
+              core_join_verdict_digest: coreJoin?.claim_digest,
+              release_join_resolution,
+              release_join_resolution_digest: hostNativeDigest(release_join_resolution),
+            }),
           } : {}),
         };
         const ticket = { ...ticketUnsigned, signature: ticketSignature(signing, ticketUnsigned) };
@@ -1654,6 +1753,35 @@ export function createHostNativeGovernance({
       const replay = getIdempotent(initial, tenantId, "reserveActionTicket", input);
       if (replay?.result) return replay.result;
       const nowValue = nowMillis(now);
+      const bootstrapTicket = initial.tickets[String(input.ticket_id || "")];
+      if (bootstrapTicket?.ticket?.bootstrap_release_exception_candidate) {
+        if (!bootstrapReleaseExceptionStore || typeof bootstrapReleaseExceptionStore.consume !== "function") {
+          fail("bootstrap_release_exception_store_unavailable");
+        }
+        if (bootstrapTicket.ticket.tenant_id !== tenantId) fail("cross_tenant_action_ticket_denied");
+        if (bootstrapTicket.state !== "issued") fail("replayed");
+        if (Date.parse(bootstrapTicket.ticket.expires_at) <= nowValue) fail("action_ticket_expired");
+        if (bootstrapTicket.ticket.host_session_fingerprint !== text(input.host_session_fingerprint, "host_session_mismatch", 300)) {
+          fail("host_session_mismatch");
+        }
+        try {
+          await bootstrapReleaseExceptionStore.consume({
+            candidate: clone(bootstrapTicket.ticket.bootstrap_release_exception_candidate),
+            expected: {
+              tenant_id: tenantId,
+              work_id: bootstrapTicket.ticket.work_id,
+              repository: bootstrapTicket.ticket.repository,
+              pr_number: bootstrapTicket.ticket.action.pull_request,
+              head_sha: bootstrapTicket.ticket.action.head_commit,
+              action: "github.merge",
+            },
+            action_ticket_id: bootstrapTicket.ticket.ticket_id,
+            consumed_by: "host_native_reservation",
+          });
+        } catch (error) {
+          fail(String(error?.message || "bootstrap_release_exception_consumption_denied"));
+        }
+      }
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "reserveActionTicket", input);
         if (descriptor?.result) return descriptor.result;
@@ -1667,7 +1795,7 @@ export function createHostNativeGovernance({
         if (!delegationActive(delegation, nowValue)) fail("delegation_not_active");
         const usage = actionUsage(record.ticket.action.kind, record.ticket.action);
         delegation.usage = ensureBudget(delegation, usage);
-        if (isReleaseAction(record.ticket.action.kind) && record.ticket.action.kind !== "render.observe") {
+        if (isReleaseAction(record.ticket.action.kind) && record.ticket.action.kind !== "render.observe" && !record.ticket.bootstrap_release_exception_candidate) {
           const join = state.core_join_verdicts[record.ticket.core_join_verdict_id];
           if (!join || join.tenant_id !== tenantId) fail("core_join_verdict_not_found");
           if (join.state !== "active") fail("core_join_verdict_consumed");

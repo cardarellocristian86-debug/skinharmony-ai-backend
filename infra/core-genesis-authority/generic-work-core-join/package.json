@@ -1,0 +1,14 @@
+{
+  "name": "@skinharmony/generic-work-core-join-genesis-signer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "public-material": "node scripts/export-public-material.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-kms": "^3.864.0",
+    "@aws-sdk/client-secrets-manager": "^3.864.0"
+  }
+}
