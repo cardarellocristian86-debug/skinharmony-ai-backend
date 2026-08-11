@@ -81,3 +81,12 @@ test("il pre-filtro V2 sopprime heartbeat informativi senza nascondere escalatio
   assert.equal(escalation.supervision_prefilter.disposition, "escalate");
   assert.deepEqual(escalation.supervision_prefilter.hard_flags, ["file_fuori_scope_task_contract"]);
 });
+
+
+test("high impact evidence in the received hierarchy input scales to V0", async () => {
+  const result = await evaluateCoreRuntimeHierarchy({
+    ...input(),
+    evidence_state: { high_impact: true },
+  }, { mode: "active" });
+  assert.equal(result.selected_authority, "V0");
+});
