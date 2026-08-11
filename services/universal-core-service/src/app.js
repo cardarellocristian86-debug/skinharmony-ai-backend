@@ -184,6 +184,14 @@ import {
   genericWorkCoreJoinDigest,
 } from "./genericWorkCoreJoin.js";
 import { createPostgresGenericWorkCoreJoinStore } from "./genericWorkCoreJoinStore.js";
+import { createPostgresBootstrapAuthorityStore } from "./bootstrapAuthorityPostgresStore.js";
+import { createBootstrapDeadlockVerdictStore } from "./bootstrapDeadlockVerdictStore.js";
+import { createBootstrapRequiredChecksReadback } from "./bootstrapRequiredChecksReadback.js";
+import { createBootstrapReleasePreparationService } from "./bootstrapReleasePreparation.js";
+import {
+  bootstrapReleaseExceptionCanonicalJson,
+  verifyLocalPinBootstrapReleaseException,
+} from "./bootstrapReleaseException.js";
 import { createPostgresCausalContinuityStore } from "./causalContinuityStore.js";
 import { createCausalContinuityRuntime } from "./causalContinuityRuntime.js";
 import { registerCausalContinuityRoutes } from "./causalContinuityRoutes.js";
@@ -208,6 +216,60 @@ const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_
 const BUILD_COMMIT_SHA =
   String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim().toLowerCase() ||
   null;
+const BOOTSTRAP_AUTHORITY_TRUST_PIN_SCHEMA_VERSION = "bootstrap_authority_trust_pin_v1";
+const BOOTSTRAP_AUTHORITY_TRUST_PIN_FIELDS = Object.freeze([
+  "authority_key_id",
+  "genesis_record_digest",
+  "public_key_sha256",
+  "schema_version",
+  "tenant_id",
+]);
+const BOOTSTRAP_AUTHORITY_FORBIDDEN_FIELD = /(^|_)(?:private(?:_key)?|secret|password|passphrase|credential|credentials|token|seed|mnemonic|hmac|mac|shared_key|symmetric_key|api_key|access_key|client_secret)(?:_|$)/i;
+
+function bootstrapAuthorityFail(code) {
+  throw new Error(code);
+}
+
+function bootstrapAuthorityPlainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function parseBootstrapAuthorityTrustPin(raw) {
+  let pin;
+  try { pin = JSON.parse(raw); } catch { bootstrapAuthorityFail("bootstrap_authority_trust_pin_json_invalid"); }
+  if (!bootstrapAuthorityPlainObject(pin)) bootstrapAuthorityFail("bootstrap_authority_trust_pin_schema_invalid");
+  const fields = Object.keys(pin).sort();
+  const expectedFields = [...BOOTSTRAP_AUTHORITY_TRUST_PIN_FIELDS].sort();
+  if (fields.length !== expectedFields.length || fields.some((field, index) => field !== expectedFields[index])) {
+    bootstrapAuthorityFail("bootstrap_authority_trust_pin_schema_invalid");
+  }
+  if (pin.schema_version !== BOOTSTRAP_AUTHORITY_TRUST_PIN_SCHEMA_VERSION ||
+      typeof pin.tenant_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$/.test(pin.tenant_id) ||
+      typeof pin.authority_key_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(pin.authority_key_id) ||
+      typeof pin.public_key_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(pin.public_key_sha256) ||
+      typeof pin.genesis_record_digest !== "string" || !/^[a-f0-9]{64}$/.test(pin.genesis_record_digest)) {
+    bootstrapAuthorityFail("bootstrap_authority_trust_pin_schema_invalid");
+  }
+  return Object.freeze({
+    tenant_id: pin.tenant_id,
+    authority_key_id: pin.authority_key_id,
+    public_key_sha256: pin.public_key_sha256,
+    genesis_record_digest: pin.genesis_record_digest,
+  });
+}
+
+const BOOTSTRAP_DEADLOCK_ALLOWED_FAILURE_CODES = Object.freeze([
+  "BOOTSTRAP_ROOT_OF_TRUST_MISSING",
+  "BOOTSTRAP_TRUST_REGISTRY_UNAVAILABLE",
+  "BOOTSTRAP_VERIFIER_UNAVAILABLE",
+]);
+const BOOTSTRAP_DEADLOCK_FAILURE_CODE_MAP = Object.freeze({
+  bootstrap_root_of_trust_missing: "BOOTSTRAP_ROOT_OF_TRUST_MISSING",
+  bootstrap_trust_registry_unavailable: "BOOTSTRAP_TRUST_REGISTRY_UNAVAILABLE",
+  bootstrap_verifier_unavailable: "BOOTSTRAP_VERIFIER_UNAVAILABLE",
+});
 const BUILD_COMMIT_VERIFIABLE = /^[a-f0-9]{40}$/.test(BUILD_COMMIT_SHA || "");
 const DEFAULT_CAUSAL_INITIALIZATION_LIVENESS_MS = 30 * 60 * 1_000;
 const MAX_CAUSAL_INITIALIZATION_LIVENESS_MS = 60 * 60 * 1_000;
@@ -4784,6 +4846,254 @@ export function createUniversalCoreService(options = {}) {
       })
     : null;
   const genericWorkCoreJoinVerifier = genericWorkCoreJoinAuthority ? createGenericWorkCoreJoinVerdictVerifier({ publicKey: genericWorkCoreJoinSigner.public_key, keyId: genericWorkCoreJoinSigner.key_id }) : null;
+  const bootstrapAuthorityTrustPinRaw = String(
+    options.bootstrapAuthorityTrustPinJson ??
+    process.env.CORE_BOOTSTRAP_AUTHORITY_TRUST_PIN_JSON ??
+    "",
+  ).trim();
+  let bootstrapAuthorityTrustPin = null;
+  let bootstrapAuthorityAttestationStatus = "unavailable";
+  let bootstrapReleaseExceptionStore = options.bootstrapReleaseExceptionStore || null;
+  let bootstrapReleaseExceptionStoreState = bootstrapReleaseExceptionStore ? "initializing" : "unavailable";
+  let bootstrapReleaseExceptionStoreError = null;
+  if (bootstrapAuthorityTrustPinRaw) {
+    try {
+      bootstrapAuthorityTrustPin = parseBootstrapAuthorityTrustPin(bootstrapAuthorityTrustPinRaw);
+      if (!governedAgentPostgresConfigured || !governedAgentPostgresVersionPool) {
+        bootstrapReleaseExceptionStoreState = "postgres_unavailable";
+      } else if (!bootstrapReleaseExceptionStore) {
+        bootstrapReleaseExceptionStore = createPostgresBootstrapAuthorityStore({
+          pool: governedAgentPostgresVersionPool,
+        });
+        bootstrapReleaseExceptionStoreState = "initializing";
+      }
+    } catch (error) {
+      bootstrapReleaseExceptionStoreState = "trust_pin_invalid";
+      bootstrapReleaseExceptionStoreError = String(error?.message || "trust_pin_invalid").slice(0, 120);
+    }
+  }
+  const bootstrapReleaseExceptionStoreInitialization = bootstrapReleaseExceptionStore?.initialize &&
+    bootstrapAuthorityTrustPin
+    ? Promise.resolve().then(async () => {
+      await bootstrapReleaseExceptionStore.initialize();
+      const key = await bootstrapReleaseExceptionStore.resolveActiveTrustKey({
+        tenant_id: bootstrapAuthorityTrustPin.tenant_id,
+        authority_key_id: bootstrapAuthorityTrustPin.authority_key_id,
+      });
+      const localSoftwareUnattested = key.authority_provider === "local_pin" &&
+        key.attestation_status === "UNATTESTED_LOCAL_SOFTWARE" &&
+        key.provider_attestation_digest == null;
+      if (key.public_key_sha256 !== bootstrapAuthorityTrustPin.public_key_sha256 ||
+          key.genesis_record_digest !== bootstrapAuthorityTrustPin.genesis_record_digest ||
+          key.authority_provider !== "local_pin" || key.algorithm !== "ECDSA_P256_SHA256_P1363" ||
+          !localSoftwareUnattested) {
+        bootstrapAuthorityFail("bootstrap_authority_trust_pin_mismatch");
+      }
+      bootstrapAuthorityAttestationStatus = key.attestation_status;
+      bootstrapReleaseExceptionStoreState = "ready";
+    }).catch((error) => {
+      bootstrapReleaseExceptionStoreState = "failed";
+      bootstrapReleaseExceptionStoreError = String(error?.message || "initialization_failed").slice(0, 120);
+    })
+    : Promise.resolve();
+  const bootstrapReleaseExceptionAdapter = bootstrapReleaseExceptionStore && bootstrapAuthorityTrustPin
+    ? Object.freeze({
+        async verifyAndRecord({ receipt, expected } = {}) {
+          await bootstrapReleaseExceptionStoreInitialization;
+          if (bootstrapReleaseExceptionStoreState !== "ready") {
+            bootstrapAuthorityFail("bootstrap_release_exception_store_unavailable");
+          }
+          if (!receipt || !expected || expected.tenant_id !== bootstrapAuthorityTrustPin.tenant_id ||
+              expected.action !== "github.merge" ||
+              typeof expected.required_checks_policy_digest !== "string" ||
+              typeof expected.required_checks_digest !== "string" ||
+              !expected.bootstrap_deadlock_verdict ||
+              expected.bootstrap_deadlock_verdict.core_policy_verdict_digest !== receipt.core_policy_verdict_digest) {
+            bootstrapAuthorityFail("bootstrap_release_exception_expected_binding_invalid");
+          }
+          const trustKey = await bootstrapReleaseExceptionStore.resolveActiveTrustKey({
+            tenant_id: expected.tenant_id,
+            authority_key_id: receipt.authority_key_id,
+          });
+          if (!trustKey || trustKey.authority_provider !== "local_pin" ||
+              trustKey.algorithm !== "ECDSA_P256_SHA256_P1363") {
+            bootstrapAuthorityFail("bootstrap_trust_key_unavailable");
+          }
+          const candidate = verifyLocalPinBootstrapReleaseException({
+            receipt,
+            publicKeySpki: trustKey.public_key_spki_der,
+            nowMs: Date.now(),
+            expected: {
+              allowed_action: expected.action,
+              core_policy_verdict_digest: expected.bootstrap_deadlock_verdict.core_policy_verdict_digest,
+              exception_id: receipt.exception_id,
+              head_sha: expected.head_sha,
+              nonce: receipt.nonce,
+              owner_confirmation_digest: receipt.owner_confirmation_digest,
+              post_deploy_obligations_digest: receipt.post_deploy_obligations_digest,
+              pr_number: expected.pr_number,
+              repository: expected.repository,
+              required_checks_digest: expected.required_checks_policy_digest,
+              required_checks_results_digest: expected.required_checks_digest,
+              rollback_obligations_digest: receipt.rollback_obligations_digest,
+              tenant_id: expected.tenant_id,
+              work_id: expected.work_id,
+            },
+          });
+          await bootstrapReleaseExceptionStore.recordVerifiedCandidate({ receipt, candidate });
+          return Object.freeze({ candidate });
+        },
+        async consume({ candidate, expected, action_ticket_id, consumed_by } = {}) {
+          await bootstrapReleaseExceptionStoreInitialization;
+          if (bootstrapReleaseExceptionStoreState !== "ready" || !candidate || !expected ||
+              expected.tenant_id !== bootstrapAuthorityTrustPin.tenant_id || expected.action !== "github.merge") {
+            bootstrapAuthorityFail("bootstrap_release_exception_store_unavailable");
+          }
+          const actionRequestDigest = crypto.createHash("sha256").update(
+            `bootstrap_release_exception_action_request_v1\0${bootstrapReleaseExceptionCanonicalJson({
+              action_ticket_id,
+              consumed_by,
+              head_sha: expected.head_sha,
+              pr_number: expected.pr_number,
+              repository: expected.repository,
+              tenant_id: expected.tenant_id,
+              work_id: expected.work_id,
+            })}`,
+            "utf8",
+          ).digest("hex");
+          const recorded = await bootstrapReleaseExceptionStore.read({
+            tenant_id: expected.tenant_id,
+            exception_id: candidate.exception_id,
+          });
+          const persisted = recorded?.receipt;
+          const receipt = persisted?.receipt;
+          if (!persisted || !receipt || persisted.receipt_digest !== candidate.receipt_digest ||
+              receipt.tenant_id !== expected.tenant_id || receipt.work_id !== expected.work_id ||
+              receipt.repository !== expected.repository || receipt.pr_number !== expected.pr_number ||
+              receipt.head_sha !== expected.head_sha || receipt.allowed_action !== expected.action ||
+              receipt.authority_key_id !== persisted.authority_key_id || recorded.revocation) {
+            bootstrapAuthorityFail("bootstrap_release_exception_not_eligible");
+          }
+          if (recorded.consumption) {
+            const consumption = recorded.consumption;
+            const outbox = recorded.outbox;
+            if (consumption.tenant_id !== expected.tenant_id ||
+                consumption.exception_id !== receipt.exception_id ||
+                consumption.receipt_digest !== persisted.receipt_digest ||
+                consumption.work_id !== expected.work_id || consumption.repository !== expected.repository ||
+                Number(consumption.pr_number) !== Number(expected.pr_number) ||
+                consumption.head_sha !== expected.head_sha || consumption.allowed_action !== expected.action ||
+                consumption.action_request_digest !== actionRequestDigest || consumption.consumed_by !== consumed_by ||
+                !outbox || outbox.action_request_digest !== actionRequestDigest ||
+                outbox.tenant_id !== expected.tenant_id || outbox.exception_id !== receipt.exception_id ||
+                outbox.allowed_action !== expected.action || outbox.target?.repository !== expected.repository ||
+                Number(outbox.target?.pr_number) !== Number(expected.pr_number) ||
+                outbox.target?.head_sha !== expected.head_sha || outbox.target?.allowed_action !== expected.action) {
+              bootstrapAuthorityFail("bootstrap_release_exception_replayed");
+            }
+            return Object.freeze({
+              consumption,
+              outbox,
+              event: null,
+              action_authorized: true,
+              core_join_authorized: false,
+              idempotent_recovery: true,
+            });
+          }
+          return bootstrapReleaseExceptionStore.consume({
+            tenant_id: expected.tenant_id,
+            exception_id: receipt.exception_id,
+            work_id: expected.work_id,
+            repository: expected.repository,
+            pr_number: expected.pr_number,
+            head_sha: expected.head_sha,
+            allowed_action: expected.action,
+            authority_key_id: persisted.authority_key_id,
+            required_checks_digest: receipt.required_checks_digest,
+            required_checks_results_digest: receipt.required_checks_results_digest,
+            owner_confirmation_digest: receipt.owner_confirmation_digest,
+            core_policy_verdict_digest: receipt.core_policy_verdict_digest,
+            rollback_obligations_digest: receipt.rollback_obligations_digest,
+            post_deploy_obligations_digest: receipt.post_deploy_obligations_digest,
+            receipt_digest: persisted.receipt_digest,
+            action_request_digest: actionRequestDigest,
+            consumed_by,
+            target: {
+              repository: expected.repository,
+              pr_number: expected.pr_number,
+              head_sha: expected.head_sha,
+              allowed_action: expected.action,
+            },
+          });
+        },
+      })
+    : null;
+  let bootstrapDeadlockVerdictStore = null;
+  const bootstrapDeadlockAllowedFailureCodes = BOOTSTRAP_DEADLOCK_ALLOWED_FAILURE_CODES;
+  let bootstrapDeadlockVerdictStoreState = "unavailable";
+  let bootstrapDeadlockVerdictStoreError = null;
+  if (!governedAgentPostgresConfigured || !governedAgentPostgresVersionPool) {
+    bootstrapDeadlockVerdictStoreState = "postgres_unavailable";
+  } else {
+    try {
+      bootstrapDeadlockVerdictStore = createBootstrapDeadlockVerdictStore({
+        pool: governedAgentPostgresVersionPool,
+        allowedFailureCodes: bootstrapDeadlockAllowedFailureCodes,
+      });
+      bootstrapDeadlockVerdictStoreState = "initializing";
+    } catch (error) {
+      bootstrapDeadlockVerdictStoreState = "failed";
+      bootstrapDeadlockVerdictStoreError = String(error?.message || "initialization_failed").slice(0, 120);
+    }
+  }
+  const bootstrapDeadlockVerdictStoreInitialization = bootstrapDeadlockVerdictStore?.initialize
+    ? Promise.resolve().then(() => bootstrapDeadlockVerdictStore.initialize()).then(() => {
+      bootstrapDeadlockVerdictStoreState = "ready";
+    }).catch((error) => {
+      bootstrapDeadlockVerdictStoreState = "failed";
+      bootstrapDeadlockVerdictStoreError = String(error?.message || "initialization_failed").slice(0, 120);
+    })
+    : Promise.resolve();
+  const bootstrapDeadlockVerdictResolver = bootstrapDeadlockVerdictStore
+    ? async ({
+      tenant_id: tenantId,
+      work_id: workId,
+      repository,
+      pr_number: prNumber,
+      head_sha: headSha,
+      exception_id: exceptionId,
+      action,
+      core_policy_verdict_digest: verdictDigest,
+    } = {}) => {
+      await bootstrapDeadlockVerdictStoreInitialization;
+      if (bootstrapDeadlockVerdictStoreState !== "ready" || !exceptionId) return null;
+      try {
+        const verdict = await bootstrapDeadlockVerdictStore.resolveActive({
+          tenant_id: tenantId,
+          work_id: workId,
+          repository,
+          pr_number: prNumber,
+          head_sha: headSha,
+          exception_id: exceptionId,
+          action,
+          verdict_digest: verdictDigest,
+        });
+        if (!verdict || verdict.classification !== "BOOTSTRAP_DEADLOCK_VERIFIED" ||
+            verdict.normal_path_available !== false || verdict.execution_authorized !== false ||
+            verdict.host_action_authorized !== false ||
+            Date.parse(verdict.expires_at || "") <= Date.now()) return null;
+        return Object.freeze({
+          classification: verdict.classification,
+          active: true,
+          expires_at: verdict.expires_at,
+          core_policy_verdict_digest: verdict.verdict_digest,
+          exception_id: verdict.exception_id,
+        });
+      } catch {
+        return null;
+      }
+    }
+    : null;
   const hostNativeResolverConfigurationValid =
     options.hostNativeResolverConfigurationValid !== false;
   const hostNativeResolverConfigurationError = hostNativeResolverConfigurationValid
@@ -4896,6 +5206,8 @@ export function createUniversalCoreService(options = {}) {
           renderServiceOriginResolver: hostNativeRenderServiceOriginResolver,
           requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
           closureAttestationSigningSecret: dttAgentIdentitySecret,
+          bootstrapReleaseExceptionStore: bootstrapReleaseExceptionAdapter,
+          bootstrapDeadlockVerdictResolver,
         });
         hostNativeGovernanceState = "ready";
       } catch (error) {
@@ -4907,6 +5219,99 @@ export function createUniversalCoreService(options = {}) {
       }
     }
   }
+  const bootstrapRequiredChecksReadback = options.bootstrapRequiredChecksReadback ||
+    (typeof hostNativeRequiredChecksPolicyResolver === "function"
+      ? createBootstrapRequiredChecksReadback({
+          fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
+          githubTokenResolver: options.hostNativeGithubTokenResolver || null,
+          requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
+          timeoutMs: Number(
+            options.hostNativeReadbackTimeoutMs ??
+            process.env.CORE_HOST_NATIVE_READBACK_TIMEOUT_MS ??
+            5_000,
+          ),
+        })
+      : null);
+  const bootstrapReleasePreparationBaseBranchResolver =
+    options.bootstrapReleasePreparationBaseBranchResolver || null;
+  const bootstrapReleasePreparationService = options.bootstrapReleasePreparationService ||
+    (hostNativeGovernance && bootstrapRequiredChecksReadback && bootstrapDeadlockVerdictStore &&
+      bootstrapDeadlockAllowedFailureCodes && bootstrapAuthorityTrustPin &&
+      typeof bootstrapReleasePreparationBaseBranchResolver === "function"
+      ? createBootstrapReleasePreparationService({
+          normalPathAttempt: async ({ authenticated_tenant_id, normal_action_request }) => {
+            try {
+              await hostNativeGovernance.issueActionTicket({
+                ...normal_action_request,
+                tenant_id: authenticated_tenant_id,
+              });
+              return { ok: true };
+            } catch (error) {
+              const failure = String(error?.message || "").trim();
+              return { ok: false, failure_code: BOOTSTRAP_DEADLOCK_FAILURE_CODE_MAP[failure] || null };
+            }
+          },
+          requiredChecksReadback: async ({ authenticated_tenant_id, normal_action_request }) => {
+            const baseBranch = await bootstrapReleasePreparationBaseBranchResolver({
+              tenant_id: authenticated_tenant_id,
+              repository: normal_action_request.repository,
+              pr_number: normal_action_request.pr_number,
+              head_sha: normal_action_request.head_sha,
+            });
+            const attestation = await bootstrapRequiredChecksReadback.attest({
+              tenant_id: authenticated_tenant_id,
+              repository: normal_action_request.repository,
+              pr_number: normal_action_request.pr_number,
+              head_sha: normal_action_request.head_sha,
+              base_branch: baseBranch,
+            });
+            return {
+              ...attestation,
+              work_id: normal_action_request.work_id,
+              policy_revision: attestation.required_checks_digest,
+            };
+          },
+          deadlockVerdictStore: bootstrapDeadlockVerdictStore,
+          activeTrustKeyResolver: async ({ tenant_id, authority_provider }) => {
+            if (authority_provider !== "local_pin") return null;
+            await bootstrapReleaseExceptionStoreInitialization;
+            if (bootstrapReleaseExceptionStoreState !== "ready") return null;
+            const key = await bootstrapReleaseExceptionStore.resolveActiveTrustKey({
+              tenant_id,
+              authority_key_id: bootstrapAuthorityTrustPin.authority_key_id,
+            });
+            return {
+              status: String(key.status || "").toLowerCase(),
+              authority_provider: key.authority_provider,
+              authority_key_id: key.authority_key_id,
+            };
+          },
+          ownerConfirmationVerifier: async ({ owner_confirmation, expected }) => {
+            const verified = verifyOwnerContextAssertion(
+              owner_confirmation,
+              ownerContextSigningSecret,
+              expected.tenant_id,
+              expected.request_digest,
+            );
+            if (!verified || owner_confirmation?.owner_subject_fingerprint !== expected.owner_id) {
+              return { verified: false };
+            }
+            return {
+              verified: true,
+              tenant_id: expected.tenant_id,
+              owner_id: expected.owner_id,
+              request_digest: expected.request_digest,
+              owner_confirmation_digest: crypto.createHash("sha256").update(
+                `bootstrap_owner_confirmation_v1\0${bootstrapReleaseExceptionCanonicalJson(owner_confirmation)}`,
+                "utf8",
+              ).digest("hex"),
+            };
+          },
+          now: Date.now,
+          idFactory: (kind) => `${kind}:${crypto.randomUUID()}`,
+          allowedFailureCodes: bootstrapDeadlockAllowedFailureCodes,
+        })
+      : null);
   const causalContinuityStore = options.causalContinuityStore
     || (nyraPolicyRegistryPostgresPool
       ? createPostgresCausalContinuityStore({ pool: nyraPolicyRegistryPostgresPool })
@@ -6087,6 +6492,29 @@ export function createUniversalCoreService(options = {}) {
         custody: genericWorkCoreJoinAuthority?.signer_metadata.custody || null,
         initialization_error: genericWorkCoreJoinStoreError,
         host_action_authorized: false,
+      },
+      bootstrap_release_exception: {
+        state: bootstrapReleaseExceptionStoreState,
+        ready: Boolean(bootstrapReleaseExceptionAdapter) && bootstrapReleaseExceptionStoreState === "ready",
+        required: false,
+        backend: bootstrapReleaseExceptionStore?.initialize ? "postgres_bootstrap_authority_v1" : "unavailable",
+        trust_pin_configured: Boolean(bootstrapAuthorityTrustPinRaw),
+        pinned: Boolean(bootstrapAuthorityTrustPin) && bootstrapReleaseExceptionStoreState === "ready",
+        authority_key_id: bootstrapAuthorityTrustPin?.authority_key_id || null,
+        attestation_status: bootstrapAuthorityAttestationStatus,
+        initialization_error: bootstrapReleaseExceptionStoreError,
+        host_action_authorized: false,
+        core_join_authorized: false,
+      },
+      bootstrap_deadlock_verdict: {
+        state: bootstrapDeadlockVerdictStoreState,
+        ready: Boolean(bootstrapDeadlockVerdictResolver) && bootstrapDeadlockVerdictStoreState === "ready",
+        required: false,
+        backend: bootstrapDeadlockVerdictStore?.kind || "unavailable",
+        failure_policy_configured: true,
+        initialization_error: bootstrapDeadlockVerdictStoreError,
+        host_action_authorized: false,
+        core_join_authorized: false,
       },
       research_airlock: {
         ...researchAirlockHealth,
@@ -7473,6 +7901,61 @@ export function createUniversalCoreService(options = {}) {
       confirmation_reference: textValue(req.body?.confirmation_reference),
     };
   }
+
+  app.post(
+    "/v1/host-native/bootstrap/release-exceptions/prepare",
+    coreAuth(SCOPES.AUTOMATION_CODEX),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      if (!hasScope(req.coreKey, SCOPES.OWNER_ASSERTION)) {
+        return publicError(res, 403, "bootstrap_release_preparation_owner_scope_required");
+      }
+      if (!bootstrapReleasePreparationService) {
+        return publicError(res, 503, "bootstrap_release_preparation_unavailable");
+      }
+      try {
+        const body = req.body || {};
+        const fields = Object.keys(body).sort();
+        const expectedFields = ["normal_action_request", "owner_confirmation", "requested_ttl_seconds"];
+        if (fields.length !== expectedFields.length || fields.some((field, index) => field !== expectedFields[index])) {
+          throw new Error("bootstrap_release_preparation_request_schema_invalid");
+        }
+        if (!body.normal_action_request || body.normal_action_request.tenant_id !== req.tenantId) {
+          throw new Error("tenant_scope_denied");
+        }
+        const ownerId = String(body.owner_confirmation?.owner_subject_fingerprint || "");
+        const preparation = await bootstrapReleasePreparationService.prepare({
+          authenticated_tenant_id: req.tenantId,
+          authenticated_owner_id: ownerId,
+          owner_confirmation: body.owner_confirmation,
+          normal_action_request: {
+            ...body.normal_action_request,
+            tenant_id: req.tenantId,
+          },
+          requested_ttl_seconds: body.requested_ttl_seconds,
+        });
+        audit.append("core_bootstrap_release_exception_prepared", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          work_id: preparation?.unsigned_receipt?.work_id || null,
+          exception_id: preparation?.unsigned_receipt?.exception_id || null,
+          action_authorized: false,
+          core_join_authorized: false,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          preparation,
+          action_authorized: false,
+          merge_authorized: false,
+          deploy_authorized: false,
+          core_join_authorized: false,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
 
   app.get(
     "/v1/host-native/status",

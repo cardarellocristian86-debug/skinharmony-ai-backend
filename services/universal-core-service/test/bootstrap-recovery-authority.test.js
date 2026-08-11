@@ -6,6 +6,10 @@ import {
   BRA_GENESIS_RECEIPT_SCHEMA_VERSION,
   BRA_INDEPENDENT_READBACK_SCHEMA_VERSION,
   BRA_TRUST_BUNDLE_SCHEMA_VERSION,
+  BRA_TRUST_BUNDLE_SCHEMA_VERSION_V2,
+  BRA_GENESIS_RECEIPT_SCHEMA_VERSION_V2,
+  BRA_INDEPENDENT_READBACK_SCHEMA_VERSION_V2,
+  CORE_GENESIS_RECORD_CANDIDATE_SCHEMA_VERSION_V2,
   CORE_GENESIS_RECORD_CANDIDATE_SCHEMA_VERSION,
   braCanonicalJson,
   braSha256,
@@ -15,6 +19,7 @@ import {
 const RECEIPT_SIGNATURE_CONTEXT = "bra-genesis-receipt-v1\0";
 const KEY_ID = "bra-genesis-key-20260808";
 const TARGET_COMMIT = "8d3a2bdf77a3a62e14cd014833b065594ee01b39";
+const P256_ORDER = BigInt("0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551");
 
 function independentCanonical(value) {
   if (Array.isArray(value)) return `[${value.map(independentCanonical).join(",")}]`;
@@ -28,6 +33,14 @@ function independentCanonical(value) {
 
 function independentDigest(value) {
   return crypto.createHash("sha256").update(independentCanonical(value), "utf8").digest("hex");
+}
+
+function canonicalP256Signature(signature) {
+  const result = Buffer.from(signature);
+  const s = BigInt(`0x${result.subarray(32).toString("hex")}`);
+  const canonicalS = s > P256_ORDER / 2n ? P256_ORDER - s : s;
+  Buffer.from(canonicalS.toString(16).padStart(64, "0"), "hex").copy(result, 32);
+  return result;
 }
 
 function signReceipt(receipt, privateKey) {
@@ -431,4 +444,157 @@ test("the candidate is public-data-only, stable, and incapable of authorizing ex
     "observed_at",
     "issued_at",
   ]);
+});
+
+function p256Fixture({ localPin = false } = {}) {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const publicKeyDer = publicKey.export({ type: "spki", format: "der" });
+  const trustBundle = {
+    schema_version: BRA_TRUST_BUNDLE_SCHEMA_VERSION_V2,
+    key_id: "bra-apple-secure-enclave-20260810",
+    algorithm: "ECDSA-P256-SHA256",
+    authority_provider: localPin ? "local_pin" : "apple_secure_enclave",
+    custody_class: localPin ? "owner_local_encrypted" : "hardware_non_exportable",
+    ...(localPin ? { attestation_status: "UNATTESTED_LOCAL_SOFTWARE" } : {}),
+    public_key_spki_base64: publicKeyDer.toString("base64"),
+    public_key_sha256: crypto.createHash("sha256").update(publicKeyDer).digest("hex"),
+    provider_attestation_digest: "c".repeat(64),
+    created_at: "2026-08-10T16:00:00.000Z",
+    approvals: [
+      {
+        role: "platform_owner",
+        approver_id: "owner-platform-01",
+        approved_at: "2026-08-10T16:01:00.000Z",
+        approval_digest: "a".repeat(64),
+      },
+      {
+        role: "security_owner",
+        approver_id: "owner-security-01",
+        approved_at: "2026-08-10T16:02:00.000Z",
+        approval_digest: "b".repeat(64),
+      },
+    ],
+  };
+  const trustBundleDigest = independentDigest(trustBundle);
+  const independentReadback = {
+    schema_version: BRA_INDEPENDENT_READBACK_SCHEMA_VERSION_V2,
+    key_id: trustBundle.key_id,
+    algorithm: trustBundle.algorithm,
+    authority_provider: trustBundle.authority_provider,
+    custody_class: trustBundle.custody_class,
+    ...(localPin ? { attestation_status: trustBundle.attestation_status } : {}),
+    public_key_sha256: trustBundle.public_key_sha256,
+    provider_attestation_digest: trustBundle.provider_attestation_digest,
+    trust_bundle_digest: trustBundleDigest,
+    observer_id: "independent-reader-01",
+    observed_at: "2026-08-10T16:03:00.000Z",
+    tenant_id: "codexai",
+    repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+    base_branch: "main",
+    target_commit: "8d3a2bdf77a3a62e14cd014833b065594ee01b39",
+    release_intent: "bootstrap_core_genesis_trust",
+  };
+  const independentReadbackDigest = independentDigest(independentReadback);
+  const receipt = {
+    schema_version: BRA_GENESIS_RECEIPT_SCHEMA_VERSION_V2,
+    key_id: trustBundle.key_id,
+    algorithm: trustBundle.algorithm,
+    authority_provider: trustBundle.authority_provider,
+    custody_class: trustBundle.custody_class,
+    ...(localPin ? { attestation_status: trustBundle.attestation_status } : {}),
+    trust_bundle_digest: trustBundleDigest,
+    tenant_id: independentReadback.tenant_id,
+    repository: independentReadback.repository,
+    base_branch: independentReadback.base_branch,
+    target_commit: independentReadback.target_commit,
+    release_intent: independentReadback.release_intent,
+    independent_readback: independentReadback,
+    independent_readback_digest: independentReadbackDigest,
+    issued_at: "2026-08-10T16:04:00.000Z",
+    signature: null,
+  };
+  const unsigned = { ...receipt };
+  delete unsigned.signature;
+  const payload = Buffer.from(`bra-genesis-receipt-v2\0${independentCanonical(unsigned)}`, "utf8");
+  receipt.signature = {
+    algorithm: trustBundle.algorithm,
+    key_id: trustBundle.key_id,
+    value_base64url: canonicalP256Signature(crypto.sign(
+      "sha256",
+      payload,
+      { key: privateKey, dsaEncoding: "ieee-p1363" },
+    )).toString("base64url"),
+  };
+  return {
+    trust_bundle: trustBundle,
+    genesis_receipt: receipt,
+    expected: {
+      tenant_id: receipt.tenant_id,
+      repository: receipt.repository,
+      base_branch: receipt.base_branch,
+      target_commit: receipt.target_commit,
+      release_intent: receipt.release_intent,
+      key_id: receipt.key_id,
+      trust_bundle_digest: trustBundleDigest,
+      independent_readback_digest: independentReadbackDigest,
+    },
+  };
+}
+
+test("verifies a provider-neutral Secure Enclave P-256 ceremony without authorizing execution", () => {
+  const value = p256Fixture();
+  const candidate = verifyBootstrapRecoveryAuthority(value);
+  assert.equal(candidate.schema_version, CORE_GENESIS_RECORD_CANDIDATE_SCHEMA_VERSION_V2);
+  assert.equal(candidate.algorithm, "ECDSA-P256-SHA256");
+  assert.equal(candidate.authority_provider, "apple_secure_enclave");
+  assert.equal(candidate.custody_class, "hardware_non_exportable");
+  assert.equal(candidate.provider_attestation_digest, "c".repeat(64));
+  assert.equal(candidate.verification_status, "verified_non_authorizing");
+  assert.equal(candidate.execution_authorized, false);
+});
+
+test("local-PIN V2 is explicitly and exclusively UNATTESTED_LOCAL_SOFTWARE", () => {
+  const value = p256Fixture({ localPin: true });
+  const candidate = verifyBootstrapRecoveryAuthority(value);
+  assert.equal(candidate.authority_provider, "local_pin");
+  assert.equal(candidate.custody_class, "owner_local_encrypted");
+  assert.equal(candidate.attestation_status, "UNATTESTED_LOCAL_SOFTWARE");
+  assert.equal(candidate.execution_authorized, false);
+
+  const missing = p256Fixture({ localPin: true });
+  delete missing.trust_bundle.attestation_status;
+  assert.throws(() => verifyBootstrapRecoveryAuthority(missing), /bra_trust_bundle_schema_invalid/);
+
+  const elevated = p256Fixture({ localPin: true });
+  elevated.trust_bundle.attestation_status = "HARDWARE_ATTESTED";
+  assert.throws(() => verifyBootstrapRecoveryAuthority(elevated), /bra_local_pin_attestation_invalid/);
+
+  const ambiguous = p256Fixture();
+  ambiguous.trust_bundle.attestation_status = "UNATTESTED_LOCAL_SOFTWARE";
+  assert.throws(() => verifyBootstrapRecoveryAuthority(ambiguous), /bra_trust_bundle_schema_invalid/);
+});
+
+test("provider-neutral ceremonies reject provider substitution, signature replay, and v1/v2 mixing", () => {
+  const providerSubstitution = p256Fixture();
+  providerSubstitution.genesis_receipt.authority_provider = "cloud_kms";
+  assert.throws(
+    () => verifyBootstrapRecoveryAuthority(providerSubstitution),
+    /bra_authority_provider_mismatch/,
+  );
+
+  const replay = p256Fixture();
+  replay.genesis_receipt.target_commit = "d".repeat(40);
+  replay.expected.target_commit = replay.genesis_receipt.target_commit;
+  replay.genesis_receipt.independent_readback.target_commit = replay.genesis_receipt.target_commit;
+  assert.throws(
+    () => verifyBootstrapRecoveryAuthority(replay),
+    /bra_readback_digest_mismatch|bra_genesis_receipt_signature_invalid/,
+  );
+
+  const mixedSchema = p256Fixture();
+  mixedSchema.genesis_receipt.schema_version = BRA_GENESIS_RECEIPT_SCHEMA_VERSION;
+  assert.throws(
+    () => verifyBootstrapRecoveryAuthority(mixedSchema),
+    /bra_genesis_receipt_schema_invalid/,
+  );
 });

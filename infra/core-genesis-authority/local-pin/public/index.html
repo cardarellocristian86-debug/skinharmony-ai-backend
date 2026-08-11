@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nyra Core Genesis Authority</title>
+  <style>
+    :root { color-scheme: light; --ink:#142019; --paper:#f4f0e7; --accent:#d8522b; --line:#b9b0a2; --ok:#1f6f4a; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 15% 10%,#fff8df 0,transparent 34%),linear-gradient(135deg,#e7eadf,#f4f0e7 58%,#e8d8c3); color:var(--ink); font-family:Georgia,serif; }
+    main { width:min(900px,calc(100% - 32px)); margin:42px auto; }
+    header { border-top:8px solid var(--ink); border-bottom:1px solid var(--line); padding:24px 0; }
+    h1 { margin:0; font-size:clamp(2rem,6vw,4.8rem); line-height:.92; letter-spacing:-.045em; }
+    .eyebrow { font:700 .78rem/1.2 ui-monospace,monospace; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); }
+    .card { margin-top:28px; padding:24px; border:1px solid var(--line); background:rgba(255,255,255,.72); box-shadow:10px 10px 0 rgba(20,32,25,.12); }
+    label { display:block; margin:16px 0 6px; font:700 .82rem/1.2 ui-monospace,monospace; text-transform:uppercase; }
+    input,textarea { width:100%; border:1px solid var(--ink); background:#fffdf7; padding:12px; font:1rem/1.45 ui-monospace,monospace; }
+    textarea { min-height:260px; resize:vertical; }
+    button { margin-top:18px; border:0; background:var(--ink); color:white; padding:13px 18px; font:700 .9rem/1 ui-monospace,monospace; cursor:pointer; }
+    button:hover { background:var(--accent); }
+    pre { overflow:auto; white-space:pre-wrap; word-break:break-word; padding:16px; border-left:5px solid var(--ok); background:#eef4ec; }
+    .hidden { display:none; }
+    .warning { color:#7b2718; font-weight:700; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="eyebrow">Owner-only / Local / Fail-closed</div>
+      <h1>Genesis<br>Authority</h1>
+      <p>Firma esclusivamente eccezioni bootstrap one-shot già classificate da Core.</p>
+    </header>
+
+    <section id="initialization" class="card hidden">
+      <div class="eyebrow">Cerimonia Genesis una tantum</div>
+      <h2>Inizializza l’authority locale</h2>
+      <p class="warning">Il PIN non è recuperabile. Non comunicarlo a Nyra, Codex o altri agenti.</p>
+      <label for="new-pin">PIN o passphrase (minimo 8 caratteri)</label>
+      <input id="new-pin" type="password" autocomplete="new-password">
+      <label for="new-pin-confirmation">Conferma</label>
+      <input id="new-pin-confirmation" type="password" autocomplete="new-password">
+      <button id="initialize">Crea authority cifrata</button>
+    </section>
+
+    <section id="signing" class="card hidden">
+      <div class="eyebrow">Bootstrap release exception</div>
+      <h2>Firma un receipt preparato da Core</h2>
+      <p>Controlla manualmente tenant, Work, repository, PR, SHA e azione prima di firmare.</p>
+      <label for="receipt">Receipt JSON non firmato</label>
+      <textarea id="receipt" spellcheck="false"></textarea>
+      <label for="pin">PIN</label>
+      <input id="pin" type="password" autocomplete="current-password">
+      <button id="sign">Firma receipt one-shot</button>
+    </section>
+
+    <section id="result" class="card hidden">
+      <div class="eyebrow">Risultato</div>
+      <pre id="output"></pre>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>
