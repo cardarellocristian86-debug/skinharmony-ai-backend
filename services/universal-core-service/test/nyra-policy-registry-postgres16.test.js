@@ -189,7 +189,8 @@ test("Policy Registry PostgreSQL 16 preserves JSONB and state across store resta
     const restarted = createPostgresNyraPolicyRegistryStore(storeOptions);
     const result = await restarted.evaluate({ tenant_id: tenantId, action,
       core_branch_id: "nyra_policy_registry", nyra_branch_id: "risk_governance",
-      domain_pack_id: "generic", satisfied_gates: ["core_allow"], now: NOW });
+      domain_pack_id: "generic", satisfied_gates: ["core_allow"],
+      context: snapshot.policy.constraints, now: NOW });
     assert.equal(result.verdict, "ALLOW");
     assert.equal(result.snapshot_verified, true);
     const status = await restarted.status();
@@ -217,6 +218,7 @@ test("Policy Registry PostgreSQL 16 serializes multi-connection replay with CAS"
     const storeOptions = options(pool, tenantId, snapshot, consumed);
     const input = activation(tenantId, snapshot, `race-${crypto.randomUUID()}`);
     const stores = Array.from({ length: 6 }, () => createPostgresNyraPolicyRegistryStore(storeOptions));
+    for (const store of stores) await store.ready();
     const results = await Promise.all(stores.map((store) => store.activate(input)));
     assert.equal(results.filter((item) => item.idempotent_replay === false).length, 1);
     assert.equal(results.filter((item) => item.idempotent_replay === true).length, 5);
