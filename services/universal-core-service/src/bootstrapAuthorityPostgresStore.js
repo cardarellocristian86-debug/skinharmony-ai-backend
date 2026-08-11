@@ -2,7 +2,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const MIGRATION_SQL = fs.readFileSync(fileURLToPath(new URL("../migrations/20260810_bootstrap_authority_registry.sql", import.meta.url)), "utf8");
+const MIGRATION_SQL = [
+  "../migrations/20260810_bootstrap_authority_registry.sql",
+  "../migrations/20260811_bootstrap_authority_schema_convergence_repair.sql",
+].map((migration) => fs.readFileSync(fileURLToPath(new URL(migration, import.meta.url)), "utf8")).join("\n");
 const DIGEST = /^[a-f0-9]{64}$/;
 const SHA = /^[a-f0-9]{40}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
@@ -25,15 +28,19 @@ WITH required_columns(table_name,column_name) AS (VALUES
 ), required_indexes(index_name) AS (VALUES
   ('core_bootstrap_one_active_key_per_tenant_idx'),
   ('core_bootstrap_receipt_target_idx')
-), required_triggers(trigger_name) AS (VALUES
-  ('core_bootstrap_trust_keys_no_mutation'),
-  ('core_bootstrap_receipts_no_mutation'),
-  ('core_bootstrap_consumptions_no_mutation'),
-  ('core_bootstrap_events_no_mutation'),
-  ('core_bootstrap_trust_state_guard')
-), required_constraints(constraint_name) AS (VALUES
-  ('core_bootstrap_local_attestation_ck'),
-  ('core_bootstrap_receipt_single_use_ck')
+), required_triggers(table_name,trigger_name) AS (VALUES
+  ('core_bootstrap_trust_keys','core_bootstrap_trust_keys_no_mutation'),
+  ('core_bootstrap_release_receipts','core_bootstrap_receipts_no_mutation'),
+  ('core_bootstrap_release_revocations','core_bootstrap_revocations_no_mutation'),
+  ('core_bootstrap_release_consumptions','core_bootstrap_consumptions_no_mutation'),
+  ('core_bootstrap_events','core_bootstrap_events_no_mutation'),
+  ('core_bootstrap_trust_key_state','core_bootstrap_trust_state_guard'),
+  ('core_bootstrap_trust_key_state','core_bootstrap_trust_state_no_delete'),
+  ('core_bootstrap_action_outbox','core_bootstrap_outbox_no_delete')
+), required_constraints(table_name,constraint_name) AS (VALUES
+  ('core_bootstrap_trust_keys','core_bootstrap_local_attestation_v2_ck'),
+  ('core_bootstrap_release_receipts','core_bootstrap_receipt_single_use_v2_ck'),
+  ('core_bootstrap_trust_key_state','core_bootstrap_trust_state_legacy_v2_ck')
 )
 SELECT
   ARRAY(SELECT table_name || '.' || column_name FROM required_columns r WHERE NOT EXISTS (
@@ -42,11 +49,12 @@ SELECT
   ARRAY(SELECT index_name FROM required_indexes r WHERE to_regclass(current_schema() || '.' || r.index_name) IS NULL) AS missing_indexes,
   ARRAY(SELECT trigger_name FROM required_triggers r WHERE NOT EXISTS (
     SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
-    WHERE n.nspname=current_schema() AND t.tgname=r.trigger_name AND NOT t.tgisinternal
+    WHERE n.nspname=current_schema() AND c.relname=r.table_name
+      AND t.tgname=r.trigger_name AND NOT t.tgisinternal
   )) AS missing_triggers,
   ARRAY(SELECT constraint_name FROM required_constraints r WHERE NOT EXISTS (
-    SELECT 1 FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace
-    WHERE n.nspname=current_schema() AND c.conname=r.constraint_name
+    SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace
+    WHERE n.nspname=current_schema() AND t.relname=r.table_name AND c.conname=r.constraint_name
   )) AS missing_constraints,
   NOT EXISTS (
     SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -97,39 +105,135 @@ SELECT
   ) AS column_semantics_converged,
   (
     EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace
-      WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_local_attestation_ck' AND c.contype='c'
-        AND regexp_replace(lower(pg_get_constraintdef(c.oid)),'[[:space:]()]','','g') LIKE '%authority_provider=''local_pin''%attestation_status=''unattested_local_software''%legacy_local_pin=false%provider_attestation_digestisnull%legacy_local_pin=true%provider_attestation_digest~%')
+      WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_local_attestation_v2_ck'
+        AND c.contype='c' AND c.convalidated AND NOT c.connoinherit
+        AND c.conrelid=to_regclass(format('%I.%I',current_schema(),'core_bootstrap_trust_keys'))
+        AND encode(sha256(convert_to(regexp_replace(regexp_replace(lower(pg_get_constraintdef(c.oid)),'::(text|character varying|core_bootstrap_attestation_status)','','g'),'[[:space:]()]','','g'),'UTF8')),'hex')
+          = '9b5a206e99449d04c295e478119785891896752e24594c60efb406465be776a8')
     AND EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace
-      WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_receipt_single_use_ck' AND c.contype='c'
-        AND regexp_replace(lower(pg_get_constraintdef(c.oid)),'[[:space:]()]','','g') LIKE '%max_uses=1%core_policy_classification=''bootstrap_deadlock_verified''%')
+      WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_receipt_single_use_v2_ck'
+        AND c.contype='c' AND c.convalidated AND NOT c.connoinherit
+        AND c.conrelid=to_regclass(format('%I.%I',current_schema(),'core_bootstrap_release_receipts'))
+        AND encode(sha256(convert_to(regexp_replace(regexp_replace(lower(pg_get_constraintdef(c.oid)),'::(text|character varying|core_bootstrap_attestation_status)','','g'),'[[:space:]()]','','g'),'UTF8')),'hex')
+          = 'a62982bfc760aa45156382981e4a968a47d2986d7e843399a98ff8be1a08d687')
   ) AS check_constraints_converged,
   EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace
-    WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_trust_state_legacy_unattested_ck' AND c.contype='c'
-      AND regexp_replace(lower(pg_get_constraintdef(c.oid)),'[[:space:]()]','','g') LIKE '%legacy_unattested=falseorstatusin''retired'',''revoked''%') AS legacy_state_constraint_converged,
+    WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_trust_state_legacy_v2_ck'
+      AND c.contype='c' AND c.convalidated AND NOT c.connoinherit
+      AND c.conrelid=to_regclass(format('%I.%I',current_schema(),'core_bootstrap_trust_key_state'))
+      AND encode(sha256(convert_to(regexp_replace(regexp_replace(lower(pg_get_constraintdef(c.oid)),'::(text|character varying|core_bootstrap_attestation_status)','','g'),'[[:space:]()]','','g'),'UTF8')),'hex')
+        = '2fbe0796d982b5c4c1177a10a67be54f287266ff453a59d0eb823e10c38fc2c0') AS legacy_state_constraint_converged,
   (
     EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace
-      WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_trust_key_state_tenant_id_authority_key_id_fkey' AND c.contype='f'
-        AND regexp_replace(lower(pg_get_constraintdef(c.oid)),'[[:space:]()]','','g') LIKE 'foreignkeytenant_id,authority_key_idreferencescore_bootstrap_trust_keystenant_id,authority_key_id%')
+      WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_state_key_v2_fk'
+        AND c.contype='f' AND c.convalidated AND NOT c.condeferrable
+        AND c.confupdtype='a' AND c.confdeltype='a'
+        AND c.conrelid=to_regclass(format('%I.%I',current_schema(),'core_bootstrap_trust_key_state'))
+        AND c.confrelid=to_regclass(format('%I.%I',current_schema(),'core_bootstrap_trust_keys'))
+        AND ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(attnum,ord)
+          JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum ORDER BY k.ord)
+          = ARRAY['tenant_id','authority_key_id']::text[]
+        AND ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(attnum,ord)
+          JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.attnum ORDER BY k.ord)
+          = ARRAY['tenant_id','authority_key_id']::text[])
     AND EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace
-      WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_release_consumptions_tenant_id_exception_id_receipt_digest_fkey' AND c.contype='f'
-        AND regexp_replace(lower(pg_get_constraintdef(c.oid)),'[[:space:]()]','','g') LIKE 'foreignkeytenant_id,exception_id,receipt_digestreferencescore_bootstrap_release_receiptstenant_id,exception_id,receipt_digest%')
+      WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_consumption_receipt_v2_fk'
+        AND c.contype='f' AND c.convalidated AND NOT c.condeferrable
+        AND c.confupdtype='a' AND c.confdeltype='a'
+        AND c.conrelid=to_regclass(format('%I.%I',current_schema(),'core_bootstrap_release_consumptions'))
+        AND c.confrelid=to_regclass(format('%I.%I',current_schema(),'core_bootstrap_release_receipts'))
+        AND ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(attnum,ord)
+          JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum ORDER BY k.ord)
+          = ARRAY['tenant_id','exception_id','receipt_digest']::text[]
+        AND ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(attnum,ord)
+          JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.attnum ORDER BY k.ord)
+          = ARRAY['tenant_id','exception_id','receipt_digest']::text[])
     AND EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace
-      WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_action_outbox_consumption_id_fkey' AND c.contype='f'
-        AND regexp_replace(lower(pg_get_constraintdef(c.oid)),'[[:space:]()]','','g') LIKE 'foreignkeyconsumption_idreferencescore_bootstrap_release_consumptionsconsumption_id%')
+      WHERE n.nspname=current_schema() AND c.conname='core_bootstrap_outbox_consumption_v2_fk'
+        AND c.contype='f' AND c.convalidated AND NOT c.condeferrable
+        AND c.confupdtype='a' AND c.confdeltype='a'
+        AND c.conrelid=to_regclass(format('%I.%I',current_schema(),'core_bootstrap_action_outbox'))
+        AND c.confrelid=to_regclass(format('%I.%I',current_schema(),'core_bootstrap_release_consumptions'))
+        AND ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(attnum,ord)
+          JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum ORDER BY k.ord)
+          = ARRAY['consumption_id']::text[]
+        AND ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(attnum,ord)
+          JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.attnum ORDER BY k.ord)
+          = ARRAY['consumption_id']::text[])
   ) AS foreign_keys_converged,
   (
-    EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
-      WHERE n.nspname=current_schema() AND c.relname='core_bootstrap_trust_keys' AND t.tgname='core_bootstrap_trust_keys_no_mutation' AND NOT t.tgisinternal
-        AND lower(pg_get_triggerdef(t.oid)) LIKE '%before update or delete on core_bootstrap_trust_keys%execute function core_bootstrap_forbid_mutation()%')
-    AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
-      WHERE n.nspname=current_schema() AND c.relname='core_bootstrap_release_receipts' AND t.tgname='core_bootstrap_receipts_no_mutation' AND NOT t.tgisinternal
-        AND lower(pg_get_triggerdef(t.oid)) LIKE '%before update or delete on core_bootstrap_release_receipts%execute function core_bootstrap_forbid_mutation()%')
-    AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
-      WHERE n.nspname=current_schema() AND c.relname='core_bootstrap_release_consumptions' AND t.tgname='core_bootstrap_consumptions_no_mutation' AND NOT t.tgisinternal
-        AND lower(pg_get_triggerdef(t.oid)) LIKE '%before update or delete on core_bootstrap_release_consumptions%execute function core_bootstrap_forbid_mutation()%')
-    AND EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
-      WHERE n.nspname=current_schema() AND c.relname='core_bootstrap_trust_key_state' AND t.tgname='core_bootstrap_trust_state_guard' AND NOT t.tgisinternal
-        AND lower(pg_get_triggerdef(t.oid)) LIKE '%before update on core_bootstrap_trust_key_state%execute function core_bootstrap_trust_state_transition()%')
+    EXISTS (SELECT 1 FROM pg_trigger t
+      JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace
+      WHERE n.nspname=current_schema() AND pn.nspname=current_schema()
+        AND c.relname='core_bootstrap_trust_keys' AND t.tgname='core_bootstrap_trust_keys_no_mutation'
+        AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=27 AND t.tgnargs=0 AND t.tgqual IS NULL
+        AND p.proname='core_bootstrap_forbid_mutation' AND p.pronargs=0 AND p.prorettype='trigger'::regtype)
+    AND EXISTS (SELECT 1 FROM pg_trigger t
+      JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace
+      WHERE n.nspname=current_schema() AND pn.nspname=current_schema()
+        AND c.relname='core_bootstrap_release_receipts' AND t.tgname='core_bootstrap_receipts_no_mutation'
+        AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=27 AND t.tgnargs=0 AND t.tgqual IS NULL
+        AND p.proname='core_bootstrap_forbid_mutation' AND p.pronargs=0 AND p.prorettype='trigger'::regtype)
+    AND EXISTS (SELECT 1 FROM pg_trigger t
+      JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace
+      WHERE n.nspname=current_schema() AND pn.nspname=current_schema()
+        AND c.relname='core_bootstrap_release_revocations' AND t.tgname='core_bootstrap_revocations_no_mutation'
+        AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=27 AND t.tgnargs=0 AND t.tgqual IS NULL
+        AND p.proname='core_bootstrap_forbid_mutation' AND p.pronargs=0 AND p.prorettype='trigger'::regtype)
+    AND EXISTS (SELECT 1 FROM pg_trigger t
+      JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace
+      WHERE n.nspname=current_schema() AND pn.nspname=current_schema()
+        AND c.relname='core_bootstrap_release_consumptions' AND t.tgname='core_bootstrap_consumptions_no_mutation'
+        AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=27 AND t.tgnargs=0 AND t.tgqual IS NULL
+        AND p.proname='core_bootstrap_forbid_mutation' AND p.pronargs=0 AND p.prorettype='trigger'::regtype)
+    AND EXISTS (SELECT 1 FROM pg_trigger t
+      JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace
+      WHERE n.nspname=current_schema() AND pn.nspname=current_schema()
+        AND c.relname='core_bootstrap_events' AND t.tgname='core_bootstrap_events_no_mutation'
+        AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=27 AND t.tgnargs=0 AND t.tgqual IS NULL
+        AND p.proname='core_bootstrap_forbid_mutation' AND p.pronargs=0 AND p.prorettype='trigger'::regtype)
+    AND EXISTS (SELECT 1 FROM pg_trigger t
+      JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace
+      WHERE n.nspname=current_schema() AND pn.nspname=current_schema()
+        AND c.relname='core_bootstrap_trust_key_state' AND t.tgname='core_bootstrap_trust_state_guard'
+        AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=19 AND t.tgnargs=0 AND t.tgqual IS NULL
+        AND p.proname='core_bootstrap_trust_state_transition' AND p.pronargs=0 AND p.prorettype='trigger'::regtype)
+    AND EXISTS (SELECT 1 FROM pg_trigger t
+      JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace
+      WHERE n.nspname=current_schema() AND pn.nspname=current_schema()
+        AND c.relname='core_bootstrap_trust_key_state' AND t.tgname='core_bootstrap_trust_state_no_delete'
+        AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=11 AND t.tgnargs=0 AND t.tgqual IS NULL
+        AND p.proname='core_bootstrap_forbid_mutation' AND p.pronargs=0 AND p.prorettype='trigger'::regtype)
+    AND EXISTS (SELECT 1 FROM pg_trigger t
+      JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+      JOIN pg_proc p ON p.oid=t.tgfoid JOIN pg_namespace pn ON pn.oid=p.pronamespace
+      WHERE n.nspname=current_schema() AND pn.nspname=current_schema()
+        AND c.relname='core_bootstrap_action_outbox' AND t.tgname='core_bootstrap_outbox_no_delete'
+        AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=11 AND t.tgnargs=0 AND t.tgqual IS NULL
+        AND p.proname='core_bootstrap_forbid_mutation' AND p.pronargs=0 AND p.prorettype='trigger'::regtype)
+    AND EXISTS (SELECT 1 FROM pg_proc p
+      JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang
+      WHERE n.nspname=current_schema() AND p.proname='core_bootstrap_forbid_mutation'
+        AND p.prokind='f' AND l.lanname='plpgsql' AND p.pronargs=0 AND p.pronargdefaults=0
+        AND p.prorettype='trigger'::regtype AND NOT p.proretset AND NOT p.prosecdef
+        AND NOT p.proleakproof AND NOT p.proisstrict AND p.provolatile='v' AND p.proparallel='u'
+        AND p.proconfig IS NULL
+        AND encode(sha256(convert_to(p.prosrc,'UTF8')),'hex')='f480f069070eb7422ac7fedec4a3546772b75ab65b4e0e81c38d0f7a2c01af37')
+    AND EXISTS (SELECT 1 FROM pg_proc p
+      JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang
+      WHERE n.nspname=current_schema() AND p.proname='core_bootstrap_trust_state_transition'
+        AND p.prokind='f' AND l.lanname='plpgsql' AND p.pronargs=0 AND p.pronargdefaults=0
+        AND p.prorettype='trigger'::regtype AND NOT p.proretset AND NOT p.prosecdef
+        AND NOT p.proleakproof AND NOT p.proisstrict AND p.provolatile='v' AND p.proparallel='u'
+        AND p.proconfig IS NULL
+        AND encode(sha256(convert_to(p.prosrc,'UTF8')),'hex')='1cbc99f0f8c6a49b96a03a3e9bc042940c7e43d02a8250bebc974fd0294629ed')
   ) AS trigger_definitions_converged`;
 
 function fail(code) { throw new Error(code); }
