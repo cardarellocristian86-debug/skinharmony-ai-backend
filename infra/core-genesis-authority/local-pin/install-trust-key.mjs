@@ -3,6 +3,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 import { createPostgresBootstrapAuthorityStore } from "../../../services/universal-core-service/src/bootstrapAuthorityPostgresStore.js";
 import { bootstrapReleaseExceptionCanonicalJson } from "../../../services/universal-core-service/src/bootstrapReleaseException.js";
@@ -101,7 +102,7 @@ async function readBundle(filename) {
       typeof bundle.tenant_id !== "string" || !TENANT.test(bundle.tenant_id) ||
       typeof bundle.authority_key_id !== "string" || !KEY_ID.test(bundle.authority_key_id) ||
       typeof bundle.public_key_sha256 !== "string" || !SHA256.test(bundle.public_key_sha256) ||
-      typeof bundle.provider_attestation_digest !== "string" || !SHA256.test(bundle.provider_attestation_digest) ||
+      bundle.provider_attestation_digest !== null ||
       typeof bundle.genesis_record_digest !== "string" || !SHA256.test(bundle.genesis_record_digest) ||
       !plain(bundle.genesis_record) ||
       typeof bundle.public_key_spki_base64 !== "string" || !CANONICAL_BASE64.test(bundle.public_key_spki_base64)) {
@@ -219,8 +220,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${String(error?.message || "bootstrap_trust_key_install_failed")}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((error) => {
+    process.stderr.write(`${String(error?.message || "bootstrap_trust_key_install_failed")}\n`);
+    process.exitCode = 1;
+  });
+}
 
+export { readBundle };
