@@ -22,6 +22,7 @@ export const WORK_EVENT_TYPES = new Set([
   "native_plan_superseded", "native_agent_lease_expired",
   "core_join_issued", "closure_finalized",
   "generic_core_join_issued", "generic_closure_finalized", "work_archived",
+  "legacy_work_reconciled_closed",
   "quality_failure_observed", "security_observation_quarantined", "quality_evidence_verified", "quality_completion_rejected",
 ]);
 
@@ -147,7 +148,7 @@ export function assertGalleryParticipantBinding(identity = {}, input = {}) {
   };
 }
 const WORK_CATALOG_STATUSES = new Set([
-  "active", "verified", "release_ready", "completed", "blocked", "failed",
+  "active", "verified", "release_ready", "completed", "cancelled", "superseded", "blocked", "failed",
 ]);
 
 function tenant(value) {

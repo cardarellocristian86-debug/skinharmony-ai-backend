@@ -412,7 +412,10 @@ function normalizeWork(row) {
 function mapLegacyStatus(status) {
   const value = String(status || "active").toLowerCase();
   if (value === "active") return "ACTIVE";
+  if (value === "verified") return "ACTIVE";
   if (value === "completed") return "COMPLETED";
+  if (value === "cancelled") return "CANCELLED";
+  if (value === "superseded") return "SUPERSEDED";
   if (value === "blocked" || value === "failed") return "BLOCKED";
   if (value === "release_ready") return "HANDOFF";
   return null;
@@ -422,7 +425,8 @@ function mapV2StatusToLegacy(status) {
   if (status === "BLOCKED") return "blocked";
   if (status === "HANDOFF") return "release_ready";
   if (["COMPLETED", "ARCHIVED"].includes(status)) return "completed";
-  if (["CANCELLED", "SUPERSEDED"].includes(status)) return "completed";
+  if (status === "CANCELLED") return "cancelled";
+  if (status === "SUPERSEDED") return "superseded";
   return "blocked";
 }
 
@@ -999,12 +1003,373 @@ export function createWorkContinuityV2Store({
         query("SELECT status,expires_at FROM core_continuity_participants WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
         query("SELECT status,expires_at FROM core_continuity_leases WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, sourceId]),
       ]);
+      const activity = {
+        participants: participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
+        leases: leases.rows,
+      };
+      const legacyReconciliationEligible = work.work_type === "legacy";
+      if (!legacyReconciliationEligible) {
+        result.push({
+          work_id: work.work_id,
+          work_code: work.work_code,
+          parent_work_id: work.parent_work_id || null,
+          successor_work_id: work.successor_work_id || null,
+          superseded_by_work_id: work.superseded_by_work_id || null,
+          expected_status: null,
+          authoritative_status: null,
+          projected_status: work.status,
+          projection_drift: false,
+          authoritative_updated_at: null,
+          projected_updated_at: work.updated_at || null,
+          timestamp_projection_drift: false,
+          work_type: work.work_type,
+          legacy_reconciliation_eligible: false,
+          allowed_actions: [],
+          owner_confirmation_required: false,
+          successor_required_for_supersede: false,
+          server_closure_evidence_required: false,
+          ...classifyStaleWork({ ...work, ...activity }),
+        });
+        continue;
+      }
+      const authoritative = await query(
+        "SELECT status,updated_at FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2",
+        [actor.tenant_id, sourceId],
+      );
+      const authoritativeStatus = authoritative.rows[0]
+        ? String(authoritative.rows[0].status || "").toLowerCase()
+        : null;
+      const authoritativeUpdatedAt = authoritative.rows[0]?.updated_at || null;
+      const authoritativeUpdatedAtMs = new Date(authoritativeUpdatedAt || "").getTime();
+      const projectedUpdatedAtMs = new Date(work.updated_at || "").getTime();
+      const authoritativeTimestampValid = Number.isFinite(authoritativeUpdatedAtMs);
+      const projectedTimestampValid = Number.isFinite(projectedUpdatedAtMs);
+      const timestampProjectionDrift = !authoritativeTimestampValid || !projectedTimestampValid ||
+        Math.abs(authoritativeUpdatedAtMs - projectedUpdatedAtMs) > 5 * 60_000;
+      const stale = classifyStaleWork({ ...work,
+        updated_at: authoritativeTimestampValid ? authoritativeUpdatedAt : null,
+        ...activity });
+      const authoritativeV2Status = authoritativeStatus
+        ? mapLegacyStatus(authoritativeStatus)
+        : null;
+      const projectionDrift = !authoritativeStatus || !authoritativeV2Status ||
+        authoritativeV2Status !== work.status;
+      const reconcilable = legacyReconciliationEligible && !projectionDrift && authoritativeTimestampValid &&
+        ["STALE", "ABANDONED"].includes(stale.classification);
+      const completedProjectionRepair = legacyReconciliationEligible && !projectionDrift && authoritativeTimestampValid &&
+        stale.classification === "COMPLETED_BUT_UNCLOSED";
       result.push({ work_id: work.work_id, work_code: work.work_code,
         parent_work_id: work.parent_work_id || null, successor_work_id: work.successor_work_id || null,
         superseded_by_work_id: work.superseded_by_work_id || null,
-        ...classifyStaleWork({ ...work, participants: participants.rows.map((row) => ({ ...row, active: row.status === "active" })), leases: leases.rows }) });
+        expected_status: authoritativeStatus,
+        authoritative_status: authoritativeStatus,
+        projected_status: work.status,
+        projection_drift: projectionDrift,
+        authoritative_updated_at: authoritativeUpdatedAt,
+        projected_updated_at: work.updated_at || null,
+        timestamp_projection_drift: timestampProjectionDrift,
+        work_type: work.work_type,
+        legacy_reconciliation_eligible: legacyReconciliationEligible,
+        allowed_actions: completedProjectionRepair
+          ? ["REPAIR_COMPLETED_PROJECTION"]
+          : reconcilable
+            ? (authoritativeStatus === "release_ready" ? ["SUPERSEDE"] : ["CANCEL", "SUPERSEDE"])
+            : [],
+        owner_confirmation_required: reconcilable || completedProjectionRepair,
+        successor_required_for_supersede: !projectionDrift && reconcilable,
+        server_closure_evidence_required: completedProjectionRepair ||
+          (reconcilable && authoritativeStatus === "release_ready"),
+        ...stale });
     }
     return { dry_run: true, classifications: result };
+  }
+
+  // This path closes stale legacy Gallery records without claiming that their
+  // acceptance criteria or deployment were completed. Completion remains
+  // reserved for the normal Core Join + final receipt flow above.
+  async function reconcileLegacyClosed(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    if (!isAdmin(actor)) fail("legacy_reconciliation_owner_required");
+    const confirmationReference = String(identity.confirmationReference || "").trim();
+    if (identity.ownerConfirmed !== true || !confirmationReference || confirmationReference.length > 240) {
+      fail("legacy_reconciliation_owner_confirmation_required");
+    }
+    const workId = uuid(input.work_id);
+    const action = String(input.action || "").trim().toUpperCase();
+    if (!["CANCEL", "SUPERSEDE", "REPAIR_COMPLETED_PROJECTION"].includes(action)) {
+      fail("legacy_reconciliation_action_invalid");
+    }
+    const expectedStatus = String(input.expected_status || "").trim().toLowerCase();
+    if (!["active", "verified", "release_ready", "completed", "blocked", "failed"].includes(expectedStatus)) {
+      fail("legacy_reconciliation_expected_status_invalid");
+    }
+    const expectedClassification = String(input.expected_classification || "").trim().toUpperCase();
+    if (!["STALE", "ABANDONED", "COMPLETED_BUT_UNCLOSED"].includes(expectedClassification)) {
+      fail("legacy_reconciliation_expected_classification_invalid");
+    }
+    const reason = text(input.reason, "legacy_reconciliation_reason_required", 1_000);
+    const idempotencyKey = text(input.idempotency_key, "legacy_reconciliation_idempotency_key_required", 160);
+    const successorWorkId = input.successor_work_id
+      ? uuid(input.successor_work_id, "legacy_reconciliation_successor_invalid")
+      : null;
+    const projectionRepair = action === "REPAIR_COMPLETED_PROJECTION";
+    if ((action === "SUPERSEDE") !== Boolean(successorWorkId) || successorWorkId === workId ||
+        (projectionRepair && (expectedStatus !== "completed" ||
+          expectedClassification !== "COMPLETED_BUT_UNCLOSED"))) {
+      fail("legacy_reconciliation_successor_invalid");
+    }
+    if (!projectionRepair && (expectedStatus === "completed" ||
+        expectedClassification === "COMPLETED_BUT_UNCLOSED")) {
+      fail("legacy_reconciliation_completed_action_invalid");
+    }
+    const targetStatus = action === "SUPERSEDE"
+      ? "SUPERSEDED"
+      : projectionRepair ? "COMPLETED" : "CANCELLED";
+    const targetLegacyStatus = targetStatus.toLowerCase();
+    const request = {
+      tenant_id: actor.tenant_id,
+      work_id: workId,
+      action,
+      expected_status: expectedStatus,
+      expected_classification: expectedClassification,
+      reason_digest: objectDigest(reason),
+      successor_work_id: successorWorkId,
+    };
+    const requestDigest = objectDigest(request);
+    const idempotencyKeyDigest = objectDigest({
+      tenant_id: actor.tenant_id,
+      work_id: workId,
+      idempotency_key: idempotencyKey,
+    });
+    const confirmationReferenceDigest = objectDigest({
+      tenant_id: actor.tenant_id,
+      work_id: workId,
+      confirmation_reference: confirmationReference,
+    });
+
+    return transaction(async (client) => {
+      const legacyResult = await client.query(`SELECT
+          work_id,project_id,parent_work_id,idea,objective,status,created_at,updated_at,next_action
+        FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]);
+      const legacy = legacyResult.rows[0];
+      if (!legacy) fail("legacy_work_not_found");
+      await projectLegacyWorkWithClient(client, actor, workId, legacy);
+      const work = await loadWork(client, actor, workId, true);
+      if (work.work_type !== "legacy") fail("legacy_reconciliation_work_type_invalid");
+
+      const replay = await client.query(`SELECT payload,event_hash,sequence_number
+        FROM tenant_work_event
+        WHERE tenant_id=$1 AND work_id=$2
+          AND event_type='legacy_work_reconciled_closed'
+          AND payload->>'idempotency_key_digest'=$3
+        ORDER BY sequence_number DESC LIMIT 1`,
+      [actor.tenant_id, workId, idempotencyKeyDigest]);
+      if (replay.rows[0]) {
+        const payload = replay.rows[0].payload || {};
+        if (payload.request_digest !== requestDigest) fail("legacy_reconciliation_idempotency_conflict");
+        return {
+          schema_version: "legacy_gallery_reconciliation_v1",
+          tenant_id: actor.tenant_id,
+          work_id: workId,
+          action: payload.action,
+          status: payload.status,
+          legacy_status: payload.legacy_status,
+          successor_work_id: payload.successor_work_id || null,
+          classification: payload.classification,
+          completed: payload.completed === true,
+          closed: true,
+          closure_receipt_created: false,
+          server_evidence: payload.server_evidence || null,
+          legacy_event_hash: payload.legacy_event_hash,
+          v2_event_hash: replay.rows[0].event_hash,
+          idempotent_replay: true,
+        };
+      }
+
+      if (String(legacy.status || "").toLowerCase() !== expectedStatus) {
+        fail("legacy_reconciliation_status_conflict");
+      }
+      const expectedV2Status = mapLegacyStatus(expectedStatus);
+      if (!expectedV2Status || work.status !== expectedV2Status) {
+        fail("legacy_reconciliation_projection_drift");
+      }
+      if (ARCHIVE_STATUSES.has(work.status) && !(projectionRepair && !work.closed_at)) {
+        fail("legacy_reconciliation_already_closed");
+      }
+
+      const [participants, leases] = await Promise.all([
+        client.query(`SELECT status,expires_at FROM core_continuity_participants
+          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]),
+        client.query(`SELECT status,expires_at FROM core_continuity_leases
+          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, workId]),
+      ]);
+      const stale = classifyStaleWork({ ...work, updated_at: legacy.updated_at,
+        participants: participants.rows.map((row) => ({ ...row, active: row.status === "active" })),
+        leases: leases.rows }, now());
+      const currentTime = now().getTime();
+      const activeParticipant = participants.rows.some((row) => row.status === "active" &&
+        new Date(row.expires_at).getTime() > currentTime);
+      const activeLease = leases.rows.some((row) => row.status === "active" &&
+        new Date(row.expires_at).getTime() > currentTime);
+      if (activeParticipant || activeLease) fail("legacy_reconciliation_active_work_denied");
+      if (stale.classification !== expectedClassification) {
+        fail("legacy_reconciliation_classification_conflict");
+      }
+
+      let serverEvidence = null;
+      if (projectionRepair) {
+        const verifiedLegacy = await client.query(`SELECT event_type,event_hash,created_at
+          FROM core_continuity_events
+          WHERE tenant_id=$1 AND work_id=$2
+            AND event_type = ANY($3::varchar[])
+          ORDER BY sequence_number DESC LIMIT 1`,
+        [actor.tenant_id, workId, ["closure_finalized", "generic_closure_finalized"]]);
+        if (!verifiedLegacy.rows[0]) fail("legacy_completed_server_evidence_required");
+        serverEvidence = {
+          source: "legacy_closure_finalized_event",
+          successor_work_id: null,
+          observed_at: verifiedLegacy.rows[0].created_at,
+          evidence_digest: objectDigest({
+            event_type: verifiedLegacy.rows[0].event_type,
+            event_hash: verifiedLegacy.rows[0].event_hash,
+          }),
+        };
+      } else if (successorWorkId) {
+        const successorLegacyResult = await client.query(`SELECT work_id,project_id,status
+          FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2 FOR SHARE`,
+        [actor.tenant_id, successorWorkId]);
+        const successorV2Result = await client.query(`SELECT work_id,legacy_work_id,project_id,status
+          FROM tenant_work WHERE tenant_id=$1 AND (work_id=$2 OR legacy_work_id=$2) FOR SHARE`,
+        [actor.tenant_id, successorWorkId]);
+        const successorLegacy = successorLegacyResult.rows[0] || null;
+        const successorV2 = successorV2Result.rows[0] || null;
+        if (!successorLegacy && !successorV2) fail("legacy_reconciliation_successor_not_found");
+        if ((successorLegacy?.project_id || successorV2?.project_id) !== legacy.project_id) {
+          fail("legacy_reconciliation_successor_project_mismatch");
+        }
+        if (expectedStatus === "release_ready") {
+          const successorV2Id = successorV2?.work_id || successorWorkId;
+          const verifiedV2 = await client.query(`SELECT
+              r.receipt_digest,f.report_digest,tw.status
+            FROM tenant_work tw
+            JOIN tenant_work_closure_receipt r
+              ON r.tenant_id=tw.tenant_id AND r.work_id=tw.work_id
+            JOIN tenant_work_final_report f
+              ON f.tenant_id=tw.tenant_id AND f.work_id=tw.work_id
+            WHERE tw.tenant_id=$1 AND tw.work_id=$2
+              AND tw.status IN ('COMPLETED','ARCHIVED')`,
+          [actor.tenant_id, successorV2Id]);
+          const verifiedLegacy = await client.query(`SELECT event_type,event_hash
+            FROM core_continuity_events
+            WHERE tenant_id=$1 AND work_id=$2
+              AND event_type = ANY($3::varchar[])
+            ORDER BY sequence_number DESC LIMIT 1`,
+          [actor.tenant_id, successorWorkId, ["closure_finalized", "generic_closure_finalized"]]);
+          if (verifiedV2.rows[0]) {
+            serverEvidence = {
+              source: "tenant_work_closure_receipt",
+              successor_work_id: successorWorkId,
+              evidence_digest: objectDigest({
+                receipt_digest: verifiedV2.rows[0].receipt_digest,
+                report_digest: verifiedV2.rows[0].report_digest,
+              }),
+            };
+          } else if (String(successorLegacy?.status || "").toLowerCase() === "completed" &&
+              verifiedLegacy.rows[0]) {
+            serverEvidence = {
+              source: "legacy_closure_finalized_event",
+              successor_work_id: successorWorkId,
+              evidence_digest: objectDigest({
+                event_type: verifiedLegacy.rows[0].event_type,
+                event_hash: verifiedLegacy.rows[0].event_hash,
+              }),
+            };
+          } else {
+            fail("legacy_release_ready_server_evidence_required");
+          }
+        }
+      } else if (expectedStatus === "release_ready") {
+        fail("legacy_release_ready_server_evidence_required");
+      }
+
+      const updatedV2 = await client.query(`UPDATE tenant_work SET
+          status=$3,closed_at=COALESCE(closed_at,$7::timestamptz,now()),
+          cancelled_at=CASE WHEN $3='CANCELLED' THEN COALESCE(cancelled_at,now()) ELSE cancelled_at END,
+          archived_at=COALESCE(archived_at,now()),closure_type='legacy_reconciliation',
+          closure_reason=$4,next_action='',successor_work_id=$5,superseded_by_work_id=$5,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND status=$6
+        RETURNING closed_at,archived_at`,
+      [actor.tenant_id, workId, targetStatus, reason, successorWorkId, expectedV2Status,
+        serverEvidence?.observed_at || null]);
+      if (!updatedV2.rows[0]) fail("legacy_reconciliation_status_conflict");
+      if (!projectionRepair) {
+        const updatedLegacy = await client.query(`UPDATE core_continuity_works SET
+            status=$3,next_action='',updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2 AND status=$4
+          RETURNING updated_at`,
+        [actor.tenant_id, workId, targetLegacyStatus, expectedStatus]);
+        if (!updatedLegacy.rows[0]) fail("legacy_reconciliation_status_conflict");
+      }
+
+      const previousLegacyEvent = await client.query(`SELECT sequence_number,event_hash
+        FROM core_continuity_events
+        WHERE tenant_id=$1 AND work_id=$2
+        ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId]);
+      const legacySequence = Number(previousLegacyEvent.rows[0]?.sequence_number || 0) + 1;
+      const auditPayload = {
+        action,
+        classification: stale.classification,
+        completed: projectionRepair,
+        confirmation_reference_digest: confirmationReferenceDigest,
+        expected_status: expectedStatus,
+        idempotency_key_digest: idempotencyKeyDigest,
+        legacy_status: targetLegacyStatus,
+        reason,
+        reason_digest: request.reason_digest,
+        request_digest: requestDigest,
+        server_evidence: serverEvidence,
+        status: targetStatus,
+        successor_work_id: successorWorkId,
+      };
+      const legacyEvent = {
+        tenant_id: actor.tenant_id,
+        work_id: workId,
+        sequence_number: legacySequence,
+        event_type: "legacy_work_reconciled_closed",
+        payload: auditPayload,
+        previous_event_hash: previousLegacyEvent.rows[0]?.event_hash || null,
+      };
+      const legacyEventHash = objectDigest(legacyEvent);
+      await client.query(`INSERT INTO core_continuity_events
+        (tenant_id,work_id,event_id,sequence_number,event_type,payload,previous_event_hash,event_hash,created_by)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`,
+      [actor.tenant_id, workId, crypto.randomUUID(), legacySequence, legacyEvent.event_type,
+        JSON.stringify(auditPayload), legacyEvent.previous_event_hash, legacyEventHash,
+        actor.agent_id || actor.user_id]);
+      const v2Event = await appendV2Event(client, actor, workId, "legacy_work_reconciled_closed", {
+        ...auditPayload,
+        legacy_event_hash: legacyEventHash,
+      });
+      return {
+        schema_version: "legacy_gallery_reconciliation_v1",
+        tenant_id: actor.tenant_id,
+        work_id: workId,
+        action,
+        status: targetStatus,
+        legacy_status: targetLegacyStatus,
+        successor_work_id: successorWorkId,
+        classification: stale.classification,
+        completed: projectionRepair,
+        closed: true,
+        closure_receipt_created: false,
+        server_evidence: serverEvidence,
+        legacy_event_hash: legacyEventHash,
+        v2_event_hash: v2Event.event_hash,
+        idempotent_replay: false,
+      };
+    });
   }
   async function closureState(client, actor, workId, lock = false) {
     const work = await loadWork(client, actor, workId, lock);
@@ -1125,6 +1490,7 @@ export function createWorkContinuityV2Store({
   return Object.freeze({ initialize, createWork, createNewWork, projectLegacyWork, projectLegacyCatalog,
     readWork, listWorks, preflightGallery, openWorkReview,
     recordTask, recordEvidence, persistCoreJoin, refreshDerived, reconcileStaleDryRun,
+    reconcileLegacyClosed,
     evaluateGenericClosure, buildGenericCoreJoinRequest, finalizeGenericClosure,
     coreJoinVerifierMetadata: resolvedCoreJoinVerifier?.metadata || null,
     verifyCoreJoinVerdict: (verdict, expected) => Boolean(

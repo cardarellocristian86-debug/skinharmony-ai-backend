@@ -815,6 +815,21 @@ const baseHandlers = {
     },
     tenant_work_stale_reconcile_dry_run: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.reconcileStaleDryRun(withTenantWorkAcl(identity), args) }),
+    tenant_work_legacy_reconcile_close: async (args, identity) => {
+      await requireOwnerGovernance(
+        identity,
+        "work.continuity.legacy_reconcile_close",
+        `${args.work_id}:${args.action}`,
+      );
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.reconcileLegacyClosed(withTenantWorkAcl(identity), args),
+        dedicated_core_gate: {
+          authorized: true,
+          authority: "universal_core",
+          route: "/v1/action-evaluator",
+          server_owned: true,
+        } });
+    },
     work_continuity_generic_core_join: async (args, identity) => {
       const aclIdentity = withTenantWorkAcl(identity);
       const { result, verdict } = await genericWorkCoreJoinCoordinator({ args, identity, aclIdentity });

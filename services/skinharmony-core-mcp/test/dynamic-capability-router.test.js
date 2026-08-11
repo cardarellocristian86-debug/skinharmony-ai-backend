@@ -532,6 +532,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_checkpoint",
     "work_continuity_resume",
     "work_continuity_v2_create",
+    "tenant_work_legacy_reconcile_close",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
   ].includes(tool.name));
@@ -550,6 +551,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_resume",
     "work_continuity_start_or_resume",
     "work_continuity_v2_create",
+    "tenant_work_legacy_reconcile_close",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
   ]);

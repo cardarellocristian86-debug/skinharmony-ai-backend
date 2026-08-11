@@ -651,6 +651,7 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   ...POLICY_REGISTRY_LIFECYCLE_TOOLS,
   "work_continuity_create",
   "work_continuity_start_or_resume",
+  "tenant_work_legacy_reconcile_close",
   "core_block_remediation_resubmit",
 ]);
 
