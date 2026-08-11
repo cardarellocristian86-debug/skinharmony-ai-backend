@@ -374,6 +374,21 @@ function createUnexpectedQueryPool() {
   };
 }
 
+function createUnreadDependency(onAccess, message) {
+  const fail = () => {
+    onAccess();
+    throw new Error(message);
+  };
+  return new Proxy(function unreadDependency() { fail(); }, {
+    apply: fail,
+    construct: fail,
+    get: fail,
+    getOwnPropertyDescriptor: fail,
+    ownKeys: fail,
+    set: fail,
+  });
+}
+
 async function startFixture({
   proofRequired = true,
   coordinatorReady = true,
@@ -1113,6 +1128,15 @@ test("compiler flags, mode, catalog JSON, digests and status fail closed before 
 test("unknown signer configuration errors cannot reflect secrets in health or audit", async () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-config-error-"));
   const reflectedSecret = "signer-super-private-service-token";
+  let signerConfigurationReads = 0;
+  const proofEnv = {};
+  Object.defineProperty(proofEnv, "CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID", {
+    enumerable: true,
+    get() {
+      signerConfigurationReads += 1;
+      throw new Error(`policy_registry_${reflectedSecret}`);
+    },
+  });
   const options = {
     storageRoot,
     nyraPolicyRegistryProofEnabled: true,
@@ -1124,17 +1148,15 @@ test("unknown signer configuration errors cannot reflect secrets in health or au
     nyraPolicyRegistryCompilerTrustCatalogDigest: TRUST_CATALOG_DIGEST,
     nyraPolicyRegistryCompilerProvenanceVerifier: staticCompilerVerifier(),
     nyraPolicyRegistryCoreSignerMode: "remote",
+    nyraPolicyRegistryProofEnv: proofEnv,
     nyraPolicyRegistryPostgresPool: createUnexpectedQueryPool(),
     nyraPolicyRegistryStore: {
       async status() { return { backend: "postgresql", ready: true, restart_durable: true, distributed: true }; },
       evaluate() { return { verdict: "DENY", snapshot_present: false }; },
     },
   };
-  Object.defineProperty(options, "nyraPolicyRegistryCoreSigner", {
-    enumerable: true,
-    get() { throw new Error(`policy_registry_${reflectedSecret}`); },
-  });
   const health = await appHealth(options);
+  assert.equal(signerConfigurationReads, 1);
   assert.equal(health.status, 503);
   assert.equal(
     health.json.nyra_policy_registry.proof_lifecycle.error,
@@ -1154,7 +1176,7 @@ test("production compiler is code-dark when disabled and rejects dependency inje
   process.env.CORE_EVIDENCE_SIGNING_SECRET = "e".repeat(64);
   delete process.env.GOVERNED_AGENT_DATABASE_URL;
   try {
-    let codeDarkGetterCalls = 0;
+    let codeDarkDependencyAccesses = 0;
     const codeDarkOptions = {
       storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-production-code-dark-")),
       nyraPolicyRegistryProofEnabled: false,
@@ -1163,6 +1185,13 @@ test("production compiler is code-dark when disabled and rejects dependency inje
       nyraPolicyRegistryCompilerProvenanceEnabled: false,
       nyraPolicyRegistryCompilerProvenanceRequired: false,
       nyraPolicyRegistryCompilerProvenanceMode: "disabled",
+      nyraPolicyRegistryPostgresPool: createUnexpectedQueryPool(),
+      nyraPolicyRegistryStore: {
+        async status() {
+          return { backend: "memory", ready: true, restart_durable: false, distributed: false };
+        },
+        evaluate() { return { verdict: "DENY", snapshot_present: false }; },
+      },
     };
     for (const field of [
       "nyraPolicyRegistryCompilerProvenanceVerifier",
@@ -1172,25 +1201,24 @@ test("production compiler is code-dark when disabled and rejects dependency inje
       "nyraPolicyRegistryCompilerTraversalBudget",
       "nyraPolicyRegistryCompilerCatalogDigest",
       "nyraPolicyRegistryCompilerTrustCatalogDigest",
-      "nyraPolicyRegistryPostgresPool",
       "nyraPolicyRegistryCoreSigner",
       "nyraPolicyRegistryProofService",
       "nyraPolicyRegistryClient",
       "nyraPolicyRegistryCoordinator",
     ]) {
-      Object.defineProperty(codeDarkOptions, field, {
-        enumerable: true,
-        get() { codeDarkGetterCalls += 1; throw new Error("must_not_read_code_dark"); },
-      });
+      codeDarkOptions[field] = createUnreadDependency(
+        () => { codeDarkDependencyAccesses += 1; },
+        "must_not_read_code_dark",
+      );
     }
     const codeDark = await appHealth(codeDarkOptions);
     assert.equal(codeDark.json.nyra_policy_registry.proof_lifecycle.state, "disabled");
     assert.equal(codeDark.json.nyra_policy_registry.proof_lifecycle.error, null);
     assert.equal(codeDark.json.nyra_policy_registry.compiler_provenance.state, "disabled");
     assert.equal(codeDark.json.nyra_policy_registry.compiler_provenance.error, null);
-    assert.equal(codeDarkGetterCalls, 0);
+    assert.equal(codeDarkDependencyAccesses, 0);
 
-    let injectionGetterCalls = 0;
+    let injectionDependencyAccesses = 0;
     const injectionOptions = {
       storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-production-di-")),
       nyraPolicyRegistryProofEnabled: true,
@@ -1211,10 +1239,10 @@ test("production compiler is code-dark when disabled and rejects dependency inje
       "nyraPolicyRegistryClient",
       "nyraPolicyRegistryCoordinator",
     ]) {
-      Object.defineProperty(injectionOptions, field, {
-        enumerable: true,
-        get() { injectionGetterCalls += 1; throw new Error("must_not_initialize_production_di"); },
-      });
+      injectionOptions[field] = createUnreadDependency(
+        () => { injectionDependencyAccesses += 1; },
+        "must_not_initialize_production_di",
+      );
     }
     const injectionDenied = await appHealth(injectionOptions);
     assert.equal(injectionDenied.status, 503);
@@ -1223,9 +1251,9 @@ test("production compiler is code-dark when disabled and rejects dependency inje
       "policy_registry_compiler_production_injection_forbidden",
     );
     assert.equal(injectionDenied.json.nyra_policy_registry.proof_e2e.e2e_verified, false);
-    assert.equal(injectionGetterCalls, 0);
+    assert.equal(injectionDependencyAccesses, 0);
 
-    let invalidModeCalls = 0;
+    let invalidModeDependencyAccesses = 0;
     const invalidModeOptions = {
       storageRoot: fs.mkdtempSync(path.join(os.tmpdir(), "policy-registry-production-mode-")),
       nyraPolicyRegistryProofEnabled: true,
@@ -1235,17 +1263,17 @@ test("production compiler is code-dark when disabled and rejects dependency inje
       nyraPolicyRegistryCompilerProvenanceRequired: true,
       nyraPolicyRegistryCompilerProvenanceMode: "CORE_DETERMINISTIC_RECOMPILE",
     };
-    Object.defineProperty(invalidModeOptions, "nyraPolicyRegistryPostgresPool", {
-      enumerable: true,
-      get() { invalidModeCalls += 1; throw new Error("must_not_initialize_invalid_config"); },
-    });
+    invalidModeOptions.nyraPolicyRegistryPostgresPool = createUnreadDependency(
+      () => { invalidModeDependencyAccesses += 1; },
+      "must_not_initialize_invalid_config",
+    );
     const invalidMode = await appHealth(invalidModeOptions);
     assert.equal(invalidMode.status, 503);
     assert.equal(
       invalidMode.json.nyra_policy_registry.compiler_provenance.error,
       "policy_registry_compiler_mode_invalid",
     );
-    assert.equal(invalidModeCalls, 0);
+    assert.equal(invalidModeDependencyAccesses, 0);
   } finally {
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;
