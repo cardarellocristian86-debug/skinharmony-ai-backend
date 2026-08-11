@@ -5,6 +5,56 @@ import { causalDigest, CausalContinuityError } from "./causalContinuityCanonical
 export const CAUSAL_MIGRATION_ID = "20260809_001_causal_continuity_v1";
 export const CAUSAL_MIGRATION_LOCK = "skinharmony:universal-core:causal-continuity:migration:v1";
 
+// `core_schema_migrations` is a shared ledger.  The bootstrap-authority
+// migration predates causal continuity and legitimately creates its minimal
+// `(migration_id, applied_at)` shape first.  `CREATE TABLE IF NOT EXISTS`
+// never reconciles that existing shape, so extend it before reading or
+// writing causal migration state.  The causal columns intentionally remain
+// nullable for historical bootstrap rows; causal rows are always populated
+// by the controlled insert below.
+export const CAUSAL_SHARED_MIGRATION_LEDGER_COMPAT_SQL = `
+  ALTER TABLE core_schema_migrations
+    ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    ADD COLUMN IF NOT EXISTS sql_digest CHAR(64),
+    ADD COLUMN IF NOT EXISTS application_state TEXT,
+    ADD COLUMN IF NOT EXISTS checkpoint TEXT,
+    ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS verifier_evidence JSONB NOT NULL DEFAULT '{}'::jsonb
+`;
+
+const CAUSAL_SHARED_MIGRATION_LEDGER_READBACK_SQL = `
+  SELECT
+    (SELECT data_type IN ('text','character varying') AND is_nullable='NO'
+       FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name='core_schema_migrations' AND column_name='migration_id') AS migration_id_valid,
+    (SELECT data_type='timestamp with time zone' AND is_nullable='NO'
+       FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name='core_schema_migrations' AND column_name='applied_at') AS applied_at_valid,
+    (SELECT data_type='character' AND character_maximum_length=64 AND is_nullable='YES'
+       FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name='core_schema_migrations' AND column_name='sql_digest') AS sql_digest_valid,
+    (SELECT data_type='text' AND is_nullable='YES'
+       FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name='core_schema_migrations' AND column_name='application_state') AS application_state_valid,
+    (SELECT data_type='text' AND is_nullable='YES'
+       FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name='core_schema_migrations' AND column_name='checkpoint') AS checkpoint_valid,
+    (SELECT data_type='timestamp with time zone' AND is_nullable='NO'
+       FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name='core_schema_migrations' AND column_name='started_at') AS started_at_valid,
+    (SELECT data_type='timestamp with time zone' AND is_nullable='YES'
+       FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name='core_schema_migrations' AND column_name='completed_at') AS completed_at_valid,
+    (SELECT data_type='jsonb' AND is_nullable='NO'
+       FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name='core_schema_migrations' AND column_name='verifier_evidence') AS verifier_evidence_valid
+`;
+
+function sharedMigrationLedgerValid(row) {
+  return ["migration_id_valid", "applied_at_valid", "sql_digest_valid", "application_state_valid", "checkpoint_valid", "started_at_valid", "completed_at_valid", "verifier_evidence_valid"].every((field) => row?.[field] === true);
+}
+
 const UP_URL = new URL("../migrations/20260809_001_causal_continuity_up.sql", import.meta.url);
 const DOWN_URL = new URL("../migrations/20260809_001_causal_continuity_down.sql", import.meta.url);
 
@@ -264,10 +314,19 @@ export function createCausalContinuityMigrator({ pool, connectionString } = {}) 
       await client.query("SELECT pg_advisory_lock(hashtext($1))", [CAUSAL_MIGRATION_LOCK]);
       locked = true;
       await client.query(`CREATE TABLE IF NOT EXISTS core_schema_migrations (
-        migration_id TEXT PRIMARY KEY, sql_digest CHAR(64) NOT NULL, application_state TEXT NOT NULL,
-        checkpoint TEXT NOT NULL, started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+        migration_id TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+        sql_digest CHAR(64), application_state TEXT, checkpoint TEXT,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
         completed_at TIMESTAMPTZ, verifier_evidence JSONB NOT NULL DEFAULT '{}'::jsonb
       )`);
+      // A pre-existing bootstrap ledger has only its historical columns.
+      // This must run before the first causal `SELECT`, otherwise PostgreSQL
+      // returns 42703 for `sql_digest` and causal initialization stays down.
+      await client.query(CAUSAL_SHARED_MIGRATION_LEDGER_COMPAT_SQL);
+      const sharedLedger = (await client.query(CAUSAL_SHARED_MIGRATION_LEDGER_READBACK_SQL)).rows[0];
+      if (!sharedMigrationLedgerValid(sharedLedger)) {
+        throw new CausalContinuityError("CAUSAL_SHARED_MIGRATION_LEDGER_SCHEMA_CONFLICT");
+      }
       const existing = (await client.query(
         "SELECT * FROM core_schema_migrations WHERE migration_id=$1",
         [CAUSAL_MIGRATION_ID],

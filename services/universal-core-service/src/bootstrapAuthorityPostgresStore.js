@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const MIGRATION_SQL = [
+  "../migrations/20260812_core_schema_migrations_compatibility.sql",
   "../migrations/20260810_bootstrap_authority_registry.sql",
   "../migrations/20260811_bootstrap_authority_schema_convergence_repair.sql",
 ].map((migration) => fs.readFileSync(fileURLToPath(new URL(migration, import.meta.url)), "utf8")).join("\n");
