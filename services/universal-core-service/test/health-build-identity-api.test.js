@@ -232,6 +232,63 @@ async function within(promise, timeoutMs, errorCode) {
   }
 }
 
+function serverOwnedBootstrapEnvironment(databaseUrl) {
+  return {
+    NODE_ENV: "production",
+    CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(32),
+    CORE_HOST_NATIVE_GOVERNANCE_ENABLED: "true",
+    CORE_HOST_NATIVE_SIGNING_SECRET: "h".repeat(32),
+    CORE_MCP_TENANT_GATEWAY_KEY: "g".repeat(32),
+    CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET: "t".repeat(32),
+    CORE_OWNER_CONTEXT_SIGNING_SECRET: "o".repeat(32),
+    DTT_AGENT_IDENTITY_SIGNING_SECRET: "d".repeat(32),
+    CORE_RESEARCH_AIRLOCK_MODE: "enforced",
+    CORE_RESEARCH_AIRLOCK_SIGNING_SECRET: "r".repeat(32),
+    CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE: "advisory_evaluate",
+    CORE_HOST_NATIVE_GITHUB_TOKEN_TEST: "github-test-token",
+    CORE_HOST_NATIVE_GITHUB_CREDENTIAL_REGISTRY_JSON: JSON.stringify({
+      schema_version: "host_native_github_credential_registry_v1",
+      bindings: [{
+        tenant_id: "tenant-test",
+        repository: "owner/repository",
+        token_env: "CORE_HOST_NATIVE_GITHUB_TOKEN_TEST",
+      }],
+    }),
+    CORE_HOST_NATIVE_RENDER_ORIGIN_REGISTRY_JSON: JSON.stringify({
+      schema_version: "host_native_render_origin_registry_v1",
+      bindings: [{
+        tenant_id: "tenant-test",
+        repository: "owner/repository",
+        service_id: "srv-test",
+        environment: "production",
+        origin: "https://core-test.onrender.com",
+      }],
+    }),
+    CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON: JSON.stringify({
+      schema_version: "host_native_required_checks_registry_v1",
+      bindings: [{
+        tenant_id: "tenant-test",
+        repository: "owner/repository",
+        base_branch: "main",
+        required_checks: ["ci/test"],
+        check_app: { id: 1, slug: "github-actions", owner: "github" },
+        workflow: {
+          id: 1,
+          name: "CI",
+          path: ".github/workflows/ci.yml",
+          sha256: "a".repeat(64),
+          candidate_sha256: "b".repeat(64),
+        },
+        allowed_events: ["pull_request"],
+      }],
+    }),
+    GOVERNED_AGENT_DATABASE_URL: databaseUrl,
+    CORE_SERVICE_BUILD_ID: undefined,
+    RENDER_GIT_COMMIT: undefined,
+    GIT_COMMIT: "a".repeat(40),
+  };
+}
+
 test("service options reject inherited, symbolic, and accessor-based provenance", async () => {
   const authoritySeams = [
     "hostNativeGovernance",
@@ -600,6 +657,42 @@ test("production liveness tolerates only causal initialization while readiness s
       await within(service.close(), 2_000, "health_service_cleanup_timeout");
     }
   }).finally(() => postgres.close());
+});
+
+test("release bootstrap option injections cannot mint degraded liveness", async () => {
+  const postgres = await startDelayedFailurePostgresEndpoint(5_000);
+  const services = [];
+  const injections = [
+    ["bootstrapAuthorityTrustPinJson", "{\"forged\":true}"],
+    ["bootstrapReleaseExceptionStore", { ready: true }],
+    ["bootstrapRequiredChecksReadback", async () => ({ ready: true })],
+    ["bootstrapReleasePreparationBaseBranchResolver", async () => "main"],
+    ["bootstrapReleasePreparationService", { ready: true }],
+  ];
+  try {
+    await withEnv(serverOwnedBootstrapEnvironment(postgres.databaseUrl), async () => {
+      for (const [name, value] of injections) {
+        const createService = await freshUniversalCoreService(`release-seam-${name}`);
+        const service = await startHealthService({
+          healthProbeTimeoutMs: 20,
+          [name]: value,
+        }, createService);
+        services.push(service);
+        const response = await fetch(`${service.base}/healthz`);
+        const health = await response.json();
+        assert.equal(response.status, 503, name);
+        assert.equal(health.liveness_degraded, false, name);
+        assert.equal(health.render_ready, false, name);
+        assert.equal(health.research_airlock.bootstrap_guard, undefined, name);
+      }
+    });
+  } finally {
+    await postgres.close();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    for (const service of services) {
+      await within(service.close(), 2_000, "release_seam_service_cleanup_timeout");
+    }
+  }
 });
 
 test("causal bootstrap accepts only the durable server-owned host-native file backend and all static authority prerequisites", async () => {
