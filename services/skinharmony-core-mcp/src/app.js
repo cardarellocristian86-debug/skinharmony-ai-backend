@@ -36,6 +36,157 @@ const SERVER_INSTRUCTIONS = [
 ].join(" ");
 
 const CONNECTOR_TOOL_NAMESPACE = "skinharmony_nyra_core";
+const RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_SCHEMA = "research_airlock_bootstrap_guard_v1";
+const RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_PURPOSE = "causal_initialization_liveness";
+const RESEARCH_AIRLOCK_POLICY_VERSION = "nyra_core_research_airlock_policy_v1";
+const MAX_CORE_HEALTH_RESPONSE_BYTES = 64 * 1024;
+
+function canonicalHealthValue(value) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return Object.is(value, -0) ? 0 : value;
+  if (Array.isArray(value)) return value.map(canonicalHealthValue);
+  if (!value || typeof value !== "object") throw new Error("health_canonical_value_invalid");
+  return Object.fromEntries(
+    Object.keys(value).sort().map((key) => [key, canonicalHealthValue(value[key])]),
+  );
+}
+
+function canonicalHealthDigest(value) {
+  return crypto.createHash("sha256")
+    .update(JSON.stringify(canonicalHealthValue(value)))
+    .digest("hex");
+}
+
+function exactKeys(value, expected) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+}
+
+function sameDigest(left, right) {
+  if (!/^[a-f0-9]{64}$/.test(String(left || "")) || !/^[a-f0-9]{64}$/.test(String(right || ""))) return false;
+  return crypto.timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"));
+}
+
+async function readBoundedJsonResponse(response, maxBytes = MAX_CORE_HEALTH_RESPONSE_BYTES) {
+  const mediaType = String(response.headers?.get?.("content-type") || "")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  if (mediaType !== "application/json") throw new Error("core_health_content_type_invalid");
+  const declaredLength = response.headers?.get?.("content-length");
+  if (declaredLength !== null && declaredLength !== undefined) {
+    if (!/^(0|[1-9][0-9]*)$/.test(declaredLength)) throw new Error("core_health_content_length_invalid");
+    if (Number(declaredLength) > maxBytes) throw new Error("core_health_body_too_large");
+  }
+  const chunks = [];
+  let bytes = 0;
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > maxBytes) {
+          await reader.cancel("core_health_body_too_large").catch(() => {});
+          throw new Error("core_health_body_too_large");
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  } else {
+    const encoded = new TextEncoder().encode(await response.text());
+    bytes = encoded.byteLength;
+    if (bytes > maxBytes) throw new Error("core_health_body_too_large");
+    chunks.push(encoded);
+  }
+  const body = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+}
+
+function verifyResearchAirlockBootstrapGuard({ payload, response, configuredCoreUrl }) {
+  const guard = payload?.research_airlock?.bootstrap_guard;
+  if (!exactKeys(guard, [
+    "accepting_new_work", "build_commit_sha", "causal_production_required", "causal_state",
+    "distributed", "guard_digest", "health_contract_digest", "initialization_elapsed_ms",
+    "liveness_window_ms", "mode", "policy_version", "purpose", "readiness_verified",
+    "restart_durable", "runtime_verified", "schema_version", "static_guard_ready", "store_backend",
+  ])) return false;
+  let expectedHealthUrl;
+  let observedUrl;
+  try {
+    const configured = new URL(configuredCoreUrl);
+    if (configured.protocol !== "https:" || configured.username || configured.password) return false;
+    expectedHealthUrl = new URL("/healthz", configured);
+    observedUrl = new URL(response.url);
+  } catch {
+    return false;
+  }
+  if (response.redirected !== false
+    || observedUrl.protocol !== "https:"
+    || observedUrl.origin !== expectedHealthUrl.origin
+    || observedUrl.pathname !== expectedHealthUrl.pathname
+    || observedUrl.search !== ""
+    || observedUrl.hash !== "") return false;
+  if (guard.schema_version !== RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_SCHEMA
+    || guard.purpose !== RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_PURPOSE
+    || guard.policy_version !== RESEARCH_AIRLOCK_POLICY_VERSION
+    || guard.static_guard_ready !== true
+    || guard.mode !== "enforced"
+    || guard.store_backend !== "postgresql"
+    || guard.restart_durable !== true
+    || guard.distributed !== true
+    || guard.accepting_new_work !== false
+    || guard.runtime_verified !== false
+    || guard.readiness_verified !== false
+    || payload.mode !== "production"
+    || guard.build_commit_sha !== payload.build?.commit_sha
+    || guard.build_commit_sha !== payload.build?.build_id
+    || guard.health_contract_digest !== payload.health_contract_digest
+    || guard.health_contract_digest !== HOST_NATIVE_HEALTH_CONTRACT_DIGEST
+    || !/^[a-f0-9]{40}$/.test(guard.build_commit_sha)
+    || payload.build?.commit_verifiable !== true
+    || payload.readiness_verified !== false
+    || guard.readiness_verified !== payload.readiness_verified
+    || payload.readiness !== false
+    || payload.ok !== false
+    || payload.render_ready !== false
+    || payload.liveness_degraded !== true
+    || guard.causal_state !== payload.causal_continuity?.state
+    || guard.causal_state !== "initializing"
+    || guard.causal_production_required !== true
+    || payload.causal_continuity?.production_required !== true
+    || payload.causal_continuity?.error != null
+    || guard.mode !== payload.research_airlock?.mode
+    || guard.policy_version !== payload.research_airlock?.policy_version
+    || guard.store_backend !== payload.research_airlock?.state_backend
+    || guard.restart_durable !== payload.research_airlock?.restart_durable
+    || guard.distributed !== payload.research_airlock?.distributed
+    || !Number.isSafeInteger(guard.liveness_window_ms)
+    || guard.liveness_window_ms < 1
+    || guard.liveness_window_ms > 60 * 60 * 1_000
+    || !Number.isSafeInteger(guard.initialization_elapsed_ms)
+    || guard.initialization_elapsed_ms < 0
+    || guard.initialization_elapsed_ms > guard.liveness_window_ms
+    || payload.research_airlock?.ready !== false
+    || payload.research_airlock?.operational_safe !== false
+    || payload.research_airlock?.accepting_new_work !== false
+    || Object.hasOwn(payload.research_airlock, "runtime")
+    || Object.hasOwn(payload.research_airlock, "runtime_ready")
+    || Object.hasOwn(payload.research_airlock, "readiness")
+  ) return false;
+  const { guard_digest: digest, ...unsigned } = guard;
+  return sameDigest(digest, canonicalHealthDigest(unsigned));
+}
 
 function resolveConnectorToolName(value, tools = []) {
   const requested = String(value || "");
@@ -632,14 +783,17 @@ export function createApp(config, options = {}) {
       upstream_bootstrap_initializing: false,
       mode: "unknown",
       state_backend: "unavailable",
+      bootstrap_guard_verified: false,
     };
     try {
-      const response = await (options.fetchImpl || globalThis.fetch)(`${config.universalCoreUrl}/healthz`, {
+      const coreHealthUrl = new URL("/healthz", config.universalCoreUrl).toString();
+      const response = await (options.fetchImpl || globalThis.fetch)(coreHealthUrl, {
         method: "GET",
         headers: { accept: "application/json" },
+        redirect: "error",
         signal: AbortSignal.timeout(3_000),
       });
-      const payload = await response.json();
+      const payload = await readBoundedJsonResponse(response);
       const validPayload = payload !== null
         && typeof payload === "object"
         && typeof payload.ok === "boolean"
@@ -660,6 +814,13 @@ export function createApp(config, options = {}) {
         && payload.ok === true
         && payload.render_ready === true
         && airlockSafe;
+      const bootstrapGuardVerified = response.status === 200
+        && validPayload
+        && verifyResearchAirlockBootstrapGuard({
+          payload,
+          response,
+          configuredCoreUrl: config.universalCoreUrl,
+        });
       const upstreamBootstrapInitializing = response.status === 200
         && validPayload
         && payload.ok === false
@@ -668,7 +829,7 @@ export function createApp(config, options = {}) {
         && payload.build.commit_verifiable === true
         && payload.causal_continuity?.production_required === true
         && payload.causal_continuity?.state === "initializing"
-        && airlockSafe;
+        && bootstrapGuardVerified;
       researchAirlock = {
         core_ready: coreReady,
         upstream_bootstrap_initializing: upstreamBootstrapInitializing,
@@ -676,6 +837,7 @@ export function createApp(config, options = {}) {
         state_backend: payload?.research_airlock?.state_backend || "unavailable",
         operational_safe: payload?.research_airlock?.operational_safe === true,
         build_commit_sha: payload?.build?.commit_sha || null,
+        bootstrap_guard_verified: bootstrapGuardVerified,
       };
     } catch {
       researchAirlock = {
@@ -683,6 +845,7 @@ export function createApp(config, options = {}) {
         upstream_bootstrap_initializing: false,
         mode: "unavailable",
         state_backend: "unavailable",
+        bootstrap_guard_verified: false,
       };
     }
     // Production MCP readiness must not depend on a mode value supplied by an
