@@ -206,7 +206,9 @@ jobs:
           abort("Universal Core Render service missing") unless core
           [mcp, core].each do |service|
             abort("#{service["name"]}: checksPass auto-deploy required") unless service["autoDeployTrigger"] == "checksPass"
-            abort("#{service["name"]}: health check must remain /healthz") unless service["healthCheckPath"] == "/healthz"
+            # Render must observe process liveness during rollout. Governed
+            # dependency readiness stays fail-closed at /healthz and /readyz.
+            abort("#{service["name"]}: deployment liveness check must remain /livez") unless service["healthCheckPath"] == "/livez"
             abort("#{service["name"]}: exact GitHub repository required") unless
               service["repo"] == "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend"
             abort("#{service["name"]}: release branch must remain main") unless
