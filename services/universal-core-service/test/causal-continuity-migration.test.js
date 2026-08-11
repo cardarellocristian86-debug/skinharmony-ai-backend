@@ -1,7 +1,69 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { CAUSAL_TABLES, createCausalContinuityMigrator, galleryTicketIndexDefinitionMatches, recoverInterruptedCausalLegacyIndex } from "../src/causalContinuityMigration.js";
+import { Pool } from "pg";
+import { CAUSAL_SHARED_MIGRATION_LEDGER_COMPAT_SQL, CAUSAL_TABLES, createCausalContinuityMigrator, galleryTicketIndexDefinitionMatches, recoverInterruptedCausalLegacyIndex } from "../src/causalContinuityMigration.js";
+import { createPostgresBootstrapAuthorityStore } from "../src/bootstrapAuthorityPostgresStore.js";
+
+const COMPAT_TEST_DATABASE_URL = process.env.CAUSAL_COMPAT_TEST_DATABASE_URL || "";
+
+async function withSchema(fn) {
+  const target = new URL(COMPAT_TEST_DATABASE_URL);
+  assert.ok(["127.0.0.1", "localhost", "::1"].includes(target.hostname), "compatibility database must be loopback-only");
+  const schema = `causal_ledger_compat_${process.pid}_${crypto.randomBytes(4).toString("hex")}`;
+  const admin = new Pool({ connectionString: COMPAT_TEST_DATABASE_URL, max: 1 });
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  const pool = new Pool({ connectionString: COMPAT_TEST_DATABASE_URL, max: 2, options: `-c search_path=${schema}` });
+  try { await fn(pool, schema); } finally {
+    await pool.end();
+    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin.end();
+  }
+}
+
+test("shared migration ledger compatibility extends the bootstrap-only schema before causal state access", () => {
+  for (const column of ["applied_at", "sql_digest", "application_state", "checkpoint", "started_at", "completed_at", "verifier_evidence"]) {
+    assert.match(CAUSAL_SHARED_MIGRATION_LEDGER_COMPAT_SQL, new RegExp(`ADD COLUMN IF NOT EXISTS ${column}`));
+  }
+  assert.doesNotMatch(CAUSAL_SHARED_MIGRATION_LEDGER_COMPAT_SQL, /DROP COLUMN|DELETE FROM|ALTER COLUMN .* SET NOT NULL/i);
+});
+
+test("bootstrap compatibility migration preserves bootstrap rows while providing a causal-safe shared ledger", async () => {
+  const sql = await readFile(new URL("../migrations/20260812_core_schema_migrations_compatibility.sql", import.meta.url), "utf8");
+  assert.match(sql, /pg_advisory_xact_lock/);
+  for (const column of ["applied_at", "sql_digest", "application_state", "checkpoint", "started_at", "completed_at", "verifier_evidence"]) {
+    assert.match(sql, new RegExp(`ADD COLUMN IF NOT EXISTS ${column}`));
+  }
+  assert.doesNotMatch(sql, /DROP TABLE|DELETE FROM|UPDATE core_schema_migrations/i);
+});
+
+test("PostgreSQL shared migration ledger supports bootstrap-first and causal-first initialization", {
+  skip: !COMPAT_TEST_DATABASE_URL,
+}, async () => {
+  await withSchema(async (pool) => {
+    const bootstrap = createPostgresBootstrapAuthorityStore({ pool });
+    await bootstrap.initialize();
+    const initial = await pool.query("SELECT migration_id, applied_at, sql_digest FROM core_schema_migrations ORDER BY migration_id");
+    assert.ok(initial.rows.length >= 2);
+    assert(initial.rows.every((row) => row.applied_at instanceof Date && row.sql_digest === null));
+    const causal = createCausalContinuityMigrator({ pool });
+    await causal.apply();
+    const causalRow = (await pool.query("SELECT sql_digest, application_state, checkpoint FROM core_schema_migrations WHERE migration_id=$1", ["20260809_001_causal_continuity_v1"])).rows[0];
+    assert.match(causalRow.sql_digest, /^[a-f0-9]{64}$/);
+    assert.equal(causalRow.application_state, "COMPLETED");
+    assert.equal(causalRow.checkpoint, "READBACK_VERIFIED");
+  });
+  await withSchema(async (pool) => {
+    const causal = createCausalContinuityMigrator({ pool });
+    await causal.apply();
+    const bootstrap = createPostgresBootstrapAuthorityStore({ pool });
+    await bootstrap.initialize();
+    const rows = await pool.query("SELECT migration_id, applied_at FROM core_schema_migrations ORDER BY migration_id");
+    assert.ok(rows.rows.some((row) => row.migration_id === "20260809_001_causal_continuity_v1"));
+    assert.ok(rows.rows.some((row) => row.migration_id === "20260810_bootstrap_authority_registry_v2_security"));
+  });
+});
 
 test("migration is additive, tenant-composite, append-only and validates the legacy FK", async () => {
   const up = await readFile(new URL("../migrations/20260809_001_causal_continuity_up.sql", import.meta.url), "utf8");
@@ -39,6 +101,7 @@ test("migration runner supports apply then empty down then clean re-apply", asyn
       if (query.includes("CREATE TABLE IF NOT EXISTS core_schema_migrations") && query.includes("core_projects")) {
         state.installed = true; state.applyCount += 1; return { rows: [] };
       }
+      if (query.includes("migration_id_valid")) return { rows: [{ migration_id_valid: true, applied_at_valid: true, sql_digest_valid: true, application_state_valid: true, checkpoint_valid: true, started_at_valid: true, completed_at_valid: true, verifier_evidence_valid: true }] };
       if (query.includes("DROP TABLE IF EXISTS core_projects") && query.includes("DELETE FROM core_schema_migrations")) {
         state.installed = false; state.migration = null; return { rows: [] };
       }
@@ -79,6 +142,46 @@ test("migration runner supports apply then empty down then clean re-apply", asyn
   assert.equal(second.applied, true);
   assert.equal(state.applyCount, 2);
   assert.equal(state.released, 3);
+});
+
+test("migration runner reconciles a bootstrap-only ledger before selecting causal fields", async () => {
+  const calls = [];
+  let compatibilityApplied = false;
+  const client = {
+    async query(sql, params = []) {
+      const query = String(sql);
+      calls.push(query);
+      if (query === "BEGIN" || query === "COMMIT" || query === "ROLLBACK" || query.includes("pg_advisory_lock") || query.includes("pg_advisory_unlock")) return { rows: [] };
+      if (query.includes("CREATE TABLE IF NOT EXISTS core_schema_migrations") && !query.includes("core_projects")) return { rows: [] };
+      if (query.includes("ADD COLUMN IF NOT EXISTS sql_digest")) { compatibilityApplied = true; return { rows: [] }; }
+      if (query.includes("migration_id_valid")) return { rows: [{ migration_id_valid: true, applied_at_valid: true, sql_digest_valid: true, application_state_valid: true, checkpoint_valid: true, started_at_valid: true, completed_at_valid: true, verifier_evidence_valid: true }] };
+      if (query.includes("SELECT * FROM core_schema_migrations")) {
+        assert.equal(compatibilityApplied, true, "causal state must not be read before ledger compatibility is applied");
+        return { rows: [{ migration_id: "20260809_001_causal_continuity_v1", sql_digest: "different".repeat(8).slice(0, 64), application_state: "COMPLETED" }] };
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const pool = { async connect() { return client; } };
+  await assert.rejects(() => createCausalContinuityMigrator({ pool }).apply(), /CAUSAL_MIGRATION_DIGEST_MISMATCH/);
+  assert.equal(calls.findIndex((query) => query.includes("ADD COLUMN IF NOT EXISTS sql_digest")) < calls.findIndex((query) => query.includes("SELECT \* FROM core_schema_migrations")), true);
+});
+
+test("migration runner rejects a conflicting shared ledger shape before causal state access", async () => {
+  const calls = [];
+  const client = {
+    async query(sql) {
+      const query = String(sql);
+      calls.push(query);
+      if (query.includes("pg_advisory_lock") || query.includes("pg_advisory_unlock")) return { rows: [] };
+      if (query.includes("migration_id_valid")) return { rows: [{ migration_id_valid: true, applied_at_valid: true, sql_digest_valid: false, application_state_valid: true, checkpoint_valid: true, started_at_valid: true, completed_at_valid: true, verifier_evidence_valid: true }] };
+      return { rows: [] };
+    },
+    release() {},
+  };
+  await assert.rejects(() => createCausalContinuityMigrator({ pool: { async connect() { return client; } } }).apply(), /CAUSAL_SHARED_MIGRATION_LEDGER_SCHEMA_CONFLICT/);
+  assert.equal(calls.some((query) => query.includes("SELECT * FROM core_schema_migrations")), false);
 });
 
 test("interrupted invalid exact index is dropped under the pinned session and retry can recreate it", async () => {
