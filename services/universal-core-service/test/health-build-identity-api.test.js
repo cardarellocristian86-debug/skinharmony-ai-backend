@@ -147,6 +147,29 @@ test("health exposes a non-secret build identity and commit-verification state",
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
+test("liveness responds without waiting for governed readiness", async () => {
+  const storageRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "host-native-liveness-"),
+  );
+  const { app } = createUniversalCoreService({ storageRoot });
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${server.address().port}/livez`,
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      service: "universal-core-service",
+      liveness: "process_running",
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test("causal initialization liveness window has a 30-minute default and 60-minute hard maximum", () => {
   assert.equal(boundedCausalInitializationLivenessMs(undefined), 30 * 60 * 1_000);
   assert.equal(boundedCausalInitializationLivenessMs(61 * 60 * 1_000), 60 * 60 * 1_000);

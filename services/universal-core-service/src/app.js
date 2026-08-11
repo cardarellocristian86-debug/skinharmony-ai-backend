@@ -6663,6 +6663,13 @@ export function createUniversalCoreService(options = {}) {
     });
   };
 
+  // Deployment liveness deliberately excludes policy, database and causal
+  // readiness. Those remain enforced by /healthz and /readyz.
+  app.get("/livez", (_req, res) => res.status(200).json({
+    ok: true,
+    service: SERVICE_NAME,
+    liveness: "process_running",
+  }));
   app.get("/healthz", (req, res) => serveHealth(req, res));
   app.get("/readyz", (req, res) => serveHealth(req, res, { strictReadiness: true }));
 

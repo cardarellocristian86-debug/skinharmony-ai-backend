@@ -945,6 +945,16 @@ test("health reports only the tenant membership binding count", async () => serv
   },
 }));
 
+test("liveness responds without waiting for governed readiness", async () => serve(async (base) => {
+  const response = await fetch(`${base}/livez`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    service: "skinharmony-core-mcp",
+    liveness: "process_running",
+  });
+}));
+
 test("returns RFC 9728 challenge when bearer is absent", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
   assert.equal(response.status, 401);
