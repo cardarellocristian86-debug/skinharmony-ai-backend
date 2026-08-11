@@ -35,7 +35,21 @@ test("migration runner supports apply then empty down then clean re-apply", asyn
   const client = {
     async query(sql, params = []) {
       const query = String(sql);
-      if (query === "BEGIN" || query === "COMMIT" || query === "ROLLBACK" || query.includes("pg_advisory_lock") || query.includes("pg_advisory_unlock")) return { rows: [] };
+      if (query === "BEGIN" || query === "COMMIT" || query === "ROLLBACK" || query.startsWith("SET LOCAL ") ||
+          query.includes("pg_advisory_lock") || query.includes("pg_advisory_xact_lock") || query.includes("pg_advisory_unlock")) return { rows: [] };
+      if (query.includes("FROM information_schema.columns") && query.includes("core_schema_migrations")) {
+        return { rows: [
+          { column_name: "migration_id", data_type: "character varying", character_maximum_length: 160, is_nullable: "NO", column_default: null },
+          { column_name: "applied_at", data_type: "timestamp with time zone", character_maximum_length: null, is_nullable: "NO", column_default: "now()" },
+          { column_name: "sql_digest", data_type: "character", character_maximum_length: 64, is_nullable: "YES", column_default: null },
+          { column_name: "application_state", data_type: "text", character_maximum_length: null, is_nullable: "YES", column_default: null },
+          { column_name: "checkpoint", data_type: "text", character_maximum_length: null, is_nullable: "YES", column_default: null },
+          { column_name: "started_at", data_type: "timestamp with time zone", character_maximum_length: null, is_nullable: "NO", column_default: "clock_timestamp()" },
+          { column_name: "completed_at", data_type: "timestamp with time zone", character_maximum_length: null, is_nullable: "YES", column_default: null },
+          { column_name: "verifier_evidence", data_type: "jsonb", character_maximum_length: null, is_nullable: "NO", column_default: "'{}'::jsonb" },
+        ] };
+      }
+      if (query.includes("FROM pg_constraint constraint_row")) return { rows: [{ column_name: "migration_id" }] };
       if (query.includes("CREATE TABLE IF NOT EXISTS core_schema_migrations") && query.includes("core_projects")) {
         state.installed = true; state.applyCount += 1; return { rows: [] };
       }

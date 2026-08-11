@@ -6,11 +6,29 @@ import {
   createWorkContinuityRuntime,
   digest,
 } from "../src/work-continuity-runtime.js";
+import { createCausalContinuityMigrator } from "../../universal-core-service/src/causalContinuityMigration.js";
+import { ensureCoreSchemaMigrationRegistry } from "../../universal-core-service/src/coreSchemaMigrationRegistry.js";
 
 const databaseUrl = String(process.env.WORK_CONTINUITY_DATABASE_URL || "").trim();
 const COMMIT = "c".repeat(40);
 const BASE_COMMIT = "a".repeat(40);
 const TREE_SHA = "b".repeat(40);
+
+function pgIdentifier(value) {
+  assert.match(value, /^[a-z][a-z0-9_]{1,62}$/);
+  return `"${value}"`;
+}
+
+function singleClientPool(client) {
+  const connection = {
+    query: (...args) => client.query(...args),
+    release() {},
+  };
+  return {
+    async connect() { return connection; },
+    query: (...args) => client.query(...args),
+  };
+}
 
 function coordinatorIdentity(tenantId) {
   return {
@@ -881,5 +899,107 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     ), /core_continuity_events_append_only/);
   } finally {
     await runtime.close();
+  }
+});
+
+test("PostgreSQL 16 converges MCP-first and legacy Core-first migration registries without losing rows", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const mcpFirstSchema = `migration_mcp_${runId}`;
+  const coreFirstSchema = `migration_core_${runId}`;
+  const schemas = [mcpFirstSchema, coreFirstSchema];
+  const pool = new Pool({ connectionString: databaseUrl, max: 3, statement_timeout: 30_000 });
+
+  try {
+    const version = await pool.query("SHOW server_version_num");
+    assert.equal(Math.floor(Number(version.rows[0].server_version_num) / 10_000), 16);
+
+    await pool.query(`CREATE SCHEMA ${pgIdentifier(mcpFirstSchema)}`);
+    const mcpClient = await pool.connect();
+    try {
+      await mcpClient.query(`SET search_path TO ${pgIdentifier(mcpFirstSchema)}`);
+      await mcpClient.query(`CREATE TABLE core_schema_migrations (
+          migration_id varchar(160) PRIMARY KEY,
+          applied_at timestamptz NOT NULL DEFAULT now()
+        )`);
+      const inserted = await mcpClient.query(`INSERT INTO core_schema_migrations (migration_id)
+        VALUES ('mcp_before_core') RETURNING applied_at`);
+      const originalAppliedAt = inserted.rows[0].applied_at;
+
+      const migrator = createCausalContinuityMigrator({
+        pool: singleClientPool(mcpClient),
+      });
+      const applied = await migrator.apply();
+      assert.equal(applied.applied, true);
+      assert.equal(applied.readback.migration.application_state, "COMPLETED");
+
+      await mcpClient.query(
+        "INSERT INTO core_schema_migrations (migration_id) VALUES ('mcp_after_core')",
+      );
+      const rows = await mcpClient.query(`SELECT migration_id,applied_at,sql_digest,application_state
+        FROM core_schema_migrations
+        WHERE migration_id IN ('mcp_before_core','mcp_after_core',$1)
+        ORDER BY migration_id`, [migrator.migration_id]);
+      assert.equal(rows.rowCount, 3);
+      const before = rows.rows.find((row) => row.migration_id === "mcp_before_core");
+      assert.equal(new Date(before.applied_at).getTime(), new Date(originalAppliedAt).getTime());
+      assert.equal(before.sql_digest, null);
+      assert.equal(before.application_state, null);
+      const core = rows.rows.find((row) => row.migration_id === migrator.migration_id);
+      assert.match(core.sql_digest, /^[a-f0-9]{64}$/);
+      assert.equal(core.application_state, "COMPLETED");
+    } finally {
+      try { await mcpClient.query("ROLLBACK"); } catch {}
+      mcpClient.release();
+    }
+
+    await pool.query(`CREATE SCHEMA ${pgIdentifier(coreFirstSchema)}`);
+    const coreClient = await pool.connect();
+    try {
+      await coreClient.query(`SET search_path TO ${pgIdentifier(coreFirstSchema)}`);
+      await coreClient.query(`CREATE TABLE core_schema_migrations (
+          migration_id text PRIMARY KEY,
+          sql_digest char(64) NOT NULL,
+          application_state text NOT NULL,
+          checkpoint text NOT NULL,
+          started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+          completed_at timestamptz,
+          verifier_evidence jsonb NOT NULL DEFAULT '{}'::jsonb
+        )`);
+      const oldCoreRow = await coreClient.query(`INSERT INTO core_schema_migrations
+          (migration_id,sql_digest,application_state,checkpoint,completed_at,verifier_evidence)
+        VALUES ('core_before_mcp',$1,'COMPLETED','READBACK_VERIFIED',clock_timestamp(),$2::jsonb)
+        RETURNING sql_digest,application_state,checkpoint,started_at,completed_at,verifier_evidence`,
+      ["d".repeat(64), JSON.stringify({ preserved: true })]);
+
+      await ensureCoreSchemaMigrationRegistry(coreClient);
+      await coreClient.query(
+        "INSERT INTO core_schema_migrations (migration_id) VALUES ('mcp_after_legacy_core')",
+      );
+      const preserved = await coreClient.query(`SELECT
+          migration_id,applied_at,sql_digest,application_state,checkpoint,
+          started_at,completed_at,verifier_evidence
+        FROM core_schema_migrations ORDER BY migration_id`);
+      assert.equal(preserved.rowCount, 2);
+      const coreBefore = preserved.rows.find((row) => row.migration_id === "core_before_mcp");
+      assert.equal(coreBefore.sql_digest, oldCoreRow.rows[0].sql_digest);
+      assert.equal(coreBefore.application_state, oldCoreRow.rows[0].application_state);
+      assert.equal(coreBefore.checkpoint, oldCoreRow.rows[0].checkpoint);
+      assert.deepEqual(coreBefore.verifier_evidence, { preserved: true });
+      assert(coreBefore.applied_at instanceof Date);
+      const mcpAfter = preserved.rows.find((row) => row.migration_id === "mcp_after_legacy_core");
+      assert.equal(mcpAfter.sql_digest, null);
+      assert.equal(mcpAfter.application_state, null);
+      assert.equal(mcpAfter.checkpoint, null);
+    } finally {
+      try { await coreClient.query("ROLLBACK"); } catch {}
+      coreClient.release();
+    }
+  } finally {
+    for (const schema of schemas) {
+      await pool.query(`DROP SCHEMA IF EXISTS ${pgIdentifier(schema)} CASCADE`);
+    }
+    await pool.end();
   }
 });
