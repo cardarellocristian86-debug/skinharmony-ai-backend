@@ -221,6 +221,8 @@ import { createPostgresCausalContinuityStore } from "./causalContinuityStore.js"
 import { createCausalContinuityRuntime } from "./causalContinuityRuntime.js";
 import { registerCausalContinuityRoutes } from "./causalContinuityRoutes.js";
 import { causalDigest, CausalContinuityError } from "./causalContinuityCanonical.js";
+import { createServerOwnedReleaseTupleResolver } from "./causalIdentityReleaseResolution.js";
+import { createPostgresServerOwnedReleaseTupleObserver } from "./causalReleaseTupleObserver.js";
 import {
   createFailClosedRenderOriginResolver,
   createProjectScopeRenderOriginResolver,
@@ -6385,12 +6387,27 @@ export function createUniversalCoreService(options = {}) {
     || (nyraPolicyRegistryPostgresPool
       ? createPostgresCausalActionLeaseVerifier(nyraPolicyRegistryPostgresPool)
       : null);
+  const causalReleaseGithubTokenResolver = serverResolverRegistry?.github?.resolver || null;
+  const causalReleaseAuthorityServerOwned = options.nyraPolicyRegistryPostgresPool === undefined &&
+    options.nyraPolicyRegistryStore === undefined && options.allowTestStore !== true;
+  const causalReleaseTupleResolver = causalReleaseAuthorityServerOwned && nyraPolicyRegistryPostgresPool &&
+      hostNativeResolverConfigurationValid && typeof causalReleaseGithubTokenResolver === "function"
+    ? createServerOwnedReleaseTupleResolver({
+        observe: createPostgresServerOwnedReleaseTupleObserver({
+          pool: nyraPolicyRegistryPostgresPool,
+          githubTokenResolver: causalReleaseGithubTokenResolver,
+          timeoutMs: Number(process.env.CORE_HOST_NATIVE_READBACK_TIMEOUT_MS || 5_000),
+          maxAgeMs: Number(process.env.CORE_CAUSAL_RELEASE_OBSERVATION_MAX_AGE_MS || 15 * 60 * 1_000),
+        }),
+      })
+    : null;
   const causalContinuityRuntime = options.causalContinuityRuntime
     || (causalContinuityStore && causalContextSigner
       ? createCausalContinuityRuntime({
         store: causalContinuityStore,
         contextSigner: causalContextSigner,
         verifyActionLease: causalActionLeaseVerifier,
+        resolveReleaseTuple: causalReleaseTupleResolver,
       })
       : null);
   if (causalContinuityRuntime) {

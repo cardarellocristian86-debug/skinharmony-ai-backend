@@ -873,12 +873,12 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     );
     assert.ok(persistedAgents.rows.every((row) => /^ags_[a-f0-9]{32}$/.test(row.native_presence_signature)));
 
+    const releaseInput = release();
     const evaluation = await runtime.evaluateClosure(coordinator, {
       work_id: firstWork.work_id,
       plan_id: planned.plan.plan_id,
-      release: release(),
       idempotency_key: `closure-${runId}`,
-    });
+    }, { release: releaseInput });
     assert.equal(evaluation.closed, true);
     assert.equal(evaluation.core_join_required, true);
     assert.equal(evaluation.independent_verifier_count, 1);

@@ -9,6 +9,12 @@ import {
   requireUuid,
   sortedUnique,
 } from "./causalContinuityCanonical.js";
+import {
+  RELEASE_TUPLE_LOOKUP_VERSION,
+  isServerOwnedReleaseTupleResolver,
+  normalizeReleaseTupleLookup,
+  verifyPersistedReleaseTuple,
+} from "./causalIdentityReleaseResolution.js";
 
 const INTENT_CLASSIFICATIONS = new Set(["REFINEMENT", "SCOPE_CHANGE", "STRATEGIC_PIVOT", "PURPOSE_CHANGE", "ROLLBACK", "TERMINATION"]);
 const ASSURANCE = Object.freeze({ "CAL-0": 0, "CAL-1": 1, "CAL-2": 2, "CAL-3": 3, "CAL-4": 4 });
@@ -109,7 +115,7 @@ function observationDigestPayload(observation) {
   };
 }
 
-export function createCausalContinuityRuntime({ store, now = () => new Date(), contextSigner, verifyActionLease } = {}) {
+export function createCausalContinuityRuntime({ store, now = () => new Date(), contextSigner, verifyActionLease, resolveReleaseTuple } = {}) {
   if (!store) throw new CausalContinuityError("CAUSAL_STORE_REQUIRED");
 
   async function validateDelegation(actor, envelope) {
@@ -141,11 +147,31 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
   async function project_identity_create(context, input = {}) {
     const prepared = mutationInput(context, input, "project_identity_create");
     const project_id = stableUuid(prepared.tenant_id, prepared.operation, prepared.idempotency_key);
-    if (input.derived_from_project_id) requireUuid(input.derived_from_project_id, "derived_from_project_id");
+    let derivedFromProjectId = null;
+    let purposeChangeRevisionId = null;
+    if (input.derived_from_project_id) {
+      const actor = tenantContext(context);
+      if (!actor.owner_confirmed && !actor.authority_scope.includes("intent:approve:strategic")) {
+        throw new CausalContinuityError("OWNER_AUTHORITY_REQUIRED");
+      }
+      derivedFromProjectId = requireUuid(input.derived_from_project_id, "derived_from_project_id");
+      purposeChangeRevisionId = requireUuid(input.purpose_change_revision_id, "purpose_change_revision_id");
+      const purposeChange = await store.readRevision({
+        tenant_id: prepared.tenant_id,
+        project_id: derivedFromProjectId,
+        intent_revision_id: purposeChangeRevisionId,
+      });
+      if (purposeChange.classification !== "PURPOSE_CHANGE" || purposeChange.state !== "PROPOSED") {
+        throw new CausalContinuityError("NEW_PROJECT_REQUIRED");
+      }
+    } else if (input.purpose_change_revision_id) {
+      throw new CausalContinuityError("DERIVED_FROM_PROJECT_ID_REQUIRED");
+    }
     return store.createProject({
       ...prepared,
       project_id,
-      derived_from_project_id: input.derived_from_project_id || null,
+      derived_from_project_id: derivedFromProjectId,
+      purpose_change_revision_id: purposeChangeRevisionId,
       canonical_name: requireText(input.canonical_name || input.alias, "canonical_name", 500),
       alias: input.alias ? requireText(input.alias, "project_alias", 500) : null,
       provenance: input.provenance || prepared.actor_provenance,
@@ -306,6 +332,121 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
       genesis_intent: await store.readGenesis({ tenant_id: actor.tenant_id, project_id }),
       intent_revisions: await store.listRevisions({ tenant_id: actor.tenant_id, project_id, limit: input.limit }),
     };
+  }
+
+  async function project_identity_spine_read(context, input = {}) {
+    const actor = tenantContext(context);
+    const project_id = requireUuid(input.project_id, "project_id");
+    const project = await store.readProject({ tenant_id: actor.tenant_id, project_id });
+    const genesis = await store.readGenesis({ tenant_id: actor.tenant_id, project_id });
+    const requestedLimit = Math.min(Number(input.limit) || 200, 200);
+    const revisions = await store.listRevisions({ tenant_id: actor.tenant_id, project_id, limit: requestedLimit });
+    const currentState = await store.currentState({ tenant_id: actor.tenant_id, project_id });
+    const ordered = revisions.map(stripEvent).sort((left, right) =>
+      `${left.created_at || ""}\0${left.intent_revision_id}`.localeCompare(`${right.created_at || ""}\0${right.intent_revision_id}`));
+    const active = project.active_intent_revision_id
+      ? stripEvent(await store.readRevision({
+          tenant_id: actor.tenant_id,
+          project_id,
+          intent_revision_id: project.active_intent_revision_id,
+        }))
+      : null;
+    if (project.active_intent_revision_id && (!active || active.state !== "APPROVED")) {
+      throw new CausalContinuityError("INTENT_LINEAGE_INTEGRITY_MISMATCH");
+    }
+    const spine = {
+      schema_version: "project_identity_spine_v1",
+      tenant_id: actor.tenant_id,
+      project: stripEvent(project),
+      project_state_digest: currentState?.state_digest || null,
+      project_state_event_sequence: Number(currentState?.ledger_sequence || 0) || null,
+      genesis_intent: stripEvent(genesis),
+      active_intent_revision: active,
+      intent_revisions: ordered,
+      intent_revision_page_limit: requestedLimit,
+      intent_revision_history_may_continue: ordered.length === requestedLimit,
+    };
+    return { ...spine, spine_digest: causalDigest(spine) };
+  }
+
+  async function release_tuple_resolve(context, input = {}) {
+    if (!isServerOwnedReleaseTupleResolver(resolveReleaseTuple)) {
+      throw new CausalContinuityError("RELEASE_RESOLVER_UNAVAILABLE");
+    }
+    const prepared = mutationInput(context, input, "release_tuple_resolve");
+    const project_id = requireUuid(input.project_id, "project_id");
+    const work_id = requireUuid(input.work_id, "work_id");
+    const change_id = requireUuid(input.change_id, "change_id");
+    const projectStateDigest = requireDigest(input.project_state_digest, "project_state_digest");
+    await project_state_verify(context, { project_id, project_state_digest: projectStateDigest });
+    const project = await store.readProject({ tenant_id: prepared.tenant_id, project_id });
+    const genesis = await store.readGenesis({ tenant_id: prepared.tenant_id, project_id });
+    const work = await store.readWork({ tenant_id: prepared.tenant_id, work_id });
+    const change = await store.readChange({ tenant_id: prepared.tenant_id, change_id });
+    if (work.project_id !== project_id || change.project_id !== project_id || change.work_id !== work_id ||
+        work.genesis_intent_id !== genesis.genesis_intent_id ||
+        work.intent_revision_id !== project.active_intent_revision_id) {
+      throw new CausalContinuityError("RELEASE_CAUSAL_BINDING_MISMATCH");
+    }
+    const lookup = normalizeReleaseTupleLookup({
+      schema_version: RELEASE_TUPLE_LOOKUP_VERSION,
+      tenant_id: prepared.tenant_id,
+      project_id,
+      project_state_digest: projectStateDigest,
+      genesis_intent_id: genesis.genesis_intent_id,
+      intent_revision_id: work.intent_revision_id,
+      work_id,
+      change_id,
+      pull_request: input.pull_request,
+    });
+    const resolved = await resolveReleaseTuple(lookup);
+    const resolution_id = stableUuid(prepared.tenant_id, project_id, work_id, change_id, resolved.phase, causalDigest(lookup));
+    const provenance = {
+      schema_version: "server_owned_release_resolution_provenance_v1",
+      authority: "universal_core",
+      actor_id: prepared.actor_provenance.actor_id,
+      lookup_digest: causalDigest(lookup),
+      observation_evidence_digests: Object.values(resolved.observations).map((item) => item.evidence_digest).sort(),
+    };
+    return store.saveReleaseTupleResolution({
+      ...prepared,
+      project_id,
+      resolution_id,
+      project_state_digest: projectStateDigest,
+      genesis_intent_id: genesis.genesis_intent_id,
+      intent_revision_id: work.intent_revision_id,
+      work_id,
+      change_id,
+      phase: resolved.phase,
+      pull_request: lookup.pull_request,
+      lookup_key: lookup,
+      lookup_digest: causalDigest(lookup),
+      release_tuple: resolved,
+      release_tuple_digest: resolved.release_tuple_digest,
+      provenance,
+      provenance_digest: causalDigest(provenance),
+      observed_at: resolved.observed_at,
+      expires_at: resolved.expires_at,
+      request: { lookup, idempotency_key: prepared.idempotency_key },
+    });
+  }
+
+  async function release_tuple_read(context, input = {}) {
+    const actor = tenantContext(context);
+    const project_id = requireUuid(input.project_id, "project_id");
+    const row = await store.readReleaseTupleResolution({
+      tenant_id: actor.tenant_id,
+      project_id,
+      work_id: requireUuid(input.work_id, "work_id"),
+      change_id: requireUuid(input.change_id, "change_id"),
+      phase: input.phase ? requireText(input.phase, "release_phase", 40).toUpperCase() : null,
+    });
+    await project_state_verify(context, { project_id, project_state_digest: row.project_state_digest });
+    const verified = verifyPersistedReleaseTuple(row, now);
+    if (verified.tenant_id !== actor.tenant_id || verified.project_id !== project_id) {
+      throw new CausalContinuityError("RELEASE_CAUSAL_BINDING_MISMATCH");
+    }
+    return { ...row, release_tuple: verified };
   }
 
   async function work_bind_intent(context, input = {}) {
@@ -731,6 +872,7 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
       known_conflicts: support.conflicts, blocker: support.conflicts.find((item) => item.conflict_type === "BLOCKER" && item.state === "OPEN") || null,
       residual_risks: obligations.flatMap((item) => Array.isArray(item.residual_obligations) ? item.residual_obligations : []), next_safe_action: input.next_safe_action || null,
       forbidden_actions: input.forbidden_actions || [], pending_temporal_checks: support.pending_temporal_checks,
+      release_tuple_resolutions: support.release_tuple_resolutions,
       capsule_version: "causal_continuity_capsule_v1", generated_from_event_sequence: sequence,
     };
     capsule.capsule_digest = causalDigest(capsule);
@@ -887,13 +1029,13 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
   const capabilities = {
     project_identity_resolve, project_identity_create, project_scope_read, project_scope_bind,
     project_state_snapshot, project_state_verify, genesis_intent_read, genesis_intent_create,
-    intent_revision_propose, intent_revision_approve, intent_revision_impact, project_decision_path_read,
+    intent_revision_propose, intent_revision_approve, intent_revision_impact, project_decision_path_read, project_identity_spine_read,
     work_bind_intent, change_create, change_read, change_transition, causal_context_issue, causal_context_validate,
     causal_obligation_create, causal_obligation_read, causal_obligation_transition, causal_observation_record, causal_reconcile,
     causal_close, causal_reopen, continuity_capsule_build, continuity_capsule_resume,
     project_timeline_read, gallery_binding_project, gallery_projection_claim, gallery_projection_complete,
     gallery_projection_fail, gallery_causal_view_read, causal_metrics_snapshot, gallery_binding_verify,
-    causal_rollout_read, causal_rollout_set,
+    causal_rollout_read, causal_rollout_set, release_tuple_resolve, release_tuple_read,
   };
 
   return {

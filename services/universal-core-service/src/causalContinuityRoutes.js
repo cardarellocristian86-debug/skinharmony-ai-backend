@@ -13,6 +13,7 @@ const ROUTES = Object.freeze([
   ["post", "/v1/causal/intents/revisions/approve", "intent_revision_approve", "causal:approve"],
   ["get", "/v1/causal/intents/revisions/impact", "intent_revision_impact", "causal:read"],
   ["get", "/v1/causal/projects/decision-path", "project_decision_path_read", "causal:read"],
+  ["get", "/v1/causal/projects/identity-spine", "project_identity_spine_read", "causal:read"],
   ["post", "/v1/causal/works/bind", "work_bind_intent", "causal:write"],
   ["post", "/v1/causal/changes", "change_create", "causal:write"],
   ["get", "/v1/causal/changes/read", "change_read", "causal:read"],
@@ -38,6 +39,8 @@ const ROUTES = Object.freeze([
   ["get", "/v1/causal/gallery/bindings/verify", "gallery_binding_verify", "causal:read"],
   ["get", "/v1/causal/projects/rollout", "causal_rollout_read", "causal:read"],
   ["post", "/v1/causal/projects/rollout", "causal_rollout_set", "causal:approve"],
+  ["post", "/v1/causal/releases/resolve", "release_tuple_resolve", "causal:write"],
+  ["get", "/v1/causal/releases/read", "release_tuple_read", "causal:read"],
 ]);
 
 async function identityFrom(req, res, resolveAgentContext) {

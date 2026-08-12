@@ -596,7 +596,21 @@ test("host-native MCP to Core reaches independently attested closure material wi
           result: await continuity.reportNativeAgent(identity, args),
         }),
       work_continuity_closure_evaluate: async (args, identity) => {
-        const evaluation = await continuity.evaluateClosure(identity, args);
+        const baseCommit = "a".repeat(40);
+        const evaluation = await continuity.evaluateClosure(identity, args, {
+          release: {
+            base_branch: "main", delivery_branch: "agent/zero-provider",
+            base_commit: baseCommit, head_commit: targetCommit, tree_sha: "c".repeat(40),
+            diff_digest: "d".repeat(64), changed_files: ["services/skinharmony-core-mcp/src/app.js"],
+            delivery: { method: "github_branch_push_auto_deploy", services: [{
+              service_id: "skinharmony-core-mcp", environment: "staging",
+              expected_previous_commit: baseCommit, target_commit: targetCommit,
+              target_resolution: "exact_commit", health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+            }] },
+            rollback: { mode: "redeploy_previous_commit", target_commit: baseCommit,
+              health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST, ready: true },
+          },
+        });
         assert.equal(evaluation.closed, true);
         const releaseIntentResult = await coreHandlers.host_native_release_intent_build(
           evaluation.core_join_material.release_intent_request,
@@ -909,7 +923,6 @@ test("host-native MCP to Core reaches independently attested closure material wi
     });
     assert.equal(verifierReportPayload.result.receipt.provider_execution, false);
 
-    const baseCommit = "a".repeat(40);
     const closurePayload = await invoke({
       transport: "coordinator-transport",
       presence: coordinatorPresence,
@@ -917,31 +930,11 @@ test("host-native MCP to Core reaches independently attested closure material wi
       arguments: {
         work_id: work.work_id,
         plan_id: planned.plan.plan_id,
-        release: {
-          base_branch: "main",
-          delivery_branch: "agent/zero-provider",
-          base_commit: baseCommit,
-          head_commit: targetCommit,
-          tree_sha: "c".repeat(40),
-          diff_digest: "d".repeat(64),
-          changed_files: ["services/skinharmony-core-mcp/src/app.js"],
-          delivery: {
-            method: "github_branch_push_auto_deploy",
-            services: [{
-              service_id: "skinharmony-core-mcp",
-              environment: "staging",
-              expected_previous_commit: baseCommit,
-              target_commit: targetCommit,
-              target_resolution: "exact_commit",
-              health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
-            }],
-          },
-          rollback: {
-            mode: "redeploy_previous_commit",
-            target_commit: baseCommit,
-            health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
-            ready: true,
-          },
+        release_lookup: {
+          project_id: "11111111-1111-4111-8111-111111111111",
+          project_state_digest: "9".repeat(64),
+          change_id: "22222222-2222-4222-8222-222222222222",
+          pull_request: 242,
         },
       },
       idempotencyKey: "invoke-closure-zero-provider-0001",
