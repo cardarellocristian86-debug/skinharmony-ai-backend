@@ -121,6 +121,7 @@ test("allowlisted induced deadlock prepares exact unsigned local-PIN receipt wit
   assert.equal(prepared.unsigned_receipt.authority_provider, "local_pin");
   assert.equal(prepared.unsigned_receipt.core_policy_classification, "BOOTSTRAP_DEADLOCK_VERIFIED");
   assert.equal(prepared.unsigned_receipt.authority_key_id, "local-pin-p256:authority-key-pr229");
+  assert.equal(prepared.unsigned_receipt.max_uses, 1);
   assert.equal(prepared.unsigned_receipt.consumed_at, null);
   assert.equal(prepared.unsigned_receipt.revoked_at, null);
   assert.equal(Object.hasOwn(prepared.unsigned_receipt, "authority_assertion"), false);

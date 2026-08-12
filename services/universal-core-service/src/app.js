@@ -4626,6 +4626,21 @@ function claimShieldCheck(payload = {}) {
   };
 }
 
+export function bootstrapReleasePreparationConstructionReady({
+  hostNativeGovernance,
+  requiredChecksReadback,
+  githubTokenResolver,
+  deadlockVerdictStore,
+  allowedFailureCodes,
+  authorityTrustPin,
+} = {}) {
+  return Boolean(
+    hostNativeGovernance && requiredChecksReadback &&
+    typeof githubTokenResolver === "function" && deadlockVerdictStore &&
+    allowedFailureCodes && authorityTrustPin,
+  );
+}
+
 export function createUniversalCoreService(options = {}) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new Error("core_service_options_invalid");
@@ -6276,7 +6291,7 @@ export function createUniversalCoreService(options = {}) {
     (typeof hostNativeRequiredChecksPolicyResolver === "function"
       ? createBootstrapRequiredChecksReadback({
           fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
-          githubTokenResolver: options.hostNativeGithubTokenResolver || null,
+          githubTokenResolver: hostNativeGithubTokenResolver,
           requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
           timeoutMs: Number(
             options.hostNativeReadbackTimeoutMs ??
@@ -6285,12 +6300,15 @@ export function createUniversalCoreService(options = {}) {
           ),
         })
       : null);
-  const bootstrapReleasePreparationBaseBranchResolver =
-    options.bootstrapReleasePreparationBaseBranchResolver || null;
   const bootstrapReleasePreparationService = options.bootstrapReleasePreparationService ||
-    (hostNativeGovernance && bootstrapRequiredChecksReadback && bootstrapDeadlockVerdictStore &&
-      bootstrapDeadlockAllowedFailureCodes && bootstrapAuthorityTrustPin &&
-      typeof bootstrapReleasePreparationBaseBranchResolver === "function"
+    (bootstrapReleasePreparationConstructionReady({
+      hostNativeGovernance,
+      requiredChecksReadback: bootstrapRequiredChecksReadback,
+      githubTokenResolver: hostNativeGithubTokenResolver,
+      deadlockVerdictStore: bootstrapDeadlockVerdictStore,
+      allowedFailureCodes: bootstrapDeadlockAllowedFailureCodes,
+      authorityTrustPin: bootstrapAuthorityTrustPin,
+    })
       ? createBootstrapReleasePreparationService({
           normalPathAttempt: async ({ authenticated_tenant_id, normal_action_request }) => {
             try {
@@ -6305,18 +6323,11 @@ export function createUniversalCoreService(options = {}) {
             }
           },
           requiredChecksReadback: async ({ authenticated_tenant_id, normal_action_request }) => {
-            const baseBranch = await bootstrapReleasePreparationBaseBranchResolver({
-              tenant_id: authenticated_tenant_id,
-              repository: normal_action_request.repository,
-              pr_number: normal_action_request.pr_number,
-              head_sha: normal_action_request.head_sha,
-            });
             const attestation = await bootstrapRequiredChecksReadback.attest({
               tenant_id: authenticated_tenant_id,
               repository: normal_action_request.repository,
               pr_number: normal_action_request.pr_number,
               head_sha: normal_action_request.head_sha,
-              base_branch: baseBranch,
             });
             return {
               ...attestation,
@@ -6324,7 +6335,15 @@ export function createUniversalCoreService(options = {}) {
               policy_revision: attestation.required_checks_digest,
             };
           },
-          deadlockVerdictStore: bootstrapDeadlockVerdictStore,
+          deadlockVerdictStore: {
+            async issue(input) {
+              await bootstrapDeadlockVerdictStoreInitialization;
+              if (bootstrapDeadlockVerdictStoreState !== "ready") {
+                throw new Error("bootstrap_deadlock_verdict_store_unavailable");
+              }
+              return bootstrapDeadlockVerdictStore.issue(input);
+            },
+          },
           activeTrustKeyResolver: async ({ tenant_id, authority_provider }) => {
             if (authority_provider !== "local_pin") return null;
             await bootstrapReleaseExceptionStoreInitialization;
@@ -8109,6 +8128,23 @@ export function createUniversalCoreService(options = {}) {
         host_action_authorized: false,
         core_join_authorized: false,
       },
+      bootstrap_release_preparation: {
+        state: bootstrapReleasePreparationService
+          ? (bootstrapDeadlockVerdictStoreState === "ready" && bootstrapReleaseExceptionStoreState === "ready"
+              ? "ready"
+              : "initializing")
+          : "unavailable",
+        ready: Boolean(bootstrapReleasePreparationService) &&
+          bootstrapDeadlockVerdictStoreState === "ready" &&
+          bootstrapReleaseExceptionStoreState === "ready",
+        required: false,
+        resolver_source: "server_owned_github_pr_readback",
+        caller_release_tuple_allowed: false,
+        max_uses: 1,
+        allowed_action: "github.merge",
+        host_action_authorized: false,
+        core_join_authorized: false,
+      },
       research_airlock: {
         ...researchAirlockHealth,
         ready: researchAirlockProductionReady && researchAirlockHealth.ready === true,
@@ -9674,6 +9710,14 @@ export function createUniversalCoreService(options = {}) {
         options.hostNativeRequiredChecksPolicyResolverState || "not_configured",
       required_checks_policy_binding_count:
         Number(options.hostNativeRequiredChecksPolicyBindingCount || 0),
+      bootstrap_release_preparation_configured:
+        Boolean(bootstrapReleasePreparationService),
+      bootstrap_release_preparation_ready:
+        Boolean(bootstrapReleasePreparationService) &&
+        bootstrapDeadlockVerdictStoreState === "ready" &&
+        bootstrapReleaseExceptionStoreState === "ready",
+      bootstrap_release_preparation_resolver_source:
+        "server_owned_github_pr_readback",
       tenant_github_credential_resolver_configured:
         typeof options.hostNativeGithubTokenResolver === "function",
       public_repository_readback_ready: true,

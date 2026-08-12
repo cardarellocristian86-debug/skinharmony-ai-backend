@@ -2,7 +2,28 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import test from "node:test";
 
-import { createUniversalCoreService } from "../src/app.js";
+import {
+  bootstrapReleasePreparationConstructionReady,
+  createUniversalCoreService,
+} from "../src/app.js";
+
+test("production construction needs only server-owned release dependencies, not an injected base-branch resolver", () => {
+  const dependencies = {
+    hostNativeGovernance: {},
+    requiredChecksReadback: {},
+    githubTokenResolver: async () => "server-owned-token",
+    deadlockVerdictStore: {},
+    allowedFailureCodes: new Set(["RELEASE_MANIFEST_REQUIRED"]),
+    authorityTrustPin: {},
+  };
+  assert.equal(bootstrapReleasePreparationConstructionReady(dependencies), true);
+  for (const field of Object.keys(dependencies)) {
+    assert.equal(bootstrapReleasePreparationConstructionReady({
+      ...dependencies,
+      [field]: null,
+    }), false, field);
+  }
+});
 
 test("bootstrap preparation API uses authenticated tenant and injected non-authorizing preparation service", async () => {
   let received = null;
@@ -81,6 +102,10 @@ test("health reports an unpinned bootstrap authority without bootstrap authoriza
     assert.equal(body.bootstrap_release_exception.pinned, false);
     assert.equal(body.bootstrap_release_exception.attestation_status, "unavailable");
     assert.equal(body.bootstrap_release_exception.host_action_authorized, false);
+    assert.equal(body.bootstrap_release_preparation.ready, false);
+    assert.equal(body.bootstrap_release_preparation.caller_release_tuple_allowed, false);
+    assert.equal(body.bootstrap_release_preparation.max_uses, 1);
+    assert.equal(body.bootstrap_release_preparation.allowed_action, "github.merge");
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

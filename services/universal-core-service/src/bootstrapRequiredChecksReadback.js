@@ -18,6 +18,7 @@ function canonical(value) {
   return value;
 }
 function digest(value) { return crypto.createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex"); }
+function bytesDigest(value) { return crypto.createHash("sha256").update(value).digest("hex"); }
 function repository(value) { const normalized = text(value); return REPOSITORY.test(normalized) ? normalized : fail("bootstrap_required_checks_repository_invalid"); }
 function exactKeys(value, fields, code) { if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== [...fields].sort().join("\0")) fail(code); }
 
@@ -48,6 +49,29 @@ async function resolveToken(resolver, scope) {
   if (!token || token.length > 4096) fail("bootstrap_required_checks_github_credential_unavailable");
   if (resolved && typeof resolved === "object" && text(resolved.tenant_id) !== scope.tenant_id) fail("bootstrap_required_checks_cross_tenant_credential_denied");
   return token;
+}
+
+function workflowSource(payload, expectedPath, role, commit) {
+  if (!payload || payload.type !== "file" || payload.encoding !== "base64" ||
+      text(payload.path) !== expectedPath || typeof payload.content !== "string") {
+    fail("bootstrap_required_checks_workflow_source_invalid");
+  }
+  const encoded = payload.content.replace(/\s/g, "");
+  if (!encoded || encoded.length > Math.ceil(MAX_RESPONSE_BYTES / 3) * 4 ||
+      encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+    fail("bootstrap_required_checks_workflow_source_invalid");
+  }
+  const source = Buffer.from(encoded, "base64");
+  if (!source.length || source.length > MAX_RESPONSE_BYTES ||
+      source.toString("base64") !== encoded) {
+    fail("bootstrap_required_checks_workflow_source_invalid");
+  }
+  return Object.freeze({
+    role,
+    commit,
+    path: expectedPath,
+    sha256: bytesDigest(source),
+  });
 }
 
 function normalizePolicy(policy, scope) {
@@ -87,19 +111,68 @@ export function createBootstrapRequiredChecksReadback({ fetchImpl = globalThis.f
   if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 30_000) fail("bootstrap_required_checks_timeout_invalid");
   return Object.freeze({
     async attest({ tenant_id, repository: repositoryInput, pr_number, head_sha, base_branch }) {
-      const scope = { tenant_id: text(tenant_id), repository: repository(repositoryInput), pr_number: Number(pr_number), head_sha: sha(head_sha), base_branch: text(base_branch) };
-      if (!scope.tenant_id || !Number.isSafeInteger(scope.pr_number) || scope.pr_number < 1 || !scope.base_branch) fail("bootstrap_required_checks_scope_invalid");
-      if (typeof requiredChecksPolicyResolver !== "function") fail("bootstrap_required_checks_policy_unavailable");
-      let rawPolicy;
-      try { rawPolicy = await requiredChecksPolicyResolver({ tenant_id: scope.tenant_id, repository: scope.repository, base_branch: scope.base_branch }); }
-      catch { fail("bootstrap_required_checks_policy_unavailable"); }
-      const policy = normalizePolicy(rawPolicy, scope);
+      const scope = {
+        tenant_id: text(tenant_id), repository: repository(repositoryInput),
+        pr_number: Number(pr_number), head_sha: sha(head_sha), base_branch: text(base_branch),
+      };
+      if (!scope.tenant_id || !Number.isSafeInteger(scope.pr_number) || scope.pr_number < 1) {
+        fail("bootstrap_required_checks_scope_invalid");
+      }
       const token = await resolveToken(githubTokenResolver, scope);
       const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "skinharmony-bootstrap-required-checks-readback", authorization: `Bearer ${token}` };
       const pr = await readJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${scope.repository}/pulls/${scope.pr_number}`, { method: "GET", redirect: "error", headers }, timeoutMs);
-      if (pr?.state !== "open" || pr?.draft === true || sha(pr?.head?.sha) !== scope.head_sha || text(pr?.base?.ref) !== scope.base_branch || text(pr?.head?.repo?.full_name) !== scope.repository || text(pr?.base?.repo?.full_name) !== scope.repository) fail("bootstrap_required_checks_pr_mismatch");
+      const observedBaseBranch = text(pr?.base?.ref);
+      const observedBaseSha = sha(pr?.base?.sha);
+      if (!observedBaseBranch || !observedBaseSha ||
+          (scope.base_branch && scope.base_branch !== observedBaseBranch) ||
+          pr?.state !== "open" || pr?.draft === true ||
+          sha(pr?.head?.sha) !== scope.head_sha ||
+          text(pr?.head?.repo?.full_name) !== scope.repository ||
+          text(pr?.base?.repo?.full_name) !== scope.repository) {
+        fail("bootstrap_required_checks_pr_mismatch");
+      }
+      scope.base_branch = observedBaseBranch;
+      if (typeof requiredChecksPolicyResolver !== "function") fail("bootstrap_required_checks_policy_unavailable");
+      let rawPolicy;
+      try {
+        rawPolicy = await requiredChecksPolicyResolver({
+          tenant_id: scope.tenant_id,
+          repository: scope.repository,
+          base_branch: scope.base_branch,
+        });
+      } catch {
+        fail("bootstrap_required_checks_policy_unavailable");
+      }
+      const policy = normalizePolicy(rawPolicy, scope);
       const checkPayload = await readJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${scope.repository}/commits/${scope.head_sha}/check-runs?per_page=100`, { method: "GET", redirect: "error", headers }, timeoutMs);
       const checks = normalizedChecks(checkPayload, scope, policy);
+      const workflowPath = policy.workflow.path;
+      const baseSource = workflowSource(await readJson(
+        fetchImpl,
+        `${GITHUB_ORIGIN}/repos/${scope.repository}/contents/${workflowPath}?ref=${observedBaseSha}`,
+        { method: "GET", redirect: "error", headers },
+        timeoutMs,
+      ), workflowPath, "base", observedBaseSha);
+      const headSource = workflowSource(await readJson(
+        fetchImpl,
+        `${GITHUB_ORIGIN}/repos/${scope.repository}/contents/${workflowPath}?ref=${scope.head_sha}`,
+        { method: "GET", redirect: "error", headers },
+        timeoutMs,
+      ), workflowPath, "head", scope.head_sha);
+      const currentWorkflowDigest = policy.workflow.sha256;
+      const candidateWorkflowDigest = policy.workflow.candidate_sha256;
+      const allowedWorkflowDigests = new Set([
+        currentWorkflowDigest,
+        ...(candidateWorkflowDigest ? [candidateWorkflowDigest] : []),
+      ]);
+      if (!allowedWorkflowDigests.has(baseSource.sha256) ||
+          !allowedWorkflowDigests.has(headSource.sha256) ||
+          (!candidateWorkflowDigest &&
+            (baseSource.sha256 !== currentWorkflowDigest || headSource.sha256 !== currentWorkflowDigest)) ||
+          (candidateWorkflowDigest &&
+            baseSource.sha256 === candidateWorkflowDigest && headSource.sha256 === currentWorkflowDigest)) {
+        fail("bootstrap_required_checks_workflow_source_mismatch");
+      }
       return Object.freeze({
         schema_version: "bootstrap_required_checks_attestation_v1",
         tenant_id: scope.tenant_id,
@@ -107,9 +180,16 @@ export function createBootstrapRequiredChecksReadback({ fetchImpl = globalThis.f
         pr_number: scope.pr_number,
         head_sha: scope.head_sha,
         base_branch: scope.base_branch,
+        base_sha: observedBaseSha,
         required_checks: policy.required_checks,
         required_checks_digest: digest(policy),
-        required_checks_results_digest: digest({ tenant_id: scope.tenant_id, repository: scope.repository, pr_number: scope.pr_number, head_sha: scope.head_sha, base_branch: scope.base_branch, checks }),
+        required_checks_results_digest: digest({
+          tenant_id: scope.tenant_id, repository: scope.repository,
+          pr_number: scope.pr_number, head_sha: scope.head_sha,
+          base_branch: scope.base_branch, base_sha: observedBaseSha,
+          checks, workflow_sources: [baseSource, headSource],
+        }),
+        workflow_sources: Object.freeze([baseSource, headSource]),
         checks,
       });
     },
