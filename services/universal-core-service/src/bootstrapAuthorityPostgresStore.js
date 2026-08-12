@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { ensureCoreSchemaMigrationRegistry } from "./coreSchemaMigrationRegistry.js";
 
 const MIGRATION_SQL = [
   "../migrations/20260810_bootstrap_authority_registry.sql",
@@ -289,6 +290,14 @@ export function createPostgresBootstrapAuthorityStore({ pool, now = Date.now } =
   if (!pool || typeof pool.query !== "function" || typeof pool.connect !== "function" || typeof now !== "function") fail("bootstrap_authority_postgres_unavailable");
   let initialized;
   const initialize = () => initialized ||= (async () => {
+    // The marker table is shared with Causal Continuity. Reconcile its
+    // additive superset before Bootstrap writes one-column historical markers.
+    const client = await pool.connect();
+    try {
+      await ensureCoreSchemaMigrationRegistry(client);
+    } finally {
+      client.release();
+    }
     await pool.query(MIGRATION_SQL);
     const convergence = await pool.query(SCHEMA_CONVERGENCE_SQL);
     const row = convergence.rows[0];
@@ -297,7 +306,7 @@ export function createPostgresBootstrapAuthorityStore({ pool, now = Date.now } =
   })();
 
   async function installTrustKey(record = {}) {
-    await initialize(); assertPublicData(record); const tenantId = tenant(record.tenant_id); const keyId = identifier(record.authority_key_id); if (!PROVIDERS.has(record.authority_provider)) fail("bootstrap_trust_provider_invalid"); if (!ALGORITHMS.has(record.algorithm)) fail("bootstrap_trust_algorithm_invalid"); if (!ATTESTATION_STATUSES.has(record.attestation_status)) fail("bootstrap_trust_attestation_status_invalid");
+    assertPublicData(record); await initialize(); const tenantId = tenant(record.tenant_id); const keyId = identifier(record.authority_key_id); if (!PROVIDERS.has(record.authority_provider)) fail("bootstrap_trust_provider_invalid"); if (!ALGORITHMS.has(record.algorithm)) fail("bootstrap_trust_algorithm_invalid"); if (!ATTESTATION_STATUSES.has(record.attestation_status)) fail("bootstrap_trust_attestation_status_invalid");
     if (!Buffer.isBuffer(record.public_key_spki_der) || record.public_key_spki_der.length < 32 || record.public_key_spki_der.length > 4096) fail("bootstrap_trust_public_key_invalid");
     for (const field of ["public_key_sha256", "trust_bundle_digest", "genesis_record_digest"]) digest(record[field], `bootstrap_trust_${field}_invalid`); if (record.authority_provider === "local_pin") { if (record.attestation_status !== "UNATTESTED_LOCAL_SOFTWARE" || record.provider_attestation_digest != null) fail("bootstrap_trust_local_attestation_invalid"); } else { if (record.attestation_status === "UNATTESTED_LOCAL_SOFTWARE") fail("bootstrap_trust_attestation_status_invalid"); digest(record.provider_attestation_digest, "bootstrap_trust_provider_attestation_digest_invalid"); } if (!plain(record.genesis_record)) fail("bootstrap_trust_genesis_record_invalid");
     return transaction(pool, async (client) => {
