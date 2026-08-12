@@ -2,6 +2,7 @@ import { createUniversalCoreService } from "./src/app.js";
 import { createGhidraHeadlessAdapter } from "./src/ghidraHeadlessAdapter.js";
 import { createFridaLocalAdapter } from "./src/fridaLocalAdapter.js";
 import { createSoftwareAuthorizationVerifier } from "./src/universalSoftwareIntelligence.js";
+import pg from "pg";
 import { createIcfPostgresStore } from "./src/icfPostgresStore.js";
 
 const port = Number(process.env.PORT || process.env.CORE_SERVICE_PORT || 8787);
