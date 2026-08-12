@@ -117,12 +117,13 @@ export function createIcfKernel({ audit, storageRoot, mode = process.env.CORE_IC
       return { cells: clone(eligible), blockers: [...work.cells.values()].filter((cell) => cell.status === "planned" && !eligible.some((item) => item.cell_id === cell.cell_id)).map((cell) => ({ cell_id: cell.cell_id, reason: "dependency_or_obligation_not_ready" })) };
     },
     requestWarrant(tenantId, workId, cellId, input = {}) {
+      if (rolloutMode === "off") return { ok: false, error: "icf_disabled" };
       const work = scoped(tenantId, workId); const cell = work.cells.get(cellId);
       const existing = [...work.warrants.values()].find((item) => item.idempotency_key === (input.idempotency_key || ""));
       if (existing) return { ok: true, idempotent_replay: true, warrant: clone(existing) };
       const frontier = this.frontier(tenantId, workId).cells.some((item) => item.cell_id === cellId);
       if (!cell || !frontier) return { ok: false, error: "cell_not_admissible" };
-      const warrant = { schema: "nyra.icf.warrant/1.0", warrant_id: id("war"), tenant_id: tenantId, work_id: workId, cell_id: cellId, covenant_digest: work.covenant?.digest, input_digest: input.input_digest || digest(input), pre_state_digest: input.pre_state_digest || null, capability_id: input.capability_id || cell.action.capability_id, canonical_targets: input.canonical_targets || cell.action.canonical_targets || [], nonce: crypto.randomUUID(), idempotency_key: input.idempotency_key || crypto.randomUUID(), expires_at: input.expires_at || new Date(Date.now() + 300000).toISOString(), status: "issued" };
+      const warrant = { schema: "nyra.icf.warrant/1.0", warrant_id: id("war"), tenant_id: tenantId, work_id: workId, cell_id: cellId, covenant_digest: work.covenant?.digest, input_digest: input.input_digest || digest(input), pre_state_digest: input.pre_state_digest || null, capability_id: input.capability_id || cell.action.capability_id, canonical_targets: input.canonical_targets || cell.action.canonical_targets || [], nonce: crypto.randomUUID(), idempotency_key: input.idempotency_key || crypto.randomUUID(), expires_at: input.expires_at || new Date(Date.now() + 300000).toISOString(), status: "issued", rollout_mode: rolloutMode, advisory: rolloutMode === "shadow" || rolloutMode === "advisory" };
       warrant.digest = digest(stable(warrant)); work.warrants.set(warrant.warrant_id, warrant); cell.status = "warranted"; append(work, "warrant_issued", { warrant_id: warrant.warrant_id, cell_id: cellId }); return { ok: true, warrant: clone(warrant) };
     },
     reserveWarrant(tenantId, workId, warrantId) {
@@ -215,9 +216,16 @@ export function createIcfKernel({ audit, storageRoot, mode = process.env.CORE_IC
     },
     issueCoreSeal(tenantId, workId) {
       const work = scoped(tenantId, workId); if (work.closure !== "CLOSING" || !work.local_join?.verified || !work.global_join?.verified) return { ok: false, error: "dual_join_required" };
+      const signingSecret = process.env.ICF_CORESEAL_SECRET;
+      if (rolloutMode === "enforced" && !signingSecret) return { ok: false, error: "coreseal_signing_key_required" };
       if (work.events.at(-1)?.digest !== work.closure_snapshot?.ledger_head && work.events.at(-1)?.type !== "global_join_completed") return { ok: false, error: "ledger_changed" };
       const seal = { schema: "nyra.icf.core-seal/1.0", seal_id: id("seal"), tenant_id: tenantId, work_id: workId, covenant_digest: work.covenant?.digest, obligation_root_digest: digest(stable([...work.obligations.values()])), proof_root_digest: digest(stable([...work.evidence.values()])), final_state_digest: work.closure_snapshot.state_digest, ledger_head: work.events.at(-1)?.digest, closure_class: "SEALED_COMPLETE", decision: "ALLOW_CLOSE", issued_at: new Date().toISOString() };
-      seal.digest = digest(stable(seal)); seal.signature = crypto.createHmac("sha256", process.env.ICF_CORESEAL_SECRET || "development-icf-seal-secret").update(seal.digest).digest("hex"); work.core_seal = seal; work.closure = "SEALED"; append(work, "core_seal_issued", { seal_id: seal.seal_id, seal_digest: seal.digest }); return { ok: true, seal: clone(seal) };
+      seal.digest = digest(stable(seal)); seal.signature_algorithm = "HMAC-SHA256"; seal.signature_key_id = signingSecret ? "env:ICF_CORESEAL_SECRET" : "development-only"; seal.signature = crypto.createHmac("sha256", signingSecret || "development-icf-seal-secret").update(seal.digest).digest("hex"); work.core_seal = seal; work.closure = "SEALED"; append(work, "core_seal_issued", { seal_id: seal.seal_id, seal_digest: seal.digest, signature_algorithm: seal.signature_algorithm }); return { ok: true, seal: clone(seal) };
+    },
+    verifyCoreSeal(tenantId, workId, seal = null) {
+      const work = scoped(tenantId, workId); const candidate = seal || work.core_seal; if (!candidate) return { ok: false, error: "coreseal_not_found" };
+      const signingSecret = process.env.ICF_CORESEAL_SECRET || "development-icf-seal-secret"; const expected = crypto.createHmac("sha256", signingSecret).update(candidate.digest).digest("hex");
+      return { ok: crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(String(candidate.signature || ""))), seal_id: candidate.seal_id, algorithm: candidate.signature_algorithm || "HMAC-SHA256" };
     },
     resolve(tenantId, workId, obligationId, disposition, options = {}) {
       const work = scoped(tenantId, workId); const obligation = work.obligations.get(obligationId);
@@ -227,6 +235,6 @@ export function createIcfKernel({ audit, storageRoot, mode = process.env.CORE_IC
     status(tenantId, workId) {
       const work = scoped(tenantId, workId); const result = closure(work); return { tenant_id: tenantId, work_id: workId, mode: rolloutMode, ledger_head: work.events.at(-1) || null, covenant: clone(work.covenant), obligations: clone([...work.obligations.values()]), cells: clone([...work.cells.values()]), warrants: clone([...work.warrants.values()]), evidence: clone([...work.evidence.values()]), closure: result };
     },
-    rollout() { return { mode: rolloutMode, execution_enforced: rolloutMode === "enforced", closure_enforced: rolloutMode === "enforced" }; },
+    rollout() { return { mode: rolloutMode, execution_enforced: rolloutMode === "enforced", closure_enforced: rolloutMode === "enforced", shadow_observation: rolloutMode === "shadow", advisory_warning: rolloutMode === "advisory" }; },
   };
 }
