@@ -483,8 +483,6 @@ jobs:
           {
             "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID" =>
               "GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID",
-            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY" =>
-              "GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY",
           }.each do |key, producer_key|
             abort("#{key}: must remain pinned to the MCP public verifier material") unless
               core_env[key] == {
@@ -493,6 +491,26 @@ jobs:
                   "type" => "web",
                   "name" => "skinharmony-core-mcp",
                   "envVarKey" => producer_key,
+                },
+              }
+          end
+          generic_join_code_dark =
+            core_env.dig("CORE_GENERIC_WORK_CORE_JOIN_ENABLED", "value") == "false" &&
+            core_env.dig("CORE_GENERIC_WORK_CORE_JOIN_REQUIRED", "value") == "false" &&
+            core_env.dig("CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE", "value") == "disabled"
+          public_key_binding =
+            core_env["CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY"]
+          if generic_join_code_dark
+            abort("Generic Join code-dark Core must not depend on unresolved public verifier material") if
+              public_key_binding
+          else
+            abort("Generic Join activation must pin the MCP public verifier material") unless
+              public_key_binding == {
+                "key" => "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY",
+                "fromService" => {
+                  "type" => "web",
+                  "name" => "skinharmony-core-mcp",
+                  "envVarKey" => "GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY",
                 },
               }
           end
