@@ -1,0 +1,2 @@
+export const ICF_STORE_CONTRACT = Object.freeze({ version: "nyra.icf.store/1.0", required: ["initialize", "loadWork", "appendEvent", "compareAndSwapHead"] });
+export function assertIcfStoreContract(store) { const missing = ICF_STORE_CONTRACT.required.filter((method) => typeof store?.[method] !== "function"); return missing.length ? { ok: false, error: "icf_store_contract_incomplete", missing } : { ok: true, contract: ICF_STORE_CONTRACT.version }; }
