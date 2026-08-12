@@ -3,6 +3,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 import { createPostgresBootstrapAuthorityStore } from "../../../services/universal-core-service/src/bootstrapAuthorityPostgresStore.js";
 import { bootstrapReleaseExceptionCanonicalJson } from "../../../services/universal-core-service/src/bootstrapReleaseException.js";
@@ -101,7 +102,7 @@ async function readBundle(filename) {
       typeof bundle.tenant_id !== "string" || !TENANT.test(bundle.tenant_id) ||
       typeof bundle.authority_key_id !== "string" || !KEY_ID.test(bundle.authority_key_id) ||
       typeof bundle.public_key_sha256 !== "string" || !SHA256.test(bundle.public_key_sha256) ||
-      typeof bundle.provider_attestation_digest !== "string" || !SHA256.test(bundle.provider_attestation_digest) ||
+      bundle.provider_attestation_digest !== null ||
       typeof bundle.genesis_record_digest !== "string" || !SHA256.test(bundle.genesis_record_digest) ||
       !plain(bundle.genesis_record) ||
       typeof bundle.public_key_spki_base64 !== "string" || !CANONICAL_BASE64.test(bundle.public_key_spki_base64)) {
@@ -135,6 +136,10 @@ async function readBundle(filename) {
       authority_key_id: bundle.authority_key_id,
       authority_provider: bundle.authority_provider,
       algorithm: bundle.algorithm,
+      // A local-PIN authority is intentionally software-unattested.  The
+      // database primitive enforces this exact pairing and rejects a provider
+      // attestation for local keys.
+      attestation_status: "UNATTESTED_LOCAL_SOFTWARE",
       public_key_spki_der: publicKeySpki,
       public_key_sha256: fingerprint,
       trust_bundle_digest: sha256Canonical(bundle),
@@ -161,11 +166,14 @@ function assertNoDifferentActiveKey(rows, record) {
 
 async function main() {
   if (process.argv.length !== 3) fail("usage:node_install-trust-key.mjs_public-trust-bundle.json");
+  // Validate the public-only input before considering a database connection.
+  // This makes the offline ceremony fail locally and deterministically for an
+  // invalid bundle, without making any network or database attempt.
+  const { installRecord } = await readBundle(process.argv[2]);
   const databaseUrl = process.env.GOVERNED_AGENT_DATABASE_URL;
   if (typeof databaseUrl !== "string" || databaseUrl.length === 0) {
     fail("governed_agent_database_url_required");
   }
-  const { installRecord } = await readBundle(process.argv[2]);
   const pool = new Pool({ connectionString: databaseUrl, max: 2 });
   const store = createPostgresBootstrapAuthorityStore({ pool });
   let lockClient;
@@ -219,8 +227,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${String(error?.message || "bootstrap_trust_key_install_failed")}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    process.stderr.write(`${String(error?.message || "bootstrap_trust_key_install_failed")}\n`);
+    process.exitCode = 1;
+  });
+}
 
+export { readBundle };

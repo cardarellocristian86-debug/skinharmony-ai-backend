@@ -1557,6 +1557,13 @@ export function createApp(config, options = {}) {
   });
   };
 
+  // Render deployment liveness must not wait on downstream Core readiness.
+  // Keep /healthz and /readyz as the governed dependency/readiness views.
+  app.get("/livez", (_req, res) => res.status(200).json({
+    ok: true,
+    service: "skinharmony-core-mcp",
+    liveness: "process_running",
+  }));
   app.get("/healthz", (req, res) => serveHealth(req, res));
   app.get("/readyz", (req, res) => serveHealth(req, res, { strictReadiness: true }));
 

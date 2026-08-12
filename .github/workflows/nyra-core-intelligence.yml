@@ -200,23 +200,37 @@ jobs:
           abort("duplicate production Universal Core Blueprint: #{duplicate_core_blueprints.join(', ')}") unless
             duplicate_core_blueprints.empty?
 
-          mcp = load_blueprint.call("render-core-mcp.yaml")
-            .find { |service| service["name"] == "skinharmony-core-mcp" }
-          core = load_blueprint.call("render-universal-core.yaml")
-            .find { |service| service["name"] == "skinharmony-universal-core" }
-          nyra = load_blueprint.call("render-nyra.yaml")
-            .find { |service| service["name"] == "skinharmony-nyra-core" }
-          abort("MCP Render service missing") unless mcp
-          abort("Universal Core Render service missing") unless core
-          abort("Nyra Render service missing") unless nyra
+          exact_service = lambda do |path, name|
+            matches = load_blueprint.call(path)
+              .select { |service| service["name"] == name }
+            abort("#{path}: expected exactly one #{name} service") unless
+              matches.length == 1
+            matches.first
+          end
+          mcp = exact_service.call(
+            "render-core-mcp.yaml", "skinharmony-core-mcp"
+          )
+          core = exact_service.call(
+            "render-universal-core.yaml", "skinharmony-universal-core"
+          )
+          nyra = exact_service.call("render-nyra.yaml", "skinharmony-nyra-core")
           [mcp, core, nyra].each do |service|
             abort("#{service["name"]}: checksPass auto-deploy required") unless service["autoDeployTrigger"] == "checksPass"
-            abort("#{service["name"]}: health check must remain /healthz") unless service["healthCheckPath"] == "/healthz"
             abort("#{service["name"]}: exact GitHub repository required") unless
               service["repo"] == "https://github.com/cardarellocristian86-debug/skinharmony-ai-backend"
             abort("#{service["name"]}: release branch must remain main") unless
               service["branch"] == "main"
           end
+          # Core and MCP expose process-only deployment liveness. Their
+          # governed dependency readiness remains fail-closed at /healthz and
+          # /readyz. Nyra has no separate process-only endpoint and therefore
+          # keeps its existing /healthz Render contract.
+          [mcp, core].each do |service|
+            abort("#{service["name"]}: deployment liveness check must remain /livez") unless
+              service["healthCheckPath"] == "/livez"
+          end
+          abort("#{nyra["name"]}: health check must remain /healthz") unless
+            nyra["healthCheckPath"] == "/healthz"
 
           mcp_env = Array(mcp["envVars"]).to_h { |entry| [entry["key"], entry] }
           %w[

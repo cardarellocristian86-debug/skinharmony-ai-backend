@@ -372,6 +372,58 @@ test("health exposes a non-secret build identity and commit-verification state",
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });
 
+test("liveness responds without consulting unavailable governed dependencies", async () => {
+  const storageRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "host-native-liveness-"),
+  );
+  const calls = { policy: 0, airlock: 0, causal: 0 };
+  const { app } = createUniversalCoreService({
+    storageRoot,
+    healthProbeTimeoutMs: 20,
+    nyraPolicyRegistryStore: {
+      status: async () => {
+        calls.policy += 1;
+        throw new Error("policy_unavailable");
+      },
+    },
+    researchAirlockRuntime: {
+      mode: "enforced",
+      ready: false,
+      store: { kind: "postgresql", restart_durable: true, distributed: true },
+      status: async () => {
+        calls.airlock += 1;
+        throw new Error("airlock_unavailable");
+      },
+    },
+    causalContinuityStore: {},
+    causalContinuityRuntime: {
+      initialize: async () => {},
+      health: async () => {
+        calls.causal += 1;
+        throw new Error("causal_unavailable");
+      },
+      invoke: async () => ({ ok: false }),
+    },
+  });
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${server.address().port}/livez`,
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ok: true,
+      service: "universal-core-service",
+      liveness: "process_running",
+    });
+    assert.deepEqual(calls, { policy: 0, airlock: 0, causal: 0 });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
 test("causal initialization liveness window has a 30-minute default and 60-minute hard maximum", () => {
   assert.equal(boundedCausalInitializationLivenessMs(undefined), 30 * 60 * 1_000);
   assert.equal(boundedCausalInitializationLivenessMs(61 * 60 * 1_000), 60 * 60 * 1_000);
