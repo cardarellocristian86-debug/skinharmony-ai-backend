@@ -108,6 +108,7 @@ import {
 } from "./providerSetupLinkBinding.js";
 import { createCoreRuntimeWorker } from "./coreRuntimeWorker.js";
 import { createIcfKernel } from "./icfKernel.js";
+import { createIcfRuntimeFacade } from "./icfRuntimeFacade.js";
 import { coreRuntimeHierarchyStatus, evaluateCoreRuntimeHierarchy } from "./coreRuntimeHierarchy.js";
 import {
   analyzeEmbeddedSoftwareArtifact,
@@ -8368,6 +8369,7 @@ export function createUniversalCoreService(options = {}) {
   });
 
   const icf = createIcfKernel({ audit, storageRoot, mode: options.icfMode || process.env.CORE_ICF_MODE || "advisory" });
+  const icfRuntime = createIcfRuntimeFacade({ kernel: icf, store: options.icfStore, mode: options.icfMode || process.env.CORE_ICF_MODE || "advisory" });
 
   app.get("/v1/icf/rollout", coreAuth(SCOPES.READ_DECISION), (req, res) => res.json({ ok: true, rollout: icf.rollout() }));
   app.get("/v1/icf/:workId", coreAuth(SCOPES.READ_DECISION), (req, res) => res.json({ ok: true, icf: icf.status(req.tenantId, req.params.workId) }));
@@ -13285,6 +13287,11 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/audit/recent", coreAuth(SCOPES.ADMIN_TENANT), (req, res) => {
     res.json({ ok: true, audit: audit.recent(Number(req.query.limit || 50)).filter((event) => !req.tenantId || event.tenant_id === req.tenantId) });
+  });
+
+  app.get("/v1/icf/runtime/attestation", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
+    const readiness = icfRuntime.readiness();
+    res.json({ ok: true, schema: "nyra.icf.runtime-attestation/1.0", build: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null, rollout: icf.rollout(), store: { kind: readiness.store_kind, contract: readiness.contract, restart_durable: readiness.restart_durable, distributed: readiness.distributed }, enforcement_allowed: readiness.enforcement_allowed });
   });
 
   app.use((req, res) => publicError(res, 404, "route_not_found"));
