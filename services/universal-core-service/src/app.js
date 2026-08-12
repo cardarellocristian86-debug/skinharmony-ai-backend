@@ -63,6 +63,9 @@ import {
 import { buildActionAuthorization } from "./actionAuthorization.js";
 import { applyActionRiskProfile, classifyActionRisk } from "./actionRisk.js";
 import { createCoreRuntimeWorker } from "./coreRuntimeWorker.js";
+import { createIcfKernel } from "./icfKernel.js";
+import { createIcfRuntimeFacade } from "./icfRuntimeFacade.js";
+import { createIcfPolicyProofVerifier } from "./icfPolicyProof.js";
 import { coreRuntimeHierarchyStatus, evaluateCoreRuntimeHierarchy } from "./coreRuntimeHierarchy.js";
 import {
   analyzeEmbeddedSoftwareArtifact,
@@ -3233,6 +3236,9 @@ export function createUniversalCoreService(options = {}) {
   const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
   const softwareJobs = createUniversalSoftwareJobManager({ adapters: options.softwareWorkerAdapters });
   const coreRuntime = options.coreRuntime || createCoreRuntimeWorker(options.coreRuntimeOptions);
+  const icf = createIcfKernel({ audit, storageRoot, mode: options.icfMode || process.env.CORE_ICF_MODE || "shadow" });
+  const icfPolicyProof = createIcfPolicyProofVerifier();
+  const icfRuntime = createIcfRuntimeFacade({ kernel: icf, store: options.icfStore, policyProofVerifier: icfPolicyProof, mode: options.icfMode || process.env.CORE_ICF_MODE || "shadow" });
   const requestedCoreRuntimeMode = String(options.coreRuntimeMode || process.env.CORE_RUNTIME_V2_MODE || "shadow").toLowerCase();
   const coreRuntimeMode = ["shadow", "active", "disabled"].includes(requestedCoreRuntimeMode) ? requestedCoreRuntimeMode : "shadow";
   const app = express();
@@ -3254,6 +3260,138 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/scopes", (req, res) => {
     res.json({ ok: true, scopes: Object.values(SCOPES), presets: KEY_PRESETS });
+  });
+
+  app.get("/v1/icf/:workId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, icf: icf.status(req.tenantId, req.params.workId) });
+  });
+
+  app.get("/v1/icf/rollout", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, rollout: icf.rollout(), runtime: icfRuntime.readiness() });
+  });
+
+  app.get("/v1/icf/runtime/readiness", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const readiness = icfRuntime.readiness();
+    res.status(readiness.enforcement_allowed || !icf.rollout().execution_enforced ? 200 : 503).json({ ok: readiness.enforcement_allowed || !icf.rollout().execution_enforced, readiness });
+  });
+
+  app.get("/v1/icf/runtime/attestation", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    const readiness = icfRuntime.readiness();
+    res.json({ ok: true, schema: "nyra.icf.runtime-attestation/1.0", build: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null, rollout: icf.rollout(), store: { kind: readiness.store_kind, contract: readiness.contract, restart_durable: readiness.restart_durable, distributed: readiness.distributed }, enforcement_allowed: readiness.enforcement_allowed });
+  });
+
+  app.post("/v1/icf/:workId/covenant", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.putCovenant(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/import-legacy", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.importLegacy(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 201 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/compile", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.compile(req.tenantId, req.params.workId, req.body?.claims || req.body?.obligations || []);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/decompose", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.decompose(req.tenantId, req.params.workId, req.body?.parent_id, req.body?.children || [], req.body?.coverage || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/merge", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.merge(req.tenantId, req.params.workId, req.body?.child_ids || [], req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/cells", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.registerCell(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 201 : 409).json(result);
+  });
+
+  app.get("/v1/icf/:workId/frontier", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, frontier: icf.frontier(req.tenantId, req.params.workId) });
+  });
+
+  app.post("/v1/icf/:workId/warrants", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.requestWarrant(req.tenantId, req.params.workId, req.body?.cell_id, req.body || {});
+    res.status(result.ok ? 201 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/warrants/:warrantId/reserve", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.reserveWarrant(req.tenantId, req.params.workId, req.params.warrantId);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/warrants/:warrantId/report", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.reportExecution(req.tenantId, req.params.workId, req.params.warrantId, req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/cells/:cellId/retry", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.retryCell(req.tenantId, req.params.workId, req.params.cellId);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.get("/v1/icf/:workId/ledger/verify", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    const result = icf.verifyLedger(req.tenantId, req.params.workId);
+    res.status(result.valid ? 200 : 409).json({ ok: result.valid, ledger: result });
+  });
+
+  app.post("/v1/icf/:workId/evidence", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.addEvidence(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 201 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/evidence/invalidate", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.invalidateEvidence(req.tenantId, req.params.workId, req.body || {});
+    res.json(result);
+  });
+
+  app.post("/v1/icf/:workId/evidence/:evidenceId/verify", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.verifyEvidence(req.tenantId, req.params.workId, req.params.evidenceId, req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/graph/invalidate", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.invalidateGraph(req.tenantId, req.params.workId, req.body || {});
+    res.json(result);
+  });
+
+  app.post("/v1/icf/:workId/reconcile", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.reconcile(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/closure/begin", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.beginClosure(req.tenantId, req.params.workId);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/closure/local-join", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.localJoin(req.tenantId, req.params.workId, req.body?.snapshot);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/closure/global-join", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.globalJoin(req.tenantId, req.params.workId, req.body?.snapshot, req.body?.reality || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/core-seal", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.issueCoreSeal(req.tenantId, req.params.workId);
+    res.status(result.ok ? 201 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/core-seal/verify", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    const result = icf.verifyCoreSeal(req.tenantId, req.params.workId, req.body?.seal || null);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/resolve", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.resolve(req.tenantId, req.params.workId, req.body?.obligation_id, req.body?.disposition, { authority: req.body?.authority, resolution_ref: req.body?.resolution_ref });
+    res.status(result.ok ? 200 : 409).json(result);
   });
 
   app.get("/v1/runtime/hierarchy/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
