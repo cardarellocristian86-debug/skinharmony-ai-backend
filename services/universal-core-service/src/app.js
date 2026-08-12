@@ -13228,7 +13228,12 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, audit: audit.recent(Number(req.query.limit || 50)).filter((event) => !req.tenantId || event.tenant_id === req.tenantId) });
   });
 
-  app.get("/v1/icf/runtime/attestation", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {\n    const readiness = icfRuntime.readiness();\n    res.json({ ok: true, schema: "nyra.icf.runtime-attestation/1.0", build: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null, rollout: icf.rollout(), store: { kind: readiness.store_kind, contract: readiness.contract, restart_durable: readiness.restart_durable, distributed: readiness.distributed }, enforcement_allowed: readiness.enforcement_allowed });\n  });\n\n  app.use((req, res) => publicError(res, 404, "route_not_found"));
+  app.get("/v1/icf/runtime/attestation", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
+    const readiness = icfRuntime.readiness();
+    res.json({ ok: true, schema: "nyra.icf.runtime-attestation/1.0", build: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null, rollout: icf.rollout(), store: { kind: readiness.store_kind, contract: readiness.contract, restart_durable: readiness.restart_durable, distributed: readiness.distributed }, enforcement_allowed: readiness.enforcement_allowed });
+  });
+
+  app.use((req, res) => publicError(res, 404, "route_not_found"));
 
   async function shutdown() {
     const tasks = [];
