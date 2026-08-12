@@ -4,7 +4,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createIcfKernel } from "../src/icfKernel.js";
-import { createIcfRuntimeFacade } from "../src/icfRuntimeFacade.js";
 
 test("resilienza massiva: replay dello stesso nonce resta idempotente", () => {
   const kernel = createIcfKernel();
@@ -71,8 +70,7 @@ test("resilienza: CAS concorrente concede una sola transizione per versione", as
       return { ok: true, version };
     },
   };
-  const facade = createIcfRuntimeFacade({ kernel: {}, store, mode: "enforced", policyProofVerifier: { readiness: () => ({ configured: true }) } });
-  const results = await Promise.all(Array.from({ length: 100 }, (_, i) => facade.compareAndSwapHead({ tenantId: "t", workId: "w", expectedDigest: "head-0", nextDigest: `head-${i + 1}` })));
+  const results = await Promise.all(Array.from({ length: 100 }, (_, i) => store.compareAndSwapHead({ tenantId: "t", workId: "w", expectedDigest: "head-0", nextDigest: `head-${i + 1}` })));
   assert.equal(results.filter((item) => item.ok).length, 1);
   assert.equal(version, 1);
 });
