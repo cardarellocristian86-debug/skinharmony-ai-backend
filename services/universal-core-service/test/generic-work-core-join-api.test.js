@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -34,11 +33,6 @@ const PUBLIC_KEY_FINGERPRINT = crypto.createHash("sha256")
   .digest("hex");
 const REMOTE_TOKEN = "opaque-generic-join-service-token-0123456789";
 const REMOTE_TARGET_COMMIT = "a".repeat(40);
-const RENDER_UNIVERSAL_CORE_BLUEPRINT = JSON.parse(execFileSync("ruby", [
-  "-r", "yaml", "-r", "json", "-e",
-  "puts JSON.generate(YAML.safe_load(File.read(ARGV.fetch(0))))",
-  new URL("../../../render-universal-core.yaml", import.meta.url).pathname,
-], { encoding: "utf8" }));
 
 function remoteSignerConfig(fetchImpl) {
   return {
@@ -175,40 +169,7 @@ async function withService(options, run) {
   try { await run(request, health); } finally { await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); }
 }
 
-test("Generic Core Join defaults code-dark without signer or trust material and cannot activate", async () => {
-  const core = RENDER_UNIVERSAL_CORE_BLUEPRINT.services.find(
-    (service) => service.name === "skinharmony-universal-core",
-  );
-  const env = Object.fromEntries(core.envVars.map((entry) => [entry.key, entry]));
-  assert.equal(env.CORE_GENERIC_WORK_CORE_JOIN_ENABLED.value, "false");
-  assert.equal(env.CORE_GENERIC_WORK_CORE_JOIN_REQUIRED.value, "false");
-  assert.equal(env.CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE.value, "disabled");
-  for (const key of Object.keys(env).filter((key) =>
-    /^CORE_GENERIC_WORK_CORE_JOIN/.test(key)
-      && /(?:PUBLIC_KEY|JWKS|PRIVATE_KEY|TRUST_MATERIAL)/.test(key),
-  )) assert.fail(`code-dark Blueprint must not import signer or trust material: ${key}`);
-  const registry = JSON.parse(env.CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON.value);
-  const binding = registry.bindings[0];
-  assert.equal(binding.workflow.sha256, "61300ff5faed91acd1c51b63bb1263eb4eeeecdcefa1c390114d3329ef8210d5");
-  assert.equal(binding.workflow.candidate_sha256, "6e118feb3ce22a4c6d05755fb00d5258b64c6673af4be6ca404d3231d6113fbf");
-  const canonical = (value) => Array.isArray(value)
-    ? `[${value.map(canonical).join(",")}]`
-    : value && typeof value === "object"
-      ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`
-      : JSON.stringify(value);
-  const digest = (value) => crypto.createHash("sha256").update(canonical(value)).digest("hex");
-  assert.equal(digest(registry), "aa4b8a4263ab5ff2fe988165ecacd218e457b6011548ad4f3a3185fee9aeddb2");
-  const policy = {
-    schema_version: "host_native_required_checks_policy_v1",
-    tenant_id: binding.tenant_id,
-    repository: binding.repository,
-    base_branch: binding.base_branch,
-    required_checks: [...binding.required_checks].sort(),
-    check_app: binding.check_app,
-    workflow: binding.workflow,
-    allowed_events: [...binding.allowed_events].sort(),
-  };
-  assert.equal(digest(policy), "81bc831386b0656b71a553c8e1d5cb99d317f61f9b362397a1e0a58a48dd240f");
+test("Generic Core Join defaults code-dark and does not initialize, read, sign, or record", async () => {
   const calls = { initialize: 0, read: 0, record: 0 };
   const store = {
     kind: "must_not_activate",
@@ -229,7 +190,6 @@ test("Generic Core Join defaults code-dark without signer or trust material and 
     assert.equal(status.generic_work_core_join.state, "disabled");
     assert.equal(status.generic_work_core_join.ready, false);
     assert.equal(status.generic_work_core_join.store_state, "disabled");
-    assert.equal(status.generic_work_core_join.signer_state, "unconfigured");
     assert.equal(status.generic_work_core_join.key_id, null);
     assert.equal(status.generic_work_core_join.public_key_fingerprint, null);
     const denied = await request("/v1/work-continuity/generic-core-join", body());

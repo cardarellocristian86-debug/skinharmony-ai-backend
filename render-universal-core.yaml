@@ -70,6 +70,11 @@ services:
           type: web
           name: skinharmony-core-mcp
           envVarKey: GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID
+      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN
         sync: false
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TIMEOUT_MS
