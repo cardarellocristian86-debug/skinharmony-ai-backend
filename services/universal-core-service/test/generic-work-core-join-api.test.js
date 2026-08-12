@@ -169,7 +169,7 @@ async function withService(options, run) {
   try { await run(request, health); } finally { await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); }
 }
 
-test("Generic Core Join defaults code-dark and does not initialize, read, sign, or record", async () => {
+test("Generic Core Join defaults code-dark without signer or trust material and cannot activate", async () => {
   const calls = { initialize: 0, read: 0, record: 0 };
   const store = {
     kind: "must_not_activate",
@@ -190,6 +190,7 @@ test("Generic Core Join defaults code-dark and does not initialize, read, sign, 
     assert.equal(status.generic_work_core_join.state, "disabled");
     assert.equal(status.generic_work_core_join.ready, false);
     assert.equal(status.generic_work_core_join.store_state, "disabled");
+    assert.equal(status.generic_work_core_join.signer_state, "unconfigured");
     assert.equal(status.generic_work_core_join.key_id, null);
     assert.equal(status.generic_work_core_join.public_key_fingerprint, null);
     const denied = await request("/v1/work-continuity/generic-core-join", body());
