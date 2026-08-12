@@ -480,27 +480,22 @@ jobs:
             abort("#{key}: must remain a manually provisioned value") unless
               core_env[key] == { "key" => key, "sync" => false }
           end
-          abort("CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID: must remain pinned to the MCP key identifier") unless
-            core_env["CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID"] == {
-              "key" => "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID",
-              "fromService" => {
-                "type" => "web",
-                "name" => "skinharmony-core-mcp",
-                "envVarKey" => "GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID",
-              },
-            }
-          %w[
-            CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY
-            CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_JWKS
-            CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PRIVATE_KEY
-            CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TRUST_MATERIAL
-          ].each do |key|
-            abort("#{key}: code-dark Generic Join must not require signer or trust material") if core_env.key?(key)
+          {
+            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID" =>
+              "GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID",
+            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY" =>
+              "GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY",
+          }.each do |key, producer_key|
+            abort("#{key}: must remain pinned to the MCP public verifier material") unless
+              core_env[key] == {
+                "key" => key,
+                "fromService" => {
+                  "type" => "web",
+                  "name" => "skinharmony-core-mcp",
+                  "envVarKey" => producer_key,
+                },
+              }
           end
-          abort("Generic Join code-dark activation guard missing") unless
-            core_env.dig("CORE_GENERIC_WORK_CORE_JOIN_ENABLED", "value") == "false" &&
-            core_env.dig("CORE_GENERIC_WORK_CORE_JOIN_REQUIRED", "value") == "false" &&
-            core_env.dig("CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE", "value") == "disabled"
           generic_join_keys = Array(mcp["envVars"]) + Array(core["envVars"])
           forbidden_generic_join_keys = generic_join_keys.filter_map do |entry|
             key = String(entry["key"])
