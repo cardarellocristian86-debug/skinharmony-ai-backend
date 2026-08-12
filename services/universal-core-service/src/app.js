@@ -107,6 +107,7 @@ import {
   providerSetupLinkBindingAuditFields,
 } from "./providerSetupLinkBinding.js";
 import { createCoreRuntimeWorker } from "./coreRuntimeWorker.js";
+import { createIcfKernel } from "./icfKernel.js";
 import { coreRuntimeHierarchyStatus, evaluateCoreRuntimeHierarchy } from "./coreRuntimeHierarchy.js";
 import {
   analyzeEmbeddedSoftwareArtifact,
@@ -8311,6 +8312,27 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/scopes", (req, res) => {
     res.json({ ok: true, scopes: Object.values(SCOPES), presets: KEY_PRESETS });
+  });
+
+  const icf = createIcfKernel({ audit });
+
+  app.get("/v1/icf/:workId", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, icf: icf.status(req.tenantId, req.params.workId) });
+  });
+
+  app.post("/v1/icf/:workId/covenant", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.putCovenant(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/compile", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.compile(req.tenantId, req.params.workId, req.body?.claims || req.body?.obligations || []);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/resolve", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.resolve(req.tenantId, req.params.workId, req.body?.obligation_id, req.body?.disposition);
+    res.status(result.ok ? 200 : 409).json(result);
   });
 
   app.get("/v1/runtime/hierarchy/status", coreAuth(SCOPES.READ_DECISION), (req, res) => {
