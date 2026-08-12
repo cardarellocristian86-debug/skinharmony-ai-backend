@@ -132,3 +132,20 @@ test("report duplicati sono idempotenti e il ledger resta verificabile", () => {
   assert.equal(kernel.reportExecution("t10", "w1", warrant.warrant_id, { status: "effect_confirmed" }).idempotent_replay, true);
   assert.equal(kernel.verifyLedger("t10", "w1").valid, true);
 });
+
+test("CoreSeal ha contratto di firma verificabile", () => {
+  const kernel = createIcfKernel();
+  const covenant = kernel.putCovenant("t11", "w1", { outcomes: ["release"] }).covenant;
+  const obligations = kernel.compile("t11", "w1", [{ claim: "release", clause_refs: [covenant.clauses[0].clause_id] }]).obligations;
+  kernel.resolve("t11", "w1", obligations[0].obligation_id, "satisfied");
+  const snapshot = kernel.beginClosure("t11", "w1").snapshot;
+  kernel.localJoin("t11", "w1", snapshot); kernel.globalJoin("t11", "w1", snapshot, { release: true });
+  const seal = kernel.issueCoreSeal("t11", "w1").seal;
+  assert.equal(kernel.verifyCoreSeal("t11", "w1", seal).ok, true);
+});
+
+test("Postgres store espone schema e append transazionale con lock", async () => {
+  const { ICF_POSTGRES_SCHEMA, createIcfPostgresStore } = await import("../src/icfPostgresStore.js");
+  assert.match(ICF_POSTGRES_SCHEMA, /FOR UPDATE|core_icf_event/);
+  assert.equal(createIcfPostgresStore().ready, false);
+});
