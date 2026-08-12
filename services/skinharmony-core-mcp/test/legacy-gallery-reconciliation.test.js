@@ -345,12 +345,13 @@ test("stale dry-run fails closed when the authoritative legacy Work is missing",
 
 test("stale dry-run classifies from authoritative V1 time, not a stale V2 projection", async () => {
   const recentPool = new ReconciliationPool();
-  recentPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = "2026-08-11T19:30:00.000Z";
+  const authoritativeUpdatedAt = new Date(Date.now() - 60_000).toISOString();
+  recentPool.legacy.get(`tenant-a:${SOURCE}`).updated_at = authoritativeUpdatedAt;
   const recent = await store(recentPool).reconcileStaleDryRun(identity());
   const recentClassification = recent.classifications.find((item) => item.work_id === SOURCE);
   assert.equal(recentClassification.projection_drift, false);
   assert.equal(recentClassification.timestamp_projection_drift, true);
-  assert.equal(recentClassification.authoritative_updated_at, "2026-08-11T19:30:00.000Z");
+  assert.equal(recentClassification.authoritative_updated_at, authoritativeUpdatedAt);
   assert.equal(recentClassification.projected_updated_at, OLD);
   assert.equal(recentClassification.classification, "ACTIVE_VALID");
   assert.deepEqual(recentClassification.allowed_actions, []);

@@ -70,11 +70,6 @@ services:
           type: web
           name: skinharmony-core-mcp
           envVarKey: GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID
-      - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY
-        fromService:
-          type: web
-          name: skinharmony-core-mcp
-          envVarKey: GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN
         sync: false
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TIMEOUT_MS
@@ -122,7 +117,7 @@ services:
       # equality claim; Core selects the binding and verifies the exact GitHub
       # Actions app, workflow run, event, branch and commit itself.
       - key: CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON
-        value: '{"schema_version":"host_native_required_checks_registry_v1","bindings":[{"tenant_id":"codexai","repository":"cardarellocristian86-debug/skinharmony-ai-backend","base_branch":"main","required_checks":["core-mcp","deployment-parity","universal-core"],"check_app":{"id":15368,"slug":"github-actions","owner":"github"},"workflow":{"id":312527659,"name":"Nyra Core Intelligence","path":".github/workflows/nyra-core-intelligence.yml","sha256":"61300ff5faed91acd1c51b63bb1263eb4eeeecdcefa1c390114d3329ef8210d5","candidate_sha256":"6e118feb3ce22a4c6d05755fb00d5258b64c6673af4be6ca404d3231d6113fbf"},"allowed_events":["pull_request","push"]}]}'
+        value: '{"schema_version":"host_native_required_checks_registry_v1","bindings":[{"tenant_id":"codexai","repository":"cardarellocristian86-debug/skinharmony-ai-backend","base_branch":"main","required_checks":["core-mcp","deployment-parity","universal-core"],"check_app":{"id":15368,"slug":"github-actions","owner":"github"},"workflow":{"id":312527659,"name":"Nyra Core Intelligence","path":".github/workflows/nyra-core-intelligence.yml","sha256":"6e118feb3ce22a4c6d05755fb00d5258b64c6673af4be6ca404d3231d6113fbf","candidate_sha256":"0561a72cdad03ee50c380fa664690d9fe098c514b67d21e2321a19fb6de2f1b1"},"allowed_events":["pull_request","push"]}]}'
       - key: CORE_RUNTIME_V2_MODE
         value: active
       - key: LEXICAL_SEMANTIC_MODE
