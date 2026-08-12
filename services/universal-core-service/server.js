@@ -29,13 +29,16 @@ if (process.env.FRIDA_LOCAL_AGENT && process.env.FRIDA_LOCAL_AGENT_SHA256) {
     expectedVersion: process.env.FRIDA_VERSION || "17.15.3",
   });
 }
-const icfDatabaseUrl = process.env.GOVERNED_AGENT_DATABASE_URL || process.env.DATABASE_URL || "";\nconst icfStore = icfDatabaseUrl ? createIcfPostgresStore({ pool: new pg.Pool({ connectionString: icfDatabaseUrl, max: 4 }) }) : undefined;\nconst softwareAuthorizationVerifier = process.env.SOFTWARE_INTELLIGENCE_AUTHORIZATION_SECRET
+const icfDatabaseUrl = process.env.GOVERNED_AGENT_DATABASE_URL || process.env.DATABASE_URL || "";
+const icfStore = icfDatabaseUrl ? createIcfPostgresStore({ pool: new pg.Pool({ connectionString: icfDatabaseUrl, max: 4 }) }) : undefined;
+const softwareAuthorizationVerifier = process.env.SOFTWARE_INTELLIGENCE_AUTHORIZATION_SECRET
   ? createSoftwareAuthorizationVerifier({ secret: process.env.SOFTWARE_INTELLIGENCE_AUTHORIZATION_SECRET })
   : undefined;
 const { app, storageRoot } = createUniversalCoreService({
   softwareWorkerAdapters,
   softwareAuthorizationVerifier,
-  softwareAuthorizationSecret: process.env.SOFTWARE_INTELLIGENCE_AUTHORIZATION_SECRET,\n  icfStore,
+  softwareAuthorizationSecret: process.env.SOFTWARE_INTELLIGENCE_AUTHORIZATION_SECRET,
+  icfStore,
 });
 
 app.listen(port, () => {
