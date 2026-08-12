@@ -4,7 +4,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildIdentity, buildReadiness, createApp, inferClientType, requiresGenericWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { buildIdentity, buildReadiness, createApp, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
@@ -19,6 +19,7 @@ import {
 import {
   createPostgresMajorVersionProbe,
 } from "../../shared/postgres-major-version.js";
+import { createGenericWorkCoreJoinVerifier } from "../src/work-continuity-v2-store.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -388,6 +389,148 @@ test("cannot force Render readiness with the legacy boolean", async () => {
   }
 });
 
+test("does not advertise Generic Work Core Join until explicitly enabled", async () => {
+  const genericTool = WORK_CONTINUITY_TOOLS.find(
+    (tool) => tool.name === "work_continuity_generic_core_join",
+  );
+  const existingIndex = TOOLS.findIndex((tool) => tool.name === genericTool.name);
+  if (existingIndex < 0) TOOLS.push(genericTool);
+  const handlers = {
+    work_continuity_generic_core_join: async () => ({
+      structuredContent: { ok: true },
+      content: [{ type: "text", text: "ok" }],
+    }),
+  };
+  const disabledApp = createApp({ ...config, genericWorkCoreJoinEnabled: false }, { handlers });
+  const incompleteApp = createApp({ ...config, genericWorkCoreJoinEnabled: true }, { handlers });
+  const enabledApp = createApp({
+    ...config,
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinConfigurationValid: true,
+  }, { handlers });
+  if (existingIndex < 0) TOOLS.splice(TOOLS.indexOf(genericTool), 1);
+
+  for (const [app, expectedVisible] of [
+    [disabledApp, false],
+    [incompleteApp, false],
+    [enabledApp, true],
+  ]) {
+    const server = app.listen(0);
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+        method: "POST",
+        headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+      const body = await response.json();
+      assert.equal(
+        body.result.tools.some((tool) => tool.name === genericTool.name),
+        expectedVisible,
+      );
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+});
+
+test("Generic Join health pins upstream key identity and gates Render only when required", async () => {
+  const { publicKey } = crypto.generateKeyPairSync("ed25519");
+  const verifier = createGenericWorkCoreJoinVerifier({
+    publicKey: publicKey.export({ type: "spki", format: "pem" }),
+    keyId: "core-key-20260810",
+  });
+  const productionConfig = {
+    ...config,
+    environment: "production",
+    production: true,
+    runtimeBuildCommit: "a".repeat(40),
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    universalCoreKeys: {},
+    databaseUrl: "",
+    workContinuityAutoCaptureEnabled: false,
+    hostNativeAgentProtocolEnabled: false,
+    decisionLedgerRequired: false,
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinConfigurationValid: true,
+  };
+  const scenarios = [
+    { required: false, fingerprint: "f".repeat(64), status: 200, renderReady: true,
+      joinReady: false, reason: "generic_work_core_join_public_key_fingerprint_mismatch" },
+    { required: false, fingerprint: verifier.public_key_fingerprint, upstreamRequired: true,
+      status: 200, renderReady: true, joinReady: false,
+      reason: "generic_work_core_join_upstream_not_ready" },
+    { required: false, fingerprint: verifier.public_key_fingerprint, omitUpstreamRequired: true,
+      status: 200, renderReady: true, joinReady: false,
+      reason: "generic_work_core_join_upstream_not_ready" },
+    { required: true, fingerprint: "f".repeat(64), status: 503, renderReady: false,
+      joinReady: false, reason: "generic_work_core_join_public_key_fingerprint_mismatch" },
+    { required: true, fingerprint: verifier.public_key_fingerprint, upstreamEnabled: false,
+      upstreamConfigurationValid: false, upstreamAlgorithm: "RSA", status: 503, renderReady: false,
+      joinReady: false, reason: "generic_work_core_join_upstream_not_ready" },
+    { required: true, fingerprint: verifier.public_key_fingerprint, upstreamRequired: false,
+      status: 503, renderReady: false, joinReady: false,
+      reason: "generic_work_core_join_upstream_not_ready" },
+    { required: true, fingerprint: verifier.public_key_fingerprint, status: 200, renderReady: true,
+      joinReady: true, reason: null },
+  ];
+  for (const scenario of scenarios) {
+    const app = createApp({
+      ...productionConfig,
+      genericWorkCoreJoinRequired: scenario.required,
+    }, {
+      handlers: {},
+      readiness: { genericWorkCoreJoinStoreInitialized: true },
+      genericWorkCoreJoin: { storeConfigured: true, verifier },
+      fetchImpl: async () => {
+        const genericWorkCoreJoin = {
+          enabled: scenario.upstreamEnabled ?? true,
+          configuration_valid: scenario.upstreamConfigurationValid ?? true,
+          algorithm: scenario.upstreamAlgorithm ?? "Ed25519",
+          ready: true,
+          key_id: verifier.key_id,
+          public_key_fingerprint: scenario.fingerprint,
+        };
+        if (scenario.omitUpstreamRequired !== true) {
+          genericWorkCoreJoin.required = scenario.upstreamRequired ?? scenario.required;
+        }
+        return new Response(JSON.stringify({
+          ok: true,
+          render_ready: true,
+          liveness_degraded: false,
+          build: { commit_sha: "b".repeat(40), commit_verifiable: true },
+          research_airlock: { ready: true, mode: "enforced", state_backend: "postgresql" },
+          generic_work_core_join: genericWorkCoreJoin,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const server = app.listen(0);
+    await new Promise((resolve) => server.once("listening", resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`);
+      const health = await response.json();
+      assert.equal(response.status, scenario.status);
+      assert.equal(health.render_ready, scenario.renderReady);
+      assert.equal(health.generic_work_core_join.enabled, true);
+      assert.equal(health.generic_work_core_join.required, scenario.required);
+      assert.equal(health.generic_work_core_join.ready, scenario.joinReady);
+      assert.equal(health.generic_work_core_join.reason, scenario.reason);
+      assert.equal(health.generic_work_core_join.key_id, verifier.key_id);
+      assert.equal(
+        health.generic_work_core_join.public_key_fingerprint,
+        verifier.public_key_fingerprint,
+      );
+      assert.equal(
+        JSON.stringify(health).includes(publicKey.export({ type: "spki", format: "pem" })),
+        false,
+      );
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+});
+
 test("production readiness fails closed with coded non-secret component blockers", async () => {
   const productionConfig = {
     ...config,
@@ -657,6 +800,7 @@ test("production MCP health rejects unauthorized, invalid, and non-bootstrap Cor
   };
   const app = createApp(productionConfig, {
     handlers,
+    policyRegistryHealthCacheTtlMs: 50,
     fetchImpl: async () => {
       fetchCount += 1;
       if (responseCase === "unauthorized") {
@@ -679,7 +823,8 @@ test("production MCP health rejects unauthorized, invalid, and non-bootstrap Cor
   await new Promise((resolve) => server.once("listening", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    for (const currentCase of ["unauthorized", "invalid", "failed"]) {
+    for (const [caseIndex, currentCase] of ["unauthorized", "invalid", "failed"].entries()) {
+      if (caseIndex > 0) await new Promise((resolve) => setTimeout(resolve, 75));
       responseCase = currentCase;
       const response = await fetch(`${base}/healthz`);
       const health = await response.json();
@@ -1178,8 +1323,14 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
     tool._meta["skinharmony/ownerConfirmationRequired"] === false
     || tool.inputSchema.properties.confirmation_reference?.type === "string"));
   const preflight = body.result.tools.find((tool) => tool.name === "work_preflight");
+  const hierarchyEvaluate = body.result.tools.find((tool) => tool.name === "core_runtime_hierarchy_evaluate");
   assert(preflight);
+  assert(hierarchyEvaluate);
   assert(preflight.outputSchema?.properties?.core_runtime);
+  for (const tool of [preflight, hierarchyEvaluate]) {
+    assert.equal(tool.inputSchema.properties.core_input.properties.evidence_state.properties.high_impact.type, "boolean");
+    assert.match(tool.inputSchema.properties.core_input.properties.evidence_state.properties.high_impact.description, /cannot authorize execution/);
+  }
   assert.equal(preflight._meta["skinharmony/preflight_entrypoint"], true);
   assert.equal(preflight._meta["openai/outputTemplate"], undefined);
   assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
@@ -1253,7 +1404,8 @@ test("production compact mode exposes only the stable connector surface", async 
       });
       const body = await response.json();
       assert.equal(response.status, 200);
-      assert.deepEqual(body.result.tools.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
+      assert.deepEqual(body.result.tools.map((tool) => tool.name),
+        COMPACT_MCP_TOOL_NAMES.filter((name) => !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(name)));
       assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
       assert.equal(body.result.tools.some((tool) => tool._meta?.["openai/outputTemplate"] === "ui://skinharmony/openai-provider-setup.html"), false);
       assert(Buffer.byteLength(JSON.stringify(body)) < 64 * 1024);

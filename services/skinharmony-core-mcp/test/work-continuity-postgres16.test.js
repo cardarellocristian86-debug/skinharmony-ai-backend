@@ -6,11 +6,29 @@ import {
   createWorkContinuityRuntime,
   digest,
 } from "../src/work-continuity-runtime.js";
+import { createCausalContinuityMigrator } from "../../universal-core-service/src/causalContinuityMigration.js";
+import { ensureCoreSchemaMigrationRegistry } from "../../universal-core-service/src/coreSchemaMigrationRegistry.js";
 
 const databaseUrl = String(process.env.WORK_CONTINUITY_DATABASE_URL || "").trim();
 const COMMIT = "c".repeat(40);
 const BASE_COMMIT = "a".repeat(40);
 const TREE_SHA = "b".repeat(40);
+
+function pgIdentifier(value) {
+  assert.match(value, /^[a-z][a-z0-9_]{1,62}$/);
+  return `"${value}"`;
+}
+
+function singleClientPool(client) {
+  const connection = {
+    query: (...args) => client.query(...args),
+    release() {},
+  };
+  return {
+    async connect() { return connection; },
+    query: (...args) => client.query(...args),
+  };
+}
 
 function coordinatorIdentity(tenantId) {
   return {
@@ -382,6 +400,126 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       lease_id: clientBoundLease.lease.lease_id,
       idempotency_key: `participant-client-lease-release-${runId}`,
     });
+
+    const replacementTransportIdentity = galleryIdentity(
+      tenantId, coordinator.subject, firstParticipant.session_id,
+      firstParticipant.agent_id, firstParticipant.client_type, "f",
+    );
+    await assert.rejects(runtime.join(replacementTransportIdentity, firstParticipant),
+      /idempotency_key_conflict/);
+    await assert.rejects(runtime.join(replacementTransportIdentity, {
+      ...firstParticipant,
+      idempotency_key: `participant-active-transport-conflict-${runId}`,
+    }), /continuity_session_conflict/);
+    const transportBoundLease = await runtime.acquireLease(firstParticipantIdentity, {
+      ...firstParticipant,
+      purpose: "Expire this lease when an expired session moves to a new transport.",
+      surfaces: [{ kind: "file", value: `services/transport-bound-${runId.slice(0, 8)}` }],
+      ttl_seconds: 3_600,
+      idempotency_key: `participant-transport-lease-${runId}`,
+    });
+    await pool.query(`UPDATE core_continuity_participants SET expires_at=now()-interval '1 second'
+      WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+    [tenantId, firstWork.work_id, firstParticipant.session_id]);
+    const transportRebound = await runtime.join(replacementTransportIdentity, {
+      ...firstParticipant,
+      ttl_seconds: 300,
+      idempotency_key: `participant-transport-rebound-${runId}`,
+    });
+    assert.equal(transportRebound.rebound_leases_expired, 1);
+    const transportState = await pool.query(`SELECT p.transport_session_fingerprint,l.status AS lease_status
+      FROM core_continuity_participants p JOIN core_continuity_leases l
+        ON l.tenant_id=p.tenant_id AND l.work_id=p.work_id AND l.session_id=p.session_id
+      WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.session_id=$3 AND l.lease_id=$4`,
+    [tenantId, firstWork.work_id, firstParticipant.session_id, transportBoundLease.lease.lease_id]);
+    assert.equal(transportState.rows[0].transport_session_fingerprint, "f".repeat(24));
+    assert.equal(transportState.rows[0].lease_status, "expired");
+    await assert.rejects(runtime.heartbeat(firstParticipantIdentity, {
+      ...firstParticipant,
+      ttl_seconds: 300,
+      idempotency_key: `participant-old-transport-heartbeat-${runId}`,
+    }), /continuity_participant_not_active/);
+    const reboundHeartbeat = {
+      ...firstParticipant,
+      ttl_seconds: 300,
+      idempotency_key: `participant-new-transport-heartbeat-${runId}`,
+    };
+    await runtime.heartbeat(replacementTransportIdentity, reboundHeartbeat);
+    await assert.rejects(runtime.heartbeat(firstParticipantIdentity, reboundHeartbeat),
+      /idempotency_key_conflict/);
+
+    const transportBranchInput = {
+      ...firstParticipant,
+      branch_key: `transport-${runId.slice(0, 12)}`,
+      title: "Transport-bound branch",
+      objective: "Prove branch idempotency cannot cross a signed transport.",
+      idempotency_key: `participant-transport-branch-${runId}`,
+    };
+    await runtime.openBranch(replacementTransportIdentity, transportBranchInput);
+    await assert.rejects(runtime.openBranch(firstParticipantIdentity, transportBranchInput),
+      /idempotency_key_conflict/);
+
+    const transportLeaseInput = {
+      ...firstParticipant,
+      purpose: "Prove lease idempotency cannot cross a signed transport.",
+      surfaces: [{ kind: "file", value: `services/transport-replay-${runId.slice(0, 8)}` }],
+      ttl_seconds: 300,
+      idempotency_key: `participant-transport-acquire-${runId}`,
+    };
+    const replacementLease = await runtime.acquireLease(
+      replacementTransportIdentity, transportLeaseInput,
+    );
+    await assert.rejects(runtime.acquireLease(firstParticipantIdentity, transportLeaseInput),
+      /idempotency_key_conflict/);
+    const transportRenewInput = {
+      ...firstParticipant,
+      lease_id: replacementLease.lease.lease_id,
+      ttl_seconds: 300,
+      idempotency_key: `participant-transport-renew-${runId}`,
+    };
+    await runtime.renewLease(replacementTransportIdentity, transportRenewInput);
+    await assert.rejects(runtime.renewLease(firstParticipantIdentity, transportRenewInput),
+      /idempotency_key_conflict/);
+    const transportReleaseInput = {
+      ...firstParticipant,
+      lease_id: replacementLease.lease.lease_id,
+      idempotency_key: `participant-transport-release-${runId}`,
+    };
+    await runtime.releaseLease(replacementTransportIdentity, transportReleaseInput);
+    await assert.rejects(runtime.releaseLease(firstParticipantIdentity, transportReleaseInput),
+      /idempotency_key_conflict/);
+
+    const transportMessageInput = {
+      ...firstParticipant,
+      message_type: "update",
+      subject: "Transport-bound replay",
+      payload: { transport_bound: true },
+      idempotency_key: `participant-transport-message-${runId}`,
+    };
+    await runtime.postMessage(replacementTransportIdentity, transportMessageInput);
+    await assert.rejects(runtime.postMessage(firstParticipantIdentity, transportMessageInput),
+      /idempotency_key_conflict/);
+
+    await pool.query(`UPDATE core_continuity_participants
+      SET transport_session_fingerprint=NULL,expires_at=now()-interval '1 second'
+      WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+    [tenantId, firstWork.work_id, firstParticipant.session_id]);
+    await assert.rejects(runtime.heartbeat(replacementTransportIdentity, {
+      ...firstParticipant,
+      ttl_seconds: 300,
+      idempotency_key: `participant-legacy-null-heartbeat-${runId}`,
+    }), /continuity_participant_not_active/);
+    await runtime.join(replacementTransportIdentity, {
+      ...firstParticipant,
+      ttl_seconds: 300,
+      idempotency_key: `participant-legacy-null-refresh-${runId}`,
+    });
+    const refreshedLegacyBinding = await pool.query(`SELECT transport_session_fingerprint
+      FROM core_continuity_participants
+      WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3`,
+    [tenantId, firstWork.work_id, firstParticipant.session_id]);
+    assert.equal(refreshedLegacyBinding.rows[0].transport_session_fingerprint, "f".repeat(24));
+
 
     const branchSession = `branch-promotion-${runId.slice(0, 10)}`;
     const branchIdentity = galleryIdentity(
@@ -761,5 +899,107 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     ), /core_continuity_events_append_only/);
   } finally {
     await runtime.close();
+  }
+});
+
+test("PostgreSQL 16 converges MCP-first and legacy Core-first migration registries without losing rows", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "").slice(0, 20);
+  const mcpFirstSchema = `migration_mcp_${runId}`;
+  const coreFirstSchema = `migration_core_${runId}`;
+  const schemas = [mcpFirstSchema, coreFirstSchema];
+  const pool = new Pool({ connectionString: databaseUrl, max: 3, statement_timeout: 30_000 });
+
+  try {
+    const version = await pool.query("SHOW server_version_num");
+    assert.equal(Math.floor(Number(version.rows[0].server_version_num) / 10_000), 16);
+
+    await pool.query(`CREATE SCHEMA ${pgIdentifier(mcpFirstSchema)}`);
+    const mcpClient = await pool.connect();
+    try {
+      await mcpClient.query(`SET search_path TO ${pgIdentifier(mcpFirstSchema)}`);
+      await mcpClient.query(`CREATE TABLE core_schema_migrations (
+          migration_id varchar(160) PRIMARY KEY,
+          applied_at timestamptz NOT NULL DEFAULT now()
+        )`);
+      const inserted = await mcpClient.query(`INSERT INTO core_schema_migrations (migration_id)
+        VALUES ('mcp_before_core') RETURNING applied_at`);
+      const originalAppliedAt = inserted.rows[0].applied_at;
+
+      const migrator = createCausalContinuityMigrator({
+        pool: singleClientPool(mcpClient),
+      });
+      const applied = await migrator.apply();
+      assert.equal(applied.applied, true);
+      assert.equal(applied.readback.migration.application_state, "COMPLETED");
+
+      await mcpClient.query(
+        "INSERT INTO core_schema_migrations (migration_id) VALUES ('mcp_after_core')",
+      );
+      const rows = await mcpClient.query(`SELECT migration_id,applied_at,sql_digest,application_state
+        FROM core_schema_migrations
+        WHERE migration_id IN ('mcp_before_core','mcp_after_core',$1)
+        ORDER BY migration_id`, [migrator.migration_id]);
+      assert.equal(rows.rowCount, 3);
+      const before = rows.rows.find((row) => row.migration_id === "mcp_before_core");
+      assert.equal(new Date(before.applied_at).getTime(), new Date(originalAppliedAt).getTime());
+      assert.equal(before.sql_digest, null);
+      assert.equal(before.application_state, null);
+      const core = rows.rows.find((row) => row.migration_id === migrator.migration_id);
+      assert.match(core.sql_digest, /^[a-f0-9]{64}$/);
+      assert.equal(core.application_state, "COMPLETED");
+    } finally {
+      try { await mcpClient.query("ROLLBACK"); } catch {}
+      mcpClient.release();
+    }
+
+    await pool.query(`CREATE SCHEMA ${pgIdentifier(coreFirstSchema)}`);
+    const coreClient = await pool.connect();
+    try {
+      await coreClient.query(`SET search_path TO ${pgIdentifier(coreFirstSchema)}`);
+      await coreClient.query(`CREATE TABLE core_schema_migrations (
+          migration_id text PRIMARY KEY,
+          sql_digest char(64) NOT NULL,
+          application_state text NOT NULL,
+          checkpoint text NOT NULL,
+          started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+          completed_at timestamptz,
+          verifier_evidence jsonb NOT NULL DEFAULT '{}'::jsonb
+        )`);
+      const oldCoreRow = await coreClient.query(`INSERT INTO core_schema_migrations
+          (migration_id,sql_digest,application_state,checkpoint,completed_at,verifier_evidence)
+        VALUES ('core_before_mcp',$1,'COMPLETED','READBACK_VERIFIED',clock_timestamp(),$2::jsonb)
+        RETURNING sql_digest,application_state,checkpoint,started_at,completed_at,verifier_evidence`,
+      ["d".repeat(64), JSON.stringify({ preserved: true })]);
+
+      await ensureCoreSchemaMigrationRegistry(coreClient);
+      await coreClient.query(
+        "INSERT INTO core_schema_migrations (migration_id) VALUES ('mcp_after_legacy_core')",
+      );
+      const preserved = await coreClient.query(`SELECT
+          migration_id,applied_at,sql_digest,application_state,checkpoint,
+          started_at,completed_at,verifier_evidence
+        FROM core_schema_migrations ORDER BY migration_id`);
+      assert.equal(preserved.rowCount, 2);
+      const coreBefore = preserved.rows.find((row) => row.migration_id === "core_before_mcp");
+      assert.equal(coreBefore.sql_digest, oldCoreRow.rows[0].sql_digest);
+      assert.equal(coreBefore.application_state, oldCoreRow.rows[0].application_state);
+      assert.equal(coreBefore.checkpoint, oldCoreRow.rows[0].checkpoint);
+      assert.deepEqual(coreBefore.verifier_evidence, { preserved: true });
+      assert(coreBefore.applied_at instanceof Date);
+      const mcpAfter = preserved.rows.find((row) => row.migration_id === "mcp_after_legacy_core");
+      assert.equal(mcpAfter.sql_digest, null);
+      assert.equal(mcpAfter.application_state, null);
+      assert.equal(mcpAfter.checkpoint, null);
+    } finally {
+      try { await coreClient.query("ROLLBACK"); } catch {}
+      coreClient.release();
+    }
+  } finally {
+    for (const schema of schemas) {
+      await pool.query(`DROP SCHEMA IF EXISTS ${pgIdentifier(schema)} CASCADE`);
+    }
+    await pool.end();
   }
 });

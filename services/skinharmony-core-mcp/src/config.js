@@ -168,6 +168,16 @@ function flag(value, fallback = false) {
   return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
 }
 
+function strictFlag(value, fallback, name) {
+  if (value === undefined || value === null || value === "") {
+    return { value: fallback, valid: true, error: null };
+  }
+  const normalized = String(value);
+  if (normalized === "true") return { value: true, valid: true, error: null };
+  if (normalized === "false") return { value: false, valid: true, error: null };
+  return { value: false, valid: false, error: `${name}_FLAG_INVALID`.toLowerCase() };
+}
+
 function optionalFullCommit(value, name) {
   const commit = String(value || "").trim().toLowerCase();
   if (!commit) return "";
@@ -269,8 +279,69 @@ export function loadConfig(env = process.env) {
   const selfServiceTenantsEnabled = flag(env.MCP_SELF_SERVICE_TENANTS_ENABLED, false);
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
   const databaseUrl = String(env.DATABASE_URL || "").trim();
+  const genericWorkCoreJoinEnabledFlag = strictFlag(
+    env.GENERIC_WORK_CORE_JOIN_ENABLED,
+    false,
+    "GENERIC_WORK_CORE_JOIN_ENABLED",
+  );
+  const genericWorkCoreJoinRequiredFlag = strictFlag(
+    env.GENERIC_WORK_CORE_JOIN_REQUIRED,
+    false,
+    "GENERIC_WORK_CORE_JOIN_REQUIRED",
+  );
+  const genericWorkCoreJoinEnabled = genericWorkCoreJoinEnabledFlag.valid
+    ? genericWorkCoreJoinEnabledFlag.value
+    : false;
+  const genericWorkCoreJoinRequired = genericWorkCoreJoinEnabledFlag.valid &&
+    genericWorkCoreJoinRequiredFlag.valid
+    ? genericWorkCoreJoinRequiredFlag.value
+    : true;
+  const genericWorkCoreJoinConfigurationError = !genericWorkCoreJoinEnabledFlag.valid
+    ? genericWorkCoreJoinEnabledFlag.error
+    : !genericWorkCoreJoinRequiredFlag.valid
+      ? genericWorkCoreJoinRequiredFlag.error
+      : genericWorkCoreJoinRequired && !genericWorkCoreJoinEnabled
+        ? "generic_work_core_join_required_without_enabled"
+        : null;
   const genericWorkCoreJoinPublicKey = String(env.GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY || "").trim();
   const genericWorkCoreJoinKeyId = String(env.GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID || "").trim();
+  const policyRegistryLifecycleEnabledFlag = strictFlag(
+    env.NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED,
+    false,
+    "NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED",
+  );
+  const policyRegistryLifecycleRequiredFlag = strictFlag(
+    env.NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED,
+    false,
+    "NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED",
+  );
+  const policyRegistryLifecycleEnabled = policyRegistryLifecycleEnabledFlag.valid
+    ? policyRegistryLifecycleEnabledFlag.value
+    : false;
+  const policyRegistryLifecycleRequired = policyRegistryLifecycleEnabledFlag.valid &&
+    policyRegistryLifecycleRequiredFlag.valid
+    ? policyRegistryLifecycleRequiredFlag.value
+    : true;
+  let policyRegistryLifecycleCoreOriginValid = false;
+  try {
+    const parsedCoreOrigin = new URL(universalCoreUrl);
+    policyRegistryLifecycleCoreOriginValid = parsedCoreOrigin.protocol === "https:" &&
+      !parsedCoreOrigin.username && !parsedCoreOrigin.password &&
+      !parsedCoreOrigin.search && !parsedCoreOrigin.hash &&
+      ["", "/"].includes(parsedCoreOrigin.pathname) &&
+      parsedCoreOrigin.origin === universalCoreUrl;
+  } catch {
+    policyRegistryLifecycleCoreOriginValid = false;
+  }
+  const policyRegistryLifecycleConfigurationError = !policyRegistryLifecycleEnabledFlag.valid
+    ? policyRegistryLifecycleEnabledFlag.error
+    : !policyRegistryLifecycleRequiredFlag.valid
+      ? policyRegistryLifecycleRequiredFlag.error
+      : policyRegistryLifecycleRequired && !policyRegistryLifecycleEnabled
+        ? "nyra_policy_registry_lifecycle_required_without_enabled"
+        : policyRegistryLifecycleEnabled && !policyRegistryLifecycleCoreOriginValid
+          ? "nyra_policy_registry_lifecycle_core_origin_invalid"
+          : null;
   // Collaboration state must never silently share the service's existing
   // DATABASE_URL. It is intentionally opt-in and has a distinct Render secret.
   const collaborationDatabaseUrl = String(env.MCP_COLLABORATION_DATABASE_URL || "").trim();
@@ -366,8 +437,18 @@ export function loadConfig(env = process.env) {
     tenantOwnerRoles: csv(env.MCP_TENANT_OWNER_ROLES || "tenant_owner,tenant_admin,owner_root"),
     sharedMemoryRoot,
     databaseUrl,
+    genericWorkCoreJoinEnabled,
+    genericWorkCoreJoinRequired,
+    genericWorkCoreJoinConfigurationValid: genericWorkCoreJoinConfigurationError === null,
+    genericWorkCoreJoinConfigurationError,
     genericWorkCoreJoinPublicKey,
     genericWorkCoreJoinKeyId,
+    policyRegistryLifecycleEnabled,
+    policyRegistryLifecycleRequired,
+    policyRegistryLifecycleConfigurationValid:
+      policyRegistryLifecycleConfigurationError === null,
+    policyRegistryLifecycleConfigurationError,
+    policyRegistryLifecycleCoreOriginValid,
     collaborationDatabaseUrl,
     decisionLedgerRequired,
     coreBlockRemediationMode,

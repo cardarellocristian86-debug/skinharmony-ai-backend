@@ -89,10 +89,14 @@ services:
         sync: false
       - key: NYRA_DEEP_BRANCH_V2_OPERATIONAL_ATTESTATION_MAX_AGE_MS
         value: "60000"
-      # Policy Registry attestation uses a dedicated Core-to-Nyra channel and
-      # independent Ed25519 material. It never reuses Deep V2 or provider keys.
+      # Policy Registry proof remains code-dark until both services have pinned
+      # public material, an external signer and a distributed replay backend.
       - key: NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED
-        value: "true"
+        value: "false"
+      - key: NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED
+        value: "false"
+      - key: NYRA_POLICY_REGISTRY_SIGNER_MODE
+        value: disabled
       - key: NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST
         value: codexai
       - key: NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY
@@ -103,12 +107,36 @@ services:
         value: nyra-policy-registry-v1
       - key: NYRA_POLICY_REGISTRY_CORE_PUBLIC_KEY
         sync: false
-      - key: NYRA_POLICY_REGISTRY_NYRA_PRIVATE_KEY
+      - key: NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY
+        sync: false
+      - key: NYRA_POLICY_REGISTRY_CORE_PUBLIC_KEY_FINGERPRINT
+        sync: false
+      - key: NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT
         sync: false
       - key: NYRA_POLICY_REGISTRY_ATTESTATION_MAX_AGE_MS
         value: "300000"
-      - key: NYRA_POLICY_REGISTRY_REPLAY_STORE_PATH
-        value: /var/data/runtime/nyra-learning/nyra_policy_registry_attestation_replay.json
+      # A dedicated least-privilege PostgreSQL DSN is provisioned manually;
+      # the MCP/Core database credential is deliberately not copied here.
+      - key: NYRA_POLICY_REGISTRY_DATABASE_URL
+        sync: false
+      - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_ORIGIN
+        sync: false
+      - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PATH
+        value: /v1/policy-registry/sign
+      - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE
+        value: nyra-policy-registry-signer
+      - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT
+        sync: false
+      - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PURPOSE
+        value: nyra.policy_registry.attestation
+      - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_KEY_ID
+        value: nyra-policy-registry-v1
+      - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE_TOKEN
+        sync: false
+      - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TIMEOUT_MS
+        value: "1500"
+      - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_MAX_RESPONSE_BYTES
+        value: "4096"
       - key: NYRA_RESEARCH_MCP_URL
         value: "https://skinharmony-core-mcp.onrender.com"
       - key: NYRA_SUITE_CORE_URL

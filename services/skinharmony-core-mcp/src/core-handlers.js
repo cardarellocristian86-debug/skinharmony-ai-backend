@@ -36,8 +36,142 @@ import {
   AI_WORK_QUALITY_SCHEMA_VERSION,
   mediateFailureObservation,
 } from "../../shared/ai-work-quality-failure-mediation.mjs";
+import {
+  DTT_WORK_CONTEXT_HEADER,
+  canonicalDttWorkContextBody,
+  issueDttWorkContext,
+} from "../../shared/dtt-work-context.js";
+import {
+  GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER,
+  GENERIC_WORK_CORE_JOIN_LEASE_BINDING_VERSION,
+  canonicalGenericWorkCoreJoinContextBody,
+  issueGenericWorkCoreJoinContext,
+} from "../../shared/generic-work-core-join-context.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
+const POLICY_REGISTRY_WORK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const POLICY_REGISTRY_OPERATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/;
+const POLICY_REGISTRY_DOMAIN_PACK_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/;
+const POLICY_REGISTRY_SHA256 = /^[a-f0-9]{64}$/;
+const POLICY_REGISTRY_PACK_ID = /^[a-z0-9][a-z0-9._/-]{1,159}$/;
+const POLICY_REGISTRY_PACK_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const POLICY_REGISTRY_PACK_REFERENCE = /^[a-z0-9][a-z0-9._/-]{1,159}@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const POLICY_REGISTRY_SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
+const POLICY_REGISTRY_COMPILER_INPUT_LIMIT_BYTES = 512 * 1024;
+const POLICY_REGISTRY_SNAPSHOT_LIMIT_BYTES = 512 * 1024;
+const POLICY_REGISTRY_REQUEST_LIMIT_BYTES = 1_572_864;
+const POLICY_REGISTRY_RESPONSE_LIMIT_BYTES = 128 * 1024;
+const POLICY_REGISTRY_CORE_TIMEOUT_MS = 3_000;
+const POLICY_REGISTRY_FORBIDDEN_CALLER_FIELDS = new Set([
+  "authenticated_tenant_id", "work_preflight", "owner_context",
+  "proof", "receipt", "attestation", "intent", "keys", "key_material",
+  "activation_attestation", "policy_registry_attestation", "core_receipt",
+  "compiler_provenance", "compiler_provenance_digest", "compiler_build_commit",
+  "catalog_digest", "trust_catalog_digest", "trust_catalog", "trusted_issuers",
+  "compiler_now",
+]);
+const POLICY_REGISTRY_FORBIDDEN_CONSTRAINT_CONTROL_FIELDS = new Set([
+  "authority", "authorization", "issuer", "issuer_key_id", "key_id",
+  "trust_mode", "trust_catalog", "trust_catalog_digest", "trusted_issuer", "trusted_issuers",
+  "compiler_algorithm", "compiler_build_commit", "compiler_now", "compiler_provenance",
+  "compiler_provenance_digest", "verification_algorithm", "catalog_digest", "traversal_budget",
+  "signature_quorum", "signature_threshold", "required_signatures", "signing_key_id",
+]);
+const POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS = new Set([
+  "policy_registry_owner_confirmation_required",
+  "policy_registry_core_authorization_denied",
+  "policy_registry_request_scope_invalid",
+  "policy_proof_tenant_denied",
+  "policy_proof_work_binding_invalid",
+  "policy_registry_request_schema_invalid",
+  "policy_registry_request_invalid",
+  "policy_registry_preflight_binding_invalid",
+  "policy_registry_snapshot_not_pure",
+  "policy_registry_snapshot_invalid",
+  "policy_registry_authorization_digest_invalid",
+  "policy_compiler_input_invalid",
+  "policy_compiler_input_oversize",
+  "policy_compiler_input_leaf_invalid",
+  "policy_compiler_input_pack_invalid",
+  "policy_compiler_input_pack_status_invalid",
+  "policy_compiler_input_signature_invalid",
+  "policy_compiler_input_noncanonical",
+  "policy_compiler_constraints_invalid",
+  "policy_compiler_verify_input_invalid",
+  "policy_compiler_tenant_invalid",
+  "policy_compiler_domain_invalid",
+  "policy_compiler_domain_untrusted",
+  "policy_compiler_snapshot_invalid",
+  "policy_compiler_snapshot_mismatch",
+  "policy_compiler_pack_set_mismatch",
+  "policy_compiler_root_unverified",
+  "policy_compiler_signature_quorum_invalid",
+  "policy_compiler_provenance_invalid",
+  "policy_proof_binding_invalid",
+  "policy_proof_attestation_invalid",
+  "policy_activation_core_receipt_invalid",
+  "policy_snapshot_signature_quorum_invalid",
+  "policy_proof_not_found",
+  "policy_proof_consumption_not_found",
+  "policy_rollback_snapshot_not_found",
+  "policy_proof_idempotency_conflict",
+  "policy_proof_owner_replayed",
+  "policy_proof_cas_conflict",
+  "policy_activation_core_receipt_replayed",
+  "policy_operation_idempotency_conflict",
+  "policy_operation_binding_invalid",
+  "policy_registry_concurrent_mutation",
+  "policy_registry_reconciliation_required",
+  "policy_registry_cas_conflict",
+  "policy_registry_state_corrupt",
+  "policy_registry_compiler_provenance_missing",
+  "policy_registry_compiler_provenance_invalid",
+  "policy_rollback_compiler_provenance_missing",
+  "policy_proof_reconciliation_not_ready",
+  "policy_registry_coordinator_unavailable",
+  "policy_registry_compiler_unavailable",
+  "policy_compiler_unavailable",
+  "policy_compiler_clock_unavailable",
+  "policy_registry_unavailable",
+  "policy_registry_postgres_required",
+  "policy_registry_postgres_unavailable",
+  "policy_proof_unavailable",
+  "policy_proof_signer_unavailable",
+  "policy_registry_nyra_busy",
+  "policy_registry_nyra_client_unavailable",
+  "policy_registry_nyra_redirect_denied",
+  "policy_registry_nyra_rejected",
+  "policy_registry_nyra_response_binding_invalid",
+  "policy_registry_nyra_response_json_invalid",
+  "policy_registry_nyra_response_too_large",
+  "policy_registry_nyra_timeout",
+  "policy_registry_nyra_unavailable",
+  "policy_registry_result_binding_invalid",
+  "policy_registry_operation_failed",
+]);
+const POLICY_REGISTRY_ROUTES = Object.freeze({
+  activate: Object.freeze({
+    path: "/v1/nyra-policy-registry/activate",
+    purpose: "nyra_policy_registry_snapshot_activate_v3",
+    action: "policy.snapshot.activate",
+    responseField: "activation",
+    successField: "activated",
+  }),
+  rollback: Object.freeze({
+    path: "/v1/nyra-policy-registry/rollback",
+    purpose: "nyra_policy_registry_snapshot_rollback_v3",
+    action: "policy.snapshot.rollback",
+    responseField: "rollback",
+    successField: "rolled_back",
+  }),
+  reconcile: Object.freeze({
+    path: "/v1/nyra-policy-registry/reconcile",
+    purpose: "nyra_policy_registry_snapshot_reconcile_v3",
+    action: "policy.snapshot.reconcile",
+    responseField: "reconciliation",
+    successField: "reconciled",
+  }),
+});
 const NYRA_DEEP_V2_PREFLIGHT_OPERATION = Object.freeze({
   preview: "nyra_v2_preview",
   requirements: "nyra_v2_requirements",
@@ -422,6 +556,9 @@ export function createCoreHandlers(config, options = {}) {
   const contextProvider = options.contextProvider;
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
   const tenantWorkGallery = options.tenantWorkGallery;
+  const resolveDttWorkBinding = options.resolveDttWorkBinding;
+  const resolveGenericWorkCoreJoinBinding = options.resolveGenericWorkCoreJoinBinding;
+  const genericWorkCoreJoinVerifierMetadata = options.genericWorkCoreJoinVerifierMetadata || null;
   const decisionLedger = options.decisionLedger || null;
   const remediationStore = options.remediationStore || createCoreBlockRemediationStore(config, {
     root: options.coreBlockRemediationRoot || config.sharedMemoryRoot || config.agentWorkspaceRoot,
@@ -437,6 +574,10 @@ export function createCoreHandlers(config, options = {}) {
   const workQualityRank = Object.freeze({ observe: 0, draft: 1, sandbox_active: 2, scoped_active: 3, privileged: 4 });
   const qualityRank = workQualityRank[workQualityMode] ?? 0;
   const remediationLedgerContexts = new Map();
+  const policyRegistryCoreTimeoutMs = Math.min(Math.max(
+    Number(options.policyRegistryCoreTimeoutMs || POLICY_REGISTRY_CORE_TIMEOUT_MS),
+    10,
+  ), POLICY_REGISTRY_CORE_TIMEOUT_MS);
 
   function isWorkQualityRemediation(remediation) {
     return Boolean(AI_WORK_FAILURE_DEFINITIONS[String(remediation?.original_decision?.block_code || "")]);
@@ -636,9 +777,14 @@ export function createCoreHandlers(config, options = {}) {
     return selected;
   }
 
-  function sanitizeCoreBody(body) {
+  function sanitizeCoreBody(body, { preservePolicyRegistryDomainPackId = false } = {}) {
     return body && typeof body === "object" && !Array.isArray(body)
-      ? (({ domain_pack: _domainPack, domain_pack_id: _domainPackId, ...rest }) => rest)(body)
+      ? (({ domain_pack: _domainPack, domain_pack_id: domainPackId, ...rest }) => ({
+          ...rest,
+          ...(preservePolicyRegistryDomainPackId && domainPackId !== undefined
+            ? { domain_pack_id: domainPackId }
+            : {}),
+        }))(body)
       : body;
   }
 
@@ -648,8 +794,14 @@ export function createCoreHandlers(config, options = {}) {
     additionalHeaders = {},
     useTenantGateway = false,
     allowFailurePayload = false,
+    dttWorkContext = null,
+    genericWorkCoreJoinContext = null,
+    preservePolicyRegistryDomainPackId = false,
+    strictTransport = false,
+    timeoutMs = POLICY_REGISTRY_CORE_TIMEOUT_MS,
+    maxResponseBytes = POLICY_REGISTRY_RESPONSE_LIMIT_BYTES,
   } = {}) {
-    const sanitizedBody = sanitizeCoreBody(body);
+    const sanitizedBody = sanitizeCoreBody(body, { preservePolicyRegistryDomainPackId });
     const headers = { accept: "application/json" };
     if (sanitizedBody !== undefined) headers["content-type"] = "application/json";
     const gatewayKey = configuredTenantGatewayKey();
@@ -674,26 +826,251 @@ export function createCoreHandlers(config, options = {}) {
       }
       headers["x-sh-tenant-context"] = context;
     }
-    const response = await fetchImpl(`${config.universalCoreUrl}${path}`, {
-      method,
-      headers,
-      body: sanitizedBody === undefined ? undefined : JSON.stringify(sanitizedBody)
-    });
-    const payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
+    if (dttWorkContext) {
+      if (useTenantGateway !== true) throw new Error("dtt_work_context_tenant_gateway_required");
+      headers[DTT_WORK_CONTEXT_HEADER] = issueDttWorkContext({
+        secret: config.dttAgentIdentitySigningSecret,
+        tenant_id: tenantId,
+        work_id: dttWorkContext.work_id,
+        lease_binding: dttWorkContext.lease_binding,
+        agent_presence: dttWorkContext.agent_presence,
+        method,
+        path,
+        body: sanitizedBody,
+      });
+    }
+    if (genericWorkCoreJoinContext) {
+      if (dttWorkContext) throw new Error("generic_work_core_join_context_ambiguous");
+      if (useTenantGateway !== true) {
+        throw new Error("generic_work_core_join_context_tenant_gateway_required");
+      }
+      headers[GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER] = issueGenericWorkCoreJoinContext({
+        secret: config.dttAgentIdentitySigningSecret,
+        tenant_id: tenantId,
+        work_id: genericWorkCoreJoinContext.work_id,
+        lease_binding: genericWorkCoreJoinContext.lease_binding,
+        agent_presence: genericWorkCoreJoinContext.agent_presence,
+        verifier: genericWorkCoreJoinContext.verifier,
+        method,
+        path,
+        body: sanitizedBody,
+      });
+    }
+    const serializedBody = sanitizedBody === undefined
+      ? undefined
+      : genericWorkCoreJoinContext
+        ? canonicalGenericWorkCoreJoinContextBody(sanitizedBody)
+        : dttWorkContext
+          ? canonicalDttWorkContextBody(sanitizedBody)
+          : JSON.stringify(sanitizedBody);
+    const endpoint = `${config.universalCoreUrl}${path}`;
+    let response;
+    let payload;
+    if (!strictTransport) {
+      response = await fetchImpl(endpoint, {
+        method,
+        headers,
+        body: serializedBody,
+      });
+      payload = await response.json().catch(() => ({ ok: false, error: "invalid_core_response" }));
+    } else {
+      const controller = new AbortController();
+      const boundedTimeout = Number.isFinite(timeoutMs)
+        ? Math.max(1, Math.min(Number(timeoutMs), POLICY_REGISTRY_CORE_TIMEOUT_MS))
+        : POLICY_REGISTRY_CORE_TIMEOUT_MS;
+      const boundedResponseBytes = Number.isFinite(maxResponseBytes)
+        ? Math.max(1, Math.min(Number(maxResponseBytes), POLICY_REGISTRY_RESPONSE_LIMIT_BYTES))
+        : POLICY_REGISTRY_RESPONSE_LIMIT_BYTES;
+      const transportError = (code, status = 502) => {
+        const error = new Error(code);
+        error.code = code;
+        error.status = status;
+        error.statusCode = status;
+        Object.defineProperty(error, "policyRegistryTransportError", { value: true });
+        return error;
+      };
+      let reader = null;
+      let timeout;
+      const operation = (async () => {
+        const strictResponse = await fetchImpl(endpoint, {
+          method,
+          headers,
+          body: serializedBody,
+          redirect: "error",
+          signal: controller.signal,
+        });
+        if (strictResponse?.redirected === true || (strictResponse?.url && strictResponse.url !== endpoint)) {
+          throw transportError("policy_registry_core_redirect_denied");
+        }
+        const contentType = String(strictResponse?.headers?.get?.("content-type") || "").trim().toLowerCase();
+        if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(contentType)) {
+          throw transportError("policy_registry_core_content_type_invalid");
+        }
+        const rawLength = strictResponse?.headers?.get?.("content-length");
+        if (rawLength !== null && rawLength !== undefined && rawLength !== "") {
+          if (!/^\d+$/.test(String(rawLength))) {
+            throw transportError("policy_registry_core_content_length_invalid");
+          }
+          const declaredLength = Number(rawLength);
+          if (!Number.isSafeInteger(declaredLength) || declaredLength > boundedResponseBytes) {
+            throw transportError("policy_registry_core_response_too_large");
+          }
+        }
+        const chunks = [];
+        let received = 0;
+        if (strictResponse?.body && typeof strictResponse.body.getReader === "function") {
+          reader = strictResponse.body.getReader();
+          while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            const chunk = Buffer.from(part.value);
+            received += chunk.byteLength;
+            if (received > boundedResponseBytes) {
+              void reader.cancel().catch(() => {});
+              throw transportError("policy_registry_core_response_too_large");
+            }
+            chunks.push(chunk);
+          }
+        } else if (typeof strictResponse?.arrayBuffer === "function") {
+          const bytes = Buffer.from(await strictResponse.arrayBuffer());
+          received = bytes.byteLength;
+          if (received > boundedResponseBytes) {
+            throw transportError("policy_registry_core_response_too_large");
+          }
+          chunks.push(bytes);
+        } else {
+          throw transportError("policy_registry_core_response_json_invalid");
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(Buffer.concat(chunks, received).toString("utf8"));
+        } catch {
+          throw transportError("policy_registry_core_response_json_invalid");
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw transportError("policy_registry_core_response_json_invalid");
+        }
+        return { response: strictResponse, payload: parsed };
+      })();
+      const deadline = new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          if (reader) void reader.cancel().catch(() => {});
+          reject(transportError("policy_registry_core_timeout", 504));
+        }, boundedTimeout);
+      });
+      try {
+        ({ response, payload } = await Promise.race([operation, deadline]));
+      } catch (error) {
+        if (error?.policyRegistryTransportError === true) throw error;
+        const wrapped = new Error("policy_registry_core_unavailable");
+        wrapped.code = "policy_registry_core_unavailable";
+        wrapped.status = 503;
+        wrapped.statusCode = 503;
+        throw wrapped;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
     if (!response.ok) {
       if (allowFailurePayload) {
         return { ok: false, status: response.status, payload };
       }
-      const upstreamCode = typeof payload.error === "string" &&
+      const candidateUpstreamCode = typeof payload.error === "string" &&
         /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/.test(payload.error)
         ? payload.error
         : "unknown";
+      const upstreamCode = strictTransport && !POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS.has(candidateUpstreamCode)
+        ? "unknown"
+        : candidateUpstreamCode;
       const error = new Error(`core_request_failed:${response.status}:${upstreamCode}`);
       error.code = upstreamCode === "unknown" ? "core_request_failed" : upstreamCode;
+      error.status = response.status;
       error.statusCode = response.status;
       throw error;
     }
     return payload;
+  }
+
+  async function dttCoreRequest(path, args, identity, request = {}) {
+    if (typeof resolveDttWorkBinding !== "function") {
+      throw new Error("dtt_work_binding_unavailable");
+    }
+    const workId = String(args?.work_id || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(workId)) {
+      throw new Error("dtt_work_id_invalid");
+    }
+    const leaseBinding = await resolveDttWorkBinding(identity, workId);
+    if (!leaseBinding || leaseBinding.execution_authorized !== false) {
+      throw new Error("dtt_work_active_lease_required");
+    }
+    if (request.strictTransport === true) {
+      const presence = identity?.agentPresence;
+      const expiresAt = Date.parse(String(leaseBinding.expires_at || ""));
+      const participantExpiresAt = Date.parse(String(leaseBinding.participant_expires_at || ""));
+      if (
+        leaseBinding.schema_version !== "dtt_work_lease_binding_v1" ||
+        leaseBinding.tenant_id !== identity.tenantId ||
+        String(leaseBinding.work_id || "").toLowerCase() !== workId ||
+        !POLICY_REGISTRY_WORK_ID.test(String(leaseBinding.lease_id || "").toLowerCase()) ||
+        !Number.isFinite(expiresAt) || expiresAt <= Date.now() ||
+        !Number.isFinite(participantExpiresAt) || participantExpiresAt <= Date.now() ||
+        !presence || presence.transport_bound !== true ||
+        leaseBinding.session_id !== presence.session_id ||
+        leaseBinding.agent_id !== presence.agent_id ||
+        leaseBinding.client_type !== presence.client_type ||
+        leaseBinding.session_fingerprint !== presence.session_fingerprint ||
+        leaseBinding.host_transport_session_fingerprint !== presence.host_transport_session_fingerprint ||
+        leaseBinding.presence_signature !== presence.signature ||
+        leaseBinding.opaque_agent_id !== presence.opaque_agent_id ||
+        leaseBinding.actor_provenance !== presence.actor_provenance
+      ) throw new Error("dtt_work_active_lease_required");
+    }
+    return coreRequest(path, identity.tenantId, {
+      ...request,
+      useTenantGateway: true,
+      dttWorkContext: {
+        work_id: workId,
+        lease_binding: leaseBinding,
+        agent_presence: identity.agentPresence,
+      },
+    });
+  }
+
+  async function genericWorkCoreJoinCoreRequest(path, args, identity, request = {}) {
+    if (!genericWorkCoreJoinVerifierMetadata) {
+      throw new Error("generic_work_core_join_verifier_unavailable");
+    }
+    if (typeof resolveGenericWorkCoreJoinBinding !== "function") {
+      throw new Error("generic_work_core_join_work_binding_unavailable");
+    }
+    const workId = String(args?.work_id || "").trim().toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(workId)) {
+      throw new Error("generic_work_core_join_work_id_invalid");
+    }
+    const leaseBinding = await resolveGenericWorkCoreJoinBinding(identity, workId);
+    if (
+      leaseBinding?.schema_version !== GENERIC_WORK_CORE_JOIN_LEASE_BINDING_VERSION
+      || leaseBinding?.tenant_id !== identity.tenantId
+      || String(leaseBinding?.work_id || "").toLowerCase() !== workId
+      || leaseBinding?.execution_authorized !== false
+    ) {
+      throw new Error("generic_work_core_join_active_lease_required");
+    }
+    const requestBody = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+      ? { ...request.body, work_id: workId }
+      : request.body;
+    return coreRequest(path, identity.tenantId, {
+      ...request,
+      body: requestBody,
+      useTenantGateway: true,
+      genericWorkCoreJoinContext: {
+        work_id: workId,
+        lease_binding: leaseBinding,
+        agent_presence: identity.agentPresence,
+        verifier: genericWorkCoreJoinVerifierMetadata,
+      },
+    });
   }
 
   async function openBlockedRemediation({
@@ -985,18 +1362,39 @@ export function createCoreHandlers(config, options = {}) {
 
   function hierarchyInput(args = {}, identity, operation = "advisory_work") {
     const supplied = args.core_input && typeof args.core_input === "object" && !Array.isArray(args.core_input) ? args.core_input : {};
+    // high_impact is escalation-only. The bridge derives the effective value
+    // from bounded evidence, signals and operation semantics; a caller cannot
+    // use false or a routing object to suppress V0 or grant execution.
+    const { evidence_state: suppliedEvidenceState, routing: _callerRouting, ...boundedSupplied } = supplied;
     const request = String(args.request || args.message || args.question || args.decision || operation).slice(0, 12_000);
     const signals = Array.isArray(supplied.signals) && supplied.signals.length
       ? supplied.signals
       : [{ id: "mcp_runtime_request", label: operation, severity: 20, reversibility_hint: 80, risk_hint: 20 }];
-    return { ...supplied, request, signals, context: { ...(supplied.context || {}), tenant_id: identity.tenantId } };
+    const evidenceEscalation = suppliedEvidenceState?.high_impact === true || args.evidence_state?.high_impact === true;
+    const signalEscalation = signals.some((signal) => [
+      signal?.severity, signal?.severity_hint, signal?.normalized_score, signal?.risk_hint,
+    ].some((value) => typeof value === "number" && Number.isFinite(value) && value >= 85 && value <= 100));
+    const operationEscalation = /(publish|pubblica|merge|deploy|rilasc|release|send|invia|delete|cancell|payment|pagament|write|scriv|update|modific)/i
+      .test(`${request} ${operation}`);
+    const highImpact = evidenceEscalation || signalEscalation || operationEscalation;
+    return {
+      ...boundedSupplied,
+      request,
+      signals,
+      evidence_state: { high_impact: highImpact },
+      context: { ...(supplied.context || {}), tenant_id: identity.tenantId },
+    };
   }
 
   async function runtimeHierarchyEvaluate(args, identity, operation) {
     const started = Date.now();
+    const input = hierarchyInput(args, identity, operation);
     const payload = await coreRequest("/v1/runtime/hierarchy/evaluate", identity.tenantId, {
       method: "POST",
-      body: { core_input: hierarchyInput(args, identity, operation) },
+      body: {
+        core_input: input,
+        ...(input.evidence_state.high_impact ? { routing: { high_impact: true } } : {}),
+      },
     });
     return compactCoreRuntime({ ...payload, latency_ms: Date.now() - started });
   }
@@ -1223,12 +1621,445 @@ export function createCoreHandlers(config, options = {}) {
     };
   }
 
+  function policyRegistryExactRecord(value, fields) {
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype) return false;
+    const keys = Reflect.ownKeys(value);
+    return keys.length === fields.length && keys.every((key) => typeof key === "string") &&
+      fields.every((field) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, field);
+        return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+      });
+  }
+
+  function assertPolicyRegistryPlainJson(value, code, {
+    maxDepth = 64,
+    maxNodes = 100_000,
+  } = {}, state = { seen: new Set(), nodes: 0 }, depth = 0) {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value) || Object.is(value, -0)) throw new Error(code);
+      return;
+    }
+    if (typeof value !== "object" || state.seen.has(value) || depth >= maxDepth ||
+      (Array.isArray(value)
+        ? Object.getPrototypeOf(value) !== Array.prototype
+        : Object.getPrototypeOf(value) !== Object.prototype)) {
+      throw new Error(code);
+    }
+    state.nodes += 1;
+    if (state.nodes > maxNodes) throw new Error(code);
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string" && key !== "length")) throw new Error(code);
+    if (Array.isArray(value)) {
+      const enumerableKeys = Object.keys(value);
+      if (enumerableKeys.length !== value.length ||
+        enumerableKeys.some((key, index) => key !== String(index)) ||
+        keys.some((key) => key !== "length" && !enumerableKeys.includes(key))) {
+        throw new Error(code);
+      }
+    }
+    state.seen.add(value);
+    for (const key of keys) {
+      if (Array.isArray(value) && key === "length") continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new Error(code);
+      assertPolicyRegistryPlainJson(descriptor.value, code, { maxDepth, maxNodes }, state, depth + 1);
+    }
+    state.seen.delete(value);
+  }
+
+  function policyRegistryCanonicalBytes(value) {
+    return Buffer.byteLength(JSON.stringify(stableCanonical(value)), "utf8");
+  }
+
+  function policyRegistryExactText(value, pattern, max) {
+    return typeof value === "string" && value === value.trim() && value.length > 0 &&
+      value.length <= max && (!pattern || pattern.test(value));
+  }
+
+  function policyRegistryUniqueTextList(value, { min = 0, max = 256, pattern = null } = {}) {
+    if (!Array.isArray(value) || value.length < min || value.length > max) return false;
+    const seen = new Set();
+    for (const item of value) {
+      if (!policyRegistryExactText(item, pattern, 200) || seen.has(item)) return false;
+      seen.add(item);
+    }
+    return true;
+  }
+
+  function validatePolicyRegistryCompilerPack(pack, identity, domainPackId) {
+    const packFields = [
+      "schema_version", "pack_id", "version", "status", "scope", "parent_refs", "bindings",
+      "privacy", "policy", "tests", "sources", "freshness_sla_days", "provenance",
+      "valid_from", "expires_at", "rollback_to", "compatibility", "trust_mode", "signatures",
+      "artifact_digest",
+    ];
+    const scopeFields = ["kind", "value", "tenant_id"];
+    const bindingFields = ["core_branch_ids", "nyra_branch_ids", "domain_pack_ids"];
+    const policyFields = [
+      "allow_mode", "allow_actions", "deny_actions", "required_gates", "constraints",
+    ];
+    const scopeKinds = new Set([
+      "core", "global", "sector", "tenant", "environment", "work_type", "action", "policy",
+    ]);
+    const tenantScopedKinds = new Set(["tenant", "environment", "work_type", "action", "policy"]);
+    if (!policyRegistryExactRecord(pack, packFields) ||
+      pack.schema_version !== "nyra_policy_pack_v1" ||
+      !POLICY_REGISTRY_PACK_ID.test(pack.pack_id) ||
+      !POLICY_REGISTRY_PACK_VERSION.test(pack.version) || pack.status !== "active" ||
+      !policyRegistryExactRecord(pack.scope, scopeFields) || !scopeKinds.has(pack.scope.kind) ||
+      !policyRegistryExactText(pack.scope.value, null, 160) ||
+      (tenantScopedKinds.has(pack.scope.kind)
+        ? !policyRegistryExactText(pack.scope.tenant_id, null, 120) ||
+          pack.scope.tenant_id !== identity.tenantId
+        : pack.scope.tenant_id !== null) ||
+      !Array.isArray(pack.parent_refs) || pack.parent_refs.length > 8 ||
+      !policyRegistryExactRecord(pack.bindings, bindingFields) ||
+      !policyRegistryUniqueTextList(pack.bindings.core_branch_ids, { min: 1 }) ||
+      !policyRegistryUniqueTextList(pack.bindings.nyra_branch_ids, { min: 1 }) ||
+      !policyRegistryUniqueTextList(pack.bindings.domain_pack_ids, { min: 1 }) ||
+      !pack.bindings.domain_pack_ids.includes(domainPackId) ||
+      !policyRegistryExactRecord(pack.privacy, ["raw_customer_data_allowed", "data_classification"]) ||
+      pack.privacy.raw_customer_data_allowed !== false ||
+      !policyRegistryExactText(pack.privacy.data_classification, null, 80) ||
+      !policyRegistryExactRecord(pack.policy, policyFields) ||
+      !new Set(["inherit", "restrict"]).has(pack.policy.allow_mode) ||
+      !policyRegistryUniqueTextList(pack.policy.allow_actions, { max: 4_096 }) ||
+      !policyRegistryUniqueTextList(pack.policy.deny_actions, { max: 4_096 }) ||
+      !policyRegistryUniqueTextList(pack.policy.required_gates, { max: 4_096 }) ||
+      !pack.policy.constraints || typeof pack.policy.constraints !== "object" ||
+      Array.isArray(pack.policy.constraints) ||
+      !Array.isArray(pack.tests) || pack.tests.length < 2 || pack.tests.length > 32 ||
+      !Array.isArray(pack.sources) || pack.sources.length < 1 || pack.sources.length > 16 ||
+      !Number.isInteger(pack.freshness_sla_days) || pack.freshness_sla_days < 1 ||
+      pack.freshness_sla_days > 3_650 ||
+      !policyRegistryExactText(pack.valid_from, null, 64) ||
+      !policyRegistryExactText(pack.expires_at, null, 64) ||
+      !Number.isFinite(Date.parse(pack.valid_from)) || !Number.isFinite(Date.parse(pack.expires_at)) ||
+      Date.parse(pack.valid_from) >= Date.parse(pack.expires_at) ||
+      !new Set(["compiled_core", "signed_bundle"]).has(pack.trust_mode) ||
+      !Array.isArray(pack.signatures) || pack.signatures.length > 4 ||
+      !POLICY_REGISTRY_SHA256.test(pack.artifact_digest)) {
+      throw new Error("policy_compiler_input_pack_invalid");
+    }
+    for (const parent of pack.parent_refs) {
+      if (!policyRegistryExactRecord(parent, ["pack_id", "version", "digest"]) ||
+        !POLICY_REGISTRY_PACK_ID.test(parent.pack_id) ||
+        !POLICY_REGISTRY_PACK_VERSION.test(parent.version) ||
+        !POLICY_REGISTRY_SHA256.test(parent.digest)) {
+        throw new Error("policy_compiler_input_pack_invalid");
+      }
+    }
+    const testOutcomes = new Set(pack.tests.map((entry) => entry?.expected));
+    if (!testOutcomes.has("ALLOW") || !testOutcomes.has("DENY")) {
+      throw new Error("policy_compiler_input_pack_invalid");
+    }
+    for (const source of pack.sources) {
+      if (!policyRegistryExactRecord(source, ["source_id", "url", "claim", "reviewed_at"]) ||
+        !POLICY_REGISTRY_PACK_ID.test(source.source_id) ||
+        !policyRegistryExactText(source.url, /^https:\/\//, 2_000) ||
+        !policyRegistryExactText(source.claim, null, 1_200) ||
+        !policyRegistryExactText(source.reviewed_at, /^\d{4}-\d{2}-\d{2}$/, 32)) {
+        throw new Error("policy_compiler_input_pack_invalid");
+      }
+    }
+    const issuers = new Set();
+    for (const signature of pack.signatures) {
+      if (!policyRegistryExactRecord(signature, ["issuer_id", "algorithm", "signature"]) ||
+        !POLICY_REGISTRY_PACK_ID.test(signature.issuer_id) || signature.algorithm !== "Ed25519" ||
+        !POLICY_REGISTRY_SIGNATURE.test(signature.signature) || issuers.has(signature.issuer_id)) {
+        throw new Error("policy_compiler_input_signature_invalid");
+      }
+      const decoded = Buffer.from(signature.signature, "base64url");
+      if (decoded.length !== 64 || decoded.toString("base64url") !== signature.signature) {
+        throw new Error("policy_compiler_input_signature_invalid");
+      }
+      issuers.add(signature.issuer_id);
+    }
+    if (pack.trust_mode === "compiled_core"
+      ? pack.scope.kind !== "core" || pack.signatures.length !== 0
+      : pack.signatures.length < 2) {
+      throw new Error("policy_compiler_input_signature_invalid");
+    }
+    assertPolicyRegistryPlainJson(pack.policy.constraints, "policy_compiler_constraints_invalid", {
+      maxDepth: 16,
+      maxNodes: 4_096,
+    });
+    if (policyRegistryCanonicalBytes(pack.policy.constraints) > 65_536) {
+      throw new Error("policy_compiler_constraints_invalid");
+    }
+  }
+
+  function validatePolicyRegistryCompilerInput(compilerInput, identity, domainPackId) {
+    assertPolicyRegistryPlainJson(compilerInput, "policy_compiler_input_invalid");
+    if (policyRegistryCanonicalBytes(compilerInput) > POLICY_REGISTRY_COMPILER_INPUT_LIMIT_BYTES) {
+      throw new Error("policy_compiler_input_oversize");
+    }
+    if (!policyRegistryExactRecord(compilerInput, ["schema_version", "leaf_pack_ids", "packs"]) ||
+      compilerInput.schema_version !== "nyra_policy_compiler_input_v1" ||
+      !Array.isArray(compilerInput.leaf_pack_ids) || compilerInput.leaf_pack_ids.length < 1 ||
+      compilerInput.leaf_pack_ids.length > 16 || !Array.isArray(compilerInput.packs) ||
+      compilerInput.packs.length < 1 || compilerInput.packs.length > 64) {
+      throw new Error("policy_compiler_input_invalid");
+    }
+    let previousLeaf = null;
+    for (const reference of compilerInput.leaf_pack_ids) {
+      if (!POLICY_REGISTRY_PACK_REFERENCE.test(reference) ||
+        (previousLeaf !== null && previousLeaf >= reference)) {
+        throw new Error("policy_compiler_input_leaf_invalid");
+      }
+      previousLeaf = reference;
+    }
+    let previousPack = null;
+    const packReferences = new Set();
+    for (const pack of compilerInput.packs) {
+      validatePolicyRegistryCompilerPack(pack, identity, domainPackId);
+      const reference = `${pack.pack_id}@${pack.version}`;
+      if (previousPack !== null && previousPack >= reference) {
+        throw new Error("policy_compiler_input_noncanonical");
+      }
+      previousPack = reference;
+      packReferences.add(reference);
+    }
+    if (compilerInput.leaf_pack_ids.some((reference) => !packReferences.has(reference))) {
+      throw new Error("policy_compiler_input_leaf_invalid");
+    }
+    const forbidden = policyRegistryForbiddenField(compilerInput, "$.compiler_input");
+    if (forbidden) throw new Error("policy_registry_caller_fields_invalid");
+    return compilerInput;
+  }
+
+  function policyRegistryForbiddenField(value, path = "$") {
+    if (!value || typeof value !== "object") return null;
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        const nested = policyRegistryForbiddenField(value[index], `${path}[${index}]`);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    const insideConstraints = path === "$.policy.constraints" ||
+      path.startsWith("$.policy.constraints.") ||
+      /^\$\.compiler_input\.packs\[\d+\]\.policy\.constraints(?:\.|$)/.test(path);
+    for (const [key, child] of Object.entries(value)) {
+      if (
+        POLICY_REGISTRY_FORBIDDEN_CALLER_FIELDS.has(key) ||
+        /(?:^|_)(?:secret|private_key|signing_key|proof|receipt|attestation)(?:$|_)/i.test(key) ||
+        (insideConstraints && POLICY_REGISTRY_FORBIDDEN_CONSTRAINT_CONTROL_FIELDS.has(key))
+      ) return `${path}.${key}`;
+      const nested = policyRegistryForbiddenField(child, `${path}.${key}`);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  function validatePolicyRegistryPreflight(preflight, identity, contract, domainPackId) {
+    const gallery = preflight?.tenant_work_gallery;
+    const security = preflight?.security_governance;
+    if (
+      !preflight || typeof preflight !== "object" || Array.isArray(preflight) ||
+      preflight.schema_version !== "skinharmony_work_preflight_v1" ||
+      typeof preflight.preflight_id !== "string" || preflight.preflight_id.length < 3 ||
+      preflight.mandatory !== true ||
+      preflight.tenant_id !== identity.tenantId ||
+      preflight.operational_surface !== "tenant_work_gallery" ||
+      gallery?.schema_version !== "tenant_work_gallery_v1" ||
+      gallery?.tenant_id !== identity.tenantId ||
+      gallery?.available !== true || gallery?.state !== "ready" ||
+      preflight?.memory_first?.status !== "recalled" ||
+      preflight?.governance?.execution_allowed_by_preflight !== false ||
+      security?.schema_version !== "nyra_core_security_gate_v1" ||
+      security?.always_on !== true || security?.fail_closed !== true ||
+      security?.core_verdict_required !== true ||
+      security?.source_instructions_are_data !== true ||
+      security?.cross_tenant_blocked !== true ||
+      preflight?.request?.operation_type !== contract.action ||
+      (domainPackId && preflight?.domain_pack?.id !== domainPackId)
+    ) {
+      throw new Error("policy_registry_preflight_binding_invalid");
+    }
+    return preflight;
+  }
+
+  function validatePolicyRegistrySnapshot(snapshot, identity, domainPackId) {
+    const exactFields = [
+      "ancestry", "bindings", "domain_pack_id", "immutable", "leaf_packs", "policy",
+      "resolution", "schema_version", "snapshot_digest", "sources", "tenant_id", "validity",
+    ];
+    if (
+      !snapshot || typeof snapshot !== "object" || Array.isArray(snapshot) ||
+      Object.keys(snapshot).sort().join("\0") !== exactFields.sort().join("\0") ||
+      snapshot.schema_version !== "nyra_policy_registry_v1" ||
+      snapshot.tenant_id !== identity.tenantId ||
+      snapshot.domain_pack_id !== domainPackId ||
+      snapshot.immutable !== true ||
+      !POLICY_REGISTRY_SHA256.test(String(snapshot.snapshot_digest || "")) ||
+      policyRegistryCanonicalBytes(snapshot) > POLICY_REGISTRY_SNAPSHOT_LIMIT_BYTES
+    ) throw new Error("policy_registry_snapshot_invalid");
+    const forbidden = policyRegistryForbiddenField(snapshot);
+    if (forbidden) throw new Error("policy_registry_snapshot_not_pure");
+    const body = structuredClone(snapshot);
+    delete body.snapshot_digest;
+    const computed = crypto.createHash("sha256")
+      .update(JSON.stringify(stableCanonical(body)))
+      .digest("hex");
+    if (computed !== snapshot.snapshot_digest) throw new Error("policy_registry_snapshot_invalid");
+    return snapshot;
+  }
+
+  function projectPolicyRegistryResponse(kind, payload, identity, args, preflight) {
+    const contract = POLICY_REGISTRY_ROUTES[kind];
+    const authorization = payload?.authorization;
+    const result = payload?.[contract.responseField];
+    if (
+      payload?.ok !== true || payload?.tenant_id !== identity.tenantId ||
+      String(payload?.work_id || "").toLowerCase() !== String(args.work_id).toLowerCase() ||
+      !authorization || typeof authorization !== "object" || Array.isArray(authorization) ||
+      authorization.allowed !== true || authorization.scope !== "policy_registry_snapshot_mutation" ||
+      typeof authorization.state !== "string" || authorization.confirmation_satisfied !== true ||
+      authorization.core_final_authority !== true || authorization.caller_authority !== false ||
+      authorization.provider_execution_authorized !== false ||
+      !result || typeof result !== "object" || Array.isArray(result) ||
+      result.tenant_id !== identity.tenantId ||
+      String(result.work_id || "").toLowerCase() !== String(args.work_id).toLowerCase() ||
+      result.operation_id !== args.operation_id || result.preflight_id !== preflight.preflight_id ||
+      !POLICY_REGISTRY_SHA256.test(String(result.snapshot_digest || "")) ||
+      !POLICY_REGISTRY_SHA256.test(String(result.compiler_provenance_digest || "")) ||
+      result[contract.successField] !== true || typeof result.idempotent_replay !== "boolean" ||
+      result.proof_status !== "consumed" || result.execution_authorized !== false ||
+      result.provider_execution_authorized !== false || result.caller_authority !== false
+    ) throw new Error("policy_registry_core_response_invalid");
+    if (result.intent_digest !== undefined && !POLICY_REGISTRY_SHA256.test(String(result.intent_digest))) {
+      throw new Error("policy_registry_core_response_invalid");
+    }
+    if (result.activation_generation !== undefined &&
+      (!Number.isSafeInteger(result.activation_generation) || result.activation_generation < 0)) {
+      throw new Error("policy_registry_core_response_invalid");
+    }
+    const projectedResult = {
+      tenant_id: identity.tenantId,
+      work_id: String(args.work_id).toLowerCase(),
+      operation_id: args.operation_id,
+      preflight_id: preflight.preflight_id,
+      snapshot_digest: result.snapshot_digest,
+      compiler_provenance_digest: result.compiler_provenance_digest,
+      [contract.successField]: true,
+      idempotent_replay: result.idempotent_replay,
+      proof_status: "consumed",
+      execution_authorized: false,
+      provider_execution_authorized: false,
+      caller_authority: false,
+      ...(result.intent_digest ? { intent_digest: result.intent_digest } : {}),
+      ...(result.activation_generation !== undefined
+        ? { activation_generation: result.activation_generation }
+        : {}),
+    };
+    return {
+      ok: true,
+      tenant_id: identity.tenantId,
+      work_id: String(args.work_id).toLowerCase(),
+      [contract.responseField]: projectedResult,
+      authorization: {
+        allowed: true,
+        state: authorization.state,
+        scope: "policy_registry_snapshot_mutation",
+        confirmation_satisfied: true,
+        core_final_authority: true,
+        caller_authority: false,
+        provider_execution_authorized: false,
+      },
+      execution_authorized: false,
+      provider_execution_authorized: false,
+      caller_authority: false,
+    };
+  }
+
+  async function policyRegistryLifecycle(kind, args, identity) {
+    const contract = POLICY_REGISTRY_ROUTES[kind];
+    if (!contract) throw new Error("policy_registry_operation_invalid");
+    const workId = String(args?.work_id || "").trim().toLowerCase();
+    const operationId = String(args?.operation_id || "").trim();
+    const domainPackId = kind === "reconcile" ? null : String(args?.domain_pack_id || "").trim();
+    const allowedFields = new Set([
+      "work_id", "operation_id", "owner_confirmed", "confirmation_reference",
+      "agent_id", "client_type", "session_id", "work_preflight",
+      ...(kind === "activate" ? ["domain_pack_id", "snapshot", "compiler_input"] : []),
+      ...(kind === "rollback" ? ["domain_pack_id", "target_snapshot_digest"] : []),
+    ]);
+    if (!args || typeof args !== "object" || Array.isArray(args) ||
+      Object.keys(args).some((field) => !allowedFields.has(field))) {
+      throw new Error("policy_registry_caller_fields_invalid");
+    }
+    if (!POLICY_REGISTRY_WORK_ID.test(workId) || !POLICY_REGISTRY_OPERATION_ID.test(operationId) ||
+      (domainPackId && !POLICY_REGISTRY_DOMAIN_PACK_ID.test(domainPackId))) {
+      throw new Error("policy_registry_request_invalid");
+    }
+    if (args.owner_confirmed !== true || identity?.ownerConfirmed !== true) {
+      throw new Error("owner_confirmation_required");
+    }
+    const preflight = validatePolicyRegistryPreflight(args.work_preflight, identity, contract, domainPackId);
+    if (kind === "activate") {
+      validatePolicyRegistrySnapshot(args.snapshot, identity, domainPackId);
+      validatePolicyRegistryCompilerInput(args.compiler_input, identity, domainPackId);
+    }
+    if (kind === "rollback" && !POLICY_REGISTRY_SHA256.test(String(args.target_snapshot_digest || ""))) {
+      throw new Error("policy_registry_request_invalid");
+    }
+    const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+    const requestBody = {
+      tenant_id: identity.tenantId,
+      work_id: workId,
+      operation_id: operationId,
+      ...(domainPackId ? { domain_pack_id: domainPackId } : {}),
+      work_preflight: preflight,
+      owner_confirmed: true,
+      confirmation_reference: hostNativeConfirmationReference(
+        identity,
+        ownerMode,
+        contract.purpose,
+        operationId,
+      ),
+      ...(kind === "activate" ? { snapshot: args.snapshot } : {}),
+      ...(kind === "activate" ? { compiler_input: args.compiler_input } : {}),
+      ...(kind === "rollback" ? { target_snapshot_digest: args.target_snapshot_digest } : {}),
+    };
+    const body = {
+      ...requestBody,
+      owner_context: ownerContext(identity, {
+        hostNativeOwner: true,
+        requestBinding: ownerRequestBinding(contract.purpose, requestBody),
+      }),
+    };
+    if (Buffer.byteLength(canonicalDttWorkContextBody(body), "utf8") >
+      POLICY_REGISTRY_REQUEST_LIMIT_BYTES) {
+      throw new Error("policy_registry_request_too_large");
+    }
+    const payload = await dttCoreRequest(contract.path, { work_id: workId }, identity, {
+      method: "POST",
+      body,
+      preservePolicyRegistryDomainPackId: kind !== "reconcile",
+      strictTransport: true,
+      timeoutMs: policyRegistryCoreTimeoutMs,
+    });
+    return dedicatedCoreTextResult(
+      projectPolicyRegistryResponse(kind, payload, identity, { ...args, work_id: workId, operation_id: operationId }, preflight),
+      contract.path,
+    );
+  }
+
   const handlers = {
     core_health: async (_args, identity) => textResult({
       ...(await coreRequest("/healthz", identity.tenantId)),
       tenant_id: identity.tenantId,
       mcp_identity: ownerBindingStatus(config, identity),
     }),
+    nyra_policy_registry_activate: async (args, identity) =>
+      policyRegistryLifecycle("activate", args, identity),
+    nyra_policy_registry_rollback: async (args, identity) =>
+      policyRegistryLifecycle("rollback", args, identity),
+    nyra_policy_registry_reconcile: async (args, identity) =>
+      policyRegistryLifecycle("reconcile", args, identity),
     host_native_status: async (_args, identity) => textResult(
       await coreRequest("/v1/host-native/status", identity.tenantId),
     ),
@@ -1300,16 +2131,18 @@ export function createCoreHandlers(config, options = {}) {
       const route = "/v1/work-continuity/generic-core-join";
       const { tenant_id: _callerTenantId, authenticated_tenant_id: _callerAuthenticatedTenantId,
         secret: _secret, signing_secret: _signingSecret, verifier_secret: _verifierSecret, ...body } = args || {};
-      const response = await coreRequest(route, identity.tenantId, {
-        method: "POST", useTenantGateway: true, body,
+      const response = await genericWorkCoreJoinCoreRequest(route, body, identity, {
+        method: "POST", body,
       });
       const verdict = response?.verdict;
+      const expectedWorkId = String(body.work_id || "").trim().toLowerCase();
       const hash = /^[a-f0-9]{64}$/i;
       if (!response || response.ok !== true || !verdict || typeof verdict !== "object" || Array.isArray(verdict) ||
           verdict.schema_version !== "generic_work_core_join_v1" ||
           !/^gwcj_[a-f0-9]{40}$/i.test(String(verdict.verdict_id || "")) ||
           String(verdict.tenant_id || "") !== String(identity.tenantId || "") ||
-          !verdict.work_id || !verdict.adapter || !hash.test(String(verdict.acceptance_criteria_digest || "")) ||
+          String(verdict.work_id || "").toLowerCase() !== expectedWorkId ||
+          !verdict.adapter || !hash.test(String(verdict.acceptance_criteria_digest || "")) ||
           !hash.test(String(verdict.task_state_digest || "")) || !hash.test(String(verdict.evidence_digest || "")) ||
           !hash.test(String(verdict.independent_verifier_receipt_digest || "")) ||
           !hash.test(String(verdict.idempotency_digest || "")) || !hash.test(String(verdict.verdict_digest || "")) ||
@@ -1862,9 +2695,10 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_plan: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_plan: async (args, identity) => textResult(await dttCoreRequest(
       "/v1/orchestration/dtt/plan",
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1874,13 +2708,15 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_read: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_read: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}`,
-      identity.tenantId,
+      args,
+      identity,
     )),
-    orchestration_dtt_expansion_propose: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_expansion_propose: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/expansion-proposals`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1889,9 +2725,10 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_replan_propose: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_replan_propose: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/replan-proposals`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1901,12 +2738,14 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_outcome_record: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_outcome_record: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/outcomes`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
+          idempotency_key: args.idempotency_key,
           outcome: args.outcome,
           evidence: args.evidence,
           evidence_draft: args.evidence_draft,
@@ -1914,9 +2753,10 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_evidence_prepare: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_evidence_prepare: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/evidence-drafts`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1933,11 +2773,13 @@ export function createCoreHandlers(config, options = {}) {
       const context = issueDttAgentContext({
         secret: config.dttAgentIdentitySigningSecret,
         tenant_id: identity.tenantId,
+        work_id: args.work_id,
         agent_presence: identity.agentPresence,
       });
-      return textResult(await coreRequest(
+      return textResult(await dttCoreRequest(
         `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/attestations`,
-        identity.tenantId,
+        args,
+        identity,
         {
           method: "POST",
           body: {
@@ -1956,17 +2798,20 @@ export function createCoreHandlers(config, options = {}) {
       const context = issueDttAgentContext({
         secret: config.dttAgentIdentitySigningSecret,
         tenant_id: identity.tenantId,
+        work_id: args.work_id,
         agent_presence: identity.agentPresence,
       });
-      return textResult(await coreRequest(
+      return textResult(await dttCoreRequest(
         `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/nodes/${encodeURIComponent(args.node_id)}/verifier-assignments`,
-        identity.tenantId,
+        args,
+        identity,
         { method: "POST", body: {}, additionalHeaders: { "x-sh-dtt-agent-context": context } },
       ));
     },
-    orchestration_dtt_artifact_register: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_artifact_register: async (args, identity) => textResult(await dttCoreRequest(
       "/v1/orchestration/evidence/artifacts",
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {
@@ -1977,21 +2822,24 @@ export function createCoreHandlers(config, options = {}) {
         },
       },
     )),
-    orchestration_dtt_cancel: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_cancel: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/cancel`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: { reason: args.reason },
       },
     )),
-    orchestration_dtt_retry_fallback_read: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_retry_fallback_read: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/retry-fallback`,
-      identity.tenantId,
+      args,
+      identity,
     )),
-    orchestration_dtt_core_join: async (args, identity) => textResult(await coreRequest(
+    orchestration_dtt_core_join: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/core-join`,
-      identity.tenantId,
+      args,
+      identity,
       {
         method: "POST",
         body: {},

@@ -35,6 +35,7 @@ test("Gallery participants require transport-bound server-signed presence", () =
     agentId: "gallery-worker",
     clientType: "codex",
     sessionFingerprint: "c".repeat(24),
+    transportSessionFingerprint: "b".repeat(24),
     acl: ["gallery.read", "gallery.coordinate"],
   });
   for (const agentPresence of [
@@ -48,6 +49,19 @@ test("Gallery participants require transport-bound server-signed presence", () =
       /gallery_signed_presence_required/,
     );
   }
+});
+
+test("Gallery derives the participant transport binding only from signed presence", () => {
+  const first = assertGalleryParticipantBinding(identity(), participantInput);
+  const second = assertGalleryParticipantBinding(identity({
+    agentPresence: {
+      ...identity().agentPresence,
+      host_transport_session_fingerprint: "C".repeat(24),
+    },
+  }), participantInput);
+  assert.equal(first.transportSessionFingerprint, "b".repeat(24));
+  assert.equal(second.transportSessionFingerprint, "c".repeat(24));
+  assert.notEqual(first.transportSessionFingerprint, second.transportSessionFingerprint);
 });
 
 test("Gallery participant claims cannot switch signed session, agent, or client", () => {

@@ -83,7 +83,7 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   const compact = compactMcpTools(TOOLS, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 7);
+  assert.equal(compact.length, 10);
   assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
   assert(Buffer.byteLength(JSON.stringify({ tools: compact })) < 64 * 1024);
 });
@@ -532,6 +532,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_checkpoint",
     "work_continuity_resume",
     "work_continuity_v2_create",
+    "tenant_work_legacy_reconcile_close",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
   ].includes(tool.name));
@@ -550,6 +551,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_resume",
     "work_continuity_start_or_resume",
     "work_continuity_v2_create",
+    "tenant_work_legacy_reconcile_close",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
   ]);

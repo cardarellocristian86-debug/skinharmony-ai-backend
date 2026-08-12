@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { Pool } from "pg";
 import { causalDigest, CausalContinuityError } from "./causalContinuityCanonical.js";
+import {
+  acquireBoundedMigrationLock,
+  ensureCoreSchemaMigrationRegistry,
+} from "./coreSchemaMigrationRegistry.js";
 
 export const PROJECT_SCOPE_RENDER_INDEX_MIGRATION_ID =
   "20260810_002_project_scope_render_origin_indexes_v1";
@@ -131,12 +135,9 @@ export function createProjectScopeRenderOriginIndexMigrator({ pool, connectionSt
     const client = await db.connect();
     let locked = false;
     try {
-      await client.query("SELECT pg_advisory_lock(hashtext($1))", [LOCK]);
+      await acquireBoundedMigrationLock(client, LOCK);
       locked = true;
-      await client.query(`CREATE TABLE IF NOT EXISTS core_schema_migrations (
-        migration_id TEXT PRIMARY KEY,sql_digest CHAR(64) NOT NULL,application_state TEXT NOT NULL,
-        checkpoint TEXT NOT NULL,started_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-        completed_at TIMESTAMPTZ,verifier_evidence JSONB NOT NULL DEFAULT '{}'::jsonb)`);
+      await ensureCoreSchemaMigrationRegistry(client);
       const existing = (await client.query(
         "SELECT * FROM core_schema_migrations WHERE migration_id=$1",
         [PROJECT_SCOPE_RENDER_INDEX_MIGRATION_ID],
@@ -172,7 +173,7 @@ export function createProjectScopeRenderOriginIndexMigrator({ pool, connectionSt
     const client = await db.connect();
     let locked = false;
     try {
-      await client.query("SELECT pg_advisory_lock(hashtext($1))", [LOCK]);
+      await acquireBoundedMigrationLock(client, LOCK);
       locked = true;
       await assertRollbackOwnership(client);
       await runSql(client, await readFile(DOWN_URL, "utf8"));

@@ -18,6 +18,15 @@ function safeTenantId(value) {
   return tenantId;
 }
 
+function safeWorkId(value) {
+  if (typeof value !== "string") throw new Error("work_id_invalid");
+  const workId = value.trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(workId)) {
+    throw new Error("work_id_invalid");
+  }
+  return workId;
+}
+
 function safeConnectionString(value) {
   const connectionString = String(value || "").trim();
   if (!/^postgres(?:ql)?:\/\//i.test(connectionString) || connectionString.length > 4_000) {
@@ -26,9 +35,33 @@ function safeConnectionString(value) {
   return connectionString;
 }
 
-function validateStoredTree(tree, tenantId, treeId) {
-  if (!tree || typeof tree !== "object" || Array.isArray(tree) || tree.tree_id !== treeId || tree.tenant_id !== tenantId) {
+function storedWorkId(tree) {
+  if (!Object.hasOwn(tree || {}, "work_id") || tree.work_id === null || String(tree.work_id || "").trim() === "") {
+    throw new Error("dtt_work_binding_required");
+  }
+  try {
+    return safeWorkId(tree.work_id);
+  } catch {
     throw new Error("dynamic_task_tree_state_corrupt");
+  }
+}
+
+function validateStoredTree(tree, tenantId, workId, treeId, { row_work_id } = {}) {
+  if (!tree || typeof tree !== "object" || Array.isArray(tree) || tree.tree_id !== treeId) {
+    throw new Error("dynamic_task_tree_state_corrupt");
+  }
+  if (tree.tenant_id !== tenantId) throw new Error("cross_tenant_task_tree_denied");
+  if (row_work_id === null) throw new Error("dtt_work_binding_required");
+  const boundWorkId = storedWorkId(tree);
+  if (boundWorkId !== workId) throw new Error("cross_work_task_tree_denied");
+  if (row_work_id !== undefined && row_work_id !== null) {
+    let rowWorkId;
+    try {
+      rowWorkId = safeWorkId(row_work_id);
+    } catch {
+      throw new Error("dynamic_task_tree_state_corrupt");
+    }
+    if (rowWorkId !== boundWorkId) throw new Error("dynamic_task_tree_state_corrupt");
   }
   return tree;
 }
@@ -41,34 +74,54 @@ export function createFileDynamicTaskTreeStateStore({ root } = {}) {
   const fileFor = (treeId) => path.join(storeRoot, `${safeTreeId(treeId)}.json`);
   const lockFor = (treeId) => path.join(storeRoot, `${safeTreeId(treeId)}.lock`);
 
-  function readRecord(treeId) {
+  function readRecord({ tenantId, workId, treeId }) {
     const file = fileFor(treeId);
     if (!fs.existsSync(file)) return null;
-    const record = JSON.parse(fs.readFileSync(file, "utf8"));
+    let record;
+    try {
+      record = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      throw new Error("dynamic_task_tree_state_corrupt");
+    }
     if (
-      record?.schema_version !== "dynamic_task_tree_state_record_v1"
+      !["dynamic_task_tree_state_record_v1", "dynamic_task_tree_state_record_v2"].includes(record?.schema_version)
       || !Number.isInteger(record.revision)
       || record.revision < 1
       || record.tree?.tree_id !== treeId
     ) {
       throw new Error("dynamic_task_tree_state_corrupt");
     }
+    if (record.schema_version !== "dynamic_task_tree_state_record_v2") {
+      throw new Error("dtt_work_binding_required");
+    }
+    validateStoredTree(record.tree, tenantId, workId, treeId);
+    if (record.tenant_id !== tenantId || record.work_id !== workId) {
+      throw new Error("dynamic_task_tree_state_corrupt");
+    }
     return record;
   }
 
   return {
-    kind: "file_cas_v1",
+    kind: "file_cas_v2",
     restart_durable: true,
     distributed: false,
 
-    load({ tree_id }) {
+    load({ tenant_id, work_id, tree_id }) {
+      const tenantId = safeTenantId(tenant_id);
+      const workId = safeWorkId(work_id);
       const treeId = safeTreeId(tree_id);
-      const record = readRecord(treeId);
+      const record = readRecord({ tenantId, workId, treeId });
       return record ? { tree: clone(record.tree), revision: record.revision } : null;
     },
 
     save({ tree, expected_revision = null }) {
       const treeId = safeTreeId(tree?.tree_id);
+      const tenantId = safeTenantId(tree?.tenant_id);
+      const workId = safeWorkId(tree?.work_id);
+      validateStoredTree(tree, tenantId, workId, treeId);
+      if (expected_revision !== null && (!Number.isSafeInteger(expected_revision) || expected_revision < 1)) {
+        throw new Error("dynamic_task_tree_expected_revision_invalid");
+      }
       const lock = lockFor(treeId);
       let lockFd;
       try {
@@ -78,12 +131,14 @@ export function createFileDynamicTaskTreeStateStore({ root } = {}) {
         throw error;
       }
       try {
-        const current = readRecord(treeId);
+        const current = readRecord({ tenantId, workId, treeId });
         const currentRevision = current?.revision ?? null;
         if (expected_revision !== currentRevision) throw new Error("dynamic_task_tree_revision_conflict");
         const revision = (currentRevision || 0) + 1;
         const record = {
-          schema_version: "dynamic_task_tree_state_record_v1",
+          schema_version: "dynamic_task_tree_state_record_v2",
+          tenant_id: tenantId,
+          work_id: workId,
           revision,
           updated_at: new Date().toISOString(),
           tree: clone(tree),
@@ -116,37 +171,60 @@ export function createPostgresDynamicTaskTreeStateStore({
 
   function initialize() {
     initialized ||= db.query(`
-      CREATE TABLE IF NOT EXISTS dynamic_task_tree_states (
+      CREATE TABLE IF NOT EXISTS dynamic_task_tree_states_v2 (
         tenant_id varchar(120) NOT NULL,
+        work_id uuid NOT NULL,
         tree_id varchar(160) NOT NULL,
         state jsonb NOT NULL,
         revision bigint NOT NULL,
         created_at timestamptz NOT NULL,
         updated_at timestamptz NOT NULL,
-        PRIMARY KEY (tenant_id, tree_id)
+        PRIMARY KEY (tenant_id, work_id, tree_id)
       );
-      CREATE INDEX IF NOT EXISTS dynamic_task_tree_states_updated_idx
-        ON dynamic_task_tree_states (tenant_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS dynamic_task_tree_states_v2_updated_idx
+        ON dynamic_task_tree_states_v2 (tenant_id, work_id, updated_at DESC);
     `);
     return initialized;
   }
 
+  async function legacyStateExists(queryable, tenantId, treeId) {
+    const relation = await queryable.query(
+      "SELECT to_regclass('dynamic_task_tree_states')::text AS legacy_table",
+    );
+    if (!relation.rows[0]?.legacy_table) return false;
+    const legacy = await queryable.query(
+      "SELECT 1 FROM dynamic_task_tree_states WHERE tenant_id=$1 AND tree_id=$2 LIMIT 1",
+      [tenantId, treeId],
+    );
+    return legacy.rowCount > 0;
+  }
+
   return {
-    kind: "postgresql_cas_v1",
+    kind: "postgresql_cas_v2",
     restart_durable: true,
     distributed: true,
 
-    async load({ tenant_id, tree_id }) {
+    async load({ tenant_id, work_id, tree_id }) {
       const tenantId = safeTenantId(tenant_id);
+      const workId = safeWorkId(work_id);
       const treeId = safeTreeId(tree_id);
       await initialize();
-      const result = await db.query(
-        "SELECT state, revision, created_at, updated_at FROM dynamic_task_tree_states WHERE tenant_id=$1 AND tree_id=$2",
-        [tenantId, treeId],
+      let result = await db.query(
+        "SELECT work_id, state, revision, created_at, updated_at FROM dynamic_task_tree_states_v2 WHERE tenant_id=$1 AND work_id=$2::uuid AND tree_id=$3",
+        [tenantId, workId, treeId],
       );
+      if (!result.rows[0]) {
+        result = await db.query(
+          "SELECT work_id, state, revision, created_at, updated_at FROM dynamic_task_tree_states_v2 WHERE tenant_id=$1 AND tree_id=$2",
+          [tenantId, treeId],
+        );
+      }
       const row = result.rows[0];
-      if (!row) return null;
-      const tree = validateStoredTree(row.state, tenantId, treeId);
+      if (!row) {
+        if (await legacyStateExists(db, tenantId, treeId)) throw new Error("dtt_work_binding_required");
+        return null;
+      }
+      const tree = validateStoredTree(row.state, tenantId, workId, treeId, { row_work_id: row.work_id });
       const revision = Number(row.revision);
       if (!Number.isSafeInteger(revision) || revision < 1) throw new Error("dynamic_task_tree_state_corrupt");
       return {
@@ -160,7 +238,8 @@ export function createPostgresDynamicTaskTreeStateStore({
     async save({ tree, expected_revision = null }) {
       const treeId = safeTreeId(tree?.tree_id);
       const tenantId = safeTenantId(tree?.tenant_id);
-      validateStoredTree(tree, tenantId, treeId);
+      const workId = safeWorkId(tree?.work_id);
+      validateStoredTree(tree, tenantId, workId, treeId);
       if (expected_revision !== null && (!Number.isSafeInteger(expected_revision) || expected_revision < 1)) {
         throw new Error("dynamic_task_tree_expected_revision_invalid");
       }
@@ -169,10 +248,19 @@ export function createPostgresDynamicTaskTreeStateStore({
       try {
         await client.query("BEGIN");
         const current = await client.query(
-          "SELECT revision, created_at FROM dynamic_task_tree_states WHERE tenant_id=$1 AND tree_id=$2 FOR UPDATE",
-          [tenantId, treeId],
+          "SELECT work_id, state, revision, created_at FROM dynamic_task_tree_states_v2 WHERE tenant_id=$1 AND work_id=$2::uuid AND tree_id=$3 FOR UPDATE",
+          [tenantId, workId, treeId],
         );
         const row = current.rows[0] || null;
+        if (row) validateStoredTree(row.state, tenantId, workId, treeId, { row_work_id: row.work_id });
+        if (!row) {
+          const crossWork = await client.query(
+            "SELECT 1 FROM dynamic_task_tree_states_v2 WHERE tenant_id=$1 AND tree_id=$2 LIMIT 1 FOR UPDATE",
+            [tenantId, treeId],
+          );
+          if (crossWork.rowCount > 0) throw new Error("cross_work_task_tree_denied");
+          if (await legacyStateExists(client, tenantId, treeId)) throw new Error("dtt_work_binding_required");
+        }
         const currentRevision = row ? Number(row.revision) : null;
         if (expected_revision !== currentRevision) throw new Error("dynamic_task_tree_revision_conflict");
         const timestamp = now();
@@ -180,13 +268,13 @@ export function createPostgresDynamicTaskTreeStateStore({
         let saved;
         if (currentRevision === null) {
           saved = await client.query(
-            "INSERT INTO dynamic_task_tree_states (tenant_id,tree_id,state,revision,created_at,updated_at) VALUES ($1,$2,$3::jsonb,1,$4,$4) RETURNING revision,created_at,updated_at",
-            [tenantId, treeId, JSON.stringify(tree), timestamp.toISOString()],
+            "INSERT INTO dynamic_task_tree_states_v2 (tenant_id,work_id,tree_id,state,revision,created_at,updated_at) VALUES ($1,$2::uuid,$3,$4::jsonb,1,$5,$5) RETURNING revision,created_at,updated_at",
+            [tenantId, workId, treeId, JSON.stringify(tree), timestamp.toISOString()],
           );
         } else {
           saved = await client.query(
-            "UPDATE dynamic_task_tree_states SET state=$3::jsonb,revision=revision+1,updated_at=$4 WHERE tenant_id=$1 AND tree_id=$2 AND revision=$5 RETURNING revision,created_at,updated_at",
-            [tenantId, treeId, JSON.stringify(tree), timestamp.toISOString(), currentRevision],
+            "UPDATE dynamic_task_tree_states_v2 SET state=$4::jsonb,revision=revision+1,updated_at=$5 WHERE tenant_id=$1 AND work_id=$2::uuid AND tree_id=$3 AND revision=$6 RETURNING revision,created_at,updated_at",
+            [tenantId, workId, treeId, JSON.stringify(tree), timestamp.toISOString(), currentRevision],
           );
           if (saved.rowCount !== 1) throw new Error("dynamic_task_tree_revision_conflict");
         }

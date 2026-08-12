@@ -80,7 +80,8 @@ test("Store rollback blocks a hijacked 002 index before any base down and preser
   const client = {
     async query(sql) {
       const query = String(sql);
-      if (query.includes("pg_advisory_lock") || query.includes("pg_advisory_unlock")) return { rows: [] };
+      if (query === "BEGIN" || query === "COMMIT" || query === "ROLLBACK" || query.startsWith("SET LOCAL ") ||
+          query.includes("pg_advisory_lock") || query.includes("pg_advisory_unlock")) return { rows: [] };
       if (query.includes("FROM pg_class idx")) return { rows: [{
         name: "core_project_scope_render_lookup_idx",
         valid: true,

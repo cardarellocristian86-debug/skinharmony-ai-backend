@@ -17,6 +17,44 @@ const DATABASE_URL = String(process.env.POLICY_REGISTRY_DATABASE_URL ||
 const NOW = new Date("2026-08-03T12:00:00.000Z");
 const PG16 = { skip: DATABASE_URL ? false : "PostgreSQL integration URL not configured" };
 
+function compilerProvenanceDigest(snapshotDigest) {
+  return crypto.createHash("sha256").update(`compiler-provenance:${snapshotDigest}`).digest("hex");
+}
+
+function compilerProvenance(snapshot) {
+  return {
+    schema_version: "nyra_policy_compiler_provenance_v1",
+    tenant_id: snapshot.tenant_id,
+    domain_pack_id: snapshot.domain_pack_id,
+    snapshot_digest: snapshot.snapshot_digest,
+    execution_authorized: false,
+    provenance_digest: compilerProvenanceDigest(snapshot.snapshot_digest),
+  };
+}
+
+function verifyCompilerProvenanceRecord(record, binding) {
+  const ok = record?.tenant_id === binding.tenant_id &&
+    record?.domain_pack_id === binding.domain_pack_id &&
+    record?.snapshot_digest === binding.snapshot_digest &&
+    record?.provenance_digest === binding.compiler_provenance_digest &&
+    record?.execution_authorized === false &&
+    !Object.hasOwn(record || {}, "compiler_input");
+  return {
+    ok,
+    record_integrity_verified: ok,
+    derivation_reverified: false,
+    execution_authorized: false,
+    tenant_id: record?.tenant_id,
+    domain_pack_id: record?.domain_pack_id,
+    snapshot_digest: record?.snapshot_digest,
+    compiler_provenance_digest: record?.provenance_digest,
+    compiler_build_commit: "1".repeat(40),
+    catalog_digest: "2".repeat(64),
+    trust_catalog_digest: "3".repeat(64),
+    error: null,
+  };
+}
+
 function tenant(label) {
   return `policy-registry-pg16-${label}-${process.pid}-${crypto.randomUUID()}`;
 }
@@ -35,7 +73,7 @@ function fixture(tenantId) {
     parent_refs: [], bindings,
     privacy: { raw_customer_data_allowed: false, data_classification: "policy_metadata_only" },
     policy: { allow_mode: "inherit", allow_actions: [], deny_actions: ["cross_tenant_access"],
-      required_gates: ["core_allow"], constraints: { nested: { jsonb: [true, 7, "stable"] } } },
+      required_gates: ["core_allow"], constraints: { core_jsonb: { nested: [true, 7, "stable"] } } },
     tests: [{ id: "allow", expected: "ALLOW" }, { id: "deny", expected: "DENY" }],
     sources, freshness_sla_days: 365, provenance: { builder: "pg16-test" },
     valid_from: "2026-08-03T00:00:00.000Z", expires_at: "2027-08-03T00:00:00.000Z",
@@ -48,7 +86,7 @@ function fixture(tenantId) {
     scope: { kind: "action", value: action, tenant_id: tenantId },
     parent_refs: [{ pack_id: corePack.pack_id, version: corePack.version, digest: policyPackDigest(corePack) }],
     bindings, policy: { allow_actions: [action], deny_actions: [`${action}.dangerous`],
-      required_gates: ["core_allow"], constraints: { nested: [1, { stable: true }] } },
+      required_gates: ["core_allow"], constraints: { action_jsonb: { nested: [1, { stable: true }] } } },
     tests: [{ id: "positive", expected: "ALLOW" }, { id: "negative", expected: "DENY" }],
     sources, freshness_sla_days: 365, valid_from: "2026-08-03T00:00:00.000Z",
     expires_at: "2027-08-03T00:00:00.000Z",
@@ -70,20 +108,48 @@ function fixture(tenantId) {
 
 function options(pool, tenantId, snapshot, consumed = { count: 0 }) {
   return { pool,
-    verifyActivationSnapshot: (value, binding) => ({ ok: true, signature_verified: true,
+    verifyCompilerProvenanceRecord,
+    verifyActivationSnapshot: (value, provenance, binding) => ({ ok: true, signature_verified: true,
       tenant_id: binding.tenant_id, snapshot_digest: value.snapshot_digest,
+      compiler_provenance_digest: provenance.provenance_digest,
+      compiler_provenance_bound: true, execution_authorized: false,
       verified_roles: ["core", "nyra"], independent_key_count: 2,
       jsonb_proof: ["roundtrip", { valid: true }] }),
     consumeCoreReceipt: async (_receipt, binding) => {
       consumed.count += 1;
       return { ok: true, consumed: true, single_use: true, signature_verified: true,
-        issuer_role: "universal_core", tenant_id: tenantId, action: binding.operation,
-        snapshot_digest: snapshot.snapshot_digest, consumption_id: `consumption-${crypto.randomUUID()}` };
+        issuer_role: "universal_core", ...binding,
+        consumption_id: `consumption-${crypto.randomUUID()}` };
     } };
+}
+
+function proofBinding(tenantId, operationId, snapshotDigest, action = "policy.snapshot.activate") {
+  return {
+    tenant_id: tenantId,
+    operation_id: operationId,
+    action,
+    operation: action === "policy.snapshot.activate"
+      ? "activate_policy_snapshot"
+      : "rollback_policy_snapshot",
+    work_id: crypto.randomUUID(),
+    preflight_id: `preflight-${crypto.randomUUID()}`,
+    intent_digest: crypto.randomBytes(32).toString("hex"),
+    domain_pack_id: "generic",
+    snapshot_digest: snapshotDigest,
+    owner_approval_hash: crypto.randomBytes(32).toString("hex"),
+    core_key_id: "core-policy-pg16-v2",
+    nyra_key_id: "nyra-policy-pg16-v2",
+    core_public_key_fingerprint: "a".repeat(64),
+    nyra_public_key_fingerprint: "b".repeat(64),
+    compiler_provenance_digest: compilerProvenanceDigest(snapshotDigest),
+  };
 }
 
 function activation(tenantId, snapshot, operationId = `activate-${crypto.randomUUID()}`) {
   return { tenant_id: tenantId, operation_id: operationId, snapshot,
+    compiler_provenance: compilerProvenance(snapshot),
+    activation_attestation: { schema_version: "pg16-test-attestation-v2" },
+    proof_binding: proofBinding(tenantId, operationId, snapshot.snapshot_digest),
     core_receipt: { ticket_id: `ticket-${crypto.randomUUID()}`, nested: { one_use: true } },
     core_branch_id: "nyra_policy_registry", nyra_branch_id: "risk_governance",
     domain_pack_id: "generic", now: NOW };
@@ -109,19 +175,28 @@ test("Policy Registry PostgreSQL 16 preserves JSONB and state across store resta
     const storeOptions = options(pool, tenantId, snapshot);
     const store = createPostgresNyraPolicyRegistryStore(storeOptions);
     assert.equal((await store.activate(activation(tenantId, snapshot))).activated, true);
-    const raw = await pool.query("SELECT active_snapshot, active_attestation, history FROM nyra_policy_registry_state WHERE tenant_id=$1", [tenantId]);
+    const raw = await pool.query(`SELECT active_snapshot, active_attestation,
+      active_compiler_provenance, history
+      FROM nyra_policy_registry_state WHERE tenant_id=$1`, [tenantId]);
     assert.equal(raw.rowCount, 1);
     assert.equal(raw.rows[0].active_snapshot.snapshot_digest, snapshot.snapshot_digest);
     assert.deepEqual(raw.rows[0].active_attestation.jsonb_proof, ["roundtrip", { valid: true }]);
+    assert.equal(raw.rows[0].active_compiler_provenance.provenance_digest,
+      compilerProvenanceDigest(snapshot.snapshot_digest));
     assert.deepEqual(raw.rows[0].history, []);
+    assert.equal(JSON.stringify(raw.rows[0]).includes("compiler_input"), false);
 
     const restarted = createPostgresNyraPolicyRegistryStore(storeOptions);
     const result = await restarted.evaluate({ tenant_id: tenantId, action,
       core_branch_id: "nyra_policy_registry", nyra_branch_id: "risk_governance",
-      domain_pack_id: "generic", satisfied_gates: ["core_allow"], now: NOW });
+      domain_pack_id: "generic", satisfied_gates: ["core_allow"],
+      context: snapshot.policy.constraints, now: NOW });
     assert.equal(result.verdict, "ALLOW");
     assert.equal(result.snapshot_verified, true);
-    assert.equal((await restarted.status()).restart_durable, true);
+    const status = await restarted.status();
+    assert.equal(status.restart_durable, true);
+    assert.equal(status.compiler_provenance_persistence, true);
+    assert.equal(status.compiler_input_persisted, false);
 
     await pool.query("INSERT INTO nyra_policy_registry_state(tenant_id) VALUES($1) ON CONFLICT (tenant_id) DO NOTHING", [sentinel]);
     await cleanup(pool, [tenantId]);
@@ -143,6 +218,7 @@ test("Policy Registry PostgreSQL 16 serializes multi-connection replay with CAS"
     const storeOptions = options(pool, tenantId, snapshot, consumed);
     const input = activation(tenantId, snapshot, `race-${crypto.randomUUID()}`);
     const stores = Array.from({ length: 6 }, () => createPostgresNyraPolicyRegistryStore(storeOptions));
+    for (const store of stores) assert.equal((await store.status()).ready, true);
     const results = await Promise.all(stores.map((store) => store.activate(input)));
     assert.equal(results.filter((item) => item.idempotent_replay === false).length, 1);
     assert.equal(results.filter((item) => item.idempotent_replay === true).length, 5);

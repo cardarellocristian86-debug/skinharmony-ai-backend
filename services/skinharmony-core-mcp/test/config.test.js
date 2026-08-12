@@ -110,6 +110,86 @@ test("keeps host-native continuity opt-in independent from legacy environment va
   assert.equal(Object.hasOwn(enabled, "openaiApiKey"), false);
 });
 
+test("Generic Work Core Join uses strict explicit enablement and requirement flags", () => {
+  const disabled = loadConfig({});
+  assert.equal(disabled.genericWorkCoreJoinEnabled, false);
+  assert.equal(disabled.genericWorkCoreJoinRequired, false);
+  assert.equal(disabled.genericWorkCoreJoinConfigurationValid, true);
+
+  const enabled = loadConfig({
+    GENERIC_WORK_CORE_JOIN_ENABLED: "true",
+    GENERIC_WORK_CORE_JOIN_REQUIRED: "true",
+  });
+  assert.equal(enabled.genericWorkCoreJoinEnabled, true);
+  assert.equal(enabled.genericWorkCoreJoinRequired, true);
+
+  const explicitlyOptional = loadConfig({
+    GENERIC_WORK_CORE_JOIN_ENABLED: "true",
+    GENERIC_WORK_CORE_JOIN_REQUIRED: "false",
+  });
+  assert.equal(explicitlyOptional.genericWorkCoreJoinEnabled, true);
+  assert.equal(explicitlyOptional.genericWorkCoreJoinRequired, false);
+
+  for (const [name, value, error] of [
+    ["GENERIC_WORK_CORE_JOIN_ENABLED", "1", "generic_work_core_join_enabled_flag_invalid"],
+    ["GENERIC_WORK_CORE_JOIN_ENABLED", "yes", "generic_work_core_join_enabled_flag_invalid"],
+    ["GENERIC_WORK_CORE_JOIN_ENABLED", "TRUE", "generic_work_core_join_enabled_flag_invalid"],
+    ["GENERIC_WORK_CORE_JOIN_ENABLED", " true ", "generic_work_core_join_enabled_flag_invalid"],
+    ["GENERIC_WORK_CORE_JOIN_REQUIRED", "enabled", "generic_work_core_join_required_flag_invalid"],
+  ]) {
+    const invalid = loadConfig({ [name]: value });
+    assert.equal(invalid.genericWorkCoreJoinEnabled, false);
+    assert.equal(invalid.genericWorkCoreJoinRequired, true);
+    assert.equal(invalid.genericWorkCoreJoinConfigurationValid, false);
+    assert.equal(invalid.genericWorkCoreJoinConfigurationError, error);
+  }
+  const contradictory = loadConfig({ GENERIC_WORK_CORE_JOIN_REQUIRED: "true" });
+  assert.equal(contradictory.genericWorkCoreJoinConfigurationValid, false);
+  assert.equal(
+    contradictory.genericWorkCoreJoinConfigurationError,
+    "generic_work_core_join_required_without_enabled",
+  );
+});
+
+test("Policy Registry lifecycle is strict, code-dark by default, and requires an HTTPS Core origin", () => {
+  const disabled = loadConfig({});
+  assert.equal(disabled.policyRegistryLifecycleEnabled, false);
+  assert.equal(disabled.policyRegistryLifecycleRequired, false);
+  assert.equal(disabled.policyRegistryLifecycleConfigurationValid, true);
+
+  const enabled = loadConfig({
+    UNIVERSAL_CORE_URL: "https://core.example.test",
+    NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED: "true",
+    NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED: "true",
+  });
+  assert.equal(enabled.policyRegistryLifecycleEnabled, true);
+  assert.equal(enabled.policyRegistryLifecycleRequired, true);
+  assert.equal(enabled.policyRegistryLifecycleConfigurationValid, true);
+  assert.equal(enabled.policyRegistryLifecycleCoreOriginValid, true);
+
+  for (const [name, value, error] of [
+    ["NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED", "1", "nyra_policy_registry_lifecycle_enabled_flag_invalid"],
+    ["NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED", "TRUE", "nyra_policy_registry_lifecycle_enabled_flag_invalid"],
+    ["NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED", "yes", "nyra_policy_registry_lifecycle_required_flag_invalid"],
+  ]) {
+    const invalid = loadConfig({ UNIVERSAL_CORE_URL: "https://core.example.test", [name]: value });
+    assert.equal(invalid.policyRegistryLifecycleEnabled, false);
+    assert.equal(invalid.policyRegistryLifecycleRequired, true);
+    assert.equal(invalid.policyRegistryLifecycleConfigurationValid, false);
+    assert.equal(invalid.policyRegistryLifecycleConfigurationError, error);
+  }
+
+  const contradictory = loadConfig({ NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED: "true" });
+  assert.equal(contradictory.policyRegistryLifecycleConfigurationError,
+    "nyra_policy_registry_lifecycle_required_without_enabled");
+  const insecure = loadConfig({
+    UNIVERSAL_CORE_URL: "http://core.example.test",
+    NYRA_POLICY_REGISTRY_LIFECYCLE_ENABLED: "true",
+  });
+  assert.equal(insecure.policyRegistryLifecycleConfigurationError,
+    "nyra_policy_registry_lifecycle_core_origin_invalid");
+});
+
 test("accepts a strong independent agent-presence signing secret by UTF-8 byte length", () => {
   const signatureSecret = "é".repeat(16);
   const independent = loadConfig({

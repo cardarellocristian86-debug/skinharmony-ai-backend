@@ -11,6 +11,9 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "core_semantic_select",
   "core_capability_read",
   "core_capability_invoke",
+  "nyra_policy_registry_activate",
+  "nyra_policy_registry_rollback",
+  "nyra_policy_registry_reconcile",
 ]);
 
 const DIRECT_ONLY = new Set(COMPACT_MCP_TOOL_NAMES);

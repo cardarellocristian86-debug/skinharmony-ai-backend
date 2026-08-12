@@ -11,10 +11,17 @@ import { createSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createResearchCortex, createResearchHandlers } from "./research-cortex.js";
 import { createDecisionLedger } from "./decision-ledger.js";
 import {
+  authorizeDttExactWorkRead,
+  authorizeGenericWorkCoreJoinExactWorkRead,
   coreJoinIdempotencyKey,
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
-import { createWorkContinuityV2Store, deriveAuthenticatedTenantWorkAcl } from "./work-continuity-v2-store.js";
+import {
+  createGenericWorkCoreJoinMcpCoordinator,
+  createGenericWorkCoreJoinVerifier,
+  createWorkContinuityV2Store,
+  deriveAuthenticatedTenantWorkAcl,
+} from "./work-continuity-v2-store.js";
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
 import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
 import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
@@ -39,6 +46,20 @@ import {
 } from "./causal-continuity.js";
 
 const config = loadConfig();
+const genericWorkCoreJoinActivationEnabled = config.genericWorkCoreJoinEnabled === true &&
+  config.genericWorkCoreJoinConfigurationValid === true;
+let genericWorkCoreJoinVerifier = null;
+if (genericWorkCoreJoinActivationEnabled) {
+  try {
+    genericWorkCoreJoinVerifier = createGenericWorkCoreJoinVerifier({
+      publicKey: config.genericWorkCoreJoinPublicKey,
+      keyId: config.genericWorkCoreJoinKeyId,
+    });
+  } catch {
+    genericWorkCoreJoinVerifier = null;
+  }
+}
+const genericWorkCoreJoinVerifierMetadata = genericWorkCoreJoinVerifier?.metadata || null;
 const webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowedOrigins });
 const hostNativeContinuityTools = new Set([
   "work_continuity_native_plan",
@@ -48,8 +69,8 @@ const hostNativeContinuityTools = new Set([
   "work_continuity_closure_finalize",
 ]);
 TOOLS.push(...WORK_CONTINUITY_TOOLS.filter((tool) =>
-  config.hostNativeAgentProtocolEnabled === true ||
-  !hostNativeContinuityTools.has(tool.name)));
+  (config.hostNativeAgentProtocolEnabled === true || !hostNativeContinuityTools.has(tool.name)) &&
+  (tool.name !== "work_continuity_generic_core_join" || genericWorkCoreJoinActivationEnabled)));
 TOOLS.push(...NYRA_NATIVE_TEAM_TOOLS);
 TOOLS.push(...NYRA_AUTOPILOT_TOOLS);
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...HOST_NATIVE_TOOLS);
@@ -78,9 +99,7 @@ const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store(
   pool: primaryDatabasePool,
   legacyRuntime: workContinuityRuntime,
   verifierReceiptSigningSecret: config.dttAgentIdentitySigningSecret,
-  coreJoinVerifier: config.genericWorkCoreJoinPublicKey && config.genericWorkCoreJoinKeyId ? {
-    publicKey: config.genericWorkCoreJoinPublicKey, keyId: config.genericWorkCoreJoinKeyId,
-  } : null,
+  coreJoinVerifier: genericWorkCoreJoinVerifier,
 }) : null;
 const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
   pool: primaryDatabasePool,
@@ -94,6 +113,8 @@ const startupReadiness = {
   continuityInitializationFailed: false,
   decisionLedgerInitialized: false,
   decisionLedgerInitializationFailed: false,
+  genericWorkCoreJoinStoreInitialized: false,
+  genericWorkCoreJoinStoreInitializationFailed: false,
 };
 const workContinuityAutomation = workContinuityRuntime
   ? createWorkContinuityAutomation({ runtime: workContinuityRuntime })
@@ -113,6 +134,17 @@ if (continuityRequired && workContinuityRuntime) {
     .catch(() => {
       startupReadiness.continuityInitializationFailed = true;
       console.error("[skinharmony-core-mcp] continuity_initialization_failed");
+    });
+}
+if (genericWorkCoreJoinActivationEnabled && workContinuityV2Store) {
+  void Promise.resolve()
+    .then(() => workContinuityV2Store.initialize())
+    .then(() => {
+      startupReadiness.genericWorkCoreJoinStoreInitialized = true;
+    })
+    .catch(() => {
+      startupReadiness.genericWorkCoreJoinStoreInitializationFailed = true;
+      console.error("[skinharmony-core-mcp] generic_work_core_join_store_initialization_failed");
     });
 }
 if (config.decisionLedgerRequired === true && decisionLedger) {
@@ -139,11 +171,103 @@ const {
 if (config.mandatoryAgentPresenceEnabled === true && typeof registerAuthenticatedPresence !== "function") {
   throw new Error("mandatory_agent_presence_registry_unavailable");
 }
+
+async function resolveDttWorkBinding(identity, workId) {
+  requireTenantWorkCapability(identity, "read");
+  if (typeof workContinuityRuntime?.resolveDttWorkLeaseBinding !== "function"
+      || typeof workContinuityV2Store?.readWork !== "function") {
+    throw new Error("dtt_work_binding_unavailable");
+  }
+  try {
+    await authorizeDttExactWorkRead({
+      store: workContinuityV2Store,
+      identity: withTenantWorkAcl(identity),
+      tenant_id: identity.tenantId,
+      work_id: workId,
+    });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if (reason === "dtt_work_binding_unavailable" || reason === "dtt_work_acl_denied") {
+      throw error;
+    }
+    const denied = new Error("dtt_work_acl_denied");
+    denied.code = "dtt_work_acl_denied";
+    throw denied;
+  }
+  try {
+    return await workContinuityRuntime.resolveDttWorkLeaseBinding(identity, {
+      work_id: workId,
+    });
+  } catch (error) {
+    if ([
+      "dtt_work_active_lease_required",
+      "dtt_work_signed_presence_required",
+      "gallery_signed_presence_required",
+      "gallery_participant_presence_mismatch",
+      "tenant_work_membership_required",
+      "work_id_invalid",
+    ].includes(String(error?.code || error?.message || ""))) {
+      throw error;
+    }
+    const unavailable = new Error("dtt_work_binding_unavailable");
+    unavailable.code = "dtt_work_binding_unavailable";
+    throw unavailable;
+  }
+}
+
+async function resolveGenericWorkCoreJoinBinding(identity, workId) {
+  requireTenantWorkCapability(identity, "read");
+  if (typeof workContinuityRuntime?.resolveGenericWorkCoreJoinLeaseBinding !== "function"
+      || typeof workContinuityV2Store?.readWork !== "function") {
+    throw new Error("generic_work_core_join_work_binding_unavailable");
+  }
+  try {
+    await authorizeGenericWorkCoreJoinExactWorkRead({
+      store: workContinuityV2Store,
+      identity: withTenantWorkAcl(identity),
+      tenant_id: identity.tenantId,
+      work_id: workId,
+    });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if ([
+      "generic_work_core_join_work_binding_unavailable",
+      "generic_work_core_join_work_acl_denied",
+    ].includes(reason)) {
+      throw error;
+    }
+    const denied = new Error("generic_work_core_join_work_acl_denied");
+    denied.code = "generic_work_core_join_work_acl_denied";
+    throw denied;
+  }
+  try {
+    return await workContinuityRuntime.resolveGenericWorkCoreJoinLeaseBinding(identity, {
+      work_id: workId,
+    });
+  } catch (error) {
+    if ([
+      "generic_work_core_join_active_lease_required",
+      "generic_work_core_join_signed_presence_required",
+      "generic_work_core_join_principal_mismatch",
+      "generic_work_core_join_work_acl_denied",
+      "generic_work_core_join_work_id_invalid",
+    ].includes(String(error?.code || error?.message || ""))) {
+      throw error;
+    }
+    const unavailable = new Error("generic_work_core_join_work_binding_unavailable");
+    unavailable.code = "generic_work_core_join_work_binding_unavailable";
+    throw unavailable;
+  }
+}
+
 const coreHandlers = createCoreHandlers(config, {
   contextProvider: memoryFabric ? (input, identity) => memoryFabric.context(input, identity) : null,
   sharedMemoryBootstrap,
   decisionLedger,
   remediationStore: workContinuityRuntime?.remediationStore,
+  resolveDttWorkBinding,
+  resolveGenericWorkCoreJoinBinding,
+  genericWorkCoreJoinVerifierMetadata,
   tenantWorkGallery: workContinuityRuntime ? {
     load: async (identity, input = {}) => {
       requireTenantWorkCapability(identity, "read");
@@ -160,23 +284,12 @@ const coreHandlers = createCoreHandlers(config, {
       });
     },
     verifyActiveLease: async (identity, workId) => {
-      requireTenantWorkCapability(identity, "read");
-      const state = await workContinuityRuntime.read(identity, { work_id: workId });
-      const sessionId = String(identity.agentPresence?.session_id || "");
-      const agentId = String(identity.agentPresence?.agent_id || identity.subject || identity.agentId || "");
-      const participant = state.participants.find((item) => String(item.session_id) === sessionId &&
-        String(item.agent_id) === agentId && item.active === true);
-      const lease = state.leases.find((item) => String(item.session_id) === sessionId &&
-        item.status === "active" && Date.parse(item.expires_at) > Date.now());
-      if (!participant || !lease) return null;
-      return {
-        lease_id: lease.lease_id,
-        session_id: sessionId,
-        agent_id: agentId,
-        session_fingerprint: identity.agentPresence?.session_fingerprint || null,
-        expires_at: lease.expires_at,
-        surfaces: lease.surfaces || [],
-      };
+      try {
+        return await resolveDttWorkBinding(identity, workId);
+      } catch (error) {
+        if (error?.message === "dtt_work_active_lease_required") return null;
+        throw error;
+      }
     },
   } : null,
 });
@@ -187,6 +300,16 @@ const causalContinuityHandlers = createCausalContinuityHandlers({
     tenant_id,
     agent_presence,
   }),
+});
+const genericWorkCoreJoinCoordinator = createGenericWorkCoreJoinMcpCoordinator({
+  enabled: genericWorkCoreJoinActivationEnabled,
+  store: workContinuityV2Store,
+  readiness: () => ({
+    initialized: startupReadiness.genericWorkCoreJoinStoreInitialized === true,
+    initializationFailed:
+      startupReadiness.genericWorkCoreJoinStoreInitializationFailed === true,
+  }),
+  issueCore: (request, identity) => coreHandlers.generic_work_core_join_issue(request, identity),
 });
 const researchCortex = config.researchCortexRoot
   ? createResearchCortex(config, {
@@ -692,22 +815,26 @@ const baseHandlers = {
     },
     tenant_work_stale_reconcile_dry_run: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.reconcileStaleDryRun(withTenantWorkAcl(identity), args) }),
+    tenant_work_legacy_reconcile_close: async (args, identity) => {
+      await requireOwnerGovernance(
+        identity,
+        "work.continuity.legacy_reconcile_close",
+        `${args.work_id}:${args.action}`,
+      );
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.reconcileLegacyClosed(withTenantWorkAcl(identity), args),
+        dedicated_core_gate: {
+          authorized: true,
+          authority: "universal_core",
+          route: "/v1/action-evaluator",
+          server_owned: true,
+        } });
+    },
     work_continuity_generic_core_join: async (args, identity) => {
       const aclIdentity = withTenantWorkAcl(identity);
-      const request = await workContinuityV2Store.buildGenericCoreJoinRequest(aclIdentity, args);
-      const response = await coreHandlers.generic_work_core_join_issue(request, identity);
-      const verdict = response?.structuredContent?.generic_core_join_verdict;
-      if (response?.structuredContent?.dedicated_core_gate?.authorized !== true ||
-          verdict?.decision !== "GENERIC_WORK_CORE_JOIN_ELIGIBLE" || verdict?.execution_authorized !== false ||
-          verdict?.tenant_id !== identity.tenantId || verdict?.work_id !== args.work_id) {
-        throw new Error("generic_work_core_join_invalid");
-      }
-      if (!workContinuityV2Store.verifyCoreJoinVerdict?.(verdict)) throw new Error("generic_work_core_join_signature_invalid");
-      const result = await workContinuityV2Store.persistCoreJoin({ ...aclIdentity, coreJoinTrusted: true }, {
-        work_id: args.work_id, core_join_digest: verdict.verdict_digest, core_join_context: verdict,
-      });
+      const { result, verdict } = await genericWorkCoreJoinCoordinator({ args, identity, aclIdentity });
       return continuityTextResult({ ok: true, result, generic_core_join_verdict: verdict,
-        dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work/core-join-verdicts", server_owned: true } });
+        dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work-continuity/generic-core-join", server_owned: true } });
     },
     work_continuity_generic_closure_evaluate: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.evaluateGenericClosure(withTenantWorkAcl(identity), args) }),
@@ -993,10 +1120,20 @@ function isAgentPresenceBootstrapCall(toolName, args = {}) {
       args?.capability_id === "agent_heartbeat");
 }
 
+const POLICY_REGISTRY_PREFLIGHT_OPERATION = Object.freeze({
+  nyra_policy_registry_activate: "policy.snapshot.activate",
+  nyra_policy_registry_rollback: "policy.snapshot.rollback",
+  nyra_policy_registry_reconcile: "policy.snapshot.reconcile",
+});
+
 const app = createApp(config, {
   handlers,
   toolSurface: "compact",
   readiness: startupReadiness,
+  genericWorkCoreJoin: {
+    storeConfigured: Boolean(workContinuityV2Store),
+    verifier: genericWorkCoreJoinVerifier,
+  },
   postgresMajorVersionProbe,
   beforeToolCall: async ({ identity, toolName, args }) => {
     // Native reports are authenticated by the child transport binding plus the
@@ -1036,13 +1173,14 @@ const app = createApp(config, {
       if (!requiresGenericWorkPreflight(toolName, args)) return { preflight: null, ledgerContext };
       const result = await coreHandlers.work_preflight({
         request: summarizeToolRequest(toolName, args),
-        operation_type: toolName,
+        operation_type: POLICY_REGISTRY_PREFLIGHT_OPERATION[toolName] || toolName,
         tool_name: toolName,
         // Dynamic capabilities that require a preflight must receive the
         // complete server-issued envelope. The compact response intentionally
         // omits governance detail and therefore cannot satisfy Universal
         // Core's preflight gate.
         response_mode: "full",
+        work_id: args.work_id,
         project_id: args.project_id,
         session_id: identity.agentPresence?.session_id || args.session_id,
         agent_id: identity.agentPresence?.agent_id || args.agent_id || args.from_agent_id || "connected_ai",

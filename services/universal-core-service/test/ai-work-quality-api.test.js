@@ -94,7 +94,7 @@ async function post(base, body, tenantId = TENANT) {
   return { status: response.status, json: await response.json() };
 }
 
-test("work-quality evaluation is gateway tenant-bound and accepts only trusted evidence", async (t) => {
+test("work-quality evaluation is gateway tenant-and-Work-bound and accepts only trusted evidence", async (t) => {
   const verificationCalls = [];
   const service = createUniversalCoreService({
     storageRoot: path.join(os.tmpdir(), `ai-work-quality-api-${Date.now()}-${Math.random()}`),
@@ -107,6 +107,7 @@ test("work-quality evaluation is gateway tenant-bound and accepts only trusted e
         verificationCalls.push(input);
         return {
           verified: input.tenant_id === TENANT
+            && input.work_id === "work-quality-1"
             && input.artifact_id === RECEIPT.artifact_id
             && input.content_digest === RECEIPT.content_digest
             && input.source_reference === RECEIPT.source_reference,
@@ -130,7 +131,11 @@ test("work-quality evaluation is gateway tenant-bound and accepts only trusted e
   assert.equal(valid.json.authorization.allowed, false);
   assert.equal(valid.json.authorization.execution_authorized, false);
   assert.equal(valid.json.guardrail.execution_allowed, false);
-  assert.deepEqual(verificationCalls.at(-1), { tenant_id: TENANT, ...RECEIPT });
+  assert.deepEqual(verificationCalls.at(-1), {
+    tenant_id: TENANT,
+    work_id: "work-quality-1",
+    ...RECEIPT,
+  });
 
   const inventedReceipt = { ...RECEIPT, content_digest: `sha256:${"d".repeat(64)}` };
   const invented = await post(base, {

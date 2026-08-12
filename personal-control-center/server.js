@@ -7,7 +7,10 @@ const {
   createNyraDeepBranchV2Federation,
   createPersistentReplayGuard,
 } = require("./lib/nyra-deep-branch-v2-federation");
-const { createNyraPolicyRegistryAttester } = require("./lib/nyra-policy-registry-attestation");
+const {
+  createNyraPolicyRegistryAttester,
+  createNyraPolicyRegistryLocalTestSigner,
+} = require("./lib/nyra-policy-registry-attestation");
 const {
   compileIntent,
   detectIntentDrift,
@@ -168,7 +171,19 @@ const nyraDeepV2Federation = createNyraDeepBranchV2Federation({
   env: process.env,
   replayGuard: nyraDeepV2ReplayGuard,
 });
-const nyraPolicyRegistryAttester = createNyraPolicyRegistryAttester({ env: process.env });
+const nyraPolicyRegistryLocalTestSigner = process.env.NODE_ENV !== "production" &&
+  process.env.NYRA_POLICY_REGISTRY_ALLOW_LOCAL_TEST_SIGNER === "true" &&
+  process.env.NYRA_POLICY_REGISTRY_TEST_LOCAL_SIGNER_PRIVATE_KEY
+  ? createNyraPolicyRegistryLocalTestSigner({
+      privateKey: process.env.NYRA_POLICY_REGISTRY_TEST_LOCAL_SIGNER_PRIVATE_KEY,
+      keyId: process.env.NYRA_POLICY_REGISTRY_NYRA_KEY_ID,
+    })
+  : undefined;
+const nyraPolicyRegistryAttester = createNyraPolicyRegistryAttester({
+  env: process.env,
+  testSigner: nyraPolicyRegistryLocalTestSigner,
+  allowLocalSignerForTests: Boolean(nyraPolicyRegistryLocalTestSigner),
+});
 
 function envTruthy(name) {
   return ["1", "true", "yes", "on"].includes(String(process.env[name] || "").trim().toLowerCase());
@@ -293,6 +308,28 @@ function authenticateNyraRequest(req) {
   };
 }
 
+function authorizeExactNyraPolicyRegistryRoute(req, res, next) {
+  const expected = String(process.env.NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY || "").trim();
+  const supplied = String(req.get("x-nyra-policy-registry-service-key") || "").trim();
+  const exactTarget = req.method === "POST" && req.path === NYRA_POLICY_REGISTRY_ATTESTATION_PATH &&
+    req.originalUrl === NYRA_POLICY_REGISTRY_ATTESTATION_PATH;
+  const dedicatedAuthentication = req.nyraAuth?.method === "policy_registry_core_service_key" &&
+    Boolean(expected) && Boolean(supplied) && safeSecretEqual(expected, supplied);
+  if (exactTarget && dedicatedAuthentication) {
+    next();
+    return;
+  }
+  const code = expected ? "nyra_policy_registry_auth_required" : "nyra_policy_registry_unavailable";
+  res.setHeader("Cache-Control", "no-store");
+  appendNyraSecurityAudit("policy_registry_route_auth_rejected", {
+    request_id: req.nyraRequestId,
+    method: req.method,
+    path: req.path,
+    reason: code,
+  });
+  res.status(expected ? 401 : 503).json({ ok: false, error: code, request_id: req.nyraRequestId });
+}
+
 app.disable("x-powered-by");
 app.use((req, res, next) => {
   const requestId = requestIdFor(req);
@@ -342,7 +379,7 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: NYRA_BODY_LIMIT }));
 
-app.get("/healthz", (_req, res) => {
+app.get("/healthz", async (_req, res) => {
   const deepV2FederationConfig = nyraDeepV2Federation.config();
   const replayStorePersistent = Boolean(
     nyraStorageRoot || configuredNyraDeepV2ReplayPath,
@@ -361,8 +398,13 @@ app.get("/healthz", (_req, res) => {
     && replayStoreReady
     && replayStoreDurable
   );
+  // The probe is bounded and internally single-flight/cooldown protected. It
+  // verifies both the replay backend and a locally verified signer challenge
+  // without creating a Policy Registry replay record.
+  await nyraPolicyRegistryAttester.probe();
   const policyRegistryAttestation = nyraPolicyRegistryAttester.status();
-  const policyRegistryReady = !policyRegistryAttestation.enabled || policyRegistryAttestation.ready;
+  const policyRegistryReady = !policyRegistryAttestation.render_gate_required ||
+    policyRegistryAttestation.ready;
   const healthy = federationReady && policyRegistryReady;
   res.status(healthy ? 200 : 503).json({
     ok: healthy,
@@ -389,28 +431,36 @@ app.get("/healthz", (_req, res) => {
   });
 });
 
-app.post(NYRA_POLICY_REGISTRY_ATTESTATION_PATH, (req, res) => {
+app.post(NYRA_POLICY_REGISTRY_ATTESTATION_PATH, authorizeExactNyraPolicyRegistryRoute, async (req, res) => {
   try {
-    const attestation = nyraPolicyRegistryAttester.attest({
-      envelope: req.body?.envelope,
-      core_signature: req.body?.core_signature,
-    });
+    const body = req.body;
+    if (!body || typeof body !== "object" || Array.isArray(body) ||
+      Object.keys(body).sort().join("\0") !== ["core_signature", "envelope"].join("\0")) {
+      throw new Error("nyra_policy_attestation_request_schema_invalid");
+    }
+    const attestation = await nyraPolicyRegistryAttester.attest(body);
     appendNyraSecurityAudit("policy_registry_attestation_issued", {
       request_id: req.nyraRequestId,
       tenant_id: attestation.envelope.tenant_id,
       operation_id: attestation.envelope.operation_id,
       action: attestation.envelope.action,
       snapshot_digest: attestation.envelope.snapshot_digest,
+      compiler_provenance_digest: attestation.envelope.compiler_provenance_digest,
       idempotent_replay: attestation.idempotent_replay,
     });
     res.json({ ok: true, attestation });
   } catch (error) {
     const code = String(error?.message || "nyra_policy_attestation_failed").slice(0, 120);
+    const unavailable = code === "nyra_policy_attestation_unavailable" ||
+      code === "nyra_policy_attestation_replay_store_unavailable" ||
+      code === "nyra_policy_attestation_replay_response_invalid" ||
+      code === "nyra_policy_signer_timeout" ||
+      code === "nyra_policy_signer_unavailable";
     appendNyraSecurityAudit("policy_registry_attestation_rejected", {
       request_id: req.nyraRequestId,
       reason: code,
     });
-    res.status(code === "nyra_policy_attestation_unavailable" ? 503 : 403).json({
+    res.status(unavailable ? 503 : 403).json({
       ok: false,
       error: code,
       request_id: req.nyraRequestId,

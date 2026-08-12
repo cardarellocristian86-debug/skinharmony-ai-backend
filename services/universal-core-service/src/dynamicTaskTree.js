@@ -4,7 +4,8 @@ import {
 } from "./verificationEvidenceContract.js";
 import { guardInterAgentEnvelope } from "../../shared/handoff-injection-guard.mjs";
 
-const SCHEMA_VERSION = "dynamic_task_tree_v2";
+const SCHEMA_VERSION = "dynamic_task_tree_v3";
+const OUTCOME_RECEIPT_SCHEMA_VERSION = "dynamic_task_tree_outcome_receipt_v2";
 const NODE_KINDS = new Set(["analysis", "research", "decision", "agent", "ai_model", "tool", "human_gate", "verification", "join", "rollback"]);
 const TERMINAL = new Set(["verified", "quarantined", "failed", "cancelled", "pruned"]);
 const HARD_LIMITS = Object.freeze({
@@ -36,6 +37,33 @@ function requireText(value, field, max = 160) {
   return normalized;
 }
 
+function requireWorkId(value) {
+  if (typeof value !== "string") throw new Error("work_id_invalid");
+  const normalized = value.trim().toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized)) {
+    throw new Error("work_id_invalid");
+  }
+  return normalized;
+}
+
+function requireStoredWorkBinding(tree) {
+  if (!Object.hasOwn(tree || {}, "work_id") || tree.work_id === null || String(tree.work_id || "").trim() === "") {
+    throw new Error("dtt_work_binding_required");
+  }
+  try {
+    return requireWorkId(tree.work_id);
+  } catch {
+    throw new Error("dynamic_task_tree_state_corrupt");
+  }
+}
+
+function requireIdempotencyKey(value) {
+  if (typeof value !== "string") throw new Error("idempotency_key_invalid");
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 200) throw new Error("idempotency_key_invalid");
+  return normalized;
+}
+
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") {
@@ -46,6 +74,10 @@ function canonical(value) {
 
 function digest(prefix, value) {
   return `${prefix}_${crypto.createHash("sha256").update(canonical(value)).digest("hex").slice(0, 24)}`;
+}
+
+function digestHex(value) {
+  return crypto.createHash("sha256").update(canonical(value)).digest("hex");
 }
 
 function integer(value, field, minimum, maximum) {
@@ -259,11 +291,87 @@ function validateNodes(nodes, limits) {
 }
 
 function publicTree(tree) {
-  return clone(tree);
+  const { outcome_idempotency: _outcomeIdempotency, ...visible } = tree;
+  return clone(visible);
 }
 
-export function buildDynamicTaskTreeContract({ tenant_id, objective, nodes, limits = {} } = {}) {
+function hasExactKeys(value, expected) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const required = [...expected].sort();
+  return actual.length === required.length && actual.every((key, index) => key === required[index]);
+}
+
+function replayOutcomeReceipt({ receipt, request_digest, scope_digest, requested_outcome, tree, node }) {
+  if (!hasExactKeys(receipt, ["schema_version", "request_digest", "scope_digest", "result"])) {
+    throw new Error("dynamic_task_tree_state_corrupt");
+  }
+  if (
+    receipt.schema_version !== OUTCOME_RECEIPT_SCHEMA_VERSION
+    || !/^[a-f0-9]{64}$/.test(receipt.request_digest)
+    || !/^[a-f0-9]{64}$/.test(receipt.scope_digest)
+  ) {
+    throw new Error("dynamic_task_tree_state_corrupt");
+  }
+  if (receipt.request_digest !== request_digest) throw new Error("outcome_idempotency_key_conflict");
+  if (receipt.scope_digest !== scope_digest) throw new Error("dynamic_task_tree_state_corrupt");
+
+  const result = receipt.result;
+  const commonValid = result?.tree_id === tree.tree_id
+    && result?.work_id === tree.work_id
+    && result?.node_id === node.node_id
+    && result?.execution_authorized === false;
+  if (!commonValid) throw new Error("dynamic_task_tree_state_corrupt");
+  const compatibleStates = requested_outcome === "verified"
+    ? new Set(["verified", "quarantined"])
+    : new Set(["retry_proposed", "fallback_proposed", "failed", "quarantined"]);
+  if (!compatibleStates.has(result.state)) throw new Error("dynamic_task_tree_state_corrupt");
+
+  if (result.state === "verified") {
+    if (!hasExactKeys(result, ["tree_id", "work_id", "node_id", "state", "next", "execution_authorized"])
+      || result.next !== "dependency_scheduler"
+      || node.status !== "verified") {
+      throw new Error("dynamic_task_tree_state_corrupt");
+    }
+  } else if (result.state === "quarantined") {
+    if (!hasExactKeys(result, ["tree_id", "work_id", "node_id", "state", "next", "execution_authorized"])
+      || result.next !== "manual_security_review"
+      || node.status !== "quarantined") {
+      throw new Error("dynamic_task_tree_state_corrupt");
+    }
+  } else if (result.state === "retry_proposed") {
+    if (!hasExactKeys(result, ["tree_id", "work_id", "node_id", "state", "attempt", "next", "execution_authorized"])
+      || result.next !== "requires_core_review"
+      || !Number.isInteger(result.attempt)
+      || result.attempt < 1
+      || result.attempt > node.retry_policy.max_attempts
+      || result.attempt > node.attempts) {
+      throw new Error("dynamic_task_tree_state_corrupt");
+    }
+  } else if (result.state === "fallback_proposed") {
+    if (!hasExactKeys(result, ["tree_id", "work_id", "node_id", "state", "fallback_node_id", "next", "execution_authorized"])
+      || result.next !== "requires_core_review"
+      || !node.fallback_node_id
+      || result.fallback_node_id !== node.fallback_node_id
+      || node.status !== "failed") {
+      throw new Error("dynamic_task_tree_state_corrupt");
+    }
+  } else if (result.state === "failed") {
+    if (!hasExactKeys(result, ["tree_id", "work_id", "node_id", "state", "next", "execution_authorized"])
+      || result.next !== "replan_or_cancel"
+      || node.fallback_node_id
+      || node.status !== "failed") {
+      throw new Error("dynamic_task_tree_state_corrupt");
+    }
+  } else {
+    throw new Error("dynamic_task_tree_state_corrupt");
+  }
+  return clone(result);
+}
+
+export function buildDynamicTaskTreeContract({ tenant_id, work_id, objective, nodes, limits = {} } = {}) {
   const tenantId = requireText(tenant_id, "tenant_id", 120);
+  const workId = requireWorkId(work_id);
   const normalizedLimits = normalizeLimits(limits);
   const normalizedNodes = (Array.isArray(nodes) ? nodes : [])
     .map((node) => normalizeNode(node, normalizedLimits))
@@ -272,6 +380,7 @@ export function buildDynamicTaskTreeContract({ tenant_id, objective, nodes, limi
   const boundedNodes = withDerivedDepths(normalizedNodes, validation.depths);
   const stable = {
     tenant_id: tenantId,
+    work_id: workId,
     objective: requireText(objective, "objective", 4_000),
     limits: normalizedLimits,
     nodes: boundedNodes.map(({ status, attempts, evidence, ...node }) => node),
@@ -291,7 +400,7 @@ export function buildDynamicTaskTreeContract({ tenant_id, objective, nodes, limi
       external_actions: false,
       core_join_required: true,
     },
-    created_from: "deterministic_tenant_bound_contract",
+    created_from: "deterministic_tenant_and_work_bound_contract",
     kill_signal: null,
     core_join: null,
   };
@@ -304,14 +413,32 @@ export function createDynamicTaskTreeRuntime({
 } = {}) {
   const trees = new Map();
   const revisions = new WeakMap();
+  const outcomeLocks = new Map();
 
-  async function treeFor({ tenant_id, tree_id }) {
+  async function serializeOutcome(scope, operation) {
+    const prior = outcomeLocks.get(scope) || Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    outcomeLocks.set(scope, current);
+    await prior;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (outcomeLocks.get(scope) === current) outcomeLocks.delete(scope);
+    }
+  }
+
+  async function treeFor({ tenant_id, work_id, tree_id }) {
     const tenantId = requireText(tenant_id, "tenant_id", 120);
+    const workId = requireWorkId(work_id);
     const treeId = requireText(tree_id, "tree_id", 160);
-    const stored = state_store ? await state_store.load({ tenant_id: tenantId, tree_id: treeId }) : null;
+    const stored = state_store ? await state_store.load({ tenant_id: tenantId, work_id: workId, tree_id: treeId }) : null;
     const tree = stored?.tree || trees.get(treeId);
     if (!tree) throw new Error("task_tree_not_found");
     if (tree.tenant_id !== tenantId) throw new Error("cross_tenant_task_tree_denied");
+    const storedWorkId = requireStoredWorkBinding(tree);
+    if (storedWorkId !== workId) throw new Error("cross_work_task_tree_denied");
     if (stored) revisions.set(tree, stored.revision);
     return tree;
   }
@@ -338,14 +465,19 @@ export function createDynamicTaskTreeRuntime({
     for (const node of tree.nodes) {
       const evidence = await validateVerificationEvidenceContractAsync(node.evidence, {
         tenant_id: tree.tenant_id,
+        work_id: tree.work_id,
         tree_id: tree.tree_id,
         node_id: node.node_id,
         minimum_approvals: node.kind === "verification"
           ? node.verification_policy.required_approvals
           : 1,
-        resolve_verifier_identity,
+        resolve_verifier_identity: typeof resolve_verifier_identity === "function"
+          ? (input) => resolve_verifier_identity({ ...input, work_id: tree.work_id })
+          : null,
         require_verified_identities: true,
-        resolve_evidence_artifact,
+        resolve_evidence_artifact: typeof resolve_evidence_artifact === "function"
+          ? (input) => resolve_evidence_artifact({ ...input, work_id: tree.work_id })
+          : null,
         require_registered_artifacts: true,
       });
       if (node.kind === "verification") {
@@ -362,7 +494,13 @@ export function createDynamicTaskTreeRuntime({
     return {
       tree_id: tree.tree_id,
       tenant_id: tree.tenant_id,
-      evidence_set_digest: digest("dttje", normalizedEvidence),
+      work_id: tree.work_id,
+      evidence_set_digest: digest("dttje", {
+        tenant_id: tree.tenant_id,
+        work_id: tree.work_id,
+        tree_id: tree.tree_id,
+        evidence: normalizedEvidence,
+      }),
       verification_node_count: verificationNodes.length,
       verified_node_count: tree.nodes.length,
       ready: true,
@@ -373,15 +511,29 @@ export function createDynamicTaskTreeRuntime({
   return {
     async create(input) {
       const contract = buildDynamicTaskTreeContract(input);
-      const stored = state_store ? await state_store.load({ tenant_id: contract.tenant_id, tree_id: contract.tree_id }) : null;
+      const stored = state_store ? await state_store.load({
+        tenant_id: contract.tenant_id,
+        work_id: contract.work_id,
+        tree_id: contract.tree_id,
+      }) : null;
       const existing = stored?.tree || trees.get(contract.tree_id);
-      if (existing) return { ...publicTree(existing), reused: true };
+      if (existing) {
+        const existingWorkId = requireStoredWorkBinding(existing);
+        if (existingWorkId !== contract.work_id) throw new Error("cross_work_task_tree_denied");
+        return { ...publicTree(existing), reused: true };
+      }
       try {
         await persist(contract);
       } catch (error) {
         if (error.message !== "dynamic_task_tree_revision_conflict") throw error;
-        const raced = state_store ? await state_store.load({ tenant_id: contract.tenant_id, tree_id: contract.tree_id }) : null;
+        const raced = state_store ? await state_store.load({
+          tenant_id: contract.tenant_id,
+          work_id: contract.work_id,
+          tree_id: contract.tree_id,
+        }) : null;
         if (!raced?.tree || raced.tree.tenant_id !== contract.tenant_id) throw error;
+        const racedWorkId = requireStoredWorkBinding(raced.tree);
+        if (racedWorkId !== contract.work_id) throw new Error("cross_work_task_tree_denied");
         return { ...publicTree(raced.tree), reused: true };
       }
       return { ...publicTree(contract), reused: false };
@@ -391,8 +543,8 @@ export function createDynamicTaskTreeRuntime({
       return publicTree(await treeFor(input));
     },
 
-    async proposeExpansion({ tenant_id, tree_id, parent_node_id, nodes }) {
-      const tree = await treeFor({ tenant_id, tree_id });
+    async proposeExpansion({ tenant_id, work_id, tree_id, parent_node_id, nodes }) {
+      const tree = await treeFor({ tenant_id, work_id, tree_id });
       if (tree.status === "cancelled") throw new Error("task_tree_cancelled");
       const parentId = requireText(parent_node_id, "parent_node_id", 120);
       const parent = tree.nodes.find((node) => node.node_id === parentId);
@@ -405,9 +557,10 @@ export function createDynamicTaskTreeRuntime({
       const validation = validateNodes(combined, tree.limits);
       const boundedCandidates = withDerivedDepths(candidates, validation.depths);
       const proposal = {
-        schema_version: "dynamic_task_tree_expansion_proposal_v1",
-        proposal_id: digest("dttx", { tree_id, parent_node_id: parentId, nodes: boundedCandidates }),
+        schema_version: "dynamic_task_tree_expansion_proposal_v2",
+        proposal_id: digest("dttx", { work_id: tree.work_id, tree_id, parent_node_id: parentId, nodes: boundedCandidates }),
         tenant_id: tree.tenant_id,
+        work_id: tree.work_id,
         tree_id: tree.tree_id,
         parent_node_id: parentId,
         nodes: boundedCandidates,
@@ -419,8 +572,8 @@ export function createDynamicTaskTreeRuntime({
       return clone(proposal);
     },
 
-    async proposePruneReplan({ tenant_id, tree_id, prune_node_ids = [], replacement_nodes = [], reason }) {
-      const tree = await treeFor({ tenant_id, tree_id });
+    async proposePruneReplan({ tenant_id, work_id, tree_id, prune_node_ids = [], replacement_nodes = [], reason }) {
+      const tree = await treeFor({ tenant_id, work_id, tree_id });
       const pruneIds = [...new Set((Array.isArray(prune_node_ids) ? prune_node_ids : [])
         .map((item) => requireText(item, "prune_node_id", 120)))].sort();
       if (!pruneIds.length || pruneIds.some((id) => !tree.nodes.some((node) => node.node_id === id))) {
@@ -432,9 +585,10 @@ export function createDynamicTaskTreeRuntime({
       const validation = validateNodes([...remaining, ...replacements], tree.limits);
       const boundedReplacements = withDerivedDepths(replacements, validation.depths);
       return {
-        schema_version: "dynamic_task_tree_replan_proposal_v1",
-        proposal_id: digest("dttr", { tree_id, prune_node_ids: pruneIds, replacement_nodes: boundedReplacements, reason }),
+        schema_version: "dynamic_task_tree_replan_proposal_v2",
+        proposal_id: digest("dttr", { work_id: tree.work_id, tree_id, prune_node_ids: pruneIds, replacement_nodes: boundedReplacements, reason }),
         tenant_id: tree.tenant_id,
+        work_id: tree.work_id,
         tree_id: tree.tree_id,
         prune_node_ids: pruneIds,
         replacement_nodes: boundedReplacements,
@@ -445,87 +599,167 @@ export function createDynamicTaskTreeRuntime({
       };
     },
 
-    async recordOutcome({ tenant_id, tree_id, node_id, outcome, evidence = {} }) {
-      const tree = await treeFor({ tenant_id, tree_id });
-      if (tree.status === "cancelled") throw new Error("task_tree_cancelled");
-      const node = tree.nodes.find((item) => item.node_id === requireText(node_id, "node_id", 120));
-      if (!node) throw new Error("node_not_found");
-      if (TERMINAL.has(node.status)) throw new Error("node_terminal");
+    async recordOutcome({ tenant_id, work_id, tree_id, node_id, outcome, evidence = {}, idempotency_key }) {
+      const tenantId = requireText(tenant_id, "tenant_id", 120);
+      const workId = requireWorkId(work_id);
+      const treeId = requireText(tree_id, "tree_id", 160);
+      const nodeId = requireText(node_id, "node_id", 120);
+      const idempotencyKey = requireIdempotencyKey(idempotency_key);
       const normalizedOutcome = requireText(outcome, "outcome", 32);
       if (!["verified", "failed"].includes(normalizedOutcome)) throw new Error("outcome_invalid");
-      const guardedEvidence = guardInterAgentEnvelope({
-        tenant_id: tree.tenant_id,
-        from_agent_id: `dtt-node-${node.node_id}`,
-        to_agent_id: "universal-core",
-        thread_id: tree.tree_id,
-        body: evidence,
+      const requestDigest = digestHex({
+        tenant_id: tenantId,
+        work_id: workId,
+        tree_id: treeId,
+        node_id: nodeId,
+        outcome: normalizedOutcome,
+        evidence,
       });
-      if (!guardedEvidence.allowed) {
-        node.status = "quarantined";
-        node.evidence = {
-          schema_version: "inter_agent_untrusted_envelope_v1",
-          state: "quarantined",
-          propagation_allowed: false,
-          quarantine: guardedEvidence.quarantine,
-        };
-        await persist(tree);
-        return {
-          tree_id: tree.tree_id,
-          node_id: node.node_id,
-          state: "quarantined",
-          next: "manual_security_review",
-          execution_authorized: false,
-        };
-      }
-      if (normalizedOutcome === "verified") {
-        const normalizedEvidence = await validateVerificationEvidenceContractAsync(guardedEvidence.value, {
-          tenant_id: tree.tenant_id,
-          tree_id: tree.tree_id,
-          node_id: node.node_id,
-          minimum_approvals: node.kind === "verification"
-            ? node.verification_policy.required_approvals
-            : 1,
-          resolve_verifier_identity,
-          require_verified_identities: true,
-          resolve_evidence_artifact,
-          require_registered_artifacts: true,
-        });
-        if (node.kind === "verification") {
-          if (normalizedEvidence.attestations.some((item) => !node.verification_policy.allowed_verifier_ids.includes(item.verifier_id))) {
-            throw new Error("verification_verifier_not_allowlisted");
+      const recordKey = digestHex({
+        tenant_id: tenantId,
+        work_id: workId,
+        tree_id: treeId,
+        node_id: nodeId,
+        idempotency_key: idempotencyKey,
+      });
+      const scope = digestHex({ tenant_id: tenantId, work_id: workId, tree_id: treeId, node_id: nodeId });
+
+      return serializeOutcome(scope, async () => {
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          const tree = await treeFor({ tenant_id: tenantId, work_id: workId, tree_id: treeId });
+          if (
+            tree.outcome_idempotency !== undefined
+            && (!tree.outcome_idempotency || typeof tree.outcome_idempotency !== "object" || Array.isArray(tree.outcome_idempotency))
+          ) {
+            throw new Error("dynamic_task_tree_state_corrupt");
           }
-          if (new Set(normalizedEvidence.attestations.map((item) => item.assignment_id)).size !== normalizedEvidence.attestations.length) {
-            throw new Error("verification_assignment_duplicate");
+          const node = tree.nodes.find((item) => item.node_id === nodeId);
+          const receiptPresent = Object.hasOwn(tree.outcome_idempotency || {}, recordKey);
+          if (receiptPresent) {
+            if (!node) throw new Error("dynamic_task_tree_state_corrupt");
+            return replayOutcomeReceipt({
+              receipt: tree.outcome_idempotency[recordKey],
+              request_digest: requestDigest,
+              scope_digest: scope,
+              requested_outcome: normalizedOutcome,
+              tree,
+              node,
+            });
+          }
+          if (tree.status === "cancelled") throw new Error("task_tree_cancelled");
+          if (!node) throw new Error("node_not_found");
+          if (TERMINAL.has(node.status)) throw new Error("node_terminal");
+          const guardedEvidence = guardInterAgentEnvelope({
+            tenant_id: tree.tenant_id,
+            from_agent_id: `dtt-node-${node.node_id}`,
+            to_agent_id: "universal-core",
+            thread_id: tree.tree_id,
+            body: evidence,
+          });
+          let result;
+          if (!guardedEvidence.allowed) {
+            node.status = "quarantined";
+            node.evidence = {
+              schema_version: "inter_agent_untrusted_envelope_v1",
+              state: "quarantined",
+              propagation_allowed: false,
+              quarantine: guardedEvidence.quarantine,
+            };
+            result = {
+              tree_id: tree.tree_id,
+              work_id: tree.work_id,
+              node_id: node.node_id,
+              state: "quarantined",
+              next: "manual_security_review",
+              execution_authorized: false,
+            };
+          } else if (normalizedOutcome === "verified") {
+            const normalizedEvidence = await validateVerificationEvidenceContractAsync(guardedEvidence.value, {
+              tenant_id: tree.tenant_id,
+              work_id: tree.work_id,
+              tree_id: tree.tree_id,
+              node_id: node.node_id,
+              minimum_approvals: node.kind === "verification"
+                ? node.verification_policy.required_approvals
+                : 1,
+              resolve_verifier_identity: typeof resolve_verifier_identity === "function"
+                ? (input) => resolve_verifier_identity({ ...input, work_id: tree.work_id })
+                : null,
+              require_verified_identities: true,
+              resolve_evidence_artifact: typeof resolve_evidence_artifact === "function"
+                ? (input) => resolve_evidence_artifact({ ...input, work_id: tree.work_id })
+                : null,
+              require_registered_artifacts: true,
+            });
+            if (node.kind === "verification") {
+              if (normalizedEvidence.attestations.some((item) => !node.verification_policy.allowed_verifier_ids.includes(item.verifier_id))) {
+                throw new Error("verification_verifier_not_allowlisted");
+              }
+              if (new Set(normalizedEvidence.attestations.map((item) => item.assignment_id)).size !== normalizedEvidence.attestations.length) {
+                throw new Error("verification_assignment_duplicate");
+              }
+            }
+            if (!normalizedEvidence.contract_satisfied) throw new Error("verification_evidence_quorum_unsatisfied");
+            node.attempts += 1;
+            node.evidence = normalizedEvidence;
+            node.status = "verified";
+            result = {
+              tree_id: tree.tree_id,
+              work_id: tree.work_id,
+              node_id: node.node_id,
+              state: "verified",
+              next: "dependency_scheduler",
+              execution_authorized: false,
+            };
+          } else {
+            node.attempts += 1;
+            node.evidence = guardedEvidence.value && typeof guardedEvidence.value === "object" && !Array.isArray(guardedEvidence.value)
+              ? guardedEvidence.value
+              : {};
+            if (node.attempts <= node.retry_policy.max_attempts) {
+              node.status = "retry_proposed";
+              result = {
+                tree_id: tree.tree_id,
+                work_id: tree.work_id,
+                node_id: node.node_id,
+                state: "retry_proposed",
+                attempt: node.attempts,
+                next: "requires_core_review",
+                execution_authorized: false,
+              };
+            } else {
+              node.status = "failed";
+              result = {
+                tree_id: tree.tree_id,
+                work_id: tree.work_id,
+                node_id: node.node_id,
+                state: node.fallback_node_id ? "fallback_proposed" : "failed",
+                next: node.fallback_node_id ? "requires_core_review" : "replan_or_cancel",
+                execution_authorized: false,
+                ...(node.fallback_node_id ? { fallback_node_id: node.fallback_node_id } : {}),
+              };
+            }
+          }
+          tree.outcome_idempotency = tree.outcome_idempotency || {};
+          tree.outcome_idempotency[recordKey] = {
+            schema_version: OUTCOME_RECEIPT_SCHEMA_VERSION,
+            request_digest: requestDigest,
+            scope_digest: scope,
+            result: clone(result),
+          };
+          try {
+            await persist(tree);
+            return result;
+          } catch (error) {
+            if (error.message !== "dynamic_task_tree_revision_conflict") throw error;
           }
         }
-        if (!normalizedEvidence.contract_satisfied) throw new Error("verification_evidence_quorum_unsatisfied");
-        node.attempts += 1;
-        node.evidence = normalizedEvidence;
-        node.status = "verified";
-        await persist(tree);
-        return { tree_id: tree.tree_id, node_id: node.node_id, state: "verified", next: "dependency_scheduler", execution_authorized: false };
-      }
-      node.attempts += 1;
-      node.evidence = guardedEvidence.value && typeof guardedEvidence.value === "object" && !Array.isArray(guardedEvidence.value) ? guardedEvidence.value : {};
-      if (node.attempts <= node.retry_policy.max_attempts) {
-        node.status = "retry_proposed";
-        await persist(tree);
-        return { tree_id: tree.tree_id, node_id: node.node_id, state: "retry_proposed", attempt: node.attempts, next: "requires_core_review", execution_authorized: false };
-      }
-      node.status = "failed";
-      await persist(tree);
-      return {
-        tree_id: tree.tree_id,
-        node_id: node.node_id,
-        state: node.fallback_node_id ? "fallback_proposed" : "failed",
-        fallback_node_id: node.fallback_node_id,
-        next: node.fallback_node_id ? "requires_core_review" : "replan_or_cancel",
-        execution_authorized: false,
-      };
+        throw new Error("dynamic_task_tree_revision_conflict");
+      });
     },
 
-    async cancel({ tenant_id, tree_id, reason = "owner_or_core_cancelled" }) {
-      const tree = await treeFor({ tenant_id, tree_id });
+    async cancel({ tenant_id, work_id, tree_id, reason = "owner_or_core_cancelled" }) {
+      const tree = await treeFor({ tenant_id, work_id, tree_id });
       let cancelled = 0;
       for (const node of tree.nodes) {
         if (!TERMINAL.has(node.status)) {
@@ -539,13 +773,13 @@ export function createDynamicTaskTreeRuntime({
       return publicTree(tree);
     },
 
-    async inspectCoreJoin({ tenant_id, tree_id }) {
-      const tree = await treeFor({ tenant_id, tree_id });
+    async inspectCoreJoin({ tenant_id, work_id, tree_id }) {
+      const tree = await treeFor({ tenant_id, work_id, tree_id });
       return clone(await validateTreeForCoreJoin(tree));
     },
 
-    async coreJoin({ tenant_id, tree_id, core_verdict, verification = {} }) {
-      const tree = await treeFor({ tenant_id, tree_id });
+    async coreJoin({ tenant_id, work_id, tree_id, core_verdict, verification = {} }) {
+      const tree = await treeFor({ tenant_id, work_id, tree_id });
       if (!core_verdict || core_verdict.allowed !== true || requireText(core_verdict.authority, "core_authority", 120) !== "universal_core") {
         throw new Error("core_join_verdict_required");
       }
@@ -578,6 +812,7 @@ export function createDynamicTaskTreeRuntime({
       return {
         tree_id: tree.tree_id,
         tenant_id: tree.tenant_id,
+        work_id: tree.work_id,
         status: tree.status,
         core_join: clone(tree.core_join),
         execution_authorized: false,

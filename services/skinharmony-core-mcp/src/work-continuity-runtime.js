@@ -22,6 +22,7 @@ export const WORK_EVENT_TYPES = new Set([
   "native_plan_superseded", "native_agent_lease_expired",
   "core_join_issued", "closure_finalized",
   "generic_core_join_issued", "generic_closure_finalized", "work_archived",
+  "legacy_work_reconciled_closed",
   "quality_failure_observed", "security_observation_quarantined", "quality_evidence_verified", "quality_completion_rejected",
 ]);
 
@@ -36,6 +37,89 @@ function gallerySecurityError(code) {
   const error = new Error(code);
   error.code = code;
   throw error;
+}
+
+function dttWorkBindingError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+const DTT_WORK_ACL_DENIALS = new Set([
+  "work_acl_denied",
+  "tenant_work_not_found",
+  "legacy_work_not_found",
+  "work_id_invalid",
+  "tenant_identity_required",
+  "work_actor_identity_required",
+  "work_server_acl_required",
+  "work_server_acl_subject_mismatch",
+  "work_server_acl_tenant_mismatch",
+]);
+
+const GENERIC_WORK_CORE_JOIN_ACL_DENIALS = new Set(DTT_WORK_ACL_DENIALS);
+
+export async function authorizeDttExactWorkRead({
+  store,
+  identity,
+  tenant_id,
+  work_id,
+} = {}) {
+  if (typeof store?.readWork !== "function") {
+    throw dttWorkBindingError("dtt_work_binding_unavailable");
+  }
+  const tenantId = tenant(tenant_id);
+  const workId = uuid(work_id, "work_id");
+  let result;
+  try {
+    result = await store.readWork(identity, { work_id: workId });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if (DTT_WORK_ACL_DENIALS.has(reason) || reason.startsWith("tenant_work_membership_")) {
+      throw dttWorkBindingError("dtt_work_acl_denied");
+    }
+    throw dttWorkBindingError("dtt_work_binding_unavailable");
+  }
+  if (
+    result?.schema_version !== "work_continuity_v2"
+    || String(result?.work?.tenant_id || "") !== tenantId
+    || String(result?.work?.work_id || "").toLowerCase() !== workId.toLowerCase()
+  ) {
+    throw dttWorkBindingError("dtt_work_acl_denied");
+  }
+  return Object.freeze({ tenant_id: tenantId, work_id: workId });
+}
+
+export async function authorizeGenericWorkCoreJoinExactWorkRead({
+  store,
+  identity,
+  tenant_id,
+  work_id,
+} = {}) {
+  if (typeof store?.readWork !== "function") {
+    throw dttWorkBindingError("generic_work_core_join_work_binding_unavailable");
+  }
+  const tenantId = tenant(tenant_id);
+  const workId = uuid(work_id, "work_id");
+  let result;
+  try {
+    result = await store.readWork(identity, { work_id: workId });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if (GENERIC_WORK_CORE_JOIN_ACL_DENIALS.has(reason)
+        || reason.startsWith("tenant_work_membership_")) {
+      throw dttWorkBindingError("generic_work_core_join_work_acl_denied");
+    }
+    throw dttWorkBindingError("generic_work_core_join_work_binding_unavailable");
+  }
+  if (
+    result?.schema_version !== "work_continuity_v2"
+    || String(result?.work?.tenant_id || "") !== tenantId
+    || String(result?.work?.work_id || "").toLowerCase() !== workId.toLowerCase()
+  ) {
+    throw dttWorkBindingError("generic_work_core_join_work_acl_denied");
+  }
+  return Object.freeze({ tenant_id: tenantId, work_id: workId });
 }
 
 export function assertGalleryParticipantBinding(identity = {}, input = {}) {
@@ -59,11 +143,12 @@ export function assertGalleryParticipantBinding(identity = {}, input = {}) {
     agentId: identifier(presence.agent_id, "agent_id"),
     clientType: safeText(presence.client_type || "other", 40),
     sessionFingerprint: String(presence.session_fingerprint || ""),
+    transportSessionFingerprint: String(presence.host_transport_session_fingerprint).toLowerCase(),
     acl: [...GALLERY_PARTICIPANT_ACL],
   };
 }
 const WORK_CATALOG_STATUSES = new Set([
-  "active", "verified", "release_ready", "completed", "blocked", "failed",
+  "active", "verified", "release_ready", "completed", "cancelled", "superseded", "blocked", "failed",
 ]);
 
 function tenant(value) {
@@ -74,7 +159,7 @@ function tenant(value) {
 
 function uuid(value, name = "id") {
   const id = String(value || "");
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
     throw new Error(`${name}_invalid`);
   }
   return id;
@@ -1243,6 +1328,10 @@ CREATE TABLE IF NOT EXISTS core_continuity_participants (
 );
 CREATE INDEX IF NOT EXISTS core_continuity_participants_active_idx
   ON core_continuity_participants (tenant_id, work_id, expires_at DESC);
+-- Existing rows intentionally remain unusable for participant operations until
+-- a signed join refreshes the server-derived transport binding.
+ALTER TABLE core_continuity_participants
+  ADD COLUMN IF NOT EXISTS transport_session_fingerprint varchar(64);
 
 CREATE TABLE IF NOT EXISTS core_continuity_leases (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, lease_id uuid NOT NULL,
@@ -1657,7 +1746,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
       WHERE tenant_id=$1 AND work_id=$2 AND idempotency_key=$3`,
     [context.tenantId, context.workId, idempotencyKey]);
     const actorBinding = String(context.actorSubject || context.actor || "");
-    const requestDigest = digest({ operation, actor_binding: actorBinding, request });
+    const requestDigest = digest({
+      operation,
+      actor_binding: actorBinding,
+      ...(context.transportSessionFingerprint
+        ? { transport_session_fingerprint: context.transportSessionFingerprint }
+        : {}),
+      request,
+    });
     if (existing.rows[0]) {
       if (existing.rows[0].operation !== operation ||
           existing.rows[0].request_digest !== requestDigest) {
@@ -2149,17 +2245,109 @@ export function createWorkContinuityRuntime(config, options = {}) {
     active = true,
     agentId,
     clientType,
+    transportSessionFingerprint,
   } = {}) {
-    const result = await client.query(`SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject
+    const result = await client.query(`SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject,
+        transport_session_fingerprint
       FROM core_continuity_participants
       WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND actor_subject=$4
         AND ($5::boolean=false OR (status='active' AND expires_at>now()))
         AND ($6::varchar IS NULL OR agent_id=$6)
         AND ($7::varchar IS NULL OR client_type=$7)
+        AND transport_session_fingerprint=$8
       FOR UPDATE`, [context.tenantId, context.workId, sessionId, context.actorSubject, active,
-      agentId || null, clientType || null]);
+      agentId || null, clientType || null, transportSessionFingerprint]);
     if (!result.rows[0]) throw new Error("continuity_participant_not_active");
     return result.rows[0];
+  }
+
+  async function resolveDttWorkLeaseBinding(identity, input = {}) {
+    await initialize();
+    const context = workContext(identity, input);
+    const presence = identity?.agentPresence || {};
+    const binding = assertGalleryParticipantBinding(identity, {
+      session_id: presence.session_id,
+      agent_id: presence.agent_id,
+      client_type: presence.client_type,
+    });
+    if (
+      !/^[a-f0-9]{16,160}$/i.test(String(presence.session_fingerprint || ""))
+      || !/^ai_[a-f0-9]{16,160}$/i.test(String(presence.opaque_agent_id || ""))
+      || !/^ap_[a-f0-9]{16,160}$/i.test(String(presence.actor_provenance || ""))
+    ) {
+      throw new Error("dtt_work_signed_presence_required");
+    }
+    const result = await pool.query(`SELECT
+        p.session_id,p.agent_id,p.client_type,p.expires_at AS participant_expires_at,
+        p.transport_session_fingerprint,l.lease_id,l.expires_at AS lease_expires_at
+      FROM core_continuity_participants p
+      JOIN core_continuity_leases l
+        ON l.tenant_id=p.tenant_id AND l.work_id=p.work_id AND l.session_id=p.session_id
+      WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.session_id=$3 AND p.actor_subject=$4
+        AND p.agent_id=$5 AND p.client_type=$6 AND p.transport_session_fingerprint=$7
+        AND p.status='active' AND p.expires_at>now()
+        AND l.status='active' AND l.expires_at>now()
+      ORDER BY l.expires_at,l.lease_id
+      LIMIT 1`, [
+      context.tenantId,
+      context.workId,
+      binding.sessionId,
+      context.actorSubject,
+      binding.agentId,
+      binding.clientType,
+      binding.transportSessionFingerprint,
+    ]);
+    const row = result.rows[0];
+    if (!row) throw new Error("dtt_work_active_lease_required");
+    const leaseExpiresAt = dateValue(row.lease_expires_at, "dtt_work_lease_expires_at");
+    const participantExpiresAt = dateValue(
+      row.participant_expires_at,
+      "dtt_work_participant_expires_at",
+    );
+    if (leaseExpiresAt.getTime() <= nowDate().getTime()
+        || participantExpiresAt.getTime() <= nowDate().getTime()) {
+      throw new Error("dtt_work_active_lease_required");
+    }
+    return Object.freeze({
+      schema_version: "dtt_work_lease_binding_v1",
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      lease_id: uuid(row.lease_id, "dtt_work_lease_id"),
+      expires_at: leaseExpiresAt.toISOString(),
+      participant_expires_at: participantExpiresAt.toISOString(),
+      session_id: binding.sessionId,
+      agent_id: binding.agentId,
+      client_type: binding.clientType,
+      session_fingerprint: String(presence.session_fingerprint).toLowerCase(),
+      host_transport_session_fingerprint: binding.transportSessionFingerprint,
+      presence_signature: String(presence.signature),
+      opaque_agent_id: String(presence.opaque_agent_id),
+      actor_provenance: String(presence.actor_provenance),
+      execution_authorized: false,
+    });
+  }
+
+  async function resolveGenericWorkCoreJoinLeaseBinding(identity, input = {}) {
+    let binding;
+    try {
+      binding = await resolveDttWorkLeaseBinding(identity, input);
+    } catch (error) {
+      const reason = String(error?.code || error?.message || "");
+      const mapped = new Map([
+        ["dtt_work_active_lease_required", "generic_work_core_join_active_lease_required"],
+        ["dtt_work_signed_presence_required", "generic_work_core_join_signed_presence_required"],
+        ["gallery_signed_presence_required", "generic_work_core_join_signed_presence_required"],
+        ["gallery_participant_presence_mismatch", "generic_work_core_join_principal_mismatch"],
+        ["tenant_work_membership_required", "generic_work_core_join_work_acl_denied"],
+        ["work_id_invalid", "generic_work_core_join_work_id_invalid"],
+      ]).get(reason) || "generic_work_core_join_work_binding_unavailable";
+      throw dttWorkBindingError(mapped);
+    }
+    return Object.freeze({
+      ...binding,
+      schema_version: "generic_work_core_join_lease_binding_v1",
+      execution_authorized: false,
+    });
   }
 
   async function expireLeases(client, context) {
@@ -2253,7 +2441,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
   async function join(identity, input) {
     const context = workContext(identity, input);
     const binding = assertGalleryParticipantBinding(identity, input);
-    const { sessionId, agentId } = binding;
+    const { sessionId, agentId, transportSessionFingerprint } = binding;
+    context.transportSessionFingerprint = transportSessionFingerprint;
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
       GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
@@ -2282,7 +2471,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
               WHERE p.tenant_id=l.tenant_id AND p.work_id=l.work_id
                 AND p.session_id=l.session_id
                 AND (p.actor_subject<>$4 OR p.agent_id<>$5 OR p.client_type<>$6
-                     OR p.branch_id IS DISTINCT FROM $7::uuid)
+                     OR p.branch_id IS DISTINCT FROM $7::uuid
+                     OR p.transport_session_fingerprint IS DISTINCT FROM $8)
                 AND (
                   p.expires_at<=now()
                   OR (p.actor_subject=$4 AND p.agent_id=$5 AND p.client_type=$6
@@ -2291,13 +2481,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
             )
           RETURNING l.lease_id,l.session_id`,
         [context.tenantId, context.workId, sessionId, context.actorSubject,
-          agentId, binding.clientType, branchId]);
+          agentId, binding.clientType, branchId, transportSessionFingerprint]);
         const participant = await client.query(`INSERT INTO core_continuity_participants
-          (tenant_id,work_id,session_id,actor_subject,agent_id,client_type,branch_id,expires_at,metadata)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,now()+($8::int*interval '1 second'),$9::jsonb)
+          (tenant_id,work_id,session_id,actor_subject,agent_id,client_type,branch_id,expires_at,metadata,
+           transport_session_fingerprint)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,now()+($8::int*interval '1 second'),$9::jsonb,$10)
           ON CONFLICT (tenant_id,work_id,session_id) DO UPDATE SET
             actor_subject=EXCLUDED.actor_subject,agent_id=EXCLUDED.agent_id,
             client_type=EXCLUDED.client_type,
+            transport_session_fingerprint=EXCLUDED.transport_session_fingerprint,
             branch_id=CASE
               WHEN core_continuity_participants.expires_at<=now() THEN EXCLUDED.branch_id
               ELSE coalesce(core_continuity_participants.branch_id,EXCLUDED.branch_id)
@@ -2307,6 +2499,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           WHERE (core_continuity_participants.actor_subject=EXCLUDED.actor_subject
                  AND core_continuity_participants.agent_id=EXCLUDED.agent_id
                  AND core_continuity_participants.client_type=EXCLUDED.client_type
+                 AND core_continuity_participants.transport_session_fingerprint=
+                   EXCLUDED.transport_session_fingerprint
                  AND (core_continuity_participants.branch_id IS NULL
                       OR EXCLUDED.branch_id IS NULL
                       OR core_continuity_participants.branch_id=EXCLUDED.branch_id))
@@ -2318,7 +2512,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
             profile: input.metadata || {},
             gallery_acl: binding.acl,
             ownership_transfer_allowed: false,
-          }, 20_000))]);
+          }, 20_000)), transportSessionFingerprint]);
         if (!participant.rows[0]) throw new Error("continuity_session_conflict");
         const leaseRebindEvent = reboundLeases.rows.length
           ? await appendEvent(client, context, "lease_expired", {
@@ -2342,7 +2536,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function heartbeat(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType, transportSessionFingerprint } =
+      assertGalleryParticipantBinding(identity, input);
+    context.transportSessionFingerprint = transportSessionFingerprint;
     const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
       GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
     return transaction(async (client) => withIdempotency(
@@ -2352,6 +2548,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           active: false,
           agentId,
           clientType,
+          transportSessionFingerprint,
         });
         const participant = await client.query(`UPDATE core_continuity_participants
           SET status='active',last_seen_at=now(),expires_at=now()+($5::int*interval '1 second')
@@ -2372,13 +2569,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function openBranch(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType, transportSessionFingerprint } =
+      assertGalleryParticipantBinding(identity, input);
+    context.transportSessionFingerprint = transportSessionFingerprint;
     const branchKey = identifier(input.branch_key, "branch_key");
     const parentBranchId = input.parent_branch_id ? uuid(input.parent_branch_id, "parent_branch_id") : null;
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "branch_open", input, async () => {
         await lockGalleryWork(client, context);
-        await requireParticipant(client, context, sessionId, { agentId, clientType });
+        await requireParticipant(client, context, sessionId, {
+          agentId, clientType, transportSessionFingerprint,
+        });
         if (parentBranchId) {
           const parent = await client.query(`SELECT branch_id FROM core_continuity_branches
             WHERE tenant_id=$1 AND work_id=$2 AND branch_id=$3`,
@@ -2428,11 +2629,18 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function acquireLease(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId, clientType, sessionFingerprint } = assertGalleryParticipantBinding(identity, input);
+    const {
+      sessionId,
+      agentId,
+      clientType,
+      sessionFingerprint,
+      transportSessionFingerprint,
+    } = assertGalleryParticipantBinding(identity, input);
     if (Object.prototype.hasOwnProperty.call(input, "authority_scope") ||
         Object.prototype.hasOwnProperty.call(input, "policy_session_fingerprint")) {
       throw new Error("continuity_lease_authority_scope_forbidden");
     }
+    context.transportSessionFingerprint = transportSessionFingerprint;
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
       GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
@@ -2446,6 +2654,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         const participant = await requireParticipant(client, context, sessionId, {
           agentId,
           clientType,
+          transportSessionFingerprint,
         });
         if (branchId && branchId !== participant.branch_id) {
           throw new Error("continuity_participant_branch_locked");
@@ -2527,7 +2736,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function renewLease(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType, transportSessionFingerprint } =
+      assertGalleryParticipantBinding(identity, input);
+    context.transportSessionFingerprint = transportSessionFingerprint;
     const leaseId = uuid(input.lease_id, "lease_id");
     const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
       GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
@@ -2537,6 +2748,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         const participant = await requireParticipant(client, context, sessionId, {
           agentId,
           clientType,
+          transportSessionFingerprint,
         });
         const lease = await client.query(`UPDATE core_continuity_leases
           SET renewed_at=now(),expires_at=now()+($5::int*interval '1 second')
@@ -2557,7 +2769,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function releaseLease(identity, input) {
     const context = workContext(identity, input);
-    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType, transportSessionFingerprint } =
+      assertGalleryParticipantBinding(identity, input);
+    context.transportSessionFingerprint = transportSessionFingerprint;
     const leaseId = uuid(input.lease_id, "lease_id");
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "lease_release", input, async () => {
@@ -2566,6 +2780,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           active: false,
           agentId,
           clientType,
+          transportSessionFingerprint,
         });
         const lease = await client.query(`UPDATE core_continuity_leases
           SET status='released',released_at=now()
@@ -2590,13 +2805,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
       sessionId: fromSessionId,
       agentId,
       clientType,
+      transportSessionFingerprint,
     } = assertGalleryParticipantBinding(identity, input);
+    context.transportSessionFingerprint = transportSessionFingerprint;
     const toSessionId = input.to_session_id ? identifier(input.to_session_id, "to_session_id") : null;
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     return transaction(async (client) => withIdempotency(
       client, context, input.idempotency_key, "message_post", input, async () => {
         await lockGalleryWork(client, context);
-        await requireParticipant(client, context, fromSessionId, { agentId, clientType });
+        await requireParticipant(client, context, fromSessionId, {
+          agentId, clientType, transportSessionFingerprint,
+        });
         let recipient = null;
         if (toSessionId) {
           const result = await client.query(`SELECT session_id,actor_subject FROM core_continuity_participants
@@ -2634,12 +2853,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
   async function inbox(identity, input) {
     await initialize();
     const context = workContext(identity, input);
-    const { sessionId, agentId, clientType } = assertGalleryParticipantBinding(identity, input);
+    const { sessionId, agentId, clientType, transportSessionFingerprint } =
+      assertGalleryParticipantBinding(identity, input);
     const limit = positiveInteger(input.limit, 50, 200);
     const participant = await requireParticipant(pool, context, sessionId, {
       active: false,
       agentId,
       clientType,
+      transportSessionFingerprint,
     });
     const branchId = input.branch_id ? uuid(input.branch_id, "branch_id") : null;
     const messages = await pool.query(`SELECT message_id,branch_id,from_session_id,to_session_id,
@@ -4669,6 +4890,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
     resolveIncident,
     remediationStore,
     gallery,
+    resolveDttWorkLeaseBinding,
+    resolveGenericWorkCoreJoinLeaseBinding,
     join,
     heartbeat,
     openBranch,

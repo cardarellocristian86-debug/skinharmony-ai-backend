@@ -20,7 +20,14 @@ import {
 import { createNyraDeepV2EvidenceLedger } from "./nyraDeepV2EvidenceLedger.js";
 import { createNyraDeepV2SourceVerifier } from "./nyraDeepV2SourceVerification.js";
 import { createNyraPolicyRegistryStore, createPostgresNyraPolicyRegistryStore } from "./nyraPolicyRegistryStore.js";
+import { validatePolicySnapshot } from "./nyraPolicyRegistry.js";
 import { createNyraPolicyRegistryProofService } from "./nyraPolicyRegistryProofService.js";
+import { createNyraPolicyRegistryCompilerProvenanceVerifier } from "./nyraPolicyRegistryCompilerProvenance.js";
+import {
+  createNyraPolicyRegistryClient,
+  createNyraPolicyRegistryCoordinator,
+} from "./nyraPolicyRegistryCoordinator.js";
+import { createNyraPolicyRegistryCoreRemoteSigner } from "./nyraPolicyRegistryCoreRemoteSigner.js";
 import {
   createNyraDeepV2McpRequestVerifier,
   nyraDeepV2EvidencePackHash,
@@ -150,6 +157,16 @@ import {
   createPostgresDttAgentIdentityReceiptStore,
 } from "../../shared/dtt-agent-identity-receipts.js";
 import {
+  DTT_WORK_CONTEXT_HEADER,
+  verifyDttWorkContext,
+} from "../../shared/dtt-work-context.js";
+import {
+  GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER,
+  GENERIC_WORK_CORE_JOIN_CONTEXT_PURPOSE,
+  GENERIC_WORK_CORE_JOIN_CONTEXT_VERSION,
+  verifyGenericWorkCoreJoinContext,
+} from "../../shared/generic-work-core-join-context.js";
+import {
   createPostgresMajorVersionProbe,
   normalizePostgresMajorVerification,
 } from "../../shared/postgres-major-version.js";
@@ -185,7 +202,12 @@ import {
   createLocalGenericWorkCoreJoinSigner,
   createGenericWorkCoreJoinVerdictVerifier,
   genericWorkCoreJoinDigest,
+  genericWorkCoreJoinInfrastructureCode,
+  genericWorkCoreJoinSignerInfrastructureCode,
+  genericWorkCoreJoinStoreInfrastructureCode,
+  verifyGenericWorkCoreJoinDigestSignature,
 } from "./genericWorkCoreJoin.js";
+import { createGenericWorkCoreJoinRemoteSigner } from "./genericWorkCoreJoinRemoteSigner.js";
 import { createPostgresGenericWorkCoreJoinStore } from "./genericWorkCoreJoinStore.js";
 import { createPostgresBootstrapAuthorityStore } from "./bootstrapAuthorityPostgresStore.js";
 import { createBootstrapDeadlockVerdictStore } from "./bootstrapDeadlockVerdictStore.js";
@@ -366,6 +388,24 @@ const NATIVE_AGENT_PROVIDER_RETIREMENT_CODE = "native_agent_provider_retired";
 const NATIVE_AGENT_PROVIDER_RETIREMENT_MESSAGE =
   "Provider execution is retired. Use native ChatGPT/Codex specialists.";
 
+function strictGenericWorkCoreJoinBoolean(value, fallback, code) {
+  if (value === undefined || value === null || value === "") {
+    return Object.freeze({ value: fallback, valid: true, error: null });
+  }
+  if (value === true || value === false) {
+    return Object.freeze({ value, valid: true, error: null });
+  }
+  if (value === "true" || value === "false") {
+    return Object.freeze({ value: value === "true", valid: true, error: null });
+  }
+  return Object.freeze({ value: fallback, valid: false, error: code });
+}
+
+function optionalGenericWorkCoreJoinInteger(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  return Number(value);
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -414,6 +454,81 @@ const MAX_NYRA_BRANCH_REQUESTS = 64;
 
 function isPlainRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validPolicyCompilerTrustCatalog(value) {
+  const exact = (record, fields) => isPlainRecord(record) &&
+    Object.getPrototypeOf(record) === Object.prototype &&
+    Object.keys(record).sort().join("\0") === [...fields].sort().join("\0");
+  const id = /^[a-z0-9][a-z0-9._/-]{1,159}$/;
+  const sha = /^[a-f0-9]{64}$/;
+  const sortedUnique = (values, pattern, maximum) => Array.isArray(values) &&
+    values.length >= 1 && values.length <= maximum &&
+    values.every((item, index) => typeof item === "string" && pattern.test(item) &&
+      (index === 0 || values[index - 1] < item));
+  if (!exact(value, [
+    "schema_version", "issuers", "trusted_core_pack_digests", "known_core_branch_ids",
+    "known_nyra_branch_ids", "known_domain_pack_ids",
+  ]) || value.schema_version !== "nyra_policy_pack_trust_catalog_v1" ||
+    !Array.isArray(value.issuers) || value.issuers.length < 2 || value.issuers.length > 32 ||
+    !sortedUnique(value.trusted_core_pack_digests, sha, 64) ||
+    !sortedUnique(value.known_core_branch_ids, id, 256) ||
+    !sortedUnique(value.known_nyra_branch_ids, id, 256) ||
+    !sortedUnique(value.known_domain_pack_ids, id, 256)) return false;
+  const issuerIds = new Set();
+  const keyIds = new Set();
+  const fingerprints = new Set();
+  const roles = new Set();
+  let previous = null;
+  for (const issuer of value.issuers) {
+    if (!exact(issuer, [
+      "issuer_id", "key_id", "role", "algorithm", "public_key", "public_key_fingerprint",
+    ]) || !id.test(issuer.issuer_id) || !id.test(issuer.key_id) ||
+      !["core", "nyra"].includes(issuer.role) || issuer.algorithm !== "Ed25519" ||
+      typeof issuer.public_key !== "string" || !issuer.public_key ||
+      /PRIVATE KEY|BEGIN RSA|BEGIN EC/.test(issuer.public_key) ||
+      !sha.test(issuer.public_key_fingerprint)) return false;
+    const order = `${issuer.issuer_id}\0${issuer.key_id}`;
+    if ((previous !== null && previous >= order) || issuerIds.has(issuer.issuer_id) ||
+      keyIds.has(issuer.key_id) || fingerprints.has(issuer.public_key_fingerprint)) return false;
+    previous = order;
+    issuerIds.add(issuer.issuer_id);
+    keyIds.add(issuer.key_id);
+    fingerprints.add(issuer.public_key_fingerprint);
+    roles.add(issuer.role);
+  }
+  return roles.has("core") && roles.has("nyra") && fingerprints.size >= 2;
+}
+
+function validPolicyCompilerStatus(value, expectedCatalogDigest, expectedTrustCatalogDigest) {
+  const fields = [
+    "schema_version", "ready", "clock_ready", "mode", "compiler_algorithm",
+    "verification_algorithm", "traversal_budget", "compiler_build_commit",
+    "catalog_digest", "trust_catalog_digest", "issuer_count", "independent_key_count",
+    "trusted_core_pack_digest_count", "known_core_branch_count", "known_nyra_branch_count",
+    "known_domain_pack_count", "execution_authorized", "error",
+  ];
+  const bounded = (input, minimum, maximum) =>
+    Number.isInteger(input) && input >= minimum && input <= maximum;
+  return isPlainRecord(value) && Object.getPrototypeOf(value) === Object.prototype &&
+    Object.keys(value).sort().join("\0") === fields.sort().join("\0") &&
+    value.schema_version === "nyra_policy_compiler_provenance_status_v1" &&
+    value.ready === true && value.clock_ready === true &&
+    value.mode === "core_deterministic_recompile" &&
+    value.compiler_algorithm === "nyra_policy_registry_v1" &&
+    value.verification_algorithm === "sha256_canonical_json+ed25519" &&
+    bounded(value.traversal_budget, 1, 256) &&
+    /^[a-f0-9]{40}$/.test(value.compiler_build_commit) &&
+    value.catalog_digest === expectedCatalogDigest &&
+    value.trust_catalog_digest === expectedTrustCatalogDigest &&
+    bounded(value.issuer_count, 2, 32) &&
+    bounded(value.independent_key_count, 2, 32) &&
+    value.independent_key_count === value.issuer_count &&
+    bounded(value.trusted_core_pack_digest_count, 1, 64) &&
+    bounded(value.known_core_branch_count, 1, 256) &&
+    bounded(value.known_nyra_branch_count, 1, 256) &&
+    bounded(value.known_domain_pack_count, 1, 256) &&
+    value.execution_authorized === false && value.error === null;
 }
 
 function nyraDeepV2Fallback({
@@ -4698,37 +4813,411 @@ export function createUniversalCoreService(options = {}) {
   const nyraPolicyRegistryDatabaseUrl = String(
     options.nyraPolicyRegistryDatabaseUrl ?? process.env.GOVERNED_AGENT_DATABASE_URL ?? "",
   ).trim();
+  const nyraPolicyRegistryProofProduction = String(process.env.NODE_ENV || "") === "production";
+  const nyraPolicyRegistryProofEnabledFlag = strictGenericWorkCoreJoinBoolean(
+    options.nyraPolicyRegistryProofEnabled ?? process.env.CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED,
+    false,
+    "policy_registry_proof_enabled_flag_invalid",
+  );
+  const nyraPolicyRegistryProofRequiredFlag = strictGenericWorkCoreJoinBoolean(
+    options.nyraPolicyRegistryProofRequired ?? process.env.CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED,
+    false,
+    "policy_registry_proof_required_flag_invalid",
+  );
+  const nyraPolicyRegistryProofEnabled = nyraPolicyRegistryProofEnabledFlag.value;
+  const nyraPolicyRegistryProofRequired = nyraPolicyRegistryProofRequiredFlag.valid
+    ? nyraPolicyRegistryProofRequiredFlag.value
+    : true;
+  const nyraPolicyRegistryCoreSignerMode = String(
+    options.nyraPolicyRegistryCoreSignerMode
+      ?? process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE
+      ?? "disabled",
+  );
+  const nyraPolicyRegistryCompilerEnabledFlag = strictGenericWorkCoreJoinBoolean(
+    options.nyraPolicyRegistryCompilerProvenanceEnabled ??
+      process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED,
+    false,
+    "policy_registry_compiler_enabled_flag_invalid",
+  );
+  const nyraPolicyRegistryCompilerRequiredFlag = strictGenericWorkCoreJoinBoolean(
+    options.nyraPolicyRegistryCompilerProvenanceRequired ??
+      process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED,
+    false,
+    "policy_registry_compiler_required_flag_invalid",
+  );
+  const nyraPolicyRegistryCompilerEnabled = nyraPolicyRegistryCompilerEnabledFlag.value;
+  const nyraPolicyRegistryCompilerRequired = nyraPolicyRegistryCompilerRequiredFlag.valid
+    ? nyraPolicyRegistryCompilerRequiredFlag.value
+    : true;
+  const nyraPolicyRegistryCompilerMode = String(
+    options.nyraPolicyRegistryCompilerProvenanceMode ??
+      process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE ??
+      "disabled",
+  );
+  const nyraPolicyRegistryCompilerModeValid = ["disabled", "core_deterministic_recompile"]
+    .includes(nyraPolicyRegistryCompilerMode);
+  const nyraPolicyRegistryCompilerProductionInjectionPresent =
+    nyraPolicyRegistryProofProduction && [
+      "nyraPolicyRegistryCompilerProvenanceEnabled",
+      "nyraPolicyRegistryCompilerProvenanceRequired",
+      "nyraPolicyRegistryCompilerProvenanceMode",
+      "nyraPolicyRegistryCompilerProvenanceVerifier",
+      "nyraPolicyRegistryCompilerTrustCatalog",
+      "nyraPolicyRegistryCompilerTrustCatalogJson",
+      "nyraPolicyRegistryCompilerNow",
+      "nyraPolicyRegistryCompilerTraversalBudget",
+      "nyraPolicyRegistryCompilerCatalogDigest",
+      "nyraPolicyRegistryCompilerTrustCatalogDigest",
+    ].some((field) => Object.hasOwn(options, field));
+  let nyraPolicyRegistryCompilerConfigurationError =
+    !nyraPolicyRegistryCompilerEnabledFlag.valid
+      ? nyraPolicyRegistryCompilerEnabledFlag.error
+      : !nyraPolicyRegistryCompilerRequiredFlag.valid
+        ? nyraPolicyRegistryCompilerRequiredFlag.error
+        : !nyraPolicyRegistryCompilerModeValid
+          ? "policy_registry_compiler_mode_invalid"
+          : nyraPolicyRegistryCompilerRequired && !nyraPolicyRegistryCompilerEnabled
+            ? "policy_registry_compiler_required_without_enabled"
+            : nyraPolicyRegistryCompilerEnabled &&
+                nyraPolicyRegistryCompilerMode !== "core_deterministic_recompile"
+              ? "policy_registry_compiler_mode_binding_invalid"
+              : !nyraPolicyRegistryCompilerEnabled && nyraPolicyRegistryCompilerMode !== "disabled"
+                ? "policy_registry_compiler_mode_binding_invalid"
+                : nyraPolicyRegistryCompilerEnabled &&
+                    nyraPolicyRegistryCompilerProductionInjectionPresent
+                  ? "policy_registry_compiler_production_injection_forbidden"
+                  : null;
+  let nyraPolicyRegistryCompilerProvenanceVerifier = null;
+  let nyraPolicyRegistryCompilerStatus = null;
+  let nyraPolicyRegistryExpectedCatalogDigest = null;
+  let nyraPolicyRegistryExpectedTrustCatalogDigest = null;
+  if (nyraPolicyRegistryCompilerEnabled && nyraPolicyRegistryCompilerConfigurationError === null) {
+    try {
+      const catalogDigest = nyraPolicyRegistryProofProduction
+        ? process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_CATALOG_DIGEST
+        : options.nyraPolicyRegistryCompilerCatalogDigest ??
+          process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_CATALOG_DIGEST;
+      const trustCatalogDigest = nyraPolicyRegistryProofProduction
+        ? process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_DIGEST
+        : options.nyraPolicyRegistryCompilerTrustCatalogDigest ??
+          process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_DIGEST;
+      if (!/^[a-f0-9]{64}$/.test(String(catalogDigest || ""))) {
+        throw new Error("policy_registry_compiler_catalog_digest_invalid");
+      }
+      if (!/^[a-f0-9]{64}$/.test(String(trustCatalogDigest || ""))) {
+        throw new Error("policy_registry_compiler_trust_catalog_digest_invalid");
+      }
+      nyraPolicyRegistryExpectedCatalogDigest = String(catalogDigest);
+      nyraPolicyRegistryExpectedTrustCatalogDigest = String(trustCatalogDigest);
+      const injectedVerifier = !nyraPolicyRegistryProofProduction
+        ? options.nyraPolicyRegistryCompilerProvenanceVerifier
+        : null;
+      if (injectedVerifier) {
+        nyraPolicyRegistryCompilerProvenanceVerifier = injectedVerifier;
+      } else {
+        let trustCatalog;
+        if (!nyraPolicyRegistryProofProduction &&
+          Object.hasOwn(options, "nyraPolicyRegistryCompilerTrustCatalog")) {
+          trustCatalog = options.nyraPolicyRegistryCompilerTrustCatalog;
+        } else {
+          const rawCatalog = String(
+            !nyraPolicyRegistryProofProduction &&
+              Object.hasOwn(options, "nyraPolicyRegistryCompilerTrustCatalogJson")
+              ? options.nyraPolicyRegistryCompilerTrustCatalogJson
+              : process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_JSON || "",
+          );
+          if (!rawCatalog || Buffer.byteLength(rawCatalog, "utf8") > 524_288) {
+            throw new Error("policy_registry_compiler_trust_catalog_json_invalid");
+          }
+          try { trustCatalog = JSON.parse(rawCatalog); } catch {
+            throw new Error("policy_registry_compiler_trust_catalog_json_invalid");
+          }
+        }
+        if (!validPolicyCompilerTrustCatalog(trustCatalog)) {
+          throw new Error("policy_registry_compiler_trust_catalog_invalid");
+        }
+        const rawTraversalBudget = !nyraPolicyRegistryProofProduction
+          ? options.nyraPolicyRegistryCompilerTraversalBudget ??
+            process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET ?? 256
+          : process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET ?? 256;
+        const traversalBudget = typeof rawTraversalBudget === "number"
+          ? rawTraversalBudget
+          : /^(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|25[0-6])$/.test(String(rawTraversalBudget))
+            ? Number(rawTraversalBudget)
+            : null;
+        if (!Number.isInteger(traversalBudget) || traversalBudget < 1 || traversalBudget > 256) {
+          throw new Error("policy_registry_compiler_traversal_budget_invalid");
+        }
+        if (!BUILD_COMMIT_VERIFIABLE) {
+          throw new Error("policy_registry_compiler_build_commit_unavailable");
+        }
+        nyraPolicyRegistryCompilerProvenanceVerifier =
+          createNyraPolicyRegistryCompilerProvenanceVerifier({
+            trust_catalog: trustCatalog,
+            build_commit: BUILD_COMMIT_SHA,
+            traversal_budget: traversalBudget,
+            now: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCompilerNow
+              ? options.nyraPolicyRegistryCompilerNow
+              : () => Date.now(),
+          });
+      }
+      if (!nyraPolicyRegistryCompilerProvenanceVerifier ||
+        typeof nyraPolicyRegistryCompilerProvenanceVerifier.verify !== "function" ||
+        typeof nyraPolicyRegistryCompilerProvenanceVerifier.verifyPersistedRecord !== "function" ||
+        typeof nyraPolicyRegistryCompilerProvenanceVerifier.status !== "function") {
+        throw new Error("policy_registry_compiler_verifier_invalid");
+      }
+      nyraPolicyRegistryCompilerStatus = nyraPolicyRegistryCompilerProvenanceVerifier.status();
+      if (typeof nyraPolicyRegistryCompilerStatus?.then === "function" ||
+        !validPolicyCompilerStatus(
+          nyraPolicyRegistryCompilerStatus,
+          nyraPolicyRegistryExpectedCatalogDigest,
+          nyraPolicyRegistryExpectedTrustCatalogDigest,
+        )) {
+        throw new Error("policy_registry_compiler_status_invalid");
+      }
+    } catch (error) {
+      nyraPolicyRegistryCompilerProvenanceVerifier = null;
+      nyraPolicyRegistryCompilerStatus = null;
+      const safeCompilerConfigurationErrors = new Set([
+        "policy_registry_compiler_catalog_digest_invalid",
+        "policy_registry_compiler_trust_catalog_digest_invalid",
+        "policy_registry_compiler_build_commit_unavailable",
+        "policy_registry_compiler_trust_catalog_json_invalid",
+        "policy_registry_compiler_trust_catalog_invalid",
+        "policy_registry_compiler_traversal_budget_invalid",
+        "policy_registry_compiler_verifier_invalid",
+        "policy_registry_compiler_status_invalid",
+      ]);
+      const code = String(error?.message || "");
+      nyraPolicyRegistryCompilerConfigurationError = safeCompilerConfigurationErrors.has(code)
+        ? code
+        : "policy_registry_compiler_configuration_invalid";
+    }
+  }
+  const nyraPolicyRegistryCompilerReady = nyraPolicyRegistryCompilerEnabled &&
+    nyraPolicyRegistryCompilerConfigurationError === null &&
+    nyraPolicyRegistryCompilerStatus?.ready === true;
+  let nyraPolicyRegistryProofConfigurationError = !nyraPolicyRegistryProofEnabledFlag.valid
+    ? nyraPolicyRegistryProofEnabledFlag.error
+    : !nyraPolicyRegistryProofRequiredFlag.valid
+      ? nyraPolicyRegistryProofRequiredFlag.error
+      : nyraPolicyRegistryProofRequired && !nyraPolicyRegistryProofEnabled
+        ? "policy_registry_proof_required_without_enabled"
+        : !["disabled", "remote"].includes(nyraPolicyRegistryCoreSignerMode)
+          ? "policy_registry_core_signer_mode_invalid"
+          : nyraPolicyRegistryProofEnabled && nyraPolicyRegistryCoreSignerMode !== "remote"
+            ? "policy_registry_core_signer_remote_required"
+            : null;
+  if (nyraPolicyRegistryProofEnabled &&
+    (!nyraPolicyRegistryCompilerEnabled || !nyraPolicyRegistryCompilerRequired)) {
+    nyraPolicyRegistryProofConfigurationError ||=
+      "policy_registry_proof_compiler_provenance_required";
+  }
+  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryCompilerConfigurationError) {
+    nyraPolicyRegistryProofConfigurationError ||= nyraPolicyRegistryCompilerConfigurationError;
+  }
+  if (nyraPolicyRegistryProofEnabled && !nyraPolicyRegistryCompilerReady) {
+    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_compiler_unavailable";
+  }
+  const nyraPolicyRegistryProductionInjectionPresent = nyraPolicyRegistryProofProduction && [
+    "nyraPolicyRegistryPostgresPool",
+    "nyraPolicyRegistryProofService",
+    "nyraPolicyRegistryStore",
+    "nyraPolicyRegistryClient",
+    "nyraPolicyRegistryCoordinator",
+    "nyraPolicyRegistryCoreSigner",
+    "nyraPolicyRegistryCoreSignerConfig",
+    "nyraPolicyRegistryCoreSignerFetch",
+    "nyraPolicyRegistryFetch",
+    "nyraPolicyRegistryProofEnv",
+    "nyraPolicyRegistryClientEnv",
+  ].some((field) => Object.hasOwn(options, field));
+  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProductionInjectionPresent) {
+    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_production_injection_forbidden";
+  }
+  const nyraPolicyRegistryProofEnv = nyraPolicyRegistryProofProduction
+    ? process.env
+    : options.nyraPolicyRegistryProofEnv || process.env;
+  const nyraPolicyRegistryPrivateMaterialPresent = Boolean(
+    process.env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY ||
+    nyraPolicyRegistryProofEnv.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY,
+  );
+  if (nyraPolicyRegistryPrivateMaterialPresent) {
+    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_core_private_key_forbidden";
+  }
+  const nyraPolicyRegistryCoreSignerTargetCommit =
+    process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT;
+  if (nyraPolicyRegistryProofProduction && nyraPolicyRegistryProofEnabled &&
+    (!BUILD_COMMIT_VERIFIABLE ||
+      nyraPolicyRegistryCoreSignerTargetCommit !== BUILD_COMMIT_SHA)) {
+    nyraPolicyRegistryProofConfigurationError ||=
+      "policy_registry_core_signer_target_commit_mismatch";
+  }
   // An injected PostgreSQL version probe is a fully controlled test/host seam.
   // Do not open implicit network pools behind it; callers that need database
   // behavior can still provide the explicit pool options above.
-  const hasInjectedPostgresVersionProbe = Boolean(options.governedAgentPostgresVersionProbe);
-  const nyraPolicyRegistryPostgresPool = options.nyraPolicyRegistryPostgresPool ||
-    (!hasInjectedPostgresVersionProbe && /^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
-      ? new pg.Pool({ connectionString: nyraPolicyRegistryDatabaseUrl })
-      : null);
-  if (nyraPolicyRegistryPostgresPool && !options.nyraPolicyRegistryPostgresPool) {
+  const hasInjectedPostgresVersionProbe = nyraPolicyRegistryProofConfigurationError === null &&
+    Boolean(options.governedAgentPostgresVersionProbe);
+  const allowInactivePolicyRegistryInjection = !nyraPolicyRegistryProofProduction ||
+    !nyraPolicyRegistryProofEnabled;
+  const nyraPolicyRegistryPostgresPool = nyraPolicyRegistryProofConfigurationError === null
+    ? ((allowInactivePolicyRegistryInjection && options.nyraPolicyRegistryPostgresPool) ||
+      (!hasInjectedPostgresVersionProbe && /^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
+        ? new pg.Pool({ connectionString: nyraPolicyRegistryDatabaseUrl })
+        : null))
+    : null;
+  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProofProduction && !nyraPolicyRegistryPostgresPool) {
+    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_postgres_required";
+  }
+  if (nyraPolicyRegistryPostgresPool &&
+    nyraPolicyRegistryPostgresPool !== options.nyraPolicyRegistryPostgresPool) {
     internallyOwnedPostgresPools.add(nyraPolicyRegistryPostgresPool);
   }
-  const nyraPolicyRegistryProofService = options.nyraPolicyRegistryProofService ||
-    (nyraPolicyRegistryPostgresPool
-      ? createNyraPolicyRegistryProofService({
+  const nyraPolicyRegistryProofActivationEnabled = nyraPolicyRegistryProofEnabled &&
+    nyraPolicyRegistryProofConfigurationError === null;
+  let nyraPolicyRegistryCoreSigner = null;
+  if (nyraPolicyRegistryProofActivationEnabled) {
+    try {
+      nyraPolicyRegistryCoreSigner = !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCoreSigner
+        ? options.nyraPolicyRegistryCoreSigner
+        : createNyraPolicyRegistryCoreRemoteSigner({
+            origin: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ORIGIN,
+            path: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PATH,
+            service: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE,
+            targetCommit: nyraPolicyRegistryCoreSignerTargetCommit,
+            keyId: nyraPolicyRegistryProofEnv.CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID,
+            serviceToken: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN,
+            publicKey: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ED25519_PUBLIC_KEY,
+            fetchImpl: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCoreSignerFetch
+              ? options.nyraPolicyRegistryCoreSignerFetch
+              : globalThis.fetch,
+            timeoutMs: optionalGenericWorkCoreJoinInteger(
+              process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TIMEOUT_MS,
+            ),
+            maxResponseBytes: optionalGenericWorkCoreJoinInteger(
+              process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MAX_RESPONSE_BYTES,
+            ),
+            probeCooldownMs: optionalGenericWorkCoreJoinInteger(
+              process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PROBE_COOLDOWN_MS,
+            ),
+          });
+      if (nyraPolicyRegistryProofProduction &&
+        nyraPolicyRegistryCoreSigner?.custody !== "external_remote_signer") {
+        throw new Error("policy_registry_external_core_signer_required");
+      }
+    } catch (error) {
+      nyraPolicyRegistryCoreSigner = null;
+      const code = String(error?.message || "");
+      const safeSignerConfigurationErrors = new Set([
+        "policy_registry_core_signer_key_id_invalid",
+        "policy_registry_core_signer_origin_invalid",
+        "policy_registry_core_signer_path_invalid",
+        "policy_registry_core_signer_probe_cooldown_invalid",
+        "policy_registry_core_signer_public_key_invalid",
+        "policy_registry_core_signer_response_limit_invalid",
+        "policy_registry_core_signer_service_invalid",
+        "policy_registry_core_signer_service_token_required",
+        "policy_registry_core_signer_target_commit_invalid",
+        "policy_registry_core_signer_timeout_invalid",
+        "policy_registry_core_signer_transport_unavailable",
+        "policy_registry_external_core_signer_required",
+      ]);
+      nyraPolicyRegistryProofConfigurationError ||= safeSignerConfigurationErrors.has(code)
+        ? code
+        : "policy_registry_core_signer_configuration_invalid";
+    }
+  }
+  let nyraPolicyRegistryProofService = null;
+  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProofConfigurationError === null) {
+    if (!nyraPolicyRegistryPostgresPool) {
+      nyraPolicyRegistryProofConfigurationError = "policy_registry_postgres_required";
+    } else {
+      nyraPolicyRegistryProofService = !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryProofService
+        ? options.nyraPolicyRegistryProofService
+        : createNyraPolicyRegistryProofService({
+            pool: nyraPolicyRegistryPostgresPool,
+            env: nyraPolicyRegistryProofEnv,
+            signer: nyraPolicyRegistryCoreSigner,
+            compilerProvenanceVerifier: nyraPolicyRegistryCompilerProvenanceVerifier,
+          });
+    }
+  }
+  const unavailablePolicyRegistry = Object.freeze({
+    kind: "unavailable",
+    restart_durable: false,
+    distributed: false,
+    evaluate: () => ({
+      verdict: "DENY",
+      reasons: ["policy_registry_unavailable"],
+      snapshot_digest: null,
+      snapshot_present: false,
+      snapshot_verified: false,
+      fail_closed: true,
+    }),
+    activate: async () => { throw new Error("policy_registry_unavailable"); },
+    rollback: async () => { throw new Error("policy_registry_unavailable"); },
+    resolveRollbackTarget: async () => { throw new Error("policy_registry_unavailable"); },
+    reconcile: async () => { throw new Error("policy_registry_unavailable"); },
+    status: async () => ({
+      configured: false,
+      backend: "unavailable",
+      restart_durable: false,
+      distributed: false,
+      compiler_provenance_persistence: false,
+      compiler_input_persisted: false,
+      state: "unavailable",
+      ready: false,
+      reason: "policy_registry_unavailable",
+    }),
+  });
+  const allowPolicyRegistryInjection = allowInactivePolicyRegistryInjection;
+  const nyraPolicyRegistry = allowPolicyRegistryInjection && options.nyraPolicyRegistryStore
+    ? options.nyraPolicyRegistryStore
+    : nyraPolicyRegistryPostgresPool
+      ? createPostgresNyraPolicyRegistryStore({
           pool: nyraPolicyRegistryPostgresPool,
-          env: options.nyraPolicyRegistryProofEnv || process.env,
+          consumeCoreReceipt: allowPolicyRegistryInjection && options.consumeNyraPolicyRegistryCoreReceipt
+            ? options.consumeNyraPolicyRegistryCoreReceipt
+            : nyraPolicyRegistryProofService?.consume,
+          verifyActivationSnapshot: allowPolicyRegistryInjection && options.verifyNyraPolicyRegistryActivationSnapshot
+            ? options.verifyNyraPolicyRegistryActivationSnapshot
+            : nyraPolicyRegistryProofService?.verifyActivationSnapshot,
+          verifyCompilerProvenanceRecord:
+            nyraPolicyRegistryCompilerProvenanceVerifier?.verifyPersistedRecord,
         })
-      : null);
-  const nyraPolicyRegistry = options.nyraPolicyRegistryStore || (nyraPolicyRegistryPostgresPool
-    ? createPostgresNyraPolicyRegistryStore({
-        pool: nyraPolicyRegistryPostgresPool,
-        consumeCoreReceipt: options.consumeNyraPolicyRegistryCoreReceipt ||
-          nyraPolicyRegistryProofService?.consume,
-        verifyActivationSnapshot: options.verifyNyraPolicyRegistryActivationSnapshot ||
-          nyraPolicyRegistryProofService?.verifyActivationSnapshot,
+      : nyraPolicyRegistryProofEnabled || nyraPolicyRegistryCompilerConfigurationError
+        ? unavailablePolicyRegistry
+        : createNyraPolicyRegistryStore({
+            filePath: path.join(storageRoot, "nyra-policy-registry.json"),
+            consumeCoreReceipt: options.consumeNyraPolicyRegistryCoreReceipt,
+            verifyActivationSnapshot: options.verifyNyraPolicyRegistryActivationSnapshot,
+            verifyCompilerProvenanceRecord:
+              nyraPolicyRegistryCompilerProvenanceVerifier?.verifyPersistedRecord,
+          });
+  const nyraPolicyRegistryClient = nyraPolicyRegistryProofEnabled &&
+    nyraPolicyRegistryProofConfigurationError === null
+    ? (!nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryClient) ||
+      createNyraPolicyRegistryClient({
+        env: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryClientEnv
+          ? options.nyraPolicyRegistryClientEnv
+          : process.env,
+        fetchImpl: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryFetch
+          ? options.nyraPolicyRegistryFetch
+          : globalThis.fetch,
       })
-    : createNyraPolicyRegistryStore({
-        filePath: path.join(storageRoot, "nyra-policy-registry.json"),
-        consumeCoreReceipt: options.consumeNyraPolicyRegistryCoreReceipt,
-        verifyActivationSnapshot: options.verifyNyraPolicyRegistryActivationSnapshot,
-      }));
+    : null;
+  const nyraPolicyRegistryCoordinator = nyraPolicyRegistryProofEnabled &&
+    nyraPolicyRegistryProofConfigurationError === null && nyraPolicyRegistryProofService &&
+    nyraPolicyRegistryClient
+    ? (!nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCoordinator) ||
+      createNyraPolicyRegistryCoordinator({
+        proofService: nyraPolicyRegistryProofService,
+        registryStore: nyraPolicyRegistry,
+        nyraClient: nyraPolicyRegistryClient,
+        compilerProvenanceVerifier: nyraPolicyRegistryCompilerProvenanceVerifier,
+      })
+    : null;
   const reviews = reviewStore(storageRoot);
   const evidence = evidenceStore(storageRoot);
   // Deep Branch V2 has Core-only trust material. Missing or invalid material
@@ -4992,36 +5481,406 @@ export function createUniversalCoreService(options = {}) {
     process.env.CORE_HOST_NATIVE_SIGNING_SECRET ??
     "",
   ).trim();
+  const genericWorkCoreJoinProduction = String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
+  const genericWorkCoreJoinEnabledFlag = strictGenericWorkCoreJoinBoolean(
+    options.genericWorkCoreJoinEnabled ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_ENABLED,
+    false,
+    "generic_work_core_join_enabled_flag_invalid",
+  );
+  const genericWorkCoreJoinRequiredFlag = strictGenericWorkCoreJoinBoolean(
+    options.genericWorkCoreJoinRequired ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REQUIRED,
+    false,
+    "generic_work_core_join_required_flag_invalid",
+  );
+  const genericWorkCoreJoinEnabled = genericWorkCoreJoinEnabledFlag.value;
+  // An invalid explicit required flag can never become an implicit opt-out.
+  const genericWorkCoreJoinRequired = genericWorkCoreJoinRequiredFlag.valid
+    ? genericWorkCoreJoinRequiredFlag.value
+    : true;
+  const genericWorkCoreJoinRemoteSignerMode = String(
+    options.genericWorkCoreJoinSignerMode
+      ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE
+      ?? "disabled",
+  );
+  let genericWorkCoreJoinConfigurationError = !genericWorkCoreJoinEnabledFlag.valid
+    ? genericWorkCoreJoinEnabledFlag.error
+    : !genericWorkCoreJoinRequiredFlag.valid
+      ? genericWorkCoreJoinRequiredFlag.error
+      : genericWorkCoreJoinRequired && !genericWorkCoreJoinEnabled
+        ? "generic_work_core_join_required_without_enabled"
+        : !["disabled", "remote"].includes(genericWorkCoreJoinRemoteSignerMode)
+          ? "generic_work_core_join_signer_mode_invalid"
+          : null;
+  let genericWorkCoreJoinActivationEnabled = genericWorkCoreJoinEnabled
+    && genericWorkCoreJoinConfigurationError === null;
+  const genericWorkCoreJoinPrivateKey = String(
+    options.genericWorkCoreJoinEd25519PrivateKey ?? "",
+  ).trim();
+  const genericWorkCoreJoinKeyId = String(
+    options.genericWorkCoreJoinEd25519KeyId ?? "",
+  ).trim();
+  const genericWorkCoreJoinInjectedRemoteConfig = options.genericWorkCoreJoinRemoteSignerConfig;
+  if (genericWorkCoreJoinInjectedRemoteConfig !== undefined
+      && (!genericWorkCoreJoinInjectedRemoteConfig
+        || typeof genericWorkCoreJoinInjectedRemoteConfig !== "object"
+        || Array.isArray(genericWorkCoreJoinInjectedRemoteConfig))) {
+    genericWorkCoreJoinConfigurationError ||= "generic_work_core_join_signer_configuration_invalid";
+  }
+  if (genericWorkCoreJoinProduction && options.genericWorkCoreJoinSigner !== undefined) {
+    genericWorkCoreJoinConfigurationError ||= "generic_work_core_join_signer_injection_forbidden";
+  }
+  const genericWorkCoreJoinConfiguredTargetCommit =
+    genericWorkCoreJoinInjectedRemoteConfig?.targetCommit
+    ?? options.genericWorkCoreJoinRemoteSignerTargetCommit
+    ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TARGET_COMMIT
+    ?? BUILD_COMMIT_SHA;
+  if (genericWorkCoreJoinActivationEnabled
+      && genericWorkCoreJoinRemoteSignerMode === "remote"
+      && genericWorkCoreJoinProduction
+      && (!BUILD_COMMIT_VERIFIABLE || genericWorkCoreJoinConfiguredTargetCommit !== BUILD_COMMIT_SHA)) {
+    genericWorkCoreJoinConfigurationError ||= "generic_work_core_join_signer_target_commit_mismatch";
+  }
+  const genericWorkCoreJoinRemoteSignerConfig = genericWorkCoreJoinInjectedRemoteConfig
+    && typeof genericWorkCoreJoinInjectedRemoteConfig === "object"
+    && !Array.isArray(genericWorkCoreJoinInjectedRemoteConfig)
+    ? {
+        ...genericWorkCoreJoinInjectedRemoteConfig,
+        targetCommit: genericWorkCoreJoinConfiguredTargetCommit,
+      }
+    : {
+        origin: options.genericWorkCoreJoinRemoteSignerOrigin ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ORIGIN,
+        path: options.genericWorkCoreJoinRemoteSignerPath ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PATH,
+        service: options.genericWorkCoreJoinRemoteSignerService ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE,
+        targetCommit: genericWorkCoreJoinConfiguredTargetCommit,
+        purpose: options.genericWorkCoreJoinRemoteSignerPurpose ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PURPOSE,
+        keyId: options.genericWorkCoreJoinRemoteSignerKeyId ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID,
+        serviceToken: options.genericWorkCoreJoinRemoteSignerServiceToken ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN,
+        publicKey: options.genericWorkCoreJoinRemoteSignerPublicKey ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY,
+        jwks: options.genericWorkCoreJoinRemoteSignerJwks ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_JWKS,
+        fetchImpl: options.genericWorkCoreJoinRemoteSignerFetch,
+        timeoutMs: optionalGenericWorkCoreJoinInteger(
+          options.genericWorkCoreJoinRemoteSignerTimeoutMs
+            ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TIMEOUT_MS,
+        ),
+        maxResponseBytes: optionalGenericWorkCoreJoinInteger(
+          options.genericWorkCoreJoinRemoteSignerMaxResponseBytes
+            ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_MAX_RESPONSE_BYTES,
+        ),
+      };
+  genericWorkCoreJoinActivationEnabled = genericWorkCoreJoinEnabled
+    && genericWorkCoreJoinConfigurationError === null;
   const genericWorkCoreJoinPostgresPool = options.genericWorkCoreJoinPostgresPool
     || governedAgentPostgresVersionPool;
-  const genericWorkCoreJoinStore = options.genericWorkCoreJoinStore
-    || (governedAgentPostgresConfigured && genericWorkCoreJoinPostgresPool
-      ? createPostgresGenericWorkCoreJoinStore({ pool: genericWorkCoreJoinPostgresPool })
-      : null);
-  const genericWorkCoreJoinPrivateKey = String(options.genericWorkCoreJoinEd25519PrivateKey ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_ED25519_PRIVATE_KEY ?? "").trim();
-  const genericWorkCoreJoinKeyId = String(options.genericWorkCoreJoinEd25519KeyId ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID ?? "").trim();
-  const genericWorkCoreJoinSigner = options.genericWorkCoreJoinSigner || (genericWorkCoreJoinPrivateKey && genericWorkCoreJoinKeyId ? createLocalGenericWorkCoreJoinSigner({ privateKey: genericWorkCoreJoinPrivateKey, keyId: genericWorkCoreJoinKeyId }) : null);
-  let genericWorkCoreJoinStoreState = genericWorkCoreJoinStore ? "initializing" : "unavailable";
-  let genericWorkCoreJoinStoreError = null;
-  const genericWorkCoreJoinStoreInitialization = genericWorkCoreJoinStore?.initialize
-    ? Promise.resolve().then(() => genericWorkCoreJoinStore.initialize()).then(() => { genericWorkCoreJoinStoreState = "ready"; }).catch((error) => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = String(error?.message || "initialization_failed").slice(0, 120); })
-    : Promise.resolve().then(() => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = "initialize_unavailable"; });
-  const genericWorkCoreJoinAuthority = genericWorkCoreJoinSigner && dttAgentIdentitySecret &&
-    genericWorkCoreJoinStore?.restart_durable === true
-    ? createGenericWorkCoreJoinAuthority({
-        signer: genericWorkCoreJoinSigner,
-        store: genericWorkCoreJoinStore,
-        verifyIndependentVerifierReceipt: (receipt) => {
-          const { signature, ...unsigned } = receipt || {};
-          const expected = crypto.createHmac("sha256", dttAgentIdentitySecret)
-            .update(`generic_work_verifier_receipt_v1\0${genericWorkCoreJoinDigest(unsigned)}`).digest("base64url");
-          const left = Buffer.from(String(signature || ""));
-          const right = Buffer.from(expected);
-          return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
-        },
-      })
+  const genericWorkCoreJoinStore = genericWorkCoreJoinActivationEnabled
+    ? options.genericWorkCoreJoinStore
+      || (governedAgentPostgresConfigured && genericWorkCoreJoinPostgresPool
+        ? createPostgresGenericWorkCoreJoinStore({ pool: genericWorkCoreJoinPostgresPool })
+        : null)
     : null;
+  const genericWorkCoreJoinSemanticCodes = new Set([
+    "acceptance_criteria_invalid",
+    "acceptance_criteria_invalid_duplicate",
+    "acceptance_criterion_invalid",
+    "adapter_unsupported",
+    "clock_invalid",
+    "evidence_duplicate",
+    "evidence_invalid",
+    "generic_work_core_join_adapter_mismatch",
+    "generic_work_core_join_context_invalid",
+    "generic_work_core_join_denied",
+    "generic_work_core_join_idempotency_conflict",
+    "generic_work_core_join_idempotency_digest_mismatch",
+    "generic_work_core_join_input_invalid",
+    "generic_work_core_join_key_id_mismatch",
+    "generic_work_core_join_nonce_replayed",
+    "generic_work_core_join_request_invalid",
+    "generic_work_core_join_tenant_id_mismatch",
+    "generic_work_core_join_verdict_digest_invalid",
+    "generic_work_core_join_verdict_invalid",
+    "generic_work_core_join_work_id_mismatch",
+    "idempotency_digest_invalid",
+    "independent_verifier_acceptance_criteria_digest_mismatch",
+    "independent_verifier_adapter_mismatch",
+    "independent_verifier_evidence_digest_mismatch",
+    "independent_verifier_not_distinct",
+    "independent_verifier_receipt_expired",
+    "independent_verifier_receipt_invalid",
+    "independent_verifier_receipt_untrusted",
+    "independent_verifier_task_state_digest_mismatch",
+    "independent_verifier_tenant_id_mismatch",
+    "independent_verifier_work_id_mismatch",
+    "requester_identity_invalid",
+    "requester_session_invalid",
+    "task_state_invalid",
+    "task_state_invalid_duplicate",
+    "tenant_id_invalid",
+    "work_id_invalid",
+  ]);
+  const genericWorkCoreJoinSignerRejectedCodes = new Set([
+    "generic_work_core_join_signature_invalid",
+    "generic_work_core_join_signer_digest_mismatch",
+    "generic_work_core_join_signer_key_id_mismatch",
+    "generic_work_core_join_signer_purpose_mismatch",
+    "generic_work_core_join_signer_redirect_denied",
+    "generic_work_core_join_signer_response_invalid",
+    "generic_work_core_join_signer_response_too_large",
+    "generic_work_core_join_signer_service_mismatch",
+    "generic_work_core_join_signer_signature_invalid",
+    "generic_work_core_join_signer_target_commit_mismatch",
+  ]);
+  const genericWorkCoreJoinSafeReason = (value, fallback) => {
+    const code = String(value?.message || value || "").trim();
+    return genericWorkCoreJoinInfrastructureCode(code) || (genericWorkCoreJoinSemanticCodes.has(code) ? code : fallback);
+  };
+  const genericWorkCoreJoinSafeCustody = (value) => {
+    const custody = String(value || "").trim();
+    return /^(?:local_process_key|external_remote_signer|external_kms|kms|hsm)$/.test(custody)
+      ? custody
+      : custody
+        ? "external"
+        : null;
+  };
+  const genericWorkCoreJoinSafeSignerState = (value, fallback = "invalid") => {
+    const state = String(value || "").trim();
+    return new Set(["configured", "forbidden", "invalid", "ready", "rejected", "unavailable", "unconfigured"]).has(state)
+      ? state
+      : fallback;
+  };
+  let genericWorkCoreJoinSigner = null;
+  let genericWorkCoreJoinSignerState = "unconfigured";
+  let genericWorkCoreJoinSignerReason = "generic_work_core_join_signer_unconfigured";
+  let genericWorkCoreJoinSignerCustody = null;
+  let genericWorkCoreJoinSignerFailureLatched = false;
+  let genericWorkCoreJoinIssueSequence = 0;
+  let genericWorkCoreJoinSignerFailureSequence = 0;
+  let genericWorkCoreJoinSignerRecoverySequence = 0;
+  try {
+    if (!genericWorkCoreJoinActivationEnabled) {
+      genericWorkCoreJoinSignerReason = genericWorkCoreJoinConfigurationError
+        || "generic_work_core_join_disabled";
+    } else if (genericWorkCoreJoinRemoteSignerMode === "remote") {
+      genericWorkCoreJoinSigner = !genericWorkCoreJoinProduction && options.genericWorkCoreJoinSigner
+        ? options.genericWorkCoreJoinSigner
+        : createGenericWorkCoreJoinRemoteSigner(genericWorkCoreJoinRemoteSignerConfig);
+    } else if (options.genericWorkCoreJoinSigner && !genericWorkCoreJoinProduction) {
+      // Explicit dependency injection is a non-production test seam only.
+      genericWorkCoreJoinSigner = options.genericWorkCoreJoinSigner;
+    } else if (genericWorkCoreJoinPrivateKey && genericWorkCoreJoinKeyId && !genericWorkCoreJoinProduction) {
+      genericWorkCoreJoinSigner = createLocalGenericWorkCoreJoinSigner({ privateKey: genericWorkCoreJoinPrivateKey, keyId: genericWorkCoreJoinKeyId });
+    } else if (genericWorkCoreJoinPrivateKey || genericWorkCoreJoinKeyId) {
+      genericWorkCoreJoinSignerCustody = "local_process_key";
+      genericWorkCoreJoinSignerState = "forbidden";
+      genericWorkCoreJoinSignerReason = genericWorkCoreJoinProduction
+        ? "generic_work_core_join_local_signer_forbidden"
+        : "generic_work_core_join_signing_unavailable";
+    }
+    if (genericWorkCoreJoinSigner) {
+      genericWorkCoreJoinSignerCustody = genericWorkCoreJoinSafeCustody(genericWorkCoreJoinSigner.custody || "external");
+      if (genericWorkCoreJoinProduction && genericWorkCoreJoinSignerCustody === "local_process_key") {
+        genericWorkCoreJoinSigner = null;
+        genericWorkCoreJoinSignerState = "forbidden";
+        genericWorkCoreJoinSignerReason = "generic_work_core_join_local_signer_forbidden";
+      } else if (genericWorkCoreJoinProduction && !["external_remote_signer", "external_kms", "kms", "hsm"].includes(genericWorkCoreJoinSignerCustody)) {
+        genericWorkCoreJoinSigner = null;
+        genericWorkCoreJoinSignerState = "invalid";
+        genericWorkCoreJoinSignerReason = "generic_work_core_join_external_signer_required";
+      } else {
+        const signerHealth = typeof genericWorkCoreJoinSigner.health === "function"
+          ? genericWorkCoreJoinSigner.health()
+          : null;
+        genericWorkCoreJoinSignerState = genericWorkCoreJoinSafeSignerState(
+          signerHealth?.signer_state || genericWorkCoreJoinSigner.signer_state || "configured",
+          "unavailable",
+        );
+        genericWorkCoreJoinSignerReason = genericWorkCoreJoinSafeReason(
+          signerHealth?.reason || genericWorkCoreJoinSigner.signer_reason,
+          genericWorkCoreJoinSignerState === "unavailable"
+            ? "generic_work_core_join_signer_unavailable"
+            : null,
+        );
+      }
+    }
+  } catch (error) {
+    genericWorkCoreJoinSigner = null;
+    genericWorkCoreJoinSignerState = "invalid";
+    genericWorkCoreJoinSignerReason = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_signer_configuration_invalid");
+    genericWorkCoreJoinConfigurationError ||= genericWorkCoreJoinSignerReason;
+    genericWorkCoreJoinActivationEnabled = false;
+    genericWorkCoreJoinSignerCustody = genericWorkCoreJoinRemoteSignerMode === "remote"
+      ? "external_remote_signer"
+      : genericWorkCoreJoinSignerCustody;
+  }
+  let genericWorkCoreJoinStoreState = !genericWorkCoreJoinActivationEnabled
+    ? "disabled"
+    : genericWorkCoreJoinStore
+      ? "initializing"
+      : "unavailable";
+  let genericWorkCoreJoinStoreError = null;
+  const genericWorkCoreJoinStoreInitialization = !genericWorkCoreJoinActivationEnabled
+    ? Promise.resolve()
+    : genericWorkCoreJoinStore?.initialize
+    ? Promise.resolve().then(() => genericWorkCoreJoinStore.initialize()).then(() => { genericWorkCoreJoinStoreState = "ready"; }).catch((error) => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_store_initialization_failed"); })
+    : Promise.resolve().then(() => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = "initialize_unavailable"; });
+  let genericWorkCoreJoinAuthority = null;
+  if (genericWorkCoreJoinSigner
+      && dttAgentIdentitySecret
+      && genericWorkCoreJoinStore?.restart_durable === true
+      && (!genericWorkCoreJoinProduction || genericWorkCoreJoinStore?.distributed === true)) {
+    try {
+      genericWorkCoreJoinAuthority = createGenericWorkCoreJoinAuthority({
+          signer: genericWorkCoreJoinSigner,
+          store: genericWorkCoreJoinStore,
+          verifyIndependentVerifierReceipt: (receipt) => {
+            const { signature, ...unsigned } = receipt || {};
+            const expected = crypto.createHmac("sha256", dttAgentIdentitySecret)
+              .update(`generic_work_verifier_receipt_v1\0${genericWorkCoreJoinDigest(unsigned)}`).digest("base64url");
+            const left = Buffer.from(String(signature || ""));
+            const right = Buffer.from(expected);
+            return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
+          },
+        });
+    } catch (error) {
+      genericWorkCoreJoinAuthority = null;
+      genericWorkCoreJoinSignerState = "invalid";
+      genericWorkCoreJoinSignerReason = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_signer_configuration_invalid");
+    }
+  }
   const genericWorkCoreJoinVerifier = genericWorkCoreJoinAuthority ? createGenericWorkCoreJoinVerdictVerifier({ publicKey: genericWorkCoreJoinSigner.public_key, keyId: genericWorkCoreJoinSigner.key_id }) : null;
+  const genericWorkCoreJoinProbeCooldownMs = Math.min(60_000, Math.max(100, Number(
+    options.genericWorkCoreJoinSignerProbeCooldownMs
+      ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_SIGNER_PROBE_COOLDOWN_MS
+      ?? 5_000,
+  ) || 5_000));
+  const genericWorkCoreJoinProbeTimeoutMs = Math.min(10_000, Math.max(100, Number(
+    options.genericWorkCoreJoinSignerProbeTimeoutMs
+      ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_SIGNER_PROBE_TIMEOUT_MS
+      ?? 2_000,
+  ) || 2_000));
+  const genericWorkCoreJoinProbeNow = typeof options.genericWorkCoreJoinProbeNow === "function"
+    ? options.genericWorkCoreJoinProbeNow
+    : () => Date.now();
+  let genericWorkCoreJoinProbeInFlight = null;
+  let genericWorkCoreJoinProbeLastAttemptAt = Number.NEGATIVE_INFINITY;
+  let genericWorkCoreJoinProbeAttempts = 0;
+  const genericWorkCoreJoinSignerHealth = () => {
+    if (typeof genericWorkCoreJoinSigner?.health !== "function") {
+      return {
+        signer_state: genericWorkCoreJoinSignerState,
+        reason: genericWorkCoreJoinSignerReason,
+      };
+    }
+    try {
+      const signerHealth = genericWorkCoreJoinSigner.health();
+      const reportedState = genericWorkCoreJoinSafeSignerState(
+        signerHealth?.signer_state || genericWorkCoreJoinSignerState,
+        genericWorkCoreJoinSignerState,
+      );
+      // Signer-owned health may degrade application readiness, but only a
+      // locally verified application-owned probe may promote it to ready.
+      const effectiveState = reportedState === "ready"
+        && genericWorkCoreJoinSignerState !== "ready"
+        ? genericWorkCoreJoinSignerState
+        : reportedState;
+      return {
+        signer_state: effectiveState === "configured"
+          && genericWorkCoreJoinSignerState !== "configured"
+          ? genericWorkCoreJoinSignerState
+          : effectiveState,
+        reason: genericWorkCoreJoinSafeReason(
+          effectiveState === reportedState
+            ? signerHealth?.reason
+            : genericWorkCoreJoinSignerReason,
+          genericWorkCoreJoinSignerReason,
+        ),
+      };
+    } catch {
+      return {
+        signer_state: "unavailable",
+        reason: "generic_work_core_join_signer_health_unavailable",
+      };
+    }
+  };
+  const ensureGenericWorkCoreJoinSignerReady = async () => {
+    if (!genericWorkCoreJoinActivationEnabled
+        || !genericWorkCoreJoinAuthority
+        || !genericWorkCoreJoinVerifier
+        || genericWorkCoreJoinStoreState !== "ready"
+        || genericWorkCoreJoinSignerFailureLatched) return false;
+    const current = genericWorkCoreJoinSignerHealth();
+    // A remote client may complete after this service's stricter probe deadline.
+    // Its late health transition must not promote the application without a new
+    // bounded probe that starts after the cooldown.
+    if (current.signer_state === "ready" && genericWorkCoreJoinSignerState === "ready") return true;
+    if (["forbidden", "invalid", "unconfigured"].includes(current.signer_state)) return false;
+    if (genericWorkCoreJoinProbeInFlight) return genericWorkCoreJoinProbeInFlight;
+    const nowValue = Number(genericWorkCoreJoinProbeNow());
+    if (!Number.isFinite(nowValue)
+        || nowValue - genericWorkCoreJoinProbeLastAttemptAt < genericWorkCoreJoinProbeCooldownMs) return false;
+    genericWorkCoreJoinProbeLastAttemptAt = nowValue;
+    genericWorkCoreJoinProbeAttempts += 1;
+    const challengeDigest = genericWorkCoreJoinDigest({
+      schema_version: "generic_work_core_join_signer_challenge_v1",
+      service: SERVICE_NAME,
+      build_commit: BUILD_COMMIT_SHA || "development",
+      key_id: genericWorkCoreJoinAuthority.signer_metadata.key_id,
+      public_key_fingerprint: genericWorkCoreJoinAuthority.signer_metadata.public_key_fingerprint,
+      nonce: crypto.randomBytes(32).toString("hex"),
+    });
+    let challengeTimeout;
+    const signatureOperation = Promise.resolve()
+      .then(() => genericWorkCoreJoinSigner.signDigest(challengeDigest));
+    void signatureOperation.catch(() => {});
+    const boundedSignature = Promise.race([
+      signatureOperation,
+      new Promise((_, reject) => {
+        challengeTimeout = setTimeout(
+          () => reject(new Error("generic_work_core_join_signer_timeout")),
+          genericWorkCoreJoinProbeTimeoutMs,
+        );
+        challengeTimeout.unref?.();
+      }),
+    ]);
+    const probeResult = boundedSignature
+      .then((signature) => {
+        verifyGenericWorkCoreJoinDigestSignature({
+          digest: challengeDigest,
+          signature,
+          publicKey: genericWorkCoreJoinSigner.public_key,
+        });
+        genericWorkCoreJoinSignerState = "ready";
+        genericWorkCoreJoinSignerReason = null;
+        return true;
+      })
+      .catch((error) => {
+        const code = genericWorkCoreJoinSignerInfrastructureCode(error)
+          || "generic_work_core_join_signer_unavailable";
+        genericWorkCoreJoinSignerState = genericWorkCoreJoinSignerRejectedCodes.has(code)
+          ? "rejected"
+          : "unavailable";
+        genericWorkCoreJoinSignerReason = code;
+        return false;
+      })
+      .finally(() => {
+        clearTimeout(challengeTimeout);
+      });
+    genericWorkCoreJoinProbeInFlight = probeResult;
+    // Keep the single-flight barrier after an outer timeout until the underlying
+    // signer call settles. This prevents an old live operation overlapping a
+    // retry, while callers still receive the bounded fail-closed result.
+    void Promise.allSettled([signatureOperation, probeResult]).then(() => {
+      if (genericWorkCoreJoinProbeInFlight === probeResult) {
+        const settledAt = Number(genericWorkCoreJoinProbeNow());
+        if (Number.isFinite(settledAt)) {
+          genericWorkCoreJoinProbeLastAttemptAt = Math.max(
+            genericWorkCoreJoinProbeLastAttemptAt,
+            settledAt,
+          );
+        }
+        genericWorkCoreJoinProbeInFlight = null;
+      }
+    });
+    return probeResult;
+  };
   const bootstrapAuthorityTrustPinRaw = String(
     options.bootstrapAuthorityTrustPinJson ??
     process.env.CORE_BOOTSTRAP_AUTHORITY_TRUST_PIN_JSON ??
@@ -5860,13 +6719,217 @@ export function createUniversalCoreService(options = {}) {
       audit: (event) => audit.append("core_causal_continuity_invoked", event),
     });
   }
+
+  const injectedDttWorkBindingResolver = process.env.NODE_ENV !== "production"
+    && options.allowTestDttWorkBindingResolver === true
+    && typeof options.resolveDttWorkBinding === "function"
+    ? options.resolveDttWorkBinding
+    : null;
+  const dttStatusForError = (code, fallback = 400) => {
+    if (["task_tree_not_found", "dtt_node_not_found", "dtt_verifier_assignment_node_invalid"].includes(code)) return 404;
+    if (["cross_tenant_task_tree_denied", "cross_work_task_tree_denied"].includes(code)) return 403;
+    if ([
+      "dtt_work_binding_required",
+      "node_terminal",
+      "outcome_idempotency_key_conflict",
+      "dynamic_task_tree_revision_conflict",
+      "dtt_agent_context_replayed",
+      "task_tree_not_verified",
+      "task_tree_already_joined",
+      "dtt_join_verdict_already_issued",
+    ].includes(code)) return 409;
+    if ([
+      "dynamic_task_tree_state_corrupt",
+      "dtt_join_verdict_ledger_integrity_failed",
+      "dtt_verification_trust_store_corrupt",
+      "dtt_agent_identity_store_corrupt",
+      "joined_tree_verdict_missing",
+      "joined_tree_verdict_voided",
+    ].includes(code)) return 500;
+    if ([
+      "dtt_work_binding_unavailable",
+      "dtt_work_context_signing_unavailable",
+      "dtt_join_finalization_pending",
+    ].includes(code)) return 503;
+    return fallback;
+  };
+  const dttWorkAuth = async (req, res, next) => {
+    try {
+      let binding;
+      const requestContext = {
+        tenant_id: req.tenantId,
+        method: req.method,
+        path: req.path,
+        body: req.body,
+      };
+      if (injectedDttWorkBindingResolver) {
+        binding = await injectedDttWorkBindingResolver({ ...requestContext, request: req });
+      } else {
+        if (!isMcpTenantGatewayRecord(req.coreKey)) throw new Error("dtt_work_gateway_required");
+        if (!dttAgentIdentitySecret) throw new Error("dtt_work_binding_unavailable");
+        binding = verifyDttWorkContext({
+          token: req.get(DTT_WORK_CONTEXT_HEADER),
+          secret: dttAgentIdentitySecret,
+          expected_tenant_id: req.tenantId,
+          method: req.method,
+          path: req.path,
+          body: req.body,
+        });
+      }
+      const workId = String(binding?.work_id || "").trim();
+      if (
+        binding?.schema_version !== "dtt_work_context_v1"
+        || binding?.tenant_id !== req.tenantId
+        || binding?.execution_authorized !== false
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(workId)
+      ) {
+        throw new Error("dtt_work_context_invalid");
+      }
+      const claimedWorkId = req.body?.work_id ?? req.query?.work_id;
+      if (claimedWorkId !== undefined && String(claimedWorkId) !== workId) {
+        throw new Error("cross_work_task_tree_denied");
+      }
+      req.workId = workId;
+      req.dttWorkBinding = Object.freeze(structuredClone(binding));
+      return next();
+    } catch (error) {
+      const reason = String(error?.message || "dtt_work_context_invalid");
+      const code = reason === "cross_work_task_tree_denied"
+        || /^dtt_work_[a-z0-9_]+$/.test(reason)
+        ? reason
+        : "dtt_work_context_invalid";
+      audit.append("dtt_work_binding_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey?.key_id || null,
+        path: req.path,
+        reason: code,
+      });
+      return publicError(
+        res,
+        dttStatusForError(code, 403),
+        code,
+      );
+    }
+  };
+
+  const genericWorkCoreJoinContextPublicCodes = new Set([
+    "core_join_mcp_gateway_required",
+    "generic_work_core_join_context_required",
+    "generic_work_core_join_context_invalid",
+    "generic_work_core_join_context_signature_invalid",
+    "generic_work_core_join_context_payload_invalid",
+    "generic_work_core_join_context_principal_invalid",
+    "generic_work_core_join_context_lease_invalid",
+    "generic_work_core_join_context_request_invalid",
+    "generic_work_core_join_context_tenant_mismatch",
+    "generic_work_core_join_context_work_mismatch",
+    "generic_work_core_join_context_request_mismatch",
+    "generic_work_core_join_context_not_active",
+    "generic_work_core_join_context_expired",
+    "generic_work_core_join_context_expiry_invalid",
+    "generic_work_core_join_context_nonce_invalid",
+    "generic_work_core_join_context_signing_unavailable",
+    "generic_work_core_join_cross_work_denied",
+    "generic_work_core_join_disabled",
+    "generic_work_core_join_distributed_store_unavailable",
+    "generic_work_core_join_verifier_binding_mismatch",
+    "generic_work_core_join_verifier_unavailable",
+  ]);
+  const genericWorkCoreJoinContextAuth = (req, res, next) => {
+    try {
+      if (!isMcpTenantGatewayRecord(req.coreKey)) {
+        throw new Error("core_join_mcp_gateway_required");
+      }
+      if (genericWorkCoreJoinConfigurationError) {
+        throw new Error(genericWorkCoreJoinConfigurationError);
+      }
+      if (!genericWorkCoreJoinEnabled) {
+        throw new Error("generic_work_core_join_disabled");
+      }
+      if (!genericWorkCoreJoinAuthority) {
+        throw new Error(genericWorkCoreJoinUnavailableCode());
+      }
+      if (!dttAgentIdentitySecret) {
+        throw new Error("generic_work_core_join_context_signing_unavailable");
+      }
+      const token = req.get(GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER);
+      if (!token) throw new Error("generic_work_core_join_context_required");
+      const binding = verifyGenericWorkCoreJoinContext({
+        token,
+        secret: dttAgentIdentitySecret,
+        expected_tenant_id: req.tenantId,
+        method: req.method,
+        path: req.path,
+        body: req.body,
+      });
+      const workId = String(binding?.work_id || "").trim().toLowerCase();
+      if (
+        binding?.schema_version !== GENERIC_WORK_CORE_JOIN_CONTEXT_VERSION
+        || binding?.purpose !== GENERIC_WORK_CORE_JOIN_CONTEXT_PURPOSE
+        || binding?.tenant_id !== req.tenantId
+        || binding?.execution_authorized !== false
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(workId)
+      ) {
+        throw new Error("generic_work_core_join_context_invalid");
+      }
+      const claimedWorkId = req.body?.work_id;
+      if (claimedWorkId !== undefined && String(claimedWorkId).trim().toLowerCase() !== workId) {
+        throw new Error("generic_work_core_join_cross_work_denied");
+      }
+      const signerMetadata = genericWorkCoreJoinAuthority.signer_metadata;
+      if (!signerMetadata
+          || !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(String(signerMetadata.key_id || ""))
+          || !/^[a-f0-9]{64}$/.test(String(signerMetadata.public_key_fingerprint || ""))) {
+        throw new Error("generic_work_core_join_verifier_unavailable");
+      }
+      if (binding.verifier?.key_id !== signerMetadata.key_id
+          || binding.verifier?.public_key_fingerprint !== signerMetadata.public_key_fingerprint) {
+        throw new Error("generic_work_core_join_verifier_binding_mismatch");
+      }
+      req.genericWorkCoreJoinWorkId = workId;
+      req.genericWorkCoreJoinBinding = binding;
+      return next();
+    } catch (error) {
+      const reason = String(error?.code || error?.message || "");
+      const code = genericWorkCoreJoinContextPublicCodes.has(reason)
+        || genericWorkCoreJoinInfrastructureCode(reason)
+        ? reason
+        : "generic_work_core_join_context_invalid";
+      audit.append("core_generic_work_core_join_context_denied", {
+        tenant_id: req.tenantId,
+        key_id: req.coreKey?.key_id || null,
+        path: req.path,
+        reason: code,
+      });
+      return publicError(
+        res,
+        genericWorkCoreJoinInfrastructureCode(code)
+          || [
+            "generic_work_core_join_context_signing_unavailable",
+            "generic_work_core_join_verifier_unavailable",
+          ].includes(code) ? 503 : 403,
+        code,
+      );
+    }
+  };
+
+  const assertDttTreeNode = async ({ tenant_id, work_id, tree_id, node_id }) => {
+    const tree = await dynamicTaskTreeRuntime.get({ tenant_id, work_id, tree_id });
+    if (!tree.nodes.some((item) => item.node_id === node_id)) {
+      throw new Error("dtt_node_not_found");
+    }
+    return tree;
+  };
+
   mountDttAgentIdentityReceiptRoutes({
     app,
     auth: coreAuth(SCOPES.WRITE_DECISION),
+    workAuth: dttWorkAuth,
+    assertTreeNode: assertDttTreeNode,
     receiptService: dttAgentIdentityReceiptService,
     audit,
   });
-  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/verifier-assignments", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/verifier-assignments", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
     if (!dttAgentIdentityReceiptService?.configured) {
       return res.status(503).json({ ok: false, error: "dtt_agent_identity_not_ready" });
     }
@@ -5874,15 +6937,17 @@ export function createUniversalCoreService(options = {}) {
       const context = dttAgentIdentityReceiptService.verifyContext(
         req.get("x-sh-dtt-agent-context"),
         req.tenantId,
+        req.workId,
+        req.dttWorkBinding.principal,
       );
-      const tree = await dynamicTaskTreeRuntime.get({ tenant_id: req.tenantId, tree_id: req.params.treeId });
+      const tree = await dynamicTaskTreeRuntime.get({ tenant_id: req.tenantId, work_id: req.workId, tree_id: req.params.treeId });
       const node = tree.nodes.find((item) => item.node_id === req.params.nodeId);
       if (!node) throw new Error("dtt_verifier_assignment_node_invalid");
       if (node.kind === "verification" && !node.verification_policy?.allowed_verifier_ids?.includes(context.agent_id)) {
         throw new Error("dtt_verifier_not_allowlisted");
       }
       const occupied = await dttVerificationTrustStore.listAssignments({
-        tenant_id: req.tenantId, tree_id: req.params.treeId, node_id: req.params.nodeId,
+        tenant_id: req.tenantId, work_id: req.workId, tree_id: req.params.treeId, node_id: req.params.nodeId,
       });
       if (occupied.some((item) => item.actor_provenance === context.actor_provenance
         && (item.verifier_id !== context.agent_id
@@ -5901,22 +6966,35 @@ export function createUniversalCoreService(options = {}) {
       }
       const assignment = await dttVerificationTrustStore.assignVerifier({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
         node_id: req.params.nodeId,
         verifier_id: context.agent_id,
+        session_id: context.session_id,
         session_fingerprint: context.session_fingerprint,
+        host_transport_session_fingerprint: context.host_transport_session_fingerprint,
+        presence_signature: context.presence_signature,
+        client_type: context.client_type,
         opaque_agent_id: context.opaque_agent_id,
         actor_provenance: context.actor_provenance,
       });
-      return res.json({ ok: true, assignment_id: assignment.assignment_id, verifier_id: assignment.verifier_id });
+      return res.json({
+        ok: true,
+        work_id: req.workId,
+        assignment_id: assignment.assignment_id,
+        verifier_id: assignment.verifier_id,
+        execution_authorized: false,
+      });
     } catch (error) {
-      return publicError(res, 403, error.message || "dtt_verifier_assignment_denied");
+      const code = error.message || "dtt_verifier_assignment_denied";
+      return publicError(res, dttStatusForError(code, 403), code);
     }
   });
-  app.post("/v1/orchestration/evidence/artifacts", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/evidence/artifacts", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
     try {
       const artifact = await dttVerificationTrustStore.registerArtifact({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         artifact_id: req.body?.artifact_id,
         content: req.body?.content,
         source_reference: req.body?.source_reference,
@@ -5924,13 +7002,21 @@ export function createUniversalCoreService(options = {}) {
       });
       audit.append("dtt_evidence_artifact_registered", {
         tenant_id: req.tenantId,
+        work_id: req.workId,
         artifact_id: artifact.artifact_id,
         content_digest: artifact.content_digest,
         registry_id: artifact.registry_id,
       });
-      return res.json({ ok: true, ...artifact });
+      return res.json({
+        ...artifact,
+        ok: true,
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        execution_authorized: false,
+      });
     } catch (error) {
-      return publicError(res, 400, error.message || "dtt_evidence_artifact_invalid");
+      const code = error.message || "dtt_evidence_artifact_invalid";
+      return publicError(res, dttStatusForError(code), code);
     }
   });
   mountAdminControlRoom({
@@ -6799,21 +7885,132 @@ export function createUniversalCoreService(options = {}) {
       hostNativeProductionReadinessReasons.length === 0;
     const hostNativeReady =
       hostNativeRuntimeReady && hostNativeProductionReadinessReady;
-    const nyraPolicyRegistryProductionReady = !production || (
+    let nyraPolicyRegistryCompilerCurrentStatus = nyraPolicyRegistryCompilerStatus;
+    if (nyraPolicyRegistryCompilerProvenanceVerifier) {
+      try {
+        const refreshed = nyraPolicyRegistryCompilerProvenanceVerifier.status();
+        nyraPolicyRegistryCompilerCurrentStatus = refreshed &&
+          typeof refreshed.then !== "function" ? refreshed : null;
+      } catch {
+        nyraPolicyRegistryCompilerCurrentStatus = null;
+      }
+    }
+    const nyraPolicyRegistryCompilerRuntimeReady =
+      nyraPolicyRegistryCompilerEnabled &&
+      nyraPolicyRegistryCompilerConfigurationError === null &&
+      validPolicyCompilerStatus(
+        nyraPolicyRegistryCompilerCurrentStatus,
+        nyraPolicyRegistryExpectedCatalogDigest,
+        nyraPolicyRegistryExpectedTrustCatalogDigest,
+      );
+    const nyraPolicyRegistryClientStatus = () => nyraPolicyRegistryClient?.status?.() || {
+      configured: false,
+      ready: false,
+      state: nyraPolicyRegistryProofEnabled ? "unavailable" : "disabled",
+      upstream_verified: false,
+      last_failure: nyraPolicyRegistryProofConfigurationError || null,
+    };
+    let nyraPolicyRegistryCoordinatorStatus;
+    try {
+      nyraPolicyRegistryCoordinatorStatus = nyraPolicyRegistryCoordinator
+        ? await nyraPolicyRegistryCoordinator.status()
+        : {
+            ready: false,
+            e2e_verified: false,
+            upstream: nyraPolicyRegistryClientStatus(),
+            error: "policy_registry_coordinator_not_configured",
+          };
+    } catch {
+      nyraPolicyRegistryCoordinatorStatus = {
+        ready: false,
+        e2e_verified: false,
+        upstream: nyraPolicyRegistryClientStatus(),
+        error: "policy_registry_coordinator_unavailable",
+      };
+    }
+    const nyraPolicyRegistryEvaluationProductionReady =
+      !production || (
+        nyraPolicyRegistryStatus.backend === "postgresql" &&
+        nyraPolicyRegistryStatus.ready === true
+      );
+    const nyraPolicyRegistryStoreProvenanceReady =
       nyraPolicyRegistryStatus.backend === "postgresql" &&
-      nyraPolicyRegistryStatus.ready === true &&
-      (nyraPolicyRegistryMode !== "enforced" || nyraPolicyRegistryProofStatus.ready === true)
-    );
+      nyraPolicyRegistryStatus.restart_durable === true &&
+      nyraPolicyRegistryStatus.distributed === true &&
+      nyraPolicyRegistryStatus.compiler_provenance_persistence === true &&
+      nyraPolicyRegistryStatus.compiler_input_persisted === false;
+    const nyraPolicyRegistryProofV3Ready =
+      nyraPolicyRegistryProofStatus.ready === true &&
+      nyraPolicyRegistryProofStatus.proof_schema_version === "nyra_policy_registry_proof_v3" &&
+      nyraPolicyRegistryProofStatus.attestation_schema_version ===
+        "nyra_policy_activation_attestation_v3" &&
+      nyraPolicyRegistryProofStatus.receipt_schema_version ===
+        "core_policy_activation_receipt_v3" &&
+      nyraPolicyRegistryProofStatus.compiler_provenance_binding_required === true;
+    const nyraPolicyRegistryProofLifecycleReady =
+      nyraPolicyRegistryProofActivationEnabled &&
+      nyraPolicyRegistryProofConfigurationError === null &&
+      nyraPolicyRegistryCompilerRuntimeReady &&
+      nyraPolicyRegistryStoreProvenanceReady &&
+      nyraPolicyRegistryProofV3Ready &&
+      nyraPolicyRegistryCoordinatorStatus.ready === true &&
+      nyraPolicyRegistryCoordinatorStatus.e2e_verified === true;
+    const nyraPolicyRegistryProductionReady = nyraPolicyRegistryEvaluationProductionReady &&
+      (nyraPolicyRegistryMode !== "enforced" || nyraPolicyRegistryProofStatus.ready === true) &&
+      (!nyraPolicyRegistryCompilerRequired || nyraPolicyRegistryCompilerRuntimeReady) &&
+      (!nyraPolicyRegistryProofRequired || nyraPolicyRegistryProofLifecycleReady);
     const researchAirlockProductionReady = !production
       || researchAirlockHealth.ready === true
       || (researchAirlockHealth.mode === "shadow" && researchAirlockHealth.operational_safe === true);
     const causalContinuityProductionReady = !causalContinuityProductionRequired
       || (Boolean(causalContinuityRuntime) && causalContinuityHealth.ok === true);
+    await ensureGenericWorkCoreJoinSignerReady();
+    const genericWorkCoreJoinCurrentSignerHealth = genericWorkCoreJoinSignerFailureLatched
+      ? {
+          signer_state: genericWorkCoreJoinSignerState,
+          reason: genericWorkCoreJoinSignerReason,
+        }
+      : genericWorkCoreJoinSignerHealth();
+    const genericWorkCoreJoinCurrentSignerState = genericWorkCoreJoinCurrentSignerHealth.signer_state;
+    const genericWorkCoreJoinCurrentSignerReason = genericWorkCoreJoinCurrentSignerHealth.reason;
+    const genericWorkCoreJoinSignerReady = genericWorkCoreJoinCurrentSignerState === "ready";
+    const genericWorkCoreJoinDistributedReady = !genericWorkCoreJoinProduction
+      || genericWorkCoreJoinStore?.distributed === true;
+    const genericWorkCoreJoinReason = genericWorkCoreJoinConfigurationError
+      ? genericWorkCoreJoinConfigurationError
+      : !genericWorkCoreJoinEnabled
+        ? "generic_work_core_join_disabled"
+        : !genericWorkCoreJoinSigner
+          ? genericWorkCoreJoinCurrentSignerReason
+          : !dttAgentIdentitySecret
+        ? "generic_work_core_join_verifier_unavailable"
+        : genericWorkCoreJoinStore?.restart_durable !== true
+          ? "generic_work_core_join_durable_store_unavailable"
+          : !genericWorkCoreJoinDistributedReady
+            ? "generic_work_core_join_distributed_store_unavailable"
+            : genericWorkCoreJoinStoreState === "failed"
+              ? genericWorkCoreJoinStoreError || "generic_work_core_join_durable_store_unavailable"
+              : genericWorkCoreJoinStoreState !== "ready"
+                ? "generic_work_core_join_store_initializing"
+                : !genericWorkCoreJoinSignerReady
+                  ? genericWorkCoreJoinCurrentSignerReason || (genericWorkCoreJoinCurrentSignerState === "configured"
+                    ? "generic_work_core_join_signer_not_yet_verified"
+                    : "generic_work_core_join_signer_unavailable")
+                  : null;
+    const genericWorkCoreJoinReady = genericWorkCoreJoinActivationEnabled
+      && Boolean(genericWorkCoreJoinAuthority)
+      && genericWorkCoreJoinStoreState === "ready"
+      && genericWorkCoreJoinDistributedReady
+      && genericWorkCoreJoinSignerReady;
     const nonCausalProductionReady = productionBuildReady
       && hostNativeReady
       && nyraPolicyRegistryModeValid
+      && nyraPolicyRegistryCompilerConfigurationError === null
+      && nyraPolicyRegistryProofConfigurationError === null
       && nyraPolicyRegistryProductionReady
-      && researchAirlockProductionReady;
+      && researchAirlockProductionReady
+      && genericWorkCoreJoinConfigurationError === null
+      && (!genericWorkCoreJoinRequired || genericWorkCoreJoinReady);
     const renderReady = nonCausalProductionReady
       && causalContinuityProductionReady;
     const causalInitializationDegraded = causalBootstrapLivenessReady;
@@ -6838,15 +8035,36 @@ export function createUniversalCoreService(options = {}) {
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
       governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
       generic_work_core_join: {
-        state: genericWorkCoreJoinAuthority ? genericWorkCoreJoinStoreState : "durability_or_signing_unavailable",
-        ready: Boolean(genericWorkCoreJoinAuthority) && genericWorkCoreJoinStoreState === "ready",
+        enabled: genericWorkCoreJoinEnabled,
+        required: genericWorkCoreJoinRequired,
+        configuration_valid: genericWorkCoreJoinConfigurationError === null,
+        configuration_error: genericWorkCoreJoinConfigurationError,
+        signer_mode: genericWorkCoreJoinRemoteSignerMode,
+        state: genericWorkCoreJoinConfigurationError
+          ? "configuration_invalid"
+          : !genericWorkCoreJoinEnabled
+            ? "disabled"
+            : !genericWorkCoreJoinAuthority
+              ? "durability_or_signing_unavailable"
+              : genericWorkCoreJoinStoreState !== "ready"
+                ? genericWorkCoreJoinStoreState
+                : genericWorkCoreJoinSignerReady
+                  ? "ready"
+                  : genericWorkCoreJoinCurrentSignerState === "configured"
+                    ? "signer_not_yet_verified"
+                    : "signer_unavailable",
+        ready: genericWorkCoreJoinReady,
+        store_state: genericWorkCoreJoinStoreState,
+        signer_state: genericWorkCoreJoinCurrentSignerState,
+        signer_probe_attempts: genericWorkCoreJoinProbeAttempts,
+        reason: genericWorkCoreJoinReason,
         backend: genericWorkCoreJoinStore?.kind || "unavailable",
         restart_durable: genericWorkCoreJoinStore?.restart_durable === true,
         distributed: genericWorkCoreJoinStore?.distributed === true,
         algorithm: genericWorkCoreJoinAuthority?.signer_metadata.algorithm || null,
         key_id: genericWorkCoreJoinAuthority?.signer_metadata.key_id || null,
         public_key_fingerprint: genericWorkCoreJoinAuthority?.signer_metadata.public_key_fingerprint || null,
-        custody: genericWorkCoreJoinAuthority?.signer_metadata.custody || null,
+        custody: genericWorkCoreJoinAuthority?.signer_metadata.custody || genericWorkCoreJoinSignerCustody,
         initialization_error: genericWorkCoreJoinStoreError,
         host_action_authorized: false,
       },
@@ -6924,7 +8142,8 @@ export function createUniversalCoreService(options = {}) {
         execution_authorized: false,
       },
       nyra_policy_registry: {
-        configuration_valid: nyraPolicyRegistryModeValid,
+        configuration_valid: nyraPolicyRegistryModeValid &&
+          nyraPolicyRegistryProofConfigurationError === null,
         evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
         enforcement: nyraPolicyRegistryMode === "enforced"
           ? "mandatory"
@@ -6935,9 +8154,69 @@ export function createUniversalCoreService(options = {}) {
         backend: nyraPolicyRegistryStatus.backend || "unavailable",
         restart_durable: nyraPolicyRegistryStatus.restart_durable === true,
         distributed: nyraPolicyRegistryStatus.distributed === true,
+        compiler_provenance_persistence:
+          nyraPolicyRegistryStatus.compiler_provenance_persistence === true,
+        compiler_input_persisted: nyraPolicyRegistryStatus.compiler_input_persisted === true,
         state: nyraPolicyRegistryStatus.state || (nyraPolicyRegistryStatus.ready === false ? "unavailable" : "ready"),
         ready: nyraPolicyRegistryProductionReady,
+        compiler_provenance: {
+          enabled: nyraPolicyRegistryCompilerEnabled,
+          required: nyraPolicyRegistryCompilerRequired,
+          mode: nyraPolicyRegistryCompilerMode,
+          configuration_valid: nyraPolicyRegistryCompilerConfigurationError === null,
+          configured: Boolean(nyraPolicyRegistryCompilerProvenanceVerifier),
+          ready: nyraPolicyRegistryCompilerRuntimeReady,
+          state: !nyraPolicyRegistryCompilerEnabled
+            ? (nyraPolicyRegistryCompilerConfigurationError ? "configuration_invalid" : "disabled")
+            : nyraPolicyRegistryCompilerConfigurationError
+              ? "configuration_invalid"
+              : nyraPolicyRegistryCompilerRuntimeReady ? "ready" : "unavailable",
+          render_gate_required: nyraPolicyRegistryCompilerRequired ||
+            !nyraPolicyRegistryCompilerEnabledFlag.valid ||
+            !nyraPolicyRegistryCompilerRequiredFlag.valid ||
+            !nyraPolicyRegistryCompilerModeValid ||
+            nyraPolicyRegistryCompilerConfigurationError !== null,
+          schema_version: nyraPolicyRegistryCompilerCurrentStatus?.schema_version || null,
+          provenance_schema_version: "nyra_policy_compiler_provenance_v1",
+          compiler_algorithm:
+            nyraPolicyRegistryCompilerCurrentStatus?.compiler_algorithm || null,
+          verification_algorithm:
+            nyraPolicyRegistryCompilerCurrentStatus?.verification_algorithm || null,
+          traversal_budget:
+            Number.isInteger(nyraPolicyRegistryCompilerCurrentStatus?.traversal_budget)
+              ? nyraPolicyRegistryCompilerCurrentStatus.traversal_budget
+              : null,
+          compiler_build_commit:
+            nyraPolicyRegistryCompilerCurrentStatus?.compiler_build_commit || null,
+          catalog_digest: nyraPolicyRegistryCompilerCurrentStatus?.catalog_digest || null,
+          trust_catalog_digest:
+            nyraPolicyRegistryCompilerCurrentStatus?.trust_catalog_digest || null,
+          compiler_input_persisted:
+            nyraPolicyRegistryStatus.compiler_input_persisted === true,
+          execution_authorized: false,
+          error: nyraPolicyRegistryCompilerConfigurationError ||
+            (nyraPolicyRegistryCompilerEnabled && !nyraPolicyRegistryCompilerRuntimeReady
+              ? "policy_registry_compiler_unavailable"
+              : null),
+        },
+        proof_lifecycle: {
+          enabled: nyraPolicyRegistryProofEnabled,
+          required: nyraPolicyRegistryProofRequired,
+          mode: nyraPolicyRegistryCoreSignerMode,
+          configuration_valid: nyraPolicyRegistryProofConfigurationError === null,
+          state: !nyraPolicyRegistryProofEnabled
+            ? (nyraPolicyRegistryProofConfigurationError ? "configuration_invalid" : "disabled")
+            : nyraPolicyRegistryProofConfigurationError
+              ? "configuration_invalid"
+              : nyraPolicyRegistryProofLifecycleReady ? "ready" : "unavailable",
+          ready: nyraPolicyRegistryProofLifecycleReady,
+          render_gate_required: nyraPolicyRegistryProofRequired ||
+            !nyraPolicyRegistryProofRequiredFlag.valid ||
+            nyraPolicyRegistryProofConfigurationError !== null,
+          error: nyraPolicyRegistryProofConfigurationError,
+        },
         proof: nyraPolicyRegistryProofStatus,
+        proof_e2e: nyraPolicyRegistryCoordinatorStatus,
       },
       governed_agent_runner: {
         mode: "manual_dry_run",
@@ -8478,33 +9757,92 @@ export function createUniversalCoreService(options = {}) {
     },
   );
 
+  const genericWorkCoreJoinUnavailableCode = () => {
+    if (genericWorkCoreJoinConfigurationError) return genericWorkCoreJoinConfigurationError;
+    if (!genericWorkCoreJoinEnabled) return "generic_work_core_join_disabled";
+    if (!genericWorkCoreJoinSigner) {
+      return genericWorkCoreJoinSafeReason(genericWorkCoreJoinSignerReason, "generic_work_core_join_signing_unavailable");
+    }
+    if (!dttAgentIdentitySecret) return "generic_work_core_join_verifier_unavailable";
+    if (genericWorkCoreJoinStore?.restart_durable !== true) return "generic_work_core_join_durable_store_unavailable";
+    if (genericWorkCoreJoinProduction && genericWorkCoreJoinStore?.distributed !== true) {
+      return "generic_work_core_join_distributed_store_unavailable";
+    }
+    if (genericWorkCoreJoinStoreState === "failed") {
+      return genericWorkCoreJoinStoreError || "generic_work_core_join_durable_store_unavailable";
+    }
+    return "generic_work_core_join_signing_unavailable";
+  };
+  const genericWorkCoreJoinFailureStatus = (code) => genericWorkCoreJoinInfrastructureCode(code) ? 503 : 409;
+
   const issueGenericWorkCoreJoin = async (req, res) => {
       if (!isMcpTenantGatewayRecord(req.coreKey)) return publicError(res, 403, "core_join_mcp_gateway_required");
       const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
       if (!assertedTenantId || assertedTenantId !== req.tenantId) return publicError(res, 403, "tenant_scope_denied");
-      if (!genericWorkCoreJoinAuthority) return publicError(res, 503, "generic_work_core_join_durable_store_unavailable");
+      if (!genericWorkCoreJoinAuthority) return publicError(res, 503, genericWorkCoreJoinUnavailableCode());
+      let issueSequence = 0;
       try {
         await genericWorkCoreJoinStoreInitialization;
         if (genericWorkCoreJoinStoreState !== "ready") return publicError(res, 503, "generic_work_core_join_durable_store_unavailable");
-        const { tenant_id: _tenantId, ...input } = req.body || {};
-        const verdict = await genericWorkCoreJoinAuthority.issue({ ...input, tenant_id: req.tenantId });
+        if (genericWorkCoreJoinProduction && genericWorkCoreJoinStore?.distributed !== true) {
+          return publicError(res, 503, "generic_work_core_join_distributed_store_unavailable");
+        }
+        if (!genericWorkCoreJoinSignerFailureLatched
+            && !await ensureGenericWorkCoreJoinSignerReady()) {
+          return publicError(res, 503, genericWorkCoreJoinSafeReason(
+            genericWorkCoreJoinSignerReason,
+            "generic_work_core_join_signer_not_yet_verified",
+          ));
+        }
+        issueSequence = ++genericWorkCoreJoinIssueSequence;
+        const { tenant_id: _tenantId, work_id: _callerWorkId, ...input } = req.body || {};
+        const issuance = await genericWorkCoreJoinAuthority.issueDetailed({
+          ...input,
+          tenant_id: req.tenantId,
+          work_id: req.genericWorkCoreJoinWorkId,
+        });
+        const verdict = issuance.verdict;
         genericWorkCoreJoinVerifier.verify({ verdict, expected: { tenant_id: req.tenantId, work_id: verdict.work_id, adapter: verdict.adapter, idempotency_digest: verdict.idempotency_digest } });
+        if (issuance.fresh_signature_verified === true && issuance.durable_record_verified === true) {
+          genericWorkCoreJoinSignerRecoverySequence = Math.max(genericWorkCoreJoinSignerRecoverySequence, issueSequence);
+          if (issueSequence > genericWorkCoreJoinSignerFailureSequence) {
+            genericWorkCoreJoinSignerFailureLatched = false;
+            genericWorkCoreJoinSignerState = "ready";
+            genericWorkCoreJoinSignerReason = null;
+          }
+        }
         audit.append("core_generic_work_core_join_issued", { tenant_id: req.tenantId, key_id: req.coreKey.key_id,
           work_id: verdict.work_id, verdict_id: verdict.verdict_id, adapter: verdict.adapter });
         return res.status(201).json({ ok: true, verdict });
       } catch (error) {
-        return publicError(res, 409, String(error?.message || "generic_work_core_join_denied"));
+        const code = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_denied");
+        if (genericWorkCoreJoinStoreInfrastructureCode(code)) {
+          genericWorkCoreJoinStoreState = "failed";
+          genericWorkCoreJoinStoreError = code;
+        }
+        const signerCode = genericWorkCoreJoinSignerInfrastructureCode(code);
+        if (signerCode) {
+          genericWorkCoreJoinSignerFailureSequence = Math.max(genericWorkCoreJoinSignerFailureSequence, issueSequence);
+          if (issueSequence > genericWorkCoreJoinSignerRecoverySequence) {
+            genericWorkCoreJoinSignerFailureLatched = true;
+            genericWorkCoreJoinSignerState = genericWorkCoreJoinSignerRejectedCodes.has(signerCode) ? "rejected" : "unavailable";
+            genericWorkCoreJoinSignerReason = signerCode;
+          }
+        }
+        return publicError(res, genericWorkCoreJoinFailureStatus(code), code);
       }
     };
 
   app.post(
     "/v1/work-continuity/generic-core-join",
     coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
+    genericWorkCoreJoinContextAuth,
     issueGenericWorkCoreJoin,
   );
   app.post(
     "/v1/work/core-join-verdicts",
     coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
+    genericWorkCoreJoinContextAuth,
     issueGenericWorkCoreJoin,
   );
 
@@ -8743,100 +10081,507 @@ export function createUniversalCoreService(options = {}) {
       }
     },
   );
+  const policyRegistryRouteContract = Object.freeze({
+    activate: Object.freeze([
+      "tenant_id", "work_id", "operation_id", "domain_pack_id", "work_preflight",
+      "owner_confirmed", "confirmation_reference", "owner_context", "snapshot",
+      "compiler_input",
+    ]),
+    rollback: Object.freeze([
+      "tenant_id", "work_id", "operation_id", "domain_pack_id", "work_preflight",
+      "owner_confirmed", "confirmation_reference", "owner_context", "target_snapshot_digest",
+    ]),
+    reconcile: Object.freeze([
+      "tenant_id", "work_id", "operation_id", "work_preflight", "owner_confirmed",
+      "confirmation_reference", "owner_context",
+    ]),
+  });
+  const policyRegistryRoutePurpose = Object.freeze({
+    activate: "nyra_policy_registry_snapshot_activate_v3",
+    rollback: "nyra_policy_registry_snapshot_rollback_v3",
+    reconcile: "nyra_policy_registry_snapshot_reconcile_v3",
+  });
 
-
-  app.post("/v1/nyra-policy-registry/activate", coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }), async (req, res) => {
-    try {
-      const result = await nyraPolicyRegistry.activate({
+  function exactPolicyRegistryRouteBody(req, kind) {
+    const body = req.body;
+    const fields = policyRegistryRouteContract[kind];
+    if (!isPlainRecord(body) || !fields ||
+      Object.keys(body).sort().join("\0") !== [...fields].sort().join("\0")) {
+      throw new Error("policy_registry_request_schema_invalid");
+    }
+    if (body.tenant_id !== req.tenantId || body.work_id !== req.workId) {
+      throw new Error("policy_registry_request_scope_invalid");
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/.test(String(body.operation_id || "")) ||
+      body.owner_confirmed !== true ||
+      !String(body.confirmation_reference || "").trim()) {
+      throw new Error("policy_registry_request_invalid");
+    }
+    if (kind !== "reconcile" &&
+      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/.test(String(body.domain_pack_id || ""))) {
+      throw new Error("policy_registry_request_invalid");
+    }
+    const action = `policy.snapshot.${kind}`;
+    if (req.workPreflight?.request?.operation_type !== action ||
+      (kind !== "reconcile" && req.workPreflight?.domain_pack?.id !== body.domain_pack_id)) {
+      throw new Error("policy_registry_preflight_binding_invalid");
+    }
+    if (kind === "activate" && (
+      !isPlainRecord(body.snapshot) ||
+      Object.hasOwn(body.snapshot, "policy_registry_attestation") ||
+      Object.hasOwn(body.snapshot, "activation_attestation")
+    )) {
+      throw new Error("policy_registry_snapshot_not_pure");
+    }
+    if (kind === "activate") {
+      const validation = validatePolicySnapshot(body.snapshot, {
         tenant_id: req.tenantId,
-        operation_id: req.body?.operation_id,
-        snapshot: req.body?.snapshot,
-        core_receipt: req.body?.core_receipt,
         core_branch_id: "nyra_policy_registry",
         nyra_branch_id: "risk_governance",
-        domain_pack_id: req.body?.domain_pack_id,
+        domain_pack_id: body.domain_pack_id,
+        now: new Date(),
       });
-      audit.append("core_nyra_policy_registry_activated", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        snapshot_digest: result.snapshot_digest,
-        idempotent_replay: result.idempotent_replay,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, activation: result });
-    } catch (error) {
-      audit.append("core_nyra_policy_registry_activation_rejected", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        reason: String(error?.message || "policy_registry_activation_failed").slice(0, 160),
-      });
-      return publicError(res, 409, String(error?.message || "policy_registry_activation_failed").slice(0, 160));
+      if (!validation.ok) throw new Error("policy_registry_snapshot_invalid");
+      if (!isPlainRecord(body.compiler_input) ||
+        !nyraPolicyRegistryCompilerProvenanceVerifier ||
+        !nyraPolicyRegistryCompilerReady) {
+        throw new Error("policy_registry_compiler_unavailable");
+      }
+      const compilerProvenance =
+        nyraPolicyRegistryCompilerProvenanceVerifier.verify({
+          tenant_id: req.tenantId,
+          domain_pack_id: body.domain_pack_id,
+          snapshot: body.snapshot,
+          compiler_input: body.compiler_input,
+        });
+      const compilerVerification =
+        nyraPolicyRegistryCompilerProvenanceVerifier.verifyPersistedRecord(
+          compilerProvenance,
+          {
+            tenant_id: req.tenantId,
+            domain_pack_id: body.domain_pack_id,
+            snapshot_digest: body.snapshot.snapshot_digest,
+            compiler_provenance_digest: compilerProvenance?.provenance_digest,
+          },
+        );
+      const compilerVerificationFields = [
+        "ok", "record_integrity_verified", "derivation_reverified", "tenant_id",
+        "domain_pack_id", "snapshot_digest", "compiler_provenance_digest",
+        "compiler_build_commit", "catalog_digest", "trust_catalog_digest",
+        "execution_authorized", "error",
+      ];
+      const compilerVerificationKeys = isPlainRecord(compilerVerification)
+        ? Reflect.ownKeys(compilerVerification)
+        : [];
+      const compilerVerificationExact = isPlainRecord(compilerVerification) &&
+        Object.getPrototypeOf(compilerVerification) === Object.prototype &&
+        compilerVerificationKeys.length === compilerVerificationFields.length &&
+        compilerVerificationKeys.every((key) => typeof key === "string") &&
+        compilerVerificationFields.every((field) => {
+          const descriptor = Object.getOwnPropertyDescriptor(compilerVerification, field);
+          return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+        });
+      if (!compilerVerificationExact ||
+        compilerVerification.ok !== true ||
+        compilerVerification.record_integrity_verified !== true ||
+        compilerVerification.derivation_reverified !== false ||
+        compilerVerification.tenant_id !== req.tenantId ||
+        compilerVerification.domain_pack_id !== body.domain_pack_id ||
+        compilerVerification.snapshot_digest !== body.snapshot.snapshot_digest ||
+        compilerVerification.compiler_provenance_digest !==
+          compilerProvenance?.provenance_digest ||
+        compilerVerification.compiler_build_commit !==
+          compilerProvenance?.compiler_build_commit ||
+        compilerVerification.compiler_build_commit !==
+          nyraPolicyRegistryCompilerStatus?.compiler_build_commit ||
+        (nyraPolicyRegistryProofProduction &&
+          compilerVerification.compiler_build_commit !== BUILD_COMMIT_SHA) ||
+        compilerVerification.catalog_digest !== compilerProvenance?.catalog_digest ||
+        compilerVerification.catalog_digest !== nyraPolicyRegistryExpectedCatalogDigest ||
+        compilerVerification.catalog_digest !==
+          nyraPolicyRegistryCompilerStatus?.catalog_digest ||
+        compilerVerification.trust_catalog_digest !==
+          compilerProvenance?.trust_catalog_digest ||
+        compilerVerification.trust_catalog_digest !==
+          nyraPolicyRegistryExpectedTrustCatalogDigest ||
+        compilerVerification.trust_catalog_digest !==
+          nyraPolicyRegistryCompilerStatus?.trust_catalog_digest ||
+        compilerVerification.execution_authorized !== false ||
+        compilerVerification.error !== null) {
+        throw new Error("policy_compiler_provenance_invalid");
+      }
     }
-  });
+    return body;
+  }
 
-  app.post("/v1/nyra-policy-registry/rollback", coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }), async (req, res) => {
-    try {
-      const result = await nyraPolicyRegistry.rollback({
-        tenant_id: req.tenantId,
-        operation_id: req.body?.operation_id,
-        target_snapshot_digest: req.body?.target_snapshot_digest,
-        core_receipt: req.body?.core_receipt,
-        core_branch_id: "nyra_policy_registry",
-        nyra_branch_id: "risk_governance",
-        domain_pack_id: req.body?.domain_pack_id,
-      });
-      audit.append("core_nyra_policy_registry_rolled_back", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        snapshot_digest: result.snapshot_digest,
-        activation_generation: result.activation_generation,
-        idempotent_replay: result.idempotent_replay,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, rollback: result });
-    } catch (error) {
-      audit.append("core_nyra_policy_registry_rollback_rejected", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        reason: String(error?.message || "policy_registry_rollback_failed").slice(0, 160),
-      });
-      return publicError(res, 409, String(error?.message || "policy_registry_rollback_failed").slice(0, 160));
+  function authorizePolicyRegistryMutation(req, kind, body) {
+    if (!nyraPolicyRegistryCoordinator) throw new Error("policy_registry_coordinator_unavailable");
+    const purpose = policyRegistryRoutePurpose[kind];
+    const owner = verifyHostNativeOwnerConfirmation(req, purpose);
+    const action = `policy.snapshot.${kind}`;
+    const authorization = buildActionAuthorization({
+      state: "attention",
+      risk_band: "high",
+      control_level: "confirm",
+      recommended_actions: [{ blocked: false }],
+    }, {
+      action_type: action,
+      operation_class: "policy_registry_snapshot_mutation",
+      authenticated_tenant_id: req.tenantId,
+      tenant_id: req.tenantId,
+      owner_confirmed: true,
+      request_bound_owner_confirmation: owner.request_bound === true,
+      owner_context_verified: owner.verified === true,
+      work_preflight_ready: Boolean(req.workPreflight?.preflight_id),
+      external_side_effect: false,
+      configuration_changes: true,
+      provider_execution: false,
+      contains_secret: false,
+      secret_value_transmitted: false,
+      cross_tenant: false,
+      bypass_orchestrator: false,
+      destructive: false,
+      rollback_ready: true,
+      audit_ready: true,
+      confirmation_reference: owner.confirmation_reference,
+    });
+    if (authorization.allowed !== true ||
+      authorization.scope !== "policy_registry_snapshot_mutation" ||
+      authorization.confirmation_satisfied !== true) {
+      throw new Error("policy_registry_core_authorization_denied");
     }
-  });
+    const snapshotDigest = kind === "activate"
+      ? String(body.snapshot?.snapshot_digest || "")
+      : kind === "rollback" ? String(body.target_snapshot_digest || "") : null;
+    const compilerInputDigest = kind === "activate"
+      ? crypto.createHash("sha256")
+          .update(JSON.stringify(stableCanonical(body.compiler_input)))
+          .digest("hex")
+      : null;
+    const authorizationDigest = crypto.createHash("sha256")
+      .update(`nyra-policy-registry-core-authorization-v2\0${JSON.stringify(stableCanonical({
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        preflight_id: req.workPreflight.preflight_id,
+        operation_id: body.operation_id,
+        action,
+        domain_pack_id: body.domain_pack_id || null,
+        snapshot_digest: snapshotDigest,
+        compiler_input_digest: compilerInputDigest,
+        authorization,
+      }))}`)
+      .digest("hex");
+    return {
+      owner,
+      authorization,
+      authorizationDigest,
+      ownerRequestBinding: ownerRequestBinding(purpose, body),
+    };
+  }
 
-  app.post("/v1/nyra-policy-registry/reconcile", coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }), async (req, res) => {
-    try {
-      if (!nyraPolicyRegistryProofService) throw new Error("policy_proof_unavailable");
-      const serverConsumptionProof = await nyraPolicyRegistryProofService.reconcileConsumption({
-        tenant_id: req.tenantId,
-        operation_id: req.body?.operation_id,
-        operation: req.body?.operation,
-        snapshot_digest: req.body?.snapshot_digest,
-      });
-      const result = await nyraPolicyRegistry.reconcile({
-        tenant_id: req.tenantId,
-        operation_id: req.body?.operation_id,
-        operation: req.body?.operation,
-        snapshot_digest: req.body?.snapshot_digest,
-        core_receipt: req.body?.core_receipt,
-        // Never trust a caller-supplied consumption proof. Reconciliation is
-        // derived from the tenant-bound one-use receipt state in PostgreSQL.
-        consumption_proof: serverConsumptionProof,
-      });
-      audit.append("core_nyra_policy_registry_reconciled", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        snapshot_digest: result.snapshot_digest,
-        idempotent_replay: result.idempotent_replay,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, reconciliation: result });
-    } catch (error) {
-      audit.append("core_nyra_policy_registry_reconciliation_rejected", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        reason: String(error?.message || "policy_registry_reconciliation_failed").slice(0, 160),
-      });
-      return publicError(res, 409, String(error?.message || "policy_registry_reconciliation_failed").slice(0, 160));
+  const policyRegistrySafeRouteErrors = new Map([
+    ["verified_owner_confirmation_required", [403, "policy_registry_owner_confirmation_required"]],
+    ["policy_registry_owner_binding_invalid", [403, "policy_registry_owner_confirmation_required"]],
+    ["policy_registry_core_authorization_denied", [403, "policy_registry_core_authorization_denied"]],
+    ["policy_registry_request_scope_invalid", [403, "policy_registry_request_scope_invalid"]],
+    ["policy_proof_tenant_denied", [403, "policy_proof_tenant_denied"]],
+    ["policy_proof_work_binding_invalid", [403, "policy_proof_work_binding_invalid"]],
+    ["policy_registry_request_schema_invalid", [400, "policy_registry_request_schema_invalid"]],
+    ["policy_registry_request_invalid", [400, "policy_registry_request_invalid"]],
+    ["policy_registry_preflight_binding_invalid", [400, "policy_registry_preflight_binding_invalid"]],
+    ["policy_registry_snapshot_not_pure", [400, "policy_registry_snapshot_not_pure"]],
+    ["policy_registry_snapshot_invalid", [400, "policy_registry_snapshot_invalid"]],
+    ["policy_registry_authorization_digest_invalid", [400, "policy_registry_authorization_digest_invalid"]],
+    ["policy_compiler_input_invalid", [400, "policy_compiler_input_invalid"]],
+    ["policy_compiler_input_oversize", [400, "policy_compiler_input_oversize"]],
+    ["policy_compiler_input_leaf_invalid", [400, "policy_compiler_input_leaf_invalid"]],
+    ["policy_compiler_input_pack_invalid", [400, "policy_compiler_input_pack_invalid"]],
+    ["policy_compiler_input_pack_status_invalid", [400, "policy_compiler_input_pack_status_invalid"]],
+    ["policy_compiler_input_signature_invalid", [400, "policy_compiler_input_signature_invalid"]],
+    ["policy_compiler_input_noncanonical", [400, "policy_compiler_input_noncanonical"]],
+    ["policy_compiler_constraints_invalid", [400, "policy_compiler_constraints_invalid"]],
+    ["policy_compiler_verify_input_invalid", [400, "policy_compiler_verify_input_invalid"]],
+    ["policy_compiler_tenant_invalid", [400, "policy_compiler_tenant_invalid"]],
+    ["policy_compiler_domain_invalid", [400, "policy_compiler_domain_invalid"]],
+    ["policy_compiler_domain_untrusted", [400, "policy_compiler_domain_untrusted"]],
+    ["policy_compiler_snapshot_invalid", [400, "policy_compiler_snapshot_invalid"]],
+    ["policy_compiler_snapshot_mismatch", [400, "policy_compiler_snapshot_mismatch"]],
+    ["policy_compiler_pack_set_mismatch", [400, "policy_compiler_pack_set_mismatch"]],
+    ["policy_compiler_root_unverified", [400, "policy_compiler_root_unverified"]],
+    ["policy_compiler_signature_quorum_invalid", [400, "policy_compiler_signature_quorum_invalid"]],
+    ["policy_compiler_provenance_invalid", [400, "policy_compiler_provenance_invalid"]],
+    ["nyra_policy_compiler_provenance_invalid", [400, "policy_compiler_provenance_invalid"]],
+    ["policy_proof_binding_invalid", [400, "policy_proof_binding_invalid"]],
+    ["policy_proof_attestation_invalid", [400, "policy_proof_attestation_invalid"]],
+    ["policy_activation_core_receipt_invalid", [400, "policy_activation_core_receipt_invalid"]],
+    ["policy_snapshot_signature_quorum_invalid", [400, "policy_snapshot_signature_quorum_invalid"]],
+    ["policy_proof_not_found", [404, "policy_proof_not_found"]],
+    ["policy_proof_consumption_not_found", [404, "policy_proof_consumption_not_found"]],
+    ["policy_rollback_snapshot_not_found", [404, "policy_rollback_snapshot_not_found"]],
+    ["policy_proof_idempotency_conflict", [409, "policy_proof_idempotency_conflict"]],
+    ["policy_proof_owner_replayed", [409, "policy_proof_owner_replayed"]],
+    ["policy_proof_cas_conflict", [409, "policy_proof_cas_conflict"]],
+    ["policy_activation_core_receipt_replayed", [409, "policy_activation_core_receipt_replayed"]],
+    ["policy_operation_idempotency_conflict", [409, "policy_operation_idempotency_conflict"]],
+    ["policy_operation_binding_invalid", [409, "policy_operation_binding_invalid"]],
+    ["policy_registry_concurrent_mutation", [409, "policy_registry_concurrent_mutation"]],
+    ["policy_registry_reconciliation_required", [409, "policy_registry_reconciliation_required"]],
+    ["policy_registry_cas_conflict", [409, "policy_registry_cas_conflict"]],
+    ["policy_registry_state_corrupt", [409, "policy_registry_state_corrupt"]],
+    ["policy_registry_compiler_provenance_missing", [409, "policy_registry_compiler_provenance_missing"]],
+    ["policy_registry_compiler_provenance_invalid", [409, "policy_registry_compiler_provenance_invalid"]],
+    ["policy_rollback_compiler_provenance_missing", [409, "policy_rollback_compiler_provenance_missing"]],
+    ["policy_proof_reconciliation_not_ready", [409, "policy_proof_reconciliation_not_ready"]],
+  ]);
+
+  function classifiedPolicyRegistryRouteError(error) {
+    const internal = String(error?.message || "");
+    const configured = policyRegistrySafeRouteErrors.get(internal);
+    if (configured) return { status: configured[0], code: configured[1] };
+    const infrastructure = new Set([
+      "policy_registry_coordinator_unavailable",
+      "policy_registry_compiler_unavailable",
+      "policy_compiler_unavailable",
+      "policy_compiler_clock_unavailable",
+      "policy_registry_unavailable",
+      "policy_registry_postgres_required",
+      "policy_registry_postgres_unavailable",
+      "policy_proof_unavailable",
+      "policy_proof_signer_unavailable",
+      "policy_registry_nyra_busy",
+      "policy_registry_nyra_client_unavailable",
+      "policy_registry_nyra_redirect_denied",
+      "policy_registry_nyra_rejected",
+      "policy_registry_nyra_response_binding_invalid",
+      "policy_registry_nyra_response_json_invalid",
+      "policy_registry_nyra_response_too_large",
+      "policy_registry_nyra_timeout",
+      "policy_registry_nyra_unavailable",
+      "policy_registry_result_binding_invalid",
+    ]);
+    return infrastructure.has(internal)
+      ? { status: 503, code: internal }
+      : { status: 503, code: "policy_registry_operation_failed" };
+  }
+
+  function policyRegistryRouteError(res, error) {
+    const classified = classifiedPolicyRegistryRouteError(error);
+    return publicError(res, classified.status, classified.code);
+  }
+
+  function policyRegistryPublicAuthorization(authorization) {
+    return {
+      allowed: authorization.allowed === true,
+      state: authorization.state,
+      scope: authorization.scope,
+      confirmation_satisfied: authorization.confirmation_satisfied === true,
+      core_final_authority: true,
+      caller_authority: false,
+      provider_execution_authorized: false,
+    };
+  }
+
+  async function requirePolicyRegistryCoordinatorReady() {
+    if (!nyraPolicyRegistryProofActivationEnabled || !nyraPolicyRegistryCoordinator) {
+      throw new Error("policy_registry_coordinator_unavailable");
     }
-  });
+    let current;
+    try { current = await nyraPolicyRegistryCoordinator.status(); } catch { current = null; }
+    if (current?.ready !== true || current?.e2e_verified !== true) {
+      throw new Error("policy_registry_coordinator_unavailable");
+    }
+  }
+
+  function policyRegistryPublicResult(kind, result, req, operationId) {
+    if (!isPlainRecord(result)) throw new Error("policy_registry_result_binding_invalid");
+    const snapshotDigest = String(result.snapshot_digest || "");
+    const compilerProvenanceDigest = String(result.compiler_provenance_digest || "");
+    if (!/^[a-f0-9]{64}$/.test(snapshotDigest) ||
+      !/^[a-f0-9]{64}$/.test(compilerProvenanceDigest)) {
+      throw new Error("policy_registry_result_binding_invalid");
+    }
+    const successField = kind === "activate"
+      ? "activated"
+      : kind === "rollback" ? "rolled_back" : "reconciled";
+    if (result[successField] !== true || result.proof_status !== "consumed") {
+      throw new Error("policy_registry_result_binding_invalid");
+    }
+    const projected = {
+      tenant_id: req.tenantId,
+      work_id: req.workId,
+      operation_id: operationId,
+      preflight_id: req.workPreflight.preflight_id,
+      snapshot_digest: snapshotDigest,
+      compiler_provenance_digest: compilerProvenanceDigest,
+      [successField]: true,
+      idempotent_replay: result.idempotent_replay === true,
+      proof_status: "consumed",
+      execution_authorized: false,
+      provider_execution_authorized: false,
+      caller_authority: false,
+    };
+    if (/^[a-f0-9]{64}$/.test(String(result.intent_digest || ""))) {
+      projected.intent_digest = result.intent_digest;
+    }
+    if (Number.isSafeInteger(result.activation_generation) && result.activation_generation >= 0) {
+      projected.activation_generation = result.activation_generation;
+    }
+    return projected;
+  }
+
+  app.post(
+    "/v1/nyra-policy-registry/activate",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }),
+    dttWorkAuth,
+    async (req, res) => {
+      try {
+        const body = exactPolicyRegistryRouteBody(req, "activate");
+        const governed = authorizePolicyRegistryMutation(req, "activate", body);
+        await requirePolicyRegistryCoordinatorReady();
+        const result = await nyraPolicyRegistryCoordinator.activate({
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          operation_id: body.operation_id,
+          preflight_id: req.workPreflight.preflight_id,
+          domain_pack_id: body.domain_pack_id,
+          snapshot: body.snapshot,
+          compiler_input: body.compiler_input,
+          owner_subject_fingerprint: governed.owner.owner_subject_fingerprint,
+          owner_binding_hash: String(body.owner_context.binding_hash || ""),
+          confirmation_reference: governed.owner.confirmation_reference,
+          owner_request_binding: governed.ownerRequestBinding,
+          authorization_digest: governed.authorizationDigest,
+          core_branch_id: "nyra_policy_registry",
+          nyra_branch_id: "risk_governance",
+        });
+        audit.append("core_nyra_policy_registry_activated", {
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          key_id: req.coreKey.key_id,
+          operation_id: body.operation_id,
+          preflight_id: req.workPreflight.preflight_id,
+          snapshot_digest: result.snapshot_digest,
+          compiler_provenance_digest: result.compiler_provenance_digest,
+          idempotent_replay: result.idempotent_replay,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          activation: policyRegistryPublicResult("activate", result, req, body.operation_id),
+          authorization: policyRegistryPublicAuthorization(governed.authorization),
+        });
+      } catch (error) {
+        const classified = classifiedPolicyRegistryRouteError(error);
+        audit.append("core_nyra_policy_registry_activation_rejected", {
+          tenant_id: req.tenantId,
+          work_id: req.workId || null,
+          key_id: req.coreKey.key_id,
+          reason: classified.code,
+        });
+        return policyRegistryRouteError(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/nyra-policy-registry/rollback",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }),
+    dttWorkAuth,
+    async (req, res) => {
+      try {
+        const body = exactPolicyRegistryRouteBody(req, "rollback");
+        const governed = authorizePolicyRegistryMutation(req, "rollback", body);
+        await requirePolicyRegistryCoordinatorReady();
+        const result = await nyraPolicyRegistryCoordinator.rollback({
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          operation_id: body.operation_id,
+          preflight_id: req.workPreflight.preflight_id,
+          domain_pack_id: body.domain_pack_id,
+          target_snapshot_digest: body.target_snapshot_digest,
+          owner_subject_fingerprint: governed.owner.owner_subject_fingerprint,
+          owner_binding_hash: String(body.owner_context.binding_hash || ""),
+          confirmation_reference: governed.owner.confirmation_reference,
+          owner_request_binding: governed.ownerRequestBinding,
+          authorization_digest: governed.authorizationDigest,
+          core_branch_id: "nyra_policy_registry",
+          nyra_branch_id: "risk_governance",
+        });
+        audit.append("core_nyra_policy_registry_rolled_back", {
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          key_id: req.coreKey.key_id,
+          operation_id: body.operation_id,
+          preflight_id: req.workPreflight.preflight_id,
+          snapshot_digest: result.snapshot_digest,
+          compiler_provenance_digest: result.compiler_provenance_digest,
+          activation_generation: result.activation_generation,
+          idempotent_replay: result.idempotent_replay,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          rollback: policyRegistryPublicResult("rollback", result, req, body.operation_id),
+          authorization: policyRegistryPublicAuthorization(governed.authorization),
+        });
+      } catch (error) {
+        const classified = classifiedPolicyRegistryRouteError(error);
+        audit.append("core_nyra_policy_registry_rollback_rejected", {
+          tenant_id: req.tenantId,
+          work_id: req.workId || null,
+          key_id: req.coreKey.key_id,
+          reason: classified.code,
+        });
+        return policyRegistryRouteError(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/nyra-policy-registry/reconcile",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }),
+    dttWorkAuth,
+    async (req, res) => {
+      try {
+        const body = exactPolicyRegistryRouteBody(req, "reconcile");
+        const governed = authorizePolicyRegistryMutation(req, "reconcile", body);
+        await requirePolicyRegistryCoordinatorReady();
+        const result = await nyraPolicyRegistryCoordinator.reconcile({
+          tenant_id: req.tenantId,
+          operation_id: body.operation_id,
+          expected_work_id: req.workId,
+        });
+        audit.append("core_nyra_policy_registry_reconciled", {
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          key_id: req.coreKey.key_id,
+          operation_id: body.operation_id,
+          preflight_id: req.workPreflight.preflight_id,
+          snapshot_digest: result.snapshot_digest,
+          compiler_provenance_digest: result.compiler_provenance_digest,
+          idempotent_replay: result.idempotent_replay,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          work_id: req.workId,
+          reconciliation: policyRegistryPublicResult("reconcile", result, req, body.operation_id),
+          authorization: policyRegistryPublicAuthorization(governed.authorization),
+        });
+      } catch (error) {
+        const classified = classifiedPolicyRegistryRouteError(error);
+        audit.append("core_nyra_policy_registry_reconciliation_rejected", {
+          tenant_id: req.tenantId,
+          work_id: req.workId || null,
+          key_id: req.coreKey.key_id,
+          reason: classified.code,
+        });
+        return policyRegistryRouteError(res, error);
+      }
+    },
+  );
 
     app.post("/v1/decision", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
     const input = buildCoreInput(req, req.coreKey);
@@ -8894,6 +10639,7 @@ export function createUniversalCoreService(options = {}) {
       }
       const verified = await dttVerificationTrustStore.verifyArtifact({
         tenant_id: req.tenantId,
+        work_id: observation.work_id,
         artifact_id: receipt.artifact_id,
         content_digest: receipt.content_digest,
         source_reference: receipt.source_reference,
@@ -9727,7 +11473,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/orchestration/dtt/plan", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/plan", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
     if (!dynamicTaskTreeRollout.enabled) {
       return publicError(res, 503, "dynamic_task_tree_disabled");
     }
@@ -9738,9 +11484,11 @@ export function createUniversalCoreService(options = {}) {
       const tree = await dynamicTaskTreeRuntime.create({
         ...(req.body || {}),
         tenant_id: req.tenantId,
+        work_id: req.workId,
       });
       audit.append("dynamic_task_tree_planned", {
         tenant_id: req.tenantId,
+        work_id: req.workId,
         key_id: req.coreKey.key_id,
         tree_id: tree.tree_id,
         node_count: tree.nodes.length,
@@ -9749,8 +11497,11 @@ export function createUniversalCoreService(options = {}) {
         rollout_mode: dynamicTaskTreeRollout.mode,
       });
       return res.json({
-        ok: true,
         ...tree,
+        ok: true,
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        execution_authorized: false,
         rollout: {
           enabled: true,
           mode: dynamicTaskTreeRollout.mode,
@@ -9760,55 +11511,67 @@ export function createUniversalCoreService(options = {}) {
         },
       });
     } catch (error) {
-      return publicError(res, 400, error.message || "dynamic_task_tree_invalid");
+      const code = error.message || "dynamic_task_tree_invalid";
+      return publicError(res, dttStatusForError(code), code);
     }
   });
 
-  app.get("/v1/orchestration/dtt/:treeId", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+  app.get("/v1/orchestration/dtt/:treeId", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
     try {
       const tree = await dynamicTaskTreeRuntime.get({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
       });
       audit.append("dynamic_task_tree_read", {
         tenant_id: req.tenantId,
+        work_id: req.workId,
         key_id: req.coreKey.key_id,
         tree_id: tree.tree_id,
         status: tree.status,
       });
-      return res.json({ ok: true, ...tree, execution_authorized: false });
+      return res.json({ ...tree, ok: true, tenant_id: req.tenantId, work_id: req.workId, execution_authorized: false });
     } catch (error) {
       const code = error.message || "dynamic_task_tree_read_failed";
-      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : 400, code);
+      return publicError(res, dttStatusForError(code), code);
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/expansion-proposals", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/expansion-proposals", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
     try {
       const proposal = await dynamicTaskTreeRuntime.proposeExpansion({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
         parent_node_id: req.body?.parent_node_id,
         nodes: req.body?.nodes,
       });
       audit.append("dynamic_task_tree_expansion_proposed", {
         tenant_id: req.tenantId,
+        work_id: req.workId,
         key_id: req.coreKey.key_id,
         tree_id: proposal.tree_id,
         proposal_id: proposal.proposal_id,
         node_count: proposal.nodes.length,
       });
-      return res.json({ ok: true, ...proposal });
+      return res.json({
+        ...proposal,
+        ok: true,
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        execution_authorized: false,
+      });
     } catch (error) {
       const code = error.message || "dynamic_task_tree_expansion_invalid";
-      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : 400, code);
+      return publicError(res, dttStatusForError(code), code);
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/replan-proposals", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/replan-proposals", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
     try {
       const proposal = await dynamicTaskTreeRuntime.proposePruneReplan({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
         prune_node_ids: req.body?.prune_node_ids,
         replacement_nodes: req.body?.replacement_nodes,
@@ -9816,23 +11579,37 @@ export function createUniversalCoreService(options = {}) {
       });
       audit.append("dynamic_task_tree_replan_proposed", {
         tenant_id: req.tenantId,
+        work_id: req.workId,
         key_id: req.coreKey.key_id,
         tree_id: proposal.tree_id,
         proposal_id: proposal.proposal_id,
         prune_count: proposal.prune_node_ids.length,
         replacement_count: proposal.replacement_nodes.length,
       });
-      return res.json({ ok: true, ...proposal });
+      return res.json({
+        ...proposal,
+        ok: true,
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        execution_authorized: false,
+      });
     } catch (error) {
       const code = error.message || "dynamic_task_tree_replan_invalid";
-      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : 400, code);
+      return publicError(res, dttStatusForError(code), code);
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/evidence-drafts", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/evidence-drafts", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
     try {
+      await assertDttTreeNode({
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        tree_id: req.params.treeId,
+        node_id: req.params.nodeId,
+      });
       const draft = prepareVerificationEvidenceDraft({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
         node_id: req.params.nodeId,
         claim: req.body?.claim,
@@ -9840,18 +11617,28 @@ export function createUniversalCoreService(options = {}) {
         provenance: {
           ...(req.body?.provenance || {}),
           tenant_id: req.tenantId,
+          work_id: req.workId,
           tree_id: req.params.treeId,
           node_id: req.params.nodeId,
         },
         required_approvals: req.body?.required_approvals,
       });
-      return res.json({ ok: true, ...draft });
+      return res.json({
+        ...draft,
+        ok: true,
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        tree_id: req.params.treeId,
+        node_id: req.params.nodeId,
+        execution_authorized: false,
+      });
     } catch (error) {
-      return publicError(res, 400, error.message || "verification_evidence_draft_invalid");
+      const code = error.message || "verification_evidence_draft_invalid";
+      return publicError(res, dttStatusForError(code), code);
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/outcomes", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/outcomes", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
     try {
       let outcomeEvidence = req.body?.evidence;
       if (!outcomeEvidence && req.body?.evidence_draft) {
@@ -9859,8 +11646,16 @@ export function createUniversalCoreService(options = {}) {
         const built = buildVerificationEvidenceContract({
           ...suppliedDraft,
           tenant_id: req.tenantId,
+          work_id: req.workId,
           tree_id: req.params.treeId,
           node_id: req.params.nodeId,
+          provenance: {
+            ...(suppliedDraft?.provenance || {}),
+            tenant_id: req.tenantId,
+            work_id: req.workId,
+            tree_id: req.params.treeId,
+            node_id: req.params.nodeId,
+          },
           votes: req.body?.votes,
           required_approvals: suppliedDraft?.quorum?.required_approvals,
         });
@@ -9869,49 +11664,61 @@ export function createUniversalCoreService(options = {}) {
       }
       const outcome = await dynamicTaskTreeRuntime.recordOutcome({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
         node_id: req.params.nodeId,
+        idempotency_key: req.body?.idempotency_key,
         outcome: req.body?.outcome,
         evidence: outcomeEvidence,
       });
       audit.append("dynamic_task_tree_outcome_recorded", {
         tenant_id: req.tenantId,
+        work_id: req.workId,
         key_id: req.coreKey.key_id,
         tree_id: outcome.tree_id,
         node_id: outcome.node_id,
         state: outcome.state,
       });
-      return res.json({ ok: true, tenant_id: req.tenantId, ...outcome });
+      return res.json({
+        ...outcome,
+        ok: true,
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        execution_authorized: false,
+      });
     } catch (error) {
       const code = error.message || "dynamic_task_tree_outcome_invalid";
-      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : code === "node_terminal" ? 409 : 400, code);
+      return publicError(res, dttStatusForError(code), code);
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/cancel", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/cancel", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
     try {
       const tree = await dynamicTaskTreeRuntime.cancel({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
         reason: req.body?.reason,
       });
       audit.append("dynamic_task_tree_cancelled", {
         tenant_id: req.tenantId,
+        work_id: req.workId,
         key_id: req.coreKey.key_id,
         tree_id: tree.tree_id,
         cancelled_node_count: tree.kill_signal?.cancelled_node_count || 0,
       });
-      return res.json({ ok: true, ...tree, execution_authorized: false });
+      return res.json({ ...tree, ok: true, tenant_id: req.tenantId, work_id: req.workId, execution_authorized: false });
     } catch (error) {
       const code = error.message || "dynamic_task_tree_cancel_failed";
-      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : 400, code);
+      return publicError(res, dttStatusForError(code), code);
     }
   });
 
-  app.get("/v1/orchestration/dtt/:treeId/retry-fallback", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+  app.get("/v1/orchestration/dtt/:treeId/retry-fallback", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
     try {
       const tree = await dynamicTaskTreeRuntime.get({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
       });
       const nodes = tree.nodes
@@ -9926,6 +11733,7 @@ export function createUniversalCoreService(options = {}) {
         }));
       audit.append("dynamic_task_tree_retry_fallback_read", {
         tenant_id: req.tenantId,
+        work_id: req.workId,
         key_id: req.coreKey.key_id,
         tree_id: tree.tree_id,
         proposal_count: nodes.length,
@@ -9933,6 +11741,7 @@ export function createUniversalCoreService(options = {}) {
       return res.json({
         ok: true,
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: tree.tree_id,
         tree_status: tree.status,
         nodes,
@@ -9940,11 +11749,11 @@ export function createUniversalCoreService(options = {}) {
       });
     } catch (error) {
       const code = error.message || "dynamic_task_tree_retry_fallback_read_failed";
-      return publicError(res, code === "task_tree_not_found" ? 404 : code === "cross_tenant_task_tree_denied" ? 403 : 400, code);
+      return publicError(res, dttStatusForError(code), code);
     }
   });
 
-  app.post("/v1/orchestration/dtt/:treeId/core-join", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
+  app.post("/v1/orchestration/dtt/:treeId/core-join", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
     let issuedVerdict = null;
     let joined = null;
     try {
@@ -9958,12 +11767,14 @@ export function createUniversalCoreService(options = {}) {
       }
       const persistedTree = await dynamicTaskTreeRuntime.get({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
       });
       if (persistedTree.status === "core_joined") {
         const reference = persistedTree.core_join?.verdict_reference;
         const events = await dynamicTaskTreeJoinVerdictStore.read({
           tenant_id: req.tenantId,
+          work_id: req.workId,
           tree_id: persistedTree.tree_id,
         });
         const issued = events.find((event) =>
@@ -9978,6 +11789,7 @@ export function createUniversalCoreService(options = {}) {
         try {
           await dynamicTaskTreeJoinVerdictStore.consume({
             tenant_id: req.tenantId,
+            work_id: req.workId,
             tree_id: persistedTree.tree_id,
             verdict_reference: reference,
           });
@@ -9986,6 +11798,7 @@ export function createUniversalCoreService(options = {}) {
         }
         audit.append("dynamic_task_tree_core_join_reconciled", {
           tenant_id: req.tenantId,
+          work_id: req.workId,
           key_id: req.coreKey.key_id,
           tree_id: persistedTree.tree_id,
           verdict_reference: reference,
@@ -9993,7 +11806,8 @@ export function createUniversalCoreService(options = {}) {
         return res.json({
           ok: true,
           tree_id: persistedTree.tree_id,
-          tenant_id: persistedTree.tenant_id,
+          tenant_id: req.tenantId,
+          work_id: req.workId,
           status: persistedTree.status,
           core_join: persistedTree.core_join,
           reconciled: true,
@@ -10002,10 +11816,12 @@ export function createUniversalCoreService(options = {}) {
       }
       const readiness = await dynamicTaskTreeRuntime.inspectCoreJoin({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
       });
       const existingEvents = await dynamicTaskTreeJoinVerdictStore.read({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: readiness.tree_id,
       });
       const activeIssued = [...existingEvents].reverse().find((event) => {
@@ -10017,6 +11833,7 @@ export function createUniversalCoreService(options = {}) {
       if (activeIssued && activeIssued.evidence_set_digest !== readiness.evidence_set_digest) {
         await dynamicTaskTreeJoinVerdictStore.void({
           tenant_id: req.tenantId,
+          work_id: req.workId,
           tree_id: readiness.tree_id,
           verdict_reference: activeIssued.verdict_reference,
           reason: "persisted_tree_evidence_digest_changed",
@@ -10026,12 +11843,14 @@ export function createUniversalCoreService(options = {}) {
       }
       issuedVerdict ||= await dynamicTaskTreeJoinVerdictStore.issue({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: readiness.tree_id,
         key_id: req.coreKey.key_id,
         evidence_set_digest: readiness.evidence_set_digest,
       });
       joined = await dynamicTaskTreeRuntime.coreJoin({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: req.params.treeId,
         core_verdict: {
           allowed: issuedVerdict.allowed === true,
@@ -10047,22 +11866,25 @@ export function createUniversalCoreService(options = {}) {
       });
       await dynamicTaskTreeJoinVerdictStore.consume({
         tenant_id: req.tenantId,
+        work_id: req.workId,
         tree_id: joined.tree_id,
         verdict_reference: issuedVerdict.verdict_reference,
       });
       audit.append("dynamic_task_tree_core_joined", {
         tenant_id: req.tenantId,
+        work_id: req.workId,
         key_id: req.coreKey.key_id,
         tree_id: joined.tree_id,
         verdict_reference: joined.core_join.verdict_reference,
       });
-      return res.json({ ok: true, ...joined });
+      return res.json({ ...joined, ok: true, tenant_id: req.tenantId, work_id: req.workId, execution_authorized: false });
     } catch (error) {
       let code = error.message || "dynamic_task_tree_core_join_failed";
       if (issuedVerdict?.verdict_reference) {
         try {
           const persistedTree = await dynamicTaskTreeRuntime.get({
             tenant_id: req.tenantId,
+            work_id: req.workId,
             tree_id: req.params.treeId,
           });
           if (
@@ -10072,11 +11894,13 @@ export function createUniversalCoreService(options = {}) {
             try {
               await dynamicTaskTreeJoinVerdictStore.consume({
                 tenant_id: req.tenantId,
+                work_id: req.workId,
                 tree_id: req.params.treeId,
                 verdict_reference: issuedVerdict.verdict_reference,
               });
               audit.append("dynamic_task_tree_core_join_reconciled", {
                 tenant_id: req.tenantId,
+                work_id: req.workId,
                 key_id: req.coreKey.key_id,
                 tree_id: req.params.treeId,
                 verdict_reference: issuedVerdict.verdict_reference,
@@ -10084,7 +11908,8 @@ export function createUniversalCoreService(options = {}) {
               return res.json({
                 ok: true,
                 tree_id: persistedTree.tree_id,
-                tenant_id: persistedTree.tenant_id,
+                tenant_id: req.tenantId,
+                work_id: req.workId,
                 status: persistedTree.status,
                 core_join: persistedTree.core_join,
                 reconciled: true,
@@ -10096,6 +11921,7 @@ export function createUniversalCoreService(options = {}) {
           } else {
             await dynamicTaskTreeJoinVerdictStore.void({
               tenant_id: req.tenantId,
+              work_id: req.workId,
               tree_id: req.params.treeId,
               verdict_reference: issuedVerdict.verdict_reference,
               reason: code,
@@ -10105,25 +11931,12 @@ export function createUniversalCoreService(options = {}) {
       }
       audit.append("dynamic_task_tree_core_join_denied", {
         tenant_id: req.tenantId,
+        work_id: req.workId,
         key_id: req.coreKey.key_id,
         tree_id: req.params.treeId,
         reason: code,
       });
-      return publicError(
-        res,
-        code === "task_tree_not_found"
-          ? 404
-          : code === "cross_tenant_task_tree_denied"
-            ? 403
-            : ["task_tree_not_verified", "task_tree_already_joined", "dtt_join_verdict_already_issued"].includes(code)
-              ? 409
-              : ["dtt_join_finalization_pending"].includes(code)
-                ? 503
-                : ["joined_tree_verdict_missing", "joined_tree_verdict_voided"].includes(code)
-                  ? 500
-                  : 400,
-        code,
-      );
+      return publicError(res, dttStatusForError(code), code);
     }
   });
 

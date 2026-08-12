@@ -403,10 +403,19 @@ test("runtime hierarchy is tenant-scoped, redacts V2 fallback details, and never
 
   const result = await handlers.core_runtime_hierarchy_evaluate({
     request: "high-risk decision",
-    core_input: { context: { tenant_id: "forged-tenant" }, signals: [{ id: "risk", severity: 100 }] },
+    routing: { high_impact: false },
+    core_input: {
+      context: { tenant_id: "forged-tenant" },
+      signals: [{ id: "risk", severity: "untrusted", risk_hint: 100 }],
+      evidence_state: { high_impact: false },
+      routing: { high_impact: false },
+    },
   }, { tenantId: "tenant-a" });
   const runtime = result.structuredContent.core_runtime;
   assert.equal(calls[0].body.core_input.context.tenant_id, "tenant-a");
+  assert.deepEqual(calls[0].body.core_input.evidence_state, { high_impact: true });
+  assert.deepEqual(calls[0].body.routing, { high_impact: true });
+  assert.equal("routing" in calls[0].body.core_input, false);
   assert.equal(calls[0].authorization, "Bearer tenant-a-key");
   assert.equal(runtime.selected_authority, "V0");
   assert.equal(runtime.parity.fallback, "V1");
@@ -414,6 +423,45 @@ test("runtime hierarchy is tenant-scoped, redacts V2 fallback details, and never
   assert.equal(runtime.execution_allowed, false);
   assert.equal(JSON.stringify(result).includes("tenant-a-key"), false);
   assert.equal(JSON.stringify(result).includes("worker timeout"), false);
+
+  await handlers.core_runtime_hierarchy_evaluate({
+    request: "read advisory status",
+    routing: { high_impact: true },
+    core_input: {
+      signals: [{ id: "bounded", severity: 10, risk_hint: 10 }],
+      routing: { high_impact: true },
+      evidence_state: { high_impact: false },
+    },
+  }, { tenantId: "tenant-a" });
+  assert.deepEqual(calls[1].body.core_input.evidence_state, { high_impact: false });
+  assert.equal("routing" in calls[1].body, false);
+  assert.equal("routing" in calls[1].body.core_input, false);
+
+  for (const invalidScore of ["85", "100", [100], { valueOf: () => 100 }, NaN, Infinity, 101, 1_000_000]) {
+    await handlers.core_runtime_hierarchy_evaluate({
+      request: "read advisory status",
+      core_input: {
+        signals: [{ id: "invalid-score", severity: invalidScore, risk_hint: 0 }],
+        evidence_state: { high_impact: false },
+      },
+    }, { tenantId: "tenant-a" });
+    const forwarded = calls.at(-1).body;
+    assert.deepEqual(forwarded.core_input.evidence_state, { high_impact: false });
+    assert.equal("routing" in forwarded, false);
+  }
+
+  for (const validScore of [85, 100]) {
+    await handlers.core_runtime_hierarchy_evaluate({
+      request: "read advisory status",
+      core_input: {
+        signals: [{ id: "valid-score", severity: validScore, risk_hint: 0 }],
+        evidence_state: { high_impact: false },
+      },
+    }, { tenantId: "tenant-a" });
+    const forwarded = calls.at(-1).body;
+    assert.deepEqual(forwarded.core_input.evidence_state, { high_impact: true });
+    assert.deepEqual(forwarded.routing, { high_impact: true });
+  }
 });
 
 test("direct Nyra interpretation accepts only the Core bridge hierarchy verdict", async () => {
