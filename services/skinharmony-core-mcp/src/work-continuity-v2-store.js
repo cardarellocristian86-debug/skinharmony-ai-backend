@@ -1295,11 +1295,12 @@ export function createWorkContinuityV2Store({
       }
 
       const updatedV2 = await client.query(`UPDATE tenant_work SET
-          status=$3,closed_at=COALESCE(closed_at,$7::timestamptz,now()),
-          cancelled_at=CASE WHEN $3='CANCELLED' THEN COALESCE(cancelled_at,now()) ELSE cancelled_at END,
+          status=$3::varchar(24),closed_at=COALESCE(closed_at,$7::timestamptz,now()),
+          cancelled_at=CASE WHEN $3::varchar(24)='CANCELLED'
+            THEN COALESCE(cancelled_at,now()) ELSE cancelled_at END,
           archived_at=COALESCE(archived_at,now()),closure_type='legacy_reconciliation',
           closure_reason=$4,next_action='',successor_work_id=$5,superseded_by_work_id=$5,updated_at=now()
-        WHERE tenant_id=$1 AND work_id=$2 AND status=$6
+        WHERE tenant_id=$1 AND work_id=$2 AND status=$6::varchar(24)
         RETURNING closed_at,archived_at`,
       [actor.tenant_id, workId, targetStatus, reason, successorWorkId, expectedV2Status,
         serverEvidence?.observed_at || null]);
