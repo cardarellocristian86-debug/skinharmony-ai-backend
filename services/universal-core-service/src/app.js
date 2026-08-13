@@ -8369,7 +8369,7 @@ export function createUniversalCoreService(options = {}) {
   });
 
   const icf = createIcfKernel({ audit, storageRoot, mode: options.icfMode || process.env.CORE_ICF_MODE || "advisory" });
-  const icfRuntime = createIcfRuntimeFacade({ kernel: icf, store: options.icfStore, mode: options.icfMode || process.env.CORE_ICF_MODE || "advisory" });
+  const icfRuntime = createIcfRuntimeFacade({ kernel: icf, store: options.icfStore, coreJoinStore: options.coreJoinStore, mode: options.icfMode || process.env.CORE_ICF_MODE || "advisory" });
 
   app.get("/v1/icf/rollout", coreAuth(SCOPES.READ_DECISION), (req, res) => res.json({ ok: true, rollout: icf.rollout() }));
   app.get("/v1/icf/:workId", coreAuth(SCOPES.READ_DECISION), (req, res) => res.json({ ok: true, icf: icf.status(req.tenantId, req.params.workId) }));

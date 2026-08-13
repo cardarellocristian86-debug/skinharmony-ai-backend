@@ -6,6 +6,7 @@ import {
   createWorkContinuityRuntime,
   digest,
 } from "../src/work-continuity-runtime.js";
+import { createWorkContinuityV2Store } from "../src/work-continuity-v2-store.js";
 import { createCausalContinuityMigrator } from "../../universal-core-service/src/causalContinuityMigration.js";
 import { ensureCoreSchemaMigrationRegistry } from "../../universal-core-service/src/coreSchemaMigrationRegistry.js";
 
@@ -71,6 +72,31 @@ function reporterIdentity(tenantId, agentId, fingerprint, signatureHex) {
       host_transport_session_fingerprint: fingerprint,
       session_fingerprint: fingerprint,
       signature: `ags_${signatureHex.repeat(32)}`,
+    },
+  };
+}
+
+function reconciliationOwnerIdentity(tenantId) {
+  const subject = "owner|postgres16-reconciliation";
+  return {
+    tenantId,
+    subject,
+    ownerConfirmed: true,
+    confirmationReference: "postgres16-gallery-reconciliation-regression",
+    agentPresence: {
+      agent_id: "postgres16-reconciliation-owner",
+      session_fingerprint: "e".repeat(64),
+    },
+    tenant_work_acl: {
+      server_derived: true,
+      tenant_id: tenantId,
+      user_id: subject,
+      role: "tenant_owner",
+      team_ids: [],
+      managed_team_ids: [],
+      assigned_work_ids: [],
+      is_tenant_owner: true,
+      is_super_admin: false,
     },
   };
 }
@@ -897,6 +923,133 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       "UPDATE core_continuity_events SET event_type='work_created' WHERE tenant_id=$1 AND work_id=$2 AND sequence_number=1",
       [tenantId, firstWork.work_id],
     ), /core_continuity_events_append_only/);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("PostgreSQL 16 reconciles stale Gallery Work with typed status parameters and durable audit", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  const tenantId = `pg16_reconcile_${runId.slice(0, 20)}`;
+  const projectId = `gallery-reconcile-${runId.slice(0, 16)}`;
+  const pool = new Pool({ connectionString: databaseUrl, max: 4, statement_timeout: 15_000 });
+  const runtime = createWorkContinuityRuntime({
+    databaseUrl,
+    dttAgentIdentitySigningSecret: "postgres16-reconciliation-secret-0123456789",
+  }, { pool });
+  const v2Store = createWorkContinuityV2Store({ pool });
+  const coordinator = coordinatorIdentity(tenantId);
+  const owner = reconciliationOwnerIdentity(tenantId);
+
+  async function createLegacyWork(label) {
+    return runtime.ensure(coordinator, {
+      project_id: projectId,
+      session_id: `${label}-${runId.slice(0, 12)}`,
+      initial_message: `Create isolated ${label} regression state.`,
+      idea: `PostgreSQL 16 ${label}`,
+      objective: "Exercise exact stale Gallery terminal reconciliation on PostgreSQL 16.",
+      acceptance_criteria: ["The typed mutation and both audit chains persist atomically."],
+      constraints: ["Do not claim completion for stale historical work."],
+      architecture: { components: [{ id: "core-mcp" }] },
+      next_action: "Await owner-confirmed reconciliation.",
+      host_type: "codex_native",
+    }, { creationAuthorized: true });
+  }
+
+  try {
+    const version = await pool.query("SHOW server_version_num");
+    assert.equal(Math.floor(Number(version.rows[0].server_version_num) / 10_000), 16);
+
+    const supersedeSource = await createLegacyWork("supersede-source");
+    const cancelSource = await createLegacyWork("cancel-source");
+    const successor = await createLegacyWork("successor");
+    for (const work of [supersedeSource, cancelSource, successor]) {
+      await v2Store.projectLegacyWork(owner, { legacy_work_id: work.work_id });
+    }
+    const sourceIds = [supersedeSource.work_id, cancelSource.work_id];
+    await pool.query(`UPDATE core_continuity_works SET updated_at=now()-interval '3 days'
+      WHERE tenant_id=$1 AND work_id=ANY($2::uuid[])`, [tenantId, sourceIds]);
+    await pool.query(`UPDATE tenant_work SET updated_at=now()-interval '3 days'
+      WHERE tenant_id=$1 AND work_id=ANY($2::uuid[])`, [tenantId, sourceIds]);
+
+    const cases = [{
+      name: "supersede",
+      work_id: supersedeSource.work_id,
+      action: "SUPERSEDE",
+      successor_work_id: successor.work_id,
+      expected_v2_status: "SUPERSEDED",
+      expected_legacy_status: "superseded",
+    }, {
+      name: "cancel",
+      work_id: cancelSource.work_id,
+      action: "CANCEL",
+      successor_work_id: null,
+      expected_v2_status: "CANCELLED",
+      expected_legacy_status: "cancelled",
+    }];
+
+    for (const scenario of cases) {
+      const input = {
+        work_id: scenario.work_id,
+        action: scenario.action,
+        expected_status: "active",
+        expected_classification: "STALE",
+        reason: `PostgreSQL 16 ${scenario.name} regression with durable dual audit.`,
+        idempotency_key: `pg16-${scenario.name}-${runId}`,
+        ...(scenario.successor_work_id
+          ? { successor_work_id: scenario.successor_work_id }
+          : {}),
+      };
+      const first = await v2Store.reconcileLegacyClosed(owner, input);
+      assert.equal(first.status, scenario.expected_v2_status);
+      assert.equal(first.legacy_status, scenario.expected_legacy_status);
+      assert.equal(first.completed, false);
+      assert.equal(first.idempotent_replay, false);
+
+      const [v2State, legacyState, v2Audit, legacyAudit] = await Promise.all([
+        pool.query(`SELECT status,closed_at,archived_at,cancelled_at,
+            successor_work_id,superseded_by_work_id
+          FROM tenant_work WHERE tenant_id=$1 AND work_id=$2`,
+        [tenantId, scenario.work_id]),
+        pool.query("SELECT status FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2",
+          [tenantId, scenario.work_id]),
+        pool.query(`SELECT payload,event_hash FROM tenant_work_event
+          WHERE tenant_id=$1 AND work_id=$2 AND event_type='legacy_work_reconciled_closed'`,
+        [tenantId, scenario.work_id]),
+        pool.query(`SELECT payload,event_hash FROM core_continuity_events
+          WHERE tenant_id=$1 AND work_id=$2 AND event_type='legacy_work_reconciled_closed'`,
+        [tenantId, scenario.work_id]),
+      ]);
+      assert.equal(v2State.rowCount, 1);
+      assert.equal(v2State.rows[0].status, scenario.expected_v2_status);
+      assert.ok(v2State.rows[0].closed_at);
+      assert.ok(v2State.rows[0].archived_at);
+      assert.equal(Boolean(v2State.rows[0].cancelled_at), scenario.action === "CANCEL");
+      assert.equal(v2State.rows[0].successor_work_id, scenario.successor_work_id);
+      assert.equal(v2State.rows[0].superseded_by_work_id, scenario.successor_work_id);
+      assert.equal(legacyState.rows[0].status, scenario.expected_legacy_status);
+      assert.equal(v2Audit.rowCount, 1);
+      assert.equal(legacyAudit.rowCount, 1);
+      assert.equal(legacyAudit.rows[0].payload.action, scenario.action);
+      assert.equal(legacyAudit.rows[0].payload.status, scenario.expected_v2_status);
+      assert.equal(legacyAudit.rows[0].event_hash, first.legacy_event_hash);
+      assert.equal(v2Audit.rows[0].payload.legacy_event_hash, first.legacy_event_hash);
+      assert.equal(v2Audit.rows[0].event_hash, first.v2_event_hash);
+
+      const replay = await v2Store.reconcileLegacyClosed(owner, input);
+      assert.equal(replay.idempotent_replay, true);
+      assert.equal(replay.legacy_event_hash, first.legacy_event_hash);
+      assert.equal(replay.v2_event_hash, first.v2_event_hash);
+      const auditCounts = await pool.query(`SELECT
+          (SELECT count(*)::int FROM tenant_work_event
+            WHERE tenant_id=$1 AND work_id=$2 AND event_type='legacy_work_reconciled_closed') AS v2,
+          (SELECT count(*)::int FROM core_continuity_events
+            WHERE tenant_id=$1 AND work_id=$2 AND event_type='legacy_work_reconciled_closed') AS legacy`,
+      [tenantId, scenario.work_id]);
+      assert.deepEqual(auditCounts.rows[0], { v2: 1, legacy: 1 });
+    }
   } finally {
     await runtime.close();
   }
