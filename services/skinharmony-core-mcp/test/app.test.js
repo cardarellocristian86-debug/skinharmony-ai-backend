@@ -4,7 +4,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildIdentity, buildReadiness, createApp, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
@@ -468,7 +468,7 @@ test("Generic Join health pins upstream key identity and gates Render only when 
       joinReady: false, reason: "generic_work_core_join_public_key_fingerprint_mismatch" },
     { required: true, fingerprint: verifier.public_key_fingerprint, upstreamEnabled: false,
       upstreamConfigurationValid: false, upstreamAlgorithm: "RSA", status: 503, renderReady: false,
-      joinReady: false, reason: "generic_work_core_join_upstream_not_ready" },
+      joinReady: false, reason: "generic_work_core_join_disabled" },
     { required: true, fingerprint: verifier.public_key_fingerprint, upstreamRequired: false,
       status: 503, renderReady: false, joinReady: false,
       reason: "generic_work_core_join_upstream_not_ready" },
@@ -489,6 +489,11 @@ test("Generic Join health pins upstream key identity and gates Render only when 
           configuration_valid: scenario.upstreamConfigurationValid ?? true,
           algorithm: scenario.upstreamAlgorithm ?? "Ed25519",
           ready: true,
+          backend: scenario.upstreamBackend ?? "postgresql",
+          restart_durable: scenario.upstreamRestartDurable ?? true,
+          distributed: scenario.upstreamDistributed ?? true,
+          signer_state: scenario.upstreamSignerState ?? "ready",
+          state: scenario.upstreamState ?? "ready",
           key_id: verifier.key_id,
           public_key_fingerprint: scenario.fingerprint,
         };
@@ -512,7 +517,7 @@ test("Generic Join health pins upstream key identity and gates Render only when 
       const health = await response.json();
       assert.equal(response.status, scenario.status);
       assert.equal(health.render_ready, scenario.renderReady);
-      assert.equal(health.generic_work_core_join.enabled, true);
+      assert.equal(health.generic_work_core_join.enabled, scenario.joinReady);
       assert.equal(health.generic_work_core_join.required, scenario.required);
       assert.equal(health.generic_work_core_join.ready, scenario.joinReady);
       assert.equal(health.generic_work_core_join.reason, scenario.reason);
@@ -529,6 +534,63 @@ test("Generic Join health pins upstream key identity and gates Render only when 
       await new Promise((resolve) => server.close(resolve));
     }
   }
+});
+
+test("Generic Join health mirrors fail-closed Universal Core readiness", () => {
+  const verifier = {
+    algorithm: "Ed25519",
+    metadata: {
+      key_id: "core-key-20260810",
+      public_key_fingerprint: "b".repeat(64),
+    },
+  };
+  const upstream = (join) => ({ responseOk: true, payload: { generic_work_core_join: {
+    enabled: true,
+    configuration_valid: true,
+    algorithm: "Ed25519",
+    required: false,
+    ready: true,
+    backend: "postgresql",
+    restart_durable: true,
+    distributed: true,
+    signer_state: "ready",
+    state: "ready",
+    key_id: verifier.metadata.key_id,
+    public_key_fingerprint: verifier.metadata.public_key_fingerprint,
+    ...join,
+  } } });
+  const input = {
+    config: {
+      genericWorkCoreJoinEnabled: true,
+      genericWorkCoreJoinRequired: false,
+      genericWorkCoreJoinConfigurationValid: true,
+    },
+    options: {
+      genericWorkCoreJoin: { storeConfigured: true, verifier },
+      readiness: { genericWorkCoreJoinStoreInitialized: true },
+    },
+  };
+  const cases = [
+    ["signer absent", { signer_state: "unconfigured", state: "signer_unavailable", reason: "generic_work_core_join_signer_unconfigured" }, "generic_work_core_join_signer_unconfigured"],
+    ["ledger absent", { backend: "unavailable", state: "durability_or_signing_unavailable", reason: "generic_work_core_join_postgres_unavailable" }, "generic_work_core_join_postgres_unavailable"],
+    ["migration absent", { ready: false, state: "failed", reason: "generic_work_core_join_migration_unavailable" }, "generic_work_core_join_migration_unavailable"],
+    ["restart durability absent", { restart_durable: false, state: "durability_or_signing_unavailable", reason: "generic_work_core_join_durable_store_unavailable" }, "generic_work_core_join_durable_store_unavailable"],
+    ["distributed store absent", { distributed: false, state: "durability_or_signing_unavailable", reason: "generic_work_core_join_distributed_store_unavailable" }, "generic_work_core_join_distributed_store_unavailable"],
+  ];
+  for (const [name, join, reason] of cases) {
+    const health = buildGenericWorkCoreJoinHealth(input.config, input.options, upstream(join));
+    assert.equal(health.enabled, false, name);
+    assert.equal(health.ready, false, name);
+    assert.equal(health.reason, reason, name);
+  }
+  const ready = buildGenericWorkCoreJoinHealth(input.config, input.options, upstream({}));
+  assert.equal(ready.enabled, true);
+  assert.equal(ready.ready, true);
+  assert.equal(ready.state, "ready");
+  assert.equal(ready.backend, "postgresql");
+  assert.equal(ready.restart_durable, true);
+  assert.equal(ready.distributed, true);
+  assert.equal(ready.signer_state, "ready");
 });
 
 test("production readiness fails closed with coded non-secret component blockers", async () => {
