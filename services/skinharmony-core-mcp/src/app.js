@@ -524,7 +524,7 @@ export function requiresGenericWorkPreflight(toolName, args = {}) {
 }
 
 export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstream = {}) {
-  const enabled = config.genericWorkCoreJoinEnabled === true;
+  const connectorEnabled = config.genericWorkCoreJoinEnabled === true;
   const required = config.genericWorkCoreJoinRequired === true;
   const configurationCodes = new Set([
     "generic_work_core_join_enabled_flag_invalid",
@@ -534,9 +534,9 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
   const configuredError = String(config.genericWorkCoreJoinConfigurationError || "");
   const configurationError = configurationCodes.has(configuredError)
     ? configuredError
-    : (enabled || required) && config.genericWorkCoreJoinConfigurationValid !== true
+    : (connectorEnabled || required) && config.genericWorkCoreJoinConfigurationValid !== true
       ? "generic_work_core_join_configuration_invalid"
-      : required && !enabled
+      : required && !connectorEnabled
       ? "generic_work_core_join_required_without_enabled"
       : null;
   const suppliedMetadata = options.genericWorkCoreJoin?.verifier?.metadata;
@@ -554,63 +554,107 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
   const storeInitializationFailed =
     options.readiness?.genericWorkCoreJoinStoreInitializationFailed === true;
   const coreHealth = upstream?.payload?.generic_work_core_join;
+  const upstreamAvailable = upstream?.responseOk === true && coreHealth !== null && typeof coreHealth === "object";
+  const upstreamEnabled = upstreamAvailable && coreHealth.enabled === true;
+  const upstreamBackend = coreHealth?.backend === "postgresql" ? "postgresql" : "unavailable";
+  const upstreamRestartDurable = coreHealth?.restart_durable === true;
+  const upstreamDistributed = coreHealth?.distributed === true;
+  const upstreamSignerState = new Set([
+    "configured", "forbidden", "invalid", "ready", "rejected", "unavailable", "unconfigured",
+  ]).has(String(coreHealth?.signer_state || ""))
+    ? String(coreHealth.signer_state)
+    : "unavailable";
+  const upstreamState = new Set([
+    "configuration_invalid", "disabled", "durability_or_signing_unavailable", "failed", "initializing",
+    "ready", "signer_not_yet_verified", "signer_unavailable", "unavailable",
+  ]).has(String(coreHealth?.state || ""))
+    ? String(coreHealth.state)
+    : "unavailable";
+  const upstreamReason = /^generic_work_core_join_[a-z0-9_]+$/.test(String(coreHealth?.reason || ""))
+    ? String(coreHealth.reason)
+    : null;
   const upstreamKeyId = GENERIC_WORK_CORE_JOIN_KEY_ID.test(String(coreHealth?.key_id || ""))
     ? String(coreHealth.key_id)
     : null;
   const upstreamFingerprint = SHA256_HEX.test(String(coreHealth?.public_key_fingerprint || ""))
     ? String(coreHealth.public_key_fingerprint)
     : null;
-  const upstreamReady = upstream?.responseOk === true
-    && coreHealth?.enabled === true
+  const upstreamReady = upstreamAvailable
+    && upstreamEnabled
     && coreHealth?.configuration_valid === true
     && coreHealth?.algorithm === "Ed25519"
     && coreHealth?.required === required
-    && coreHealth?.ready === true;
+    && coreHealth?.ready === true
+    && upstreamBackend === "postgresql"
+    && upstreamRestartDurable
+    && upstreamDistributed
+    && upstreamSignerState === "ready";
   const keyIdMatches = Boolean(verifierMetadata && upstreamKeyId === verifierMetadata.key_id);
   const fingerprintMatches = Boolean(
     verifierMetadata && upstreamFingerprint === verifierMetadata.public_key_fingerprint,
   );
-  let state = "disabled";
+  let state = connectorEnabled ? "unavailable" : "disabled";
   let reason = "generic_work_core_join_disabled";
   let ready = false;
   if (configurationError) {
     state = "configuration_invalid";
     reason = configurationError;
-  } else if (enabled && !storeConfigured) {
+  } else if (!connectorEnabled) {
+    state = "disabled";
+    reason = "generic_work_core_join_disabled";
+  } else if (!upstreamAvailable) {
+    state = "unavailable";
+    reason = "generic_work_core_join_upstream_unavailable";
+  } else if (!upstreamEnabled) {
+    state = upstreamState;
+    reason = upstreamReason || "generic_work_core_join_disabled";
+  } else if (upstreamBackend !== "postgresql") {
+    state = "durability_or_signing_unavailable";
+    reason = upstreamReason || "generic_work_core_join_postgres_unavailable";
+  } else if (!upstreamRestartDurable) {
+    state = "durability_or_signing_unavailable";
+    reason = upstreamReason || "generic_work_core_join_durable_store_unavailable";
+  } else if (!upstreamDistributed) {
+    state = "durability_or_signing_unavailable";
+    reason = upstreamReason || "generic_work_core_join_distributed_store_unavailable";
+  } else if (upstreamSignerState !== "ready") {
+    state = upstreamState;
+    reason = upstreamReason || "generic_work_core_join_signer_unavailable";
+  } else if (coreHealth.ready !== true) {
+    state = upstreamState;
+    reason = upstreamReason || "generic_work_core_join_upstream_not_ready";
+  } else if (!storeConfigured) {
     state = "store_unavailable";
     reason = "generic_work_core_join_store_unavailable";
-  } else if (enabled && storeInitializationFailed) {
+  } else if (storeInitializationFailed) {
     state = "store_unavailable";
     reason = "generic_work_core_join_store_unavailable";
-  } else if (enabled && !storeInitialized) {
+  } else if (!storeInitialized) {
     state = "initializing";
     reason = "generic_work_core_join_store_initializing";
-  } else if (enabled && !verifierMetadata) {
+  } else if (!verifierMetadata) {
     state = "verifier_unavailable";
     reason = "generic_work_core_join_verifier_unavailable";
-  } else if (enabled && upstream?.responseOk !== true) {
-    state = "upstream_unavailable";
-    reason = "generic_work_core_join_upstream_unavailable";
-  } else if (enabled && !upstreamReady) {
+  } else if (!upstreamReady) {
     state = "upstream_not_ready";
     reason = "generic_work_core_join_upstream_not_ready";
-  } else if (enabled && !keyIdMatches) {
+  } else if (!keyIdMatches) {
     state = "trust_mismatch";
     reason = "generic_work_core_join_key_id_mismatch";
-  } else if (enabled && !fingerprintMatches) {
+  } else if (!fingerprintMatches) {
     state = "trust_mismatch";
     reason = "generic_work_core_join_public_key_fingerprint_mismatch";
-  } else if (enabled) {
+  } else {
     state = "ready";
     reason = null;
     ready = true;
   }
   return Object.freeze({
-    enabled,
+    enabled: ready,
     required,
     configuration_valid: configurationError === null,
     configuration_error: configurationError,
-    configured: enabled && configurationError === null && storeConfigured && Boolean(verifierMetadata),
+    configured: connectorEnabled && configurationError === null && storeConfigured && Boolean(verifierMetadata),
     ready,
     usable: ready,
     state,
@@ -618,6 +662,10 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
     store_configured: storeConfigured,
     store_initialized: storeInitialized,
     store_initialization_failed: storeInitializationFailed,
+    backend: upstreamBackend,
+    restart_durable: upstreamRestartDurable,
+    distributed: upstreamDistributed,
+    signer_state: upstreamSignerState,
     verifier_configured: Boolean(verifierMetadata),
     algorithm: verifierMetadata?.algorithm || null,
     key_id: verifierMetadata?.key_id || null,
