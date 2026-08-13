@@ -1544,6 +1544,18 @@ export function createHostNativeGovernance({
           if (!service || service.target_commit !== action.target_commit || service.expected_previous_commit !== action.expected_live_commit) {
             fail("release_manifest_action_mismatch");
           }
+          if (action.kind === "render.deploy" && action.environment === "production" && (
+            release_manifest.delivery.method !== "manual_render_deploy" ||
+            release_manifest.delivery.services.some((entry) => entry.target_commit === null) ||
+            action.branch !== release_manifest.delivery_branch ||
+            action.base_branch !== release_manifest.base_branch ||
+            action.source_commit !== release_manifest.head_commit ||
+            action.target_commit !== release_manifest.head_commit ||
+            action.target_commit !== release_manifest.verification.checks_commit ||
+            action.expected_base_commit !== release_manifest.base_commit ||
+            action.rollback_commit !== service.expected_previous_commit ||
+            action.health_contract_digest !== service.health_contract_digest
+          )) fail("release_manifest_action_mismatch");
           if (action.kind === "render.deploy" && action.environment === "staging" && (
             !Number.isSafeInteger(Number(action.pull_request)) || Number(action.pull_request) < 1 ||
             action.branch !== release_manifest.delivery_branch ||
@@ -1699,6 +1711,9 @@ export function createHostNativeGovernance({
             repository: delegation.grant.repository,
             checks_commit: release_manifest.verification.checks_commit,
             required_checks: release_manifest.verification.required_checks,
+            ...(coreJoin.claim.required_checks_policy_digest ? {
+              required_checks_policy_digest: coreJoin.claim.required_checks_policy_digest,
+            } : {}),
             evidence_digest,
             source_evidence: {
               base_commit: release_manifest.base_commit,
@@ -2128,6 +2143,16 @@ export function createHostNativeGovernance({
       )) {
         fail("trusted_readback_github_mismatch");
       }
+      if (current.ticket.action.kind === "render.deploy" &&
+          current.ticket.action.environment === "production") {
+        const resolution = current.ticket.release_join_resolution;
+        const joinedPolicyDigest = resolution?.required_checks_policy_digest;
+        if (
+          !SHA256.test(String(joinedPolicyDigest || "")) ||
+          current.ticket.release_join_resolution_digest !== hostNativeDigest(resolution) ||
+          github.required_checks_policy_digest !== joinedPolicyDigest
+        ) fail("trusted_readback_github_mismatch");
+      }
       if (current.ticket.action.kind === "render.observe") {
         const predecessor = current.ticket.predecessor;
         const sourceAction = predecessor?.source_action;
@@ -2170,8 +2195,10 @@ export function createHostNativeGovernance({
       for (const expected of verificationScope === "full_release" ? expectedServices : []) {
         const observed = external.services.find((service) =>
           service.service_id === expected.service_id && service.environment === expected.environment);
-        if (!observed || observed.origin !== expected.origin || observed.live_commit !== targetCommit ||
+        const expectedLiveCommit = expected.target_commit || targetCommit;
+        if (!observed || observed.origin !== expected.origin || observed.live_commit !== expectedLiveCommit ||
             observed.health_contract_digest !== expected.health_contract_digest ||
+            observed.previous_live_commit !== expected.expected_previous_commit ||
             observed.rollback_commit !== current.ticket.release_manifest_binding.rollback.target_commit ||
             observed.rollback_status !== "previous_live_attested") {
           fail("trusted_readback_service_mismatch");
