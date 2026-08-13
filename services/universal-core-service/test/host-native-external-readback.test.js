@@ -57,14 +57,19 @@ function mergeTicket({
     health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
   }],
 } = {}) {
-  const previousLiveAttestations = services.map((service) => {
+  const normalizedServices = services.map((service) => ({
+    expected_previous_commit: service.expected_previous_commit || BASE,
+    ...service,
+  }));
+  const previousLiveAttestations = normalizedServices.map((service) => {
+    const expectedPreviousCommit = service.expected_previous_commit;
     const unsigned = {
       service_id: service.service_id,
       environment: service.environment,
       origin: service.origin,
       health_path: "/healthz",
       deployment_id: `previous-${service.service_id}`,
-      live_commit: BASE,
+      live_commit: expectedPreviousCommit,
       health_status: "healthy",
       health_contract_digest: service.health_contract_digest,
     };
@@ -136,7 +141,7 @@ function mergeTicket({
         required_checks: ["deployment-parity", "unit-tests"],
         checks_commit: HEAD,
       },
-      services,
+      services: normalizedServices,
       rollback: {
         target_commit: BASE,
       },
@@ -251,6 +256,12 @@ const STRICT_POLICY = Object.freeze({
     sha256: WORKFLOW_SHA256,
   },
   allowed_events: ["pull_request", "push"],
+});
+const STRICT_POLICY_DIGEST = hostNativeDigest({
+  ...STRICT_POLICY,
+  required_checks: [...STRICT_POLICY.required_checks].sort(),
+  workflow: { ...STRICT_POLICY.workflow, candidate_sha256: null },
+  allowed_events: [...STRICT_POLICY.allowed_events].sort(),
 });
 
 function strictTicket() {
@@ -405,6 +416,7 @@ function strictObserveTicket() {
     service_id: "service-b",
     environment: "production",
     origin: "https://service-b.onrender.com",
+    expected_previous_commit: BASE,
     health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
   };
   ticket.release_manifest_binding.services.push(serviceB);
@@ -621,6 +633,78 @@ function strictStagingDeployFetch({
     if (url === "https://service-a.onrender.com/healthz") {
       return jsonResponse(serviceHealth("service-a", {
         build: { build_id: "build-service-a", commit_sha: HEAD, commit_verifiable: true },
+      }));
+    }
+    return fallback(url, init);
+  };
+}
+
+function strictProductionDeployTicket() {
+  const ticket = mergeTicket({
+    services: [
+      {
+        service_id: "service-a",
+        environment: "production",
+        origin: "https://service-a.onrender.com",
+        expected_previous_commit: BASE,
+        target_commit: HEAD,
+        health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      },
+      {
+        service_id: "service-b",
+        environment: "production",
+        origin: "https://service-b.onrender.com",
+        expected_previous_commit: ALTERNATE,
+        target_commit: ALTERNATE,
+        health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      },
+    ],
+  });
+  ticket.release_manifest_binding.base_branch = "main";
+  ticket.release_manifest_binding.delivery_branch = "main";
+  ticket.release_manifest_binding.verification.required_checks =
+    [...STRICT_POLICY.required_checks];
+  ticket.release_join_resolution.required_checks_policy_digest = STRICT_POLICY_DIGEST;
+  ticket.release_join_resolution_digest = hostNativeDigest(ticket.release_join_resolution);
+  ticket.action = {
+    kind: "render.deploy",
+    repository: "owner/repo",
+    branch: "main",
+    base_branch: "main",
+    service_id: "service-a",
+    environment: "production",
+    source_commit: HEAD,
+    target_commit: HEAD,
+    expected_base_commit: BASE,
+    expected_live_commit: BASE,
+    provider_execution: false,
+  };
+  return ticket;
+}
+
+function strictProductionDeployFetch({ ticket = strictProductionDeployTicket() } = {}) {
+  const fallback = strictFetch({
+    ticket,
+    workflowById: new Map([[700, strictWorkflow({
+      event: "push",
+      head_branch: "main",
+      pull_requests: [],
+    })]]),
+  });
+  return async (url, init) => {
+    const root = "https://api.github.com/repos/owner/repo";
+    if (url === `${root}/git/ref/heads/main`) {
+      return jsonResponse({ object: { sha: HEAD } });
+    }
+    if (url === `${root}/git/commits/${HEAD}`) return jsonResponse({ sha: HEAD });
+    if (url === "https://service-a.onrender.com/healthz") {
+      return jsonResponse(serviceHealth("service-a", {
+        build: { build_id: "current-service-a", commit_sha: HEAD, commit_verifiable: true },
+      }));
+    }
+    if (url === "https://service-b.onrender.com/healthz") {
+      return jsonResponse(serviceHealth("service-b", {
+        build: { build_id: "current-service-b", commit_sha: ALTERNATE, commit_verifiable: true },
       }));
     }
     return fallback(url, init);
@@ -1563,6 +1647,76 @@ test("external readback binds previous-live evidence from the persisted action t
   }
 });
 
+test("production deploy readback keeps a non-selected service at its exact manifest target", async () => {
+  const ticket = strictProductionDeployTicket();
+  const verify = createHostNativeExternalReadbackVerifier({
+    fetchImpl: strictProductionDeployFetch({ ticket }),
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+  });
+  const readback = await verify({ ticket, target_commit: HEAD });
+  assert.equal(readback.github.target_commit, HEAD);
+  assert.equal(readback.github.rollback_commit, BASE);
+  assert.deepEqual(
+    readback.services.map((service) => ({
+      service_id: service.service_id,
+      live_commit: service.live_commit,
+      previous_live_commit: service.previous_live_commit,
+      rollback_commit: service.rollback_commit,
+    })),
+    [
+      {
+        service_id: "service-a",
+        live_commit: HEAD,
+        previous_live_commit: BASE,
+        rollback_commit: BASE,
+      },
+      {
+        service_id: "service-b",
+        live_commit: ALTERNATE,
+        previous_live_commit: ALTERNATE,
+        rollback_commit: BASE,
+      },
+    ],
+  );
+});
+
+test("production deploy readback rejects a null target for any non-selected service", async () => {
+  const ticket = strictProductionDeployTicket();
+  ticket.release_manifest_binding.services.find((service) =>
+    service.service_id === "service-b").target_commit = null;
+  await assert.rejects(
+    createHostNativeExternalReadbackVerifier({
+      fetchImpl: strictProductionDeployFetch({ ticket }),
+      requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    })({ ticket, target_commit: HEAD }),
+    /trusted_readback_services_invalid/,
+  );
+});
+
+test("production deploy final readback requires the exact ReleaseJoin policy", async (t) => {
+  await t.test("missing policy resolver", async () => {
+    const ticket = strictProductionDeployTicket();
+    await assert.rejects(
+      createHostNativeExternalReadbackVerifier({
+        fetchImpl: strictProductionDeployFetch({ ticket }),
+      })({ ticket, target_commit: HEAD }),
+      /trusted_readback_required_checks_policy_unavailable/,
+    );
+  });
+  await t.test("substituted persisted digest", async () => {
+    const ticket = strictProductionDeployTicket();
+    ticket.release_join_resolution.required_checks_policy_digest = "0".repeat(64);
+    ticket.release_join_resolution_digest = hostNativeDigest(ticket.release_join_resolution);
+    await assert.rejects(
+      createHostNativeExternalReadbackVerifier({
+        fetchImpl: strictProductionDeployFetch({ ticket }),
+        requiredChecksPolicyResolver: async () => STRICT_POLICY,
+      })({ ticket, target_commit: HEAD }),
+      /trusted_readback_required_checks_policy_mismatch/,
+    );
+  });
+});
+
 test("post-action compact commit identity readback remains size-bounded", async (t) => {
   const ticket = mergeTicket();
   const repositoryRoot = "https://api.github.com/repos/owner/repo";
@@ -2105,6 +2259,102 @@ function releaseJoinFetch({
   };
 }
 
+function productionDeployJoinRequest(overrides = {}) {
+  const serviceA = {
+    service_id: "service-a",
+    environment: "production",
+    origin: "https://service-a.onrender.com",
+    expected_previous_commit: BASE,
+    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  };
+  const serviceB = {
+    service_id: "service-b",
+    environment: "production",
+    origin: "https://service-b.onrender.com",
+    expected_previous_commit: ALTERNATE,
+    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  };
+  return releaseJoinRequest({
+    required_checks: [...STRICT_POLICY.required_checks],
+    required_checks_policy_digest: STRICT_POLICY_DIGEST,
+    delivery_services: [serviceA, serviceB],
+    action: {
+      kind: "render.deploy",
+      repository: "owner/repo",
+      branch: "main",
+      base_branch: "main",
+      service_id: "service-a",
+      environment: "production",
+      source_commit: HEAD,
+      target_commit: HEAD,
+      expected_base_commit: BASE,
+      expected_live_commit: BASE,
+      provider_execution: false,
+    },
+    ...overrides,
+  });
+}
+
+function productionDeployJoinFetch({
+  refSha = HEAD,
+  treeSha = TREE,
+  compareFiles = [{ filename: RELEASE_CHANGED_FILES[0], status: "modified" }],
+  workflow = strictWorkflow({
+    event: "push",
+    head_branch: "main",
+    pull_requests: [],
+  }),
+} = {}) {
+  return async (url) => {
+    const root = "https://api.github.com/repos/owner/repo";
+    if (url === `${root}/git/commits/${HEAD}`) {
+      return jsonResponse({ sha: HEAD, tree: { sha: treeSha } });
+    }
+    if (url === `${root}/commits/${HEAD}/check-runs?per_page=100`) {
+      return jsonResponse(strictChecks());
+    }
+    if (url === `${root}/actions/runs/700`) return jsonResponse(workflow);
+    if ([
+      `${root}/contents/.github/workflows/nyra-core-intelligence.yml?ref=${BASE}`,
+      `${root}/contents/.github/workflows/nyra-core-intelligence.yml?ref=${HEAD}`,
+    ].includes(url)) {
+      return jsonResponse({
+        type: "file",
+        path: ".github/workflows/nyra-core-intelligence.yml",
+        encoding: "base64",
+        content: Buffer.from(WORKFLOW_SOURCE).toString("base64"),
+      });
+    }
+    if (url === `${root}/git/ref/heads/main`) {
+      return jsonResponse({ object: { sha: refSha } });
+    }
+    if (url === `${root}/compare/${BASE}...${HEAD}?per_page=10&page=1`) {
+      return jsonResponse({
+        status: "ahead",
+        ahead_by: 1,
+        behind_by: 0,
+        total_commits: 1,
+        base_commit: { sha: BASE },
+        merge_base_commit: { sha: BASE },
+        head_commit: { sha: HEAD, commit: { tree: { sha: treeSha } } },
+        commits: [{ sha: HEAD }],
+        files: compareFiles,
+      });
+    }
+    if (url === "https://service-a.onrender.com/healthz") {
+      return jsonResponse(serviceHealth("service-a", {
+        build: { build_id: "previous-service-a", commit_sha: BASE, commit_verifiable: true },
+      }));
+    }
+    if (url === "https://service-b.onrender.com/healthz") {
+      return jsonResponse(serviceHealth("service-b", {
+        build: { build_id: "previous-service-b", commit_sha: ALTERNATE, commit_verifiable: true },
+      }));
+    }
+    throw new Error(`unexpected URL: ${url}`);
+  };
+}
+
 test("release-join resolver independently proves exact pre-merge GitHub state", async () => {
   const calls = [];
   const credentialRequests = [];
@@ -2185,6 +2435,72 @@ test("release-join resolver independently proves exact pre-merge GitHub state", 
     pre_action_readback_digest: resolution.pre_action_readback_digest,
     provider_execution: false,
   });
+});
+
+test("production deploy release-join proves exact push source and mixed previous-live state", async () => {
+  const resolver = createHostNativeReleaseJoinVerdictResolver({
+    fetchImpl: productionDeployJoinFetch(),
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    now: () => Date.parse(VERIFIED_AT),
+  });
+  const resolution = await resolver(productionDeployJoinRequest());
+  assert.match(resolution.required_checks_policy_digest, /^[a-f0-9]{64}$/);
+  assert.equal(resolution.source_attestation.evidence_kind, "github_compare_files");
+  assert.equal(resolution.source_attestation.pull_request, null);
+  assert.equal(resolution.source_attestation.base_commit, BASE);
+  assert.equal(resolution.source_attestation.head_commit, HEAD);
+  assert.equal(resolution.source_attestation.tree_sha, TREE);
+  assert.deepEqual(
+    resolution.previous_live_attestations.map(({ service_id, live_commit }) => ({
+      service_id,
+      live_commit,
+    })),
+    [
+      { service_id: "service-a", live_commit: BASE },
+      { service_id: "service-b", live_commit: ALTERNATE },
+    ],
+  );
+});
+
+test("production deploy release-join fails closed on source, compare, or workflow drift", async (t) => {
+  const resolve = (request, fetchImpl) => createHostNativeReleaseJoinVerdictResolver({
+    fetchImpl,
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+  })(request);
+  await t.test("missing required-check policy resolver", async () => assert.rejects(
+    createHostNativeReleaseJoinVerdictResolver({
+      fetchImpl: productionDeployJoinFetch(),
+    })(productionDeployJoinRequest()),
+    /required_checks_policy_unavailable/,
+  ));
+  await t.test("Core-bound required-check policy digest", async () => assert.rejects(
+    resolve(productionDeployJoinRequest({
+      required_checks_policy_digest: "0".repeat(64),
+    }), productionDeployJoinFetch()),
+    /required_checks_policy_mismatch/,
+  ));
+  await t.test("main ref", async () => assert.rejects(
+    resolve(productionDeployJoinRequest(), productionDeployJoinFetch({ refSha: ALTERNATE })),
+    /release_join_verdict_source_attestation_mismatch/,
+  ));
+  await t.test("compare file set", async () => assert.rejects(
+    resolve(productionDeployJoinRequest(), productionDeployJoinFetch({
+      compareFiles: [{ filename: "forbidden/hidden.js", status: "added" }],
+    })),
+    /release_join_verdict_changed_files_mismatch/,
+  ));
+  await t.test("workflow event", async () => assert.rejects(
+    resolve(productionDeployJoinRequest(), productionDeployJoinFetch({
+      workflow: strictWorkflow(),
+    })),
+    /workflow_run_mismatch/,
+  ));
+  await t.test("source commit", async () => assert.rejects(
+    resolve(productionDeployJoinRequest({
+      action: { ...productionDeployJoinRequest().action, source_commit: ALTERNATE },
+    }), productionDeployJoinFetch()),
+    /workflow_source_commit_mismatch|release_join_verdict_action_invalid/,
+  ));
 });
 
 test("release-join compact commit readback preserves fail-closed boundaries", async (t) => {

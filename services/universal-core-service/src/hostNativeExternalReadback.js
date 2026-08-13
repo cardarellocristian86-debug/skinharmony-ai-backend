@@ -17,6 +17,15 @@ const MAX_PULL_REQUEST_FILES = 2_000;
 const MAX_PULL_REQUEST_FILE_PAGES = Math.ceil(
   MAX_PULL_REQUEST_FILES / GITHUB_PULL_FILES_PAGE_SIZE,
 );
+const GITHUB_COMPARE_COMMITS_PAGE_SIZE = 10;
+const MAX_COMPARE_COMMITS = 2_000;
+const MAX_COMPARE_COMMIT_PAGES = Math.ceil(
+  MAX_COMPARE_COMMITS / GITHUB_COMPARE_COMMITS_PAGE_SIZE,
+);
+// GitHub exposes at most 300 changed files on a compare response.  Treat a
+// response at that boundary as potentially truncated instead of authorizing a
+// release from an incomplete path set.
+const MAX_COMPLETE_COMPARE_FILES = 299;
 
 function error(code) {
   throw new Error(code);
@@ -618,7 +627,15 @@ function validateMergePullRequest(pull, action, repository, targetCommit, { merg
   return matches;
 }
 
-function healthAttestation({ service, origin, health, liveCommit, rollbackCommit, previous = false }) {
+function healthAttestation({
+  service,
+  origin,
+  health,
+  liveCommit,
+  previousLiveCommit = null,
+  rollbackCommit,
+  previous = false,
+}) {
   const matches = (
     health?.ok === true && health?.render_ready === true &&
     health?.build?.commit_verifiable === true && sha(health?.build?.commit_sha) === liveCommit &&
@@ -641,6 +658,7 @@ function healthAttestation({ service, origin, health, liveCommit, rollbackCommit
     health_contract_digest: service.health_contract_digest,
   };
   if (!previous) {
+    unsigned.previous_live_commit = previousLiveCommit;
     unsigned.rollback_commit = rollbackCommit;
     unsigned.rollback_status = "previous_live_attested";
   }
@@ -797,6 +815,19 @@ export function createHostNativeExternalReadbackVerifier({
         ticket.predecessor.source_required_checks_policy_digest) {
       error("required_checks_policy_mismatch");
     }
+    const productionDeploy = action.kind === "render.deploy" && action.environment === "production";
+    if (productionDeploy) {
+      const joinedPolicyDigest = string(
+        ticket?.release_join_resolution?.required_checks_policy_digest,
+      );
+      if (!/^[a-f0-9]{64}$/.test(joinedPolicyDigest) ||
+          !checks.required_checks_policy_digest) {
+        error("trusted_readback_required_checks_policy_unavailable");
+      }
+      if (checks.required_checks_policy_digest !== joinedPolicyDigest) {
+        error("trusted_readback_required_checks_policy_mismatch");
+      }
+    }
     let mergeCommit = null;
     let branch = null;
     let branchCommit = null;
@@ -856,12 +887,19 @@ export function createHostNativeExternalReadbackVerifier({
     if (sha(rollback?.sha) !== rollbackCommit) error("trusted_readback_rollback_unavailable");
     const sourceServices = Array.isArray(binding?.services) ? binding.services : [];
     if (!mergeOnly && sourceServices.length < 1) error("trusted_readback_services_invalid");
+    const exactProductionTargets = productionDeploy;
+    if (exactProductionTargets && sourceServices.some((service) => !sha(service?.target_commit))) {
+      error("trusted_readback_services_invalid");
+    }
     const services = [];
     for (const service of mergeOnly ? [] : sourceServices) {
       const origin = originForHealth(service?.origin);
       const prior = expectedPrevious(ticket, service);
+      const serviceTargetCommit = sha(service?.target_commit) ||
+        (exactProductionTargets ? null : targetCommit);
       if (
-        !prior || sha(prior.live_commit) !== rollbackCommit ||
+        !prior || sha(prior.live_commit) !== sha(service?.expected_previous_commit) ||
+        !serviceTargetCommit ||
         string(prior.health_contract_digest) !== string(service.health_contract_digest)
       ) {
         error("trusted_readback_render_health_mismatch");
@@ -876,7 +914,8 @@ export function createHostNativeExternalReadbackVerifier({
         service,
         origin,
         health,
-        liveCommit: targetCommit,
+        liveCommit: serviceTargetCommit,
+        previousLiveCommit: sha(prior.live_commit),
         rollbackCommit,
       }));
     }
@@ -942,6 +981,77 @@ function sourceFilesEqual(actual, expected) {
   return sameStrings(actual, expected);
 }
 
+function sourceFileNames(items, code) {
+  if (!Array.isArray(items)) error(code);
+  const files = [];
+  for (const item of items) {
+    if (string(item?.filename)) files.push(string(item.filename));
+    if (string(item?.previous_filename)) files.push(string(item.previous_filename));
+  }
+  return files;
+}
+
+async function attestCompareSource({
+  getGithub,
+  repository,
+  baseCommit,
+  headCommit,
+  treeSha,
+  expectedFiles,
+}) {
+  const encodedRange = `${baseCommit}...${headCommit}`;
+  let first = null;
+  let fileNames = null;
+  let observedCommits = 0;
+  for (let page = 1; page <= MAX_COMPARE_COMMIT_PAGES; page += 1) {
+    const response = await getGithub(
+      `/compare/${encodedRange}?per_page=${GITHUB_COMPARE_COMMITS_PAGE_SIZE}&page=${page}`,
+    );
+    if (!response || typeof response !== "object" || Array.isArray(response)) {
+      error("release_join_verdict_source_attestation_mismatch");
+    }
+    if (page === 1) {
+      first = response;
+      if (
+        sha(response?.base_commit?.sha) !== baseCommit ||
+        sha(response?.merge_base_commit?.sha) !== baseCommit ||
+        sha(response?.head_commit?.sha) !== headCommit ||
+        sha(response?.head_commit?.commit?.tree?.sha) !== treeSha ||
+        response?.status !== "ahead" ||
+        Number(response?.behind_by) !== 0 ||
+        !Number.isSafeInteger(Number(response?.ahead_by)) || Number(response.ahead_by) < 1 ||
+        !Number.isSafeInteger(Number(response?.total_commits)) ||
+        Number(response.total_commits) !== Number(response.ahead_by) ||
+        !Array.isArray(response?.files) || response.files.length > MAX_COMPLETE_COMPARE_FILES
+      ) {
+        error("release_join_verdict_source_attestation_mismatch");
+      }
+      fileNames = sourceFileNames(
+        response.files,
+        "release_join_verdict_changed_files_mismatch",
+      );
+    } else if (response?.files !== undefined && response.files !== null) {
+      error("release_join_verdict_source_attestation_mismatch");
+    }
+    const commits = Array.isArray(response?.commits) ? response.commits : null;
+    if (!commits) error("release_join_verdict_source_attestation_mismatch");
+    observedCommits += commits.length;
+    if (observedCommits > MAX_COMPARE_COMMITS) {
+      error("release_join_verdict_source_attestation_mismatch");
+    }
+    if (commits.length < GITHUB_COMPARE_COMMITS_PAGE_SIZE) break;
+    if (page === MAX_COMPARE_COMMIT_PAGES) {
+      error("release_join_verdict_source_attestation_mismatch");
+    }
+  }
+  if (
+    !first || observedCommits !== Number(first.total_commits) ||
+    !sourceFilesEqual(fileNames, expectedFiles)
+  ) {
+    error("release_join_verdict_changed_files_mismatch");
+  }
+}
+
 /**
  * Independently attests the pre-merge source and the previous live deployment
  * used by a Core-join verdict.  This is deliberately separate from the
@@ -974,6 +1084,7 @@ export function createHostNativeReleaseJoinVerdictResolver({
     const treeSha = sha(source.tree_sha);
     const checksCommit = sha(request.checks_commit);
     const baseBranch = string(action.base_branch || action.branch);
+    const productionDeploy = action.kind === "render.deploy" && action.environment === "production";
     if (!tenantId || !headCommit || !baseCommit || !treeSha || !checksCommit || !baseBranch || checksCommit !== headCommit) {
       error("release_join_verdict_source_attestation_mismatch");
     }
@@ -992,7 +1103,7 @@ export function createHostNativeReleaseJoinVerdictResolver({
     if (sha(commit?.sha) !== headCommit || sha(commit?.tree?.sha) !== treeSha) {
       error("release_join_verdict_source_attestation_mismatch");
     }
-    await attestChecks({
+    const checks = await attestChecks({
       getGithub,
       tenantId,
       repository,
@@ -1005,33 +1116,69 @@ export function createHostNativeReleaseJoinVerdictResolver({
       workflowRunCache,
       workflowSourceCache,
     });
-    if (action.kind !== "github.merge") error("release_join_verdict_action_invalid");
-    const pull = await getGithub(`/pulls/${Number(action.pull_request)}`);
-    if (!validateMergePullRequest(pull, action, repository, null, { merged: false })) {
-      error("release_join_verdict_pull_request_mismatch");
+    if (productionDeploy) {
+      const requiredChecksPolicyDigest = string(request.required_checks_policy_digest);
+      if (!/^[a-f0-9]{64}$/.test(requiredChecksPolicyDigest) ||
+          !checks.required_checks_policy_digest) {
+        error("required_checks_policy_unavailable");
+      }
+      if (checks.required_checks_policy_digest !== requiredChecksPolicyDigest) {
+        error("required_checks_policy_mismatch");
+      }
     }
-    const files = [];
-    let fileEntries = 0;
-    for (let page = 1; page <= MAX_PULL_REQUEST_FILE_PAGES; page += 1) {
-      const response = await getGithub(
-        `/pulls/${Number(action.pull_request)}/files?per_page=${GITHUB_PULL_FILES_PAGE_SIZE}&page=${page}`,
-      );
-      if (!Array.isArray(response)) error("release_join_verdict_changed_files_mismatch");
-      for (const item of response) {
-        fileEntries += 1;
+    let evidenceKind;
+    let pullRequest = null;
+    if (action.kind === "github.merge") {
+      const pull = await getGithub(`/pulls/${Number(action.pull_request)}`);
+      if (!validateMergePullRequest(pull, action, repository, null, { merged: false })) {
+        error("release_join_verdict_pull_request_mismatch");
+      }
+      const files = [];
+      let fileEntries = 0;
+      for (let page = 1; page <= MAX_PULL_REQUEST_FILE_PAGES; page += 1) {
+        const response = await getGithub(
+          `/pulls/${Number(action.pull_request)}/files?per_page=${GITHUB_PULL_FILES_PAGE_SIZE}&page=${page}`,
+        );
+        if (!Array.isArray(response)) error("release_join_verdict_changed_files_mismatch");
+        fileEntries += response.length;
         if (fileEntries > MAX_PULL_REQUEST_FILES) {
           error("release_join_verdict_changed_files_mismatch");
         }
-        if (string(item?.filename)) files.push(string(item.filename));
-        if (string(item?.previous_filename)) files.push(string(item.previous_filename));
+        files.push(...sourceFileNames(response, "release_join_verdict_changed_files_mismatch"));
+        if (response.length < GITHUB_PULL_FILES_PAGE_SIZE) break;
+        if (page === MAX_PULL_REQUEST_FILE_PAGES) {
+          error("release_join_verdict_changed_files_mismatch");
+        }
       }
-      if (response.length < GITHUB_PULL_FILES_PAGE_SIZE) break;
-      if (page === MAX_PULL_REQUEST_FILE_PAGES) {
+      if (!sourceFilesEqual(files, source.changed_files)) {
         error("release_join_verdict_changed_files_mismatch");
       }
-    }
-    if (!sourceFilesEqual(files, source.changed_files)) {
-      error("release_join_verdict_changed_files_mismatch");
+      evidenceKind = "github_pull_request_files";
+      pullRequest = Number(action.pull_request);
+    } else if (productionDeploy) {
+      if (
+        !validBranch(action.branch) || action.branch !== baseBranch ||
+        sha(action.source_commit) !== headCommit ||
+        sha(action.target_commit) !== headCommit ||
+        sha(action.expected_base_commit) !== baseCommit
+      ) error("release_join_verdict_action_invalid");
+      const ref = await getGithub(
+        `/git/ref/heads/${encodeURIComponent(action.branch).replace(/%2F/g, "/")}`,
+      );
+      if (sha(ref?.object?.sha) !== headCommit) {
+        error("release_join_verdict_source_attestation_mismatch");
+      }
+      await attestCompareSource({
+        getGithub,
+        repository,
+        baseCommit,
+        headCommit,
+        treeSha,
+        expectedFiles: source.changed_files,
+      });
+      evidenceKind = "github_compare_files";
+    } else {
+      error("release_join_verdict_action_invalid");
     }
     const delivery = Array.isArray(request.delivery_services) ? request.delivery_services : [];
     if (delivery.length < 1) error("release_join_verdict_previous_live_mismatch");
@@ -1059,8 +1206,8 @@ export function createHostNativeReleaseJoinVerdictResolver({
     const sourceUnsigned = {
       schema_version: "host_native_source_attestation_v1",
       repository,
-      evidence_kind: "github_pull_request_files",
-      pull_request: Number(action.pull_request),
+      evidence_kind: evidenceKind,
+      pull_request: pullRequest,
       base_commit: baseCommit,
       head_commit: headCommit,
       tree_sha: treeSha,
@@ -1092,6 +1239,9 @@ export function createHostNativeReleaseJoinVerdictResolver({
       source_attestation,
       previous_live_attestations,
       pre_action_readback_digest,
+      ...(productionDeploy ? {
+        required_checks_policy_digest: checks.required_checks_policy_digest,
+      } : {}),
       provider_execution: false,
     };
   };

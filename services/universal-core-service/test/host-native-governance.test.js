@@ -105,6 +105,10 @@ function trustedExternalReadback(
     observed_checks: observedChecks,
     rollback_commit: binding.rollback.target_commit,
     rollback_commit_available: true,
+    ...(action.kind === "render.deploy" && action.environment === "production" ? {
+      required_checks_policy_digest:
+        ticket.release_join_resolution.required_checks_policy_digest,
+    } : {}),
     ...(observeAction ? {
       source_action_kind: sourceAction.kind,
       predecessor_ticket_id: ticket.predecessor.ticket_id,
@@ -121,10 +125,11 @@ function trustedExternalReadback(
       origin: expected.origin,
       health_path: "/healthz",
       deployment_id: `dep-${expected.service_id}`,
-      live_commit: targetCommit,
+      live_commit: expected.target_commit || targetCommit,
       version: "test-1.0.0",
       health_status: "healthy",
       health_contract_digest: expected.health_contract_digest,
+      previous_live_commit: expected.expected_previous_commit,
       rollback_commit: binding.rollback.target_commit,
       rollback_status: "previous_live_attested",
     };
@@ -207,6 +212,9 @@ function trustedJoinResolution(request, clock) {
       source_attestation: sourceAttestation,
       previous_live_attestations: previousLiveAttestations,
     }),
+    ...(request.action.kind === "render.deploy" && request.action.environment === "production" ? {
+      required_checks_policy_digest: request.required_checks_policy_digest || H("7"),
+    } : {}),
     provider_execution: false,
   };
 }
@@ -1787,9 +1795,12 @@ test("protected push, Render deploy/rollback, and linked observation each requir
     kind: "render.deploy",
     repository: "owner/repo",
     branch: "main",
+    base_branch: "main",
+    source_commit: G("4"),
     service_id: "srv-core",
     environment: "production",
     target_commit: G("4"),
+    expected_base_commit: G("1"),
     expected_live_commit: G("1"),
     trigger: "manual",
     health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
@@ -1798,6 +1809,159 @@ test("protected push, Render deploy/rollback, and linked observation each requir
   };
   const deployed = await finalizeExact(deploySubject, deployAction, deployManifest);
   assert.equal(deployed.receipt.live_services[0].live_commit, G("4"));
+
+  const mixedDeployManifest = releaseManifestInput({
+    delivery: {
+      method: "manual_render_deploy",
+      services: [
+        {
+          service_id: "srv-core",
+          environment: "production",
+          expected_previous_commit: G("1"),
+          target_commit: G("4"),
+          target_resolution: "exact_commit",
+          health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        },
+        {
+          service_id: "srv-already-live",
+          environment: "production",
+          expected_previous_commit: G("2"),
+          target_commit: G("2"),
+          target_resolution: "exact_commit",
+          health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        },
+      ],
+    },
+  });
+  const mixed = await finalizeExact(harness(), deployAction, mixedDeployManifest);
+  assert.equal(mixed.receipt.github_readback.rollback_commit, G("1"));
+  assert.deepEqual(
+    mixed.receipt.live_services.map((service) => ({
+      service_id: service.service_id,
+      live_commit: service.live_commit,
+      previous_live_commit: service.previous_live_commit,
+      rollback_commit: service.rollback_commit,
+    })),
+    [
+      {
+        service_id: "srv-core",
+        live_commit: G("4"),
+        previous_live_commit: G("1"),
+        rollback_commit: G("1"),
+      },
+      {
+        service_id: "srv-already-live",
+        live_commit: G("2"),
+        previous_live_commit: G("2"),
+        rollback_commit: G("1"),
+      },
+    ],
+  );
+
+  const wrongPreviousSubject = harness({
+    externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) => {
+      const readback = trustedExternalReadback(
+        ticket,
+        target_commit,
+        "2026-07-29T10:00:00.000Z",
+        verification_scope,
+      );
+      readback.services.find((service) =>
+        service.service_id === "srv-already-live").previous_live_commit = G("1");
+      return redigestTrustedReadback(readback);
+    },
+  });
+  await assert.rejects(
+    finalizeExact(wrongPreviousSubject, deployAction, mixedDeployManifest),
+    /trusted_readback_service_mismatch/,
+  );
+
+  const substitutedPolicySubject = harness({
+    externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) => {
+      const readback = trustedExternalReadback(
+        ticket,
+        target_commit,
+        "2026-07-29T10:00:00.000Z",
+        verification_scope,
+      );
+      readback.github.required_checks_policy_digest = H("8");
+      return redigestTrustedReadback(readback);
+    },
+  });
+  await assert.rejects(
+    finalizeExact(substitutedPolicySubject, deployAction, mixedDeployManifest),
+    /trusted_readback_github_mismatch/,
+  );
+
+  for (const [name, mutate] of [
+    ["branch", (action) => { action.branch = "agent/release"; }],
+    ["source commit", (action) => { delete action.source_commit; }],
+    ["base branch", (action) => { delete action.base_branch; }],
+    ["expected base", (action) => { delete action.expected_base_commit; }],
+    ["rollback", (action) => { action.rollback_commit = G("2"); }],
+    ["health contract", (action) => { action.health_contract_digest = H("0"); }],
+  ]) {
+    await t.test(`production deploy rejects mismatched ${name}`, async () => {
+      const invalidAction = structuredClone(deployAction);
+      mutate(invalidAction);
+      await assert.rejects(
+        finalizeExact(harness(), invalidAction, deployManifest),
+        /release_manifest_action_mismatch|branch_not_allowed/,
+      );
+    });
+  }
+  await t.test("production deploy target cannot drift with its selected service", async () => {
+    const driftManifest = releaseManifestInput({
+      delivery: {
+        method: "manual_render_deploy",
+        services: [{
+          service_id: "srv-core",
+          environment: "production",
+          expected_previous_commit: G("1"),
+          target_commit: G("5"),
+          target_resolution: "exact_commit",
+          health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        }],
+      },
+    });
+    await assert.rejects(
+      finalizeExact(harness(), {
+        ...deployAction,
+        source_commit: G("5"),
+        target_commit: G("5"),
+      }, driftManifest),
+      /release_manifest_action_mismatch/,
+    );
+  });
+  await t.test("production deploy requires an exact target for every service", async () => {
+    const nullTargetManifest = releaseManifestInput({
+      delivery: {
+        method: "manual_render_deploy",
+        services: [
+          {
+            service_id: "srv-core",
+            environment: "production",
+            expected_previous_commit: G("1"),
+            target_commit: G("4"),
+            target_resolution: "exact_commit",
+            health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+          },
+          {
+            service_id: "srv-unresolved",
+            environment: "production",
+            expected_previous_commit: G("2"),
+            target_commit: null,
+            target_resolution: "post_merge_readback",
+            health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+          },
+        ],
+      },
+    });
+    await assert.rejects(
+      finalizeExact(harness(), deployAction, nullTargetManifest),
+      /release_manifest_action_mismatch/,
+    );
+  });
 
   const stagingSubject = harness();
   const stagingManifest = releaseManifestInput({
@@ -2704,9 +2868,12 @@ test("Render deploy predecessor requires a current trusted merge finalization bo
       kind: "render.deploy",
       repository: "owner/repo",
       branch: "main",
+      base_branch: "main",
+      source_commit: G("4"),
       service_id: "srv-core",
       environment: "production",
       target_commit: G("4"),
+      expected_base_commit: G("1"),
       expected_live_commit: G("1"),
       trigger: "manual",
       health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
@@ -2791,10 +2958,15 @@ test("Render deploy predecessor rejects stale, tampered, and target-mismatched f
           kind: "render.deploy",
           repository: "owner/repo",
           branch: "main",
+          base_branch: "main",
+          source_commit: targetCommit,
           service_id: "srv-core",
           environment: "production",
           target_commit: targetCommit,
+          expected_base_commit: G("1"),
           expected_live_commit: G("1"),
+          health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+          rollback_commit: G("1"),
           provider_execution: false,
         },
         evidence_digest: H("7"),
