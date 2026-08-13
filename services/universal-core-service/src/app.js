@@ -2,7 +2,6 @@ import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import pg from "pg";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { runUniversalCore } from "../../../universal-core/packages/core/src/index.ts";
@@ -10,31 +9,8 @@ import { mapFlowCoreToUniversal } from "../../../universal-core/packages/branche
 import { runTextBranch } from "../../../universal-core/packages/branches/ramo-testo/src/index.ts";
 import { runNiraUniversalCoreBridge } from "../../../universal-core/tools/nira-universal-core-bridge.ts";
 import { buildDeepNyraRuntime } from "./deepNyraRuntime.js";
-import { createNyraDeepBranchV2Client } from "./nyraDeepBranchV2Client.js";
-import {
-  createNyraDeepBranchV2Attester,
-  NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_BUNDLE_SCHEMA_VERSION,
-  NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_ISSUER,
-  NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_SCHEMA_VERSION,
-} from "./nyraDeepBranchV2Attestation.js";
-import { createNyraDeepV2EvidenceLedger } from "./nyraDeepV2EvidenceLedger.js";
-import { createNyraDeepV2SourceVerifier } from "./nyraDeepV2SourceVerification.js";
-import { createNyraPolicyRegistryStore, createPostgresNyraPolicyRegistryStore } from "./nyraPolicyRegistryStore.js";
-import { validatePolicySnapshot } from "./nyraPolicyRegistry.js";
-import { createNyraPolicyRegistryProofService } from "./nyraPolicyRegistryProofService.js";
-import { createNyraPolicyRegistryCompilerProvenanceVerifier } from "./nyraPolicyRegistryCompilerProvenance.js";
-import {
-  createNyraPolicyRegistryClient,
-  createNyraPolicyRegistryCoordinator,
-} from "./nyraPolicyRegistryCoordinator.js";
-import { createNyraPolicyRegistryCoreRemoteSigner } from "./nyraPolicyRegistryCoreRemoteSigner.js";
-import {
-  createNyraDeepV2McpRequestVerifier,
-  nyraDeepV2EvidencePackHash,
-  nyraDeepV2StableJson,
-} from "./nyraDeepV2McpRequest.js";
 import { createAudit, ensureDir } from "./audit.js";
-import { createKeyStore, isMcpTenantGatewayRecord, isProviderSetupLinkServiceRecord } from "./keyStore.js";
+import { createKeyStore } from "./keyStore.js";
 import { createSetupTokenStore } from "./setupTokenStore.js";
 import { detectLanguageGuardIssues, supportedLanguageGuardLocales } from "./languageGuard.js";
 import { hasScope, requireTenantAccess, KEY_PRESETS, SCOPES } from "./scope.js";
@@ -47,11 +23,6 @@ import {
   deterministicBranchTaxonomy,
   resolveBranchesForKey,
 } from "../branches/index.js";
-import { resolveOwnerTenantBranchProfile } from "./ownerTenantBranchProfile.js";
-import {
-  listOrchestrationCapabilities,
-  listVirtualOrchestrationCombinations,
-} from "../branches/orchestration-capability-catalog.js";
 import { buildSuitePolicy } from "./suitePolicy.js";
 import { getTenantPolicy } from "./tenantRegistry.js";
 import { checkDomainPackRequest, listDomainPacks, publicDomainPack, resolveDomainPackForKey } from "./domainPacks.js";
@@ -80,16 +51,6 @@ import {
 } from "./softwareLanguageGate.js";
 import { buildWorkPreflight } from "./workPreflight.js";
 import {
-  AI_WORK_FAILURE_DISPOSITION,
-  aiWorkQualityEvidenceBindingReference,
-  verifyAiWorkQualityObservation,
-} from "../../shared/ai-work-quality-failure.js";
-import {
-    validateWorkPreflightEnvelope,
-  workPreflightFailure,
-} from "../../shared/work-preflight-gate.mjs";
-import { mediateFailureObservation } from "../../shared/ai-work-quality-failure-mediation.mjs";
-import {
   analyzeScenarios,
   evaluateCounterfactuals,
   evaluateEvents,
@@ -101,14 +62,10 @@ import {
 } from "./intelligenceEngine.js";
 import { buildActionAuthorization } from "./actionAuthorization.js";
 import { applyActionRiskProfile, classifyActionRisk } from "./actionRisk.js";
-import {
-  isProviderSetupLinkBindingAttempt,
-  providerSetupLinkBindingApprovalDigest,
-  providerSetupLinkBindingAuditFields,
-} from "./providerSetupLinkBinding.js";
 import { createCoreRuntimeWorker } from "./coreRuntimeWorker.js";
 import { createIcfKernel } from "./icfKernel.js";
 import { createIcfRuntimeFacade } from "./icfRuntimeFacade.js";
+import { createIcfPolicyProofVerifier } from "./icfPolicyProof.js";
 import { coreRuntimeHierarchyStatus, evaluateCoreRuntimeHierarchy } from "./coreRuntimeHierarchy.js";
 import {
   analyzeEmbeddedSoftwareArtifact,
@@ -116,779 +73,20 @@ import {
   MAX_EMBEDDED_ARTIFACT_BYTES,
 } from "./embeddedSoftwareIntelligence.js";
 import { buildResearchPlan, validateResearchEvidence } from "./researchCortex.js";
-import { buildCoreResearchDirective } from "./coreResearchDirective.js";
-import {
-  createResearchDistillationRuntime,
-  sourceRegistry as createResearchSourceRegistry,
-} from "./researchDistillationLayer.js";
-import {
-  createResearchAirlockRuntime,
-  RESEARCH_AIRLOCK_POLICY_VERSION,
-} from "./researchAirlock.js";
-import { createPostgresResearchAirlockStore } from "./researchAirlockStore.js";
 import {
   createUniversalSoftwareJobManager,
   issueSoftwareAuthorizationEnvelope,
   universalSoftwareComponentManifest,
 } from "./universalSoftwareIntelligence.js";
-import { createGenericAgentRuntime } from "./genericAgentRuntime.js";
-import { createGenericAgentCheckpointStore } from "./genericAgentCheckpointStore.js";
-import { evaluateGenericAgentRun } from "./genericAgentEvaluation.js";
-import { createGenericAgentOrchestrator } from "./genericAgentOrchestrator.js";
-import { createGenericAgentOrchestrationStore } from "./genericAgentOrchestrationStore.js";
-import { buildGovernedResearchWorkers, createGovernedAgentRegistry } from "./governedAgentRegistry.js";
-import { createRelationalOrchestrationSupervisor } from "./relationalOrchestrationSupervisor.js";
-import { createDynamicTaskTreeRuntime } from "./dynamicTaskTree.js";
-import {
-  buildVerificationEvidenceContract,
-  prepareVerificationEvidenceDraft,
-} from "./verificationEvidenceContract.js";
-import { createFileDynamicTaskTreeStateStore, createPostgresDynamicTaskTreeStateStore } from "./dynamicTaskTreeStateStore.js";
-import {
-  createFileDynamicTaskTreeJoinVerdictStore,
-  createPostgresDynamicTaskTreeJoinVerdictStore,
-} from "./dynamicTaskTreeJoinVerdictStore.js";
-import { mountDttAgentIdentityReceiptRoutes } from "./dttAgentIdentityReceiptRoutes.js";
-import {
-  createFileDttVerificationTrustStore,
-  createPostgresDttVerificationTrustStore,
-} from "./dttVerificationTrustStore.js";
-import {
-  createAsyncDttAgentIdentityReceiptService,
-  createFileDttAgentIdentityReceiptStore,
-  createPostgresDttAgentIdentityReceiptStore,
-} from "../../shared/dtt-agent-identity-receipts.js";
-import {
-  DTT_WORK_CONTEXT_HEADER,
-  verifyDttWorkContext,
-} from "../../shared/dtt-work-context.js";
-import {
-  GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER,
-  GENERIC_WORK_CORE_JOIN_CONTEXT_PURPOSE,
-  GENERIC_WORK_CORE_JOIN_CONTEXT_VERSION,
-  verifyGenericWorkCoreJoinContext,
-} from "../../shared/generic-work-core-join-context.js";
-import {
-  createPostgresMajorVersionProbe,
-  normalizePostgresMajorVerification,
-} from "../../shared/postgres-major-version.js";
-import {
-  assessLexicalSemanticText,
-  lexicalSemanticCatalogDescriptor,
-  listLexicalSemanticCapabilities,
-  listVirtualLexicalSemanticVariants,
-} from "../../shared/lexical-semantic-engine.mjs";
-import { createGovernedAgentActivationStore } from "./governedAgentActivationStore.js";
-import { createGovernedAgentBudgetStore } from "./governedAgentBudgetStore.js";
-import { createGovernedAgentQueueStore } from "./governedAgentQueueStore.js";
-import { createGovernedAgentPostgresQueueStore } from "./governedAgentPostgresQueueStore.js";
-import { createGovernedAgentDryRunRunner } from "./governedAgentDryRunRunner.js";
-import { mountAdminControlRoom } from "./adminControlRoom.js";
-import {
-  HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
-  HOST_NATIVE_HEALTH_CONTRACT_VERSION,
-  HOST_RELEASE_MANIFEST_VERSION,
-  buildHostNativeWorkPlan,
-  buildHostReleaseIntentV1,
-  createFileHostNativeGovernanceStore,
-  createHostNativeGovernance,
-  createHostNativeDomainSigner,
-  validateHostReleaseManifestV2,
-} from "./hostNativeGovernance.js";
-import {
-  createHostNativeExternalReadbackVerifier,
-  createHostNativeReleaseJoinVerdictResolver,
-} from "./hostNativeExternalReadback.js";
-import {
-  createGenericWorkCoreJoinAuthority,
-  createLocalGenericWorkCoreJoinSigner,
-  createGenericWorkCoreJoinVerdictVerifier,
-  genericWorkCoreJoinDigest,
-  genericWorkCoreJoinInfrastructureCode,
-  genericWorkCoreJoinSignerInfrastructureCode,
-  genericWorkCoreJoinStoreInfrastructureCode,
-  verifyGenericWorkCoreJoinDigestSignature,
-} from "./genericWorkCoreJoin.js";
-import { createGenericWorkCoreJoinRemoteSigner } from "./genericWorkCoreJoinRemoteSigner.js";
-import { createPostgresGenericWorkCoreJoinStore } from "./genericWorkCoreJoinStore.js";
-import { createPostgresBootstrapAuthorityStore } from "./bootstrapAuthorityPostgresStore.js";
-import { createBootstrapDeadlockVerdictStore } from "./bootstrapDeadlockVerdictStore.js";
-import { createBootstrapRequiredChecksReadback } from "./bootstrapRequiredChecksReadback.js";
-import { createBootstrapReleasePreparationService } from "./bootstrapReleasePreparation.js";
-import {
-  bootstrapReleaseExceptionCanonicalJson,
-  verifyLocalPinBootstrapReleaseException,
-} from "./bootstrapReleaseException.js";
-import { createPostgresCausalContinuityStore } from "./causalContinuityStore.js";
-import { createCausalContinuityRuntime } from "./causalContinuityRuntime.js";
-import { registerCausalContinuityRoutes } from "./causalContinuityRoutes.js";
-import { causalDigest, CausalContinuityError } from "./causalContinuityCanonical.js";
-import {
-  createFailClosedRenderOriginResolver,
-  createProjectScopeRenderOriginResolver,
-} from "./projectScopeRenderOriginResolver.js";
-import { loadHostNativeResolverRegistryFromEnvironment } from "./hostNativeResolverRegistry.js";
-import {
-  buildCausalBranchResult,
-  extendCausalBranchRegistry,
-  validateCausalBranchInvocation,
-} from "./causalBranchContract.js";
-import { createCausalBranchEnforcer } from "./causalBranchEnforcement.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
-const SERVICE_VERSION = "0.13.0-host-native-governance";
+const SERVICE_VERSION = "0.10.2-nyra-live-validation";
 const SERVICE_NAME = String(process.env.CORE_SERVICE_NAME || "universal-core-service").trim();
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
-const BUILD_ID = String(process.env.CORE_SERVICE_BUILD_ID || process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unavailable").trim();
-const BUILD_COMMIT_SHA =
-  String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim().toLowerCase() ||
-  null;
-const BOOTSTRAP_AUTHORITY_TRUST_PIN_SCHEMA_VERSION = "bootstrap_authority_trust_pin_v1";
-const BOOTSTRAP_AUTHORITY_TRUST_PIN_FIELDS = Object.freeze([
-  "authority_key_id",
-  "genesis_record_digest",
-  "public_key_sha256",
-  "schema_version",
-  "tenant_id",
-]);
-const BOOTSTRAP_AUTHORITY_FORBIDDEN_FIELD = /(^|_)(?:private(?:_key)?|secret|password|passphrase|credential|credentials|token|seed|mnemonic|hmac|mac|shared_key|symmetric_key|api_key|access_key|client_secret)(?:_|$)/i;
-
-function bootstrapAuthorityFail(code) {
-  throw new Error(code);
-}
-
-function bootstrapAuthorityPlainObject(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function parseBootstrapAuthorityTrustPin(raw) {
-  let pin;
-  try { pin = JSON.parse(raw); } catch { bootstrapAuthorityFail("bootstrap_authority_trust_pin_json_invalid"); }
-  if (!bootstrapAuthorityPlainObject(pin)) bootstrapAuthorityFail("bootstrap_authority_trust_pin_schema_invalid");
-  const fields = Object.keys(pin).sort();
-  const expectedFields = [...BOOTSTRAP_AUTHORITY_TRUST_PIN_FIELDS].sort();
-  if (fields.length !== expectedFields.length || fields.some((field, index) => field !== expectedFields[index])) {
-    bootstrapAuthorityFail("bootstrap_authority_trust_pin_schema_invalid");
-  }
-  if (pin.schema_version !== BOOTSTRAP_AUTHORITY_TRUST_PIN_SCHEMA_VERSION ||
-      typeof pin.tenant_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$/.test(pin.tenant_id) ||
-      typeof pin.authority_key_id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(pin.authority_key_id) ||
-      typeof pin.public_key_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(pin.public_key_sha256) ||
-      typeof pin.genesis_record_digest !== "string" || !/^[a-f0-9]{64}$/.test(pin.genesis_record_digest)) {
-    bootstrapAuthorityFail("bootstrap_authority_trust_pin_schema_invalid");
-  }
-  return Object.freeze({
-    tenant_id: pin.tenant_id,
-    authority_key_id: pin.authority_key_id,
-    public_key_sha256: pin.public_key_sha256,
-    genesis_record_digest: pin.genesis_record_digest,
-  });
-}
-
-const BOOTSTRAP_DEADLOCK_ALLOWED_FAILURE_CODES = Object.freeze([
-  "BOOTSTRAP_ROOT_OF_TRUST_MISSING",
-  "BOOTSTRAP_TRUST_REGISTRY_UNAVAILABLE",
-  "BOOTSTRAP_VERIFIER_UNAVAILABLE",
-]);
-const BOOTSTRAP_DEADLOCK_FAILURE_CODE_MAP = Object.freeze({
-  bootstrap_root_of_trust_missing: "BOOTSTRAP_ROOT_OF_TRUST_MISSING",
-  bootstrap_trust_registry_unavailable: "BOOTSTRAP_TRUST_REGISTRY_UNAVAILABLE",
-  bootstrap_verifier_unavailable: "BOOTSTRAP_VERIFIER_UNAVAILABLE",
-});
-const BUILD_COMMIT_VERIFIABLE = /^[a-f0-9]{40}$/.test(BUILD_COMMIT_SHA || "");
-const DEFAULT_CAUSAL_INITIALIZATION_LIVENESS_MS = 30 * 60 * 1_000;
-const MAX_CAUSAL_INITIALIZATION_LIVENESS_MS = 60 * 60 * 1_000;
-const DEFAULT_HEALTH_PROBE_TIMEOUT_MS = 1_500;
-const MAX_HEALTH_PROBE_TIMEOUT_MS = 2_500;
-const RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_SCHEMA = "research_airlock_bootstrap_guard_v1";
-const RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_PURPOSE = "causal_initialization_liveness";
-
-export function boundedCausalInitializationLivenessMs(value) {
-  const requested = Number(value ?? DEFAULT_CAUSAL_INITIALIZATION_LIVENESS_MS);
-  return Math.min(
-    Math.max(
-      Number.isFinite(requested)
-        ? requested
-        : DEFAULT_CAUSAL_INITIALIZATION_LIVENESS_MS,
-      1,
-    ),
-    MAX_CAUSAL_INITIALIZATION_LIVENESS_MS,
-  );
-}
-
-export function boundedHealthProbeTimeoutMs(value) {
-  const requested = Number(value ?? DEFAULT_HEALTH_PROBE_TIMEOUT_MS);
-  return Math.min(
-    Math.max(
-      Number.isFinite(requested) ? requested : DEFAULT_HEALTH_PROBE_TIMEOUT_MS,
-      1,
-    ),
-    MAX_HEALTH_PROBE_TIMEOUT_MS,
-  );
-}
-
-function buildResearchAirlockBootstrapGuard({
-  buildCommitSha,
-  causalProductionRequired,
-  causalState,
-  initializationElapsedMs,
-  livenessWindowMs,
-  mode,
-  runtimeReady,
-  store,
-}) {
-  const backend = String(store?.kind || "unavailable");
-  const restartDurable = store?.restart_durable === true;
-  const distributed = store?.distributed === true;
-  const normalizedMode = String(mode || "unknown");
-  const structurallySafe = backend === "postgresql" && restartDurable && distributed;
-  const elapsed = Math.max(0, Math.floor(Number(initializationElapsedMs)));
-  const windowMs = Math.floor(Number(livenessWindowMs));
-  const modeSafe = normalizedMode === "enforced" && runtimeReady === true;
-  if (!BUILD_COMMIT_VERIFIABLE
-    || !/^[a-f0-9]{40}$/.test(BUILD_ID)
-    || BUILD_ID !== buildCommitSha
-    || causalProductionRequired !== true
-    || causalState !== "initializing"
-    || !Number.isSafeInteger(elapsed)
-    || !Number.isSafeInteger(windowMs)
-    || windowMs < 1
-    || elapsed > windowMs
-    || !structurallySafe
-    || !modeSafe) {
-    return null;
-  }
-  const payload = {
-    schema_version: RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_SCHEMA,
-    purpose: RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_PURPOSE,
-    policy_version: RESEARCH_AIRLOCK_POLICY_VERSION,
-    static_guard_ready: true,
-    mode: normalizedMode,
-    store_backend: backend,
-    restart_durable: restartDurable,
-    distributed,
-    accepting_new_work: false,
-    runtime_verified: false,
-    build_commit_sha: buildCommitSha,
-    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
-    causal_state: causalState,
-    causal_production_required: true,
-    liveness_window_ms: windowMs,
-    initialization_elapsed_ms: elapsed,
-    readiness_verified: false,
-  };
-  return Object.freeze({ ...payload, guard_digest: causalDigest(payload) });
-}
-const PROVIDER_SETUP_LINK_ISSUER_KIND = "provider_setup_link";
-const PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN = /^osf_[a-f0-9]{64}$/;
-const TRUSTED_PROVIDER_SETUP_ORIGIN = "https://skinharmony-universal-core.onrender.com";
-const TRUSTED_AGENT_PORTAL_URL = "https://skinharmony-core-mcp.onrender.com/agents";
-const NATIVE_AGENT_PROVIDER_RETIREMENT_CODE = "native_agent_provider_retired";
-const NATIVE_AGENT_PROVIDER_RETIREMENT_MESSAGE =
-  "Provider execution is retired. Use native ChatGPT/Codex specialists.";
-
-function strictGenericWorkCoreJoinBoolean(value, fallback, code) {
-  if (value === undefined || value === null || value === "") {
-    return Object.freeze({ value: fallback, valid: true, error: null });
-  }
-  if (value === true || value === false) {
-    return Object.freeze({ value, valid: true, error: null });
-  }
-  if (value === "true" || value === "false") {
-    return Object.freeze({ value: value === "true", valid: true, error: null });
-  }
-  return Object.freeze({ value: fallback, valid: false, error: code });
-}
-
-function optionalGenericWorkCoreJoinInteger(value) {
-  if (value === undefined || value === null || value === "") return undefined;
-  return Number(value);
-}
 
 function nowIso() {
   return new Date().toISOString();
-}
-
-function dynamicTaskTreeRolloutConfig(env = process.env) {
-  const enabledRaw = env.CORE_DTT_ENABLED;
-  const enabled = enabledRaw === undefined
-    ? true
-    : ["1", "true", "yes", "on"].includes(String(enabledRaw).trim().toLowerCase());
-  const requestedMode = String(env.CORE_DTT_MODE || "shadow").trim().toLowerCase();
-  const mode = enabled && ["shadow", "active"].includes(requestedMode)
-    ? requestedMode
-    : "off";
-  const tenantAllowlist = [...new Set(
-    String(env.CORE_DTT_TENANT_ALLOWLIST || "")
-      .split(/[\s,]+/)
-      .map((value) => value.trim())
-      .filter(Boolean),
-  )].slice(0, 64);
-  const production = String(env.NODE_ENV || "").trim().toLowerCase() === "production";
-  return Object.freeze({
-    enabled: enabled && mode !== "off",
-    mode,
-    tenant_allowlist: tenantAllowlist,
-    tenantAllowed(tenantId) {
-      return tenantAllowlist.length > 0
-        ? tenantAllowlist.includes(String(tenantId || ""))
-        : !production;
-    },
-  });
-}
-
-// Deep Branch V2 identifiers and evidence references are deliberately bounded
-// before any federation or persistence operation.
-const NYRA_DEEP_V2_ID_PATTERN = /^[a-z][a-z0-9_-]{1,63}$/i;
-const NYRA_DEEP_V2_REQUIREMENT_REF_PATTERN = /^req_[a-f0-9]{64}$/;
-const NYRA_DEEP_V2_RECORD_REF_PATTERN = /^[a-f0-9]{64}$/;
-const NYRA_DEEP_V2_OPERATIONS = new Set(["preview", "requirements", "prepare_evidence", "evaluate"]);
-const NYRA_DEEP_V2_PREFLIGHT_OPERATIONS = Object.freeze({
-  preview: "nyra_v2_preview",
-  requirements: "nyra_v2_requirements",
-  prepare_evidence: "nyra_v2_evidence_prepare",
-  evaluate: "nyra_v2_evaluate",
-});
-const MAX_NYRA_BRANCH_REQUESTS = 64;
-
-function isPlainRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function validPolicyCompilerTrustCatalog(value) {
-  const exact = (record, fields) => isPlainRecord(record) &&
-    Object.getPrototypeOf(record) === Object.prototype &&
-    Object.keys(record).sort().join("\0") === [...fields].sort().join("\0");
-  const id = /^[a-z0-9][a-z0-9._/-]{1,159}$/;
-  const sha = /^[a-f0-9]{64}$/;
-  const sortedUnique = (values, pattern, maximum) => Array.isArray(values) &&
-    values.length >= 1 && values.length <= maximum &&
-    values.every((item, index) => typeof item === "string" && pattern.test(item) &&
-      (index === 0 || values[index - 1] < item));
-  if (!exact(value, [
-    "schema_version", "issuers", "trusted_core_pack_digests", "known_core_branch_ids",
-    "known_nyra_branch_ids", "known_domain_pack_ids",
-  ]) || value.schema_version !== "nyra_policy_pack_trust_catalog_v1" ||
-    !Array.isArray(value.issuers) || value.issuers.length < 2 || value.issuers.length > 32 ||
-    !sortedUnique(value.trusted_core_pack_digests, sha, 64) ||
-    !sortedUnique(value.known_core_branch_ids, id, 256) ||
-    !sortedUnique(value.known_nyra_branch_ids, id, 256) ||
-    !sortedUnique(value.known_domain_pack_ids, id, 256)) return false;
-  const issuerIds = new Set();
-  const keyIds = new Set();
-  const fingerprints = new Set();
-  const roles = new Set();
-  let previous = null;
-  for (const issuer of value.issuers) {
-    if (!exact(issuer, [
-      "issuer_id", "key_id", "role", "algorithm", "public_key", "public_key_fingerprint",
-    ]) || !id.test(issuer.issuer_id) || !id.test(issuer.key_id) ||
-      !["core", "nyra"].includes(issuer.role) || issuer.algorithm !== "Ed25519" ||
-      typeof issuer.public_key !== "string" || !issuer.public_key ||
-      /PRIVATE KEY|BEGIN RSA|BEGIN EC/.test(issuer.public_key) ||
-      !sha.test(issuer.public_key_fingerprint)) return false;
-    const order = `${issuer.issuer_id}\0${issuer.key_id}`;
-    if ((previous !== null && previous >= order) || issuerIds.has(issuer.issuer_id) ||
-      keyIds.has(issuer.key_id) || fingerprints.has(issuer.public_key_fingerprint)) return false;
-    previous = order;
-    issuerIds.add(issuer.issuer_id);
-    keyIds.add(issuer.key_id);
-    fingerprints.add(issuer.public_key_fingerprint);
-    roles.add(issuer.role);
-  }
-  return roles.has("core") && roles.has("nyra") && fingerprints.size >= 2;
-}
-
-function validPolicyCompilerStatus(value, expectedCatalogDigest, expectedTrustCatalogDigest) {
-  const fields = [
-    "schema_version", "ready", "clock_ready", "mode", "compiler_algorithm",
-    "verification_algorithm", "traversal_budget", "compiler_build_commit",
-    "catalog_digest", "trust_catalog_digest", "issuer_count", "independent_key_count",
-    "trusted_core_pack_digest_count", "known_core_branch_count", "known_nyra_branch_count",
-    "known_domain_pack_count", "execution_authorized", "error",
-  ];
-  const bounded = (input, minimum, maximum) =>
-    Number.isInteger(input) && input >= minimum && input <= maximum;
-  return isPlainRecord(value) && Object.getPrototypeOf(value) === Object.prototype &&
-    Object.keys(value).sort().join("\0") === fields.sort().join("\0") &&
-    value.schema_version === "nyra_policy_compiler_provenance_status_v1" &&
-    value.ready === true && value.clock_ready === true &&
-    value.mode === "core_deterministic_recompile" &&
-    value.compiler_algorithm === "nyra_policy_registry_v1" &&
-    value.verification_algorithm === "sha256_canonical_json+ed25519" &&
-    bounded(value.traversal_budget, 1, 256) &&
-    /^[a-f0-9]{40}$/.test(value.compiler_build_commit) &&
-    value.catalog_digest === expectedCatalogDigest &&
-    value.trust_catalog_digest === expectedTrustCatalogDigest &&
-    bounded(value.issuer_count, 2, 32) &&
-    bounded(value.independent_key_count, 2, 32) &&
-    value.independent_key_count === value.issuer_count &&
-    bounded(value.trusted_core_pack_digest_count, 1, 64) &&
-    bounded(value.known_core_branch_count, 1, 256) &&
-    bounded(value.known_nyra_branch_count, 1, 256) &&
-    bounded(value.known_domain_pack_count, 1, 256) &&
-    value.execution_authorized === false && value.error === null;
-}
-
-function nyraDeepV2Fallback({
-  requestId = null,
-  state = "disabled_v1_authoritative",
-  reason = "nyra_deep_branch_v2_unavailable",
-} = {}) {
-  return {
-    schema_version: "nyra_deep_branch_v2_core_operation_v1",
-    state,
-    ...(requestId ? { request_id: requestId } : {}),
-    reason: String(reason || "nyra_deep_branch_v2_unavailable").slice(0, 160),
-    requirements: [],
-    evidence: {
-      state: "not_prepared_v1_authoritative",
-      evidence_refs: [],
-      validation: {
-        state: "not_requested",
-        accepted_source_count: 0,
-        accepted_claim_count: 0,
-        rejected_count: 0,
-      },
-    },
-    evaluation: { state: "not_requested_v1_authoritative", evaluated_node_count: 0 },
-    execution_authorized: false,
-    core_final_authority: true,
-    fallback: "nyra_neural_branch_network_v1",
-  };
-}
-
-function nyraDeepV2Operation(value) {
-  const operation = String(value || "").trim();
-  return NYRA_DEEP_V2_OPERATIONS.has(operation) ? operation : null;
-}
-
-function nyraDeepV2PreflightOperation(value) {
-  const operation = nyraDeepV2Operation(value);
-  return operation ? NYRA_DEEP_V2_PREFLIGHT_OPERATIONS[operation] : null;
-}
-
-function boundedNyraDeepV2EvidenceRefs(values, maximum = 100) {
-  if (!Array.isArray(values) || values.length > maximum) return null;
-  const refs = values.map((value) => String(value || "").trim());
-  if (
-    refs.some((value) => !NYRA_DEEP_V2_RECORD_REF_PATTERN.test(value))
-    || new Set(refs).size !== refs.length
-  ) return null;
-  return refs;
-}
-
-function normalizeNyraDeepV2RequirementBindings(values, discovered = []) {
-  if (!Array.isArray(values) || values.length < 1 || values.length > 64) {
-    return {
-      ok: false,
-      reason: "nyra_deep_branch_v2_requirement_bindings_required",
-      bindings: [],
-    };
-  }
-  const available = new Map(
-    (Array.isArray(discovered) ? discovered : [])
-      .map((binding) => [binding.requirement_ref, binding]),
-  );
-  const seenIds = new Set();
-  const seenRefs = new Set();
-  const seenClaimIds = new Set();
-  const bindings = [];
-  for (const item of values) {
-    if (!isPlainRecord(item)) {
-      return {
-        ok: false,
-        reason: "nyra_deep_branch_v2_requirement_binding_invalid",
-        bindings: [],
-      };
-    }
-    const id = String(item.id || "").trim();
-    const requirementRef = String(item.requirement_ref || "").trim();
-    const sourceIds = Array.isArray(item.source_ids)
-      ? item.source_ids.map((value) => String(value || "").trim())
-      : null;
-    const claimIds = Array.isArray(item.claim_ids)
-      ? item.claim_ids.map((value) => String(value || "").trim())
-      : null;
-    if (
-      !NYRA_DEEP_V2_ID_PATTERN.test(id)
-      || !NYRA_DEEP_V2_REQUIREMENT_REF_PATTERN.test(requirementRef)
-      || !sourceIds
-      || !claimIds
-      || sourceIds.length < 1
-      || claimIds.length < 1
-      || sourceIds.length > 20
-      || claimIds.length > 30
-      || sourceIds.some((value) => !NYRA_DEEP_V2_ID_PATTERN.test(value))
-      || claimIds.some((value) => !NYRA_DEEP_V2_ID_PATTERN.test(value))
-      || new Set(sourceIds).size !== sourceIds.length
-      || new Set(claimIds).size !== claimIds.length
-      || seenIds.has(id)
-      || seenRefs.has(requirementRef)
-      || claimIds.some((claimId) => seenClaimIds.has(claimId))
-      || !available.has(requirementRef)
-    ) {
-      return {
-        ok: false,
-        reason: "nyra_deep_branch_v2_requirement_binding_rejected",
-        bindings: [],
-      };
-    }
-    seenIds.add(id);
-    seenRefs.add(requirementRef);
-    claimIds.forEach((claimId) => seenClaimIds.add(claimId));
-    const acceptance = available.get(requirementRef);
-    bindings.push({
-      id,
-      requirement_ref: requirementRef,
-      source_ids: sourceIds,
-      claim_ids: claimIds,
-      minimum_count: Math.max(1, Number(acceptance.minimum_count) || 1),
-      evidence_type: String(acceptance.evidence_type || ""),
-      semantic_claim_hash: String(acceptance.semantic_claim_hash || ""),
-      required_claim: String(acceptance.required_claim || ""),
-      required_content_tag: String(acceptance.required_content_tag || ""),
-      capability_spec_hash: String(acceptance.capability_spec_hash || ""),
-    });
-  }
-  return { ok: true, bindings };
-}
-
-function normalizedNyraDeepV2EvidenceText(value) {
-  return String(value || "").replace(/\s+/gu, " ").trim();
-}
-
-function nyraDeepV2AcceptanceContractsMatch(evidencePack, bindings) {
-  const sources = new Map(
-    (Array.isArray(evidencePack?.sources) ? evidencePack.sources : [])
-      .map((source) => [String(source?.id || ""), source]),
-  );
-  const claims = new Map(
-    (Array.isArray(evidencePack?.claims) ? evidencePack.claims : [])
-      .map((claim) => [String(claim?.id || ""), claim]),
-  );
-  for (const binding of bindings) {
-    let acceptedCount = 0;
-    const requiredClaim = normalizedNyraDeepV2EvidenceText(binding.required_claim);
-    for (const claimId of binding.claim_ids) {
-      const claim = claims.get(claimId);
-      const claimText = normalizedNyraDeepV2EvidenceText(claim?.text);
-      const facts = Array.isArray(claim?.facts)
-        ? claim.facts.map(normalizedNyraDeepV2EvidenceText)
-        : [];
-      const claimSourceIds = Array.isArray(claim?.source_ids)
-        ? [...new Set(claim.source_ids.map((value) => String(value || "")))]
-        : [];
-      const sourceSetMatches = claimSourceIds.length === binding.source_ids.length
-        && binding.source_ids.every((sourceId) => claimSourceIds.includes(sourceId));
-      const excerptsMatch = binding.source_ids.every((sourceId) => (
-        normalizedNyraDeepV2EvidenceText(sources.get(sourceId)?.excerpt)
-          .includes(requiredClaim)
-      ));
-      if (
-        claimText === requiredClaim
-        && facts.includes(requiredClaim)
-        && claim?.claim_hash === binding.semantic_claim_hash
-        && claim?.semantic_hash === binding.semantic_claim_hash
-        && claim?.content_tag === binding.required_content_tag
-        && claim?.capability_spec_hash === binding.capability_spec_hash
-        && sourceSetMatches
-        && excerptsMatch
-      ) acceptedCount += 1;
-    }
-    if (acceptedCount < binding.minimum_count) return false;
-  }
-  return true;
-}
-
-function coreBindNyraDeepV2EvidencePack({
-  evidencePack,
-  bindings,
-  sourceReceipts,
-  tenantId,
-  requestId,
-  branchId,
-  subbranchId,
-  workPreflight,
-}) {
-  const bindingByClaim = new Map();
-  for (const binding of bindings) {
-    for (const claimId of binding.claim_ids) bindingByClaim.set(claimId, binding);
-  }
-  const receipts = new Map(
-    sourceReceipts.map((receipt) => [receipt.source_id, receipt]),
-  );
-  const digest = (value) => crypto.createHash("sha256")
-    .update(nyraDeepV2StableJson(value))
-    .digest("hex");
-  return {
-    ...evidencePack,
-    claims: evidencePack.claims.map((claim) => {
-      const binding = bindingByClaim.get(String(claim?.id || ""));
-      const recordHashes = (Array.isArray(claim?.source_ids) ? claim.source_ids : [])
-        .map((sourceId) => receipts.get(sourceId)?.content_sha256)
-        .filter((value) => /^[a-f0-9]{64}$/u.test(String(value || "")))
-        .sort();
-      return {
-        ...claim,
-        capability_input_hash: digest({
-          tenant_id: tenantId,
-          request_id: requestId,
-          branch_id: branchId,
-          subbranch_id: subbranchId,
-          requirement_ref: binding?.requirement_ref || null,
-          work_preflight: workPreflight || null,
-        }),
-        subject_hash: digest({
-          tenant_id: tenantId,
-          branch_id: branchId,
-          subbranch_id: subbranchId,
-          requirement_ref: binding?.requirement_ref || null,
-        }),
-        record_hashes: recordHashes,
-      };
-    }),
-  };
-}
-
-function boundedNyraDeepV2EvidencePack(value) {
-  if (
-    !isPlainRecord(value)
-    || !Array.isArray(value.sources)
-    || !Array.isArray(value.claims)
-    || value.sources.length < 1
-    || value.sources.length > 20
-    || value.claims.length < 1
-    || value.claims.length > 30
-  ) {
-    return { ok: false, reason: "nyra_deep_branch_v2_evidence_pack_invalid" };
-  }
-  return { ok: true, evidence_pack: value };
-}
-
-function validNyraDeepV2SourceReceipt(receipt, now = Date.now()) {
-  const expiresAt = Date.parse(String(receipt?.expires_at || ""));
-  return receipt?.issuer === "skinharmony-universal-core"
-    && NYRA_DEEP_V2_ID_PATTERN.test(String(receipt?.source_id || ""))
-    && NYRA_DEEP_V2_ID_PATTERN.test(String(receipt?.registry_source_id || ""))
-    && ["official", "regulator", "academic", "standards", "manufacturer"]
-      .includes(String(receipt?.source_type || ""))
-    && Number.isFinite(Number(receipt?.reliability_score))
-    && Number(receipt.reliability_score) >= 0
-    && Number(receipt.reliability_score) <= 1
-    && /^[a-f0-9]{64}$/i.test(String(receipt?.source_url_sha256 || ""))
-    && /^[a-f0-9]{64}$/i.test(String(receipt?.content_sha256 || ""))
-    && /^[a-f0-9]{64}$/i.test(String(receipt?.excerpt_sha256 || ""))
-    && /^ev_[a-f0-9-]{36}$/i.test(String(receipt?.receipt_id || ""))
-    && Number.isFinite(expiresAt)
-    && expiresAt > now;
-}
-
-function coreValidatedNyraDeepV2Claims(
-  evidencePack,
-  validation,
-  sourceReceipts = [],
-  now = Date.now(),
-) {
-  const sourceAssessment = new Map(
-    (validation?.source_assessments || []).map((item) => [item.source_id, item]),
-  );
-  const claimInput = new Map(
-    (evidencePack?.claims || []).map((item) => [item.id, item]),
-  );
-  const receiptsBySource = new Map(
-    (Array.isArray(sourceReceipts) ? sourceReceipts : [])
-      .filter((receipt) => validNyraDeepV2SourceReceipt(receipt, now))
-      .map((receipt) => [receipt.source_id, receipt]),
-  );
-  const releaseEligible = validation?.release_readiness?.eligible_for_tenant_review === true;
-  const validatedClaims = [];
-  for (const assessment of validation?.claim_assessments || []) {
-    const claim = claimInput.get(assessment.claim_id);
-    const sourceIds = Array.isArray(claim?.source_ids) ? claim.source_ids : [];
-    const sources = sourceIds.map((id) => sourceAssessment.get(id)).filter(Boolean);
-    const receipts = sourceIds.map((id) => receiptsBySource.get(id)).filter(Boolean);
-    const authoritative = sources.some((source) => Number(source.authority_score) >= 80);
-    const supported = assessment.state === "supported"
-      && Array.isArray(assessment.contradictions)
-      && assessment.contradictions.length === 0;
-    const coreVerified = sourceIds.length > 0 && receipts.length === sourceIds.length;
-    validatedClaims.push({
-      claim_id: assessment.claim_id,
-      valid: releaseEligible && supported && authoritative && coreVerified,
-      authority: authoritative ? "authoritative" : "unverified",
-      independent: Number(assessment.independent_host_count || 0) >= 2,
-      valid_until: coreVerified
-        ? Math.min(...receipts.map((receipt) => Date.parse(receipt.expires_at)))
-        : null,
-      ...(coreVerified ? {
-        core_receipt: {
-          schema_version: "nyra_deep_v2_core_source_receipt_bundle_v1",
-          issuer: "skinharmony-universal-core",
-          receipt_ids: receipts.map((receipt) => receipt.receipt_id),
-          sources: receipts.map((receipt) => ({
-            source_id: receipt.source_id,
-            source_url_sha256: receipt.source_url_sha256,
-            content_sha256: receipt.content_sha256,
-            excerpt_sha256: receipt.excerpt_sha256,
-          })),
-        },
-      } : {}),
-    });
-  }
-  const acceptedClaimCount = validatedClaims.filter((claim) => claim.valid).length;
-  const acceptedSourceCount = (validation?.source_assessments || []).filter((source) => (
-    Number(source.authority_score) >= 80
-    && source.prompt_injection_detected !== true
-    && source.sensitive_content_detected !== true
-    && receiptsBySource.has(source.source_id)
-  )).length;
-  return {
-    validated_claims: validatedClaims,
-    compact_validation: {
-      state: releaseEligible && acceptedClaimCount > 0
-        ? "core_verified_candidate_validated"
-        : "core_verified_candidate_not_ready",
-      accepted_source_count: acceptedSourceCount,
-      accepted_claim_count: acceptedClaimCount,
-      rejected_count: Math.max(
-        0,
-        Number(validation?.claim_assessments?.length || 0) - acceptedClaimCount,
-      ),
-    },
-  };
-}
-
-function compactNyraDeepV2Requirements(bindings) {
-  return (Array.isArray(bindings) ? bindings : [])
-    .slice(0, 64)
-    .map((binding) => ({
-      requirement_ref: String(binding.requirement_ref || ""),
-      level: Number(binding.level),
-      node_type: String(binding.node_type || ""),
-      minimum_count: Math.max(1, Number(binding.minimum_count) || 1),
-      authority_requirement: String(binding.authority_requirement || "unverified"),
-      evidence_type: String(binding.evidence_type || ""),
-      semantic_claim_hash: String(binding.semantic_claim_hash || ""),
-      required_claim: String(binding.required_claim || ""),
-      required_content_tag: String(binding.required_content_tag || ""),
-      capability_spec_hash: String(binding.capability_spec_hash || ""),
-    }))
-    .filter((binding) => (
-      NYRA_DEEP_V2_REQUIREMENT_REF_PATTERN.test(binding.requirement_ref)
-      && Number.isInteger(binding.level)
-      && binding.level >= 2
-      && binding.level <= 4
-      && /^[a-f0-9]{64}$/u.test(binding.semantic_claim_hash)
-      && /^[a-f0-9]{64}$/u.test(binding.capability_spec_hash)
-      && binding.required_claim.length >= 16
-      && binding.required_claim.length <= 2_000
-      && /^[a-z][a-z0-9_]{1,159}$/u.test(binding.required_content_tag)
-      && /^[a-z][a-z0-9_]{1,159}$/u.test(binding.evidence_type)
-    ));
 }
 
 function ownerContextCanonical(context) {
@@ -900,189 +98,23 @@ function ownerContextCanonical(context) {
     role: context.role,
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
-    owner_subject_fingerprint: context.owner_subject_fingerprint,
     issued_at: context.issued_at,
-    binding_version: context.binding_version,
-    binding_hash: context.binding_hash,
-    approval_digest: context.approval_digest,
   });
 }
 
-function stableCanonical(value) {
-  if (Array.isArray(value)) return value.map(stableCanonical);
-  if (!value || typeof value !== "object") return value;
-  return Object.keys(value).sort().reduce((result, key) => {
-    if (value[key] !== undefined) result[key] = stableCanonical(value[key]);
-    return result;
-  }, {});
-}
-
-function ownerRequestBinding(purpose, body = {}) {
-  const { owner_context: _ownerContext, ...payload } = body;
-  return `${purpose}\u0000${JSON.stringify(stableCanonical(payload))}`;
-}
-
-function verifyOwnerContextAssertion(context, secret, tenantId, expectedBinding, now = Date.now()) {
+function verifyOwnerContextAssertion(context, secret, tenantId, now = Date.now()) {
   if (!context || typeof context !== "object" || !secret) return false;
   if (context.assertion_version !== OWNER_CONTEXT_ASSERTION_VERSION) return false;
   if (context.audience !== "nira_core_bridge" || context.tenant_id !== tenantId) return false;
-  const tenantOwner = context.role === "tenant_owner" && context.access_mode === "tenant_owner";
-  const globalOwner = context.role === "owner_root" && context.access_mode === "god_mode";
-  if (context.owner_verified !== true || (!tenantOwner && !globalOwner)) return false;
+  if (context.owner_verified !== true || context.role !== "owner_root" || context.access_mode !== "god_mode") return false;
   const issuedAt = Date.parse(String(context.issued_at || ""));
   if (!Number.isFinite(issuedAt) || issuedAt > now + 30_000 || now - issuedAt > 120_000) return false;
   const supplied = String(context.assertion || "");
   if (!/^ocs_[a-f0-9]{64}$/i.test(supplied)) return false;
-  if (expectedBinding !== undefined) {
-    if (context.binding_version !== "owner_request_binding_v1") return false;
-    const suppliedBindingHash = String(context.binding_hash || "");
-    const expectedBindingHash = crypto.createHash("sha256").update(String(expectedBinding)).digest("hex");
-    if (!/^[a-f0-9]{64}$/i.test(suppliedBindingHash)) return false;
-    if (!crypto.timingSafeEqual(Buffer.from(suppliedBindingHash), Buffer.from(expectedBindingHash))) return false;
-  }
   const expected = `ocs_${crypto.createHmac("sha256", secret)
     .update(`owner-context\u0000${ownerContextCanonical(context)}`)
     .digest("hex")}`;
   return crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
-}
-
-function verifiedOwnerBranchProfile(req, requestedBranches = [], purpose = "", ownerContextSigningSecret = "", bindingBody) {
-  const encodedHeader = String(req.get?.("x-sh-owner-context") || "").trim();
-  let headerContext = null;
-  if (encodedHeader && /^[A-Za-z0-9_-]{16,12000}$/.test(encodedHeader)) {
-    try { headerContext = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8")); } catch { headerContext = null; }
-  }
-  const context = req.body?.owner_context || headerContext;
-  const body = bindingBody || (req.body && typeof req.body === "object" ? req.body : {});
-  const expectedBinding = purpose ? ownerRequestBinding(purpose, body) : undefined;
-  const ownerVerified =
-    req.tenantId === "codexai" &&
-    context?.role === "owner_root" &&
-    context?.access_mode === "god_mode" &&
-    context?.delegated_actor === "oauth" &&
-    verifyOwnerContextAssertion(context, ownerContextSigningSecret, req.tenantId, expectedBinding);
-  const commercialResolution = resolveBranchesForKey(req.coreKey, requestedBranches);
-  return resolveOwnerTenantBranchProfile({
-    tenantId: req.tenantId,
-    ownerVerified,
-    registry: branchRegistry(),
-    groups: deterministicBranchGroups(),
-    requestedBranches,
-    commercialResolution,
-  }) || commercialResolution;
-}
-
-// A signed owner context is intentionally short-lived, but a short lifetime
-// alone does not make it one-use. Prefer the vault's PostgreSQL-backed
-// implementation; the file fallback is an atomic, persistent guard for test
-// doubles and single-instance local deployments. It stores only assertion
-// hashes, never owner payloads or provider credentials.
-function createOwnerExecutionApprovalStore({ root, credentialStore }) {
-  const fallbackRoot = path.join(root, "owner-execution-approvals");
-  return {
-    async consume({ tenant_id, approval_hash, expires_at }) {
-      if (typeof credentialStore?.consumeOpenAiExecutionApproval === "function") {
-        return credentialStore.consumeOpenAiExecutionApproval({ tenant_id, approval_hash, expires_at });
-      }
-      const tenantHash = crypto.createHash("sha256").update(String(tenant_id)).digest("hex");
-      const approvalHash = String(approval_hash || "");
-      if (!/^sha256:[a-f0-9]{64}$/i.test(approvalHash)) throw new Error("approval_hash_invalid");
-      const expiry = Date.parse(String(expires_at || ""));
-      if (!Number.isFinite(expiry) || expiry <= Date.now()) throw new Error("approval_expired");
-      const file = path.join(fallbackRoot, tenantHash, `${approvalHash.slice("sha256:".length)}.json`);
-      fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-      const write = () => {
-        const descriptor = fs.openSync(file, "wx", 0o600);
-        try { fs.writeFileSync(descriptor, JSON.stringify({ expires_at: new Date(expiry).toISOString() }), "utf8"); }
-        finally { fs.closeSync(descriptor); }
-      };
-      try {
-        write();
-        return { consumed: true };
-      } catch (error) {
-        if (error?.code !== "EEXIST") throw error;
-        try {
-          const existing = JSON.parse(fs.readFileSync(file, "utf8"));
-          if (Date.parse(String(existing?.expires_at || "")) <= Date.now()) {
-            fs.unlinkSync(file);
-            write();
-            return { consumed: true };
-          }
-        } catch (readError) {
-          if (readError?.code === "ENOENT") {
-            try { write(); return { consumed: true }; } catch {}
-          }
-        }
-        return { consumed: false };
-      }
-    },
-  };
-}
-
-function verifyMcpTenantContextAssertion(value, secret, tenantId, now = Date.now()) {
-  if (!secret) return false;
-  let context;
-  try { context = JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8")); } catch { return false; }
-  if (!context || context.version !== "mcp_tenant_context_v1" || context.tenant_id !== tenantId) return false;
-  const issuedAt = Date.parse(String(context.issued_at || ""));
-  if (!Number.isFinite(issuedAt) || issuedAt > now + 30_000 || now - issuedAt > 120_000) return false;
-  const canonical = JSON.stringify({ version: context.version, tenant_id: context.tenant_id, issued_at: context.issued_at });
-  const expected = `mtc_${crypto.createHmac("sha256", secret).update(`mcp-tenant-context\u0000${canonical}`).digest("hex")}`;
-  return typeof context.assertion === "string" && context.assertion.length === expected.length && crypto.timingSafeEqual(Buffer.from(context.assertion), Buffer.from(expected));
-}
-
-function hasProviderSetupOwnerContext(context) {
-  return context?.delegated_actor === "oauth" &&
-    PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN.test(String(context?.owner_subject_fingerprint || ""));
-}
-
-function isDedicatedProviderSetupLinkIssuer(keyRecord, tenantId) {
-  return Boolean(
-    keyRecord &&
-    keyRecord.tenant_id === tenantId &&
-    keyRecord.key_type === "connector" &&
-    keyRecord.status === "active" &&
-    keyRecord.expires_at === null &&
-    keyRecord.preset === null &&
-    keyRecord.brand_scope === "" &&
-    keyRecord.metadata?.bootstrap_kind === PROVIDER_SETUP_LINK_ISSUER_KIND &&
-    Array.isArray(keyRecord.allowed_scopes) &&
-    keyRecord.allowed_scopes.length === 1 &&
-    keyRecord.allowed_scopes[0] === SCOPES.WRITE_PROVIDER_SETUP_LINK
-  );
-}
-
-function isProviderSetupLinkIssuer(keyRecord, tenantId) {
-  return isDedicatedProviderSetupLinkIssuer(keyRecord, tenantId) || isProviderSetupLinkServiceRecord(keyRecord);
-}
-
-function trustedProviderSetupBaseUrl(value) {
-  const raw = String(value || TRUSTED_PROVIDER_SETUP_ORIGIN).trim();
-  let parsed;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error("provider_setup_public_url_invalid");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.origin !== TRUSTED_PROVIDER_SETUP_ORIGIN ||
-    parsed.pathname !== "/" ||
-    parsed.search ||
-    parsed.hash ||
-    parsed.username ||
-    parsed.password
-  ) {
-    throw new Error("provider_setup_public_url_invalid");
-  }
-  return parsed.origin;
-}
-
-function sameDigest(left, right) {
-  const actual = String(left || "");
-  const expected = String(right || "");
-  if (!/^pslb_[a-f0-9]{64}$/i.test(actual) || actual.length !== expected.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(actual), Buffer.from(expected));
 }
 
 function readSecret(req) {
@@ -1093,83 +125,6 @@ function readSecret(req) {
 
 function publicError(res, status, code, message = code) {
   return res.status(status).json({ ok: false, error: code, message });
-}
-
-function providerSetupHtml(res, status, html, { scriptNonce = "" } = {}) {
-  const scriptPolicy = scriptNonce ? `; script-src 'nonce-${scriptNonce}'` : "";
-  return res
-    .status(status)
-    .set({
-      "cache-control": "no-store, max-age=0",
-      pragma: "no-cache",
-      "referrer-policy": "no-referrer",
-      "x-content-type-options": "nosniff",
-      "x-frame-options": "DENY",
-      "content-security-policy": `default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; style-src 'unsafe-inline'${scriptPolicy}`,
-    })
-    .type("html")
-    .send(html);
-}
-
-function validProviderSetupToken(value) {
-  const token = String(value || "").trim();
-  return /^[A-Za-z0-9_-]{30,120}$/.test(token) ? token : "";
-}
-
-function validProviderSetupProof(value) {
-  const proof = String(value || "").trim();
-  return /^[A-Za-z0-9_-]{32,120}$/.test(proof) ? proof : "";
-}
-
-function escapeProviderSetupHtml(value) {
-  return String(value || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function providerSetupFormHtml(scriptNonce, { setupProof = "", errorMessage = "" } = {}) {
-  const safeProof = escapeProviderSetupHtml(validProviderSetupProof(setupProof));
-  const safeError = escapeProviderSetupHtml(errorMessage);
-  return `<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Collega OpenAI</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Collega OpenAI</h1><p>Inserisci una API key personale. Non è il tuo abbonamento ChatGPT. Verrà cifrata e non mostrata di nuovo.</p><form method="post" id="provider-setup-form"><input type="hidden" name="setup_proof" id="setup-proof" value="${safeProof}"><label>API key<input name="api_key" type="password" autocomplete="new-password" required style="display:block;width:100%;margin:8px 0 16px;padding:12px"></label><button type="submit" id="submit">Collega in modo sicuro</button></form><p id="link-error" role="alert">${safeError}</p><script nonce="${scriptNonce}">(function(){const input=document.getElementById("setup-proof");const fragmentProof=new URLSearchParams(location.hash.slice(1)).get("proof")||"";const proof=input.value||fragmentProof;const button=document.getElementById("submit");const error=document.getElementById("link-error");if(!/^[A-Za-z0-9_-]{32,120}$/.test(proof)){input.disabled=true;button.disabled=true;error.textContent="Link incompleto. Torna a ChatGPT e apri di nuovo il collegamento sicuro.";return;}input.value=proof;history.replaceState(null,document.title,location.pathname);})();</script></body></html>`;
-}
-
-function providerSetupLinkBootstrapErrorCode(error) {
-  const code = error instanceof Error ? error.message : "";
-  return new Set([
-    "provider_setup_link_key_required",
-    "provider_setup_link_tenant_required",
-    "provider_setup_link_key_conflict",
-    "provider_setup_link_key_rotation_required",
-    "mcp_tenant_gateway_key_required",
-    "mcp_tenant_gateway_key_weak",
-    "mcp_tenant_gateway_key_conflict",
-    "mcp_tenant_gateway_key_rotation_required",
-  ]).has(code)
-    ? code
-    : "provider_setup_link_bootstrap_unavailable";
-}
-
-// This status is intentionally coarse because /healthz is public. It is only
-// enough to distinguish an absent binding from a persistent-key conflict; it
-// never includes a tenant id, secret, hash, or the underlying storage error.
-function getProviderSetupLinkBootstrapState({ key, tenantId, configured, error } = {}) {
-  if (configured === true) return "ready";
-  const hasKey = Boolean(key);
-  const hasTenant = Boolean(tenantId);
-  if (!hasKey && !hasTenant) return "incomplete";
-  if (!hasKey && hasTenant) return "binding_missing";
-  if (hasKey && !hasTenant) return "incomplete";
-
-  const code = providerSetupLinkBootstrapErrorCode(error);
-  if (code === "provider_setup_link_key_conflict" || code === "provider_setup_link_key_rotation_required") {
-    return "binding_conflict";
-  }
-  if (code === "provider_setup_link_key_required") return "binding_missing";
-  if (code === "provider_setup_link_tenant_required") return "incomplete";
-  return "unavailable";
 }
 
 function readJsonFile(file, fallback) {
@@ -1207,15 +162,6 @@ function sanitizeMemoryText(value, max = 2_000) {
     .replace(/\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}\b/g, "[REDACTED_SECRET]")
     .replace(/\b(?:password|passwd|secret|api[_ -]?key|token)\s*[:=]\s*[^\s,;]+/gi, "[REDACTED_SECRET]")
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED_EMAIL]");
-}
-
-function outcomeContainsSensitiveContent(body = {}) {
-  if (body.contains_secret === true || body.contains_customer_data === true) return true;
-  const values = [body.outcome_id, body.prediction_id, body.domain, body.horizon, body.notes, ...(Array.isArray(body.lessons) ? body.lessons : [])];
-  return values.some((value) => {
-    const raw = String(value ?? "");
-    return raw.length > 2_000 || sanitizeMemoryText(raw, 2_000) !== raw;
-  });
 }
 
 function normalizeTenantMemoryContext(raw, tenantId) {
@@ -1264,62 +210,6 @@ function normalizeTenantMemoryContext(raw, tenantId) {
         raw_prompts_stored_automatically: false,
         secrets_storable: false,
       },
-    },
-  };
-}
-
-function normalizeTenantWorkGalleryContext(raw, tenantId) {
-  if (raw === undefined || raw === null) {
-    return {
-      ok: true,
-      value: {
-        schema_version: "tenant_work_gallery_v1",
-        tenant_id: tenantId,
-        available: false,
-        state: "runtime_unavailable",
-        work_count: 0,
-        works: [],
-      },
-    };
-  }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return { ok: false, error: "gallery_context_invalid" };
-  }
-  if (String(raw.tenant_id || "") !== tenantId) {
-    return { ok: false, error: "gallery_context_tenant_mismatch" };
-  }
-  const works = Array.isArray(raw.works) ? raw.works.slice(0, 20).map((work) => {
-    if (!work || typeof work !== "object" || Array.isArray(work)) return null;
-    return {
-      work_id: sanitizeMemoryText(work.work_id, 64),
-      project_id: sanitizeMemoryText(work.project_id, 64),
-      status: sanitizeMemoryText(work.status, 40),
-      current_version: Number.isInteger(Number(work.current_version))
-        ? Math.max(0, Number(work.current_version))
-        : 0,
-      next_action: sanitizeMemoryText(work.next_action, 500),
-      updated_at: sanitizeMemoryText(work.updated_at, 40),
-      active_participants: Math.max(0, Number(work.active_participants || 0)),
-      active_leases: Math.max(0, Number(work.active_leases || 0)),
-      active_branches: Math.max(0, Number(work.active_branches || 0)),
-    };
-  }).filter((work) => work?.work_id) : [];
-  return {
-    ok: true,
-    value: {
-      schema_version: "tenant_work_gallery_v1",
-      tenant_id: tenantId,
-      available: raw.available === true,
-      state: ["ready", "membership_required", "runtime_unavailable"].includes(String(raw.state || ""))
-        ? String(raw.state)
-        : "runtime_unavailable",
-      generated_at: sanitizeMemoryText(raw.generated_at, 40) || null,
-      work_count: works.length,
-      filters: {
-        project_id: raw.filters?.project_id ? sanitizeMemoryText(raw.filters.project_id, 64) : null,
-        status: raw.filters?.status ? sanitizeMemoryText(raw.filters.status, 40) : null,
-      },
-      works,
     },
   };
 }
@@ -1411,9 +301,6 @@ function buildActionEvaluatorInput(req, keyRecord) {
         operation_class: riskClassification.operation_class,
         publish_intent: publishIntent ? "true" : "false",
         source: "action_evaluator",
-        ...(typeof body.remediation_context === "object" && body.remediation_context
-          ? { remediation_context: body.remediation_context }
-          : {}),
         ...(typeof body.metadata === "object" && body.metadata ? body.metadata : {}),
       },
     },
@@ -1480,12 +367,7 @@ function requireAdmin(req, res, next) {
   return next();
 }
 
-function createAuth(keyStore, audit, requiredScope, {
-  allowProviderSetupService = false,
-  tenantContextSigningSecret = "",
-  requireWorkPreflight = false,
-  requireWorkPreflightExecution = false,
-} = {}) {
+function createAuth(keyStore, audit, requiredScope) {
   return (req, res, next) => {
     const auth = keyStore.authenticate(readSecret(req));
     if (!auth.ok) {
@@ -1494,181 +376,19 @@ function createAuth(keyStore, audit, requiredScope, {
     }
 
     const tenantId = safeTenantId(req, auth.record);
-    const serviceIssuer = allowProviderSetupService === true && isProviderSetupLinkServiceRecord(auth.record);
-    const tenantGateway = isMcpTenantGatewayRecord(auth.record);
-    const validGatewayContext = tenantGateway && verifyMcpTenantContextAssertion(
-      req.get("x-sh-tenant-context"),
-      tenantContextSigningSecret,
-      tenantId,
-    );
-    if (!tenantId || (!serviceIssuer && !validGatewayContext && !requireTenantAccess(auth.record, tenantId))) {
+    if (!requireTenantAccess(auth.record, tenantId)) {
       audit.append("core_tenant_scope_denied", { key_id: auth.record.key_id, requested_tenant: tenantId, path: req.path });
       return publicError(res, 403, "tenant_scope_denied");
     }
 
-    const requiredScopes = Array.isArray(requiredScope) ? requiredScope : [requiredScope].filter(Boolean);
-    if (requiredScopes.length && !requiredScopes.some((scope) => hasScope(auth.record, scope))) {
-      audit.append("core_scope_denied", { key_id: auth.record.key_id, required_scopes: requiredScopes, path: req.path });
-      return publicError(res, 403, "scope_denied", `Required scope: ${requiredScopes.join(" or ")}`);
+    if (requiredScope && !hasScope(auth.record, requiredScope)) {
+      audit.append("core_scope_denied", { key_id: auth.record.key_id, required_scope: requiredScope, path: req.path });
+      return publicError(res, 403, "scope_denied", `Required scope: ${requiredScope}`);
     }
 
     req.coreKey = auth.record;
     req.tenantId = tenantId || auth.record.tenant_id;
-    if (requireWorkPreflight) {
-      const gate = validateWorkPreflightEnvelope(req.body || {}, req.tenantId, {
-        requireGallery: true,
-        requireMemory: true,
-        requireExecution: requireWorkPreflightExecution,
-      });
-      if (!gate.ok) {
-        audit.append("core_work_preflight_gate_denied", {
-          tenant_id: req.tenantId,
-          key_id: auth.record.key_id,
-          path: req.path,
-          reason_codes: gate.errors,
-        });
-        const failure = workPreflightFailure(gate.errors);
-        return res.status(428).json({
-          ok: false,
-          error: failure.code,
-          reason_codes: failure.reason_codes,
-          execution_allowed: false,
-        });
-      }
-      req.workPreflight = gate.preflight;
-    }
     return next();
-  };
-}
-
-const CAUSAL_WRITE_TRANSPORT_SCOPES = Object.freeze([
-  "causal:write",
-  "causal:authorize",
-  "causal:approve",
-  "causal:evidence",
-  "causal:reconcile",
-  "causal:close",
-  "causal:reopen",
-  "causal:intent:propose",
-  "causal:intent:approve",
-  "causal:change:create",
-  "causal:change:execute",
-  "causal:evidence:produce",
-  "causal:outcome:reconcile",
-  "causal:obligation:close",
-  "causal:rollout",
-  "gallery:project",
-  "core:govern",
-]);
-
-export function causalRouteAuthenticatedScopes(requiredScope, keyRecord = {}) {
-  const required = String(requiredScope || "").trim();
-  const platformScopes = Array.isArray(keyRecord.allowed_scopes) ? keyRecord.allowed_scopes : [];
-  const mapped = required === "causal:read"
-    ? ["causal:read"]
-    : [required, ...CAUSAL_WRITE_TRANSPORT_SCOPES];
-  if (platformScopes.includes(SCOPES.OWNER_ASSERTION)) mapped.push("intent:approve:strategic");
-  return [...new Set(mapped.filter(Boolean))].sort();
-}
-
-export function createPostgresCausalActionLeaseVerifier(pool) {
-  if (!pool || typeof pool.query !== "function") {
-    throw new TypeError("causal_action_lease_pool_required");
-  }
-  return async (input) => {
-    if (Object.prototype.hasOwnProperty.call(input, "policy_session_fingerprint")) return null;
-    const requestingSessionFingerprint = String(input.actor_session_fingerprint || "");
-    if (!/^[a-f0-9]{16,64}$/i.test(requestingSessionFingerprint)) return null;
-    const leaseResult = await pool.query(
-      `SELECT l.lease_id,l.tenant_id,l.work_id,l.purpose,l.status,l.expires_at,
-              l.policy_authority_scope,l.policy_authority_source,l.policy_authority_binding_digest,
-              l.policy_session_fingerprint,
-              w.project_uuid,p.agent_id,
-              coalesce(jsonb_agg(jsonb_build_object('kind',s.surface_kind,'value',s.surface_value)
-                ORDER BY s.surface_kind,s.surface_value)
-                FILTER (WHERE s.surface_kind IS NOT NULL),'[]'::jsonb) AS surfaces
-         FROM core_continuity_leases l
-         JOIN core_continuity_works w
-           ON w.tenant_id=l.tenant_id AND w.work_id=l.work_id
-         JOIN core_continuity_participants p
-           ON p.tenant_id=l.tenant_id AND p.work_id=l.work_id AND p.session_id=l.session_id
-         LEFT JOIN core_continuity_lease_surfaces s
-           ON s.tenant_id=l.tenant_id AND s.work_id=l.work_id AND s.lease_id=l.lease_id
-        WHERE l.tenant_id=$1 AND l.work_id=$2 AND l.lease_id=$3
-          AND l.status='active' AND l.expires_at>now()
-          AND l.policy_session_fingerprint=$6
-          AND p.status='active' AND p.expires_at>now()
-          AND p.agent_id=$4 AND w.project_uuid=$5
-        GROUP BY l.lease_id,l.tenant_id,l.work_id,l.purpose,l.status,l.expires_at,
-          l.policy_authority_scope,l.policy_authority_source,l.policy_authority_binding_digest,
-          l.policy_session_fingerprint,w.project_uuid,p.agent_id`,
-      [input.tenant_id, input.work_id, input.lease_id, input.actor_id, input.project_id, requestingSessionFingerprint],
-    );
-    const lease = leaseResult.rows[0];
-    if (!lease) return null;
-    const surfaces = Array.isArray(lease.surfaces) ? lease.surfaces : [];
-    const valuesFor = (kind) => surfaces
-      .filter((surface) => surface?.kind === kind)
-      .map((surface) => String(surface.value || "").toLowerCase())
-      .sort();
-    const expectedObligations = [...new Set((input.obligation_ids || []).map((value) => String(value).toLowerCase()))].sort();
-    const projectSurfaces = valuesFor("causal_project");
-    const changeSurfaces = valuesFor("causal_change");
-    const obligationSurfaces = valuesFor("causal_obligation");
-    if (surfaces.length !== 2 + expectedObligations.length ||
-        projectSurfaces.length !== 1 || projectSurfaces[0] !== String(input.project_id).toLowerCase() ||
-        changeSurfaces.length !== 1 || changeSurfaces[0] !== String(input.change_id).toLowerCase() ||
-        JSON.stringify(obligationSurfaces) !== JSON.stringify(expectedObligations)) {
-      return null;
-    }
-    const bindingResult = await pool.query(
-      `SELECT c.change_id,array_agg(o.obligation_id ORDER BY o.obligation_id) AS obligation_ids
-         FROM core_changes c
-         JOIN core_causal_obligations o
-           ON o.tenant_id=c.tenant_id AND o.project_id=c.project_id
-          AND o.work_id=c.work_id AND o.change_id=c.change_id
-        WHERE c.tenant_id=$1 AND c.project_id=$2 AND c.work_id=$3 AND c.change_id=$4
-          AND o.obligation_id=ANY($5::uuid[])
-        GROUP BY c.change_id`,
-      [input.tenant_id, input.project_id, input.work_id, input.change_id, input.obligation_ids],
-    );
-    const binding = bindingResult.rows[0];
-    if (!binding || binding.obligation_ids.length !== input.obligation_ids.length) return null;
-    const persistedAuthorityScope = Array.isArray(lease.policy_authority_scope)
-      ? [...lease.policy_authority_scope].map(String).sort()
-      : [];
-    const authorityProof = {
-      schema_version: "persisted_lease_authority_v1", tenant_id: lease.tenant_id, lease_id: lease.lease_id,
-      actor_id: lease.agent_id, purpose: lease.purpose, surfaces,
-      persisted_authority_scope: persistedAuthorityScope,
-      policy_session_fingerprint: requestingSessionFingerprint,
-    };
-    if (lease.policy_session_fingerprint !== requestingSessionFingerprint ||
-        lease.policy_authority_binding_digest !== causalDigest(authorityProof)) return null;
-    return {
-      valid: true,
-      readback_verified: true,
-      active: lease.status === "active",
-      replayed: false,
-      consumed: false,
-      revoked: false,
-      tenant_id: lease.tenant_id,
-      project_id: lease.project_uuid,
-      work_id: lease.work_id,
-      change_id: binding.change_id,
-      obligation_ids: binding.obligation_ids,
-      lease_id: lease.lease_id,
-      actor_id: lease.agent_id,
-      purpose: lease.purpose,
-      status: lease.status,
-      surfaces,
-      persisted_authority_scope: persistedAuthorityScope,
-      policy_session_fingerprint: lease.policy_session_fingerprint,
-      authority_source: lease.policy_authority_source,
-      authority_binding_digest: lease.policy_authority_binding_digest,
-      expires_at: lease.expires_at,
-      provenance: "core_continuity_lease_postgres_readback_v1",
-    };
   };
 }
 
@@ -1963,9 +683,6 @@ function branchMaturityReport() {
       maturity,
       execution_default: maturity === "production" ? "confirm" : maturity === "advisory" ? "advisory_only" : "test_only",
       promotion_required: maturity === "production" ? [] : ["benchmark_pass", "owner_approval", "regression_test", "audit_sample"],
-      enforcement_overlays: Array.isArray(profile.guardrails?.enforcement_overlays)
-        ? profile.guardrails.enforcement_overlays.map((overlay) => ({ ...overlay }))
-        : [],
     };
   }
   return {
@@ -2177,25 +894,13 @@ const MANDATORY_NYRA_WORK_BRANCHES = Object.freeze([
   "risk_governance",
   "execution_planning",
   "parallel_coordination",
-  "tenant_work_coordination",
   "quality_verification",
   "learning_memory",
   "adaptive_learning",
 ]);
 
-function composeMandatoryWorkPreflight(req, {
-  domainPack,
-  memoryContext = null,
-  galleryContext = null,
-  branchContext = null,
-  nyraNetwork = null,
-} = {}) {
+function composeMandatoryWorkPreflight(req, { domainPack, memoryContext = null, branchContext = null, nyraNetwork = null } = {}) {
   const body = req.body || {};
-  const operationType = body.operation_type
-    || body.action_type
-    || body.requested_action?.type
-    || nyraDeepV2PreflightOperation(body.deep_branch_v2?.operation)
-    || "advisory_work";
   const requestText = String(
     body.request || body.message || body.text || body.task || body.user_request || body.user_input || body.input || body.action_label ||
     body.requested_action?.label || body.requested_action?.type ||
@@ -2218,29 +923,25 @@ function composeMandatoryWorkPreflight(req, {
   } : mandatoryBranchContext;
   const requestedNyraBranches = [
     ...MANDATORY_NYRA_WORK_BRANCHES,
-    ...normalizeList(body.nyra_branches, MAX_NYRA_BRANCH_REQUESTS),
+    ...normalizeList(body.nyra_branches, 20),
   ];
   const resolvedNyraNetwork = nyraNetwork || routeNyraBranches({
     text: requestText,
     requestedBranches: requestedNyraBranches,
-    authorizedCoreBranches: resolvedBranchContext.selected_branches,
     domainPackId: domainPack.id,
   });
   return buildWorkPreflight({
     tenantId: req.tenantId,
     requestText,
     targetSystem: body.target_system || "universal_core",
-    operationType,
+    operationType: body.operation_type || body.action_type || body.requested_action?.type || "advisory_work",
     toolName: body.source_tool || body.tool_name || "",
     availableCapabilities: body.available_capabilities || body.available_tools || body.connected_capabilities || [],
     memoryContext,
-    galleryContext,
     branchContext: resolvedBranchContext,
     nyraNetwork: resolvedNyraNetwork,
     domainPack: publicDomainPack(domainPack),
     ownerConfirmed: body.owner_confirmed === true,
-    evidenceState: body.evidence_state || body.research_evidence_state || {},
-    researchAllowedDomains: normalizeList(body.research_allowed_domains, 20),
   });
 }
 
@@ -2258,33 +959,10 @@ function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy =
   const crossTenant = context.cross_tenant === true || action.cross_tenant === true || policy.cross_tenant === true;
   const pii = context.contains_pii === true || action.contains_pii === true || policy.contains_pii === true;
   const missingAudit = context.audit_ready === false || action.audit_ready === false;
-  const requestedFailureCode = action.failure_code ?? context.failure_code ?? policy.failure_code;
-  const hasFailureObservation = requestedFailureCode !== undefined && requestedFailureCode !== null && String(requestedFailureCode).trim() !== "";
-  const failureObservation = hasFailureObservation
-    ? mediateFailureObservation({
-      code: requestedFailureCode,
-      scope: {
-        tenant_id: entitlement.tenant_id,
-        repository: action.repository || context.repository || policy.repository,
-        branch: action.branch || action.ref || context.branch || context.ref || policy.branch || policy.ref,
-        surface: action.surface || context.surface || policy.surface,
-        work_id: action.work_id || context.work_id || policy.work_id,
-        session_id: action.session_id || context.session_id || policy.session_id,
-      },
-      worker_id: action.worker_id || context.worker_id || policy.worker_id,
-      verifier_id: action.verifier_id || context.verifier_id || policy.verifier_id,
-      attempt: action.attempt ?? context.attempt ?? policy.attempt,
-      attempt_limit: action.attempt_limit ?? context.attempt_limit ?? policy.attempt_limit,
-      summary: action.failure_summary || context.failure_summary || policy.failure_summary,
-    })
-    : null;
 
   let mediation = "allow";
   const reasons = [];
-  if (failureObservation) {
-    mediation = failureObservation.mediation_state;
-    reasons.push(failureObservation.code);
-  } else if (crossTenant) {
+  if (crossTenant) {
     mediation = "block";
     reasons.push("cross_tenant_denied");
   } else if (destructive && !ownerConfirmed) {
@@ -2318,18 +996,12 @@ function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy =
     decision: mediation === "block" ? "blocked" : mediation === "allow" ? "ready" : "attention",
     action_mediation: {
       state: mediation,
-      execution_allowed: failureObservation ? false : mediation === "allow" || mediation === "rewrite" || mediation === "sandbox",
+      execution_allowed: mediation === "allow" || mediation === "rewrite" || mediation === "sandbox",
       owner_confirmation_required: mediation === "confirm" || mediation === "rollback_required",
       sandbox_required: mediation === "sandbox",
       rollback_required: mediation === "rollback_required",
       rewrite_allowed: mediation === "rewrite",
-      blocked: mediation === "block" || mediation === "hard_block",
-      failure_code: failureObservation?.code || null,
-      failure_class: failureObservation?.classification?.block_class || null,
-      failure_action: failureObservation?.action || null,
-      retry_allowed: failureObservation?.classification?.retry_allowed === true,
-      retry_exhausted: failureObservation?.classification?.retry_exhausted === true,
-      quarantine: failureObservation?.quarantine === true,
+      blocked: mediation === "block",
       next_step:
         mediation === "allow"
           ? "execute_with_audit"
@@ -2350,7 +1022,6 @@ function evaluatePolicyEngine({ tenantPolicy, entitlement, action = {}, policy =
       score: Math.max(0, Math.min(100, riskHint + (destructive ? 15 : 0) + (crossTenant ? 50 : 0))),
       reasons: reasons,
     },
-    failure_mediation: failureObservation,
     policy_flags: {
       missing_required_branches: missingBranches,
       sensitive_domain: sensitiveDomain,
@@ -2417,7 +1088,7 @@ function suiteRunbookCatalog() {
 
 function buildConnectorSdkManifest() {
   return {
-    manifest_version: "core_connector_sdk_v2",
+    manifest_version: "core_connector_sdk_v1",
     positioning: "AI Governance + Automation Control Plane per PMI e verticali premium",
     rule: "AI e automazioni possono agire solo passando da Core, policy, audit, tenant isolation e conferma quando serve.",
     transports: ["rest_json", "mcp_ready_schema"],
@@ -2438,24 +1109,8 @@ function buildConnectorSdkManifest() {
     core_routes: {
       work_preflight: "/v1/work/preflight",
       gate: "/v1/ai-gateway/evaluate",
-      tenant_status: "/v1/tenant/status",
-      entitlements: "/v1/entitlements/current",
-      domain_pack: "/v1/domain-packs/current",
-      branches: "/v1/branches",
-      branch_taxonomy: "/v1/branches/taxonomy",
-      branch_maturity: "/v1/branches/maturity",
-      branch_authorized: "/v1/branches/authorized",
-      branch_analyze: "/v1/branches/:branch/analyze",
-      semantic_selection: "/v1/semantic-selection",
       software_language_gate: "/v1/software-language-gate/evaluate",
-      content_guard: "/v1/content-guard/check",
-      claim_guard: "/v1/claim-guard/check",
-      pricing_guard: "/v1/pricing-guard/check",
-      policy_check: "/v1/policy/check",
-      action_mediation: "/v1/action-mediation/evaluate",
       control_plane: "/v1/control-plane/overview",
-      control_plane_dashboard: "/v1/control-plane/dashboard",
-      ecosystem_pulse: "/v1/ecosystem-pulse",
       translator_extractor_status: "/v1/translator/extractor/status",
       translator_extractor_catalog: "/v1/translator/extractor/catalog",
       runbooks: "/v1/runbooks",
@@ -2479,21 +1134,12 @@ function buildConnectorSdkManifest() {
       software_intelligence_jobs_submit: "/v1/software-intelligence/jobs",
       software_intelligence_jobs_list: "/v1/software-intelligence/jobs",
       software_intelligence_job_get: "/v1/software-intelligence/jobs/:jobId",
-      entity_graph: "/v1/entity-graph",
-      entity_graph_upsert: "/v1/entity-graph/upsert",
-      review_pending: "/v1/review/pending",
-      review_action: "/v1/review/action",
     },
   };
 }
 
 function repoRoot() {
   return path.resolve(__dirname, "../../..");
-}
-
-function lexicalSemanticRuntimeMode() {
-  const requested = String(process.env.LEXICAL_SEMANTIC_MODE || "active").trim().toLowerCase();
-  return ["active", "shadow", "off"].includes(requested) ? requested : "shadow";
 }
 
 function extractorBinaryPath() {
@@ -2762,62 +1408,21 @@ function buildExtractorCoreInput(req, extraction) {
   };
 }
 
-function evaluateReleaseManifest(payload = {}, context = {}) {
+function evaluateReleaseManifest(payload = {}) {
   const manifest = typeof payload.manifest === "object" && payload.manifest ? payload.manifest : payload;
-  if (manifest?.schema_version === HOST_RELEASE_MANIFEST_VERSION) {
-    try {
-      const verified = validateHostReleaseManifestV2(manifest, context);
-      return {
-        status: "ready",
-        execution_allowed: false,
-        owner_confirmation_required: true,
-        manifest: {
-          ...verified,
-          integrity_verified: true,
-          signature_verified: false,
-          signed: false,
-        },
-        issues: [],
-        required_next_step: "bounded_host_action_ticket_then_host_policy_approval",
-      };
-    } catch (error) {
-      return {
-        status: "blocked",
-        execution_allowed: false,
-        owner_confirmation_required: true,
-        manifest: {
-          schema_version: HOST_RELEASE_MANIFEST_VERSION,
-          manifest_id: textValue(manifest.manifest_id) || null,
-          integrity_verified: false,
-          signature_verified: false,
-          signed: false,
-        },
-        issues: [{
-          code: "release_manifest_v2_invalid",
-          severity: "critical",
-          reason: String(error?.message || "release_manifest_invalid").slice(0, 160),
-        }],
-        required_next_step: "fix_manifest_before_release",
-      };
-    }
-  }
   const version = textValue(manifest.version || manifest.stable_version);
   const channel = textValue(manifest.channel || manifest.release_channel, "stable");
   const packageUrl = textValue(manifest.package_url || manifest.package || manifest.zip_url);
   const checksum = textValue(manifest.checksum_sha256 || manifest.sha256 || manifest.checksum);
   const rollbackUrl = textValue(manifest.rollback_url);
-  const signaturePresent = Boolean(manifest.signature || manifest.signed === true);
-  // Legacy envelopes have no canonical payload or trusted verification key.
-  // A boolean or arbitrary string therefore never proves a signature.
-  const signatureVerified = false;
+  const signed = Boolean(manifest.signature || manifest.signed === true);
   const issues = [];
 
   if (!version) issues.push({ code: "missing_version", severity: "critical" });
   if (!["stable", "beta", "canary"].includes(channel)) issues.push({ code: "invalid_channel", severity: "critical", channel });
   if (!packageUrl) issues.push({ code: "missing_package_url", severity: "critical" });
   if (!checksum || !/^[a-f0-9]{64}$/i.test(checksum)) issues.push({ code: "missing_or_invalid_sha256", severity: "critical" });
-  if (!signaturePresent) issues.push({ code: "missing_manifest_signature", severity: "high" });
-  else issues.push({ code: "manifest_signature_unverified", severity: "high" });
+  if (!signed) issues.push({ code: "missing_manifest_signature", severity: "high" });
   if (!rollbackUrl) issues.push({ code: "missing_rollback_url", severity: "high" });
   if (manifest.skip_integrity_check === true || manifest.bypass_checksum === true) issues.push({ code: "integrity_bypass_requested", severity: "critical" });
 
@@ -2826,16 +1431,7 @@ function evaluateReleaseManifest(payload = {}, context = {}) {
     status: critical ? "blocked" : issues.length ? "review_required" : "ready",
     execution_allowed: false,
     owner_confirmation_required: true,
-    manifest: {
-      version,
-      channel,
-      package_url: packageUrl,
-      checksum_sha256: checksum || null,
-      rollback_url: rollbackUrl || null,
-      signed: signatureVerified,
-      signature_present: signaturePresent,
-      signature_verified: signatureVerified,
-    },
+    manifest: { version, channel, package_url: packageUrl, checksum_sha256: checksum || null, rollback_url: rollbackUrl || null, signed },
     issues,
     required_next_step: critical ? "fix_manifest_before_release" : issues.length ? "owner_review_before_release" : "staging_canary_then_owner_confirmation",
   };
@@ -2857,7 +1453,7 @@ function buildControlPlaneOverview({ tenantId, keyRecord, keyStore, snapshot, au
     control_plane: {
       api_keys: { total: tenantKeys.length, active: activeKeys, suspended: suspendedKeys, revoked: revokedKeys },
       licenses: { tier: branchResolution.tier, suite_policy: suitePolicy },
-      versions: { service_version: SERVICE_VERSION, connector_sdk_manifest: "core_connector_sdk_v2" },
+      versions: { service_version: SERVICE_VERSION, connector_sdk_manifest: "core_connector_sdk_v1" },
       update: { release_manifest_check: "/v1/releases/manifest/check", automatic_update_allowed: false },
       gate: { ai_gateway: "/v1/ai-gateway/evaluate", policy_check: "/v1/policy/check" },
       automations: { runbook_count: suiteRunbookCatalog().length, execution_default: "confirm_or_block" },
@@ -4626,3723 +3222,183 @@ function claimShieldCheck(payload = {}) {
 }
 
 export function createUniversalCoreService(options = {}) {
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
-    throw new Error("core_service_options_invalid");
-  }
-  const optionsPrototype = Object.getPrototypeOf(options);
-  if (optionsPrototype !== Object.prototype && optionsPrototype !== null) {
-    throw new Error("core_service_options_prototype_invalid");
-  }
-  if (Object.getOwnPropertySymbols(options).length > 0) {
-    throw new Error("core_service_options_symbol_invalid");
-  }
-  const normalizedOptions = Object.create(null);
-  for (const [name, descriptor] of Object.entries(
-    Object.getOwnPropertyDescriptors(options),
-  )) {
-    if (!("value" in descriptor) || descriptor.get || descriptor.set) {
-      throw new Error("core_service_options_accessor_invalid");
-    }
-    Object.defineProperty(normalizedOptions, name, {
-      value: descriptor.value,
-      enumerable: true,
-      writable: false,
-      configurable: false,
-    });
-  }
-  options = Object.freeze(normalizedOptions);
-  const internallyOwnedPostgresPools = new Set();
-  let serverResolverRegistry = null;
-  try {
-    serverResolverRegistry = loadHostNativeResolverRegistryFromEnvironment(process.env);
-  } catch {
-    serverResolverRegistry = null;
-  }
-  const hasOwnOption = (name) => Object.prototype.hasOwnProperty.call(options, name);
-  // A degraded production liveness receipt is meaningful only when the
-  // authority-bearing components were built by this service from its host
-  // configuration. Object properties supplied through test/integration seams
-  // can exercise normal behavior, but can never attest bootstrap provenance.
-  const causalBootstrapConstructionProvenance = Object.freeze({
-    host_native: ![
-      "hostNativeGovernance", "hostNativeGovernanceEnabled",
-      "hostNativeGovernanceStore", "hostNativeExternalReadbackVerifier",
-      "hostNativeReleaseJoinVerdictResolver", "hostNativeSigningSecret",
-      "hostNativeResolverConfigurationValid", "hostNativeResolverConfigurationError",
-      "hostNativeRequiredChecksPolicyResolver",
-      "hostNativeRequiredChecksPolicyResolverState",
-      "hostNativeRequiredChecksPolicyBindingCount",
-      "hostNativeRenderServiceOriginResolver",
-      "hostNativeRenderServiceOriginResolverState",
-      "hostNativeRenderServiceOriginBindingCount",
-      "hostNativeProjectScopeRenderOriginResolver",
-      "hostNativeGithubTokenResolver", "hostNativeGithubCredentialResolverState",
-      "hostNativeGithubCredentialBindingCount", "hostNativeReadbackFetchImpl",
-      "bootstrapAuthorityTrustPinJson", "bootstrapReleaseExceptionStore",
-      "bootstrapRequiredChecksReadback",
-      "bootstrapReleasePreparationBaseBranchResolver",
-      "bootstrapReleasePreparationService",
-      "mcpTenantGatewayKey", "tenantContextSigningSecret",
-      "ownerContextSigningSecret",
-    ].some(hasOwnOption),
-    research_airlock: ![
-      "researchAirlockRuntime", "researchAirlockPostgresPool",
-      "researchAirlockMode", "researchAirlockSigningSecret",
-      "researchAirlockTransport",
-    ].some(hasOwnOption),
-    policy_registry: ![
-      "nyraPolicyRegistryStore", "nyraPolicyRegistryPostgresPool",
-      "nyraPolicyRegistryDatabaseUrl", "nyraPolicyRegistryProofService",
-      "nyraPolicyRegistryProofEnv", "nyraPolicyRegistryEnforcementMode",
-      "consumeNyraPolicyRegistryCoreReceipt",
-      "verifyNyraPolicyRegistryActivationSnapshot",
-    ].some(hasOwnOption),
-    causal_runtime: ![
-      "causalContinuityStore", "causalContinuityRuntime",
-      "causalContextSigner", "causalActionLeaseVerifier",
-      "governedAgentPostgresVersionProbe", "governedAgentPostgresVersionPool",
-    ].some(hasOwnOption),
-    dtt_identity: ![
-      "dttAgentIdentitySigningSecret", "dttAgentIdentityPostgresPool",
-      "dttAgentIdentityReceiptStore", "dttAgentIdentityReceiptService",
-      "dttVerificationTrustStore", "dynamicTaskTreePostgresPool",
-      "resolveDttVerifierIdentity",
-    ].some(hasOwnOption),
-    resolver_registry: Boolean(
-      serverResolverRegistry?.configuration_valid === true
-      && serverResolverRegistry.github?.state === "exact_registry_ready"
-      && typeof serverResolverRegistry.github?.resolver === "function"
-      && serverResolverRegistry.render?.state === "exact_registry_ready"
-      && typeof serverResolverRegistry.render?.resolver === "function"
-      && serverResolverRegistry.required_checks?.state === "exact_registry_ready"
-      && typeof serverResolverRegistry.required_checks?.resolver === "function"
-    ),
-  });
   const storageRoot = options.storageRoot || process.env.CORE_SERVICE_STORAGE_ROOT || DEFAULT_STORAGE_ROOT;
   ensureDir(storageRoot);
 
   const audit = createAudit(storageRoot);
   const keyStore = createKeyStore(storageRoot, audit);
-  const providerSetupLinkBootstrapKey = String(
-    options.providerSetupLinkBootstrapKey ?? process.env.CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY ?? "",
-  ).trim();
-  const providerSetupLinkServiceKey = String(
-    options.providerSetupLinkServiceKey ?? process.env.CORE_PROVIDER_SETUP_LINK_SERVICE_KEY ?? "",
-  ).trim();
-  const mcpTenantGatewayKey = String(options.mcpTenantGatewayKey ?? process.env.CORE_MCP_TENANT_GATEWAY_KEY ?? "").trim();
-  const tenantContextSigningSecretCandidate = String(
-    options.tenantContextSigningSecret
-      ?? process.env.CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET
-      ?? "",
-  ).trim();
-  const tenantContextSigningSecret =
-    Buffer.byteLength(tenantContextSigningSecretCandidate, "utf8") >= 32
-      ? tenantContextSigningSecretCandidate
-      : "";
-  const providerSetupLinkTenantId = String(
-    options.providerSetupLinkTenantId ?? process.env.CORE_PROVIDER_SETUP_LINK_TENANT_ID ?? "",
-  ).trim();
-  // This is intentionally distinct from every Core bearer key. It proves an
-  // owner confirmation originated at the MCP bridge, rather than from any
-  // caller that can reach the action-evaluator endpoint.
-  const ownerContextSigningSecretCandidate = String(
-    options.ownerContextSigningSecret ?? process.env.CORE_OWNER_CONTEXT_SIGNING_SECRET ?? "",
-  ).trim();
-  // The bridge assertion is an authorization credential, not a convenience
-  // flag. Short values are treated as absent so the sensitive setup flow
-  // fails closed rather than silently using weak signing material.
-  const ownerContextSigningSecret = ownerContextSigningSecretCandidate.length >= 32
-    ? ownerContextSigningSecretCandidate
-    : "";
-  let providerSetupLinkBootstrapConfigured = false;
-  let providerSetupLinkBootstrapState = getProviderSetupLinkBootstrapState({
-    key: providerSetupLinkBootstrapKey,
-    tenantId: providerSetupLinkTenantId,
-  });
-  if (providerSetupLinkBootstrapKey || providerSetupLinkTenantId) {
-    try {
-      keyStore.ensureProviderSetupLinkKey({
-        secret: providerSetupLinkBootstrapKey,
-        tenant_id: providerSetupLinkTenantId,
-      });
-      providerSetupLinkBootstrapConfigured = true;
-      providerSetupLinkBootstrapState = "ready";
-    } catch (error) {
-      providerSetupLinkBootstrapState = getProviderSetupLinkBootstrapState({
-        key: providerSetupLinkBootstrapKey,
-        tenantId: providerSetupLinkTenantId,
-        error,
-      });
-      // The privileged setup path must fail closed without taking down the
-      // rest of Universal Core. Do not log the seed or its hash.
-      audit.append("core_provider_setup_link_key_bootstrap_unavailable", {
-        tenant_id: providerSetupLinkTenantId || null,
-        reason: providerSetupLinkBootstrapErrorCode(error),
-      });
-    }
-  }
-  if (providerSetupLinkServiceKey) {
-    try {
-      keyStore.ensureProviderSetupLinkServiceKey({ secret: providerSetupLinkServiceKey });
-    } catch (error) {
-      audit.append("core_provider_setup_link_service_key_bootstrap_unavailable", {
-        reason: providerSetupLinkBootstrapErrorCode(error),
-      });
-    }
-  }
-  let mcpTenantGatewayConfigured = false;
-  if (mcpTenantGatewayKey) {
-    try {
-      keyStore.ensureMcpTenantGatewayKey({ secret: mcpTenantGatewayKey });
-      mcpTenantGatewayConfigured = true;
-    }
-    catch (error) { audit.append("core_mcp_tenant_gateway_key_bootstrap_unavailable", { reason: providerSetupLinkBootstrapErrorCode(error) }); }
-  }
   const setupTokens = createSetupTokenStore(storageRoot, audit);
   const snapshots = snapshotStore(storageRoot);
-  const nyraPolicyRegistryRequestedMode = String(
-    options.nyraPolicyRegistryEnforcementMode
-      ?? process.env.CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE
-      ?? "advisory_evaluate",
-  ).trim().toLowerCase();
-  const nyraPolicyRegistryModeValid = new Set(["disabled", "advisory_evaluate", "enforced"])
-    .has(nyraPolicyRegistryRequestedMode);
-  // Invalid configuration is never interpreted as advisory or disabled.
-  const nyraPolicyRegistryMode = nyraPolicyRegistryModeValid
-    ? nyraPolicyRegistryRequestedMode
-    : "enforced";
-  const nyraPolicyRegistryEvaluationEnabled = nyraPolicyRegistryMode !== "disabled";
-  const nyraPolicyRegistryDatabaseUrl = String(
-    options.nyraPolicyRegistryDatabaseUrl ?? process.env.GOVERNED_AGENT_DATABASE_URL ?? "",
-  ).trim();
-  const nyraPolicyRegistryProofProduction = String(process.env.NODE_ENV || "") === "production";
-  const nyraPolicyRegistryProofEnabledFlag = strictGenericWorkCoreJoinBoolean(
-    options.nyraPolicyRegistryProofEnabled ?? process.env.CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED,
-    false,
-    "policy_registry_proof_enabled_flag_invalid",
-  );
-  const nyraPolicyRegistryProofRequiredFlag = strictGenericWorkCoreJoinBoolean(
-    options.nyraPolicyRegistryProofRequired ?? process.env.CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED,
-    false,
-    "policy_registry_proof_required_flag_invalid",
-  );
-  const nyraPolicyRegistryProofEnabled = nyraPolicyRegistryProofEnabledFlag.value;
-  const nyraPolicyRegistryProofRequired = nyraPolicyRegistryProofRequiredFlag.valid
-    ? nyraPolicyRegistryProofRequiredFlag.value
-    : true;
-  const nyraPolicyRegistryCoreSignerMode = String(
-    options.nyraPolicyRegistryCoreSignerMode
-      ?? process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE
-      ?? "disabled",
-  );
-  const nyraPolicyRegistryCompilerEnabledFlag = strictGenericWorkCoreJoinBoolean(
-    options.nyraPolicyRegistryCompilerProvenanceEnabled ??
-      process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED,
-    false,
-    "policy_registry_compiler_enabled_flag_invalid",
-  );
-  const nyraPolicyRegistryCompilerRequiredFlag = strictGenericWorkCoreJoinBoolean(
-    options.nyraPolicyRegistryCompilerProvenanceRequired ??
-      process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED,
-    false,
-    "policy_registry_compiler_required_flag_invalid",
-  );
-  const nyraPolicyRegistryCompilerEnabled = nyraPolicyRegistryCompilerEnabledFlag.value;
-  const nyraPolicyRegistryCompilerRequired = nyraPolicyRegistryCompilerRequiredFlag.valid
-    ? nyraPolicyRegistryCompilerRequiredFlag.value
-    : true;
-  const nyraPolicyRegistryCompilerMode = String(
-    options.nyraPolicyRegistryCompilerProvenanceMode ??
-      process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE ??
-      "disabled",
-  );
-  const nyraPolicyRegistryCompilerModeValid = ["disabled", "core_deterministic_recompile"]
-    .includes(nyraPolicyRegistryCompilerMode);
-  const nyraPolicyRegistryCompilerProductionInjectionPresent =
-    nyraPolicyRegistryProofProduction && [
-      "nyraPolicyRegistryCompilerProvenanceEnabled",
-      "nyraPolicyRegistryCompilerProvenanceRequired",
-      "nyraPolicyRegistryCompilerProvenanceMode",
-      "nyraPolicyRegistryCompilerProvenanceVerifier",
-      "nyraPolicyRegistryCompilerTrustCatalog",
-      "nyraPolicyRegistryCompilerTrustCatalogJson",
-      "nyraPolicyRegistryCompilerNow",
-      "nyraPolicyRegistryCompilerTraversalBudget",
-      "nyraPolicyRegistryCompilerCatalogDigest",
-      "nyraPolicyRegistryCompilerTrustCatalogDigest",
-    ].some((field) => Object.hasOwn(options, field));
-  let nyraPolicyRegistryCompilerConfigurationError =
-    !nyraPolicyRegistryCompilerEnabledFlag.valid
-      ? nyraPolicyRegistryCompilerEnabledFlag.error
-      : !nyraPolicyRegistryCompilerRequiredFlag.valid
-        ? nyraPolicyRegistryCompilerRequiredFlag.error
-        : !nyraPolicyRegistryCompilerModeValid
-          ? "policy_registry_compiler_mode_invalid"
-          : nyraPolicyRegistryCompilerRequired && !nyraPolicyRegistryCompilerEnabled
-            ? "policy_registry_compiler_required_without_enabled"
-            : nyraPolicyRegistryCompilerEnabled &&
-                nyraPolicyRegistryCompilerMode !== "core_deterministic_recompile"
-              ? "policy_registry_compiler_mode_binding_invalid"
-              : !nyraPolicyRegistryCompilerEnabled && nyraPolicyRegistryCompilerMode !== "disabled"
-                ? "policy_registry_compiler_mode_binding_invalid"
-                : nyraPolicyRegistryCompilerEnabled &&
-                    nyraPolicyRegistryCompilerProductionInjectionPresent
-                  ? "policy_registry_compiler_production_injection_forbidden"
-                  : null;
-  let nyraPolicyRegistryCompilerProvenanceVerifier = null;
-  let nyraPolicyRegistryCompilerStatus = null;
-  let nyraPolicyRegistryExpectedCatalogDigest = null;
-  let nyraPolicyRegistryExpectedTrustCatalogDigest = null;
-  if (nyraPolicyRegistryCompilerEnabled && nyraPolicyRegistryCompilerConfigurationError === null) {
-    try {
-      const catalogDigest = nyraPolicyRegistryProofProduction
-        ? process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_CATALOG_DIGEST
-        : options.nyraPolicyRegistryCompilerCatalogDigest ??
-          process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_CATALOG_DIGEST;
-      const trustCatalogDigest = nyraPolicyRegistryProofProduction
-        ? process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_DIGEST
-        : options.nyraPolicyRegistryCompilerTrustCatalogDigest ??
-          process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_DIGEST;
-      if (!/^[a-f0-9]{64}$/.test(String(catalogDigest || ""))) {
-        throw new Error("policy_registry_compiler_catalog_digest_invalid");
-      }
-      if (!/^[a-f0-9]{64}$/.test(String(trustCatalogDigest || ""))) {
-        throw new Error("policy_registry_compiler_trust_catalog_digest_invalid");
-      }
-      nyraPolicyRegistryExpectedCatalogDigest = String(catalogDigest);
-      nyraPolicyRegistryExpectedTrustCatalogDigest = String(trustCatalogDigest);
-      const injectedVerifier = !nyraPolicyRegistryProofProduction
-        ? options.nyraPolicyRegistryCompilerProvenanceVerifier
-        : null;
-      if (injectedVerifier) {
-        nyraPolicyRegistryCompilerProvenanceVerifier = injectedVerifier;
-      } else {
-        let trustCatalog;
-        if (!nyraPolicyRegistryProofProduction &&
-          Object.hasOwn(options, "nyraPolicyRegistryCompilerTrustCatalog")) {
-          trustCatalog = options.nyraPolicyRegistryCompilerTrustCatalog;
-        } else {
-          const rawCatalog = String(
-            !nyraPolicyRegistryProofProduction &&
-              Object.hasOwn(options, "nyraPolicyRegistryCompilerTrustCatalogJson")
-              ? options.nyraPolicyRegistryCompilerTrustCatalogJson
-              : process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRUST_CATALOG_JSON || "",
-          );
-          if (!rawCatalog || Buffer.byteLength(rawCatalog, "utf8") > 524_288) {
-            throw new Error("policy_registry_compiler_trust_catalog_json_invalid");
-          }
-          try { trustCatalog = JSON.parse(rawCatalog); } catch {
-            throw new Error("policy_registry_compiler_trust_catalog_json_invalid");
-          }
-        }
-        if (!validPolicyCompilerTrustCatalog(trustCatalog)) {
-          throw new Error("policy_registry_compiler_trust_catalog_invalid");
-        }
-        const rawTraversalBudget = !nyraPolicyRegistryProofProduction
-          ? options.nyraPolicyRegistryCompilerTraversalBudget ??
-            process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET ?? 256
-          : process.env.CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET ?? 256;
-        const traversalBudget = typeof rawTraversalBudget === "number"
-          ? rawTraversalBudget
-          : /^(?:[1-9]|[1-9]\d|1\d\d|2[0-4]\d|25[0-6])$/.test(String(rawTraversalBudget))
-            ? Number(rawTraversalBudget)
-            : null;
-        if (!Number.isInteger(traversalBudget) || traversalBudget < 1 || traversalBudget > 256) {
-          throw new Error("policy_registry_compiler_traversal_budget_invalid");
-        }
-        if (!BUILD_COMMIT_VERIFIABLE) {
-          throw new Error("policy_registry_compiler_build_commit_unavailable");
-        }
-        nyraPolicyRegistryCompilerProvenanceVerifier =
-          createNyraPolicyRegistryCompilerProvenanceVerifier({
-            trust_catalog: trustCatalog,
-            build_commit: BUILD_COMMIT_SHA,
-            traversal_budget: traversalBudget,
-            now: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCompilerNow
-              ? options.nyraPolicyRegistryCompilerNow
-              : () => Date.now(),
-          });
-      }
-      if (!nyraPolicyRegistryCompilerProvenanceVerifier ||
-        typeof nyraPolicyRegistryCompilerProvenanceVerifier.verify !== "function" ||
-        typeof nyraPolicyRegistryCompilerProvenanceVerifier.verifyPersistedRecord !== "function" ||
-        typeof nyraPolicyRegistryCompilerProvenanceVerifier.status !== "function") {
-        throw new Error("policy_registry_compiler_verifier_invalid");
-      }
-      nyraPolicyRegistryCompilerStatus = nyraPolicyRegistryCompilerProvenanceVerifier.status();
-      if (typeof nyraPolicyRegistryCompilerStatus?.then === "function" ||
-        !validPolicyCompilerStatus(
-          nyraPolicyRegistryCompilerStatus,
-          nyraPolicyRegistryExpectedCatalogDigest,
-          nyraPolicyRegistryExpectedTrustCatalogDigest,
-        )) {
-        throw new Error("policy_registry_compiler_status_invalid");
-      }
-    } catch (error) {
-      nyraPolicyRegistryCompilerProvenanceVerifier = null;
-      nyraPolicyRegistryCompilerStatus = null;
-      const safeCompilerConfigurationErrors = new Set([
-        "policy_registry_compiler_catalog_digest_invalid",
-        "policy_registry_compiler_trust_catalog_digest_invalid",
-        "policy_registry_compiler_build_commit_unavailable",
-        "policy_registry_compiler_trust_catalog_json_invalid",
-        "policy_registry_compiler_trust_catalog_invalid",
-        "policy_registry_compiler_traversal_budget_invalid",
-        "policy_registry_compiler_verifier_invalid",
-        "policy_registry_compiler_status_invalid",
-      ]);
-      const code = String(error?.message || "");
-      nyraPolicyRegistryCompilerConfigurationError = safeCompilerConfigurationErrors.has(code)
-        ? code
-        : "policy_registry_compiler_configuration_invalid";
-    }
-  }
-  const nyraPolicyRegistryCompilerReady = nyraPolicyRegistryCompilerEnabled &&
-    nyraPolicyRegistryCompilerConfigurationError === null &&
-    nyraPolicyRegistryCompilerStatus?.ready === true;
-  let nyraPolicyRegistryProofConfigurationError = !nyraPolicyRegistryProofEnabledFlag.valid
-    ? nyraPolicyRegistryProofEnabledFlag.error
-    : !nyraPolicyRegistryProofRequiredFlag.valid
-      ? nyraPolicyRegistryProofRequiredFlag.error
-      : nyraPolicyRegistryProofRequired && !nyraPolicyRegistryProofEnabled
-        ? "policy_registry_proof_required_without_enabled"
-        : !["disabled", "remote"].includes(nyraPolicyRegistryCoreSignerMode)
-          ? "policy_registry_core_signer_mode_invalid"
-          : nyraPolicyRegistryProofEnabled && nyraPolicyRegistryCoreSignerMode !== "remote"
-            ? "policy_registry_core_signer_remote_required"
-            : null;
-  if (nyraPolicyRegistryProofEnabled &&
-    (!nyraPolicyRegistryCompilerEnabled || !nyraPolicyRegistryCompilerRequired)) {
-    nyraPolicyRegistryProofConfigurationError ||=
-      "policy_registry_proof_compiler_provenance_required";
-  }
-  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryCompilerConfigurationError) {
-    nyraPolicyRegistryProofConfigurationError ||= nyraPolicyRegistryCompilerConfigurationError;
-  }
-  if (nyraPolicyRegistryProofEnabled && !nyraPolicyRegistryCompilerReady) {
-    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_compiler_unavailable";
-  }
-  const nyraPolicyRegistryProductionInjectionPresent = nyraPolicyRegistryProofProduction && [
-    "nyraPolicyRegistryPostgresPool",
-    "nyraPolicyRegistryProofService",
-    "nyraPolicyRegistryStore",
-    "nyraPolicyRegistryClient",
-    "nyraPolicyRegistryCoordinator",
-    "nyraPolicyRegistryCoreSigner",
-    "nyraPolicyRegistryCoreSignerConfig",
-    "nyraPolicyRegistryCoreSignerFetch",
-    "nyraPolicyRegistryFetch",
-    "nyraPolicyRegistryProofEnv",
-    "nyraPolicyRegistryClientEnv",
-  ].some((field) => Object.hasOwn(options, field));
-  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProductionInjectionPresent) {
-    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_production_injection_forbidden";
-  }
-  const nyraPolicyRegistryProofEnv = nyraPolicyRegistryProofProduction
-    ? process.env
-    : options.nyraPolicyRegistryProofEnv || process.env;
-  const nyraPolicyRegistryPrivateMaterialPresent = Boolean(
-    process.env.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY ||
-    nyraPolicyRegistryProofEnv.CORE_NYRA_POLICY_REGISTRY_CORE_PRIVATE_KEY,
-  );
-  if (nyraPolicyRegistryPrivateMaterialPresent) {
-    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_core_private_key_forbidden";
-  }
-  const nyraPolicyRegistryCoreSignerTargetCommit =
-    process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT;
-  if (nyraPolicyRegistryProofProduction && nyraPolicyRegistryProofEnabled &&
-    (!BUILD_COMMIT_VERIFIABLE ||
-      nyraPolicyRegistryCoreSignerTargetCommit !== BUILD_COMMIT_SHA)) {
-    nyraPolicyRegistryProofConfigurationError ||=
-      "policy_registry_core_signer_target_commit_mismatch";
-  }
-  // An injected PostgreSQL version probe is a fully controlled test/host seam.
-  // Do not open implicit network pools behind it; callers that need database
-  // behavior can still provide the explicit pool options above.
-  const hasInjectedPostgresVersionProbe = nyraPolicyRegistryProofConfigurationError === null &&
-    Boolean(options.governedAgentPostgresVersionProbe);
-  const allowInactivePolicyRegistryInjection = !nyraPolicyRegistryProofProduction ||
-    !nyraPolicyRegistryProofEnabled;
-  const nyraPolicyRegistryPostgresPool = nyraPolicyRegistryProofConfigurationError === null
-    ? ((allowInactivePolicyRegistryInjection && options.nyraPolicyRegistryPostgresPool) ||
-      (!hasInjectedPostgresVersionProbe && /^postgres(?:ql)?:\/\//i.test(nyraPolicyRegistryDatabaseUrl)
-        ? new pg.Pool({ connectionString: nyraPolicyRegistryDatabaseUrl })
-        : null))
-    : null;
-  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProofProduction && !nyraPolicyRegistryPostgresPool) {
-    nyraPolicyRegistryProofConfigurationError ||= "policy_registry_postgres_required";
-  }
-  if (nyraPolicyRegistryPostgresPool &&
-    nyraPolicyRegistryPostgresPool !== options.nyraPolicyRegistryPostgresPool) {
-    internallyOwnedPostgresPools.add(nyraPolicyRegistryPostgresPool);
-  }
-  const nyraPolicyRegistryProofActivationEnabled = nyraPolicyRegistryProofEnabled &&
-    nyraPolicyRegistryProofConfigurationError === null;
-  let nyraPolicyRegistryCoreSigner = null;
-  if (nyraPolicyRegistryProofActivationEnabled) {
-    try {
-      nyraPolicyRegistryCoreSigner = !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCoreSigner
-        ? options.nyraPolicyRegistryCoreSigner
-        : createNyraPolicyRegistryCoreRemoteSigner({
-            origin: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ORIGIN,
-            path: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PATH,
-            service: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE,
-            targetCommit: nyraPolicyRegistryCoreSignerTargetCommit,
-            keyId: nyraPolicyRegistryProofEnv.CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID,
-            serviceToken: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN,
-            publicKey: process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ED25519_PUBLIC_KEY,
-            fetchImpl: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCoreSignerFetch
-              ? options.nyraPolicyRegistryCoreSignerFetch
-              : globalThis.fetch,
-            timeoutMs: optionalGenericWorkCoreJoinInteger(
-              process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TIMEOUT_MS,
-            ),
-            maxResponseBytes: optionalGenericWorkCoreJoinInteger(
-              process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MAX_RESPONSE_BYTES,
-            ),
-            probeCooldownMs: optionalGenericWorkCoreJoinInteger(
-              process.env.CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PROBE_COOLDOWN_MS,
-            ),
-          });
-      if (nyraPolicyRegistryProofProduction &&
-        nyraPolicyRegistryCoreSigner?.custody !== "external_remote_signer") {
-        throw new Error("policy_registry_external_core_signer_required");
-      }
-    } catch (error) {
-      nyraPolicyRegistryCoreSigner = null;
-      const code = String(error?.message || "");
-      const safeSignerConfigurationErrors = new Set([
-        "policy_registry_core_signer_key_id_invalid",
-        "policy_registry_core_signer_origin_invalid",
-        "policy_registry_core_signer_path_invalid",
-        "policy_registry_core_signer_probe_cooldown_invalid",
-        "policy_registry_core_signer_public_key_invalid",
-        "policy_registry_core_signer_response_limit_invalid",
-        "policy_registry_core_signer_service_invalid",
-        "policy_registry_core_signer_service_token_required",
-        "policy_registry_core_signer_target_commit_invalid",
-        "policy_registry_core_signer_timeout_invalid",
-        "policy_registry_core_signer_transport_unavailable",
-        "policy_registry_external_core_signer_required",
-      ]);
-      nyraPolicyRegistryProofConfigurationError ||= safeSignerConfigurationErrors.has(code)
-        ? code
-        : "policy_registry_core_signer_configuration_invalid";
-    }
-  }
-  let nyraPolicyRegistryProofService = null;
-  if (nyraPolicyRegistryProofEnabled && nyraPolicyRegistryProofConfigurationError === null) {
-    if (!nyraPolicyRegistryPostgresPool) {
-      nyraPolicyRegistryProofConfigurationError = "policy_registry_postgres_required";
-    } else {
-      nyraPolicyRegistryProofService = !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryProofService
-        ? options.nyraPolicyRegistryProofService
-        : createNyraPolicyRegistryProofService({
-            pool: nyraPolicyRegistryPostgresPool,
-            env: nyraPolicyRegistryProofEnv,
-            signer: nyraPolicyRegistryCoreSigner,
-            compilerProvenanceVerifier: nyraPolicyRegistryCompilerProvenanceVerifier,
-          });
-    }
-  }
-  const unavailablePolicyRegistry = Object.freeze({
-    kind: "unavailable",
-    restart_durable: false,
-    distributed: false,
-    evaluate: () => ({
-      verdict: "DENY",
-      reasons: ["policy_registry_unavailable"],
-      snapshot_digest: null,
-      snapshot_present: false,
-      snapshot_verified: false,
-      fail_closed: true,
-    }),
-    activate: async () => { throw new Error("policy_registry_unavailable"); },
-    rollback: async () => { throw new Error("policy_registry_unavailable"); },
-    resolveRollbackTarget: async () => { throw new Error("policy_registry_unavailable"); },
-    reconcile: async () => { throw new Error("policy_registry_unavailable"); },
-    status: async () => ({
-      configured: false,
-      backend: "unavailable",
-      restart_durable: false,
-      distributed: false,
-      compiler_provenance_persistence: false,
-      compiler_input_persisted: false,
-      state: "unavailable",
-      ready: false,
-      reason: "policy_registry_unavailable",
-    }),
-  });
-  const allowPolicyRegistryInjection = allowInactivePolicyRegistryInjection;
-  const nyraPolicyRegistry = allowPolicyRegistryInjection && options.nyraPolicyRegistryStore
-    ? options.nyraPolicyRegistryStore
-    : nyraPolicyRegistryPostgresPool
-      ? createPostgresNyraPolicyRegistryStore({
-          pool: nyraPolicyRegistryPostgresPool,
-          consumeCoreReceipt: allowPolicyRegistryInjection && options.consumeNyraPolicyRegistryCoreReceipt
-            ? options.consumeNyraPolicyRegistryCoreReceipt
-            : nyraPolicyRegistryProofService?.consume,
-          verifyActivationSnapshot: allowPolicyRegistryInjection && options.verifyNyraPolicyRegistryActivationSnapshot
-            ? options.verifyNyraPolicyRegistryActivationSnapshot
-            : nyraPolicyRegistryProofService?.verifyActivationSnapshot,
-          verifyCompilerProvenanceRecord:
-            nyraPolicyRegistryCompilerProvenanceVerifier?.verifyPersistedRecord,
-        })
-      : nyraPolicyRegistryProofEnabled || nyraPolicyRegistryCompilerConfigurationError
-        ? unavailablePolicyRegistry
-        : createNyraPolicyRegistryStore({
-            filePath: path.join(storageRoot, "nyra-policy-registry.json"),
-            consumeCoreReceipt: options.consumeNyraPolicyRegistryCoreReceipt,
-            verifyActivationSnapshot: options.verifyNyraPolicyRegistryActivationSnapshot,
-            verifyCompilerProvenanceRecord:
-              nyraPolicyRegistryCompilerProvenanceVerifier?.verifyPersistedRecord,
-          });
-  const nyraPolicyRegistryClient = nyraPolicyRegistryProofEnabled &&
-    nyraPolicyRegistryProofConfigurationError === null
-    ? (!nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryClient) ||
-      createNyraPolicyRegistryClient({
-        env: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryClientEnv
-          ? options.nyraPolicyRegistryClientEnv
-          : process.env,
-        fetchImpl: !nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryFetch
-          ? options.nyraPolicyRegistryFetch
-          : globalThis.fetch,
-      })
-    : null;
-  const nyraPolicyRegistryCoordinator = nyraPolicyRegistryProofEnabled &&
-    nyraPolicyRegistryProofConfigurationError === null && nyraPolicyRegistryProofService &&
-    nyraPolicyRegistryClient
-    ? (!nyraPolicyRegistryProofProduction && options.nyraPolicyRegistryCoordinator) ||
-      createNyraPolicyRegistryCoordinator({
-        proofService: nyraPolicyRegistryProofService,
-        registryStore: nyraPolicyRegistry,
-        nyraClient: nyraPolicyRegistryClient,
-        compilerProvenanceVerifier: nyraPolicyRegistryCompilerProvenanceVerifier,
-      })
-    : null;
   const reviews = reviewStore(storageRoot);
   const evidence = evidenceStore(storageRoot);
-  // Deep Branch V2 has Core-only trust material. Missing or invalid material
-  // leaves V1 and the current relational DTT healthy while V2 fails closed.
-  const nyraDeepV2Env = options.nyraDeepV2Env || process.env;
-  const nyraDeepV2LedgerSecret = String(
-    options.nyraDeepV2LedgerSecret
-      ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_LEDGER_SECRET
-      ?? "",
-  ).trim();
-  const nyraDeepV2McpSigningSecret = String(
-    options.nyraDeepV2McpSigningSecret
-      ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET
-      ?? "",
-  ).trim();
-  const nyraDeepV2AttestationPrivateKey = String(
-    options.nyraDeepV2AttestationPrivateKey
-      ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_PRIVATE_KEY
-      ?? "",
-  ).trim();
-  const nyraDeepV2AttestationKeyId = String(
-    options.nyraDeepV2AttestationKeyId
-      ?? nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_ATTESTATION_KEY_ID
-      ?? "universal-core-nyra-v2",
-  ).trim();
-  let nyraDeepV2Ledger = options.nyraDeepV2EvidenceLedger || null;
-  let nyraDeepV2Attester = options.nyraDeepV2Attester || null;
-  let nyraDeepV2SourceVerifier = options.nyraDeepV2SourceVerifier || null;
-  const nyraDeepV2StateRoot = String(
-    options.nyraDeepV2StateRoot
-      || ((options.storageRoot || process.env.CORE_SERVICE_STORAGE_ROOT)
-        ? path.join(storageRoot, "nyra-deep-v2")
-        : ""),
-  ).trim();
-  const nyraDeepV2SourceRegistry = options.nyraDeepV2SourceRegistry
-    || createResearchSourceRegistry(nyraBranchCatalog("skinharmony").branches);
-  let nyraDeepV2IntegrationReason = null;
-  if (!nyraDeepV2Ledger && nyraDeepV2LedgerSecret.length >= 32) {
-    try {
-      nyraDeepV2Ledger = createNyraDeepV2EvidenceLedger({
-        secret: nyraDeepV2LedgerSecret,
-        storagePath: nyraDeepV2StateRoot
-          ? path.join(nyraDeepV2StateRoot, "evidence-ledger.json")
-          : "",
-      });
-    } catch {
-      nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_ledger_unavailable";
-    }
-  }
-  if (
-    !nyraDeepV2Attester
-    && nyraDeepV2Ledger
-    && nyraDeepV2AttestationPrivateKey
-  ) {
-    try {
-      nyraDeepV2Attester = createNyraDeepBranchV2Attester({
-        ledger: nyraDeepV2Ledger,
-        signingPrivateKey: nyraDeepV2AttestationPrivateKey,
-        keyId: nyraDeepV2AttestationKeyId,
-      });
-    } catch {
-      nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_attester_unavailable";
-    }
-  }
-  if (!nyraDeepV2SourceVerifier) {
-    try {
-      nyraDeepV2SourceVerifier = createNyraDeepV2SourceVerifier({
-        fetchImpl: options.nyraDeepV2SourceFetchImpl,
-        dnsLookup: options.nyraDeepV2SourceDnsLookup,
-        sourceRegistry: nyraDeepV2SourceRegistry,
-        timeoutMs: Number(
-          nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_SOURCE_FETCH_TIMEOUT_MS || 5_000,
-        ),
-        maxBytes: Number(
-          nyraDeepV2Env.CORE_NYRA_DEEP_BRANCH_V2_SOURCE_MAX_BYTES || 250_000,
-        ),
-      });
-    } catch {
-      nyraDeepV2IntegrationReason = nyraDeepV2IntegrationReason
-        || "nyra_deep_branch_v2_source_verifier_unavailable";
-    }
-  }
-  if (
-    !nyraDeepV2IntegrationReason
-    && (!nyraDeepV2Ledger || !nyraDeepV2Attester || !nyraDeepV2SourceVerifier)
-  ) {
-    nyraDeepV2IntegrationReason = "nyra_deep_branch_v2_core_material_unavailable";
-  }
-  const nyraDeepV2McpRequestVerifier = options.nyraDeepV2McpRequestVerifier
-    || createNyraDeepV2McpRequestVerifier({
-      secret: nyraDeepV2McpSigningSecret,
-      storagePath: nyraDeepV2StateRoot
-        ? path.join(nyraDeepV2StateRoot, "mcp-request-replay.json")
-        : "",
-    });
-  const nyraDeepBranchV2Client = options.nyraDeepBranchV2Client
-    || createNyraDeepBranchV2Client({
-      env: nyraDeepV2Env,
-      fetchImpl: options.nyraDeepBranchV2FetchImpl || fetch,
-    });
   const tenants = tenantRegistryStore(storageRoot);
   const entityGraph = entityGraphStore(storageRoot);
   const intelligenceOutcomes = intelligenceOutcomeStore(storageRoot);
   const softwareJobs = createUniversalSoftwareJobManager({ adapters: options.softwareWorkerAdapters });
   const coreRuntime = options.coreRuntime || createCoreRuntimeWorker(options.coreRuntimeOptions);
-  const genericAgentRuntime = options.genericAgentRuntime || createGenericAgentRuntime();
-  const genericAgentCheckpoints = options.genericAgentCheckpointStore || createGenericAgentCheckpointStore({
-    root: path.join(storageRoot, "generic-agent-checkpoints"),
-  });
-  const genericAgentOrchestrator = options.genericAgentOrchestrator || createGenericAgentOrchestrator(options.genericAgentOrchestratorOptions);
-  const genericAgentOrchestrationStore = options.genericAgentOrchestrationStore || createGenericAgentOrchestrationStore({
-    root: path.join(storageRoot, "generic-agent-orchestrations"),
-  });
-  const governedAgentRegistry = options.governedAgentRegistry || createGovernedAgentRegistry();
-  const relationalOrchestrationSupervisor = options.relationalOrchestrationSupervisor || createRelationalOrchestrationSupervisor();
-  const governedAgentDatabaseUrl = String(process.env.GOVERNED_AGENT_DATABASE_URL || "").trim();
-  const governedAgentPostgresConfigured =
-    /^postgres(?:ql)?:\/\//i.test(governedAgentDatabaseUrl);
-  const dynamicTaskTreeStateStore = options.dynamicTaskTreeStateStore || (!hasInjectedPostgresVersionProbe && governedAgentDatabaseUrl
-    ? createPostgresDynamicTaskTreeStateStore({
-        connectionString: governedAgentDatabaseUrl,
-        pool: options.dynamicTaskTreePostgresPool || null,
-      })
-    : createFileDynamicTaskTreeStateStore({ root: path.join(storageRoot, "dynamic-task-trees") }));
-  const dynamicTaskTreeJoinVerdictStore = options.dynamicTaskTreeJoinVerdictStore
-    || (!hasInjectedPostgresVersionProbe && governedAgentDatabaseUrl
-      ? createPostgresDynamicTaskTreeJoinVerdictStore({
-          connectionString: governedAgentDatabaseUrl,
-          pool: options.dynamicTaskTreePostgresPool || null,
-        })
-      : createFileDynamicTaskTreeJoinVerdictStore({
-          root: path.join(storageRoot, "dynamic-task-tree-join-verdicts"),
-        }));
-  const dttAgentIdentitySecretCandidate = String(
-    options.dttAgentIdentitySigningSecret ?? process.env.DTT_AGENT_IDENTITY_SIGNING_SECRET ?? "",
-  ).trim();
-  const dttAgentIdentitySecret = dttAgentIdentitySecretCandidate.length >= 32
-    ? dttAgentIdentitySecretCandidate
-    : "";
-  const dttAgentIdentityPostgresPool = options.dttAgentIdentityPostgresPool
-    || (!hasInjectedPostgresVersionProbe && dttAgentIdentitySecret && governedAgentDatabaseUrl
-      ? new pg.Pool({ connectionString: governedAgentDatabaseUrl })
-      : null);
-  if (dttAgentIdentityPostgresPool && !options.dttAgentIdentityPostgresPool) {
-    internallyOwnedPostgresPools.add(dttAgentIdentityPostgresPool);
-  }
-  const governedAgentPostgresVersionPool =
-    options.governedAgentPostgresVersionProbe
-      ? null
-      : options.governedAgentPostgresVersionPool
-        || options.dynamicTaskTreePostgresPool
-        || dttAgentIdentityPostgresPool
-        || (governedAgentPostgresConfigured
-          ? new pg.Pool({
-              connectionString: governedAgentDatabaseUrl,
-              max: 1,
-              idleTimeoutMillis: 10_000,
-            })
-          : null);
-  if (governedAgentPostgresVersionPool
-    && !options.governedAgentPostgresVersionPool
-    && !options.dynamicTaskTreePostgresPool
-    && governedAgentPostgresVersionPool !== dttAgentIdentityPostgresPool) {
-    internallyOwnedPostgresPools.add(governedAgentPostgresVersionPool);
-  }
-  const governedAgentPostgresVersionProbe =
-    options.governedAgentPostgresVersionProbe
-    || (governedAgentPostgresVersionPool
-      ? createPostgresMajorVersionProbe({
-          pool: governedAgentPostgresVersionPool,
-        })
-      : null);
-  const dttVerificationTrustStore = options.dttVerificationTrustStore
-    || (dttAgentIdentityPostgresPool
-      ? createPostgresDttVerificationTrustStore({ pool: dttAgentIdentityPostgresPool })
-      : createFileDttVerificationTrustStore({
-        root: path.join(storageRoot, "dynamic-task-tree-verification-trust"),
-      }));
-  const dttAgentIdentityReceiptStore = options.dttAgentIdentityReceiptStore || (dttAgentIdentitySecret
-    ? (dttAgentIdentityPostgresPool
-      ? createPostgresDttAgentIdentityReceiptStore({ pool: dttAgentIdentityPostgresPool })
-      : createFileDttAgentIdentityReceiptStore({
-        file_path: path.join(storageRoot, "dynamic-task-tree-agent-identities.json"),
-      }))
-    : null);
-  const dttAgentIdentityReceiptService = options.dttAgentIdentityReceiptService
-    || (dttAgentIdentitySecret && dttAgentIdentityReceiptStore
-      ? createAsyncDttAgentIdentityReceiptService({
-        secret: dttAgentIdentitySecret,
-        store: dttAgentIdentityReceiptStore,
-        resolve_assignment: (input) => dttVerificationTrustStore.verifyAssignment(input),
-      })
-      : null);
-  const dttVerifierIdentityResolverConfigured = typeof options.resolveDttVerifierIdentity === "function"
-    || dttAgentIdentityReceiptService?.configured === true;
-  const resolveDttVerifierIdentity = dttVerifierIdentityResolverConfigured
-    ? (options.resolveDttVerifierIdentity || ((input) => dttAgentIdentityReceiptService.validate(input)))
-    : () => ({ verified: false });
-  const dynamicTaskTreeRuntime = options.dynamicTaskTreeRuntime || createDynamicTaskTreeRuntime({
-    state_store: dynamicTaskTreeStateStore,
-    resolve_verifier_identity: resolveDttVerifierIdentity,
-    resolve_evidence_artifact: (input) => dttVerificationTrustStore.verifyArtifact(input),
-  });
-  const dynamicTaskTreeRollout = dynamicTaskTreeRolloutConfig(
-    options.dynamicTaskTreeEnv || process.env,
-  );
-  const researchRuntime = options.researchRuntime || createResearchDistillationRuntime({
-    env: options.researchEnv || process.env,
-    storageRoot,
-  });
-  const researchAirlockMode = String(
-    options.researchAirlockMode
-      ?? process.env.CORE_RESEARCH_AIRLOCK_MODE
-      ?? "shadow",
-  ).trim().toLowerCase();
-  const researchAirlockShadowMonitor =
-    process.env.NODE_ENV === "production" && researchAirlockMode === "shadow";
-  const researchAirlockRuntime = options.researchAirlockRuntime || createResearchAirlockRuntime({
-    store: (researchAirlockMode === "enforced" || researchAirlockShadowMonitor) && governedAgentPostgresConfigured
-      ? createPostgresResearchAirlockStore({
-          connectionString: governedAgentDatabaseUrl,
-          pool: options.researchAirlockPostgresPool || null,
-        })
-      : null,
-    mode: researchAirlockMode,
-    shadowMonitorRequired: process.env.NODE_ENV === "production",
-    signingSecret: options.researchAirlockSigningSecret
-      ?? process.env.CORE_RESEARCH_AIRLOCK_SIGNING_SECRET
-      ?? process.env.CORE_EVIDENCE_SIGNING_SECRET
-      ?? "",
-    releaseCommitSha: BUILD_COMMIT_SHA,
-    transport: options.researchAirlockTransport,
-  });
-  const governedAgentActivationStore = options.governedAgentActivationStore || createGovernedAgentActivationStore({
-    root: path.join(storageRoot, "governed-agent-activations"),
-  });
-  const governedAgentBudgetStore = options.governedAgentBudgetStore || createGovernedAgentBudgetStore({ root: path.join(storageRoot, "governed-agent-budgets") });
-  const governedAgentQueueStore = options.governedAgentQueueStore || (governedAgentDatabaseUrl
-    ? createGovernedAgentPostgresQueueStore({ connectionString: governedAgentDatabaseUrl })
-    : createGovernedAgentQueueStore({ root: path.join(storageRoot, "governed-agent-queue") }));
-  const governedAgentDryRunRunner = options.governedAgentDryRunRunner || createGovernedAgentDryRunRunner({ queueStore: governedAgentQueueStore, audit });
-  // Core never instantiates, accepts, or invokes a provider credential vault.
-  // Native ChatGPT/Codex specialists are materialized by the host, not with an
-  // API key or a provider runner.  Keep the legacy values explicitly null so
-  // injected vaults, runners, and matching environment variables cannot
-  // reactivate the retired path.
-  const tenantProviderCredentials = null;
-  const ownerExecutionApprovals = options.ownerExecutionApprovals || createOwnerExecutionApprovalStore({
-    root: storageRoot,
-    credentialStore: null,
-  });
-  const hostNativeGovernanceEnabled = options.hostNativeGovernance
-    ? true
-    : String(
-        options.hostNativeGovernanceEnabled ??
-        process.env.CORE_HOST_NATIVE_GOVERNANCE_ENABLED ??
-        "false",
-      ).trim().toLowerCase() === "true";
-  const hostNativeSigningSecret = String(
-    options.hostNativeSigningSecret ??
-    process.env.CORE_HOST_NATIVE_SIGNING_SECRET ??
-    "",
-  ).trim();
-  const genericWorkCoreJoinProduction = String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
-  const genericWorkCoreJoinEnabledFlag = strictGenericWorkCoreJoinBoolean(
-    options.genericWorkCoreJoinEnabled ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_ENABLED,
-    false,
-    "generic_work_core_join_enabled_flag_invalid",
-  );
-  const genericWorkCoreJoinRequiredFlag = strictGenericWorkCoreJoinBoolean(
-    options.genericWorkCoreJoinRequired ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REQUIRED,
-    false,
-    "generic_work_core_join_required_flag_invalid",
-  );
-  const genericWorkCoreJoinEnabled = genericWorkCoreJoinEnabledFlag.value;
-  // An invalid explicit required flag can never become an implicit opt-out.
-  const genericWorkCoreJoinRequired = genericWorkCoreJoinRequiredFlag.valid
-    ? genericWorkCoreJoinRequiredFlag.value
-    : true;
-  const genericWorkCoreJoinRemoteSignerMode = String(
-    options.genericWorkCoreJoinSignerMode
-      ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE
-      ?? "disabled",
-  );
-  let genericWorkCoreJoinConfigurationError = !genericWorkCoreJoinEnabledFlag.valid
-    ? genericWorkCoreJoinEnabledFlag.error
-    : !genericWorkCoreJoinRequiredFlag.valid
-      ? genericWorkCoreJoinRequiredFlag.error
-      : genericWorkCoreJoinRequired && !genericWorkCoreJoinEnabled
-        ? "generic_work_core_join_required_without_enabled"
-        : !["disabled", "remote"].includes(genericWorkCoreJoinRemoteSignerMode)
-          ? "generic_work_core_join_signer_mode_invalid"
-          : null;
-  let genericWorkCoreJoinActivationEnabled = genericWorkCoreJoinEnabled
-    && genericWorkCoreJoinConfigurationError === null;
-  const genericWorkCoreJoinPrivateKey = String(
-    options.genericWorkCoreJoinEd25519PrivateKey ?? "",
-  ).trim();
-  const genericWorkCoreJoinKeyId = String(
-    options.genericWorkCoreJoinEd25519KeyId ?? "",
-  ).trim();
-  const genericWorkCoreJoinInjectedRemoteConfig = options.genericWorkCoreJoinRemoteSignerConfig;
-  if (genericWorkCoreJoinInjectedRemoteConfig !== undefined
-      && (!genericWorkCoreJoinInjectedRemoteConfig
-        || typeof genericWorkCoreJoinInjectedRemoteConfig !== "object"
-        || Array.isArray(genericWorkCoreJoinInjectedRemoteConfig))) {
-    genericWorkCoreJoinConfigurationError ||= "generic_work_core_join_signer_configuration_invalid";
-  }
-  if (genericWorkCoreJoinProduction && options.genericWorkCoreJoinSigner !== undefined) {
-    genericWorkCoreJoinConfigurationError ||= "generic_work_core_join_signer_injection_forbidden";
-  }
-  const genericWorkCoreJoinConfiguredTargetCommit =
-    genericWorkCoreJoinInjectedRemoteConfig?.targetCommit
-    ?? options.genericWorkCoreJoinRemoteSignerTargetCommit
-    ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TARGET_COMMIT
-    ?? BUILD_COMMIT_SHA;
-  if (genericWorkCoreJoinActivationEnabled
-      && genericWorkCoreJoinRemoteSignerMode === "remote"
-      && genericWorkCoreJoinProduction
-      && (!BUILD_COMMIT_VERIFIABLE || genericWorkCoreJoinConfiguredTargetCommit !== BUILD_COMMIT_SHA)) {
-    genericWorkCoreJoinConfigurationError ||= "generic_work_core_join_signer_target_commit_mismatch";
-  }
-  const genericWorkCoreJoinRemoteSignerConfig = genericWorkCoreJoinInjectedRemoteConfig
-    && typeof genericWorkCoreJoinInjectedRemoteConfig === "object"
-    && !Array.isArray(genericWorkCoreJoinInjectedRemoteConfig)
-    ? {
-        ...genericWorkCoreJoinInjectedRemoteConfig,
-        targetCommit: genericWorkCoreJoinConfiguredTargetCommit,
-      }
-    : {
-        origin: options.genericWorkCoreJoinRemoteSignerOrigin ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ORIGIN,
-        path: options.genericWorkCoreJoinRemoteSignerPath ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PATH,
-        service: options.genericWorkCoreJoinRemoteSignerService ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE,
-        targetCommit: genericWorkCoreJoinConfiguredTargetCommit,
-        purpose: options.genericWorkCoreJoinRemoteSignerPurpose ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PURPOSE,
-        keyId: options.genericWorkCoreJoinRemoteSignerKeyId ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID,
-        serviceToken: options.genericWorkCoreJoinRemoteSignerServiceToken ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN,
-        publicKey: options.genericWorkCoreJoinRemoteSignerPublicKey ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY,
-        jwks: options.genericWorkCoreJoinRemoteSignerJwks ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_JWKS,
-        fetchImpl: options.genericWorkCoreJoinRemoteSignerFetch,
-        timeoutMs: optionalGenericWorkCoreJoinInteger(
-          options.genericWorkCoreJoinRemoteSignerTimeoutMs
-            ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TIMEOUT_MS,
-        ),
-        maxResponseBytes: optionalGenericWorkCoreJoinInteger(
-          options.genericWorkCoreJoinRemoteSignerMaxResponseBytes
-            ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_MAX_RESPONSE_BYTES,
-        ),
-      };
-  genericWorkCoreJoinActivationEnabled = genericWorkCoreJoinEnabled
-    && genericWorkCoreJoinConfigurationError === null;
-  const genericWorkCoreJoinPostgresPool = options.genericWorkCoreJoinPostgresPool
-    || governedAgentPostgresVersionPool;
-  const genericWorkCoreJoinStore = genericWorkCoreJoinActivationEnabled
-    ? options.genericWorkCoreJoinStore
-      || (governedAgentPostgresConfigured && genericWorkCoreJoinPostgresPool
-        ? createPostgresGenericWorkCoreJoinStore({ pool: genericWorkCoreJoinPostgresPool })
-        : null)
-    : null;
-  const genericWorkCoreJoinSemanticCodes = new Set([
-    "acceptance_criteria_invalid",
-    "acceptance_criteria_invalid_duplicate",
-    "acceptance_criterion_invalid",
-    "adapter_unsupported",
-    "clock_invalid",
-    "evidence_duplicate",
-    "evidence_invalid",
-    "generic_work_core_join_adapter_mismatch",
-    "generic_work_core_join_context_invalid",
-    "generic_work_core_join_denied",
-    "generic_work_core_join_idempotency_conflict",
-    "generic_work_core_join_idempotency_digest_mismatch",
-    "generic_work_core_join_input_invalid",
-    "generic_work_core_join_key_id_mismatch",
-    "generic_work_core_join_nonce_replayed",
-    "generic_work_core_join_request_invalid",
-    "generic_work_core_join_tenant_id_mismatch",
-    "generic_work_core_join_verdict_digest_invalid",
-    "generic_work_core_join_verdict_invalid",
-    "generic_work_core_join_work_id_mismatch",
-    "idempotency_digest_invalid",
-    "independent_verifier_acceptance_criteria_digest_mismatch",
-    "independent_verifier_adapter_mismatch",
-    "independent_verifier_evidence_digest_mismatch",
-    "independent_verifier_not_distinct",
-    "independent_verifier_receipt_expired",
-    "independent_verifier_receipt_invalid",
-    "independent_verifier_receipt_untrusted",
-    "independent_verifier_task_state_digest_mismatch",
-    "independent_verifier_tenant_id_mismatch",
-    "independent_verifier_work_id_mismatch",
-    "requester_identity_invalid",
-    "requester_session_invalid",
-    "task_state_invalid",
-    "task_state_invalid_duplicate",
-    "tenant_id_invalid",
-    "work_id_invalid",
-  ]);
-  const genericWorkCoreJoinSignerRejectedCodes = new Set([
-    "generic_work_core_join_signature_invalid",
-    "generic_work_core_join_signer_digest_mismatch",
-    "generic_work_core_join_signer_key_id_mismatch",
-    "generic_work_core_join_signer_purpose_mismatch",
-    "generic_work_core_join_signer_redirect_denied",
-    "generic_work_core_join_signer_response_invalid",
-    "generic_work_core_join_signer_response_too_large",
-    "generic_work_core_join_signer_service_mismatch",
-    "generic_work_core_join_signer_signature_invalid",
-    "generic_work_core_join_signer_target_commit_mismatch",
-  ]);
-  const genericWorkCoreJoinSafeReason = (value, fallback) => {
-    const code = String(value?.message || value || "").trim();
-    return genericWorkCoreJoinInfrastructureCode(code) || (genericWorkCoreJoinSemanticCodes.has(code) ? code : fallback);
-  };
-  const genericWorkCoreJoinSafeCustody = (value) => {
-    const custody = String(value || "").trim();
-    return /^(?:local_process_key|external_remote_signer|external_kms|kms|hsm)$/.test(custody)
-      ? custody
-      : custody
-        ? "external"
-        : null;
-  };
-  const genericWorkCoreJoinSafeSignerState = (value, fallback = "invalid") => {
-    const state = String(value || "").trim();
-    return new Set(["configured", "forbidden", "invalid", "ready", "rejected", "unavailable", "unconfigured"]).has(state)
-      ? state
-      : fallback;
-  };
-  let genericWorkCoreJoinSigner = null;
-  let genericWorkCoreJoinSignerState = "unconfigured";
-  let genericWorkCoreJoinSignerReason = "generic_work_core_join_signer_unconfigured";
-  let genericWorkCoreJoinSignerCustody = null;
-  let genericWorkCoreJoinSignerFailureLatched = false;
-  let genericWorkCoreJoinIssueSequence = 0;
-  let genericWorkCoreJoinSignerFailureSequence = 0;
-  let genericWorkCoreJoinSignerRecoverySequence = 0;
-  try {
-    if (!genericWorkCoreJoinActivationEnabled) {
-      genericWorkCoreJoinSignerReason = genericWorkCoreJoinConfigurationError
-        || "generic_work_core_join_disabled";
-    } else if (genericWorkCoreJoinRemoteSignerMode === "remote") {
-      genericWorkCoreJoinSigner = !genericWorkCoreJoinProduction && options.genericWorkCoreJoinSigner
-        ? options.genericWorkCoreJoinSigner
-        : createGenericWorkCoreJoinRemoteSigner(genericWorkCoreJoinRemoteSignerConfig);
-    } else if (options.genericWorkCoreJoinSigner && !genericWorkCoreJoinProduction) {
-      // Explicit dependency injection is a non-production test seam only.
-      genericWorkCoreJoinSigner = options.genericWorkCoreJoinSigner;
-    } else if (genericWorkCoreJoinPrivateKey && genericWorkCoreJoinKeyId && !genericWorkCoreJoinProduction) {
-      genericWorkCoreJoinSigner = createLocalGenericWorkCoreJoinSigner({ privateKey: genericWorkCoreJoinPrivateKey, keyId: genericWorkCoreJoinKeyId });
-    } else if (genericWorkCoreJoinPrivateKey || genericWorkCoreJoinKeyId) {
-      genericWorkCoreJoinSignerCustody = "local_process_key";
-      genericWorkCoreJoinSignerState = "forbidden";
-      genericWorkCoreJoinSignerReason = genericWorkCoreJoinProduction
-        ? "generic_work_core_join_local_signer_forbidden"
-        : "generic_work_core_join_signing_unavailable";
-    }
-    if (genericWorkCoreJoinSigner) {
-      genericWorkCoreJoinSignerCustody = genericWorkCoreJoinSafeCustody(genericWorkCoreJoinSigner.custody || "external");
-      if (genericWorkCoreJoinProduction && genericWorkCoreJoinSignerCustody === "local_process_key") {
-        genericWorkCoreJoinSigner = null;
-        genericWorkCoreJoinSignerState = "forbidden";
-        genericWorkCoreJoinSignerReason = "generic_work_core_join_local_signer_forbidden";
-      } else if (genericWorkCoreJoinProduction && !["external_remote_signer", "external_kms", "kms", "hsm"].includes(genericWorkCoreJoinSignerCustody)) {
-        genericWorkCoreJoinSigner = null;
-        genericWorkCoreJoinSignerState = "invalid";
-        genericWorkCoreJoinSignerReason = "generic_work_core_join_external_signer_required";
-      } else {
-        const signerHealth = typeof genericWorkCoreJoinSigner.health === "function"
-          ? genericWorkCoreJoinSigner.health()
-          : null;
-        genericWorkCoreJoinSignerState = genericWorkCoreJoinSafeSignerState(
-          signerHealth?.signer_state || genericWorkCoreJoinSigner.signer_state || "configured",
-          "unavailable",
-        );
-        genericWorkCoreJoinSignerReason = genericWorkCoreJoinSafeReason(
-          signerHealth?.reason || genericWorkCoreJoinSigner.signer_reason,
-          genericWorkCoreJoinSignerState === "unavailable"
-            ? "generic_work_core_join_signer_unavailable"
-            : null,
-        );
-      }
-    }
-  } catch (error) {
-    genericWorkCoreJoinSigner = null;
-    genericWorkCoreJoinSignerState = "invalid";
-    genericWorkCoreJoinSignerReason = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_signer_configuration_invalid");
-    genericWorkCoreJoinConfigurationError ||= genericWorkCoreJoinSignerReason;
-    genericWorkCoreJoinActivationEnabled = false;
-    genericWorkCoreJoinSignerCustody = genericWorkCoreJoinRemoteSignerMode === "remote"
-      ? "external_remote_signer"
-      : genericWorkCoreJoinSignerCustody;
-  }
-  let genericWorkCoreJoinStoreState = !genericWorkCoreJoinActivationEnabled
-    ? "disabled"
-    : genericWorkCoreJoinStore
-      ? "initializing"
-      : "unavailable";
-  let genericWorkCoreJoinStoreError = null;
-  const genericWorkCoreJoinStoreInitialization = !genericWorkCoreJoinActivationEnabled
-    ? Promise.resolve()
-    : genericWorkCoreJoinStore?.initialize
-    ? Promise.resolve().then(() => genericWorkCoreJoinStore.initialize()).then(() => { genericWorkCoreJoinStoreState = "ready"; }).catch((error) => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_store_initialization_failed"); })
-    : Promise.resolve().then(() => { genericWorkCoreJoinStoreState = "failed"; genericWorkCoreJoinStoreError = "initialize_unavailable"; });
-  let genericWorkCoreJoinAuthority = null;
-  if (genericWorkCoreJoinSigner
-      && dttAgentIdentitySecret
-      && genericWorkCoreJoinStore?.restart_durable === true
-      && (!genericWorkCoreJoinProduction || genericWorkCoreJoinStore?.distributed === true)) {
-    try {
-      genericWorkCoreJoinAuthority = createGenericWorkCoreJoinAuthority({
-          signer: genericWorkCoreJoinSigner,
-          store: genericWorkCoreJoinStore,
-          verifyIndependentVerifierReceipt: (receipt) => {
-            const { signature, ...unsigned } = receipt || {};
-            const expected = crypto.createHmac("sha256", dttAgentIdentitySecret)
-              .update(`generic_work_verifier_receipt_v1\0${genericWorkCoreJoinDigest(unsigned)}`).digest("base64url");
-            const left = Buffer.from(String(signature || ""));
-            const right = Buffer.from(expected);
-            return left.length > 0 && left.length === right.length && crypto.timingSafeEqual(left, right);
-          },
-        });
-    } catch (error) {
-      genericWorkCoreJoinAuthority = null;
-      genericWorkCoreJoinSignerState = "invalid";
-      genericWorkCoreJoinSignerReason = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_signer_configuration_invalid");
-    }
-  }
-  const genericWorkCoreJoinVerifier = genericWorkCoreJoinAuthority ? createGenericWorkCoreJoinVerdictVerifier({ publicKey: genericWorkCoreJoinSigner.public_key, keyId: genericWorkCoreJoinSigner.key_id }) : null;
-  const genericWorkCoreJoinProbeCooldownMs = Math.min(60_000, Math.max(100, Number(
-    options.genericWorkCoreJoinSignerProbeCooldownMs
-      ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_SIGNER_PROBE_COOLDOWN_MS
-      ?? 5_000,
-  ) || 5_000));
-  const genericWorkCoreJoinProbeTimeoutMs = Math.min(10_000, Math.max(100, Number(
-    options.genericWorkCoreJoinSignerProbeTimeoutMs
-      ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_SIGNER_PROBE_TIMEOUT_MS
-      ?? 2_000,
-  ) || 2_000));
-  const genericWorkCoreJoinProbeNow = typeof options.genericWorkCoreJoinProbeNow === "function"
-    ? options.genericWorkCoreJoinProbeNow
-    : () => Date.now();
-  let genericWorkCoreJoinProbeInFlight = null;
-  let genericWorkCoreJoinProbeLastAttemptAt = Number.NEGATIVE_INFINITY;
-  let genericWorkCoreJoinProbeAttempts = 0;
-  const genericWorkCoreJoinSignerHealth = () => {
-    if (typeof genericWorkCoreJoinSigner?.health !== "function") {
-      return {
-        signer_state: genericWorkCoreJoinSignerState,
-        reason: genericWorkCoreJoinSignerReason,
-      };
-    }
-    try {
-      const signerHealth = genericWorkCoreJoinSigner.health();
-      const reportedState = genericWorkCoreJoinSafeSignerState(
-        signerHealth?.signer_state || genericWorkCoreJoinSignerState,
-        genericWorkCoreJoinSignerState,
-      );
-      // Signer-owned health may degrade application readiness, but only a
-      // locally verified application-owned probe may promote it to ready.
-      const effectiveState = reportedState === "ready"
-        && genericWorkCoreJoinSignerState !== "ready"
-        ? genericWorkCoreJoinSignerState
-        : reportedState;
-      return {
-        signer_state: effectiveState === "configured"
-          && genericWorkCoreJoinSignerState !== "configured"
-          ? genericWorkCoreJoinSignerState
-          : effectiveState,
-        reason: genericWorkCoreJoinSafeReason(
-          effectiveState === reportedState
-            ? signerHealth?.reason
-            : genericWorkCoreJoinSignerReason,
-          genericWorkCoreJoinSignerReason,
-        ),
-      };
-    } catch {
-      return {
-        signer_state: "unavailable",
-        reason: "generic_work_core_join_signer_health_unavailable",
-      };
-    }
-  };
-  const ensureGenericWorkCoreJoinSignerReady = async () => {
-    if (!genericWorkCoreJoinActivationEnabled
-        || !genericWorkCoreJoinAuthority
-        || !genericWorkCoreJoinVerifier
-        || genericWorkCoreJoinStoreState !== "ready"
-        || genericWorkCoreJoinSignerFailureLatched) return false;
-    const current = genericWorkCoreJoinSignerHealth();
-    // A remote client may complete after this service's stricter probe deadline.
-    // Its late health transition must not promote the application without a new
-    // bounded probe that starts after the cooldown.
-    if (current.signer_state === "ready" && genericWorkCoreJoinSignerState === "ready") return true;
-    if (["forbidden", "invalid", "unconfigured"].includes(current.signer_state)) return false;
-    if (genericWorkCoreJoinProbeInFlight) return genericWorkCoreJoinProbeInFlight;
-    const nowValue = Number(genericWorkCoreJoinProbeNow());
-    if (!Number.isFinite(nowValue)
-        || nowValue - genericWorkCoreJoinProbeLastAttemptAt < genericWorkCoreJoinProbeCooldownMs) return false;
-    genericWorkCoreJoinProbeLastAttemptAt = nowValue;
-    genericWorkCoreJoinProbeAttempts += 1;
-    const challengeDigest = genericWorkCoreJoinDigest({
-      schema_version: "generic_work_core_join_signer_challenge_v1",
-      service: SERVICE_NAME,
-      build_commit: BUILD_COMMIT_SHA || "development",
-      key_id: genericWorkCoreJoinAuthority.signer_metadata.key_id,
-      public_key_fingerprint: genericWorkCoreJoinAuthority.signer_metadata.public_key_fingerprint,
-      nonce: crypto.randomBytes(32).toString("hex"),
-    });
-    let challengeTimeout;
-    const signatureOperation = Promise.resolve()
-      .then(() => genericWorkCoreJoinSigner.signDigest(challengeDigest));
-    void signatureOperation.catch(() => {});
-    const boundedSignature = Promise.race([
-      signatureOperation,
-      new Promise((_, reject) => {
-        challengeTimeout = setTimeout(
-          () => reject(new Error("generic_work_core_join_signer_timeout")),
-          genericWorkCoreJoinProbeTimeoutMs,
-        );
-        challengeTimeout.unref?.();
-      }),
-    ]);
-    const probeResult = boundedSignature
-      .then((signature) => {
-        verifyGenericWorkCoreJoinDigestSignature({
-          digest: challengeDigest,
-          signature,
-          publicKey: genericWorkCoreJoinSigner.public_key,
-        });
-        genericWorkCoreJoinSignerState = "ready";
-        genericWorkCoreJoinSignerReason = null;
-        return true;
-      })
-      .catch((error) => {
-        const code = genericWorkCoreJoinSignerInfrastructureCode(error)
-          || "generic_work_core_join_signer_unavailable";
-        genericWorkCoreJoinSignerState = genericWorkCoreJoinSignerRejectedCodes.has(code)
-          ? "rejected"
-          : "unavailable";
-        genericWorkCoreJoinSignerReason = code;
-        return false;
-      })
-      .finally(() => {
-        clearTimeout(challengeTimeout);
-      });
-    genericWorkCoreJoinProbeInFlight = probeResult;
-    // Keep the single-flight barrier after an outer timeout until the underlying
-    // signer call settles. This prevents an old live operation overlapping a
-    // retry, while callers still receive the bounded fail-closed result.
-    void Promise.allSettled([signatureOperation, probeResult]).then(() => {
-      if (genericWorkCoreJoinProbeInFlight === probeResult) {
-        const settledAt = Number(genericWorkCoreJoinProbeNow());
-        if (Number.isFinite(settledAt)) {
-          genericWorkCoreJoinProbeLastAttemptAt = Math.max(
-            genericWorkCoreJoinProbeLastAttemptAt,
-            settledAt,
-          );
-        }
-        genericWorkCoreJoinProbeInFlight = null;
-      }
-    });
-    return probeResult;
-  };
-  const bootstrapAuthorityTrustPinRaw = String(
-    options.bootstrapAuthorityTrustPinJson ??
-    process.env.CORE_BOOTSTRAP_AUTHORITY_TRUST_PIN_JSON ??
-    "",
-  ).trim();
-  let bootstrapAuthorityTrustPin = null;
-  let bootstrapAuthorityAttestationStatus = "unavailable";
-  let bootstrapReleaseExceptionStore = options.bootstrapReleaseExceptionStore || null;
-  let bootstrapReleaseExceptionStoreState = bootstrapReleaseExceptionStore ? "initializing" : "unavailable";
-  let bootstrapReleaseExceptionStoreError = null;
-  if (bootstrapAuthorityTrustPinRaw) {
-    try {
-      bootstrapAuthorityTrustPin = parseBootstrapAuthorityTrustPin(bootstrapAuthorityTrustPinRaw);
-      if (!governedAgentPostgresConfigured || !governedAgentPostgresVersionPool) {
-        bootstrapReleaseExceptionStoreState = "postgres_unavailable";
-      } else if (!bootstrapReleaseExceptionStore) {
-        bootstrapReleaseExceptionStore = createPostgresBootstrapAuthorityStore({
-          pool: governedAgentPostgresVersionPool,
-        });
-        bootstrapReleaseExceptionStoreState = "initializing";
-      }
-    } catch (error) {
-      bootstrapReleaseExceptionStoreState = "trust_pin_invalid";
-      bootstrapReleaseExceptionStoreError = String(error?.message || "trust_pin_invalid").slice(0, 120);
-    }
-  }
-  const bootstrapReleaseExceptionStoreInitialization = bootstrapReleaseExceptionStore?.initialize &&
-    bootstrapAuthorityTrustPin
-    ? Promise.resolve().then(async () => {
-      await bootstrapReleaseExceptionStore.initialize();
-      const key = await bootstrapReleaseExceptionStore.resolveActiveTrustKey({
-        tenant_id: bootstrapAuthorityTrustPin.tenant_id,
-        authority_key_id: bootstrapAuthorityTrustPin.authority_key_id,
-      });
-      const localSoftwareUnattested = key.authority_provider === "local_pin" &&
-        key.attestation_status === "UNATTESTED_LOCAL_SOFTWARE" &&
-        key.provider_attestation_digest == null;
-      if (key.public_key_sha256 !== bootstrapAuthorityTrustPin.public_key_sha256 ||
-          key.genesis_record_digest !== bootstrapAuthorityTrustPin.genesis_record_digest ||
-          key.authority_provider !== "local_pin" || key.algorithm !== "ECDSA_P256_SHA256_P1363" ||
-          !localSoftwareUnattested) {
-        bootstrapAuthorityFail("bootstrap_authority_trust_pin_mismatch");
-      }
-      bootstrapAuthorityAttestationStatus = key.attestation_status;
-      bootstrapReleaseExceptionStoreState = "ready";
-    }).catch((error) => {
-      bootstrapReleaseExceptionStoreState = "failed";
-      bootstrapReleaseExceptionStoreError = String(error?.message || "initialization_failed").slice(0, 120);
-    })
-    : Promise.resolve();
-  const bootstrapReleaseExceptionAdapter = bootstrapReleaseExceptionStore && bootstrapAuthorityTrustPin
-    ? Object.freeze({
-        async verifyAndRecord({ receipt, expected } = {}) {
-          await bootstrapReleaseExceptionStoreInitialization;
-          if (bootstrapReleaseExceptionStoreState !== "ready") {
-            bootstrapAuthorityFail("bootstrap_release_exception_store_unavailable");
-          }
-          if (!receipt || !expected || expected.tenant_id !== bootstrapAuthorityTrustPin.tenant_id ||
-              expected.action !== "github.merge" ||
-              typeof expected.required_checks_policy_digest !== "string" ||
-              typeof expected.required_checks_digest !== "string" ||
-              !expected.bootstrap_deadlock_verdict ||
-              expected.bootstrap_deadlock_verdict.core_policy_verdict_digest !== receipt.core_policy_verdict_digest) {
-            bootstrapAuthorityFail("bootstrap_release_exception_expected_binding_invalid");
-          }
-          const trustKey = await bootstrapReleaseExceptionStore.resolveActiveTrustKey({
-            tenant_id: expected.tenant_id,
-            authority_key_id: receipt.authority_key_id,
-          });
-          if (!trustKey || trustKey.authority_provider !== "local_pin" ||
-              trustKey.algorithm !== "ECDSA_P256_SHA256_P1363") {
-            bootstrapAuthorityFail("bootstrap_trust_key_unavailable");
-          }
-          const candidate = verifyLocalPinBootstrapReleaseException({
-            receipt,
-            publicKeySpki: trustKey.public_key_spki_der,
-            nowMs: Date.now(),
-            expected: {
-              allowed_action: expected.action,
-              core_policy_verdict_digest: expected.bootstrap_deadlock_verdict.core_policy_verdict_digest,
-              exception_id: receipt.exception_id,
-              head_sha: expected.head_sha,
-              nonce: receipt.nonce,
-              owner_confirmation_digest: receipt.owner_confirmation_digest,
-              post_deploy_obligations_digest: receipt.post_deploy_obligations_digest,
-              pr_number: expected.pr_number,
-              repository: expected.repository,
-              required_checks_digest: expected.required_checks_policy_digest,
-              required_checks_results_digest: expected.required_checks_digest,
-              rollback_obligations_digest: receipt.rollback_obligations_digest,
-              tenant_id: expected.tenant_id,
-              work_id: expected.work_id,
-            },
-          });
-          await bootstrapReleaseExceptionStore.recordVerifiedCandidate({ receipt, candidate });
-          return Object.freeze({ candidate });
-        },
-        async consume({ candidate, expected, action_ticket_id, consumed_by } = {}) {
-          await bootstrapReleaseExceptionStoreInitialization;
-          if (bootstrapReleaseExceptionStoreState !== "ready" || !candidate || !expected ||
-              expected.tenant_id !== bootstrapAuthorityTrustPin.tenant_id || expected.action !== "github.merge") {
-            bootstrapAuthorityFail("bootstrap_release_exception_store_unavailable");
-          }
-          const actionRequestDigest = crypto.createHash("sha256").update(
-            `bootstrap_release_exception_action_request_v1\0${bootstrapReleaseExceptionCanonicalJson({
-              action_ticket_id,
-              consumed_by,
-              head_sha: expected.head_sha,
-              pr_number: expected.pr_number,
-              repository: expected.repository,
-              tenant_id: expected.tenant_id,
-              work_id: expected.work_id,
-            })}`,
-            "utf8",
-          ).digest("hex");
-          const recorded = await bootstrapReleaseExceptionStore.read({
-            tenant_id: expected.tenant_id,
-            exception_id: candidate.exception_id,
-          });
-          const persisted = recorded?.receipt;
-          const receipt = persisted?.receipt;
-          if (!persisted || !receipt || persisted.receipt_digest !== candidate.receipt_digest ||
-              receipt.tenant_id !== expected.tenant_id || receipt.work_id !== expected.work_id ||
-              receipt.repository !== expected.repository || receipt.pr_number !== expected.pr_number ||
-              receipt.head_sha !== expected.head_sha || receipt.allowed_action !== expected.action ||
-              receipt.authority_key_id !== persisted.authority_key_id || recorded.revocation) {
-            bootstrapAuthorityFail("bootstrap_release_exception_not_eligible");
-          }
-          if (recorded.consumption) {
-            const consumption = recorded.consumption;
-            const outbox = recorded.outbox;
-            if (consumption.tenant_id !== expected.tenant_id ||
-                consumption.exception_id !== receipt.exception_id ||
-                consumption.receipt_digest !== persisted.receipt_digest ||
-                consumption.work_id !== expected.work_id || consumption.repository !== expected.repository ||
-                Number(consumption.pr_number) !== Number(expected.pr_number) ||
-                consumption.head_sha !== expected.head_sha || consumption.allowed_action !== expected.action ||
-                consumption.action_request_digest !== actionRequestDigest || consumption.consumed_by !== consumed_by ||
-                !outbox || outbox.action_request_digest !== actionRequestDigest ||
-                outbox.tenant_id !== expected.tenant_id || outbox.exception_id !== receipt.exception_id ||
-                outbox.allowed_action !== expected.action || outbox.target?.repository !== expected.repository ||
-                Number(outbox.target?.pr_number) !== Number(expected.pr_number) ||
-                outbox.target?.head_sha !== expected.head_sha || outbox.target?.allowed_action !== expected.action) {
-              bootstrapAuthorityFail("bootstrap_release_exception_replayed");
-            }
-            return Object.freeze({
-              consumption,
-              outbox,
-              event: null,
-              action_authorized: true,
-              core_join_authorized: false,
-              idempotent_recovery: true,
-            });
-          }
-          return bootstrapReleaseExceptionStore.consume({
-            tenant_id: expected.tenant_id,
-            exception_id: receipt.exception_id,
-            work_id: expected.work_id,
-            repository: expected.repository,
-            pr_number: expected.pr_number,
-            head_sha: expected.head_sha,
-            allowed_action: expected.action,
-            authority_key_id: persisted.authority_key_id,
-            required_checks_digest: receipt.required_checks_digest,
-            required_checks_results_digest: receipt.required_checks_results_digest,
-            owner_confirmation_digest: receipt.owner_confirmation_digest,
-            core_policy_verdict_digest: receipt.core_policy_verdict_digest,
-            rollback_obligations_digest: receipt.rollback_obligations_digest,
-            post_deploy_obligations_digest: receipt.post_deploy_obligations_digest,
-            receipt_digest: persisted.receipt_digest,
-            action_request_digest: actionRequestDigest,
-            consumed_by,
-            target: {
-              repository: expected.repository,
-              pr_number: expected.pr_number,
-              head_sha: expected.head_sha,
-              allowed_action: expected.action,
-            },
-          });
-        },
-      })
-    : null;
-  let bootstrapDeadlockVerdictStore = null;
-  const bootstrapDeadlockAllowedFailureCodes = BOOTSTRAP_DEADLOCK_ALLOWED_FAILURE_CODES;
-  let bootstrapDeadlockVerdictStoreState = "unavailable";
-  let bootstrapDeadlockVerdictStoreError = null;
-  if (!governedAgentPostgresConfigured || !governedAgentPostgresVersionPool) {
-    bootstrapDeadlockVerdictStoreState = "postgres_unavailable";
-  } else {
-    try {
-      bootstrapDeadlockVerdictStore = createBootstrapDeadlockVerdictStore({
-        pool: governedAgentPostgresVersionPool,
-        allowedFailureCodes: bootstrapDeadlockAllowedFailureCodes,
-      });
-      bootstrapDeadlockVerdictStoreState = "initializing";
-    } catch (error) {
-      bootstrapDeadlockVerdictStoreState = "failed";
-      bootstrapDeadlockVerdictStoreError = String(error?.message || "initialization_failed").slice(0, 120);
-    }
-  }
-  const bootstrapDeadlockVerdictStoreInitialization = bootstrapDeadlockVerdictStore?.initialize
-    ? Promise.resolve().then(() => bootstrapDeadlockVerdictStore.initialize()).then(() => {
-      bootstrapDeadlockVerdictStoreState = "ready";
-    }).catch((error) => {
-      bootstrapDeadlockVerdictStoreState = "failed";
-      bootstrapDeadlockVerdictStoreError = String(error?.message || "initialization_failed").slice(0, 120);
-    })
-    : Promise.resolve();
-  const bootstrapDeadlockVerdictResolver = bootstrapDeadlockVerdictStore
-    ? async ({
-      tenant_id: tenantId,
-      work_id: workId,
-      repository,
-      pr_number: prNumber,
-      head_sha: headSha,
-      exception_id: exceptionId,
-      action,
-      core_policy_verdict_digest: verdictDigest,
-    } = {}) => {
-      await bootstrapDeadlockVerdictStoreInitialization;
-      if (bootstrapDeadlockVerdictStoreState !== "ready" || !exceptionId) return null;
-      try {
-        const verdict = await bootstrapDeadlockVerdictStore.resolveActive({
-          tenant_id: tenantId,
-          work_id: workId,
-          repository,
-          pr_number: prNumber,
-          head_sha: headSha,
-          exception_id: exceptionId,
-          action,
-          verdict_digest: verdictDigest,
-        });
-        if (!verdict || verdict.classification !== "BOOTSTRAP_DEADLOCK_VERIFIED" ||
-            verdict.normal_path_available !== false || verdict.execution_authorized !== false ||
-            verdict.host_action_authorized !== false ||
-            Date.parse(verdict.expires_at || "") <= Date.now()) return null;
-        return Object.freeze({
-          classification: verdict.classification,
-          active: true,
-          expires_at: verdict.expires_at,
-          core_policy_verdict_digest: verdict.verdict_digest,
-          exception_id: verdict.exception_id,
-        });
-      } catch {
-        return null;
-      }
-    }
-    : null;
-  const hostNativeResolverConfigurationValid =
-    options.hostNativeResolverConfigurationValid !== false
-    && serverResolverRegistry?.configuration_valid !== false;
-  const hostNativeResolverConfigurationError = hostNativeResolverConfigurationValid
-    ? null
-    : String(
-        options.hostNativeResolverConfigurationError ||
-        "host_native_resolver_registry_invalid",
-      ).slice(0, 160);
-  const hostNativeProjectScopeRenderOriginResolver =
-    options.hostNativeProjectScopeRenderOriginResolver ||
-    (nyraPolicyRegistryPostgresPool
-      ? createProjectScopeRenderOriginResolver({
-          pool: nyraPolicyRegistryPostgresPool,
-          maxAgeMs:
-            options.hostNativeRenderScopeMaxAgeMs ??
-            process.env.CORE_HOST_NATIVE_RENDER_SCOPE_MAX_AGE_MS,
-        })
-      : null);
-  // Always provide a fail-closed resolver. Without an exact environment or
-  // verified Project Scope binding, host-native governance must not consume a
-  // caller/manifest origin or synthesize a service-slug origin.
-  const serverOwnedRenderServiceOriginResolver =
-    serverResolverRegistry?.render?.resolver || null;
-  const hostNativeRenderServiceOriginResolver =
-    createFailClosedRenderOriginResolver({
-      environmentResolver: serverOwnedRenderServiceOriginResolver
-        || options.hostNativeRenderServiceOriginResolver
-        || null,
-      projectScopeResolver: hostNativeProjectScopeRenderOriginResolver,
-    });
-  const hostNativeRenderServiceOriginResolverState =
-    typeof serverOwnedRenderServiceOriginResolver === "function"
-      ? (hostNativeProjectScopeRenderOriginResolver
-          ? "exact_registry_then_project_scope"
-          : "exact_registry_only")
-      : typeof options.hostNativeRenderServiceOriginResolver === "function"
-      ? (hostNativeProjectScopeRenderOriginResolver
-          ? "exact_registry_then_project_scope"
-          : "exact_registry_only")
-      : (hostNativeProjectScopeRenderOriginResolver
-          ? "project_scope_only"
-          : "fail_closed_unavailable");
-  let hostNativeGovernance = options.hostNativeGovernance || null;
-  let hostNativeGovernanceState = hostNativeGovernance ? "ready" : "disabled";
-  const hostNativeRequiredChecksPolicyResolver =
-    serverResolverRegistry?.required_checks?.resolver
-    || options.hostNativeRequiredChecksPolicyResolver
-    || null;
-  const hostNativeGithubTokenResolver =
-    serverResolverRegistry?.github?.resolver
-    || options.hostNativeGithubTokenResolver
-    || null;
-  if (
-    hostNativeGovernanceEnabled &&
-    hostNativeGovernance &&
-    (
-      hostNativeGovernance.required_checks_policy_resolver_configured !== true ||
-      hostNativeGovernance.closure_attestation_verifier_configured !== true
-    )
-  ) {
-    hostNativeGovernance = null;
-    hostNativeGovernanceState = "required_governance_verifier_unavailable";
-    audit.append("core_host_native_governance_unavailable", {
-      reason: hostNativeGovernanceState,
-    });
-  }
-  if (hostNativeGovernanceEnabled && !hostNativeGovernance) {
-    if (!hostNativeResolverConfigurationValid) {
-      hostNativeGovernanceState = "resolver_configuration_invalid";
-      audit.append("core_host_native_governance_unavailable", {
-        reason: hostNativeGovernanceState,
-        error_code: hostNativeResolverConfigurationError,
-      });
-    } else if (typeof hostNativeRequiredChecksPolicyResolver !== "function") {
-      hostNativeGovernanceState = "required_checks_policy_unavailable";
-      audit.append("core_host_native_governance_unavailable", {
-        reason: hostNativeGovernanceState,
-      });
-    } else if (!dttAgentIdentitySecret) {
-      hostNativeGovernanceState = "closure_attestation_signing_secret_unavailable";
-      audit.append("core_host_native_governance_unavailable", {
-        reason: hostNativeGovernanceState,
-      });
-    } else if (hostNativeSigningSecret.length < 32) {
-      hostNativeGovernanceState = "signing_secret_unavailable";
-      audit.append("core_host_native_governance_unavailable", {
-        reason: hostNativeGovernanceState,
-      });
-    } else {
-      try {
-        const hostNativeStore = options.hostNativeGovernanceStore ||
-          createFileHostNativeGovernanceStore({
-            root: path.join(storageRoot, "host-native-governance"),
-          });
-        const hostNativeExternalReadbackVerifier =
-          options.hostNativeExternalReadbackVerifier ||
-          createHostNativeExternalReadbackVerifier({
-            fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
-            githubTokenResolver: hostNativeGithubTokenResolver,
-            requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
-            timeoutMs: Number(
-              options.hostNativeReadbackTimeoutMs ??
-              process.env.CORE_HOST_NATIVE_READBACK_TIMEOUT_MS ??
-              5_000,
-            ),
-          });
-        const hostNativeReleaseJoinVerdictResolver =
-          options.hostNativeReleaseJoinVerdictResolver ||
-          createHostNativeReleaseJoinVerdictResolver({
-            fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
-            githubTokenResolver: hostNativeGithubTokenResolver,
-            requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
-            timeoutMs: Number(
-              options.hostNativeReadbackTimeoutMs ??
-              process.env.CORE_HOST_NATIVE_READBACK_TIMEOUT_MS ??
-              5_000,
-            ),
-          });
-        hostNativeGovernance = createHostNativeGovernance({
-          store: hostNativeStore,
-          signingSecret: hostNativeSigningSecret,
-          externalReadbackVerifier: hostNativeExternalReadbackVerifier,
-          releaseJoinVerdictResolver: hostNativeReleaseJoinVerdictResolver,
-          renderServiceOriginResolver: hostNativeRenderServiceOriginResolver,
-          requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
-          closureAttestationSigningSecret: dttAgentIdentitySecret,
-          bootstrapReleaseExceptionStore: bootstrapReleaseExceptionAdapter,
-          bootstrapDeadlockVerdictResolver,
-        });
-        hostNativeGovernanceState = "ready";
-      } catch (error) {
-        hostNativeGovernanceState = "persistent_store_unavailable";
-        audit.append("core_host_native_governance_unavailable", {
-          reason: hostNativeGovernanceState,
-          error_code: String(error?.message || "initialization_failed").slice(0, 160),
-        });
-      }
-    }
-  }
-  const bootstrapRequiredChecksReadback = options.bootstrapRequiredChecksReadback ||
-    (typeof hostNativeRequiredChecksPolicyResolver === "function"
-      ? createBootstrapRequiredChecksReadback({
-          fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
-          githubTokenResolver: options.hostNativeGithubTokenResolver || null,
-          requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
-          timeoutMs: Number(
-            options.hostNativeReadbackTimeoutMs ??
-            process.env.CORE_HOST_NATIVE_READBACK_TIMEOUT_MS ??
-            5_000,
-          ),
-        })
-      : null);
-  const bootstrapReleasePreparationBaseBranchResolver =
-    options.bootstrapReleasePreparationBaseBranchResolver || null;
-  const bootstrapReleasePreparationService = options.bootstrapReleasePreparationService ||
-    (hostNativeGovernance && bootstrapRequiredChecksReadback && bootstrapDeadlockVerdictStore &&
-      bootstrapDeadlockAllowedFailureCodes && bootstrapAuthorityTrustPin &&
-      typeof bootstrapReleasePreparationBaseBranchResolver === "function"
-      ? createBootstrapReleasePreparationService({
-          normalPathAttempt: async ({ authenticated_tenant_id, normal_action_request }) => {
-            try {
-              await hostNativeGovernance.issueActionTicket({
-                ...normal_action_request,
-                tenant_id: authenticated_tenant_id,
-              });
-              return { ok: true };
-            } catch (error) {
-              const failure = String(error?.message || "").trim();
-              return { ok: false, failure_code: BOOTSTRAP_DEADLOCK_FAILURE_CODE_MAP[failure] || null };
-            }
-          },
-          requiredChecksReadback: async ({ authenticated_tenant_id, normal_action_request }) => {
-            const baseBranch = await bootstrapReleasePreparationBaseBranchResolver({
-              tenant_id: authenticated_tenant_id,
-              repository: normal_action_request.repository,
-              pr_number: normal_action_request.pr_number,
-              head_sha: normal_action_request.head_sha,
-            });
-            const attestation = await bootstrapRequiredChecksReadback.attest({
-              tenant_id: authenticated_tenant_id,
-              repository: normal_action_request.repository,
-              pr_number: normal_action_request.pr_number,
-              head_sha: normal_action_request.head_sha,
-              base_branch: baseBranch,
-            });
-            return {
-              ...attestation,
-              work_id: normal_action_request.work_id,
-              policy_revision: attestation.required_checks_digest,
-            };
-          },
-          deadlockVerdictStore: bootstrapDeadlockVerdictStore,
-          activeTrustKeyResolver: async ({ tenant_id, authority_provider }) => {
-            if (authority_provider !== "local_pin") return null;
-            await bootstrapReleaseExceptionStoreInitialization;
-            if (bootstrapReleaseExceptionStoreState !== "ready") return null;
-            const key = await bootstrapReleaseExceptionStore.resolveActiveTrustKey({
-              tenant_id,
-              authority_key_id: bootstrapAuthorityTrustPin.authority_key_id,
-            });
-            return {
-              status: String(key.status || "").toLowerCase(),
-              authority_provider: key.authority_provider,
-              authority_key_id: key.authority_key_id,
-            };
-          },
-          ownerConfirmationVerifier: async ({ owner_confirmation, expected }) => {
-            const verified = verifyOwnerContextAssertion(
-              owner_confirmation,
-              ownerContextSigningSecret,
-              expected.tenant_id,
-              expected.request_digest,
-            );
-            if (!verified || owner_confirmation?.owner_subject_fingerprint !== expected.owner_id) {
-              return { verified: false };
-            }
-            return {
-              verified: true,
-              tenant_id: expected.tenant_id,
-              owner_id: expected.owner_id,
-              request_digest: expected.request_digest,
-              owner_confirmation_digest: crypto.createHash("sha256").update(
-                `bootstrap_owner_confirmation_v1\0${bootstrapReleaseExceptionCanonicalJson(owner_confirmation)}`,
-                "utf8",
-              ).digest("hex"),
-            };
-          },
-          now: Date.now,
-          idFactory: (kind) => `${kind}:${crypto.randomUUID()}`,
-          allowedFailureCodes: bootstrapDeadlockAllowedFailureCodes,
-        })
-      : null);
-  const causalContinuityStore = options.causalContinuityStore
-    || (nyraPolicyRegistryPostgresPool
-      ? createPostgresCausalContinuityStore({ pool: nyraPolicyRegistryPostgresPool })
-      : null);
-  let causalContinuityState = causalContinuityStore ? "initializing" : "disabled";
-  let causalContinuityInitializationError = null;
-  let causalContinuityInitializationStartedAtMs = null;
-  const causalContinuityInitializationLivenessMs =
-    boundedCausalInitializationLivenessMs(
-      options.causalContinuityInitializationLivenessMs,
-  );
-  let causalContextSigner = options.causalContextSigner || null;
-  if (!causalContextSigner && hostNativeSigningSecret.length >= 32) {
-    try {
-      causalContextSigner = createHostNativeDomainSigner({ signingSecret: hostNativeSigningSecret });
-    } catch {
-      causalContinuityState = "signer_unavailable";
-    }
-  }
-  const causalActionLeaseVerifier = options.causalActionLeaseVerifier
-    || (nyraPolicyRegistryPostgresPool
-      ? createPostgresCausalActionLeaseVerifier(nyraPolicyRegistryPostgresPool)
-      : null);
-  const causalContinuityRuntime = options.causalContinuityRuntime
-    || (causalContinuityStore && causalContextSigner
-      ? createCausalContinuityRuntime({
-        store: causalContinuityStore,
-        contextSigner: causalContextSigner,
-        verifyActionLease: causalActionLeaseVerifier,
-      })
-      : null);
-  if (causalContinuityRuntime) {
-    causalContinuityInitializationStartedAtMs = performance.now();
-    void Promise.resolve(causalContinuityRuntime.initialize())
-      .then(() => { causalContinuityState = "ready"; })
-      .catch((error) => {
-        causalContinuityState = "initialization_failed";
-        causalContinuityInitializationError = String(error?.code || error?.message || "causal_initialization_failed").slice(0, 160);
-        audit.append("core_causal_continuity_unavailable", { reason: causalContinuityInitializationError });
-      });
-  } else if (causalContinuityStore && causalContinuityState === "initializing") {
-    causalContinuityState = "signer_unavailable";
-  }
-  const causalRouteRuntime = causalContinuityRuntime ? {
-    invoke(capability, identity, input) {
-      if (causalContinuityState !== "ready") throw new CausalContinuityError("CAUSAL_RUNTIME_NOT_READY");
-      return causalContinuityRuntime.invoke(capability, identity, input);
-    },
-  } : null;
-  const causalBranchEnforcer = causalContinuityRuntime && causalContinuityStore && dttAgentIdentityReceiptService?.configured
-    ? createCausalBranchEnforcer({
-        store: causalContinuityStore,
-        runtime: causalContinuityRuntime,
-        resolveAgentContext: (token, tenantId) => dttAgentIdentityReceiptService.verifyContext(token, tenantId),
-      })
-    : null;
-  const tenantProviderSetupLinks = null;
-  const tenantOpenAiMultiAgentRunner = null;
-
-  function recoverGenericOrchestration(tenantId, planId) {
-    try {
-      return genericAgentOrchestrator.getPlan({ tenant_id: tenantId, plan_id: planId });
-    } catch (error) {
-      if (error.message !== "plan_not_found") throw error;
-      const record = genericAgentOrchestrationStore.load({ tenant_id: tenantId, plan_id: planId });
-      if (!record?.plan_snapshot) throw error;
-      return genericAgentOrchestrator.restorePlan({ tenant_id: tenantId, plan_snapshot: record.plan_snapshot });
-    }
-  }
-
-  function persistGenericOrchestration(plan) {
-    return genericAgentOrchestrationStore.save({ tenant_id: plan.tenant_id, plan_snapshot: plan });
-  }
-
-  function boundedProviderExecutionBody(req, purpose) {
-    const raw = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
-    if (raw.tenant_id !== undefined && String(raw.tenant_id) !== req.tenantId) throw new Error("tenant_scope_denied");
-    if (purpose === "tenant_openai_multiagent_run") {
-      const task = String(raw.task || "").trim();
-      const confirmationReference = String(raw.confirmation_reference || "").trim().slice(0, 240);
-      return {
-        tenant_id: req.tenantId,
-        task,
-        owner_confirmed: raw.owner_confirmed === true,
-        ...(confirmationReference ? { confirmation_reference: confirmationReference } : {}),
-      };
-    }
-    return {
-      tenant_id: req.tenantId,
-      run_id: String(raw.run_id || "").trim(),
-    };
-  }
-
-  function requireBoundedProviderExecutionOwner(req, purpose) {
-    if (!tenantOpenAiMultiAgentRunner) throw new Error("tenant_openai_execution_not_configured");
-    const body = boundedProviderExecutionBody(req, purpose);
-    if (purpose === "tenant_openai_multiagent_run" && body.owner_confirmed !== true) throw new Error("owner_confirmation_required");
-    const ownerContext = req.body?.owner_context;
-    const binding = ownerRequestBinding(purpose, body);
-    if (
-      !verifyOwnerContextAssertion(ownerContext, ownerContextSigningSecret, req.tenantId, binding) ||
-      !hasProviderSetupOwnerContext(ownerContext)
-    ) {
-      throw new Error("owner_context_required");
-    }
-    return body;
-  }
-
-  async function consumeBoundedProviderExecutionOwner(req) {
-    const body = requireBoundedProviderExecutionOwner(req, "tenant_openai_multiagent_run");
-    if (!tenantProviderCredentials || typeof tenantProviderCredentials.status !== "function") throw new Error("tenant_openai_execution_not_configured");
-    let provider;
-    try { provider = await tenantProviderCredentials.status({ tenant_id: req.tenantId }); }
-    catch { throw new Error("tenant_provider_credential_unavailable"); }
-    if (provider?.configured !== true) throw new Error("tenant_openai_provider_not_configured");
-    const ownerContext = req.body?.owner_context;
-    const issuedAt = Date.parse(String(ownerContext?.issued_at || ""));
-    const approvalHash = `sha256:${crypto.createHash("sha256")
-      .update(`tenant-openai-execution-approval\u0000${String(ownerContext?.assertion || "")}`)
-      .digest("hex")}`;
-    let consumed;
-    try {
-      consumed = await ownerExecutionApprovals.consume({
-        tenant_id: req.tenantId,
-        approval_hash: approvalHash,
-        expires_at: new Date(issuedAt + 120_000).toISOString(),
-      });
-    } catch (error) {
-      if (error?.message === "approval_expired") throw new Error("owner_context_required");
-      throw new Error("owner_confirmation_consume_unavailable");
-    }
-    if (consumed?.consumed !== true) throw new Error("owner_confirmation_replayed");
-    return body;
-  }
-
-  function issueNyraDeepV2PolicySnapshotBundle({
-    keyRecord,
-    tenantId,
-    requestId,
-    branchId,
-    subbranchId,
-    workPreflight,
-    nyraNetwork,
-    bridgeResult,
-    operationalContext,
-  } = {}) {
-    if (
-      !nyraDeepV2Attester
-      || typeof nyraDeepV2Attester.operationalPolicySnapshotRequirements !== "function"
-    ) {
-      return {
-        ok: false,
-        reason: "nyra_deep_branch_v2_policy_receipt_issuer_unavailable",
-      };
-    }
-    if (
-      !nyraDeepV2Ledger
-      || typeof nyraDeepV2Ledger.issueCorePolicyDecisionReceipt !== "function"
-    ) {
-      return {
-        ok: false,
-        reason: "nyra_deep_branch_v2_policy_receipt_ledger_unavailable",
-      };
-    }
-    const discovery = nyraDeepV2Attester
-      .operationalPolicySnapshotRequirements({ branchId, subbranchId });
-    if (
-      !discovery?.ok
-      || !Array.isArray(discovery.requirements)
-      || discovery.requirements.length < 1
-    ) {
-      return {
-        ok: false,
-        reason: discovery?.reason
-          || "nyra_deep_branch_v2_policy_requirements_unavailable",
-      };
-    }
-    const issuedMs = Math.max(
-      Date.now(),
-      Date.parse(String(operationalContext?.issued_at || "")) || 0,
-    );
-    const expiresMs = Date.parse(String(operationalContext?.expires_at || ""));
-    if (
-      !Number.isFinite(expiresMs)
-      || !Number.isFinite(issuedMs)
-      || expiresMs <= issuedMs
-    ) {
-      return {
-        ok: false,
-        reason: "nyra_deep_branch_v2_policy_receipt_window_invalid",
-      };
-    }
-    const branchRoute = (nyraNetwork?.opened_branches || [])
-      .find((item) => item?.id === branchId) || null;
-    const coreBranchBindings = Array.isArray(branchRoute?.core_branch_bindings)
-      ? branchRoute.core_branch_bindings
-        .filter((value) => /^[a-z][a-z0-9_]{1,63}$/.test(String(value || "")))
-      : [];
-    const branchResolution = resolveBranchesForKey(keyRecord);
-    const entitlement = buildEntitlement(keyRecord, branchResolution);
-    const tenantPolicy = getTenantPolicy(tenantId, keyRecord?.metadata?.tier, {
-      brandScope: keyRecord?.brand_scope,
-      metadata: keyRecord?.metadata,
-    });
-    const preflightReady = workPreflight?.mandatory === true
-      && workPreflight?.tenant_id === tenantId
-      && workPreflight?.state === "ready_read_only"
-      && workPreflight?.governance?.execution_allowed_by_preflight === true
-      && workPreflight?.memory_first?.status === "recalled";
-    const tenantIsolated = keyRecord?.tenant_id === tenantId;
-    const bridgeBlocked = Array.isArray(
-      bridgeResult?.selected_by_core?.blocked_reasons,
-    ) && bridgeResult.selected_by_core.blocked_reasons.length > 0;
-    const controlLevel = String(
-      bridgeResult?.selected_by_core?.control_level || "",
-    );
-    const riskHint = bridgeResult?.selected_by_core?.risk_band === "high"
-      ? 80
-      : bridgeResult?.selected_by_core?.risk_band === "medium"
-        ? 45
-        : 20;
-    const issuedAt = new Date(issuedMs).toISOString();
-    const expiresAt = new Date(expiresMs).toISOString();
-    const policySnapshots = [];
-    for (const requirement of discovery.requirements) {
-      const mediation = evaluatePolicyEngine({
-        tenantPolicy,
-        entitlement,
-        action: {
-          action_type: `nyra_deep_v2_${requirement.policy_id}_advisory`,
-          risk_hint: riskHint,
-          required_branches: coreBranchBindings,
-          audit_ready: true,
-          cross_tenant: false,
-          contains_pii: false,
-        },
-        policy: {
-          mode: "hard-gating",
-          required_branches: coreBranchBindings,
-        },
-        context: {
-          audit_ready: true,
-          cross_tenant: false,
-          contains_pii: false,
-          rollback_ready: true,
-        },
-      });
-      const allow = preflightReady
-        && tenantIsolated
-        && branchRoute !== null
-        && bridgeResult?.ok === true
-        && !bridgeBlocked
-        && ["observe", "suggest"].includes(controlLevel)
-        && mediation?.action_mediation?.state === "allow";
-      const receipt = nyraDeepV2Ledger.issueCorePolicyDecisionReceipt({
-        tenantId,
-        requestId,
-        branchId,
-        subbranchId,
-        nodeId: requirement.node_id,
-        policyId: requirement.policy_id,
-        effect: requirement.effect,
-        decision: allow ? "ALLOW" : "DENY",
-        preflightId: workPreflight?.preflight_id || "",
-        corePolicyHash:
-          operationalContext?.policy_hash
-          || operationalContext?.policyHash
-          || "",
-        issuedAt,
-        expiresAt,
-        observedAt: issuedMs,
-      });
-      if (!receipt?.ok) {
-        return {
-          ok: false,
-          reason: "nyra_deep_branch_v2_policy_receipt_persistence_failed",
-        };
-      }
-      policySnapshots.push({
-        schema_version: NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_SCHEMA_VERSION,
-        issuer: NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_ISSUER,
-        decision_id: receipt.decision_id,
-        decision_receipt: receipt.decision_receipt,
-        decision: allow ? "ALLOW" : "DENY",
-        tenant_id: tenantId,
-        request_id: requestId,
-        branch_id: branchId,
-        subbranch_id: subbranchId,
-        node_id: requirement.node_id,
-        policy_id: requirement.policy_id,
-        effect: requirement.effect,
-        preflight_id: workPreflight?.preflight_id || "",
-        core_policy_hash:
-          operationalContext?.policy_hash
-          || operationalContext?.policyHash
-          || "",
-        issued_at: issuedAt,
-        expires_at: expiresAt,
-      });
-    }
-    return {
-      ok: true,
-      corePolicyContext: {
-        schema_version:
-          NYRA_DEEP_BRANCH_V2_CORE_POLICY_SNAPSHOT_BUNDLE_SCHEMA_VERSION,
-        policy_snapshots: policySnapshots,
-      },
-      summary: {
-        required_policy_receipt_count: discovery.requirements.length,
-        allow_count: policySnapshots
-          .filter((item) => item.decision === "ALLOW").length,
-        deny_count: policySnapshots
-          .filter((item) => item.decision === "DENY").length,
-      },
-    };
-  }
-
+  const icf = createIcfKernel({ audit, storageRoot, mode: options.icfMode || process.env.CORE_ICF_MODE || "shadow" });
+  const icfPolicyProof = createIcfPolicyProofVerifier();
+  const icfRuntime = createIcfRuntimeFacade({ kernel: icf, store: options.icfStore, coreJoinStore: options.coreJoinStore, policyProofVerifier: icfPolicyProof, mode: options.icfMode || process.env.CORE_ICF_MODE || "shadow" });
   const requestedCoreRuntimeMode = String(options.coreRuntimeMode || process.env.CORE_RUNTIME_V2_MODE || "shadow").toLowerCase();
   const coreRuntimeMode = ["shadow", "active", "disabled"].includes(requestedCoreRuntimeMode) ? requestedCoreRuntimeMode : "shadow";
   const app = express();
-  const coreAuth = (requiredScope, authOptions = {}) => createAuth(
-    keyStore,
-    audit,
-    requiredScope,
-    { ...authOptions, tenantContextSigningSecret },
-  );
 
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
-  app.use(express.urlencoded({ extended: false, limit: "8kb" }));
-  if (causalRouteRuntime) {
-    registerCausalContinuityRoutes({
-      app,
-      authFor: (requiredScope) => {
-        const authenticate = coreAuth(
-          requiredScope === "causal:read" ? SCOPES.READ_DECISION : SCOPES.WRITE_DECISION,
-        );
-        return (req, res, next) => authenticate(req, res, (error) => {
-          if (error) return next(error);
-          // The platform key is authenticated above. Expose only a derived,
-          // causal-domain authority view to the route adapter; never accept
-          // causal authority fields from the request or DTT caller payload.
-          req.coreKey = {
-            ...req.coreKey,
-            scopes: causalRouteAuthenticatedScopes(requiredScope, req.coreKey),
-          };
-          return next();
-        });
-      },
-      runtime: causalRouteRuntime,
-      resolveAgentContext: (token, tenantId) => {
-        if (!dttAgentIdentityReceiptService?.configured) throw new Error("dtt_agent_identity_not_ready");
-        return dttAgentIdentityReceiptService.verifyContext(token, tenantId);
-      },
-      audit: (event) => audit.append("core_causal_continuity_invoked", event),
-    });
-  }
 
-  const injectedDttWorkBindingResolver = process.env.NODE_ENV !== "production"
-    && options.allowTestDttWorkBindingResolver === true
-    && typeof options.resolveDttWorkBinding === "function"
-    ? options.resolveDttWorkBinding
-    : null;
-  const dttStatusForError = (code, fallback = 400) => {
-    if (["task_tree_not_found", "dtt_node_not_found", "dtt_verifier_assignment_node_invalid"].includes(code)) return 404;
-    if (["cross_tenant_task_tree_denied", "cross_work_task_tree_denied"].includes(code)) return 403;
-    if ([
-      "dtt_work_binding_required",
-      "node_terminal",
-      "outcome_idempotency_key_conflict",
-      "dynamic_task_tree_revision_conflict",
-      "dtt_agent_context_replayed",
-      "task_tree_not_verified",
-      "task_tree_already_joined",
-      "dtt_join_verdict_already_issued",
-    ].includes(code)) return 409;
-    if ([
-      "dynamic_task_tree_state_corrupt",
-      "dtt_join_verdict_ledger_integrity_failed",
-      "dtt_verification_trust_store_corrupt",
-      "dtt_agent_identity_store_corrupt",
-      "joined_tree_verdict_missing",
-      "joined_tree_verdict_voided",
-    ].includes(code)) return 500;
-    if ([
-      "dtt_work_binding_unavailable",
-      "dtt_work_context_signing_unavailable",
-      "dtt_join_finalization_pending",
-    ].includes(code)) return 503;
-    return fallback;
-  };
-  const dttWorkAuth = async (req, res, next) => {
-    try {
-      let binding;
-      const requestContext = {
-        tenant_id: req.tenantId,
-        method: req.method,
-        path: req.path,
-        body: req.body,
-      };
-      if (injectedDttWorkBindingResolver) {
-        binding = await injectedDttWorkBindingResolver({ ...requestContext, request: req });
-      } else {
-        if (!isMcpTenantGatewayRecord(req.coreKey)) throw new Error("dtt_work_gateway_required");
-        if (!dttAgentIdentitySecret) throw new Error("dtt_work_binding_unavailable");
-        binding = verifyDttWorkContext({
-          token: req.get(DTT_WORK_CONTEXT_HEADER),
-          secret: dttAgentIdentitySecret,
-          expected_tenant_id: req.tenantId,
-          method: req.method,
-          path: req.path,
-          body: req.body,
-        });
-      }
-      const workId = String(binding?.work_id || "").trim();
-      if (
-        binding?.schema_version !== "dtt_work_context_v1"
-        || binding?.tenant_id !== req.tenantId
-        || binding?.execution_authorized !== false
-        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(workId)
-      ) {
-        throw new Error("dtt_work_context_invalid");
-      }
-      const claimedWorkId = req.body?.work_id ?? req.query?.work_id;
-      if (claimedWorkId !== undefined && String(claimedWorkId) !== workId) {
-        throw new Error("cross_work_task_tree_denied");
-      }
-      req.workId = workId;
-      req.dttWorkBinding = Object.freeze(structuredClone(binding));
-      return next();
-    } catch (error) {
-      const reason = String(error?.message || "dtt_work_context_invalid");
-      const code = reason === "cross_work_task_tree_denied"
-        || /^dtt_work_[a-z0-9_]+$/.test(reason)
-        ? reason
-        : "dtt_work_context_invalid";
-      audit.append("dtt_work_binding_denied", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey?.key_id || null,
-        path: req.path,
-        reason: code,
-      });
-      return publicError(
-        res,
-        dttStatusForError(code, 403),
-        code,
-      );
-    }
-  };
-
-  const genericWorkCoreJoinContextPublicCodes = new Set([
-    "core_join_mcp_gateway_required",
-    "generic_work_core_join_context_required",
-    "generic_work_core_join_context_invalid",
-    "generic_work_core_join_context_signature_invalid",
-    "generic_work_core_join_context_payload_invalid",
-    "generic_work_core_join_context_principal_invalid",
-    "generic_work_core_join_context_lease_invalid",
-    "generic_work_core_join_context_request_invalid",
-    "generic_work_core_join_context_tenant_mismatch",
-    "generic_work_core_join_context_work_mismatch",
-    "generic_work_core_join_context_request_mismatch",
-    "generic_work_core_join_context_not_active",
-    "generic_work_core_join_context_expired",
-    "generic_work_core_join_context_expiry_invalid",
-    "generic_work_core_join_context_nonce_invalid",
-    "generic_work_core_join_context_signing_unavailable",
-    "generic_work_core_join_cross_work_denied",
-    "generic_work_core_join_disabled",
-    "generic_work_core_join_distributed_store_unavailable",
-    "generic_work_core_join_verifier_binding_mismatch",
-    "generic_work_core_join_verifier_unavailable",
-  ]);
-  const genericWorkCoreJoinContextAuth = (req, res, next) => {
-    try {
-      if (!isMcpTenantGatewayRecord(req.coreKey)) {
-        throw new Error("core_join_mcp_gateway_required");
-      }
-      if (genericWorkCoreJoinConfigurationError) {
-        throw new Error(genericWorkCoreJoinConfigurationError);
-      }
-      if (!genericWorkCoreJoinEnabled) {
-        throw new Error("generic_work_core_join_disabled");
-      }
-      if (!genericWorkCoreJoinAuthority) {
-        throw new Error(genericWorkCoreJoinUnavailableCode());
-      }
-      if (!dttAgentIdentitySecret) {
-        throw new Error("generic_work_core_join_context_signing_unavailable");
-      }
-      const token = req.get(GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER);
-      if (!token) throw new Error("generic_work_core_join_context_required");
-      const binding = verifyGenericWorkCoreJoinContext({
-        token,
-        secret: dttAgentIdentitySecret,
-        expected_tenant_id: req.tenantId,
-        method: req.method,
-        path: req.path,
-        body: req.body,
-      });
-      const workId = String(binding?.work_id || "").trim().toLowerCase();
-      if (
-        binding?.schema_version !== GENERIC_WORK_CORE_JOIN_CONTEXT_VERSION
-        || binding?.purpose !== GENERIC_WORK_CORE_JOIN_CONTEXT_PURPOSE
-        || binding?.tenant_id !== req.tenantId
-        || binding?.execution_authorized !== false
-        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(workId)
-      ) {
-        throw new Error("generic_work_core_join_context_invalid");
-      }
-      const claimedWorkId = req.body?.work_id;
-      if (claimedWorkId !== undefined && String(claimedWorkId).trim().toLowerCase() !== workId) {
-        throw new Error("generic_work_core_join_cross_work_denied");
-      }
-      const signerMetadata = genericWorkCoreJoinAuthority.signer_metadata;
-      if (!signerMetadata
-          || !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(String(signerMetadata.key_id || ""))
-          || !/^[a-f0-9]{64}$/.test(String(signerMetadata.public_key_fingerprint || ""))) {
-        throw new Error("generic_work_core_join_verifier_unavailable");
-      }
-      if (binding.verifier?.key_id !== signerMetadata.key_id
-          || binding.verifier?.public_key_fingerprint !== signerMetadata.public_key_fingerprint) {
-        throw new Error("generic_work_core_join_verifier_binding_mismatch");
-      }
-      req.genericWorkCoreJoinWorkId = workId;
-      req.genericWorkCoreJoinBinding = binding;
-      return next();
-    } catch (error) {
-      const reason = String(error?.code || error?.message || "");
-      const code = genericWorkCoreJoinContextPublicCodes.has(reason)
-        || genericWorkCoreJoinInfrastructureCode(reason)
-        ? reason
-        : "generic_work_core_join_context_invalid";
-      audit.append("core_generic_work_core_join_context_denied", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey?.key_id || null,
-        path: req.path,
-        reason: code,
-      });
-      return publicError(
-        res,
-        genericWorkCoreJoinInfrastructureCode(code)
-          || [
-            "generic_work_core_join_context_signing_unavailable",
-            "generic_work_core_join_verifier_unavailable",
-          ].includes(code) ? 503 : 403,
-        code,
-      );
-    }
-  };
-
-  const assertDttTreeNode = async ({ tenant_id, work_id, tree_id, node_id }) => {
-    const tree = await dynamicTaskTreeRuntime.get({ tenant_id, work_id, tree_id });
-    if (!tree.nodes.some((item) => item.node_id === node_id)) {
-      throw new Error("dtt_node_not_found");
-    }
-    return tree;
-  };
-
-  mountDttAgentIdentityReceiptRoutes({
-    app,
-    auth: coreAuth(SCOPES.WRITE_DECISION),
-    workAuth: dttWorkAuth,
-    assertTreeNode: assertDttTreeNode,
-    receiptService: dttAgentIdentityReceiptService,
-    audit,
-  });
-  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/verifier-assignments", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
-    if (!dttAgentIdentityReceiptService?.configured) {
-      return res.status(503).json({ ok: false, error: "dtt_agent_identity_not_ready" });
-    }
-    try {
-      const context = dttAgentIdentityReceiptService.verifyContext(
-        req.get("x-sh-dtt-agent-context"),
-        req.tenantId,
-        req.workId,
-        req.dttWorkBinding.principal,
-      );
-      const tree = await dynamicTaskTreeRuntime.get({ tenant_id: req.tenantId, work_id: req.workId, tree_id: req.params.treeId });
-      const node = tree.nodes.find((item) => item.node_id === req.params.nodeId);
-      if (!node) throw new Error("dtt_verifier_assignment_node_invalid");
-      if (node.kind === "verification" && !node.verification_policy?.allowed_verifier_ids?.includes(context.agent_id)) {
-        throw new Error("dtt_verifier_not_allowlisted");
-      }
-      const occupied = await dttVerificationTrustStore.listAssignments({
-        tenant_id: req.tenantId, work_id: req.workId, tree_id: req.params.treeId, node_id: req.params.nodeId,
-      });
-      if (occupied.some((item) => item.actor_provenance === context.actor_provenance
-        && (item.verifier_id !== context.agent_id
-          || item.session_fingerprint !== context.session_fingerprint
-          || item.opaque_agent_id !== context.opaque_agent_id))) {
-        throw new Error("dtt_verifier_actor_already_assigned");
-      }
-      if (occupied.some((item) => item.verifier_id === context.agent_id
-        && item.session_fingerprint !== context.session_fingerprint)) {
-        throw new Error("dtt_verifier_slot_already_assigned");
-      }
-      if (node.kind !== "verification" && occupied.length > 0
-        && !occupied.some((item) => item.verifier_id === context.agent_id
-          && item.session_fingerprint === context.session_fingerprint)) {
-        throw new Error("dtt_nonverification_slot_already_assigned");
-      }
-      const assignment = await dttVerificationTrustStore.assignVerifier({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-        node_id: req.params.nodeId,
-        verifier_id: context.agent_id,
-        session_id: context.session_id,
-        session_fingerprint: context.session_fingerprint,
-        host_transport_session_fingerprint: context.host_transport_session_fingerprint,
-        presence_signature: context.presence_signature,
-        client_type: context.client_type,
-        opaque_agent_id: context.opaque_agent_id,
-        actor_provenance: context.actor_provenance,
-      });
-      return res.json({
-        ok: true,
-        work_id: req.workId,
-        assignment_id: assignment.assignment_id,
-        verifier_id: assignment.verifier_id,
-        execution_authorized: false,
-      });
-    } catch (error) {
-      const code = error.message || "dtt_verifier_assignment_denied";
-      return publicError(res, dttStatusForError(code, 403), code);
-    }
-  });
-  app.post("/v1/orchestration/evidence/artifacts", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
-    try {
-      const artifact = await dttVerificationTrustStore.registerArtifact({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        artifact_id: req.body?.artifact_id,
-        content: req.body?.content,
-        source_reference: req.body?.source_reference,
-        registry_reference: req.body?.registry_reference,
-      });
-      audit.append("dtt_evidence_artifact_registered", {
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        artifact_id: artifact.artifact_id,
-        content_digest: artifact.content_digest,
-        registry_id: artifact.registry_id,
-      });
-      return res.json({
-        ...artifact,
-        ok: true,
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        execution_authorized: false,
-      });
-    } catch (error) {
-      const code = error.message || "dtt_evidence_artifact_invalid";
-      return publicError(res, dttStatusForError(code), code);
-    }
-  });
-  mountAdminControlRoom({
-    app,
-    storageRoot,
-    audit,
-    keyStore,
-    tenants,
-    nyraCatalog: nyraBranchCatalog,
-    agentRegistry: multiAgentRegistry,
-    uiRoot: path.join(__dirname, "../admin-ui"),
-  });
-  // This must remain before every legacy provider route below.  It is
-  // deliberately unauthenticated: accepting a token, setup proof, or body
-  // before returning retirement would keep a credential path alive and would
-  // produce inconsistent 401/403 responses instead of the stable 410.
-  app.use("/v1/generic-agents/providers/openai", (req, res) => {
-    audit.append("native_agent_provider_route_retired", {
-      method: req.method,
-      route: "generic_agents_provider",
-    });
-    return publicError(
-      res,
-      410,
-      NATIVE_AGENT_PROVIDER_RETIREMENT_CODE,
-      NATIVE_AGENT_PROVIDER_RETIREMENT_MESSAGE,
-    );
-  });
-  app.get("/v1/generic-agents/providers/openai/setup/:token", (req, res) => {
-    const token = validProviderSetupToken(req.params.token);
-    if (!token) return providerSetupHtml(res, 404, "Link non valido.");
-    const scriptNonce = crypto.randomBytes(18).toString("base64");
-    return providerSetupHtml(res, 200, providerSetupFormHtml(scriptNonce), { scriptNonce });
-  });
-  app.post("/v1/generic-agents/providers/openai/setup/:token", async (req, res) => {
-    if (!tenantProviderSetupLinks || !tenantProviderCredentials) return providerSetupHtml(res, 503, "Configurazione provider non disponibile.");
-    // A setup proof is an irreversible credential-entry capability. Do not use
-    // the legacy claim → save → finalize sequence here: the link store locks
-    // and consumes the active row only inside the very same transaction that
-    // receives the encrypted credential upsert.
-    if (
-      typeof tenantProviderSetupLinks.consumeAndPersist !== "function" ||
-      typeof tenantProviderCredentials.ensureInitialized !== "function" ||
-      typeof tenantProviderCredentials.saveOpenAiInTransaction !== "function"
-    ) {
-      return providerSetupHtml(res, 503, "Configurazione provider non disponibile.");
-    }
-    let completed;
-    try {
-      completed = await tenantProviderSetupLinks.consumeAndPersist({
-        token: req.params.token,
-        proof: req.body?.setup_proof,
-        prepare: () => tenantProviderCredentials.ensureInitialized(),
-        persist: ({ tenant_id, client }) => tenantProviderCredentials.saveOpenAiInTransaction({
-          tenant_id,
-          api_key: req.body?.api_key,
-          client,
-        }),
-      });
-    } catch (error) {
-      const code = error instanceof Error ? error.message : "";
-      if (code === "openai_api_key_invalid" || code === "openai_api_key_format_invalid") {
-        // Validation happens inside the transaction, so the rollback leaves
-        // this short-lived proof active. Re-render only a validated capability,
-        // never the submitted key, so the owner can safely correct a typo.
-        const token = validProviderSetupToken(req.params.token);
-        const setupProof = validProviderSetupProof(req.body?.setup_proof);
-        if (!token || !setupProof) {
-          return providerSetupHtml(res, 410, "Link scaduto, già usato o non valido. Torna a ChatGPT e apri un nuovo collegamento.");
-        }
-        const scriptNonce = crypto.randomBytes(18).toString("base64");
-        return providerSetupHtml(
-          res,
-          400,
-          providerSetupFormHtml(scriptNonce, {
-            setupProof,
-            errorMessage: "Chiave non valida. Correggila e riprova.",
-          }),
-          { scriptNonce },
-        );
-      }
-      if (code === "setup_token_invalid" || code === "setup_proof_invalid") {
-        return providerSetupHtml(res, 410, "Link scaduto, già usato o non valido. Torna a ChatGPT e apri un nuovo collegamento.");
-      }
-      return providerSetupHtml(res, 503, "Il collegamento non è stato completato. Torna a ChatGPT e verifica lo stato prima di riprovare.");
-    }
-    if (!completed) return providerSetupHtml(res, 410, "Link scaduto, già usato o non valido. Torna a ChatGPT e apri un nuovo collegamento.");
-    audit.append("tenant_openai_provider_setup_completed", {
-      tenant_id: completed.tenant_id,
-      provider: "openai",
-      link_id: completed.link_id,
-      owner_subject_fingerprint: completed.owner_subject_fingerprint,
-    });
-    return providerSetupHtml(res, 200, `<h1>OpenAI collegato</h1><p>La chiave è stata salvata nel vault cifrato del tuo account.</p><p><a href="${TRUSTED_AGENT_PORTAL_URL}" style="display:inline-block;background:#111;color:#fff;padding:14px 18px;border-radius:10px;text-decoration:none;font-weight:700">Torna a Nyra e avvia il test</a></p>`);
-  });
-
-  app.get("/v1/generic-agents/registry", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    const agents = governedAgentRegistry.listAgents();
-    audit.append("governed_agent_registry_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, agent_count: agents.length });
-    return res.json({
+  app.get("/healthz", (req, res) => {
+    res.json({
       ok: true,
-      tenant_id: req.tenantId,
-      agents,
-      defaults: { activation_mode: "dry_run", learning_mode: "frozen", model_budget_required: true, external_actions: "owner_confirmation_required" },
-    });
-  });
-
-  app.post("/v1/generic-agents/activations", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      const existing = req.body?.idempotency_key
-        ? governedAgentActivationStore.findByIdempotency({ tenant_id: req.tenantId, idempotency_key: req.body.idempotency_key })
-        : null;
-      if (existing) {
-        const run = genericAgentRuntime.restoreRun({ tenant_id: req.tenantId, run_snapshot: existing.run_snapshot });
-        return res.json({ ok: true, tenant_id: req.tenantId, activation: { ...existing.activation, reused: true }, run, workflow: existing.workflow, reused: true, restored_from_durable_activation: true, execution_allowed: false });
-      }
-      const activation = governedAgentRegistry.proposeActivation({ ...(req.body || {}), tenant_id: req.tenantId });
-      if (activation.reused) {
-        const run = genericAgentRuntime.getRun({ run_id: `run_${activation.activation_id}`, tenant_id: req.tenantId });
-        return res.json({ ok: true, tenant_id: req.tenantId, activation, run, reused: true, execution_allowed: false });
-      }
-      const run = genericAgentRuntime.startRun({
-        run_id: `run_${activation.activation_id}`,
-        tenant_id: req.tenantId,
-        agent_id: activation.agent_id,
-        task: activation.task,
-        metadata: { activation_id: activation.activation_id, trigger: activation.trigger, role: activation.role },
-        learning_mode: "frozen",
-        model_budget: { max_model_calls: 0, max_total_tokens: 0 },
-      });
-      governedAgentActivationStore.save({ tenant_id: req.tenantId, activation, run_snapshot: run });
-      audit.append("governed_agent_activation_proposed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, activation_id: activation.activation_id, run_id: run.run_id, agent_id: activation.agent_id, trigger: activation.trigger });
-      return res.status(201).json({ ok: true, tenant_id: req.tenantId, activation, run, execution_allowed: false });
-    } catch (error) {
-      return publicError(res, 400, error.message || "governed_agent_activation_invalid");
-    }
-  });
-
-  app.get("/v1/generic-agents/activations/:activationId", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    try {
-      const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
-      if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
-      return res.json({ ok: true, tenant_id: req.tenantId, activation: record.activation, workflow: record.workflow, revision: record.revision, updated_at: record.updated_at, execution_allowed: false });
-    } catch (error) {
-      return publicError(res, 403, error.message || "governed_agent_activation_read_failed");
-    }
-  });
-
-  app.post("/v1/generic-agents/activations/:activationId/research-workflow", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
-    try {
-      const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
-      if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
-      if (record.activation.agent_id !== "nyra-supervisor") return publicError(res, 400, "research_workflow_requires_nyra_supervisor");
-      if (record.workflow?.plan_id) {
-        const plan = recoverGenericOrchestration(req.tenantId, record.workflow.plan_id);
-        return res.json({ ok: true, tenant_id: req.tenantId, activation: record.activation, plan, reused: true, execution_allowed: false });
-      }
-      const plan = genericAgentOrchestrator.createPlan({
-        tenant_id: req.tenantId,
-        run_id: record.run_snapshot.run_id,
-        workers: buildGovernedResearchWorkers({ task: record.activation.task }),
-      });
-      const budget = governedAgentBudgetStore.reserveWorkflow({ tenant_id: req.tenantId, worker_count: plan.workers.length, deadline_ms: req.body?.deadline_ms ?? 120_000 });
-      persistGenericOrchestration(plan);
-      const workflow = { schema_version: "governed_research_workflow_v1", plan_id: plan.plan_id, status: plan.status, execution_mode: "dry_run", model_invocation: false, tool_invocation: false, external_action: false, operational_budget: budget, telemetry: { queue_ms: 0, context_build_ms: 0, retry_events: 0, timeout_events: 0, cancellation_events: 0, zombie_branches: 0 } };
-      const queueJobs = await governedAgentQueueStore.enqueue({ tenant_id: req.tenantId, activation_id: record.activation.activation_id, plan_id: plan.plan_id, workers: plan.workers, deadline_at: budget.deadline_at, max_retries: budget.limits.max_retries_per_worker });
-      workflow.queue = { job_count: queueJobs.length, status: "queued" };
-      const saved = governedAgentActivationStore.save({ tenant_id: req.tenantId, activation: record.activation, run_snapshot: record.run_snapshot, workflow, expected_revision: record.revision });
-      audit.append("governed_agent_research_workflow_created", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, activation_id: record.activation.activation_id, plan_id: plan.plan_id, worker_count: plan.workers.length });
-      return res.status(201).json({ ok: true, tenant_id: req.tenantId, activation: saved.activation, workflow: saved.workflow, plan, execution_allowed: false });
-    } catch (error) {
-      return publicError(res, error.message === "activation_revision_conflict" ? 409 : 400, error.message || "governed_agent_research_workflow_failed");
-    }
-  });
-
-  app.post("/v1/generic-agents/activations/:activationId/research-evidence", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      const record = governedAgentActivationStore.load({ tenant_id: req.tenantId, activation_id: req.params.activationId });
-      if (!record) return publicError(res, 404, "governed_agent_activation_not_found");
-      if (!record.workflow?.plan_id) return publicError(res, 400, "research_workflow_required");
-      const plan = buildResearchPlan({ question: record.activation.task, allowed_domains: req.body?.allowed_domains });
-      const validation = validateResearchEvidence({ question: record.activation.task, plan, sources: req.body?.sources, claims: req.body?.claims });
-      const priorTelemetry = record.workflow.telemetry || { evidence_validation_attempts: 0, quarantined_count: 0 };
-      const workflow = {
-        ...record.workflow,
-        evidence: {
-          validation_id: validation.validation_id,
-          state: validation.state,
-          quality_score: validation.quality_score,
-          source_count: validation.source_count,
-          independent_host_count: validation.independent_host_count,
-          contradictions: validation.contradictions,
-          release_readiness: validation.release_readiness,
-          threat_assessment: validation.threat_assessment,
-        },
-        telemetry: {
-          ...priorTelemetry,
-          evidence_validation_attempts: Number(priorTelemetry.evidence_validation_attempts || 0) + 1,
-          quarantined_count: Number(priorTelemetry.quarantined_count || 0) + (validation.state === "quarantined" ? 1 : 0),
-          last_evidence_validation_at: validation.validated_at,
-        },
-      };
-      const saved = governedAgentActivationStore.save({ tenant_id: req.tenantId, activation: record.activation, run_snapshot: record.run_snapshot, workflow, expected_revision: record.revision });
-      audit.append("governed_agent_research_evidence_validated", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        activation_id: record.activation.activation_id,
-        validation_id: validation.validation_id,
-        state: validation.state,
-        quality_score: validation.quality_score,
-        source_count: validation.source_count,
-        prompt_injection_count: validation.threat_assessment.prompt_injection_count,
-        contradiction_count: validation.contradictions.length,
-      });
-      return res.status(201).json({ ok: true, tenant_id: req.tenantId, plan, validation, workflow: saved.workflow, execution_allowed: false });
-    } catch (error) {
-      return publicError(res, error.message === "activation_revision_conflict" ? 409 : 400, error.message || "governed_agent_research_evidence_failed");
-    }
-  });
-
-  app.get("/v1/generic-agents/operational-budget", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    const budget = governedAgentBudgetStore.get({ tenant_id: req.tenantId });
-    return res.json({ ok: true, tenant_id: req.tenantId, budget, execution_allowed: false });
-  });
-
-  app.get("/v1/generic-agents/queue/metrics", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
-    res.json(await governedAgentQueueStore.metrics({ tenant_id: req.tenantId }));
-  });
-  app.post("/v1/generic-agents/queue/tick", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
-    const outcome = await governedAgentDryRunRunner.tick({ tenant_id: req.tenantId });
-    audit.append("governed_agent_queue_dry_run_tick", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, completed: outcome.completed.length, expired: outcome.expired });
-    return res.json({ ok: true, tenant_id: req.tenantId, ...outcome });
-  });
-  app.post("/v1/generic-agents/queue/claim", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
-    const job = await governedAgentQueueStore.claim({ tenant_id: req.tenantId });
-    if (!job) return res.status(204).end();
-    return res.json(job);
-  });
-  app.post("/v1/generic-agents/queue/:jobId/complete", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
-    const job = await governedAgentQueueStore.complete({ tenant_id: req.tenantId, job_id: req.params.jobId, result: req.body?.result || null });
-    if (!job) return publicError(res, 404, "queue_job_not_found");
-    return res.json(job);
-  });
-  app.post("/v1/generic-agents/queue/:jobId/fail", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
-    const job = await governedAgentQueueStore.fail({ tenant_id: req.tenantId, job_id: req.params.jobId, error: req.body?.error || "worker_failed" });
-    if (!job) return publicError(res, 404, "queue_job_not_found");
-    return res.json(job);
-  });
-  app.post("/v1/generic-agents/queue/activations/:activationId/cancel", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
-    return res.json(await governedAgentQueueStore.cancelActivation({ tenant_id: req.tenantId, activation_id: req.params.activationId }));
-  });
-  app.post("/v1/generic-agents/providers/openai/setup-links", coreAuth(SCOPES.WRITE_PROVIDER_SETUP_LINK, { allowProviderSetupService: true }), async (req, res) => {
-    if (!tenantProviderSetupLinks) return publicError(res, 503, "tenant_provider_setup_not_configured");
-    // `admin:tenant` is intentionally not a wildcard here. This endpoint
-    // mints a credential-entry capability, so it accepts only the exact
-    // bootstrap key created from the approved MCP→Core binding.
-    if (!isProviderSetupLinkIssuer(req.coreKey, req.tenantId)) {
-      audit.append("tenant_openai_provider_setup_link_issuer_blocked", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-      });
-      return publicError(res, 403, "provider_setup_link_issuer_required");
-    }
-    const ownerContext = req.body?.owner_context;
-    if (!verifyOwnerContextAssertion(ownerContext, ownerContextSigningSecret, req.tenantId) || !hasProviderSetupOwnerContext(ownerContext)) {
-      audit.append("tenant_openai_provider_setup_link_owner_context_blocked", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-      });
-      return publicError(res, 403, "owner_context_required");
-    }
-    let link;
-    try {
-      link = await tenantProviderSetupLinks.issue({
-        tenant_id: req.tenantId,
-        owner_subject_fingerprint: ownerContext.owner_subject_fingerprint,
-        ttl_minutes: req.body?.ttl_minutes,
-      });
-    } catch {
-      // Keep database/provider-link implementation details out of this
-      // credential-capability endpoint. The portal can safely ask the owner
-      // to retry without exposing a token, proof, database error or secret.
-      audit.append("tenant_openai_provider_setup_link_issue_failed", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-      });
-      return publicError(res, 503, "tenant_provider_setup_link_unavailable");
-    }
-    audit.append("tenant_openai_provider_setup_link_issued", {
-      tenant_id: req.tenantId,
-      key_id: req.coreKey.key_id,
-      link_id: link.link_id,
-      owner_subject_fingerprint: ownerContext.owner_subject_fingerprint,
-      expires_at: link.expires_at,
-    });
-    return res.status(201).json({
-      ok: true,
-      tenant_id: req.tenantId,
-      setup_url: null,
-      // This is delivered only to the server-side owner portal, which moves it
-      // into the URL fragment. It is never included in an MCP tool response.
-      setup_proof: link.proof,
-      link_id: link.link_id,
-      expires_at: link.expires_at,
-      execution_enabled: false,
-    });
-  });
-  app.get("/v1/generic-agents/providers/openai", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
-    if (!tenantProviderCredentials) return publicError(res, 503, "tenant_provider_vault_not_configured");
-    const provider = await tenantProviderCredentials.status({ tenant_id: req.tenantId });
-    return res.json({
-      ok: true,
-      tenant_id: req.tenantId,
-      provider: {
-        ...provider,
-        // A configured key is still never a global execution switch. The
-        // capability below means an OAuth owner can start the fixed workflow
-        // after a fresh request-bound confirmation; every run is separate.
-        execution_enabled: provider.execution_enabled === true,
-        execution_available: provider.configured === true && Boolean(tenantOpenAiMultiAgentRunner),
-        execution_mode: provider.configured === true && tenantOpenAiMultiAgentRunner
-          ? "bounded_owner_confirmed_multiagent"
-          : "disabled",
-      },
-    });
-  });
-  // Provider credentials are intentionally accepted only by a consumed, short-lived
-  // setup link. A normal Core key must never become a second, bypassable secret
-  // input channel, even when it has a broad write scope.
-  app.put("/v1/generic-agents/providers/openai", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    audit.append("tenant_openai_provider_direct_write_blocked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
-    return publicError(res, 410, "provider_setup_link_required", "Use a one-time owner setup link.");
-  });
-  app.delete("/v1/generic-agents/providers/openai", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    audit.append("tenant_openai_provider_direct_delete_blocked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
-    return publicError(res, 410, "provider_setup_link_required", "Provider changes require the owner setup flow.");
-  });
-
-  // The only live provider path. Its graph, model, token cap, concurrency and
-  // tool policy are all fixed in the runner; callers can supply only a bounded
-  // task plus a fresh, request-bound OAuth owner confirmation.
-  app.post("/v1/generic-agents/providers/openai/multi-agent-runs", coreAuth(SCOPES.WRITE_DECISION), async (req, res) => {
-    try {
-      const body = await consumeBoundedProviderExecutionOwner(req);
-      const run = tenantOpenAiMultiAgentRunner.start({ tenant_id: req.tenantId, task: body.task });
-      const response = { ok: true, tenant_id: req.tenantId, run, governance: {
-        scope: "bounded_tenant_provider_execution",
-        owner_confirmation_required: true,
-        owner_confirmation_satisfied: true,
-        external_tools: false,
-        fixed_workflow: "research_review_synthesis_v1",
-      } };
-      // The caller receives a run id before the first provider request can
-      // complete, so it can poll or propagate cancellation immediately.
-      return res.status(202).json(response);
-    } catch (error) {
-      const code = error.message || "tenant_openai_multi_agent_run_failed";
-      const status = ["owner_context_required", "owner_confirmation_required", "tenant_scope_denied"].includes(code)
-        ? 403
-        : ["tenant_openai_provider_not_configured", "tenant_provider_credential_unavailable", "tenant_openai_execution_not_configured", "owner_confirmation_replayed", "owner_confirmation_consume_unavailable"].includes(code)
-          ? 409
-          : ["tenant_multi_agent_run_in_progress", "multi_agent_execution_capacity_reached", "daily_workflow_budget_exceeded", "model_budget_exceeded"].includes(code)
-            ? 429
-            : 400;
-      return publicError(res, status, code);
-    }
-  });
-
-  app.get("/v1/generic-agents/providers/openai/multi-agent-runs/:runId", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    if (!tenantOpenAiMultiAgentRunner) return publicError(res, 503, "tenant_openai_execution_not_configured");
-    try {
-      // Status can be read by a tenant decision key; model output remains
-      // owner-only and is available through the signed POST result endpoint.
-      const run = tenantOpenAiMultiAgentRunner.get({ tenant_id: req.tenantId, run_id: req.params.runId, include_output: false });
-      return res.json({ ok: true, tenant_id: req.tenantId, run });
-    } catch (error) {
-      const code = error.message || "tenant_openai_multi_agent_run_read_failed";
-      return publicError(res, code === "tenant_openai_multi_agent_run_not_found" ? 404 : 403, code);
-    }
-  });
-
-  app.post("/v1/generic-agents/providers/openai/multi-agent-runs/:runId/result", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      const body = requireBoundedProviderExecutionOwner(req, "tenant_openai_multiagent_read");
-      if (body.run_id !== req.params.runId) return publicError(res, 400, "run_id_mismatch");
-      const run = tenantOpenAiMultiAgentRunner.get({ tenant_id: req.tenantId, run_id: req.params.runId, include_output: true });
-      return res.json({ ok: true, tenant_id: req.tenantId, run });
-    } catch (error) {
-      const code = error.message || "tenant_openai_multi_agent_run_result_failed";
-      return publicError(res, code === "tenant_openai_multi_agent_run_not_found" ? 404 : 403, code);
-    }
-  });
-
-  app.post("/v1/generic-agents/providers/openai/multi-agent-runs/:runId/cancel", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      const body = requireBoundedProviderExecutionOwner(req, "tenant_openai_multiagent_cancel");
-      if (body.run_id !== req.params.runId) return publicError(res, 400, "run_id_mismatch");
-      const run = tenantOpenAiMultiAgentRunner.cancel({ tenant_id: req.tenantId, run_id: req.params.runId });
-      return res.json({ ok: true, tenant_id: req.tenantId, run });
-    } catch (error) {
-      const code = error.message || "tenant_openai_multi_agent_run_cancel_failed";
-      return publicError(res, code === "tenant_openai_multi_agent_run_not_found" ? 404 : 403, code);
-    }
-  });
-
-  app.post("/v1/generic-agents/runs", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      const run = genericAgentRuntime.startRun({ ...(req.body || {}), tenant_id: req.tenantId });
-      audit.append("generic_agent_run_started", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, agent_id: run.agent_id });
-      return res.status(201).json({ ok: true, tenant_id: req.tenantId, run });
-    } catch (error) {
-      return publicError(res, 400, error.message || "generic_agent_run_invalid");
-    }
-  });
-
-  app.post("/v1/generic-agents/runs/:runId/checkpoint", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      const run = genericAgentRuntime.checkpointRun({ run_id: req.params.runId, tenant_id: req.tenantId, checkpoint: req.body?.checkpoint });
-      const record = genericAgentCheckpoints.save({
-        tenant_id: req.tenantId,
-        run_id: run.run_id,
-        checkpoint: run.checkpoint,
-        run_snapshot: run,
-        expected_revision: req.body?.expected_revision ?? null,
-      });
-      audit.append("generic_agent_checkpoint_saved", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, revision: record.revision });
-      return res.json({ ok: true, tenant_id: req.tenantId, run, checkpoint_record: { revision: record.revision, updated_at: record.updated_at } });
-    } catch (error) {
-      return publicError(res, error.message === "checkpoint_revision_conflict" ? 409 : 400, error.message || "generic_agent_checkpoint_failed");
-    }
-  });
-
-  app.get("/v1/generic-agents/runs/:runId", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    try {
-      let restored = false;
-      let run;
-      try {
-        run = genericAgentRuntime.getRun({ run_id: req.params.runId, tenant_id: req.tenantId });
-      } catch (error) {
-        if (error.message !== "run_not_found") throw error;
-        const durable = genericAgentCheckpoints.load({ tenant_id: req.tenantId, run_id: req.params.runId });
-        if (!durable?.run_snapshot) throw error;
-        run = genericAgentRuntime.restoreRun({ tenant_id: req.tenantId, run_snapshot: durable.run_snapshot });
-        restored = true;
-      }
-      const checkpoint = genericAgentCheckpoints.load({ tenant_id: req.tenantId, run_id: run.run_id });
-      return res.json({ ok: true, tenant_id: req.tenantId, run, restored_from_checkpoint: restored, durable_checkpoint: checkpoint ? { revision: checkpoint.revision, updated_at: checkpoint.updated_at } : null });
-    } catch (error) {
-      return publicError(res, error.message === "run_not_found" ? 404 : 403, error.message || "generic_agent_run_read_failed");
-    }
-  });
-
-  app.post("/v1/generic-agents/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    try {
-      const report = evaluateGenericAgentRun(req.body?.cases);
-      audit.append("generic_agent_evaluation_completed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, case_count: report.case_count, score: report.score });
-      return res.json({ ok: true, tenant_id: req.tenantId, evaluation: report, execution_allowed: false });
-    } catch (error) {
-      return publicError(res, 400, error.message || "generic_agent_evaluation_failed");
-    }
-  });
-
-  app.post("/v1/generic-agents/runs/:runId/model-reservations", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      const run = genericAgentRuntime.reserveModelCall({
-        run_id: req.params.runId,
-        tenant_id: req.tenantId,
-        model_id: req.body?.model_id,
-        estimated_tokens: req.body?.estimated_tokens,
-      });
-      audit.append("generic_agent_model_reserved", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, model_id: req.body?.model_id, estimated_tokens: req.body?.estimated_tokens });
-      return res.status(201).json({ ok: true, tenant_id: req.tenantId, run_id: run.run_id, model_usage: run.model_usage, model_budget: run.model_budget });
-    } catch (error) {
-      return publicError(res, error.message === "model_budget_exceeded" ? 429 : 400, error.message || "generic_agent_model_reservation_failed");
-    }
-  });
-
-  app.post("/v1/generic-agents/runs/:runId/tool-events", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      const run = genericAgentRuntime.recordToolEvent({
-        run_id: req.params.runId,
-        tenant_id: req.tenantId,
-        tool_id: req.body?.tool_id,
-        outcome: req.body?.outcome,
-        retry_count: req.body?.retry_count,
-      });
-      audit.append("generic_agent_tool_event", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, tool_id: req.body?.tool_id, outcome: req.body?.outcome || "success" });
-      return res.json({ ok: true, tenant_id: req.tenantId, run_id: run.run_id });
-    } catch (error) {
-      return publicError(res, 400, error.message || "generic_agent_tool_event_failed");
-    }
-  });
-
-  app.get("/v1/generic-agents/metrics", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    try {
-      return res.json({ ok: true, metrics: genericAgentRuntime.getMetrics({ tenant_id: req.tenantId }) });
-    } catch (error) {
-      return publicError(res, 403, error.message || "generic_agent_metrics_read_failed");
-    }
-  });
-
-  app.post("/v1/generic-agents/runs/:runId/orchestration", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      const run = genericAgentRuntime.getRun({ run_id: req.params.runId, tenant_id: req.tenantId });
-      const plan = genericAgentOrchestrator.createPlan({ tenant_id: req.tenantId, run_id: run.run_id, workers: req.body?.workers });
-      persistGenericOrchestration(plan);
-      audit.append("generic_agent_orchestration_created", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, run_id: run.run_id, plan_id: plan.plan_id, worker_count: plan.workers.length });
-      return res.status(201).json({ ok: true, tenant_id: req.tenantId, plan });
-    } catch (error) {
-      return publicError(res, 400, error.message || "generic_agent_orchestration_invalid");
-    }
-  });
-
-  app.post("/v1/generic-agents/orchestration/:planId/claim", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      recoverGenericOrchestration(req.tenantId, req.params.planId);
-      const claimed = genericAgentOrchestrator.claimReadyWorkers({ tenant_id: req.tenantId, plan_id: req.params.planId });
-      persistGenericOrchestration(genericAgentOrchestrator.getPlan({ tenant_id: req.tenantId, plan_id: req.params.planId }));
-      audit.append("generic_agent_workers_claimed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: claimed.plan_id, worker_count: claimed.workers.length });
-      return res.json({ ok: true, tenant_id: req.tenantId, ...claimed });
-    } catch (error) {
-      return publicError(res, 400, error.message || "generic_agent_orchestration_claim_failed");
-    }
-  });
-
-  app.post("/v1/generic-agents/orchestration/:planId/workers/:workerId/complete", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      recoverGenericOrchestration(req.tenantId, req.params.planId);
-      const plan = genericAgentOrchestrator.completeWorker({ tenant_id: req.tenantId, plan_id: req.params.planId, worker_id: req.params.workerId, result: req.body?.result });
-      persistGenericOrchestration(plan);
-      const worker = plan.workers.find((candidate) => candidate.worker_id === req.params.workerId);
-      audit.append(worker?.status === "quarantined" ? "generic_agent_worker_result_quarantined" : "generic_agent_worker_completed", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: plan.plan_id, worker_id: req.params.workerId });
-      return res.json({ ok: true, tenant_id: req.tenantId, plan });
-    } catch (error) {
-      return publicError(res, 400, error.message || "generic_agent_worker_complete_failed");
-    }
-  });
-
-  app.post("/v1/generic-agents/orchestration/:planId/cancel", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      recoverGenericOrchestration(req.tenantId, req.params.planId);
-      const plan = genericAgentOrchestrator.cancelPlan({ tenant_id: req.tenantId, plan_id: req.params.planId });
-      persistGenericOrchestration(plan);
-      audit.append("generic_agent_orchestration_cancelled", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: plan.plan_id });
-      return res.json({ ok: true, tenant_id: req.tenantId, plan });
-    } catch (error) {
-      return publicError(res, 400, error.message || "generic_agent_orchestration_cancel_failed");
-    }
-  });
-
-  app.post("/v1/generic-agents/orchestration/:planId/join", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
-    try {
-      recoverGenericOrchestration(req.tenantId, req.params.planId);
-      const joined = genericAgentOrchestrator.coreJoin({ tenant_id: req.tenantId, plan_id: req.params.planId });
-      persistGenericOrchestration(genericAgentOrchestrator.getPlan({ tenant_id: req.tenantId, plan_id: req.params.planId }));
-      audit.append("generic_agent_orchestration_core_joined", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, plan_id: joined.plan_id, run_id: joined.run_id });
-      return res.json({ ok: true, tenant_id: req.tenantId, joined, execution_allowed: false });
-    } catch (error) {
-      return publicError(res, 400, error.message || "generic_agent_orchestration_join_failed");
-    }
-  });
-
-  const healthProbeTimeoutMs = boundedHealthProbeTimeoutMs(options.healthProbeTimeoutMs);
-  const healthProbeFlights = new Map();
-  let healthProbeGeneration = 0;
-  const boundedSingleFlightHealthProbe = async (name, run) => {
-    let state = healthProbeFlights.get(name);
-    if (!state) {
-      state = { active: null, orphan: null };
-      healthProbeFlights.set(name, state);
-    }
-    let entry = state.active;
-    if (!entry) {
-      const generation = ++healthProbeGeneration;
-      const promise = Promise.resolve()
-        .then(run)
-        .then(
-          (value) => ({ ok: true, value }),
-          (error) => ({
-            ok: false,
-            error: String(error?.code || error?.message || `${name}_failed`).slice(0, 160),
-          }),
-        );
-      entry = { generation, promise };
-      state.active = entry;
-      promise.then(() => {
-        if (healthProbeFlights.get(name) !== state) return;
-        if (state.active?.generation === generation) state.active = null;
-        if (state.orphan?.generation === generation) state.orphan = null;
-        if (!state.active && !state.orphan) {
-          healthProbeFlights.delete(name);
-        }
-      });
-    }
-    let timer;
-    try {
-      const result = await Promise.race([
-        entry.promise,
-        new Promise((resolve) => {
-          timer = setTimeout(() => resolve({
-            ok: false,
-            timed_out: true,
-            error: `${name}_timeout`,
-          }), healthProbeTimeoutMs);
-        }),
-      ]);
-      if (result.timed_out === true
-        && healthProbeFlights.get(name) === state
-        && state.active?.generation === entry.generation
-        && !state.orphan) {
-        // Permit one recovery attempt without allowing an attacker or a stuck
-        // dependency to create an unbounded chain of unresolved promises.
-        state.orphan = entry;
-        state.active = null;
-      }
-      return result;
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  };
-
-  const serveHealth = async (_req, res, { strictReadiness = false } = {}) => {
-    const production = (process.env.NODE_ENV || "development") === "production";
-    const productionBuildReady =
-      !production ||
-      BUILD_COMMIT_VERIFIABLE;
-    const hostNativeRuntimeReady =
-      !hostNativeGovernanceEnabled ||
-      (
-        hostNativeGovernanceState === "ready" &&
-        hostNativeGovernance?.storage?.restart_durable === true &&
-        hostNativeGovernance?.trusted_readback_configured === true &&
-        hostNativeGovernance?.release_join_verdict_resolver_configured === true &&
-        hostNativeGovernance?.required_checks_policy_resolver_configured === true &&
-        hostNativeGovernance?.closure_attestation_verifier_configured === true &&
-        hostNativeResolverConfigurationValid
-      );
-    const hostNativeProductionReadinessRequired =
-      production && hostNativeGovernanceEnabled;
-    const causalContinuityProductionRequired = production
-      && governedAgentPostgresConfigured
-      && (
-        !hasInjectedPostgresVersionProbe
-        || Boolean(options.causalContinuityStore || options.causalContinuityRuntime)
-      );
-    const causalInitializationElapsedMs = causalContinuityInitializationStartedAtMs === null
-      ? null
-      : Math.max(0, Math.floor(performance.now() - causalContinuityInitializationStartedAtMs));
-    const causalInitializationWindowOpen = production
-      && causalContinuityProductionRequired
-      && Boolean(causalContinuityRuntime)
-      && causalContinuityState === "initializing"
-      && causalInitializationElapsedMs !== null
-      && causalInitializationElapsedMs <= causalContinuityInitializationLivenessMs;
-    const researchAirlockBootstrapGuard = causalInitializationWindowOpen
-      ? buildResearchAirlockBootstrapGuard({
-          buildCommitSha: BUILD_COMMIT_SHA,
-          causalProductionRequired: causalContinuityProductionRequired,
-          causalState: causalContinuityState,
-          initializationElapsedMs: causalInitializationElapsedMs,
-          livenessWindowMs: causalContinuityInitializationLivenessMs,
-          mode: researchAirlockRuntime.mode,
-          runtimeReady: researchAirlockRuntime.ready,
-          store: researchAirlockRuntime.store,
-        })
-      : null;
-    const hostNativeBootstrapPrerequisitesReady = hostNativeProductionReadinessRequired
-      && hostNativeGovernanceEnabled
-      && hostNativeRuntimeReady
-      && hostNativeGovernanceState === "ready"
-      // Host-native governance is intentionally the server-owned atomic file
-      // store in production. Its authority comes from the independently
-      // verified readback/signing/resolver gates below, not from pretending the
-      // store is distributed. Research Airlock remains separately constrained
-      // to its PostgreSQL distributed store by the signed bootstrap guard.
-      && hostNativeGovernance?.storage?.kind === "file_atomic"
-      && hostNativeGovernance?.storage?.restart_durable === true
-      && hostNativeGovernance?.render_service_origin_resolver_configured === true
-      && mcpTenantGatewayConfigured
-      && hostNativeSigningSecret.length >= 32
-      && Boolean(tenantContextSigningSecret)
-      && Boolean(ownerContextSigningSecret)
-      && Boolean(dttAgentIdentitySecret)
-      && dttVerifierIdentityResolverConfigured
-      && governedAgentPostgresConfigured
-      && Boolean(nyraPolicyRegistryPostgresPool)
-      && typeof hostNativeRequiredChecksPolicyResolver === "function"
-      && hostNativeRenderServiceOriginResolverState !== "fail_closed_unavailable"
-      && options.researchAirlockRuntime === undefined;
-    const policyProofBootstrapReady = nyraPolicyRegistryMode === "advisory_evaluate"
-      || (
-        nyraPolicyRegistryMode === "enforced"
-        && nyraPolicyRegistryProofService?.configuration_ready === true
-      );
-    const policyRegistryBootstrapReady = Boolean(nyraPolicyRegistryPostgresPool)
-      && options.nyraPolicyRegistryStore === undefined;
-    const causalBootstrapLivenessReady = !strictReadiness
-      && causalInitializationWindowOpen
-      && causalBootstrapConstructionProvenance.host_native
-      && causalBootstrapConstructionProvenance.research_airlock
-      && causalBootstrapConstructionProvenance.policy_registry
-      && causalBootstrapConstructionProvenance.causal_runtime
-      && causalBootstrapConstructionProvenance.dtt_identity
-      && causalBootstrapConstructionProvenance.resolver_registry
-      && productionBuildReady
-      && hostNativeBootstrapPrerequisitesReady
-      && nyraPolicyRegistryModeValid
-      && nyraPolicyRegistryMode !== "disabled"
-      && policyProofBootstrapReady
-      && policyRegistryBootstrapReady
-      && Boolean(researchAirlockBootstrapGuard);
-
-    let governedAgentPostgresVersion =
-      normalizePostgresMajorVerification(null);
-    let nyraPolicyRegistryStatus;
-    let nyraPolicyRegistryProofStatus;
-    let researchAirlockHealth;
-    let causalContinuityHealth = {
-      ok: false,
-      state: causalContinuityState,
-      error: causalContinuityInitializationError,
-    };
-    if (causalBootstrapLivenessReady) {
-      nyraPolicyRegistryStatus = {
-        configured: true,
-        backend: "postgresql",
-        restart_durable: true,
-        distributed: true,
-        state: "probe_deferred_during_causal_initialization",
-        ready: false,
-      };
-      nyraPolicyRegistryProofStatus = {
-        ready: false,
-        backend: nyraPolicyRegistryProofService ? "postgresql" : "unavailable",
-        state: "probe_deferred_during_causal_initialization",
-      };
-      researchAirlockHealth = {
-        policy_version: RESEARCH_AIRLOCK_POLICY_VERSION,
-        mode: researchAirlockRuntime.mode || "unknown",
-        ready: false,
-        operational_safe: false,
-        accepting_new_work: false,
-        state_backend: researchAirlockRuntime.store?.kind || "unavailable",
-        restart_durable: researchAirlockRuntime.store?.restart_durable === true,
-        distributed: researchAirlockRuntime.store?.distributed === true,
-        bootstrap_guard: researchAirlockBootstrapGuard,
-      };
-    } else {
-      const probe = governedAgentPostgresVersionProbe;
-      const postgresCheck = typeof probe === "function"
-        ? probe
-        : typeof probe?.check === "function"
-          ? () => probe.check()
-          : null;
-      const [postgresResult, policyResult, proofResult, airlockResult, causalResult] = await Promise.all([
-        hostNativeProductionReadinessRequired && governedAgentPostgresConfigured && postgresCheck
-          ? boundedSingleFlightHealthProbe("postgres_major", postgresCheck)
-          : Promise.resolve({ ok: true, value: normalizePostgresMajorVerification(null) }),
-        boundedSingleFlightHealthProbe("nyra_policy_registry", () => nyraPolicyRegistry.status()),
-        nyraPolicyRegistryProofService
-          ? boundedSingleFlightHealthProbe("nyra_policy_registry_proof", () => nyraPolicyRegistryProofService.status())
-          : Promise.resolve({ ok: true, value: { ready: false, backend: "unavailable", error: "policy_proof_not_configured" } }),
-        boundedSingleFlightHealthProbe("research_airlock", () => researchAirlockRuntime.status("health_probe")),
-        causalContinuityRuntime && causalContinuityState === "ready"
-          ? boundedSingleFlightHealthProbe("causal_continuity", () => causalContinuityRuntime.health())
-          : Promise.resolve({ ok: true, value: causalContinuityHealth }),
-      ]);
-      if (postgresResult.ok) {
-        governedAgentPostgresVersion = normalizePostgresMajorVerification(postgresResult.value);
-      }
-      nyraPolicyRegistryStatus = policyResult.ok && policyResult.value && typeof policyResult.value === "object"
-        ? policyResult.value
-        : {
-            configured: true,
-            backend: policyRegistryBootstrapReady ? "postgresql" : "unavailable",
-            restart_durable: policyRegistryBootstrapReady,
-            distributed: policyRegistryBootstrapReady,
-            state: policyResult.timed_out ? "probe_timeout" : "unavailable",
-            ready: false,
-            error: policyResult.error,
-          };
-      nyraPolicyRegistryProofStatus = proofResult.ok && proofResult.value && typeof proofResult.value === "object"
-        ? proofResult.value
-        : {
-            ready: false,
-            backend: nyraPolicyRegistryProofService ? "postgresql" : "unavailable",
-            state: proofResult.timed_out ? "probe_timeout" : "unavailable",
-            error: proofResult.error,
-          };
-      researchAirlockHealth = airlockResult.ok && airlockResult.value && typeof airlockResult.value === "object"
-        ? airlockResult.value
-        : {
-            mode: researchAirlockRuntime.mode || "shadow",
-            ready: false,
-            operational_safe: false,
-            accepting_new_work: false,
-            state_backend: researchAirlockRuntime.store?.kind || "unavailable",
-            state: airlockResult.timed_out ? "probe_timeout" : "unavailable",
-            error: airlockResult.error,
-          };
-      if (causalResult.ok && causalResult.value && typeof causalResult.value === "object") {
-        causalContinuityHealth = {
-          ...causalResult.value,
-          state: causalContinuityState,
-        };
-      } else {
-        causalContinuityHealth = {
-          ok: false,
-          state: causalResult.timed_out ? "health_timeout" : "health_failed",
-          error: causalResult.error,
-        };
-      }
-    }
-    const hostNativeProductionReadinessReasons = [];
-    if (
-      hostNativeProductionReadinessRequired &&
-      !mcpTenantGatewayConfigured
-    ) {
-      hostNativeProductionReadinessReasons.push(
-        "mcp_tenant_gateway_not_configured",
-      );
-    }
-    if (
-      hostNativeProductionReadinessRequired &&
-      !tenantContextSigningSecret
-    ) {
-      hostNativeProductionReadinessReasons.push(
-        "tenant_context_signing_not_configured",
-      );
-    }
-    if (
-      hostNativeProductionReadinessRequired &&
-      !ownerContextSigningSecret
-    ) {
-      hostNativeProductionReadinessReasons.push(
-        "owner_context_signing_not_configured",
-      );
-    }
-    if (
-      hostNativeProductionReadinessRequired &&
-      !dttAgentIdentitySecret
-    ) {
-      hostNativeProductionReadinessReasons.push(
-        "dtt_closure_signing_not_configured",
-      );
-    }
-    if (
-      hostNativeProductionReadinessRequired &&
-      !governedAgentPostgresConfigured
-    ) {
-      hostNativeProductionReadinessReasons.push(
-        "governed_agent_postgres_not_configured",
-      );
-    }
-    if (
-      hostNativeProductionReadinessRequired &&
-      governedAgentPostgresConfigured &&
-      !governedAgentPostgresVersion.verified
-    ) {
-      hostNativeProductionReadinessReasons.push(
-        "governed_agent_postgres_major_16_not_verified",
-      );
-    }
-    const hostNativeProductionReadinessReady =
-      !hostNativeProductionReadinessRequired ||
-      hostNativeProductionReadinessReasons.length === 0;
-    const hostNativeReady =
-      hostNativeRuntimeReady && hostNativeProductionReadinessReady;
-    let nyraPolicyRegistryCompilerCurrentStatus = nyraPolicyRegistryCompilerStatus;
-    if (nyraPolicyRegistryCompilerProvenanceVerifier) {
-      try {
-        const refreshed = nyraPolicyRegistryCompilerProvenanceVerifier.status();
-        nyraPolicyRegistryCompilerCurrentStatus = refreshed &&
-          typeof refreshed.then !== "function" ? refreshed : null;
-      } catch {
-        nyraPolicyRegistryCompilerCurrentStatus = null;
-      }
-    }
-    const nyraPolicyRegistryCompilerRuntimeReady =
-      nyraPolicyRegistryCompilerEnabled &&
-      nyraPolicyRegistryCompilerConfigurationError === null &&
-      validPolicyCompilerStatus(
-        nyraPolicyRegistryCompilerCurrentStatus,
-        nyraPolicyRegistryExpectedCatalogDigest,
-        nyraPolicyRegistryExpectedTrustCatalogDigest,
-      );
-    const nyraPolicyRegistryClientStatus = () => nyraPolicyRegistryClient?.status?.() || {
-      configured: false,
-      ready: false,
-      state: nyraPolicyRegistryProofEnabled ? "unavailable" : "disabled",
-      upstream_verified: false,
-      last_failure: nyraPolicyRegistryProofConfigurationError || null,
-    };
-    let nyraPolicyRegistryCoordinatorStatus;
-    try {
-      nyraPolicyRegistryCoordinatorStatus = nyraPolicyRegistryCoordinator
-        ? await nyraPolicyRegistryCoordinator.status()
-        : {
-            ready: false,
-            e2e_verified: false,
-            upstream: nyraPolicyRegistryClientStatus(),
-            error: "policy_registry_coordinator_not_configured",
-          };
-    } catch {
-      nyraPolicyRegistryCoordinatorStatus = {
-        ready: false,
-        e2e_verified: false,
-        upstream: nyraPolicyRegistryClientStatus(),
-        error: "policy_registry_coordinator_unavailable",
-      };
-    }
-    const nyraPolicyRegistryEvaluationProductionReady =
-      !production || (
-        nyraPolicyRegistryStatus.backend === "postgresql" &&
-        nyraPolicyRegistryStatus.ready === true
-      );
-    const nyraPolicyRegistryStoreProvenanceReady =
-      nyraPolicyRegistryStatus.backend === "postgresql" &&
-      nyraPolicyRegistryStatus.restart_durable === true &&
-      nyraPolicyRegistryStatus.distributed === true &&
-      nyraPolicyRegistryStatus.compiler_provenance_persistence === true &&
-      nyraPolicyRegistryStatus.compiler_input_persisted === false;
-    const nyraPolicyRegistryProofV3Ready =
-      nyraPolicyRegistryProofStatus.ready === true &&
-      nyraPolicyRegistryProofStatus.proof_schema_version === "nyra_policy_registry_proof_v3" &&
-      nyraPolicyRegistryProofStatus.attestation_schema_version ===
-        "nyra_policy_activation_attestation_v3" &&
-      nyraPolicyRegistryProofStatus.receipt_schema_version ===
-        "core_policy_activation_receipt_v3" &&
-      nyraPolicyRegistryProofStatus.compiler_provenance_binding_required === true;
-    const nyraPolicyRegistryProofLifecycleReady =
-      nyraPolicyRegistryProofActivationEnabled &&
-      nyraPolicyRegistryProofConfigurationError === null &&
-      nyraPolicyRegistryCompilerRuntimeReady &&
-      nyraPolicyRegistryStoreProvenanceReady &&
-      nyraPolicyRegistryProofV3Ready &&
-      nyraPolicyRegistryCoordinatorStatus.ready === true &&
-      nyraPolicyRegistryCoordinatorStatus.e2e_verified === true;
-    const nyraPolicyRegistryProductionReady = nyraPolicyRegistryEvaluationProductionReady &&
-      (nyraPolicyRegistryMode !== "enforced" || nyraPolicyRegistryProofStatus.ready === true) &&
-      (!nyraPolicyRegistryCompilerRequired || nyraPolicyRegistryCompilerRuntimeReady) &&
-      (!nyraPolicyRegistryProofRequired || nyraPolicyRegistryProofLifecycleReady);
-    const researchAirlockProductionReady = !production
-      || researchAirlockHealth.ready === true
-      || (researchAirlockHealth.mode === "shadow" && researchAirlockHealth.operational_safe === true);
-    const causalContinuityProductionReady = !causalContinuityProductionRequired
-      || (Boolean(causalContinuityRuntime) && causalContinuityHealth.ok === true);
-    await ensureGenericWorkCoreJoinSignerReady();
-    const genericWorkCoreJoinCurrentSignerHealth = genericWorkCoreJoinSignerFailureLatched
-      ? {
-          signer_state: genericWorkCoreJoinSignerState,
-          reason: genericWorkCoreJoinSignerReason,
-        }
-      : genericWorkCoreJoinSignerHealth();
-    const genericWorkCoreJoinCurrentSignerState = genericWorkCoreJoinCurrentSignerHealth.signer_state;
-    const genericWorkCoreJoinCurrentSignerReason = genericWorkCoreJoinCurrentSignerHealth.reason;
-    const genericWorkCoreJoinSignerReady = genericWorkCoreJoinCurrentSignerState === "ready";
-    const genericWorkCoreJoinDistributedReady = !genericWorkCoreJoinProduction
-      || genericWorkCoreJoinStore?.distributed === true;
-    const genericWorkCoreJoinReason = genericWorkCoreJoinConfigurationError
-      ? genericWorkCoreJoinConfigurationError
-      : !genericWorkCoreJoinEnabled
-        ? "generic_work_core_join_disabled"
-        : !genericWorkCoreJoinSigner
-          ? genericWorkCoreJoinCurrentSignerReason
-          : !dttAgentIdentitySecret
-        ? "generic_work_core_join_verifier_unavailable"
-        : genericWorkCoreJoinStore?.restart_durable !== true
-          ? "generic_work_core_join_durable_store_unavailable"
-          : !genericWorkCoreJoinDistributedReady
-            ? "generic_work_core_join_distributed_store_unavailable"
-            : genericWorkCoreJoinStoreState === "failed"
-              ? genericWorkCoreJoinStoreError || "generic_work_core_join_durable_store_unavailable"
-              : genericWorkCoreJoinStoreState !== "ready"
-                ? "generic_work_core_join_store_initializing"
-                : !genericWorkCoreJoinSignerReady
-                  ? genericWorkCoreJoinCurrentSignerReason || (genericWorkCoreJoinCurrentSignerState === "configured"
-                    ? "generic_work_core_join_signer_not_yet_verified"
-                    : "generic_work_core_join_signer_unavailable")
-                  : null;
-    const genericWorkCoreJoinReady = genericWorkCoreJoinActivationEnabled
-      && Boolean(genericWorkCoreJoinAuthority)
-      && genericWorkCoreJoinStoreState === "ready"
-      && genericWorkCoreJoinDistributedReady
-      && genericWorkCoreJoinSignerReady;
-    const nonCausalProductionReady = productionBuildReady
-      && hostNativeReady
-      && nyraPolicyRegistryModeValid
-      && nyraPolicyRegistryCompilerConfigurationError === null
-      && nyraPolicyRegistryProofConfigurationError === null
-      && nyraPolicyRegistryProductionReady
-      && researchAirlockProductionReady
-      && genericWorkCoreJoinConfigurationError === null
-      && (!genericWorkCoreJoinRequired || genericWorkCoreJoinReady);
-    const renderReady = nonCausalProductionReady
-      && causalContinuityProductionReady;
-    const causalInitializationDegraded = causalBootstrapLivenessReady;
-    const healthStatusReady = renderReady
-      || (!strictReadiness && causalInitializationDegraded);
-    res.status(healthStatusReady ? 200 : 503).json({
-      ok: !production || renderReady,
       service: SERVICE_NAME,
       version: SERVICE_VERSION,
-      build: {
-        build_id: BUILD_ID,
-        commit_sha: BUILD_COMMIT_SHA,
-        commit_verifiable: BUILD_COMMIT_VERIFIABLE,
-      },
-      health_contract_version: HOST_NATIVE_HEALTH_CONTRACT_VERSION,
-      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
       mode: process.env.NODE_ENV || "development",
-      render_ready: renderReady,
-      readiness: renderReady,
-      readiness_verified: renderReady,
-      liveness_degraded: causalInitializationDegraded,
+      render_ready: true,
       storage_root_configured: Boolean(process.env.CORE_SERVICE_STORAGE_ROOT),
-      governed_agent_queue_backend: governedAgentDatabaseUrl ? "postgresql" : "file_fallback",
-      generic_work_core_join: {
-        enabled: genericWorkCoreJoinEnabled,
-        required: genericWorkCoreJoinRequired,
-        configuration_valid: genericWorkCoreJoinConfigurationError === null,
-        configuration_error: genericWorkCoreJoinConfigurationError,
-        signer_mode: genericWorkCoreJoinRemoteSignerMode,
-        state: genericWorkCoreJoinConfigurationError
-          ? "configuration_invalid"
-          : !genericWorkCoreJoinEnabled
-            ? "disabled"
-            : !genericWorkCoreJoinAuthority
-              ? "durability_or_signing_unavailable"
-              : genericWorkCoreJoinStoreState !== "ready"
-                ? genericWorkCoreJoinStoreState
-                : genericWorkCoreJoinSignerReady
-                  ? "ready"
-                  : genericWorkCoreJoinCurrentSignerState === "configured"
-                    ? "signer_not_yet_verified"
-                    : "signer_unavailable",
-        ready: genericWorkCoreJoinReady,
-        store_state: genericWorkCoreJoinStoreState,
-        signer_state: genericWorkCoreJoinCurrentSignerState,
-        signer_probe_attempts: genericWorkCoreJoinProbeAttempts,
-        reason: genericWorkCoreJoinReason,
-        backend: genericWorkCoreJoinStore?.kind || "unavailable",
-        restart_durable: genericWorkCoreJoinStore?.restart_durable === true,
-        distributed: genericWorkCoreJoinStore?.distributed === true,
-        algorithm: genericWorkCoreJoinAuthority?.signer_metadata.algorithm || null,
-        key_id: genericWorkCoreJoinAuthority?.signer_metadata.key_id || null,
-        public_key_fingerprint: genericWorkCoreJoinAuthority?.signer_metadata.public_key_fingerprint || null,
-        custody: genericWorkCoreJoinAuthority?.signer_metadata.custody || genericWorkCoreJoinSignerCustody,
-        initialization_error: genericWorkCoreJoinStoreError,
-        host_action_authorized: false,
-      },
-      bootstrap_release_exception: {
-        state: bootstrapReleaseExceptionStoreState,
-        ready: Boolean(bootstrapReleaseExceptionAdapter) && bootstrapReleaseExceptionStoreState === "ready",
-        required: false,
-        backend: bootstrapReleaseExceptionStore?.initialize ? "postgres_bootstrap_authority_v1" : "unavailable",
-        trust_pin_configured: Boolean(bootstrapAuthorityTrustPinRaw),
-        pinned: Boolean(bootstrapAuthorityTrustPin) && bootstrapReleaseExceptionStoreState === "ready",
-        authority_key_id: bootstrapAuthorityTrustPin?.authority_key_id || null,
-        attestation_status: bootstrapAuthorityAttestationStatus,
-        initialization_error: bootstrapReleaseExceptionStoreError,
-        host_action_authorized: false,
-        core_join_authorized: false,
-      },
-      bootstrap_deadlock_verdict: {
-        state: bootstrapDeadlockVerdictStoreState,
-        ready: Boolean(bootstrapDeadlockVerdictResolver) && bootstrapDeadlockVerdictStoreState === "ready",
-        required: false,
-        backend: bootstrapDeadlockVerdictStore?.kind || "unavailable",
-        failure_policy_configured: true,
-        initialization_error: bootstrapDeadlockVerdictStoreError,
-        host_action_authorized: false,
-        core_join_authorized: false,
-      },
-      research_airlock: {
-        ...researchAirlockHealth,
-        ready: researchAirlockProductionReady && researchAirlockHealth.ready === true,
-        production_required: production && researchAirlockHealth.mode === "enforced",
-      },
-      causal_continuity: {
-        ...causalContinuityHealth,
-        production_required: causalContinuityProductionRequired,
-        feature_flag_default: "SHADOW",
-      },
-      dynamic_task_tree: {
-        state_backend: dynamicTaskTreeStateStore.kind || "injected",
-        restart_durable: dynamicTaskTreeStateStore.restart_durable === true,
-        distributed_store: dynamicTaskTreeStateStore.distributed === true,
-        verifier_identity_resolver_configured: dttVerifierIdentityResolverConfigured,
-        agent_identity_receipts_ready: dttAgentIdentityReceiptService?.configured === true,
-        agent_identity_receipt_backend: dttAgentIdentityPostgresPool ? "postgresql" : "file_fallback",
-        verification_trust_backend: dttVerificationTrustStore.kind || "injected",
-        verification_trust_distributed: dttVerificationTrustStore.distributed === true,
-        core_join_verdict_source: "universal_core_append_only_ledger",
-        join_verdict_backend: dynamicTaskTreeJoinVerdictStore.kind || "injected",
-        join_verdict_restart_durable: dynamicTaskTreeJoinVerdictStore.restart_durable === true,
-        join_verdict_distributed: dynamicTaskTreeJoinVerdictStore.distributed === true,
-        verified_outcome_and_join_ready: dttVerifierIdentityResolverConfigured,
-        execution_authorized: false,
-      },
-      nyra_deep_branch_v2: {
-        core_material_ready: !nyraDeepV2IntegrationReason,
-        integration_state: nyraDeepV2IntegrationReason || "ready",
-        evidence_ledger: typeof nyraDeepV2Ledger?.ledgerStats === "function"
-          ? nyraDeepV2Ledger.ledgerStats()
-          : {
-            backend: nyraDeepV2Ledger ? "injected" : "unavailable",
-            restart_durable: false,
-            distributed: false,
-            raw_content_retained: false,
-          },
-        mcp_request_replay: typeof nyraDeepV2McpRequestVerifier?.status === "function"
-          ? nyraDeepV2McpRequestVerifier.status()
-          : {
-            backend: nyraDeepV2McpRequestVerifier ? "injected" : "unavailable",
-            restart_durable: false,
-            distributed: false,
-            ready: Boolean(nyraDeepV2McpRequestVerifier),
-            raw_identifiers_retained: false,
-          },
-        attester_ready: Boolean(nyraDeepV2Attester),
-        source_verifier_ready: Boolean(nyraDeepV2SourceVerifier),
-        execution_authorized: false,
-      },
-      nyra_policy_registry: {
-        configuration_valid: nyraPolicyRegistryModeValid &&
-          nyraPolicyRegistryProofConfigurationError === null,
-        evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
-        enforcement: nyraPolicyRegistryMode === "enforced"
-          ? "mandatory"
-          : nyraPolicyRegistryEvaluationEnabled
-            ? "conditional_on_active_snapshot"
-            : "disabled",
-        configured: nyraPolicyRegistryStatus.configured === true,
-        backend: nyraPolicyRegistryStatus.backend || "unavailable",
-        restart_durable: nyraPolicyRegistryStatus.restart_durable === true,
-        distributed: nyraPolicyRegistryStatus.distributed === true,
-        compiler_provenance_persistence:
-          nyraPolicyRegistryStatus.compiler_provenance_persistence === true,
-        compiler_input_persisted: nyraPolicyRegistryStatus.compiler_input_persisted === true,
-        state: nyraPolicyRegistryStatus.state || (nyraPolicyRegistryStatus.ready === false ? "unavailable" : "ready"),
-        ready: nyraPolicyRegistryProductionReady,
-        compiler_provenance: {
-          enabled: nyraPolicyRegistryCompilerEnabled,
-          required: nyraPolicyRegistryCompilerRequired,
-          mode: nyraPolicyRegistryCompilerMode,
-          configuration_valid: nyraPolicyRegistryCompilerConfigurationError === null,
-          configured: Boolean(nyraPolicyRegistryCompilerProvenanceVerifier),
-          ready: nyraPolicyRegistryCompilerRuntimeReady,
-          state: !nyraPolicyRegistryCompilerEnabled
-            ? (nyraPolicyRegistryCompilerConfigurationError ? "configuration_invalid" : "disabled")
-            : nyraPolicyRegistryCompilerConfigurationError
-              ? "configuration_invalid"
-              : nyraPolicyRegistryCompilerRuntimeReady ? "ready" : "unavailable",
-          render_gate_required: nyraPolicyRegistryCompilerRequired ||
-            !nyraPolicyRegistryCompilerEnabledFlag.valid ||
-            !nyraPolicyRegistryCompilerRequiredFlag.valid ||
-            !nyraPolicyRegistryCompilerModeValid ||
-            nyraPolicyRegistryCompilerConfigurationError !== null,
-          schema_version: nyraPolicyRegistryCompilerCurrentStatus?.schema_version || null,
-          provenance_schema_version: "nyra_policy_compiler_provenance_v1",
-          compiler_algorithm:
-            nyraPolicyRegistryCompilerCurrentStatus?.compiler_algorithm || null,
-          verification_algorithm:
-            nyraPolicyRegistryCompilerCurrentStatus?.verification_algorithm || null,
-          traversal_budget:
-            Number.isInteger(nyraPolicyRegistryCompilerCurrentStatus?.traversal_budget)
-              ? nyraPolicyRegistryCompilerCurrentStatus.traversal_budget
-              : null,
-          compiler_build_commit:
-            nyraPolicyRegistryCompilerCurrentStatus?.compiler_build_commit || null,
-          catalog_digest: nyraPolicyRegistryCompilerCurrentStatus?.catalog_digest || null,
-          trust_catalog_digest:
-            nyraPolicyRegistryCompilerCurrentStatus?.trust_catalog_digest || null,
-          compiler_input_persisted:
-            nyraPolicyRegistryStatus.compiler_input_persisted === true,
-          execution_authorized: false,
-          error: nyraPolicyRegistryCompilerConfigurationError ||
-            (nyraPolicyRegistryCompilerEnabled && !nyraPolicyRegistryCompilerRuntimeReady
-              ? "policy_registry_compiler_unavailable"
-              : null),
-        },
-        proof_lifecycle: {
-          enabled: nyraPolicyRegistryProofEnabled,
-          required: nyraPolicyRegistryProofRequired,
-          mode: nyraPolicyRegistryCoreSignerMode,
-          configuration_valid: nyraPolicyRegistryProofConfigurationError === null,
-          state: !nyraPolicyRegistryProofEnabled
-            ? (nyraPolicyRegistryProofConfigurationError ? "configuration_invalid" : "disabled")
-            : nyraPolicyRegistryProofConfigurationError
-              ? "configuration_invalid"
-              : nyraPolicyRegistryProofLifecycleReady ? "ready" : "unavailable",
-          ready: nyraPolicyRegistryProofLifecycleReady,
-          render_gate_required: nyraPolicyRegistryProofRequired ||
-            !nyraPolicyRegistryProofRequiredFlag.valid ||
-            nyraPolicyRegistryProofConfigurationError !== null,
-          error: nyraPolicyRegistryProofConfigurationError,
-        },
-        proof: nyraPolicyRegistryProofStatus,
-        proof_e2e: nyraPolicyRegistryCoordinatorStatus,
-      },
-      governed_agent_runner: {
-        mode: "manual_dry_run",
-        provider_execution_available: false,
-        fixed_provider_workflow: null,
-        native_specialists_only: true,
-        max_jobs_per_tick: 2,
-      },
-      tenant_provider_vault: {
-        retired: true,
-        configured: false,
-        execution_available: false,
-        execution_enabled: false,
-        tenant_scoped: true,
-      },
-      host_native_governance: {
-        enabled: hostNativeGovernanceEnabled,
-        state: hostNativeGovernanceState,
-        production_readiness_required:
-          hostNativeProductionReadinessRequired,
-        production_readiness_ready:
-          hostNativeProductionReadinessReady,
-        production_readiness_reasons:
-          hostNativeProductionReadinessReasons,
-        mcp_tenant_gateway_configured: mcpTenantGatewayConfigured,
-        tenant_context_signing_configured:
-          Boolean(tenantContextSigningSecret),
-        owner_context_signing_configured:
-          Boolean(ownerContextSigningSecret),
-        dtt_closure_signing_configured:
-          Boolean(dttAgentIdentitySecret),
-        governed_agent_postgres_configured:
-          governedAgentPostgresConfigured,
-        governed_agent_postgres_version:
-          governedAgentPostgresVersion,
-        route_ready: Boolean(hostNativeGovernance),
-        store_backend: hostNativeGovernance?.storage?.kind || null,
-        restart_durable: hostNativeGovernance?.storage?.restart_durable === true,
-        distributed_store: hostNativeGovernance?.storage?.distributed === true,
-        trusted_readback_configured:
-          hostNativeGovernance?.trusted_readback_configured === true,
-        release_join_verdict_resolver_configured:
-          hostNativeGovernance?.release_join_verdict_resolver_configured === true,
-        required_checks_policy_resolver_configured:
-          hostNativeGovernance?.required_checks_policy_resolver_configured === true,
-        closure_attestation_verifier_configured:
-          hostNativeGovernance?.closure_attestation_verifier_configured === true,
-        render_service_origin_resolver_configured:
-          hostNativeGovernance?.render_service_origin_resolver_configured === true,
-        resolver_configuration_valid: hostNativeResolverConfigurationValid,
-        resolver_configuration_error: hostNativeResolverConfigurationError,
-        github_credential_resolver_state:
-          options.hostNativeGithubCredentialResolverState || "not_configured",
-        github_credential_binding_count:
-          Number(options.hostNativeGithubCredentialBindingCount || 0),
-        render_origin_resolver_state: hostNativeRenderServiceOriginResolverState,
-        render_origin_binding_count:
-          Number(options.hostNativeRenderServiceOriginBindingCount || 0),
-        required_checks_policy_resolver_state:
-          options.hostNativeRequiredChecksPolicyResolverState || "not_configured",
-        required_checks_policy_binding_count:
-          Number(options.hostNativeRequiredChecksPolicyBindingCount || 0),
-        tenant_github_credential_resolver_configured:
-          typeof options.hostNativeGithubTokenResolver === "function",
-        public_repository_readback_ready: true,
-        private_repository_readback_ready:
-          typeof options.hostNativeGithubTokenResolver === "function",
-        caller_supplied_github_token_allowed: false,
-        execution_adapter: "host_native",
-        provider_execution: false,
-        provider_api_key_required: false,
-        maximum_specialists: 3,
-        maximum_parallel_specialists: 2,
-      },
-      provider_setup_link_bootstrap_configured: providerSetupLinkBootstrapConfigured,
-      provider_setup_link_bootstrap_state: providerSetupLinkBootstrapState,
-      tenant_context_signing_configured: Boolean(tenantContextSigningSecret),
-      owner_context_signing_configured: Boolean(ownerContextSigningSecret),
       uptime_seconds: Math.round(process.uptime()),
     });
-  };
-
-  // Deployment liveness deliberately excludes policy, database and causal
-  // readiness. Those remain enforced by /healthz and /readyz.
-  app.get("/livez", (_req, res) => res.status(200).json({
-    ok: true,
-    service: SERVICE_NAME,
-    liveness: "process_running",
-  }));
-  app.get("/healthz", (req, res) => serveHealth(req, res));
-  app.get("/readyz", (req, res) => serveHealth(req, res, { strictReadiness: true }));
+  });
 
   app.get("/v1/scopes", (req, res) => {
     res.json({ ok: true, scopes: Object.values(SCOPES), presets: KEY_PRESETS });
   });
 
-  const icf = createIcfKernel({ audit, storageRoot, mode: options.icfMode || process.env.CORE_ICF_MODE || "advisory" });
-  const icfRuntime = createIcfRuntimeFacade({ kernel: icf, store: options.icfStore, mode: options.icfMode || process.env.CORE_ICF_MODE || "advisory" });
+  app.get("/v1/icf/:workId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, icf: icf.status(req.tenantId, req.params.workId) });
+  });
 
-  app.get("/v1/icf/rollout", coreAuth(SCOPES.READ_DECISION), (req, res) => res.json({ ok: true, rollout: icf.rollout() }));
-  app.get("/v1/icf/:workId", coreAuth(SCOPES.READ_DECISION), (req, res) => res.json({ ok: true, icf: icf.status(req.tenantId, req.params.workId) }));
-  app.post("/v1/icf/:workId/covenant", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => res.status((r=icf.putCovenant(req.tenantId, req.params.workId, req.body || {})).ok ? 200 : 409).json(r));
-  app.post("/v1/icf/:workId/compile", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => res.status((r=icf.compile(req.tenantId, req.params.workId, req.body?.claims || [])).ok ? 200 : 409).json(r));
-  app.post("/v1/icf/:workId/decompose", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => res.status((r=icf.decompose(req.tenantId, req.params.workId, req.body?.parent_id, req.body?.children || [], req.body?.coverage || {})).ok ? 200 : 409).json(r));
-  app.post("/v1/icf/:workId/merge", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => res.status((r=icf.merge(req.tenantId, req.params.workId, req.body?.child_ids || [], req.body || {})).ok ? 200 : 409).json(r));
-  app.post("/v1/icf/:workId/cells", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => res.status((r=icf.registerCell(req.tenantId, req.params.workId, req.body || {})).ok ? 201 : 409).json(r));
-  app.get("/v1/icf/:workId/frontier", coreAuth(SCOPES.READ_DECISION), (req, res) => res.json({ ok: true, frontier: icf.frontier(req.tenantId, req.params.workId) }));
-  app.post("/v1/icf/:workId/warrants", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => res.status((r=icf.requestWarrant(req.tenantId, req.params.workId, req.body?.cell_id, req.body || {})).ok ? 201 : 409).json(r));
-  app.post("/v1/icf/:workId/warrants/:warrantId/reserve", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => res.status((r=icf.reserveWarrant(req.tenantId, req.params.workId, req.params.warrantId)).ok ? 200 : 409).json(r));
-  app.post("/v1/icf/:workId/warrants/:warrantId/report", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => res.status((r=icf.reportExecution(req.tenantId, req.params.workId, req.params.warrantId, req.body || {})).ok ? 200 : 409).json(r));
-  app.post("/v1/icf/:workId/evidence", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => res.status((r=icf.addEvidence(req.tenantId, req.params.workId, req.body || {})).ok ? 201 : 409).json(r));
-  app.post("/v1/icf/:workId/evidence/:evidenceId/verify", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => res.status((r=icf.verifyEvidence(req.tenantId, req.params.workId, req.params.evidenceId, req.body || {})).ok ? 200 : 409).json(r));
-  app.post("/v1/icf/:workId/graph/invalidate", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => res.json(icf.invalidateGraph(req.tenantId, req.params.workId, req.body || {})));
-  app.post("/v1/icf/:workId/closure/begin", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => res.status((r=icf.beginClosure(req.tenantId, req.params.workId)).ok ? 200 : 409).json(r));
-  app.post("/v1/icf/:workId/closure/local-join", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => res.status((r=icf.localJoin(req.tenantId, req.params.workId, req.body?.snapshot)).ok ? 200 : 409).json(r));
-  app.post("/v1/icf/:workId/closure/global-join", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => res.status((r=icf.globalJoin(req.tenantId, req.params.workId, req.body?.snapshot, req.body?.reality || {})).ok ? 200 : 409).json(r));
-  app.post("/v1/icf/:workId/core-seal", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => res.status((r=icf.issueCoreSeal(req.tenantId, req.params.workId)).ok ? 201 : 409).json(r));
-  app.get("/v1/icf/:workId/ledger/verify", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => { const ledger = icf.verifyLedger(req.tenantId, req.params.workId); res.status(ledger.valid ? 200 : 409).json({ ok: ledger.valid, ledger }); });
+  app.get("/v1/icf/rollout", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, rollout: icf.rollout(), runtime: icfRuntime.readiness() });
+  });
 
-  app.get("/v1/runtime/hierarchy/status", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/icf/runtime/readiness", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    const readiness = icfRuntime.readiness();
+    res.status(readiness.enforcement_allowed || !icf.rollout().execution_enforced ? 200 : 503).json({ ok: readiness.enforcement_allowed || !icf.rollout().execution_enforced, readiness });
+  });
+
+  app.get("/v1/icf/runtime/attestation", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    const readiness = icfRuntime.readiness();
+    res.json({ ok: true, schema: "nyra.icf.runtime-attestation/1.0", build: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null, rollout: icf.rollout(), store: { kind: readiness.store_kind, contract: readiness.contract, restart_durable: readiness.restart_durable, distributed: readiness.distributed }, enforcement_allowed: readiness.enforcement_allowed });
+  });
+
+  app.post("/v1/icf/:workId/covenant", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.putCovenant(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/import-legacy", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.importLegacy(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 201 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/compile", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.compile(req.tenantId, req.params.workId, req.body?.claims || req.body?.obligations || []);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/decompose", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.decompose(req.tenantId, req.params.workId, req.body?.parent_id, req.body?.children || [], req.body?.coverage || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/merge", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.merge(req.tenantId, req.params.workId, req.body?.child_ids || [], req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/cells", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.registerCell(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 201 : 409).json(result);
+  });
+
+  app.get("/v1/icf/:workId/frontier", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
+    res.json({ ok: true, frontier: icf.frontier(req.tenantId, req.params.workId) });
+  });
+
+  app.post("/v1/icf/:workId/warrants", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.requestWarrant(req.tenantId, req.params.workId, req.body?.cell_id, req.body || {});
+    res.status(result.ok ? 201 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/warrants/:warrantId/reserve", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.reserveWarrant(req.tenantId, req.params.workId, req.params.warrantId);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/warrants/:warrantId/report", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.reportExecution(req.tenantId, req.params.workId, req.params.warrantId, req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/cells/:cellId/retry", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.retryCell(req.tenantId, req.params.workId, req.params.cellId);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.get("/v1/icf/:workId/ledger/verify", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    const result = icf.verifyLedger(req.tenantId, req.params.workId);
+    res.status(result.valid ? 200 : 409).json({ ok: result.valid, ledger: result });
+  });
+
+  app.post("/v1/icf/:workId/evidence", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.addEvidence(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 201 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/evidence/invalidate", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.invalidateEvidence(req.tenantId, req.params.workId, req.body || {});
+    res.json(result);
+  });
+
+  app.post("/v1/icf/:workId/evidence/:evidenceId/verify", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.verifyEvidence(req.tenantId, req.params.workId, req.params.evidenceId, req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/graph/invalidate", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.invalidateGraph(req.tenantId, req.params.workId, req.body || {});
+    res.json(result);
+  });
+
+  app.post("/v1/icf/:workId/reconcile", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.reconcile(req.tenantId, req.params.workId, req.body || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/closure/begin", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.beginClosure(req.tenantId, req.params.workId);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/closure/local-join", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.localJoin(req.tenantId, req.params.workId, req.body?.snapshot);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/closure/global-join", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.globalJoin(req.tenantId, req.params.workId, req.body?.snapshot, req.body?.reality || {});
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/core-seal", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
+    const result = icf.issueCoreSeal(req.tenantId, req.params.workId);
+    res.status(result.ok ? 201 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/core-seal/verify", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
+    const result = icf.verifyCoreSeal(req.tenantId, req.params.workId, req.body?.seal || null);
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.post("/v1/icf/:workId/resolve", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
+    const result = icf.resolve(req.tenantId, req.params.workId, req.body?.obligation_id, req.body?.disposition, { authority: req.body?.authority, resolution_ref: req.body?.resolution_ref });
+    res.status(result.ok ? 200 : 409).json(result);
+  });
+
+  app.get("/v1/runtime/hierarchy/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     res.json({ ok: true, tenant_id: req.tenantId, runtime: coreRuntimeHierarchyStatus(coreRuntime, coreRuntimeMode) });
   });
 
-  app.post("/v1/runtime/hierarchy/evaluate", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/runtime/hierarchy/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
     try {
       const rawInput = req.body?.core_input || req.body?.input;
       if (!rawInput || typeof rawInput !== "object") return publicError(res, 400, "core_runtime_input_required");
@@ -8517,7 +3573,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, tokens: setupTokens.list({ tenant_id: req.query.tenant_id }) });
   });
 
-  app.get("/v1/bootstrap/profile", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/bootstrap/profile", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const tenant = tenants.get(req.tenantId);
@@ -8536,7 +3592,7 @@ export function createUniversalCoreService(options = {}) {
     return res.json(profile);
   });
 
-  app.get("/v1/tenants/registry", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/tenants/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const all = tenants.list();
     const visible = hasScope(req.coreKey, SCOPES.ADMIN_TENANT)
       ? all
@@ -8550,7 +3606,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/domain-packs", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/domain-packs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const current = resolveDomainPackForKey(req.coreKey);
     audit.append("core_domain_pack_catalog_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, domain_pack_id: current.id });
     res.json({
@@ -8562,19 +3618,14 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/domain-packs/current", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/domain-packs/current", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const current = resolveDomainPackForKey(req.coreKey);
     res.json({ ok: true, tenant_id: req.tenantId, domain_pack: publicDomainPack(current) });
   });
 
-  app.get("/v1/nira/branches", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/nira/branches", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const current = resolveDomainPackForKey(req.coreKey);
-    const rawCatalog = nyraBranchCatalog(current.id);
-    const catalog = {
-      ...rawCatalog,
-      branches: extendCausalBranchRegistry(rawCatalog.branches),
-      causal_context_schema_version: "causal_context_envelope_v1",
-    };
+    const catalog = nyraBranchCatalog(current.id);
     audit.append("core_nyra_branch_catalog_read", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -8584,7 +3635,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, tenant_id: req.tenantId, catalog });
   });
 
-  app.post("/v1/research/plan", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/research/plan", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     try {
@@ -8620,7 +3671,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/research/validate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/research/validate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     try {
@@ -8655,284 +3706,23 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/research/status", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
-    const status = researchRuntime.status(req.tenantId);
-    return res.json({ ok: true, tenant_id: req.tenantId, status });
-  });
-
-  app.get("/v1/research/airlock/status", coreAuth(SCOPES.READ_EVIDENCE), async (req, res) => {
-    try {
-      const status = await researchAirlockRuntime.status(req.tenantId);
-      return res.json({ ok: true, tenant_id: req.tenantId, status });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_status_failed");
-    }
-  });
-
-  app.post("/v1/research/airlock/plan", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
-    try {
-      const decision = await researchAirlockRuntime.createPlan(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
-      audit.append("core_research_airlock_plan_issued", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        work_id: req.body?.work_binding?.work_id || null,
-        plan_digest: decision.plan?.plan_digest || null,
-        source_url_digests: decision.plan?.source_url_digests || [],
-      });
-      return res.status(201).json({ ok: true, tenant_id: req.tenantId, decision });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_plan_issue_failed");
-    }
-  });
-
-  app.post("/v1/research/airlock/work", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
-    try {
-      const work = await researchAirlockRuntime.createWork(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
-      audit.append("core_research_airlock_work_created", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        work_id: work.work_id,
-        state: work.state,
-      });
-      return res.status(201).json({ ok: true, tenant_id: req.tenantId, work });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_work_create_failed");
-    }
-  });
-
-  app.post("/v1/research/airlock/discover", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
-    try {
-      const decision = await researchAirlockRuntime.discover(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
-      audit.append("core_research_airlock_discovery_decision", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        verdict: decision.verdict,
-        reason: decision.reason || "research_airlock_fetch_verified",
-        work_id: req.body?.work_binding?.work_id || null,
-        fetch_id: decision.fetch_proof?.fetch_id || null,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, decision });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_discovery_failed");
-    }
-  });
-
-  app.post("/v1/research/airlock/seal", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
-    try {
-      const decision = await researchAirlockRuntime.seal(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
-      audit.append("core_research_airlock_evidence_sealed", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        work_id: req.body?.work_binding?.work_id || null,
-        capsule_id: decision.capsule?.capsule_id || null,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, decision });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_seal_failed");
-    }
-  });
-
-  app.post("/v1/research/airlock/private-entry", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
-    try {
-      const decision = await researchAirlockRuntime.enterPrivate(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
-      audit.append("core_research_airlock_private_entry", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, work_id: req.body?.work_binding?.work_id || null, state: decision.state });
-      return res.json({ ok: true, tenant_id: req.tenantId, decision });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_private_entry_failed");
-    }
-  });
-
-  app.post("/v1/research/airlock/tool-authorize", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
-    try {
-      const decision = await researchAirlockRuntime.authorizeTool(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
-      return res.json({ ok: true, tenant_id: req.tenantId, decision });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_tool_authorization_failed");
-    }
-  });
-
-  app.post("/v1/research/airlock/session-tool-authorize", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
-    try {
-      const decision = await researchAirlockRuntime.authorizeSessionTool(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
-      return res.json({ ok: true, tenant_id: req.tenantId, decision });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_session_tool_authorization_failed");
-    }
-  });
-
-  app.post("/v1/research/airlock/complete", coreAuth(SCOPES.WRITE_SNAPSHOT), async (req, res) => {
-    try {
-      const decision = await researchAirlockRuntime.complete(req.body || {}, { tenantId: req.tenantId, keyId: req.coreKey.key_id });
-      return res.json({ ok: true, tenant_id: req.tenantId, decision });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_airlock_complete_failed");
-    }
-  });
-
-  app.get("/api/universal-core/research/status", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
-    const status = researchRuntime.status(req.tenantId);
-    return res.json({ ok: true, tenant_id: req.tenantId, status });
-  });
-
-  app.get("/v1/research/source-registry", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
-    try {
-      const payload = researchRuntime.registryForTenant(req.tenantId);
-      return res.json({ ok: true, tenant_id: req.tenantId, ...payload });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_registry_failed");
-    }
-  });
-
-  app.get("/v1/research/learning-packs", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
-    try {
-      const branchId = String(req.query.branch_id || "").trim() || null;
-      const payload = researchRuntime.branchPack(req.tenantId, branchId);
-      return res.json({ ok: true, tenant_id: req.tenantId, ...payload });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_learning_pack_failed");
-    }
-  });
-
-  app.post("/v1/research/envelope/authorize", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
-    try {
-      const question = String(req.body?.question || "").trim();
-      if (!question) return publicError(res, 400, "research_question_required");
-      const coreResearch = buildCoreResearchDirective({
-        tenantId: req.tenantId,
-        requestText: question,
-        operationType: "research_distillation_shadow",
-        evidenceState: {
-          source_count: 0,
-          confidence: 0,
-          freshness_state: "unknown",
-          evidence_gap: true,
-        },
-        selectedBranches: Array.isArray(req.body?.branch_ids) ? req.body.branch_ids : [],
-        allowedDomains: [],
-      });
-      if (!coreResearch.directive) return publicError(res, 409, "research_core_directive_not_required");
-      const payload = researchRuntime.authorizeEnvelope(req.body || {}, {
-        tenantId: req.tenantId,
-        coreDirective: coreResearch.directive,
-      });
-      return res.json({
-        ok: true,
-        tenant_id: req.tenantId,
-        envelope: payload,
-        core_directive: {
-          directive_id: coreResearch.directive.directive_id,
-          status: coreResearch.directive.status,
-          research_execution_authorized: false,
-          distillation_authorized: false,
-        },
-      });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_envelope_invalid");
-    }
-  });
-
-  app.post("/v1/research/workspaces/open", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
-    try {
-      const workspace = researchRuntime.openWorkspace({
-        tenant_id: req.tenantId,
-        envelope_id: req.body?.envelope_id,
-      });
-      return res.status(201).json({ ok: true, tenant_id: req.tenantId, workspace });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_workspace_open_failed");
-    }
-  });
-
-  app.post("/v1/research/workspaces/attach", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
-    try {
-      const workspaceId = String(req.body?.workspace_id || "").trim();
-      if (!workspaceId) return publicError(res, 400, "research_workspace_id_required");
-      const payload = researchRuntime.attachEvidence(workspaceId, {
-        tenant_id: req.tenantId,
-        evidence: Array.isArray(req.body?.evidence) ? req.body.evidence : [],
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, ...payload });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_workspace_attach_failed");
-    }
-  });
-
-  app.post("/v1/research/workspaces/close", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
-    try {
-      const workspaceId = String(req.body?.workspace_id || "").trim();
-      if (!workspaceId) return publicError(res, 400, "research_workspace_id_required");
-      const workspace = researchRuntime.closeWorkspace(workspaceId, {
-        tenant_id: req.tenantId,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, workspace });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_workspace_close_failed");
-    }
-  });
-
-  app.post("/v1/research/distill", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
-    try {
-      const workspaceId = String(req.body?.workspace_id || "").trim();
-      if (!workspaceId) return publicError(res, 400, "research_workspace_id_required");
-      const result = researchRuntime.distillCandidate(workspaceId, {
-        tenant_id: req.tenantId,
-        evidence: Array.isArray(req.body?.evidence) ? req.body.evidence : [],
-        lesson: req.body?.lesson,
-        learning: req.body?.learning,
-        scope: req.body?.scope,
-        confidence: req.body?.confidence,
-        limitations: Array.isArray(req.body?.limitations) ? req.body.limitations : [],
-        outcome_refs: Array.isArray(req.body?.outcome_refs) ? req.body.outcome_refs : [],
-        persist_verified: req.body?.persist_verified === true,
-        audit_reference: req.body?.audit_reference || null,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, ...result });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_distillation_failed");
-    }
-  });
-
-  app.post("/v1/research/cleanup", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
-    try {
-      const cleaned = researchRuntime.cleanupExpired({
-        tenant_id: req.tenantId,
-      });
-      audit.append("core_research_cleanup_executed", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        cleaned,
-      });
-      return res.json({ ok: true, tenant_id: req.tenantId, cleanup: { cleaned } });
-    } catch (error) {
-      return publicError(res, error.status || 400, error.code || error.message || "research_cleanup_failed");
-    }
-  });
-
-  app.post("/v1/work/preflight", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/work/preflight", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
     if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
-    const galleryContext = normalizeTenantWorkGalleryContext(req.body?.gallery_context, req.tenantId);
-    if (!galleryContext.ok) return publicError(res, 403, galleryContext.error);
     const requestText = String(req.body?.request || req.body?.message || req.body?.text || req.body?.task || req.body?.action_label || "").trim();
     if (!requestText) return publicError(res, 400, "work_preflight_request_required");
     if (requestText.length > 20_000) return publicError(res, 413, "work_preflight_request_too_long");
     if (req.body?.nyra_branches !== undefined && !Array.isArray(req.body.nyra_branches)) {
       return publicError(res, 400, "nyra_branches_must_be_array");
     }
-    if (Array.isArray(req.body?.nyra_branches) && req.body.nyra_branches.length > MAX_NYRA_BRANCH_REQUESTS) {
+    if (Array.isArray(req.body?.nyra_branches) && req.body.nyra_branches.length > 20) {
       return publicError(res, 400, "nyra_branch_request_limit_exceeded");
     }
-    const ownerBranches = verifiedOwnerBranchProfile(req, [], "work_preflight", ownerContextSigningSecret);
-    const ownerProfileActive = ownerBranches.owner_profile === "tenant_scoped_verified_owner";
     const preflight = composeMandatoryWorkPreflight(req, {
-      // A verified codexai OAuth owner gets a tenant-scoped registry profile;
-      // this is not a commercial plan and it does not alter execution policy.
-      domainPack: ownerProfileActive ? ownerBranches.domain_pack : domainPackAccess.pack,
+      domainPack: domainPackAccess.pack,
       memoryContext: memoryContext.value,
-      ...(ownerProfileActive ? { branchContext: ownerBranches } : {}),
-      galleryContext: galleryContext.value,
     });
     audit.append("core_work_preflight_completed", {
       tenant_id: req.tenantId,
@@ -8943,8 +3733,6 @@ export function createUniversalCoreService(options = {}) {
       selected_branches: preflight.core_route.selected_branches,
       preferred_route: preflight.tool_routing.preferred_route.id,
       owner_confirmation_required: preflight.governance.owner_confirmation_required,
-      research_required: preflight.core_research.assessment.required,
-      research_directive_id: preflight.core_research.directive?.directive_id || null,
     });
     return res.json({
       ok: true,
@@ -8968,7 +3756,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/tenant/status", coreAuth(), (req, res) => {
+  app.get("/v1/tenant/status", createAuth(keyStore, audit), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const suitePolicy = buildSuitePolicy(req.coreKey, branchResolution);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
@@ -8991,14 +3779,14 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/entitlements/current", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/entitlements/current", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     audit.append("core_entitlement_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, tier: entitlement.tier });
     res.json({ ok: true, entitlement });
   });
 
-  app.get("/v1/control-plane/overview", coreAuth(SCOPES.READ_CONTROL_PLANE), (req, res) => {
+  app.get("/v1/control-plane/overview", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
     const overview = buildControlPlaneOverview({
       tenantId: req.tenantId,
       keyRecord: req.coreKey,
@@ -9011,7 +3799,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, overview });
   });
 
-  app.get("/v1/control-plane/dashboard", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/control-plane/dashboard", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const graph = entityGraph.readTenant(req.tenantId);
@@ -9055,12 +3843,12 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/connectors/sdk/manifest", coreAuth(SCOPES.READ_CONTROL_PLANE), (req, res) => {
+  app.get("/v1/connectors/sdk/manifest", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
     audit.append("core_connector_sdk_manifest_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, tenant_id: req.tenantId, sdk: buildConnectorSdkManifest() });
   });
 
-  app.get("/v1/translator/extractor/status", coreAuth(SCOPES.EXTRACT_CATALOG), (req, res) => {
+  app.get("/v1/translator/extractor/status", createAuth(keyStore, audit, SCOPES.EXTRACT_CATALOG), (req, res) => {
     const binary = resolveExtractorBinaryPath({ allowBuild: false });
     audit.append("core_translation_extractor_status_read", {
       tenant_id: req.tenantId,
@@ -9083,7 +3871,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/translator/extractor/catalog", coreAuth(SCOPES.EXTRACT_CATALOG), (req, res) => {
+  app.post("/v1/translator/extractor/catalog", createAuth(keyStore, audit, SCOPES.EXTRACT_CATALOG), (req, res) => {
     try {
       const extraction = runRustExtractorGovernor(storageRoot, req.body || {});
       const coreInput = buildExtractorCoreInput(req, extraction);
@@ -9153,7 +3941,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.get("/v1/customer-intelligence/contract", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/customer-intelligence/contract", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const contract = buildCustomerIntelligenceContract({
       tenantId: req.tenantId,
@@ -9165,7 +3953,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, contract });
   });
 
-  app.post("/v1/customer-intelligence/readiness", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
+  app.post("/v1/customer-intelligence/readiness", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const readiness = summarizeCustomerIntelligenceReadiness(req.body || {});
     audit.append("core_customer_intelligence_readiness_evaluated", {
       tenant_id: req.tenantId,
@@ -9181,7 +3969,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/runbooks", coreAuth(SCOPES.READ_CONTROL_PLANE), (req, res) => {
+  app.get("/v1/runbooks", createAuth(keyStore, audit, SCOPES.READ_CONTROL_PLANE), (req, res) => {
     res.json({
       ok: true,
       tenant_id: req.tenantId,
@@ -9190,7 +3978,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/runbooks/evaluate", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => {
+  app.post("/v1/runbooks/evaluate", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
     const runbookId = textValue(req.body?.runbook_id || req.body?.id);
     const runbook = suiteRunbookCatalog().find((item) => item.id === runbookId);
     if (!runbook) return publicError(res, 404, "runbook_not_found");
@@ -9267,8 +4055,8 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/releases/manifest/check", coreAuth(SCOPES.POLICY_CHECK), (req, res) => {
-    const result = evaluateReleaseManifest(req.body || {}, { tenant_id: req.tenantId });
+  app.post("/v1/releases/manifest/check", createAuth(keyStore, audit, SCOPES.POLICY_CHECK), (req, res) => {
+    const result = evaluateReleaseManifest(req.body || {});
     const evidenceRecord = evidence.append(req.tenantId, "release_manifest_checked", {
       result,
       rollback_possible: Boolean(result.manifest.rollback_url),
@@ -9282,11 +4070,11 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, tenant_id: req.tenantId, result, evidence: evidenceRecord });
   });
 
-  app.get("/v1/evidence/recent", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
+  app.get("/v1/evidence/recent", createAuth(keyStore, audit, SCOPES.READ_EVIDENCE), (req, res) => {
     res.json({ ok: true, tenant_id: req.tenantId, evidence: evidence.recent(req.tenantId, Number(req.query.limit || 50)) });
   });
 
-  app.get("/v1/ecosystem-pulse", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/ecosystem-pulse", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const pulse = buildEcosystemPulse({
       tenantId: req.tenantId,
       keyRecord: req.coreKey,
@@ -9297,11 +4085,11 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, pulse });
   });
 
-  app.get("/v1/calibration/status", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/calibration/status", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     res.json({ ok: true, calibration: calibrationStatus() });
   });
 
-  app.post("/v1/calibration/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/calibration/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const result = calibrationEvaluate(req.body || {});
     audit.append("core_calibration_evaluated", {
       tenant_id: req.tenantId,
@@ -9336,38 +4124,38 @@ export function createUniversalCoreService(options = {}) {
     });
   }
 
-  app.post("/v1/intelligence/workflow", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/workflow", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     intelligenceResponse(req, res, "workflow", runIntelligenceWorkflow);
   });
 
-  app.post("/v1/intelligence/scenarios", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/scenarios", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     intelligenceResponse(req, res, "scenarios", analyzeScenarios);
   });
 
-  app.post("/v1/intelligence/hypotheses/rank", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/hypotheses/rank", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     if (!Array.isArray(req.body?.hypotheses) || !req.body.hypotheses.length) return publicError(res, 400, "hypotheses_required");
     intelligenceResponse(req, res, "hypothesis_ranking", rankHypotheses);
   });
 
-  app.post("/v1/intelligence/events/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/events/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     if (!Array.isArray(req.body?.events) || !req.body.events.length) return publicError(res, 400, "events_required");
     intelligenceResponse(req, res, "event_probability", evaluateEvents);
   });
 
-  app.post("/v1/intelligence/counterfactuals/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/counterfactuals/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     if (!req.body?.baseline || !Array.isArray(req.body?.alternatives) || !req.body.alternatives.length) {
       return publicError(res, 400, "baseline_and_alternatives_required");
     }
     intelligenceResponse(req, res, "counterfactual_analysis", evaluateCounterfactuals);
   });
 
-  app.post("/v1/intelligence/decisions/select", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/decisions/select", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const options = req.body?.options || req.body?.alternatives;
     if (!Array.isArray(options) || options.length < 2) return publicError(res, 400, "at_least_two_options_required");
     intelligenceResponse(req, res, "decision_selection", selectDecision);
   });
 
-  app.post("/v1/intelligence/outcomes/verify", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/intelligence/outcomes/verify", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     if (req.body?.predicted_probability === undefined && req.body?.prediction?.probability === undefined) {
       return publicError(res, 400, "predicted_probability_required");
     }
@@ -9375,7 +4163,7 @@ export function createUniversalCoreService(options = {}) {
     intelligenceResponse(req, res, "outcome_verification", verifyOutcome);
   });
 
-  app.post("/v1/intelligence/outcomes/record", coreAuth([SCOPES.WRITE_INTELLIGENCE_OUTCOME, SCOPES.WRITE_SNAPSHOT]), (req, res) => {
+  app.post("/v1/intelligence/outcomes/record", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
     if (!String(req.body?.outcome_id || "").trim()) return publicError(res, 400, "outcome_id_required");
     if (req.body?.predicted_probability === undefined && req.body?.prediction?.probability === undefined) {
       return publicError(res, 400, "predicted_probability_required");
@@ -9384,77 +4172,8 @@ export function createUniversalCoreService(options = {}) {
     if (![true, false, 0, 1, "occurred", "not_occurred"].includes(req.body.actual_outcome)) {
       return publicError(res, 400, "actual_outcome_invalid");
     }
-    if (outcomeContainsSensitiveContent(req.body || {})) {
-      audit.append("core_intelligence_outcome_sensitive_content_rejected", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-      });
-      return publicError(res, 400, "outcome_sensitive_content_rejected");
-    }
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
     if (!memoryContext.ok) return publicError(res, 400, memoryContext.error);
-    const dedicatedOutcomeScope = hasScope(req.coreKey, SCOPES.WRITE_INTELLIGENCE_OUTCOME);
-    let outcomeAuthorization = null;
-    {
-      const trustedOwnerContext = hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) && verifyOwnerContextAssertion(
-        req.body?.owner_context,
-        readSecret(req),
-        req.tenantId,
-        ownerRequestBinding("intelligence_outcome_record", req.body || {}),
-      );
-      const explicitAutomationConfirmation = req.body?.owner_confirmed === true &&
-        req.coreKey?.key_type === "automation" && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX);
-      const gateBody = {
-        action_label: "Record tenant-scoped verified intelligence outcome",
-        action_type: "outcome_record",
-        operation_class: "verified_outcome_record",
-        external_side_effect: false,
-        contains_customer_data: false,
-        contains_secret: false,
-        secret_value_transmitted: false,
-        cross_tenant: false,
-        destructive: false,
-        bypass_orchestrator: false,
-        configuration_changes: false,
-        rollback_ready: true,
-        audit_ready: true,
-        verified_outcome: true,
-        live_weight_mutation: false,
-        owner_confirmed: trustedOwnerContext || explicitAutomationConfirmation,
-        confirmation_reference: trustedOwnerContext ? "signed_owner_context" : req.body?.confirmation_reference,
-        target_tenant_id: req.tenantId,
-        authenticated_tenant_id: req.tenantId,
-        outcome_id: String(req.body.outcome_id).trim(),
-        predicted_probability: req.body.predicted_probability ?? req.body.prediction?.probability,
-        actual_outcome: req.body.actual_outcome,
-        confirmation_outcome_id: String(req.body.outcome_id).trim(),
-        confirmation_target_tenant_id: req.tenantId,
-      };
-      const riskClassification = classifyActionRisk(gateBody);
-      const gateReq = Object.create(req);
-      gateReq.body = gateBody;
-      const output = runUniversalCore(buildActionEvaluatorInput(gateReq, req.coreKey));
-      const decisionContract = applyActionRiskProfile(normalizeDecisionContract(output, {
-        action_type: gateBody.action_type,
-        publish_intent: false,
-      }), riskClassification);
-      outcomeAuthorization = buildActionAuthorization(decisionContract, gateBody);
-      audit.append("core_intelligence_outcome_authorized", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        outcome_id: gateBody.outcome_id,
-        authorization_state: outcomeAuthorization.state,
-        confirmation_satisfied: outcomeAuthorization.confirmation_satisfied,
-      });
-      if (!outcomeAuthorization.allowed) {
-        return res.status(403).json({
-          ok: false,
-          error: "outcome_record_not_authorized",
-          authorization: outcomeAuthorization,
-          decision_contract: decisionContract,
-        });
-      }
-    }
     const verified = verifyOutcome({ ...(req.body || {}), memory_context: memoryContext.value });
     const stored = intelligenceOutcomes.append(req.tenantId, verified);
     if (stored.conflict) {
@@ -9486,12 +4205,10 @@ export function createUniversalCoreService(options = {}) {
       calibration,
       evidence: evidenceRecord,
       live_weight_mutation_enabled: false,
-      authorization: outcomeAuthorization,
-      legacy_scope_compatibility: !dedicatedOutcomeScope,
     });
   });
 
-  app.get("/v1/intelligence/calibration", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/intelligence/calibration", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const calibration = intelligenceOutcomes.calibration(req.tenantId);
     res.json({
       ok: true,
@@ -9501,7 +4218,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/compliance/claim-shield/status", coreAuth(SCOPES.CLAIM_CHECK), (req, res) => {
+  app.get("/v1/compliance/claim-shield/status", createAuth(keyStore, audit, SCOPES.CLAIM_CHECK), (req, res) => {
     res.json({
       ok: true,
       claim_shield: {
@@ -9515,1100 +4232,13 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/compliance/claim-shield/check", coreAuth(SCOPES.CLAIM_CHECK), (req, res) => {
+  app.post("/v1/compliance/claim-shield/check", createAuth(keyStore, audit, SCOPES.CLAIM_CHECK), (req, res) => {
     const result = claimShieldCheck(req.body || {});
     audit.append("core_claim_shield_checked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, status: result.status, shield_status: result.shield_status });
     res.json({ ok: true, result });
   });
 
-  function hostNativeFailure(res, error) {
-    const code = String(error?.message || "host_native_governance_failed").slice(0, 200);
-    const status = /(?:replayed|revision_conflict|already_exists|budget_exhausted|not_completable|not_reconcilable|idempotency_key_conflict)/.test(code)
-      ? 409
-      : /not_found/.test(code)
-        ? 404
-        : /(?:cross_tenant|not_active|expired|signature_invalid|owner_mismatch|host_session_mismatch)/.test(code)
-          ? 403
-          : /(?:store_lock_timeout|store_unavailable)/.test(code)
-            ? 503
-            : 400;
-    return publicError(res, status, code);
-  }
-
-  function requireHostNativeGovernance(res) {
-    if (hostNativeGovernance) return true;
-    publicError(res, 503, "host_native_governance_unavailable", hostNativeGovernanceState);
-    return false;
-  }
-
-  function verifyHostNativeOwnerConfirmation(req, purpose) {
-    if (
-      req.coreKey?.key_type !== "connector" ||
-      !hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) ||
-      req.body?.owner_confirmed !== true
-    ) {
-      throw new Error("verified_owner_confirmation_required");
-    }
-    const context = req.body?.owner_context;
-    if (
-      !verifyOwnerContextAssertion(
-        context,
-        ownerContextSigningSecret,
-        req.tenantId,
-        ownerRequestBinding(purpose, req.body || {}),
-      ) ||
-      !PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN.test(String(context?.owner_subject_fingerprint || ""))
-    ) {
-      throw new Error("verified_owner_confirmation_required");
-    }
-    return {
-      verified: true,
-      request_bound: true,
-      owner_subject_fingerprint: context.owner_subject_fingerprint,
-      consent_nonce: String(context.assertion || ""),
-      confirmation_reference: textValue(req.body?.confirmation_reference),
-    };
-  }
-
-  app.post(
-    "/v1/host-native/bootstrap/release-exceptions/prepare",
-    coreAuth(SCOPES.AUTOMATION_CODEX),
-    async (req, res) => {
-      if (!requireHostNativeGovernance(res)) return;
-      if (!hasScope(req.coreKey, SCOPES.OWNER_ASSERTION)) {
-        return publicError(res, 403, "bootstrap_release_preparation_owner_scope_required");
-      }
-      if (!bootstrapReleasePreparationService) {
-        return publicError(res, 503, "bootstrap_release_preparation_unavailable");
-      }
-      try {
-        const body = req.body || {};
-        const fields = Object.keys(body).sort();
-        const expectedFields = ["normal_action_request", "owner_confirmation", "requested_ttl_seconds"];
-        if (fields.length !== expectedFields.length || fields.some((field, index) => field !== expectedFields[index])) {
-          throw new Error("bootstrap_release_preparation_request_schema_invalid");
-        }
-        if (!body.normal_action_request || body.normal_action_request.tenant_id !== req.tenantId) {
-          throw new Error("tenant_scope_denied");
-        }
-        const ownerId = String(body.owner_confirmation?.owner_subject_fingerprint || "");
-        const preparation = await bootstrapReleasePreparationService.prepare({
-          authenticated_tenant_id: req.tenantId,
-          authenticated_owner_id: ownerId,
-          owner_confirmation: body.owner_confirmation,
-          normal_action_request: {
-            ...body.normal_action_request,
-            tenant_id: req.tenantId,
-          },
-          requested_ttl_seconds: body.requested_ttl_seconds,
-        });
-        audit.append("core_bootstrap_release_exception_prepared", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          work_id: preparation?.unsigned_receipt?.work_id || null,
-          exception_id: preparation?.unsigned_receipt?.exception_id || null,
-          action_authorized: false,
-          core_join_authorized: false,
-        });
-        return res.status(201).json({
-          ok: true,
-          tenant_id: req.tenantId,
-          preparation,
-          action_authorized: false,
-          merge_authorized: false,
-          deploy_authorized: false,
-          core_join_authorized: false,
-        });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  app.get(
-    "/v1/host-native/status",
-    coreAuth(SCOPES.READ_DECISION),
-    (_req, res) => res.json({
-      ok: true,
-      enabled: hostNativeGovernanceEnabled,
-      state: hostNativeGovernanceState,
-      configured: Boolean(hostNativeGovernance),
-      store_backend: hostNativeGovernance?.storage?.kind || null,
-      restart_durable: hostNativeGovernance?.storage?.restart_durable === true,
-      distributed_store: hostNativeGovernance?.storage?.distributed === true,
-      trusted_readback_configured:
-        hostNativeGovernance?.trusted_readback_configured === true,
-      release_join_verdict_resolver_configured:
-        hostNativeGovernance?.release_join_verdict_resolver_configured === true,
-      required_checks_policy_resolver_configured:
-        hostNativeGovernance?.required_checks_policy_resolver_configured === true,
-      closure_attestation_verifier_configured:
-        hostNativeGovernance?.closure_attestation_verifier_configured === true,
-      render_service_origin_resolver_configured:
-        hostNativeGovernance?.render_service_origin_resolver_configured === true,
-      resolver_configuration_valid: hostNativeResolverConfigurationValid,
-      resolver_configuration_error: hostNativeResolverConfigurationError,
-      github_credential_resolver_state:
-        options.hostNativeGithubCredentialResolverState || "not_configured",
-      github_credential_binding_count:
-        Number(options.hostNativeGithubCredentialBindingCount || 0),
-      render_origin_resolver_state: hostNativeRenderServiceOriginResolverState,
-      render_origin_binding_count:
-        Number(options.hostNativeRenderServiceOriginBindingCount || 0),
-      required_checks_policy_resolver_state:
-        options.hostNativeRequiredChecksPolicyResolverState || "not_configured",
-      required_checks_policy_binding_count:
-        Number(options.hostNativeRequiredChecksPolicyBindingCount || 0),
-      tenant_github_credential_resolver_configured:
-        typeof options.hostNativeGithubTokenResolver === "function",
-      public_repository_readback_ready: true,
-      private_repository_readback_ready:
-        typeof options.hostNativeGithubTokenResolver === "function",
-      caller_supplied_github_token_allowed: false,
-      execution_adapter: "host_native",
-      provider_execution: false,
-      provider_api_key_required: false,
-      persistent_store_required: true,
-    }),
-  );
-
-  app.post(
-    "/v1/host-native/work-plans",
-    coreAuth(SCOPES.READ_DECISION),
-    async (req, res) => {
-      try {
-        if (hostNativeGovernanceEnabled && !requireHostNativeGovernance(res)) return;
-        const { tenant_id: _tenantId, ...input } = req.body || {};
-        const plan = hostNativeGovernanceEnabled
-          ? await hostNativeGovernance.buildWorkPlan({
-            ...input,
-            tenant_id: req.tenantId,
-          })
-          : buildHostNativeWorkPlan({ ...input, tenant_id: req.tenantId });
-        audit.append("core_host_native_work_plan_built", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          work_id: plan.work_id,
-          plan_id: plan.plan_id,
-          agent_count: plan.agents.length,
-          maximum_parallel_agents: plan.maximum_parallel_agents,
-        });
-        return res.status(201).json({
-          ok: true,
-          tenant_id: req.tenantId,
-          plan,
-          governance_state: hostNativeGovernanceState,
-        });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  app.post(
-    "/v1/host-native/release-intents",
-    coreAuth(SCOPES.READ_DECISION),
-    (req, res) => {
-      try {
-        const { tenant_id: _tenantId, release_intent_digest: _callerDigest, ...input } =
-          req.body || {};
-        const releaseIntent = buildHostReleaseIntentV1({
-          ...input,
-          tenant_id: req.tenantId,
-        });
-        audit.append("core_host_native_release_intent_built", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          work_id: releaseIntent.work_id,
-          repository: releaseIntent.repository,
-          release_intent_digest: releaseIntent.release_intent_digest,
-        });
-        return res.status(201).json({
-          ok: true,
-          tenant_id: req.tenantId,
-          release_intent: releaseIntent,
-        });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  app.post(
-    "/v1/host-native/core-join-verdicts",
-    coreAuth(SCOPES.AUTOMATION_CODEX, {
-      tenantContextSigningSecret,
-    }),
-    async (req, res) => {
-      if (!isMcpTenantGatewayRecord(req.coreKey)) {
-        audit.append("core_host_native_core_join_gateway_denied", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          reason: "mcp_tenant_gateway_required",
-        });
-        return publicError(res, 403, "core_join_mcp_gateway_required");
-      }
-      const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
-      if (!assertedTenantId || assertedTenantId !== req.tenantId) {
-        audit.append("core_host_native_core_join_gateway_denied", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          reason: "tenant_context_mismatch",
-        });
-        return publicError(res, 403, "tenant_scope_denied");
-      }
-      if (!requireHostNativeGovernance(res)) return;
-      try {
-        const { tenant_id: _tenantId, ...input } = req.body || {};
-        const coreJoinVerdict = await hostNativeGovernance.issueCoreJoinVerdict({
-          ...input,
-          tenant_id: req.tenantId,
-        });
-        audit.append("core_host_native_core_join_issued", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          verdict_id: coreJoinVerdict.verdict.verdict_id,
-          work_id: coreJoinVerdict.verdict.work_id,
-          target_commit: coreJoinVerdict.verdict.checks.commit,
-        });
-        return res.status(201).json({
-          ok: true,
-          tenant_id: req.tenantId,
-          core_join_verdict: coreJoinVerdict,
-        });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  const genericWorkCoreJoinUnavailableCode = () => {
-    if (genericWorkCoreJoinConfigurationError) return genericWorkCoreJoinConfigurationError;
-    if (!genericWorkCoreJoinEnabled) return "generic_work_core_join_disabled";
-    if (!genericWorkCoreJoinSigner) {
-      return genericWorkCoreJoinSafeReason(genericWorkCoreJoinSignerReason, "generic_work_core_join_signing_unavailable");
-    }
-    if (!dttAgentIdentitySecret) return "generic_work_core_join_verifier_unavailable";
-    if (genericWorkCoreJoinStore?.restart_durable !== true) return "generic_work_core_join_durable_store_unavailable";
-    if (genericWorkCoreJoinProduction && genericWorkCoreJoinStore?.distributed !== true) {
-      return "generic_work_core_join_distributed_store_unavailable";
-    }
-    if (genericWorkCoreJoinStoreState === "failed") {
-      return genericWorkCoreJoinStoreError || "generic_work_core_join_durable_store_unavailable";
-    }
-    return "generic_work_core_join_signing_unavailable";
-  };
-  const genericWorkCoreJoinFailureStatus = (code) => genericWorkCoreJoinInfrastructureCode(code) ? 503 : 409;
-
-  const issueGenericWorkCoreJoin = async (req, res) => {
-      if (!isMcpTenantGatewayRecord(req.coreKey)) return publicError(res, 403, "core_join_mcp_gateway_required");
-      const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
-      if (!assertedTenantId || assertedTenantId !== req.tenantId) return publicError(res, 403, "tenant_scope_denied");
-      if (!genericWorkCoreJoinAuthority) return publicError(res, 503, genericWorkCoreJoinUnavailableCode());
-      let issueSequence = 0;
-      try {
-        await genericWorkCoreJoinStoreInitialization;
-        if (genericWorkCoreJoinStoreState !== "ready") return publicError(res, 503, "generic_work_core_join_durable_store_unavailable");
-        if (genericWorkCoreJoinProduction && genericWorkCoreJoinStore?.distributed !== true) {
-          return publicError(res, 503, "generic_work_core_join_distributed_store_unavailable");
-        }
-        if (!genericWorkCoreJoinSignerFailureLatched
-            && !await ensureGenericWorkCoreJoinSignerReady()) {
-          return publicError(res, 503, genericWorkCoreJoinSafeReason(
-            genericWorkCoreJoinSignerReason,
-            "generic_work_core_join_signer_not_yet_verified",
-          ));
-        }
-        issueSequence = ++genericWorkCoreJoinIssueSequence;
-        const { tenant_id: _tenantId, work_id: _callerWorkId, ...input } = req.body || {};
-        const issuance = await genericWorkCoreJoinAuthority.issueDetailed({
-          ...input,
-          tenant_id: req.tenantId,
-          work_id: req.genericWorkCoreJoinWorkId,
-        });
-        const verdict = issuance.verdict;
-        genericWorkCoreJoinVerifier.verify({ verdict, expected: { tenant_id: req.tenantId, work_id: verdict.work_id, adapter: verdict.adapter, idempotency_digest: verdict.idempotency_digest } });
-        if (issuance.fresh_signature_verified === true && issuance.durable_record_verified === true) {
-          genericWorkCoreJoinSignerRecoverySequence = Math.max(genericWorkCoreJoinSignerRecoverySequence, issueSequence);
-          if (issueSequence > genericWorkCoreJoinSignerFailureSequence) {
-            genericWorkCoreJoinSignerFailureLatched = false;
-            genericWorkCoreJoinSignerState = "ready";
-            genericWorkCoreJoinSignerReason = null;
-          }
-        }
-        audit.append("core_generic_work_core_join_issued", { tenant_id: req.tenantId, key_id: req.coreKey.key_id,
-          work_id: verdict.work_id, verdict_id: verdict.verdict_id, adapter: verdict.adapter });
-        return res.status(201).json({ ok: true, verdict });
-      } catch (error) {
-        const code = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_denied");
-        if (genericWorkCoreJoinStoreInfrastructureCode(code)) {
-          genericWorkCoreJoinStoreState = "failed";
-          genericWorkCoreJoinStoreError = code;
-        }
-        const signerCode = genericWorkCoreJoinSignerInfrastructureCode(code);
-        if (signerCode) {
-          genericWorkCoreJoinSignerFailureSequence = Math.max(genericWorkCoreJoinSignerFailureSequence, issueSequence);
-          if (issueSequence > genericWorkCoreJoinSignerRecoverySequence) {
-            genericWorkCoreJoinSignerFailureLatched = true;
-            genericWorkCoreJoinSignerState = genericWorkCoreJoinSignerRejectedCodes.has(signerCode) ? "rejected" : "unavailable";
-            genericWorkCoreJoinSignerReason = signerCode;
-          }
-        }
-        return publicError(res, genericWorkCoreJoinFailureStatus(code), code);
-      }
-    };
-
-  app.post(
-    "/v1/work-continuity/generic-core-join",
-    coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
-    genericWorkCoreJoinContextAuth,
-    issueGenericWorkCoreJoin,
-  );
-  app.post(
-    "/v1/work/core-join-verdicts",
-    coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
-    genericWorkCoreJoinContextAuth,
-    issueGenericWorkCoreJoin,
-  );
-
-  app.get(
-    "/v1/host-native/core-join-verdicts/:verdictId",
-    coreAuth(SCOPES.READ_DECISION),
-    async (req, res) => {
-      if (!requireHostNativeGovernance(res)) return;
-      try {
-        const coreJoinVerdict = await hostNativeGovernance.readCoreJoinVerdict({
-          tenant_id: req.tenantId,
-          verdict_id: req.params.verdictId,
-        });
-        return res.json({
-          ok: true,
-          tenant_id: req.tenantId,
-          core_join_verdict: coreJoinVerdict,
-        });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  app.post(
-    "/v1/host-native/delegations",
-    coreAuth(SCOPES.OWNER_ASSERTION),
-    async (req, res) => {
-      if (!requireHostNativeGovernance(res)) return;
-      try {
-        const ownerConfirmation = verifyHostNativeOwnerConfirmation(
-          req,
-          "host_native_delegation_issue",
-        );
-        const {
-          tenant_id: _tenantId,
-          owner_context: _ownerContext,
-          owner_confirmed: _ownerConfirmed,
-          owner_confirmation: _ownerConfirmation,
-          confirmation_reference: _confirmationReference,
-          ...input
-        } = req.body || {};
-        if (!ownerConfirmation.confirmation_reference) {
-          throw new Error("confirmation_reference_invalid");
-        }
-        const record = await hostNativeGovernance.issueDelegation({
-          ...input,
-          tenant_id: req.tenantId,
-          owner_confirmation: ownerConfirmation,
-        });
-        audit.append("core_host_native_delegation_issued", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          delegation_id: record.delegation_id,
-          work_id: record.grant.work_id,
-          expires_at: record.grant.expires_at,
-        });
-        return res.status(201).json({ ok: true, tenant_id: req.tenantId, delegation: record });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  app.get(
-    "/v1/host-native/delegations/:delegationId",
-    coreAuth(SCOPES.READ_DECISION),
-    async (req, res) => {
-      if (!requireHostNativeGovernance(res)) return;
-      try {
-        const delegation = await hostNativeGovernance.readDelegation({
-          tenant_id: req.tenantId,
-          delegation_id: req.params.delegationId,
-        });
-        return res.json({ ok: true, tenant_id: req.tenantId, delegation });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  app.post(
-    "/v1/host-native/delegations/:delegationId/revoke",
-    coreAuth(SCOPES.OWNER_ASSERTION),
-    async (req, res) => {
-      if (!requireHostNativeGovernance(res)) return;
-      try {
-        const ownerConfirmation = verifyHostNativeOwnerConfirmation(
-          req,
-          "host_native_delegation_revoke",
-        );
-        if (!ownerConfirmation.confirmation_reference) {
-          throw new Error("confirmation_reference_invalid");
-        }
-        const delegation = await hostNativeGovernance.revokeDelegation({
-          tenant_id: req.tenantId,
-          delegation_id: req.params.delegationId,
-          owner_confirmation: ownerConfirmation,
-          idempotency_key: req.body?.idempotency_key,
-        });
-        audit.append("core_host_native_delegation_revoked", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          delegation_id: delegation.delegation_id,
-        });
-        return res.json({ ok: true, tenant_id: req.tenantId, delegation });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  app.post(
-    "/v1/host-native/actions/authorize",
-    coreAuth(SCOPES.AUTOMATION_CODEX),
-    async (req, res) => {
-      if (!requireHostNativeGovernance(res)) return;
-      try {
-        const { tenant_id: _tenantId, ...input } = req.body || {};
-        const actionTicket = await hostNativeGovernance.issueActionTicket({
-          ...input,
-          tenant_id: req.tenantId,
-        });
-        audit.append("core_host_native_action_ticket_issued", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          ticket_id: actionTicket.ticket.ticket_id,
-          delegation_id: actionTicket.ticket.delegation_id,
-          action_kind: actionTicket.ticket.action.kind,
-        });
-        return res.status(201).json({ ok: true, tenant_id: req.tenantId, action_ticket: actionTicket });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  app.get(
-    "/v1/host-native/actions/:ticketId",
-    coreAuth(SCOPES.READ_DECISION),
-    async (req, res) => {
-      if (!requireHostNativeGovernance(res)) return;
-      try {
-        const actionTicket = await hostNativeGovernance.readActionTicket({
-          tenant_id: req.tenantId,
-          ticket_id: req.params.ticketId,
-        });
-        return res.json({ ok: true, tenant_id: req.tenantId, action_ticket: actionTicket });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  for (const [suffix, method] of [
-    ["reserve", "reserveActionTicket"],
-    ["complete", "completeActionTicket"],
-    ["reconcile", "reconcileActionTicket"],
-  ]) {
-    app.post(
-      `/v1/host-native/actions/:ticketId/${suffix}`,
-      coreAuth(SCOPES.AUTOMATION_CODEX),
-      async (req, res) => {
-        if (!requireHostNativeGovernance(res)) return;
-        try {
-          const { tenant_id: _tenantId, ticket_id: _ticketId, ...input } = req.body || {};
-          const actionTicket = await hostNativeGovernance[method]({
-            ...input,
-            tenant_id: req.tenantId,
-            ticket_id: req.params.ticketId,
-          });
-          audit.append(`core_host_native_action_${suffix}`, {
-            tenant_id: req.tenantId,
-            key_id: req.coreKey.key_id,
-            ticket_id: req.params.ticketId,
-            state: actionTicket.state,
-          });
-          return res.json({ ok: true, tenant_id: req.tenantId, action_ticket: actionTicket });
-        } catch (error) {
-          return hostNativeFailure(res, error);
-        }
-      },
-    );
-  }
-
-  app.post(
-    "/v1/host-native/actions/:ticketId/observe-unreserved",
-    coreAuth(SCOPES.AUTOMATION_CODEX),
-    async (req, res) => {
-      if (!requireHostNativeGovernance(res)) return;
-      try {
-        const { tenant_id: _tenantId, ticket_id: _ticketId, ...input } = req.body || {};
-        const actionTicket = await hostNativeGovernance.observeUnreservedActionEffect({
-          ...input,
-          tenant_id: req.tenantId,
-          ticket_id: req.params.ticketId,
-        });
-        audit.append("core_host_native_action_observed_unreserved", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          ticket_id: req.params.ticketId,
-          classification: actionTicket.protocol_deviation?.classification || "BLOCKED",
-        });
-        return res.json({ ok: true, tenant_id: req.tenantId, action_ticket: actionTicket });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-
-  app.post(
-    "/v1/host-native/actions/:ticketId/authorize-finalize",
-    coreAuth(SCOPES.AUTOMATION_CODEX),
-    async (req, res) => {
-      if (!requireHostNativeGovernance(res)) return;
-      try {
-        const finalizeAuthorization = await hostNativeGovernance.authorizeFinalize({
-          tenant_id: req.tenantId,
-          ticket_id: req.params.ticketId,
-          host_session_fingerprint: req.body?.host_session_fingerprint,
-        });
-        audit.append("core_host_native_finalize_authorized", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          ticket_id: req.params.ticketId,
-          target_commit: finalizeAuthorization.target_commit,
-          outcome_source: finalizeAuthorization.outcome_source,
-        });
-        return res.json({
-          ok: true,
-          tenant_id: req.tenantId,
-          finalize_authorization: finalizeAuthorization,
-        });
-      } catch (error) {
-        return hostNativeFailure(res, error);
-      }
-    },
-  );
-  const policyRegistryRouteContract = Object.freeze({
-    activate: Object.freeze([
-      "tenant_id", "work_id", "operation_id", "domain_pack_id", "work_preflight",
-      "owner_confirmed", "confirmation_reference", "owner_context", "snapshot",
-      "compiler_input",
-    ]),
-    rollback: Object.freeze([
-      "tenant_id", "work_id", "operation_id", "domain_pack_id", "work_preflight",
-      "owner_confirmed", "confirmation_reference", "owner_context", "target_snapshot_digest",
-    ]),
-    reconcile: Object.freeze([
-      "tenant_id", "work_id", "operation_id", "work_preflight", "owner_confirmed",
-      "confirmation_reference", "owner_context",
-    ]),
-  });
-  const policyRegistryRoutePurpose = Object.freeze({
-    activate: "nyra_policy_registry_snapshot_activate_v3",
-    rollback: "nyra_policy_registry_snapshot_rollback_v3",
-    reconcile: "nyra_policy_registry_snapshot_reconcile_v3",
-  });
-
-  function exactPolicyRegistryRouteBody(req, kind) {
-    const body = req.body;
-    const fields = policyRegistryRouteContract[kind];
-    if (!isPlainRecord(body) || !fields ||
-      Object.keys(body).sort().join("\0") !== [...fields].sort().join("\0")) {
-      throw new Error("policy_registry_request_schema_invalid");
-    }
-    if (body.tenant_id !== req.tenantId || body.work_id !== req.workId) {
-      throw new Error("policy_registry_request_scope_invalid");
-    }
-    if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/.test(String(body.operation_id || "")) ||
-      body.owner_confirmed !== true ||
-      !String(body.confirmation_reference || "").trim()) {
-      throw new Error("policy_registry_request_invalid");
-    }
-    if (kind !== "reconcile" &&
-      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,255}$/.test(String(body.domain_pack_id || ""))) {
-      throw new Error("policy_registry_request_invalid");
-    }
-    const action = `policy.snapshot.${kind}`;
-    if (req.workPreflight?.request?.operation_type !== action ||
-      (kind !== "reconcile" && req.workPreflight?.domain_pack?.id !== body.domain_pack_id)) {
-      throw new Error("policy_registry_preflight_binding_invalid");
-    }
-    if (kind === "activate" && (
-      !isPlainRecord(body.snapshot) ||
-      Object.hasOwn(body.snapshot, "policy_registry_attestation") ||
-      Object.hasOwn(body.snapshot, "activation_attestation")
-    )) {
-      throw new Error("policy_registry_snapshot_not_pure");
-    }
-    if (kind === "activate") {
-      const validation = validatePolicySnapshot(body.snapshot, {
-        tenant_id: req.tenantId,
-        core_branch_id: "nyra_policy_registry",
-        nyra_branch_id: "risk_governance",
-        domain_pack_id: body.domain_pack_id,
-        now: new Date(),
-      });
-      if (!validation.ok) throw new Error("policy_registry_snapshot_invalid");
-      if (!isPlainRecord(body.compiler_input) ||
-        !nyraPolicyRegistryCompilerProvenanceVerifier ||
-        !nyraPolicyRegistryCompilerReady) {
-        throw new Error("policy_registry_compiler_unavailable");
-      }
-      const compilerProvenance =
-        nyraPolicyRegistryCompilerProvenanceVerifier.verify({
-          tenant_id: req.tenantId,
-          domain_pack_id: body.domain_pack_id,
-          snapshot: body.snapshot,
-          compiler_input: body.compiler_input,
-        });
-      const compilerVerification =
-        nyraPolicyRegistryCompilerProvenanceVerifier.verifyPersistedRecord(
-          compilerProvenance,
-          {
-            tenant_id: req.tenantId,
-            domain_pack_id: body.domain_pack_id,
-            snapshot_digest: body.snapshot.snapshot_digest,
-            compiler_provenance_digest: compilerProvenance?.provenance_digest,
-          },
-        );
-      const compilerVerificationFields = [
-        "ok", "record_integrity_verified", "derivation_reverified", "tenant_id",
-        "domain_pack_id", "snapshot_digest", "compiler_provenance_digest",
-        "compiler_build_commit", "catalog_digest", "trust_catalog_digest",
-        "execution_authorized", "error",
-      ];
-      const compilerVerificationKeys = isPlainRecord(compilerVerification)
-        ? Reflect.ownKeys(compilerVerification)
-        : [];
-      const compilerVerificationExact = isPlainRecord(compilerVerification) &&
-        Object.getPrototypeOf(compilerVerification) === Object.prototype &&
-        compilerVerificationKeys.length === compilerVerificationFields.length &&
-        compilerVerificationKeys.every((key) => typeof key === "string") &&
-        compilerVerificationFields.every((field) => {
-          const descriptor = Object.getOwnPropertyDescriptor(compilerVerification, field);
-          return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
-        });
-      if (!compilerVerificationExact ||
-        compilerVerification.ok !== true ||
-        compilerVerification.record_integrity_verified !== true ||
-        compilerVerification.derivation_reverified !== false ||
-        compilerVerification.tenant_id !== req.tenantId ||
-        compilerVerification.domain_pack_id !== body.domain_pack_id ||
-        compilerVerification.snapshot_digest !== body.snapshot.snapshot_digest ||
-        compilerVerification.compiler_provenance_digest !==
-          compilerProvenance?.provenance_digest ||
-        compilerVerification.compiler_build_commit !==
-          compilerProvenance?.compiler_build_commit ||
-        compilerVerification.compiler_build_commit !==
-          nyraPolicyRegistryCompilerStatus?.compiler_build_commit ||
-        (nyraPolicyRegistryProofProduction &&
-          compilerVerification.compiler_build_commit !== BUILD_COMMIT_SHA) ||
-        compilerVerification.catalog_digest !== compilerProvenance?.catalog_digest ||
-        compilerVerification.catalog_digest !== nyraPolicyRegistryExpectedCatalogDigest ||
-        compilerVerification.catalog_digest !==
-          nyraPolicyRegistryCompilerStatus?.catalog_digest ||
-        compilerVerification.trust_catalog_digest !==
-          compilerProvenance?.trust_catalog_digest ||
-        compilerVerification.trust_catalog_digest !==
-          nyraPolicyRegistryExpectedTrustCatalogDigest ||
-        compilerVerification.trust_catalog_digest !==
-          nyraPolicyRegistryCompilerStatus?.trust_catalog_digest ||
-        compilerVerification.execution_authorized !== false ||
-        compilerVerification.error !== null) {
-        throw new Error("policy_compiler_provenance_invalid");
-      }
-    }
-    return body;
-  }
-
-  function authorizePolicyRegistryMutation(req, kind, body) {
-    if (!nyraPolicyRegistryCoordinator) throw new Error("policy_registry_coordinator_unavailable");
-    const purpose = policyRegistryRoutePurpose[kind];
-    const owner = verifyHostNativeOwnerConfirmation(req, purpose);
-    const action = `policy.snapshot.${kind}`;
-    const authorization = buildActionAuthorization({
-      state: "attention",
-      risk_band: "high",
-      control_level: "confirm",
-      recommended_actions: [{ blocked: false }],
-    }, {
-      action_type: action,
-      operation_class: "policy_registry_snapshot_mutation",
-      authenticated_tenant_id: req.tenantId,
-      tenant_id: req.tenantId,
-      owner_confirmed: true,
-      request_bound_owner_confirmation: owner.request_bound === true,
-      owner_context_verified: owner.verified === true,
-      work_preflight_ready: Boolean(req.workPreflight?.preflight_id),
-      external_side_effect: false,
-      configuration_changes: true,
-      provider_execution: false,
-      contains_secret: false,
-      secret_value_transmitted: false,
-      cross_tenant: false,
-      bypass_orchestrator: false,
-      destructive: false,
-      rollback_ready: true,
-      audit_ready: true,
-      confirmation_reference: owner.confirmation_reference,
-    });
-    if (authorization.allowed !== true ||
-      authorization.scope !== "policy_registry_snapshot_mutation" ||
-      authorization.confirmation_satisfied !== true) {
-      throw new Error("policy_registry_core_authorization_denied");
-    }
-    const snapshotDigest = kind === "activate"
-      ? String(body.snapshot?.snapshot_digest || "")
-      : kind === "rollback" ? String(body.target_snapshot_digest || "") : null;
-    const compilerInputDigest = kind === "activate"
-      ? crypto.createHash("sha256")
-          .update(JSON.stringify(stableCanonical(body.compiler_input)))
-          .digest("hex")
-      : null;
-    const authorizationDigest = crypto.createHash("sha256")
-      .update(`nyra-policy-registry-core-authorization-v2\0${JSON.stringify(stableCanonical({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        preflight_id: req.workPreflight.preflight_id,
-        operation_id: body.operation_id,
-        action,
-        domain_pack_id: body.domain_pack_id || null,
-        snapshot_digest: snapshotDigest,
-        compiler_input_digest: compilerInputDigest,
-        authorization,
-      }))}`)
-      .digest("hex");
-    return {
-      owner,
-      authorization,
-      authorizationDigest,
-      ownerRequestBinding: ownerRequestBinding(purpose, body),
-    };
-  }
-
-  const policyRegistrySafeRouteErrors = new Map([
-    ["verified_owner_confirmation_required", [403, "policy_registry_owner_confirmation_required"]],
-    ["policy_registry_owner_binding_invalid", [403, "policy_registry_owner_confirmation_required"]],
-    ["policy_registry_core_authorization_denied", [403, "policy_registry_core_authorization_denied"]],
-    ["policy_registry_request_scope_invalid", [403, "policy_registry_request_scope_invalid"]],
-    ["policy_proof_tenant_denied", [403, "policy_proof_tenant_denied"]],
-    ["policy_proof_work_binding_invalid", [403, "policy_proof_work_binding_invalid"]],
-    ["policy_registry_request_schema_invalid", [400, "policy_registry_request_schema_invalid"]],
-    ["policy_registry_request_invalid", [400, "policy_registry_request_invalid"]],
-    ["policy_registry_preflight_binding_invalid", [400, "policy_registry_preflight_binding_invalid"]],
-    ["policy_registry_snapshot_not_pure", [400, "policy_registry_snapshot_not_pure"]],
-    ["policy_registry_snapshot_invalid", [400, "policy_registry_snapshot_invalid"]],
-    ["policy_registry_authorization_digest_invalid", [400, "policy_registry_authorization_digest_invalid"]],
-    ["policy_compiler_input_invalid", [400, "policy_compiler_input_invalid"]],
-    ["policy_compiler_input_oversize", [400, "policy_compiler_input_oversize"]],
-    ["policy_compiler_input_leaf_invalid", [400, "policy_compiler_input_leaf_invalid"]],
-    ["policy_compiler_input_pack_invalid", [400, "policy_compiler_input_pack_invalid"]],
-    ["policy_compiler_input_pack_status_invalid", [400, "policy_compiler_input_pack_status_invalid"]],
-    ["policy_compiler_input_signature_invalid", [400, "policy_compiler_input_signature_invalid"]],
-    ["policy_compiler_input_noncanonical", [400, "policy_compiler_input_noncanonical"]],
-    ["policy_compiler_constraints_invalid", [400, "policy_compiler_constraints_invalid"]],
-    ["policy_compiler_verify_input_invalid", [400, "policy_compiler_verify_input_invalid"]],
-    ["policy_compiler_tenant_invalid", [400, "policy_compiler_tenant_invalid"]],
-    ["policy_compiler_domain_invalid", [400, "policy_compiler_domain_invalid"]],
-    ["policy_compiler_domain_untrusted", [400, "policy_compiler_domain_untrusted"]],
-    ["policy_compiler_snapshot_invalid", [400, "policy_compiler_snapshot_invalid"]],
-    ["policy_compiler_snapshot_mismatch", [400, "policy_compiler_snapshot_mismatch"]],
-    ["policy_compiler_pack_set_mismatch", [400, "policy_compiler_pack_set_mismatch"]],
-    ["policy_compiler_root_unverified", [400, "policy_compiler_root_unverified"]],
-    ["policy_compiler_signature_quorum_invalid", [400, "policy_compiler_signature_quorum_invalid"]],
-    ["policy_compiler_provenance_invalid", [400, "policy_compiler_provenance_invalid"]],
-    ["nyra_policy_compiler_provenance_invalid", [400, "policy_compiler_provenance_invalid"]],
-    ["policy_proof_binding_invalid", [400, "policy_proof_binding_invalid"]],
-    ["policy_proof_attestation_invalid", [400, "policy_proof_attestation_invalid"]],
-    ["policy_activation_core_receipt_invalid", [400, "policy_activation_core_receipt_invalid"]],
-    ["policy_snapshot_signature_quorum_invalid", [400, "policy_snapshot_signature_quorum_invalid"]],
-    ["policy_proof_not_found", [404, "policy_proof_not_found"]],
-    ["policy_proof_consumption_not_found", [404, "policy_proof_consumption_not_found"]],
-    ["policy_rollback_snapshot_not_found", [404, "policy_rollback_snapshot_not_found"]],
-    ["policy_proof_idempotency_conflict", [409, "policy_proof_idempotency_conflict"]],
-    ["policy_proof_owner_replayed", [409, "policy_proof_owner_replayed"]],
-    ["policy_proof_cas_conflict", [409, "policy_proof_cas_conflict"]],
-    ["policy_activation_core_receipt_replayed", [409, "policy_activation_core_receipt_replayed"]],
-    ["policy_operation_idempotency_conflict", [409, "policy_operation_idempotency_conflict"]],
-    ["policy_operation_binding_invalid", [409, "policy_operation_binding_invalid"]],
-    ["policy_registry_concurrent_mutation", [409, "policy_registry_concurrent_mutation"]],
-    ["policy_registry_reconciliation_required", [409, "policy_registry_reconciliation_required"]],
-    ["policy_registry_cas_conflict", [409, "policy_registry_cas_conflict"]],
-    ["policy_registry_state_corrupt", [409, "policy_registry_state_corrupt"]],
-    ["policy_registry_compiler_provenance_missing", [409, "policy_registry_compiler_provenance_missing"]],
-    ["policy_registry_compiler_provenance_invalid", [409, "policy_registry_compiler_provenance_invalid"]],
-    ["policy_rollback_compiler_provenance_missing", [409, "policy_rollback_compiler_provenance_missing"]],
-    ["policy_proof_reconciliation_not_ready", [409, "policy_proof_reconciliation_not_ready"]],
-  ]);
-
-  function classifiedPolicyRegistryRouteError(error) {
-    const internal = String(error?.message || "");
-    const configured = policyRegistrySafeRouteErrors.get(internal);
-    if (configured) return { status: configured[0], code: configured[1] };
-    const infrastructure = new Set([
-      "policy_registry_coordinator_unavailable",
-      "policy_registry_compiler_unavailable",
-      "policy_compiler_unavailable",
-      "policy_compiler_clock_unavailable",
-      "policy_registry_unavailable",
-      "policy_registry_postgres_required",
-      "policy_registry_postgres_unavailable",
-      "policy_proof_unavailable",
-      "policy_proof_signer_unavailable",
-      "policy_registry_nyra_busy",
-      "policy_registry_nyra_client_unavailable",
-      "policy_registry_nyra_redirect_denied",
-      "policy_registry_nyra_rejected",
-      "policy_registry_nyra_response_binding_invalid",
-      "policy_registry_nyra_response_json_invalid",
-      "policy_registry_nyra_response_too_large",
-      "policy_registry_nyra_timeout",
-      "policy_registry_nyra_unavailable",
-      "policy_registry_result_binding_invalid",
-    ]);
-    return infrastructure.has(internal)
-      ? { status: 503, code: internal }
-      : { status: 503, code: "policy_registry_operation_failed" };
-  }
-
-  function policyRegistryRouteError(res, error) {
-    const classified = classifiedPolicyRegistryRouteError(error);
-    return publicError(res, classified.status, classified.code);
-  }
-
-  function policyRegistryPublicAuthorization(authorization) {
-    return {
-      allowed: authorization.allowed === true,
-      state: authorization.state,
-      scope: authorization.scope,
-      confirmation_satisfied: authorization.confirmation_satisfied === true,
-      core_final_authority: true,
-      caller_authority: false,
-      provider_execution_authorized: false,
-    };
-  }
-
-  async function requirePolicyRegistryCoordinatorReady() {
-    if (!nyraPolicyRegistryProofActivationEnabled || !nyraPolicyRegistryCoordinator) {
-      throw new Error("policy_registry_coordinator_unavailable");
-    }
-    let current;
-    try { current = await nyraPolicyRegistryCoordinator.status(); } catch { current = null; }
-    if (current?.ready !== true || current?.e2e_verified !== true) {
-      throw new Error("policy_registry_coordinator_unavailable");
-    }
-  }
-
-  function policyRegistryPublicResult(kind, result, req, operationId) {
-    if (!isPlainRecord(result)) throw new Error("policy_registry_result_binding_invalid");
-    const snapshotDigest = String(result.snapshot_digest || "");
-    const compilerProvenanceDigest = String(result.compiler_provenance_digest || "");
-    if (!/^[a-f0-9]{64}$/.test(snapshotDigest) ||
-      !/^[a-f0-9]{64}$/.test(compilerProvenanceDigest)) {
-      throw new Error("policy_registry_result_binding_invalid");
-    }
-    const successField = kind === "activate"
-      ? "activated"
-      : kind === "rollback" ? "rolled_back" : "reconciled";
-    if (result[successField] !== true || result.proof_status !== "consumed") {
-      throw new Error("policy_registry_result_binding_invalid");
-    }
-    const projected = {
-      tenant_id: req.tenantId,
-      work_id: req.workId,
-      operation_id: operationId,
-      preflight_id: req.workPreflight.preflight_id,
-      snapshot_digest: snapshotDigest,
-      compiler_provenance_digest: compilerProvenanceDigest,
-      [successField]: true,
-      idempotent_replay: result.idempotent_replay === true,
-      proof_status: "consumed",
-      execution_authorized: false,
-      provider_execution_authorized: false,
-      caller_authority: false,
-    };
-    if (/^[a-f0-9]{64}$/.test(String(result.intent_digest || ""))) {
-      projected.intent_digest = result.intent_digest;
-    }
-    if (Number.isSafeInteger(result.activation_generation) && result.activation_generation >= 0) {
-      projected.activation_generation = result.activation_generation;
-    }
-    return projected;
-  }
-
-  app.post(
-    "/v1/nyra-policy-registry/activate",
-    coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }),
-    dttWorkAuth,
-    async (req, res) => {
-      try {
-        const body = exactPolicyRegistryRouteBody(req, "activate");
-        const governed = authorizePolicyRegistryMutation(req, "activate", body);
-        await requirePolicyRegistryCoordinatorReady();
-        const result = await nyraPolicyRegistryCoordinator.activate({
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          operation_id: body.operation_id,
-          preflight_id: req.workPreflight.preflight_id,
-          domain_pack_id: body.domain_pack_id,
-          snapshot: body.snapshot,
-          compiler_input: body.compiler_input,
-          owner_subject_fingerprint: governed.owner.owner_subject_fingerprint,
-          owner_binding_hash: String(body.owner_context.binding_hash || ""),
-          confirmation_reference: governed.owner.confirmation_reference,
-          owner_request_binding: governed.ownerRequestBinding,
-          authorization_digest: governed.authorizationDigest,
-          core_branch_id: "nyra_policy_registry",
-          nyra_branch_id: "risk_governance",
-        });
-        audit.append("core_nyra_policy_registry_activated", {
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          key_id: req.coreKey.key_id,
-          operation_id: body.operation_id,
-          preflight_id: req.workPreflight.preflight_id,
-          snapshot_digest: result.snapshot_digest,
-          compiler_provenance_digest: result.compiler_provenance_digest,
-          idempotent_replay: result.idempotent_replay,
-        });
-        return res.json({
-          ok: true,
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          activation: policyRegistryPublicResult("activate", result, req, body.operation_id),
-          authorization: policyRegistryPublicAuthorization(governed.authorization),
-        });
-      } catch (error) {
-        const classified = classifiedPolicyRegistryRouteError(error);
-        audit.append("core_nyra_policy_registry_activation_rejected", {
-          tenant_id: req.tenantId,
-          work_id: req.workId || null,
-          key_id: req.coreKey.key_id,
-          reason: classified.code,
-        });
-        return policyRegistryRouteError(res, error);
-      }
-    },
-  );
-
-  app.post(
-    "/v1/nyra-policy-registry/rollback",
-    coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }),
-    dttWorkAuth,
-    async (req, res) => {
-      try {
-        const body = exactPolicyRegistryRouteBody(req, "rollback");
-        const governed = authorizePolicyRegistryMutation(req, "rollback", body);
-        await requirePolicyRegistryCoordinatorReady();
-        const result = await nyraPolicyRegistryCoordinator.rollback({
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          operation_id: body.operation_id,
-          preflight_id: req.workPreflight.preflight_id,
-          domain_pack_id: body.domain_pack_id,
-          target_snapshot_digest: body.target_snapshot_digest,
-          owner_subject_fingerprint: governed.owner.owner_subject_fingerprint,
-          owner_binding_hash: String(body.owner_context.binding_hash || ""),
-          confirmation_reference: governed.owner.confirmation_reference,
-          owner_request_binding: governed.ownerRequestBinding,
-          authorization_digest: governed.authorizationDigest,
-          core_branch_id: "nyra_policy_registry",
-          nyra_branch_id: "risk_governance",
-        });
-        audit.append("core_nyra_policy_registry_rolled_back", {
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          key_id: req.coreKey.key_id,
-          operation_id: body.operation_id,
-          preflight_id: req.workPreflight.preflight_id,
-          snapshot_digest: result.snapshot_digest,
-          compiler_provenance_digest: result.compiler_provenance_digest,
-          activation_generation: result.activation_generation,
-          idempotent_replay: result.idempotent_replay,
-        });
-        return res.json({
-          ok: true,
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          rollback: policyRegistryPublicResult("rollback", result, req, body.operation_id),
-          authorization: policyRegistryPublicAuthorization(governed.authorization),
-        });
-      } catch (error) {
-        const classified = classifiedPolicyRegistryRouteError(error);
-        audit.append("core_nyra_policy_registry_rollback_rejected", {
-          tenant_id: req.tenantId,
-          work_id: req.workId || null,
-          key_id: req.coreKey.key_id,
-          reason: classified.code,
-        });
-        return policyRegistryRouteError(res, error);
-      }
-    },
-  );
-
-  app.post(
-    "/v1/nyra-policy-registry/reconcile",
-    coreAuth(SCOPES.AUTOMATION_CODEX, { requireWorkPreflight: true }),
-    dttWorkAuth,
-    async (req, res) => {
-      try {
-        const body = exactPolicyRegistryRouteBody(req, "reconcile");
-        const governed = authorizePolicyRegistryMutation(req, "reconcile", body);
-        await requirePolicyRegistryCoordinatorReady();
-        const result = await nyraPolicyRegistryCoordinator.reconcile({
-          tenant_id: req.tenantId,
-          operation_id: body.operation_id,
-          expected_work_id: req.workId,
-        });
-        audit.append("core_nyra_policy_registry_reconciled", {
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          key_id: req.coreKey.key_id,
-          operation_id: body.operation_id,
-          preflight_id: req.workPreflight.preflight_id,
-          snapshot_digest: result.snapshot_digest,
-          compiler_provenance_digest: result.compiler_provenance_digest,
-          idempotent_replay: result.idempotent_replay,
-        });
-        return res.json({
-          ok: true,
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          reconciliation: policyRegistryPublicResult("reconcile", result, req, body.operation_id),
-          authorization: policyRegistryPublicAuthorization(governed.authorization),
-        });
-      } catch (error) {
-        const classified = classifiedPolicyRegistryRouteError(error);
-        audit.append("core_nyra_policy_registry_reconciliation_rejected", {
-          tenant_id: req.tenantId,
-          work_id: req.workId || null,
-          key_id: req.coreKey.key_id,
-          reason: classified.code,
-        });
-        return policyRegistryRouteError(res, error);
-      }
-    },
-  );
-
-    app.post("/v1/decision", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
+  app.post("/v1/decision", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const input = buildCoreInput(req, req.coreKey);
     if (!input.signals.length) {
       input.signals.push(normalizeSignal({ id: "core:no_signal", label: "Nessun segnale operativo fornito", normalized_score: 10, tags: ["system"] }));
@@ -10632,275 +4262,26 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/work-quality/evaluate", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
-    const observation = req.body?.observation;
-    const observerBinding = req.body?.observer_binding;
-    if (!isMcpTenantGatewayRecord(req.coreKey)) {
-      return publicError(res, 403, "ai_work_quality_gateway_required");
-    }
-    if (!verifyAiWorkQualityObservation(observation)) {
-      return publicError(res, 400, "ai_work_quality_observation_invalid");
-    }
-    if (String(observation.tenant_id || "") !== req.tenantId) {
-      return publicError(res, 403, "tenant_scope_violation");
-    }
-    if (observerBinding?.transport_bound !== true || observerBinding?.active_lease_verified !== true ||
-        String(observerBinding?.gallery_work_id || "") !== String(observation.work_id || "") ||
-        !String(observerBinding?.agent_id || "") || !String(observerBinding?.session_id || "") ||
-        !String(observerBinding?.lease_id || "")) {
-      return publicError(res, 403, "ai_work_quality_observer_binding_invalid");
-    }
-    if (!observation.expected_state_digest || !observation.observed_state_digest ||
-        !Array.isArray(observation.evidence_receipts) || observation.evidence_receipts.length < 1) {
-      return publicError(res, 400, "ai_work_quality_verified_evidence_required");
-    }
-    const expectedEvidenceBinding = aiWorkQualityEvidenceBindingReference({
-      ...observation,
-      observer_session_id: observerBinding.session_id,
-    });
-    for (const receipt of observation.evidence_receipts) {
-      if (receipt.registry_reference !== expectedEvidenceBinding) {
-        return publicError(res, 403, "ai_work_quality_evidence_binding_invalid");
-      }
-      const verified = await dttVerificationTrustStore.verifyArtifact({
-        tenant_id: req.tenantId,
-        work_id: observation.work_id,
-        artifact_id: receipt.artifact_id,
-        content_digest: receipt.content_digest,
-        source_reference: receipt.source_reference,
-        registry_reference: receipt.registry_reference,
-      });
-      if (!verified?.verified) return publicError(res, 403, "ai_work_quality_evidence_receipt_invalid");
-    }
-    const disposition = observation.disposition;
-    const verdict = disposition === AI_WORK_FAILURE_DISPOSITION.CONFIRMATION_REQUIRED
-      ? "CONFIRM"
-      : disposition === AI_WORK_FAILURE_DISPOSITION.TRANSIENT ? "DEFER" : "BLOCK";
-    const decisionId = `awq_${observation.observation_digest.slice(0, 40)}`;
-    const decisionContract = {
-      schema_version: "core_decision_contract_v1",
-      decision_id: decisionId,
-      decision_digest: crypto.createHash("sha256").update(JSON.stringify({
-        tenant_id: req.tenantId,
-        observation_digest: observation.observation_digest,
-        observer_binding: observerBinding,
-        verdict,
-      })).digest("hex"),
-      state: verdict,
-      verdict,
-      block_code: observation.code,
-      block_class: disposition,
-      risk_band: disposition === AI_WORK_FAILURE_DISPOSITION.ABSOLUTE ? "critical" : "medium",
-      policy_snapshot_digest: crypto.createHash("sha256").update(JSON.stringify({
-        policy: "ai_work_quality_failure_v1",
-        rollout_tier: observation.rollout_tier,
-        disposition,
-        code: observation.code,
-      })).digest("hex"),
-      blocked_reasons: [observation.summary],
-      evidence_requirements: observation.evidence_digests,
-      allowed_alternatives: disposition === AI_WORK_FAILURE_DISPOSITION.ABSOLUTE
-        ? ["new_scope_decision_contract"] : ["verified_remediation_proposal"],
-    };
-    const authorization = {
-      allowed: false,
-      state: verdict,
-      confirmation_required: disposition === AI_WORK_FAILURE_DISPOSITION.CONFIRMATION_REQUIRED,
-      confirmation_satisfied: false,
-      execution_authorized: false,
-    };
-    audit.append("ai_work_quality_evaluated", {
-      tenant_id: req.tenantId,
-      key_id: req.coreKey.key_id,
-      decision_id: decisionId,
-      observation_digest: observation.observation_digest,
-      failure_code: observation.code,
-      failure_class: observation.failure_class,
-      disposition,
-      execution_authorized: false,
-    });
-    return res.json({
-      ok: true,
-      tenant_id: req.tenantId,
-      observation_digest: observation.observation_digest,
-      decision_contract: decisionContract,
-      authorization,
-      guardrail: { execution_allowed: false, authority: "universal_core" },
-    });
-  });
-
-  app.post("/v1/action-evaluator", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/action-evaluator", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
     if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
-    // An owner assertion is a connector capability. An automation key may keep
-    // its legacy explicit-confirmation path, but it must never become an owner
-    // connector merely by being issued the same named scope.
-    const trustedOwnerContext = req.coreKey?.key_type === "connector" &&
-      hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) && verifyOwnerContextAssertion(
-      req.body?.owner_context,
-      readSecret(req),
-      req.tenantId,
-      ownerRequestBinding("core_action_evaluator", req.body || {}),
-    );
-    const providerSetupLinkAttempt = isProviderSetupLinkBindingAttempt(req.body);
-    // Provider setup has a second, deliberately separate assertion scheme.
-    // A Core bearer key must never be enough to mint a credential-entry link:
-    // the assertion must instead come from the OAuth owner bridge and be
-    // signed with the dedicated bridge secret.
-    const providerSetupLinkOwnerVerified = providerSetupLinkAttempt &&
-      Boolean(ownerContextSigningSecret) &&
-      verifyOwnerContextAssertion(
-        req.body?.owner_context,
-        ownerContextSigningSecret,
-        req.tenantId,
-      ) &&
-      hasProviderSetupOwnerContext(req.body?.owner_context);
-    const providerSetupLinkApprovalBound = providerSetupLinkAttempt &&
-      providerSetupLinkOwnerVerified &&
-      sameDigest(
-        req.body?.owner_context?.approval_digest,
-        providerSetupLinkBindingApprovalDigest(req.body, req.tenantId),
-      );
-    // The signed provider context proves who approved the request, while the
-    // envelope's own boolean proves that this exact request was actually
-    // confirmed. Do not promote a signed-but-explicitly-unconfirmed envelope.
-    const providerSetupLinkOwnerConfirmed = providerSetupLinkOwnerVerified &&
-      req.body?.owner_confirmed === true;
-    const explicitAutomationConfirmation = req.body?.owner_confirmed === true &&
-      req.coreKey?.key_type === "automation" && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX);
-    const tenantBindingAttempt = req.body?.operation_class ===
-      "reversible_owner_confirmed_mcp_default_tenant_correction";
-    const coreAdminBootstrapAttempt = req.body?.operation_class ===
-      "reversible_owner_confirmed_core_admin_bootstrap_configuration";
-    let requestBoundOwnerConfirmation = false;
-    if (trustedOwnerContext && req.body?.owner_confirmed === true && !providerSetupLinkAttempt) {
-      const ownerAssertion = String(req.body?.owner_context?.assertion || "");
-      const approvalHash = `sha256:${crypto.createHash("sha256")
-        .update(`core-action-owner-approval-v1\u0000${ownerAssertion}`)
-        .digest("hex")}`;
-      const assertionExpiry = new Date(
-        Date.parse(String(req.body?.owner_context?.issued_at || "")) + 120_000,
-      ).toISOString();
-      try {
-        const consumed = await ownerExecutionApprovals.consume({
-          tenant_id: req.tenantId,
-          approval_hash: approvalHash,
-          expires_at: assertionExpiry,
-        });
-        if (consumed?.consumed !== true) {
-          audit.append("core_action_owner_confirmation_replayed", {
-            tenant_id: req.tenantId,
-            key_id: req.coreKey.key_id,
-            operation_class: String(req.body?.operation_class || "").slice(0, 120),
-          });
-          return publicError(res, 409, "owner_confirmation_replayed");
-        }
-        requestBoundOwnerConfirmation = true;
-      } catch (error) {
-        audit.append("core_action_owner_confirmation_rejected", {
-          tenant_id: req.tenantId,
-          key_id: req.coreKey.key_id,
-          reason: error?.message === "approval_expired" ? "approval_expired" : "approval_store_unavailable",
-        });
-        return publicError(
-          res,
-          error?.message === "approval_expired" ? 403 : 503,
-          error?.message === "approval_expired"
-            ? "owner_context_required"
-            : "owner_confirmation_store_unavailable",
-        );
-      }
-    }
-    const governedReq = Object.create(req);
-    governedReq.body = {
-      ...(req.body || {}),
-      // Identity proves who is calling; consent proves that this exact action
-      // was approved. Never silently turn a valid owner identity into consent.
-      owner_confirmed: requestBoundOwnerConfirmation || providerSetupLinkOwnerConfirmed || explicitAutomationConfirmation,
-      // Server-derived and deliberately written after the caller payload. The
-      // generic owner-sovereignty gate and specialized production gates must
-      // never accept caller-provided identity or request-binding booleans.
-      request_bound_owner_confirmation: requestBoundOwnerConfirmation,
-      authenticated_key_type: req.coreKey?.key_type || null,
-      authenticated_tenant_id: req.tenantId,
-      tenant_id: req.tenantId,
-    };
-    const workPreflight = composeMandatoryWorkPreflight(governedReq, {
+    const workPreflight = composeMandatoryWorkPreflight(req, {
       domainPack: domainPackAccess.pack,
       memoryContext: memoryContext.value,
     });
-    const riskClassification = classifyActionRisk(governedReq.body);
-    const input = buildActionEvaluatorInput(governedReq, req.coreKey);
+    const riskClassification = classifyActionRisk(req.body || {});
+    const input = buildActionEvaluatorInput(req, req.coreKey);
     const output = runUniversalCore(input);
     const decisionContract = applyActionRiskProfile(normalizeDecisionContract(output, {
-      action_type: governedReq.body.action_type || input.context.metadata.action_type,
-      publish_intent: governedReq.body.publish_intent === true,
+      action_type: req.body?.action_type || input.context.metadata.action_type,
+      publish_intent: req.body?.publish_intent === true,
     }), riskClassification);
-    // Normalize the request *once* before both evaluation and audit. In
-    // particular, a caller-controlled tenant label must never influence either
-    // the authorization decision or the evidence emitted for it.
-    const evaluatedActionBody = {
-      ...governedReq.body,
-      ...(memoryContext.value ? { memory_context: memoryContext.value } : {}),
-      operation_class: governedReq.body.operation_class || riskClassification.operation_class,
-      // The body is untrusted. The authorization gate must bind a scoped
-      // operation to the tenant authenticated by the Core key, not to a tenant
-      // label supplied by a caller.
-      authenticated_tenant_id: req.tenantId,
-      tenant_id: req.tenantId,
-      // A caller cannot assert this flag itself. The provider setup-link
-      // binding requires a short-lived owner context signed by the MCP with a
-      // separate bridge secret, bound to this exact Blueprint envelope.
-      owner_context_verified: providerSetupLinkAttempt
-        ? providerSetupLinkOwnerVerified
-        : trustedOwnerContext,
-      owner_context_approval_bound: providerSetupLinkApprovalBound,
-    };
-    const coreAuthorization = buildActionAuthorization(decisionContract, evaluatedActionBody);
-    const policyRegistryEvaluation = nyraPolicyRegistryEvaluationEnabled
-      ? await nyraPolicyRegistry.evaluate({
-          tenant_id: req.tenantId,
-          action: String(evaluatedActionBody.action_type || input.context.metadata.action_type || "unknown"),
-          core_branch_id: "nyra_policy_registry",
-          nyra_branch_id: "risk_governance",
-          domain_pack_id: domainPackAccess.pack.id,
-          satisfied_gates: coreAuthorization.allowed ? ["core_allow"] : [],
-          context: {
-            tenant_id: req.tenantId,
-            domain_pack_id: domainPackAccess.pack.id,
-            action_type: String(evaluatedActionBody.action_type || input.context.metadata.action_type || "unknown"),
-          },
-        })
-      : {
-          verdict: "NOT_EVALUATED",
-          reasons: [],
-          fail_closed: true,
-          snapshot_digest: null,
-          snapshot_present: false,
-          snapshot_verified: false,
-        };
-    // The registry is a deny-only constraint. It can narrow an authorization
-    // issued by Universal Core, but can never manufacture an ALLOW.
-    const policyRegistryEnforcementActive = nyraPolicyRegistryMode === "enforced" ||
-      (nyraPolicyRegistryEvaluationEnabled && policyRegistryEvaluation.snapshot_present === true);
-    const policyRegistryDenied = policyRegistryEnforcementActive && policyRegistryEvaluation.verdict !== "ALLOW";
-    const authorization = policyRegistryDenied
-      ? {
-          ...coreAuthorization,
-          allowed: false,
-          state: "blocked",
-          mediation: "hard_block",
-          policy_registry_denied: true,
-        }
-      : coreAuthorization;
-    const tenantBindingAuthorization = authorization.allowed === true && [
-      "reversible_owner_confirmed_mcp_default_tenant_correction",
-      "reversible_owner_confirmed_mcp_default_tenant_blueprint_alignment",
-    ].includes(authorization.scope);
-    const coreAdminBootstrapAuthorization = authorization.allowed === true &&
-      authorization.scope === "reversible_owner_confirmed_core_admin_bootstrap_configuration";
+    const authorization = buildActionAuthorization(decisionContract, {
+      ...(req.body || {}),
+      operation_class: req.body?.operation_class || riskClassification.operation_class,
+    });
     audit.append("core_action_evaluated", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -10911,42 +4292,10 @@ export function createUniversalCoreService(options = {}) {
       publish_safe: decisionContract.publish_safe,
       preflight_id: workPreflight.preflight_id,
       authorization_state: authorization.state,
-      policy_registry_evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
-      policy_registry_enforcement: policyRegistryEnforcementActive ? "enforced" : "advisory_until_snapshot",
-      policy_registry_verdict: policyRegistryEvaluation.verdict,
-      policy_registry_snapshot_digest: policyRegistryEvaluation.snapshot_digest,
       action_classification: riskClassification.classification,
       action_risk_band: riskClassification.risk_band,
       action_reason_codes: riskClassification.reason_codes,
       confirmation_satisfied: authorization.confirmation_satisfied,
-      owner_identity_verified: trustedOwnerContext || providerSetupLinkOwnerVerified,
-      provider_setup_link_binding_authorized: authorization.allowed === true && providerSetupLinkAttempt,
-      ...providerSetupLinkBindingAuditFields(evaluatedActionBody),
-      request_bound_owner_confirmation: requestBoundOwnerConfirmation,
-      authenticated_key_type: req.coreKey?.key_type || null,
-      authorization_scope: authorization.scope,
-      authorization_target_commit: authorization.target_commit,
-      authorization_workflow_phase: authorization.workflow_phase,
-      // Never persist caller-controlled target strings from a denied attempt.
-      // Successful tenant-binding gates can be represented by these canonical,
-      // non-secret constants because their predicates require exact matches.
-      authorization_target_service: tenantBindingAuthorization ? "skinharmony-core-mcp" : null,
-      authorization_target_service_id: tenantBindingAuthorization ? "srv-d99ef1mcjfls73857m40" : null,
-      authorization_target_environment_variable: tenantBindingAuthorization ? "MCP_DEFAULT_TENANT_ID" : null,
-      authorization_current_tenant_id: tenantBindingAuthorization ? "owner-private" : null,
-      authorization_target_tenant_id: tenantBindingAuthorization ? "codexai" : null,
-      core_admin_bootstrap_authorized: coreAdminBootstrapAuthorization,
-      core_admin_bootstrap_target_service:
-        coreAdminBootstrapAuthorization ? "skinharmony-universal-core" : null,
-      core_admin_bootstrap_target_service_id:
-        coreAdminBootstrapAuthorization ? "srv-d82c9j3tqb8s73cgriag" : null,
-      core_admin_bootstrap_environment_variables: coreAdminBootstrapAuthorization
-        ? [
-            "CORE_ADMIN_SESSION_SECRET",
-            "CORE_ADMIN_BOOTSTRAP_USERNAME",
-            "CORE_ADMIN_BOOTSTRAP_PASSWORD",
-          ]
-        : [],
     });
     res.json({
       ok: true,
@@ -10955,16 +4304,6 @@ export function createUniversalCoreService(options = {}) {
       output,
       work_preflight: workPreflight,
       authorization,
-      policy_registry: {
-        evaluation: nyraPolicyRegistryEvaluationEnabled ? "active" : "disabled",
-        enforcement: policyRegistryEnforcementActive ? "enforced" : "advisory_until_snapshot",
-        verdict: policyRegistryEvaluation.verdict,
-        reasons: policyRegistryEvaluation.reasons,
-        snapshot_digest: policyRegistryEvaluation.snapshot_digest,
-        snapshot_present: policyRegistryEvaluation.snapshot_present,
-        snapshot_verified: policyRegistryEvaluation.snapshot_verified,
-        deny_only: true,
-      },
       risk_classification: riskClassification,
       guardrail: {
         destructive_automation: false,
@@ -11005,11 +4344,11 @@ export function createUniversalCoreService(options = {}) {
     });
   }
 
-  app.post("/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
+  app.post("/v1/semantic-selection", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     return handleSemanticSelection(req, res);
   });
 
-  app.post("/api/v1/semantic-selection", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
+  app.post("/api/v1/semantic-selection", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     return handleSemanticSelection(req, res);
   });
 
@@ -11055,11 +4394,11 @@ export function createUniversalCoreService(options = {}) {
     });
   }
 
-  app.post("/v1/software-language-gate/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/software-language-gate/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     return handleSoftwareLanguageGate(req, res);
   });
 
-  app.post("/api/v1/software-language-gate/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/api/v1/software-language-gate/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     return handleSoftwareLanguageGate(req, res);
   });
 
@@ -11168,42 +4507,42 @@ export function createUniversalCoreService(options = {}) {
     });
   }
 
-  app.post("/v1/ai-gateway/evaluate", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/v1/ai-gateway/evaluate", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res);
   });
-  app.post("/api/v1/ai-gateway/evaluate", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/api/v1/ai-gateway/evaluate", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res);
   });
 
-  app.post("/v1/adapters/codex/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/v1/adapters/codex/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "codex");
   });
-  app.post("/api/v1/adapters/codex/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/api/v1/adapters/codex/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "codex");
   });
 
-  app.post("/v1/adapters/site-suite/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/v1/adapters/site-suite/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "site_suite");
   });
-  app.post("/api/v1/adapters/site-suite/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/api/v1/adapters/site-suite/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "site_suite");
   });
 
-  app.post("/v1/adapters/smart-desk/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/v1/adapters/smart-desk/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "smart_desk");
   });
-  app.post("/api/v1/adapters/smart-desk/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/api/v1/adapters/smart-desk/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "smart_desk");
   });
 
-  app.post("/v1/adapters/skinharmony-core/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/v1/adapters/skinharmony-core/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "skinharmony_core");
   });
-  app.post("/api/v1/adapters/skinharmony-core/gateway", coreAuth(SCOPES.AI_GATEWAY), (req, res) => {
+  app.post("/api/v1/adapters/skinharmony-core/gateway", createAuth(keyStore, audit, SCOPES.AI_GATEWAY), (req, res) => {
     return handleAiGateway(req, res, "skinharmony_core");
   });
 
-  app.post("/v1/flowcore/decision", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/flowcore/decision", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const branchInput = buildFlowCoreBranchInput(req.body || {});
     const input = mapFlowCoreToUniversal(branchInput);
     input.context = {
@@ -11240,11 +4579,11 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/branches", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/branches", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey);
     res.json({
       ok: true,
-      branches: extendCausalBranchRegistry(branchRegistry()),
+      branches: branchRegistry(),
       groups: deterministicBranchGroups(),
       taxonomy: deterministicBranchTaxonomy(),
       packages: BRANCH_PACKAGES,
@@ -11253,7 +4592,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/branches/taxonomy", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/branches/taxonomy", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     res.json({
       ok: true,
       taxonomy: deterministicBranchTaxonomy(),
@@ -11262,42 +4601,34 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/branches/maturity", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/branches/maturity", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const report = branchMaturityReport();
     audit.append("core_branch_maturity_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, ...report });
   });
 
-  app.get("/v1/branches/authorized", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/branches/authorized", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const requested = typeof req.query.branches === "string" && req.query.branches.trim()
       ? req.query.branches.split(",").map((item) => item.trim()).filter(Boolean)
       : [];
-    const resolution = verifiedOwnerBranchProfile(
-      req,
-      requested,
-      "branch_registry",
-      ownerContextSigningSecret,
-      { view: "authorized", branches: requested },
-    );
+    const resolution = resolveBranchesForKey(req.coreKey, requested);
     res.json({
       ok: true,
       tenant_id: req.tenantId,
       branch_package: resolution,
       groups: deterministicBranchGroups(),
       taxonomy: deterministicBranchTaxonomy(),
-      branches: extendCausalBranchRegistry(Object.fromEntries(
-        resolution.selected_branches.map((id) => [id, branchRegistry()[id]]).filter(([, value]) => Boolean(value)),
-      )),
+      branches: Object.fromEntries(resolution.selected_branches.map((id) => [id, branchRegistry()[id]]).filter(([, value]) => Boolean(value))),
     });
   });
 
-  app.get("/v1/agents/registry", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/agents/registry", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const pack = resolveDomainPackForKey(req.coreKey);
     audit.append("multi_agent_registry_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, domain_pack_id: pack.id });
     res.json({ ok: true, ...multiAgentRegistry({ domainPackId: pack.id }) });
   });
 
-  app.post("/v1/agents/plan", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/agents/plan", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -11318,654 +4649,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, ...plan });
   });
 
-  app.get("/v1/orchestration/capabilities", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    try {
-      const branchId = String(req.query.branch || "");
-      const view = String(req.query.view || "capabilities");
-      if (!["capabilities", "virtual"].includes(view)) return publicError(res, 400, "orchestration_catalog_view_invalid");
-      const input = {
-        branchId,
-        cursor: req.query.cursor,
-        limit: req.query.limit,
-      };
-      const catalog = view === "virtual"
-        ? listVirtualOrchestrationCombinations(input)
-        : listOrchestrationCapabilities(input);
-      audit.append("orchestration_capability_catalog_read", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        branch_id: branchId,
-        view,
-        item_count: catalog.items.length,
-      });
-      return res.json({
-        ok: true,
-        tenant_id: req.tenantId,
-        view,
-        ...catalog,
-        execution_authorized: false,
-      });
-    } catch (error) {
-      return publicError(res, 400, error.message || "orchestration_catalog_invalid");
-    }
-  });
-
-  app.get("/v1/lexical-semantics/catalog", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    try {
-      const resolution = resolveBranchesForKey(req.coreKey, ["lexical_semantic_intelligence"]);
-      if (!resolution.selected_branches.includes("lexical_semantic_intelligence")) {
-        return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
-      }
-      const view = String(req.query.view || "capabilities");
-      if (!["capabilities", "virtual"].includes(view)) return publicError(res, 400, "lexical_catalog_view_invalid");
-      const input = { cursor: req.query.cursor, limit: req.query.limit };
-      const catalog = view === "virtual"
-        ? listVirtualLexicalSemanticVariants(input)
-        : listLexicalSemanticCapabilities(input);
-      audit.append("lexical_semantic_catalog_read", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        view,
-        item_count: catalog.items.length,
-        fingerprint: catalog.fingerprint,
-      });
-      return res.json({
-        ok: true,
-        tenant_id: req.tenantId,
-        view,
-        ...catalog,
-        execution_authorized: false,
-      });
-    } catch (error) {
-      return publicError(res, 400, error.message || "lexical_catalog_invalid");
-    }
-  });
-
-  app.post("/v1/lexical-semantics/analyze", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    try {
-      const runtimeMode = lexicalSemanticRuntimeMode();
-      if (runtimeMode === "off") {
-        return publicError(res, 503, "lexical_semantic_runtime_disabled");
-      }
-      const resolution = resolveBranchesForKey(req.coreKey, ["lexical_semantic_intelligence"]);
-      if (!resolution.selected_branches.includes("lexical_semantic_intelligence")) {
-        return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
-      }
-      const text = String(req.body?.text || "");
-      if (!text.trim()) return publicError(res, 400, "lexical_text_required");
-      if (text.length > 32_768) return publicError(res, 413, "lexical_text_too_large");
-      const assessment = assessLexicalSemanticText({
-        text,
-        locale: req.body?.locale,
-        source_context: req.body?.source_context,
-        scope_salt: `${req.tenantId}\u0000${process.env.CORE_EVIDENCE_SIGNING_SECRET || "tenant_bound_digest_v1"}`,
-      });
-      const score = assessment.disposition === "block" ? 94 : assessment.disposition === "clarify" ? 58 : 6;
-      const coreInput = {
-        context: {
-          tenant_id: req.tenantId,
-          source: "lexical_semantic_intelligence",
-          locale: assessment.locale,
-          source_context: assessment.source_context,
-        },
-        signals: [normalizeSignal({
-          id: `lexical-semantic:${assessment.text_digest.slice(0, 20)}`,
-          label: `Lexical semantic disposition: ${assessment.disposition}`,
-          category: "language_security",
-          normalized_score: score,
-          severity_hint: score,
-          confidence_hint: assessment.disposition === "allow" ? 86 : 92,
-          evidence: [
-            { label: "text_digest", value: assessment.text_digest },
-            { label: "matched_families", value: assessment.matched_families },
-            { label: "quoted_or_reported", value: assessment.context.quoted || assessment.context.reported },
-          ],
-          tags: ["lexical_semantic_intelligence", assessment.disposition, ...assessment.matched_families],
-        })],
-        data_quality: {
-          score: assessment.disposition === "clarify" ? 62 : 88,
-          missing_fields: assessment.disposition === "clarify" ? ["explicit_context_or_confirmation"] : [],
-        },
-        constraints: safeConstraints({
-          require_confirmation: assessment.disposition !== "allow",
-          max_control_level: assessment.disposition === "allow" ? "observe" : "confirm",
-          risk_floor: assessment.disposition === "block" ? "high" : assessment.disposition === "clarify" ? "low" : "low",
-          passive_only: true,
-          allow_automation: false,
-          safety_mode: true,
-          blocked_actions: assessment.disposition === "block"
-            ? ["execute_or_propagate_lexically_unsafe_content"]
-            : [],
-        }, req.coreKey, false),
-      };
-      const coreOutput = runtimeMode === "active" ? runUniversalCore(coreInput) : null;
-      audit.append("lexical_semantic_analyzed", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        catalog_fingerprint: assessment.catalog_fingerprint,
-        disposition: assessment.disposition,
-        matched_families: assessment.matched_families,
-        normalized_changed: assessment.normalized_changed,
-        core_state: coreOutput?.state || null,
-        core_risk: coreOutput?.risk?.band || null,
-        runtime_mode: runtimeMode,
-        digest_persisted: false,
-        raw_text_persisted: false,
-      });
-      return res.json({
-        ok: true,
-        tenant_id: req.tenantId,
-        branch: "lexical_semantic_intelligence",
-        assessment,
-        catalog: lexicalSemanticCatalogDescriptor(),
-        core_output: coreOutput,
-        authority: {
-          lexical_semantic: "advisory",
-          final_router: "universal_core",
-          nyra_role: "interpret_and_explain",
-        },
-        guardrail: {
-          execution_allowed: false,
-          raw_text_persisted: false,
-          explicit_confirmation_eligible: assessment.explicit_confirmation_eligible,
-          mode: runtimeMode === "active"
-            ? "active_advisory_core_governed"
-            : "shadow_observe_only",
-          rollback_mode: "shadow",
-        },
-      });
-    } catch (error) {
-      return publicError(res, 400, error.message || "lexical_semantic_analysis_invalid");
-    }
-  });
-
-  app.post("/v1/orchestration/relational/evaluate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    try {
-      const supervision = relationalOrchestrationSupervisor.create({
-        ...(req.body || {}),
-        tenant_id: req.tenantId,
-      });
-      audit.append("relational_orchestration_evaluated", {
-        tenant_id: req.tenantId,
-        key_id: req.coreKey.key_id,
-        supervision_id: supervision.supervision_id,
-        actor_count: supervision.actors.length,
-        conflict_count: supervision.unresolved_conflicts.length,
-      });
-      return res.json({ ok: true, ...supervision });
-    } catch (error) {
-      return publicError(res, 400, error.message || "relational_orchestration_invalid");
-    }
-  });
-
-  app.post("/v1/orchestration/dtt/plan", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
-    if (!dynamicTaskTreeRollout.enabled) {
-      return publicError(res, 503, "dynamic_task_tree_disabled");
-    }
-    if (!dynamicTaskTreeRollout.tenantAllowed(req.tenantId)) {
-      return publicError(res, 403, "dynamic_task_tree_tenant_denied");
-    }
-    try {
-      const tree = await dynamicTaskTreeRuntime.create({
-        ...(req.body || {}),
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-      });
-      audit.append("dynamic_task_tree_planned", {
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        key_id: req.coreKey.key_id,
-        tree_id: tree.tree_id,
-        node_count: tree.nodes.length,
-        max_depth: tree.limits.max_depth,
-        max_parallel: tree.limits.max_parallel,
-        rollout_mode: dynamicTaskTreeRollout.mode,
-      });
-      return res.json({
-        ...tree,
-        ok: true,
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        execution_authorized: false,
-        rollout: {
-          enabled: true,
-          mode: dynamicTaskTreeRollout.mode,
-          tenant_allowed: true,
-          execution_authorized: false,
-          core_join_required: true,
-        },
-      });
-    } catch (error) {
-      const code = error.message || "dynamic_task_tree_invalid";
-      return publicError(res, dttStatusForError(code), code);
-    }
-  });
-
-  app.get("/v1/orchestration/dtt/:treeId", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
-    try {
-      const tree = await dynamicTaskTreeRuntime.get({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-      });
-      audit.append("dynamic_task_tree_read", {
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        key_id: req.coreKey.key_id,
-        tree_id: tree.tree_id,
-        status: tree.status,
-      });
-      return res.json({ ...tree, ok: true, tenant_id: req.tenantId, work_id: req.workId, execution_authorized: false });
-    } catch (error) {
-      const code = error.message || "dynamic_task_tree_read_failed";
-      return publicError(res, dttStatusForError(code), code);
-    }
-  });
-
-  app.post("/v1/orchestration/dtt/:treeId/expansion-proposals", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
-    try {
-      const proposal = await dynamicTaskTreeRuntime.proposeExpansion({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-        parent_node_id: req.body?.parent_node_id,
-        nodes: req.body?.nodes,
-      });
-      audit.append("dynamic_task_tree_expansion_proposed", {
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        key_id: req.coreKey.key_id,
-        tree_id: proposal.tree_id,
-        proposal_id: proposal.proposal_id,
-        node_count: proposal.nodes.length,
-      });
-      return res.json({
-        ...proposal,
-        ok: true,
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        execution_authorized: false,
-      });
-    } catch (error) {
-      const code = error.message || "dynamic_task_tree_expansion_invalid";
-      return publicError(res, dttStatusForError(code), code);
-    }
-  });
-
-  app.post("/v1/orchestration/dtt/:treeId/replan-proposals", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
-    try {
-      const proposal = await dynamicTaskTreeRuntime.proposePruneReplan({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-        prune_node_ids: req.body?.prune_node_ids,
-        replacement_nodes: req.body?.replacement_nodes,
-        reason: req.body?.reason,
-      });
-      audit.append("dynamic_task_tree_replan_proposed", {
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        key_id: req.coreKey.key_id,
-        tree_id: proposal.tree_id,
-        proposal_id: proposal.proposal_id,
-        prune_count: proposal.prune_node_ids.length,
-        replacement_count: proposal.replacement_nodes.length,
-      });
-      return res.json({
-        ...proposal,
-        ok: true,
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        execution_authorized: false,
-      });
-    } catch (error) {
-      const code = error.message || "dynamic_task_tree_replan_invalid";
-      return publicError(res, dttStatusForError(code), code);
-    }
-  });
-
-  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/evidence-drafts", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
-    try {
-      await assertDttTreeNode({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-        node_id: req.params.nodeId,
-      });
-      const draft = prepareVerificationEvidenceDraft({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-        node_id: req.params.nodeId,
-        claim: req.body?.claim,
-        artifacts: req.body?.artifacts,
-        provenance: {
-          ...(req.body?.provenance || {}),
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          tree_id: req.params.treeId,
-          node_id: req.params.nodeId,
-        },
-        required_approvals: req.body?.required_approvals,
-      });
-      return res.json({
-        ...draft,
-        ok: true,
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-        node_id: req.params.nodeId,
-        execution_authorized: false,
-      });
-    } catch (error) {
-      const code = error.message || "verification_evidence_draft_invalid";
-      return publicError(res, dttStatusForError(code), code);
-    }
-  });
-
-  app.post("/v1/orchestration/dtt/:treeId/nodes/:nodeId/outcomes", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
-    try {
-      let outcomeEvidence = req.body?.evidence;
-      if (!outcomeEvidence && req.body?.evidence_draft) {
-        const suppliedDraft = req.body.evidence_draft;
-        const built = buildVerificationEvidenceContract({
-          ...suppliedDraft,
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          tree_id: req.params.treeId,
-          node_id: req.params.nodeId,
-          provenance: {
-            ...(suppliedDraft?.provenance || {}),
-            tenant_id: req.tenantId,
-            work_id: req.workId,
-            tree_id: req.params.treeId,
-            node_id: req.params.nodeId,
-          },
-          votes: req.body?.votes,
-          required_approvals: suppliedDraft?.quorum?.required_approvals,
-        });
-        if (built.evidence_digest !== suppliedDraft.evidence_digest) throw new Error("evidence_draft_digest_mismatch");
-        outcomeEvidence = built;
-      }
-      const outcome = await dynamicTaskTreeRuntime.recordOutcome({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-        node_id: req.params.nodeId,
-        idempotency_key: req.body?.idempotency_key,
-        outcome: req.body?.outcome,
-        evidence: outcomeEvidence,
-      });
-      audit.append("dynamic_task_tree_outcome_recorded", {
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        key_id: req.coreKey.key_id,
-        tree_id: outcome.tree_id,
-        node_id: outcome.node_id,
-        state: outcome.state,
-      });
-      return res.json({
-        ...outcome,
-        ok: true,
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        execution_authorized: false,
-      });
-    } catch (error) {
-      const code = error.message || "dynamic_task_tree_outcome_invalid";
-      return publicError(res, dttStatusForError(code), code);
-    }
-  });
-
-  app.post("/v1/orchestration/dtt/:treeId/cancel", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
-    try {
-      const tree = await dynamicTaskTreeRuntime.cancel({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-        reason: req.body?.reason,
-      });
-      audit.append("dynamic_task_tree_cancelled", {
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        key_id: req.coreKey.key_id,
-        tree_id: tree.tree_id,
-        cancelled_node_count: tree.kill_signal?.cancelled_node_count || 0,
-      });
-      return res.json({ ...tree, ok: true, tenant_id: req.tenantId, work_id: req.workId, execution_authorized: false });
-    } catch (error) {
-      const code = error.message || "dynamic_task_tree_cancel_failed";
-      return publicError(res, dttStatusForError(code), code);
-    }
-  });
-
-  app.get("/v1/orchestration/dtt/:treeId/retry-fallback", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
-    try {
-      const tree = await dynamicTaskTreeRuntime.get({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-      });
-      const nodes = tree.nodes
-        .filter((node) => node.status === "retry_proposed" || (node.status === "failed" && node.fallback_node_id))
-        .map((node) => ({
-          node_id: node.node_id,
-          state: node.status === "retry_proposed" ? "retry_proposed" : "fallback_proposed",
-          attempts: node.attempts,
-          max_attempts: node.retry_policy.max_attempts,
-          fallback_node_id: node.fallback_node_id,
-          execution_authorized: false,
-        }));
-      audit.append("dynamic_task_tree_retry_fallback_read", {
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        key_id: req.coreKey.key_id,
-        tree_id: tree.tree_id,
-        proposal_count: nodes.length,
-      });
-      return res.json({
-        ok: true,
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: tree.tree_id,
-        tree_status: tree.status,
-        nodes,
-        execution_authorized: false,
-      });
-    } catch (error) {
-      const code = error.message || "dynamic_task_tree_retry_fallback_read_failed";
-      return publicError(res, dttStatusForError(code), code);
-    }
-  });
-
-  app.post("/v1/orchestration/dtt/:treeId/core-join", coreAuth(SCOPES.WRITE_DECISION), dttWorkAuth, async (req, res) => {
-    let issuedVerdict = null;
-    let joined = null;
-    try {
-      if (
-        Object.hasOwn(req.body || {}, "verdict_reference")
-        || Object.hasOwn(req.body || {}, "core_verdict")
-        || Object.hasOwn(req.body || {}, "allowed")
-        || Object.hasOwn(req.body || {}, "authority")
-      ) {
-        throw new Error("client_core_verdict_denied");
-      }
-      const persistedTree = await dynamicTaskTreeRuntime.get({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-      });
-      if (persistedTree.status === "core_joined") {
-        const reference = persistedTree.core_join?.verdict_reference;
-        const events = await dynamicTaskTreeJoinVerdictStore.read({
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          tree_id: persistedTree.tree_id,
-        });
-        const issued = events.find((event) =>
-          event.event_type === "issued" && event.verdict_reference === reference);
-        const consumed = events.some((event) =>
-          event.event_type === "consumed" && event.verdict_reference === reference);
-        const voided = events.some((event) =>
-          event.event_type === "voided" && event.verdict_reference === reference);
-        if (!issued) throw new Error("joined_tree_verdict_missing");
-        if (voided) throw new Error("joined_tree_verdict_voided");
-        if (consumed) throw new Error("task_tree_already_joined");
-        try {
-          await dynamicTaskTreeJoinVerdictStore.consume({
-            tenant_id: req.tenantId,
-            work_id: req.workId,
-            tree_id: persistedTree.tree_id,
-            verdict_reference: reference,
-          });
-        } catch {
-          throw new Error("dtt_join_finalization_pending");
-        }
-        audit.append("dynamic_task_tree_core_join_reconciled", {
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          key_id: req.coreKey.key_id,
-          tree_id: persistedTree.tree_id,
-          verdict_reference: reference,
-        });
-        return res.json({
-          ok: true,
-          tree_id: persistedTree.tree_id,
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          status: persistedTree.status,
-          core_join: persistedTree.core_join,
-          reconciled: true,
-          execution_authorized: false,
-        });
-      }
-      const readiness = await dynamicTaskTreeRuntime.inspectCoreJoin({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-      });
-      const existingEvents = await dynamicTaskTreeJoinVerdictStore.read({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: readiness.tree_id,
-      });
-      const activeIssued = [...existingEvents].reverse().find((event) => {
-        if (event.event_type !== "issued") return false;
-        return !existingEvents.some((candidate) =>
-          candidate.verdict_reference === event.verdict_reference
-          && ["consumed", "voided"].includes(candidate.event_type));
-      });
-      if (activeIssued && activeIssued.evidence_set_digest !== readiness.evidence_set_digest) {
-        await dynamicTaskTreeJoinVerdictStore.void({
-          tenant_id: req.tenantId,
-          work_id: req.workId,
-          tree_id: readiness.tree_id,
-          verdict_reference: activeIssued.verdict_reference,
-          reason: "persisted_tree_evidence_digest_changed",
-        });
-      } else if (activeIssued) {
-        issuedVerdict = activeIssued;
-      }
-      issuedVerdict ||= await dynamicTaskTreeJoinVerdictStore.issue({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: readiness.tree_id,
-        key_id: req.coreKey.key_id,
-        evidence_set_digest: readiness.evidence_set_digest,
-      });
-      joined = await dynamicTaskTreeRuntime.coreJoin({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: req.params.treeId,
-        core_verdict: {
-          allowed: issuedVerdict.allowed === true,
-          authority: issuedVerdict.authority,
-          verdict_reference: issuedVerdict.verdict_reference,
-        },
-        verification: {
-          source: "universal_core_persisted_tree_inspection",
-          evidence_set_digest: readiness.evidence_set_digest,
-          verified_node_count: readiness.verified_node_count,
-          verification_node_count: readiness.verification_node_count,
-        },
-      });
-      await dynamicTaskTreeJoinVerdictStore.consume({
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        tree_id: joined.tree_id,
-        verdict_reference: issuedVerdict.verdict_reference,
-      });
-      audit.append("dynamic_task_tree_core_joined", {
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        key_id: req.coreKey.key_id,
-        tree_id: joined.tree_id,
-        verdict_reference: joined.core_join.verdict_reference,
-      });
-      return res.json({ ...joined, ok: true, tenant_id: req.tenantId, work_id: req.workId, execution_authorized: false });
-    } catch (error) {
-      let code = error.message || "dynamic_task_tree_core_join_failed";
-      if (issuedVerdict?.verdict_reference) {
-        try {
-          const persistedTree = await dynamicTaskTreeRuntime.get({
-            tenant_id: req.tenantId,
-            work_id: req.workId,
-            tree_id: req.params.treeId,
-          });
-          if (
-            persistedTree.status === "core_joined"
-            && persistedTree.core_join?.verdict_reference === issuedVerdict.verdict_reference
-          ) {
-            try {
-              await dynamicTaskTreeJoinVerdictStore.consume({
-                tenant_id: req.tenantId,
-                work_id: req.workId,
-                tree_id: req.params.treeId,
-                verdict_reference: issuedVerdict.verdict_reference,
-              });
-              audit.append("dynamic_task_tree_core_join_reconciled", {
-                tenant_id: req.tenantId,
-                work_id: req.workId,
-                key_id: req.coreKey.key_id,
-                tree_id: req.params.treeId,
-                verdict_reference: issuedVerdict.verdict_reference,
-              });
-              return res.json({
-                ok: true,
-                tree_id: persistedTree.tree_id,
-                tenant_id: req.tenantId,
-                work_id: req.workId,
-                status: persistedTree.status,
-                core_join: persistedTree.core_join,
-                reconciled: true,
-                execution_authorized: false,
-              });
-            } catch {
-              code = "dtt_join_finalization_pending";
-            }
-          } else {
-            await dynamicTaskTreeJoinVerdictStore.void({
-              tenant_id: req.tenantId,
-              work_id: req.workId,
-              tree_id: req.params.treeId,
-              verdict_reference: issuedVerdict.verdict_reference,
-              reason: code,
-            });
-          }
-        } catch {}
-      }
-      audit.append("dynamic_task_tree_core_join_denied", {
-        tenant_id: req.tenantId,
-        work_id: req.workId,
-        key_id: req.coreKey.key_id,
-        tree_id: req.params.treeId,
-        reason: code,
-      });
-      return publicError(res, dttStatusForError(code), code);
-    }
-  });
-
-  app.post("/v1/codex/context", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/codex/context", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -12047,7 +4731,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/codex/guard", coreAuth(SCOPES.AUTOMATION_CODEX), (req, res) => {
+  app.post("/v1/codex/guard", createAuth(keyStore, audit, SCOPES.AUTOMATION_CODEX), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -12114,7 +4798,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, ...response });
   });
 
-  app.post("/v1/nira/core-bridge", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), async (req, res) => {
+  app.post("/v1/nira/core-bridge", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const domainPackAccess = checkDomainPackRequest(req.coreKey, req.body?.domain_pack || req.body?.domain_pack_id);
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
@@ -12126,123 +4810,22 @@ export function createUniversalCoreService(options = {}) {
     if (requestedNyraBranches !== undefined && !Array.isArray(requestedNyraBranches)) {
       return publicError(res, 400, "nyra_branches_must_be_array");
     }
-    if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.length > MAX_NYRA_BRANCH_REQUESTS) {
+    if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.length > 20) {
       return publicError(res, 400, "nyra_branch_request_limit_exceeded");
     }
     if (Array.isArray(requestedNyraBranches) && requestedNyraBranches.some((id) => !/^[a-z][a-z0-9_]{1,63}$/.test(String(id || "")))) {
       return publicError(res, 400, "invalid_nyra_branch_id");
     }
-    const rawDeepBranchV2 = isPlainRecord(req.body?.deep_branch_v2)
-      ? req.body.deep_branch_v2
-      : null;
-    const deepBranchV2Requested = req.body?.deep_branch_v2_preview === true
-      || rawDeepBranchV2 !== null;
-    const coreRequestId = String(
-      req.body?.request_id || `nira_service_${crypto.randomUUID()}`,
-    ).slice(0, 160);
-    const deepBranchV2Operation = rawDeepBranchV2
-      ? nyraDeepV2Operation(rawDeepBranchV2.operation)
-      : null;
-    let deepBranchV2McpRequest = {
-      ok: false,
-      reason: "nyra_deep_branch_v2_mcp_attestation_required",
-    };
-    if (deepBranchV2Requested && deepBranchV2Operation) {
-      deepBranchV2McpRequest = nyraDeepV2McpRequestVerifier.verify({
-        attestation: rawDeepBranchV2?.request_attestation,
-        tenantId: req.tenantId,
-        requestId: coreRequestId,
-        operation: deepBranchV2Operation,
-      });
-      if (
-        deepBranchV2McpRequest.ok
-        && deepBranchV2Operation !== "preview"
-        && (
-          rawDeepBranchV2.branch_id !== deepBranchV2McpRequest.branch_id
-          || rawDeepBranchV2.subbranch_id
-            !== deepBranchV2McpRequest.subbranch_id
-        )
-      ) {
-        deepBranchV2McpRequest = {
-          ok: false,
-          reason: "nyra_deep_branch_v2_mcp_branch_binding_mismatch",
-        };
-      }
-      if (
-        deepBranchV2McpRequest.ok
-        && JSON.stringify(rawDeepBranchV2.evidence_refs || [])
-          !== JSON.stringify(deepBranchV2McpRequest.evidence_refs || [])
-      ) {
-        deepBranchV2McpRequest = {
-          ok: false,
-          reason: "nyra_deep_branch_v2_mcp_evidence_binding_mismatch",
-        };
-      }
-    } else if (deepBranchV2Requested) {
-      deepBranchV2McpRequest = {
-        ok: false,
-        reason: "nyra_deep_branch_v2_mcp_operation_invalid",
-      };
-    }
-    const signedDeepBranchId = deepBranchV2McpRequest.ok
-      ? deepBranchV2McpRequest.branch_id
-      : null;
     const ownerContext = req.body?.owner_context && typeof req.body.owner_context === "object"
       ? req.body.owner_context
       : {};
-    const trustedOwnerContext = verifyOwnerContextAssertion(ownerContext, ownerContextSigningSecret, req.tenantId);
+    const trustedOwnerContext = verifyOwnerContextAssertion(ownerContext, readSecret(req), req.tenantId);
     const explicitOwnerConfirmation = req.body?.owner_confirmed === true || req.body?.owner_confirmation === true;
     const ownerConfirmed = explicitOwnerConfirmation || trustedOwnerContext;
     const requestedGodMode = req.body?.mode === "god_mode_owner_only"
       || req.body?.god_mode === true
       || trustedOwnerContext;
     const ownerVerified = Boolean(trustedOwnerContext || (explicitOwnerConfirmation && hasScope(req.coreKey, SCOPES.AUTOMATION_CODEX)));
-    let coreRuntimeDecision;
-    try {
-      coreRuntimeDecision = await evaluateCoreRuntimeHierarchy({
-        request_id: coreRequestId,
-        generated_at: new Date().toISOString(),
-        domain: domainPackAccess.pack.domain,
-        context: {
-          tenant_id: req.tenantId,
-          metadata: { operation_type: "nyra_interpret_request" },
-        },
-        signals: [{
-          id: "nyra_runtime_request",
-          source: "universal_core_nyra_bridge",
-          category: "runtime",
-          label: "Nyra interpretation request",
-          value: 20,
-          normalized_score: 20,
-          severity_hint: 20,
-          confidence_hint: 80,
-          reliability_hint: 80,
-          friction_hint: 20,
-          risk_hint: 20,
-          reversibility_hint: 80,
-          tags: ["nyra", "core_runtime"],
-        }],
-        data_quality: {
-          score: 80,
-          completeness: 80,
-          freshness: 80,
-          consistency: 80,
-          reliability: 80,
-        },
-        constraints: {
-          allow_automation: false,
-          require_confirmation: false,
-          blocked_actions: [],
-          blocked_action_rules: [],
-        },
-      }, {
-        worker: coreRuntime,
-        mode: coreRuntimeMode,
-        ownerMode: options.coreRuntimeOwnerMode || "normal",
-      });
-    } catch {
-      return publicError(res, 503, "core_runtime_hierarchy_unavailable");
-    }
     const requestedBranches = [...new Set(["work_cortex", ...inferNiraBranchRequest(req.body || {})])];
     const branchContext = composeBranchContext({
       keyRecord: req.coreKey,
@@ -12256,9 +4839,7 @@ export function createUniversalCoreService(options = {}) {
       requestedBranches: [
         ...MANDATORY_NYRA_WORK_BRANCHES,
         ...(Array.isArray(requestedNyraBranches) ? requestedNyraBranches : []),
-        ...(signedDeepBranchId ? [signedDeepBranchId] : []),
       ],
-      authorizedCoreBranches: branchContext.selected_branches,
       domainPackId: domainPackAccess.pack.id,
     });
     const workPreflight = composeMandatoryWorkPreflight(req, {
@@ -12268,7 +4849,7 @@ export function createUniversalCoreService(options = {}) {
       nyraNetwork,
     });
     const result = runNiraUniversalCoreBridge({
-      request_id: coreRequestId,
+      request_id: req.body?.request_id || `nira_service_${crypto.randomUUID()}`,
       text: niraText,
       tenant_id: req.tenantId,
       domain: domainPackAccess.pack.domain,
@@ -12301,434 +4882,6 @@ export function createUniversalCoreService(options = {}) {
       nyraNetwork,
       memoryContext: memoryContext.value,
     });
-    const deepBranchV2 = !deepBranchV2Requested ? null : await (async () => {
-      if (!deepBranchV2McpRequest.ok) {
-        return nyraDeepV2Fallback({
-          requestId: coreRequestId,
-          state: "request_rejected_v1_authoritative",
-          reason: deepBranchV2McpRequest.reason,
-        });
-      }
-      const common = {
-        tenantId: req.tenantId,
-        requestId: coreRequestId,
-        entitlementDomainPackId: domainPackAccess.pack.id,
-        selectedByCore: result.selected_by_core,
-        nyraNetwork,
-        workPreflight,
-      };
-      if (deepBranchV2Operation === "preview") {
-        try {
-          return await nyraDeepBranchV2Client.evaluate({
-            requested: true,
-            ...common,
-          });
-        } catch {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "unavailable_v1_authoritative",
-            reason: "nyra_deep_branch_v2_preview_unavailable",
-          });
-        }
-      }
-      if (
-        nyraDeepV2IntegrationReason
-        || !nyraDeepV2Ledger
-        || !nyraDeepV2Attester
-        || !nyraDeepV2SourceVerifier
-      ) {
-        return nyraDeepV2Fallback({
-          requestId: coreRequestId,
-          reason: nyraDeepV2IntegrationReason
-            || "nyra_deep_branch_v2_core_material_unavailable",
-        });
-      }
-      const branchId = deepBranchV2McpRequest.branch_id;
-      const subbranchId = deepBranchV2McpRequest.subbranch_id;
-      const discovery = nyraDeepV2Attester.requirementBindings({
-        branchId,
-        subbranchId,
-      });
-      if (!discovery?.ok) {
-        return nyraDeepV2Fallback({
-          requestId: coreRequestId,
-          state: "catalog_rejected_v1_authoritative",
-          reason: discovery?.reason
-            || "nyra_deep_branch_v2_requirement_discovery_failed",
-        });
-      }
-      if (deepBranchV2Operation === "requirements") {
-        return {
-          schema_version: "nyra_deep_branch_v2_core_operation_v1",
-          state: "requirements_ready_v1_authoritative",
-          request_id: coreRequestId,
-          branch_id: branchId,
-          subbranch_id: subbranchId,
-          requirements: compactNyraDeepV2Requirements(
-            discovery.requirement_bindings,
-          ),
-          evidence: {
-            state: "not_prepared_v1_authoritative",
-            evidence_refs: [],
-            validation: {
-              state: "not_requested",
-              accepted_source_count: 0,
-              accepted_claim_count: 0,
-              rejected_count: 0,
-            },
-          },
-          evaluation: {
-            state: "not_requested_v1_authoritative",
-            evaluated_node_count: 0,
-          },
-          execution_authorized: false,
-          core_final_authority: true,
-          fallback: "nyra_neural_branch_network_v1",
-        };
-      }
-      if (deepBranchV2Operation === "prepare_evidence") {
-        const boundedEvidence = boundedNyraDeepV2EvidencePack(
-          rawDeepBranchV2.evidence_pack,
-        );
-        if (!boundedEvidence.ok) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: boundedEvidence.reason,
-          });
-        }
-        const suppliedBindings = Array.isArray(
-          rawDeepBranchV2.requirement_bindings,
-        ) ? rawDeepBranchV2.requirement_bindings : [];
-        if (
-          rawDeepBranchV2.evidence_pack_hash
-            !== deepBranchV2McpRequest.evidence_pack_hash
-          || rawDeepBranchV2.evidence_pack_hash
-            !== nyraDeepV2EvidencePackHash(
-              boundedEvidence.evidence_pack,
-              suppliedBindings,
-            )
-        ) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: "nyra_deep_branch_v2_evidence_hash_mismatch",
-          });
-        }
-        const normalizedBindings = normalizeNyraDeepV2RequirementBindings(
-          suppliedBindings,
-          discovery.requirement_bindings,
-        );
-        if (!normalizedBindings.ok) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: normalizedBindings.reason,
-          });
-        }
-        const sourceIds = new Set(
-          boundedEvidence.evidence_pack.sources
-            .map((source) => String(source?.id || "")),
-        );
-        const claimsById = new Map(
-          boundedEvidence.evidence_pack.claims
-            .map((claim) => [String(claim?.id || ""), claim]),
-        );
-        const bindingsMatchEvidence = normalizedBindings.bindings
-          .every((binding) => (
-            binding.source_ids.every((id) => sourceIds.has(id))
-            && binding.claim_ids.every((id) => {
-              const claimSources = Array.isArray(
-                claimsById.get(id)?.source_ids,
-              ) ? claimsById.get(id).source_ids : [];
-              return claimsById.has(id)
-                && binding.source_ids
-                  .some((sourceId) => claimSources.includes(sourceId));
-            })
-          ));
-        if (!bindingsMatchEvidence) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: "nyra_deep_branch_v2_evidence_binding_invalid",
-          });
-        }
-        if (!nyraDeepV2AcceptanceContractsMatch(
-          boundedEvidence.evidence_pack,
-          normalizedBindings.bindings,
-        )) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: "nyra_deep_branch_v2_evidence_acceptance_contract_rejected",
-          });
-        }
-        let sourceVerification;
-        try {
-          sourceVerification = await nyraDeepV2SourceVerifier.verifySources(
-            boundedEvidence.evidence_pack.sources,
-            { branchId },
-          );
-        } catch {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: "nyra_deep_branch_v2_source_verifier_unavailable",
-          });
-        }
-        if (!sourceVerification?.ok) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: "nyra_deep_branch_v2_source_verification_failed",
-          });
-        }
-        let sourceReceipts;
-        try {
-          sourceReceipts = sourceVerification.receipts.map((receipt) => {
-            const auditReceipt = evidence.append(
-              req.tenantId,
-              "nyra_deep_v2_source_verified",
-              {
-                issuer: receipt.issuer,
-                source_id: receipt.source_id,
-                registry_source_id: receipt.registry_source_id,
-                source_type: receipt.source_type,
-                reliability_score: receipt.reliability_score,
-                source_url_sha256: receipt.source_url_sha256,
-                content_sha256: receipt.content_sha256,
-                excerpt_sha256: receipt.excerpt_sha256,
-                content_type: receipt.content_type,
-                fetched_at: receipt.fetched_at,
-                expires_at: receipt.expires_at,
-                request_id: coreRequestId,
-                branch_id: branchId,
-                subbranch_id: subbranchId,
-              },
-            );
-            return {
-              ...receipt,
-              receipt_id: auditReceipt.evidence_id,
-            };
-          });
-        } catch {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: "nyra_deep_branch_v2_source_receipt_unavailable",
-          });
-        }
-        const coreBoundEvidencePack = coreBindNyraDeepV2EvidencePack({
-          evidencePack: boundedEvidence.evidence_pack,
-          bindings: normalizedBindings.bindings,
-          sourceReceipts,
-          tenantId: req.tenantId,
-          requestId: coreRequestId,
-          branchId,
-          subbranchId,
-          workPreflight,
-        });
-        let researchValidation;
-        try {
-          const trustedReceiptsBySource = new Map(
-            sourceReceipts.map((receipt) => [receipt.source_id, receipt]),
-          );
-          researchValidation = validateResearchEvidence({
-            question: String(
-              coreBoundEvidencePack.research_question
-                || `Nyra Deep V2 evidence for ${branchId}.${subbranchId}`,
-            ).slice(0, 2_000),
-            sources: coreBoundEvidencePack.sources.map((source) => ({
-              ...source,
-              source_type: trustedReceiptsBySource.get(String(source?.id || ""))
-                ?.source_type || "other",
-            })),
-            claims: coreBoundEvidencePack.claims,
-          });
-        } catch {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: "nyra_deep_branch_v2_research_validation_rejected",
-          });
-        }
-        const validated = coreValidatedNyraDeepV2Claims(
-          coreBoundEvidencePack,
-          researchValidation,
-          sourceReceipts,
-        );
-        let ingested;
-        try {
-          ingested = nyraDeepV2Ledger.ingestResearchEvidence({
-            tenantId: req.tenantId,
-            requestId: coreRequestId,
-            branchId,
-            subbranchId,
-            evidenceSessionId: `evs_${crypto.randomBytes(18).toString("hex")}`,
-            evidencePack: {
-              ...coreBoundEvidencePack,
-              validated_claims: validated.validated_claims,
-            },
-            bindings: normalizedBindings.bindings,
-          });
-        } catch {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: "nyra_deep_branch_v2_evidence_ledger_unavailable",
-          });
-        }
-        const evidenceRefs = Array.isArray(ingested?.evidence_refs)
-          ? ingested.evidence_refs
-            .map((item) => String(item?.record_ref || ""))
-            .filter((ref) => NYRA_DEEP_V2_RECORD_REF_PATTERN.test(ref))
-            .slice(0, 100)
-          : [];
-        const fullyPrepared = ingested?.ok === true
-          && Array.isArray(ingested?.missing_bindings)
-          && ingested.missing_bindings.length === 0
-          && evidenceRefs.length >= normalizedBindings.bindings.length;
-        if (!fullyPrepared) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: "nyra_deep_branch_v2_core_evidence_not_qualified",
-          });
-        }
-        return {
-          schema_version: "nyra_deep_branch_v2_core_operation_v1",
-          state: "evidence_prepared_v1_authoritative",
-          request_id: coreRequestId,
-          branch_id: branchId,
-          subbranch_id: subbranchId,
-          evidence: {
-            state: ingested?.state || "evidence_rejected",
-            evidence_refs: [...new Set(evidenceRefs)],
-            validation: validated.compact_validation,
-          },
-          evaluation: {
-            state: "not_requested_v1_authoritative",
-            evaluated_node_count: 0,
-          },
-          execution_authorized: false,
-          core_final_authority: true,
-          fallback: "nyra_neural_branch_network_v1",
-        };
-      }
-      if (deepBranchV2Operation === "evaluate") {
-        const operationalContext = typeof nyraDeepBranchV2Client.beginOperational
-          === "function"
-          ? nyraDeepBranchV2Client.beginOperational({
-            ...common,
-            branchId,
-            subbranchId,
-          })
-          : {
-            ok: false,
-            response: nyraDeepV2Fallback({
-              requestId: coreRequestId,
-              reason: "nyra_deep_branch_v2_client_operational_unavailable",
-            }),
-          };
-        if (!operationalContext?.ok) {
-          return operationalContext?.response || nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            reason: "nyra_deep_branch_v2_operational_configuration_disabled",
-          });
-        }
-        const evidenceRefs = boundedNyraDeepV2EvidenceRefs(
-          deepBranchV2McpRequest.evidence_refs,
-        );
-        if (
-          !evidenceRefs
-          || evidenceRefs.length === 0
-          || typeof nyraDeepV2Ledger.resolveEvidenceSession !== "function"
-        ) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: "nyra_deep_branch_v2_evidence_handoff_required",
-          });
-        }
-        const evidenceSession = nyraDeepV2Ledger.resolveEvidenceSession({
-          tenantId: req.tenantId,
-          branchId,
-          subbranchId,
-          recordRefs: evidenceRefs,
-        });
-        if (!evidenceSession?.ok) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "evidence_rejected_v1_authoritative",
-            reason: evidenceSession?.reason
-              || "nyra_deep_branch_v2_evidence_handoff_invalid",
-          });
-        }
-        const policyBundle = issueNyraDeepV2PolicySnapshotBundle({
-          keyRecord: req.coreKey,
-          tenantId: req.tenantId,
-          requestId: coreRequestId,
-          branchId,
-          subbranchId,
-          workPreflight,
-          nyraNetwork,
-          bridgeResult: result,
-          operationalContext,
-        });
-        if (!policyBundle.ok) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "unavailable_v1_authoritative",
-            reason: policyBundle.reason
-              || "nyra_deep_branch_v2_policy_receipt_unavailable",
-          });
-        }
-        const prepared = nyraDeepV2Attester.prepareOperational({
-          tenantId: req.tenantId,
-          requestId: coreRequestId,
-          domainPackId: "skinharmony",
-          entitlementDomainPackId: domainPackAccess.pack.id,
-          branchId,
-          subbranchId,
-          preflightId: workPreflight.preflight_id,
-          corePolicyHash:
-            operationalContext.policy_hash
-            || operationalContext.policyHash,
-          envelopeBindingHash: operationalContext.envelope_binding_hash,
-          issuedAt: operationalContext.issued_at,
-          expiresAt: operationalContext.expires_at,
-          observedAt: Date.now(),
-          evidenceRefs,
-          evidenceSessionRef: evidenceSession.evidence_session_ref,
-          corePolicyContext: policyBundle.corePolicyContext,
-        });
-        if (!prepared?.ok) {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "unavailable_v1_authoritative",
-            reason: prepared?.reason
-              || "nyra_deep_branch_v2_attestation_unavailable",
-          });
-        }
-        try {
-          return await nyraDeepBranchV2Client.evaluateOperational({
-            context: operationalContext,
-            operationalAttestation: prepared.attestation,
-          });
-        } catch {
-          return nyraDeepV2Fallback({
-            requestId: coreRequestId,
-            state: "unavailable_v1_authoritative",
-            reason: "nyra_deep_branch_v2_operational_unavailable",
-          });
-        }
-      }
-      return nyraDeepV2Fallback({
-        requestId: coreRequestId,
-        state: "request_rejected_v1_authoritative",
-        reason: "nyra_deep_branch_v2_operation_unsupported",
-      });
-    })();
     const guardedResult = {
       ...result,
       selected_by_core: {
@@ -12755,8 +4908,6 @@ export function createUniversalCoreService(options = {}) {
       memory_context: memoryContext.value,
       work_preflight: workPreflight,
       deep_nyra_runtime: deepNyraRuntime,
-      core_runtime: coreRuntimeDecision,
-      ...(deepBranchV2Requested ? { deep_branch_v2: deepBranchV2 } : {}),
     };
     audit.append("core_nira_bridge_evaluated", {
       tenant_id: req.tenantId,
@@ -12773,26 +4924,6 @@ export function createUniversalCoreService(options = {}) {
       preflight_id: workPreflight.preflight_id,
       deep_runtime_mode: deepNyraRuntime.mode,
       deep_runtime_hard_block: deepNyraRuntime.owner_protection?.hard_block === true,
-      core_runtime_route: coreRuntimeDecision.router.route,
-      core_runtime_authority: coreRuntimeDecision.selected_authority,
-      core_runtime_parity_matched: coreRuntimeDecision.parity.matched,
-      deep_branch_v2_requested: deepBranchV2Requested,
-      deep_branch_v2_operation: deepBranchV2Operation,
-      deep_branch_v2_branch_id: deepBranchV2McpRequest.ok
-        ? deepBranchV2McpRequest.branch_id
-        : null,
-      deep_branch_v2_subbranch_id: deepBranchV2McpRequest.ok
-        ? deepBranchV2McpRequest.subbranch_id
-        : null,
-      deep_branch_v2_state: deepBranchV2?.state || null,
-      deep_branch_v2_rollout_mode: deepBranchV2?.rollout_mode || null,
-      deep_branch_v2_selected_branch_count: Array.isArray(
-        deepBranchV2?.selected_branches,
-      ) ? deepBranchV2.selected_branches.length : 0,
-      deep_branch_v2_evaluated_node_count: Number.isInteger(
-        Number(deepBranchV2?.evaluation?.evaluated_node_count),
-      ) ? Number(deepBranchV2.evaluation.evaluated_node_count) : 0,
-      deep_branch_v2_execution_allowed: false,
     });
     res.json({
       ok: true,
@@ -12818,7 +4949,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/content-guard/check", coreAuth(SCOPES.READ_DECISION), async (req, res) => {
+  app.post("/v1/content-guard/check", createAuth(keyStore, audit, SCOPES.READ_DECISION), async (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey, ["ramo_testo"]);
     if (!resolution.selected_branches.includes("ramo_testo")) {
       audit.append("core_branch_denied", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, branch: "ramo_testo" });
@@ -12867,7 +4998,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/software-intelligence/components", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/software-intelligence/components", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
     if (!resolution.selected_branches.includes("software_binary_intelligence")) {
       audit.append("core_branch_denied", {
@@ -12888,7 +5019,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/software-intelligence/jobs", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
     if (!resolution.selected_branches.includes("software_binary_intelligence")) return publicError(res, 403, "branch_not_allowed");
     try {
@@ -12918,7 +5049,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/software-intelligence/authorize", coreAuth(SCOPES.WRITE_RUNBOOK), (req, res) => {
+  app.post("/v1/software-intelligence/authorize", createAuth(keyStore, audit, SCOPES.WRITE_RUNBOOK), (req, res) => {
     if (!options.softwareAuthorizationSecret) return publicError(res, 503, "software_authorization_issuer_unavailable");
     if (!req.body?.memory_context || typeof req.body.memory_context !== "object") return publicError(res, 400, "software_memory_required");
     const memoryContext = normalizeTenantMemoryContext(req.body.memory_context, req.tenantId);
@@ -12935,17 +5066,17 @@ export function createUniversalCoreService(options = {}) {
     } catch (error) { return publicError(res, 400, error.message || "software_authorization_failed"); }
   });
 
-  app.get("/v1/software-intelligence/jobs", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/software-intelligence/jobs", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     res.json({ ok: true, tenant_id: req.tenantId, jobs: softwareJobs.list(req.tenantId) });
   });
 
-  app.get("/v1/software-intelligence/jobs/:jobId", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/software-intelligence/jobs/:jobId", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const job = softwareJobs.get(req.params.jobId, req.tenantId);
     if (!job) return publicError(res, 404, "software_job_not_found");
     return res.json({ ok: true, job });
   });
 
-  app.post("/v1/software-intelligence/correlate", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/software-intelligence/correlate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     try {
       const correlation = softwareJobs.correlate(req.body?.job_ids, req.tenantId);
       audit.append("core_software_evidence_correlated", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, source_job_ids: correlation.source_job_ids, raw_content_persisted: false });
@@ -12953,7 +5084,7 @@ export function createUniversalCoreService(options = {}) {
     } catch (error) { return publicError(res, 400, error.message || "software_correlation_failed"); }
   });
 
-  app.post("/v1/software-intelligence/analyze", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.post("/v1/software-intelligence/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey, ["software_binary_intelligence"]);
     if (!resolution.selected_branches.includes("software_binary_intelligence")) {
       audit.append("core_branch_denied", {
@@ -13009,7 +5140,7 @@ export function createUniversalCoreService(options = {}) {
     }
   });
 
-  app.post("/v1/branches/:branch/analyze", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), async (req, res) => {
+  app.post("/v1/branches/:branch/analyze", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const branch = String(req.params.branch || "").trim();
     const resolution = resolveBranchesForKey(req.coreKey, [branch]);
     if (!resolution.selected_branches.includes(branch)) {
@@ -13021,48 +5152,6 @@ export function createUniversalCoreService(options = {}) {
     payload.core_input.context.tenant_id = req.tenantId;
     payload.core_input.constraints = safeConstraints(payload.core_input.constraints, req.coreKey, false);
     const output = runUniversalCore(payload.core_input);
-    const causalContract = extendCausalBranchRegistry({ [branch]: branchRegistry()[branch] || {} })[branch];
-    const causalResult = buildCausalBranchResult({
-      context: req.body?.causal_context,
-      contract: causalContract,
-      input_state_digest: req.body?.causal_context?.project_state_digest || null,
-      output_digest: causalDigest(output),
-      decision: output.state || "ADVISORY",
-      evidence: [],
-      residual_risks: payload.warnings || [],
-      obligation_state: "OBSERVING",
-      causal_assurance_level: "CAL-1",
-    });
-    const causalValidation = validateCausalBranchInvocation({
-      context: req.body?.causal_context,
-      contract: causalContract,
-      output: causalResult,
-      authenticatedTenantId: req.tenantId,
-    });
-    let causalEnforcement = {
-      schema_version: "causal_branch_enforcement_v1",
-      rollout: { mode: "SHADOW", version: null, source: "causal_runtime_unavailable" },
-      structural: causalValidation,
-      authoritative_context: { valid: false, code: "CAUSAL_RUNTIME_NOT_READY" },
-      enforcement_required: false,
-      allowed: true,
-      shadow_would_allow: false,
-      code: "CAUSAL_BRANCH_SHADOW_OBSERVED",
-    };
-    if (causalBranchEnforcer) {
-      causalEnforcement = await causalBranchEnforcer({
-        tenant_id: req.tenantId,
-        project_id: req.body?.project_id,
-        context: req.body?.causal_context,
-        signature: req.body?.causal_signature,
-        agent_context_token: String(req.get("x-sh-dtt-agent-context") || "").trim(),
-        authority_scope: Array.isArray(req.coreKey?.scopes)
-          ? req.coreKey.scopes
-          : Array.isArray(req.coreKey?.allowed_scopes) ? req.coreKey.allowed_scopes : [],
-        contract: causalContract,
-        output: causalResult,
-      });
-    }
     audit.append("core_branch_analyzed", {
       tenant_id: req.tenantId,
       key_id: req.coreKey.key_id,
@@ -13070,17 +5159,7 @@ export function createUniversalCoreService(options = {}) {
       state: output.state,
       risk: output.risk?.band,
       production_status: payload.profile.production_status,
-      causal_rollout_mode: causalEnforcement.rollout.mode,
-      causal_context_verified: causalEnforcement.authoritative_context.valid === true,
-      causal_allowed: causalEnforcement.allowed,
     });
-    if (!causalEnforcement.allowed) {
-      return res.status(409).json({
-        ok: false,
-        error: "causal_branch_context_blocked",
-        causal_continuity: causalEnforcement,
-      });
-    }
     res.json({
       ok: true,
       tenant_id: req.tenantId,
@@ -13089,14 +5168,6 @@ export function createUniversalCoreService(options = {}) {
       branch_output: payload.branch_output,
       warnings: payload.warnings,
       output,
-      causal_continuity: {
-        rollout_mode: causalEnforcement.rollout.mode,
-        contract: causalContract,
-        result: causalResult,
-        validation: causalValidation,
-        enforcement: causalEnforcement,
-        execution_authorized: false,
-      },
       guardrail: {
         destructive_automation: false,
         execution_allowed: false,
@@ -13106,7 +5177,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.get("/v1/entity-graph", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+  app.get("/v1/entity-graph", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const graph = entityGraph.readTenant(req.tenantId);
     audit.append("core_entity_graph_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, entities: graph.entities.length, relations: graph.relations.length });
     res.json({
@@ -13119,7 +5190,7 @@ export function createUniversalCoreService(options = {}) {
     });
   });
 
-  app.post("/v1/entity-graph/upsert", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+  app.post("/v1/entity-graph/upsert", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
     const graph = entityGraph.upsert(req.tenantId, req.body || {});
     const evidenceRecord = evidence.append(req.tenantId, "entity_graph_upserted", {
       key_id: req.coreKey.key_id,
@@ -13130,29 +5201,29 @@ export function createUniversalCoreService(options = {}) {
     res.status(201).json({ ok: true, tenant_id: req.tenantId, graph, evidence: evidenceRecord });
   });
 
-  app.post("/v1/snapshot", coreAuth(SCOPES.WRITE_SNAPSHOT), (req, res) => {
+  app.post("/v1/snapshot", createAuth(keyStore, audit, SCOPES.WRITE_SNAPSHOT), (req, res) => {
     const record = snapshots.append(req.tenantId, req.body?.source || "unknown", req.body?.payload || req.body || {});
     audit.append("core_snapshot_written", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, snapshot_id: record.snapshot_id });
     res.status(201).json({ ok: true, snapshot: record });
   });
 
-  app.get("/v1/snapshot", coreAuth(SCOPES.READ_SNAPSHOT), (req, res) => {
+  app.get("/v1/snapshot", createAuth(keyStore, audit, SCOPES.READ_SNAPSHOT), (req, res) => {
     res.json({ ok: true, snapshot: snapshots.latest(req.tenantId) });
   });
 
-  app.post("/v1/sync/suite", coreAuth(SCOPES.WRITE_SYNC_SUITE), (req, res) => {
+  app.post("/v1/sync/suite", createAuth(keyStore, audit, SCOPES.WRITE_SYNC_SUITE), (req, res) => {
     const record = snapshots.append(req.tenantId, "suite", req.body || {});
     audit.append("core_suite_sync_received", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, snapshot_id: record.snapshot_id });
     res.json({ ok: true, sync_status: "received", snapshot_id: record.snapshot_id });
   });
 
-  app.post("/v1/sync/wordpress", coreAuth(SCOPES.WRITE_SYNC_WORDPRESS), (req, res) => {
+  app.post("/v1/sync/wordpress", createAuth(keyStore, audit, SCOPES.WRITE_SYNC_WORDPRESS), (req, res) => {
     const record = snapshots.append(req.tenantId, "wordpress", req.body || {});
     audit.append("core_wordpress_sync_received", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, snapshot_id: record.snapshot_id });
     res.json({ ok: true, sync_status: "received", snapshot_id: record.snapshot_id });
   });
 
-  app.post("/v1/policy/check", coreAuth(SCOPES.POLICY_CHECK), (req, res) => {
+  app.post("/v1/policy/check", createAuth(keyStore, audit, SCOPES.POLICY_CHECK), (req, res) => {
     const policy = req.body?.policy || {};
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
@@ -13178,7 +5249,7 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, result });
   });
 
-  app.post("/v1/action-mediation/evaluate", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), (req, res) => {
+  app.post("/v1/action-mediation/evaluate", createAuth(keyStore, audit, SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const tenantPolicy = getTenantPolicy(req.tenantId, req.body?.plan || req.coreKey?.metadata?.tier, {
@@ -13201,51 +5272,34 @@ export function createUniversalCoreService(options = {}) {
     res.json({ ok: true, result, evidence: evidenceRecord });
   });
 
-  app.post("/v1/claim-guard/check", coreAuth(SCOPES.CLAIM_CHECK), (req, res) => {
+  app.post("/v1/claim-guard/check", createAuth(keyStore, audit, SCOPES.CLAIM_CHECK), (req, res) => {
     const result = claimGuardCheck(req.body || {});
     audit.append("core_claim_checked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, status: result.status, issue_count: result.issue_count });
     res.json({ ok: true, result });
   });
 
-  app.post("/v1/pricing-guard/check", coreAuth(SCOPES.PRICING_CHECK), (req, res) => {
+  app.post("/v1/pricing-guard/check", createAuth(keyStore, audit, SCOPES.PRICING_CHECK), (req, res) => {
     const result = pricingGuardCheck(req.body || {});
     audit.append("core_pricing_checked", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, status: result.status, issue_count: result.issue_count });
     res.json({ ok: true, result });
   });
 
-  app.get("/v1/review/pending", coreAuth(SCOPES.READ_REVIEW), (req, res) => {
+  app.get("/v1/review/pending", createAuth(keyStore, audit, SCOPES.READ_REVIEW), (req, res) => {
     res.json({ ok: true, reviews: reviews.pending(req.tenantId) });
   });
 
-  app.post("/v1/review/action", coreAuth(SCOPES.WRITE_REVIEW), (req, res) => {
+  app.post("/v1/review/action", createAuth(keyStore, audit, SCOPES.WRITE_REVIEW), (req, res) => {
     const record = reviews.action(req.tenantId, req.body || {});
     if (!record) return publicError(res, 404, "review_not_found");
     audit.append("core_review_action", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, review_id: record.review_id, status: record.status });
     res.json({ ok: true, review: record });
   });
 
-  app.get("/v1/audit/recent", coreAuth(SCOPES.ADMIN_TENANT), (req, res) => {
+  app.get("/v1/audit/recent", createAuth(keyStore, audit, SCOPES.ADMIN_TENANT), (req, res) => {
     res.json({ ok: true, audit: audit.recent(Number(req.query.limit || 50)).filter((event) => !req.tenantId || event.tenant_id === req.tenantId) });
-  });
-
-  app.get("/v1/icf/runtime/attestation", coreAuth(SCOPES.READ_EVIDENCE), (req, res) => {
-    const readiness = icfRuntime.readiness();
-    res.json({ ok: true, schema: "nyra.icf.runtime-attestation/1.0", build: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null, rollout: icf.rollout(), store: { kind: readiness.store_kind, contract: readiness.contract, restart_durable: readiness.restart_durable, distributed: readiness.distributed }, enforcement_allowed: readiness.enforcement_allowed });
   });
 
   app.use((req, res) => publicError(res, 404, "route_not_found"));
 
-  async function shutdown() {
-    const tasks = [];
-    if (causalBootstrapConstructionProvenance.research_airlock
-      && typeof researchAirlockRuntime?.store?.close === "function") {
-      tasks.push(Promise.resolve().then(() => researchAirlockRuntime.store.close()));
-    }
-    for (const pool of internallyOwnedPostgresPools) {
-      if (typeof pool?.end === "function") tasks.push(Promise.resolve().then(() => pool.end()));
-    }
-    await Promise.allSettled(tasks);
-  }
-
-  return { app, storageRoot, coreRuntime, shutdown };
+  return { app, storageRoot, coreRuntime };
 }
