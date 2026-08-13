@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   HOST_NATIVE_ABSOLUTE_DENY_ACTIONS,
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  HOST_NATIVE_HEALTH_CONTRACT_VERSION,
   buildHostNativeWorkPlan,
   buildHostReleaseManifestV2,
   createFileHostNativeGovernanceStore,
@@ -19,6 +20,7 @@ import {
   hostNativeGithubDiffDigest,
   validateHostReleaseManifestV2,
 } from "../src/hostNativeGovernance.js";
+import { createHostNativeExternalReadbackVerifier } from "../src/hostNativeExternalReadback.js";
 
 test("host-native domain signer binds causal envelopes to their exact purpose and payload", async () => {
   const signer = createHostNativeDomainSigner({
@@ -79,17 +81,21 @@ function trustedExternalReadback(
     conclusion: "success",
   }));
   const mergeAction = action.kind === "github.merge";
+  const observeAction = action.kind === "render.observe";
+  const sourceAction = observeAction ? ticket.predecessor.source_action : action;
+  const sourceMerge = sourceAction.kind === "github.merge";
   const githubUnsigned = {
     api_origin: "https://api.github.com",
     repository: ticket.repository,
     action_kind: action.kind,
-    head_branch: action.head_branch || null,
-    base_branch: action.base_branch || null,
-    pull_request: mergeAction ? action.pull_request : null,
-    merged: mergeAction ? true : null,
-    head_commit: action.head_commit || binding.verification.checks_commit,
-    expected_base_commit: action.expected_base_commit || binding.base_commit,
-    merge_commit: mergeAction ? targetCommit : null,
+    head_branch: sourceMerge ? sourceAction.head_branch : action.branch || null,
+    base_branch: sourceMerge ? sourceAction.base_branch : null,
+    pull_request: mergeAction || sourceMerge ? sourceAction.pull_request : null,
+    merged: mergeAction || sourceMerge ? true : null,
+    head_commit: sourceAction.head_commit || binding.verification.checks_commit,
+    expected_base_commit: sourceAction.expected_base_commit ||
+      sourceAction.expected_remote_commit || binding.base_commit,
+    merge_commit: mergeAction || sourceMerge ? targetCommit : null,
     target_commit: targetCommit,
     branch: action.branch || action.base_branch || null,
     branch_commit: mergeAction ? null : targetCommit,
@@ -99,6 +105,12 @@ function trustedExternalReadback(
     observed_checks: observedChecks,
     rollback_commit: binding.rollback.target_commit,
     rollback_commit_available: true,
+    ...(observeAction ? {
+      source_action_kind: sourceAction.kind,
+      predecessor_ticket_id: ticket.predecessor.ticket_id,
+      predecessor_ticket_digest: ticket.predecessor.ticket_digest,
+      source_action_digest: ticket.predecessor.source_action_digest,
+    } : {}),
   };
   const services = (verificationScope === "github_merge_and_checks_only"
     ? []
@@ -213,6 +225,7 @@ function harness({
   renderServiceOriginResolver,
   bootstrapReleaseExceptionStore,
   bootstrapDeadlockVerdictResolver,
+  requiredChecksPolicyResolver,
 } = {}) {
   let clock = Date.parse(clockStart);
   let sequence = 0;
@@ -237,6 +250,7 @@ function harness({
     releaseJoinVerdictResolver: releaseJoinVerdictResolver === undefined
       ? (async (request) => trustedJoinResolution(request, clock))
       : releaseJoinVerdictResolver,
+    requiredChecksPolicyResolver: requiredChecksPolicyResolver || null,
     renderServiceOriginResolver: renderServiceOriginResolver || null,
     ...(ticketTtlMs === undefined ? {} : { ticketTtlMs }),
     ...(reservationLeaseMs === undefined ? {} : { reservationLeaseMs }),
@@ -1639,7 +1653,7 @@ test("Render origins are server-resolved, ticket-bound, and restricted to truste
   );
 });
 
-test("protected push, Render deploy/rollback, and linked observation each require trusted finalization", async () => {
+test("protected push, Render deploy/rollback, and linked observation each require trusted finalization", async (t) => {
   async function finalizeExact(subject, action, pending) {
     const delegation = await subject.governance.issueDelegation(subject.delegationInput);
     const manifest = await bindCoreJoinVerdict(
@@ -1670,6 +1684,7 @@ test("protected push, Render deploy/rollback, and linked observation each requir
       host_session_fingerprint: issued.ticket.host_session_fingerprint,
       outcome: "success",
       result_digest: H("a"),
+      ...(action.kind === "github.merge" ? { result_commit: G("4") } : {}),
       readback_digest: H("b"),
     });
     const receipt = await subject.governance.authorizeFinalize({
@@ -1679,6 +1694,71 @@ test("protected push, Render deploy/rollback, and linked observation each requir
     });
     return { delegation, manifest, issued, receipt };
   }
+
+  function observationRequest(parent, { action = {}, input = {} } = {}) {
+    return {
+      tenant_id: "codexai",
+      delegation_id: parent.delegation.delegation_id,
+      work_id: "work-1",
+      intent_anchor_digest: H("1"),
+      repository: "owner/repo",
+      host_kind: "codex_native",
+      host_session_fingerprint: parent.issued.ticket.host_session_fingerprint,
+      action: {
+        kind: "render.observe",
+        repository: "owner/repo",
+        branch: "main",
+        service_id: "srv-core",
+        environment: "production",
+        target_commit: G("4"),
+        parent_release_ticket_id: parent.issued.ticket.ticket_id,
+        parent_release_ticket_digest: hostNativeDigest(parent.issued.ticket),
+        release_manifest_digest: parent.manifest.manifest_digest,
+        provider_execution: false,
+        ...action,
+      },
+      evidence_digest: H("6"),
+      release_manifest: parent.manifest,
+      ...input,
+    };
+  }
+  const observationPolicy = {
+    schema_version: "host_native_required_checks_policy_v1",
+    tenant_id: "codexai",
+    repository: "owner/repo",
+    base_branch: "main",
+    required_checks: ["unit-tests"],
+    check_app: { id: 15368, slug: "github-actions", owner: "github" },
+    workflow: {
+      id: 312527659,
+      name: "Core",
+      path: ".github/workflows/core.yml",
+      sha256: H("d"),
+    },
+    allowed_events: ["push", "pull_request"],
+  };
+  const observationPolicyDigest = hostNativeDigest({
+    ...observationPolicy,
+    required_checks: [...observationPolicy.required_checks].sort(),
+    workflow: { ...observationPolicy.workflow, candidate_sha256: null },
+    allowed_events: [...observationPolicy.allowed_events].sort(),
+  });
+  const linkedHarness = (options = {}) => harness({
+    ...options,
+    requiredChecksPolicyResolver: options.requiredChecksPolicyResolver ||
+      (async () => observationPolicy),
+    externalReadbackVerifier: options.externalReadbackVerifier ||
+      (async ({ ticket, target_commit, verification_scope }) => {
+      const readback = trustedExternalReadback(
+        ticket,
+        target_commit,
+        "2026-07-29T10:00:00.000Z",
+        verification_scope,
+      );
+      readback.github.required_checks_policy_digest = observationPolicyDigest;
+      return redigestTrustedReadback(readback);
+      }),
+  });
 
   const pushSubject = harness();
   const pushed = await finalizeExact(
@@ -1804,35 +1884,15 @@ test("protected push, Render deploy/rollback, and linked observation each requir
   assert.equal(rolledBack.receipt.target_commit, G("1"));
   assert.equal(rolledBack.receipt.live_services[0].rollback_commit, G("2"));
 
-  const observationSubject = harness();
+  const observationSubject = linkedHarness();
   const parent = await finalizeExact(
     observationSubject,
     protectedPushAction(),
     releaseManifestInput(),
   );
-  const observation = await observationSubject.governance.issueActionTicket({
-    tenant_id: "codexai",
-    delegation_id: parent.delegation.delegation_id,
-    work_id: "work-1",
-    intent_anchor_digest: H("1"),
-    repository: "owner/repo",
-    host_kind: "codex_native",
-    host_session_fingerprint: "linked-render-observation",
-    action: {
-      kind: "render.observe",
-      repository: "owner/repo",
-      branch: "main",
-      service_id: "srv-core",
-      environment: "production",
-      target_commit: G("4"),
-      parent_release_ticket_id: parent.issued.ticket.ticket_id,
-      parent_release_ticket_digest: hostNativeDigest(parent.issued.ticket),
-      release_manifest_digest: parent.manifest.manifest_digest,
-      provider_execution: false,
-    },
-    evidence_digest: H("6"),
-    release_manifest: parent.manifest,
-  });
+  const observation = await observationSubject.governance.issueActionTicket(
+    observationRequest(parent),
+  );
   assert.equal(
     observation.ticket.core_join_verdict_id,
     parent.issued.ticket.core_join_verdict_id,
@@ -1840,6 +1900,20 @@ test("protected push, Render deploy/rollback, and linked observation each requir
   assert.equal(
     observation.ticket.release_join_resolution_digest,
     parent.issued.ticket.release_join_resolution_digest,
+  );
+  assert.deepEqual(
+    observation.ticket.release_manifest_binding,
+    parent.issued.ticket.release_manifest_binding,
+  );
+  assert.equal(observation.ticket.predecessor.result_commit, parent.receipt.target_commit);
+  assert.equal(
+    observation.ticket.predecessor.finalize_authorization_digest,
+    parent.receipt.authorization_digest,
+  );
+  assert.deepEqual(observation.ticket.predecessor.source_action, parent.issued.ticket.action);
+  assert.equal(
+    observation.ticket.predecessor.source_action_digest,
+    hostNativeDigest(parent.issued.ticket.action),
   );
   const observationReservation = await observationSubject.governance.reserveActionTicket({
     tenant_id: "codexai",
@@ -1861,6 +1935,422 @@ test("protected push, Render deploy/rollback, and linked observation each requir
     host_session_fingerprint: observation.ticket.host_session_fingerprint,
   });
   assert.equal(observed.target_commit, G("4"));
+
+  for (const [name, mutation, expected] of [
+    ["evidence", (request) => { request.evidence_digest = H("7"); }, /predecessor_ticket_invalid/],
+    ["branch", (request) => { request.action.branch = "agent/other"; }, /predecessor_ticket_invalid/],
+    ["service anchor", (request) => { request.action.service_id = "srv-other"; }, /predecessor_ticket_invalid/],
+    ["manifest", (request) => {
+      request.release_manifest = buildHostReleaseManifestV2({
+        ...releaseManifestInput(),
+        manifest_id: "other-manifest",
+      });
+    }, /predecessor_ticket_invalid/],
+  ]) {
+    await t.test(`linked observation rejects mismatched ${name}`, async () => {
+      const subject = linkedHarness();
+      const linkedParent = await finalizeExact(subject, protectedPushAction(), releaseManifestInput());
+      const request = observationRequest(linkedParent);
+      mutation(request);
+      await assert.rejects(subject.governance.issueActionTicket(request), expected);
+    });
+  }
+
+  await t.test("linked observation rejects an expired parent authorization", async () => {
+    const subject = linkedHarness({ reservationLeaseMs: 1_000 });
+    const linkedParent = await finalizeExact(subject, protectedPushAction(), releaseManifestInput());
+    subject.advance(1_001);
+    await assert.rejects(
+      subject.governance.issueActionTicket(observationRequest(linkedParent)),
+      /predecessor_finalize_authorization_invalid/,
+    );
+  });
+
+  await t.test("consumed Core Join may expire while a re-attested parent authorization remains fresh", async () => {
+    let verifiedAt = Date.parse("2026-07-29T10:00:00.000Z");
+    const subject = linkedHarness({
+      externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) => {
+        const readback = trustedExternalReadback(
+          ticket,
+          target_commit,
+          new Date(verifiedAt).toISOString(),
+          verification_scope,
+        );
+        readback.github.required_checks_policy_digest = observationPolicyDigest;
+        return redigestTrustedReadback(readback);
+      },
+    });
+    const linkedParent = await finalizeExact(
+      subject,
+      protectedPushAction(),
+      releaseManifestInput(),
+    );
+    const consumedJoin = await subject.governance.readCoreJoinVerdict({
+      tenant_id: "codexai",
+      verdict_id: linkedParent.issued.ticket.core_join_verdict_id,
+    });
+    assert.equal(consumedJoin.state, "consumed");
+    assert.equal(consumedJoin.uses, 1);
+    assert.equal(
+      Date.parse(consumedJoin.verdict.expires_at) - Date.parse(consumedJoin.verdict.issued_at),
+      30 * 60_000,
+    );
+    const elapsed = 30 * 60_000 + 1_000;
+    verifiedAt += elapsed;
+    subject.advance(elapsed);
+    assert.ok(Date.parse(consumedJoin.verdict.expires_at) < subject.now());
+    const refreshed = await subject.governance.authorizeFinalize({
+      tenant_id: "codexai",
+      ticket_id: linkedParent.issued.ticket.ticket_id,
+      host_session_fingerprint: linkedParent.issued.ticket.host_session_fingerprint,
+    });
+    assert.notEqual(
+      refreshed.authorization_digest,
+      linkedParent.receipt.authorization_digest,
+    );
+    assert.equal(Date.parse(refreshed.expires_at) - Date.parse(refreshed.issued_at), 5 * 60_000);
+    assert.ok(Date.parse(refreshed.issued_at) > Date.parse(consumedJoin.verdict.expires_at));
+    assert.ok(Date.parse(refreshed.expires_at) > subject.now());
+    const observation = await subject.governance.issueActionTicket(
+      observationRequest(linkedParent),
+    );
+    assert.equal(
+      observation.ticket.predecessor.finalize_authorization_digest,
+      refreshed.authorization_digest,
+    );
+    assert.equal(
+      observation.ticket.core_join_verdict_id,
+      consumedJoin.verdict_id,
+    );
+  });
+
+  await t.test("real governance ticket finalizes through the real external verifier", async () => {
+    const workflowSource = "name: Core\non: [push]\n";
+    const workflowSha = crypto.createHash("sha256").update(workflowSource).digest("hex");
+    const json = (body) => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      const root = "https://api.github.com/repos/owner/repo";
+      if (url === `${root}/commits/${G("4")}/check-runs?per_page=100`) {
+        return json({ check_runs: [{
+          id: 101,
+          name: "unit-tests",
+          head_sha: G("4"),
+          status: "completed",
+          conclusion: "success",
+          details_url: "https://github.com/owner/repo/actions/runs/700/job/800",
+          app: { id: 15368, slug: "github-actions", owner: { login: "github" } },
+        }] });
+      }
+      if (url === `${root}/actions/runs/700`) {
+        return json({
+          id: 700,
+          workflow_id: 312527659,
+          run_attempt: 1,
+          name: "Core",
+          path: ".github/workflows/core.yml",
+          event: "push",
+          head_sha: G("4"),
+          head_branch: "main",
+          repository: { full_name: "owner/repo" },
+          pull_requests: [],
+          status: "completed",
+          conclusion: "success",
+        });
+      }
+      if ([G("1"), G("4")].some((ref) =>
+        url === `${root}/contents/.github/workflows/core.yml?ref=${ref}`)) {
+        return json({
+          type: "file",
+          path: ".github/workflows/core.yml",
+          encoding: "base64",
+          content: Buffer.from(workflowSource).toString("base64"),
+        });
+      }
+      if (url === `${root}/git/ref/heads/main`) return json({ object: { sha: G("4") } });
+      if (url === `${root}/git/commits/${G("4")}`) return json({ sha: G("4") });
+      if (url === `${root}/git/commits/${G("1")}`) return json({ sha: G("1") });
+      if (url === "https://srv-core.onrender.com/healthz") {
+        return json({
+          ok: true,
+          render_ready: true,
+          version: "integration-1",
+          build: { build_id: "build-integration", commit_sha: G("4"), commit_verifiable: true },
+          health_contract_version: HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+          health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    };
+    const externalReadbackVerifier = createHostNativeExternalReadbackVerifier({
+      fetchImpl,
+      requiredChecksPolicyResolver: async () => ({
+        schema_version: "host_native_required_checks_policy_v1",
+        tenant_id: "codexai",
+        repository: "owner/repo",
+        base_branch: "main",
+        required_checks: ["unit-tests"],
+        check_app: { id: 15368, slug: "github-actions", owner: "github" },
+        workflow: {
+          id: 312527659,
+          name: "Core",
+          path: ".github/workflows/core.yml",
+          sha256: workflowSha,
+        },
+        allowed_events: ["push"],
+      }),
+      now: () => Date.parse("2026-07-29T10:00:00.000Z"),
+    });
+    const requiredChecksPolicy = {
+      schema_version: "host_native_required_checks_policy_v1",
+      tenant_id: "codexai",
+      repository: "owner/repo",
+      base_branch: "main",
+      required_checks: ["unit-tests"],
+      check_app: { id: 15368, slug: "github-actions", owner: "github" },
+      workflow: {
+        id: 312527659,
+        name: "Core",
+        path: ".github/workflows/core.yml",
+        sha256: workflowSha,
+      },
+      allowed_events: ["push"],
+    };
+    const subject = harness({
+      externalReadbackVerifier,
+      requiredChecksPolicyResolver: async () => requiredChecksPolicy,
+    });
+    const linkedParent = await finalizeExact(subject, protectedPushAction(), releaseManifestInput());
+    const issued = await subject.governance.issueActionTicket(observationRequest(linkedParent));
+    const reserved = await subject.governance.reserveActionTicket({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    });
+    await subject.governance.completeActionTicket({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      reservation_id: reserved.reservation_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+      outcome: "success",
+      result_digest: H("a"),
+      readback_digest: H("b"),
+    });
+    const receipt = await subject.governance.authorizeFinalize({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    });
+    assert.equal(receipt.target_commit, G("4"));
+    assert.equal(receipt.github_readback.action_kind, "render.observe");
+    assert.equal(receipt.github_readback.source_action_kind, "git.push.protected");
+    assert.equal(receipt.live_services[0].live_commit, G("4"));
+    assert.ok(calls.some(({ url }) => url.endsWith("/git/ref/heads/main")));
+    assert.ok(calls.some(({ url }) => url === "https://srv-core.onrender.com/healthz"));
+  });
+
+  await t.test("merged-PR parent drives real full-release observation when workflow association is empty", async () => {
+    const baseCommit = G("1");
+    const headCommit = G("3");
+    const mergeCommit = G("4");
+    assert.notEqual(mergeCommit, headCommit);
+    const workflowSource = "name: Core Merge\non: [pull_request]\n";
+    const workflowSha = crypto.createHash("sha256").update(workflowSource).digest("hex");
+    const policy = {
+      schema_version: "host_native_required_checks_policy_v1",
+      tenant_id: "codexai",
+      repository: "owner/repo",
+      base_branch: "main",
+      required_checks: ["unit-tests"],
+      check_app: { id: 15368, slug: "github-actions", owner: "github" },
+      workflow: {
+        id: 312527659,
+        name: "Core Merge",
+        path: ".github/workflows/core-merge.yml",
+        sha256: workflowSha,
+      },
+      allowed_events: ["pull_request"],
+    };
+    const json = (body) => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    const calls = [];
+    const fetchImpl = async (url, init) => {
+      calls.push({ url, init });
+      const root = "https://api.github.com/repos/owner/repo";
+      if (url === `${root}/commits/${headCommit}/check-runs?per_page=100`) {
+        return json({ check_runs: [{
+          id: 201,
+          name: "unit-tests",
+          head_sha: headCommit,
+          status: "completed",
+          conclusion: "success",
+          details_url: "https://github.com/owner/repo/actions/runs/900/job/901",
+          app: { id: 15368, slug: "github-actions", owner: { login: "github" } },
+        }] });
+      }
+      if (url === `${root}/actions/runs/900`) {
+        return json({
+          id: 900,
+          workflow_id: 312527659,
+          run_attempt: 1,
+          name: "Core Merge",
+          path: ".github/workflows/core-merge.yml",
+          event: "pull_request",
+          head_sha: headCommit,
+          head_branch: "agent/native-work",
+          repository: { full_name: "owner/repo" },
+          pull_requests: [],
+          status: "completed",
+          conclusion: "success",
+        });
+      }
+      if ([baseCommit, headCommit].some((ref) =>
+        url === `${root}/contents/.github/workflows/core-merge.yml?ref=${ref}`)) {
+        return json({
+          type: "file",
+          path: ".github/workflows/core-merge.yml",
+          encoding: "base64",
+          content: Buffer.from(workflowSource).toString("base64"),
+        });
+      }
+      if (url === `${root}/pulls/42`) {
+        return json({
+          number: 42,
+          state: "closed",
+          draft: false,
+          merged: true,
+          merge_commit_sha: mergeCommit,
+          head: {
+            sha: headCommit,
+            ref: "agent/native-work",
+            repo: { full_name: "owner/repo" },
+          },
+          base: {
+            sha: baseCommit,
+            ref: "main",
+            repo: { full_name: "owner/repo" },
+          },
+        });
+      }
+      if (url === `${root}/git/ref/heads/main`) {
+        return json({ object: { sha: mergeCommit } });
+      }
+      if (url === `${root}/git/commits/${mergeCommit}`) return json({ sha: mergeCommit });
+      if (url === `${root}/git/commits/${baseCommit}`) return json({ sha: baseCommit });
+      const service = /https:\/\/(srv-core|srv-aux)\.onrender\.com\/healthz$/.exec(url)?.[1];
+      if (service) {
+        return json({
+          ok: true,
+          render_ready: true,
+          version: `integration-${service}`,
+          build: {
+            build_id: `build-${service}`,
+            commit_sha: mergeCommit,
+            commit_verifiable: true,
+          },
+          health_contract_version: HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+          health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    };
+    const externalReadbackVerifier = createHostNativeExternalReadbackVerifier({
+      fetchImpl,
+      requiredChecksPolicyResolver: async () => policy,
+      now: () => Date.parse("2026-07-29T10:00:00.000Z"),
+    });
+    const subject = harness({
+      externalReadbackVerifier,
+      requiredChecksPolicyResolver: async () => policy,
+    });
+    const services = ["srv-core", "srv-aux"].map((service_id) => ({
+      service_id,
+      environment: "production",
+      expected_previous_commit: baseCommit,
+      target_commit: null,
+      target_resolution: "post_merge_readback",
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+    }));
+    const parent = await finalizeExact(
+      subject,
+      githubMergeAction({
+        induced_effects: services.map(({ service_id, environment }) => ({
+          service_id,
+          environment,
+          trigger: "github_auto_deploy",
+        })),
+      }),
+      mergeReleaseManifestInput({
+        delivery: {
+          method: "github_protected_push_auto_deploy",
+          services,
+        },
+      }),
+    );
+    assert.equal(parent.issued.ticket.action.head_commit, headCommit);
+    assert.equal(parent.receipt.target_commit, mergeCommit);
+    assert.equal(parent.receipt.verification_scope, "github_merge_and_checks_only");
+    assert.equal(parent.receipt.services_verified, false);
+    assert.deepEqual(parent.receipt.live_services, []);
+    const observation = await subject.governance.issueActionTicket(
+      observationRequest(parent, {
+        action: { target_commit: mergeCommit },
+      }),
+    );
+    const reserved = await subject.governance.reserveActionTicket({
+      tenant_id: "codexai",
+      ticket_id: observation.ticket.ticket_id,
+      host_session_fingerprint: observation.ticket.host_session_fingerprint,
+    });
+    await subject.governance.completeActionTicket({
+      tenant_id: "codexai",
+      ticket_id: observation.ticket.ticket_id,
+      reservation_id: reserved.reservation_id,
+      host_session_fingerprint: observation.ticket.host_session_fingerprint,
+      outcome: "success",
+      result_digest: H("a"),
+      readback_digest: H("b"),
+    });
+    const receipt = await subject.governance.authorizeFinalize({
+      tenant_id: "codexai",
+      ticket_id: observation.ticket.ticket_id,
+      host_session_fingerprint: observation.ticket.host_session_fingerprint,
+    });
+    assert.equal(receipt.verification_scope, "full_release");
+    assert.equal(receipt.services_verified, true);
+    assert.equal(receipt.target_commit, mergeCommit);
+    assert.equal(receipt.github_readback.action_kind, "render.observe");
+    assert.equal(receipt.github_readback.source_action_kind, "github.merge");
+    assert.equal(receipt.github_readback.pull_request, 42);
+    assert.equal(receipt.github_readback.head_commit, headCommit);
+    assert.equal(receipt.github_readback.merge_commit, mergeCommit);
+    assert.equal(receipt.github_readback.branch, "main");
+    assert.equal(receipt.github_readback.branch_commit, mergeCommit);
+    assert.deepEqual(
+      receipt.live_services.map(({ service_id, live_commit, rollback_commit }) => ({
+        service_id,
+        live_commit,
+        rollback_commit,
+      })),
+      [
+        { service_id: "srv-aux", live_commit: mergeCommit, rollback_commit: baseCommit },
+        { service_id: "srv-core", live_commit: mergeCommit, rollback_commit: baseCommit },
+      ],
+    );
+    assert.ok(calls.some(({ url }) => url.endsWith("/actions/runs/900")));
+    assert.ok(calls.some(({ url }) => url.endsWith("/git/ref/heads/main")));
+    assert.ok(calls.filter(({ url }) => url.endsWith("/pulls/42")).length >= 2);
+    for (const service of ["srv-core", "srv-aux"]) {
+      assert.ok(calls.some(({ url }) =>
+        url === `https://${service}.onrender.com/healthz`));
+    }
+  });
 });
 
 test("GitHub draft, ready and protected merge are exact bounded actions", async () => {

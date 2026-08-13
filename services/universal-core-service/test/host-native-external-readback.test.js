@@ -399,6 +399,180 @@ function strictProtectedPushTicket() {
   return ticket;
 }
 
+function strictObserveTicket() {
+  const ticket = strictTicket();
+  const serviceB = {
+    service_id: "service-b",
+    environment: "production",
+    origin: "https://service-b.onrender.com",
+    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  };
+  ticket.release_manifest_binding.services.push(serviceB);
+  const previousBUnsigned = {
+    service_id: serviceB.service_id,
+    environment: serviceB.environment,
+    origin: serviceB.origin,
+    health_path: "/healthz",
+    deployment_id: "previous-service-b",
+    live_commit: BASE,
+    health_status: "healthy",
+    health_contract_digest: serviceB.health_contract_digest,
+  };
+  ticket.release_join_resolution.previous_live_attestations.push({
+    ...previousBUnsigned,
+    readback_digest: hostNativeDigest(previousBUnsigned),
+  });
+  ticket.release_join_resolution.pre_action_readback_digest = hostNativeDigest({
+    source_attestation: ticket.release_join_resolution.source_attestation,
+    previous_live_attestations: ticket.release_join_resolution.previous_live_attestations,
+  });
+  ticket.release_join_resolution_digest = hostNativeDigest(ticket.release_join_resolution);
+  const sourceAction = {
+    ...ticket.action,
+    repository: ticket.repository,
+    provider_execution: false,
+  };
+  const manifestDigest = "c".repeat(64);
+  const parentTicketId = "hnt_parent-release";
+  const parentTicketDigest = "d".repeat(64);
+  ticket.host_kind = "codex_native";
+  ticket.host_session_fingerprint = "observe-session";
+  ticket.release_manifest_digest = manifestDigest;
+  ticket.release_intent_digest = "e".repeat(64);
+  ticket.core_join_verdict_digest = "f".repeat(64);
+  ticket.release_manifest_binding = {
+    ...ticket.release_manifest_binding,
+    schema_version: "host_release_manifest_v2",
+    repository: ticket.repository,
+    manifest_digest: manifestDigest,
+    delivery_branch: "main",
+  };
+  ticket.action = {
+    kind: "render.observe",
+    repository: ticket.repository,
+    branch: "main",
+    service_id: "service-a",
+    environment: "production",
+    target_commit: TARGET,
+    parent_release_ticket_id: parentTicketId,
+    parent_release_ticket_digest: parentTicketDigest,
+    release_manifest_digest: manifestDigest,
+    provider_execution: false,
+  };
+  const policyDigest = hostNativeDigest({
+    schema_version: STRICT_POLICY.schema_version,
+    tenant_id: STRICT_POLICY.tenant_id,
+    repository: STRICT_POLICY.repository,
+    base_branch: STRICT_POLICY.base_branch,
+    required_checks: [...STRICT_POLICY.required_checks].sort(),
+    check_app: STRICT_POLICY.check_app,
+    workflow: { ...STRICT_POLICY.workflow, candidate_sha256: null },
+    allowed_events: [...STRICT_POLICY.allowed_events].sort(),
+  });
+  const receiptUnsigned = {
+    schema_version: "host_native_finalize_authorization_v1",
+    trusted: true,
+    allowed: true,
+    decision: "ALLOW_FINALIZE",
+    decision_id: parentTicketId,
+    tenant_id: ticket.tenant_id,
+    work_id: ticket.work_id,
+    repository: ticket.repository,
+    result_commit_verified: true,
+    action_ticket_id: parentTicketId,
+    action_ticket_digest: parentTicketDigest,
+    target_commit: TARGET,
+    release_manifest_digest: manifestDigest,
+    release_intent_digest: ticket.release_intent_digest,
+    core_join_verdict_id: ticket.core_join_verdict_id,
+    core_join_verdict_digest: ticket.core_join_verdict_digest,
+    core_join_resolution_digest: ticket.release_join_resolution_digest,
+    predecessor: null,
+    predecessor_chain_digest: null,
+    evidence_digest: ticket.evidence_digest,
+    host_kind: ticket.host_kind,
+    host_session_fingerprint: ticket.host_session_fingerprint,
+    host_policy_override: false,
+    host_policy_must_allow: true,
+    provider_execution: false,
+    github_readback: { required_checks_policy_digest: policyDigest },
+  };
+  const authorizationDigest = hostNativeDigest(receiptUnsigned);
+  const finalizeAuthorization = {
+    ...receiptUnsigned,
+    authorization_digest: authorizationDigest,
+    signature: `hnf_${"a".repeat(64)}`,
+  };
+  ticket.predecessor = {
+    ticket_id: parentTicketId,
+    ticket_digest: parentTicketDigest,
+    result_commit: TARGET,
+    finalize_authorization: finalizeAuthorization,
+    finalize_authorization_digest: authorizationDigest,
+    source_action: sourceAction,
+    source_action_digest: hostNativeDigest(sourceAction),
+    source_evidence_digest: ticket.evidence_digest,
+    source_required_checks_policy_digest: policyDigest,
+  };
+  ticket.predecessor_chain_digest = hostNativeDigest(ticket.predecessor);
+  return ticket;
+}
+
+function strictObserveFetch({
+  ticket = strictObserveTicket(),
+  refSha = TARGET,
+  pull = pullRequest(),
+  calls = [],
+} = {}) {
+  const fallback = strictFetch({ ticket, calls });
+  return async (url, init) => {
+    const root = "https://api.github.com/repos/owner/repo";
+    if (url === `${root}/git/ref/heads/main`) {
+      calls.push({ url, init });
+      return jsonResponse({ object: { sha: refSha } });
+    }
+    if (url === `${root}/pulls/42`) {
+      calls.push({ url, init });
+      return jsonResponse(pull);
+    }
+    if (url === "https://service-b.onrender.com/healthz") {
+      calls.push({ url, init });
+      return jsonResponse(serviceHealth("service-b"));
+    }
+    return fallback(url, init);
+  };
+}
+
+function refreshObservePredecessor(ticket) {
+  const receipt = ticket.predecessor.finalize_authorization;
+  const { signature: _signature, authorization_digest: _digest, ...receiptUnsigned } = receipt;
+  receipt.authorization_digest = hostNativeDigest(receiptUnsigned);
+  receipt.signature = `hnf_${"a".repeat(64)}`;
+  ticket.predecessor.finalize_authorization_digest = receipt.authorization_digest;
+  ticket.predecessor.source_action_digest = hostNativeDigest(ticket.predecessor.source_action);
+  ticket.predecessor_chain_digest = hostNativeDigest(ticket.predecessor);
+  return ticket;
+}
+
+function strictProtectedPushObserveTicket() {
+  const ticket = strictObserveTicket();
+  ticket.action.target_commit = HEAD;
+  ticket.predecessor.result_commit = HEAD;
+  ticket.predecessor.source_action = {
+    kind: "git.push.protected",
+    repository: ticket.repository,
+    branch: "main",
+    source_commit: HEAD,
+    expected_remote_commit: BASE,
+    force: false,
+    delete_ref: false,
+    tags: false,
+    provider_execution: false,
+  };
+  ticket.predecessor.finalize_authorization.target_commit = HEAD;
+  return refreshObservePredecessor(ticket);
+}
+
 function strictStagingDeployTicket() {
   const ticket = strictTicket();
   ticket.release_manifest_binding.services[0].environment = "staging";
@@ -491,6 +665,124 @@ function strictProtectedPushFetch({
     return fallback(url, init);
   };
 }
+
+test("render.observe verifies signed merged-PR source, exact main target, all services and rollback", async (t) => {
+  const verify = async (ticket = strictObserveTicket(), fetchOptions = {}, resolver = async () => STRICT_POLICY) => {
+    const calls = [];
+    const verifier = createHostNativeExternalReadbackVerifier({
+      fetchImpl: strictObserveFetch({ ticket, calls, ...fetchOptions }),
+      requiredChecksPolicyResolver: resolver,
+      now: () => Date.parse(VERIFIED_AT),
+    });
+    return { result: await verifier({ ticket, target_commit: TARGET }), calls };
+  };
+
+  assert.notEqual(TARGET, HEAD);
+  const { result, calls } = await verify();
+  assert.equal(result.github.action_kind, "render.observe");
+  assert.equal(result.github.source_action_kind, "github.merge");
+  assert.equal(result.github.head_commit, HEAD);
+  assert.equal(result.github.target_commit, TARGET);
+  assert.equal(result.github.branch_commit, TARGET);
+  assert.equal(result.github.merge_commit, TARGET);
+  assert.equal(result.github.pull_request, 42);
+  assert.equal(result.services.length, 2);
+  assert.deepEqual(
+    result.services.map(({ service_id, live_commit, rollback_commit }) => ({
+      service_id, live_commit, rollback_commit,
+    })),
+    [
+      { service_id: "service-a", live_commit: TARGET, rollback_commit: BASE },
+      { service_id: "service-b", live_commit: TARGET, rollback_commit: BASE },
+    ],
+  );
+  assert.ok(calls.some(({ url }) => url.endsWith("/git/ref/heads/main")));
+  assert.ok(calls.some(({ url }) => url.endsWith("/pulls/42")));
+  assert.ok(calls.some(({ url }) => url === "https://service-a.onrender.com/healthz"));
+  assert.ok(calls.some(({ url }) => url === "https://service-b.onrender.com/healthz"));
+
+  await t.test("strict workflow policy is mandatory", async () => {
+    await assert.rejects(
+      verify(strictObserveTicket(), {}, null),
+      /required_checks_policy_unavailable/,
+    );
+  });
+
+  await t.test("a different valid workflow policy cannot replace the signed parent policy", async () => {
+    await assert.rejects(
+      verify(strictObserveTicket(), {}, async () => ({
+        ...STRICT_POLICY,
+        workflow: {
+          ...STRICT_POLICY.workflow,
+          candidate_sha256: WORKFLOW_CANDIDATE_SHA256,
+        },
+      })),
+      /required_checks_policy_mismatch/,
+    );
+  });
+
+  for (const [name, mutate] of [
+    ["predecessor chain", (ticket) => { ticket.predecessor_chain_digest = "0".repeat(64); }],
+    ["source action", (ticket) => { ticket.predecessor.source_action.pull_request = 99; }],
+    ["source action digest", (ticket) => { ticket.predecessor.source_action_digest = "0".repeat(64); }],
+    ["parent id", (ticket) => { ticket.action.parent_release_ticket_id = "hnt_other"; }],
+    ["result target", (ticket) => { ticket.predecessor.result_commit = ALTERNATE; }],
+    ["manifest binding", (ticket) => { ticket.release_manifest_binding.manifest_digest = "0".repeat(64); }],
+    ["resolution digest", (ticket) => { ticket.release_join_resolution_digest = "0".repeat(64); }],
+    ["recursive observe", (ticket) => { ticket.predecessor.source_action.kind = "render.observe"; }],
+  ]) {
+    await t.test(`tampered ${name} fails before provider readback`, async () => {
+      const ticket = strictObserveTicket();
+      mutate(ticket);
+      let fetched = false;
+      const verifier = createHostNativeExternalReadbackVerifier({
+        fetchImpl: async () => { fetched = true; throw new Error("must not fetch"); },
+        requiredChecksPolicyResolver: async () => STRICT_POLICY,
+      });
+      await assert.rejects(
+        verifier({ ticket, target_commit: TARGET }),
+        /trusted_readback_observation_binding_invalid/,
+      );
+      assert.equal(fetched, false);
+    });
+  }
+
+  await t.test("main ref must equal TARGET, not HEAD", async () => {
+    await assert.rejects(
+      verify(strictObserveTicket(), { refSha: HEAD }),
+      /trusted_readback_branch_commit_mismatch/,
+    );
+  });
+});
+
+test("render.observe also verifies an exact protected-push predecessor", async () => {
+  const ticket = strictProtectedPushObserveTicket();
+  const calls = [];
+  const fallback = strictProtectedPushFetch({ ticket });
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    if (url === "https://service-b.onrender.com/healthz") {
+      return jsonResponse(serviceHealth("service-b", {
+        build: { build_id: "build-service-b", commit_sha: HEAD, commit_verifiable: true },
+      }));
+    }
+    return fallback(url, init);
+  };
+  const verifier = createHostNativeExternalReadbackVerifier({
+    fetchImpl,
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    now: () => Date.parse(VERIFIED_AT),
+  });
+  const result = await verifier({ ticket, target_commit: HEAD });
+  assert.equal(result.github.action_kind, "render.observe");
+  assert.equal(result.github.source_action_kind, "git.push.protected");
+  assert.equal(result.github.branch, "main");
+  assert.equal(result.github.branch_commit, HEAD);
+  assert.equal(result.github.pull_request, null);
+  assert.equal(result.github.merged, null);
+  assert.equal(result.services.length, 2);
+  assert.equal(calls.some(({ url }) => url.endsWith("/pulls/42")), false);
+});
 
 test("strict required-check attestation pins app/workflow, accepts deterministic rerun, and caches one run", async () => {
   const ticket = strictTicket();

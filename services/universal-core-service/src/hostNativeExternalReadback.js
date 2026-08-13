@@ -657,6 +657,81 @@ function expectedPrevious(ticket, service) {
   )) || null;
 }
 
+function observeSourceContext(ticket, action, binding, repository, targetCommit, checksCommit, baseCommit) {
+  const predecessor = ticket?.predecessor;
+  const receipt = predecessor?.finalize_authorization;
+  const sourceAction = predecessor?.source_action;
+  const sourceKind = sourceAction?.kind;
+  const sourceBranch = sourceKind === "github.merge"
+    ? string(sourceAction?.base_branch)
+    : string(sourceAction?.branch);
+  const receiptUnsigned = receipt && { ...receipt };
+  if (receiptUnsigned) {
+    delete receiptUnsigned.signature;
+    delete receiptUnsigned.authorization_digest;
+  }
+  const service = Array.isArray(binding?.services) && binding.services.find((entry) => (
+    string(entry?.service_id) === string(action?.service_id) &&
+    string(entry?.environment) === string(action?.environment)
+  ));
+  if (
+    action?.kind !== "render.observe" || !predecessor || !receipt || !sourceAction ||
+    ticket?.predecessor_chain_digest !== hostNativeDigest(predecessor) ||
+    predecessor.ticket_id !== action.parent_release_ticket_id ||
+    predecessor.ticket_digest !== action.parent_release_ticket_digest ||
+    predecessor.result_commit !== targetCommit || action.target_commit !== targetCommit ||
+    predecessor.source_action_digest !== hostNativeDigest(sourceAction) ||
+    predecessor.source_evidence_digest !== ticket?.evidence_digest ||
+    !/^[a-f0-9]{64}$/.test(string(predecessor.source_required_checks_policy_digest)) ||
+    !["github.merge", "git.push.protected"].includes(sourceKind) ||
+    string(sourceAction.repository) !== repository ||
+    string(action.repository) !== repository ||
+    string(action.branch) !== sourceBranch || sourceBranch !== string(binding?.delivery_branch) ||
+    action.release_manifest_digest !== ticket?.release_manifest_digest ||
+    action.release_manifest_digest !== binding?.manifest_digest ||
+    ticket?.release_join_resolution?.evidence_digest !== ticket?.evidence_digest ||
+    ticket?.release_join_resolution_digest !== hostNativeDigest(ticket?.release_join_resolution) ||
+    receipt.schema_version !== "host_native_finalize_authorization_v1" ||
+    receipt.trusted !== true || receipt.allowed !== true ||
+    receipt.decision !== "ALLOW_FINALIZE" || receipt.result_commit_verified !== true ||
+    receipt.decision_id !== predecessor.ticket_id ||
+    receipt.tenant_id !== ticket?.tenant_id || receipt.work_id !== ticket?.work_id ||
+    receipt.repository !== repository || receipt.provider_execution !== false ||
+    receipt.host_policy_override !== false || receipt.host_policy_must_allow !== true ||
+    receipt.action_ticket_id !== predecessor.ticket_id ||
+    receipt.action_ticket_digest !== predecessor.ticket_digest ||
+    receipt.target_commit !== targetCommit ||
+    receipt.release_manifest_digest !== action.release_manifest_digest ||
+    receipt.release_intent_digest !== ticket?.release_intent_digest ||
+    receipt.core_join_verdict_id !== ticket?.core_join_verdict_id ||
+    receipt.core_join_verdict_digest !== ticket?.core_join_verdict_digest ||
+    receipt.core_join_resolution_digest !== ticket?.release_join_resolution_digest ||
+    receipt.evidence_digest !== ticket?.evidence_digest ||
+    receipt.host_kind !== ticket?.host_kind ||
+    receipt.host_session_fingerprint !== ticket?.host_session_fingerprint ||
+    receipt.github_readback?.required_checks_policy_digest !==
+      predecessor.source_required_checks_policy_digest ||
+    receipt.predecessor_chain_digest !== (
+      receipt.predecessor ? hostNativeDigest(receipt.predecessor) : null
+    ) ||
+    predecessor.finalize_authorization_digest !== receipt.authorization_digest ||
+    !/^[a-f0-9]{64}$/.test(string(receipt.authorization_digest)) ||
+    hostNativeDigest(receiptUnsigned) !== receipt.authorization_digest ||
+    !/^hnf_[a-f0-9]{64}$/.test(string(receipt.signature)) ||
+    !service
+  ) error("trusted_readback_observation_binding_invalid");
+  if (sourceKind === "github.merge" && (
+    sha(sourceAction.head_commit) !== checksCommit ||
+    sha(sourceAction.expected_base_commit) !== baseCommit ||
+    string(sourceAction.base_branch) !== sourceBranch
+  )) error("trusted_readback_observation_binding_invalid");
+  if (sourceKind === "git.push.protected" && (
+    sha(sourceAction.source_commit) !== checksCommit ||
+    sha(sourceAction.expected_remote_commit) !== baseCommit
+  )) error("trusted_readback_observation_binding_invalid");
+  return { sourceAction, sourceBranch };
+}
+
 /**
  * Build a trusted post-action GitHub + Render readback.  Nothing supplied by
  * the caller is accepted as proof: GitHub and each fixed Render health URL are
@@ -695,6 +770,10 @@ export function createHostNativeExternalReadbackVerifier({
     if (!tenantId || !targetCommit || !checksCommit || !baseCommit || !rollbackCommit || !baseBranch) {
       error("trusted_readback_ticket_invalid");
     }
+    const observation = action.kind === "render.observe"
+      ? observeSourceContext(ticket, action, binding, repository, targetCommit, checksCommit, baseCommit)
+      : null;
+    const evidenceAction = observation?.sourceAction || action;
     const token = await resolveGithubToken(githubTokenResolver, { tenant_id: tenantId, repository });
     const getGithub = githubClient({ fetchImpl, token, repository, timeoutMs: boundedTimeout });
     const checks = await attestChecks({
@@ -705,12 +784,19 @@ export function createHostNativeExternalReadbackVerifier({
       baseCommit,
       checksCommit,
       requiredChecks: binding?.verification?.required_checks,
-      action,
+      action: evidenceAction,
       requiredChecksPolicyResolver,
       workflowRunCache: workflow_run_cache,
       workflowSourceCache: workflow_source_cache,
       ticket,
     });
+    if (observation && !checks.required_checks_policy_digest) {
+      error("required_checks_policy_unavailable");
+    }
+    if (observation && checks.required_checks_policy_digest !==
+        ticket.predecessor.source_required_checks_policy_digest) {
+      error("required_checks_policy_mismatch");
+    }
     let mergeCommit = null;
     let branch = null;
     let branchCommit = null;
@@ -740,6 +826,27 @@ export function createHostNativeExternalReadbackVerifier({
         targetCommit !== sha(action.source_commit) ||
         targetCommit !== checksCommit
       ) error("trusted_readback_branch_commit_mismatch");
+    } else if (action.kind === "render.observe") {
+      branch = string(action.branch);
+      if (!validBranch(branch) || branch !== observation.sourceBranch) {
+        error("trusted_readback_ticket_invalid");
+      }
+      const ref = await getGithub(`/git/ref/heads/${encodeURIComponent(branch).replace(/%2F/g, "/")}`);
+      branchCommit = sha(ref?.object?.sha);
+      if (branchCommit !== targetCommit || targetCommit !== sha(action.target_commit) ||
+          targetCommit !== sha(ticket.predecessor.result_commit)) {
+        error("trusted_readback_branch_commit_mismatch");
+      }
+      if (evidenceAction.kind === "github.merge") {
+        const pull = await getGithub(`/pulls/${Number(evidenceAction.pull_request)}`);
+        if (!validateMergePullRequest(pull, evidenceAction, repository, targetCommit, { merged: true })) {
+          error("trusted_readback_github_merge_mismatch");
+        }
+        mergeCommit = targetCommit;
+        merged = true;
+      } else if (targetCommit !== checksCommit || targetCommit !== sha(evidenceAction.source_commit)) {
+        error("trusted_readback_branch_commit_mismatch");
+      }
     } else {
       error("trusted_readback_action_invalid");
     }
@@ -778,17 +885,17 @@ export function createHostNativeExternalReadbackVerifier({
       api_origin: GITHUB_ORIGIN,
       repository,
       action_kind: action.kind,
-      head_branch: action.kind === "github.merge" ? string(action.head_branch) :
-        action.kind === "render.deploy" ? branch : null,
-      base_branch: action.kind === "github.merge" || action.kind === "render.deploy"
-        ? string(action.base_branch || baseBranch) : null,
-      pull_request: action.kind === "github.merge" ||
+      head_branch: evidenceAction.kind === "github.merge" ? string(evidenceAction.head_branch) :
+        action.kind === "render.deploy" || action.kind === "render.observe" ? branch : null,
+      base_branch: evidenceAction.kind === "github.merge" || action.kind === "render.deploy"
+        ? string(evidenceAction.base_branch || baseBranch) : null,
+      pull_request: evidenceAction.kind === "github.merge" ||
         action.kind === "render.deploy" && action.environment === "staging"
-        ? Number(action.pull_request) : null,
+        ? Number(evidenceAction.pull_request) : null,
       merged,
-      head_commit: action.kind === "github.merge" ? sha(action.head_commit) : checksCommit,
-      expected_base_commit: action.kind === "github.merge" || action.kind === "render.deploy"
-        ? sha(action.expected_base_commit || baseCommit) : sha(action.expected_remote_commit),
+      head_commit: evidenceAction.kind === "github.merge" ? sha(evidenceAction.head_commit) : checksCommit,
+      expected_base_commit: evidenceAction.kind === "github.merge" || action.kind === "render.deploy"
+        ? sha(evidenceAction.expected_base_commit || baseCommit) : sha(evidenceAction.expected_remote_commit),
       merge_commit: mergeCommit,
       target_commit: targetCommit,
       branch,
@@ -799,6 +906,12 @@ export function createHostNativeExternalReadbackVerifier({
       observed_checks: checks.observed_checks,
       rollback_commit: rollbackCommit,
       rollback_commit_available: true,
+      ...(observation ? {
+        source_action_kind: evidenceAction.kind,
+        predecessor_ticket_id: ticket.predecessor.ticket_id,
+        predecessor_ticket_digest: ticket.predecessor.ticket_digest,
+        source_action_digest: ticket.predecessor.source_action_digest,
+      } : {}),
       ...(checks.required_checks_policy_digest ? {
         required_checks_policy_digest: checks.required_checks_policy_digest,
         checks_attestation_digest: checks.checks_attestation_digest,

@@ -1035,15 +1035,27 @@ function verifiedFinalizeAuthorization(record, {
   const signed = { ...unsigned, authorization_digest };
   const issuedAt = Date.parse(receipt.issued_at || "");
   const expiresAt = Date.parse(receipt.expires_at || "");
+  const ticket = record?.ticket;
   if (
+    !ticket || !safeEqual(ticket.signature, ticketSignature(signing, ticket)) ||
     receipt.schema_version !== "host_native_finalize_authorization_v1" ||
     receipt.trusted !== true || receipt.allowed !== true ||
     receipt.decision !== "ALLOW_FINALIZE" ||
     receipt.result_commit_verified !== true ||
     receipt.tenant_id !== tenantId || receipt.work_id !== workId ||
     receipt.repository !== repository || receipt.target_commit !== targetCommit ||
-    receipt.action_ticket_id !== record.ticket?.ticket_id ||
-    receipt.decision_id !== record.ticket?.ticket_id ||
+    receipt.action_ticket_id !== ticket.ticket_id ||
+    receipt.decision_id !== ticket.ticket_id ||
+    receipt.action_ticket_digest !== hostNativeDigest(ticket) ||
+    receipt.release_manifest_digest !== ticket.release_manifest_digest ||
+    receipt.release_intent_digest !== ticket.release_intent_digest ||
+    receipt.core_join_verdict_id !== ticket.core_join_verdict_id ||
+    receipt.core_join_verdict_digest !== ticket.core_join_verdict_digest ||
+    receipt.core_join_resolution_digest !== ticket.release_join_resolution_digest ||
+    receipt.predecessor_chain_digest !== (ticket.predecessor_chain_digest || null) ||
+    receipt.evidence_digest !== ticket.evidence_digest ||
+    receipt.host_kind !== ticket.host_kind ||
+    receipt.host_session_fingerprint !== ticket.host_session_fingerprint ||
     receipt.host_policy_override !== false || receipt.host_policy_must_allow !== true ||
     receipt.provider_execution !== false ||
     !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) ||
@@ -1542,18 +1554,89 @@ export function createHostNativeGovernance({
         }
         if (action.kind === "render.observe") {
           const parent = initial.tickets[String(action.parent_release_ticket_id || "")];
-          if (!parent?.finalize_authorization || parent.ticket.tenant_id !== tenantId ||
-              action.parent_release_ticket_digest !== hostNativeDigest(parent.ticket) ||
-              action.release_manifest_digest !== parent.ticket.release_manifest_digest) {
+          const parentTicket = parent?.ticket;
+          const parentTicketDigest = parentTicket && hostNativeDigest(parentTicket);
+          const sourceAction = parentTicket?.action;
+          const sourceKind = sourceAction?.kind;
+          const sourceBranch = sourceKind === "github.merge"
+            ? sourceAction?.base_branch
+            : sourceAction?.branch;
+          const parentBinding = parentTicket?.release_manifest_binding;
+          const parentResolution = parentTicket?.release_join_resolution;
+          if (
+            !parent || !["completed", "reconciled"].includes(parent.state) ||
+            (parent.outcome !== "success" && parent.observed_outcome !== "success") ||
+            !["github.merge", "git.push.protected"].includes(sourceKind) ||
+            parentTicket.bootstrap_release_exception_candidate ||
+            parentTicket.tenant_id !== tenantId ||
+            parentTicket.work_id !== delegation.grant.work_id ||
+            parentTicket.delegation_id !== delegation.delegation_id ||
+            parentTicket.repository !== delegation.grant.repository ||
+            parentTicket.host_kind !== host_kind ||
+            parentTicket.host_session_fingerprint !== host_session_fingerprint ||
+            action.parent_release_ticket_digest !== parentTicketDigest ||
+            action.release_manifest_digest !== release_manifest.manifest_digest ||
+            action.release_manifest_digest !== parentTicket.release_manifest_digest ||
+            evidence_digest !== parentTicket.evidence_digest ||
+            parentResolution?.evidence_digest !== parentTicket.evidence_digest ||
+            parentBinding?.manifest_digest !== parentTicket.release_manifest_digest ||
+            parentBinding?.repository !== delegation.grant.repository ||
+            parentBinding?.delivery_branch !== sourceBranch || action.branch !== sourceBranch
+          ) {
             fail("predecessor_ticket_invalid");
           }
-          coreJoin = initial.core_join_verdicts[parent.ticket.core_join_verdict_id];
-          release_join_resolution = parent.ticket.release_join_resolution;
-          release_intent_digest = parent.ticket.release_intent_digest;
+          const finalizeAuthorization = verifiedFinalizeAuthorization(parent, {
+            signing,
+            nowValue,
+            tenantId,
+            workId: delegation.grant.work_id,
+            repository: delegation.grant.repository,
+            targetCommit: commit(action.target_commit),
+          });
+          const service = parentBinding.delivery?.services?.find((entry) =>
+            entry.service_id === action.service_id && entry.environment === action.environment);
+          if (!service || finalizeAuthorization.target_commit !== action.target_commit) {
+            fail("predecessor_ticket_invalid");
+          }
+          coreJoin = initial.core_join_verdicts[parentTicket.core_join_verdict_id];
+          if (
+            !coreJoin || coreJoin.state !== "consumed" || coreJoin.uses !== 1 ||
+            hostNativeDigest(coreJoin.claim) !== coreJoin.claim_digest ||
+            coreJoin.consumed_by_ticket_id !== parentTicket.ticket_id ||
+            coreJoin.verdict_id !== parentTicket.core_join_verdict_id ||
+            coreJoin.claim_digest !== parentTicket.core_join_verdict_digest ||
+            coreJoin.claim?.tenant_id !== tenantId ||
+            coreJoin.claim?.work_id !== delegation.grant.work_id ||
+            coreJoin.claim?.intent_anchor_digest !== delegation.grant.intent_anchor_digest ||
+            coreJoin.claim?.repository !== delegation.grant.repository ||
+            coreJoin.claim?.release_intent_digest !== parentTicket.release_intent_digest ||
+            parentResolution?.verdict_id !== coreJoin.verdict_id ||
+            parentResolution?.tenant_id !== tenantId ||
+            parentResolution?.work_id !== delegation.grant.work_id ||
+            parentResolution?.intent_anchor_digest !== delegation.grant.intent_anchor_digest ||
+            parentResolution?.repository !== delegation.grant.repository
+          ) {
+            fail("core_join_verdict_binding_mismatch");
+          }
+          const sourceRequiredChecksPolicyDigest = coreJoin.claim.required_checks_policy_digest;
+          if (
+            !SHA256.test(String(sourceRequiredChecksPolicyDigest || "")) ||
+            finalizeAuthorization.github_readback?.required_checks_policy_digest !==
+              sourceRequiredChecksPolicyDigest
+          ) fail("required_checks_policy_mismatch");
+          release_manifest = clone(parentBinding);
+          release_join_resolution = clone(parentResolution);
+          release_intent_digest = parentTicket.release_intent_digest;
           predecessor = {
-            ticket_id: parent.ticket.ticket_id,
-            ticket_digest: hostNativeDigest(parent.ticket),
-            result_commit: parent.result_commit || action.target_commit,
+            ticket_id: parentTicket.ticket_id,
+            ticket_digest: parentTicketDigest,
+            result_commit: finalizeAuthorization.target_commit,
+            finalize_authorization: clone(finalizeAuthorization),
+            finalize_authorization_digest: finalizeAuthorization.authorization_digest,
+            source_action: clone(sourceAction),
+            source_action_digest: hostNativeDigest(sourceAction),
+            source_evidence_digest: parentTicket.evidence_digest,
+            source_required_checks_policy_digest: sourceRequiredChecksPolicyDigest,
           };
         } else if (bootstrapReleaseExceptionCandidate) {
           const resolvedServices = [];
@@ -2044,6 +2127,32 @@ export function createHostNativeGovernance({
         github.expected_base_commit !== current.ticket.action.expected_base_commit
       )) {
         fail("trusted_readback_github_mismatch");
+      }
+      if (current.ticket.action.kind === "render.observe") {
+        const predecessor = current.ticket.predecessor;
+        const sourceAction = predecessor?.source_action;
+        const expectedBase = sourceAction?.kind === "github.merge"
+          ? sourceAction.expected_base_commit
+          : sourceAction?.expected_remote_commit;
+        if (
+          current.ticket.predecessor_chain_digest !== hostNativeDigest(predecessor) ||
+          predecessor?.source_action_digest !== hostNativeDigest(sourceAction) ||
+          github.source_action_kind !== sourceAction?.kind ||
+          github.predecessor_ticket_id !== predecessor?.ticket_id ||
+          github.predecessor_ticket_digest !== predecessor?.ticket_digest ||
+          github.source_action_digest !== predecessor?.source_action_digest ||
+          github.branch !== current.ticket.action.branch || github.branch_commit !== targetCommit ||
+          github.head_commit !== current.ticket.release_manifest_binding.verification.checks_commit ||
+          github.expected_base_commit !== expectedBase ||
+          github.required_checks_policy_digest !==
+            predecessor?.source_required_checks_policy_digest ||
+          (sourceAction?.kind === "github.merge" && (
+            github.merged !== true || github.merge_commit !== targetCommit ||
+            github.pull_request !== sourceAction.pull_request ||
+            github.head_branch !== sourceAction.head_branch ||
+            github.base_branch !== sourceAction.base_branch
+          ))
+        ) fail("trusted_readback_github_mismatch");
       }
       if (!Array.isArray(github.observed_checks) || github.observed_checks.some((check) => (
         check?.status !== "completed" || check?.conclusion !== "success" ||
