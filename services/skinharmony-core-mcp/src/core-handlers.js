@@ -2069,7 +2069,7 @@ export function createCoreHandlers(config, options = {}) {
           restart_durable: store.restart_durable === true,
           distributed: store.distributed === true,
           signer_mode: "hmac_icf",
-          signer_state: attestation.enforcement_allowed === true ? "configured" : "unconfigured",
+          signer_state: store.kind === "postgresql" && store.restart_durable === true && store.distributed === true ? "configured" : "unconfigured",
         } : { enabled: false, ready: false, signer_mode: "hmac_icf", signer_state: "unconfigured", backend: "unavailable" },
         tenant_id: identity.tenantId,
         mcp_identity: ownerBindingStatus(config, identity),
