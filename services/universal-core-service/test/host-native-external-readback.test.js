@@ -2259,6 +2259,101 @@ function releaseJoinFetch({
   };
 }
 
+function standingMergeJoinRequest(overrides = {}) {
+  return releaseJoinRequest({
+    required_checks: [...STRICT_POLICY.required_checks],
+    required_checks_policy_digest: STRICT_POLICY_DIGEST,
+    action: {
+      ...releaseJoinRequest().action,
+      merge_method: "merge",
+    },
+    ...overrides,
+  });
+}
+
+function standingMergeJoinFetch({
+  protection = {},
+  rules = [],
+  reviews = [{
+    id: 501,
+    state: "APPROVED",
+    commit_id: HEAD,
+    submitted_at: VERIFIED_AT,
+    user: { login: "reviewer-a" },
+  }],
+} = {}) {
+  return async (url) => {
+    const root = "https://api.github.com/repos/owner/repo";
+    if (url === `${root}/git/commits/${HEAD}`) {
+      return jsonResponse({ sha: HEAD, tree: { sha: TREE } });
+    }
+    if (url === `${root}/commits/${HEAD}/check-runs?per_page=100`) {
+      return jsonResponse(strictChecks());
+    }
+    if (url === `${root}/actions/runs/700`) return jsonResponse(strictWorkflow());
+    if ([
+      `${root}/contents/.github/workflows/nyra-core-intelligence.yml?ref=${BASE}`,
+      `${root}/contents/.github/workflows/nyra-core-intelligence.yml?ref=${HEAD}`,
+    ].includes(url)) {
+      return jsonResponse({
+        type: "file",
+        path: STRICT_POLICY.workflow.path,
+        encoding: "base64",
+        content: Buffer.from(WORKFLOW_SOURCE).toString("base64"),
+      });
+    }
+    if (url === `${root}/pulls/42`) {
+      return jsonResponse(pullRequest("owner/repo", {
+        merged: false,
+        state: "open",
+        draft: false,
+        user: { login: "author-a" },
+      }));
+    }
+    if (url === `${root}/branches/main`) {
+      return jsonResponse({ name: "main", protected: true, commit: { sha: BASE } });
+    }
+    if (url === `${root}/branches/main/protection`) {
+      return jsonResponse({
+        required_status_checks: {
+          strict: true,
+          checks: STRICT_POLICY.required_checks.map((context) => ({
+            context,
+            app_id: STRICT_POLICY.check_app.id,
+          })),
+        },
+        enforce_admins: { enabled: true },
+        required_pull_request_reviews: {
+          required_approving_review_count: 1,
+          bypass_pull_request_allowances: { users: [], teams: [], apps: [] },
+        },
+        allow_force_pushes: { enabled: false },
+        allow_deletions: { enabled: false },
+        ...protection,
+      });
+    }
+    if (url === `${root}/rules/branches/main?per_page=100&page=1`) {
+      return jsonResponse(rules);
+    }
+    if (url === `${root}/pulls/42/reviews?per_page=100&page=1`) {
+      return jsonResponse(reviews);
+    }
+    if (url === `${root}/pulls/42/files?per_page=10&page=1`) {
+      return jsonResponse([{ filename: RELEASE_CHANGED_FILES[0], status: "modified" }]);
+    }
+    if (url === "https://service-a.onrender.com/healthz") {
+      return jsonResponse(serviceHealth("service-a", {
+        build: {
+          build_id: "previous-service-a",
+          commit_sha: BASE,
+          commit_verifiable: true,
+        },
+      }));
+    }
+    throw new Error(`unexpected URL: ${url}`);
+  };
+}
+
 function productionDeployJoinRequest(overrides = {}) {
   const serviceA = {
     service_id: "service-a",
@@ -2434,6 +2529,58 @@ test("release-join resolver independently proves exact pre-merge GitHub state", 
     previous_live_attestations: resolution.previous_live_attestations,
     pre_action_readback_digest: resolution.pre_action_readback_digest,
     provider_execution: false,
+  });
+});
+
+test("standing merge readback is fresh and fails closed on protection or review drift", async (t) => {
+  const resolve = (fetchImpl) => createHostNativeReleaseJoinVerdictResolver({
+    fetchImpl,
+    githubTokenResolver: async () => "standing-merge-token",
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    now: () => Date.parse(VERIFIED_AT),
+  })(standingMergeJoinRequest());
+
+  const verified = await resolve(standingMergeJoinFetch());
+  assert.equal(verified.pre_merge_readback.trusted, true);
+  assert.equal(verified.pre_merge_readback.head_commit, HEAD);
+  assert.equal(verified.pre_merge_readback.approved_reviews.length, 1);
+  assert.equal(verified.required_checks_policy_digest, STRICT_POLICY_DIGEST);
+
+  await t.test("protection drift", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protection: { enforce_admins: { enabled: false } },
+    })),
+    /release_join_verdict_pre_merge_protection_drift/,
+  ));
+  await t.test("review drift", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      reviews: [{
+        id: 501,
+        state: "APPROVED",
+        commit_id: ALTERNATE,
+        submitted_at: VERIFIED_AT,
+        user: { login: "reviewer-a" },
+      }],
+    })),
+    /release_join_verdict_pre_merge_review_not_approved/,
+  ));
+  await t.test("review ordering uses the latest authoritative state", async () => {
+    const resolution = await resolve(standingMergeJoinFetch({
+      reviews: [{
+        id: 502,
+        state: "APPROVED",
+        commit_id: HEAD,
+        submitted_at: VERIFIED_AT,
+        user: { login: "reviewer-a" },
+      }, {
+        id: 501,
+        state: "CHANGES_REQUESTED",
+        commit_id: HEAD,
+        submitted_at: "2026-07-29T11:59:00.000Z",
+        user: { login: "reviewer-a" },
+      }],
+    }));
+    assert.equal(resolution.pre_merge_readback.approved_reviews[0].review_id, 502);
   });
 });
 

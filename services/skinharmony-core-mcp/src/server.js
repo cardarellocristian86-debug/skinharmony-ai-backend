@@ -215,6 +215,44 @@ async function resolveDttWorkBinding(identity, workId) {
   }
 }
 
+async function resolveStandingReleaseIntentBinding(identity, workId) {
+  requireTenantWorkCapability(identity, "read");
+  if (
+    typeof workContinuityRuntime?.resolveStandingReleaseIntentBinding !== "function" ||
+    typeof workContinuityV2Store?.readWork !== "function"
+  ) {
+    throw new Error("standing_release_intent_binding_unavailable");
+  }
+  try {
+    await authorizeDttExactWorkRead({
+      store: workContinuityV2Store,
+      identity: withTenantWorkAcl(identity),
+      tenant_id: identity.tenantId,
+      work_id: workId,
+    });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if (reason === "dtt_work_acl_denied") throw error;
+    const unavailable = new Error("standing_release_intent_binding_unavailable");
+    unavailable.code = "standing_release_intent_binding_unavailable";
+    throw unavailable;
+  }
+  try {
+    return await workContinuityRuntime.resolveStandingReleaseIntentBinding(identity, {
+      work_id: workId,
+    });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if (reason.startsWith("standing_release_intent_") || reason === "work_id_invalid") {
+      throw error;
+    }
+    const unavailable = new Error("standing_release_intent_binding_unavailable");
+    unavailable.code = "standing_release_intent_binding_unavailable";
+    throw unavailable;
+  }
+}
+Object.defineProperty(resolveStandingReleaseIntentBinding, "trusted", { value: true });
+
 async function resolveGenericWorkCoreJoinBinding(identity, workId) {
   requireTenantWorkCapability(identity, "read");
   if (typeof workContinuityRuntime?.resolveGenericWorkCoreJoinLeaseBinding !== "function"
@@ -266,6 +304,7 @@ const coreHandlers = createCoreHandlers(config, {
   decisionLedger,
   remediationStore: workContinuityRuntime?.remediationStore,
   resolveDttWorkBinding,
+  resolveStandingReleaseIntentBinding,
   resolveGenericWorkCoreJoinBinding,
   genericWorkCoreJoinVerifierMetadata,
   tenantWorkGallery: workContinuityRuntime ? {

@@ -195,6 +195,10 @@ export function loadConfig(env = process.env) {
   const auth0Audience = String(env.AUTH0_AUDIENCE || "").trim();
   const codexKeys = csv(env.CODEX_BEARER_KEYS);
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
+  const githubStandingReleaseWorkerUrl = url(
+    env.GITHUB_STANDING_RELEASE_WORKER_URL,
+    "GITHUB_STANDING_RELEASE_WORKER_URL",
+  );
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
   const universalCoreKeys = jsonObject(env.UNIVERSAL_CORE_KEYS_JSON, "UNIVERSAL_CORE_KEYS_JSON");
   const suiteControlPlaneUrl = url(env.SUITE_CONTROL_PLANE_URL, "SUITE_CONTROL_PLANE_URL");
@@ -412,6 +416,7 @@ export function loadConfig(env = process.env) {
     codexScopes: csv(env.CODEX_BEARER_SCOPES || "core:read,core:govern"),
     supportedScopes: csv(env.MCP_SUPPORTED_SCOPES || "core:read,core:govern"),
     universalCoreUrl,
+    githubStandingReleaseWorkerUrl,
     universalCoreKey,
     universalCoreKeys,
     tenantGatewayKey,

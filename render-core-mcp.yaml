@@ -66,6 +66,8 @@ services:
         value: "false"
       - key: UNIVERSAL_CORE_URL
         value: https://skinharmony-universal-core.onrender.com
+      - key: GITHUB_STANDING_RELEASE_WORKER_URL
+        value: https://skinharmony-github-standing-release-worker.onrender.com
       - key: UNIVERSAL_CORE_KEYS_JSON
         sync: false
       - key: UNIVERSAL_CORE_KEY

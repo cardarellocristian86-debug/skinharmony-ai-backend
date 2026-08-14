@@ -651,6 +651,7 @@ export function createCoreHandlers(config, options = {}) {
   const sharedMemoryBootstrap = options.sharedMemoryBootstrap;
   const tenantWorkGallery = options.tenantWorkGallery;
   const resolveDttWorkBinding = options.resolveDttWorkBinding;
+  const resolveStandingReleaseIntentBinding = options.resolveStandingReleaseIntentBinding;
   const resolveGenericWorkCoreJoinBinding = options.resolveGenericWorkCoreJoinBinding;
   const genericWorkCoreJoinVerifierMetadata = options.genericWorkCoreJoinVerifierMetadata || null;
   const decisionLedger = options.decisionLedger || null;
@@ -1128,6 +1129,80 @@ export function createCoreHandlers(config, options = {}) {
         lease_binding: leaseBinding,
         agent_presence: identity.agentPresence,
       },
+    });
+  }
+
+  async function persistedStandingReleaseIntent(identity, workIdValue, callerDigestValue) {
+    const rawWorkId = typeof workIdValue === "string" ? workIdValue : "";
+    const workId = rawWorkId.trim().toLowerCase();
+    if (rawWorkId !== workId || !POLICY_REGISTRY_WORK_ID.test(workId)) {
+      throw new Error("standing_release_work_id_invalid");
+    }
+    const rawCallerDigest = typeof callerDigestValue === "string" ? callerDigestValue : "";
+    const callerDigest = rawCallerDigest.trim().toLowerCase();
+    if (rawCallerDigest !== callerDigest || !POLICY_REGISTRY_SHA256.test(callerDigest)) {
+      throw new Error("standing_release_intent_digest_invalid");
+    }
+    if (
+      typeof resolveStandingReleaseIntentBinding !== "function" ||
+      resolveStandingReleaseIntentBinding.trusted !== true
+    ) {
+      throw new Error("standing_release_intent_binding_unavailable");
+    }
+    let binding;
+    try {
+      binding = await resolveStandingReleaseIntentBinding(identity, workId);
+    } catch (error) {
+      const reason = String(error?.code || error?.message || "");
+      if (reason.startsWith("standing_release_intent_") || reason === "dtt_work_acl_denied") {
+        throw error;
+      }
+      throw new Error("standing_release_intent_binding_unavailable");
+    }
+    const persistedDigest = String(binding?.intent_anchor_digest || "").trim().toLowerCase();
+    const bindingDigest = String(binding?.binding_digest || "").trim().toLowerCase();
+    const verifiedAtRaw = String(binding?.verified_at || "");
+    const workUpdatedAtRaw = String(binding?.work_updated_at || "");
+    const anchorCreatedAtRaw = String(binding?.intent_anchor_created_at || "");
+    const verifiedAt = Date.parse(verifiedAtRaw);
+    const workUpdatedAt = Date.parse(workUpdatedAtRaw);
+    const anchorCreatedAt = Date.parse(anchorCreatedAtRaw);
+    const nowValue = Date.now();
+    const { binding_digest: _bindingDigest, ...unsignedBinding } = binding || {};
+    const computedBindingDigest = crypto.createHash("sha256")
+      .update(JSON.stringify(stableCanonical(unsignedBinding)))
+      .digest("hex");
+    if (
+      binding?.schema_version !== "standing_release_intent_binding_v1" ||
+      binding?.source !== "mcp_work_continuity_postgres" ||
+      binding?.tenant_id !== identity?.tenantId ||
+      binding?.work_id !== workId ||
+      typeof binding?.project_id !== "string" ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,63}$/.test(binding.project_id) ||
+      !["active", "verified", "release_ready"].includes(binding?.work_status) ||
+      !Number.isSafeInteger(binding?.current_version) || binding.current_version < 1 ||
+      !Number.isFinite(workUpdatedAt) || workUpdatedAtRaw !== new Date(workUpdatedAt).toISOString() ||
+      binding?.intent_anchor_schema_version !== "intent_anchor_v1" ||
+      binding?.intent_anchor_immutable !== true ||
+      binding?.intent_anchor_digest !== persistedDigest || !POLICY_REGISTRY_SHA256.test(persistedDigest) ||
+      !Number.isFinite(anchorCreatedAt) ||
+      anchorCreatedAtRaw !== new Date(anchorCreatedAt).toISOString() ||
+      !Number.isFinite(verifiedAt) || verifiedAtRaw !== new Date(verifiedAt).toISOString() ||
+      verifiedAt > nowValue + 30_000 || verifiedAt < nowValue - 300_000 ||
+      workUpdatedAt > verifiedAt + 30_000 || anchorCreatedAt > verifiedAt + 30_000 ||
+      binding?.provider_execution !== false ||
+      binding?.binding_digest !== bindingDigest || !POLICY_REGISTRY_SHA256.test(bindingDigest) ||
+      bindingDigest !== computedBindingDigest
+    ) {
+      throw new Error("standing_release_intent_binding_invalid");
+    }
+    if (callerDigest !== persistedDigest) {
+      throw new Error("standing_release_intent_digest_mismatch");
+    }
+    return Object.freeze({
+      work_id: workId,
+      intent_anchor_digest: persistedDigest,
+      binding: Object.freeze(structuredClone(binding)),
     });
   }
 
@@ -2288,6 +2363,373 @@ export function createCoreHandlers(config, options = {}) {
       }
       return dedicatedCoreTextResult({ ok: true, generic_core_join_verdict: verdict }, route);
     },
+    host_native_standing_release_mandate_install: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const ttlSeconds = Number(args.ttl_seconds);
+      if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 2_592_000) {
+        throw new Error("standing_release_mandate_ttl_invalid");
+      }
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.authorization_work_id,
+        args.authorization_intent_anchor_digest,
+      );
+      const requestBody = {
+        authorization_work_id: persistedIntent.work_id,
+        authorization_intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        authorization_intent_binding: persistedIntent.binding,
+        repository: args.repository,
+        base_branch: args.base_branch,
+        delivery_branch_prefix: args.delivery_branch_prefix,
+        allowed_path_prefixes: args.allowed_path_prefixes,
+        denied_path_prefixes: args.denied_path_prefixes || [],
+        required_checks: args.required_checks,
+        required_checks_policy_digest: args.required_checks_policy_digest,
+        services: args.services,
+        repair_classes: args.repair_classes,
+        limits: args.limits,
+        base_protection_required: args.base_protection_required === true,
+        expires_at: new Date(Date.now() + ttlSeconds * 1_000).toISOString(),
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_standing_release_mandate_install",
+          args.idempotency_key,
+        ),
+      };
+      const route = "/v1/host-native/standing-release/mandates";
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding(
+              "host_native_standing_release_mandate_install",
+              requestBody,
+            ),
+          }),
+        },
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_mandate_read: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/mandates/${encodeURIComponent(args.mandate_id)}`;
+      return textResult(await dttCoreRequest(
+        route,
+        { work_id: args.work_id },
+        identity,
+        { method: "GET", strictTransport: true },
+      ));
+    },
+    host_native_standing_release_mandate_revoke: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const requestBody = {
+        mandate_id: args.mandate_id,
+        reason_digest: args.reason_digest,
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_standing_release_mandate_revoke",
+          args.idempotency_key,
+        ),
+      };
+      const route = `/v1/host-native/standing-release/mandates/${encodeURIComponent(args.mandate_id)}/revoke`;
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding(
+              "host_native_standing_release_mandate_revoke",
+              requestBody,
+            ),
+          }),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_delegation_derive: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/mandates/${encodeURIComponent(args.mandate_id)}/derive-delegation`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body: {
+          work_id: persistedIntent.work_id,
+          intent_anchor_digest: persistedIntent.intent_anchor_digest,
+          intent_binding: persistedIntent.binding,
+          delivery_branch: args.delivery_branch,
+          changed_files: args.changed_files,
+          builder_agent_id: args.builder_agent_id,
+          verifier_agent_ids: args.verifier_agent_ids,
+          required_checks_policy_digest: args.required_checks_policy_digest,
+          induced_services: args.induced_services,
+          host_kind: hostNativeKind(identity),
+          host_session_fingerprint: hostNativeSessionFingerprint(identity),
+          ttl_seconds: args.ttl_seconds,
+          idempotency_key: args.idempotency_key,
+        },
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_start: async (args, identity) => {
+      const route = "/v1/host-native/standing-release/runs";
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        delegation_id: args.delegation_id,
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        host_kind: hostNativeKind(identity),
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_read: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}`;
+      return textResult(await dttCoreRequest(
+        route,
+        { work_id: args.work_id },
+        identity,
+        { method: "GET", strictTransport: true },
+      ));
+    },
+    host_native_standing_release_run_bind_ticket: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/bind-ticket`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        expected_version: args.expected_version,
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_reserve: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/reserve`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        expected_version: args.expected_version,
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_complete: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/complete`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        expected_version: args.expected_version,
+        reservation_id: args.reservation_id,
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        outcome: args.outcome,
+        result_digest: args.result_digest,
+        idempotency_key: args.idempotency_key,
+        ...(args.result_commit ? { result_commit: args.result_commit } : {}),
+        ...(args.result_pull_request === undefined
+          ? {}
+          : { result_pull_request: args.result_pull_request }),
+        ...(args.readback_digest ? { readback_digest: args.readback_digest } : {}),
+      };
+      const payload = await dttCoreRequest(
+        route,
+        { work_id: persistedIntent.work_id },
+        identity,
+        { method: "POST", body, strictTransport: true },
+      );
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_reconcile: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/reconcile`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        expected_version: args.expected_version,
+        reservation_id: args.reservation_id,
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        observed_outcome: args.observed_outcome,
+        readback_digest: args.readback_digest,
+        idempotency_key: args.idempotency_key,
+        ...(args.observed_commit ? { observed_commit: args.observed_commit } : {}),
+        ...(args.observed_pull_request === undefined
+          ? {}
+          : { observed_pull_request: args.observed_pull_request }),
+      };
+      const payload = await dttCoreRequest(
+        route,
+        { work_id: persistedIntent.work_id },
+        identity,
+        { method: "POST", body, strictTransport: true },
+      );
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_advance: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/advance`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        expected_version: args.expected_version,
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_quarantine_expired: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/quarantine-expired`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        reservation_id: args.reservation_id,
+        expected_version: args.expected_version,
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_cancel: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/cancel`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        reason_digest: args.reason_digest,
+        expected_version: args.expected_version,
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_github_execute: async (args, identity) => {
+      const persistedIntent = await persistedStandingReleaseIntent(identity, args.work_id, args.intent_anchor_digest);
+      if (String(args.claim?.tenant_id || "") !== String(identity.tenantId || "") ||
+          String(args.claim?.work_id || "").toLowerCase() !== persistedIntent.work_id ||
+          String(args.claim?.schema_version || "") !== "github_worker_execution_claim_v1") {
+        throw new Error("github_worker_execution_claim_binding_mismatch");
+      }
+      if (!config.githubStandingReleaseWorkerUrl) throw new Error("github_worker_unavailable");
+      const response = await fetchImpl(`${config.githubStandingReleaseWorkerUrl}/v1/execute`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ claim: args.claim, ...(args.materialization ? { materialization: args.materialization } : {}) }),
+      });
+      const payload = await response.json().catch(() => ({ error: "github_worker_invalid_response" }));
+      if (!response.ok) {
+        const error = new Error(String(payload?.error || "github_worker_execution_failed"));
+        error.statusCode = response.status;
+        throw error;
+      }
+      return dedicatedCoreTextResult(payload, "/v1/execute");
+    },
+    host_native_standing_release_github_reconcile: async (args, identity) => {
+      const persistedIntent = await persistedStandingReleaseIntent(identity, args.work_id, args.intent_anchor_digest);
+      if (String(args.claim?.tenant_id || "") !== String(identity.tenantId || "") ||
+          String(args.claim?.work_id || "").toLowerCase() !== persistedIntent.work_id ||
+          String(args.claim?.schema_version || "") !== "github_worker_execution_claim_v1") {
+        throw new Error("github_worker_execution_claim_binding_mismatch");
+      }
+      if (!config.githubStandingReleaseWorkerUrl) throw new Error("github_worker_unavailable");
+      const response = await fetchImpl(`${config.githubStandingReleaseWorkerUrl}/v1/reconcile`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ claim: args.claim }),
+      });
+      const payload = await response.json().catch(() => ({ error: "github_worker_invalid_response" }));
+      if (!response.ok) {
+        const error = new Error(String(payload?.error || "github_worker_reconciliation_failed"));
+        error.statusCode = response.status;
+        throw error;
+      }
+      return dedicatedCoreTextResult(payload, "/v1/reconcile");
+    },
     host_native_delegation_issue: async (args, identity) => {
       const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
       const ttlSeconds = Number(args.ttl_seconds);
@@ -2417,6 +2859,9 @@ export function createCoreHandlers(config, options = {}) {
             result_digest: args.result_digest,
             idempotency_key: args.idempotency_key,
             ...(args.result_commit ? { result_commit: args.result_commit } : {}),
+            ...(args.result_pull_request === undefined
+              ? {}
+              : { result_pull_request: args.result_pull_request }),
             ...(args.readback_digest ? { readback_digest: args.readback_digest } : {}),
           },
         }), route);
@@ -2442,6 +2887,9 @@ export function createCoreHandlers(config, options = {}) {
             observed_outcome: args.observed_outcome,
             readback_digest: args.readback_digest,
             ...(args.observed_commit ? { observed_commit: args.observed_commit } : {}),
+            ...(args.observed_pull_request === undefined
+              ? {}
+              : { observed_pull_request: args.observed_pull_request }),
           },
         }), route);
       } catch (error) {

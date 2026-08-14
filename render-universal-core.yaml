@@ -107,6 +107,11 @@ services:
         value: "true"
       - key: CORE_HOST_NATIVE_SIGNING_SECRET
         generateValue: true
+      # Dedicated Core→GitHub-worker execution-claim domain. The worker may
+      # verify only exact short-lived reserved actions; it receives no Core
+      # bearer, owner context or DTT signing material.
+      - key: CORE_GITHUB_WORKER_EXECUTION_SIGNING_SECRET
+        generateValue: true
       # Exact, non-secret tenant/repository/service bindings used by Core's
       # server-side live readback. Private GitHub repositories additionally
       # require the server-only credential registry documented in the service
