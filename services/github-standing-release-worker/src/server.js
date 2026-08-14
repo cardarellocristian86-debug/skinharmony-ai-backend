@@ -1,4 +1,5 @@
 import express from "express";
+import crypto from "node:crypto";
 import { createGitHubInstallationTokenResolver, parseGitHubAppBindings } from "./githubApp.js";
 import { verifyGitHubWorkerExecutionClaim } from "../../shared/github-worker-execution-claim.js";
 import { createFileExecutionLedger } from "./executionLedger.js";
@@ -15,6 +16,12 @@ function positiveInteger(value, code) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(code);
   return parsed;
+}
+
+const JOIN_SCHEMA = "generic_work_core_join_v1";
+const JOIN_PURPOSE = "generic_work_core_join_v1";
+function joinSignaturePayload(digest) {
+  return Buffer.from(`${JOIN_SCHEMA}\0${digest}`, "utf8");
 }
 
 export function createGitHubStandingReleaseWorker({ env = process.env, fetch_impl = fetch } = {}) {
@@ -68,6 +75,20 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
       tenant_bindings_configured: enabled && Boolean(env.GITHUB_APP_TENANT_BINDINGS_JSON),
       configuration_error: readinessError,
     });
+  });
+  app.post("/v1/generic-work-core-join/sign", (req, res) => {
+    const token = String(env.GENERIC_WORK_CORE_JOIN_SIGNER_SERVICE_TOKEN || "");
+    if (!token || req.get("authorization") !== `Bearer ${token}`) return res.status(401).json({ error: "unauthorized" });
+    const body = req.body;
+    if (!body || body.schema_version !== JOIN_SCHEMA || body.service !== "universal-core-service" || body.purpose !== JOIN_PURPOSE ||
+        !/^[a-f0-9]{64}$/.test(String(body.digest || "")) || !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(String(body.key_id || "")) ||
+        !/^[a-f0-9]{40}$/.test(String(body.target_commit || ""))) return res.status(400).json({ error: "invalid_request" });
+    try {
+      const key = crypto.createPrivateKey(String(env.GENERIC_WORK_CORE_JOIN_SIGNER_PRIVATE_KEY || "").replaceAll("\\n", "\n"));
+      if (key.asymmetricKeyType !== "ed25519") throw new Error("invalid_key");
+      const signature = crypto.sign(null, joinSignaturePayload(body.digest), key).toString("base64url");
+      return res.status(200).json({ schema_version: "generic_work_core_join_sign_response_v1", service: body.service, target_commit: body.target_commit, purpose: body.purpose, key_id: body.key_id, digest: body.digest, signature_algorithm: "ed25519", signature });
+    } catch { return res.status(503).json({ error: "signer_unavailable" }); }
   });
   app.post("/v1/execute", async (req, res) => {
     if (!enabled || readinessError || !ledger || !executor) {
