@@ -348,6 +348,12 @@ function dedicatedCoreTextResult(payload, route) {
   });
 }
 
+function standingReleaseAutoDigest(evidence) {
+  return crypto.createHash("sha256")
+    .update(JSON.stringify(stableCanonical(evidence)))
+    .digest("hex");
+}
+
 function compactTextResult(payload, narration = {}) {
   return {
     structuredContent: payload,
@@ -2538,6 +2544,13 @@ export function createCoreHandlers(config, options = {}) {
       return dedicatedCoreTextResult(payload, route);
     },
     host_native_standing_release_run_reserve: async (args, identity) => {
+      if (
+        config.standingReleaseAutoCoordinatorConfigurationValid === false ||
+        (config.standingReleaseAutoCoordinatorEnabled &&
+          !config.githubStandingReleaseWorkerUrl)
+      ) {
+        throw new Error("standing_release_auto_coordinator_unavailable");
+      }
       const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/reserve`;
       const persistedIntent = await persistedStandingReleaseIntent(
         identity,
@@ -2558,7 +2571,164 @@ export function createCoreHandlers(config, options = {}) {
         body,
         strictTransport: true,
       });
-      return dedicatedCoreTextResult(payload, route);
+      const claim = payload?.github_execution_claim;
+      if (!config.standingReleaseAutoCoordinatorEnabled || !claim) {
+        return dedicatedCoreTextResult(payload, route);
+      }
+      if (
+        claim.schema_version !== "github_worker_execution_claim_v1" ||
+        claim.tenant_id !== identity.tenantId ||
+        String(claim.work_id || "").toLowerCase() !== persistedIntent.work_id ||
+        claim.ticket_id !== args.ticket_id ||
+        claim.ticket_id !== payload?.action_ticket?.ticket?.ticket_id ||
+        claim.reservation_id !== payload?.action_ticket?.reservation_id
+      ) {
+        throw new Error("standing_release_auto_claim_binding_mismatch");
+      }
+      // A reserve replay returns the authoritative current ticket. Once the
+      // first attempt has marked it reconciliation_required or completed, do
+      // not mint another worker attempt from the freshly signed replay claim.
+      if (payload.action_ticket.state !== "reserved") {
+        return dedicatedCoreTextResult(payload, route);
+      }
+
+      const dispatchDigest = standingReleaseAutoDigest({
+        schema_version: "standing_release_auto_dispatch_evidence_v1",
+        ticket_id: claim.ticket_id,
+        reservation_id: claim.reservation_id,
+        action_digest: claim.action_digest,
+        nonce: claim.nonce,
+        state: "outcome_unknown_before_dispatch",
+      });
+      const markerIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const completeRoute = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/complete`;
+      const marker = await dttCoreRequest(
+        completeRoute,
+        { work_id: markerIntent.work_id },
+        identity,
+        {
+          method: "POST",
+          strictTransport: true,
+          body: {
+            work_id: markerIntent.work_id,
+            intent_anchor_digest: markerIntent.intent_anchor_digest,
+            intent_binding: markerIntent.binding,
+            ticket_id: claim.ticket_id,
+            expected_version: args.expected_version,
+            reservation_id: claim.reservation_id,
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            outcome: "unknown",
+            result_digest: dispatchDigest,
+            idempotency_key: `auto-dispatch-${crypto.createHash("sha256")
+              .update(args.idempotency_key).digest("hex").slice(0, 32)}`,
+          },
+        },
+      );
+
+      let workerResponse;
+      let workerPayload;
+      try {
+        workerResponse = await fetchImpl(`${config.githubStandingReleaseWorkerUrl}/v1/execute`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            claim,
+            ...(args.materialization ? { materialization: args.materialization } : {}),
+          }),
+        });
+        workerPayload = await workerResponse.json().catch(() => null);
+      } catch {
+        throw new Error("standing_release_auto_execution_outcome_unknown");
+      }
+      if (!workerResponse.ok) {
+        const code = String(workerPayload?.error || "");
+        const error = new Error(code === "github_worker_execution_outcome_unknown"
+          ? "standing_release_auto_execution_outcome_unknown"
+          : "standing_release_auto_execution_failed");
+        error.statusCode = workerResponse.status;
+        throw error;
+      }
+
+      const execution = workerPayload?.execution;
+      const result = execution?.result;
+      const actionKind = String(claim.action?.kind || "");
+      const commitAction = ["git.push.branch", "github.merge"].includes(actionKind);
+      const pullRequestAction = ["github.draft_pr", "github.ready"].includes(actionKind);
+      if (
+        workerPayload?.ok !== true ||
+        workerPayload?.provider_execution !== true ||
+        execution?.schema_version !== "github_worker_execution_record_v1" ||
+        execution?.state !== "succeeded" ||
+        execution?.tenant_id !== claim.tenant_id ||
+        execution?.repository !== claim.repository ||
+        execution?.ticket_id !== claim.ticket_id ||
+        execution?.reservation_id !== claim.reservation_id ||
+        execution?.action_digest !== claim.action_digest ||
+        execution?.nonce !== claim.nonce ||
+        execution?.claim_digest !== standingReleaseAutoDigest(claim) ||
+        !/^gwl_[a-f0-9]{64}$/.test(String(execution?.signature || "")) ||
+        result?.outcome !== "success" ||
+        (!commitAction && !pullRequestAction) ||
+        (commitAction && !/^[a-f0-9]{40}$/.test(String(result?.result_commit || ""))) ||
+        (pullRequestAction && !/^[a-f0-9]{40}$/.test(String(claim.action?.head_commit || ""))) ||
+        (pullRequestAction && (!Number.isSafeInteger(result?.result_pull_request) ||
+          result.result_pull_request < 1))
+      ) {
+        throw new Error("standing_release_auto_worker_result_invalid");
+      }
+
+      const resultDigest = standingReleaseAutoDigest({
+        schema_version: "standing_release_auto_execution_evidence_v1",
+        ticket_id: claim.ticket_id,
+        reservation_id: claim.reservation_id,
+        action_digest: claim.action_digest,
+        state: execution.state,
+        result: execution.result,
+      });
+      const reconcileIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const reconcileRoute = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/reconcile`;
+      const reconcileBody = {
+        work_id: reconcileIntent.work_id,
+        intent_anchor_digest: reconcileIntent.intent_anchor_digest,
+        intent_binding: reconcileIntent.binding,
+        ticket_id: claim.ticket_id,
+        expected_version: args.expected_version,
+        reservation_id: claim.reservation_id,
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        observed_outcome: "success",
+        readback_digest: resultDigest,
+        idempotency_key: `auto-reconcile-${crypto.createHash("sha256")
+          .update(args.idempotency_key).digest("hex").slice(0, 32)}`,
+        observed_commit: result.result_commit || claim.action.head_commit,
+        ...(result.result_pull_request === undefined
+          ? {}
+          : { observed_pull_request: result.result_pull_request }),
+      };
+      const reconciliation = await dttCoreRequest(
+        reconcileRoute,
+        { work_id: reconcileIntent.work_id },
+        identity,
+        { method: "POST", body: reconcileBody, strictTransport: true },
+      );
+      return dedicatedCoreTextResult({
+        ...payload,
+        standing_release_auto_coordinator: {
+          schema_version: "standing_release_auto_coordinator_result_v1",
+          forwarded: true,
+          core_unknown_marker: marker,
+          worker_execution: execution,
+          core_reconciliation: reconciliation,
+          provider_execution: true,
+        },
+      }, route);
     },
     host_native_standing_release_run_complete: async (args, identity) => {
       const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/complete`;

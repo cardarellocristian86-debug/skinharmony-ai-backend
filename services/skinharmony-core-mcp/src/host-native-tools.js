@@ -412,8 +412,8 @@ export const HOST_NATIVE_TOOLS = [
   ),
   tool(
     "host_native_standing_release_run_reserve",
-    "Reserve the active horizontal-run ticket",
-    "Atomically reserve the exact ticket already bound to the run after a fresh Work/Intent DTT check. This is the only reservation path once a standing run exists.",
+    "Reserve and coordinate the active horizontal-run ticket",
+    "Atomically reserve the exact ticket already bound to the run after a fresh Work/Intent DTT check. When the server returns a signed GitHub execution claim and automatic coordination is enabled, the MCP durably marks the attempt uncertain before forwarding it once to the fixed worker, then reconciles only a bound successful result; uncertain outcomes stop without retry.",
     object({
       run_id: standingReleaseRunId,
       work_id: workUuid,
@@ -421,6 +421,14 @@ export const HOST_NATIVE_TOOLS = [
       ticket_id: actionTicketId,
       expected_version: { type: "integer", minimum: 1 },
       idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+      materialization: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string", minLength: 1, maxLength: 256 },
+          body: { type: "string", maxLength: 20000 },
+        },
+      },
     }, ["run_id", "work_id", "intent_anchor_digest", "ticket_id", "expected_version", "idempotency_key"]),
   ),
   tool(
