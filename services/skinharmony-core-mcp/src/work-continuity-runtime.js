@@ -3815,8 +3815,23 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ) {
           throw new Error("native_agent_plan_not_release_ready");
         }
+        const planHostType = String(row.plan.host_type || "");
+        const receiptHostKind = String(receipt.host_kind || "");
+        const sameNativeHost =
+          NATIVE_HOST_TYPES.has(planHostType) &&
+          planHostType === receiptHostKind;
+        const transportSessionFingerprint = String(
+          identity.agentPresence?.host_transport_session_fingerprint || "",
+        );
+        const sessionBoundChatgptToCodexHandoff =
+          planHostType === "chatgpt_native" &&
+          receiptHostKind === "codex_native" &&
+          identity.agentPresence?.transport_bound === true &&
+          /^[a-f0-9]{16,64}$/i.test(transportSessionFingerprint) &&
+          row.plan.coordinator_session_fingerprint ===
+            transportSessionFingerprint;
         if (
-          row.plan.host_type !== receipt.host_kind ||
+          (!sameNativeHost && !sessionBoundChatgptToCodexHandoff) ||
           row.plan.core_authority?.repository !== receipt.repository ||
           row.release_intent.repository !== receipt.repository ||
           row.release_intent.work_id !== context.workId ||

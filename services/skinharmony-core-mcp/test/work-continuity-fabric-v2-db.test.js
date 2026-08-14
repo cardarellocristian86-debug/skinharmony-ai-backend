@@ -1867,6 +1867,8 @@ test("local closure becomes release-ready and external completion needs exact Co
       agent_id: "codex-coordinator",
       client_type: "codex",
       session_fingerprint: "d".repeat(64),
+      host_transport_session_fingerprint: "7".repeat(64),
+      transport_bound: true,
     },
   };
   const work = await runtime.ensure(identity, {
@@ -1877,7 +1879,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     work_id: work.work_id,
     repository: "owner/repo",
     base_branch: "main",
-    host_type: "codex_native",
+    host_type: "chatgpt_native",
     required_checks: ["core-mcp"],
     tasks: [
       { task_id: "build", kind: "builder", instruction: "Implement." },
@@ -2024,7 +2026,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     plan_id: planId,
     task_id: "build",
     native_agent_id: "codex-builder",
-    host_type: "codex_native",
+    host_type: "chatgpt_native",
     host_task_id: "/root/build",
   });
   await assert.rejects(runtime.bindNativeAgent(identity, {
@@ -2032,7 +2034,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     plan_id: planId,
     task_id: "verify",
     native_agent_id: "codex-verifier",
-    host_type: "codex_native",
+    host_type: "chatgpt_native",
     host_task_id: "/root/verify",
   }), /native_agent_dependency_not_ready/);
   const builderIdentity = {
@@ -2079,7 +2081,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     plan_id: planId,
     task_id: "verify",
     native_agent_id: "codex-verifier",
-    host_type: "codex_native",
+    host_type: "chatgpt_native",
     host_task_id: "/root/verify",
   });
   const reusedVerifierIdentity = {
@@ -2615,12 +2617,139 @@ test("local closure becomes release-ready and external completion needs exact Co
     /continuity_trusted_core_closure_receipt_required/,
   );
 
+  const sameHostAuthorization = redigestAuthorization(
+    authorization,
+    { host_kind: "chatgpt_native" },
+    "0",
+  );
   await assert.rejects(
-    runtime.finalizeClosure(identity, baseFinalize, authorization),
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-same-host-regression",
+    }, sameHostAuthorization),
     /continuity_live_verification_required/,
   );
-  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "release_ready");
-  assert.equal(pool.plans.get(key("tenant-a", planId)).status, "verified");
+
+  const planRow = pool.plans.get(key("tenant-a", planId));
+  const originalPlan = structuredClone(planRow.plan);
+  planRow.plan.host_type = "browser_native";
+  planRow.plan_digest = digest(planRow.plan);
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-invalid-plan-host",
+    }, authorization),
+    /continuity_host_policy_scope_mismatch/,
+  );
+  planRow.plan = structuredClone(originalPlan);
+  planRow.plan_digest = digest(planRow.plan);
+
+  const wrongRepositoryAuthorization = redigestAuthorization(
+    authorization,
+    { repository: "other/repo" },
+    "f",
+  );
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-wrong-repository",
+    }, wrongRepositoryAuthorization),
+    /continuity_host_policy_scope_mismatch/,
+  );
+
+  const reverseHostAuthorization = redigestAuthorization(
+    authorization,
+    { host_kind: "chatgpt_native" },
+    "1",
+  );
+  planRow.plan.host_type = "codex_native";
+  planRow.plan_digest = digest(planRow.plan);
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-reverse-host-handoff",
+    }, reverseHostAuthorization),
+    /continuity_host_policy_scope_mismatch/,
+  );
+  planRow.plan = structuredClone(originalPlan);
+  planRow.plan_digest = digest(planRow.plan);
+
+  const unknownReceiptHostAuthorization = redigestAuthorization(
+    authorization,
+    { host_kind: "browser_native" },
+    "2",
+  );
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-unknown-receipt-host",
+    }, unknownReceiptHostAuthorization),
+    /continuity_trusted_core_closure_receipt_required/,
+  );
+
+  const wrongLogicalSessionAuthorization = redigestAuthorization(
+    authorization,
+    { host_session_fingerprint: "6".repeat(64) },
+    "3",
+  );
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-wrong-logical-session",
+    }, wrongLogicalSessionAuthorization),
+    /continuity_trusted_core_closure_receipt_required/,
+  );
+
+  identity.agentPresence.transport_bound = false;
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-cross-host-unbound-transport",
+    }, authorization),
+    /continuity_host_policy_scope_mismatch/,
+  );
+  identity.agentPresence.transport_bound = true;
+
+  planRow.plan.coordinator_session_fingerprint = "e".repeat(64);
+  planRow.plan_digest = digest(planRow.plan);
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-cross-host-wrong-session",
+    }, authorization),
+    /continuity_host_policy_scope_mismatch/,
+  );
+
+  planRow.plan.coordinator_session_fingerprint =
+    identity.agentPresence.host_transport_session_fingerprint;
+  planRow.plan_digest = digest(planRow.plan);
+  assert.notEqual(
+    planRow.plan.coordinator_session_fingerprint,
+    authorization.host_session_fingerprint,
+  );
+  const crossHostAuthorization = redigestAuthorization(authorization, {
+    verification_scope: "full_release",
+    services_verified: true,
+    live_services: [{
+      service_id: "srv-core-mcp",
+      environment: "production",
+      live_commit: liveCommit,
+      health_status: "healthy",
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      rollback_commit: "a".repeat(40),
+      rollback_status: "previous_live_attested",
+      readback_digest: "8".repeat(64),
+    }],
+  }, "1");
+  const finalized = await runtime.finalizeClosure(identity, {
+    ...baseFinalize,
+    idempotency_key: "closure-finalize-cross-host",
+  }, crossHostAuthorization);
+  assert.equal(finalized.completed, true);
+  assert.equal(finalized.final_receipt.host_type, "codex_native");
+  assert.equal(planRow.plan.host_type, "chatgpt_native");
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "completed");
+  assert.equal(planRow.status, "closed");
 });
 
 test("continuity runtime exposes no parallel delegation authority", () => {
