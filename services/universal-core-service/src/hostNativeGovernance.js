@@ -1,6 +1,20 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  normalizeStandingReleaseIntentBinding,
+  normalizeStandingReleaseMandate,
+  standingReleaseBindingActive,
+  standingReleaseEffectiveState,
+  validateStandingReleaseDerivation,
+} from "./standingReleasePolicy.js";
+import {
+  advanceStandingReleaseRun as advanceStandingReleaseRunState,
+  bindStandingReleaseRunTicket as bindStandingReleaseRunTicketState,
+  cancelStandingReleaseRun as cancelStandingReleaseRunState,
+  createStandingReleaseRun as createStandingReleaseRunState,
+  quarantineExpiredStandingReleaseRun as quarantineExpiredStandingReleaseRunState,
+} from "./standingReleaseRunner.js";
 
 export const HOST_NATIVE_HEALTH_CONTRACT_VERSION = "host_native_health_contract_v1";
 export const HOST_RELEASE_MANIFEST_VERSION = "host_release_manifest_v2";
@@ -227,12 +241,222 @@ function ticketReleaseBinding(manifest) {
   return { ...manifest, services: manifest.delivery.services };
 }
 
-function actionUsage(kind, action) {
+function actionUsage(kind, action, delegation = null) {
   const commits = kind === "git.commit" ? 1 : 0;
-  const pushes = ["git.push.branch", "git.push.protected", "github.merge"].includes(kind) ? 1 : 0;
+  const standingRelease = Boolean(delegation?.grant?.standing_release_binding);
+  const pushes = (
+    ["git.push.branch", "git.push.protected"].includes(kind) ||
+    (kind === "github.merge" && !standingRelease)
+  ) ? 1 : 0;
   const directDeploy = ["render.deploy", "render.rollback"].includes(kind) ? 1 : 0;
   const inducedDeploys = Array.isArray(action?.induced_effects) ? action.induced_effects.length : 0;
   return { commits, pushes, deploys: directDeploy + inducedDeploys, total_actions: 1 };
+}
+
+const EMPTY_STANDING_RELEASE_USAGE = Object.freeze({
+  pull_requests: 0,
+  merges: 0,
+  repair_attempts: 0,
+  rollbacks: 0,
+  deploys_by_service: {},
+});
+
+function validateStandingRepairAction(delegation, action) {
+  const binding = delegation?.grant?.standing_release_binding;
+  if (!binding || action.kind !== "git.commit" ||
+    Number(delegation.usage?.commits || 0) < 1) return;
+  if (!binding.repair_classes.includes(action.repair_class)) {
+    fail("standing_release_repair_class_denied");
+  }
+  const failedCheck = text(
+    action.failed_check,
+    "standing_release_failed_check_required",
+    160,
+  );
+  if (
+    failedCheck === "deployment-parity" ||
+    !delegation.grant.release_policy.required_checks.includes(failedCheck)
+  ) fail("standing_release_repair_check_denied");
+  if (!/^[a-f0-9]{64}$/.test(String(action.failure_evidence_digest || ""))) {
+    fail("standing_release_repair_evidence_required");
+  }
+}
+
+function successfulStandingReleasePredecessor(record) {
+  return (record?.state === "completed" && record.outcome === "success") ||
+    (record?.state === "reconciled" && record.observed_outcome === "success");
+}
+
+function sameStandingReleaseAuthority(left, right) {
+  return Boolean(left && right) &&
+    left.mandate_id === right.mandate_id &&
+    left.mandate_digest === right.mandate_digest &&
+    left.revision === right.revision &&
+    left.revocation_epoch === right.revocation_epoch;
+}
+
+function resolveStandingRepairReadyOrigin({
+  state,
+  delegation,
+  standingBinding,
+  tenantId,
+  hostKind,
+  hostSessionFingerprint,
+  readyAction,
+  repairPush,
+}) {
+  const originDraftTicketId = text(
+    readyAction.origin_draft_ticket_id,
+    "standing_release_origin_draft_required",
+    240,
+  );
+  const originDraft = state.tickets?.[originDraftTicketId];
+  const originBinding = state.delegations?.[
+    originDraft?.ticket?.delegation_id
+  ]?.grant?.standing_release_binding;
+  const pullRequest = positiveInteger(
+    readyAction.pull_request,
+    "standing_release_pull_request_invalid",
+    Number.MAX_SAFE_INTEGER,
+  );
+  if (originDraft?.ticket?.action?.kind !== "github.draft_pr") {
+    fail("standing_release_origin_draft_mismatch");
+  }
+  const originHead = commit(originDraft.ticket.action.head_commit);
+  const readyHead = commit(readyAction.head_commit);
+  const expectedBase = commit(
+    readyAction.expected_base_commit,
+    "standing_release_expected_base_required",
+  );
+  const sameTicketContext = (record) => record?.ticket?.tenant_id === tenantId &&
+    record.ticket.delegation_id === delegation.delegation_id &&
+    record.ticket.work_id === delegation.grant.work_id &&
+    record.ticket.intent_anchor_digest === delegation.grant.intent_anchor_digest &&
+    record.ticket.repository === delegation.grant.repository &&
+    record.ticket.host_kind === hostKind &&
+    record.ticket.host_session_fingerprint === hostSessionFingerprint;
+
+  if (
+    !successfulStandingReleasePredecessor(originDraft) ||
+    !sameTicketContext(originDraft) ||
+    !sameStandingReleaseAuthority(originBinding, standingBinding) ||
+    originDraft.result_pull_request !== pullRequest ||
+    originDraft.ticket.action.head_branch !== readyAction.head_branch ||
+    originDraft.ticket.action.base_branch !== readyAction.base_branch ||
+    commit(originDraft.ticket.action.expected_base_commit) !== expectedBase ||
+    expectedBase !== standingBinding.base_commit ||
+    originHead === readyHead
+  ) fail("standing_release_origin_draft_mismatch");
+
+  const configuredRepairLimit = Number(standingBinding.max_repair_attempts);
+  if (
+    !Number.isSafeInteger(configuredRepairLimit) ||
+    configuredRepairLimit < 1 || configuredRepairLimit > 2 ||
+    configuredRepairLimit !== Number(standingBinding.limits?.max_repair_attempts)
+  ) fail("standing_release_origin_draft_mismatch");
+
+  let currentPush = repairPush;
+  let expectedNewHead = readyHead;
+  let repairCount = 0;
+  while (true) {
+    repairCount += 1;
+    if (repairCount > configuredRepairLimit) {
+      fail("standing_release_origin_draft_mismatch");
+    }
+    const repairCommit = state.tickets?.[
+      currentPush?.ticket?.predecessor?.ticket_id
+    ];
+    const prior = state.tickets?.[
+      repairCommit?.ticket?.predecessor?.ticket_id
+    ];
+    const repairCommitBinding = state.delegations?.[
+      repairCommit?.ticket?.delegation_id
+    ]?.grant?.standing_release_binding;
+    const repairPushBinding = state.delegations?.[
+      currentPush?.ticket?.delegation_id
+    ]?.grant?.standing_release_binding;
+    if (
+      currentPush?.ticket?.action?.kind !== "git.push.branch" ||
+      repairCommit?.ticket?.action?.kind !== "git.commit" ||
+      !successfulStandingReleasePredecessor(currentPush) ||
+      !successfulStandingReleasePredecessor(repairCommit) ||
+      !sameTicketContext(currentPush) ||
+      !sameTicketContext(repairCommit) ||
+      !sameStandingReleaseAuthority(repairPushBinding, standingBinding) ||
+      !sameStandingReleaseAuthority(repairCommitBinding, standingBinding) ||
+      currentPush.ticket.predecessor?.ticket_id !== repairCommit.ticket.ticket_id ||
+      currentPush.ticket.action.branch !== readyAction.head_branch ||
+      repairCommit.ticket.action.branch !== readyAction.head_branch ||
+      repairCommit.result_commit !== expectedNewHead ||
+      commit(currentPush.ticket.action.source_commit) !== expectedNewHead ||
+      currentPush.result_commit !== expectedNewHead
+    ) fail("standing_release_origin_draft_mismatch");
+    validateStandingRepairAction(delegation, repairCommit.ticket.action);
+
+    const expectedOldHead = commit(repairCommit.ticket.action.parent_commit);
+    if (
+      commit(currentPush.ticket.action.expected_remote_commit) !== expectedOldHead ||
+      expectedOldHead === expectedNewHead
+    ) fail("standing_release_origin_draft_mismatch");
+
+    if (prior?.ticket?.action?.kind === "github.draft_pr") {
+      if (
+        prior.ticket.ticket_id !== originDraftTicketId ||
+        expectedOldHead !== originHead
+      ) fail("standing_release_origin_draft_mismatch");
+      break;
+    }
+    if (
+      prior?.ticket?.action?.kind !== "git.push.branch" ||
+      prior.result_commit !== expectedOldHead
+    ) fail("standing_release_origin_draft_mismatch");
+    currentPush = prior;
+    expectedNewHead = expectedOldHead;
+  }
+  return originDraft;
+}
+
+function standingReleaseUsageNext(delegation, action) {
+  const binding = delegation?.grant?.standing_release_binding;
+  if (!binding) return null;
+  const limits = binding.limits;
+  const current = delegation.standing_release_usage || EMPTY_STANDING_RELEASE_USAGE;
+  const next = {
+    pull_requests: Number(current.pull_requests || 0),
+    merges: Number(current.merges || 0),
+    repair_attempts: Number(current.repair_attempts || 0),
+    rollbacks: Number(current.rollbacks || 0),
+    deploys_by_service: { ...(current.deploys_by_service || {}) },
+  };
+  if (action.kind === "github.draft_pr") next.pull_requests += 1;
+  if (action.kind === "github.merge") next.merges += 1;
+  if (action.kind === "render.rollback") next.rollbacks += 1;
+  if (action.kind === "git.commit" && Number(delegation.usage?.commits || 0) >= 1) {
+    validateStandingRepairAction(delegation, action);
+    next.repair_attempts += 1;
+  }
+  const deployments = action.kind === "render.deploy"
+    ? [{ service_id: action.service_id, environment: action.environment }]
+    : action.kind === "github.merge" && Array.isArray(action.induced_effects)
+      ? action.induced_effects
+      : [];
+  for (const deployment of deployments) {
+    const key = `${text(deployment?.service_id, "standing_release_service_invalid", 160)}\u0000${text(deployment?.environment, "standing_release_service_invalid", 160)}`;
+    if (!binding.induced_services.some((service) =>
+      `${service.service_id}\u0000${service.environment}` === key)) {
+      fail("standing_release_service_scope_drift");
+    }
+    next.deploys_by_service[key] = Number(next.deploys_by_service[key] || 0) + 1;
+  }
+  if (
+    next.pull_requests > limits.max_pull_requests ||
+    next.merges > limits.max_merges ||
+    next.repair_attempts > limits.max_repair_attempts ||
+    next.rollbacks > limits.max_rollbacks ||
+    Object.values(next.deploys_by_service).some((count) =>
+      count > limits.max_deploys_per_service)
+  ) fail("standing_release_action_budget_exhausted");
+  return next;
 }
 
 function emptyState() {
@@ -243,6 +467,9 @@ function emptyState() {
     core_join_verdicts: {},
     owner_nonces: {},
     idempotency: {},
+    standing_release_mandates: {},
+    standing_release_leases: {},
+    standing_release_runs: {},
   };
 }
 
@@ -255,6 +482,15 @@ function normalizeState(input) {
     core_join_verdicts: input.core_join_verdicts && typeof input.core_join_verdicts === "object" ? input.core_join_verdicts : {},
     owner_nonces: input.owner_nonces && typeof input.owner_nonces === "object" ? input.owner_nonces : {},
     idempotency: input.idempotency && typeof input.idempotency === "object" ? input.idempotency : {},
+    standing_release_mandates: input.standing_release_mandates && typeof input.standing_release_mandates === "object"
+      ? input.standing_release_mandates
+      : {},
+    standing_release_leases: input.standing_release_leases && typeof input.standing_release_leases === "object"
+      ? input.standing_release_leases
+      : {},
+    standing_release_runs: input.standing_release_runs && typeof input.standing_release_runs === "object"
+      ? input.standing_release_runs
+      : {},
   };
 }
 
@@ -277,6 +513,7 @@ export function createFileHostNativeGovernanceStore({ root } = {}) {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = path.join(directory, "host-native-governance.json");
   const lock = `${file}.lock`;
+  const staleLockMs = 60_000;
   function read() {
     try {
       return normalizeState(JSON.parse(fs.readFileSync(file, "utf8")));
@@ -285,10 +522,51 @@ export function createFileHostNativeGovernanceStore({ root } = {}) {
       fail("store_unavailable");
     }
   }
+  function acquireLock() {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const descriptor = fs.openSync(lock, "wx", 0o600);
+        try {
+          fs.writeFileSync(descriptor, JSON.stringify({
+            pid: process.pid,
+            acquired_at: new Date().toISOString(),
+          }));
+          fs.fsyncSync(descriptor);
+          return descriptor;
+        } catch {
+          try { fs.closeSync(descriptor); } catch {}
+          try { fs.unlinkSync(lock); } catch {}
+          fail("store_unavailable");
+        }
+      } catch (cause) {
+        if (cause?.code !== "EEXIST" || attempt > 0) fail("store_lock_timeout");
+        let recoverable = false;
+        try {
+          const stat = fs.statSync(lock);
+          let metadata = null;
+          try { metadata = JSON.parse(fs.readFileSync(lock, "utf8")); } catch {}
+          const pid = Number(metadata?.pid);
+          if (Number.isSafeInteger(pid) && pid > 0) {
+            try { process.kill(pid, 0); }
+            catch (probe) { recoverable = probe?.code === "ESRCH"; }
+          } else {
+            recoverable = Date.now() - stat.mtimeMs > staleLockMs;
+          }
+        } catch (probe) {
+          if (probe?.code === "ENOENT") continue;
+          fail("store_lock_timeout");
+        }
+        if (!recoverable) fail("store_lock_timeout");
+        try { fs.unlinkSync(lock); }
+        catch (unlinkError) {
+          if (unlinkError?.code !== "ENOENT") fail("store_lock_timeout");
+        }
+      }
+    }
+    fail("store_lock_timeout");
+  }
   function mutate(operation) {
-    let descriptor;
-    try { descriptor = fs.openSync(lock, "wx", 0o600); }
-    catch { fail("store_lock_timeout"); }
+    const descriptor = acquireLock();
     try {
       const state = read();
       const result = operation(state);
@@ -338,6 +616,105 @@ function getIdempotent(state, tenantId, method, input) {
   return { key, requestDigest, result: clone(existing.result) };
 }
 
+function semanticStandingReleaseIntentBinding(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const {
+    work_status: _workStatus,
+    current_version: _currentVersion,
+    work_updated_at: _workUpdatedAt,
+    verified_at: _verifiedAt,
+    binding_digest: _bindingDigest,
+    ...stableBinding
+  } = input;
+  return stableBinding;
+}
+
+function standingReleaseInstallIdempotencyInput(mandate, intentBinding, idempotencyKey) {
+  const { expires_at: _expiresAt, ...semanticMandate } = mandate;
+  return {
+    ...semanticMandate,
+    authorization_intent_binding: semanticStandingReleaseIntentBinding(intentBinding),
+    idempotency_key: String(idempotencyKey),
+  };
+}
+
+function standingReleaseRevokeIdempotencyInput(input = {}) {
+  return {
+    tenant_id: input.tenant_id,
+    mandate_id: input.mandate_id,
+    reason_digest: input.reason_digest,
+    idempotency_key: input.idempotency_key,
+  };
+}
+
+function standingReleaseDerivationIdempotencyInput(input, grant) {
+  const binding = grant.standing_release_binding;
+  return {
+    tenant_id: grant.tenant_id,
+    mandate_id: binding.mandate_id,
+    work_id: grant.work_id,
+    intent_anchor_digest: grant.intent_anchor_digest,
+    intent_binding: semanticStandingReleaseIntentBinding(binding.intent_binding),
+    delivery_branch: binding.delivery_branch,
+    changed_files: [...binding.changed_files],
+    builder_agent_id: binding.builder_agent_id,
+    verifier_agent_ids: [...binding.verifier_agent_ids],
+    required_checks_policy_digest: binding.required_checks_policy_digest,
+    induced_services: clone(binding.induced_services),
+    base_commit: binding.base_commit,
+    host_kind: binding.host_kind,
+    host_session_fingerprint: binding.host_session_fingerprint,
+    horizontal_runner_required: binding.horizontal_runner_required === true,
+    ttl_seconds: Number(input.ttl_seconds),
+    idempotency_key: String(input.idempotency_key),
+  };
+}
+
+function standingReleaseRunIdempotencyInput(input = {}) {
+  const {
+    dtt_request_binding_digest: _freshDttBinding,
+    intent_binding: _freshIntentBinding,
+    ...semantic
+  } = input;
+  return semantic;
+}
+
+function actionReservationIdempotencyInput(input = {}) {
+  const { dtt_request_binding_digest: _freshDttBinding, ...semantic } = input;
+  return semantic;
+}
+
+function actionLifecycleIdempotencyInput(input = {}) {
+  const { dtt_request_binding_digest: _freshDttBinding, ...semantic } = input;
+  return semantic;
+}
+
+function actionTicketLifecycleUnsigned(record) {
+  return {
+    schema_version: "host_native_action_lifecycle_v1",
+    ticket_id: record?.ticket?.ticket_id,
+    ticket_digest: hostNativeDigest(record?.ticket),
+    state: record?.state,
+    uses: record?.uses,
+    reservation_id: record?.reservation_id ?? null,
+    reserved_at: record?.reserved_at ?? null,
+    reservation_expires_at: record?.reservation_expires_at ?? null,
+    outcome: record?.outcome ?? null,
+    observed_outcome: record?.observed_outcome ?? null,
+    result_digest: record?.result_digest ?? null,
+    result_commit: record?.result_commit ?? null,
+    result_pull_request: record?.result_pull_request ?? null,
+    observed_commit: record?.observed_commit ?? null,
+    observed_pull_request: record?.observed_pull_request ?? null,
+    host_readback_digest: record?.host_readback_digest ?? null,
+    completed_at: record?.completed_at ?? null,
+    reconciled_at: record?.reconciled_at ?? null,
+    pre_merge_readback_digest: record?.pre_merge_readback_digest ?? null,
+    quarantined_at: record?.quarantined_at ?? null,
+    quarantine_reason_digest: record?.quarantine_reason_digest ?? null,
+  };
+}
+
 function saveIdempotent(state, descriptor, result) {
   if (descriptor?.key) {
     state.idempotency[descriptor.key] = {
@@ -351,18 +728,27 @@ function saveIdempotent(state, descriptor, result) {
 function checkOwnerConfirmation(confirmation) {
   exactKeys(confirmation, new Set([
     "verified", "request_bound", "owner_subject_fingerprint", "consent_nonce", "confirmation_reference",
+    "purpose", "request_binding_hash",
   ]));
   if (confirmation.verified !== true || confirmation.request_bound !== true) {
     fail("owner_confirmation_invalid");
   }
   const owner_subject_fingerprint = text(confirmation.owner_subject_fingerprint, "owner_confirmation_invalid", 100);
   if (!OWNER_FINGERPRINT.test(owner_subject_fingerprint)) fail("owner_confirmation_invalid");
+  const purpose = confirmation.purpose === undefined
+    ? null
+    : text(confirmation.purpose, "owner_confirmation_invalid", 160);
+  const request_binding_hash = confirmation.request_binding_hash === undefined
+    ? null
+    : digest(confirmation.request_binding_hash);
   return {
     verified: true,
     request_bound: true,
     owner_subject_fingerprint,
     consent_nonce: text(confirmation.consent_nonce, "owner_confirmation_invalid", 300),
     confirmation_reference: text(confirmation.confirmation_reference, "owner_confirmation_invalid", 1_000),
+    ...(purpose ? { purpose } : {}),
+    ...(request_binding_hash ? { request_binding_hash } : {}),
   };
 }
 
@@ -896,21 +1282,29 @@ function ensureObservationOnlyActionShape(action) {
 // issuance authenticates the immutable grant and its zero-use starting point.
 // Reconstruct that original envelope so a completed parent remains
 // cryptographically attributable after its usage counters have advanced.
-function issuedDelegationSignatureValid(record, signing) {
+function issuedDelegationIssuanceSignatureValid(record, signing) {
   try {
     if (
       !record || record.schema_version !== "host_native_delegation_v1" ||
-      record.state !== "active" || record.tenant_id !== record.grant?.tenant_id
+      record.tenant_id !== record.grant?.tenant_id
     ) return false;
     const issued = delegationUnsigned(
       record.grant,
       record.delegation_id,
       record.issued_at,
     );
+    if (record.grant?.standing_release_binding) {
+      issued.standing_release_usage = clone(EMPTY_STANDING_RELEASE_USAGE);
+    }
     return safeEqual(record.signature, hmac("hnd", signing, canonical(issued)));
   } catch {
     return false;
   }
+}
+
+function issuedDelegationSignatureValid(record, signing) {
+  return record?.state === "active" &&
+    issuedDelegationIssuanceSignatureValid(record, signing);
 }
 
 function delegationUsageMatches(record, expectedTotalActions) {
@@ -1376,6 +1770,9 @@ export function createHostNativeGovernance({
   ticketTtlMs = DEFAULT_TICKET_TTL_MS,
   reservationLeaseMs = DEFAULT_RESERVATION_LEASE_MS,
   coreJoinTtlMs = DEFAULT_CORE_JOIN_TTL_MS,
+  standingReleaseAutomationEnabled = false,
+  standingReleaseEmergencyStop = false,
+  standingReleaseBaseProtectionResolver = null,
 } = {}) {
   const store = requireStore(suppliedStore);
   const signing = String(signingSecret || "");
@@ -1385,10 +1782,47 @@ export function createHostNativeGovernance({
   const ticketTtl = Math.max(1_000, Math.min(60 * 60_000, Number(ticketTtlMs) || DEFAULT_TICKET_TTL_MS));
   const leaseMs = Math.max(1_000, Math.min(60 * 60_000, Number(reservationLeaseMs) || DEFAULT_RESERVATION_LEASE_MS));
   const coreJoinTtl = Math.max(1_000, Math.min(60 * 60_000, Number(coreJoinTtlMs) || DEFAULT_CORE_JOIN_TTL_MS));
+  const standingReleaseRuntimeEnabled = () => (
+    typeof standingReleaseAutomationEnabled === "function"
+      ? standingReleaseAutomationEnabled() === true
+      : standingReleaseAutomationEnabled === true
+  );
+  const standingReleaseStopped = () => (
+    typeof standingReleaseEmergencyStop === "function"
+      ? standingReleaseEmergencyStop() === true
+      : standingReleaseEmergencyStop === true
+  );
 
   function makeId(prefix, seed) {
     const suffix = String(idFactory?.() || hostNativeDigest(seed).slice(0, 32)).replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 80);
     return `${prefix}_${suffix || hostNativeDigest(seed).slice(0, 32)}`;
+  }
+
+  function signActionTicketLifecycleRecord(record) {
+    const unsigned = actionTicketLifecycleUnsigned(record);
+    record.lifecycle_digest = hostNativeDigest(unsigned);
+    record.lifecycle_signature = hmac(
+      "hnl",
+      signing,
+      canonical({ ...unsigned, lifecycle_digest: record.lifecycle_digest }),
+    );
+    return record;
+  }
+
+  function verifyActionTicketLifecycleRecord(record) {
+    const unsigned = actionTicketLifecycleUnsigned(record);
+    if (
+      record?.lifecycle_digest !== hostNativeDigest(unsigned) ||
+      !safeEqual(
+        record?.lifecycle_signature,
+        hmac(
+          "hnl",
+          signing,
+          canonical({ ...unsigned, lifecycle_digest: record?.lifecycle_digest }),
+        ),
+      )
+    ) fail("action_ticket_lifecycle_invalid");
+    return record;
   }
 
   function readDelegationRecord(tenantId, delegationId) {
@@ -1403,6 +1837,425 @@ export function createHostNativeGovernance({
     if (!record) fail("action_ticket_not_found");
     if (record.ticket.tenant_id !== tenantId) fail("cross_tenant_action_ticket_denied");
     return clone(record);
+  }
+
+  function signStandingReleaseRunRecord(run, {
+    transition,
+    dttRequestBindingDigest,
+    dttSessionFingerprint,
+    intentBinding,
+  } = {}) {
+    const runDigest = hostNativeDigest(run);
+    const unsigned = {
+      schema_version: "standing_release_run_record_v1",
+      tenant_id: run.tenant_id,
+      run_id: run.run_id,
+      run_digest: runDigest,
+      run,
+      transition: text(transition, "standing_release_run_transition_invalid", 80),
+      dtt_request_binding_digest: digest(dttRequestBindingDigest),
+      dtt_session_fingerprint: text(
+        dttSessionFingerprint,
+        "standing_release_run_session_invalid",
+        160,
+      ).toLowerCase(),
+      intent_binding_digest: digest(intentBinding?.binding_digest),
+      intent_work_version: positiveInteger(
+        intentBinding?.current_version,
+        "standing_release_intent_binding_invalid",
+      ),
+      intent_verified_at: text(
+        intentBinding?.verified_at,
+        "standing_release_intent_binding_invalid",
+        80,
+      ),
+      provider_execution: false,
+    };
+    return {
+      ...unsigned,
+      signature: hmac("srr", signing, canonical(unsigned)),
+    };
+  }
+
+  function verifiedStandingReleaseRunRecord(record) {
+    const { authority_state: _derivedAuthorityState, signature, ...unsigned } = record || {};
+    if (
+      unsigned.schema_version !== "standing_release_run_record_v1" ||
+      unsigned.provider_execution !== false ||
+      unsigned.tenant_id !== unsigned.run?.tenant_id ||
+      unsigned.run_id !== unsigned.run?.run_id ||
+      unsigned.run_digest !== hostNativeDigest(unsigned.run) ||
+      !/^[a-f0-9]{64}$/.test(String(unsigned.dtt_request_binding_digest || "")) ||
+      unsigned.dtt_session_fingerprint !== unsigned.run?.host_session_fingerprint ||
+      !/^[a-f0-9]{64}$/.test(String(unsigned.intent_binding_digest || "")) ||
+      !Number.isSafeInteger(unsigned.intent_work_version) ||
+      !Number.isFinite(Date.parse(unsigned.intent_verified_at || "")) ||
+      !safeEqual(signature, hmac("srr", signing, canonical(unsigned)))
+    ) fail("standing_release_run_record_invalid");
+    return clone(unsigned.run);
+  }
+
+  function readStandingReleaseRunRecord(state, tenantId, runId) {
+    const record = state.standing_release_runs?.[String(runId || "")];
+    if (!record) fail("standing_release_run_not_found");
+    if (record.tenant_id !== tenantId) fail("standing_release_run_cross_tenant_denied");
+    verifiedStandingReleaseRunRecord(record);
+    return record;
+  }
+
+  function currentStandingReleaseRunReplay(state, cached, tenantId) {
+    const runId = cached?.run_id || cached?.run?.run_id;
+    return clone(readStandingReleaseRunRecord(state, tenantId, runId));
+  }
+
+  function standingReleaseRunForDelegation(state, delegationId) {
+    const matches = Object.values(state.standing_release_runs || {}).filter((record) =>
+      record?.run?.delegation_id === delegationId);
+    if (matches.length > 1) fail("standing_release_run_store_conflict");
+    if (!matches.length) return null;
+    verifiedStandingReleaseRunRecord(matches[0]);
+    return matches[0];
+  }
+
+  function ensureStandingReleaseRunReservation(state, ticketRecord, input, nowValue) {
+    const standingRunRecord = standingReleaseRunForDelegation(
+      state,
+      ticketRecord?.ticket?.delegation_id,
+    );
+    if (!standingRunRecord) {
+      const delegation = state.delegations?.[ticketRecord?.ticket?.delegation_id];
+      if (delegation?.grant?.standing_release_binding?.horizontal_runner_required === true) {
+        fail("standing_release_run_required");
+      }
+      return null;
+    }
+    if (ticketRecord.state !== "issued") {
+      verifyActionTicketLifecycleRecord(ticketRecord);
+    }
+    const standingRun = verifiedStandingReleaseRunRecord(standingRunRecord);
+    ensureStandingReleaseRunAuthority(state, standingRun, nowValue);
+    if (
+      String(input.standing_release_run_id || "") !== standingRun.run_id ||
+      input.standing_release_run_version !== standingRun.version ||
+      !/^[a-f0-9]{64}$/.test(String(input.dtt_request_binding_digest || "")) ||
+      standingRun.state !== "ACTION_IN_PROGRESS" ||
+      standingRun.active_action?.ticket_id !== ticketRecord.ticket.ticket_id ||
+      standingRun.active_action?.action_digest !==
+        hostNativeDigest(ticketRecord.ticket.action)
+    ) fail("standing_release_run_ticket_not_bound");
+    return standingRun;
+  }
+
+  function standingMergeFreshResolutionInput(state, ticketRecord, nowValue) {
+    const ticket = ticketRecord?.ticket;
+    const delegation = state.delegations?.[ticket?.delegation_id];
+    if (
+      !delegation?.grant?.standing_release_binding ||
+      ticket?.action?.kind !== "github.merge"
+    ) return null;
+    if (
+      typeof releaseJoinVerdictResolver !== "function" ||
+      releaseJoinVerdictResolver.trusted !== true ||
+      releaseJoinVerdictResolver.standing_pre_merge_readback !== true
+    ) fail("standing_release_pre_merge_readback_unavailable");
+    if (
+      ticketRecord.state !== "issued" || ticketRecord.uses !== 0 ||
+      !governance.verifyActionTicket(ticket) ||
+      ticket.release_join_resolution_digest !==
+        hostNativeDigest(ticket.release_join_resolution)
+    ) fail("standing_release_pre_merge_ticket_invalid");
+    const coreJoin = state.core_join_verdicts?.[ticket.core_join_verdict_id];
+    const requiredChecksPolicyDigest = coreJoin?.claim?.required_checks_policy_digest;
+    if (
+      !coreJoin || coreJoin.state !== "active" || coreJoin.uses !== 0 ||
+      coreJoin.authorized_ticket_id !== ticket.ticket_id ||
+      coreJoin.claim_digest !== ticket.core_join_verdict_digest ||
+      coreJoin.claim?.release_intent_digest !== ticket.release_intent_digest ||
+      !governance.verifyCoreJoinVerdict(coreJoin) ||
+      !SHA256.test(String(requiredChecksPolicyDigest || ""))
+    ) fail("standing_release_pre_merge_join_invalid");
+    const binding = ticket.release_manifest_binding;
+    const source = ticket.release_join_resolution?.source_attestation;
+    const services = binding?.delivery?.services;
+    if (
+      !binding || !source || !Array.isArray(services) || services.length < 1 ||
+      source.repository !== ticket.repository ||
+      source.pull_request !== ticket.action.pull_request ||
+      source.base_commit !== ticket.action.expected_base_commit ||
+      source.head_commit !== ticket.action.head_commit ||
+      source.head_commit !== ticket.action.checks_commit ||
+      source.attestation_digest !== hostNativeDigest((({ attestation_digest: _digest, ...unsigned }) => unsigned)(source))
+    ) fail("standing_release_pre_merge_ticket_invalid");
+    return {
+      request: {
+        core_join_verified: true,
+        core_join_issued_at: coreJoin.verdict.issued_at,
+        core_join_expires_at: coreJoin.verdict.expires_at,
+        verdict_id: coreJoin.verdict_id,
+        tenant_id: ticket.tenant_id,
+        work_id: ticket.work_id,
+        intent_anchor_digest: ticket.intent_anchor_digest,
+        repository: ticket.repository,
+        checks_commit: binding.verification.checks_commit,
+        required_checks: binding.verification.required_checks,
+        required_checks_policy_digest: requiredChecksPolicyDigest,
+        evidence_digest: ticket.evidence_digest,
+        source_evidence: {
+          base_commit: source.base_commit,
+          head_commit: source.head_commit,
+          tree_sha: source.tree_sha,
+          diff_digest: source.diff_digest,
+          changed_files: source.changed_files,
+        },
+        delivery_services: services.map((service) => ({
+          service_id: service.service_id,
+          environment: service.environment,
+          origin: service.origin,
+          expected_previous_commit: service.expected_previous_commit,
+          health_contract_digest: service.health_contract_digest,
+        })),
+        rollback: binding.rollback,
+        action: ticket.action,
+        provider_execution: false,
+      },
+      ticket_digest: hostNativeDigest(ticket),
+      core_join_claim_digest: coreJoin.claim_digest,
+      source_attestation_digest: source.attestation_digest,
+      now_value: nowValue,
+    };
+  }
+
+  async function requireFreshStandingMergeReadback(state, ticketRecord, nowValue) {
+    const pending = standingMergeFreshResolutionInput(state, ticketRecord, nowValue);
+    if (!pending) return null;
+    let fresh;
+    try {
+      fresh = await releaseJoinVerdictResolver(pending.request);
+    } catch (cause) {
+      const code = String(cause?.message || "standing_release_pre_merge_readback_unavailable");
+      if (
+        /^(release_join_verdict_pre_merge_|release_join_verdict_pull_request_|required_checks_|trusted_readback_|workflow_|check_app_)/.test(code)
+      ) fail(code);
+      fail("standing_release_pre_merge_readback_unavailable");
+    }
+    const readback = fresh?.pre_merge_readback;
+    const verifiedAt = Date.parse(readback?.verified_at || "");
+    if (
+      fresh?.trusted !== true || fresh?.allowed !== true ||
+      fresh?.provider_execution !== false ||
+      fresh.verdict_id !== pending.request.verdict_id ||
+      fresh.tenant_id !== pending.request.tenant_id ||
+      fresh.work_id !== pending.request.work_id ||
+      fresh.intent_anchor_digest !== pending.request.intent_anchor_digest ||
+      fresh.repository !== pending.request.repository ||
+      fresh.checks_commit !== pending.request.checks_commit ||
+      fresh.required_checks_policy_digest !==
+        pending.request.required_checks_policy_digest ||
+      fresh.source_attestation?.attestation_digest !==
+        pending.source_attestation_digest ||
+      readback?.schema_version !== "host_native_pre_merge_readback_v1" ||
+      readback?.trusted !== true || readback?.provider_execution !== false ||
+      readback.repository !== pending.request.repository ||
+      readback.base_branch !== pending.request.action.base_branch ||
+      readback.base_commit !== pending.request.action.expected_base_commit ||
+      readback.head_branch !== pending.request.action.head_branch ||
+      readback.head_commit !== pending.request.action.head_commit ||
+      readback.pull_request !== pending.request.action.pull_request ||
+      readback.required_checks_policy_digest !==
+        pending.request.required_checks_policy_digest ||
+      fresh.pre_merge_readback_digest !== hostNativeDigest(readback) ||
+      !Number.isFinite(verifiedAt) || verifiedAt > nowValue + 30_000 ||
+      verifiedAt < nowValue - 30_000
+    ) fail("standing_release_pre_merge_readback_invalid");
+    return {
+      ticket_digest: pending.ticket_digest,
+      core_join_claim_digest: pending.core_join_claim_digest,
+      pre_merge_readback_digest: fresh.pre_merge_readback_digest,
+    };
+  }
+
+  function denyHorizontalRunGenericLifecycle(state, ticketRecord) {
+    const delegation = state.delegations?.[ticketRecord?.ticket?.delegation_id];
+    if (
+      delegation?.grant?.standing_release_binding?.horizontal_runner_required === true ||
+      standingReleaseRunForDelegation(state, ticketRecord?.ticket?.delegation_id)
+    ) fail("standing_release_run_reservation_route_required");
+  }
+
+  function standingReleaseOptions(nowValue = nowMillis(now)) {
+    return {
+      now: nowValue,
+      runtimeEnabled: standingReleaseRuntimeEnabled(),
+      emergencyStop: standingReleaseStopped(),
+    };
+  }
+
+  function ensureStandingReleaseDelegationActive(state, delegation, nowValue = nowMillis(now)) {
+    if (!delegation?.grant?.standing_release_binding) return;
+    if (!standingReleaseBindingActive(state, delegation, standingReleaseOptions(nowValue))) {
+      fail("standing_release_authority_inactive");
+    }
+    const mandate = state.standing_release_mandates?.[
+      delegation.grant.standing_release_binding.mandate_id
+    ];
+    if (!governance?.verifyStandingReleaseMandate?.(mandate)) {
+      fail("standing_release_mandate_signature_invalid");
+    }
+  }
+
+  function ensureStandingReleaseRunBinding(state, run) {
+    const delegation = state.delegations?.[run?.delegation_id];
+    if (
+      !delegation || delegation.grant?.tenant_id !== run?.tenant_id ||
+      !(
+        issuedDelegationIssuanceSignatureValid(delegation, signing) ||
+        governance?.verifyDelegation?.(delegation) === true
+      )
+    ) {
+      fail("standing_release_run_delegation_invalid");
+    }
+    const binding = delegation.grant.standing_release_binding;
+    const mandate = state.standing_release_mandates?.[binding?.mandate_id];
+    const sortedServices = (values) => [...(values || [])]
+      .map((service) => ({
+        service_id: service.service_id,
+        environment: service.environment,
+        health_contract_digest: service.health_contract_digest,
+      }))
+      .sort((left, right) => `${left.service_id}\u0000${left.environment}`.localeCompare(
+        `${right.service_id}\u0000${right.environment}`,
+      ));
+    if (
+      !mandate || !governance.verifyStandingReleaseMandate(mandate) ||
+      run.work_id !== delegation.grant.work_id ||
+      run.intent_anchor_digest !== delegation.grant.intent_anchor_digest ||
+      run.repository !== delegation.grant.repository ||
+      run.host_kind !== binding.host_kind ||
+      run.host_session_fingerprint !== binding.host_session_fingerprint ||
+      run.mandate_id !== binding.mandate_id ||
+      run.mandate_digest !== binding.mandate_digest ||
+      run.mandate_revision !== binding.revision ||
+      run.revocation_epoch !== binding.revocation_epoch ||
+      run.max_repair_attempts !== binding.max_repair_attempts ||
+      run.base_branch !== mandate.mandate.base_branch ||
+      run.delivery_branch !== binding.delivery_branch ||
+      run.change_cone?.base_commit !== binding.base_commit ||
+      !sameStrings(run.change_cone?.changed_files || [], binding.changed_files || []) ||
+      hostNativeDigest(sortedServices(run.services)) !==
+        hostNativeDigest(sortedServices(binding.induced_services))
+    ) fail("standing_release_run_authority_drift");
+    return delegation;
+  }
+
+  function ensureStandingReleaseRunAuthority(
+    state,
+    run,
+    nowValue = nowMillis(now),
+    {
+      allowCompletedRenderObservation = false,
+      allowCompletedRun = false,
+    } = {},
+  ) {
+    const delegation = ensureStandingReleaseRunBinding(state, run);
+    const completedRenderObservation = allowCompletedRenderObservation &&
+      delegation.state === "completed" && run?.state === "ACTION_IN_PROGRESS" &&
+      run?.active_action?.kind === "render.observe";
+    const completedRun = allowCompletedRun && delegation.state === "completed" &&
+      run?.state === "COMPLETED";
+    if (
+      !delegationActive(delegation, nowValue) &&
+      !completedRenderObservation &&
+      !completedRun
+    ) {
+      fail("standing_release_authority_inactive");
+    }
+    ensureStandingReleaseDelegationActive(state, delegation, nowValue);
+    return delegation;
+  }
+
+  function freshStandingReleaseRunIntent(input, tenantId, run, nowValue) {
+    const requestedIntentDigest = digest(input.intent_anchor_digest);
+    if (requestedIntentDigest !== run.intent_anchor_digest) {
+      fail("standing_release_run_intent_mismatch");
+    }
+    const dttSessionFingerprint = text(
+      input.dtt_session_fingerprint,
+      "standing_release_run_session_invalid",
+      160,
+    ).toLowerCase();
+    if (
+      !/^[a-f0-9]{16,160}$/.test(dttSessionFingerprint) ||
+      dttSessionFingerprint !== run.host_session_fingerprint
+    ) fail("standing_release_run_session_mismatch");
+    const intentBinding = normalizeStandingReleaseIntentBinding(
+      input.intent_binding,
+      {
+        tenantId,
+        workId: run.work_id,
+        intentDigest: run.intent_anchor_digest,
+        now: nowValue,
+      },
+    );
+    return { intentBinding, dttSessionFingerprint };
+  }
+
+  function expiredStandingReleaseRunReservation(state, run, input, nowValue) {
+    const ticketId = text(input.ticket_id, "standing_release_expired_ticket_invalid", 240);
+    const reservationId = text(
+      input.reservation_id,
+      "standing_release_expired_reservation_mismatch",
+      240,
+    );
+    const record = state.tickets?.[ticketId];
+    if (!record || record.ticket?.tenant_id !== run.tenant_id) {
+      fail("action_ticket_not_found");
+    }
+    if (!governance.verifyActionTicket(record.ticket)) {
+      fail("action_ticket_signature_invalid");
+    }
+    verifyActionTicketLifecycleRecord(record);
+    const expiresAt = Date.parse(record.reservation_expires_at || "");
+    if (
+      run.state !== "ACTION_IN_PROGRESS" || !run.active_action ||
+      run.active_action.ticket_id !== ticketId ||
+      run.active_action.action_digest !== hostNativeDigest(record.ticket.action) ||
+      record.ticket.delegation_id !== run.delegation_id ||
+      record.ticket.work_id !== run.work_id ||
+      record.ticket.repository !== run.repository ||
+      record.ticket.host_kind !== run.host_kind ||
+      record.ticket.host_session_fingerprint !== run.host_session_fingerprint ||
+      record.uses !== 1 ||
+      !["reserved", "reconciliation_required"].includes(record.state) ||
+      (record.state === "reconciliation_required" && record.outcome !== "unknown") ||
+      record.reservation_id !== reservationId ||
+      !Number.isFinite(expiresAt) || expiresAt > nowValue
+    ) fail("standing_release_expired_reservation_mismatch");
+    return record;
+  }
+
+  function authoritativeReplayResult(state, cached) {
+    if (cached?.delegation_id && cached?.grant) {
+      return state.delegations?.[cached.delegation_id] || cached;
+    }
+    const ticketId = cached?.ticket?.ticket_id;
+    return ticketId ? (state.tickets?.[ticketId] || cached) : cached;
+  }
+
+  function validateStandingReplay(state, cached, nowValue = nowMillis(now)) {
+    const current = authoritativeReplayResult(state, cached);
+    const delegation = current?.grant?.standing_release_binding
+      ? current
+      : state.delegations?.[current?.ticket?.delegation_id];
+    if (delegation?.grant?.standing_release_binding) {
+      if (current?.ticket && current.state !== "issued") {
+        verifyActionTicketLifecycleRecord(current);
+      }
+      if (!delegationActive(delegation, nowValue)) {
+        fail("standing_release_authority_inactive");
+      }
+      ensureStandingReleaseDelegationActive(state, delegation, nowValue);
+    }
+    return clone(current);
   }
 
   async function resolveCoreJoinRequiredChecksPolicyDigest(input, manifest) {
@@ -1445,6 +2298,14 @@ export function createHostNativeGovernance({
     required_checks_policy_resolver_configured: typeof requiredChecksPolicyResolver === "function",
     closure_attestation_verifier_configured: true,
     render_service_origin_resolver_configured: typeof renderServiceOriginResolver === "function",
+    standing_release_policy_supported: true,
+    standing_release_runner_supported: true,
+    standing_release_coordination_model: "horizontal_peer_adapters_v1",
+    standing_release_base_protection_resolver_configured:
+      typeof standingReleaseBaseProtectionResolver === "function" &&
+      standingReleaseBaseProtectionResolver.trusted === true,
+    get standing_release_automation_enabled() { return standingReleaseRuntimeEnabled(); },
+    get standing_release_emergency_stop() { return standingReleaseStopped(); },
 
     async buildWorkPlan(input) {
       const plan = buildHostNativeWorkPlan(input);
@@ -1462,6 +2323,806 @@ export function createHostNativeGovernance({
       }
       const normalizedPolicy = normalizedRequiredChecksPolicy(policy, plan);
       return buildPolicyBoundWorkPlan(plan, hostNativeDigest(normalizedPolicy));
+    },
+
+    async installStandingReleaseMandate(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "authorization_work_id", "authorization_intent_anchor_digest",
+        "authorization_intent_binding", "authorization_dtt_request_binding_digest",
+        "repository", "base_branch", "delivery_branch_prefix", "allowed_path_prefixes",
+        "denied_path_prefixes", "required_checks", "required_checks_policy_digest",
+        "services", "repair_classes", "limits", "base_protection_required", "expires_at",
+        "owner_confirmation", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      text(input.idempotency_key, "standing_release_idempotency_key_required", 160);
+      const nowValue = nowMillis(now);
+      const confirmation = checkOwnerConfirmation(input.owner_confirmation);
+      if (
+        confirmation.purpose !== "host_native_standing_release_mandate_install" ||
+        !confirmation.request_binding_hash
+      ) fail("standing_release_owner_binding_invalid");
+      const authorizationIntentBinding = normalizeStandingReleaseIntentBinding(
+        input.authorization_intent_binding,
+        {
+          tenantId,
+          workId: input.authorization_work_id,
+          intentDigest: input.authorization_intent_anchor_digest,
+          now: nowValue,
+        },
+      );
+      const authorizationDttRequestBindingDigest = String(
+        input.authorization_dtt_request_binding_digest || "",
+      ).trim().toLowerCase();
+      if (!SHA256.test(authorizationDttRequestBindingDigest)) {
+        fail("standing_release_intent_binding_invalid");
+      }
+      const {
+        owner_confirmation: _ownerConfirmation,
+        idempotency_key: _idempotencyKey,
+        authorization_intent_binding: _authorizationIntentBinding,
+        authorization_dtt_request_binding_digest: _authorizationDttRequestBindingDigest,
+        ...mandateInput
+      } = input;
+      const mandate = normalizeStandingReleaseMandate(mandateInput, { now: nowValue });
+      if (mandate.tenant_id !== tenantId) fail("standing_release_cross_tenant_denied");
+      const mandateDigest = hostNativeDigest(mandate);
+      const mandateId = `srm_${mandateDigest.slice(0, 40)}`;
+      const idempotencyInput = standingReleaseInstallIdempotencyInput(
+        mandate,
+        authorizationIntentBinding,
+        input.idempotency_key,
+      );
+      const initial = store.readState();
+      const replay = getIdempotent(
+        initial,
+        tenantId,
+        "installStandingReleaseMandate",
+        idempotencyInput,
+      );
+      if (replay?.result) {
+        const current = initial.standing_release_mandates?.[replay.result.mandate_id] || replay.result;
+        if (current?.owner_subject_fingerprint !== confirmation.owner_subject_fingerprint) {
+          fail("standing_release_owner_mismatch");
+        }
+        return clone(current);
+      }
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(
+          state,
+          tenantId,
+          "installStandingReleaseMandate",
+          idempotencyInput,
+        );
+        if (descriptor?.result) {
+          const current = state.standing_release_mandates?.[descriptor.result.mandate_id] ||
+            descriptor.result;
+          if (current?.owner_subject_fingerprint !== confirmation.owner_subject_fingerprint) {
+            fail("standing_release_owner_mismatch");
+          }
+          return clone(current);
+        }
+        const nonce = ownerNonceKey(tenantId, confirmation);
+        if (state.owner_nonces[nonce]) fail("owner_confirmation_replayed");
+        for (const existing of Object.values(state.standing_release_mandates || {})) {
+          if (
+            standingReleaseEffectiveState(existing, {
+              now: nowValue,
+              runtimeEnabled: true,
+              emergencyStop: false,
+            }) === "active" && existing?.mandate?.tenant_id === tenantId &&
+            existing.mandate.repository === mandate.repository &&
+            existing.mandate.base_branch === mandate.base_branch
+          ) fail("standing_release_active_mandate_exists");
+        }
+        const existing = state.standing_release_mandates?.[mandateId];
+        if (existing?.mandate_digest && existing.mandate_digest !== mandateDigest) {
+          fail("standing_release_mandate_conflict");
+        }
+        const revision = existing ? Number(existing.revision || 0) + 1 : 1;
+        const revocationEpoch = existing ? Number(existing.revocation_epoch || 0) + 1 : 1;
+        const unsigned = {
+          schema_version: "owner_standing_release_mandate_record_v1",
+          mandate_id: mandateId,
+          mandate_digest: mandateDigest,
+          tenant_id: tenantId,
+          state: "active",
+          revision,
+          revocation_epoch: revocationEpoch,
+          mandate,
+          owner_subject_fingerprint: confirmation.owner_subject_fingerprint,
+          owner_confirmation_digest: hostNativeDigest(confirmation),
+          authorization_intent_binding: authorizationIntentBinding,
+          authorization_intent_binding_digest: authorizationIntentBinding.binding_digest,
+          authorization_dtt_request_binding_digest: authorizationDttRequestBindingDigest,
+          issued_at: iso(nowValue),
+          ...(existing ? { previous_record_digest: hostNativeDigest(existing) } : {}),
+          provider_execution: false,
+          host_action_ticket_required: true,
+        };
+        const record = { ...unsigned, signature: hmac("srm", signing, canonical(unsigned)) };
+        state.owner_nonces[nonce] = { mandate_id: mandateId, used_at: iso(nowValue) };
+        state.standing_release_mandates ||= {};
+        state.standing_release_mandates[mandateId] = record;
+        return saveIdempotent(state, descriptor, clone(record));
+      });
+    },
+
+    async readStandingReleaseMandate({ tenant_id, mandate_id } = {}) {
+      const tenantId = text(tenant_id, "tenant_id_invalid", 160);
+      const record = store.readState().standing_release_mandates?.[String(mandate_id || "")];
+      if (!record) fail("standing_release_mandate_not_found");
+      if (record.tenant_id !== tenantId) fail("standing_release_cross_tenant_denied");
+      return {
+        ...clone(record),
+        effective_state: standingReleaseEffectiveState(record, standingReleaseOptions()),
+        automation_enabled: standingReleaseRuntimeEnabled(),
+        emergency_stop: standingReleaseStopped(),
+      };
+    },
+
+    verifyStandingReleaseMandate(record) {
+      try {
+        const { signature, ...unsigned } = record || {};
+        return unsigned.schema_version === "owner_standing_release_mandate_record_v1" &&
+          unsigned.mandate_digest === hostNativeDigest(unsigned.mandate) &&
+          safeEqual(signature, hmac("srm", signing, canonical(unsigned)));
+      } catch { return false; }
+    },
+
+    async revokeStandingReleaseMandate(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "mandate_id", "owner_confirmation", "reason_digest", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const confirmation = checkOwnerConfirmation(input.owner_confirmation);
+      if (
+        confirmation.purpose !== "host_native_standing_release_mandate_revoke" ||
+        !confirmation.request_binding_hash
+      ) fail("standing_release_owner_binding_invalid");
+      const reasonDigest = digest(input.reason_digest);
+      const nowValue = nowMillis(now);
+      const idempotencyInput = standingReleaseRevokeIdempotencyInput(input);
+      const initial = store.readState();
+      const initialRecord = initial.standing_release_mandates?.[String(input.mandate_id || "")];
+      if (!initialRecord) fail("standing_release_mandate_not_found");
+      if (initialRecord.tenant_id !== tenantId) fail("standing_release_cross_tenant_denied");
+      if (initialRecord.owner_subject_fingerprint !== confirmation.owner_subject_fingerprint) {
+        fail("standing_release_owner_mismatch");
+      }
+      const replay = getIdempotent(
+        initial,
+        tenantId,
+        "revokeStandingReleaseMandate",
+        idempotencyInput,
+      );
+      if (replay?.result) return clone(initialRecord);
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(
+          state,
+          tenantId,
+          "revokeStandingReleaseMandate",
+          idempotencyInput,
+        );
+        if (descriptor?.result) {
+          const current = state.standing_release_mandates?.[String(input.mandate_id || "")] ||
+            descriptor.result;
+          if (current?.owner_subject_fingerprint !== confirmation.owner_subject_fingerprint) {
+            fail("standing_release_owner_mismatch");
+          }
+          return clone(current);
+        }
+        const record = state.standing_release_mandates?.[String(input.mandate_id || "")];
+        if (!record) fail("standing_release_mandate_not_found");
+        if (record.tenant_id !== tenantId) fail("standing_release_cross_tenant_denied");
+        const nonce = ownerNonceKey(tenantId, confirmation);
+        if (state.owner_nonces[nonce]) fail("owner_confirmation_replayed");
+        if (record.owner_subject_fingerprint !== confirmation.owner_subject_fingerprint) {
+          fail("standing_release_owner_mismatch");
+        }
+        if (record.state !== "active") fail("standing_release_mandate_not_active");
+        record.state = "revoked";
+        record.revocation_epoch += 1;
+        record.revoked_at = iso(nowValue);
+        record.revocation_reason_digest = reasonDigest;
+        const { signature: _signature, ...unsigned } = record;
+        record.signature = hmac("srm", signing, canonical(unsigned));
+        for (const delegation of Object.values(state.delegations || {})) {
+          if (delegation?.grant?.standing_release_binding?.mandate_id === record.mandate_id && delegation.state === "active") {
+            delegation.state = "revoked";
+            delegation.revoked_at = iso(nowValue);
+            delegation.revocation = { reason: "standing_release_mandate_revoked" };
+            const { signature: _delegationSignature, ...delegationUnsignedRecord } = delegation;
+            delegation.signature = hmac("hnd", signing, canonical(delegationUnsignedRecord));
+          }
+        }
+        for (const ticket of Object.values(state.tickets || {})) {
+          const delegation = state.delegations?.[ticket?.ticket?.delegation_id];
+          if (delegation?.grant?.standing_release_binding?.mandate_id !== record.mandate_id) continue;
+          if (ticket.state === "issued") {
+            ticket.state = "revoked";
+            ticket.revoked_at = iso(nowValue);
+          } else if (ticket.state === "reserved") {
+            ticket.state = "reconciliation_required";
+            ticket.outcome = "unknown";
+            ticket.revoked_at = iso(nowValue);
+            signActionTicketLifecycleRecord(ticket);
+          }
+        }
+        const leaseKey = `${tenantId}\u0000${record.mandate.repository}\u0000${record.mandate.base_branch}`;
+        delete state.standing_release_leases?.[leaseKey];
+        state.owner_nonces[nonce] = { mandate_id: record.mandate_id, used_at: iso(nowValue) };
+        return saveIdempotent(state, descriptor, clone(record));
+      });
+    },
+
+    async deriveStandingReleaseDelegation(input = {}) {
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      text(input.idempotency_key, "standing_release_idempotency_key_required", 160);
+      const nowValue = nowMillis(now);
+      const initial = store.readState();
+      const record = initial.standing_release_mandates?.[String(input.mandate_id || "")];
+      if (!record) fail("standing_release_mandate_not_found");
+      if (!governance.verifyStandingReleaseMandate(record)) fail("standing_release_mandate_signature_invalid");
+      if (
+        typeof standingReleaseBaseProtectionResolver !== "function" ||
+        standingReleaseBaseProtectionResolver.trusted !== true
+      ) fail("standing_release_base_protection_readback_unavailable");
+      let baseProtection;
+      try {
+        baseProtection = await standingReleaseBaseProtectionResolver({
+          tenant_id: tenantId,
+          repository: record.mandate.repository,
+          base_branch: record.mandate.base_branch,
+          required_checks: record.mandate.required_checks,
+          required_checks_policy_digest: record.mandate.required_checks_policy_digest,
+        });
+      } catch (error) {
+        const code = String(error?.message || "standing_release_base_protection_readback_unavailable");
+        if (code.startsWith("standing_release_")) fail(code);
+        fail("standing_release_base_protection_readback_unavailable");
+      }
+      const derivationOptions = { ...standingReleaseOptions(nowValue), baseProtection };
+      const grant = validateStandingReleaseDerivation(record, input, derivationOptions);
+      const idempotencyInput = standingReleaseDerivationIdempotencyInput(input, grant);
+      const replay = getIdempotent(
+        initial,
+        tenantId,
+        "deriveStandingReleaseDelegation",
+        idempotencyInput,
+      );
+      if (replay?.result) return validateStandingReplay(initial, replay.result, nowValue);
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(
+          state,
+          tenantId,
+          "deriveStandingReleaseDelegation",
+          idempotencyInput,
+        );
+        if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
+        const current = state.standing_release_mandates?.[record.mandate_id];
+        if (!current || !governance.verifyStandingReleaseMandate(current)) {
+          fail("standing_release_mandate_signature_invalid");
+        }
+        validateStandingReleaseDerivation(current, input, derivationOptions);
+        const leaseKey = `${tenantId}\u0000${current.mandate.repository}\u0000${current.mandate.base_branch}`;
+        state.standing_release_leases ||= {};
+        const existingLease = state.standing_release_leases[leaseKey];
+        if (existingLease) {
+          const existingDelegation = state.delegations?.[existingLease.delegation_id];
+          if (
+            existingDelegation && delegationActive(existingDelegation, nowValue) &&
+            standingReleaseBindingActive(state, existingDelegation, standingReleaseOptions(nowValue))
+          ) fail("standing_release_lease_conflict");
+          delete state.standing_release_leases[leaseKey];
+        }
+        const delegationId = `hnd_${hostNativeDigest({
+          mandate_id: current.mandate_id,
+          work_id: grant.work_id,
+          intent_anchor_digest: grant.intent_anchor_digest,
+          issued_at: iso(nowValue),
+          idempotency_key: input.idempotency_key,
+        }).slice(0, 40)}`;
+        const delegationGrant = {
+          ...grant,
+          host_policy_override: false,
+          host_policy_must_allow: true,
+          absolute_deny_actions: [...HOST_NATIVE_ABSOLUTE_DENY_ACTIONS],
+        };
+        const unsigned = {
+          ...delegationUnsigned(delegationGrant, delegationId, iso(nowValue)),
+          standing_release_usage: clone(EMPTY_STANDING_RELEASE_USAGE),
+        };
+        const delegation = { ...unsigned, signature: hmac("hnd", signing, canonical(unsigned)) };
+        state.delegations[delegationId] = delegation;
+        state.standing_release_leases[leaseKey] = {
+          schema_version: "standing_release_lease_v1",
+          tenant_id: tenantId,
+          mandate_id: current.mandate_id,
+          work_id: grant.work_id,
+          delegation_id: delegationId,
+          acquired_at: iso(nowValue),
+          expires_at: grant.expires_at,
+        };
+        if (grant.standing_release_binding.horizontal_runner_required === true) {
+          const run = createStandingReleaseRunState({
+            tenant_id: tenantId,
+            work_id: grant.work_id,
+            intent_anchor_digest: grant.intent_anchor_digest,
+            mandate_id: grant.standing_release_binding.mandate_id,
+            mandate_digest: grant.standing_release_binding.mandate_digest,
+            mandate_revision: grant.standing_release_binding.revision,
+            revocation_epoch: grant.standing_release_binding.revocation_epoch,
+            delegation_id: delegationId,
+            repository: grant.repository,
+            base_branch: current.mandate.base_branch,
+            delivery_branch: grant.standing_release_binding.delivery_branch,
+            base_commit: grant.standing_release_binding.base_commit,
+            changed_files: grant.standing_release_binding.changed_files,
+            services: grant.standing_release_binding.induced_services,
+            host_kind: grant.standing_release_binding.host_kind,
+            host_session_fingerprint: grant.standing_release_binding.host_session_fingerprint,
+            max_repair_attempts: grant.standing_release_binding.max_repair_attempts,
+          }, { now: () => nowValue });
+          const record = signStandingReleaseRunRecord(run, {
+            transition: "derive_start",
+            dttRequestBindingDigest: grant.dtt_request_binding_digest,
+            dttSessionFingerprint: input.dtt_session_fingerprint,
+            intentBinding: grant.standing_release_binding.intent_binding,
+          });
+          state.standing_release_runs ||= {};
+          if (state.standing_release_runs[run.run_id]) fail("standing_release_run_exists");
+          state.standing_release_runs[run.run_id] = record;
+        }
+        return saveIdempotent(state, descriptor, clone(delegation));
+      });
+    },
+
+    async startStandingReleaseRun(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "delegation_id", "work_id", "intent_anchor_digest",
+        "intent_binding", "host_kind", "host_session_fingerprint",
+        "dtt_session_fingerprint", "dtt_request_binding_digest", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      text(input.idempotency_key, "standing_release_idempotency_key_required", 160);
+      const dttRequestBindingDigest = digest(input.dtt_request_binding_digest);
+      const idempotencyInput = standingReleaseRunIdempotencyInput(input);
+      const nowValue = nowMillis(now);
+      const initial = store.readState();
+      const replay = getIdempotent(initial, tenantId, "startStandingReleaseRun", idempotencyInput);
+      if (replay?.result) {
+        const current = currentStandingReleaseRunReplay(initial, replay.result, tenantId);
+        ensureStandingReleaseRunAuthority(initial, current.run, nowValue);
+        freshStandingReleaseRunIntent(input, tenantId, current.run, nowValue);
+        return current;
+      }
+      const delegation = initial.delegations?.[String(input.delegation_id || "")];
+      if (!delegation || delegation.grant?.tenant_id !== tenantId) {
+        fail("standing_release_run_delegation_invalid");
+      }
+      if (!delegationActive(delegation, nowValue)) fail("standing_release_authority_inactive");
+      ensureStandingReleaseDelegationActive(initial, delegation, nowValue);
+      const binding = delegation.grant.standing_release_binding;
+      if (!binding) fail("standing_release_run_delegation_invalid");
+      const workId = text(input.work_id, "standing_release_run_work_invalid", 80).toLowerCase();
+      const hostKind = text(input.host_kind, "standing_release_run_host_invalid", 80);
+      const hostSessionFingerprint = text(
+        input.host_session_fingerprint,
+        "standing_release_run_session_invalid",
+        80,
+      ).toLowerCase();
+      if (
+        workId !== delegation.grant.work_id ||
+        hostKind !== binding.host_kind ||
+        hostSessionFingerprint !== binding.host_session_fingerprint
+      ) fail("standing_release_run_binding_invalid");
+      const existingRunRecord = standingReleaseRunForDelegation(
+        initial,
+        delegation.delegation_id,
+      );
+      if (existingRunRecord) {
+        const existingRun = verifiedStandingReleaseRunRecord(existingRunRecord);
+        ensureStandingReleaseRunAuthority(initial, existingRun, nowValue);
+        freshStandingReleaseRunIntent(input, tenantId, existingRun, nowValue);
+        return store.mutate((state) => {
+          const descriptor = getIdempotent(
+            state,
+            tenantId,
+            "startStandingReleaseRun",
+            idempotencyInput,
+          );
+          if (descriptor?.result) {
+            return currentStandingReleaseRunReplay(state, descriptor.result, tenantId);
+          }
+          const current = readStandingReleaseRunRecord(
+            state,
+            tenantId,
+            existingRun.run_id,
+          );
+          ensureStandingReleaseRunAuthority(state, current.run, nowValue);
+          const freshness = freshStandingReleaseRunIntent(
+            input,
+            tenantId,
+            current.run,
+            nowValue,
+          );
+          const attached = signStandingReleaseRunRecord(current.run, {
+            transition: "start_attach",
+            dttRequestBindingDigest,
+            dttSessionFingerprint: freshness.dttSessionFingerprint,
+            intentBinding: freshness.intentBinding,
+          });
+          state.standing_release_runs[current.run_id] = attached;
+          return saveIdempotent(state, descriptor, clone(attached));
+        });
+      }
+      const mandate = initial.standing_release_mandates?.[binding.mandate_id];
+      if (!mandate || !governance.verifyStandingReleaseMandate(mandate)) {
+        fail("standing_release_mandate_signature_invalid");
+      }
+      const run = createStandingReleaseRunState({
+        tenant_id: tenantId,
+        work_id: delegation.grant.work_id,
+        intent_anchor_digest: delegation.grant.intent_anchor_digest,
+        mandate_id: binding.mandate_id,
+        mandate_digest: binding.mandate_digest,
+        mandate_revision: binding.revision,
+        revocation_epoch: binding.revocation_epoch,
+        delegation_id: delegation.delegation_id,
+        repository: delegation.grant.repository,
+        base_branch: mandate.mandate.base_branch,
+        delivery_branch: binding.delivery_branch,
+        base_commit: binding.base_commit,
+        changed_files: binding.changed_files,
+        services: binding.induced_services,
+        host_kind: binding.host_kind,
+        host_session_fingerprint: binding.host_session_fingerprint,
+        max_repair_attempts: binding.max_repair_attempts,
+      }, { now: () => nowValue });
+      const { intentBinding, dttSessionFingerprint } = freshStandingReleaseRunIntent(
+        input,
+        tenantId,
+        run,
+        nowValue,
+      );
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(state, tenantId, "startStandingReleaseRun", idempotencyInput);
+        if (descriptor?.result) {
+          const current = currentStandingReleaseRunReplay(state, descriptor.result, tenantId);
+          ensureStandingReleaseRunAuthority(state, current.run, nowValue);
+          freshStandingReleaseRunIntent(input, tenantId, current.run, nowValue);
+          return current;
+        }
+        ensureStandingReleaseRunAuthority(state, run, nowValue);
+        state.standing_release_runs ||= {};
+        if (state.standing_release_runs[run.run_id]) fail("standing_release_run_exists");
+        for (const existingRecord of Object.values(state.standing_release_runs)) {
+          const existingRun = verifiedStandingReleaseRunRecord(existingRecord);
+          if (existingRun.delegation_id === run.delegation_id) {
+            fail("standing_release_run_exists");
+          }
+        }
+        const record = signStandingReleaseRunRecord(run, {
+          transition: "start",
+          dttRequestBindingDigest,
+          dttSessionFingerprint,
+          intentBinding,
+        });
+        state.standing_release_runs[run.run_id] = record;
+        return saveIdempotent(state, descriptor, clone(record));
+      });
+    },
+
+    async readStandingReleaseRun({ tenant_id, run_id } = {}) {
+      const tenantId = text(tenant_id, "tenant_id_invalid", 160);
+      const state = store.readState();
+      const record = clone(readStandingReleaseRunRecord(state, tenantId, run_id));
+      let authorityState = "active";
+      try {
+        ensureStandingReleaseRunAuthority(state, record.run, nowMillis(now), {
+          allowCompletedRenderObservation: true,
+        });
+      } catch (error) {
+        const code = String(error?.message || "standing_release_authority_inactive");
+        if (!/^(standing_release_(authority_inactive|run_authority_drift|run_delegation_invalid|mandate_signature_invalid))$/.test(code)) {
+          throw error;
+        }
+        authorityState = "inactive";
+      }
+      return { ...record, authority_state: authorityState };
+    },
+
+    verifyStandingReleaseRunRecord(record) {
+      try {
+        verifiedStandingReleaseRunRecord(record);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    async bindStandingReleaseRunTicket(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
+        "ticket_id", "expected_version", "dtt_session_fingerprint",
+        "dtt_request_binding_digest", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      text(input.idempotency_key, "standing_release_idempotency_key_required", 160);
+      const dttRequestBindingDigest = digest(input.dtt_request_binding_digest);
+      const idempotencyInput = standingReleaseRunIdempotencyInput(input);
+      const nowValue = nowMillis(now);
+      const initial = store.readState();
+      const replay = getIdempotent(initial, tenantId, "bindStandingReleaseRunTicket", idempotencyInput);
+      if (replay?.result) {
+        const current = currentStandingReleaseRunReplay(initial, replay.result, tenantId);
+        ensureStandingReleaseRunAuthority(initial, current.run, nowValue);
+        freshStandingReleaseRunIntent(input, tenantId, current.run, nowValue);
+        return current;
+      }
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(state, tenantId, "bindStandingReleaseRunTicket", idempotencyInput);
+        if (descriptor?.result) {
+          const current = currentStandingReleaseRunReplay(state, descriptor.result, tenantId);
+          ensureStandingReleaseRunAuthority(state, current.run, nowValue);
+          freshStandingReleaseRunIntent(input, tenantId, current.run, nowValue);
+          return current;
+        }
+        const currentRecord = readStandingReleaseRunRecord(state, tenantId, input.run_id);
+        const currentRun = verifiedStandingReleaseRunRecord(currentRecord);
+        if (text(input.work_id, "standing_release_run_work_invalid", 80).toLowerCase() !== currentRun.work_id) {
+          fail("standing_release_run_work_mismatch");
+        }
+        ensureStandingReleaseRunAuthority(state, currentRun, nowValue);
+        const freshness = freshStandingReleaseRunIntent(
+          input,
+          tenantId,
+          currentRun,
+          nowValue,
+        );
+        const ticketRecord = state.tickets?.[String(input.ticket_id || "")];
+        if (!ticketRecord || ticketRecord.ticket?.tenant_id !== tenantId) {
+          fail("action_ticket_not_found");
+        }
+        if (!governance.verifyActionTicket(ticketRecord.ticket)) {
+          fail("action_ticket_signature_invalid");
+        }
+        const nextRun = bindStandingReleaseRunTicketState(currentRun, clone(ticketRecord), {
+          now: () => nowValue,
+          expected_version: input.expected_version,
+        });
+        const nextRecord = signStandingReleaseRunRecord(nextRun, {
+          transition: "bind_ticket",
+          dttRequestBindingDigest,
+          dttSessionFingerprint: freshness.dttSessionFingerprint,
+          intentBinding: freshness.intentBinding,
+        });
+        state.standing_release_runs[nextRun.run_id] = nextRecord;
+        return saveIdempotent(state, descriptor, clone(nextRecord));
+      });
+    },
+
+    async advanceStandingReleaseRun(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
+        "ticket_id", "expected_version", "dtt_session_fingerprint",
+        "dtt_request_binding_digest", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      text(input.idempotency_key, "standing_release_idempotency_key_required", 160);
+      const dttRequestBindingDigest = digest(input.dtt_request_binding_digest);
+      const idempotencyInput = standingReleaseRunIdempotencyInput(input);
+      const nowValue = nowMillis(now);
+      const initial = store.readState();
+      const replay = getIdempotent(initial, tenantId, "advanceStandingReleaseRun", idempotencyInput);
+      if (replay?.result) {
+        const current = currentStandingReleaseRunReplay(initial, replay.result, tenantId);
+        ensureStandingReleaseRunAuthority(initial, current.run, nowValue, {
+          allowCompletedRun: true,
+        });
+        freshStandingReleaseRunIntent(input, tenantId, current.run, nowValue);
+        return current;
+      }
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(state, tenantId, "advanceStandingReleaseRun", idempotencyInput);
+        if (descriptor?.result) {
+          const current = currentStandingReleaseRunReplay(state, descriptor.result, tenantId);
+          ensureStandingReleaseRunAuthority(state, current.run, nowValue, {
+            allowCompletedRun: true,
+          });
+          freshStandingReleaseRunIntent(input, tenantId, current.run, nowValue);
+          return current;
+        }
+        const currentRecord = readStandingReleaseRunRecord(state, tenantId, input.run_id);
+        const currentRun = verifiedStandingReleaseRunRecord(currentRecord);
+        if (text(input.work_id, "standing_release_run_work_invalid", 80).toLowerCase() !== currentRun.work_id) {
+          fail("standing_release_run_work_mismatch");
+        }
+        if (currentRun.active_action?.ticket_id !== String(input.ticket_id || "")) {
+          fail("standing_release_active_ticket_mismatch");
+        }
+        const allowCompletedRenderObservation = currentRun.active_action?.kind === "render.observe";
+        ensureStandingReleaseRunAuthority(state, currentRun, nowValue, {
+          allowCompletedRenderObservation,
+        });
+        const freshness = freshStandingReleaseRunIntent(
+          input,
+          tenantId,
+          currentRun,
+          nowValue,
+        );
+        const ticketRecord = state.tickets?.[String(input.ticket_id || "")];
+        if (!ticketRecord || ticketRecord.ticket?.tenant_id !== tenantId) {
+          fail("action_ticket_not_found");
+        }
+        if (!governance.verifyActionTicket(ticketRecord.ticket)) {
+          fail("action_ticket_signature_invalid");
+        }
+        verifyActionTicketLifecycleRecord(ticketRecord);
+        if (ticketRecord.ticket.action.kind === "render.observe") {
+          const receipt = verifiedFinalizeAuthorization(ticketRecord, {
+            signing,
+            nowValue,
+            tenantId,
+            workId: currentRun.work_id,
+            repository: currentRun.repository,
+            targetCommit: currentRun.merge_commit,
+          });
+          if (receipt.verification_scope !== "full_release" || receipt.services_verified !== true) {
+            fail("standing_release_run_live_verification_incomplete");
+          }
+        }
+        const nextRun = advanceStandingReleaseRunState(currentRun, clone(ticketRecord), {
+          now: () => nowValue,
+          expected_version: input.expected_version,
+        });
+        if (nextRun.version === currentRun.version) {
+          fail("standing_release_action_outcome_pending");
+        }
+        const nextRecord = signStandingReleaseRunRecord(nextRun, {
+          transition: "advance",
+          dttRequestBindingDigest,
+          dttSessionFingerprint: freshness.dttSessionFingerprint,
+          intentBinding: freshness.intentBinding,
+        });
+        state.standing_release_runs[nextRun.run_id] = nextRecord;
+        return saveIdempotent(state, descriptor, clone(nextRecord));
+      });
+    },
+
+    async cancelStandingReleaseRun(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
+        "reason_digest", "expected_version", "dtt_session_fingerprint",
+        "dtt_request_binding_digest", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      text(input.idempotency_key, "standing_release_idempotency_key_required", 160);
+      const dttRequestBindingDigest = digest(input.dtt_request_binding_digest);
+      const idempotencyInput = standingReleaseRunIdempotencyInput(input);
+      const nowValue = nowMillis(now);
+      const initial = store.readState();
+      const replay = getIdempotent(initial, tenantId, "cancelStandingReleaseRun", idempotencyInput);
+      if (replay?.result) {
+        const current = currentStandingReleaseRunReplay(initial, replay.result, tenantId);
+        ensureStandingReleaseRunAuthority(initial, current.run, nowValue);
+        freshStandingReleaseRunIntent(input, tenantId, current.run, nowValue);
+        return current;
+      }
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(state, tenantId, "cancelStandingReleaseRun", idempotencyInput);
+        if (descriptor?.result) {
+          const current = currentStandingReleaseRunReplay(state, descriptor.result, tenantId);
+          ensureStandingReleaseRunAuthority(state, current.run, nowValue);
+          freshStandingReleaseRunIntent(input, tenantId, current.run, nowValue);
+          return current;
+        }
+        const currentRecord = readStandingReleaseRunRecord(state, tenantId, input.run_id);
+        const currentRun = verifiedStandingReleaseRunRecord(currentRecord);
+        if (text(input.work_id, "standing_release_run_work_invalid", 80).toLowerCase() !== currentRun.work_id) {
+          fail("standing_release_run_work_mismatch");
+        }
+        ensureStandingReleaseRunAuthority(state, currentRun, nowValue);
+        const freshness = freshStandingReleaseRunIntent(
+          input,
+          tenantId,
+          currentRun,
+          nowValue,
+        );
+        const nextRun = cancelStandingReleaseRunState(currentRun, {
+          reason_digest: input.reason_digest,
+          now: () => nowValue,
+          expected_version: input.expected_version,
+        });
+        const nextRecord = signStandingReleaseRunRecord(nextRun, {
+          transition: "cancel",
+          dttRequestBindingDigest,
+          dttSessionFingerprint: freshness.dttSessionFingerprint,
+          intentBinding: freshness.intentBinding,
+        });
+        state.standing_release_runs[nextRun.run_id] = nextRecord;
+        return saveIdempotent(state, descriptor, clone(nextRecord));
+      });
+    },
+
+    async quarantineExpiredStandingReleaseRun(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
+        "ticket_id", "reservation_id", "expected_version", "dtt_session_fingerprint",
+        "dtt_request_binding_digest", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      text(input.idempotency_key, "standing_release_idempotency_key_required", 160);
+      const dttRequestBindingDigest = digest(input.dtt_request_binding_digest);
+      const idempotencyInput = standingReleaseRunIdempotencyInput(input);
+      const nowValue = nowMillis(now);
+      const initial = store.readState();
+      const replay = getIdempotent(
+        initial,
+        tenantId,
+        "quarantineExpiredStandingReleaseRun",
+        idempotencyInput,
+      );
+      if (replay?.result) {
+        const current = currentStandingReleaseRunReplay(initial, replay.result, tenantId);
+        const currentRun = verifiedStandingReleaseRunRecord(current);
+        if (
+          text(input.work_id, "standing_release_run_work_invalid", 80).toLowerCase() !==
+            currentRun.work_id ||
+          currentRun.state !== "QUARANTINED"
+        ) fail("standing_release_run_work_mismatch");
+        ensureStandingReleaseRunBinding(initial, currentRun);
+        freshStandingReleaseRunIntent(input, tenantId, currentRun, nowValue);
+        return current;
+      }
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(
+          state,
+          tenantId,
+          "quarantineExpiredStandingReleaseRun",
+          idempotencyInput,
+        );
+        if (descriptor?.result) {
+          const current = currentStandingReleaseRunReplay(state, descriptor.result, tenantId);
+          const currentRun = verifiedStandingReleaseRunRecord(current);
+          ensureStandingReleaseRunBinding(state, currentRun);
+          freshStandingReleaseRunIntent(input, tenantId, currentRun, nowValue);
+          return current;
+        }
+        const currentRecord = readStandingReleaseRunRecord(state, tenantId, input.run_id);
+        const currentRun = verifiedStandingReleaseRunRecord(currentRecord);
+        if (text(input.work_id, "standing_release_run_work_invalid", 80).toLowerCase() !== currentRun.work_id) {
+          fail("standing_release_run_work_mismatch");
+        }
+        ensureStandingReleaseRunBinding(state, currentRun);
+        const freshness = freshStandingReleaseRunIntent(input, tenantId, currentRun, nowValue);
+        const ticketRecord = expiredStandingReleaseRunReservation(
+          state,
+          currentRun,
+          input,
+          nowValue,
+        );
+        const nextRun = quarantineExpiredStandingReleaseRunState(currentRun, {
+          ticket_id: ticketRecord.ticket.ticket_id,
+          reservation_id: ticketRecord.reservation_id,
+          now: () => nowValue,
+          expected_version: input.expected_version,
+        });
+        ticketRecord.state = "quarantined";
+        ticketRecord.observed_outcome = "unknown";
+        ticketRecord.quarantined_at = iso(nowValue);
+        ticketRecord.quarantine_reason_digest = nextRun.terminal_reason_digest;
+        signActionTicketLifecycleRecord(ticketRecord);
+        const nextRecord = signStandingReleaseRunRecord(nextRun, {
+          transition: "quarantine_expired",
+          dttRequestBindingDigest,
+          dttSessionFingerprint: freshness.dttSessionFingerprint,
+          intentBinding: freshness.intentBinding,
+        });
+        state.standing_release_runs[nextRun.run_id] = nextRecord;
+        return saveIdempotent(state, descriptor, clone(nextRecord));
+      });
     },
 
     async issueDelegation(input = {}) {
@@ -1532,6 +3193,29 @@ export function createHostNativeGovernance({
         record.revocation = { owner_subject_fingerprint: confirmation.owner_subject_fingerprint };
         const { signature: _signature, ...unsigned } = record;
         record.signature = hmac("hnd", signing, canonical(unsigned));
+        const standingBinding = record.grant?.standing_release_binding;
+        if (standingBinding) {
+          for (const ticket of Object.values(state.tickets || {})) {
+            if (ticket?.ticket?.delegation_id !== record.delegation_id) continue;
+            if (ticket.state === "issued") {
+              ticket.state = "revoked";
+              ticket.revoked_at = iso(nowValue);
+            } else if (ticket.state === "reserved") {
+              ticket.state = "reconciliation_required";
+              ticket.outcome = "unknown";
+              ticket.revoked_at = iso(nowValue);
+              signActionTicketLifecycleRecord(ticket);
+            }
+          }
+          const mandate = state.standing_release_mandates?.[standingBinding.mandate_id];
+          if (mandate) {
+            const leaseKey = `${tenantId}\u0000${mandate.mandate.repository}\u0000${mandate.mandate.base_branch}`;
+            const lease = state.standing_release_leases?.[leaseKey];
+            if (lease?.delegation_id === record.delegation_id) {
+              delete state.standing_release_leases[leaseKey];
+            }
+          }
+        }
         return saveIdempotent(state, descriptor, record);
       });
     },
@@ -1667,19 +3351,66 @@ export function createHostNativeGovernance({
       const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
       const initial = store.readState();
       const replay = getIdempotent(initial, tenantId, "issueActionTicket", input);
-      if (replay?.result) return replay.result;
+      if (replay?.result) return validateStandingReplay(initial, replay.result);
       const action = validateActionShape(input.action);
       const nowValue = nowMillis(now);
       const delegation = initial.delegations[String(input.delegation_id || "")];
       if (!delegation) fail("delegation_not_found");
       if (delegation.grant.tenant_id !== tenantId) fail("cross_tenant_delegation_denied");
       if (!delegationActive(delegation, nowValue)) fail("delegation_not_active");
+      ensureStandingReleaseDelegationActive(initial, delegation, nowValue);
       if (text(input.work_id, "work_id_invalid", 240) !== delegation.grant.work_id) fail("delegation_work_mismatch");
       if (digest(input.intent_anchor_digest) !== delegation.grant.intent_anchor_digest) fail("delegation_intent_mismatch");
       if (text(input.repository, "repository_invalid", 300) !== delegation.grant.repository) fail("delegation_repository_mismatch");
       const host_kind = text(input.host_kind, "host_kind_invalid", 120);
       if (!delegation.grant.audience.includes(host_kind)) fail("host_not_allowed");
       const host_session_fingerprint = text(input.host_session_fingerprint, "host_session_invalid", 300);
+      const standingBinding = delegation.grant.standing_release_binding;
+      if (standingBinding && (
+        standingBinding.host_kind !== host_kind ||
+        standingBinding.host_session_fingerprint !== host_session_fingerprint
+      )) fail("standing_release_host_session_mismatch");
+      const standingMandate = standingBinding
+        ? initial.standing_release_mandates?.[standingBinding.mandate_id]?.mandate
+        : null;
+      if (standingBinding && !standingMandate) fail("standing_release_authority_inactive");
+      if (standingBinding) {
+        const changedFilesRequired = [
+          "git.commit", "git.push.branch", "github.draft_pr",
+        ].includes(action.kind);
+        if (["git.commit", "git.push.branch", "github.draft_pr", "github.ready", "github.merge"].includes(action.kind) &&
+          actionBranch(action) !== standingBinding.delivery_branch) {
+          fail("standing_release_delivery_branch_denied");
+        }
+        if (["github.draft_pr", "github.ready", "github.merge"].includes(action.kind) &&
+          action.base_branch !== standingMandate.base_branch) {
+          fail("standing_release_base_branch_denied");
+        }
+        if (["github.draft_pr", "github.merge"].includes(action.kind) &&
+          commit(action.expected_base_commit) !== standingBinding.base_commit) {
+          fail("standing_release_base_commit_drift");
+        }
+        if (changedFilesRequired && (!Array.isArray(action.changed_files) || !action.changed_files.length)) {
+          fail("standing_release_changed_files_required");
+        }
+        if (changedFilesRequired &&
+          !sameStrings(action.changed_files, standingBinding.changed_files)) {
+          fail("standing_release_change_cone_drift");
+        }
+        if (action.kind === "git.commit" && !input.predecessor_ticket_id &&
+          commit(action.parent_commit) !== standingBinding.base_commit) {
+          fail("standing_release_commit_chain_mismatch");
+        }
+        if (["git.push.branch", "github.draft_pr", "github.ready", "github.merge"].includes(action.kind) &&
+          !input.predecessor_ticket_id) {
+          fail("standing_release_predecessor_required");
+        }
+      }
+      if (standingBinding && action.kind === "github.merge" &&
+        action.head_branch !== standingBinding.delivery_branch) {
+        fail("standing_release_delivery_branch_denied");
+      }
+      validateStandingRepairAction(delegation, action);
       ensureActionBound(action, delegation);
       if (input.bootstrap_release_exception_receipt !== undefined && action.kind !== "github.merge") {
         fail("bootstrap_release_exception_action_not_allowed");
@@ -1692,7 +3423,7 @@ export function createHostNativeGovernance({
       let bootstrapReleaseExceptionCandidate = null;
       let predecessor = null;
       let expiredDelegationContinuation = null;
-      if (input.predecessor_ticket_id) {
+        if (input.predecessor_ticket_id) {
         const parent = initial.tickets[String(input.predecessor_ticket_id)];
         const parentMayContinue = parent && (
           parent.state === "completed" ||
@@ -1703,6 +3434,126 @@ export function createHostNativeGovernance({
         );
         if (!parentMayContinue || parent.ticket.tenant_id !== tenantId) {
           fail("predecessor_ticket_invalid");
+        }
+        if (standingBinding) verifyActionTicketLifecycleRecord(parent);
+        if (standingBinding) {
+          const parentDelegation = initial.delegations?.[parent.ticket.delegation_id];
+          const parentBinding = parentDelegation?.grant?.standing_release_binding;
+          if (
+            !parentBinding || parentBinding.mandate_id !== standingBinding.mandate_id ||
+            parentBinding.mandate_digest !== standingBinding.mandate_digest ||
+            parentBinding.revision !== standingBinding.revision ||
+            parentBinding.revocation_epoch !== standingBinding.revocation_epoch ||
+            parent.ticket.host_kind !== host_kind ||
+            parent.ticket.host_session_fingerprint !== host_session_fingerprint
+          ) fail("standing_release_predecessor_mismatch");
+          const parentKind = parent.ticket.action.kind;
+          const chainValid = action.kind === "git.commit"
+            ? (["git.commit", "git.push.branch"].includes(parentKind) &&
+              parent.result_commit === commit(action.parent_commit)) ||
+              (parentKind === "github.draft_pr" &&
+                successfulStandingReleasePredecessor(parent) &&
+                parent.ticket.delegation_id === delegation.delegation_id &&
+                parent.ticket.action.head_branch === action.branch &&
+                commit(parent.ticket.action.head_commit) === commit(action.parent_commit) &&
+                Number(delegation.usage?.commits || 0) >= 1)
+            : action.kind === "git.push.branch"
+              ? parentKind === "git.commit" && parent.result_commit === commit(action.source_commit)
+              : action.kind === "github.draft_pr"
+                ? parentKind === "git.push.branch" && parent.result_commit === commit(action.head_commit)
+                : action.kind === "github.ready"
+                  ? (parentKind === "github.draft_pr" &&
+                      action.origin_draft_ticket_id === undefined &&
+                      parent.ticket.action.head_commit === commit(action.head_commit) &&
+                      parent.ticket.action.head_branch === action.head_branch &&
+                      parent.ticket.action.base_branch === action.base_branch &&
+                      parent.result_pull_request === positiveInteger(
+                        action.pull_request,
+                        "standing_release_pull_request_invalid",
+                        Number.MAX_SAFE_INTEGER,
+                      )) ||
+                    (parentKind === "git.push.branch" && (() => {
+                      resolveStandingRepairReadyOrigin({
+                        state: initial,
+                        delegation,
+                        standingBinding,
+                        tenantId,
+                        hostKind: host_kind,
+                        hostSessionFingerprint: host_session_fingerprint,
+                        readyAction: action,
+                        repairPush: parent,
+                      });
+                      return true;
+                    })())
+                  : action.kind === "github.merge"
+                    ? parentKind === "github.ready" &&
+                      parent.ticket.action.head_commit === commit(action.head_commit) &&
+                      parent.ticket.action.head_branch === action.head_branch &&
+                      parent.ticket.action.base_branch === action.base_branch &&
+                      positiveInteger(
+                        parent.ticket.action.pull_request,
+                        "standing_release_pull_request_invalid",
+                        Number.MAX_SAFE_INTEGER,
+                      ) === positiveInteger(
+                        action.pull_request,
+                        "standing_release_pull_request_invalid",
+                        Number.MAX_SAFE_INTEGER,
+                      ) && (parent.ticket.action.origin_draft_ticket_id
+                        ? (() => {
+                          if (!successfulStandingReleasePredecessor(parent) ||
+                            parent.ticket.delegation_id !== delegation.delegation_id ||
+                            (action.origin_draft_ticket_id !== undefined &&
+                              action.origin_draft_ticket_id !==
+                                parent.ticket.action.origin_draft_ticket_id)) {
+                            fail("standing_release_origin_draft_mismatch");
+                          }
+                          const repairPush = initial.tickets?.[
+                            parent.ticket.predecessor?.ticket_id
+                          ];
+                          const draft = resolveStandingRepairReadyOrigin({
+                            state: initial,
+                            delegation,
+                            standingBinding,
+                            tenantId,
+                            hostKind: host_kind,
+                            hostSessionFingerprint: host_session_fingerprint,
+                            readyAction: parent.ticket.action,
+                            repairPush,
+                          });
+                          return commit(parent.ticket.action.expected_base_commit) ===
+                              commit(action.expected_base_commit) &&
+                            draft.ticket.action.head_branch === action.head_branch &&
+                            draft.ticket.action.base_branch === action.base_branch &&
+                            commit(draft.ticket.action.expected_base_commit) ===
+                              commit(action.expected_base_commit) &&
+                            draft.result_pull_request === positiveInteger(
+                              action.pull_request,
+                              "standing_release_pull_request_invalid",
+                              Number.MAX_SAFE_INTEGER,
+                            );
+                        })()
+                        : (() => {
+                          if (action.origin_draft_ticket_id !== undefined) {
+                            fail("standing_release_origin_draft_mismatch");
+                          }
+                          const draft = initial.tickets?.[
+                            parent.ticket.predecessor?.ticket_id
+                          ];
+                          return draft?.ticket?.action?.kind === "github.draft_pr" &&
+                            draft.ticket.action.head_branch === action.head_branch &&
+                            draft.ticket.action.base_branch === action.base_branch &&
+                            commit(draft.ticket.action.head_commit) ===
+                              commit(action.head_commit) &&
+                            commit(draft.ticket.action.expected_base_commit) ===
+                              commit(action.expected_base_commit) &&
+                            draft.result_pull_request === positiveInteger(
+                              action.pull_request,
+                              "standing_release_pull_request_invalid",
+                              Number.MAX_SAFE_INTEGER,
+                            );
+                        })())
+                    : true;
+          if (!chainValid) fail("standing_release_predecessor_mismatch");
         }
         let finalizeAuthorization = null;
         if (action.kind === "render.deploy") {
@@ -1732,6 +3583,29 @@ export function createHostNativeGovernance({
           intent_anchor_digest: delegation.grant.intent_anchor_digest,
           repository: delegation.grant.repository,
         });
+        if (standingBinding) {
+          const manifestServices = release_manifest.delivery.services.map((service) => ({
+            service_id: service.service_id,
+            environment: service.environment,
+            health_contract_digest: service.health_contract_digest,
+          })).sort((left, right) =>
+            `${left.service_id}\u0000${left.environment}`.localeCompare(
+              `${right.service_id}\u0000${right.environment}`,
+            ));
+          if (
+            release_manifest.base_branch !== standingMandate.base_branch ||
+            (action.kind === "github.merge" &&
+              release_manifest.delivery_branch !== standingMandate.base_branch) ||
+            !sameStrings(release_manifest.changed_files, standingBinding.changed_files) ||
+            release_manifest.verification.builder_agent_id !== standingBinding.builder_agent_id ||
+            !sameStrings(
+              release_manifest.verification.verifier_agent_ids,
+              standingBinding.verifier_agent_ids,
+            ) ||
+            hostNativeDigest(manifestServices) !==
+              hostNativeDigest(standingBinding.induced_services)
+          ) fail("standing_release_release_manifest_drift");
+        }
         // Render origins are materialized below and intentionally are not part
         // of the signed manifest digest.  Capture the immutable release intent
         // before adding that server-resolved runtime detail.
@@ -2076,9 +3950,10 @@ export function createHostNativeGovernance({
       }
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "issueActionTicket", input);
-        if (descriptor?.result) return descriptor.result;
+        if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
         const currentDelegation = state.delegations[String(input.delegation_id || "")];
         if (!currentDelegation || !delegationActive(currentDelegation, nowValue)) fail("delegation_not_active");
+        ensureStandingReleaseDelegationActive(state, currentDelegation, nowValue);
         let releaseJoin = null;
         let supersededTicket = null;
         if (isReleaseAction(action.kind) && action.kind !== "render.observe" && !bootstrapReleaseExceptionCandidate) {
@@ -2112,7 +3987,7 @@ export function createHostNativeGovernance({
             supersededTicket = priorTicket;
           }
         }
-        const usage = actionUsage(action.kind, action);
+        const usage = actionUsage(action.kind, action, currentDelegation);
         ensureBudget(currentDelegation, usage);
         const ticketId = makeId("hnt", { input, issued_at: iso(nowValue) });
         if (releaseJoin) {
@@ -2181,14 +4056,137 @@ export function createHostNativeGovernance({
       catch { return false; }
     },
 
-    async reserveActionTicket(input = {}) {
-      exactKeys(input, new Set(["tenant_id", "ticket_id", "host_session_fingerprint", "idempotency_key"]));
+    async reserveStandingReleaseRunTicket(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
+        "ticket_id", "expected_version", "host_session_fingerprint",
+        "dtt_session_fingerprint", "dtt_request_binding_digest", "idempotency_key",
+      ]));
       const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const state = store.readState();
+      const runRecord = readStandingReleaseRunRecord(state, tenantId, input.run_id);
+      const run = verifiedStandingReleaseRunRecord(runRecord);
+      if (text(input.work_id, "standing_release_run_work_invalid", 80).toLowerCase() !== run.work_id) {
+        fail("standing_release_run_work_mismatch");
+      }
+      if (
+        input.expected_version !== run.version ||
+        run.state !== "ACTION_IN_PROGRESS" ||
+        run.active_action?.ticket_id !== String(input.ticket_id || "")
+      ) fail("standing_release_run_version_conflict");
+      ensureStandingReleaseRunAuthority(state, run, nowMillis(now));
+      freshStandingReleaseRunIntent(input, tenantId, run, nowMillis(now));
+      return governance.reserveActionTicket({
+        tenant_id: tenantId,
+        ticket_id: input.ticket_id,
+        host_session_fingerprint: input.host_session_fingerprint,
+        standing_release_run_id: run.run_id,
+        standing_release_run_version: run.version,
+        dtt_request_binding_digest: input.dtt_request_binding_digest,
+        idempotency_key: input.idempotency_key,
+      });
+    },
+
+    async completeStandingReleaseRunTicket(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
+        "ticket_id", "expected_version", "reservation_id", "host_session_fingerprint",
+        "outcome", "result_digest", "result_commit", "result_pull_request",
+        "readback_digest", "dtt_session_fingerprint", "dtt_request_binding_digest",
+        "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const state = store.readState();
+      const runRecord = readStandingReleaseRunRecord(state, tenantId, input.run_id);
+      const run = verifiedStandingReleaseRunRecord(runRecord);
+      if (text(input.work_id, "standing_release_run_work_invalid", 80).toLowerCase() !== run.work_id) {
+        fail("standing_release_run_work_mismatch");
+      }
+      if (
+        input.expected_version !== run.version ||
+        run.state !== "ACTION_IN_PROGRESS" ||
+        run.active_action?.ticket_id !== String(input.ticket_id || "")
+      ) fail("standing_release_run_version_conflict");
+      const nowValue = nowMillis(now);
+      ensureStandingReleaseRunAuthority(state, run, nowValue);
+      freshStandingReleaseRunIntent(input, tenantId, run, nowValue);
+      return governance.completeActionTicket({
+        tenant_id: tenantId,
+        ticket_id: input.ticket_id,
+        reservation_id: input.reservation_id,
+        host_session_fingerprint: input.host_session_fingerprint,
+        outcome: input.outcome,
+        result_digest: input.result_digest,
+        ...(input.result_commit === undefined ? {} : { result_commit: input.result_commit }),
+        ...(input.result_pull_request === undefined
+          ? {}
+          : { result_pull_request: input.result_pull_request }),
+        ...(input.readback_digest === undefined ? {} : { readback_digest: input.readback_digest }),
+        standing_release_run_id: run.run_id,
+        standing_release_run_version: run.version,
+        dtt_request_binding_digest: input.dtt_request_binding_digest,
+        idempotency_key: input.idempotency_key,
+      });
+    },
+
+    async reconcileStandingReleaseRunTicket(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
+        "ticket_id", "expected_version", "reservation_id", "host_session_fingerprint",
+        "observed_outcome", "observed_commit", "observed_pull_request", "readback_digest",
+        "dtt_session_fingerprint", "dtt_request_binding_digest", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const state = store.readState();
+      const runRecord = readStandingReleaseRunRecord(state, tenantId, input.run_id);
+      const run = verifiedStandingReleaseRunRecord(runRecord);
+      if (text(input.work_id, "standing_release_run_work_invalid", 80).toLowerCase() !== run.work_id) {
+        fail("standing_release_run_work_mismatch");
+      }
+      if (
+        input.expected_version !== run.version ||
+        run.state !== "ACTION_IN_PROGRESS" ||
+        run.active_action?.ticket_id !== String(input.ticket_id || "")
+      ) fail("standing_release_run_version_conflict");
+      const nowValue = nowMillis(now);
+      ensureStandingReleaseRunAuthority(state, run, nowValue);
+      freshStandingReleaseRunIntent(input, tenantId, run, nowValue);
+      return governance.reconcileActionTicket({
+        tenant_id: tenantId,
+        ticket_id: input.ticket_id,
+        reservation_id: input.reservation_id,
+        host_session_fingerprint: input.host_session_fingerprint,
+        observed_outcome: input.observed_outcome,
+        ...(input.observed_commit === undefined ? {} : { observed_commit: input.observed_commit }),
+        ...(input.observed_pull_request === undefined
+          ? {}
+          : { observed_pull_request: input.observed_pull_request }),
+        readback_digest: input.readback_digest,
+        standing_release_run_id: run.run_id,
+        standing_release_run_version: run.version,
+        dtt_request_binding_digest: input.dtt_request_binding_digest,
+        idempotency_key: input.idempotency_key,
+      });
+    },
+
+    async reserveActionTicket(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "ticket_id", "host_session_fingerprint", "standing_release_run_id",
+        "standing_release_run_version", "dtt_request_binding_digest", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const idempotencyInput = actionReservationIdempotencyInput(input);
       const initial = store.readState();
-      const replay = getIdempotent(initial, tenantId, "reserveActionTicket", input);
-      if (replay?.result) return replay.result;
+      const replay = getIdempotent(initial, tenantId, "reserveActionTicket", idempotencyInput);
+      if (replay?.result) return validateStandingReplay(initial, replay.result);
       const nowValue = nowMillis(now);
       const bootstrapTicket = initial.tickets[String(input.ticket_id || "")];
+      if (bootstrapTicket) {
+        ensureStandingReleaseRunReservation(initial, bootstrapTicket, input, nowValue);
+      }
+      const freshStandingMerge = bootstrapTicket
+        ? await requireFreshStandingMergeReadback(initial, bootstrapTicket, nowValue)
+        : null;
       if (bootstrapTicket?.ticket?.bootstrap_release_exception_candidate) {
         if (!bootstrapReleaseExceptionStore || typeof bootstrapReleaseExceptionStore.consume !== "function") {
           fail("bootstrap_release_exception_store_unavailable");
@@ -2218,8 +4216,8 @@ export function createHostNativeGovernance({
         }
       }
       return store.mutate((state) => {
-        const descriptor = getIdempotent(state, tenantId, "reserveActionTicket", input);
-        if (descriptor?.result) return descriptor.result;
+        const descriptor = getIdempotent(state, tenantId, "reserveActionTicket", idempotencyInput);
+        if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
         const record = state.tickets[String(input.ticket_id || "")];
         if (!record) fail("action_ticket_not_found");
         if (record.ticket.tenant_id !== tenantId) fail("cross_tenant_action_ticket_denied");
@@ -2228,6 +4226,17 @@ export function createHostNativeGovernance({
         if (Date.parse(record.ticket.expires_at) <= nowValue) fail("action_ticket_expired");
         const delegation = state.delegations[record.ticket.delegation_id];
         if (!delegationActive(delegation, nowValue)) fail("delegation_not_active");
+        ensureStandingReleaseDelegationActive(state, delegation, nowValue);
+        ensureStandingReleaseRunReservation(state, record, input, nowValue);
+        if (freshStandingMerge) {
+          const join = state.core_join_verdicts?.[record.ticket.core_join_verdict_id];
+          if (
+            hostNativeDigest(record.ticket) !== freshStandingMerge.ticket_digest ||
+            join?.claim_digest !== freshStandingMerge.core_join_claim_digest ||
+            join?.state !== "active" || join?.uses !== 0 ||
+            join?.authorized_ticket_id !== record.ticket.ticket_id
+          ) fail("standing_release_pre_merge_state_drift");
+        }
         if (record.ticket.action.kind === "render.observe") {
           validateStoredObserveDelegationContinuation(record, state, {
             nowValue,
@@ -2235,8 +4244,16 @@ export function createHostNativeGovernance({
             successorUsage: 0,
           });
         }
-        const usage = actionUsage(record.ticket.action.kind, record.ticket.action);
-        delegation.usage = ensureBudget(delegation, usage);
+        const usage = actionUsage(
+          record.ticket.action.kind,
+          record.ticket.action,
+          delegation,
+        );
+        const nextUsage = ensureBudget(delegation, usage);
+        const nextStandingUsage = standingReleaseUsageNext(
+          delegation,
+          record.ticket.action,
+        );
         if (isReleaseAction(record.ticket.action.kind) && record.ticket.action.kind !== "render.observe" && !record.ticket.bootstrap_release_exception_candidate) {
           const join = state.core_join_verdicts[record.ticket.core_join_verdict_id];
           if (!join || join.tenant_id !== tenantId) fail("core_join_verdict_not_found");
@@ -2258,29 +4275,42 @@ export function createHostNativeGovernance({
           join.uses = 1;
           join.consumed_by_ticket_id = record.ticket.ticket_id;
         }
+        delegation.usage = nextUsage;
+        if (nextStandingUsage) delegation.standing_release_usage = nextStandingUsage;
         record.state = "reserved";
         record.uses = 1;
+        if (freshStandingMerge) {
+          record.pre_merge_readback_digest =
+            freshStandingMerge.pre_merge_readback_digest;
+        }
         record.reservation_id = makeId("hnr", { ticket_id: record.ticket.ticket_id, nowValue });
         record.reserved_at = iso(nowValue);
         record.reservation_expires_at = iso(nowValue + leaseMs);
+        signActionTicketLifecycleRecord(record);
         return saveIdempotent(state, descriptor, record);
       });
     },
 
     async completeActionTicket(input = {}) {
       exactKeys(input, new Set([
-        "tenant_id", "ticket_id", "reservation_id", "host_session_fingerprint", "outcome", "result_digest", "result_commit", "readback_digest", "idempotency_key",
+        "tenant_id", "ticket_id", "reservation_id", "host_session_fingerprint", "outcome", "result_digest", "result_commit", "result_pull_request", "readback_digest",
+        "standing_release_run_id", "standing_release_run_version",
+        "dtt_request_binding_digest", "idempotency_key",
       ]));
       const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
       const initial = store.readState();
-      const replay = getIdempotent(initial, tenantId, "completeActionTicket", input);
-      if (replay?.result) return replay.result;
       const nowValue = nowMillis(now);
+      const initialRecord = initial.tickets[String(input.ticket_id || "")];
+      if (initialRecord) ensureStandingReleaseRunReservation(initial, initialRecord, input, nowValue);
+      const idempotencyInput = actionLifecycleIdempotencyInput(input);
+      const replay = getIdempotent(initial, tenantId, "completeActionTicket", idempotencyInput);
+      if (replay?.result) return validateStandingReplay(initial, replay.result, nowValue);
       return store.mutate((state) => {
-        const descriptor = getIdempotent(state, tenantId, "completeActionTicket", input);
-        if (descriptor?.result) return descriptor.result;
+        const descriptor = getIdempotent(state, tenantId, "completeActionTicket", idempotencyInput);
+        if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
         const record = state.tickets[String(input.ticket_id || "")];
         if (!record || record.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
+        ensureStandingReleaseRunReservation(state, record, input, nowValue);
         if (record.state !== "reserved") fail("not_completable");
         if (record.reservation_id !== input.reservation_id || record.ticket.host_session_fingerprint !== input.host_session_fingerprint) fail("host_session_mismatch");
         if (Date.parse(record.reservation_expires_at) <= nowValue) fail("action_ticket_reservation_expired");
@@ -2289,33 +4319,59 @@ export function createHostNativeGovernance({
         record.result_digest = digest(input.result_digest);
         record.host_readback_digest = input.readback_digest ? digest(input.readback_digest) : null;
         record.result_commit = input.result_commit ? commit(input.result_commit) : null;
+        record.result_pull_request = input.result_pull_request === undefined
+          ? null
+          : positiveInteger(
+            input.result_pull_request,
+            "result_pull_request_invalid",
+            Number.MAX_SAFE_INTEGER,
+          );
         // A host-reported result is evidence, not independent verification.
         // `authorizeFinalize` is the sole transition that can establish this.
         record.result_commit_verified = false;
         if (record.ticket.action.kind === "github.merge" && outcome === "success") {
           if (!record.result_commit || !record.host_readback_digest) fail("commit_result_evidence_required");
         }
+        const standingBinding = state.delegations?.[
+          record.ticket.delegation_id
+        ]?.grant?.standing_release_binding;
+        if (
+          standingBinding && outcome === "success" &&
+          ["git.push.branch", "git.push.protected"].includes(record.ticket.action.kind) &&
+          record.result_commit !== commit(record.ticket.action.source_commit)
+        ) fail("standing_release_push_result_commit_mismatch");
+        if (
+          standingBinding && record.ticket.action.kind === "github.draft_pr" &&
+          outcome === "success" && !record.result_pull_request
+        ) fail("standing_release_pull_request_result_required");
         record.outcome = outcome;
         record.completed_at = iso(nowValue);
         record.state = outcome === "unknown" ? "reconciliation_required" : "completed";
+        signActionTicketLifecycleRecord(record);
         return saveIdempotent(state, descriptor, record);
       });
     },
 
     async reconcileActionTicket(input = {}) {
       exactKeys(input, new Set([
-        "tenant_id", "ticket_id", "reservation_id", "host_session_fingerprint", "observed_outcome", "observed_commit", "readback_digest", "idempotency_key",
+        "tenant_id", "ticket_id", "reservation_id", "host_session_fingerprint", "observed_outcome", "observed_commit", "observed_pull_request", "readback_digest",
+        "standing_release_run_id", "standing_release_run_version",
+        "dtt_request_binding_digest", "idempotency_key",
       ]));
       const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
       const initial = store.readState();
-      const replay = getIdempotent(initial, tenantId, "reconcileActionTicket", input);
-      if (replay?.result) return replay.result;
       const nowValue = nowMillis(now);
+      const initialRecord = initial.tickets[String(input.ticket_id || "")];
+      if (initialRecord) ensureStandingReleaseRunReservation(initial, initialRecord, input, nowValue);
+      const idempotencyInput = actionLifecycleIdempotencyInput(input);
+      const replay = getIdempotent(initial, tenantId, "reconcileActionTicket", idempotencyInput);
+      if (replay?.result) return validateStandingReplay(initial, replay.result, nowValue);
       return store.mutate((state) => {
-        const descriptor = getIdempotent(state, tenantId, "reconcileActionTicket", input);
-        if (descriptor?.result) return descriptor.result;
+        const descriptor = getIdempotent(state, tenantId, "reconcileActionTicket", idempotencyInput);
+        if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
         const record = state.tickets[String(input.ticket_id || "")];
         if (!record || record.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
+        ensureStandingReleaseRunReservation(state, record, input, nowValue);
         if (!["reconciliation_required", "reserved"].includes(record.state)) fail("not_reconcilable");
         if (record.reservation_id !== input.reservation_id || record.ticket.host_session_fingerprint !== input.host_session_fingerprint) fail("host_session_mismatch");
         if (Date.parse(record.reservation_expires_at) <= nowValue) fail("action_ticket_reservation_expired");
@@ -2325,9 +4381,24 @@ export function createHostNativeGovernance({
         record.observed_outcome = "success";
         record.observed_commit = observedCommit;
         record.result_commit = observedCommit;
+        if (input.observed_pull_request !== undefined) {
+          record.result_pull_request = positiveInteger(
+            input.observed_pull_request,
+            "result_pull_request_invalid",
+            Number.MAX_SAFE_INTEGER,
+          );
+        }
+        const standingBinding = state.delegations?.[
+          record.ticket.delegation_id
+        ]?.grant?.standing_release_binding;
+        if (
+          standingBinding && record.ticket.action.kind === "github.draft_pr" &&
+          !record.result_pull_request
+        ) fail("standing_release_pull_request_result_required");
         record.host_readback_digest = digest(input.readback_digest);
         record.reconciled_at = iso(nowValue);
         record.state = "reconciled";
+        signActionTicketLifecycleRecord(record);
         return saveIdempotent(state, descriptor, record);
       });
     },
@@ -2349,6 +4420,7 @@ export function createHostNativeGovernance({
       const nowValue = nowMillis(now);
       const initialRecord = initial.tickets[String(input.ticket_id || "")];
       if (!initialRecord || initialRecord.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
+      denyHorizontalRunGenericLifecycle(initial, initialRecord);
       if (initialRecord.ticket.host_session_fingerprint !== text(input.host_session_fingerprint, "host_session_mismatch", 300)) fail("host_session_mismatch");
       if (initialRecord.state !== "issued" || initialRecord.reservation_id) fail("unreserved_effect_not_eligible");
       if (Date.parse(initialRecord.ticket.expires_at) <= nowValue) fail("action_ticket_expired");
@@ -2385,6 +4457,7 @@ export function createHostNativeGovernance({
         if (descriptor?.result) return descriptor.result;
         const record = state.tickets[String(input.ticket_id || "")];
         if (!record || record.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
+        denyHorizontalRunGenericLifecycle(state, record);
         if (record.state !== "issued" || record.reservation_id) fail("unreserved_effect_not_eligible");
         const receiptUnsigned = {
           schema_version: "host_native_observed_unreserved_effect_v1",
@@ -2410,6 +4483,7 @@ export function createHostNativeGovernance({
         record.observed_commit = observedCommit;
         record.host_readback_digest = readbackDigest;
         record.state = "observed_unreserved_effect";
+        signActionTicketLifecycleRecord(record);
         return saveIdempotent(state, descriptor, record);
       });
     },
@@ -2654,6 +4728,25 @@ export function createHostNativeGovernance({
           ].slice(-MAX_FINALIZE_AUTHORIZATION_HISTORY);
         }
         record.finalize_authorization = receipt;
+        if (
+          verificationScope === "full_release" &&
+          record.ticket.action.kind === "render.observe"
+        ) {
+          const delegation = state.delegations?.[record.ticket.delegation_id];
+          const standingBinding = delegation?.grant?.standing_release_binding;
+          if (standingBinding) {
+            delegation.state = "completed";
+            delegation.completed_at = iso(receiptNow);
+            const mandate = state.standing_release_mandates?.[standingBinding.mandate_id];
+            if (mandate) {
+              const leaseKey = `${tenantId}\u0000${mandate.mandate.repository}\u0000${mandate.mandate.base_branch}`;
+              const lease = state.standing_release_leases?.[leaseKey];
+              if (lease?.delegation_id === delegation.delegation_id) {
+                delete state.standing_release_leases[leaseKey];
+              }
+            }
+          }
+        }
         return receipt;
       });
     },

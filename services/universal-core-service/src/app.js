@@ -90,6 +90,10 @@ import {
 } from "../../shared/work-preflight-gate.mjs";
 import { mediateFailureObservation } from "../../shared/ai-work-quality-failure-mediation.mjs";
 import {
+  githubWorkerActionDigest,
+  signGitHubWorkerExecutionClaim,
+} from "../../shared/github-worker-execution-claim.js";
+import {
   analyzeScenarios,
   evaluateCounterfactuals,
   evaluateEvents,
@@ -196,6 +200,7 @@ import {
   validateHostReleaseManifestV2,
 } from "./hostNativeGovernance.js";
 import {
+  createHostNativeBranchProtectionResolver,
   createHostNativeExternalReadbackVerifier,
   createHostNativeReleaseJoinVerdictResolver,
 } from "./hostNativeExternalReadback.js";
@@ -5505,6 +5510,25 @@ export function createUniversalCoreService(options = {}) {
     process.env.CORE_HOST_NATIVE_SIGNING_SECRET ??
     "",
   ).trim();
+  const githubWorkerExecutionSigningSecret = String(
+    options.githubWorkerExecutionSigningSecret ??
+    process.env.CORE_GITHUB_WORKER_EXECUTION_SIGNING_SECRET ??
+    "",
+  ).trim();
+  const standingReleaseAutomationEnabledFlag = strictGenericWorkCoreJoinBoolean(
+    options.standingReleaseAutomationEnabled ??
+      process.env.CORE_STANDING_RELEASE_AUTOMATION_ENABLED,
+    false,
+    "standing_release_automation_enabled_flag_invalid",
+  );
+  const standingReleaseEmergencyStopFlag = strictGenericWorkCoreJoinBoolean(
+    options.standingReleaseEmergencyStop ??
+      process.env.CORE_STANDING_RELEASE_EMERGENCY_STOP,
+    false,
+    "standing_release_emergency_stop_flag_invalid",
+  );
+  const standingReleaseConfigurationValid =
+    standingReleaseAutomationEnabledFlag.valid && standingReleaseEmergencyStopFlag.valid;
   const genericWorkCoreJoinProduction = String(process.env.NODE_ENV || "").trim().toLowerCase() === "production";
   const genericWorkCoreJoinEnabledFlag = strictGenericWorkCoreJoinBoolean(
     options.genericWorkCoreJoinEnabled ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_ENABLED,
@@ -6272,6 +6296,20 @@ export function createUniversalCoreService(options = {}) {
               5_000,
             ),
           });
+        const standingReleaseBaseProtectionResolver =
+          options.standingReleaseBaseProtectionResolver ||
+          (typeof hostNativeGithubTokenResolver === "function"
+            ? createHostNativeBranchProtectionResolver({
+              fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
+              githubTokenResolver: hostNativeGithubTokenResolver,
+              requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
+              timeoutMs: Number(
+                options.hostNativeReadbackTimeoutMs ??
+                process.env.CORE_HOST_NATIVE_READBACK_TIMEOUT_MS ??
+                5_000,
+              ),
+            })
+            : null);
         hostNativeGovernance = createHostNativeGovernance({
           store: hostNativeStore,
           signingSecret: hostNativeSigningSecret,
@@ -6282,6 +6320,11 @@ export function createUniversalCoreService(options = {}) {
           closureAttestationSigningSecret: dttAgentIdentitySecret,
           bootstrapReleaseExceptionStore: bootstrapReleaseExceptionAdapter,
           bootstrapDeadlockVerdictResolver,
+          standingReleaseAutomationEnabled:
+            standingReleaseAutomationEnabledFlag.value,
+          standingReleaseEmergencyStop:
+            standingReleaseEmergencyStopFlag.value,
+          standingReleaseBaseProtectionResolver,
         });
         hostNativeGovernanceState = "ready";
       } catch (error) {
@@ -6834,6 +6877,22 @@ export function createUniversalCoreService(options = {}) {
         code,
       );
     }
+  };
+
+  const dttWorkRequestBindingDigest = (req) => {
+    const value = String(req.dttWorkBinding?.request?.request_digest || "").trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(value)) throw new Error("standing_release_intent_binding_invalid");
+    return value;
+  };
+
+  const dttWorkSessionFingerprint = (req) => {
+    const value = String(
+      req.dttWorkBinding?.principal?.session_fingerprint || "",
+    ).trim().toLowerCase();
+    if (!/^[a-f0-9]{16,160}$/.test(value)) {
+      throw new Error("standing_release_run_session_invalid");
+    }
+    return value;
   };
 
   const genericWorkCoreJoinContextPublicCodes = new Set([
@@ -7667,6 +7726,13 @@ export function createUniversalCoreService(options = {}) {
     const productionBuildReady =
       !production ||
       BUILD_COMMIT_VERIFIABLE;
+    const standingReleasePolicyReady =
+      standingReleaseAutomationEnabledFlag.value !== true ||
+      (
+        standingReleaseConfigurationValid &&
+        hostNativeGovernance?.standing_release_policy_supported === true &&
+        hostNativeGovernance?.standing_release_base_protection_resolver_configured === true
+      );
     const hostNativeRuntimeReady =
       !hostNativeGovernanceEnabled ||
       (
@@ -7676,7 +7742,8 @@ export function createUniversalCoreService(options = {}) {
         hostNativeGovernance?.release_join_verdict_resolver_configured === true &&
         hostNativeGovernance?.required_checks_policy_resolver_configured === true &&
         hostNativeGovernance?.closure_attestation_verifier_configured === true &&
-        hostNativeResolverConfigurationValid
+        hostNativeResolverConfigurationValid &&
+        standingReleasePolicyReady
       );
     const hostNativeProductionReadinessRequired =
       production && hostNativeGovernanceEnabled;
@@ -7861,6 +7928,15 @@ export function createUniversalCoreService(options = {}) {
     ) {
       hostNativeProductionReadinessReasons.push(
         "mcp_tenant_gateway_not_configured",
+      );
+    }
+    if (
+      hostNativeProductionReadinessRequired &&
+      standingReleaseAutomationEnabledFlag.value === true &&
+      !standingReleasePolicyReady
+    ) {
+      hostNativeProductionReadinessReasons.push(
+        "standing_release_policy_not_ready",
       );
     }
     if (
@@ -8314,6 +8390,21 @@ export function createUniversalCoreService(options = {}) {
         provider_api_key_required: false,
         maximum_specialists: 3,
         maximum_parallel_specialists: 2,
+        standing_release_policy: {
+          schema_version: "owner_standing_release_mandate_v1",
+          configuration_valid: standingReleaseConfigurationValid,
+          enabled: standingReleaseAutomationEnabledFlag.value === true,
+          emergency_stop:
+            hostNativeGovernance?.standing_release_emergency_stop === true,
+          base_protection_readback_configured:
+            hostNativeGovernance?.standing_release_base_protection_resolver_configured === true,
+          authorization_ready: standingReleasePolicyReady,
+          active:
+            standingReleasePolicyReady &&
+            standingReleaseAutomationEnabledFlag.value === true &&
+            hostNativeGovernance?.standing_release_emergency_stop !== true,
+          provider_execution: false,
+        },
       },
       provider_setup_link_bootstrap_configured: providerSetupLinkBootstrapConfigured,
       provider_setup_link_bootstrap_state: providerSetupLinkBootstrapState,
@@ -9571,7 +9662,7 @@ export function createUniversalCoreService(options = {}) {
 
   function hostNativeFailure(res, error) {
     const code = String(error?.message || "host_native_governance_failed").slice(0, 200);
-    const status = /(?:replayed|revision_conflict|already_exists|budget_exhausted|not_completable|not_reconcilable|idempotency_key_conflict)/.test(code)
+    const status = /(?:replayed|revision_conflict|version_conflict|already_exists|budget_exhausted|not_completable|not_reconcilable|idempotency_key_conflict)/.test(code)
       ? 409
       : /not_found/.test(code)
         ? 404
@@ -9586,6 +9677,39 @@ export function createUniversalCoreService(options = {}) {
   function requireHostNativeGovernance(res) {
     if (hostNativeGovernance) return true;
     publicError(res, 503, "host_native_governance_unavailable", hostNativeGovernanceState);
+    return false;
+  }
+
+  function requireStandingReleasePolicy(res) {
+    if (!requireHostNativeGovernance(res)) return false;
+    if (
+      hostNativeGovernance?.standing_release_policy_supported === true &&
+      typeof hostNativeGovernance.installStandingReleaseMandate === "function" &&
+      typeof hostNativeGovernance.readStandingReleaseMandate === "function" &&
+      typeof hostNativeGovernance.revokeStandingReleaseMandate === "function" &&
+      typeof hostNativeGovernance.deriveStandingReleaseDelegation === "function"
+    ) return true;
+    publicError(res, 503, "standing_release_policy_unavailable");
+    return false;
+  }
+
+  function requireStandingReleaseRunner(res) {
+    if (!requireStandingReleasePolicy(res)) return false;
+    if (
+      hostNativeGovernance?.standing_release_runner_supported === true &&
+      hostNativeGovernance?.standing_release_coordination_model ===
+        "horizontal_peer_adapters_v1" &&
+      typeof hostNativeGovernance.startStandingReleaseRun === "function" &&
+      typeof hostNativeGovernance.readStandingReleaseRun === "function" &&
+      typeof hostNativeGovernance.bindStandingReleaseRunTicket === "function" &&
+      typeof hostNativeGovernance.reserveStandingReleaseRunTicket === "function" &&
+      typeof hostNativeGovernance.completeStandingReleaseRunTicket === "function" &&
+      typeof hostNativeGovernance.reconcileStandingReleaseRunTicket === "function" &&
+      typeof hostNativeGovernance.advanceStandingReleaseRun === "function" &&
+      typeof hostNativeGovernance.quarantineExpiredStandingReleaseRun === "function" &&
+      typeof hostNativeGovernance.cancelStandingReleaseRun === "function"
+    ) return true;
+    publicError(res, 503, "standing_release_runner_unavailable");
     return false;
   }
 
@@ -9615,6 +9739,8 @@ export function createUniversalCoreService(options = {}) {
       owner_subject_fingerprint: context.owner_subject_fingerprint,
       consent_nonce: String(context.assertion || ""),
       confirmation_reference: textValue(req.body?.confirmation_reference),
+      purpose,
+      request_binding_hash: String(context.binding_hash || ""),
     };
   }
 
@@ -9717,6 +9843,39 @@ export function createUniversalCoreService(options = {}) {
       provider_execution: false,
       provider_api_key_required: false,
       persistent_store_required: true,
+      standing_release_policy: {
+        schema_version: "owner_standing_release_mandate_v1",
+        supported: hostNativeGovernance?.standing_release_policy_supported === true,
+        configuration_valid: standingReleaseConfigurationValid,
+        enabled:
+          hostNativeGovernance?.standing_release_automation_enabled === true,
+        emergency_stop:
+          hostNativeGovernance?.standing_release_emergency_stop === true,
+        base_protection_readback_configured:
+          hostNativeGovernance?.standing_release_base_protection_resolver_configured === true,
+        authorization_ready:
+          standingReleaseConfigurationValid &&
+          hostNativeGovernance?.standing_release_policy_supported === true &&
+          hostNativeGovernance?.standing_release_base_protection_resolver_configured === true,
+        active:
+          standingReleaseAutomationEnabledFlag.value === true &&
+          standingReleaseConfigurationValid &&
+          hostNativeGovernance?.standing_release_policy_supported === true &&
+          hostNativeGovernance?.standing_release_base_protection_resolver_configured === true &&
+          hostNativeGovernance?.standing_release_emergency_stop !== true,
+        provider_execution: false,
+        external_action_ticket_required: true,
+        runner: {
+          supported:
+            hostNativeGovernance?.standing_release_runner_supported === true,
+          coordination_model:
+            hostNativeGovernance?.standing_release_coordination_model || null,
+          adapter_relationship: "horizontal_peer",
+          connected_host_required: true,
+          background_execution: false,
+          provider_execution: false,
+        },
+      },
     }),
   );
 
@@ -9781,6 +9940,438 @@ export function createUniversalCoreService(options = {}) {
       }
     },
   );
+
+  app.post(
+    "/v1/host-native/standing-release/mandates",
+    coreAuth(SCOPES.OWNER_ASSERTION, { tenantContextSigningSecret }),
+    dttWorkAuth,
+    async (req, res) => {
+      if (!requireStandingReleasePolicy(res)) return;
+      try {
+        if (!isMcpTenantGatewayRecord(req.coreKey)) {
+          return publicError(res, 403, "standing_release_mcp_gateway_required");
+        }
+        if (String(req.body?.authorization_work_id || "").toLowerCase() !== req.workId) {
+          throw new Error("standing_release_intent_binding_mismatch");
+        }
+        const ownerConfirmation = verifyHostNativeOwnerConfirmation(
+          req,
+          "host_native_standing_release_mandate_install",
+        );
+        if (!ownerConfirmation.confirmation_reference) {
+          throw new Error("confirmation_reference_invalid");
+        }
+        const {
+          tenant_id: _tenantId,
+          owner_context: _ownerContext,
+          owner_confirmed: _ownerConfirmed,
+          owner_confirmation: _ownerConfirmation,
+          confirmation_reference: _confirmationReference,
+          ...input
+        } = req.body || {};
+        const mandate = await hostNativeGovernance.installStandingReleaseMandate({
+          ...input,
+          tenant_id: req.tenantId,
+          authorization_dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
+          owner_confirmation: ownerConfirmation,
+        });
+        const installed = await hostNativeGovernance.readStandingReleaseMandate({
+          tenant_id: req.tenantId,
+          mandate_id: mandate.mandate_id,
+        });
+        audit.append("core_standing_release_mandate_installed", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          mandate_id: mandate.mandate_id,
+          repository: mandate.mandate.repository,
+          base_branch: mandate.mandate.base_branch,
+          automation_enabled:
+            hostNativeGovernance.standing_release_automation_enabled === true,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          mandate: installed,
+          effective_state: standingReleaseConfigurationValid
+            ? installed.effective_state
+            : "configuration_invalid",
+          provider_execution: false,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.get(
+    "/v1/host-native/standing-release/mandates/:mandateId",
+    coreAuth(SCOPES.READ_DECISION, { tenantContextSigningSecret }),
+    dttWorkAuth,
+    async (req, res) => {
+      if (!requireStandingReleasePolicy(res)) return;
+      if (!isMcpTenantGatewayRecord(req.coreKey)) {
+        return publicError(res, 403, "standing_release_mcp_gateway_required");
+      }
+      const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
+      if (!assertedTenantId || assertedTenantId !== req.tenantId) {
+        return publicError(res, 403, "tenant_scope_denied");
+      }
+      try {
+        const mandate = await hostNativeGovernance.readStandingReleaseMandate({
+          tenant_id: req.tenantId,
+          mandate_id: req.params.mandateId,
+        });
+        if (mandate.mandate.authorization_work_id !== req.workId) {
+          throw new Error("standing_release_mandate_work_mismatch");
+        }
+        return res.json({ ok: true, tenant_id: req.tenantId, mandate });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/standing-release/mandates/:mandateId/revoke",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireStandingReleasePolicy(res)) return;
+      try {
+        if (String(req.body?.mandate_id || "") !== req.params.mandateId) {
+          throw new Error("standing_release_mandate_target_mismatch");
+        }
+        const ownerConfirmation = verifyHostNativeOwnerConfirmation(
+          req,
+          "host_native_standing_release_mandate_revoke",
+        );
+        if (!ownerConfirmation.confirmation_reference) {
+          throw new Error("confirmation_reference_invalid");
+        }
+        const mandate = await hostNativeGovernance.revokeStandingReleaseMandate({
+          tenant_id: req.tenantId,
+          mandate_id: req.params.mandateId,
+          owner_confirmation: ownerConfirmation,
+          reason_digest: req.body?.reason_digest,
+          idempotency_key: req.body?.idempotency_key,
+        });
+        audit.append("core_standing_release_mandate_revoked", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          mandate_id: mandate.mandate_id,
+          revocation_epoch: mandate.revocation_epoch,
+        });
+        return res.json({ ok: true, tenant_id: req.tenantId, mandate });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/standing-release/mandates/:mandateId/derive-delegation",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
+    dttWorkAuth,
+    async (req, res) => {
+      if (!isMcpTenantGatewayRecord(req.coreKey)) {
+        return publicError(res, 403, "standing_release_mcp_gateway_required");
+      }
+      const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
+      if (!assertedTenantId || assertedTenantId !== req.tenantId) {
+        return publicError(res, 403, "tenant_scope_denied");
+      }
+      if (!requireStandingReleasePolicy(res)) return;
+      if (!standingReleaseConfigurationValid) {
+        return publicError(res, 503, "standing_release_configuration_invalid");
+      }
+      try {
+        const { tenant_id: _tenantId, mandate_id: _mandateId, ...input } = req.body || {};
+        const delegation = await hostNativeGovernance.deriveStandingReleaseDelegation({
+          ...input,
+          tenant_id: req.tenantId,
+          mandate_id: req.params.mandateId,
+          dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
+          dtt_session_fingerprint: dttWorkSessionFingerprint(req),
+          horizontal_runner_required: true,
+        });
+        audit.append("core_standing_release_delegation_derived", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          mandate_id: req.params.mandateId,
+          delegation_id: delegation.delegation_id,
+          work_id: delegation.grant.work_id,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          delegation,
+          provider_execution: false,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/standing-release/runs",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
+    dttWorkAuth,
+    async (req, res) => {
+      if (!requireStandingReleaseRunner(res)) return;
+      if (!isMcpTenantGatewayRecord(req.coreKey)) {
+        return publicError(res, 403, "standing_release_mcp_gateway_required");
+      }
+      const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
+      if (!assertedTenantId || assertedTenantId !== req.tenantId) {
+        return publicError(res, 403, "tenant_scope_denied");
+      }
+      try {
+        if (String(req.body?.work_id || "").trim().toLowerCase() !== req.workId) {
+          throw new Error("standing_release_run_work_mismatch");
+        }
+        const { tenant_id: _tenantId, ...input } = req.body || {};
+        const record = await hostNativeGovernance.startStandingReleaseRun({
+          ...input,
+          tenant_id: req.tenantId,
+          dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
+          dtt_session_fingerprint: dttWorkSessionFingerprint(req),
+        });
+        audit.append("core_standing_release_run_started", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          run_id: record.run_id,
+          delegation_id: record.run.delegation_id,
+          work_id: record.run.work_id,
+          coordination_model: record.run.coordination_model,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          standing_release_run: record,
+          provider_execution: false,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.get(
+    "/v1/host-native/standing-release/runs/:runId",
+    coreAuth(SCOPES.READ_DECISION, { tenantContextSigningSecret }),
+    dttWorkAuth,
+    async (req, res) => {
+      if (!requireStandingReleaseRunner(res)) return;
+      if (!isMcpTenantGatewayRecord(req.coreKey)) {
+        return publicError(res, 403, "standing_release_mcp_gateway_required");
+      }
+      const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
+      if (!assertedTenantId || assertedTenantId !== req.tenantId) {
+        return publicError(res, 403, "tenant_scope_denied");
+      }
+      try {
+        const record = await hostNativeGovernance.readStandingReleaseRun({
+          tenant_id: req.tenantId,
+          run_id: req.params.runId,
+        });
+        if (record.run.work_id !== req.workId) {
+          throw new Error("standing_release_run_work_mismatch");
+        }
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          standing_release_run: record,
+          provider_execution: false,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/standing-release/runs/:runId/reserve",
+    coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
+    dttWorkAuth,
+    async (req, res) => {
+      if (!requireStandingReleaseRunner(res)) return;
+      if (!isMcpTenantGatewayRecord(req.coreKey)) {
+        return publicError(res, 403, "standing_release_mcp_gateway_required");
+      }
+      const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
+      if (!assertedTenantId || assertedTenantId !== req.tenantId) {
+        return publicError(res, 403, "tenant_scope_denied");
+      }
+      try {
+        if (String(req.body?.work_id || "").trim().toLowerCase() !== req.workId) {
+          throw new Error("standing_release_run_work_mismatch");
+        }
+        const {
+          tenant_id: _tenantId,
+          run_id: _runId,
+          ...input
+        } = req.body || {};
+        const actionTicket = await hostNativeGovernance.reserveStandingReleaseRunTicket({
+          ...input,
+          tenant_id: req.tenantId,
+          run_id: req.params.runId,
+          dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
+          dtt_session_fingerprint: dttWorkSessionFingerprint(req),
+        });
+        const githubAction = actionTicket?.ticket?.action;
+        const githubExecutionClaim = githubWorkerExecutionSigningSecret &&
+          ["git.push.branch", "github.draft_pr", "github.ready", "github.merge"].includes(githubAction?.kind)
+          ? signGitHubWorkerExecutionClaim({
+              schema_version: "github_worker_execution_claim_v1",
+              tenant_id: req.tenantId,
+              work_id: actionTicket.ticket.work_id,
+              repository: actionTicket.ticket.repository,
+              ticket_id: actionTicket.ticket.ticket_id,
+              reservation_id: actionTicket.reservation_id,
+              action: githubAction,
+              action_digest: githubWorkerActionDigest(githubAction),
+              issued_at: new Date().toISOString(),
+              expires_at: new Date(Math.min(
+                Date.parse(actionTicket.reservation_expires_at || actionTicket.ticket.expires_at),
+                Date.now() + 2 * 60_000,
+              )).toISOString(),
+              nonce: crypto.randomBytes(32).toString("hex"),
+              provider_execution: false,
+            }, { signing_secret: githubWorkerExecutionSigningSecret })
+          : null;
+        audit.append("core_standing_release_run_ticket_reserved", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          run_id: req.params.runId,
+          ticket_id: actionTicket.ticket.ticket_id,
+          state: actionTicket.state,
+        });
+        return res.json({
+          ok: true,
+          tenant_id: req.tenantId,
+          action_ticket: actionTicket,
+          github_execution_claim: githubExecutionClaim,
+          provider_execution: false,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  for (const [suffix, method, auditEvent] of [
+    ["complete", "completeStandingReleaseRunTicket", "core_standing_release_run_ticket_completed"],
+    ["reconcile", "reconcileStandingReleaseRunTicket", "core_standing_release_run_ticket_reconciled"],
+  ]) {
+    app.post(
+      `/v1/host-native/standing-release/runs/:runId/${suffix}`,
+      coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
+      dttWorkAuth,
+      async (req, res) => {
+        if (!requireStandingReleaseRunner(res)) return;
+        if (!isMcpTenantGatewayRecord(req.coreKey)) {
+          return publicError(res, 403, "standing_release_mcp_gateway_required");
+        }
+        const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
+        if (!assertedTenantId || assertedTenantId !== req.tenantId) {
+          return publicError(res, 403, "tenant_scope_denied");
+        }
+        try {
+          if (String(req.body?.work_id || "").trim().toLowerCase() !== req.workId) {
+            throw new Error("standing_release_run_work_mismatch");
+          }
+          const {
+            tenant_id: _tenantId,
+            run_id: _runId,
+            ...input
+          } = req.body || {};
+          const actionTicket = await hostNativeGovernance[method]({
+            ...input,
+            tenant_id: req.tenantId,
+            run_id: req.params.runId,
+            dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
+            dtt_session_fingerprint: dttWorkSessionFingerprint(req),
+          });
+          audit.append(auditEvent, {
+            tenant_id: req.tenantId,
+            key_id: req.coreKey.key_id,
+            run_id: req.params.runId,
+            ticket_id: actionTicket.ticket.ticket_id,
+            state: actionTicket.state,
+          });
+          return res.json({
+            ok: true,
+            tenant_id: req.tenantId,
+            action_ticket: actionTicket,
+            provider_execution: false,
+          });
+        } catch (error) {
+          return hostNativeFailure(res, error);
+        }
+      },
+    );
+  }
+
+  for (const [suffix, method, auditEvent] of [
+    ["bind-ticket", "bindStandingReleaseRunTicket", "core_standing_release_run_ticket_bound"],
+    ["advance", "advanceStandingReleaseRun", "core_standing_release_run_advanced"],
+    ["cancel", "cancelStandingReleaseRun", "core_standing_release_run_cancelled"],
+    [
+      "quarantine-expired",
+      "quarantineExpiredStandingReleaseRun",
+      "core_standing_release_run_expired_reservation_quarantined",
+    ],
+  ]) {
+    app.post(
+      `/v1/host-native/standing-release/runs/:runId/${suffix}`,
+      coreAuth(SCOPES.AUTOMATION_CODEX, { tenantContextSigningSecret }),
+      dttWorkAuth,
+      async (req, res) => {
+        if (!requireStandingReleaseRunner(res)) return;
+        if (!isMcpTenantGatewayRecord(req.coreKey)) {
+          return publicError(res, 403, "standing_release_mcp_gateway_required");
+        }
+        const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
+        if (!assertedTenantId || assertedTenantId !== req.tenantId) {
+          return publicError(res, 403, "tenant_scope_denied");
+        }
+        try {
+          if (String(req.body?.work_id || "").trim().toLowerCase() !== req.workId) {
+            throw new Error("standing_release_run_work_mismatch");
+          }
+          const {
+            tenant_id: _tenantId,
+            run_id: _runId,
+            ...input
+          } = req.body || {};
+          const record = await hostNativeGovernance[method]({
+            ...input,
+            tenant_id: req.tenantId,
+            run_id: req.params.runId,
+            dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
+            dtt_session_fingerprint: dttWorkSessionFingerprint(req),
+          });
+          audit.append(auditEvent, {
+            tenant_id: req.tenantId,
+            key_id: req.coreKey.key_id,
+            run_id: record.run_id,
+            work_id: record.run.work_id,
+            state: record.run.state,
+            version: record.run.version,
+            coordination_model: record.run.coordination_model,
+          });
+          return res.json({
+            ok: true,
+            tenant_id: req.tenantId,
+            standing_release_run: record,
+            provider_execution: false,
+          });
+        } catch (error) {
+          return hostNativeFailure(res, error);
+        }
+      },
+    );
+  }
 
   app.post(
     "/v1/host-native/core-join-verdicts",
@@ -10081,6 +10672,16 @@ export function createUniversalCoreService(options = {}) {
       async (req, res) => {
         if (!requireHostNativeGovernance(res)) return;
         try {
+          if (
+            ["reserve", "complete", "reconcile"].includes(suffix) &&
+            [
+              "standing_release_run_id",
+              "standing_release_run_version",
+              "dtt_request_binding_digest",
+            ].some((field) => Object.hasOwn(req.body || {}, field))
+          ) {
+            throw new Error("standing_release_run_reservation_route_required");
+          }
           const { tenant_id: _tenantId, ticket_id: _ticketId, ...input } = req.body || {};
           const actionTicket = await hostNativeGovernance[method]({
             ...input,

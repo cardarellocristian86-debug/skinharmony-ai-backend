@@ -150,6 +150,9 @@ export function assertGalleryParticipantBinding(identity = {}, input = {}) {
 const WORK_CATALOG_STATUSES = new Set([
   "active", "verified", "release_ready", "completed", "cancelled", "superseded", "blocked", "failed",
 ]);
+const STANDING_RELEASE_ELIGIBLE_WORK_STATUSES = new Set([
+  "active", "verified", "release_ready",
+]);
 
 function tenant(value) {
   const id = String(value || "");
@@ -1947,6 +1950,72 @@ export function createWorkContinuityRuntime(config, options = {}) {
       work_id: workId,
       ...result.rows[0],
     };
+  }
+
+  async function resolveStandingReleaseIntentBinding(identity, input = {}) {
+    await initialize();
+    const tenantId = tenant(identity?.tenantId);
+    const workId = uuid(input.work_id, "work_id");
+    const result = await pool.query(`SELECT
+        w.tenant_id,w.work_id,w.project_id,w.status AS work_status,
+        w.current_version,w.updated_at AS work_updated_at,
+        a.anchor,a.intent_digest,a.created_at AS intent_anchor_created_at
+      FROM core_continuity_works w
+      JOIN core_continuity_intent_anchors a
+        ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
+      WHERE w.tenant_id=$1 AND w.work_id=$2`, [tenantId, workId]);
+    const row = result.rows[0];
+    if (!row) throw new Error("standing_release_intent_binding_not_found");
+    const anchor = row.anchor;
+    const persistedDigest = String(row.intent_digest || "").trim().toLowerCase();
+    if (
+      String(row.tenant_id || "") !== tenantId ||
+      String(row.work_id || "").trim().toLowerCase() !== workId ||
+      !anchor || typeof anchor !== "object" || Array.isArray(anchor) ||
+      anchor.schema_version !== "intent_anchor_v1" || anchor.immutable !== true ||
+      !/^[a-f0-9]{64}$/.test(persistedDigest) || digest(anchor) !== persistedDigest
+    ) {
+      throw new Error("standing_release_intent_binding_corrupt");
+    }
+    const workStatus = String(row.work_status || "");
+    if (!STANDING_RELEASE_ELIGIBLE_WORK_STATUSES.has(workStatus)) {
+      throw new Error("standing_release_intent_work_status_ineligible");
+    }
+    const currentVersion = Number(row.current_version);
+    if (!Number.isSafeInteger(currentVersion) || currentVersion < 1) {
+      throw new Error("standing_release_intent_binding_corrupt");
+    }
+    let workUpdatedAt;
+    let intentAnchorCreatedAt;
+    try {
+      workUpdatedAt = dateValue(row.work_updated_at, "standing_release_work_updated_at").toISOString();
+      intentAnchorCreatedAt = dateValue(
+        row.intent_anchor_created_at,
+        "standing_release_intent_anchor_created_at",
+      ).toISOString();
+    } catch {
+      throw new Error("standing_release_intent_binding_corrupt");
+    }
+    const binding = {
+      schema_version: "standing_release_intent_binding_v1",
+      source: "mcp_work_continuity_postgres",
+      tenant_id: tenantId,
+      work_id: workId,
+      project_id: identifier(row.project_id, "standing_release_project_id", 64),
+      work_status: workStatus,
+      current_version: currentVersion,
+      work_updated_at: workUpdatedAt,
+      intent_anchor_schema_version: "intent_anchor_v1",
+      intent_anchor_immutable: true,
+      intent_anchor_digest: persistedDigest,
+      intent_anchor_created_at: intentAnchorCreatedAt,
+      verified_at: nowDate().toISOString(),
+      provider_execution: false,
+    };
+    return Object.freeze({
+      ...binding,
+      binding_digest: digest(binding),
+    });
   }
 
   // Compact tenant-wide index. Deliberately excludes idea, objective, anchor,
@@ -4889,6 +4958,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     ensure,
     ensureWithClient,
     readIntent,
+    resolveStandingReleaseIntentBinding,
     listWorks,
     recordChange,
     checkpoint,

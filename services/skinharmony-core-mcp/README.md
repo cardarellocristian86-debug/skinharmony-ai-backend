@@ -173,6 +173,41 @@ form.
 7. **Retired browser paths.** `/connect/openai`, `/agents` and `/mobile/agents` return `410 Gone`. They do not initiate credential setup, model execution or a parallel agent system; continue the work in the native ChatGPT/Codex session instead.
 8. **Research and privacy.** Research is planned first, then evidence is sourced and reviewed through the host-managed browser. Do not send secrets, raw customer records or full pages to the connector.
 
+### GitHub App onboarding for customer repositories
+
+The GitHub integration is installation-scoped, not account-scoped. A customer
+never receives the GitHub App private key, the owner installation id, a Render
+credential or access to the Nyra/Universal Core source repository.
+
+For each tenant that wants governed GitHub automation:
+
+1. the customer opens the GitHub App installation page while authenticated to
+   their own GitHub account or organization;
+2. the customer selects only the repositories that Nyra may operate on;
+3. GitHub creates a distinct installation id for that customer installation;
+4. an administrator binds that installation id, exact repository allowlist and
+   tenant id in the server-side credential registry;
+5. ChatGPT, Codex or another MCP-compatible AI authenticates to the customer's
+   tenant and requests work through MCP;
+6. Universal Core validates tenant, Work Identity, persisted Intent, repository,
+   branch, file cone and action, then issues a bounded one-use ticket;
+7. the separate GitHub worker exchanges its private App key for a short-lived
+   installation token and executes only the authorized ticket.
+
+The client never supplies `tenant_id`, `installation_id`, repository bindings,
+provider URLs, tokens or private keys in an MCP tool call. Those values are
+resolved from authenticated server-side configuration. An installation bound
+to one tenant must never authorize another tenant, and an installation for a
+customer repository must never authorize the proprietary Nyra/Core repository.
+Removing the GitHub App installation immediately removes the customer's
+provider access; Core revocation and emergency-stop controls remain independent.
+
+The private key belongs only in the protected environment of the dedicated
+GitHub worker. It must not be committed, copied into MCP responses, exposed to
+AI agents or shared with a customer. MCP exposes governed capabilities, not the
+credential itself. See
+[`docs/runbooks/github-app-tenant-onboarding.md`](../../docs/runbooks/github-app-tenant-onboarding.md).
+
 - Codex: `Authorization: Bearer <key>` from `CODEX_BEARER_KEYS`; scopes come only from trusted server configuration.
 - ChatGPT: Auth0 RS256 access token verified against JWKS, exact issuer, audience, expiry and optional `nbf`.
 - OAuth discovery: `/.well-known/oauth-protected-resource` and the RFC 9728 path-specific `/.well-known/oauth-protected-resource/mcp` advertise the protected resource. The compatibility authorization-server endpoint advertises authorization-code flow with PKCE `S256` only.
