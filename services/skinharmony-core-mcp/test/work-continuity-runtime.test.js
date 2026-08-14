@@ -101,6 +101,135 @@ test("continuity digests are deterministic across object key order", () => {
   assert.notEqual(digest({ a: 1 }), digest({ a: 2 }));
 });
 
+function standingReleaseAnchor(overrides = {}) {
+  return {
+    schema_version: "intent_anchor_v1",
+    initial_message: "prompt-shaped text must never leave this read",
+    idea: "Bound release automation",
+    objective: "Release only verified changes",
+    acceptance_criteria: ["All checks pass"],
+    constraints: ["No provider execution"],
+    source: { client_type: "codex_native", session_id: "session-a" },
+    immutable: true,
+    ...overrides,
+  };
+}
+
+function standingReleaseBindingRuntime(row) {
+  const reads = [];
+  const pool = {
+    async query(sql, parameters = []) {
+      if (sql.includes("CREATE TABLE IF NOT EXISTS core_continuity_works")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes("FROM core_continuity_works w") &&
+          sql.includes("JOIN core_continuity_intent_anchors a")) {
+        reads.push({ sql, parameters });
+        return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+      }
+      throw new Error("unexpected_standing_release_binding_query");
+    },
+    async end() {},
+  };
+  return { runtime: createWorkContinuityRuntime({}, { pool }), reads };
+}
+
+test("standing release Intent read atomically verifies immutable anchor and returns metadata only", async () => {
+  for (const status of ["active", "verified", "release_ready"]) {
+    const anchor = standingReleaseAnchor();
+    const { runtime, reads } = standingReleaseBindingRuntime({
+      tenant_id: "tenant-a",
+      work_id: WORK_ID,
+      project_id: "project-a",
+      work_status: status,
+      current_version: "2",
+      work_updated_at: "2026-08-14T10:00:00.000Z",
+      anchor,
+      intent_digest: digest(anchor),
+      intent_anchor_created_at: "2026-08-14T09:00:00.000Z",
+    });
+    const binding = await runtime.resolveStandingReleaseIntentBinding(
+      { tenantId: "tenant-a" },
+      { work_id: WORK_ID },
+    );
+    assert.equal(binding.tenant_id, "tenant-a");
+    assert.equal(binding.work_id, WORK_ID);
+    assert.equal(binding.work_status, status);
+    assert.equal(binding.source, "mcp_work_continuity_postgres");
+    assert.equal(binding.intent_anchor_digest, digest(anchor));
+    assert.equal(binding.intent_anchor_schema_version, "intent_anchor_v1");
+    assert.equal(binding.intent_anchor_immutable, true);
+    assert.equal(binding.provider_execution, false);
+    assert.equal(Object.isFrozen(binding), true);
+    const { binding_digest: bindingDigest, ...unsignedBinding } = binding;
+    assert.match(bindingDigest, /^[a-f0-9]{64}$/);
+    assert.equal(bindingDigest, digest(unsignedBinding));
+    assert.notEqual(bindingDigest, digest({ ...unsignedBinding, current_version: 3 }));
+    assert.deepEqual(Object.keys(binding).sort(), [
+      "binding_digest", "current_version", "intent_anchor_created_at",
+      "intent_anchor_digest", "intent_anchor_immutable", "intent_anchor_schema_version",
+      "project_id", "provider_execution", "schema_version", "source", "tenant_id",
+      "verified_at", "work_id", "work_status", "work_updated_at",
+    ]);
+    assert.equal("anchor" in binding, false);
+    assert.equal("initial_message" in binding, false);
+    assert.equal("idea" in binding, false);
+    assert.equal("objective" in binding, false);
+    assert.equal(reads.length, 1);
+    assert.deepEqual(reads[0].parameters, ["tenant-a", WORK_ID]);
+    assert.match(reads[0].sql, /JOIN core_continuity_intent_anchors/);
+  }
+});
+
+test("standing release Intent read fails closed for missing, corrupt or ineligible persistence", async () => {
+  const validAnchor = standingReleaseAnchor();
+  const validRow = {
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    project_id: "project-a",
+    work_status: "active",
+    current_version: 1,
+    work_updated_at: "2026-08-14T10:00:00.000Z",
+    anchor: validAnchor,
+    intent_digest: digest(validAnchor),
+    intent_anchor_created_at: "2026-08-14T09:00:00.000Z",
+  };
+  for (const [name, row, expected] of [
+    ["missing", null, /standing_release_intent_binding_not_found/],
+    ["schema", { ...validRow, anchor: standingReleaseAnchor({ schema_version: "intent_anchor_v0" }) },
+      /standing_release_intent_binding_corrupt/],
+    ["mutable", { ...validRow, anchor: standingReleaseAnchor({ immutable: false }) },
+      /standing_release_intent_binding_corrupt/],
+    ["digest", { ...validRow, intent_digest: "f".repeat(64) },
+      /standing_release_intent_binding_corrupt/],
+    ["tenant", { ...validRow, tenant_id: "tenant-b" },
+      /standing_release_intent_binding_corrupt/],
+    ["work", { ...validRow, work_id: "22222222-2222-4222-8222-222222222222" },
+      /standing_release_intent_binding_corrupt/],
+    ["status", { ...validRow, work_status: "blocked" },
+      /standing_release_intent_work_status_ineligible/],
+    ["version", { ...validRow, current_version: 0 }, /standing_release_intent_binding_corrupt/],
+  ]) {
+    const { runtime } = standingReleaseBindingRuntime(row);
+    await assert.rejects(
+      runtime.resolveStandingReleaseIntentBinding(
+        { tenantId: "tenant-a" },
+        { work_id: WORK_ID },
+      ),
+      expected,
+      name,
+    );
+  }
+  const { runtime } = standingReleaseBindingRuntime(validRow);
+  await assert.rejects(
+    runtime.resolveStandingReleaseIntentBinding(
+      { tenantId: "tenant-a" },
+      { work_id: "not-a-uuid" },
+    ),
+    /work_id_invalid/,
+  );
+});
+
 test("legacy continuity idempotency cannot replay across authenticated subjects", async () => {
   const cases = [
     ["recordChange", "record_change"],

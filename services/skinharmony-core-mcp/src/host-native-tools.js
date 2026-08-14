@@ -29,6 +29,10 @@ const identifier = {
   type: "string",
   pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:-]{1,159}$",
 };
+const workUuid = {
+  type: "string",
+  format: "uuid",
+};
 const repository = {
   type: "string",
   pattern: "^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$",
@@ -60,6 +64,14 @@ const delegationId = {
 const actionTicketId = {
   type: "string",
   pattern: "^hnt_[a-zA-Z0-9-]{8,160}$",
+};
+const standingReleaseMandateId = {
+  type: "string",
+  pattern: "^srm_[a-f0-9]{40}$",
+};
+const standingReleaseRunId = {
+  type: "string",
+  pattern: "^srr_[a-f0-9]{40}$",
 };
 const object = (properties = {}, required = []) => ({
   type: "object",
@@ -142,6 +154,25 @@ const allowedAction = {
   ],
 };
 
+const standingReleaseService = object({
+  service_id: identifier,
+  environment: identifier,
+  health_contract_digest: sha256,
+}, ["service_id", "environment", "health_contract_digest"]);
+
+const standingReleaseLimits = object({
+  max_pull_requests: { type: "integer", const: 1 },
+  max_merges: { type: "integer", const: 1 },
+  max_commits: { type: "integer", minimum: 1, maximum: 3 },
+  max_pushes: { type: "integer", minimum: 1, maximum: 3 },
+  max_repair_attempts: { type: "integer", minimum: 1, maximum: 2 },
+  max_deploys_per_service: { type: "integer", const: 1 },
+  max_rollbacks: { type: "integer", const: 1 },
+}, [
+  "max_pull_requests", "max_merges", "max_commits", "max_pushes",
+  "max_repair_attempts", "max_deploys_per_service", "max_rollbacks",
+]);
+
 export const HOST_NATIVE_TOOLS = [
   tool(
     "host_native_status",
@@ -203,6 +234,304 @@ export const HOST_NATIVE_TOOLS = [
       "agents",
     ]),
     { readOnly: true },
+  ),
+  tool(
+    "host_native_standing_release_mandate_install",
+    "Install a revocable standing release mandate",
+    "After one fresh authenticated owner confirmation, install a tenant/repository/base-bound mandate for repeated safe releases. It remains fail-closed unless Core runtime, branch protection, exact checks, service coverage and host policy are all ready.",
+    object({
+      authorization_work_id: workUuid,
+      authorization_intent_anchor_digest: sha256,
+      repository,
+      base_branch: exactBranch,
+      delivery_branch_prefix: {
+        type: "string",
+        minLength: 2,
+        maxLength: 180,
+        pattern: "^[a-zA-Z0-9][a-zA-Z0-9._/-]*/$",
+      },
+      allowed_path_prefixes: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        uniqueItems: true,
+        items: { type: "string", minLength: 1, maxLength: 500 },
+      },
+      denied_path_prefixes: {
+        type: "array",
+        maxItems: 100,
+        uniqueItems: true,
+        items: { type: "string", minLength: 1, maxLength: 500 },
+      },
+      required_checks: {
+        type: "array",
+        minItems: 1,
+        maxItems: 20,
+        uniqueItems: true,
+        items: identifier,
+      },
+      required_checks_policy_digest: sha256,
+      services: {
+        type: "array",
+        minItems: 1,
+        maxItems: 20,
+        items: standingReleaseService,
+      },
+      repair_classes: {
+        type: "array",
+        minItems: 1,
+        maxItems: 6,
+        uniqueItems: true,
+        items: {
+          type: "string",
+          enum: [
+            "deterministic_build", "deterministic_lint", "deterministic_test",
+            "deterministic_typecheck", "transient_network", "transient_runner",
+          ],
+        },
+      },
+      limits: standingReleaseLimits,
+      base_protection_required: { type: "boolean", const: true },
+      ttl_seconds: { type: "integer", minimum: 60, maximum: 2_592_000 },
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, [
+      "authorization_work_id", "authorization_intent_anchor_digest", "repository",
+      "base_branch", "delivery_branch_prefix", "allowed_path_prefixes",
+      "required_checks", "required_checks_policy_digest", "services", "repair_classes",
+      "limits", "base_protection_required", "ttl_seconds", "idempotency_key",
+    ]),
+    { ownerConfirmationRequired: true },
+  ),
+  tool(
+    "host_native_standing_release_mandate_read",
+    "Read a standing release mandate",
+    "Read the signed tenant-and-Work-scoped mandate, revocation epoch and effective Core runtime state without granting or consuming authority.",
+    object({
+      mandate_id: standingReleaseMandateId,
+      work_id: workUuid,
+    }, ["mandate_id", "work_id"]),
+    { readOnly: true },
+  ),
+  tool(
+    "host_native_standing_release_mandate_revoke",
+    "Revoke a standing release mandate",
+    "Immediately revoke one mandate and invalidate its open derived authority after a fresh authenticated owner confirmation.",
+    object({
+      mandate_id: standingReleaseMandateId,
+      reason_digest: sha256,
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, ["mandate_id", "reason_digest", "idempotency_key"]),
+    { ownerConfirmationRequired: true, destructive: true },
+  ),
+  tool(
+    "host_native_standing_release_delegation_derive",
+    "Derive one release delegation from a standing mandate",
+    "Derive a short-lived exact Work/Intent/branch/change-cone delegation only after server-read GitHub branch protection and exact induced-service coverage are supplied. No owner prompt is repeated and no external action is executed.",
+    object({
+      mandate_id: standingReleaseMandateId,
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      delivery_branch: exactBranch,
+      changed_files: {
+        type: "array",
+        minItems: 1,
+        maxItems: 5_000,
+        uniqueItems: true,
+        items: { type: "string", minLength: 1, maxLength: 500 },
+      },
+      builder_agent_id: identifier,
+      verifier_agent_ids: {
+        type: "array",
+        minItems: 1,
+        maxItems: 3,
+        uniqueItems: true,
+        items: identifier,
+      },
+      required_checks_policy_digest: sha256,
+      induced_services: {
+        type: "array",
+        minItems: 1,
+        maxItems: 20,
+        items: standingReleaseService,
+      },
+      ttl_seconds: { type: "integer", minimum: 60, maximum: 43_200 },
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, [
+      "mandate_id", "work_id", "intent_anchor_digest", "delivery_branch",
+      "changed_files", "builder_agent_id", "verifier_agent_ids",
+      "required_checks_policy_digest", "induced_services",
+      "ttl_seconds", "idempotency_key",
+    ]),
+  ),
+  tool(
+    "host_native_standing_release_run_start",
+    "Start a horizontal standing release run",
+    "Create a durable Core-coordinated run from one exact standing delegation. GitHub and Render remain peer adapter lanes; external mutations still require the connected host and no provider action is executed by Core.",
+    object({
+      delegation_id: delegationId,
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, ["delegation_id", "work_id", "intent_anchor_digest", "idempotency_key"]),
+  ),
+  tool(
+    "host_native_standing_release_run_read",
+    "Read a horizontal standing release run",
+    "Read the durable tenant-scoped coordinator state, peer adapter lanes, current action and next fail-closed transition without consuming authority.",
+    object({
+      run_id: standingReleaseRunId,
+      work_id: workUuid,
+    }, ["run_id", "work_id"]),
+    { readOnly: true },
+  ),
+  tool(
+    "host_native_standing_release_run_bind_ticket",
+    "Bind one Core ticket to a standing release run",
+    "Bind the exact issued Core action ticket for the run's current state. The ticket remains one-use and the connected host is still required for any GitHub or Render side effect.",
+    object({
+      run_id: standingReleaseRunId,
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      ticket_id: actionTicketId,
+      expected_version: { type: "integer", minimum: 1 },
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, ["run_id", "work_id", "intent_anchor_digest", "ticket_id", "expected_version", "idempotency_key"]),
+  ),
+  tool(
+    "host_native_standing_release_run_advance",
+    "Advance a standing release run from a Core ticket",
+    "Advance only from the authoritative completed or reconciled Core ticket already bound to the run. Caller-supplied outcomes cannot move the state machine.",
+    object({
+      run_id: standingReleaseRunId,
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      ticket_id: actionTicketId,
+      expected_version: { type: "integer", minimum: 1 },
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, ["run_id", "work_id", "intent_anchor_digest", "ticket_id", "expected_version", "idempotency_key"]),
+  ),
+  tool(
+    "host_native_standing_release_run_reserve",
+    "Reserve the active horizontal-run ticket",
+    "Atomically reserve the exact ticket already bound to the run after a fresh Work/Intent DTT check. This is the only reservation path once a standing run exists.",
+    object({
+      run_id: standingReleaseRunId,
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      ticket_id: actionTicketId,
+      expected_version: { type: "integer", minimum: 1 },
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, ["run_id", "work_id", "intent_anchor_digest", "ticket_id", "expected_version", "idempotency_key"]),
+  ),
+  tool(
+    "host_native_standing_release_run_complete",
+    "Complete the active horizontal-run ticket",
+    "Record the connected-host result for the exact reserved run ticket after a fresh persisted Intent and DTT session check. Core and the provider lanes remain peers; Core performs no provider action.",
+    object({
+      run_id: standingReleaseRunId,
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      ticket_id: actionTicketId,
+      expected_version: { type: "integer", minimum: 1 },
+      reservation_id: {
+        type: "string",
+        pattern: "^hnr_[a-zA-Z0-9-]{8,160}$",
+      },
+      outcome: { type: "string", enum: ["success", "failure", "unknown"] },
+      result_digest: sha256,
+      result_commit: gitSha,
+      result_pull_request: { type: "integer", minimum: 1 },
+      readback_digest: sha256,
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, [
+      "run_id", "work_id", "intent_anchor_digest", "ticket_id", "expected_version",
+      "reservation_id", "outcome", "result_digest", "idempotency_key",
+    ]),
+  ),
+  tool(
+    "host_native_standing_release_run_reconcile",
+    "Reconcile the active horizontal-run ticket",
+    "Reconcile an unknown exact run-ticket outcome through the run-bound route after fresh persisted Intent and DTT checks. This records evidence only and does not retry a provider mutation.",
+    object({
+      run_id: standingReleaseRunId,
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      ticket_id: actionTicketId,
+      expected_version: { type: "integer", minimum: 1 },
+      reservation_id: {
+        type: "string",
+        pattern: "^hnr_[a-zA-Z0-9-]{8,160}$",
+      },
+      observed_outcome: { type: "string", enum: ["success", "failure"] },
+      observed_commit: gitSha,
+      observed_pull_request: { type: "integer", minimum: 1 },
+      readback_digest: sha256,
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, [
+      "run_id", "work_id", "intent_anchor_digest", "ticket_id", "expected_version",
+      "reservation_id", "observed_outcome", "readback_digest", "idempotency_key",
+    ]),
+  ),
+  tool(
+    "host_native_standing_release_run_quarantine_expired",
+    "Quarantine an expired horizontal-run reservation",
+    "Terminate an in-flight run after its exact reservation lease expired with an unknown effect. Core records a signed quarantine and never retries, refunds, or infers a provider outcome.",
+    object({
+      run_id: standingReleaseRunId,
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      ticket_id: actionTicketId,
+      reservation_id: {
+        type: "string",
+        pattern: "^hnr_[a-zA-Z0-9._-]{8,200}$",
+      },
+      expected_version: { type: "integer", minimum: 1 },
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, [
+      "run_id", "work_id", "intent_anchor_digest", "ticket_id", "reservation_id",
+      "expected_version", "idempotency_key",
+    ]),
+  ),
+  tool(
+    "host_native_standing_release_run_cancel",
+    "Cancel a standing release run",
+    "Stop a run fail-closed without executing an external action. A run with an in-flight action must first reconcile that exact ticket.",
+    object({
+      run_id: standingReleaseRunId,
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      reason_digest: sha256,
+      expected_version: { type: "integer", minimum: 1 },
+      idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
+    }, ["run_id", "work_id", "intent_anchor_digest", "reason_digest", "expected_version", "idempotency_key"]),
+  ),
+  tool(
+    "host_native_standing_release_github_execute",
+    "Execute one Core-reserved GitHub peer action",
+    "Forward one short-lived Core-signed execution claim to the dedicated GitHub App worker after a fresh Work/Intent check. The caller cannot provide a provider URL, token, installation id or credential.",
+    object({
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      claim: { type: "object" },
+      materialization: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string", minLength: 1, maxLength: 256 },
+          body: { type: "string", maxLength: 20000 },
+        },
+      },
+    }, ["work_id", "intent_anchor_digest", "claim"]),
+  ),
+  tool(
+    "host_native_standing_release_github_reconcile",
+    "Reconcile one uncertain GitHub peer action",
+    "Ask the dedicated worker to read GitHub and prove whether the exact signed action occurred. It never retries the provider mutation.",
+    object({
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      claim: { type: "object" },
+    }, ["work_id", "intent_anchor_digest", "claim"]),
   ),
   tool(
     "host_native_delegation_issue",
@@ -372,6 +701,7 @@ export const HOST_NATIVE_TOOLS = [
       },
       result_digest: sha256,
       result_commit: gitSha,
+      result_pull_request: { type: "integer", minimum: 1 },
       readback_digest: sha256,
       idempotency_key: {
         type: "string",
@@ -396,6 +726,7 @@ export const HOST_NATIVE_TOOLS = [
       },
       readback_digest: sha256,
       observed_commit: gitSha,
+      observed_pull_request: { type: "integer", minimum: 1 },
       idempotency_key: {
         type: "string",
         minLength: 1,

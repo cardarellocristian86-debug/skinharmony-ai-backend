@@ -1,0 +1,44 @@
+services:
+  - type: web
+    name: skinharmony-github-standing-release-worker
+    env: node
+    plan: starter
+    repo: https://github.com/cardarellocristian86-debug/skinharmony-ai-backend
+    branch: main
+    numInstances: 1
+    buildCommand: npm ci
+    startCommand: node services/github-standing-release-worker/src/server.js
+    healthCheckPath: /livez
+    autoDeployTrigger: checksPass
+    disk:
+      name: github-standing-release-worker-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Keep false until the Core-signed execution-claim path is merged,
+      # deployed and verified. Liveness can be deployed without authority.
+      - key: GITHUB_STANDING_RELEASE_WORKER_ENABLED
+        value: "false"
+      - key: GITHUB_STANDING_RELEASE_WORKER_EMERGENCY_STOP
+        value: "false"
+      - key: GITHUB_APP_ID
+        value: "4596254"
+      # Non-secret exact owner binding. Customer installations are added only
+      # through authenticated server-side onboarding and never from MCP input.
+      - key: GITHUB_APP_TENANT_BINDINGS_JSON
+        value: '{"schema_version":"github_app_tenant_bindings_v1","bindings":[{"tenant_id":"codexai","installation_id":153760356,"repositories":["cardarellocristian86-debug/skinharmony-ai-backend"]}]}'
+      # Generate on GitHub only when this exact Render secret destination
+      # exists. Never commit, log, return through MCP or share with a tenant.
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: CORE_GITHUB_WORKER_EXECUTION_SIGNING_SECRET
+        fromService:
+          type: web
+          name: skinharmony-universal-core
+          envVarKey: CORE_GITHUB_WORKER_EXECUTION_SIGNING_SECRET
+      - key: GITHUB_WORKER_LEDGER_ROOT
+        value: /var/data/github-standing-release-worker
+      - key: GITHUB_WORKER_LEDGER_SIGNING_SECRET
+        generateValue: true

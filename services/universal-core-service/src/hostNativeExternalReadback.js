@@ -26,6 +26,8 @@ const MAX_COMPARE_COMMIT_PAGES = Math.ceil(
 // response at that boundary as potentially truncated instead of authorizing a
 // release from an incomplete path set.
 const MAX_COMPLETE_COMPARE_FILES = 299;
+const GITHUB_PRE_MERGE_PAGE_SIZE = 100;
+const MAX_PRE_MERGE_PAGES = 10;
 
 function error(code) {
   throw new Error(code);
@@ -568,6 +570,7 @@ async function attestChecks({
     }),
     required_checks_policy_digest: null,
     workflow_sources: null,
+    policy: null,
   };
   const strict = await strictWorkflowEvidence({
     getGithub,
@@ -610,6 +613,7 @@ async function attestChecks({
     }),
     required_checks_policy_digest: policyDigest,
     workflow_sources: strict.sources,
+    policy,
   };
 }
 
@@ -625,6 +629,227 @@ function validateMergePullRequest(pull, action, repository, targetCommit, { merg
     string(pull?.base?.repo?.full_name) === repository
   );
   return matches;
+}
+
+async function readGithubPages(getGithub, path, code) {
+  const entries = [];
+  for (let page = 1; page <= MAX_PRE_MERGE_PAGES; page += 1) {
+    const response = await getGithub(
+      `${path}${path.includes("?") ? "&" : "?"}per_page=${GITHUB_PRE_MERGE_PAGE_SIZE}&page=${page}`,
+    );
+    if (!Array.isArray(response)) error(code);
+    entries.push(...response);
+    if (response.length < GITHUB_PRE_MERGE_PAGE_SIZE) return entries;
+  }
+  error(code);
+}
+
+function preMergeProtectionRequirements({
+  branchReadback,
+  protection,
+  baseBranch,
+  baseCommit,
+  requiredChecks,
+  checkAppId,
+}) {
+  const statusChecks = protection?.required_status_checks;
+  const checkBindings = Array.isArray(statusChecks?.checks)
+    ? statusChecks.checks.map((check) => ({
+      context: string(check?.context),
+      app_id: Number(check?.app_id),
+    }))
+    : [];
+  const reviews = protection?.required_pull_request_reviews;
+  const bypass = reviews?.bypass_pull_request_allowances || {};
+  const bypassCount = ["users", "teams", "apps"].reduce((total, key) =>
+    total + (Array.isArray(bypass[key]) ? bypass[key].length : 0), 0);
+  const approvingReviews = Number(reviews?.required_approving_review_count);
+  if (
+    string(branchReadback?.name) !== baseBranch ||
+    branchReadback?.protected !== true || sha(branchReadback?.commit?.sha) !== baseCommit ||
+    statusChecks?.strict !== true || !Number.isSafeInteger(checkAppId) ||
+    checkBindings.length !== requiredChecks.length ||
+    !sameStrings(checkBindings.map((check) => check.context), requiredChecks) ||
+    checkBindings.some((check) => !check.context || check.app_id !== checkAppId) ||
+    protection?.enforce_admins?.enabled !== true || !reviews ||
+    !Number.isSafeInteger(approvingReviews) || approvingReviews < 1 || bypassCount !== 0 ||
+    protection?.allow_force_pushes?.enabled === true ||
+    protection?.allow_deletions?.enabled === true
+  ) error("release_join_verdict_pre_merge_protection_drift");
+  return approvingReviews;
+}
+
+function preMergeRulesetRequirements(rules, { requiredChecks, checkAppId, mergeMethod }) {
+  const allowedPassiveRules = new Set(["deletion", "non_fast_forward"]);
+  const rulesetChecks = [];
+  let requiredReviews = 0;
+  for (const rule of rules) {
+    const type = string(rule?.type);
+    if (!Number.isSafeInteger(Number(rule?.ruleset_id)) || Number(rule.ruleset_id) < 1 || !type) {
+      error("release_join_verdict_pre_merge_ruleset_invalid");
+    }
+    if (type === "required_status_checks") {
+      const parameters = rule?.parameters;
+      const checks = Array.isArray(parameters?.required_status_checks)
+        ? parameters.required_status_checks
+        : null;
+      if (!checks || parameters?.strict_required_status_checks_policy !== true) {
+        error("release_join_verdict_pre_merge_ruleset_drift");
+      }
+      for (const check of checks) {
+        const context = string(check?.context);
+        const integrationId = Number(check?.integration_id);
+        if (!context || integrationId !== checkAppId) {
+          error("release_join_verdict_pre_merge_ruleset_drift");
+        }
+        rulesetChecks.push(context);
+      }
+      continue;
+    }
+    if (type === "pull_request") {
+      const parameters = rule?.parameters;
+      const count = Number(parameters?.required_approving_review_count);
+      const allowedMergeMethods = stableStrings(parameters?.allowed_merge_methods);
+      const specializedReviewers = Array.isArray(parameters?.required_reviewers)
+        ? parameters.required_reviewers.some((entry) => Number(entry?.minimum_approvals) > 0)
+        : false;
+      if (
+        !Number.isSafeInteger(count) || count < 1 || !allowedMergeMethods.includes(mergeMethod) ||
+        parameters?.require_code_owner_review === true ||
+        parameters?.require_last_push_approval === true ||
+        parameters?.required_review_thread_resolution === true || specializedReviewers
+      ) error("release_join_verdict_pre_merge_ruleset_unsupported");
+      requiredReviews = Math.max(requiredReviews, count);
+      continue;
+    }
+    if (!allowedPassiveRules.has(type)) {
+      // The current readback does not pretend to certify merge queues,
+      // deployments, code scanning, signatures, workflow rules, or pattern
+      // rules.  Any such active rule blocks autonomous merge fail-closed.
+      error("release_join_verdict_pre_merge_ruleset_unsupported");
+    }
+  }
+  if (rulesetChecks.length > 0 && !sameStrings(rulesetChecks, requiredChecks)) {
+    error("release_join_verdict_pre_merge_ruleset_drift");
+  }
+  return requiredReviews;
+}
+
+function approvedHeadReviews(reviews, pull, headCommit, requiredCount) {
+  const author = string(pull?.user?.login);
+  if (!author) error("release_join_verdict_pre_merge_review_invalid");
+  const latestByReviewer = new Map();
+  for (const review of reviews) {
+    const reviewer = string(review?.user?.login);
+    const state = string(review?.state).toUpperCase();
+    const reviewId = Number(review?.id);
+    const submittedAt = Date.parse(string(review?.submitted_at));
+    if (
+      !reviewer || !Number.isSafeInteger(reviewId) || reviewId < 1 ||
+      !Number.isFinite(submittedAt) ||
+      !["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING"].includes(state)
+    ) error("release_join_verdict_pre_merge_review_invalid");
+    const key = reviewer.toLowerCase();
+    const prior = latestByReviewer.get(key);
+    if (
+      !prior || submittedAt > prior.submittedAt ||
+      (submittedAt === prior.submittedAt && reviewId > prior.reviewId)
+    ) {
+      latestByReviewer.set(key, {
+        review,
+        reviewer,
+        state,
+        reviewId,
+        submittedAt,
+      });
+    }
+  }
+  if ([...latestByReviewer.values()].some(({ state }) => state === "CHANGES_REQUESTED")) {
+    error("release_join_verdict_pre_merge_review_not_approved");
+  }
+  const approved = [...latestByReviewer.values()].filter(({ review, reviewer, state }) =>
+    state === "APPROVED" && reviewer.toLowerCase() !== author.toLowerCase() &&
+    sha(review?.commit_id) === headCommit);
+  if (approved.length < requiredCount) {
+    error("release_join_verdict_pre_merge_review_not_approved");
+  }
+  return approved.map(({ reviewer, reviewId }) => ({
+    review_id: reviewId,
+    reviewer,
+    reviewed_commit: headCommit,
+  })).sort((left, right) => left.reviewer.localeCompare(right.reviewer));
+}
+
+async function attestStandingPreMerge({
+  getGithub,
+  repository,
+  action,
+  pull,
+  baseCommit,
+  headCommit,
+  checks,
+  now,
+}) {
+  const policy = checks.policy;
+  if (!policy || !checks.required_checks_policy_digest) {
+    error("required_checks_policy_unavailable");
+  }
+  const baseBranch = string(action.base_branch);
+  const encodedBranch = encodeURIComponent(baseBranch);
+  const [branchReadback, protection, rules, reviews] = await Promise.all([
+    getGithub(`/branches/${encodedBranch}`),
+    getGithub(`/branches/${encodedBranch}/protection`),
+    readGithubPages(
+      getGithub,
+      `/rules/branches/${encodedBranch}`,
+      "release_join_verdict_pre_merge_ruleset_invalid",
+    ),
+    readGithubPages(
+      getGithub,
+      `/pulls/${Number(action.pull_request)}/reviews`,
+      "release_join_verdict_pre_merge_review_invalid",
+    ),
+  ]);
+  if (
+    pull?.state !== "open" || pull?.draft !== false ||
+    !validateMergePullRequest(pull, action, repository, null, { merged: false }) ||
+    sha(action.head_commit) !== headCommit
+  ) error("release_join_verdict_pull_request_mismatch");
+  const classicReviews = preMergeProtectionRequirements({
+    branchReadback,
+    protection,
+    baseBranch,
+    baseCommit,
+    requiredChecks: checks.required_checks,
+    checkAppId: Number(policy.check_app.id),
+  });
+  const rulesetReviews = preMergeRulesetRequirements(rules, {
+    requiredChecks: checks.required_checks,
+    checkAppId: Number(policy.check_app.id),
+    mergeMethod: string(action.merge_method || "merge"),
+  });
+  const requiredReviews = Math.max(classicReviews, rulesetReviews);
+  const approvedReviews = approvedHeadReviews(reviews, pull, headCommit, requiredReviews);
+  const unsigned = {
+    schema_version: "host_native_pre_merge_readback_v1",
+    trusted: true,
+    source: "universal_core_github_readback",
+    repository,
+    base_branch: baseBranch,
+    base_commit: baseCommit,
+    head_branch: string(action.head_branch),
+    head_commit: headCommit,
+    pull_request: Number(action.pull_request),
+    required_checks: checks.required_checks,
+    required_checks_policy_digest: checks.required_checks_policy_digest,
+    check_app_id: Number(policy.check_app.id),
+    approving_reviews_required: requiredReviews,
+    approved_reviews: approvedReviews,
+    active_rules_digest: hostNativeDigest(rules),
+    verified_at: isoNow(now),
+    provider_execution: false,
+  };
+  return { ...unsigned, evidence_digest: hostNativeDigest(unsigned) };
 }
 
 function healthAttestation({
@@ -748,6 +973,135 @@ function observeSourceContext(ticket, action, binding, repository, targetCommit,
     sha(sourceAction.expected_remote_commit) !== baseCommit
   )) error("trusted_readback_observation_binding_invalid");
   return { sourceAction, sourceBranch };
+}
+
+export function createHostNativeBranchProtectionResolver({
+  fetchImpl = globalThis.fetch,
+  githubTokenResolver = null,
+  requiredChecksPolicyResolver = null,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  now = () => Date.now(),
+} = {}) {
+  if (typeof fetchImpl !== "function") error("standing_release_base_protection_readback_unavailable");
+  if (typeof githubTokenResolver !== "function") {
+    error("standing_release_base_protection_credential_unavailable");
+  }
+  if (typeof requiredChecksPolicyResolver !== "function") {
+    error("standing_release_checks_policy_unavailable");
+  }
+  const boundedTimeout = Math.max(500, Math.min(30_000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
+  const resolve = async ({
+    tenant_id,
+    repository,
+    base_branch,
+    required_checks,
+    required_checks_policy_digest,
+  } = {}) => {
+    const tenantId = string(tenant_id);
+    const safeRepository = repositoryPath(repository);
+    const branch = string(base_branch);
+    if (!tenantId || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(branch)) {
+      error("standing_release_base_protection_scope_invalid");
+    }
+    const requiredChecks = stableStrings(required_checks);
+    if (!requiredChecks.length || !/^[a-f0-9]{64}$/.test(string(required_checks_policy_digest))) {
+      error("standing_release_checks_policy_invalid");
+    }
+    let policy;
+    try {
+      policy = await requiredChecksPolicyResolver({
+        tenant_id: tenantId,
+        repository: safeRepository,
+        base_branch: branch,
+      });
+    } catch {
+      error("standing_release_checks_policy_unavailable");
+    }
+    if (
+      !policy || policy.schema_version !== "host_native_required_checks_policy_v1" ||
+      string(policy.tenant_id) !== tenantId || string(policy.repository) !== safeRepository ||
+      string(policy.base_branch) !== branch ||
+      !sameStrings(policy.required_checks, requiredChecks) ||
+      hostNativeDigest(policy) !== string(required_checks_policy_digest)
+    ) error("standing_release_checks_policy_drift");
+    const token = await resolveGithubToken(githubTokenResolver, {
+      tenant_id: tenantId,
+      repository: safeRepository,
+    });
+    if (!token) error("standing_release_base_protection_credential_unavailable");
+    const getGithub = githubClient({
+      fetchImpl,
+      token,
+      repository: safeRepository,
+      timeoutMs: boundedTimeout,
+    });
+    let branchReadback;
+    let protection;
+    try {
+      const encodedBranch = encodeURIComponent(branch);
+      [branchReadback, protection] = await Promise.all([
+        getGithub(`/branches/${encodedBranch}`),
+        getGithub(`/branches/${encodedBranch}/protection`),
+      ]);
+    } catch {
+      error("standing_release_base_protection_readback_unavailable");
+    }
+    const statusChecks = protection?.required_status_checks;
+    const checkBindings = Array.isArray(statusChecks?.checks)
+      ? statusChecks.checks.map((check) => ({
+        name: string(check?.context),
+        app_id: Number(check?.app_id),
+      }))
+      : [];
+    const expectedAppId = Number(policy?.check_app?.id);
+    // A context-only protection response does not prove which GitHub App owns
+    // the required check.  Standing automation must bind every exact check to
+    // the server-resolved App id; legacy unbound contexts therefore fail
+    // closed instead of silently widening the trusted CI authority.
+    const appBindingsValid = Number.isSafeInteger(expectedAppId) &&
+      checkBindings.length === requiredChecks.length &&
+      sameStrings(checkBindings.map((check) => check.name), requiredChecks) &&
+      checkBindings.every((check) =>
+        check.name && Number.isSafeInteger(check.app_id) && check.app_id === expectedAppId);
+    const reviews = protection?.required_pull_request_reviews;
+    const bypass = reviews?.bypass_pull_request_allowances || {};
+    const bypassCount = ["users", "teams", "apps"].reduce((total, key) =>
+      total + (Array.isArray(bypass[key]) ? bypass[key].length : 0), 0);
+    if (
+      string(branchReadback?.name) !== branch || branchReadback?.protected !== true ||
+      !sha(branchReadback?.commit?.sha) ||
+      statusChecks?.strict !== true ||
+      appBindingsValid !== true || protection?.enforce_admins?.enabled !== true ||
+      !reviews || Number(reviews.required_approving_review_count) < 1 || bypassCount !== 0 ||
+      protection?.allow_force_pushes?.enabled === true ||
+      protection?.allow_deletions?.enabled === true
+    ) error("standing_release_base_protection_not_ready");
+    const unsigned = {
+      schema_version: "standing_release_base_protection_readback_v1",
+      trusted: true,
+      source: "universal_core_github_readback",
+      tenant_id: tenantId,
+      repository: safeRepository,
+      branch,
+      base_commit: sha(branchReadback.commit.sha),
+      protected: true,
+      direct_push_allowed: false,
+      force_push_allowed: false,
+      deletion_allowed: false,
+      pull_request_required: true,
+      approving_reviews_required: Number(reviews.required_approving_review_count),
+      enforce_admins: true,
+      bypass_allowance_count: 0,
+      required_checks: requiredChecks,
+      required_checks_policy_digest: string(required_checks_policy_digest),
+      check_app_id: expectedAppId,
+      verified_at: isoNow(now),
+      provider_execution: false,
+    };
+    return Object.freeze({ ...unsigned, evidence_digest: hostNativeDigest(unsigned) });
+  };
+  Object.defineProperty(resolve, "trusted", { value: true });
+  return resolve;
 }
 
 /**
@@ -1085,6 +1439,8 @@ export function createHostNativeReleaseJoinVerdictResolver({
     const checksCommit = sha(request.checks_commit);
     const baseBranch = string(action.base_branch || action.branch);
     const productionDeploy = action.kind === "render.deploy" && action.environment === "production";
+    const standingMerge = action.kind === "github.merge" &&
+      /^[a-f0-9]{64}$/.test(string(request.required_checks_policy_digest));
     if (!tenantId || !headCommit || !baseCommit || !treeSha || !checksCommit || !baseBranch || checksCommit !== headCommit) {
       error("release_join_verdict_source_attestation_mismatch");
     }
@@ -1116,7 +1472,7 @@ export function createHostNativeReleaseJoinVerdictResolver({
       workflowRunCache,
       workflowSourceCache,
     });
-    if (productionDeploy) {
+    if (productionDeploy || standingMerge) {
       const requiredChecksPolicyDigest = string(request.required_checks_policy_digest);
       if (!/^[a-f0-9]{64}$/.test(requiredChecksPolicyDigest) ||
           !checks.required_checks_policy_digest) {
@@ -1128,10 +1484,23 @@ export function createHostNativeReleaseJoinVerdictResolver({
     }
     let evidenceKind;
     let pullRequest = null;
+    let preMergeReadback = null;
     if (action.kind === "github.merge") {
       const pull = await getGithub(`/pulls/${Number(action.pull_request)}`);
       if (!validateMergePullRequest(pull, action, repository, null, { merged: false })) {
         error("release_join_verdict_pull_request_mismatch");
+      }
+      if (standingMerge) {
+        preMergeReadback = await attestStandingPreMerge({
+          getGithub,
+          repository,
+          action,
+          pull,
+          baseCommit,
+          headCommit,
+          checks,
+          now,
+        });
       }
       const files = [];
       let fileEntries = 0;
@@ -1239,12 +1608,19 @@ export function createHostNativeReleaseJoinVerdictResolver({
       source_attestation,
       previous_live_attestations,
       pre_action_readback_digest,
-      ...(productionDeploy ? {
+      ...(productionDeploy || standingMerge ? {
         required_checks_policy_digest: checks.required_checks_policy_digest,
+      } : {}),
+      ...(preMergeReadback ? {
+        pre_merge_readback: preMergeReadback,
+        pre_merge_readback_digest: hostNativeDigest(preMergeReadback),
       } : {}),
       provider_execution: false,
     };
   };
-  Object.defineProperty(resolve, "trusted", { value: true });
+  Object.defineProperties(resolve, {
+    trusted: { value: true },
+    standing_pre_merge_readback: { value: true },
+  });
   return resolve;
 }

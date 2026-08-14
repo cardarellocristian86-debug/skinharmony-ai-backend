@@ -90,6 +90,22 @@ class ContinuityPool {
       const row = this.anchors.get(key(parameters[0], parameters[1]));
       return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT w.tenant_id,w.work_id,w.project_id,w.status AS work_status")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      const anchor = this.anchors.get(key(parameters[0], parameters[1]));
+      const row = work && anchor ? {
+        tenant_id: work.tenant_id,
+        work_id: work.work_id,
+        project_id: work.project_id,
+        work_status: work.status,
+        current_version: work.current_version,
+        work_updated_at: work.updated_at,
+        anchor: anchor.anchor,
+        intent_digest: anchor.intent_digest,
+        intent_anchor_created_at: anchor.created_at,
+      } : null;
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
     if (q.startsWith("INSERT INTO core_continuity_works")) {
       const [
         tenantId, projectId, workId, sessionId, parentWorkId, idea, objective,
@@ -900,6 +916,55 @@ test("ensure survives runtime restart, is strict by default and isolates tenants
   assert.equal("idea" in catalog.works[0], false);
   assert.equal("objective" in catalog.works[0], false);
   assert.equal("anchor" in catalog.works[0], false);
+});
+
+test("standing release resolves one atomic persisted Work/Intent binding fail-closed", async () => {
+  const clock = () => new Date("2026-08-14T12:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = { tenantId: "tenant-a", subject: "codex" };
+  const created = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
+
+  const binding = await runtime.resolveStandingReleaseIntentBinding(identity, {
+    work_id: created.work_id,
+  });
+  assert.equal(binding.schema_version, "standing_release_intent_binding_v1");
+  assert.equal(binding.source, "mcp_work_continuity_postgres");
+  assert.equal(binding.tenant_id, "tenant-a");
+  assert.equal(binding.work_id, created.work_id);
+  assert.equal(binding.intent_anchor_digest, created.intent_digest);
+  assert.equal(binding.intent_anchor_immutable, true);
+  assert.equal(binding.work_status, "active");
+  assert.equal(binding.provider_execution, false);
+  const { binding_digest: bindingDigest, ...unsignedBinding } = binding;
+  assert.equal(bindingDigest, digest(unsignedBinding));
+  assert.match(bindingDigest, /^[a-f0-9]{64}$/);
+  assert.notEqual(bindingDigest, digest({ ...unsignedBinding, work_status: "verified" }));
+  for (const promptField of ["anchor", "initial_message", "idea", "objective", "constraints"]) {
+    assert.equal(promptField in binding, false);
+  }
+
+  await assert.rejects(
+    runtime.resolveStandingReleaseIntentBinding(
+      { tenantId: "tenant-b", subject: "codex" },
+      { work_id: created.work_id },
+    ),
+    /standing_release_intent_binding_not_found/,
+  );
+
+  const anchor = pool.anchors.get(key("tenant-a", created.work_id));
+  const originalDigest = anchor.intent_digest;
+  anchor.intent_digest = "f".repeat(64);
+  await assert.rejects(
+    runtime.resolveStandingReleaseIntentBinding(identity, { work_id: created.work_id }),
+    /standing_release_intent_binding_corrupt/,
+  );
+  anchor.intent_digest = originalDigest;
+  pool.works.get(key("tenant-a", created.work_id)).status = "blocked";
+  await assert.rejects(
+    runtime.resolveStandingReleaseIntentBinding(identity, { work_id: created.work_id }),
+    /standing_release_intent_work_status_ineligible/,
+  );
 });
 
 test("exact Work resume binds new sessions idempotently without duplicating Work events", async () => {

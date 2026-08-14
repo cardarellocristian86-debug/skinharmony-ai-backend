@@ -33,6 +33,8 @@
     "core:client": "node services/universal-core-service/tools/core-service-client.js",
     "core:mcp": "node services/skinharmony-core-mcp/src/server.js",
     "core:mcp:test": "node --test services/skinharmony-core-mcp/test/*.test.js",
+    "github:standing-release-worker": "node services/github-standing-release-worker/src/server.js",
+    "github:standing-release-worker:test": "node --test services/github-standing-release-worker/test/*.test.js",
     "memory:import": "node scripts/import-shared-work-memory.mjs",
     "memory:view:owner": "node scripts/build-tenant-memory-view.mjs shared-work-memory/archive/connector-memory shared-work-memory owner-private",
     "memory:cloud:sync": "node scripts/sync-cloud-memory.mjs"
