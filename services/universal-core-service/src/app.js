@@ -47,7 +47,7 @@ import {
   deterministicBranchTaxonomy,
   resolveBranchesForKey,
 } from "../branches/index.js";
-import { resolveOwnerTenantBranchProfile } from "./ownerTenantBranchProfile.js";
+import { applyOwnerActiveAdvisory, resolveOwnerTenantBranchProfile } from "./ownerTenantBranchProfile.js";
 import {
   listOrchestrationCapabilities,
   listVirtualOrchestrationCombinations,
@@ -952,14 +952,17 @@ function verifiedOwnerBranchProfile(req, requestedBranches = [], purpose = "", o
   if (encodedHeader && /^[A-Za-z0-9_-]{16,12000}$/.test(encodedHeader)) {
     try { headerContext = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8")); } catch { headerContext = null; }
   }
-  const context = req.body?.owner_context || headerContext;
+  // Transport-authenticated MCP headers take precedence. A caller-supplied
+  // body object must never shadow a valid request-bound owner assertion.
+  const context = headerContext || req.body?.owner_context;
   const body = bindingBody || (req.body && typeof req.body === "object" ? req.body : {});
   const expectedBinding = purpose ? ownerRequestBinding(purpose, body) : undefined;
   const ownerVerified =
     req.tenantId === "codexai" &&
     context?.role === "owner_root" &&
     context?.access_mode === "god_mode" &&
-    context?.delegated_actor === "oauth" &&
+    ["oauth", "codex"].includes(context?.delegated_actor) &&
+    /^osf_[a-f0-9]{64}$/i.test(String(context?.owner_subject_fingerprint || "")) &&
     verifyOwnerContextAssertion(context, ownerContextSigningSecret, req.tenantId, expectedBinding);
   const commercialResolution = resolveBranchesForKey(req.coreKey, requestedBranches);
   return resolveOwnerTenantBranchProfile({
@@ -970,6 +973,19 @@ function verifiedOwnerBranchProfile(req, requestedBranches = [], purpose = "", o
     requestedBranches,
     commercialResolution,
   }) || commercialResolution;
+}
+
+function verifiedOwnerAdvisoryActivation(req, purpose, ownerContextSigningSecret, bindingBody) {
+  const resolution = verifiedOwnerBranchProfile(
+    req,
+    [],
+    purpose,
+    ownerContextSigningSecret,
+    bindingBody,
+  );
+  return resolution.owner_profile === "tenant_scoped_verified_owner"
+    ? resolution.advisory_activation
+    : null;
 }
 
 // A signed owner context is intentionally short-lived, but a short lifetime
@@ -1941,9 +1957,10 @@ function entityGraphStore(storageRoot) {
   };
 }
 
-function branchMaturityReport() {
+function branchMaturityReport(advisoryActivation = null) {
   const registry = branchRegistry();
   const groups = deterministicBranchGroups();
+  const activeAdvisory = new Set(Array.isArray(advisoryActivation?.active_branches) ? advisoryActivation.active_branches : []);
   const statuses = {};
   for (const [branchId, profile] of Object.entries(registry)) {
     const productionStatus = profile.production_status || "unknown";
@@ -1962,6 +1979,10 @@ function branchMaturityReport() {
       production_status: productionStatus,
       maturity,
       execution_default: maturity === "production" ? "confirm" : maturity === "advisory" ? "advisory_only" : "test_only",
+      ...(activeAdvisory.has(branchId) ? {
+        activation_state: "active_advisory",
+        execution_authorized: false,
+      } : {}),
       promotion_required: maturity === "production" ? [] : ["benchmark_pass", "owner_approval", "regression_test", "audit_sample"],
       enforcement_overlays: Array.isArray(profile.guardrails?.enforcement_overlays)
         ? profile.guardrails.enforcement_overlays.map((overlay) => ({ ...overlay }))
@@ -1970,6 +1991,7 @@ function branchMaturityReport() {
   }
   return {
     schema_version: "branch_maturity_v1",
+    ...(advisoryActivation ? { advisory_activation: advisoryActivation } : {}),
     statuses,
     groups: Object.fromEntries(
       Object.entries(groups).map(([groupId, group]) => [
@@ -8970,6 +8992,12 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/tenant/status", coreAuth(), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
+    const advisoryActivation = verifiedOwnerAdvisoryActivation(
+      req,
+      "control_plane_read",
+      ownerContextSigningSecret,
+      { view: "tenant_status" },
+    );
     const suitePolicy = buildSuitePolicy(req.coreKey, branchResolution);
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     res.json({
@@ -8981,6 +9009,7 @@ export function createUniversalCoreService(options = {}) {
       tier: branchResolution.tier,
       active_branches: branchResolution.allowed_branches,
       active_branch_groups: branchResolution.allowed_groups,
+      ...(advisoryActivation ? { owner_active_advisory: advisoryActivation } : {}),
       allowed_scopes: req.coreKey.allowed_scopes,
       status: req.coreKey.status,
       expires_at: req.coreKey.expires_at,
@@ -8993,12 +9022,24 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/entitlements/current", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
+    const advisoryActivation = verifiedOwnerAdvisoryActivation(
+      req,
+      "control_plane_read",
+      ownerContextSigningSecret,
+      { view: "entitlements" },
+    );
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     audit.append("core_entitlement_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, tier: entitlement.tier });
-    res.json({ ok: true, entitlement });
+    res.json({ ok: true, entitlement, ...(advisoryActivation ? { owner_active_advisory: advisoryActivation } : {}) });
   });
 
   app.get("/v1/control-plane/overview", coreAuth(SCOPES.READ_CONTROL_PLANE), (req, res) => {
+    const advisoryActivation = verifiedOwnerAdvisoryActivation(
+      req,
+      "control_plane_read",
+      ownerContextSigningSecret,
+      { view: "overview" },
+    );
     const overview = buildControlPlaneOverview({
       tenantId: req.tenantId,
       keyRecord: req.coreKey,
@@ -9008,14 +9049,20 @@ export function createUniversalCoreService(options = {}) {
       evidenceEvents: evidence.recent(req.tenantId, 50),
     });
     audit.append("core_control_plane_overview_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
-    res.json({ ok: true, overview });
+    res.json({ ok: true, overview, ...(advisoryActivation ? { owner_active_advisory: advisoryActivation } : {}) });
   });
 
   app.get("/v1/control-plane/dashboard", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const branchResolution = resolveBranchesForKey(req.coreKey);
+    const advisoryActivation = verifiedOwnerAdvisoryActivation(
+      req,
+      "control_plane_read",
+      ownerContextSigningSecret,
+      { view: "dashboard" },
+    );
     const entitlement = buildEntitlement(req.coreKey, branchResolution);
     const graph = entityGraph.readTenant(req.tenantId);
-    const maturity = branchMaturityReport();
+    const maturity = branchMaturityReport(advisoryActivation);
     const overview = buildControlPlaneOverview({
       tenantId: req.tenantId,
       keyRecord: req.coreKey,
@@ -9032,6 +9079,7 @@ export function createUniversalCoreService(options = {}) {
       tenant_id: req.tenantId,
       overview,
       entitlement,
+      ...(advisoryActivation ? { owner_active_advisory: advisoryActivation } : {}),
       network_graph_summary: {
         entity_count: graph.entities.length,
         relation_count: graph.relations.length,
@@ -11242,13 +11290,21 @@ export function createUniversalCoreService(options = {}) {
 
   app.get("/v1/branches", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const resolution = resolveBranchesForKey(req.coreKey);
+    const advisoryActivation = verifiedOwnerAdvisoryActivation(
+      req,
+      "branch_registry",
+      ownerContextSigningSecret,
+      { view: "registry", branches: [] },
+    );
+    const projectedRegistry = applyOwnerActiveAdvisory(branchRegistry(), advisoryActivation);
     res.json({
       ok: true,
-      branches: extendCausalBranchRegistry(branchRegistry()),
+      branches: extendCausalBranchRegistry(projectedRegistry),
       groups: deterministicBranchGroups(),
       taxonomy: deterministicBranchTaxonomy(),
       packages: BRANCH_PACKAGES,
       tenant_package: resolution,
+      ...(advisoryActivation ? { advisory_activation: advisoryActivation } : {}),
       rule: "Ogni ramo produce decisioni advisory/read-only. Azioni operative e pubblicazione richiedono conferma owner.",
     });
   });
@@ -11263,7 +11319,13 @@ export function createUniversalCoreService(options = {}) {
   });
 
   app.get("/v1/branches/maturity", coreAuth(SCOPES.READ_DECISION), (req, res) => {
-    const report = branchMaturityReport();
+    const advisoryActivation = verifiedOwnerAdvisoryActivation(
+      req,
+      "branch_registry",
+      ownerContextSigningSecret,
+      { view: "maturity", branches: [] },
+    );
+    const report = branchMaturityReport(advisoryActivation);
     audit.append("core_branch_maturity_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id });
     res.json({ ok: true, ...report });
   });
@@ -11279,15 +11341,16 @@ export function createUniversalCoreService(options = {}) {
       ownerContextSigningSecret,
       { view: "authorized", branches: requested },
     );
+    const selectedRegistry = Object.fromEntries(
+      resolution.selected_branches.map((id) => [id, branchRegistry()[id]]).filter(([, value]) => Boolean(value)),
+    );
     res.json({
       ok: true,
       tenant_id: req.tenantId,
       branch_package: resolution,
       groups: deterministicBranchGroups(),
       taxonomy: deterministicBranchTaxonomy(),
-      branches: extendCausalBranchRegistry(Object.fromEntries(
-        resolution.selected_branches.map((id) => [id, branchRegistry()[id]]).filter(([, value]) => Boolean(value)),
-      )),
+      branches: extendCausalBranchRegistry(applyOwnerActiveAdvisory(selectedRegistry, resolution.advisory_activation)),
     });
   });
 
@@ -13011,13 +13074,26 @@ export function createUniversalCoreService(options = {}) {
 
   app.post("/v1/branches/:branch/analyze", coreAuth(SCOPES.READ_DECISION, { requireWorkPreflight: true }), async (req, res) => {
     const branch = String(req.params.branch || "").trim();
-    const resolution = resolveBranchesForKey(req.coreKey, [branch]);
-    if (!resolution.selected_branches.includes(branch)) {
+    const commercialResolution = resolveBranchesForKey(req.coreKey, [branch]);
+    const ownerResolution = verifiedOwnerBranchProfile(
+      req,
+      [branch],
+      "branch_analyze",
+      ownerContextSigningSecret,
+      { ...(req.body || {}), branch },
+    );
+    const ownerActiveAdvisory =
+      ownerResolution.owner_profile === "tenant_scoped_verified_owner" &&
+      ownerResolution.advisory_activation?.active_branches?.includes(branch);
+    if (!commercialResolution.selected_branches.includes(branch) && !ownerActiveAdvisory) {
       audit.append("core_branch_denied", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, branch });
-      return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${resolution.tier}`);
+      return publicError(res, 403, "branch_not_allowed", `Branch not allowed for tier ${commercialResolution.tier}`);
     }
     const payload = buildBranchPayload(branch, { ...(req.body || {}), tenant_id: req.tenantId });
     if (!payload) return publicError(res, 404, "branch_not_found");
+    const responseProfile = ownerActiveAdvisory
+      ? applyOwnerActiveAdvisory({ [branch]: payload.profile }, ownerResolution.advisory_activation)[branch]
+      : payload.profile;
     payload.core_input.context.tenant_id = req.tenantId;
     payload.core_input.constraints = safeConstraints(payload.core_input.constraints, req.coreKey, false);
     const output = runUniversalCore(payload.core_input);
@@ -13070,6 +13146,7 @@ export function createUniversalCoreService(options = {}) {
       state: output.state,
       risk: output.risk?.band,
       production_status: payload.profile.production_status,
+      activation_state: ownerActiveAdvisory ? "active_advisory" : "commercial_advisory",
       causal_rollout_mode: causalEnforcement.rollout.mode,
       causal_context_verified: causalEnforcement.authoritative_context.valid === true,
       causal_allowed: causalEnforcement.allowed,
@@ -13085,7 +13162,7 @@ export function createUniversalCoreService(options = {}) {
       ok: true,
       tenant_id: req.tenantId,
       branch,
-      profile: payload.profile,
+      profile: responseProfile,
       branch_output: payload.branch_output,
       warnings: payload.warnings,
       output,
@@ -13101,7 +13178,9 @@ export function createUniversalCoreService(options = {}) {
         destructive_automation: false,
         execution_allowed: false,
         publish_requires_owner_confirmation: true,
-        mode: payload.profile.production_status === "test_only" ? "test_only" : "advisory_only",
+        mode: ownerActiveAdvisory
+          ? "active_advisory"
+          : payload.profile.production_status === "test_only" ? "test_only" : "advisory_only",
       },
     });
   });

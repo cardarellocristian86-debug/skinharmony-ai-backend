@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 
 import { CORE_CONNECTOR_CAPABILITIES, readCoreCapabilityCatalog } from "../src/core-capability-catalog.js";
@@ -32,6 +33,21 @@ function harness() {
     },
   });
   return { calls, handlers };
+}
+
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().filter((key) => value[key] !== undefined).map((key) => [key, stable(value[key])]));
+}
+
+function expectedBindingHash(purpose, payload) {
+  return crypto.createHash("sha256").update(`${purpose}\u0000${JSON.stringify(stable(payload))}`).digest("hex");
+}
+
+function decodeOwnerHeader(call) {
+  const encoded = call.init.headers["x-sh-owner-context"];
+  return encoded ? JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) : null;
 }
 
 test("catalog classifies connector capabilities and excludes arbitrary/admin invocation", () => {
@@ -96,6 +112,65 @@ test("read capability handlers bind tenant server-side and route only to enumera
   assert.equal(calls[3].url.searchParams.get("limit"), "7");
   assert(calls.every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
   assert(calls.filter((call) => call.body).every((call) => !Object.hasOwn(call.body, "tenant_id")));
+});
+
+test("owner advisory reads bind registry, analyze and control-plane headers to the exact request", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { codexai: "codexai-commercial-key" },
+    tenantGatewayKey: "g".repeat(48),
+    tenantContextSigningSecret: "t".repeat(48),
+    ownerContextSigningSecret: "o".repeat(48),
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeCodexEnabled: true,
+    godModeTenantIds: ["codexai"],
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url: new URL(url), init, body: init.body ? JSON.parse(init.body) : undefined });
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const identity = { tenantId: "codexai", kind: "codex", role: "owner_root", godMode: true, subject: "codex" };
+
+  await handlers.core_branch_registry({ view: "registry", branches: ["ignored_for_registry_view"] }, identity);
+  await handlers.core_branch_analyze({ branch: "suite_governance", request: "Review governance" }, identity);
+  await handlers.core_control_plane_read({ view: "tenant_status" }, identity);
+
+  assert.equal(calls.length, 3);
+  assert(calls.every((call) => call.init.headers.authorization === "Bearer codexai-commercial-key"));
+  const contexts = calls.map(decodeOwnerHeader);
+  assert(contexts.every((context) => context?.owner_verified === true));
+  assert(contexts.every((context) => context?.delegated_actor === "codex"));
+  assert(contexts.every((context) => /^osf_[a-f0-9]{64}$/u.test(context?.owner_subject_fingerprint || "")));
+  assert.equal(contexts[0].binding_hash, expectedBindingHash("branch_registry", { view: "registry", branches: [] }));
+  assert.equal(contexts[1].binding_hash, expectedBindingHash("branch_analyze", { request: "Review governance", branch: "suite_governance" }));
+  assert.equal(contexts[2].binding_hash, expectedBindingHash("control_plane_read", { view: "tenant_status" }));
+  assert.equal(calls[1].body.owner_context, undefined);
+  assert.equal(calls[1].body.branch, undefined);
+});
+
+test("owner advisory reads fall back to commercial transport when the read signer is unavailable", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { codexai: "codexai-commercial-key" },
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeCodexEnabled: true,
+    godModeTenantIds: ["codexai"],
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url: new URL(url), init });
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const identity = { tenantId: "codexai", kind: "codex", role: "owner_root", godMode: true, subject: "codex" };
+  await handlers.core_control_plane_read({ view: "tenant_status" }, identity);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.headers.authorization, "Bearer codexai-commercial-key");
+  assert.equal(calls[0].init.headers["x-sh-owner-context"], undefined);
 });
 
 test("governed graph and review writes require verified explicit owner confirmation", async () => {

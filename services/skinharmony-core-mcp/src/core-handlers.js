@@ -1328,6 +1328,19 @@ export function createCoreHandlers(config, options = {}) {
     return { ...context, assertion: `ocs_${digest}` };
   }
 
+  function ownerReadContext(identity, requestBinding) {
+    try {
+      return identity.kind === "codex"
+        ? ownerContext(identity, { hostNativeOwner: true, requestBinding })
+        : ownerContext(identity, requestBinding);
+    } catch (error) {
+      if (["host_native_owner_context_signing_unavailable", "owner_context_signing_unavailable"].includes(error?.message)) {
+        return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+      }
+      throw error;
+    }
+  }
+
   async function memoryContext(input, identity) {
     if (typeof contextProvider !== "function") return undefined;
     return contextProvider(input, identity);
@@ -2475,32 +2488,40 @@ export function createCoreHandlers(config, options = {}) {
         authorized: "/v1/branches/authorized",
       };
       const view = args.view || "registry";
-      const query = view === "authorized" && Array.isArray(args.branches) && args.branches.length
-        ? `?${new URLSearchParams({ branches: args.branches.join(",") }).toString()}`
+      const requestedBranches = view === "authorized" && Array.isArray(args.branches) ? args.branches : [];
+      const query = requestedBranches.length
+        ? `?${new URLSearchParams({ branches: requestedBranches.join(",") }).toString()}`
         : "";
-      const bindingPayload = { view, branches: Array.isArray(args.branches) ? args.branches : [] };
-      const owner = ownerContext(identity, ownerRequestBinding("branch_registry", bindingPayload));
+      const bindingPayload = { view, branches: requestedBranches };
+      const owner = ownerReadContext(identity, ownerRequestBinding("branch_registry", bindingPayload));
       const additionalHeaders = owner.owner_verified === true
         ? { "x-sh-owner-context": Buffer.from(JSON.stringify(owner)).toString("base64url") }
         : {};
       return textResult(await coreRequest(`${paths[view]}${query}`, identity.tenantId, {
         additionalHeaders,
-        useTenantGateway: Boolean(config.tenantGatewayKey),
       }));
     },
-    core_branch_analyze: async (args, identity) => textResult(await coreRequest(
-      `/v1/branches/${encodeURIComponent(args.branch)}/analyze`,
-      identity.tenantId,
-      {
-        method: "POST",
-        body: {
-          request: args.request,
-          ...(args.signals ? { signals: args.signals } : {}),
-          ...(args.context ? { context: args.context } : {}),
-          ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
+    core_branch_analyze: async (args, identity) => {
+      const body = {
+        request: args.request,
+        ...(args.signals ? { signals: args.signals } : {}),
+        ...(args.context ? { context: args.context } : {}),
+        ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
+      };
+      const owner = ownerReadContext(identity, ownerRequestBinding("branch_analyze", { ...body, branch: args.branch }));
+      const additionalHeaders = owner.owner_verified === true
+        ? { "x-sh-owner-context": Buffer.from(JSON.stringify(owner)).toString("base64url") }
+        : {};
+      return textResult(await coreRequest(
+        `/v1/branches/${encodeURIComponent(args.branch)}/analyze`,
+        identity.tenantId,
+        {
+          method: "POST",
+          body,
+          additionalHeaders,
         },
-      },
-    )),
+      ));
+    },
     core_control_plane_read: async (args, identity) => {
       const paths = {
         tenant_status: "/v1/tenant/status",
@@ -2512,7 +2533,14 @@ export function createCoreHandlers(config, options = {}) {
         connector_manifest: "/v1/connectors/sdk/manifest",
         customer_intelligence_contract: "/v1/customer-intelligence/contract",
       };
-      return textResult(await coreRequest(paths[args.view], identity.tenantId));
+      const bindingPayload = { view: args.view };
+      const owner = ownerReadContext(identity, ownerRequestBinding("control_plane_read", bindingPayload));
+      const additionalHeaders = owner.owner_verified === true
+        ? { "x-sh-owner-context": Buffer.from(JSON.stringify(owner)).toString("base64url") }
+        : {};
+      return textResult(await coreRequest(paths[args.view], identity.tenantId, {
+        additionalHeaders,
+      }));
     },
     core_evidence_recent: async (args, identity) => {
       const query = new URLSearchParams({ limit: String(args.limit || 50) });
