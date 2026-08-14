@@ -29,6 +29,7 @@ on:
       - "scripts/lib/nyra-deep-branch-v2-shards.mjs"
       - "skinharmony-rust-extractor-governor/**"
       - "services/shared/**"
+      - "services/github-standing-release-worker/**"
       - "services/skinharmony-core-mcp/**"
       - "services/universal-core-service/**"
       - "universal-core/**"
@@ -62,6 +63,7 @@ on:
       - "scripts/lib/nyra-deep-branch-v2-shards.mjs"
       - "skinharmony-rust-extractor-governor/**"
       - "services/shared/**"
+      - "services/github-standing-release-worker/**"
       - "services/skinharmony-core-mcp/**"
       - "services/universal-core-service/**"
       - "universal-core/**"
@@ -462,7 +464,8 @@ jobs:
             "CORE_GENERIC_WORK_CORE_JOIN_ENABLED" => "false",
             "CORE_GENERIC_WORK_CORE_JOIN_REQUIRED" => "false",
             "CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE" => "disabled",
-            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PATH" => "/v1/sign",
+            "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PATH" =>
+              "/v1/generic-work-core-join/sign",
             "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE" => "universal-core-service",
             "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PURPOSE" => "generic_work_core_join_v1",
             "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TIMEOUT_MS" => "1500",
@@ -1021,6 +1024,8 @@ jobs:
       # Root postinstall builds both Render Rust artifacts once.
       - name: Install root deployment dependencies and artifacts
         run: npm ci
+      - name: Test Generic Work Core Join remote signer worker
+        run: npm run github:standing-release-worker:test
       - name: Verify exact Nyra Deep V2 runtime artifacts
         run: npm run nyra:deep-v2:runtime:verify
       - name: Test shared service contracts
