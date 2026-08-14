@@ -17,10 +17,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      # Keep false until the Core-signed execution-claim path is merged,
-      # deployed and verified. Liveness can be deployed without authority.
+      # Enabled only after the Core-signed execution-claim path was merged,
+      # deployed on Core/MCP and verified on the exact main commit.
       - key: GITHUB_STANDING_RELEASE_WORKER_ENABLED
-        value: "false"
+        value: "true"
       - key: GITHUB_STANDING_RELEASE_WORKER_EMERGENCY_STOP
         value: "false"
       - key: GITHUB_APP_ID
