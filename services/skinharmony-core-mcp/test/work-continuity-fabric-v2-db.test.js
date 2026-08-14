@@ -2327,6 +2327,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     coreJoinClaimDigest,
   ]).size, 5);
   assert.equal(coreJoinRecord.claim.evaluation_digest, evaluationDigest);
+  assert.equal(coreJoinRecord.claim.checks.evidence_digest, evaluationDigest);
 
   const releaseManifest = buildHostReleaseManifestV2({
     schema_version: "host_release_manifest_v2",
@@ -2405,7 +2406,7 @@ test("local closure becomes release-ready and external completion needs exact Co
       }],
       provider_execution: false,
     },
-    evidence_digest: coreJoinRecordDigest,
+    evidence_digest: evaluationDigest,
     release_manifest: releaseManifest,
     idempotency_key: "closure-contract-ticket",
   });
@@ -2499,7 +2500,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     issued_at: initialAuthorization.issued_at,
     expires_at: initialAuthorization.expires_at,
   }]);
-  assert.equal(authorization.evidence_digest, coreJoinRecordDigest);
+  assert.equal(authorization.evidence_digest, evaluationDigest);
   assert.equal(authorization.release_intent_digest, releaseIntentDigest);
   assert.equal(authorization.core_join_verdict_digest, coreJoinClaimDigest);
   assert.equal(authorization.verification_scope, "github_merge_and_checks_only");
@@ -2534,7 +2535,7 @@ test("local closure becomes release-ready and external completion needs exact Co
 
   const forgedAuthorization = redigestAuthorization(
     authorization,
-    { evidence_digest: evaluationDigest },
+    { evidence_digest: coreJoinRecordDigest },
     "9",
   );
   await assert.rejects(
@@ -2595,7 +2596,7 @@ test("local closure becomes release-ready and external completion needs exact Co
   releaseJoinRow.core_join_record_digest = digest(wrongEvaluationRecord);
   const wrongEvaluationAuthorization = redigestAuthorization(
     authorization,
-    { evidence_digest: releaseJoinRow.core_join_record_digest },
+    {},
     "e",
   );
   await assert.rejects(
@@ -2607,6 +2608,41 @@ test("local closure becomes release-ready and external completion needs exact Co
   );
   releaseJoinRow.core_join_record = originalCoreJoinRecord;
   releaseJoinRow.core_join_record_digest = originalCoreJoinRecordDigest;
+
+  const wrongChecksEvidenceRecord = structuredClone(originalCoreJoinRecord);
+  wrongChecksEvidenceRecord.claim.checks.evidence_digest = "1".repeat(64);
+  releaseJoinRow.core_join_record = wrongChecksEvidenceRecord;
+  releaseJoinRow.core_join_record_digest = digest(wrongChecksEvidenceRecord);
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-wrong-checks-evidence-binding",
+    }, redigestAuthorization(authorization, {}, "4")),
+    /continuity_external_release_authorization_mismatch/,
+  );
+  releaseJoinRow.core_join_record = originalCoreJoinRecord;
+  releaseJoinRow.core_join_record_digest = originalCoreJoinRecordDigest;
+
+  const originalReleaseIntent = releaseJoinRow.release_intent;
+  const originalReleaseIntentDigest = releaseJoinRow.release_intent_digest;
+  const wrongManifestEvidenceIntent = structuredClone(originalReleaseIntent);
+  wrongManifestEvidenceIntent.verification.evidence_digest = "2".repeat(64);
+  delete wrongManifestEvidenceIntent.release_intent_digest;
+  const wrongManifestEvidenceIntentDigest = digest(wrongManifestEvidenceIntent);
+  wrongManifestEvidenceIntent.release_intent_digest = wrongManifestEvidenceIntentDigest;
+  releaseJoinRow.release_intent = wrongManifestEvidenceIntent;
+  releaseJoinRow.release_intent_digest = wrongManifestEvidenceIntentDigest;
+  await assert.rejects(
+    runtime.finalizeClosure(identity, {
+      ...baseFinalize,
+      idempotency_key: "closure-finalize-wrong-manifest-evidence-binding",
+    }, redigestAuthorization(authorization, {
+      release_intent_digest: wrongManifestEvidenceIntentDigest,
+    }, "5")),
+    /continuity_external_release_authorization_mismatch/,
+  );
+  releaseJoinRow.release_intent = originalReleaseIntent;
+  releaseJoinRow.release_intent_digest = originalReleaseIntentDigest;
 
   const expiredAuthorization = redigestAuthorization(authorization, {
     issued_at: "2026-07-29T13:10:00.000Z",

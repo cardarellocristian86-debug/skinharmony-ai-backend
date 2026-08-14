@@ -3847,6 +3847,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           row.core_join_record?.claim,
           "persisted_core_join_claim",
         );
+        const closureEvidenceDigest = row.evaluation_digest;
         if (
           row.verdict_id !== receipt.core_join_verdict_id ||
           verdict.verdict_id !== row.verdict_id ||
@@ -3854,8 +3855,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
           row.core_join_record.claim_digest !==
             receipt.core_join_verdict_digest ||
           row.release_intent_digest !== receipt.release_intent_digest ||
-          coreJoinClaim.evaluation_digest !== row.evaluation_digest ||
-          row.core_join_record_digest !== receipt.evidence_digest ||
+          coreJoinClaim.evaluation_digest !== closureEvidenceDigest ||
+          coreJoinClaim.checks?.evidence_digest !== closureEvidenceDigest ||
+          row.release_intent.verification?.evidence_digest !==
+            closureEvidenceDigest ||
+          receipt.evidence_digest !== closureEvidenceDigest ||
           row.release_intent.head_commit !== row.evaluation.target_commit ||
           receipt.github_readback?.checks_commit !== row.evaluation.target_commit ||
           receipt.github_readback?.checks_passed !== true ||
