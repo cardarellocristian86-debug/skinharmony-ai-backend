@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 
+export const CORE_JOIN_POSTGRES_BACKEND = "postgres_append_only_v1";
+
 export const CORE_JOIN_POSTGRES_SCHEMA = [
   "CREATE TABLE IF NOT EXISTS core_icf_join_head (tenant_id text NOT NULL, work_id text NOT NULL, version bigint NOT NULL DEFAULT 0, head_digest text, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, work_id));",
   "CREATE TABLE IF NOT EXISTS core_icf_join_event (tenant_id text NOT NULL, work_id text NOT NULL, seq bigint NOT NULL, join_type text NOT NULL, statement jsonb NOT NULL, previous_digest text, digest text NOT NULL, signature text NOT NULL, key_id text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (tenant_id, work_id, seq), UNIQUE (tenant_id, work_id, digest));",
@@ -30,11 +32,59 @@ export function createCoreJoinSigner({ secret, keyId = "core-join-hmac-v1" } = {
 }
 
 export function createCoreJoinPostgresStore({ pool, signer, audit } = {}) {
-  if (!pool || typeof pool.query !== "function") return { kind: "unavailable", ready: false, reason: "pool_required" };
-  if (!signer?.configured) return { kind: "postgresql", ready: false, reason: "signer_required" };
+  const signerConfigured = signer?.configured === true;
+  if (!pool || typeof pool.query !== "function") {
+    return {
+      kind: "unavailable",
+      ready: false,
+      initialized: false,
+      initialization_state: "unavailable",
+      restart_durable: false,
+      distributed: false,
+      signer_configured: signerConfigured,
+      reason: "pool_required",
+    };
+  }
+  const state = {
+    ready: false,
+    initialized: false,
+    initialization_state: signerConfigured ? "initializing" : "blocked",
+    reason: signerConfigured ? "initializing" : "signer_required",
+  };
   return {
-    kind: "postgresql", ready: true, restart_durable: true, distributed: true,
-    async initialize() { await pool.query(CORE_JOIN_POSTGRES_SCHEMA); },
+    kind: CORE_JOIN_POSTGRES_BACKEND,
+    restart_durable: true,
+    distributed: true,
+    signer_configured: signerConfigured,
+    get ready() { return state.ready; },
+    get initialized() { return state.initialized; },
+    get initialization_state() { return state.initialization_state; },
+    get reason() { return state.reason; },
+    async initialize() {
+      if (!signerConfigured) throw new Error("core_join_signing_secret_required");
+      state.ready = false;
+      state.initialized = false;
+      state.initialization_state = "initializing";
+      state.reason = "initializing";
+      try {
+        await pool.query(CORE_JOIN_POSTGRES_SCHEMA);
+        state.ready = true;
+        state.initialized = true;
+        state.initialization_state = "ready";
+        state.reason = null;
+        return {
+          kind: CORE_JOIN_POSTGRES_BACKEND,
+          restart_durable: true,
+          distributed: true,
+        };
+      } catch (error) {
+        state.ready = false;
+        state.initialized = false;
+        state.initialization_state = "failed";
+        state.reason = "migration_unavailable";
+        throw error;
+      }
+    },
     async head(tenantId, workId) {
       const r = await pool.query("SELECT version, head_digest FROM core_icf_join_head WHERE tenant_id=$1 AND work_id=$2", [tenantId, workId]);
       return r.rows[0] || { version: 0, head_digest: null };

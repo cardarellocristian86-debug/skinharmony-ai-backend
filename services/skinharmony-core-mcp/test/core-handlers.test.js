@@ -78,18 +78,18 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   await handlers.research_validate({ evidence_pack: { question: "ricerca", sources: [], claims: [] }, domain_pack: "analyzer" }, identity);
   await handlers.nyra_interpret_request({ message: "analizza", session_id: "s1", domain_pack: "analyzer", nyra_branches: ["context_intelligence"] }, identity);
   await handlers.core_gate_action({ action_label: "deploy", action_type: "release" }, identity);
-  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/runtime/hierarchy/evaluate", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/research/plan", "/v1/research/validate", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
-  assert(calls.filter((_, index) => ![2, calls.length - 1].includes(index)).every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
-  assert.equal(calls[2].init.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
-  assert.ok(calls[2].init.headers["x-sh-tenant-context"]);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/icf/runtime/attestation", "/v1/runtime/hierarchy/evaluate", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/research/plan", "/v1/research/validate", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
+  assert(calls.filter((_, index) => ![3, calls.length - 1].includes(index)).every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
+  assert.equal(calls[3].init.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
+  assert.ok(calls[3].init.headers["x-sh-tenant-context"]);
   assert.equal(calls.at(-1).init.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
   assert.ok(calls.at(-1).init.headers["x-sh-tenant-context"]);
   assert(calls.filter((call) => call.init.body && new URL(call.url).pathname !== "/v1/runtime/hierarchy/evaluate").every((call) => JSON.parse(call.init.body).tenant_id === "tenant-a"));
-  assert.equal(JSON.parse(calls[1].init.body).core_input.context.tenant_id, "tenant-a");
-  assert.deepEqual(JSON.parse(calls[2].init.body).available_capabilities, ["github_connected_app"]);
-  assert.equal(JSON.parse(calls[2].init.body).evidence_state.evidence_gap, true);
-  assert.deepEqual(JSON.parse(calls[2].init.body).research_allowed_domains, ["docs.github.com"]);
-  assert.deepEqual(JSON.parse(calls[2].init.body).host_native, {
+  assert.equal(JSON.parse(calls[2].init.body).core_input.context.tenant_id, "tenant-a");
+  assert.deepEqual(JSON.parse(calls[3].init.body).available_capabilities, ["github_connected_app"]);
+  assert.equal(JSON.parse(calls[3].init.body).evidence_state.evidence_gap, true);
+  assert.deepEqual(JSON.parse(calls[3].init.body).research_allowed_domains, ["docs.github.com"]);
+  assert.deepEqual(JSON.parse(calls[3].init.body).host_native, {
     requested: false,
     host_type: "codex_native",
     provider_execution: false,
@@ -99,18 +99,18 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
     host_policy_override: false,
     host_policy_must_allow: true,
   });
-  assert.equal(JSON.stringify(JSON.parse(calls[2].init.body).host_native).includes("OPENAI_API_KEY"), false);
-  assert.equal("domain_pack" in JSON.parse(calls[2].init.body), false);
+  assert.equal(JSON.stringify(JSON.parse(calls[3].init.body).host_native).includes("OPENAI_API_KEY"), false);
   assert.equal("domain_pack" in JSON.parse(calls[3].init.body), false);
-  assert.equal("domain_pack" in JSON.parse(calls[5].init.body), false);
+  assert.equal("domain_pack" in JSON.parse(calls[4].init.body), false);
   assert.equal("domain_pack" in JSON.parse(calls[6].init.body), false);
   assert.equal("domain_pack" in JSON.parse(calls[7].init.body), false);
-  assert.deepEqual(JSON.parse(calls[5].init.body).allowed_domains, ["example.org"]);
-  assert.equal(JSON.parse(calls[6].init.body).evidence_pack.question, "ricerca");
-  assert.deepEqual(JSON.parse(calls[7].init.body).nyra_branches, ["context_intelligence"]);
-  assert.equal(JSON.parse(calls[2].init.body).memory_context.tenant_id, "tenant-a");
-  assert.equal(JSON.parse(calls[7].init.body).memory_context.revision, 7);
-  assert.equal("core_runtime" in JSON.parse(calls[7].init.body), false);
+  assert.equal("domain_pack" in JSON.parse(calls[8].init.body), false);
+  assert.deepEqual(JSON.parse(calls[6].init.body).allowed_domains, ["example.org"]);
+  assert.equal(JSON.parse(calls[7].init.body).evidence_pack.question, "ricerca");
+  assert.deepEqual(JSON.parse(calls[8].init.body).nyra_branches, ["context_intelligence"]);
+  assert.equal(JSON.parse(calls[3].init.body).memory_context.tenant_id, "tenant-a");
+  assert.equal(JSON.parse(calls[8].init.body).memory_context.revision, 7);
+  assert.equal("core_runtime" in JSON.parse(calls[8].init.body), false);
   assert.equal(contextCalls.length, 4);
   assert.equal(contextCalls[2].input.query, "analizza");
   assert.equal(contextCalls[2].input.agent_id, "nyra");
