@@ -37,11 +37,11 @@ const icfDatabaseUrl = process.env.GOVERNED_AGENT_DATABASE_URL || process.env.DA
 const icfPool = icfDatabaseUrl ? new pg.Pool({ connectionString: icfDatabaseUrl, max: 4, idleTimeoutMillis: 30000 }) : null;
 const icfStore = icfPool ? createIcfPostgresStore({ pool: icfPool }) : undefined;
 const coreJoinSigner = createCoreJoinSigner({ secret: process.env.ICF_GENERIC_JOIN_SIGNING_SECRET, keyId: process.env.ICF_GENERIC_JOIN_KEY_ID || "core-join-hmac-v1" });
-const coreJoinStore = icfPool ? createCoreJoinPostgresStore({ pool: icfPool, signer: coreJoinSigner }) : undefined;
+const coreJoinStore = createCoreJoinPostgresStore({ pool: icfPool, signer: coreJoinSigner });
 if (icfStore) {
   try { await icfStore.initialize(); } catch (error) { console.error(`[UniversalCoreService] ICF PostgreSQL store unavailable: ${error.message}`); }
 }
-if (coreJoinStore?.ready) {
+if (coreJoinStore?.signer_configured === true && typeof coreJoinStore.initialize === "function") {
   try { await coreJoinStore.initialize(); } catch (error) { console.error(`[UniversalCoreService] Generic Core Join store unavailable: ${error.message}`); }
 }
 const { app, storageRoot } = createUniversalCoreService({
