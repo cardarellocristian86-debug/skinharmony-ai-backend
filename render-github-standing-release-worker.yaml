@@ -42,3 +42,17 @@ services:
         value: /var/data/github-standing-release-worker
       - key: GITHUB_WORKER_LEDGER_SIGNING_SECRET
         generateValue: true
+      # Generic Join signer pins are operator-owned and exact. The target
+      # commit defaults fail-closed to Render's immutable RENDER_GIT_COMMIT.
+      - key: GENERIC_WORK_CORE_JOIN_SIGNER_SERVICE
+        value: universal-core-service
+      - key: GENERIC_WORK_CORE_JOIN_SIGNER_PURPOSE
+        value: generic_work_core_join_v1
+      - key: GENERIC_WORK_CORE_JOIN_SIGNER_KEY_ID
+        sync: false
+      # Provision the service credential and Ed25519 private key directly in
+      # Render. Neither value belongs in source, logs, health or MCP output.
+      - key: GENERIC_WORK_CORE_JOIN_SIGNER_SERVICE_TOKEN
+        sync: false
+      - key: GENERIC_WORK_CORE_JOIN_SIGNER_PRIVATE_KEY
+        sync: false
