@@ -2049,11 +2049,32 @@ export function createCoreHandlers(config, options = {}) {
   }
 
   const handlers = {
-    core_health: async (_args, identity) => textResult({
-      ...(await coreRequest("/healthz", identity.tenantId)),
-      tenant_id: identity.tenantId,
-      mcp_identity: ownerBindingStatus(config, identity),
-    }),
+    core_health: async (_args, identity) => {
+      const health = await coreRequest("/healthz", identity.tenantId);
+      let attestation = null;
+      try {
+        attestation = await coreRequest("/v1/icf/runtime/attestation", identity.tenantId);
+      } catch {
+        // ICF attestation is additive; base health remains available.
+      }
+      const store = attestation?.store;
+      return textResult({
+        ...health,
+        generic_work_core_join: store ? {
+          enabled: store.kind === "postgresql",
+          required: false,
+          state: store.kind === "postgresql" && store.restart_durable && store.distributed ? "durability_or_signing_unavailable" : "disabled",
+          ready: attestation.enforcement_allowed === true,
+          backend: store.kind,
+          restart_durable: store.restart_durable === true,
+          distributed: store.distributed === true,
+          signer_mode: "hmac_icf",
+          signer_state: attestation.enforcement_allowed === true ? "configured" : "unconfigured",
+        } : { enabled: false, ready: false, signer_mode: "hmac_icf", signer_state: "unconfigured", backend: "unavailable" },
+        tenant_id: identity.tenantId,
+        mcp_identity: ownerBindingStatus(config, identity),
+      });
+    },
     nyra_policy_registry_activate: async (args, identity) =>
       policyRegistryLifecycle("activate", args, identity),
     nyra_policy_registry_rollback: async (args, identity) =>
