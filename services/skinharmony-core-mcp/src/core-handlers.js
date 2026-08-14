@@ -62,6 +62,22 @@ const POLICY_REGISTRY_SNAPSHOT_LIMIT_BYTES = 512 * 1024;
 const POLICY_REGISTRY_REQUEST_LIMIT_BYTES = 1_572_864;
 const POLICY_REGISTRY_RESPONSE_LIMIT_BYTES = 128 * 1024;
 const POLICY_REGISTRY_CORE_TIMEOUT_MS = 3_000;
+const ICF_RUNTIME_ATTESTATION_SCHEMA = "nyra.icf.runtime-attestation/1.0";
+const ICF_GENERIC_JOIN_BACKENDS = new Set(["postgres_append_only_v1", "unavailable"]);
+const ICF_GENERIC_JOIN_STATES = new Set([
+  "durability_or_signing_unavailable",
+  "failed",
+  "initializing",
+  "ready",
+  "signer_unavailable",
+  "unavailable",
+]);
+const ICF_GENERIC_JOIN_SIGNER_STATES = new Set([
+  "configured",
+  "unavailable",
+  "unconfigured",
+]);
+const ICF_GENERIC_JOIN_REASON = /^generic_work_core_join_[a-z0-9_]+$/;
 const POLICY_REGISTRY_FORBIDDEN_CALLER_FIELDS = new Set([
   "authenticated_tenant_id", "work_preflight", "owner_context",
   "proof", "receipt", "attestation", "intent", "keys", "key_material",
@@ -239,6 +255,84 @@ function textResult(payload) {
     structuredContent: payload,
     content: [{ type: "text", text: JSON.stringify(payload) }]
   };
+}
+
+function unavailableIcfGenericWorkCoreJoin(reason) {
+  return Object.freeze({
+    enabled: false,
+    state: "unavailable",
+    ready: false,
+    backend: "unavailable",
+    restart_durable: false,
+    distributed: false,
+    signer_mode: "hmac_icf",
+    signer_state: "unavailable",
+    signer_configured: false,
+    reason,
+  });
+}
+
+export function projectIcfGenericWorkCoreJoinAttestation(attestation, { unavailable = false } = {}) {
+  if (unavailable) {
+    return unavailableIcfGenericWorkCoreJoin(
+      "generic_work_core_join_attestation_unavailable",
+    );
+  }
+  const join = attestation?.generic_work_core_join;
+  const shapeValid = attestation
+    && typeof attestation === "object"
+    && !Array.isArray(attestation)
+    && attestation.ok === true
+    && attestation.schema === ICF_RUNTIME_ATTESTATION_SCHEMA
+    && join
+    && typeof join === "object"
+    && !Array.isArray(join)
+    && typeof join.enabled === "boolean"
+    && typeof join.ready === "boolean"
+    && ICF_GENERIC_JOIN_STATES.has(join.state)
+    && ICF_GENERIC_JOIN_BACKENDS.has(join.backend)
+    && typeof join.restart_durable === "boolean"
+    && typeof join.distributed === "boolean"
+    && join.signer_mode === "hmac_icf"
+    && ICF_GENERIC_JOIN_SIGNER_STATES.has(join.signer_state)
+    && typeof join.signer_configured === "boolean"
+    && (join.signer_configured === (join.signer_state === "configured"))
+    && (join.reason === null || ICF_GENERIC_JOIN_REASON.test(String(join.reason || "")));
+  if (!shapeValid) {
+    return unavailableIcfGenericWorkCoreJoin(
+      "generic_work_core_join_attestation_invalid",
+    );
+  }
+  const positive = join.enabled === true
+    && join.ready === true
+    && join.state === "ready"
+    && join.backend === "postgres_append_only_v1"
+    && join.restart_durable === true
+    && join.distributed === true
+    && join.signer_state === "configured"
+    && join.signer_configured === true
+    && join.reason === null;
+  const negative = join.enabled === false
+    && join.ready === false
+    && join.state !== "ready"
+    && ICF_GENERIC_JOIN_REASON.test(String(join.reason || ""));
+  if (!positive && !negative) {
+    return unavailableIcfGenericWorkCoreJoin(
+      "generic_work_core_join_attestation_invalid",
+    );
+  }
+  return Object.freeze({
+    enabled: join.enabled,
+    state: join.state,
+    ready: join.ready,
+    backend: join.backend,
+    restart_durable: join.restart_durable,
+    distributed: join.distributed,
+    signer_mode: join.signer_mode,
+    signer_state: join.signer_state,
+    signer_configured: join.signer_configured,
+    reason: join.reason,
+  });
 }
 
 function dedicatedCoreTextResult(payload, route) {
@@ -2138,27 +2232,34 @@ export function createCoreHandlers(config, options = {}) {
 
   const handlers = {
     core_health: async (_args, identity) => {
-      const health = await coreRequest("/healthz", identity.tenantId);
-      let attestation = null;
+      const coreHealth = await coreRequest("/healthz", identity.tenantId);
+      let icfGenericWorkCoreJoin;
       try {
-        attestation = await coreRequest("/v1/icf/runtime/attestation", identity.tenantId);
+        const attestation = await coreRequest(
+          "/v1/icf/runtime/attestation",
+          identity.tenantId,
+          {
+            strictTransport: true,
+            timeoutMs: POLICY_REGISTRY_CORE_TIMEOUT_MS,
+            maxResponseBytes: POLICY_REGISTRY_RESPONSE_LIMIT_BYTES,
+          },
+        );
+        icfGenericWorkCoreJoin = projectIcfGenericWorkCoreJoinAttestation(attestation);
       } catch {
-        // ICF attestation is additive; base health remains available.
+        icfGenericWorkCoreJoin = projectIcfGenericWorkCoreJoinAttestation(
+          null,
+          { unavailable: true },
+        );
       }
-      const store = attestation?.store;
       return textResult({
-        ...health,
-        generic_work_core_join: store ? {
-          enabled: store.kind === "postgresql",
-          required: false,
-          state: store.kind === "postgresql" && store.restart_durable && store.distributed ? "durability_or_signing_unavailable" : "disabled",
-          ready: attestation.enforcement_allowed === true,
-          backend: store.kind,
-          restart_durable: store.restart_durable === true,
-          distributed: store.distributed === true,
-          signer_mode: "hmac_icf",
-          signer_state: attestation.enforcement_allowed === true ? "configured" : "unconfigured",
-        } : { enabled: false, ready: false, signer_mode: "hmac_icf", signer_state: "unconfigured", backend: "unavailable" },
+        ...coreHealth,
+        generic_work_core_join_remote_ed25519:
+          coreHealth?.generic_work_core_join
+          && typeof coreHealth.generic_work_core_join === "object"
+          && !Array.isArray(coreHealth.generic_work_core_join)
+            ? coreHealth.generic_work_core_join
+            : null,
+        generic_work_core_join: icfGenericWorkCoreJoin,
         tenant_id: identity.tenantId,
         mcp_identity: ownerBindingStatus(config, identity),
       });
