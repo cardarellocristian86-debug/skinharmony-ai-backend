@@ -2188,6 +2188,226 @@ test("protected push, Render deploy/rollback, and linked observation each requir
     );
   });
 
+  async function expiredParentForFreshObservation() {
+    let verifiedAt = Date.parse("2026-07-29T10:00:00.000Z");
+    const subject = linkedHarness({
+      externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) => {
+        const readback = trustedExternalReadback(
+          ticket,
+          target_commit,
+          new Date(verifiedAt).toISOString(),
+          verification_scope,
+        );
+        readback.github.required_checks_policy_digest = observationPolicyDigest;
+        return redigestTrustedReadback(readback);
+      },
+    });
+    const parent = await finalizeExact(
+      subject,
+      protectedPushAction(),
+      releaseManifestInput(),
+    );
+    subject.advance(60 * 60_000 + 1);
+    verifiedAt = subject.now();
+    const refreshed = await subject.governance.authorizeFinalize({
+      tenant_id: "codexai",
+      ticket_id: parent.issued.ticket.ticket_id,
+      host_session_fingerprint: parent.issued.ticket.host_session_fingerprint,
+    });
+    return { subject, parent, refreshed };
+  }
+
+  async function observationOnlyDelegation(subject, {
+    ownerSubjectFingerprint = OWNER,
+    allowedActions = ["render.observe"],
+    maxTotalActions = 1,
+    nonce = "owner-consent-observe-continuation-0001",
+  } = {}) {
+    return subject.governance.issueDelegation({
+      ...subject.delegationInput,
+      owner_confirmation: {
+        ...subject.delegationInput.owner_confirmation,
+        owner_subject_fingerprint: ownerSubjectFingerprint,
+        consent_nonce: nonce,
+        confirmation_reference: "owner confirmed one late production observation",
+      },
+      audience: ["codex_native"],
+      allowed_branches: ["main"],
+      allowed_actions: allowedActions,
+      budget: {
+        max_agents: 1,
+        max_parallel: 1,
+        max_commits: 1,
+        max_pushes: 1,
+        max_deploys: 1,
+        max_total_actions: maxTotalActions,
+      },
+      expires_at: new Date(subject.now() + 60 * 60_000).toISOString(),
+    });
+  }
+
+  await t.test("expired delegation continues through one signed owner-confirmed observation only", async () => {
+    const { subject, parent, refreshed } = await expiredParentForFreshObservation();
+    const successor = await observationOnlyDelegation(subject);
+    const issued = await subject.governance.issueActionTicket(observationRequest(parent, {
+      input: { delegation_id: successor.delegation_id },
+    }));
+    const continuation = issued.ticket.predecessor.delegation_continuation;
+    assert.equal(continuation.schema_version, "host_native_delegation_continuation_v1");
+    assert.equal(continuation.parent_delegation_id, parent.delegation.delegation_id);
+    assert.equal(continuation.successor_delegation_id, successor.delegation_id);
+    assert.equal(continuation.owner_subject_fingerprint, OWNER);
+    assert.equal(continuation.host_kind, parent.issued.ticket.host_kind);
+    assert.equal(
+      continuation.host_session_fingerprint,
+      parent.issued.ticket.host_session_fingerprint,
+    );
+    assert.equal(
+      continuation.parent_finalize_authorization_digest,
+      refreshed.authorization_digest,
+    );
+    assert.equal(continuation.authorized_action, "render.observe");
+    assert.equal(continuation.max_total_actions, 1);
+    assert.equal(continuation.provider_execution, false);
+    assert.match(continuation.continuation_digest, /^[a-f0-9]{64}$/);
+    assert.match(continuation.signature, /^hndc_[a-f0-9]{64}$/);
+
+    const reserved = await subject.governance.reserveActionTicket({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    });
+    await subject.governance.completeActionTicket({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      reservation_id: reserved.reservation_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+      outcome: "success",
+      result_digest: H("a"),
+      readback_digest: H("b"),
+    });
+    subject.advance(60 * 60_000 + 1);
+    const expiredSuccessor = await subject.governance.readDelegation({
+      tenant_id: "codexai",
+      delegation_id: successor.delegation_id,
+    });
+    assert.equal(expiredSuccessor.effective_state, "expired");
+    const receipt = await subject.governance.authorizeFinalize({
+      tenant_id: "codexai",
+      ticket_id: issued.ticket.ticket_id,
+      host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    });
+    assert.equal(receipt.target_commit, G("4"));
+    assert.equal(receipt.services_verified, true);
+    const consumed = await subject.governance.readDelegation({
+      tenant_id: "codexai",
+      delegation_id: successor.delegation_id,
+    });
+    assert.deepEqual(consumed.usage, {
+      commits: 0,
+      pushes: 0,
+      deploys: 0,
+      total_actions: 1,
+    });
+  });
+
+  await t.test("fresh observation continuation rejects an active parent delegation", async () => {
+    const subject = linkedHarness();
+    const parent = await finalizeExact(
+      subject,
+      protectedPushAction(),
+      releaseManifestInput(),
+    );
+    const successor = await observationOnlyDelegation(subject);
+    await assert.rejects(
+      subject.governance.issueActionTicket(observationRequest(parent, {
+        input: { delegation_id: successor.delegation_id },
+      })),
+      /delegation_continuation_invalid/,
+    );
+  });
+
+  await t.test("fresh observation continuation rejects a revoked parent delegation", async () => {
+    const { subject, parent } = await expiredParentForFreshObservation();
+    await subject.governance.revokeDelegation({
+      tenant_id: "codexai",
+      delegation_id: parent.delegation.delegation_id,
+      owner_confirmation: {
+        ...subject.delegationInput.owner_confirmation,
+        consent_nonce: "owner-consent-revoke-expired-parent-0001",
+        confirmation_reference: "owner revoked expired parent delegation",
+      },
+    });
+    const successor = await observationOnlyDelegation(subject);
+    await assert.rejects(
+      subject.governance.issueActionTicket(observationRequest(parent, {
+        input: { delegation_id: successor.delegation_id },
+      })),
+      /delegation_continuation_invalid/,
+    );
+  });
+
+  await t.test("fresh observation continuation rejects a different owner subject", async () => {
+    const { subject, parent } = await expiredParentForFreshObservation();
+    const successor = await observationOnlyDelegation(subject, {
+      ownerSubjectFingerprint: `osf_${H("b")}`,
+    });
+    await assert.rejects(
+      subject.governance.issueActionTicket(observationRequest(parent, {
+        input: { delegation_id: successor.delegation_id },
+      })),
+      /delegation_continuation_invalid/,
+    );
+  });
+
+  for (const [name, delegationOverrides] of [
+    ["broader actions", { allowedActions: ["git.commit", "render.observe"] }],
+    ["broader budget", { maxTotalActions: 2 }],
+  ]) {
+    await t.test(`fresh observation continuation rejects ${name}`, async () => {
+      const { subject, parent } = await expiredParentForFreshObservation();
+      const successor = await observationOnlyDelegation(subject, delegationOverrides);
+      await assert.rejects(
+        subject.governance.issueActionTicket(observationRequest(parent, {
+          input: { delegation_id: successor.delegation_id },
+        })),
+        /delegation_continuation_invalid/,
+      );
+    });
+  }
+
+  await t.test("fresh observation continuation rejects induced or effectful action fields", async () => {
+    const { subject, parent } = await expiredParentForFreshObservation();
+    const successor = await observationOnlyDelegation(subject);
+    await assert.rejects(
+      subject.governance.issueActionTicket(observationRequest(parent, {
+        action: {
+          induced_effects: [{
+            service_id: "srv-core",
+            environment: "production",
+            trigger: "github_auto_deploy",
+          }],
+        },
+        input: { delegation_id: successor.delegation_id },
+      })),
+      /delegation_continuation_action_field_denied:induced_effects/,
+    );
+  });
+
+  await t.test("fresh observation continuation rejects a different host session", async () => {
+    const { subject, parent } = await expiredParentForFreshObservation();
+    const successor = await observationOnlyDelegation(subject);
+    await assert.rejects(
+      subject.governance.issueActionTicket(observationRequest(parent, {
+        input: {
+          delegation_id: successor.delegation_id,
+          host_session_fingerprint: "different-host-session",
+        },
+      })),
+      /predecessor_ticket_invalid|delegation_continuation_invalid/,
+    );
+  });
+
   await t.test("real governance ticket finalizes through the real external verifier", async () => {
     const workflowSource = "name: Core\non: [push]\n";
     const workflowSha = crypto.createHash("sha256").update(workflowSource).digest("hex");
@@ -2424,10 +2644,11 @@ test("protected push, Render deploy/rollback, and linked observation each requir
       }
       throw new Error(`unexpected URL: ${url}`);
     };
+    let verificationClock = Date.parse("2026-07-29T10:00:00.000Z");
     const externalReadbackVerifier = createHostNativeExternalReadbackVerifier({
       fetchImpl,
       requiredChecksPolicyResolver: async () => policy,
-      now: () => Date.parse("2026-07-29T10:00:00.000Z"),
+      now: () => verificationClock,
     });
     const subject = harness({
       externalReadbackVerifier,
@@ -2462,10 +2683,31 @@ test("protected push, Render deploy/rollback, and linked observation each requir
     assert.equal(parent.receipt.verification_scope, "github_merge_and_checks_only");
     assert.equal(parent.receipt.services_verified, false);
     assert.deepEqual(parent.receipt.live_services, []);
+    subject.advance(60 * 60_000 + 1);
+    verificationClock = subject.now();
+    const refreshedParent = await subject.governance.authorizeFinalize({
+      tenant_id: "codexai",
+      ticket_id: parent.issued.ticket.ticket_id,
+      host_session_fingerprint: parent.issued.ticket.host_session_fingerprint,
+    });
+    const successor = await observationOnlyDelegation(subject, {
+      nonce: "owner-consent-merge-observe-continuation-0001",
+    });
     const observation = await subject.governance.issueActionTicket(
       observationRequest(parent, {
         action: { target_commit: mergeCommit },
+        input: { delegation_id: successor.delegation_id },
       }),
+    );
+    assert.equal(
+      observation.ticket.predecessor.delegation_continuation
+        .parent_finalize_authorization_digest,
+      refreshedParent.authorization_digest,
+    );
+    assert.equal(
+      observation.ticket.predecessor.delegation_continuation
+        .successor_delegation_id,
+      successor.delegation_id,
     );
     const reserved = await subject.governance.reserveActionTicket({
       tenant_id: "codexai",
