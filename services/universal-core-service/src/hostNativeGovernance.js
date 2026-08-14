@@ -861,6 +861,66 @@ function delegationActive(record, now) {
   return record?.state === "active" && Date.parse(record.grant.expires_at) > now;
 }
 
+const ZERO_DELEGATION_USAGE = Object.freeze({
+  commits: 0,
+  pushes: 0,
+  deploys: 0,
+  total_actions: 0,
+});
+
+const OBSERVATION_ONLY_ACTION_FIELDS = new Set([
+  "kind",
+  "repository",
+  "branch",
+  "service_id",
+  "environment",
+  "target_commit",
+  "parent_release_ticket_id",
+  "parent_release_ticket_digest",
+  "release_manifest_digest",
+  "provider_execution",
+]);
+
+function ensureObservationOnlyActionShape(action) {
+  exactKeys(
+    action,
+    OBSERVATION_ONLY_ACTION_FIELDS,
+    "delegation_continuation_action_field_denied",
+  );
+  if (action.kind !== "render.observe" || action.provider_execution !== false) {
+    fail("delegation_continuation_action_invalid");
+  }
+}
+
+// Delegation usage is authoritative mutable state, while the HMAC emitted at
+// issuance authenticates the immutable grant and its zero-use starting point.
+// Reconstruct that original envelope so a completed parent remains
+// cryptographically attributable after its usage counters have advanced.
+function issuedDelegationSignatureValid(record, signing) {
+  try {
+    if (
+      !record || record.schema_version !== "host_native_delegation_v1" ||
+      record.state !== "active" || record.tenant_id !== record.grant?.tenant_id
+    ) return false;
+    const issued = delegationUnsigned(
+      record.grant,
+      record.delegation_id,
+      record.issued_at,
+    );
+    return safeEqual(record.signature, hmac("hnd", signing, canonical(issued)));
+  } catch {
+    return false;
+  }
+}
+
+function delegationUsageMatches(record, expectedTotalActions) {
+  const usage = record?.usage;
+  return usage?.commits === ZERO_DELEGATION_USAGE.commits &&
+    usage?.pushes === ZERO_DELEGATION_USAGE.pushes &&
+    usage?.deploys === ZERO_DELEGATION_USAGE.deploys &&
+    usage?.total_actions === expectedTotalActions;
+}
+
 function validateActionShape(action) {
   if (!action || typeof action !== "object" || Array.isArray(action)) fail("action_invalid");
   const kind = text(action.kind, "action_invalid", 160);
@@ -1001,6 +1061,237 @@ function coreJoinClaim(input, manifest, closure, requiredChecksPolicyDigest = nu
 function ticketSignature(secret, ticket) {
   const { signature, ...unsigned } = ticket;
   return hmac("hnt", secret, canonical(unsigned));
+}
+
+function ensureExpiredObserveContinuationDelegations({
+  parentDelegation,
+  successorDelegation,
+  parentTicket,
+  tenantId,
+  workId,
+  intentAnchorDigest,
+  repository,
+  hostKind,
+  hostSessionFingerprint,
+  nowValue,
+  signing,
+  successorUsage,
+} = {}) {
+  const parentExpiresAt = Date.parse(parentDelegation?.grant?.expires_at || "");
+  if (
+    !parentDelegation || !successorDelegation || !parentTicket ||
+    parentDelegation.delegation_id === successorDelegation.delegation_id ||
+    parentDelegation.delegation_id !== parentTicket.delegation_id ||
+    parentDelegation.state !== "active" ||
+    !Number.isFinite(parentExpiresAt) || parentExpiresAt > nowValue ||
+    !issuedDelegationSignatureValid(parentDelegation, signing) ||
+    !delegationActive(successorDelegation, nowValue) ||
+    !issuedDelegationSignatureValid(successorDelegation, signing) ||
+    parentDelegation.grant.tenant_id !== tenantId ||
+    successorDelegation.grant.tenant_id !== tenantId ||
+    parentDelegation.grant.work_id !== workId ||
+    successorDelegation.grant.work_id !== workId ||
+    parentDelegation.grant.intent_anchor_digest !== intentAnchorDigest ||
+    successorDelegation.grant.intent_anchor_digest !== intentAnchorDigest ||
+    parentDelegation.grant.repository !== repository ||
+    successorDelegation.grant.repository !== repository ||
+    parentDelegation.grant.owner_confirmation?.owner_subject_fingerprint !==
+      successorDelegation.grant.owner_confirmation?.owner_subject_fingerprint ||
+    !parentDelegation.grant.audience?.includes(hostKind) ||
+    !successorDelegation.grant.audience?.includes(hostKind) ||
+    parentTicket.host_kind !== hostKind ||
+    parentTicket.host_session_fingerprint !== hostSessionFingerprint ||
+    !Array.isArray(successorDelegation.grant.allowed_actions) ||
+    !sameStrings(successorDelegation.grant.allowed_actions, ["render.observe"]) ||
+    successorDelegation.grant.budget?.max_total_actions !== 1 ||
+    successorDelegation.grant.provider_execution !== false ||
+    successorDelegation.grant.host_policy_override !== false ||
+    successorDelegation.grant.host_policy_must_allow !== true ||
+    !delegationUsageMatches(successorDelegation, successorUsage)
+  ) {
+    fail("delegation_continuation_invalid");
+  }
+}
+
+function delegationContinuationUnsigned({
+  parentDelegation,
+  successorDelegation,
+  parentTicket,
+  parentTicketDigest,
+  parentFinalizeAuthorizationDigest,
+  sourceActionDigest,
+  sourceRequiredChecksPolicyDigest,
+  hostKind,
+  hostSessionFingerprint,
+  issuedAt,
+} = {}) {
+  return {
+    schema_version: "host_native_delegation_continuation_v1",
+    tenant_id: successorDelegation.grant.tenant_id,
+    work_id: successorDelegation.grant.work_id,
+    intent_anchor_digest: successorDelegation.grant.intent_anchor_digest,
+    repository: successorDelegation.grant.repository,
+    parent_ticket_id: parentTicket.ticket_id,
+    parent_ticket_digest: parentTicketDigest,
+    parent_delegation_id: parentDelegation.delegation_id,
+    parent_delegation_grant_digest: hostNativeDigest(parentDelegation.grant),
+    parent_delegation_signature: parentDelegation.signature,
+    parent_delegation_expires_at: parentDelegation.grant.expires_at,
+    successor_delegation_id: successorDelegation.delegation_id,
+    successor_delegation_grant_digest: hostNativeDigest(successorDelegation.grant),
+    successor_delegation_signature: successorDelegation.signature,
+    successor_delegation_expires_at: successorDelegation.grant.expires_at,
+    owner_subject_fingerprint:
+      successorDelegation.grant.owner_confirmation.owner_subject_fingerprint,
+    host_kind: hostKind,
+    host_session_fingerprint: hostSessionFingerprint,
+    authorized_action: "render.observe",
+    max_total_actions: 1,
+    release_manifest_digest: parentTicket.release_manifest_digest,
+    release_intent_digest: parentTicket.release_intent_digest,
+    evidence_digest: parentTicket.evidence_digest,
+    core_join_verdict_id: parentTicket.core_join_verdict_id,
+    core_join_verdict_digest: parentTicket.core_join_verdict_digest,
+    core_join_resolution_digest: parentTicket.release_join_resolution_digest,
+    parent_finalize_authorization_digest: parentFinalizeAuthorizationDigest,
+    source_action_digest: sourceActionDigest,
+    source_required_checks_policy_digest: sourceRequiredChecksPolicyDigest,
+    issued_at: issuedAt,
+    external_execution_allowed: false,
+    provider_execution: false,
+  };
+}
+
+function signDelegationContinuation(input, signing) {
+  const unsigned = delegationContinuationUnsigned(input);
+  const continuation_digest = hostNativeDigest(unsigned);
+  return {
+    ...unsigned,
+    continuation_digest,
+    signature: hmac("hndc", signing, canonical({ ...unsigned, continuation_digest })),
+  };
+}
+
+function validateStoredObserveDelegationContinuation(record, state, {
+  nowValue,
+  signing,
+  successorUsage,
+} = {}) {
+  const ticket = record?.ticket;
+  if (ticket?.action?.kind !== "render.observe") return;
+  const parent = state.tickets[String(ticket.action.parent_release_ticket_id || "")];
+  const parentTicket = parent?.ticket;
+  const crossDelegation = parentTicket?.delegation_id !== ticket.delegation_id;
+  const continuation = ticket.predecessor?.delegation_continuation;
+  if (!crossDelegation) {
+    if (continuation) fail("delegation_continuation_invalid");
+    return;
+  }
+  ensureObservationOnlyActionShape(ticket.action);
+  const parentDelegation = state.delegations[String(parentTicket?.delegation_id || "")];
+  const successorDelegation = state.delegations[String(ticket.delegation_id || "")];
+  const parentTicketDigest = parentTicket && hostNativeDigest(parentTicket);
+  const sourceAction = parentTicket?.action;
+  const parentBinding = parentTicket?.release_manifest_binding;
+  const parentResolution = parentTicket?.release_join_resolution;
+  const coreJoin = state.core_join_verdicts[String(parentTicket?.core_join_verdict_id || "")];
+  const sourceRequiredChecksPolicyDigest = coreJoin?.claim?.required_checks_policy_digest;
+  const continuationIssuedAt = Date.parse(continuation?.issued_at || "");
+  const authorityTime = successorUsage === 0 ? nowValue : continuationIssuedAt;
+  if (
+    !continuation || !parent ||
+    !Number.isFinite(continuationIssuedAt) || continuationIssuedAt > nowValue ||
+    continuation.issued_at !== ticket.issued_at ||
+    !["completed", "reconciled"].includes(parent.state) ||
+    (parent.outcome !== "success" && parent.observed_outcome !== "success") ||
+    !parentTicket || !safeEqual(parentTicket.signature, ticketSignature(signing, parentTicket)) ||
+    !safeEqual(ticket.signature, ticketSignature(signing, ticket)) ||
+    parentTicket.tenant_id !== ticket.tenant_id ||
+    parentTicket.work_id !== ticket.work_id ||
+    parentTicket.intent_anchor_digest !== ticket.intent_anchor_digest ||
+    parentTicket.repository !== ticket.repository ||
+    parentTicket.host_kind !== ticket.host_kind ||
+    parentTicket.host_session_fingerprint !== ticket.host_session_fingerprint ||
+    ticket.provider_execution !== false || ticket.action.provider_execution !== false ||
+    ticket.predecessor_chain_digest !== hostNativeDigest(ticket.predecessor) ||
+    ticket.predecessor.ticket_id !== parentTicket.ticket_id ||
+    ticket.predecessor.ticket_digest !== parentTicketDigest ||
+    ticket.predecessor.source_action_digest !== hostNativeDigest(sourceAction) ||
+    ticket.action.parent_release_ticket_digest !== parentTicketDigest ||
+    ticket.action.release_manifest_digest !== parentTicket.release_manifest_digest ||
+    ticket.release_manifest_digest !== parentTicket.release_manifest_digest ||
+    !ticket.release_manifest_binding || !parentBinding ||
+    hostNativeDigest(ticket.release_manifest_binding) !== hostNativeDigest(parentBinding) ||
+    parentBinding?.manifest_digest !== parentTicket.release_manifest_digest ||
+    parentBinding?.repository !== ticket.repository ||
+    ticket.release_intent_digest !== parentTicket.release_intent_digest ||
+    ticket.evidence_digest !== parentTicket.evidence_digest ||
+    ticket.predecessor.source_evidence_digest !== parentTicket.evidence_digest ||
+    ticket.core_join_verdict_id !== parentTicket.core_join_verdict_id ||
+    ticket.core_join_verdict_digest !== parentTicket.core_join_verdict_digest ||
+    ticket.release_join_resolution_digest !== parentTicket.release_join_resolution_digest ||
+    !ticket.release_join_resolution || !parentResolution ||
+    hostNativeDigest(ticket.release_join_resolution) !== hostNativeDigest(parentResolution) ||
+    parentTicket.release_join_resolution_digest !== hostNativeDigest(parentResolution) ||
+    parentResolution?.evidence_digest !== parentTicket.evidence_digest ||
+    parentResolution?.tenant_id !== ticket.tenant_id ||
+    parentResolution?.work_id !== ticket.work_id ||
+    parentResolution?.intent_anchor_digest !== ticket.intent_anchor_digest ||
+    parentResolution?.repository !== ticket.repository ||
+    !coreJoin || coreJoin.state !== "consumed" || coreJoin.uses !== 1 ||
+    coreJoin.verdict_id !== parentTicket.core_join_verdict_id ||
+    coreJoin.consumed_by_ticket_id !== parentTicket.ticket_id ||
+    coreJoin.claim_digest !== parentTicket.core_join_verdict_digest ||
+    hostNativeDigest(coreJoin.claim) !== coreJoin.claim_digest ||
+    coreJoin.claim?.tenant_id !== ticket.tenant_id ||
+    coreJoin.claim?.work_id !== ticket.work_id ||
+    coreJoin.claim?.intent_anchor_digest !== ticket.intent_anchor_digest ||
+    coreJoin.claim?.repository !== ticket.repository ||
+    coreJoin.claim?.release_intent_digest !== ticket.release_intent_digest ||
+    !SHA256.test(String(sourceRequiredChecksPolicyDigest || "")) ||
+    ticket.predecessor.source_required_checks_policy_digest !==
+      sourceRequiredChecksPolicyDigest
+  ) {
+    fail("delegation_continuation_invalid");
+  }
+  ensureExpiredObserveContinuationDelegations({
+    parentDelegation,
+    successorDelegation,
+    parentTicket,
+    tenantId: ticket.tenant_id,
+    workId: ticket.work_id,
+    intentAnchorDigest: ticket.intent_anchor_digest,
+    repository: ticket.repository,
+    hostKind: ticket.host_kind,
+    hostSessionFingerprint: ticket.host_session_fingerprint,
+    nowValue: authorityTime,
+    signing,
+    successorUsage,
+  });
+  const expectedUnsigned = delegationContinuationUnsigned({
+    parentDelegation,
+    successorDelegation,
+    parentTicket,
+    parentTicketDigest,
+    parentFinalizeAuthorizationDigest:
+      ticket.predecessor.finalize_authorization_digest,
+    sourceActionDigest: ticket.predecessor.source_action_digest,
+    sourceRequiredChecksPolicyDigest,
+    hostKind: ticket.host_kind,
+    hostSessionFingerprint: ticket.host_session_fingerprint,
+    issuedAt: continuation.issued_at,
+  });
+  const { signature, continuation_digest, ...actualUnsigned } = continuation;
+  if (
+    hostNativeDigest(expectedUnsigned) !== hostNativeDigest(actualUnsigned) ||
+    hostNativeDigest(actualUnsigned) !== continuation_digest ||
+    !safeEqual(
+      signature,
+      hmac("hndc", signing, canonical({ ...actualUnsigned, continuation_digest })),
+    )
+  ) {
+    fail("delegation_continuation_invalid");
+  }
 }
 
 function verifyReadbackDigest(record) {
@@ -1400,6 +1691,7 @@ export function createHostNativeGovernance({
       let coreJoin = null;
       let bootstrapReleaseExceptionCandidate = null;
       let predecessor = null;
+      let expiredDelegationContinuation = null;
       if (input.predecessor_ticket_id) {
         const parent = initial.tickets[String(input.predecessor_ticket_id)];
         const parentMayContinue = parent && (
@@ -1575,6 +1867,8 @@ export function createHostNativeGovernance({
             : sourceAction?.branch;
           const parentBinding = parentTicket?.release_manifest_binding;
           const parentResolution = parentTicket?.release_join_resolution;
+          const usesExpiredDelegationContinuation = parentTicket?.delegation_id !==
+            delegation.delegation_id;
           if (
             !parent || !["completed", "reconciled"].includes(parent.state) ||
             (parent.outcome !== "success" && parent.observed_outcome !== "success") ||
@@ -1582,7 +1876,6 @@ export function createHostNativeGovernance({
             parentTicket.bootstrap_release_exception_candidate ||
             parentTicket.tenant_id !== tenantId ||
             parentTicket.work_id !== delegation.grant.work_id ||
-            parentTicket.delegation_id !== delegation.delegation_id ||
             parentTicket.repository !== delegation.grant.repository ||
             parentTicket.host_kind !== host_kind ||
             parentTicket.host_session_fingerprint !== host_session_fingerprint ||
@@ -1596,6 +1889,25 @@ export function createHostNativeGovernance({
             parentBinding?.delivery_branch !== sourceBranch || action.branch !== sourceBranch
           ) {
             fail("predecessor_ticket_invalid");
+          }
+          if (usesExpiredDelegationContinuation) {
+            ensureObservationOnlyActionShape(action);
+            const parentDelegation = initial.delegations[parentTicket.delegation_id];
+            ensureExpiredObserveContinuationDelegations({
+              parentDelegation,
+              successorDelegation: delegation,
+              parentTicket,
+              tenantId,
+              workId: delegation.grant.work_id,
+              intentAnchorDigest: delegation.grant.intent_anchor_digest,
+              repository: delegation.grant.repository,
+              hostKind: host_kind,
+              hostSessionFingerprint: host_session_fingerprint,
+              nowValue,
+              signing,
+              successorUsage: 0,
+            });
+            expiredDelegationContinuation = { parentDelegation };
           }
           const finalizeAuthorization = verifiedFinalizeAuthorization(parent, {
             signing,
@@ -1639,6 +1951,21 @@ export function createHostNativeGovernance({
           release_manifest = clone(parentBinding);
           release_join_resolution = clone(parentResolution);
           release_intent_digest = parentTicket.release_intent_digest;
+          const delegationContinuation = expiredDelegationContinuation
+            ? signDelegationContinuation({
+              parentDelegation: expiredDelegationContinuation.parentDelegation,
+              successorDelegation: delegation,
+              parentTicket,
+              parentTicketDigest,
+              parentFinalizeAuthorizationDigest:
+                finalizeAuthorization.authorization_digest,
+              sourceActionDigest: hostNativeDigest(sourceAction),
+              sourceRequiredChecksPolicyDigest,
+              hostKind: host_kind,
+              hostSessionFingerprint: host_session_fingerprint,
+              issuedAt: iso(nowValue),
+            }, signing)
+            : null;
           predecessor = {
             ticket_id: parentTicket.ticket_id,
             ticket_digest: parentTicketDigest,
@@ -1649,6 +1976,9 @@ export function createHostNativeGovernance({
             source_action_digest: hostNativeDigest(sourceAction),
             source_evidence_digest: parentTicket.evidence_digest,
             source_required_checks_policy_digest: sourceRequiredChecksPolicyDigest,
+            ...(delegationContinuation
+              ? { delegation_continuation: delegationContinuation }
+              : {}),
           };
         } else if (bootstrapReleaseExceptionCandidate) {
           const resolvedServices = [];
@@ -1830,6 +2160,13 @@ export function createHostNativeGovernance({
         };
         const ticket = { ...ticketUnsigned, signature: ticketSignature(signing, ticketUnsigned) };
         const record = { state: "issued", uses: 0, ticket };
+        if (action.kind === "render.observe") {
+          validateStoredObserveDelegationContinuation(record, state, {
+            nowValue,
+            signing,
+            successorUsage: 0,
+          });
+        }
         state.tickets[ticketId] = record;
         return saveIdempotent(state, descriptor, record);
       });
@@ -1891,6 +2228,13 @@ export function createHostNativeGovernance({
         if (Date.parse(record.ticket.expires_at) <= nowValue) fail("action_ticket_expired");
         const delegation = state.delegations[record.ticket.delegation_id];
         if (!delegationActive(delegation, nowValue)) fail("delegation_not_active");
+        if (record.ticket.action.kind === "render.observe") {
+          validateStoredObserveDelegationContinuation(record, state, {
+            nowValue,
+            signing,
+            successorUsage: 0,
+          });
+        }
         const usage = actionUsage(record.ticket.action.kind, record.ticket.action);
         delegation.usage = ensureBudget(delegation, usage);
         if (isReleaseAction(record.ticket.action.kind) && record.ticket.action.kind !== "render.observe" && !record.ticket.bootstrap_release_exception_candidate) {
@@ -2092,6 +2436,13 @@ export function createHostNativeGovernance({
       if (!["completed", "reconciled"].includes(current.state) || (current.outcome !== "success" && current.observed_outcome !== "success")) {
         fail("successful_outcome_required");
       }
+      if (current.ticket.action.kind === "render.observe") {
+        validateStoredObserveDelegationContinuation(current, store.readState(), {
+          nowValue,
+          signing,
+          successorUsage: 1,
+        });
+      }
       if (!isReleaseAction(current.ticket.action.kind)) fail("release_manifest_required");
       if (typeof externalReadbackVerifier !== "function") fail("trusted_readback_unavailable");
       const targetCommit = commit(current.result_commit || current.ticket.action.target_commit || current.ticket.release_manifest_binding.head_commit);
@@ -2208,6 +2559,13 @@ export function createHostNativeGovernance({
         const record = state.tickets[String(input.ticket_id || "")];
         if (!record || record.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
         const receiptNow = nowMillis(now);
+        if (record.ticket.action.kind === "render.observe") {
+          validateStoredObserveDelegationContinuation(record, state, {
+            nowValue: receiptNow,
+            signing,
+            successorUsage: 1,
+          });
+        }
         if (record.finalize_authorization) {
           const storedExpiresAt = Date.parse(record.finalize_authorization.expires_at || 0);
           if (storedExpiresAt > receiptNow) {
