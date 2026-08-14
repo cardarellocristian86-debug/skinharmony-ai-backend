@@ -199,6 +199,20 @@ export function loadConfig(env = process.env) {
     env.GITHUB_STANDING_RELEASE_WORKER_URL,
     "GITHUB_STANDING_RELEASE_WORKER_URL",
   );
+  const standingReleaseAutoCoordinatorFlag = strictFlag(
+    env.STANDING_RELEASE_AUTO_COORDINATOR_ENABLED,
+    false,
+    "STANDING_RELEASE_AUTO_COORDINATOR_ENABLED",
+  );
+  const standingReleaseAutoCoordinatorEnabled = standingReleaseAutoCoordinatorFlag.valid
+    ? standingReleaseAutoCoordinatorFlag.value
+    : false;
+  const standingReleaseAutoCoordinatorConfigurationError =
+    !standingReleaseAutoCoordinatorFlag.valid
+      ? standingReleaseAutoCoordinatorFlag.error
+      : standingReleaseAutoCoordinatorEnabled && !githubStandingReleaseWorkerUrl
+        ? "standing_release_auto_coordinator_worker_url_required"
+        : null;
   const universalCoreKey = String(env.UNIVERSAL_CORE_KEY || "").trim();
   const universalCoreKeys = jsonObject(env.UNIVERSAL_CORE_KEYS_JSON, "UNIVERSAL_CORE_KEYS_JSON");
   const suiteControlPlaneUrl = url(env.SUITE_CONTROL_PLANE_URL, "SUITE_CONTROL_PLANE_URL");
@@ -417,6 +431,10 @@ export function loadConfig(env = process.env) {
     supportedScopes: csv(env.MCP_SUPPORTED_SCOPES || "core:read,core:govern"),
     universalCoreUrl,
     githubStandingReleaseWorkerUrl,
+    standingReleaseAutoCoordinatorEnabled,
+    standingReleaseAutoCoordinatorConfigurationValid:
+      standingReleaseAutoCoordinatorConfigurationError === null,
+    standingReleaseAutoCoordinatorConfigurationError,
     universalCoreKey,
     universalCoreKeys,
     tenantGatewayKey,

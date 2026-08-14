@@ -110,6 +110,36 @@ test("keeps host-native continuity opt-in independent from legacy environment va
   assert.equal(Object.hasOwn(enabled, "openaiApiKey"), false);
 });
 
+test("standing release auto coordination is strict, opt-in, and worker-bound", () => {
+  const disabled = loadConfig({});
+  assert.equal(disabled.standingReleaseAutoCoordinatorEnabled, false);
+  assert.equal(disabled.standingReleaseAutoCoordinatorConfigurationValid, true);
+
+  const enabled = loadConfig({
+    GITHUB_STANDING_RELEASE_WORKER_URL: "https://github-worker.example.test/",
+    STANDING_RELEASE_AUTO_COORDINATOR_ENABLED: "true",
+  });
+  assert.equal(enabled.githubStandingReleaseWorkerUrl, "https://github-worker.example.test");
+  assert.equal(enabled.standingReleaseAutoCoordinatorEnabled, true);
+  assert.equal(enabled.standingReleaseAutoCoordinatorConfigurationValid, true);
+
+  const missingWorker = loadConfig({ STANDING_RELEASE_AUTO_COORDINATOR_ENABLED: "true" });
+  assert.equal(missingWorker.standingReleaseAutoCoordinatorEnabled, true);
+  assert.equal(missingWorker.standingReleaseAutoCoordinatorConfigurationValid, false);
+  assert.equal(
+    missingWorker.standingReleaseAutoCoordinatorConfigurationError,
+    "standing_release_auto_coordinator_worker_url_required",
+  );
+
+  const invalid = loadConfig({ STANDING_RELEASE_AUTO_COORDINATOR_ENABLED: "TRUE" });
+  assert.equal(invalid.standingReleaseAutoCoordinatorEnabled, false);
+  assert.equal(invalid.standingReleaseAutoCoordinatorConfigurationValid, false);
+  assert.equal(
+    invalid.standingReleaseAutoCoordinatorConfigurationError,
+    "standing_release_auto_coordinator_enabled_flag_invalid",
+  );
+});
+
 test("Generic Work Core Join uses strict explicit enablement and requirement flags", () => {
   const disabled = loadConfig({});
   assert.equal(disabled.genericWorkCoreJoinEnabled, false);

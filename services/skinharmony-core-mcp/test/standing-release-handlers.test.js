@@ -239,6 +239,324 @@ test("GitHub worker handlers forward only same-tenant persisted-Intent claims", 
   assert.equal(calls.length, 2);
 });
 
+test("reserved GitHub tickets are forwarded once and successful evidence is completed in Core", async () => {
+  const runId = `srr_${"a".repeat(40)}`;
+  const ticketId = `hnt_${"b".repeat(40)}`;
+  const reservationId = `hnr_${"c".repeat(40)}`;
+  const resultCommit = "d".repeat(40);
+  const claim = {
+    schema_version: "github_worker_execution_claim_v1",
+    tenant_id: "tenant-a",
+    work_id: RELEASE_WORK,
+    repository: "owner/repo",
+    ticket_id: ticketId,
+    reservation_id: reservationId,
+    action: { kind: "git.push.branch" },
+    action_digest: H("e"),
+    issued_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    nonce: H("f"),
+    provider_execution: false,
+    signature: `gwe_${H("1")}`,
+  };
+  const calls = [];
+  const intentRequests = [];
+  const leaseRequests = [];
+  const handlers = createCoreHandlers({
+    ...config(),
+    standingReleaseAutoCoordinatorEnabled: true,
+  }, {
+    resolveStandingReleaseIntentBinding: trustedResolver(async (actor, workId) => {
+      intentRequests.push([actor.tenantId, workId]);
+      return intentBinding(workId, RELEASE_DIGEST);
+    }),
+    resolveDttWorkBinding: async (actor, workId) => {
+      leaseRequests.push(workId);
+      return leaseBinding(actor, workId);
+    },
+    fetchImpl: async (url, init) => {
+      const call = {
+        url,
+        path: new URL(url).pathname,
+        method: init.method,
+        body: JSON.parse(init.body),
+      };
+      calls.push(call);
+      if (url === "https://github-worker.test/v1/execute") {
+        return new Response(JSON.stringify({
+          ok: true,
+          provider_execution: true,
+          execution: {
+            schema_version: "github_worker_execution_record_v1",
+            nonce: claim.nonce,
+            tenant_id: "tenant-a",
+            repository: claim.repository,
+            ticket_id: ticketId,
+            reservation_id: reservationId,
+            action_digest: claim.action_digest,
+            claim_digest: canonicalDigest(claim),
+            state: "succeeded",
+            result: { outcome: "success", result_commit: resultCommit },
+            signature: `gwl_${H("8")}`,
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (call.path.endsWith("/reserve")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          tenant_id: "tenant-a",
+          action_ticket: {
+            state: "reserved",
+            reservation_id: reservationId,
+            ticket: { ticket_id: ticketId },
+          },
+          github_execution_claim: claim,
+          provider_execution: false,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        tenant_id: "tenant-a",
+        action_ticket: { state: "completed", ticket: { ticket_id: ticketId } },
+        provider_execution: false,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  const result = await handlers.host_native_standing_release_run_reserve({
+    run_id: runId,
+    work_id: RELEASE_WORK,
+    intent_anchor_digest: RELEASE_DIGEST,
+    ticket_id: ticketId,
+    expected_version: 2,
+    idempotency_key: "auto-reserve-success",
+  }, identity());
+
+  assert.deepEqual(calls.map((call) => [call.method, call.path]), [
+    ["POST", `/v1/host-native/standing-release/runs/${runId}/reserve`],
+    ["POST", `/v1/host-native/standing-release/runs/${runId}/complete`],
+    ["POST", "/v1/execute"],
+    ["POST", `/v1/host-native/standing-release/runs/${runId}/reconcile`],
+  ]);
+  assert.equal(calls[1].body.outcome, "unknown");
+  assert.match(calls[1].body.result_digest, /^[a-f0-9]{64}$/);
+  assert.deepEqual(calls[2].body, { claim });
+  assert.equal(calls[3].body.observed_outcome, "success");
+  assert.equal(calls[3].body.observed_commit, resultCommit);
+  assert.match(calls[3].body.readback_digest, /^[a-f0-9]{64}$/);
+  assert.equal(calls[3].body.reservation_id, reservationId);
+  assert.equal(calls[3].body.ticket_id, ticketId);
+  assert.equal(result.structuredContent.standing_release_auto_coordinator.forwarded, true);
+  assert.deepEqual(intentRequests, [
+    ["tenant-a", RELEASE_WORK],
+    ["tenant-a", RELEASE_WORK],
+    ["tenant-a", RELEASE_WORK],
+  ]);
+  assert.deepEqual(leaseRequests, [RELEASE_WORK, RELEASE_WORK, RELEASE_WORK]);
+
+  const readyRunId = `srr_${"9".repeat(40)}`;
+  const readyTicketId = `hnt_${"a".repeat(40)}`;
+  const readyReservationId = `hnr_${"b".repeat(40)}`;
+  const readyHeadCommit = "c".repeat(40);
+  const readyClaim = {
+    ...claim,
+    ticket_id: readyTicketId,
+    reservation_id: readyReservationId,
+    action: {
+      kind: "github.ready",
+      head_commit: readyHeadCommit,
+    },
+    action_digest: H("3"),
+    nonce: H("4"),
+  };
+  const readyCalls = [];
+  const readyHandlers = createCoreHandlers({
+    ...config(),
+    standingReleaseAutoCoordinatorEnabled: true,
+  }, {
+    resolveStandingReleaseIntentBinding: trustedResolver(async (_actor, workId) =>
+      intentBinding(workId, RELEASE_DIGEST)),
+    resolveDttWorkBinding: async (actor, workId) => leaseBinding(actor, workId),
+    fetchImpl: async (url, init) => {
+      const call = {
+        url,
+        path: new URL(url).pathname,
+        method: init.method,
+        body: JSON.parse(init.body),
+      };
+      readyCalls.push(call);
+      if (url === "https://github-worker.test/v1/execute") {
+        return new Response(JSON.stringify({
+          ok: true,
+          provider_execution: true,
+          execution: {
+            schema_version: "github_worker_execution_record_v1",
+            nonce: readyClaim.nonce,
+            tenant_id: readyClaim.tenant_id,
+            repository: readyClaim.repository,
+            ticket_id: readyTicketId,
+            reservation_id: readyReservationId,
+            action_digest: readyClaim.action_digest,
+            claim_digest: canonicalDigest(readyClaim),
+            state: "succeeded",
+            result: { outcome: "success", result_pull_request: 17 },
+            signature: `gwl_${H("5")}`,
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (call.path.endsWith("/reserve")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          tenant_id: "tenant-a",
+          action_ticket: {
+            state: "reserved",
+            reservation_id: readyReservationId,
+            ticket: { ticket_id: readyTicketId },
+          },
+          github_execution_claim: readyClaim,
+          provider_execution: false,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ ok: true, tenant_id: "tenant-a" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  await readyHandlers.host_native_standing_release_run_reserve({
+    run_id: readyRunId,
+    work_id: RELEASE_WORK,
+    intent_anchor_digest: RELEASE_DIGEST,
+    ticket_id: readyTicketId,
+    expected_version: 2,
+    idempotency_key: "auto-ready-success",
+  }, identity());
+  assert.deepEqual(readyCalls.map((call) => call.path), [
+    `/v1/host-native/standing-release/runs/${readyRunId}/reserve`,
+    `/v1/host-native/standing-release/runs/${readyRunId}/complete`,
+    "/v1/execute",
+    `/v1/host-native/standing-release/runs/${readyRunId}/reconcile`,
+  ]);
+  assert.equal(readyCalls[3].body.observed_commit, readyHeadCommit);
+  assert.equal(readyCalls[3].body.observed_pull_request, 17);
+});
+
+test("uncertain GitHub worker outcomes remain reconciliation-required without blind retry", async () => {
+  const runId = `srr_${"2".repeat(40)}`;
+  const ticketId = `hnt_${"3".repeat(40)}`;
+  const reservationId = `hnr_${"4".repeat(40)}`;
+  const claim = {
+    schema_version: "github_worker_execution_claim_v1",
+    tenant_id: "tenant-a",
+    work_id: RELEASE_WORK,
+    repository: "owner/repo",
+    ticket_id: ticketId,
+    reservation_id: reservationId,
+    action: { kind: "github.ready" },
+    action_digest: H("5"),
+    issued_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+    nonce: H("6"),
+    provider_execution: false,
+    signature: `gwe_${H("7")}`,
+  };
+  const calls = [];
+  let ticketState = "reserved";
+  const handlers = createCoreHandlers({
+    ...config(),
+    standingReleaseAutoCoordinatorEnabled: true,
+  }, {
+    resolveStandingReleaseIntentBinding: trustedResolver(async (_actor, workId) =>
+      intentBinding(workId, RELEASE_DIGEST)),
+    resolveDttWorkBinding: async (actor, workId) => leaseBinding(actor, workId),
+    fetchImpl: async (url, init) => {
+      calls.push({ url, path: new URL(url).pathname, method: init.method });
+      if (url === "https://github-worker.test/v1/execute") {
+        return new Response(JSON.stringify({
+          error: "github_worker_execution_outcome_unknown",
+          execution: { state: "outcome_unknown" },
+        }), { status: 409, headers: { "content-type": "application/json" } });
+      }
+      if (new URL(url).pathname.endsWith("/complete")) {
+        ticketState = "reconciliation_required";
+        return new Response(JSON.stringify({
+          ok: true,
+          tenant_id: "tenant-a",
+          action_ticket: { state: ticketState, ticket: { ticket_id: ticketId } },
+          provider_execution: false,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        tenant_id: "tenant-a",
+        action_ticket: {
+          state: ticketState,
+          reservation_id: reservationId,
+          ticket: { ticket_id: ticketId },
+        },
+        github_execution_claim: claim,
+        provider_execution: false,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  await assert.rejects(handlers.host_native_standing_release_run_reserve({
+    run_id: runId,
+    work_id: RELEASE_WORK,
+    intent_anchor_digest: RELEASE_DIGEST,
+    ticket_id: ticketId,
+    expected_version: 2,
+    idempotency_key: "auto-reserve-unknown",
+  }, identity()), /standing_release_auto_execution_outcome_unknown/);
+  assert.deepEqual(calls.map((call) => [call.method, call.path]), [
+    ["POST", `/v1/host-native/standing-release/runs/${runId}/reserve`],
+    ["POST", `/v1/host-native/standing-release/runs/${runId}/complete`],
+    ["POST", "/v1/execute"],
+  ]);
+
+  const replay = await handlers.host_native_standing_release_run_reserve({
+    run_id: runId,
+    work_id: RELEASE_WORK,
+    intent_anchor_digest: RELEASE_DIGEST,
+    ticket_id: ticketId,
+    expected_version: 2,
+    idempotency_key: "auto-reserve-unknown",
+  }, identity());
+  assert.equal(replay.structuredContent.action_ticket.state, "reconciliation_required");
+  assert.equal(calls.filter((call) => call.path === "/v1/execute").length, 1);
+  assert.deepEqual(calls.map((call) => [call.method, call.path]), [
+    ["POST", `/v1/host-native/standing-release/runs/${runId}/reserve`],
+    ["POST", `/v1/host-native/standing-release/runs/${runId}/complete`],
+    ["POST", "/v1/execute"],
+    ["POST", `/v1/host-native/standing-release/runs/${runId}/reserve`],
+  ]);
+
+  let invalidConfigurationFetches = 0;
+  const invalidConfigurationHandlers = createCoreHandlers({
+    ...config(),
+    githubStandingReleaseWorkerUrl: "",
+    standingReleaseAutoCoordinatorEnabled: true,
+    standingReleaseAutoCoordinatorConfigurationValid: false,
+  }, {
+    resolveStandingReleaseIntentBinding: trustedResolver(async (_actor, workId) =>
+      intentBinding(workId, RELEASE_DIGEST)),
+    resolveDttWorkBinding: async (actor, workId) => leaseBinding(actor, workId),
+    fetchImpl: async () => {
+      invalidConfigurationFetches += 1;
+      throw new Error("fetch_must_not_run");
+    },
+  });
+  await assert.rejects(invalidConfigurationHandlers.host_native_standing_release_run_reserve({
+    run_id: runId,
+    work_id: RELEASE_WORK,
+    intent_anchor_digest: RELEASE_DIGEST,
+    ticket_id: ticketId,
+    expected_version: 2,
+    idempotency_key: "invalid-auto-coordinator",
+  }, identity()), /standing_release_auto_coordinator_unavailable/);
+  assert.equal(invalidConfigurationFetches, 0);
+});
+
 test("horizontal runner mutations use fresh exact DTT bindings and peer-provider routes", async () => {
   const calls = [];
   const leaseRequests = [];
