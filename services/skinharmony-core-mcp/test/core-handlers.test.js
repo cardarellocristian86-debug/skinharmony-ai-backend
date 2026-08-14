@@ -78,7 +78,7 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   await handlers.research_validate({ evidence_pack: { question: "ricerca", sources: [], claims: [] }, domain_pack: "analyzer" }, identity);
   await handlers.nyra_interpret_request({ message: "analizza", session_id: "s1", domain_pack: "analyzer", nyra_branches: ["context_intelligence"] }, identity);
   await handlers.core_gate_action({ action_label: "deploy", action_type: "release" }, identity);
-  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/runtime/hierarchy/evaluate", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/research/plan", "/v1/research/validate", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/healthz", "/v1/icf/runtime/attestation", "/v1/runtime/hierarchy/evaluate", "/v1/work/preflight", "/v1/codex/context", "/v1/nira/branches", "/v1/research/plan", "/v1/research/validate", "/v1/nira/core-bridge", "/v1/action-evaluator"]);
   assert(calls.filter((_, index) => ![2, calls.length - 1].includes(index)).every((call) => call.init.headers.authorization === "Bearer tenant-a-key"));
   assert.equal(calls[2].init.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
   assert.ok(calls[2].init.headers["x-sh-tenant-context"]);
