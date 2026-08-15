@@ -133,6 +133,18 @@ services:
         generateValue: true
       - key: POLICY_REGISTRY_CORE_SIGNER_SEED
         generateValue: true
+      - key: POLICY_REGISTRY_NYRA_SIGNER_ENABLED
+        value: "true"
+      - key: POLICY_REGISTRY_NYRA_SIGNER_SERVICE
+        value: nyra-policy-registry-signer
+      - key: POLICY_REGISTRY_NYRA_SIGNER_KEY_ID
+        value: nyra-policy-registry-v1
+      - key: POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
+        sync: false
+      - key: POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
+        generateValue: true
+      - key: POLICY_REGISTRY_NYRA_SIGNER_SEED
+        generateValue: true
       # Dedicated MCP→Core Deep V2 request signature. Universal Core consumes
       # the same generated value through an internal Render reference. It is
       # an internal continuity signature, not a model-provider credential.

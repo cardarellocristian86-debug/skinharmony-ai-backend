@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 
 export const POLICY_REGISTRY_SIGN_ROUTE = "/v1/policy-registry/sign";
 export const POLICY_REGISTRY_SIGNER_HEALTH_ROUTE = "/v1/policy-registry/signer-health";
+export const NYRA_POLICY_REGISTRY_SIGN_ROUTE = "/v1/policy-registry/nyra/sign";
+export const NYRA_POLICY_REGISTRY_SIGNER_HEALTH_ROUTE = "/v1/policy-registry/nyra/signer-health";
 
 const REQUEST_FIELDS = ["digest", "key_id", "payload", "purpose", "schema_version", "service", "target_commit"];
 const PURPOSES = new Set([
@@ -22,11 +24,14 @@ function safeEqual(left, right) {
   return crypto.timingSafeEqual(a, b);
 }
 
-function deriveSigningKey(seed) {
+function deriveSigningKey(seed, domain) {
   if (typeof seed !== "string" || seed.length < 32 || seed.length > 4096 || seed !== seed.trim()) {
     throw new Error("policy_registry_signer_seed_invalid");
   }
-  const raw = crypto.createHash("sha256").update("skinharmony-policy-registry-core-signer-v1\0").update(seed).digest();
+  if (typeof domain !== "string" || domain.length < 16 || domain.length > 128) {
+    throw new Error("policy_registry_signer_domain_invalid");
+  }
+  const raw = crypto.createHash("sha256").update(`${domain}\0`).update(seed).digest();
   return crypto.createPrivateKey({
     key: Buffer.concat([PKCS8_ED25519_SEED_PREFIX, raw]),
     format: "der",
@@ -51,7 +56,14 @@ function noStore(res) {
   return res.set({ "cache-control": "no-store", "x-content-type-options": "nosniff" });
 }
 
-export function createPolicyRegistrySigner({ env = process.env } = {}) {
+export function createPolicyRegistrySigner({
+  env = process.env,
+  prefix = "POLICY_REGISTRY_CORE_SIGNER",
+  route = POLICY_REGISTRY_SIGN_ROUTE,
+  allowedPurposes = PURPOSES,
+  signatureAlgorithm = "Ed25519",
+  derivationDomain = "skinharmony-policy-registry-core-signer-v1",
+} = {}) {
   let state = { configured: false, ready: false, error: "policy_registry_signer_disabled" };
   let signingKey = null;
   let publicKey = null;
@@ -62,16 +74,17 @@ export function createPolicyRegistrySigner({ env = process.env } = {}) {
   let keyId = null;
   let targetCommit = null;
   try {
-    if (env.POLICY_REGISTRY_CORE_SIGNER_ENABLED !== "true") throw new Error("policy_registry_signer_disabled");
-    service = String(env.POLICY_REGISTRY_CORE_SIGNER_SERVICE || "");
-    keyId = String(env.POLICY_REGISTRY_CORE_SIGNER_KEY_ID || "");
-    targetCommit = String(env.POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT || "").toLowerCase();
-    token = String(env.POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN || "");
+    if (env[`${prefix}_ENABLED`] !== "true") throw new Error("policy_registry_signer_disabled");
+    service = String(env[`${prefix}_SERVICE`] || "");
+    keyId = String(env[`${prefix}_KEY_ID`] || "");
+    targetCommit = String(env[`${prefix}_TARGET_COMMIT`] || "").toLowerCase();
+    token = String(env[`${prefix}_SERVICE_TOKEN`] || "");
     if (!SERVICE.test(service)) throw new Error("policy_registry_signer_service_invalid");
     if (!ID.test(keyId)) throw new Error("policy_registry_signer_key_id_invalid");
     if (!COMMIT.test(targetCommit)) throw new Error("policy_registry_signer_target_commit_invalid");
     if (token.length < 32 || token.length > 4096 || token !== token.trim()) throw new Error("policy_registry_signer_token_invalid");
-    signingKey = deriveSigningKey(env.POLICY_REGISTRY_CORE_SIGNER_SEED);
+    if (!(allowedPurposes instanceof Set) || allowedPurposes.size < 1) throw new Error("policy_registry_signer_purposes_invalid");
+    signingKey = deriveSigningKey(String(env[`${prefix}_SEED`] || ""), derivationDomain);
     ({ publicKey, fingerprint: publicKeyFingerprint, publicJwk } = publicMetadata(signingKey, keyId));
     state = { configured: true, ready: true, error: null };
   } catch (error) {
@@ -89,7 +102,7 @@ export function createPolicyRegistrySigner({ env = process.env } = {}) {
       target_commit: targetCommit,
       public_key_fingerprint: publicKeyFingerprint,
       public_key: publicJwk,
-      route: POLICY_REGISTRY_SIGN_ROUTE,
+      route,
     });
   }
 
@@ -105,7 +118,7 @@ export function createPolicyRegistrySigner({ env = process.env } = {}) {
       Object.keys(body).sort().join("\0") !== REQUEST_FIELDS.join("\0") ||
       body.schema_version !== "nyra_policy_registry_sign_request_v1" ||
       body.service !== service || body.key_id !== keyId || body.target_commit !== targetCommit ||
-      !PURPOSES.has(body.purpose) || !SHA256.test(String(body.digest || "")) ||
+      !allowedPurposes.has(body.purpose) || !SHA256.test(String(body.digest || "")) ||
       !BASE64URL.test(String(body.payload || ""))) {
       return noStore(res).status(400).json({ error: "invalid_request" });
     }
@@ -125,7 +138,7 @@ export function createPolicyRegistrySigner({ env = process.env } = {}) {
       purpose: body.purpose,
       key_id: keyId,
       digest: body.digest,
-      signature_algorithm: "Ed25519",
+      signature_algorithm: signatureAlgorithm,
       signature,
     });
   }

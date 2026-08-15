@@ -47,11 +47,20 @@ import {
 import {
   POLICY_REGISTRY_SIGN_ROUTE,
   POLICY_REGISTRY_SIGNER_HEALTH_ROUTE,
+  NYRA_POLICY_REGISTRY_SIGN_ROUTE,
+  NYRA_POLICY_REGISTRY_SIGNER_HEALTH_ROUTE,
   createPolicyRegistrySigner,
 } from "./policy-registry-signer.js";
 
 const config = loadConfig();
 const policyRegistrySigner = createPolicyRegistrySigner();
+const nyraPolicyRegistrySigner = createPolicyRegistrySigner({
+  prefix: "POLICY_REGISTRY_NYRA_SIGNER",
+  route: NYRA_POLICY_REGISTRY_SIGN_ROUTE,
+  allowedPurposes: new Set(["nyra.policy_registry.attestation"]),
+  signatureAlgorithm: "ed25519",
+  derivationDomain: "skinharmony-policy-registry-nyra-signer-v1",
+});
 const genericWorkCoreJoinActivationEnabled = config.genericWorkCoreJoinEnabled === true &&
   config.genericWorkCoreJoinConfigurationValid === true;
 let genericWorkCoreJoinVerifier = null;
@@ -1287,4 +1296,9 @@ app.get(POLICY_REGISTRY_SIGNER_HEALTH_ROUTE, (_req, res) => res
   .set("cache-control", "no-store")
   .json(policyRegistrySigner.health()));
 app.post(POLICY_REGISTRY_SIGN_ROUTE, (req, res) => policyRegistrySigner.handle(req, res));
+app.get(NYRA_POLICY_REGISTRY_SIGNER_HEALTH_ROUTE, (_req, res) => res
+  .status(nyraPolicyRegistrySigner.health().ready ? 200 : 503)
+  .set("cache-control", "no-store")
+  .json(nyraPolicyRegistrySigner.health()));
+app.post(NYRA_POLICY_REGISTRY_SIGN_ROUTE, (req, res) => nyraPolicyRegistrySigner.handle(req, res));
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));
