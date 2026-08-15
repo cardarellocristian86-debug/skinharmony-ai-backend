@@ -104,6 +104,9 @@ const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store(
   verifierReceiptSigningSecret: config.dttAgentIdentitySigningSecret,
   coreJoinVerifier: genericWorkCoreJoinVerifier,
 }) : null;
+if (workContinuityRuntime && workContinuityV2Store) {
+  workContinuityRuntime.setWorkEventProjector(workContinuityV2Store.projectLegacyEvent);
+}
 const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
   pool: primaryDatabasePool,
 });
@@ -130,6 +133,7 @@ if (continuityRequired && workContinuityRuntime) {
     .then(async () => {
       await workContinuityRuntime.initialize();
       await workContinuityV2Store?.initialize();
+      await workContinuityV2Store?.backfillLegacyProjection();
     })
     .then(() => {
       startupReadiness.continuityInitialized = true;

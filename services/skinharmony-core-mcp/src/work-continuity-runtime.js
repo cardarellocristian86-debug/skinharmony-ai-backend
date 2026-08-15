@@ -1604,6 +1604,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
   const assignmentSigningSecret = String(
     config.dttAgentIdentitySigningSecret || "",
   ).trim();
+  let workEventProjector = null;
   let ready;
   const initialize = () => ready ||= pool.query(WORK_CONTINUITY_SCHEMA_SQL);
 
@@ -1723,7 +1724,22 @@ export function createWorkContinuityRuntime(config, options = {}) {
       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)`,
     [context.tenantId, context.workId, eventId, sequence, eventType, JSON.stringify(cleanPayload),
       event.previous_event_hash, eventHash, context.actor]);
-    return { event_id: eventId, sequence_number: sequence, event_type: eventType, event_hash: eventHash };
+    const persistedEvent = { event_id: eventId, sequence_number: sequence, event_type: eventType,
+      event_hash: eventHash, payload: cleanPayload };
+    if (workEventProjector) {
+      await workEventProjector({ client, tenant_id: context.tenantId, work_id: context.workId,
+        actor: context.actor, event: persistedEvent });
+    }
+    return persistedEvent;
+  }
+
+  function setWorkEventProjector(projector) {
+    if (typeof projector !== "function") throw new Error("work_event_projector_invalid");
+    if (workEventProjector && workEventProjector !== projector) {
+      throw new Error("work_event_projector_already_configured");
+    }
+    workEventProjector = projector;
+    return true;
   }
 
   async function transaction(fn) {
@@ -4965,6 +4981,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     create,
     ensure,
     ensureWithClient,
+    setWorkEventProjector,
     readIntent,
     resolveStandingReleaseIntentBinding,
     listWorks,

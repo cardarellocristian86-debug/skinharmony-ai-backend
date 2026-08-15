@@ -19,6 +19,7 @@ class AtomicWorkPool {
     this.sequences = new Map();
     this.participants = new Map();
     this.leases = new Map();
+    this.queries = [];
   }
 
   snapshot() {
@@ -60,6 +61,7 @@ class AtomicWorkPool {
 
   async query(sql, parameters = []) {
     const q = sql.replace(/\s+/g, " ").trim();
+    this.queries.push(q);
     if (q.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [], rowCount: 0 };
     if (q.startsWith("SELECT * FROM tenant_work_open_review")) {
       const row = this.reviews.get(key(parameters[0], parameters[1]));
@@ -93,6 +95,17 @@ class AtomicWorkPool {
       const row = [...this.works.values()].find((work) => work.tenant_id === parameters[0] && work.legacy_work_id === parameters[1]);
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2)")) {
+      const row = [...this.works.values()].find((work) => work.tenant_id === parameters[0] &&
+        (work.legacy_work_id === parameters[1] || work.work_id === parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT legacy_projection_sequence FROM tenant_work")) {
+      const row = [...this.works.values()].find((work) => work.tenant_id === parameters[0] &&
+        (work.legacy_work_id === parameters[1] || work.work_id === parameters[1]));
+      return { rows: row ? [{ legacy_projection_sequence: row.legacy_projection_sequence || 0 }] : [],
+        rowCount: row ? 1 : 0 };
+    }
     if (q.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2")) {
       const row = this.works.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
@@ -114,16 +127,32 @@ class AtomicWorkPool {
           updated_at: "2026-08-08T10:00:00.000Z" };
       } else {
         const [tenantId, workId, workCode, workName, projectId, createdAt, updatedAt, status,
-          objective, nextAction, parentWorkId] = parameters;
+          objective, nextAction, parentWorkId, projectionSequence, projectionEventHash,
+          projectionUpdatedAt] = parameters;
         row = { tenant_id: tenantId, work_id: workId, legacy_work_id: workId, work_code: workCode,
           work_name: workName, work_type: "legacy", project_id: projectId, owner_user_id: null,
           created_by_user_id: null, assigned_user_ids: [], supervising_user_ids: [], agent_ids: [],
           visibility_scope: "private", created_at: createdAt, started_at: createdAt, updated_at: updatedAt,
           status, objective, next_action: nextAction, parent_work_id: parentWorkId, progress_bp: 0,
-          priority: "P4", priority_score: 0 };
+          priority: "P4", priority_score: 0, legacy_projection_sequence: projectionSequence,
+          legacy_projection_event_hash: projectionEventHash,
+          legacy_projection_updated_at: projectionUpdatedAt };
       }
       this.works.set(key(row.tenant_id, row.work_id), row);
       return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET project_id=$3")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, { project_id: parameters[2], parent_work_id: parameters[3],
+        work_name: parameters[4], objective: parameters[5], next_action: parameters[6],
+        status: parameters[7], updated_at: parameters[8], legacy_projection_sequence: parameters[9],
+        legacy_projection_event_hash: parameters[10], legacy_projection_updated_at: parameters[11] });
+      if (parameters[12].includes(row.status)) {
+        row.closed_at ||= parameters[8];
+        row.archived_at ||= parameters[8];
+      }
+      return { rows: [structuredClone(row)], rowCount: 1 };
     }
     if (q.startsWith("INSERT INTO tenant_work_task")) {
       const row = { tenant_id: parameters[0], task_id: parameters[1], work_id: parameters[2],
@@ -155,7 +184,7 @@ class AtomicWorkPool {
     }
     if (q.startsWith("SELECT w.work_id,w.project_id,w.parent_work_id")) {
       const rows = [...this.legacy.values()].filter((work) => work.tenant_id === parameters[0] &&
-        (!parameters[1] || work.project_id === parameters[1]) && !this.works.has(key(work.tenant_id, work.work_id)))
+        (!parameters[1] || work.project_id === parameters[1]))
         .slice(0, parameters[2]);
       return { rows: structuredClone(rows), rowCount: rows.length };
     }
@@ -265,7 +294,8 @@ test("preflight projects legacy rows without inventing ownership and preserves G
   pool.legacy.set(key("tenant-a", legacyId), { tenant_id: "tenant-a", work_id: legacyId,
     project_id: "nyra-core", parent_work_id: null, idea: "Legacy continuity", objective: "project safely",
     status: "active", next_action: "resume", created_at: "2026-08-01T10:00:00.000Z",
-    updated_at: "2026-08-08T09:00:00.000Z" });
+    updated_at: "2026-08-08T09:00:00.000Z", source_sequence_number: 1,
+    source_event_type: "work_created", source_event_hash: "a".repeat(64), source_event_payload: {} });
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
   const gallery = await store.preflightGallery(identity(), { project_id: "nyra-core" });
   assert.equal(gallery.schema_version, "tenant_work_gallery_v1");
@@ -273,6 +303,57 @@ test("preflight projects legacy rows without inventing ownership and preserves G
   assert.equal(gallery.works[0].work_id, legacyId);
   assert.equal(gallery.works[0].status, "active");
   assert.equal(pool.works.get(key("tenant-a", legacyId)).owner_user_id, null);
+  const insert = pool.queries.find((query) => query.startsWith("INSERT INTO tenant_work "));
+  assert.match(insert, /\$8::varchar/);
+  assert.equal((insert.match(/\$8::varchar/g) || []).length, 3,
+    "PostgreSQL must infer one varchar type for status and both archive predicates");
+});
+
+test("Gallery projection advances from the authoritative Work event and exact replay is idempotent", async () => {
+  const pool = new AtomicWorkPool();
+  const legacyId = "55555555-5555-4555-8555-555555555555";
+  pool.legacy.set(key("tenant-a", legacyId), { tenant_id: "tenant-a", work_id: legacyId,
+    project_id: "nyra-core", parent_work_id: null, idea: "Projected continuity", objective: "stay aligned",
+    status: "active", next_action: "start", created_at: "2026-08-01T10:00:00.000Z",
+    updated_at: "2026-08-08T09:00:00.000Z", source_sequence_number: 1,
+    source_event_type: "work_created", source_event_hash: "a".repeat(64), source_event_payload: {} });
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  const source = pool.legacy.get(key("tenant-a", legacyId));
+  Object.assign(source, { status: "release_ready", next_action: "release", updated_at: "2026-08-08T10:01:00.000Z",
+    source_sequence_number: 2, source_event_type: "core_join_issued",
+    source_event_hash: "b".repeat(64), source_event_payload: {} });
+  const first = await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  assert.equal(first.works[0].status, "release_ready");
+  assert.equal(pool.works.get(key("tenant-a", legacyId)).status, "HANDOFF");
+  assert.equal(pool.works.get(key("tenant-a", legacyId)).legacy_projection_sequence, 2);
+  const eventCount = pool.events.size;
+  await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  assert.equal(pool.events.size, eventCount, "same authoritative event must not append another projection event");
+});
+
+test("terminal projection requires immutable Core closure evidence", async () => {
+  const pool = new AtomicWorkPool();
+  const legacyId = "66666666-6666-4666-8666-666666666666";
+  pool.legacy.set(key("tenant-a", legacyId), { tenant_id: "tenant-a", work_id: legacyId,
+    project_id: "nyra-core", parent_work_id: null, idea: "Terminal continuity", objective: "close safely",
+    status: "active", next_action: "start", created_at: "2026-08-01T10:00:00.000Z",
+    updated_at: "2026-08-08T09:00:00.000Z", source_sequence_number: 1,
+    source_event_type: "work_created", source_event_hash: "a".repeat(64), source_event_payload: {} });
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  const source = pool.legacy.get(key("tenant-a", legacyId));
+  Object.assign(source, { status: "completed", next_action: "", updated_at: "2026-08-08T10:01:00.000Z",
+    source_sequence_number: 2, source_event_type: "checkpoint_created",
+    source_event_hash: "b".repeat(64), source_event_payload: {} });
+  await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  assert.equal(pool.works.get(key("tenant-a", legacyId)).status, "ACTIVE");
+  Object.assign(source, { source_sequence_number: 3, source_event_type: "closure_finalized",
+    source_event_hash: "c".repeat(64) });
+  await store.preflightGallery(identity(), { project_id: "nyra-core" });
+  const projected = pool.works.get(key("tenant-a", legacyId));
+  assert.equal(projected.status, "COMPLETED");
+  assert.equal(projected.archived_at, "2026-08-08T10:01:00.000Z");
 });
 
 test("archive exposes a bounded final report summary and stale dry-run preserves relations", async () => {
