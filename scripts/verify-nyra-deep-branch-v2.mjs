@@ -50,7 +50,7 @@ const V2_EXCLUDED_BRANCH_IDS = new Set();
 const CORE_SKINHARMONY_V2_BRANCHES = CORE_SKINHARMONY_CATALOG.branches.filter(
   (branch) => !V2_EXCLUDED_BRANCH_IDS.has(branch.id),
 );
-const REQUIRED_RUNTIME_SHARD_COUNT = 326;
+const REQUIRED_RUNTIME_SHARD_COUNT = 337;
 const MEMORY_HARNESS_TEST_NAME =
   "validation and a lazy evaluated deep route stay below 256 MiB without reading the monolith";
 const PATH_ARGUMENTS = Object.freeze([

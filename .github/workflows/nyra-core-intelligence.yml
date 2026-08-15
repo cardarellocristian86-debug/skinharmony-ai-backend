@@ -197,7 +197,9 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            services/universal-core-service/package-lock.json
       - name: Validate Render continuity feature flags
         shell: ruby {0}
         run: |
@@ -1065,6 +1067,8 @@ jobs:
       # Root postinstall builds both Render Rust artifacts once.
       - name: Install root deployment dependencies and artifacts
         run: npm ci
+      - name: Install Universal Core locked dependencies
+        run: npm ci --ignore-scripts --prefix services/universal-core-service
       - name: Test Generic Work Core Join remote signer worker
         run: npm run github:standing-release-worker:test
       - name: Verify exact Nyra Deep V2 runtime artifacts

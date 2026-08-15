@@ -18,6 +18,10 @@ const {
 } = require("../lib/nyra-deep-branch-v2");
 
 const repoRoot = path.resolve(__dirname, "../..");
+const activeRuntimeManifestPath = path.resolve(
+  process.env.NYRA_DEEP_BRANCH_V2_RUNTIME_MANIFEST_PATH
+    || DEFAULT_RUNTIME_MANIFEST_PATH
+);
 const branchIds = [
   "context_intelligence",
   "work_intake",
@@ -42,6 +46,7 @@ const branchIds = [
   "suite_domain",
   "smartdesk_domain",
   "analyzer_domain",
+  "software_cognition",
 ];
 const level4NodeTypes = Object.freeze(["method", "strategy", "verifier", "metric"]);
 const nodesPerSubbranch = 2 + level4NodeTypes.length;
@@ -437,11 +442,11 @@ test("validation and a lazy evaluated deep route stay below 256 MiB without read
 
 test("missing, tampered, swapped, oversized and stale shards all fail closed", () => {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-v2-shard-negative-"));
-  const manifestPath = path.join(temporaryRoot, path.basename(DEFAULT_RUNTIME_MANIFEST_PATH));
-  const sourceManifestBytes = fs.readFileSync(DEFAULT_RUNTIME_MANIFEST_PATH);
+  const manifestPath = path.join(temporaryRoot, path.basename(activeRuntimeManifestPath));
+  const sourceManifestBytes = fs.readFileSync(activeRuntimeManifestPath);
   const sourceManifest = JSON.parse(sourceManifestBytes);
   const sourceShardRoot = path.resolve(
-    path.dirname(DEFAULT_RUNTIME_MANIFEST_PATH),
+    path.dirname(activeRuntimeManifestPath),
     "nyra-deep-branch-v2.shards"
   );
   const temporaryShardRoot = path.resolve(temporaryRoot, "nyra-deep-branch-v2.shards");
@@ -577,10 +582,10 @@ test("missing, tampered, swapped, oversized and stale shards all fail closed", (
 });
 
 test("runtime packaging retains exactly the manifest generation and declared shards", () => {
-  const manifest = JSON.parse(fs.readFileSync(DEFAULT_RUNTIME_MANIFEST_PATH, "utf8"));
+  const manifest = JSON.parse(fs.readFileSync(activeRuntimeManifestPath, "utf8"));
   const expectedShardCount = manifest.topology.subbranch_count;
   const firstShardPath = path.resolve(
-    path.dirname(DEFAULT_RUNTIME_MANIFEST_PATH),
+    path.dirname(activeRuntimeManifestPath),
     manifest.shards[0].relative_path
   );
   const generationRoot = path.dirname(firstShardPath);
