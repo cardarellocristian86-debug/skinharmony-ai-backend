@@ -242,14 +242,13 @@ jobs:
             abort("#{service["name"]}: release branch must remain main") unless
               service["branch"] == "main"
           end
-          # Core and MCP expose process-only deployment liveness. Their
-          # governed dependency readiness remains fail-closed at /healthz and
-          # /readyz. Nyra has no separate process-only endpoint and therefore
-          # keeps its existing /healthz Render contract.
-          [mcp, core].each do |service|
-            abort("#{service["name"]}: deployment liveness check must remain /livez") unless
-              service["healthCheckPath"] == "/livez"
-          end
+          # MCP exposes process-only deployment liveness at /livez. Universal
+          # Core exposes governed dependency readiness at /readyz. Nyra has
+          # no separate process-only endpoint and keeps its /healthz contract.
+          abort("#{mcp["name"]}: deployment liveness check must remain /livez") unless
+            mcp["healthCheckPath"] == "/livez"
+          abort("#{core["name"]}: deployment readiness check must remain /readyz") unless
+            core["healthCheckPath"] == "/readyz"
           abort("#{nyra["name"]}: health check must remain /healthz") unless
             nyra["healthCheckPath"] == "/healthz"
 
