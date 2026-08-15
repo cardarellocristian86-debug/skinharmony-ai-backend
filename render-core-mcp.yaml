@@ -67,7 +67,7 @@ services:
       - key: UNIVERSAL_CORE_URL
         value: https://skinharmony-universal-core.onrender.com
       - key: GITHUB_STANDING_RELEASE_WORKER_URL
-        value: https://skinharmony-github-standing-release-worker.onrender.com
+        value: https://skinharmony-github-standing-release.onrender.com
       # A reserved Core ticket carrying a signed GitHub execution claim is
       # forwarded once to the worker. Only a bound succeeded result is written
       # back to Core; uncertain outcomes stop for explicit reconciliation.

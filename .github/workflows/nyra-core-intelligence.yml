@@ -588,6 +588,21 @@ jobs:
                 "environment" => "production",
                 "origin" => "https://skinharmony-core-mcp.onrender.com",
               },
+              {
+                "tenant_id" => "codexai",
+                "repository" => "cardarellocristian86-debug/skinharmony-ai-backend",
+                "service_id" => "srv-d82c9j3tqb8s73cgriag",
+                "environment" => "production",
+                "origin" => "https://skinharmony-universal-core.onrender.com",
+              },
+              {
+                "tenant_id" => "codexai",
+                "repository" => "cardarellocristian86-debug/skinharmony-ai-backend",
+                "service_id" => "srv-d9vmccfmal7c73fu0srg",
+                "environment" => "production",
+                "origin" =>
+                  "https://skinharmony-github-standing-release.onrender.com",
+              },
             ],
           }
           abort("Core Render resolver registry is not bound to the exact production services") unless
