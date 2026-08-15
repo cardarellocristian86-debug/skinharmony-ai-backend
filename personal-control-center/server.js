@@ -184,6 +184,20 @@ const nyraPolicyRegistryAttester = createNyraPolicyRegistryAttester({
   testSigner: nyraPolicyRegistryLocalTestSigner,
   allowLocalSignerForTests: Boolean(nyraPolicyRegistryLocalTestSigner),
 });
+if (process.env.NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED === "true") {
+  void nyraPolicyRegistryAttester.probe({ force: true }).then((status) => {
+    console.log("[nyra-policy-registry]", JSON.stringify({
+      configured: status.configured,
+      ready: status.ready,
+      state: status.state,
+      signer_state: status.signer_state,
+      replay_state: status.replay_state,
+      replay_backend: status.replay_backend,
+      custody: status.custody,
+      error: status.error,
+    }));
+  });
+}
 
 function envTruthy(name) {
   return ["1", "true", "yes", "on"].includes(String(process.env[name] || "").trim().toLowerCase());
