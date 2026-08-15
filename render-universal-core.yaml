@@ -168,19 +168,19 @@ services:
       # and independently verified. Core holds public verification material
       # only; never add an in-process/private signing key here.
       - key: CORE_NYRA_POLICY_REGISTRY_PROOF_ENABLED
-        value: "false"
+        value: "true"
       - key: CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED
-        value: "false"
+        value: "true"
       - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_ENABLED
-        value: "false"
+        value: "true"
       - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_REQUIRED
-        value: "false"
+        value: "true"
       - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_PROVENANCE_MODE
-        value: disabled
+        value: core_deterministic_recompile
       - key: CORE_NYRA_POLICY_REGISTRY_COMPILER_TRAVERSAL_BUDGET
         value: "256"
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_MODE
-        value: disabled
+        value: remote
       - key: CORE_NYRA_POLICY_REGISTRY_TENANT_ALLOWLIST
         value: codexai
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_KEY_ID
@@ -188,15 +188,18 @@ services:
       - key: CORE_NYRA_POLICY_REGISTRY_NYRA_KEY_ID
         value: nyra-policy-registry-v1
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ORIGIN
-        sync: false
+        value: https://skinharmony-core-mcp.onrender.com
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_PATH
         value: /v1/policy-registry/sign
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE
         value: universal-core-policy-registry-signer
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
-        sync: false
+        value: c6882cd8594cd03dbff2ff7ffe6205bb81269f1a
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
-        sync: false
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_ED25519_PUBLIC_KEY
         sync: false
       - key: CORE_NYRA_POLICY_REGISTRY_CORE_SIGNER_TIMEOUT_MS

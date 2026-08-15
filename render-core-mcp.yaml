@@ -118,6 +118,21 @@ services:
         value: "false"
       - key: NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED
         value: "false"
+      # Existing MCP service hosts the isolated Core Policy Registry signer.
+      # Render generates both secrets; Universal Core receives only the bearer
+      # token and public verification material, never the signing seed.
+      - key: POLICY_REGISTRY_CORE_SIGNER_ENABLED
+        value: "true"
+      - key: POLICY_REGISTRY_CORE_SIGNER_SERVICE
+        value: universal-core-policy-registry-signer
+      - key: POLICY_REGISTRY_CORE_SIGNER_KEY_ID
+        value: universal-core-policy-registry-v1
+      - key: POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
+        value: c6882cd8594cd03dbff2ff7ffe6205bb81269f1a
+      - key: POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
+        generateValue: true
+      - key: POLICY_REGISTRY_CORE_SIGNER_SEED
+        generateValue: true
       # Dedicated MCP→Core Deep V2 request signature. Universal Core consumes
       # the same generated value through an internal Render reference. It is
       # an internal continuity signature, not a model-provider credential.

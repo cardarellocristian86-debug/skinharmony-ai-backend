@@ -115,12 +115,31 @@ services:
         sync: false
       - key: NYRA_POLICY_REGISTRY_ATTESTATION_MAX_AGE_MS
         value: "300000"
+      # The existing Nyra service owns its signer seed and exposes only the
+      # authenticated narrow signing route plus public readiness metadata.
+      - key: NYRA_POLICY_REGISTRY_EMBEDDED_SIGNER_ENABLED
+        value: "true"
+      - key: NYRA_POLICY_REGISTRY_EMBEDDED_SIGNER_SERVICE
+        value: nyra-policy-registry-signer
+      - key: NYRA_POLICY_REGISTRY_EMBEDDED_SIGNER_KEY_ID
+        value: nyra-policy-registry-v1
+      - key: NYRA_POLICY_REGISTRY_EMBEDDED_SIGNER_TARGET_COMMIT
+        sync: false
+      - key: NYRA_POLICY_REGISTRY_EMBEDDED_SIGNER_PURPOSE
+        value: nyra.policy_registry.attestation
+      - key: NYRA_POLICY_REGISTRY_EMBEDDED_SIGNER_SERVICE_TOKEN
+        generateValue: true
+      - key: NYRA_POLICY_REGISTRY_EMBEDDED_SIGNER_SEED
+        generateValue: true
       # A dedicated least-privilege PostgreSQL DSN is provisioned manually;
       # the MCP/Core database credential is deliberately not copied here.
       - key: NYRA_POLICY_REGISTRY_DATABASE_URL
-        sync: false
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: DATABASE_URL
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_ORIGIN
-        sync: false
+        value: https://skinharmony-nyra-core.onrender.com
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PATH
         value: /v1/policy-registry/sign
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE
@@ -132,7 +151,10 @@ services:
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_KEY_ID
         value: nyra-policy-registry-v1
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE_TOKEN
-        sync: false
+        fromService:
+          type: web
+          name: skinharmony-nyra-core
+          envVarKey: NYRA_POLICY_REGISTRY_EMBEDDED_SIGNER_SERVICE_TOKEN
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TIMEOUT_MS
         value: "1500"
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_MAX_RESPONSE_BYTES

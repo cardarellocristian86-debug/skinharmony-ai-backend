@@ -12,6 +12,11 @@ const {
   createNyraPolicyRegistryLocalTestSigner,
 } = require("./lib/nyra-policy-registry-attestation");
 const {
+  HEALTH_ROUTE: NYRA_POLICY_REGISTRY_SIGNER_HEALTH_ROUTE,
+  SIGN_ROUTE: NYRA_POLICY_REGISTRY_SIGNER_ROUTE,
+  createNyraPolicyRegistryEmbeddedSigner,
+} = require("./lib/nyra-policy-registry-embedded-signer");
+const {
   compileIntent,
   detectIntentDrift,
   synthesizeDecisionPath,
@@ -184,6 +189,7 @@ const nyraPolicyRegistryAttester = createNyraPolicyRegistryAttester({
   testSigner: nyraPolicyRegistryLocalTestSigner,
   allowLocalSignerForTests: Boolean(nyraPolicyRegistryLocalTestSigner),
 });
+const nyraPolicyRegistryEmbeddedSigner = createNyraPolicyRegistryEmbeddedSigner({ env: process.env });
 
 function envTruthy(name) {
   return ["1", "true", "yes", "on"].includes(String(process.env[name] || "").trim().toLowerCase());
@@ -259,6 +265,10 @@ function rateLimitAllowed(req) {
 }
 
 function authenticateNyraRequest(req) {
+  if (req.method === "POST" && req.path === NYRA_POLICY_REGISTRY_SIGNER_ROUTE &&
+    nyraPolicyRegistryEmbeddedSigner.authorize(req.get("authorization"))) {
+    return { ok: true, method: "policy_registry_embedded_signer_token" };
+  }
   if (req.path === NYRA_POLICY_REGISTRY_ATTESTATION_PATH && req.method === "POST") {
     const expected = String(process.env.NYRA_POLICY_REGISTRY_CORE_SERVICE_KEY || "").trim();
     const supplied = String(req.get("x-nyra-policy-registry-service-key") || "").trim();
@@ -339,7 +349,7 @@ app.use((req, res, next) => {
   res.setHeader("Referrer-Policy", "no-referrer");
   if (req.path.startsWith("/api/")) res.setHeader("Cache-Control", "no-store");
 
-  if (req.path === "/healthz") {
+  if (req.path === "/healthz" || req.path === NYRA_POLICY_REGISTRY_SIGNER_HEALTH_ROUTE) {
     next();
     return;
   }
@@ -430,6 +440,14 @@ app.get("/healthz", async (_req, res) => {
     policy_registry_attestation: policyRegistryAttestation,
   });
 });
+
+app.get(NYRA_POLICY_REGISTRY_SIGNER_HEALTH_ROUTE, (_req, res) => {
+  const health = nyraPolicyRegistryEmbeddedSigner.health();
+  res.setHeader("Cache-Control", "no-store");
+  res.status(health.ready ? 200 : 503).json(health);
+});
+
+app.post(NYRA_POLICY_REGISTRY_SIGNER_ROUTE, (req, res) => nyraPolicyRegistryEmbeddedSigner.handle(req, res));
 
 app.post(NYRA_POLICY_REGISTRY_ATTESTATION_PATH, authorizeExactNyraPolicyRegistryRoute, async (req, res) => {
   try {

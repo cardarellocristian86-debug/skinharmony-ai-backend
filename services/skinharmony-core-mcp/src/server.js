@@ -44,8 +44,14 @@ import {
   CAUSAL_CONTINUITY_TOOLS,
   createCausalContinuityHandlers,
 } from "./causal-continuity.js";
+import {
+  POLICY_REGISTRY_SIGN_ROUTE,
+  POLICY_REGISTRY_SIGNER_HEALTH_ROUTE,
+  createPolicyRegistrySigner,
+} from "./policy-registry-signer.js";
 
 const config = loadConfig();
+const policyRegistrySigner = createPolicyRegistrySigner();
 const genericWorkCoreJoinActivationEnabled = config.genericWorkCoreJoinEnabled === true &&
   config.genericWorkCoreJoinConfigurationValid === true;
 let genericWorkCoreJoinVerifier = null;
@@ -1276,4 +1282,9 @@ const disabledProviderPortal = (_req, res) => res
   .send('<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Funzione disattivata</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Funzione disattivata</h1><p>Il collegamento OpenAI non viene più usato. Nyra e Universal Core funzionano senza chiave API.</p><p>Puoi chiudere questa pagina e continuare normalmente in ChatGPT o Codex.</p></body></html>');
 
 app.use(["/connect/openai", "/agents", "/mobile/agents"], disabledProviderPortal);
+app.get(POLICY_REGISTRY_SIGNER_HEALTH_ROUTE, (_req, res) => res
+  .status(policyRegistrySigner.health().ready ? 200 : 503)
+  .set("cache-control", "no-store")
+  .json(policyRegistrySigner.health()));
+app.post(POLICY_REGISTRY_SIGN_ROUTE, (req, res) => policyRegistrySigner.handle(req, res));
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));
