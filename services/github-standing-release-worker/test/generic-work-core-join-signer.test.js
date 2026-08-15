@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import healthContract from "../../shared/host-native-health-contract.cjs";
 import { createGitHubStandingReleaseWorker } from "../src/server.js";
 
 const GITHUB_KEYS = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -37,6 +38,7 @@ function baseEnv(root, overrides = {}) {
     GENERIC_WORK_CORE_JOIN_SIGNER_PURPOSE: "generic_work_core_join_v1",
     GENERIC_WORK_CORE_JOIN_SIGNER_KEY_ID: KEY_ID,
     RENDER_GIT_COMMIT: TARGET_COMMIT,
+    RENDER_DEPLOY_ID: "deploy-worker-test",
     GENERIC_WORK_CORE_JOIN_SIGNER_SERVICE_TOKEN: TOKEN,
     GENERIC_WORK_CORE_JOIN_SIGNER_PRIVATE_KEY: SIGNER_KEYS.privateKey
       .export({ type: "pkcs8", format: "pem" })
@@ -100,7 +102,23 @@ test("sign route accepts the exact Universal Core contract and returns a verifia
   await withWorker({}, async ({ health, request }) => {
     const status = await health();
     assert.equal(status.status, 200);
+    assert.equal(status.json.ok, true);
     assert.equal(status.json.ready, true);
+    assert.equal(status.json.render_ready, true);
+    assert.equal(status.json.version, "1.0.0");
+    assert.deepEqual(status.json.build, {
+      build_id: "deploy-worker-test",
+      commit_sha: TARGET_COMMIT,
+      commit_verifiable: true,
+    });
+    assert.equal(
+      status.json.health_contract_version,
+      healthContract.HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+    );
+    assert.equal(
+      status.json.health_contract_digest,
+      healthContract.HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+    );
     assert.equal(status.json.execution_endpoint_enabled, true);
     assert.deepEqual(status.json.generic_work_core_join_signer, {
       configured: true,
@@ -186,6 +204,7 @@ test("signer configuration failures are explicit in health and fail closed witho
     ["missing target pin", {
       GENERIC_WORK_CORE_JOIN_SIGNER_TARGET_COMMIT: "",
       RENDER_GIT_COMMIT: "",
+      GIT_COMMIT: TARGET_COMMIT,
     }, "generic_work_core_join_signer_target_commit_invalid"],
     ["target differs from live commit", {
       GENERIC_WORK_CORE_JOIN_SIGNER_TARGET_COMMIT: "c".repeat(40),
@@ -231,4 +250,20 @@ test("sign route is gated by worker readiness and emergency stop", async (t) => 
       });
     });
   }
+});
+
+test("health and signing fail closed when the provider build commit is unverifiable", async () => {
+  await withWorker({ RENDER_GIT_COMMIT: "" }, async ({ health, request }) => {
+    const status = await health();
+    assert.equal(status.status, 503);
+    assert.equal(status.json.ok, false);
+    assert.equal(status.json.ready, false);
+    assert.equal(status.json.render_ready, false);
+    assert.equal(status.json.build.commit_sha, null);
+    assert.equal(status.json.build.commit_verifiable, false);
+    assert.equal(status.json.generic_work_core_join_signer.ready, false);
+    const denied = await request(SIGN_ROUTE);
+    assert.equal(denied.status, 503);
+    assert.deepEqual(denied.json, { error: "signer_unavailable" });
+  });
 });

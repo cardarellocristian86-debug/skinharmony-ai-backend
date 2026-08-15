@@ -1,4 +1,5 @@
 import express from "express";
+import healthContract from "../../shared/host-native-health-contract.cjs";
 import { createGitHubInstallationTokenResolver, parseGitHubAppBindings } from "./githubApp.js";
 import { verifyGitHubWorkerExecutionClaim } from "../../shared/github-worker-execution-claim.js";
 import { createFileExecutionLedger } from "./executionLedger.js";
@@ -7,6 +8,8 @@ import {
   GENERIC_WORK_CORE_JOIN_SIGN_ROUTE,
   createGenericWorkCoreJoinSignerEndpoint,
 } from "./genericWorkCoreJoinSigner.js";
+
+const WORKER_VERSION = "1.0.0";
 
 function boolean(value, fallback = false) {
   if (value === undefined || value === "") return fallback;
@@ -24,6 +27,7 @@ function positiveInteger(value, code) {
 export function createGitHubStandingReleaseWorker({ env = process.env, fetch_impl = fetch } = {}) {
   const enabled = boolean(env.GITHUB_STANDING_RELEASE_WORKER_ENABLED, false);
   const port = positiveInteger(env.PORT || 8792, "github_worker_port_invalid");
+  const build = healthContract.buildIdentity(env);
   let emergencyStop = false;
   let resolver = null;
   let ledger = null;
@@ -61,7 +65,8 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
     && ledger !== null
     && executor !== null
     && reconciler !== null
-    && readinessError === null;
+    && readinessError === null
+    && build.commit_verifiable === true;
 
   const app = express();
   app.disable("x-powered-by");
@@ -77,9 +82,14 @@ export function createGitHubStandingReleaseWorker({ env = process.env, fetch_imp
     // The GitHub execution adapter and Generic Join signer are independent
     // horizontal capabilities. Each publishes and enforces its own readiness.
     const ready = executionReady;
-    res.status(ready ? 200 : 503).json({
-      ok: ready,
+    const hostHealth = healthContract.healthPayload({
       service: "github-standing-release-worker",
+      version: WORKER_VERSION,
+      ready,
+      environment: env,
+    });
+    res.status(hostHealth.render_ready ? 200 : 503).json({
+      ...hostHealth,
       coordination_model: "horizontal_peer_adapters_v1",
       provider: "github_app",
       enabled,
