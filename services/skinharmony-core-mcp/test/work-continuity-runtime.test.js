@@ -323,6 +323,48 @@ test("continuity schema is persistent, tenant-scoped and append-only", () => {
   assert.ok(WORK_EVENT_TYPES.has("memory_verified"));
 });
 
+test("authoritative Work events invoke the Gallery projector in the same transaction", async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, parameters = []) {
+      calls.push({ sql, parameters });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
+      if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
+      if (/SELECT w.current_version,v.architecture/.test(sql)) {
+        return { rows: [{ current_version: 1, architecture: { functions: [], components: [], dependencies: [], links: [] } }] };
+      }
+      if (/SELECT sequence_number,event_hash FROM core_continuity_events/.test(sql)) return { rows: [] };
+      return { rows: [], rowCount: 1 };
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const projected = [];
+  runtime.setWorkEventProjector(async (input) => {
+    projected.push(input);
+    assert.equal(input.client, pool);
+  });
+  await assert.rejects(
+    async () => runtime.setWorkEventProjector(() => {}),
+    /work_event_projector_already_configured/,
+  );
+  const result = await runtime.recordChange({ tenantId: "tenant-a", subject: "owner" }, {
+    work_id: WORK_ID,
+    idempotency_key: "project-gallery-event-0001",
+    expected_version: 1,
+    architecture: { functions: [], components: [], dependencies: [], links: [] },
+    change: { function_id: "gallery-projector", reason: "keep projection aligned" },
+    next_action: "verify Gallery",
+  });
+  assert.equal(result.event.event_type, "function_changed");
+  assert.equal(projected.length, 1);
+  assert.equal(projected[0].tenant_id, "tenant-a");
+  assert.equal(projected[0].work_id, WORK_ID);
+  assert.equal(projected[0].event.event_hash, result.event.event_hash);
+  assert.deepEqual(projected[0].event.payload.version, 2);
+  assert(calls.some((call) => /INSERT INTO core_continuity_events/.test(call.sql)));
+});
+
 test("continuity capabilities expose correct read/write and confirmation boundaries", () => {
   const names = [
     "work_continuity_create", "work_continuity_record_change", "work_continuity_checkpoint",

@@ -126,6 +126,11 @@ class ReconciliationPool {
         item.tenant_id === params[0] && item.legacy_work_id === params[1]);
       return { rows: row ? [{ ...row }] : [] };
     }
+    if (q.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2)")) {
+      const row = [...this.works.values()].find((item) => item.tenant_id === params[0] &&
+        (item.legacy_work_id === params[1] || item.work_id === params[1]));
+      return { rows: row ? [{ ...row }] : [] };
+    }
     if (q.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2")) {
       const row = this.works.get(`${params[0]}:${params[1]}`);
       return { rows: row ? [{ ...row }] : [] };
