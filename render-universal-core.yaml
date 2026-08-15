@@ -126,7 +126,7 @@ services:
       # equality claim; Core selects the binding and verifies the exact GitHub
       # Actions app, workflow run, event, branch and commit itself.
       - key: CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON
-        value: '{"schema_version":"host_native_required_checks_registry_v1","bindings":[{"tenant_id":"codexai","repository":"cardarellocristian86-debug/skinharmony-ai-backend","base_branch":"main","required_checks":["core-mcp","deployment-parity","universal-core"],"check_app":{"id":15368,"slug":"github-actions","owner":"github"},"workflow":{"id":312527659,"name":"Nyra Core Intelligence","path":".github/workflows/nyra-core-intelligence.yml","sha256":"139bf3efeeda714cfa6c295bcbef4dcd3db278bf33a946b50b8d08a2ebec8bc6","candidate_sha256":"bd0cf791ed5eb9c123d9c514fc165ed39dd06c85c134936b0bc5c5d5e0309975"},"allowed_events":["pull_request","push"]}]}'
+        value: '{"schema_version":"host_native_required_checks_registry_v1","bindings":[{"tenant_id":"codexai","repository":"cardarellocristian86-debug/skinharmony-ai-backend","base_branch":"main","required_checks":["core-mcp","deployment-parity","universal-core"],"check_app":{"id":15368,"slug":"github-actions","owner":"github"},"workflow":{"id":312527659,"name":"Nyra Core Intelligence","path":".github/workflows/nyra-core-intelligence.yml","sha256":"139bf3efeeda714cfa6c295bcbef4dcd3db278bf33a946b50b8d08a2ebec8bc6","candidate_sha256":"98af37f6d0f2f9cfd14551959fca0e156239295633703e250a6587d2edd8a348"},"allowed_events":["pull_request","push"]}]}'
       - key: CORE_RUNTIME_V2_MODE
         value: active
       - key: LEXICAL_SEMANTIC_MODE
