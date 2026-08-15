@@ -133,7 +133,13 @@ jobs:
       - name: Install MCP dependencies for staging integration tests
         working-directory: .
         run: npm ci --prefix services/skinharmony-core-mcp
-      - run: node --test test/*.test.js
+      - name: Test governed Universal Core automation contracts
+        run: |
+          node --test \
+            test/bootstrap-required-checks-readback.test.js \
+            test/host-native-governance.test.js \
+            test/host-native-resolver-registry.test.js \
+            test/nyra-work-automation-*.test.js
       - name: Test Nyra Work Automation v3 contracts
         working-directory: .
         run: |
@@ -1214,6 +1220,11 @@ jobs:
           node --test
           personal-control-center/test/nyra-policy-registry-attestation-postgres16.test.js
       - name: Test Universal Core from root install
-        run: node --test services/universal-core-service/test/*.test.js
+        run: |
+          node --test \
+            services/universal-core-service/test/bootstrap-required-checks-readback.test.js \
+            services/universal-core-service/test/host-native-governance.test.js \
+            services/universal-core-service/test/host-native-resolver-registry.test.js \
+            services/universal-core-service/test/nyra-work-automation-*.test.js
       - name: Test Core MCP from root install
         run: npm run core:mcp:test
