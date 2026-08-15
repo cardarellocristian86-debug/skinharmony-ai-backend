@@ -7,7 +7,7 @@ import { causalDigest } from "../src/causalContinuityCanonical.js";
 test("all registered logical branches inherit the shared causal contract", () => {
   const registry = extendCausalBranchRegistry(deterministicBranchRegistry());
   const ids = Object.keys(registry).sort();
-  assert.equal(ids.length, 72);
+  assert.equal(ids.length, 73);
   for (const id of ids) {
     const contract = registry[id];
     assert.equal(contract.requires_causal_context, true, id);
@@ -18,13 +18,13 @@ test("all registered logical branches inherit the shared causal contract", () =>
     assert(Array.isArray(contract.inherited_constraints), id);
   }
   const digest = causalDigest(ids.map((id) => ({ id, ...registry[id] })));
-  assert.equal(digest, "c01a0f659a048d175758f9273123f7ba52b2835ec32aae6707f41d10a8632656");
+  assert.equal(digest, "ae747faf445d5ee164a34f5d0f4183438a19d130bf09d785296bdbf745a39e8f");
 });
 
-test("the 70 active-advisory candidates retain evidence-only causal authority", () => {
+test("the 71 active-advisory candidates retain evidence-only causal authority", () => {
   const registry = extendCausalBranchRegistry(deterministicBranchRegistry());
   const advisory = Object.entries(registry).filter(([, contract]) => contract.production_status === "advisory");
-  assert.equal(advisory.length, 70);
+  assert.equal(advisory.length, 71);
   for (const [id, contract] of advisory) {
     assert.equal(contract.can_propose_intent_revision, false, id);
     assert.equal(contract.can_approve_intent_revision, false, id);

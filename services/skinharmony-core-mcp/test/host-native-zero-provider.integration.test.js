@@ -202,8 +202,16 @@ class EphemeralContinuityPool {
         : null;
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }
+    if (query.startsWith("SELECT plan_id,plan_version FROM core_continuity_native_plans")) {
+      const rows = [...this.plans.values()]
+        .filter((row) => row.tenant_id === parameters[0] && row.work_id === parameters[1])
+        .sort((left, right) => Number(right.plan_version || 1) - Number(left.plan_version || 1) ||
+          String(right.created_at).localeCompare(String(left.created_at)) || String(right.plan_id).localeCompare(String(left.plan_id)));
+      return { rows: rows.length ? [{ plan_id: rows[0].plan_id, plan_version: rows[0].plan_version || 1 }] : [], rowCount: rows.length ? 1 : 0 };
+    }
     if (query.startsWith("INSERT INTO core_continuity_native_plans")) {
-      const [tenantId, workId, planId, plan, planDigest, createdBy] = parameters;
+      const [tenantId, workId, planId, plan, planDigest, createdBy, changeId, baseStateDigest,
+        contractSchema, planVersion, supersedesPlanId] = parameters;
       this.plans.set(mapKey(tenantId, planId), {
         tenant_id: tenantId,
         work_id: workId,
@@ -212,6 +220,11 @@ class EphemeralContinuityPool {
         plan_digest: planDigest,
         status: "planned",
         created_by: createdBy,
+        change_id: changeId,
+        base_state_digest: baseStateDigest,
+        contract_schema: contractSchema,
+        plan_version: planVersion,
+        supersedes_plan_id: supersedesPlanId,
         created_at: this.now().toISOString(),
       });
       return { rows: [], rowCount: 1 };

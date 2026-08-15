@@ -12,10 +12,12 @@
     "test:core-runtime": "node --experimental-strip-types --test test/core-runtime-hierarchy.test.js",
     "test:core-runtime:parity": "node --experimental-strip-types tools/check-core-runtime-parity.js",
     "test:local-software-agent": "node --test test/ghidra-headless-adapter.test.js test/frida-local-adapter.test.js",
-    "benchmark:software": "node tools/benchmark-universal-software.js"
+    "benchmark:software": "node tools/benchmark-universal-software.js",
+    "benchmark:software-cognition": "node tools/benchmark-software-cognition.js"
   },
   "dependencies": {
     "express": "^5.2.1",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "typescript": "6.0.3"
   }
 }

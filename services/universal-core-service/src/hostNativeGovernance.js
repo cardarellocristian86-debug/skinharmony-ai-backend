@@ -1421,8 +1421,19 @@ function coreJoinClaim(input, manifest, closure, requiredChecksPolicyDigest = nu
     100,
   );
   if (!SHA256.test(release_intent_digest)) fail("core_join_verdict_binding_mismatch");
+  const softwareClosureDigest = input.software_closure_digest === undefined
+    ? null
+    : digest(input.software_closure_digest);
+  const softwareClosureFreshUntilText = softwareClosureDigest
+    ? text(input.software_closure_fresh_until, "software_cognition_closure_expired_during_issuance", 64)
+    : null;
+  const softwareClosureFreshUntil = softwareClosureFreshUntilText ? Date.parse(softwareClosureFreshUntilText) : null;
+  if (softwareClosureFreshUntilText && (!Number.isFinite(softwareClosureFreshUntil) ||
+      new Date(softwareClosureFreshUntil).toISOString() !== softwareClosureFreshUntilText)) {
+    fail("software_cognition_closure_expired_during_issuance");
+  }
   const claim = {
-    schema_version: "host_native_core_join_claim_v1",
+    schema_version: softwareClosureDigest ? "host_native_core_join_claim_v2" : "host_native_core_join_claim_v1",
     tenant_id: manifest.tenant_id,
     work_id: manifest.work_id,
     intent_anchor_digest: manifest.intent_anchor_digest,
@@ -1443,6 +1454,8 @@ function coreJoinClaim(input, manifest, closure, requiredChecksPolicyDigest = nu
       evidence_digest: digest(input.checks.evidence_digest),
     },
     closure_attestation: closure,
+    ...(softwareClosureDigest ? { software_closure_digest: softwareClosureDigest } : {}),
+    ...(softwareClosureFreshUntilText ? { software_closure_fresh_until: softwareClosureFreshUntilText } : {}),
     release_intent_digest,
     ...(requiredChecksPolicyDigest
       ? { required_checks_policy_digest: requiredChecksPolicyDigest }
@@ -1782,6 +1795,13 @@ export function createHostNativeGovernance({
   const ticketTtl = Math.max(1_000, Math.min(60 * 60_000, Number(ticketTtlMs) || DEFAULT_TICKET_TTL_MS));
   const leaseMs = Math.max(1_000, Math.min(60 * 60_000, Number(reservationLeaseMs) || DEFAULT_RESERVATION_LEASE_MS));
   const coreJoinTtl = Math.max(1_000, Math.min(60 * 60_000, Number(coreJoinTtlMs) || DEFAULT_CORE_JOIN_TTL_MS));
+  const assertSoftwareConsumerFresh = (trusted = {}) => {
+    if (trusted.software_closure_fresh_until === undefined) return;
+    const freshUntil = Date.parse(trusted.software_closure_fresh_until || "");
+    if (!Number.isFinite(freshUntil) || nowMillis(now) > freshUntil) {
+      fail("software_cognition_closure_expired_during_consumption");
+    }
+  };
   const standingReleaseRuntimeEnabled = () => (
     typeof standingReleaseAutomationEnabled === "function"
       ? standingReleaseAutomationEnabled() === true
@@ -2844,7 +2864,7 @@ export function createHostNativeGovernance({
       }
     },
 
-    async bindStandingReleaseRunTicket(input = {}) {
+    async bindStandingReleaseRunTicket(input = {}, trusted = {}) {
       exactKeys(input, new Set([
         "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
         "ticket_id", "expected_version", "dtt_session_fingerprint",
@@ -2863,6 +2883,7 @@ export function createHostNativeGovernance({
         freshStandingReleaseRunIntent(input, tenantId, current.run, nowValue);
         return current;
       }
+      assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "bindStandingReleaseRunTicket", idempotencyInput);
         if (descriptor?.result) {
@@ -2905,7 +2926,7 @@ export function createHostNativeGovernance({
       });
     },
 
-    async advanceStandingReleaseRun(input = {}) {
+    async advanceStandingReleaseRun(input = {}, trusted = {}) {
       exactKeys(input, new Set([
         "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
         "ticket_id", "expected_version", "dtt_session_fingerprint",
@@ -2926,6 +2947,7 @@ export function createHostNativeGovernance({
         freshStandingReleaseRunIntent(input, tenantId, current.run, nowValue);
         return current;
       }
+      assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "advanceStandingReleaseRun", idempotencyInput);
         if (descriptor?.result) {
@@ -3292,6 +3314,9 @@ export function createHostNativeGovernance({
       const claim_digest = hostNativeDigest(claim);
       const verdictId = `hnj_${claim_digest.slice(0, 40)}`;
       const nowValue = nowMillis(now);
+      if (claim.software_closure_fresh_until && nowValue > Date.parse(claim.software_closure_fresh_until)) {
+        fail("software_cognition_closure_expired_during_issuance");
+      }
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "issueCoreJoinVerdict", input);
         if (descriptor?.result) return descriptor.result;
@@ -3299,7 +3324,7 @@ export function createHostNativeGovernance({
         if (existing) return saveIdempotent(state, descriptor, clone(existing));
         const { schema_version: _claimSchemaVersion, ...claimFields } = claim;
         const verdictUnsigned = {
-          schema_version: "host_native_core_join_v1",
+          schema_version: claim.schema_version === "host_native_core_join_claim_v2" ? "host_native_core_join_v2" : "host_native_core_join_v1",
           verdict_id: verdictId,
           claim_digest,
           ...claimFields,
@@ -3307,7 +3332,8 @@ export function createHostNativeGovernance({
           allowed: true,
           provider_execution: false,
           issued_at: iso(nowValue),
-          expires_at: iso(nowValue + coreJoinTtl),
+          expires_at: iso(Math.min(nowValue + coreJoinTtl,
+            claim.software_closure_fresh_until ? Date.parse(claim.software_closure_fresh_until) : Number.POSITIVE_INFINITY)),
         };
         const verdict = { ...verdictUnsigned, signature: hmac("hnj", signing, canonical(verdictUnsigned)) };
         const record = {
@@ -3349,7 +3375,7 @@ export function createHostNativeGovernance({
       } catch { return false; }
     },
 
-    async issueActionTicket(input = {}) {
+    async issueActionTicket(input = {}, trusted = {}) {
       const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
       const initial = store.readState();
       const replay = getIdempotent(initial, tenantId, "issueActionTicket", input);
@@ -3950,6 +3976,7 @@ export function createHostNativeGovernance({
           }
         }
       }
+      assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "issueActionTicket", input);
         if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
@@ -4058,7 +4085,7 @@ export function createHostNativeGovernance({
       catch { return false; }
     },
 
-    async reserveStandingReleaseRunTicket(input = {}) {
+    async reserveStandingReleaseRunTicket(input = {}, trusted = {}) {
       exactKeys(input, new Set([
         "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
         "ticket_id", "expected_version", "host_session_fingerprint",
@@ -4086,10 +4113,10 @@ export function createHostNativeGovernance({
         standing_release_run_version: run.version,
         dtt_request_binding_digest: input.dtt_request_binding_digest,
         idempotency_key: input.idempotency_key,
-      });
+      }, trusted);
     },
 
-    async completeStandingReleaseRunTicket(input = {}) {
+    async completeStandingReleaseRunTicket(input = {}, trusted = {}) {
       exactKeys(input, new Set([
         "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
         "ticket_id", "expected_version", "reservation_id", "host_session_fingerprint",
@@ -4128,10 +4155,10 @@ export function createHostNativeGovernance({
         standing_release_run_version: run.version,
         dtt_request_binding_digest: input.dtt_request_binding_digest,
         idempotency_key: input.idempotency_key,
-      });
+      }, trusted);
     },
 
-    async reconcileStandingReleaseRunTicket(input = {}) {
+    async reconcileStandingReleaseRunTicket(input = {}, trusted = {}) {
       exactKeys(input, new Set([
         "tenant_id", "run_id", "work_id", "intent_anchor_digest", "intent_binding",
         "ticket_id", "expected_version", "reservation_id", "host_session_fingerprint",
@@ -4168,10 +4195,10 @@ export function createHostNativeGovernance({
         standing_release_run_version: run.version,
         dtt_request_binding_digest: input.dtt_request_binding_digest,
         idempotency_key: input.idempotency_key,
-      });
+      }, trusted);
     },
 
-    async reserveActionTicket(input = {}) {
+    async reserveActionTicket(input = {}, trusted = {}) {
       exactKeys(input, new Set([
         "tenant_id", "ticket_id", "host_session_fingerprint", "standing_release_run_id",
         "standing_release_run_version", "dtt_request_binding_digest", "idempotency_key",
@@ -4217,6 +4244,7 @@ export function createHostNativeGovernance({
           fail(String(error?.message || "bootstrap_release_exception_consumption_denied"));
         }
       }
+      assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "reserveActionTicket", idempotencyInput);
         if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
@@ -4293,7 +4321,7 @@ export function createHostNativeGovernance({
       });
     },
 
-    async completeActionTicket(input = {}) {
+    async completeActionTicket(input = {}, trusted = {}) {
       exactKeys(input, new Set([
         "tenant_id", "ticket_id", "reservation_id", "host_session_fingerprint", "outcome", "result_digest", "result_commit", "result_pull_request", "readback_digest",
         "standing_release_run_id", "standing_release_run_version",
@@ -4307,6 +4335,7 @@ export function createHostNativeGovernance({
       const idempotencyInput = actionLifecycleIdempotencyInput(input);
       const replay = getIdempotent(initial, tenantId, "completeActionTicket", idempotencyInput);
       if (replay?.result) return validateStandingReplay(initial, replay.result, nowValue);
+      assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "completeActionTicket", idempotencyInput);
         if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
@@ -4354,7 +4383,7 @@ export function createHostNativeGovernance({
       });
     },
 
-    async reconcileActionTicket(input = {}) {
+    async reconcileActionTicket(input = {}, trusted = {}) {
       exactKeys(input, new Set([
         "tenant_id", "ticket_id", "reservation_id", "host_session_fingerprint", "observed_outcome", "observed_commit", "observed_pull_request", "readback_digest",
         "standing_release_run_id", "standing_release_run_version",
@@ -4368,6 +4397,7 @@ export function createHostNativeGovernance({
       const idempotencyInput = actionLifecycleIdempotencyInput(input);
       const replay = getIdempotent(initial, tenantId, "reconcileActionTicket", idempotencyInput);
       if (replay?.result) return validateStandingReplay(initial, replay.result, nowValue);
+      assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "reconcileActionTicket", idempotencyInput);
         if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
@@ -4409,7 +4439,7 @@ export function createHostNativeGovernance({
     // independently observed effect that occurred after a valid ticket was
     // issued but before the host reserved it. The original ticket timestamps
     // and reservation fields remain untouched; the default verdict is BLOCKED.
-    async observeUnreservedActionEffect(input = {}) {
+    async observeUnreservedActionEffect(input = {}, trusted = {}) {
       exactKeys(input, new Set([
         "tenant_id", "ticket_id", "host_session_fingerprint", "observed_outcome",
         "observed_commit", "readback_digest", "verifier_evidence_digest",
@@ -4454,6 +4484,7 @@ export function createHostNativeGovernance({
         fail("unreserved_effect_classification_invalid");
       }
       const continuationAuthorized = classification === "RECONCILED_WITH_EXCEPTION" && decision.continuation_authorized === true;
+      assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "observeUnreservedActionEffect", input);
         if (descriptor?.result) return descriptor.result;
@@ -4490,7 +4521,7 @@ export function createHostNativeGovernance({
       });
     },
 
-    async authorizeFinalize(input = {}) {
+    async authorizeFinalize(input = {}, trusted = {}) {
       exactKeys(input, new Set(["tenant_id", "ticket_id", "host_session_fingerprint"]));
       const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
       const nowValue = nowMillis(now);
@@ -4501,6 +4532,7 @@ export function createHostNativeGovernance({
         previousAuthorization &&
         Date.parse(previousAuthorization.expires_at || 0) > nowValue
       ) {
+        assertSoftwareConsumerFresh(trusted);
         return clone(current.finalize_authorization);
       }
       if (
@@ -4631,6 +4663,7 @@ export function createHostNativeGovernance({
           fail("trusted_readback_service_mismatch");
         }
       }
+      assertSoftwareConsumerFresh(trusted);
       return store.mutate((state) => {
         const record = state.tickets[String(input.ticket_id || "")];
         if (!record || record.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");

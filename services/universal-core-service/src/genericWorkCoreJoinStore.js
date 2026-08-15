@@ -24,7 +24,11 @@ export function createMemoryGenericWorkCoreJoinStore() {
       if (existing) return clone(existing);
       const nonceOwner = nonces.get(nonceKey);
       if (nonceOwner && nonceOwner !== key) fail("generic_work_core_join_nonce_replayed");
-      const immutable = Object.freeze(clone(record));
+      if (record.software_closure_fresh_until && Date.now() > Date.parse(record.software_closure_fresh_until)) {
+        fail("software_cognition_closure_expired_during_issuance");
+      }
+      const { software_closure_fresh_until: _freshnessGuard, ...durableRecord } = record;
+      const immutable = Object.freeze(clone(durableRecord));
       records.set(key, immutable); nonces.set(nonceKey, key);
       events.push(Object.freeze({ event_type: "generic_work_core_join_issued", tenant_id: record.tenant_id, work_id: record.work_id, adapter: record.adapter, idempotency_digest: record.idempotency_digest, verdict_id: record.verdict.verdict_id, receipt_digest: record.independent_verifier_receipt_digest, event_digest: crypto.createHash("sha256").update(JSON.stringify(record.verdict)).digest("hex") }));
       return clone(immutable);
@@ -67,6 +71,10 @@ export function createPostgresGenericWorkCoreJoinStore({ pool } = {}) {
         if (existing) { await client.query("COMMIT"); return existing; }
         const nonce = await client.query("SELECT 1 FROM generic_work_core_joins WHERE tenant_id=$1 AND verifier_nonce=$2 FOR UPDATE", [record.tenant_id, record.verifier_nonce]);
         if (nonce.rowCount) fail("generic_work_core_join_nonce_replayed");
+        if (record.software_closure_fresh_until) {
+          const fresh = await client.query("SELECT clock_timestamp() <= $1::timestamptz AS fresh", [record.software_closure_fresh_until]);
+          if (fresh.rows[0]?.fresh !== true) fail("software_cognition_closure_expired_during_issuance");
+        }
         await client.query(`INSERT INTO generic_work_core_joins (tenant_id,work_id,adapter,idempotency_digest,request_canonical,request_digest,independent_verifier_receipt_digest,verifier_nonce,verdict_id,verdict) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`, [record.tenant_id, record.work_id, record.adapter, record.idempotency_digest, record.request_canonical, record.request_digest, record.independent_verifier_receipt_digest, record.verifier_nonce, record.verdict.verdict_id, JSON.stringify(record.verdict)]);
         await client.query(`INSERT INTO generic_work_core_join_events (tenant_id,work_id,adapter,idempotency_digest,verdict_id,receipt_digest,event_type) VALUES ($1,$2,$3,$4,$5,$6,'generic_work_core_join_issued')`, [record.tenant_id, record.work_id, record.adapter, record.idempotency_digest, record.verdict.verdict_id, record.independent_verifier_receipt_digest]);
         await client.query("COMMIT"); return clone(record);

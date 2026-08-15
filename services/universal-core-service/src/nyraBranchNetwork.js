@@ -137,6 +137,16 @@ const NYRA_BRANCHES = Object.freeze([
     "compatibility_mapping", "clean_room_variant", "patch_candidate", "sandbox_plan", "security_review",
     "license_review", "regression_matrix", "evidence_confidence", "core_verdict", "learning_handoff",
   ], ["*"], { workPhase: "research", coreBranchBindings: ["research_evidence_intelligence", "quality_verification_intelligence"] }),
+  branch("software_cognition", "Software Cognition", [
+    "software cognition", "cognitive twin", "reality graph", "change impact", "obligation coverage", "supervisory challenge", "runtime reconciliation",
+  ], [
+    "software_reality_graph", "requirement_traceability", "change_impact_prediction", "causal_obligation_coverage",
+    "worker_plan_review", "supervisory_challenge", "predicted_actual_reconciliation", "runtime_reality",
+    "architecture_recovery", "verified_learning_calibration", "closure_readiness_advisory",
+  ], ["*"], { workPhase: "verification", coreBranchBindings: [
+    "research_evidence_intelligence", "planning_priority_intelligence", "execution_coordination_intelligence",
+    "quality_verification_intelligence", "adaptive_learning_intelligence",
+  ] }),
   branch("suite_domain", "Suite Product Pack", ["suite", "sito", "wordpress", "landing", "pubblica"], [
     "site_governance", "content_publishing", "template_management", "landing_management", "lead_capture",
     "deployment_readiness", "site_isolation", "rollback_readiness",
@@ -166,6 +176,7 @@ const CORE_TO_NYRA_REQUEST_ROUTES = Object.freeze({
   agent_orchestration: Object.freeze(["relational_supervision", "agent_orchestration"]),
   ai_orchestration: Object.freeze(["relational_supervision", "ai_orchestration"]),
   software_systems_intelligence: Object.freeze(["software_intelligence"]),
+  software_cognition: Object.freeze(["software_cognition"]),
   software_binary_intelligence: Object.freeze(["software_intelligence"]),
   suite_governance: Object.freeze(["suite_domain"]),
   smartdesk_operations_guard: Object.freeze(["smartdesk_domain"]),

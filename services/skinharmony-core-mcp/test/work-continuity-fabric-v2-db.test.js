@@ -413,8 +413,16 @@ class ContinuityPool {
       } : null;
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT plan_id,plan_version FROM core_continuity_native_plans")) {
+      const rows = [...this.plans.values()]
+        .filter((row) => row.tenant_id === parameters[0] && row.work_id === parameters[1])
+        .sort((left, right) => Number(right.plan_version || 1) - Number(left.plan_version || 1) ||
+          String(right.created_at).localeCompare(String(left.created_at)) || String(right.plan_id).localeCompare(String(left.plan_id)));
+      return { rows: rows.length ? [{ plan_id: rows[0].plan_id, plan_version: rows[0].plan_version || 1 }] : [], rowCount: rows.length ? 1 : 0 };
+    }
     if (q.startsWith("INSERT INTO core_continuity_native_plans")) {
-      const [tenantId, workId, planId, plan, planDigest, createdBy] = parameters;
+      const [tenantId, workId, planId, plan, planDigest, createdBy, changeId, baseStateDigest,
+        contractSchema, planVersion, supersedesPlanId] = parameters;
       this.plans.set(key(tenantId, planId), {
         tenant_id: tenantId,
         work_id: workId,
@@ -423,6 +431,11 @@ class ContinuityPool {
         plan_digest: planDigest,
         status: "planned",
         created_by: createdBy,
+        change_id: changeId,
+        base_state_digest: baseStateDigest,
+        contract_schema: contractSchema,
+        plan_version: planVersion,
+        supersedes_plan_id: supersedesPlanId,
         created_at: this.clock().toISOString(),
       });
       return { rows: [], rowCount: 1 };
@@ -2327,6 +2340,8 @@ test("local closure becomes release-ready and external completion needs exact Co
   const coreJoinRecord = await realCore.issueCoreJoinVerdict({
     tenant_id: "tenant-a",
     ...evaluation.core_join_material.core_join_request,
+    software_closure_digest: "8".repeat(64),
+    software_closure_fresh_until: "2099-08-15T12:00:00.000Z",
     release_intent: releaseIntent,
     idempotency_key: "real-core-hnj-contract",
   });
@@ -2337,6 +2352,8 @@ test("local closure becomes release-ready and external completion needs exact Co
     ...evaluation.core_join_material.core_join_request,
     release_intent_digest: releaseIntent.release_intent_digest,
     base_branch: releaseIntent.base_branch,
+    software_closure_digest: "8".repeat(64),
+    software_closure_fresh_until: "2099-08-15T12:00:00.000Z",
     required_checks_policy_digest:
       planned.plan.core_authority.required_checks_policy_digest,
   };
@@ -2350,7 +2367,7 @@ test("local closure becomes release-ready and external completion needs exact Co
   assert.equal(
     verdict.claim_digest,
     hostNativeDigest({
-      schema_version: "host_native_core_join_claim_v1",
+      schema_version: "host_native_core_join_claim_v2",
       ...expectedCoreClaim,
     }),
   );

@@ -10,6 +10,7 @@ import { createUniversalCoreService } from "../src/app.js";
 import { genericWorkCoreJoinDigest, genericWorkCoreJoinSignaturePayload } from "../src/genericWorkCoreJoin.js";
 import { GENERIC_WORK_CORE_JOIN_SIGN_RESPONSE_SCHEMA_VERSION } from "../src/genericWorkCoreJoinRemoteSigner.js";
 import { createMemoryGenericWorkCoreJoinStore, createPostgresGenericWorkCoreJoinStore } from "../src/genericWorkCoreJoinStore.js";
+import { softwareAuthoritySnapshotDigest } from "../src/softwareCognition.js";
 import {
   GENERIC_WORK_CORE_JOIN_CONTEXT_HEADER,
   canonicalGenericWorkCoreJoinContextBody,
@@ -123,10 +124,10 @@ function joinContext(pathname, payload, {
     ttl_ms: 10_000,
   });
 }
-function body({ idempotency = "idem-001", nonce = "nonce-001" } = {}) {
+function body({ idempotency = "idem-001", nonce = "nonce-001", evidenceDigests } = {}) {
   const acceptance_criteria = [{ criterion_id: "criterion-001", criterion_digest: digest("criterion"), evidence_digest: digest("criterion-evidence"), verification_digest: digest("criterion-verification") }];
   const task_state = [{ task_id: "task-001", completion_evidence_digest: digest("task-evidence"), task_state_digest: digest("task-state"), verification_digest: digest("task-verification") }];
-  const evidence_digests = [digest("evidence-001")];
+  const evidence_digests = evidenceDigests || [digest("evidence-001")];
   const unsigned = { schema_version: "generic_work_independent_verifier_receipt_v1", tenant_id: TENANT, work_id: WORK_ID, adapter: "research", acceptance_criteria_digest: genericWorkCoreJoinDigest(acceptance_criteria), task_state_digest: genericWorkCoreJoinDigest(task_state), evidence_digest: genericWorkCoreJoinDigest([...evidence_digests].sort()), verification_digest: digest("verification"), verifier_identity: "verifier-001", session_id: "verifier-session-001", nonce, issued_at: "2026-08-08T09:59:00.000Z", expires_at: "2099-08-08T10:05:00.000Z" };
   return { work_id: WORK_ID, adapter: "research", requester_identity: "builder-001", requester_session_id: "builder-session-001", idempotency_digest: digest(idempotency), acceptance_criteria, task_state, evidence_digests, independent_verifier_receipt: { ...unsigned, signature: crypto.createHmac("sha256", DTT_SECRET).update(`generic_work_verifier_receipt_v1\0${genericWorkCoreJoinDigest(unsigned)}`).digest("base64url") } };
 }
@@ -451,6 +452,71 @@ test("canonical and legacy generic Core Join routes await the same durable issue
     assert.equal(status.generic_work_core_join.key_id, "generic-work-core-join-api-key");
     assert.match(status.generic_work_core_join.public_key_fingerprint, /^[a-f0-9]{64}$/);
     assert.equal(Object.hasOwn(status.generic_work_core_join, "private_key"), false);
+  });
+});
+
+test("ENFORCED Generic Join binds the fresh software closure digest in independently verified evidence", async () => {
+  const closureDigest = digest("software-closure");
+  const graph = { revision: 3, source_digest: digest("atlas"), nodes: [], edges: [] };
+  const snapshot = { project: { digest: "project" }, work: { digest: "work" }, change: { digest: "change" },
+    obligations: [], evidence: [], icf: { digest: "icf" }, graph, native_plan: { digest: "plan" },
+    latest_native_plan_id: "plan-a", native_closure: { digest: "native" }, challenges: [], artifacts: {},
+    db_now: new Date().toISOString() };
+  const closure = { project_id: "project-a", payload: { verdict: "RELEASE_READY", authoritative_transition_performed: false,
+    graph_revision: graph.revision, graph_digest: graph.source_digest, change_id: "change-a", plan_id: "plan-a",
+    authority_snapshot_digest: softwareAuthoritySnapshotDigest(snapshot), evidence_fresh_until: new Date(Date.now() + 60_000).toISOString(),
+    closure_digest: closureDigest } };
+  let freshnessChecks = 0;
+  const softwareStore = {
+    async withClosureAuthorityLock(_scope, operation) {
+      return operation({
+        readReleaseReadyClosure: async () => closure,
+        readGraph: async () => graph,
+        readClosureSnapshot: async () => snapshot,
+        assertClosureFresh: async ({ fresh_until, issued_at }) => {
+          freshnessChecks += 1;
+          assert(Date.parse(issued_at) <= Date.parse(fresh_until));
+        },
+      });
+    },
+  };
+  const softwareRuntime = { initialize: async () => ({ ready: true }), invoke: async () => { throw new Error("not_invoked"); } };
+  const joinStore = createMemoryGenericWorkCoreJoinStore();
+  joinStore.restart_durable = true; joinStore.distributed = true; joinStore.initialize = async () => {};
+  await withService({ genericWorkCoreJoinStore: joinStore, softwareCognitionMode: "ENFORCED",
+    softwareCognitionStore: softwareStore, softwareCognitionRuntime: softwareRuntime }, async (request, health) => {
+    for (let attempt = 0; attempt < 5 && (await health()).software_cognition.state !== "ready"; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+    const missing = await request("/v1/work-continuity/generic-core-join", body({ idempotency: "software-missing", nonce: "software-missing" }));
+    assert.equal(missing.status, 409, JSON.stringify(missing.json));
+    assert.equal(missing.json.error, "software_cognition_closure_digest_mismatch");
+    const boundBody = body({ idempotency: "software-bound", nonce: "software-bound", evidenceDigests: [digest("evidence-001"), closureDigest] });
+    const issued = await request("/v1/work-continuity/generic-core-join", boundBody);
+    assert.equal(issued.status, 201, JSON.stringify(issued.json));
+    assert.equal(issued.json.verdict.evidence_digest, genericWorkCoreJoinDigest([...boundBody.evidence_digests].sort()));
+    assert.equal(freshnessChecks, 1);
+  });
+});
+
+test("OFF suppresses injected NSCT runtime and invalid rollout fails Join closed", async () => {
+  let initialized = 0;
+  const runtime = { initialize: async () => { initialized += 1; }, invoke: async () => ({}) };
+  await withService({ softwareCognitionMode: "OFF", softwareCognitionRuntime: runtime }, async (_request, health) => {
+    const status = await health();
+    assert.equal(status.software_cognition.state, "disabled");
+    assert.equal(status.software_cognition.rollout_mode, "OFF");
+    assert.equal(initialized, 0);
+  });
+  const joinStore = createMemoryGenericWorkCoreJoinStore();
+  joinStore.restart_durable = true; joinStore.distributed = true; joinStore.initialize = async () => {};
+  await withService({ genericWorkCoreJoinStore: joinStore, softwareCognitionMode: "enforce", softwareCognitionRuntime: runtime }, async (request, health) => {
+    const status = await health();
+    assert.equal(status.software_cognition.state, "configuration_invalid");
+    assert.equal(status.software_cognition.rollout_mode, "INVALID");
+    assert.equal(initialized, 0);
+    const denied = await request("/v1/work-continuity/generic-core-join", body({ idempotency: "invalid-mode", nonce: "invalid-mode" }));
+    assert.equal(denied.status, 409);
+    assert.equal(denied.json.error, "software_cognition_mode_invalid");
+    assert.equal(joinStore.events().length, 0);
   });
 });
 

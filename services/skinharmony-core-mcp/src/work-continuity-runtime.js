@@ -18,6 +18,7 @@ export const WORK_EVENT_TYPES = new Set([
   "message_posted",
   "intent_anchored", "native_plan_created", "native_agent_bound",
   "native_agent_reported", "closure_evaluated", "atlas_updated",
+  "software_challenge_opened", "software_challenge_resolved", "software_receipt_recorded",
   "incident_recorded", "incident_runbook_verified", "incident_runbook_quarantined",
   "native_plan_superseded", "native_agent_lease_expired",
   "core_join_issued", "closure_finalized",
@@ -477,6 +478,7 @@ export function buildNativeAgentPlan(input = {}) {
   if (normalizedTasks.filter((task) => task.kind === "builder").length !== 1) {
     throw new Error("native_agent_single_builder_required");
   }
+  const softwareContract = input.software_contract === undefined ? null : cleanJson(input.software_contract, 80_000);
   return {
     schema_version: "native_agent_plan_v1",
     execution_mode: "host_native_only",
@@ -491,6 +493,7 @@ export function buildNativeAgentPlan(input = {}) {
     required_checks: requiredChecks,
     tasks: normalizedTasks,
     closure_requirements: requirements,
+    ...(softwareContract ? { software_contract: { schema_version: "worker_plan_contract_v1", ...softwareContract } } : {}),
   };
 }
 
@@ -1422,11 +1425,18 @@ CREATE TABLE IF NOT EXISTS core_continuity_session_bindings (
 CREATE TABLE IF NOT EXISTS core_continuity_native_plans (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, plan_id uuid NOT NULL,
   plan jsonb NOT NULL, plan_digest char(64) NOT NULL, status varchar(32) NOT NULL DEFAULT 'planned',
+  change_id uuid, base_state_digest char(64), contract_schema varchar(80) NOT NULL DEFAULT 'native_agent_plan_v1',
+  plan_version bigint NOT NULL DEFAULT 1, supersedes_plan_id uuid,
   created_by varchar(120) NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
   closed_at timestamptz,
   PRIMARY KEY (tenant_id, plan_id),
   FOREIGN KEY (tenant_id, work_id) REFERENCES core_continuity_works(tenant_id, work_id)
 );
+ALTER TABLE core_continuity_native_plans ADD COLUMN IF NOT EXISTS change_id uuid;
+ALTER TABLE core_continuity_native_plans ADD COLUMN IF NOT EXISTS base_state_digest char(64);
+ALTER TABLE core_continuity_native_plans ADD COLUMN IF NOT EXISTS contract_schema varchar(80) NOT NULL DEFAULT 'native_agent_plan_v1';
+ALTER TABLE core_continuity_native_plans ADD COLUMN IF NOT EXISTS plan_version bigint NOT NULL DEFAULT 1;
+ALTER TABLE core_continuity_native_plans ADD COLUMN IF NOT EXISTS supersedes_plan_id uuid;
 CREATE INDEX IF NOT EXISTS core_continuity_native_plans_work_idx
   ON core_continuity_native_plans (tenant_id, work_id, created_at DESC);
 
@@ -1510,10 +1520,13 @@ CREATE TABLE IF NOT EXISTS core_continuity_atlas_state (
 CREATE INDEX IF NOT EXISTS core_continuity_atlas_project_idx
   ON core_continuity_atlas_state (tenant_id, project_id, updated_at DESC);
 CREATE TABLE IF NOT EXISTS core_continuity_atlas_nodes (
-  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, node_id varchar(160) NOT NULL,
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, project_id varchar(64), node_id varchar(160) NOT NULL,
   node_kind varchar(60) NOT NULL, path text NOT NULL DEFAULT '', symbol text NOT NULL DEFAULT '',
   summary text NOT NULL DEFAULT '', node_digest char(64) NOT NULL, context_bytes integer NOT NULL,
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb, revision bigint NOT NULL, active boolean NOT NULL DEFAULT true,
+  source_kind varchar(80), source_ref text, source_digest char(64), provenance jsonb NOT NULL DEFAULT '{}'::jsonb,
+  verification_state varchar(32) NOT NULL DEFAULT 'observed', confidence double precision NOT NULL DEFAULT 0.5,
+  tombstoned_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, work_id, node_id),
   FOREIGN KEY (tenant_id, work_id) REFERENCES core_continuity_works(tenant_id, work_id)
@@ -1521,10 +1534,21 @@ CREATE TABLE IF NOT EXISTS core_continuity_atlas_nodes (
 CREATE INDEX IF NOT EXISTS core_continuity_atlas_nodes_path_idx
   ON core_continuity_atlas_nodes (tenant_id, work_id, path);
 CREATE TABLE IF NOT EXISTS core_continuity_atlas_edges (
-  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, from_node_id varchar(160) NOT NULL,
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, project_id varchar(64), from_node_id varchar(160) NOT NULL,
   to_node_id varchar(160) NOT NULL, edge_type varchar(60) NOT NULL, revision bigint NOT NULL,
+  edge_id varchar(64), edge_digest char(64), source varchar(120), provenance jsonb NOT NULL DEFAULT '{}'::jsonb,
+  verification_state varchar(32) NOT NULL DEFAULT 'observed', confidence double precision NOT NULL DEFAULT 0.5,
+  active boolean NOT NULL DEFAULT true, tombstoned_at timestamptz, updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, work_id, from_node_id, to_node_id, edge_type),
   FOREIGN KEY (tenant_id, work_id) REFERENCES core_continuity_works(tenant_id, work_id)
+);
+
+CREATE TABLE IF NOT EXISTS core_continuity_atlas_revision_history (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, project_id varchar(64) NOT NULL,
+  revision bigint NOT NULL, source_digest char(64) NOT NULL, base_commit varchar(64), head_commit varchar(64),
+  node_count bigint NOT NULL, edge_count bigint NOT NULL, provenance jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(tenant_id,work_id,revision),
+  FOREIGN KEY(tenant_id,work_id) REFERENCES core_continuity_atlas_state(tenant_id,work_id)
 );
 
 CREATE TABLE IF NOT EXISTS core_continuity_incident_runbooks (
@@ -3032,6 +3056,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
           WHERE w.tenant_id=$1 AND w.work_id=$2 FOR UPDATE`,
         [context.tenantId, context.workId]);
         if (!work.rows[0]) throw new Error("continuity_work_not_found");
+        const priorPlan = (await client.query(`SELECT plan_id,plan_version FROM core_continuity_native_plans
+          WHERE tenant_id=$1 AND work_id=$2 ORDER BY plan_version DESC,created_at DESC,plan_id DESC LIMIT 1 FOR UPDATE`,
+        [context.tenantId, context.workId])).rows[0];
+        const planVersion = Number(priorPlan?.plan_version || 0) + 1;
         const plan = {
           ...basePlan,
           coordinator_session_fingerprint: coordinatorSessionFingerprint,
@@ -3048,9 +3076,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
         };
         const planDigest = digest(plan);
         await client.query(`INSERT INTO core_continuity_native_plans
-          (tenant_id,work_id,plan_id,plan,plan_digest,status,created_by)
-          VALUES ($1,$2,$3,$4::jsonb,$5,'planned',$6)`,
-        [context.tenantId, context.workId, planId, JSON.stringify(plan), planDigest, context.actor]);
+          (tenant_id,work_id,plan_id,plan,plan_digest,status,created_by,change_id,base_state_digest,contract_schema,plan_version,supersedes_plan_id)
+          VALUES ($1,$2,$3,$4::jsonb,$5,'planned',$6,$7,$8,$9,$10,$11)`,
+        [context.tenantId, context.workId, planId, JSON.stringify(plan), planDigest, context.actor,
+          plan.software_contract?.change_id || null, plan.software_contract?.base_state_digest || null,
+          plan.software_contract ? "worker_plan_contract_v1" : "native_agent_plan_v1", planVersion, priorPlan?.plan_id || null]);
         const receipt = await insertNativeReceipt(client, context, {
           plan_id: planId,
           receipt_type: "plan_created",
@@ -3661,6 +3691,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ...material.core_join_request,
         release_intent_digest: expectedReleaseIntentDigest,
         base_branch: expectedReleaseIntent.base_branch,
+        ...(verdict.schema_version === "host_native_core_join_v2"
+          ? { software_closure_digest: releaseField(verdict.software_closure_digest,
+              "software_closure_digest", /^[a-f0-9]{64}$/, 64),
+            software_closure_fresh_until: dateValue(verdict.software_closure_fresh_until, "software_closure_fresh_until").toISOString() }
+          : {}),
         ...(row.plan.core_authority?.required_checks_policy_digest
           ? {
               required_checks_policy_digest:
@@ -3669,7 +3704,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
           : {}),
       };
       const expectedClaimDigest = digest({
-        schema_version: "host_native_core_join_claim_v1",
+        schema_version: verdict.schema_version === "host_native_core_join_v2"
+          ? "host_native_core_join_claim_v2"
+          : "host_native_core_join_claim_v1",
         ...expectedClaim,
       });
       const verdictId = String(verdict.verdict_id || "");
@@ -3679,7 +3716,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         coreJoinRecord.schema_version !== "host_native_core_join_record_v1" ||
         coreJoinRecord.tenant_id !== context.tenantId ||
         coreJoinRecord.state !== "active" ||
-        verdict.schema_version !== "host_native_core_join_v1" ||
+        !["host_native_core_join_v1", "host_native_core_join_v2"].includes(verdict.schema_version) ||
         verdict.authority !== "universal_core" ||
         verdict.allowed !== true ||
         verdict.provider_execution !== false ||
@@ -4110,6 +4147,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
         symbol: safeText(node.symbol, 500),
         summary,
         metadata,
+        source_kind: identifier(node.source_kind || "work_atlas", "source_kind", 80),
+        source_ref: safeText(node.source_ref || node.path || nodeId, 2_000),
+        provenance: cleanJson(node.provenance || {}, 20_000),
+        verification_state: ["observed", "inferred_candidate", "verified", "contradicted", "stale"].includes(node.verification_state) ? node.verification_state : "observed",
+        confidence: Math.max(0, Math.min(1, Number(node.confidence ?? 0.5))),
       };
       return {
         ...normalized,
@@ -4124,6 +4166,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         from_node_id: identifier(edge.from_node_id, "from_node_id", 160),
         to_node_id: identifier(edge.to_node_id, "to_node_id", 160),
         edge_type: identifier(edge.edge_type || "depends_on", "edge_type", 60),
+        provenance: cleanJson(edge.provenance || {}, 20_000),
+        verification_state: ["observed", "inferred_candidate", "verified", "contradicted", "stale"].includes(edge.verification_state) ? edge.verification_state : "observed",
+        confidence: Math.max(0, Math.min(1, Number(edge.confidence ?? 0.5))),
       };
       if ((!nodeIds.has(normalized.from_node_id) || !nodeIds.has(normalized.to_node_id)) &&
           (!input.allow_existing_edge_nodes || input.replace === true)) {
@@ -4164,35 +4209,45 @@ export function createWorkContinuityRuntime(config, options = {}) {
         }
         const revision = currentRevision + 1;
         if (input.replace === true) {
-          await client.query(`UPDATE core_continuity_atlas_nodes SET active=false,revision=$3,updated_at=now()
+          await client.query(`UPDATE core_continuity_atlas_nodes SET active=false,revision=$3,tombstoned_at=clock_timestamp(),updated_at=clock_timestamp()
             WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId, revision]);
-          await client.query(`DELETE FROM core_continuity_atlas_edges WHERE tenant_id=$1 AND work_id=$2`,
-            [context.tenantId, context.workId]);
+          await client.query(`UPDATE core_continuity_atlas_edges
+            SET active=false,revision=$3,tombstoned_at=clock_timestamp(),updated_at=clock_timestamp()
+            WHERE tenant_id=$1 AND work_id=$2 AND active=true`, [context.tenantId, context.workId, revision]);
         }
         let changedNodes = 0;
         for (const node of nodes) {
           const written = await client.query(`INSERT INTO core_continuity_atlas_nodes
-            (tenant_id,work_id,node_id,node_kind,path,symbol,summary,node_digest,context_bytes,metadata,revision,active)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,true)
+            (tenant_id,work_id,project_id,node_id,node_kind,path,symbol,summary,node_digest,context_bytes,metadata,revision,active,
+             source_kind,source_ref,source_digest,provenance,verification_state,confidence,tombstoned_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,true,$13,$14,$9,$15::jsonb,$16,$17,NULL)
             ON CONFLICT (tenant_id,work_id,node_id) DO UPDATE SET
-              node_kind=EXCLUDED.node_kind,path=EXCLUDED.path,symbol=EXCLUDED.symbol,
+              project_id=EXCLUDED.project_id,node_kind=EXCLUDED.node_kind,path=EXCLUDED.path,symbol=EXCLUDED.symbol,
               summary=EXCLUDED.summary,node_digest=EXCLUDED.node_digest,
               context_bytes=EXCLUDED.context_bytes,metadata=EXCLUDED.metadata,
-              revision=EXCLUDED.revision,active=true,updated_at=now()
+              revision=EXCLUDED.revision,active=true,source_kind=EXCLUDED.source_kind,source_ref=EXCLUDED.source_ref,
+              source_digest=EXCLUDED.source_digest,provenance=EXCLUDED.provenance,verification_state=EXCLUDED.verification_state,
+              confidence=EXCLUDED.confidence,tombstoned_at=NULL,updated_at=clock_timestamp()
             WHERE core_continuity_atlas_nodes.node_digest IS DISTINCT FROM EXCLUDED.node_digest
                OR core_continuity_atlas_nodes.active=false
             RETURNING node_id`,
-          [context.tenantId, context.workId, node.node_id, node.node_kind, node.path, node.symbol,
-            node.summary, node.node_digest, node.context_bytes, JSON.stringify(node.metadata), revision]);
+          [context.tenantId, context.workId, work.rows[0].project_id, node.node_id, node.node_kind, node.path, node.symbol,
+            node.summary, node.node_digest, node.context_bytes, JSON.stringify(node.metadata), revision, node.source_kind,
+            node.source_ref, JSON.stringify(node.provenance), node.verification_state, node.confidence]);
           changedNodes += Number(written.rowCount ?? written.rows.length);
         }
         for (const edge of edges) {
           await client.query(`INSERT INTO core_continuity_atlas_edges
-            (tenant_id,work_id,from_node_id,to_node_id,edge_type,revision)
-            VALUES ($1,$2,$3,$4,$5,$6)
+            (tenant_id,work_id,project_id,from_node_id,to_node_id,edge_type,revision,edge_id,edge_digest,source,provenance,verification_state,confidence,active,tombstoned_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,true,NULL)
             ON CONFLICT (tenant_id,work_id,from_node_id,to_node_id,edge_type)
-            DO UPDATE SET revision=EXCLUDED.revision`,
-          [context.tenantId, context.workId, edge.from_node_id, edge.to_node_id, edge.edge_type, revision]);
+            DO UPDATE SET project_id=EXCLUDED.project_id,revision=EXCLUDED.revision,edge_id=EXCLUDED.edge_id,
+              edge_digest=EXCLUDED.edge_digest,source=EXCLUDED.source,provenance=EXCLUDED.provenance,
+              verification_state=EXCLUDED.verification_state,confidence=EXCLUDED.confidence,active=true,tombstoned_at=NULL,updated_at=clock_timestamp()`,
+          [context.tenantId, context.workId, work.rows[0].project_id, edge.from_node_id, edge.to_node_id, edge.edge_type, revision,
+            `sce_${digest({ tenant_id: context.tenantId, work_id: context.workId, ...edge }).slice(0, 48)}`,
+            digest({ tenant_id: context.tenantId, work_id: context.workId, ...edge }), "software_cognition_v1",
+            JSON.stringify(edge.provenance), edge.verification_state, edge.confidence]);
         }
         const totals = await client.query(`SELECT count(*)::bigint AS total_nodes,
             COALESCE(sum(context_bytes),0)::bigint AS total_context_bytes
@@ -4206,8 +4261,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
           SET revision=$3,total_nodes=$4,total_context_bytes=$5,source_hash=$6,updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2`,
         [context.tenantId, context.workId, revision, totalNodes, totalContextBytes, sourceHash]);
+        await client.query(`INSERT INTO core_continuity_atlas_revision_history
+          (tenant_id,work_id,project_id,revision,source_digest,base_commit,head_commit,node_count,edge_count,provenance)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`, [context.tenantId, context.workId, work.rows[0].project_id,
+          revision, sourceHash, input.base_commit || null, input.head_commit || null, totalNodes, edges.length,
+          JSON.stringify({ actor: context.actor, incremental: input.replace !== true })]);
         const event = await appendEvent(client, context, "atlas_updated", {
           revision,
+          source_hash: sourceHash,
           changed_nodes: changedNodes,
           submitted_nodes: nodes.length,
           submitted_edges: edges.length,
@@ -4247,6 +4308,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
     });
     if (!seedNodeIds.length) throw new Error("work_atlas_seed_required");
     const maxDepth = Math.min(Math.max(Number(input.max_depth) || 1, 0), 4);
+    const maxNodes = Math.min(Math.max(Number(input.max_nodes) || 200, 1), 500);
+    const edgeTypes = input.edge_types === undefined ? null : stringList(input.edge_types, "edge_types", { maxItems: 40, maxLength: 60 });
+    if (edgeTypes && !edgeTypes.length) throw new Error("work_atlas_edge_types_invalid");
 
     // An explicit work remains an exact snapshot lookup. Project selection is
     // a separate aggregate projection below and never silently substitutes
@@ -4263,6 +4327,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           SELECT CASE WHEN e.from_node_id=s.node_id THEN e.to_node_id ELSE e.from_node_id END,s.depth+1
           FROM selected s JOIN core_continuity_atlas_edges e
             ON e.tenant_id=$1 AND e.work_id=$2
+           AND e.active=true
+           AND ($5::varchar[] IS NULL OR e.edge_type=ANY($5::varchar[]))
            AND (e.from_node_id=s.node_id OR e.to_node_id=s.node_id)
           WHERE s.depth<$4
         )
@@ -4272,8 +4338,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           ON n.tenant_id=$1 AND n.work_id=$2 AND n.node_id=s.node_id AND n.active=true
         GROUP BY n.node_id,n.node_kind,n.path,n.symbol,n.summary,n.node_digest,n.context_bytes,n.metadata
         ORDER BY min(s.depth),n.node_id`,
-      [tenantId, workId, seedNodeIds, maxDepth]);
-      const selected = selectAtlasWithinBudget(candidates.rows, {
+      [tenantId, workId, seedNodeIds, maxDepth, edgeTypes]);
+      const selected = selectAtlasWithinBudget(candidates.rows.slice(0, maxNodes), {
         max_bytes: input.max_bytes,
         total_context_bytes: Number(state.rows[0].total_context_bytes || 0),
       });
@@ -4377,6 +4443,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         JOIN latest_nodes source ON source.node_id=e.from_node_id
         JOIN latest_nodes target ON target.node_id=e.to_node_id
         WHERE e.tenant_id=$1 AND s.project_id=$2
+          AND e.active=true
+          AND ($5::varchar[] IS NULL OR e.edge_type=ANY($5::varchar[]))
         GROUP BY e.from_node_id,e.to_node_id,e.edge_type
       ),
       selected(node_id,depth) AS (
@@ -4393,21 +4461,23 @@ export function createWorkContinuityRuntime(config, options = {}) {
       GROUP BY n.node_id,n.node_kind,n.path,n.symbol,n.summary,n.node_digest,n.context_bytes,
         n.metadata,n.source_work_ids
       ORDER BY min(s.depth),n.node_id`,
-    [tenantId, projectId, seedNodeIds, maxDepth]);
-    const candidateNodeIds = candidates.rows.map((node) => node.node_id);
+    [tenantId, projectId, seedNodeIds, maxDepth, edgeTypes]);
+    const boundedCandidates = candidates.rows.slice(0, maxNodes);
+    const candidateNodeIds = boundedCandidates.map((node) => node.node_id);
     const aggregateEdges = candidateNodeIds.length
       ? await pool.query(`SELECT e.from_node_id,e.to_node_id,e.edge_type,
           array_agg(DISTINCT e.work_id ORDER BY e.work_id) AS source_work_ids
         FROM core_continuity_atlas_edges e
         JOIN core_continuity_atlas_state s
           ON s.tenant_id=e.tenant_id AND s.work_id=e.work_id
-        WHERE e.tenant_id=$1 AND s.project_id=$2
+        WHERE e.tenant_id=$1 AND s.project_id=$2 AND e.active=true
+          AND ($4::varchar[] IS NULL OR e.edge_type=ANY($4::varchar[]))
           AND e.from_node_id=ANY($3::varchar[]) AND e.to_node_id=ANY($3::varchar[])
         GROUP BY e.from_node_id,e.to_node_id,e.edge_type
         ORDER BY e.from_node_id,e.to_node_id,e.edge_type`,
-      [tenantId, projectId, candidateNodeIds])
+      [tenantId, projectId, candidateNodeIds, edgeTypes])
       : { rows: [] };
-    const selected = selectAggregatedAtlasWithinBudget(candidates.rows, aggregateEdges.rows, {
+    const selected = selectAggregatedAtlasWithinBudget(boundedCandidates, aggregateEdges.rows, {
       max_bytes: input.max_bytes,
       total_context_bytes: Number(totals.rows[0]?.total_context_bytes || 0),
     });
@@ -4415,8 +4485,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       work_id: String(state.work_id),
       revision: Number(state.revision || 0),
       source_hash: state.source_hash || null,
-      updated_at: new Date(state.updated_at).toISOString(),
-    }));
+    })).sort((a, b) => a.work_id.localeCompare(b.work_id));
     const sourceWorkIds = [...new Set(sourceStates.map((state) => state.work_id))].sort();
     const discoveryRequired = candidates.rows.length === 0;
     return {
@@ -4432,6 +4501,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         project_id: projectId,
         sources: sourceStates,
       }),
+      revision_vector: sourceStates,
+      project_revision_digest: digest({ tenant_id: tenantId, project_id: projectId, revision_vector: sourceStates }),
       source_work_ids: sourceWorkIds,
       aggregate: true,
       state: discoveryRequired ? "discovery_required" : "indexed",
@@ -4444,6 +4515,35 @@ export function createWorkContinuityRuntime(config, options = {}) {
         seed_nodes: seedNodeIds.length,
         traversal_depth: maxDepth,
       },
+    };
+  }
+
+  async function readAtlasGraph(identity, input) {
+    await initialize();
+    const tenantId = tenant(identity.tenantId);
+    const workId = uuid(input.work_id, "work_id");
+    const projectId = identifier(input.project_id, "project_id", 64);
+    const state = await pool.query(`SELECT revision,source_hash,total_nodes,total_context_bytes FROM core_continuity_atlas_state
+      WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3`, [tenantId, projectId, workId]);
+    if (!state.rows[0]) throw new Error("work_atlas_not_found");
+    const [nodes, edges] = await Promise.all([
+      pool.query(`SELECT node_id,node_kind,source_ref,source_kind,source_digest,provenance,metadata,revision
+        FROM core_continuity_atlas_nodes WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY node_id`,
+      [tenantId, projectId, workId]),
+      pool.query(`SELECT edge_id,from_node_id,to_node_id,edge_type,edge_digest,source,provenance
+        FROM core_continuity_atlas_edges WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY edge_id`,
+      [tenantId, projectId, workId]),
+    ]);
+    return {
+      schema_version: "software_reality_graph_atlas_v1", tenant_id: tenantId, project_id: projectId, work_id: workId,
+      revision: Number(state.rows[0].revision), source_digest: state.rows[0].source_hash,
+      nodes: nodes.rows.map((row) => ({ tenant_id: tenantId, project_id: projectId, work_id: workId, node_id: row.node_id,
+        kind: row.node_kind, source_ref: row.source_ref, source_kind: row.source_kind, provenance: row.provenance,
+        payload: row.metadata, digest: row.source_digest, version: Number(row.revision), tombstoned: false })),
+      edges: edges.rows.map((row) => ({ tenant_id: tenantId, project_id: projectId, work_id: workId, edge_id: row.edge_id,
+        from_node_id: row.from_node_id, to_node_id: row.to_node_id, edge_type: row.edge_type,
+        digest: row.edge_digest, source: row.source, provenance: row.provenance })),
+      metrics: { total_nodes: Number(state.rows[0].total_nodes), total_context_bytes: Number(state.rows[0].total_context_bytes) },
     };
   }
 
@@ -4998,6 +5098,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     finalizeClosure,
     upsertAtlas,
     selectAtlas,
+    readAtlasGraph,
     recordOperationalIncident,
     recordIncident,
     verifyIncident,

@@ -62,7 +62,7 @@ const STORE_INFRASTRUCTURE_CODES = new Set([
   "postgres_unavailable",
   "store_unavailable",
 ]);
-const STORE_SEMANTIC_CODES = new Set(["generic_work_core_join_idempotency_conflict", "generic_work_core_join_nonce_replayed"]);
+const STORE_SEMANTIC_CODES = new Set(["generic_work_core_join_idempotency_conflict", "generic_work_core_join_nonce_replayed", "software_cognition_closure_expired_during_issuance"]);
 const VERDICT_FIELDS = ["acceptance_criteria_digest", "adapter", "authority", "decision", "evidence_digest", "execution_authorized", "host_action_authorized", "idempotency_digest", "independent_verifier_receipt_digest", "issued_at", "key_id", "schema_version", "signature", "signature_algorithm", "task_state_digest", "tenant_id", "verdict_digest", "verdict_id", "work_id"];
 function fail(code) { throw new Error(code); }
 function errorCode(value) { return String(value?.message || value || ""); }
@@ -99,8 +99,14 @@ export function createGenericWorkCoreJoinAuthority({ signer: suppliedSigner, sig
   const signer = normalizeSigner(suppliedSigner || createLocalGenericWorkCoreJoinSigner({ privateKey: signingPrivateKey, keyId: signingKeyId }));
   if (typeof now !== "function" || typeof verifyIndependentVerifierReceipt !== "function" || !store || typeof store.read !== "function" || typeof store.record !== "function") fail("generic_work_core_join_dependency_unavailable");
 
-  async function issueDetailed(input = {}) {
+  async function issueDetailed(input = {}, { softwareClosure = null } = {}) {
     const material = requestMaterial(input);
+    if (softwareClosure) {
+      const closureDigest = digest(softwareClosure.digest, "software_cognition_closure_digest_mismatch");
+      const freshUntil = timestamp(softwareClosure.fresh_until, "software_cognition_closure_expired_during_issuance");
+      if (!input.evidence_digests.includes(closureDigest)) fail("software_cognition_closure_digest_mismatch");
+      softwareClosure = { digest: closureDigest, fresh_until: new Date(freshUntil).toISOString() };
+    }
     const key = { tenant_id: material.tenant_id, work_id: material.work_id, adapter: material.adapter, idempotency_digest: material.idempotency_digest };
     const prior = await readStore(store, key);
     if (prior) {
@@ -110,6 +116,7 @@ export function createGenericWorkCoreJoinAuthority({ signer: suppliedSigner, sig
     }
     const nowValue = now();
     if (!Number.isFinite(nowValue)) fail("clock_invalid");
+    if (softwareClosure && nowValue > Date.parse(softwareClosure.fresh_until)) fail("software_cognition_closure_expired_during_issuance");
     const verified = verifyReceipt(material.independent_verifier_receipt, material, nowValue, verifyIndependentVerifierReceipt);
     const unsigned = { schema_version: GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION, verdict_id: `gwcj_${genericWorkCoreJoinDigest({ ...key, receipt_digest: verified.digest }).slice(0, 40)}`, tenant_id: material.tenant_id, work_id: material.work_id, adapter: material.adapter, acceptance_criteria_digest: material.acceptance_criteria_digest, task_state_digest: material.task_state_digest, evidence_digest: material.evidence_digest, independent_verifier_receipt_digest: verified.digest, idempotency_digest: material.idempotency_digest, issued_at: new Date(nowValue).toISOString(), authority: "universal_core", decision: "GENERIC_WORK_CORE_JOIN_ELIGIBLE", execution_authorized: false, host_action_authorized: false, key_id: signer.key_id, signature_algorithm: "ed25519" };
     const verdict_digest = genericWorkCoreJoinDigest(unsigned);
@@ -122,7 +129,9 @@ export function createGenericWorkCoreJoinAuthority({ signer: suppliedSigner, sig
     decodeGenericWorkCoreJoinEd25519Signature(signature);
     const verdict = { ...unsigned, verdict_digest, signature };
     verifyGenericWorkCoreJoinVerdict({ verdict, expected: key, publicKey: signer.public_key, expectedKeyId: signer.key_id });
-    const recorded = await recordStore(store, { ...key, request_canonical: material.request_canonical, request_digest: material.request_digest, independent_verifier_receipt_digest: verified.digest, verifier_nonce: verified.nonce, verdict });
+    const recorded = await recordStore(store, { ...key, request_canonical: material.request_canonical, request_digest: material.request_digest,
+      independent_verifier_receipt_digest: verified.digest, verifier_nonce: verified.nonce, verdict,
+      ...(softwareClosure ? { software_closure_fresh_until: softwareClosure.fresh_until } : {}) });
     if (!recorded || typeof recorded !== "object") fail("generic_work_core_join_store_unavailable");
     if (recorded.request_canonical !== material.request_canonical) fail("generic_work_core_join_idempotency_conflict");
     verifyGenericWorkCoreJoinVerdict({ verdict: recorded.verdict, expected: key, publicKey: signer.public_key, expectedKeyId: signer.key_id });

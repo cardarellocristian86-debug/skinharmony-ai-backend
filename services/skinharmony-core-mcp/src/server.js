@@ -46,6 +46,10 @@ import {
   CAUSAL_CONTINUITY_TOOLS,
   createCausalContinuityHandlers,
 } from "./causal-continuity.js";
+import {
+  SOFTWARE_COGNITION_TOOLS,
+  createSoftwareCognitionHandlers,
+} from "./software-cognition.js";
 
 const config = loadConfig();
 const genericWorkCoreJoinActivationEnabled = config.genericWorkCoreJoinEnabled === true &&
@@ -78,6 +82,7 @@ TOOLS.push(...NYRA_AUTOPILOT_TOOLS);
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...HOST_NATIVE_TOOLS);
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...NYRA_WORK_AUTOMATION_TOOLS);
 TOOLS.push(...CAUSAL_CONTINUITY_TOOLS);
+TOOLS.push(...SOFTWARE_COGNITION_TOOLS);
 
 const primaryDatabasePool = config.databaseUrl
   ? new Pool({
@@ -351,6 +356,15 @@ const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === tru
   : {};
 const causalContinuityHandlers = createCausalContinuityHandlers({
   coreRequest: coreHandlers.causalCoreRequest,
+  issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
+    secret: config.dttAgentIdentitySigningSecret,
+    tenant_id,
+    agent_presence,
+  }),
+});
+const softwareCognitionHandlers = createSoftwareCognitionHandlers({
+  coreRequest: coreHandlers.causalCoreRequest,
+  atlasRuntime: workContinuityRuntime,
   issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
     secret: config.dttAgentIdentitySigningSecret,
     tenant_id,
@@ -660,6 +674,7 @@ const baseHandlers = {
 
   ...coreHandlers,
   ...causalContinuityHandlers,
+  ...softwareCognitionHandlers,
   work_preflight: async (args, identity) => {
     const result = await coreHandlers.work_preflight(args, identity);
     await ensureContinuity(identity, args, "work_preflight", result, { resumeExisting: true });
