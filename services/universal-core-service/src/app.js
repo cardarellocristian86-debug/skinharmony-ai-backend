@@ -5577,6 +5577,25 @@ export function createUniversalCoreService(options = {}) {
   if (genericWorkCoreJoinProduction && options.genericWorkCoreJoinSigner !== undefined) {
     genericWorkCoreJoinConfigurationError ||= "generic_work_core_join_signer_injection_forbidden";
   }
+  const genericWorkCoreJoinCanonicalPublicKey =
+    typeof process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PUBLIC_KEY === "string"
+    && process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PUBLIC_KEY.trim()
+      ? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PUBLIC_KEY
+      : undefined;
+  const genericWorkCoreJoinLegacyPublicKey =
+    typeof process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY === "string"
+    && process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY.trim()
+      ? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY
+      : undefined;
+  if (genericWorkCoreJoinActivationEnabled
+      && genericWorkCoreJoinRemoteSignerMode === "remote"
+      && genericWorkCoreJoinInjectedRemoteConfig === undefined
+      && options.genericWorkCoreJoinRemoteSignerPublicKey === undefined
+      && genericWorkCoreJoinCanonicalPublicKey
+      && genericWorkCoreJoinLegacyPublicKey
+      && genericWorkCoreJoinCanonicalPublicKey.trim() !== genericWorkCoreJoinLegacyPublicKey.trim()) {
+    genericWorkCoreJoinConfigurationError ||= "generic_work_core_join_signer_public_key_ambiguous";
+  }
   const genericWorkCoreJoinConfiguredTargetCommit =
     genericWorkCoreJoinInjectedRemoteConfig?.targetCommit
     ?? options.genericWorkCoreJoinRemoteSignerTargetCommit
@@ -5603,7 +5622,9 @@ export function createUniversalCoreService(options = {}) {
         purpose: options.genericWorkCoreJoinRemoteSignerPurpose ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PURPOSE,
         keyId: options.genericWorkCoreJoinRemoteSignerKeyId ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID,
         serviceToken: options.genericWorkCoreJoinRemoteSignerServiceToken ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN,
-        publicKey: options.genericWorkCoreJoinRemoteSignerPublicKey ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY,
+        publicKey: options.genericWorkCoreJoinRemoteSignerPublicKey
+          ?? genericWorkCoreJoinCanonicalPublicKey
+          ?? genericWorkCoreJoinLegacyPublicKey,
         jwks: options.genericWorkCoreJoinRemoteSignerJwks ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_JWKS,
         fetchImpl: options.genericWorkCoreJoinRemoteSignerFetch,
         timeoutMs: optionalGenericWorkCoreJoinInteger(

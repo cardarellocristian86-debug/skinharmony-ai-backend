@@ -278,6 +278,74 @@ test("remote signer residue cannot activate Core while signer mode is disabled",
   });
 });
 
+test("remote signer reads the canonical PUBLIC_KEY environment name and rejects ambiguous legacy material", async (t) => {
+  const canonicalName = "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PUBLIC_KEY";
+  const legacyName = "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY";
+  const savedCanonical = process.env[canonicalName];
+  const savedLegacy = process.env[legacyName];
+  const remoteOptions = () => {
+    const store = createMemoryGenericWorkCoreJoinStore();
+    store.restart_durable = true;
+    store.distributed = true;
+    store.initialize = async () => {};
+    return {
+      genericWorkCoreJoinTestDefaults: false,
+      genericWorkCoreJoinEnabled: true,
+      genericWorkCoreJoinSignerMode: "remote",
+      genericWorkCoreJoinStore: store,
+      genericWorkCoreJoinRemoteSignerOrigin: "https://generic-join-signer.example.invalid",
+      genericWorkCoreJoinRemoteSignerPath: "/v1/generic-work-core-join/sign",
+      genericWorkCoreJoinRemoteSignerService: "universal-core-service",
+      genericWorkCoreJoinRemoteSignerTargetCommit: REMOTE_TARGET_COMMIT,
+      genericWorkCoreJoinRemoteSignerPurpose: "generic_work_core_join_v1",
+      genericWorkCoreJoinRemoteSignerKeyId: "generic-work-core-join-api-key",
+      genericWorkCoreJoinRemoteSignerServiceToken: REMOTE_TOKEN,
+      genericWorkCoreJoinRemoteSignerFetch: async (_url, init) => remoteSignerResponse(JSON.parse(init.body)),
+    };
+  };
+  try {
+    await t.test("canonical name", async () => {
+      process.env[canonicalName] = PUBLIC_KEY;
+      delete process.env[legacyName];
+      await withService(remoteOptions(), async (_request, health) => {
+        const status = await health();
+        assert.equal(status.generic_work_core_join.configuration_error, null);
+        assert.equal(status.generic_work_core_join.signer_state, "ready");
+        assert.equal(status.generic_work_core_join.ready, true);
+      });
+    });
+    await t.test("unambiguous legacy compatibility", async () => {
+      delete process.env[canonicalName];
+      process.env[legacyName] = PUBLIC_KEY;
+      await withService(remoteOptions(), async (_request, health) => {
+        const status = await health();
+        assert.equal(status.generic_work_core_join.configuration_error, null);
+        assert.equal(status.generic_work_core_join.signer_state, "ready");
+        assert.equal(status.generic_work_core_join.ready, true);
+      });
+    });
+    await t.test("ambiguous names fail closed", async () => {
+      const other = crypto.generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" });
+      process.env[canonicalName] = PUBLIC_KEY;
+      process.env[legacyName] = other;
+      await withService(remoteOptions(), async (_request, health) => {
+        const status = await health();
+        assert.equal(status.generic_work_core_join.configuration_valid, false);
+        assert.equal(
+          status.generic_work_core_join.configuration_error,
+          "generic_work_core_join_signer_public_key_ambiguous",
+        );
+        assert.equal(status.generic_work_core_join.ready, false);
+      });
+    });
+  } finally {
+    if (savedCanonical === undefined) delete process.env[canonicalName];
+    else process.env[canonicalName] = savedCanonical;
+    if (savedLegacy === undefined) delete process.env[legacyName];
+    else process.env[legacyName] = savedLegacy;
+  }
+});
+
 test("startup signer challenge is single-flight and retries only after cooldown", async () => {
   let now = 1_000;
   let calls = 0;
