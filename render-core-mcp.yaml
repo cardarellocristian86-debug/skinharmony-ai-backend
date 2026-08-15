@@ -145,6 +145,20 @@ services:
         generateValue: true
       - key: POLICY_REGISTRY_NYRA_SIGNER_SEED
         generateValue: true
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_ENABLED
+        value: "true"
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE
+        value: universal-core-service
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_PURPOSE
+        value: generic_work_core_join_v1
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_KEY_ID
+        value: universal-core-generic-join-v1
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_TARGET_COMMIT
+        value: c6882cd8594cd03dbff2ff7ffe6205bb81269f1a
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE_TOKEN
+        generateValue: true
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SEED
+        generateValue: true
       # Dedicated MCP→Core Deep V2 request signature. Universal Core consumes
       # the same generated value through an internal Render reference. It is
       # an internal continuity signature, not a model-provider credential.
