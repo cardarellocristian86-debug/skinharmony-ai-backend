@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS core_schema_migrations (
 );
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS acceptance_criteria jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_projection_sequence bigint NOT NULL DEFAULT 0;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_projection_event_hash char(64);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_projection_updated_at timestamptz;
 CREATE TABLE IF NOT EXISTS tenant_work_open_review (
   tenant_id varchar(64) NOT NULL, review_id uuid NOT NULL, request_digest char(64) NOT NULL,
   review_digest char(64) NOT NULL, decision_required boolean NOT NULL, expires_at timestamptz NOT NULL,
@@ -430,6 +433,41 @@ function mapV2StatusToLegacy(status) {
   return "blocked";
 }
 
+const LEGACY_TERMINAL_PROJECTION_EVENTS = Object.freeze({
+  COMPLETED: new Set(["closure_finalized", "generic_closure_finalized"]),
+  CANCELLED: new Set(["legacy_work_reconciled_closed"]),
+  SUPERSEDED: new Set(["legacy_work_reconciled_closed"]),
+});
+
+function legacyProjectionEvent(row, suppliedEvent = null) {
+  const event = suppliedEvent || {
+    sequence_number: row?.source_sequence_number,
+    event_type: row?.source_event_type,
+    event_hash: row?.source_event_hash,
+    payload: row?.source_event_payload,
+  };
+  const sequence = Number(event?.sequence_number || 0);
+  const eventHash = String(event?.event_hash || "").trim().toLowerCase();
+  const eventType = String(event?.event_type || "").trim();
+  if (!Number.isSafeInteger(sequence) || sequence < 1 || !HASH.test(eventHash) || !eventType) return null;
+  return { sequence_number: sequence, event_type: eventType, event_hash: eventHash,
+    payload: plainRecord(event?.payload) ? stable(event.payload) : {} };
+}
+
+function terminalLegacyProjectionVerified(projectedStatus, event, row = null) {
+  const allowed = LEGACY_TERMINAL_PROJECTION_EVENTS[projectedStatus];
+  if (!allowed) return true;
+  const evidence = event && allowed.has(event.event_type) ? event : legacyProjectionEvent({
+    source_sequence_number: row?.terminal_sequence_number,
+    source_event_type: row?.terminal_event_type,
+    source_event_hash: row?.terminal_event_hash,
+    source_event_payload: row?.terminal_event_payload,
+  });
+  if (!evidence || !allowed.has(evidence.event_type)) return false;
+  if (evidence.event_type !== "legacy_work_reconciled_closed") return true;
+  return String(evidence.payload?.status || "").toUpperCase() === projectedStatus;
+}
+
 export function verifyGenericCoreJoinVerdict(verdict, { publicKey, keyId, expected } = {}) {
   try {
     return createGenericWorkCoreJoinVerifier({ publicKey, keyId }).verify(verdict, expected);
@@ -714,25 +752,83 @@ export function createWorkContinuityV2Store({
       };
     });
   }
-  async function projectLegacyWorkWithClient(client, actor, legacyId, suppliedRow = null) {
-      const existing = await client.query("SELECT * FROM tenant_work WHERE tenant_id=$1 AND legacy_work_id=$2", [actor.tenant_id, legacyId]);
-      if (existing.rows[0]) return normalizeWork(existing.rows[0]);
-      const legacy = suppliedRow ? { rows: [suppliedRow] } : await client.query(`SELECT work_id,project_id,parent_work_id,idea,objective,status,created_at,updated_at,next_action
-        FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, legacyId]);
+  async function projectLegacyWorkWithClient(client, actor, legacyId, suppliedRow = null, suppliedEvent = null) {
+      const legacy = suppliedRow ? { rows: [suppliedRow] } : await client.query(`SELECT
+          w.work_id,w.project_id,w.parent_work_id,w.idea,w.objective,w.status,w.created_at,w.updated_at,w.next_action,
+          e.sequence_number AS source_sequence_number,e.event_type AS source_event_type,
+          e.event_hash AS source_event_hash,e.payload AS source_event_payload,
+          te.sequence_number AS terminal_sequence_number,te.event_type AS terminal_event_type,
+          te.event_hash AS terminal_event_hash,te.payload AS terminal_event_payload
+        FROM core_continuity_works w
+        LEFT JOIN LATERAL (
+          SELECT sequence_number,event_type,event_hash,payload
+          FROM core_continuity_events
+          WHERE tenant_id=w.tenant_id AND work_id=w.work_id
+          ORDER BY sequence_number DESC LIMIT 1
+        ) e ON true
+        LEFT JOIN LATERAL (
+          SELECT sequence_number,event_type,event_hash,payload
+          FROM core_continuity_events
+          WHERE tenant_id=w.tenant_id AND work_id=w.work_id
+            AND event_type = ANY(ARRAY['closure_finalized','generic_closure_finalized','legacy_work_reconciled_closed']::varchar[])
+          ORDER BY sequence_number DESC LIMIT 1
+        ) te ON true
+        WHERE w.tenant_id=$1 AND w.work_id=$2`, [actor.tenant_id, legacyId]);
       const row = legacy.rows[0];
       if (!row) fail("legacy_work_not_found");
       const status = mapLegacyStatus(row.status);
       if (!status) fail("legacy_work_status_not_projectable");
+      const existing = await client.query(`SELECT * FROM tenant_work
+        WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2) FOR UPDATE`,
+      [actor.tenant_id, legacyId]);
+      const sourceEvent = legacyProjectionEvent(row, suppliedEvent);
+      if (!sourceEvent && existing.rows[0]) return normalizeWork(existing.rows[0]);
+      if (!sourceEvent) fail("legacy_projection_source_event_required");
+      if (!terminalLegacyProjectionVerified(status, sourceEvent, row)) {
+        fail("legacy_projection_terminal_evidence_required");
+      }
+      if (existing.rows[0]) {
+        const current = normalizeWork(existing.rows[0]);
+        const projectedSequence = Number(current.legacy_projection_sequence || 0);
+        if (projectedSequence >= sourceEvent.sequence_number) return current;
+        if (ARCHIVE_STATUSES.has(current.status) && !ARCHIVE_STATUSES.has(status)) {
+          fail("legacy_projection_terminal_regression_denied");
+        }
+        const updated = await client.query(`UPDATE tenant_work SET
+            project_id=$3,parent_work_id=$4,work_name=$5,objective=$6,next_action=$7,status=$8,
+            updated_at=$9::timestamptz,
+            closed_at=CASE WHEN $8 = ANY($13::varchar[]) THEN COALESCE(closed_at,$9::timestamptz) ELSE closed_at END,
+            archived_at=CASE WHEN $8 = ANY($13::varchar[]) THEN COALESCE(archived_at,$9::timestamptz) ELSE archived_at END,
+            legacy_projection_sequence=$10,legacy_projection_event_hash=$11,
+            legacy_projection_updated_at=$12::timestamptz
+          WHERE tenant_id=$1 AND work_id=$2 RETURNING *`,
+        [actor.tenant_id, current.work_id, row.project_id || null, row.parent_work_id || null,
+          String(row.idea || row.objective || "Legacy work").slice(0, 1_000), row.objective || null,
+          row.next_action || null, status, row.updated_at || now(), sourceEvent.sequence_number,
+          sourceEvent.event_hash, now(), [...ARCHIVE_STATUSES]]);
+        await appendV2Event(client, actor, current.work_id, "legacy_work_projection_synced", {
+          legacy_status: String(row.status || "").toLowerCase(), projected_status: status,
+          source_event_type: sourceEvent.event_type, source_event_hash: sourceEvent.event_hash,
+          source_sequence_number: sourceEvent.sequence_number,
+        });
+        return normalizeWork(updated.rows[0]);
+      }
       const workCode = await allocateCode(client, actor, row.project_id || "LEGACY");
       await client.query(`INSERT INTO tenant_work
         (tenant_id,work_id,legacy_work_id,work_code,work_name,work_type,project_id,owner_user_id,created_by_user_id,
-         assigned_user_ids,supervising_user_ids,agent_ids,visibility_scope,created_at,started_at,updated_at,status,objective,next_action,parent_work_id)
-        VALUES ($1,$2,$2,$3,$4,'legacy',$5,NULL,NULL,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,'private',$6,$6,$7,$8,$9,$10,$11)`,
+         assigned_user_ids,supervising_user_ids,agent_ids,visibility_scope,created_at,started_at,updated_at,status,objective,next_action,parent_work_id,
+         closed_at,archived_at,legacy_projection_sequence,legacy_projection_event_hash,legacy_projection_updated_at)
+        VALUES ($1,$2,$2,$3,$4,'legacy',$5,NULL,NULL,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,'private',$6,$6,$7,$8,$9,$10,$11,
+          CASE WHEN $8 = ANY($15::varchar[]) THEN $7::timestamptz ELSE NULL END,
+          CASE WHEN $8 = ANY($15::varchar[]) THEN $7::timestamptz ELSE NULL END,$12,$13,$14)`,
       [actor.tenant_id, legacyId, workCode, String(row.idea || row.objective || "Legacy work").slice(0, 1_000), row.project_id || null,
-        row.created_at || now(), row.updated_at || now(), status, row.objective || null, row.next_action || null, row.parent_work_id || null]);
+        row.created_at || now(), row.updated_at || now(), status, row.objective || null, row.next_action || null,
+        row.parent_work_id || null, sourceEvent.sequence_number, sourceEvent.event_hash, now(), [...ARCHIVE_STATUSES]]);
       const projected = await loadWork(client, actor, legacyId);
       await appendV2Event(client, actor, legacyId, "legacy_work_projected", {
         legacy_status: row.status, projected_status: status, ownership_invented: false,
+        source_event_type: sourceEvent.event_type, source_event_hash: sourceEvent.event_hash,
+        source_sequence_number: sourceEvent.sequence_number,
       });
       return projected;
   }
@@ -849,20 +945,106 @@ export function createWorkContinuityV2Store({
     const actor = actorFromIdentity(identity);
     if (!isAdmin(actor)) return { projected: 0 };
     const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 50));
-    const legacy = await query(`SELECT w.work_id,w.project_id,w.parent_work_id,w.idea,w.objective,w.status,w.created_at,w.updated_at,w.next_action
+    const legacy = await query(`SELECT w.work_id,w.project_id,w.parent_work_id,w.idea,w.objective,w.status,w.created_at,w.updated_at,w.next_action,
+        e.sequence_number AS source_sequence_number,e.event_type AS source_event_type,
+        e.event_hash AS source_event_hash,e.payload AS source_event_payload,
+        te.sequence_number AS terminal_sequence_number,te.event_type AS terminal_event_type,
+        te.event_hash AS terminal_event_hash,te.payload AS terminal_event_payload
       FROM core_continuity_works w
-      LEFT JOIN tenant_work tw ON tw.tenant_id=w.tenant_id AND tw.legacy_work_id=w.work_id
-      WHERE w.tenant_id=$1 AND ($2::varchar IS NULL OR w.project_id=$2) AND tw.work_id IS NULL
+      LEFT JOIN LATERAL (
+        SELECT sequence_number,event_type,event_hash,payload FROM core_continuity_events
+        WHERE tenant_id=w.tenant_id AND work_id=w.work_id ORDER BY sequence_number DESC LIMIT 1
+      ) e ON true
+      LEFT JOIN LATERAL (
+        SELECT sequence_number,event_type,event_hash,payload FROM core_continuity_events
+        WHERE tenant_id=w.tenant_id AND work_id=w.work_id
+          AND event_type = ANY(ARRAY['closure_finalized','generic_closure_finalized','legacy_work_reconciled_closed']::varchar[])
+        ORDER BY sequence_number DESC LIMIT 1
+      ) te ON true
+      WHERE w.tenant_id=$1 AND ($2::varchar IS NULL OR w.project_id=$2)
       ORDER BY w.updated_at DESC LIMIT $3`, [actor.tenant_id, project_id || null, boundedLimit]);
     let projected = 0;
+    let skipped = 0;
     await transaction(async (client) => {
       for (const row of legacy.rows) {
-        if (!mapLegacyStatus(row.status)) continue;
-        await projectLegacyWorkWithClient(client, actor, row.work_id, row);
-        projected += 1;
+        if (!mapLegacyStatus(row.status)) { skipped += 1; continue; }
+        try {
+          const before = await client.query(`SELECT legacy_projection_sequence FROM tenant_work
+            WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2)`, [actor.tenant_id, row.work_id]);
+          const previousSequence = Number(before.rows[0]?.legacy_projection_sequence || 0);
+          const event = legacyProjectionEvent(row);
+          await projectLegacyWorkWithClient(client, actor, row.work_id, row, event);
+          if (event && event.sequence_number > previousSequence) projected += 1;
+        } catch (error) {
+          if (["legacy_projection_source_event_required", "legacy_projection_terminal_evidence_required",
+            "legacy_projection_terminal_regression_denied"].includes(error?.message)) {
+            skipped += 1;
+            continue;
+          }
+          throw error;
+        }
       }
     });
-    return { projected };
+    return { projected, skipped, scanned: legacy.rows.length };
+  }
+
+  async function projectLegacyEvent({ client, tenant_id, work_id, actor, event } = {}) {
+    await initialize();
+    if (!client || typeof client.query !== "function") fail("legacy_projection_client_required");
+    const internalActor = {
+      tenant_id: text(tenant_id, "tenant_identity_required", 64),
+      user_id: String(actor || "core_gallery_projector").slice(0, 128),
+      agent_id: "core_gallery_projector",
+      session_fingerprint: null,
+      team_ids: [], managed_team_ids: [], is_tenant_owner: true, is_super_admin: false,
+    };
+    return projectLegacyWorkWithClient(client, internalActor, uuid(work_id), null, event);
+  }
+
+  async function backfillLegacyProjection({ limit = 5_000 } = {}) {
+    await initialize();
+    const boundedLimit = Math.max(1, Math.min(10_000, Number(limit) || 5_000));
+    const rows = await query(`SELECT w.tenant_id,w.work_id,w.project_id,w.parent_work_id,w.idea,w.objective,w.status,
+        w.created_at,w.updated_at,w.next_action,e.sequence_number AS source_sequence_number,
+        e.event_type AS source_event_type,e.event_hash AS source_event_hash,e.payload AS source_event_payload,
+        te.sequence_number AS terminal_sequence_number,te.event_type AS terminal_event_type,
+        te.event_hash AS terminal_event_hash,te.payload AS terminal_event_payload
+      FROM core_continuity_works w
+      LEFT JOIN LATERAL (
+        SELECT sequence_number,event_type,event_hash,payload FROM core_continuity_events
+        WHERE tenant_id=w.tenant_id AND work_id=w.work_id ORDER BY sequence_number DESC LIMIT 1
+      ) e ON true
+      LEFT JOIN LATERAL (
+        SELECT sequence_number,event_type,event_hash,payload FROM core_continuity_events
+        WHERE tenant_id=w.tenant_id AND work_id=w.work_id
+          AND event_type = ANY(ARRAY['closure_finalized','generic_closure_finalized','legacy_work_reconciled_closed']::varchar[])
+        ORDER BY sequence_number DESC LIMIT 1
+      ) te ON true
+      ORDER BY w.tenant_id,w.work_id LIMIT $1`, [boundedLimit]);
+    const result = { scanned: rows.rows.length, projected: 0, skipped: 0 };
+    await transaction(async (client) => {
+      for (const row of rows.rows) {
+        const actor = { tenant_id: row.tenant_id, user_id: "core_gallery_projector",
+          agent_id: "core_gallery_projector", session_fingerprint: null, team_ids: [],
+          managed_team_ids: [], is_tenant_owner: true, is_super_admin: false };
+        const event = legacyProjectionEvent(row);
+        try {
+          const before = await client.query(`SELECT legacy_projection_sequence FROM tenant_work
+            WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2)`, [row.tenant_id, row.work_id]);
+          const previousSequence = Number(before.rows[0]?.legacy_projection_sequence || 0);
+          await projectLegacyWorkWithClient(client, actor, row.work_id, row, event);
+          if (event && event.sequence_number > previousSequence) result.projected += 1;
+        } catch (error) {
+          if (["legacy_projection_source_event_required", "legacy_projection_terminal_evidence_required",
+            "legacy_projection_terminal_regression_denied"].includes(error?.message)) {
+            result.skipped += 1;
+            continue;
+          }
+          throw error;
+        }
+      }
+    });
+    return Object.freeze(result);
   }
   async function preflightGallery(identity, input = {}) {
     await initialize();
@@ -1489,6 +1671,7 @@ export function createWorkContinuityV2Store({
     });
   }
   return Object.freeze({ initialize, createWork, createNewWork, projectLegacyWork, projectLegacyCatalog,
+    projectLegacyEvent, backfillLegacyProjection,
     readWork, listWorks, preflightGallery, openWorkReview,
     recordTask, recordEvidence, persistCoreJoin, refreshDerived, reconcileStaleDryRun,
     reconcileLegacyClosed,
