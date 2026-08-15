@@ -3301,6 +3301,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
     }
     const report = cleanJson({
       schema_version: "native_agent_report_v1",
+      automation_stage: reportInput.automation_stage
+        ? String(reportInput.automation_stage)
+        : null,
       summary: safeText(reportInput.summary, 8_000),
       verdict: reportInput.verdict ? String(reportInput.verdict) : null,
       commit_sha: commitSha,
@@ -3417,6 +3420,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ) {
           throw new Error("native_agent_acceptance_evidence_invalid");
         }
+      } else if (
+        row.task_kind === "builder" &&
+        (report.verdict !== null || report.live_verified || report.acceptance_evidence.length)
+      ) {
+        throw new Error("native_agent_builder_authority_exceeded");
       } else if (report.verdict === "approved") {
         throw new Error("native_agent_non_verifier_approval_forbidden");
       } else if (report.acceptance_evidence.length) {

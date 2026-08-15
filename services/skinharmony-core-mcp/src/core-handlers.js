@@ -4376,6 +4376,14 @@ export function createCoreHandlers(config, options = {}) {
     configurable: false,
     writable: false,
   });
+  // Work Automation v3 shares the hardened Core transport.  Keeping the seam
+  // non-enumerable prevents it from becoming an MCP capability by accident.
+  Object.defineProperty(handlers, "nyraWorkAutomationCoreRequest", {
+    value: coreRequest,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
   return handlers;
 }
 

@@ -13,6 +13,12 @@ import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import { createWorkContinuityRuntime } from "../src/work-continuity-runtime.js";
 import { createUniversalCoreService } from "../../universal-core-service/src/app.js";
 import { HOST_NATIVE_HEALTH_CONTRACT_DIGEST } from "../../universal-core-service/src/hostNativeGovernance.js";
+import { HOST_NATIVE_NYRA_WORK_AUTOMATION } from "../src/host-native-tools.js";
+
+test("Nyra Work Automation v3 requires no provider execution", () => {
+  assert.equal(HOST_NATIVE_NYRA_WORK_AUTOMATION.provider_execution, false);
+  assert.equal(HOST_NATIVE_NYRA_WORK_AUTOMATION.verifier_assignment, "system_owned");
+});
 
 function mapKey(...parts) {
   return parts.join("\u0000");

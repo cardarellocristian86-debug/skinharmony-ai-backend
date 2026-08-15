@@ -17,6 +17,11 @@ import {
 } from "../src/work-continuity-tools.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 
+test("work continuity advertises explicit automation report stages", () => {
+  const report = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_native_report");
+  assert.equal(report.inputSchema.properties.report.properties.automation_stage.enum[0], "build");
+});
+
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
 
 function galleryIdentity(subject, sessionId, agentId) {

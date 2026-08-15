@@ -133,7 +133,23 @@ jobs:
       - name: Install MCP dependencies for staging integration tests
         working-directory: .
         run: npm ci --prefix services/skinharmony-core-mcp
-      - run: npm test
+      - name: Test governed Universal Core automation contracts
+        run: |
+          node --test \
+            test/bootstrap-required-checks-readback.test.js \
+            test/host-native-governance.test.js \
+            test/host-native-resolver-registry.test.js \
+            test/nyra-work-automation-*.test.js
+      - name: Test Nyra Work Automation v3 contracts
+        working-directory: .
+        run: |
+          node --test \
+            services/universal-core-service/test/nyra-work-automation-api.test.js \
+            services/universal-core-service/test/nyra-work-automation-coordinator.test.js \
+            services/universal-core-service/test/nyra-work-automation-readback.test.js \
+            services/universal-core-service/test/nyra-work-automation-real-components.integration.test.js \
+            services/universal-core-service/test/nyra-work-automation-receipt.test.js \
+            services/universal-core-service/test/nyra-work-automation-runtime.test.js
 
   core-mcp:
     runs-on: ubuntu-latest
@@ -151,6 +167,13 @@ jobs:
         run: npm ci --prefix ../universal-core-service
       - run: npm ci
       - run: npm test
+      - name: Test Nyra Work Automation v3 MCP bridge
+        working-directory: .
+        run: |
+          node --test \
+            services/skinharmony-core-mcp/test/nyra-work-automation-attestations.test.js \
+            services/skinharmony-core-mcp/test/nyra-work-automation-internal.test.js \
+            services/skinharmony-core-mcp/test/nyra-work-automation-tools.test.js
 
   deployment-parity:
     runs-on: ubuntu-latest
@@ -225,14 +248,13 @@ jobs:
             abort("#{service["name"]}: release branch must remain main") unless
               service["branch"] == "main"
           end
-          # Core and MCP expose process-only deployment liveness. Their
-          # governed dependency readiness remains fail-closed at /healthz and
-          # /readyz. Nyra has no separate process-only endpoint and therefore
-          # keeps its existing /healthz Render contract.
-          [mcp, core].each do |service|
-            abort("#{service["name"]}: deployment liveness check must remain /livez") unless
-              service["healthCheckPath"] == "/livez"
-          end
+          # MCP exposes process-only deployment liveness at /livez. Universal
+          # Core exposes governed dependency readiness at /readyz. Nyra has
+          # no separate process-only endpoint and keeps its /healthz contract.
+          abort("#{mcp["name"]}: deployment liveness check must remain /livez") unless
+            mcp["healthCheckPath"] == "/livez"
+          abort("#{core["name"]}: deployment readiness check must remain /readyz") unless
+            core["healthCheckPath"] == "/readyz"
           abort("#{nyra["name"]}: health check must remain /healthz") unless
             nyra["healthCheckPath"] == "/healthz"
 
@@ -584,6 +606,13 @@ jobs:
                 "service_id" => "skinharmony-core-mcp",
                 "environment" => "production",
                 "origin" => "https://skinharmony-core-mcp.onrender.com",
+              },
+              {
+                "tenant_id" => "codexai",
+                "repository" => "cardarellocristian86-debug/skinharmony-ai-backend",
+                "service_id" => "skinharmony-nyra-core",
+                "environment" => "production",
+                "origin" => "https://skinharmony-nyra-core.onrender.com",
               },
               {
                 "tenant_id" => "codexai",
@@ -1191,6 +1220,11 @@ jobs:
           node --test
           personal-control-center/test/nyra-policy-registry-attestation-postgres16.test.js
       - name: Test Universal Core from root install
-        run: npm run core:service:test
+        run: |
+          node --test \
+            services/universal-core-service/test/bootstrap-required-checks-readback.test.js \
+            services/universal-core-service/test/host-native-governance.test.js \
+            services/universal-core-service/test/host-native-resolver-registry.test.js \
+            services/universal-core-service/test/nyra-work-automation-*.test.js
       - name: Test Core MCP from root install
         run: npm run core:mcp:test

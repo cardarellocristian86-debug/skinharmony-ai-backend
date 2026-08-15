@@ -19,6 +19,10 @@ function key(...parts) {
   return parts.join("\u0000");
 }
 
+test("automation phases are digest-separated in the persistent fabric", () => {
+  assert.notEqual(digest({ phase: "readiness", commit: "a".repeat(40) }), digest({ phase: "final_acceptance", commit: "a".repeat(40) }));
+});
+
 function galleryIdentity(subject, sessionId, agentId, clientType = "codex", tenantId = "tenant-a") {
   return {
     tenantId,

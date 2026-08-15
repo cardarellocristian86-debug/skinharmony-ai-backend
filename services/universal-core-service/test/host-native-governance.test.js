@@ -20,6 +20,21 @@ import {
   hostNativeGithubDiffDigest,
   validateHostReleaseManifestV2,
 } from "../src/hostNativeGovernance.js";
+
+test("host-native governance advertises Work Automation v3 without provider execution", () => {
+  const governance = createHostNativeGovernance({
+    store: createInMemoryHostNativeGovernanceStore(),
+    signingSecret: "s".repeat(64),
+    closureAttestationSigningSecret: "c".repeat(64),
+    requiredChecksPolicyResolver: async () => ({
+      schema_version: "host_native_required_checks_policy_v1", tenant_id: "tenant", repository: "owner/repo", base_branch: "main",
+      required_checks: ["core"], check_app: { id: 1, slug: "github-actions", owner: "github" },
+      workflow: { id: 1, name: "CI", path: ".github/workflows/ci.yml", sha256: "a".repeat(64), candidate_sha256: null }, allowed_events: ["pull_request"],
+    }),
+  });
+  assert.equal(governance.nyra_work_automation_v3_supported, true);
+  assert.equal(governance.nyra_work_automation_provider_execution, false);
+});
 import { createHostNativeExternalReadbackVerifier } from "../src/hostNativeExternalReadback.js";
 
 test("host-native domain signer binds causal envelopes to their exact purpose and payload", async () => {

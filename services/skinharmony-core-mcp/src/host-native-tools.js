@@ -772,3 +772,12 @@ export const HOST_NATIVE_TOOLS = [
     { readOnly: true },
   ),
 ];
+
+export const HOST_NATIVE_NYRA_WORK_AUTOMATION = Object.freeze({
+  schema_version: "nyra_work_automation_v3",
+  maximum_advisory_capabilities: 6,
+  maximum_parallel_builders: 1,
+  verifier_assignment: "system_owned",
+  unknown_outcome_policy: "authoritative_reconciliation_required",
+  provider_execution: false,
+});

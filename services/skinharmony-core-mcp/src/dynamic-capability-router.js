@@ -20,6 +20,9 @@ const DIRECT_ONLY = new Set(COMPACT_MCP_TOOL_NAMES);
 const FORBIDDEN_DYNAMIC_TOOLS = new Set([
   "core_gate_action",
 ]);
+const SYSTEM_ASSIGNED_CAPABILITIES = new Set([
+  "nyra_work_automation_ci_verify",
+]);
 const FORBIDDEN_ARGUMENT_KEYS = new Set([
   "__proto__",
   "prototype",
@@ -98,7 +101,12 @@ function assertBoundedSafeArguments(
       capabilityId === "host_native_action_authorize" &&
       path === "$.release_manifest" &&
       key === "tenant_id";
-    if (FORBIDDEN_ARGUMENT_KEYS.has(key.toLowerCase()) && !releaseManifestTenant) {
+    const nyraVerifiedEvidenceTenant = key === "tenant_id" && (
+      (capabilityId === "nyra_work_automation_push_record" && path === "$.action_receipt") ||
+      (capabilityId === "nyra_work_automation_core_join_record" && path === "$.core_join") ||
+      (capabilityId === "nyra_work_automation_reconcile" && path === "$.action_receipt")
+    );
+    if (FORBIDDEN_ARGUMENT_KEYS.has(key.toLowerCase()) && !releaseManifestTenant && !nyraVerifiedEvidenceTenant) {
       const error = new Error("dynamic_capability_reserved_argument");
       error.argumentPath = `${path}.${key}`;
       throw error;
@@ -168,6 +176,7 @@ function assertRevision(expected, actual) {
 }
 
 function targetArguments(tool, wrapperArgs, identity = {}) {
+  assertSystemAssignedCapability(tool, wrapperArgs);
   const args = { ...(wrapperArgs.arguments || {}) };
   if (tool._meta?.["skinharmony/tenantBoundedCollaboration"] === true) {
     const presence = identity.agentPresence || {};
@@ -214,6 +223,14 @@ function ownerConfirmationRequiredForInvocation(tool, wrapperArgs) {
   const customCapabilities = targetArgs.capabilities !== undefined &&
     (!Array.isArray(targetArgs.capabilities) || targetArgs.capabilities.length > 0);
   return customDisplayName || customCapabilities;
+}
+
+function assertSystemAssignedCapability(tool, wrapperArgs) {
+  if (!SYSTEM_ASSIGNED_CAPABILITIES.has(tool.name)) return;
+  const args = wrapperArgs.arguments || {};
+  if (Object.hasOwn(args, "verifier_agent_id") || Object.hasOwn(args, "system_assigned")) {
+    throw new Error("dynamic_capability_system_assignment_reserved");
+  }
 }
 
 function authorizationAllowed(result) {

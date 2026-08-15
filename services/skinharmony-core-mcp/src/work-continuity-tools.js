@@ -362,6 +362,7 @@ export const WORK_CONTINUITY_TOOLS = [
       },
       status: { type: "string", enum: ["completed", "failed", "blocked"] },
       report: object({
+        automation_stage: { type: "string", enum: ["build", "system_verification", "final_acceptance"] },
         summary: text(8_000), verdict: { type: "string", enum: ["approved", "rejected"] },
         commit_sha: gitSha,
         tests: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } },
