@@ -461,9 +461,9 @@ jobs:
               mcp_env[key] == expected
           end
           generic_join_core_values = {
-            "CORE_GENERIC_WORK_CORE_JOIN_ENABLED" => "false",
-            "CORE_GENERIC_WORK_CORE_JOIN_REQUIRED" => "false",
-            "CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE" => "disabled",
+            "CORE_GENERIC_WORK_CORE_JOIN_ENABLED" => "true",
+            "CORE_GENERIC_WORK_CORE_JOIN_REQUIRED" => "true",
+            "CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE" => "remote",
             "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PATH" =>
               "/v1/generic-work-core-join/sign",
             "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE" => "universal-core-service",
@@ -499,10 +499,7 @@ jobs:
                 },
               }
           end
-          generic_join_code_dark =
-            core_env.dig("CORE_GENERIC_WORK_CORE_JOIN_ENABLED", "value") == "false" &&
-            core_env.dig("CORE_GENERIC_WORK_CORE_JOIN_REQUIRED", "value") == "false" &&
-            core_env.dig("CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE", "value") == "disabled"
+          generic_join_code_dark = false
           public_key_binding =
             core_env["CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY"]
           if generic_join_code_dark
