@@ -795,10 +795,10 @@ export function createWorkContinuityV2Store({
           fail("legacy_projection_terminal_regression_denied");
         }
         const updated = await client.query(`UPDATE tenant_work SET
-            project_id=$3,parent_work_id=$4,work_name=$5,objective=$6,next_action=$7,status=$8,
+            project_id=$3,parent_work_id=$4,work_name=$5,objective=$6,next_action=$7,status=$8::varchar,
             updated_at=$9::timestamptz,
-            closed_at=CASE WHEN $8 = ANY($13::varchar[]) THEN COALESCE(closed_at,$9::timestamptz) ELSE closed_at END,
-            archived_at=CASE WHEN $8 = ANY($13::varchar[]) THEN COALESCE(archived_at,$9::timestamptz) ELSE archived_at END,
+            closed_at=CASE WHEN $8::varchar = ANY($13::varchar[]) THEN COALESCE(closed_at,$9::timestamptz) ELSE closed_at END,
+            archived_at=CASE WHEN $8::varchar = ANY($13::varchar[]) THEN COALESCE(archived_at,$9::timestamptz) ELSE archived_at END,
             legacy_projection_sequence=$10,legacy_projection_event_hash=$11,
             legacy_projection_updated_at=$12::timestamptz
           WHERE tenant_id=$1 AND work_id=$2 RETURNING *`,
@@ -818,9 +818,9 @@ export function createWorkContinuityV2Store({
         (tenant_id,work_id,legacy_work_id,work_code,work_name,work_type,project_id,owner_user_id,created_by_user_id,
          assigned_user_ids,supervising_user_ids,agent_ids,visibility_scope,created_at,started_at,updated_at,status,objective,next_action,parent_work_id,
          closed_at,archived_at,legacy_projection_sequence,legacy_projection_event_hash,legacy_projection_updated_at)
-        VALUES ($1,$2,$2,$3,$4,'legacy',$5,NULL,NULL,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,'private',$6,$6,$7,$8,$9,$10,$11,
-          CASE WHEN $8 = ANY($15::varchar[]) THEN $7::timestamptz ELSE NULL END,
-          CASE WHEN $8 = ANY($15::varchar[]) THEN $7::timestamptz ELSE NULL END,$12,$13,$14)`,
+        VALUES ($1,$2,$2,$3,$4,'legacy',$5,NULL,NULL,'[]'::jsonb,'[]'::jsonb,'[]'::jsonb,'private',$6,$6,$7,$8::varchar,$9,$10,$11,
+          CASE WHEN $8::varchar = ANY($15::varchar[]) THEN $7::timestamptz ELSE NULL END,
+          CASE WHEN $8::varchar = ANY($15::varchar[]) THEN $7::timestamptz ELSE NULL END,$12,$13,$14)`,
       [actor.tenant_id, legacyId, workCode, String(row.idea || row.objective || "Legacy work").slice(0, 1_000), row.project_id || null,
         row.created_at || now(), row.updated_at || now(), status, row.objective || null, row.next_action || null,
         row.parent_work_id || null, sourceEvent.sequence_number, sourceEvent.event_hash, now(), [...ARCHIVE_STATUSES]]);

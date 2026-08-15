@@ -19,6 +19,7 @@ class AtomicWorkPool {
     this.sequences = new Map();
     this.participants = new Map();
     this.leases = new Map();
+    this.queries = [];
   }
 
   snapshot() {
@@ -60,6 +61,7 @@ class AtomicWorkPool {
 
   async query(sql, parameters = []) {
     const q = sql.replace(/\s+/g, " ").trim();
+    this.queries.push(q);
     if (q.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [], rowCount: 0 };
     if (q.startsWith("SELECT * FROM tenant_work_open_review")) {
       const row = this.reviews.get(key(parameters[0], parameters[1]));
@@ -301,6 +303,10 @@ test("preflight projects legacy rows without inventing ownership and preserves G
   assert.equal(gallery.works[0].work_id, legacyId);
   assert.equal(gallery.works[0].status, "active");
   assert.equal(pool.works.get(key("tenant-a", legacyId)).owner_user_id, null);
+  const insert = pool.queries.find((query) => query.startsWith("INSERT INTO tenant_work "));
+  assert.match(insert, /\$8::varchar/);
+  assert.equal((insert.match(/\$8::varchar/g) || []).length, 3,
+    "PostgreSQL must infer one varchar type for status and both archive predicates");
 });
 
 test("Gallery projection advances from the authoritative Work event and exact replay is idempotent", async () => {
