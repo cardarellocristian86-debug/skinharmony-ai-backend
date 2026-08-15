@@ -604,6 +604,13 @@ jobs:
               {
                 "tenant_id" => "codexai",
                 "repository" => "cardarellocristian86-debug/skinharmony-ai-backend",
+                "service_id" => "skinharmony-nyra-core",
+                "environment" => "production",
+                "origin" => "https://skinharmony-nyra-core.onrender.com",
+              },
+              {
+                "tenant_id" => "codexai",
+                "repository" => "cardarellocristian86-debug/skinharmony-ai-backend",
                 "service_id" => "srv-d82c9j3tqb8s73cgriag",
                 "environment" => "production",
                 "origin" => "https://skinharmony-universal-core.onrender.com",
