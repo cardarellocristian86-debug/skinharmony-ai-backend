@@ -3,6 +3,7 @@ import { Pool } from "pg";
 import { causalDigest, CausalContinuityError, requireText, requireUuid } from "./causalContinuityCanonical.js";
 import { createCausalContinuityMigrator } from "./causalContinuityMigration.js";
 import { createProjectScopeRenderOriginIndexMigrator } from "./projectScopeRenderOriginMigration.js";
+import { createCausalIdentityReleaseResolutionMigrator } from "./causalIdentityReleaseResolutionMigration.js";
 
 function rowOrNotFound(result) {
   if (!result.rows[0]) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
@@ -100,6 +101,7 @@ function galleryIntegrityValid({ binding, event, outbox, context, previous }) {
 export async function rollbackCausalContinuityMigrations({
   baseMigrator,
   renderOriginIndexMigrator,
+  identityReleaseMigrator,
 } = {}) {
   if (!baseMigrator?.rollback || !renderOriginIndexMigrator?.rollback) {
     throw new CausalContinuityError("CAUSAL_MIGRATOR_REQUIRED");
@@ -107,9 +109,10 @@ export async function rollbackCausalContinuityMigrations({
   // The additive migration owns named indexes on base tables. Verify and
   // remove those objects before the base down migration can drop their tables;
   // otherwise an index-name hijack would evade the 002 ownership guard.
+  const identityRelease = identityReleaseMigrator?.rollback ? await identityReleaseMigrator.rollback() : null;
   const renderOriginIndexes = await renderOriginIndexMigrator.rollback();
   const base = await baseMigrator.rollback();
-  return { ...base, project_scope_render_origin_indexes: renderOriginIndexes };
+  return { ...base, project_scope_render_origin_indexes: renderOriginIndexes, identity_release_resolution: identityRelease };
 }
 
 export function createPostgresCausalContinuityStore({ pool, connectionString, now = () => new Date() } = {}) {
@@ -118,26 +121,31 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
   const db = pool || new Pool({ connectionString, max: 6, idleTimeoutMillis: 10_000 });
   const migrator = createCausalContinuityMigrator({ pool: db });
   const renderOriginIndexMigrator = createProjectScopeRenderOriginIndexMigrator({ pool: db });
+  const identityReleaseMigrator = createCausalIdentityReleaseResolutionMigrator({ pool: db });
   let initialized = false;
 
   async function initialize() {
     const migration = await migrator.apply();
     const renderOriginIndexes = await renderOriginIndexMigrator.apply();
+    const identityReleaseResolution = await identityReleaseMigrator.apply();
     initialized = true;
-    return { ...migration, project_scope_render_origin_indexes: renderOriginIndexes };
+    return { ...migration, project_scope_render_origin_indexes: renderOriginIndexes, identity_release_resolution: identityReleaseResolution };
   }
 
   async function health() {
     const probe = await db.query("SELECT current_setting('server_version_num')::int AS version_num, clock_timestamp() AS database_now");
     const readback = await migrator.readback();
     const renderOriginIndexes = await renderOriginIndexMigrator.readback();
+    const identityReleaseResolution = await identityReleaseMigrator.readback();
     return {
-      ok: initialized && readback.migration?.application_state === "COMPLETED",
+      ok: initialized && readback.migration?.application_state === "COMPLETED" &&
+        identityReleaseResolution.migration?.application_state === "COMPLETED",
       initialized,
       database_time: probe.rows[0]?.database_now,
       postgres_major: Math.floor(Number(probe.rows[0]?.version_num || 0) / 10_000),
       migration: readback.migration,
       project_scope_render_origin_indexes: renderOriginIndexes,
+      identity_release_resolution: identityReleaseResolution,
     };
   }
 
@@ -145,6 +153,7 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
     return {
       ...(await migrator.readback()),
       project_scope_render_origin_indexes: await renderOriginIndexMigrator.readback(),
+      identity_release_resolution: await identityReleaseMigrator.readback(),
     };
   }
 
@@ -152,6 +161,7 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
     return rollbackCausalContinuityMigrations({
       baseMigrator: migrator,
       renderOriginIndexMigrator,
+      identityReleaseMigrator,
     });
   }
 
@@ -245,9 +255,11 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
       ...input, operation: "project_identity_create", event_type: "PROJECT_REGISTERED", request: input,
       mutate: async (client) => {
         await client.query(
-          `INSERT INTO core_projects (tenant_id,project_id,derived_from_project_id,canonical_name)
-           VALUES ($1,$2,$3,$4)`,
-          [input.tenant_id, input.project_id, input.derived_from_project_id || null, input.canonical_name],
+          `INSERT INTO core_projects
+            (tenant_id,project_id,derived_from_project_id,derived_from_intent_revision_id,canonical_name)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [input.tenant_id, input.project_id, input.derived_from_project_id || null,
+            input.purpose_change_revision_id || null, input.canonical_name],
         );
         if (input.alias) {
           await client.query(
@@ -404,6 +416,15 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
         return result;
       },
     });
+  }
+
+  async function readRevision(input) {
+    return rowOrNotFound(await db.query(
+      `SELECT * FROM core_intent_revisions
+        WHERE tenant_id=$1 AND project_id=$2 AND intent_revision_id=$3`,
+      [requireText(input.tenant_id, "tenant_id", 120), requireUuid(input.project_id, "project_id"),
+        requireUuid(input.intent_revision_id, "intent_revision_id")],
+    ));
   }
 
   async function approveRevision(input) {
@@ -731,7 +752,7 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
 
   async function readCapsuleSupport(input) {
     const limit = Math.max(1, Math.min(Number(input.limit) || 200, 200));
-    const [gallery, artifacts, conflicts, temporal] = await Promise.all([
+    const [gallery, artifacts, conflicts, temporal, releaseTuples] = await Promise.all([
       db.query(`SELECT * FROM core_gallery_entity_bindings WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3
         ORDER BY core_event_sequence DESC LIMIT $4`, [input.tenant_id, input.project_id, input.work_id, limit]),
       db.query(`SELECT a.* FROM core_change_artifacts a JOIN core_changes c ON c.tenant_id=a.tenant_id AND c.change_id=a.change_id
@@ -741,8 +762,12 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
       db.query(`SELECT t.* FROM core_temporal_checks t JOIN core_causal_obligations o ON o.tenant_id=t.tenant_id AND o.obligation_id=t.obligation_id
         WHERE o.tenant_id=$1 AND o.project_id=$2 AND o.work_id=$3 AND t.state='PENDING'
         ORDER BY t.due_at,t.temporal_check_id LIMIT $4`, [input.tenant_id, input.project_id, input.work_id, limit]),
+      db.query(`SELECT * FROM core_release_tuple_resolutions
+        WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3
+        ORDER BY event_sequence DESC LIMIT $4`, [input.tenant_id, input.project_id, input.work_id, limit]),
     ]);
-    return { gallery_bindings: gallery.rows, artifacts: artifacts.rows, conflicts: conflicts.rows, pending_temporal_checks: temporal.rows };
+    return { gallery_bindings: gallery.rows, artifacts: artifacts.rows, conflicts: conflicts.rows,
+      pending_temporal_checks: temporal.rows, release_tuple_resolutions: releaseTuples.rows };
   }
 
   async function updateTemporalCheck(input) {
@@ -1446,18 +1471,68 @@ export function createPostgresCausalContinuityStore({ pool, connectionString, no
     });
   }
 
+  async function saveReleaseTupleResolution(input) {
+    return runProjectOperation({
+      ...input,
+      operation: "release_tuple_resolve",
+      event_type: "RELEASE_TUPLE_RESOLVED",
+      projection_type: "RELEASE_TUPLE_RESOLUTION",
+      request: input.request,
+      mutate: async (client, event) => {
+        const result = await client.query(
+          `INSERT INTO core_release_tuple_resolutions
+            (tenant_id,resolution_id,project_id,project_state_digest,genesis_intent_id,intent_revision_id,
+             work_id,change_id,phase,pull_request,lookup_key,lookup_digest,release_tuple,release_tuple_digest,
+             provenance,provenance_digest,event_sequence,observed_at,expires_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13::jsonb,$14,$15::jsonb,$16,$17,$18,$19)
+           ON CONFLICT (tenant_id,project_id,work_id,change_id,phase,lookup_digest) DO NOTHING
+           RETURNING *`,
+          [input.tenant_id, input.resolution_id, input.project_id, input.project_state_digest,
+            input.genesis_intent_id, input.intent_revision_id, input.work_id, input.change_id,
+            input.phase, input.pull_request, json(input.lookup_key), input.lookup_digest,
+            json(input.release_tuple), input.release_tuple_digest, json(input.provenance), input.provenance_digest,
+            event.sequence_number, input.observed_at, input.expires_at],
+        );
+        if (result.rows[0]) return result.rows[0];
+        const existing = rowOrNotFound(await client.query(
+          `SELECT * FROM core_release_tuple_resolutions
+            WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND change_id=$4 AND phase=$5 AND lookup_digest=$6
+            FOR SHARE`,
+          [input.tenant_id, input.project_id, input.work_id, input.change_id, input.phase, input.lookup_digest],
+        ));
+        if (existing.release_tuple_digest !== input.release_tuple_digest || existing.provenance_digest !== input.provenance_digest) {
+          throw new CausalContinuityError("RELEASE_TUPLE_CONFLICT");
+        }
+        return existing;
+      },
+    });
+  }
+
+  async function readReleaseTupleResolution(input) {
+    const params = [requireText(input.tenant_id, "tenant_id", 120), requireUuid(input.project_id, "project_id"),
+      requireUuid(input.work_id, "work_id"), requireUuid(input.change_id, "change_id")];
+    const phase = input.phase ? requireText(input.phase, "release_phase", 40).toUpperCase() : null;
+    return rowOrNotFound(await db.query(
+      `SELECT * FROM core_release_tuple_resolutions
+        WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND change_id=$4
+          AND ($5::text IS NULL OR phase=$5)
+        ORDER BY event_sequence DESC LIMIT 1`,
+      [...params, phase],
+    ));
+  }
+
   return {
     initialize, health, migrationReadback, migrationRollback,
     readProject, createProject, bindScope, readScope, saveState, currentState,
-    createGenesis, readGenesis, proposeRevision, approveRevision, listRevisions,
+    createGenesis, readGenesis, proposeRevision, readRevision, approveRevision, listRevisions,
     bindWork, readWork, createChange, readChange, listChanges, transitionChange, createObligation, bindActionLease, readObligation, listObligations, listTemporalChecks, readCapsuleSupport, updateTemporalCheck, updateObligation, transitionObligation,
     recordObservation, listObservations, saveReconciliation, readReconciliation, saveReceipt, closeObligationAtomic, saveContext, readContext, consumeNonce, consumeContextAtomic,
     saveCapsule, latestCapsule, timeline,
     createGalleryBinding, claimGalleryProjection, completeGalleryProjection, failGalleryProjection,
     readGalleryCausalView, metricsSnapshot, verifyGalleryBinding,
-    readFeatureFlag, setFeatureFlag, runProjectOperation,
+    readFeatureFlag, setFeatureFlag, saveReleaseTupleResolution, readReleaseTupleResolution, runProjectOperation,
     async close() {
-      await Promise.all([migrator.close(), renderOriginIndexMigrator.close()]);
+      await Promise.all([migrator.close(), renderOriginIndexMigrator.close(), identityReleaseMigrator.close()]);
       if (ownsPool) await db.end();
     },
     now,
@@ -1469,7 +1544,7 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
     projects: new Map(), aliases: new Map(), scopes: new Map(), snapshots: new Map(), genesis: new Map(), revisions: new Map(),
     works: new Map(), changes: new Map(), obligations: new Map(), observations: new Map(), reconciliations: new Map(),
     contexts: new Map(), nonces: new Set(), capsules: new Map(), events: new Map(), idempotency: new Map(),
-    gallery: new Map(), outbox: new Map(), featureFlags: new Map(), legacyWorks: new Map(),
+    gallery: new Map(), outbox: new Map(), featureFlags: new Map(), legacyWorks: new Map(), releaseTuples: new Map(),
     changeTransitions: new Map(), obligationTransitions: new Map(), artifacts: new Map(), conflicts: new Map(),
   };
   const key = (tenant, id) => `${tenant}\u0000${id}`;
@@ -1531,7 +1606,11 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       return get(state.projects, input.tenant_id, projectId);
     },
     async createProject(input) { return withOp(input, "project_identity_create", "PROJECT_REGISTERED", async () => {
-      const row = { tenant_id: input.tenant_id, project_id: input.project_id, canonical_name: input.canonical_name, derived_from_project_id: input.derived_from_project_id || null, status: "ACTIVE", version: 1, active_state_digest: null, active_intent_revision_id: null };
+      if (state.projects.has(key(input.tenant_id, input.project_id))) throw new CausalContinuityError("PROJECT_IDENTITY_CONFLICT");
+      const row = { tenant_id: input.tenant_id, project_id: input.project_id, canonical_name: input.canonical_name,
+        derived_from_project_id: input.derived_from_project_id || null,
+        derived_from_intent_revision_id: input.purpose_change_revision_id || null,
+        status: "ACTIVE", version: 1, active_state_digest: null, active_intent_revision_id: null };
       state.projects.set(key(input.tenant_id, input.project_id), row);
       state.featureFlags.set(key(input.tenant_id, input.project_id), {
         tenant_id: input.tenant_id, project_id: input.project_id, mode: "SHADOW", version: 1,
@@ -1560,7 +1639,10 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       return row;
     }); },
     async currentState(input) { const project = await this.readProject(input); return project.active_state_digest ? listFor(state.snapshots, input.tenant_id, (row) => row.project_id === project.project_id && row.state_digest === project.active_state_digest)[0] || null : null; },
-    async createGenesis(input) { return withOp(input, "genesis_intent_create", "GENESIS_INTENT_CREATED", async () => { const row = { ...input }; state.genesis.set(key(input.tenant_id, input.project_id), row); return row; }); },
+    async createGenesis(input) { return withOp(input, "genesis_intent_create", "GENESIS_INTENT_CREATED", async () => {
+      if (state.genesis.has(key(input.tenant_id, input.project_id))) throw new CausalContinuityError("GENESIS_INTENT_IMMUTABLE");
+      const row = { ...input }; state.genesis.set(key(input.tenant_id, input.project_id), row); return row;
+    }); },
     async readGenesis(input) { return get(state.genesis, input.tenant_id, input.project_id); },
     async proposeRevision(input) { return withOp(input, "intent_revision_propose", "INTENT_REVISION_PROPOSED", async () => {
       if (input.parent_revision_id) {
@@ -1577,6 +1659,11 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       }
       const row = { ...input, state: "PROPOSED" }; state.revisions.set(key(input.tenant_id, input.intent_revision_id), row); return row;
     }); },
+    async readRevision(input) {
+      const row = get(state.revisions, input.tenant_id, input.intent_revision_id);
+      if (row.project_id !== input.project_id) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
+      return row;
+    },
     async approveRevision(input) { return withOp(input, "intent_revision_approve", input.approved === false ? "INTENT_REVISION_REJECTED" : "INTENT_REVISION_APPROVED", async () => {
       const revision = state.revisions.get(key(input.tenant_id, input.intent_revision_id));
       if (!revision) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
@@ -1586,7 +1673,9 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       if (revision.state === "APPROVED") state.projects.get(key(input.tenant_id, revision.project_id)).active_intent_revision_id = revision.intent_revision_id;
       return revision;
     }); },
-    async listRevisions(input) { return listFor(state.revisions, input.tenant_id, (row) => row.project_id === input.project_id); },
+    async listRevisions(input) { return listFor(state.revisions, input.tenant_id, (row) => row.project_id === input.project_id)
+      .sort((a, b) => `${a.created_at || ""}\0${a.intent_revision_id}`.localeCompare(`${b.created_at || ""}\0${b.intent_revision_id}`))
+      .slice(0, Math.min(Number(input.limit) || 200, 200)); },
     async bindWork(input) { return withOp(input, "work_bind_intent", "WORK_OPENED", async () => {
       const project = state.projects.get(key(input.tenant_id, input.project_id));
       if (!project) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
@@ -1668,6 +1757,9 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
         artifacts: listFor(state.artifacts, input.tenant_id, (row) => changeIds.has(row.change_id)).slice(0,limit),
         conflicts: listFor(state.conflicts, input.tenant_id, (row) => row.project_id === input.project_id && (!row.work_id || row.work_id === input.work_id)).slice(0,limit),
         pending_temporal_checks: listFor(state.temporalChecks, input.tenant_id, (row) => obligationIds.has(row.obligation_id) && row.state === "PENDING").slice(0,limit),
+        release_tuple_resolutions: listFor(state.releaseTuples, input.tenant_id,
+          (row) => row.project_id === input.project_id && row.work_id === input.work_id)
+          .sort((a,b) => Number(b.event_sequence)-Number(a.event_sequence)).slice(0,limit),
       };
     },
     async updateTemporalCheck(input) { state.temporalChecks ||= new Map(); const row = state.temporalChecks.get(key(input.tenant_id, input.temporal_check_id)); if (!row) throw new CausalContinuityError("CAUSAL_NOT_FOUND"); row.state = input.state; row.observation_id = input.observation_id || null; row.checked_at = now().toISOString(); return row; },
@@ -1926,6 +2018,25 @@ export function createInMemoryCausalContinuityStore({ now = () => new Date() } =
       row.mode = input.mode; row.version += 1; row.updated_at = now().toISOString();
       return row;
     }); },
+    async saveReleaseTupleResolution(input) { return withOp({ ...input, request: input.request }, "release_tuple_resolve", "RELEASE_TUPLE_RESOLVED", async (_, event) => {
+      const resolutionKey = key(input.tenant_id, `${input.project_id}:${input.work_id}:${input.change_id}:${input.phase}:${input.lookup_digest}`);
+      const existing = state.releaseTuples.get(resolutionKey);
+      if (existing) {
+        if (existing.release_tuple_digest !== input.release_tuple_digest || existing.provenance_digest !== input.provenance_digest) {
+          throw new CausalContinuityError("RELEASE_TUPLE_CONFLICT");
+        }
+        return existing;
+      }
+      const row = { ...input, event_sequence: event.sequence_number };
+      state.releaseTuples.set(resolutionKey, row);
+      return row;
+    }); },
+    async readReleaseTupleResolution(input) {
+      const rows = listFor(state.releaseTuples, input.tenant_id, (row) => row.project_id === input.project_id &&
+        row.work_id === input.work_id && row.change_id === input.change_id && (!input.phase || row.phase === input.phase));
+      if (!rows.length) throw new CausalContinuityError("CAUSAL_NOT_FOUND");
+      return structuredClone(rows.sort((a, b) => Number(b.event_sequence) - Number(a.event_sequence))[0]);
+    },
     runProjectOperation,
     async close() {},
     now,

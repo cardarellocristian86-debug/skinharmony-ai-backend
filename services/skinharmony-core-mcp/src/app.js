@@ -539,16 +539,7 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
       : required && !connectorEnabled
       ? "generic_work_core_join_required_without_enabled"
       : null;
-  const suppliedMetadata = options.genericWorkCoreJoin?.verifier?.metadata;
-  const verifierMetadata = suppliedMetadata &&
-    GENERIC_WORK_CORE_JOIN_KEY_ID.test(String(suppliedMetadata.key_id || "")) &&
-    SHA256_HEX.test(String(suppliedMetadata.public_key_fingerprint || "")) &&
-    options.genericWorkCoreJoin?.verifier?.algorithm === "Ed25519"
-    ? {
-        ...suppliedMetadata,
-        algorithm: options.genericWorkCoreJoin.verifier.algorithm,
-      }
-    : null;
+  const verifierMetadata = genericWorkCoreJoinVerifierMetadata(options);
   const storeConfigured = options.genericWorkCoreJoin?.storeConfigured === true;
   const storeInitialized = options.readiness?.genericWorkCoreJoinStoreInitialized === true;
   const storeInitializationFailed =
@@ -556,7 +547,16 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
   const coreHealth = upstream?.payload?.generic_work_core_join;
   const upstreamAvailable = upstream?.responseOk === true && coreHealth !== null && typeof coreHealth === "object";
   const upstreamEnabled = upstreamAvailable && coreHealth.enabled === true;
-  const upstreamBackend = coreHealth?.backend === "postgresql" ? "postgresql" : "unavailable";
+  const upstreamRequired = typeof coreHealth?.required === "boolean"
+    ? coreHealth.required
+    : null;
+  const upstreamBackendToken = String(coreHealth?.backend || "");
+  const upstreamBackend = new Set([
+    "postgresql",
+    "postgres_append_only_v1",
+  ]).has(upstreamBackendToken)
+    ? upstreamBackendToken
+    : "unavailable";
   const upstreamRestartDurable = coreHealth?.restart_durable === true;
   const upstreamDistributed = coreHealth?.distributed === true;
   const upstreamSignerState = new Set([
@@ -583,9 +583,8 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
     && upstreamEnabled
     && coreHealth?.configuration_valid === true
     && coreHealth?.algorithm === "Ed25519"
-    && coreHealth?.required === required
     && coreHealth?.ready === true
-    && upstreamBackend === "postgresql"
+    && upstreamBackend !== "unavailable"
     && upstreamRestartDurable
     && upstreamDistributed
     && upstreamSignerState === "ready";
@@ -593,6 +592,7 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
   const fingerprintMatches = Boolean(
     verifierMetadata && upstreamFingerprint === verifierMetadata.public_key_fingerprint,
   );
+  const upstreamRequirementMatches = upstreamRequired === required;
   let state = connectorEnabled ? "unavailable" : "disabled";
   let reason = "generic_work_core_join_disabled";
   let ready = false;
@@ -608,7 +608,7 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
   } else if (!upstreamEnabled) {
     state = upstreamState;
     reason = upstreamReason || "generic_work_core_join_disabled";
-  } else if (upstreamBackend !== "postgresql") {
+  } else if (upstreamBackend === "unavailable") {
     state = "durability_or_signing_unavailable";
     reason = upstreamReason || "generic_work_core_join_postgres_unavailable";
   } else if (!upstreamRestartDurable) {
@@ -623,6 +623,9 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
   } else if (coreHealth.ready !== true) {
     state = upstreamState;
     reason = upstreamReason || "generic_work_core_join_upstream_not_ready";
+  } else if (!upstreamRequirementMatches) {
+    state = "upstream_not_ready";
+    reason = "generic_work_core_join_upstream_not_ready";
   } else if (!storeConfigured) {
     state = "store_unavailable";
     reason = "generic_work_core_join_store_unavailable";
@@ -650,7 +653,10 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
     ready = true;
   }
   return Object.freeze({
-    enabled: ready,
+    // `enabled` is the local MCP feature gate. Upstream activation and health
+    // remain independently observable even when this bridge is disabled.
+    enabled: connectorEnabled,
+    local_enabled: connectorEnabled,
     required,
     configuration_valid: configurationError === null,
     configuration_error: configurationError,
@@ -670,11 +676,33 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
     algorithm: verifierMetadata?.algorithm || null,
     key_id: verifierMetadata?.key_id || null,
     public_key_fingerprint: verifierMetadata?.public_key_fingerprint || null,
+    upstream_available: upstreamAvailable,
+    upstream_enabled: upstreamEnabled,
+    upstream_required: upstreamRequired,
+    upstream_backend: upstreamBackend,
+    upstream_state: upstreamState,
+    upstream_reason: upstreamReason,
     upstream_ready: upstreamReady,
+    upstream_requirement_matches: upstreamRequirementMatches,
     upstream_key_id_matches: keyIdMatches,
     upstream_public_key_fingerprint_matches: fingerprintMatches,
     host_action_authorized: false,
   });
+}
+
+function genericWorkCoreJoinVerifierMetadata(options = {}) {
+  const verifier = options.genericWorkCoreJoin?.verifier;
+  const suppliedMetadata = verifier?.metadata;
+  return suppliedMetadata &&
+    GENERIC_WORK_CORE_JOIN_KEY_ID.test(String(suppliedMetadata.key_id || "")) &&
+    SHA256_HEX.test(String(suppliedMetadata.public_key_fingerprint || "")) &&
+    verifier?.algorithm === "Ed25519" &&
+    typeof verifier.verify === "function"
+    ? {
+        ...suppliedMetadata,
+        algorithm: verifier.algorithm,
+      }
+    : null;
 }
 const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "agent_heartbeat",
@@ -1217,11 +1245,14 @@ export function createApp(config, options = {}) {
   const policyRegistryLocallyEligible = config.policyRegistryLifecycleEnabled === true &&
     config.policyRegistryLifecycleConfigurationValid === true &&
     config.policyRegistryLifecycleCoreOriginValid === true;
+  const genericWorkCoreJoinLocallyEligible =
+    config.genericWorkCoreJoinEnabled === true &&
+    config.genericWorkCoreJoinConfigurationValid === true &&
+    genericWorkCoreJoinVerifierMetadata(options) !== null;
   const availableTools = TOOLS.filter((tool) =>
     typeof handlers[tool.name] === "function" &&
     (tool.name !== GENERIC_WORK_CORE_JOIN_TOOL || (
-      config.genericWorkCoreJoinEnabled === true &&
-      config.genericWorkCoreJoinConfigurationValid === true
+      genericWorkCoreJoinLocallyEligible
     )) &&
     (!POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name) || policyRegistryLocallyEligible)
   ).map((tool) => configureToolForRuntime(tool, config));

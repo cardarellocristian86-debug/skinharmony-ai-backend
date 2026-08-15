@@ -1925,6 +1925,12 @@ test("local closure becomes release-ready and external completion needs exact Co
   const runtime = createWorkContinuityRuntime({
     dttAgentIdentitySigningSecret: closureAttestationSecret,
   }, { pool, now: clock });
+  // Production server passes the release only through its private options
+  // channel after Universal Core resolution; direct caller `input.release` is
+  // never consumed by runtime.
+  const evaluateClosure = (input) => runtime.evaluateClosure(identity, input, {
+    release: input.release,
+  });
   const identity = {
     tenantId: "tenant-a",
     subject: "coordinator",
@@ -2193,7 +2199,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     },
   };
   await runtime.reportNativeAgent(verifierIdentity, verifierReportInput);
-  await assert.rejects(runtime.evaluateClosure(identity, {
+  await assert.rejects(evaluateClosure({
     work_id: work.work_id,
     plan_id: planId,
     release: {
@@ -2231,7 +2237,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     tree_sha: "b".repeat(40),
     changed_files: ["services/skinharmony-core-mcp/src/server.js"],
   });
-  const evaluation = await runtime.evaluateClosure(identity, {
+  const evaluation = await evaluateClosure({
     work_id: work.work_id,
     plan_id: planId,
     release: {
@@ -2273,7 +2279,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     verification: _releaseVerification,
     ...releaseInput
   } = evaluation.core_join_material.release_intent_request;
-  const exactReplay = await runtime.evaluateClosure(identity, {
+  const exactReplay = await evaluateClosure({
     work_id: work.work_id,
     plan_id: planId,
     release: releaseInput,
@@ -2288,7 +2294,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     coreJoinIdempotencyKey(exactReplay.core_join_material),
     coreJoinIdempotencyKey(evaluation.core_join_material),
   );
-  const correctedRelease = await runtime.evaluateClosure(identity, {
+  const correctedRelease = await evaluateClosure({
     work_id: work.work_id,
     plan_id: planId,
     release: {
@@ -2306,7 +2312,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     coreJoinIdempotencyKey(correctedRelease.core_join_material),
     coreJoinIdempotencyKey(evaluation.core_join_material),
   );
-  await assert.rejects(runtime.evaluateClosure(identity, {
+  await assert.rejects(evaluateClosure({
     work_id: work.work_id,
     plan_id: planId,
     release: {

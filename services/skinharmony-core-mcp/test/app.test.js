@@ -403,16 +403,40 @@ test("does not advertise Generic Work Core Join until explicitly enabled", async
   };
   const disabledApp = createApp({ ...config, genericWorkCoreJoinEnabled: false }, { handlers });
   const incompleteApp = createApp({ ...config, genericWorkCoreJoinEnabled: true }, { handlers });
-  const enabledApp = createApp({
+  const configuredWithoutVerifierApp = createApp({
     ...config,
     genericWorkCoreJoinEnabled: true,
     genericWorkCoreJoinConfigurationValid: true,
   }, { handlers });
+  const metadataOnlyVerifier = {
+    algorithm: "Ed25519",
+    metadata: {
+      key_id: "core-key-metadata-only",
+      public_key_fingerprint: "b".repeat(64),
+    },
+  };
+  const metadataOnlyApp = createApp({
+    ...config,
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinConfigurationValid: true,
+  }, { handlers, genericWorkCoreJoin: { verifier: metadataOnlyVerifier } });
+  const { publicKey } = crypto.generateKeyPairSync("ed25519");
+  const verifier = createGenericWorkCoreJoinVerifier({
+    publicKey: publicKey.export({ type: "spki", format: "pem" }),
+    keyId: "core-key-tool-visibility",
+  });
+  const enabledApp = createApp({
+    ...config,
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinConfigurationValid: true,
+  }, { handlers, genericWorkCoreJoin: { verifier } });
   if (existingIndex < 0) TOOLS.splice(TOOLS.indexOf(genericTool), 1);
 
   for (const [app, expectedVisible] of [
     [disabledApp, false],
     [incompleteApp, false],
+    [configuredWithoutVerifierApp, false],
+    [metadataOnlyApp, false],
     [enabledApp, true],
   ]) {
     const server = app.listen(0);
@@ -517,7 +541,22 @@ test("Generic Join health pins upstream key identity and gates Render only when 
       const health = await response.json();
       assert.equal(response.status, scenario.status);
       assert.equal(health.render_ready, scenario.renderReady);
-      assert.equal(health.generic_work_core_join.enabled, scenario.joinReady);
+      assert.equal(health.generic_work_core_join.enabled, true);
+      assert.equal(health.generic_work_core_join.local_enabled, true);
+      assert.equal(
+        health.generic_work_core_join.upstream_enabled,
+        scenario.upstreamEnabled ?? true,
+      );
+      assert.equal(
+        health.generic_work_core_join.upstream_ready,
+        (scenario.upstreamEnabled ?? true) &&
+          (scenario.upstreamConfigurationValid ?? true) &&
+          (scenario.upstreamAlgorithm ?? "Ed25519") === "Ed25519" &&
+          (scenario.upstreamBackend ?? "postgresql") !== "unavailable" &&
+          (scenario.upstreamRestartDurable ?? true) &&
+          (scenario.upstreamDistributed ?? true) &&
+          (scenario.upstreamSignerState ?? "ready") === "ready",
+      );
       assert.equal(health.generic_work_core_join.required, scenario.required);
       assert.equal(health.generic_work_core_join.ready, scenario.joinReady);
       assert.equal(health.generic_work_core_join.reason, scenario.reason);
@@ -539,6 +578,7 @@ test("Generic Join health pins upstream key identity and gates Render only when 
 test("Generic Join health mirrors fail-closed Universal Core readiness", () => {
   const verifier = {
     algorithm: "Ed25519",
+    verify: async () => true,
     metadata: {
       key_id: "core-key-20260810",
       public_key_fingerprint: "b".repeat(64),
@@ -579,7 +619,8 @@ test("Generic Join health mirrors fail-closed Universal Core readiness", () => {
   ];
   for (const [name, join, reason] of cases) {
     const health = buildGenericWorkCoreJoinHealth(input.config, input.options, upstream(join));
-    assert.equal(health.enabled, false, name);
+    assert.equal(health.enabled, true, name);
+    assert.equal(health.local_enabled, true, name);
     assert.equal(health.ready, false, name);
     assert.equal(health.reason, reason, name);
   }
@@ -591,6 +632,166 @@ test("Generic Join health mirrors fail-closed Universal Core readiness", () => {
   assert.equal(ready.restart_durable, true);
   assert.equal(ready.distributed, true);
   assert.equal(ready.signer_state, "ready");
+});
+
+test("Generic Join health accepts only exact durable upstream backend contracts", () => {
+  const verifier = {
+    algorithm: "Ed25519",
+    verify: async () => true,
+    metadata: {
+      key_id: "core-key-20260810",
+      public_key_fingerprint: "b".repeat(64),
+    },
+  };
+  const configInput = {
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinRequired: false,
+    genericWorkCoreJoinConfigurationValid: true,
+  };
+  const options = {
+    genericWorkCoreJoin: { storeConfigured: true, verifier },
+    readiness: { genericWorkCoreJoinStoreInitialized: true },
+  };
+  const upstream = (backend, signer_state = "ready") => ({
+    responseOk: true,
+    payload: {
+      generic_work_core_join: {
+        enabled: true,
+        configuration_valid: true,
+        algorithm: "Ed25519",
+        required: false,
+        ready: true,
+        backend,
+        restart_durable: true,
+        distributed: true,
+        signer_state,
+        state: signer_state === "ready" ? "ready" : "signer_unavailable",
+        reason: signer_state === "ready" ? null : "generic_work_core_join_signer_unconfigured",
+        key_id: verifier.metadata.key_id,
+        public_key_fingerprint: verifier.metadata.public_key_fingerprint,
+      },
+    },
+  });
+
+  for (const backend of ["postgresql", "postgres_append_only_v1"]) {
+    const health = buildGenericWorkCoreJoinHealth(configInput, options, upstream(backend));
+    assert.equal(health.ready, true, backend);
+    assert.equal(health.backend, backend, backend);
+    assert.equal(health.upstream_backend, backend, backend);
+  }
+  for (const backend of ["postgres", "postgres_append_only", "postgresql16", "postgres-like"]) {
+    const health = buildGenericWorkCoreJoinHealth(configInput, options, upstream(backend));
+    assert.equal(health.ready, false, backend);
+    assert.equal(health.backend, "unavailable", backend);
+    assert.equal(health.reason, "generic_work_core_join_postgres_unavailable", backend);
+  }
+
+  const signerMissing = buildGenericWorkCoreJoinHealth(
+    configInput,
+    options,
+    upstream("postgres_append_only_v1", "unconfigured"),
+  );
+  assert.equal(signerMissing.ready, false);
+  assert.equal(signerMissing.usable, false);
+  assert.equal(signerMissing.upstream_ready, false);
+  assert.equal(signerMissing.reason, "generic_work_core_join_signer_unconfigured");
+});
+
+test("Generic Join health does not claim a metadata-only verifier is configured", () => {
+  const metadataOnlyVerifier = {
+    algorithm: "Ed25519",
+    verify: "not-callable",
+    metadata: {
+      key_id: "core-key-metadata-only",
+      public_key_fingerprint: "b".repeat(64),
+    },
+  };
+  const health = buildGenericWorkCoreJoinHealth({
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinRequired: false,
+    genericWorkCoreJoinConfigurationValid: true,
+  }, {
+    genericWorkCoreJoin: {
+      storeConfigured: true,
+      verifier: metadataOnlyVerifier,
+    },
+    readiness: { genericWorkCoreJoinStoreInitialized: true },
+  }, {
+    responseOk: true,
+    payload: {
+      generic_work_core_join: {
+        enabled: true,
+        configuration_valid: true,
+        algorithm: "Ed25519",
+        required: false,
+        ready: true,
+        backend: "postgresql",
+        restart_durable: true,
+        distributed: true,
+        signer_state: "ready",
+        state: "ready",
+        reason: null,
+        key_id: metadataOnlyVerifier.metadata.key_id,
+        public_key_fingerprint: metadataOnlyVerifier.metadata.public_key_fingerprint,
+      },
+    },
+  });
+  assert.equal(health.verifier_configured, false);
+  assert.equal(health.configured, false);
+  assert.equal(health.ready, false);
+  assert.equal(health.usable, false);
+  assert.equal(health.state, "verifier_unavailable");
+  assert.equal(health.reason, "generic_work_core_join_verifier_unavailable");
+});
+
+test("Generic Join reports Universal activation independently from the local MCP gate", () => {
+  const verifier = {
+    algorithm: "Ed25519",
+    metadata: {
+      key_id: "core-key-20260810",
+      public_key_fingerprint: "b".repeat(64),
+    },
+  };
+  const health = buildGenericWorkCoreJoinHealth({
+    genericWorkCoreJoinEnabled: false,
+    genericWorkCoreJoinRequired: false,
+    genericWorkCoreJoinConfigurationValid: true,
+  }, {
+    genericWorkCoreJoin: { storeConfigured: true, verifier },
+    readiness: { genericWorkCoreJoinStoreInitialized: true },
+  }, {
+    responseOk: true,
+    payload: {
+      generic_work_core_join: {
+        enabled: true,
+        configuration_valid: true,
+        algorithm: "Ed25519",
+        required: false,
+        ready: true,
+        backend: "postgres_append_only_v1",
+        restart_durable: true,
+        distributed: true,
+        signer_state: "ready",
+        state: "ready",
+        reason: null,
+        key_id: verifier.metadata.key_id,
+        public_key_fingerprint: verifier.metadata.public_key_fingerprint,
+      },
+    },
+  });
+  assert.equal(health.enabled, false);
+  assert.equal(health.local_enabled, false);
+  assert.equal(health.ready, false);
+  assert.equal(health.usable, false);
+  assert.equal(health.state, "disabled");
+  assert.equal(health.reason, "generic_work_core_join_disabled");
+  assert.equal(health.upstream_available, true);
+  assert.equal(health.upstream_enabled, true);
+  assert.equal(health.upstream_ready, true);
+  assert.equal(health.upstream_required, false);
+  assert.equal(health.upstream_requirement_matches, true);
+  assert.equal(health.upstream_state, "ready");
+  assert.equal(health.upstream_backend, "postgres_append_only_v1");
 });
 
 test("production readiness fails closed with coded non-secret component blockers", async () => {

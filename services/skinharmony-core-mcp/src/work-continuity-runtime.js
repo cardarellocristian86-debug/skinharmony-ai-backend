@@ -912,6 +912,86 @@ function normalizeReleaseInput(value) {
   };
 }
 
+export function buildServerOwnedReleaseInput(resolutionEnvelope, lookup, tenantId) {
+  const envelope = requireObject(resolutionEnvelope, "continuity_release_resolution");
+  const row = envelope.result && typeof envelope.result === "object" ? envelope.result : envelope;
+  const tupleWithDigest = requireObject(row.release_tuple, "continuity_release_tuple");
+  const { release_tuple_digest: embeddedDigest, ...tuple } = tupleWithDigest;
+  const expectedDigest = releaseField(row.release_tuple_digest, "continuity_release_tuple_digest", /^[a-f0-9]{64}$/, 64);
+  if (embeddedDigest !== expectedDigest || digest(tuple) !== expectedDigest || tuple.schema_version !== "causal_release_tuple_resolution_v1") {
+    throw new Error("continuity_release_tuple_digest_mismatch");
+  }
+  const expectedTenant = tenant(tenantId);
+  const expectedLookup = requireObject(lookup, "continuity_release_lookup");
+  const expectedProject = uuid(expectedLookup.project_id, "project_id");
+  const expectedWork = uuid(expectedLookup.work_id, "work_id");
+  const expectedChange = uuid(expectedLookup.change_id, "change_id");
+  if (tuple.phase !== "PRE_ACTION" || tuple.tenant_id !== expectedTenant || tuple.project_id !== expectedProject ||
+      tuple.project_state_digest !== expectedLookup.project_state_digest || tuple.work_id !== expectedWork ||
+      tuple.change_id !== expectedChange || Number(tuple.pull_request) !== Number(expectedLookup.pull_request) ||
+      row.tenant_id !== expectedTenant || row.project_id !== expectedProject || row.work_id !== expectedWork ||
+      row.change_id !== expectedChange) {
+    throw new Error("continuity_release_tuple_binding_mismatch");
+  }
+  const services = Array.isArray(tuple.services) ? tuple.services : [];
+  if (!services.length) throw new Error("continuity_release_tuple_partial");
+  const release = {
+    base_branch: tuple.base_branch,
+    delivery_branch: tuple.delivery_branch,
+    base_commit: tuple.base_commit,
+    head_commit: tuple.head_commit,
+    tree_sha: tuple.tree_sha,
+    diff_digest: tuple.diff_digest,
+    changed_files: tuple.changed_files,
+    delivery: {
+      method: tuple.delivery_method,
+      services: services.map((service) => ({
+        service_id: service.service_id,
+        environment: service.environment,
+        expected_previous_commit: service.previous_commit,
+        target_commit: service.target_commit,
+        target_resolution: service.target_resolution,
+        health_contract_digest: service.health_contract_digest,
+      })),
+    },
+    rollback: {
+      mode: tuple.rollback?.mode,
+      target_commit: tuple.rollback?.target_commit,
+      health_contract_digest: tuple.rollback?.health_contract_digest,
+      ready: tuple.rollback?.ready,
+    },
+  };
+  const normalized = normalizeReleaseInputWithoutAuthorityCheck(release);
+  return Object.freeze(normalized);
+}
+
+function normalizeReleaseInputWithoutAuthorityCheck(value) {
+  const release = requireObject(value, "continuity_release");
+  const allowedKeys = new Set([
+    "base_branch", "delivery_branch", "base_commit", "head_commit", "tree_sha",
+    "diff_digest", "changed_files", "delivery", "rollback",
+  ]);
+  if (Object.keys(release).some((key) => !allowedKeys.has(key))) {
+    throw new Error("continuity_release_fields_invalid");
+  }
+  const changedFiles = stringList(release.changed_files, "continuity_release_changed_files", {
+    maxItems: 1_000,
+    maxLength: 2_000,
+  }).sort();
+  if (!changedFiles.length) throw new Error("continuity_release_changed_files_invalid");
+  return {
+    base_branch: releaseBranch(release.base_branch, "continuity_release_base_branch"),
+    delivery_branch: releaseBranch(release.delivery_branch, "continuity_release_delivery_branch"),
+    base_commit: releaseField(release.base_commit, "continuity_release_base_commit", /^[a-f0-9]{40}$/, 40),
+    head_commit: releaseField(release.head_commit, "continuity_release_head_commit", /^[a-f0-9]{40}$/, 40),
+    tree_sha: releaseField(release.tree_sha, "continuity_release_tree_sha", /^[a-f0-9]{40}$/, 40),
+    diff_digest: releaseField(release.diff_digest, "continuity_release_diff_digest", /^[a-f0-9]{64}$/, 64),
+    changed_files: changedFiles,
+    delivery: cleanJson(requireObject(release.delivery, "continuity_release_delivery"), 80_000),
+    rollback: cleanJson(requireObject(release.rollback, "continuity_release_rollback"), 20_000),
+  };
+}
+
 function buildCoreJoinMaterial({
   tenantId,
   workId,
@@ -924,6 +1004,7 @@ function buildCoreJoinMaterial({
   attestationSigningSecret,
 } = {}) {
   if (evaluation?.closed !== true) throw new Error("native_agent_verified_closure_required");
+  if (!release) throw new Error("continuity_server_owned_release_resolution_required");
   const normalizedRelease = normalizeReleaseInput(release);
   const coreAuthority = requireObject(plan.core_authority, "core_authority");
   if (
@@ -3476,7 +3557,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     });
   }
 
-  async function evaluateClosure(identity, input) {
+  async function evaluateClosure(identity, input, options = {}) {
     const context = workContext(identity, input);
     const planId = uuid(input.plan_id, "plan_id");
     return transaction(async (client) => withIdempotency(
@@ -3518,7 +3599,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
             agents: agents.rows,
             evaluation,
             evaluationDigest,
-            release: input.release,
+            release: options.release,
             attestationSigningSecret: assignmentSigningSecret,
           })
           : null;
