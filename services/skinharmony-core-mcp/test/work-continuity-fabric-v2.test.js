@@ -11,6 +11,7 @@ import {
   selectAggregatedAtlasWithinBudget,
   surfacesOverlap,
 } from "../src/work-continuity-runtime.js";
+import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 
 const COMMIT = "c".repeat(40);
 const COORDINATOR_SESSION = "a".repeat(64);
@@ -289,4 +290,10 @@ test("lease and incident identifiers are normalized and deterministic per tenant
   assert.equal(first.fingerprint, second.fingerprint);
   assert.equal(first.scope.error_code, "TRUSTED_READBACK_CHECKS_NOT_READY");
   assert.equal(WORK_CONTINUITY_FABRIC_SCHEMA_VERSION, "work_continuity_fabric_v2");
+});
+
+test("native report schema separates build from system verification", () => {
+  const reportTool = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_native_report");
+  assert.deepEqual(reportTool.inputSchema.properties.report.properties.automation_stage.enum,
+    ["build", "system_verification", "final_acceptance"]);
 });

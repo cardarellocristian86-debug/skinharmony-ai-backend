@@ -2300,6 +2300,8 @@ export function createHostNativeGovernance({
     render_service_origin_resolver_configured: typeof renderServiceOriginResolver === "function",
     standing_release_policy_supported: true,
     standing_release_runner_supported: true,
+    nyra_work_automation_v3_supported: true,
+    nyra_work_automation_provider_execution: false,
     standing_release_coordination_model: "horizontal_peer_adapters_v1",
     standing_release_base_protection_resolver_configured:
       typeof standingReleaseBaseProtectionResolver === "function" &&

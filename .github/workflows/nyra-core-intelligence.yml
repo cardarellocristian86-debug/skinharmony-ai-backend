@@ -134,6 +134,16 @@ jobs:
         working-directory: .
         run: npm ci --prefix services/skinharmony-core-mcp
       - run: npm test
+      - name: Test Nyra Work Automation v3 contracts
+        working-directory: .
+        run: |
+          node --test \
+            services/universal-core-service/test/nyra-work-automation-api.test.js \
+            services/universal-core-service/test/nyra-work-automation-coordinator.test.js \
+            services/universal-core-service/test/nyra-work-automation-readback.test.js \
+            services/universal-core-service/test/nyra-work-automation-real-components.integration.test.js \
+            services/universal-core-service/test/nyra-work-automation-receipt.test.js \
+            services/universal-core-service/test/nyra-work-automation-runtime.test.js
 
   core-mcp:
     runs-on: ubuntu-latest
@@ -151,6 +161,13 @@ jobs:
         run: npm ci --prefix ../universal-core-service
       - run: npm ci
       - run: npm test
+      - name: Test Nyra Work Automation v3 MCP bridge
+        working-directory: .
+        run: |
+          node --test \
+            services/skinharmony-core-mcp/test/nyra-work-automation-attestations.test.js \
+            services/skinharmony-core-mcp/test/nyra-work-automation-internal.test.js \
+            services/skinharmony-core-mcp/test/nyra-work-automation-tools.test.js
 
   deployment-parity:
     runs-on: ubuntu-latest

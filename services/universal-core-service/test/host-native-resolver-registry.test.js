@@ -2,10 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  HOST_NATIVE_GITHUB_WORKFLOW,
   loadHostNativeResolverRegistryFromEnvironment,
 } from "../src/hostNativeResolverRegistry.js";
 
 const TOKEN = `github_pat_${"A".repeat(40)}`;
+
+test("workflow rotation binds the current main and reconstructed v3 candidate", () => {
+  assert.equal(HOST_NATIVE_GITHUB_WORKFLOW.sha256, "139bf3efeeda714cfa6c295bcbef4dcd3db278bf33a946b50b8d08a2ebec8bc6");
+  assert.equal(HOST_NATIVE_GITHUB_WORKFLOW.candidate_sha256, "fbe10243a8cef83a901e962f63bcf4f9ce4e2812c26fbd152a3e1a452cc02316");
+});
 const GITHUB_REGISTRY = JSON.stringify({
   schema_version: "host_native_github_credential_registry_v1",
   bindings: [{

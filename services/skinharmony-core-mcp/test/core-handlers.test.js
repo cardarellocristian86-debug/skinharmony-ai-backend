@@ -1693,6 +1693,8 @@ test("exposes one non-tool causal Core transport that preserves the verified DTT
     },
   });
   assert.equal(Object.keys(handlers).includes("causalCoreRequest"), false);
+  assert.equal(Object.keys(handlers).includes("nyraWorkAutomationCoreRequest"), false);
+  assert.equal(handlers.nyraWorkAutomationCoreRequest, handlers.causalCoreRequest);
   await handlers.causalCoreRequest("/v1/causal/projects/resolve?alias=repo", "tenant-a", {
     additionalHeaders: { "x-sh-dtt-agent-context": "dac_verified_context" },
   });

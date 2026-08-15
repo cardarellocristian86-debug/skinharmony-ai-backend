@@ -98,6 +98,17 @@ export function createBootstrapRequiredChecksReadback({ fetchImpl = globalThis.f
       const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "user-agent": "skinharmony-bootstrap-required-checks-readback", authorization: `Bearer ${token}` };
       const pr = await readJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${scope.repository}/pulls/${scope.pr_number}`, { method: "GET", redirect: "error", headers }, timeoutMs);
       if (pr?.state !== "open" || pr?.draft === true || sha(pr?.head?.sha) !== scope.head_sha || text(pr?.base?.ref) !== scope.base_branch || text(pr?.head?.repo?.full_name) !== scope.repository || text(pr?.base?.repo?.full_name) !== scope.repository) fail("bootstrap_required_checks_pr_mismatch");
+      const workflow = await readJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${scope.repository}/actions/workflows/${policy.workflow.id}`, { method: "GET", redirect: "error", headers }, timeoutMs);
+      if (Number(workflow?.id) !== policy.workflow.id || text(workflow?.name) !== policy.workflow.name || text(workflow?.path) !== policy.workflow.path || workflow?.state !== "active") fail("bootstrap_required_checks_workflow_mismatch");
+      const encodedPath = policy.workflow.path.split("/").map(encodeURIComponent).join("/");
+      const workflowContent = await readJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${scope.repository}/contents/${encodedPath}?ref=${scope.head_sha}`, { method: "GET", redirect: "error", headers }, timeoutMs);
+      let workflowBytes;
+      try { workflowBytes = Buffer.from(String(workflowContent?.content || "").replace(/\s/g, ""), "base64"); } catch { fail("bootstrap_required_checks_workflow_content_invalid"); }
+      const observedWorkflowDigest = crypto.createHash("sha256").update(workflowBytes).digest("hex");
+      const expectedWorkflowDigest = policy.workflow.candidate_sha256 || policy.workflow.sha256;
+      if (!workflowBytes.length || observedWorkflowDigest !== expectedWorkflowDigest) fail("bootstrap_required_checks_workflow_digest_mismatch");
+      const workflowRuns = await readJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${scope.repository}/actions/workflows/${policy.workflow.id}/runs?head_sha=${scope.head_sha}&event=pull_request&per_page=20`, { method: "GET", redirect: "error", headers }, timeoutMs);
+      if (!(Array.isArray(workflowRuns?.workflow_runs) && workflowRuns.workflow_runs.some((run) => sha(run?.head_sha) === scope.head_sha && run?.event === "pull_request" && run?.conclusion === "success" && text(run?.path) === policy.workflow.path))) fail("bootstrap_required_checks_workflow_run_mismatch");
       const checkPayload = await readJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${scope.repository}/commits/${scope.head_sha}/check-runs?per_page=100`, { method: "GET", redirect: "error", headers }, timeoutMs);
       const checks = normalizedChecks(checkPayload, scope, policy);
       return Object.freeze({
@@ -110,6 +121,7 @@ export function createBootstrapRequiredChecksReadback({ fetchImpl = globalThis.f
         required_checks: policy.required_checks,
         required_checks_digest: digest(policy),
         required_checks_results_digest: digest({ tenant_id: scope.tenant_id, repository: scope.repository, pr_number: scope.pr_number, head_sha: scope.head_sha, base_branch: scope.base_branch, checks }),
+        workflow: { id: policy.workflow.id, name: policy.workflow.name, path: policy.workflow.path, sha256: observedWorkflowDigest, event: "pull_request" },
         checks,
       });
     },

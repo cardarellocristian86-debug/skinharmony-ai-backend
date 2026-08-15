@@ -15,6 +15,10 @@ const COMMIT = "c".repeat(40);
 const BASE_COMMIT = "a".repeat(40);
 const TREE_SHA = "b".repeat(40);
 
+test("PostgreSQL continuity bindings distinguish authoritative reconciliation", () => {
+  assert.notEqual(digest({ outcome: "unknown" }), digest({ outcome: "authoritatively_reconciled" }));
+});
+
 function pgIdentifier(value) {
   assert.match(value, /^[a-z][a-z0-9_]{1,62}$/);
   return `"${value}"`;

@@ -32,6 +32,8 @@ import {
 import { NYRA_NATIVE_TEAM_TOOLS } from "./nyra-native-team-tools.js";
 import { NYRA_AUTOPILOT_TOOLS } from "./nyra-autopilot-tools.js";
 import { HOST_NATIVE_TOOLS } from "./host-native-tools.js";
+import { NYRA_WORK_AUTOMATION_TOOLS } from "./nyra-work-automation-tools.js";
+import { createNyraWorkAutomationInternal } from "./nyra-work-automation-internal.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 import { TOOLS } from "./tool-definitions.js";
@@ -74,6 +76,7 @@ TOOLS.push(...WORK_CONTINUITY_TOOLS.filter((tool) =>
 TOOLS.push(...NYRA_NATIVE_TEAM_TOOLS);
 TOOLS.push(...NYRA_AUTOPILOT_TOOLS);
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...HOST_NATIVE_TOOLS);
+if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...NYRA_WORK_AUTOMATION_TOOLS);
 TOOLS.push(...CAUSAL_CONTINUITY_TOOLS);
 
 const primaryDatabasePool = config.databaseUrl
@@ -332,6 +335,16 @@ const coreHandlers = createCoreHandlers(config, {
     },
   } : null,
 });
+const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === true
+  ? createNyraWorkAutomationInternal({
+      coreRequest: coreHandlers.causalCoreRequest,
+      resolveIntentBinding: resolveStandingReleaseIntentBinding,
+      resolveSystemVerifier: async ({ work_id }) => ({
+        agent_id: `system_verifier_${crypto.createHash("sha256").update(String(work_id)).digest("hex").slice(0, 24)}`,
+        system_assigned: true,
+      }),
+    })
+  : {};
 const causalContinuityHandlers = createCausalContinuityHandlers({
   coreRequest: coreHandlers.causalCoreRequest,
   issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
@@ -603,6 +616,7 @@ function withTenantWorkAcl(identity) {
 }
 
 const baseHandlers = {
+  ...nyraWorkAutomationHandlers,
   web_compatibility_manifest: async (_args, identity) => ({
     structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
     content: [{ type: "text", text: JSON.stringify({ ok: true, manifest: webCompatibilityManifest() }) }],

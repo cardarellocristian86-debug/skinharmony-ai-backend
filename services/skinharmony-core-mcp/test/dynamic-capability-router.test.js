@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { TOOLS } from "../src/tool-definitions.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
+import { NYRA_WORK_AUTOMATION_TOOLS } from "../src/nyra-work-automation-tools.js";
 import {
   COMPACT_MCP_TOOL_NAMES,
   compactMcpTools,
@@ -15,6 +16,40 @@ const identity = {
   scopes: ["core:read", "core:govern"],
   ownerConfirmed: true,
 };
+
+test("catalog includes system-owned CI without exposing verifier assignment fields", () => {
+  const tool = NYRA_WORK_AUTOMATION_TOOLS.find((item) => item.name === "nyra_work_automation_ci_verify");
+  const handlers = { [tool.name]: async () => ({}) };
+  const snapshot = dynamicCapabilityCatalogSnapshot([tool], handlers);
+  assert.deepEqual(snapshot.capabilities.map((item) => item.capability_id), [tool.name]);
+  assert.equal(Object.hasOwn(tool.inputSchema.properties, "verifier_agent_id"), false);
+  assert.equal(Object.hasOwn(tool.inputSchema.properties, "system_assigned"), false);
+});
+
+test("late-stage Nyra closure traverses the real dynamic connector gate and exact schema", async () => {
+  const tool = NYRA_WORK_AUTOMATION_TOOLS.find((item) => item.name === "nyra_work_automation_closure_finalize");
+  let received;
+  const handlers = { [tool.name]: async (args) => { received = args; return { structuredContent: { ok: true, state: "COMPLETED", dedicated_core_gate: { authorized: true, authority: "universal_core" } } }; } };
+  const router = createDynamicCapabilityHandlers({ tools: [tool], handlers, semanticSelect: async () => ({}), gateAction: async () => ({ structuredContent: { authorization: { allowed: true } } }) });
+  const catalog_revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const caller = { ...identity, agentPresence: { agent_id: "builder", session_id: "session", client_type: "codex" } };
+  const argumentsValue = { work_id: "work", closure_receipt: { ticket_id: "ticket", host_session_fingerprint: "host-session" } };
+  const response = await router.core_capability_invoke({ capability_id: tool.name, catalog_revision, idempotency_key: "closure-once", arguments: argumentsValue }, caller);
+  assert.equal(response.structuredContent.state, "COMPLETED");
+  assert.equal(received.agent_id, "builder");
+  await assert.rejects(router.core_capability_invoke({ capability_id: tool.name, catalog_revision, idempotency_key: "closure-forged", arguments: { ...argumentsValue, closure_receipt: { ...argumentsValue.closure_receipt, closed: true } } }, caller), /dynamic_capability_arguments_invalid/);
+});
+
+test("Nyra admits tenant binding only at signed evidence roots verified again by Core", async () => {
+  const tool = NYRA_WORK_AUTOMATION_TOOLS.find((item) => item.name === "nyra_work_automation_push_record");
+  const handlers = { [tool.name]: async () => ({ structuredContent: { ok: true, dedicated_core_gate: { authorized: true, authority: "universal_core" } } }) };
+  const router = createDynamicCapabilityHandlers({ tools: [tool], handlers, semanticSelect: async () => ({}), gateAction: async () => ({ structuredContent: { authorization: { allowed: true } } }) });
+  const catalog_revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const caller = { ...identity, agentPresence: { agent_id: "builder", session_id: "session", client_type: "codex" } };
+  const base = { work_id: "work", session_fingerprint: "session", action_receipt: { tenant_id: "tenant-a" } };
+  await router.core_capability_invoke({ capability_id: tool.name, catalog_revision, idempotency_key: "signed-root", arguments: base }, caller);
+  await assert.rejects(router.core_capability_invoke({ capability_id: tool.name, catalog_revision, idempotency_key: "nested-forged", arguments: { ...base, action_receipt: { signed: { tenant_id: "tenant-a" } } } }, caller), /dynamic_capability_reserved_argument/);
+});
 
 function readTool(name = "nyra_dynamic_read") {
   return {

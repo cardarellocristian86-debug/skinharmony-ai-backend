@@ -428,6 +428,17 @@ app.get("/healthz", async (_req, res) => {
       operational_evaluation_enabled: deepV2FederationConfig.operational_evaluation_enabled,
     },
     policy_registry_attestation: policyRegistryAttestation,
+    work_automation: {
+      schema_version: "nyra_work_automation_v3",
+      role: "host_native_advisory_selection",
+      core_final_authority: true,
+      maximum_advisory_capabilities: 6,
+      maximum_parallel_builders: 1,
+      system_verifier_required: true,
+      smart_desk_automation_enabled: false,
+      automatic_customer_contact: false,
+      provider_execution: false,
+    },
   });
 });
 

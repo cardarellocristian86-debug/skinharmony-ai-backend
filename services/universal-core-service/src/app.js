@@ -219,6 +219,13 @@ import { createPostgresGenericWorkCoreJoinStore } from "./genericWorkCoreJoinSto
 import { createPostgresBootstrapAuthorityStore } from "./bootstrapAuthorityPostgresStore.js";
 import { createBootstrapDeadlockVerdictStore } from "./bootstrapDeadlockVerdictStore.js";
 import { createBootstrapRequiredChecksReadback } from "./bootstrapRequiredChecksReadback.js";
+import { createNyraWorkAutomationAuthoritativeIssuers, createNyraWorkAutomationCoordinator } from "./nyraWorkAutomationCoordinator.js";
+import { createNyraWorkAutomationReadback } from "./nyraWorkAutomationReadback.js";
+import { createNyraWorkAutomationReceiptService } from "./nyraWorkAutomationReceipt.js";
+import {
+  createNyraFileStore,
+  createNyraWorkAutomationRuntime,
+} from "./nyraWorkAutomationRuntime.js";
 import { createBootstrapReleasePreparationService } from "./bootstrapReleasePreparation.js";
 import {
   bootstrapReleaseExceptionCanonicalJson,
@@ -6370,6 +6377,156 @@ export function createUniversalCoreService(options = {}) {
           ),
         })
       : null);
+  let nyraWorkAutomation = options.nyraWorkAutomationCoordinator || null;
+  let nyraWorkAutomationState = nyraWorkAutomation ? "ready" : "disabled";
+  if (!nyraWorkAutomation && hostNativeGovernanceEnabled) {
+    if (!dttAgentIdentitySecret || !dttVerifierIdentityResolverConfigured || !hostNativeGovernance || typeof hostNativeRequiredChecksPolicyResolver !== "function" || typeof hostNativeRenderServiceOriginResolver !== "function" || (!dttAgentIdentityPostgresPool && !(options.nyraWorkAutomationIntentAnchorResolver && options.nyraWorkAutomationCriterionPolicyResolver))) {
+      nyraWorkAutomationState = "governance_dependencies_unavailable";
+    } else {
+      try {
+        const nyraReceipts = createNyraWorkAutomationReceiptService({ secret: dttAgentIdentitySecret });
+        const readPersistedIntent = async ({ tenant_id, work_id }) => {
+          const result = await dttAgentIdentityPostgresPool.query(`SELECT a.anchor,a.intent_digest,w.status
+            FROM core_continuity_intent_anchors a
+            JOIN core_continuity_works w ON w.tenant_id=a.tenant_id AND w.work_id=a.work_id
+            WHERE a.tenant_id=$1 AND a.work_id=$2`, [tenant_id, work_id]);
+          const row = result.rows[0];
+          const anchor = row?.anchor;
+          if (!anchor || anchor.schema_version !== "intent_anchor_v1" || anchor.immutable !== true || !["active", "release_ready", "blocked", "paused"].includes(String(row.status || "")) || nyraReceipts.digest(anchor) !== row.intent_digest || !String(anchor.objective || "").trim()) throw new Error("nyra_intent_anchor_readback_invalid");
+          return { anchor, intent_anchor_digest: row.intent_digest };
+        };
+        const intentAnchorResolver = options.nyraWorkAutomationIntentAnchorResolver || (async ({ tenant_id, work_id }) => {
+          const persisted = await readPersistedIntent({ tenant_id, work_id });
+          return { schema_version: "nyra_immutable_intent_anchor_v1", tenant_id, work_id, intent_anchor_digest: persisted.intent_anchor_digest, intent_objective: persisted.anchor.objective, acceptance_criteria: persisted.anchor.acceptance_criteria, constraints: persisted.anchor.constraints, immutable: true, source: "mcp_work_continuity_postgres" };
+        });
+        const criterionPolicyResolver = options.nyraWorkAutomationCriterionPolicyResolver || (async ({ tenant_id, work_id, intent_anchor_digest }) => {
+          const persisted = await readPersistedIntent({ tenant_id, work_id });
+          if (persisted.intent_anchor_digest !== intent_anchor_digest || !Array.isArray(persisted.anchor.acceptance_criteria) || !persisted.anchor.acceptance_criteria.length) throw new Error("nyra_intent_criteria_unavailable");
+          const criteria = persisted.anchor.acceptance_criteria.map((criterion, index) => ({ criterion_id: `intent_criterion_${index + 1}`, criterion_digest: nyraReceipts.digest({ index, criterion: String(criterion) }) }));
+          return nyraReceipts.criterionPolicy({ tenant_id, work_id, intent_anchor_digest, criteria });
+        });
+        const finalizedTicket = async ({ tenant_id, ticket_id, host_session_fingerprint }) => {
+          if (!hostNativeGovernance) throw new Error("nyra_production_governance_unavailable");
+          const ticket = await hostNativeGovernance.readActionTicket({ tenant_id, ticket_id });
+          if (!hostNativeGovernance.verifyActionTicket(ticket?.ticket)) throw new Error("nyra_production_ticket_invalid");
+          const authorization = await hostNativeGovernance.authorizeFinalize({ tenant_id, ticket_id, host_session_fingerprint });
+          if (authorization?.trusted !== true || authorization.allowed !== true || authorization.action_ticket_id !== ticket_id) throw new Error("nyra_production_finalize_invalid");
+          return { ticket, authorization };
+        };
+        const criterionEvidenceVerifier = options.nyraWorkAutomationCriterionEvidenceVerifier || (async (evidence, expected) => {
+          if (!evidence || !/^[a-f0-9]{64}$/.test(String(evidence.artifact_digest || ""))) throw new Error("nyra_criterion_evidence_invalid");
+          const evidence_digest = nyraReceipts.digest({ schema_version: "nyra_criterion_evidence_binding_v1", ...expected, artifact_digest: evidence.artifact_digest });
+          const verified = await resolveDttVerifierIdentity({ tenant_id: expected.tenant_id, work_id: expected.work_id, tree_id: evidence.tree_id, node_id: evidence.node_id, evidence_digest, decision: "approved", rationale: evidence.rationale, verifier_id: evidence.verifier_id, assignment_id: evidence.assignment_id, identity_receipt: evidence.identity_receipt });
+          if (verified?.verified !== true || verified.evidence_digest !== evidence_digest || verified.verifier_id !== evidence.verifier_id || verified.assignment_id !== evidence.assignment_id) throw new Error("nyra_criterion_evidence_invalid");
+          return verified;
+        });
+        const authoritativeIssuers = createNyraWorkAutomationAuthoritativeIssuers({ receipts: nyraReceipts, hostNativeGovernance, finalizedTicket, criterionEvidenceVerifier });
+        const builderBindingVerifier = options.nyraWorkAutomationBuilderBindingVerifier || authoritativeIssuers.builderBindingVerifier;
+        const builderReportIssuer = options.nyraWorkAutomationBuilderReportIssuer || authoritativeIssuers.builderReportIssuer;
+        const criterionReadinessIssuer = options.nyraWorkAutomationCriterionReadinessIssuer || authoritativeIssuers.criterionReadinessIssuer;
+        const actionReceiptVerifier = options.nyraWorkAutomationActionReceiptVerifier || (async (receipt, expected) => {
+          const { ticket, authorization } = await finalizedTicket({ tenant_id: expected.tenant_id, ticket_id: receipt?.ticket_id, host_session_fingerprint: expected.session_fingerprint });
+          const action = ticket.ticket.action;
+          if (action.kind !== expected.action_kind || ticket.ticket.repository !== expected.repository || action.branch !== expected.branch || authorization.target_commit !== expected.commit || authorization.host_session_fingerprint !== expected.session_fingerprint) throw new Error("nyra_push_ticket_binding_mismatch");
+          return { schema_version: "host_native_action_completion_receipt_v1", ...expected, receipt_digest: authorization.authorization_digest };
+        });
+        const coreJoinVerifier = options.nyraWorkAutomationCoreJoinVerifier || (async (claim, expected) => {
+          if (!hostNativeGovernance) throw new Error("nyra_core_join_governance_unavailable");
+          const record = await hostNativeGovernance.readCoreJoinVerdict({ tenant_id: expected.tenant_id, verdict_id: claim?.verdict_id });
+          const builderBinding = record.claim.closure_attestation?.report_bindings?.find((binding) => binding.task_kind === "builder");
+          if (!hostNativeGovernance.verifyCoreJoinVerdict(record) || record.claim.work_id !== expected.work_id || record.claim.intent_anchor_digest !== expected.intent_anchor_digest || record.claim.repository !== expected.repository || record.claim.checks?.commit !== expected.head_commit || record.claim.evaluation_digest !== expected.readiness_digest || builderBinding?.report_digest !== expected.builder_report_digest) throw new Error("nyra_core_join_binding_mismatch");
+          return { schema_version: "host_native_core_join_verdict_v1", ...expected, trusted: true, allowed: true, verdict_digest: record.claim_digest };
+        });
+        const mergeReadbackResolver = options.nyraWorkAutomationMergeReadbackResolver || (async (input) => {
+          const { ticket, authorization } = await finalizedTicket({ tenant_id: input.tenant_id, ticket_id: input.ticket_id, host_session_fingerprint: input.host_session_fingerprint });
+          if (ticket.ticket.action.kind !== "github.merge" || authorization.github_readback?.merged !== true) throw new Error("nyra_merge_ticket_invalid");
+          const unsigned = { schema_version: "nyra_authoritative_merge_readback_v1", repository: ticket.ticket.repository, head_commit: authorization.github_readback.head_commit, merge_commit: authorization.github_readback.merge_commit, ticket_id: input.ticket_id, ticket_finalized: true, authorization_digest: authorization.authorization_digest };
+          return { ...unsigned, readback_digest: nyraReceipts.digest(unsigned) };
+        });
+        const deploymentReadbackResolver = options.nyraWorkAutomationDeploymentReadbackResolver || (async (input) => {
+          const { ticket, authorization } = await finalizedTicket({ tenant_id: input.tenant_id, ticket_id: input.ticket_id, host_session_fingerprint: input.host_session_fingerprint });
+          if (ticket.ticket.action.kind !== "render.deploy" || authorization.services_verified !== true) throw new Error("nyra_deployment_ticket_invalid");
+          const services = authorization.live_services.map(({ service_id, environment }) => ({ service_id, environment }));
+          const unsigned = { schema_version: "nyra_authoritative_deployment_readback_v1", live_commit: authorization.target_commit, services, authorization_digest: authorization.authorization_digest };
+          return { ...unsigned, readback_digest: nyraReceipts.digest(unsigned) };
+        });
+        const serviceObservationResolver = options.nyraWorkAutomationServiceObservationResolver || (async ({ tenant_id, host_session_fingerprint, observation_ticket_ids, service }) => {
+          const ticketId = observation_ticket_ids?.[`${service.service_id}:${service.environment}`];
+          const { ticket, authorization } = await finalizedTicket({ tenant_id, ticket_id: ticketId, host_session_fingerprint });
+          const observed = authorization.live_services.find((item) => item.service_id === service.service_id && item.environment === service.environment);
+          if (ticket.ticket.action.kind !== "render.observe" || !observed || observed.live_commit !== authorization.target_commit) throw new Error("nyra_observation_ticket_invalid");
+          const unsigned = { schema_version: "nyra_authoritative_service_observation_v1", service_id: service.service_id, environment: service.environment, live_commit: observed.live_commit, health_status: "healthy", authorization_digest: authorization.authorization_digest };
+          return { ...unsigned, readback_digest: nyraReceipts.digest(unsigned) };
+        });
+        const finalCriterionIssuer = options.nyraWorkAutomationFinalCriterionIssuer || authoritativeIssuers.finalCriterionIssuer;
+        const closureReceiptVerifier = options.nyraWorkAutomationClosureReceiptVerifier || (async (receipt, expected) => {
+          const { authorization } = await finalizedTicket({ tenant_id: expected.tenant_id, ticket_id: receipt?.ticket_id, host_session_fingerprint: receipt?.host_session_fingerprint });
+          if (authorization.target_commit !== expected.live_commit) throw new Error("nyra_closure_live_commit_mismatch");
+          const unsigned = { schema_version: "nyra_authoritative_closure_receipt_v1", ...expected, closed: true, authorization_digest: authorization.authorization_digest };
+          return { ...unsigned, closure_digest: nyraReceipts.digest(unsigned) };
+        });
+        const inducedServiceResolver = options.nyraWorkAutomationInducedServiceResolver || (async ({ tenant_id, repository }) => {
+          const identities = ["skinharmony-universal-core", "skinharmony-core-mcp", "skinharmony-nyra-core"];
+          const services = [];
+          for (const service_id of identities) {
+            await hostNativeRenderServiceOriginResolver({ tenant_id, repository, service_id, environment: "production" });
+            services.push({ service_id, environment: "production" });
+          }
+          return services;
+        });
+        const reconciliationVerifier = options.nyraWorkAutomationReconciliationResolver || (async (input, record) => {
+          let artifact_name;
+          let artifact;
+          if (input.next_state === "DRAFT_PR_PENDING") {
+            artifact_name = "push_receipt";
+            artifact = await actionReceiptVerifier(input.action_receipt, { tenant_id: record.tenant_id, work_id: record.work_id, action_kind: "git.push.branch", repository: record.repository, branch: record.delivery_branch, commit: record.artifacts?.commit_attestation?.commit, session_fingerprint: input.host_session_fingerprint });
+          } else if (input.next_state === "DEPLOYMENT_READBACK_PENDING") {
+            artifact_name = "merge_readback";
+            artifact = await mergeReadbackResolver(input);
+          } else if (input.next_state === "OBSERVE_PENDING") {
+            artifact_name = "deployment_readback";
+            artifact = await deploymentReadbackResolver(input);
+          } else {
+            throw new Error("nyra_reconciliation_stage_unsupported");
+          }
+          const unsigned = { authoritative: true, verifier_id: "core_server_host_native_reconciliation_v1", tenant_id: record.tenant_id, work_id: record.work_id, intent_anchor_digest: record.intent_anchor_digest, verified_at: new Date().toISOString(), artifact_name, artifact };
+          return { ...unsigned, readback_digest: nyraReceipts.digest(unsigned) };
+        });
+        const nyraReadback = createNyraWorkAutomationReadback({
+          fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
+          githubTokenResolver: hostNativeGithubTokenResolver,
+          requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
+          intentAnchorResolver,
+          timeoutMs: Number(options.hostNativeReadbackTimeoutMs ?? 5_000),
+        });
+        const nyraRuntime = createNyraWorkAutomationRuntime({
+          store: createNyraFileStore({ filePath: path.join(storageRoot, "nyra-work-automation-v3.json") }),
+          reconciliationVerifier,
+        });
+        nyraWorkAutomation = createNyraWorkAutomationCoordinator({
+          runtime: nyraRuntime,
+          receipts: nyraReceipts,
+          readback: nyraReadback,
+          criterionPolicyResolver,
+          criterionReadinessIssuer,
+          builderBindingVerifier,
+          builderReportIssuer,
+          actionReceiptVerifier,
+          coreJoinVerifier,
+          mergeReadbackResolver,
+          deploymentReadbackResolver,
+          serviceObservationResolver,
+          closureReceiptVerifier,
+          inducedServiceResolver,
+          finalCriterionIssuer,
+        });
+        nyraWorkAutomationState = "ready";
+      } catch {
+        nyraWorkAutomation = null;
+        nyraWorkAutomationState = "initialization_failed";
+      }
+    }
+  }
   const bootstrapReleasePreparationBaseBranchResolver =
     options.bootstrapReleasePreparationBaseBranchResolver || null;
   const bootstrapReleasePreparationService = options.bootstrapReleasePreparationService ||
@@ -8385,6 +8542,12 @@ export function createUniversalCoreService(options = {}) {
           hostNativeGovernance?.required_checks_policy_resolver_configured === true,
         closure_attestation_verifier_configured:
           hostNativeGovernance?.closure_attestation_verifier_configured === true,
+        nyra_work_automation_v3: {
+          configured: Boolean(nyraWorkAutomation),
+          state: nyraWorkAutomationState,
+          caller_authority_trusted: false,
+          provider_execution: false,
+        },
         render_service_origin_resolver_configured:
           hostNativeGovernance?.render_service_origin_resolver_configured === true,
         resolver_configuration_valid: hostNativeResolverConfigurationValid,
@@ -9930,6 +10093,97 @@ export function createUniversalCoreService(options = {}) {
       } catch (error) {
         return hostNativeFailure(res, error);
       }
+    },
+  );
+
+  function requireNyraWorkAutomation(res) {
+    if (nyraWorkAutomation) return true;
+    publicError(res, 503, "nyra_work_automation_unavailable", nyraWorkAutomationState);
+    return false;
+  }
+  const nyraDedicatedCoreGate = Object.freeze({ authorized: true, authority: "universal_core", provider_execution: false });
+
+  app.get(
+    "/v1/nyra/work-automation/:workId",
+    coreAuth(SCOPES.READ_DECISION),
+    async (req, res) => {
+      if (!requireNyraWorkAutomation(res)) return;
+      try {
+        const record = await nyraWorkAutomation.read({ tenant_id: req.tenantId, work_id: req.params.workId });
+        return res.json({ ok: true, tenant_id: req.tenantId, state: nyraWorkAutomationState, record });
+      } catch (error) { return hostNativeFailure(res, error); }
+    },
+  );
+
+  app.post(
+    "/v1/nyra/work-automation/plan",
+    coreAuth(SCOPES.AUTOMATION_CODEX),
+    async (req, res) => {
+      if (!requireNyraWorkAutomation(res)) return;
+      try {
+        const record = await nyraWorkAutomation.plan({ ...(req.body || {}), tenant_id: req.tenantId });
+        return res.status(201).json({ ok: true, tenant_id: req.tenantId, record, execution_authorized: false, dedicated_core_gate: nyraDedicatedCoreGate });
+      } catch (error) { return hostNativeFailure(res, error); }
+    },
+  );
+
+  for (const [route, method] of [
+    ["/v1/nyra/work-automation/:workId/builder/bind", "bindBuilder"],
+    ["/v1/nyra/work-automation/:workId/builder/begin", "beginBuild"],
+    ["/v1/nyra/work-automation/:workId/commit/attest", "attestCommit"],
+    ["/v1/nyra/work-automation/:workId/push/record", "recordPush"],
+    ["/v1/nyra/work-automation/:workId/pull-request/ready", "markPullRequestReady"],
+    ["/v1/nyra/work-automation/:workId/readiness/record", "recordReadiness"],
+    ["/v1/nyra/work-automation/:workId/core-join/record", "recordCoreJoin"],
+    ["/v1/nyra/work-automation/:workId/merge/record", "recordMerge"],
+    ["/v1/nyra/work-automation/:workId/deployment/readback", "recordDeployment"],
+    ["/v1/nyra/work-automation/:workId/services/observe", "observeServices"],
+    ["/v1/nyra/work-automation/:workId/acceptance/finalize", "finalizeAcceptance"],
+    ["/v1/nyra/work-automation/:workId/closure/finalize", "close"],
+  ]) {
+    app.post(route, coreAuth(SCOPES.AUTOMATION_CODEX), async (req, res) => {
+      if (!requireNyraWorkAutomation(res)) return;
+      try {
+        const record = await nyraWorkAutomation[method]({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId });
+        return res.json({ ok: true, tenant_id: req.tenantId, record, external_action_authorized: false, dedicated_core_gate: nyraDedicatedCoreGate });
+      } catch (error) { return hostNativeFailure(res, error); }
+    });
+  }
+
+  app.post(
+    "/v1/nyra/work-automation/:workId/builder-report",
+    coreAuth(SCOPES.AUTOMATION_CODEX),
+    async (req, res) => {
+      if (!requireNyraWorkAutomation(res)) return;
+      try {
+        const record = await nyraWorkAutomation.builderReport({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId });
+        return res.json({ ok: true, tenant_id: req.tenantId, record, external_action_authorized: false, dedicated_core_gate: nyraDedicatedCoreGate });
+      } catch (error) { return hostNativeFailure(res, error); }
+    },
+  );
+
+  app.post(
+    "/v1/nyra/work-automation/:workId/ci/verify",
+    coreAuth(SCOPES.AUTOMATION_CODEX),
+    async (req, res) => {
+      if (!requireNyraWorkAutomation(res)) return;
+      try {
+        const verifier_agent_id = `system_verifier_${crypto.createHash("sha256").update(`${req.tenantId}\u0000${req.params.workId}`).digest("hex").slice(0, 24)}`;
+        const record = await nyraWorkAutomation.verifyCi({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId, verifier_agent_id, system_assigned: true });
+        return res.json({ ok: true, tenant_id: req.tenantId, record, verifier_agent_id, dedicated_core_gate: nyraDedicatedCoreGate });
+      } catch (error) { return hostNativeFailure(res, error); }
+    },
+  );
+
+  app.post(
+    "/v1/nyra/work-automation/:workId/reconcile",
+    coreAuth(SCOPES.AUTOMATION_CODEX),
+    async (req, res) => {
+      if (!requireNyraWorkAutomation(res)) return;
+      try {
+        const record = await nyraWorkAutomation.reconcileUnknown({ ...(req.body || {}), tenant_id: req.tenantId, work_id: req.params.workId });
+        return res.json({ ok: true, tenant_id: req.tenantId, record, retried: false, dedicated_core_gate: nyraDedicatedCoreGate });
+      } catch (error) { return hostNativeFailure(res, error); }
     },
   );
 
