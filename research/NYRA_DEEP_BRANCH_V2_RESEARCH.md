@@ -3,7 +3,8 @@
 ## Scope, source of truth and decision rule
 
 This dossier analyses the catalogue returned by the authenticated `codexai` Render request
-`GET /v1/nira/branches` captured on 2026-08-05. It contains 23 branches and 326 subbranches.
+`GET /v1/nira/branches` captured on 2026-08-05 and extended by the governed software-cognition
+branch. It contains 24 branches and 337 subbranches.
 Every live subbranch is represented below exactly once. The repository V1 catalogue was used only
 as a read-only equivalence check; the authenticated live response remains the source of truth.
 
@@ -571,6 +572,22 @@ authority for policy, joins, release and execution; no row authorizes automatic 
 | planning_prioritization | next_action_selection | Approved plans need live selection of executable frontier. | plan_frontier_resolver | Compute dependency-ready, authorized items from current state. | starvation_aware_action_selector | Balance priority with long-waiting feasible work. | Stale blockers; priority bypass; unauthorized action; starvation. | Approved plan, state, dependencies, capacity, authority. | Decision next-best-action can precede full plan. |
 | planning_prioritization | plan_summary | Consumers need versioned plan, assumptions, gates and fallback. | plan_contract_assembler | Assemble authoritative WBS, graph, milestones, estimates and controls. | plan_summary_consistency_checker | Reconcile summary with source plan records and revision. | Dependencies/exclusions lost; stale revision. | Full plan records, risks/gates/fallback, hash. | Not an execution runbook. |
 
+## 24. `software_cognition` (11/11)
+
+| branch_id | subbranch_id | problem_solved | specialized_capability_id | specialized_purpose | micro_capability_id | micro_purpose | failure_modes | required_evidence | overlap_notes |
+|---|---|---|---|---|---|---|---|---|---|
+| software_cognition | software_reality_graph | Software structure needs a persistent incremental model rather than caller assertions. | atlas_software_reality_projector | Project repository facts into the tenant and Work scoped Atlas authority. | graph_revision_integrity_probe | Verify deterministic IDs, provenance, tombstones and revision CAS. | Parallel graph authority; stale nodes; dangling or cross-scope edges. | Trusted diff, Atlas head, node and edge digests, composite scope. | Extends Work Atlas and never creates another graph authority. |
+| software_cognition | requirement_traceability | Genesis, Intent, ICF, requirements, code, tests and runtime need evidence-linked lineage. | requirement_code_traceability_builder | Construct typed trace links with provenance and verification state. | verified_link_authority_filter | Prevent inferred candidates from becoming hard-block authority. | Invented requirement; cross-tenant link; stale or unsupported trace. | Current authority digests, graph nodes, evidence subjects, verifier receipt. | Causal Continuity remains the authority for Genesis, Intent and Work. |
+| software_cognition | change_impact_prediction | A worker-proposed scope can omit consumers and downstream effects. | change_impact_expansion_engine | Derive bounded direct, transitive, schema, test, deploy and runtime impact. | reverse_consumer_impact_probe | Discover incoming consumers and surface unknown blast radius. | Under-approximation; stale graph; ignored API or schema consequence. | Current Atlas revision, candidate Change, dependency edges, policy checks. | The worker proposes scope while Nyra computes advisory impact. |
+| software_cognition | causal_obligation_coverage | Completion needs weighted server-derived coverage of required causal obligations. | causal_obligation_coverage_evaluator | Calculate category coverage and closure eligibility from persisted obligations. | critical_gap_closure_guard | Deny readiness when a critical or blocking obligation is not verified. | Caller-forged coverage; waived contradiction; reopened obligation ignored. | Causal obligation transitions, evidence contracts, DB-time state. | Extends Causal Continuity obligations rather than duplicating them. |
+| software_cognition | worker_plan_review | Material software execution needs an immutable plan bound to current state. | worker_plan_contract_supervisor | Evaluate the Native Plan software contract against impact and obligations. | plan_state_binding_checker | Reject cross-Change, stale-base and superseded plan use. | Plan rewrite; stale Atlas digest; builder identity substitution. | Native Plan digest, Change binding, Atlas digest, native agent records. | The software contract is embedded in the existing Native Plan authority. |
+| software_cognition | supervisory_challenge | Unsupported assumptions and missing consequences need explicit auditable challenges. | supervisory_challenge_engine | Emit bounded claims, counter-hypotheses, risks and recommended actions. | evidence_bound_rebuttal_verifier | Require exact independent evidence and CAS for rebuttal resolution. | Empty rebuttal; replayed resolution; unrelated evidence reuse. | Challenge subject digest, verifier identity, evidence refs, version. | Nyra challenges are advisory until Universal Core authorizes transitions. |
+| software_cognition | predicted_actual_reconciliation | The actual diff can diverge materially from the authorized prediction. | predicted_actual_change_reconciler | Compare predicted impact with the trusted post-implementation change graph. | unplanned_change_detector | Open a blocking discrepancy for unexplained changed nodes or edges. | Caller-supplied actual set; missing change; hidden dependency drift. | Trusted diff evidence, prediction digest, current Atlas revision, Change. | Reconciliation links existing Change and evidence authorities. |
+| software_cognition | runtime_reality | Test success alone cannot prove deployed behavior or version. | runtime_reality_linker | Bind existing reality observations to software nodes and exact subjects. | fresh_observation_subject_verifier | Enforce independent, current and subject-bound runtime evidence. | Stale health; wrong commit; worker self-observation; invented freshness. | Causal reality observation, commit and subject digest, DB clock. | Reuses runtime observation infrastructure and does not create monitoring. |
+| software_cognition | architecture_recovery | Architecture claims need observable graph support and explicit uncertainty. | evidence_bounded_architecture_recovery | Recover boundaries, layers and coupling as observed or inferred assertions. | architecture_assertion_state_checker | Distinguish observed, inferred, verified, contradicted and stale claims. | Pattern declared certain; direction reversed; coupling hidden. | Atlas topology, dependency evidence, independent architecture receipt. | Architecture findings advise research and quality Core branches. |
+| software_cognition | verified_learning_calibration | Supervision depth should learn only from independently verified outcomes. | verified_outcome_calibrator | Derive scoped reliability and component-risk evidence without model weight changes. | unverified_learning_exclusion_probe | Reject anecdotal, unrelated or cross-tenant learning candidates. | Self-reinforcement; tenant leak; arbitrary candidate promotion. | Verified outcome subject, independent evidence, tenant and task scope. | Adaptive Learning remains proposal-only and Universal Core governed. |
+| software_cognition | closure_readiness_advisory | Software closure needs one exact join across Intent, ICF, obligations, diff and runtime. | software_closure_readiness_advisor | Produce a signed-evidence-bound advisory readiness receipt. | core_join_binding_freshness_guard | Require current v2 closure binding at every authoritative consumer. | Legacy verdict reuse; expiry race; open challenge or obligation bypass. | Current authority snapshot, Native closure, Core Join signature, DB time. | Universal Core and Generic Core Join remain the only closure authorities. |
+
 ## Semantic collision register
 
 These are the material overlaps found across the live catalogue. The ownership rule in the final
@@ -631,15 +648,15 @@ The Research Agent rejected these expansions rather than emitting nominal nodes:
 A read-only verifier compared the stable ten-column registry against the authenticated live
 catalogue and then confirmed repository V1 equivalence with `nyraBranchCatalog("skinharmony")`.
 
-- Live branches: **23**
-- Live subbranches: **326**
-- Stable generator rows: **326**
-- Unique `(branch_id, subbranch_id)` pairs: **326**
+- Live branches: **24**
+- Live subbranches: **337**
+- Stable generator rows: **337**
+- Unique `(branch_id, subbranch_id)` pairs: **337**
 - Missing live subbranches: **0**
 - Duplicate live-subbranch rows in the stable registry: **0**
 - Duplicate specialized/micro capability IDs: **0**
-- Proposed specialized capabilities: **326**
-- Proposed independently testable micro-capabilities: **326**
+- Proposed specialized capabilities: **337**
+- Proposed independently testable micro-capabilities: **337**
 
 Per-branch stable-row counts: `context_intelligence=10`, `work_intake=14`,
 `research_evidence=20`, `decision_reasoning=10`, `planning_prioritization=15`,
@@ -649,7 +666,7 @@ Per-branch stable-row counts: `context_intelligence=10`, `work_intake=14`,
 `tenant_work_coordination=19`, `agent_change_interlock=8`,
 `learning_memory=10`, `adaptive_learning=16`, `communication_explanation=10`,
 `software_intelligence=20`, `suite_domain=8`, `smartdesk_domain=8`,
-`analyzer_domain=17`.
+`analyzer_domain=17`, `software_cognition=11`.
 
 This is a research recommendation set, not an approval set. Architecture must create independent
 contracts and Verification must supply tests/metrics. Supervisor may reject any candidate. No node,

@@ -46,8 +46,33 @@ import {
   CAUSAL_CONTINUITY_TOOLS,
   createCausalContinuityHandlers,
 } from "./causal-continuity.js";
+import {
+  SOFTWARE_COGNITION_TOOLS,
+  createSoftwareCognitionHandlers,
+} from "./software-cognition.js";
+import {
+  POLICY_REGISTRY_SIGN_ROUTE,
+  POLICY_REGISTRY_SIGNER_HEALTH_ROUTE,
+  NYRA_POLICY_REGISTRY_SIGN_ROUTE,
+  NYRA_POLICY_REGISTRY_SIGNER_HEALTH_ROUTE,
+  createPolicyRegistrySigner,
+} from "./policy-registry-signer.js";
+import {
+  GENERIC_WORK_CORE_JOIN_SIGN_ROUTE,
+  GENERIC_WORK_CORE_JOIN_SIGNER_HEALTH_ROUTE,
+  createGenericWorkCoreJoinSigner,
+} from "./generic-work-core-join-signer.js";
 
 const config = loadConfig();
+const policyRegistrySigner = createPolicyRegistrySigner();
+const nyraPolicyRegistrySigner = createPolicyRegistrySigner({
+  prefix: "POLICY_REGISTRY_NYRA_SIGNER",
+  route: NYRA_POLICY_REGISTRY_SIGN_ROUTE,
+  allowedPurposes: new Set(["nyra.policy_registry.attestation"]),
+  signatureAlgorithm: "ed25519",
+  derivationDomain: "skinharmony-policy-registry-nyra-signer-v1",
+});
+const genericWorkCoreJoinSigner = createGenericWorkCoreJoinSigner();
 const genericWorkCoreJoinActivationEnabled = config.genericWorkCoreJoinEnabled === true &&
   config.genericWorkCoreJoinConfigurationValid === true;
 let genericWorkCoreJoinVerifier = null;
@@ -78,6 +103,7 @@ TOOLS.push(...NYRA_AUTOPILOT_TOOLS);
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...HOST_NATIVE_TOOLS);
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...NYRA_WORK_AUTOMATION_TOOLS);
 TOOLS.push(...CAUSAL_CONTINUITY_TOOLS);
+TOOLS.push(...SOFTWARE_COGNITION_TOOLS);
 
 const primaryDatabasePool = config.databaseUrl
   ? new Pool({
@@ -168,8 +194,17 @@ if (config.decisionLedgerRequired === true && decisionLedger) {
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
 const govern = createCoreWriteGuard(config);
 const memoryFabric = config.memoryFabricRoot ? createMemoryFabric(config, { govern }) : null;
+let validatePresenceRecoveryContext = null;
 const collaborationRuntime = (config.agentWorkspaceRoot || config.collaborationDatabaseUrl)
-  ? createCollaborationHandlers(config, { govern })
+  ? createCollaborationHandlers(config, {
+      govern,
+      validatePresenceRecoveryContext: (...args) => {
+        if (typeof validatePresenceRecoveryContext !== "function") {
+          throw new Error("presence_recovery_verifier_unavailable");
+        }
+        return validatePresenceRecoveryContext(...args);
+      },
+    })
   : {};
 const {
   registerAuthenticatedPresence,
@@ -351,6 +386,17 @@ const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === tru
   : {};
 const causalContinuityHandlers = createCausalContinuityHandlers({
   coreRequest: coreHandlers.causalCoreRequest,
+  issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
+    secret: config.dttAgentIdentitySigningSecret,
+    tenant_id,
+    agent_presence,
+  }),
+});
+validatePresenceRecoveryContext = (args, identity) =>
+  causalContinuityHandlers.causal_context_validate(args, identity);
+const softwareCognitionHandlers = createSoftwareCognitionHandlers({
+  coreRequest: coreHandlers.causalCoreRequest,
+  atlasRuntime: workContinuityRuntime,
   issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
     secret: config.dttAgentIdentitySigningSecret,
     tenant_id,
@@ -660,6 +706,7 @@ const baseHandlers = {
 
   ...coreHandlers,
   ...causalContinuityHandlers,
+  ...softwareCognitionHandlers,
   work_preflight: async (args, identity) => {
     const result = await coreHandlers.work_preflight(args, identity);
     await ensureContinuity(identity, args, "work_preflight", result, { resumeExisting: true });
@@ -1113,6 +1160,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   tools: TOOLS,
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
+  internallyGovernedCapabilities: ["agent_heartbeat"],
   gateAction: ({ tool, identity, catalogRevision, idempotencyKey }) => {
     const researchDistillationShadow =
       researchDistillationShadowTools.has(tool.name);
@@ -1294,4 +1342,19 @@ const disabledProviderPortal = (_req, res) => res
   .send('<!doctype html><html lang="it"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Funzione disattivata</title><body style="font-family:system-ui;max-width:560px;margin:48px auto;padding:24px"><h1>Funzione disattivata</h1><p>Il collegamento OpenAI non viene più usato. Nyra e Universal Core funzionano senza chiave API.</p><p>Puoi chiudere questa pagina e continuare normalmente in ChatGPT o Codex.</p></body></html>');
 
 app.use(["/connect/openai", "/agents", "/mobile/agents"], disabledProviderPortal);
+app.get(POLICY_REGISTRY_SIGNER_HEALTH_ROUTE, (_req, res) => res
+  .status(policyRegistrySigner.health().ready ? 200 : 503)
+  .set("cache-control", "no-store")
+  .json(policyRegistrySigner.health()));
+app.post(POLICY_REGISTRY_SIGN_ROUTE, (req, res) => policyRegistrySigner.handle(req, res));
+app.get(NYRA_POLICY_REGISTRY_SIGNER_HEALTH_ROUTE, (_req, res) => res
+  .status(nyraPolicyRegistrySigner.health().ready ? 200 : 503)
+  .set("cache-control", "no-store")
+  .json(nyraPolicyRegistrySigner.health()));
+app.post(NYRA_POLICY_REGISTRY_SIGN_ROUTE, (req, res) => nyraPolicyRegistrySigner.handle(req, res));
+app.get(GENERIC_WORK_CORE_JOIN_SIGNER_HEALTH_ROUTE, (_req, res) => res
+  .status(genericWorkCoreJoinSigner.health().ready ? 200 : 503)
+  .set("cache-control", "no-store")
+  .json(genericWorkCoreJoinSigner.health()));
+app.post(GENERIC_WORK_CORE_JOIN_SIGN_ROUTE, (req, res) => genericWorkCoreJoinSigner.handle(req, res));
 app.listen(config.port, () => console.log(`[skinharmony-core-mcp] listening on ${config.port}`));

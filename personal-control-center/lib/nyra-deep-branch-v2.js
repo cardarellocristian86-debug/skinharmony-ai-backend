@@ -31,8 +31,8 @@ const LEVEL_NODE_TYPES = Object.freeze({
 const REQUIRED_LEVEL4_TYPES = Object.freeze(["method", "strategy", "verifier", "metric"]);
 const NODES_PER_SUBBRANCH = 2 + REQUIRED_LEVEL4_TYPES.length;
 const SKINHARMONY_CORE_TOPOLOGY_BASELINE = Object.freeze({
-  branch_count: 23,
-  subbranch_count: 326,
+  branch_count: 24,
+  subbranch_count: 337,
 });
 const REQUIRED_CONTRACT_FIELDS = Object.freeze([
   "id",

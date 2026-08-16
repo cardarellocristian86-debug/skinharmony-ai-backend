@@ -20,7 +20,11 @@ function signer() {
   };
 }
 
-async function fixture({ withSigner = true } = {}) {
+async function fixture({
+  withSigner = true,
+  leaseAuthorityScope = CONTEXT.authority_scope,
+  leaseExpiresAt = "2026-08-09T12:10:00.000Z",
+} = {}) {
   let clock = new Date("2026-08-09T12:00:00.000Z");
   const now = () => new Date(clock);
   const store = createInMemoryCausalContinuityStore({ now });
@@ -29,7 +33,7 @@ async function fixture({ withSigner = true } = {}) {
       { kind: "causal_project", value: request.project_id }, { kind: "causal_change", value: request.change_id },
       ...request.obligation_ids.map((value) => ({ kind: "causal_obligation", value })),
     ].sort((a, b) => `${a.kind}:${a.value}`.localeCompare(`${b.kind}:${b.value}`));
-    const persisted_authority_scope = [...CONTEXT.authority_scope].sort();
+    const persisted_authority_scope = [...leaseAuthorityScope].sort();
     const authorityProof = { schema_version: "persisted_lease_authority_v1", tenant_id: request.tenant_id,
       lease_id: request.lease_id, actor_id: request.actor_id, purpose: "causal_context_issue", surfaces, persisted_authority_scope,
       policy_session_fingerprint: request.actor_session_fingerprint };
@@ -38,7 +42,7 @@ async function fixture({ withSigner = true } = {}) {
       obligation_ids: request.obligation_ids, lease_id: request.lease_id, purpose: "causal_context_issue", surfaces,
       persisted_authority_scope, authority_source: "persisted_lease_policy_v1",
       policy_session_fingerprint: request.actor_session_fingerprint,
-      authority_binding_digest: causalDigest(authorityProof), expires_at: "2026-08-09T12:10:00.000Z" };
+      authority_binding_digest: causalDigest(authorityProof), expires_at: leaseExpiresAt };
   };
   const runtime = createCausalContinuityRuntime({ store, now, contextSigner: withSigner ? signer() : undefined, verifyActionLease });
   await runtime.initialize();
@@ -229,6 +233,83 @@ test("context issue fails closed without injected signer", async () => {
     }),
     (error) => error.code === "CAUSAL_SIGNER_UNAVAILABLE",
   );
+});
+
+test("Core govern can pre-issue only a tightly bounded presence recovery context", async () => {
+  const recoveryAuthority = "agent:presence:recover";
+  const recoveryContext = {
+    ...CONTEXT,
+    authority_scope: ["core:govern"],
+  };
+  const constraints = ["presence_only", "no_host_action", "no_publish", "no_deploy"];
+  const f = await fixture({ leaseAuthorityScope: [recoveryAuthority] });
+  const issued = await f.runtime.causal_context_issue(recoveryContext, {
+    project_id: f.project.project_id,
+    project_state_digest: f.snapshot.state_digest,
+    work_id: f.work.work_id,
+    change_id: f.change.change_id,
+    obligation_ids: [f.obligation.obligation_id],
+    environment: "production",
+    authority_scope: [recoveryAuthority],
+    inherited_constraints: constraints,
+    lease_id: "presence-recovery-lease",
+    expires_at: "2026-08-09T12:10:00.000Z",
+    idempotency_key: "presence-recovery-context",
+  });
+  assert.deepEqual(issued.envelope.authority_scope, [recoveryAuthority]);
+  assert.deepEqual(issued.envelope.inherited_constraints, [...constraints].sort());
+  assert.deepEqual(issued.envelope.gallery_ticket_ids, []);
+
+  const missingConstraints = await fixture({ leaseAuthorityScope: [recoveryAuthority] });
+  await assert.rejects(missingConstraints.runtime.causal_context_issue(recoveryContext, {
+    project_id: missingConstraints.project.project_id,
+    project_state_digest: missingConstraints.snapshot.state_digest,
+    work_id: missingConstraints.work.work_id,
+    change_id: missingConstraints.change.change_id,
+    obligation_ids: [missingConstraints.obligation.obligation_id],
+    environment: "production",
+    authority_scope: [recoveryAuthority],
+    inherited_constraints: ["presence_only"],
+    lease_id: "presence-recovery-constraints",
+    expires_at: "2026-08-09T12:05:00.000Z",
+    idempotency_key: "presence-recovery-constraints",
+  }), (error) => error.code === "PRESENCE_RECOVERY_CONTRACT_INVALID");
+
+  const excessiveTtl = await fixture({
+    leaseAuthorityScope: [recoveryAuthority],
+    leaseExpiresAt: "2026-08-09T12:20:00.000Z",
+  });
+  await assert.rejects(excessiveTtl.runtime.causal_context_issue(recoveryContext, {
+    project_id: excessiveTtl.project.project_id,
+    project_state_digest: excessiveTtl.snapshot.state_digest,
+    work_id: excessiveTtl.work.work_id,
+    change_id: excessiveTtl.change.change_id,
+    obligation_ids: [excessiveTtl.obligation.obligation_id],
+    environment: "production",
+    authority_scope: [recoveryAuthority],
+    inherited_constraints: constraints,
+    lease_id: "presence-recovery-long",
+    expires_at: "2026-08-09T12:10:01.000Z",
+    idempotency_key: "presence-recovery-long",
+  }), (error) => error.code === "CONTEXT_EXPIRED");
+
+  const unauthorized = await fixture({ leaseAuthorityScope: [recoveryAuthority] });
+  await assert.rejects(unauthorized.runtime.causal_context_issue({
+    ...CONTEXT,
+    authority_scope: ["causal:write"],
+  }, {
+    project_id: unauthorized.project.project_id,
+    project_state_digest: unauthorized.snapshot.state_digest,
+    work_id: unauthorized.work.work_id,
+    change_id: unauthorized.change.change_id,
+    obligation_ids: [unauthorized.obligation.obligation_id],
+    environment: "production",
+    authority_scope: [recoveryAuthority],
+    inherited_constraints: constraints,
+    lease_id: "presence-recovery-unauthorized",
+    expires_at: "2026-08-09T12:05:00.000Z",
+    idempotency_key: "presence-recovery-unauthorized",
+  }), (error) => error.code === "AUTHORITY_SCOPE_VIOLATION");
 });
 
 test("context nonce is consumed once and expiry equality is blocked", async () => {

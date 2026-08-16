@@ -22,6 +22,11 @@ const ROLLOUT_TRANSITIONS = Object.freeze({
 });
 const GALLERY_ENTITY_TYPES = new Set(["PROJECT_GENESIS", "INTENT_REVISION", "ARCHITECTURE_DECISION", "WORK", "CHANGE", "BLOCKER", "CONFLICT", "EVIDENCE", "VERIFICATION", "REMEDIATION", "ROLLBACK", "OUTCOME", "CLOSURE", "REOPENING"]);
 const GALLERY_VIEWS = new Set(["project_timeline", "intent_evolution", "decision_history", "work_graph", "change_timeline", "evidence", "closure", "resume"]);
+const PRESENCE_RECOVERY_AUTHORITY = "agent:presence:recover";
+const PRESENCE_RECOVERY_MAX_TTL_MS = 10 * 60 * 1_000;
+const PRESENCE_RECOVERY_CONSTRAINTS = Object.freeze([
+  "presence_only", "no_host_action", "no_publish", "no_deploy",
+]);
 const CHANGE_TRANSITIONS = Object.freeze({
   DRAFT: new Set(["MODELED"]), MODELED: new Set(["AUTHORIZED"]), AUTHORIZED: new Set(["EXECUTED"]),
   EXECUTED: new Set(["OBSERVING"]), OBSERVING: new Set(["VERIFIED_PROVISIONAL", "PARTIAL", "CONTRADICTED", "HARMFUL", "UNKNOWN"]),
@@ -467,7 +472,19 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
       obligationRows.push(obligation);
     }
     const requestedAuthority = sortedUnique(input.authority_scope || actor.authority_scope, "authority_scope", { maxItems: 100, maxLength: 240 });
-    if (!isSubset(requestedAuthority, actor.authority_scope)) throw new CausalContinuityError("AUTHORITY_SCOPE_VIOLATION");
+    const presenceRecovery = requestedAuthority.length === 1 && requestedAuthority[0] === PRESENCE_RECOVERY_AUTHORITY;
+    if (!isSubset(requestedAuthority, actor.authority_scope) &&
+        !(presenceRecovery && actor.authority_scope.includes("core:govern"))) {
+      throw new CausalContinuityError("AUTHORITY_SCOPE_VIOLATION");
+    }
+    const inheritedConstraints = sortedUnique(input.inherited_constraints || [], "inherited_constraints", { maxItems: 100, maxLength: 240 });
+    if (presenceRecovery) {
+      const constraints = new Set(inheritedConstraints);
+      if (PRESENCE_RECOVERY_CONSTRAINTS.some((constraint) => !constraints.has(constraint)) ||
+          (Array.isArray(input.gallery_ticket_ids) && input.gallery_ticket_ids.length > 0)) {
+        throw new CausalContinuityError("PRESENCE_RECOVERY_CONTRACT_INVALID");
+      }
+    }
     const actorSessionFingerprint = requireText(actor.provenance?.session_fingerprint, "actor_session_fingerprint", 64);
     if (typeof verifyActionLease !== "function") throw new CausalContinuityError("LEASE_VERIFIER_UNAVAILABLE");
     const lease_id = requireText(input.lease_id, "lease_id", 240);
@@ -514,7 +531,10 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
     await project_state_verify(context, { project_id, project_state_digest });
     const issued_at = now().toISOString();
     const expires_at = iso(input.expires_at, "expires_at");
-    if (new Date(expires_at).getTime() <= new Date(issued_at).getTime() || new Date(expires_at).getTime() > new Date(leaseExpiresAt).getTime()) throw new CausalContinuityError("CONTEXT_EXPIRED");
+    if (new Date(expires_at).getTime() <= new Date(issued_at).getTime() || new Date(expires_at).getTime() > new Date(leaseExpiresAt).getTime() ||
+        (presenceRecovery && new Date(expires_at).getTime() - new Date(issued_at).getTime() > PRESENCE_RECOVERY_MAX_TTL_MS)) {
+      throw new CausalContinuityError("CONTEXT_EXPIRED");
+    }
     await store.bindActionLease({
       ...prepared, project_id, work_id: work.work_id, change_id: change.change_id,
       obligation_id: obligation_ids[0], obligation_ids, lease_id, authority_scope: requestedAuthority,
@@ -535,7 +555,7 @@ export function createCausalContinuityRuntime({ store, now = () => new Date(), c
       delegated_from: input.delegated_from || null,
       environment: requireText(input.environment, "environment", 80), base_state_digest: change.base_state_digest,
       authority_scope: requestedAuthority,
-      risk_budget: input.risk_budget || {}, inherited_constraints: sortedUnique(input.inherited_constraints || [], "inherited_constraints", { maxItems: 100, maxLength: 240 }),
+      risk_budget: input.risk_budget || {}, inherited_constraints: inheritedConstraints,
       issued_at, expires_at, single_use_nonce: opaqueNonce(),
       lease_id, event_ledger_sequence,
     };

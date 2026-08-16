@@ -467,6 +467,118 @@ test("allows only a metadata-free agent heartbeat without owner confirmation", a
   }
 });
 
+test("agent heartbeat can rely on its handler-owned Core gate without a duplicate dynamic gate", async () => {
+  const tool = writeTool("agent_heartbeat");
+  tool.inputSchema.properties = {
+    agent_id: { type: "string" },
+    client_type: { type: "string" },
+    session_id: { type: "string" },
+    display_name: { type: "string" },
+    capabilities: { type: "array", items: { type: "string" } },
+    owner_confirmed: { type: "boolean" },
+    confirmation_reference: { type: "string" },
+  };
+  tool.inputSchema.required = ["agent_id", "client_type", "session_id", "owner_confirmed"];
+  let dynamicGateCalls = 0;
+  let handlerGateVerified = true;
+  const handlers = {
+    agent_heartbeat: async () => ({
+      structuredContent: {
+        ok: true,
+        gate: { allowed: handlerGateVerified },
+      },
+    }),
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    internallyGovernedCapabilities: ["agent_heartbeat"],
+    gateAction: async () => {
+      dynamicGateCalls += 1;
+      return { structuredContent: { authorization: { allowed: true } } };
+    },
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const invoke = (suffix) => router.core_capability_invoke({
+    capability_id: "agent_heartbeat",
+    catalog_revision: revision,
+    idempotency_key: `heartbeat-internal-${suffix}`,
+    arguments: { agent_id: "agent-a", client_type: "codex", session_id: "session-a" },
+  }, { ...identity, ownerConfirmed: false });
+
+  const result = await invoke("verified");
+  assert.equal(dynamicGateCalls, 0);
+  assert.equal(result.structuredContent.dynamic_capability.gate_source, "handler_internal_core_gate");
+
+  handlerGateVerified = false;
+  await assert.rejects(invoke("unverified"), /dynamic_capability_internal_core_gate_unverified/);
+  assert.equal(dynamicGateCalls, 0);
+});
+
+test("agent heartbeat admits tenant identity only inside a Core-signed recovery envelope", async () => {
+  const tool = writeTool("agent_heartbeat");
+  tool.inputSchema.properties = {
+    agent_id: { type: "string" },
+    client_type: { type: "string" },
+    session_id: { type: "string" },
+    owner_confirmed: { type: "boolean" },
+    confirmation_reference: { type: "string" },
+    recovery_context: {
+      type: "object",
+      properties: {
+        envelope: { type: "object", additionalProperties: true },
+        signature: { type: "object", additionalProperties: true },
+      },
+      required: ["envelope", "signature"],
+      additionalProperties: false,
+    },
+  };
+  tool.inputSchema.required = ["agent_id", "client_type", "session_id", "recovery_context"];
+  const handlers = {
+    agent_heartbeat: async () => ({ structuredContent: { gate: { allowed: true } } }),
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    internallyGovernedCapabilities: ["agent_heartbeat"],
+  });
+  const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const base = {
+    capability_id: "agent_heartbeat",
+    catalog_revision: revision,
+    idempotency_key: "presence-recovery-envelope",
+    arguments: {
+      agent_id: "agent-a",
+      client_type: "codex",
+      session_id: "session-a",
+      recovery_context: {
+        envelope: { tenant_id: "tenant-a", context_digest: "a".repeat(64) },
+        signature: { key_id: "causal-v1", digest: "b".repeat(64) },
+      },
+    },
+  };
+  const accepted = await router.core_capability_invoke(base, { ...identity, ownerConfirmed: false });
+  assert.equal(accepted.structuredContent.dynamic_capability.gate_source, "handler_internal_core_gate");
+  await assert.rejects(router.core_capability_invoke({
+    ...base,
+    idempotency_key: "presence-recovery-top-level-tenant",
+    arguments: { ...base.arguments, tenant_id: "tenant-a" },
+  }, { ...identity, ownerConfirmed: false }), /dynamic_capability_reserved_argument/);
+  await assert.rejects(router.core_capability_invoke({
+    ...base,
+    idempotency_key: "presence-recovery-nested-tenant",
+    arguments: {
+      ...base.arguments,
+      recovery_context: {
+        ...base.arguments.recovery_context,
+        envelope: { tenant_id: "tenant-a", nested: { tenant_id: "tenant-a" } },
+      },
+    },
+  }, { ...identity, ownerConfirmed: false }), /dynamic_capability_reserved_argument/);
+});
+
 test("bounded internal mutations use the target metadata instead of impersonating the owner", async () => {
   const tool = delegatedWriteTool();
   let received;

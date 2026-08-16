@@ -118,6 +118,48 @@ services:
         value: "false"
       - key: NYRA_POLICY_REGISTRY_LIFECYCLE_REQUIRED
         value: "false"
+      # Core MCP is the existing isolated signer custody boundary. Target
+      # commits are operator-rotated atomically with Universal Core; signing
+      # material remains provisioned only in Render and is never generated or
+      # replaced by a source deployment.
+      - key: POLICY_REGISTRY_CORE_SIGNER_ENABLED
+        value: "true"
+      - key: POLICY_REGISTRY_CORE_SIGNER_SERVICE
+        value: universal-core-policy-registry-signer
+      - key: POLICY_REGISTRY_CORE_SIGNER_KEY_ID
+        value: universal-core-policy-registry-v1
+      - key: POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
+        sync: false
+      - key: POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
+        sync: false
+      - key: POLICY_REGISTRY_CORE_SIGNER_SEED
+        sync: false
+      - key: POLICY_REGISTRY_NYRA_SIGNER_ENABLED
+        value: "true"
+      - key: POLICY_REGISTRY_NYRA_SIGNER_SERVICE
+        value: nyra-policy-registry-signer
+      - key: POLICY_REGISTRY_NYRA_SIGNER_KEY_ID
+        value: nyra-policy-registry-v1
+      - key: POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
+        sync: false
+      - key: POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
+        sync: false
+      - key: POLICY_REGISTRY_NYRA_SIGNER_SEED
+        sync: false
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_ENABLED
+        value: "true"
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE
+        value: universal-core-service
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_PURPOSE
+        value: generic_work_core_join_v1
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_KEY_ID
+        value: universal-core-generic-join-v1
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_TARGET_COMMIT
+        sync: false
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE_TOKEN
+        sync: false
+      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SEED
+        sync: false
       # Dedicated MCP→Core Deep V2 request signature. Universal Core consumes
       # the same generated value through an internal Render reference. It is
       # an internal continuity signature, not a model-provider credential.

@@ -197,6 +197,7 @@ import {
   createFileHostNativeGovernanceStore,
   createHostNativeGovernance,
   createHostNativeDomainSigner,
+  hostNativeDigest,
   validateHostReleaseManifestV2,
 } from "./hostNativeGovernance.js";
 import {
@@ -246,6 +247,9 @@ import {
   validateCausalBranchInvocation,
 } from "./causalBranchContract.js";
 import { createCausalBranchEnforcer } from "./causalBranchEnforcement.js";
+import { createPostgresSoftwareCognitionStore } from "./softwareCognitionStore.js";
+import { createSoftwareCognitionRuntime, normalizeSoftwareCognitionMode, requireCurrentSoftwareClosure } from "./softwareCognitionRuntime.js";
+import { registerSoftwareCognitionRoutes } from "./softwareCognitionRoutes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -5687,6 +5691,12 @@ export function createUniversalCoreService(options = {}) {
     "independent_verifier_work_id_mismatch",
     "requester_identity_invalid",
     "requester_session_invalid",
+    "software_cognition_closure_digest_mismatch",
+    "software_cognition_closure_expired_during_issuance",
+    "software_cognition_closure_required",
+    "software_cognition_closure_stale",
+    "software_cognition_closure_authority_changed",
+    "software_cognition_mode_invalid",
     "task_state_invalid",
     "task_state_invalid_duplicate",
     "tenant_id_invalid",
@@ -6407,11 +6417,12 @@ export function createUniversalCoreService(options = {}) {
         });
         const finalizedTicket = async ({ tenant_id, ticket_id, host_session_fingerprint }) => {
           if (!hostNativeGovernance) throw new Error("nyra_production_governance_unavailable");
-          const ticket = await hostNativeGovernance.readActionTicket({ tenant_id, ticket_id });
-          if (!hostNativeGovernance.verifyActionTicket(ticket?.ticket)) throw new Error("nyra_production_ticket_invalid");
-          const authorization = await hostNativeGovernance.authorizeFinalize({ tenant_id, ticket_id, host_session_fingerprint });
-          if (authorization?.trusted !== true || authorization.allowed !== true || authorization.action_ticket_id !== ticket_id) throw new Error("nyra_production_finalize_invalid");
-          return { ticket, authorization };
+          return withEnforcedSoftwareActionTicket(tenant_id, ticket_id, async (ticket, trusted) => {
+            if (!hostNativeGovernance.verifyActionTicket(ticket?.ticket)) throw new Error("nyra_production_ticket_invalid");
+            const authorization = await hostNativeGovernance.authorizeFinalize({ tenant_id, ticket_id, host_session_fingerprint }, trusted);
+            if (authorization?.trusted !== true || authorization.allowed !== true || authorization.action_ticket_id !== ticket_id) throw new Error("nyra_production_finalize_invalid");
+            return { ticket, authorization };
+          });
         };
         const criterionEvidenceVerifier = options.nyraWorkAutomationCriterionEvidenceVerifier || (async (evidence, expected) => {
           if (!evidence || !/^[a-f0-9]{64}$/.test(String(evidence.artifact_digest || ""))) throw new Error("nyra_criterion_evidence_invalid");
@@ -6432,10 +6443,11 @@ export function createUniversalCoreService(options = {}) {
         });
         const coreJoinVerifier = options.nyraWorkAutomationCoreJoinVerifier || (async (claim, expected) => {
           if (!hostNativeGovernance) throw new Error("nyra_core_join_governance_unavailable");
-          const record = await hostNativeGovernance.readCoreJoinVerdict({ tenant_id: expected.tenant_id, verdict_id: claim?.verdict_id });
-          const builderBinding = record.claim.closure_attestation?.report_bindings?.find((binding) => binding.task_kind === "builder");
-          if (!hostNativeGovernance.verifyCoreJoinVerdict(record) || record.claim.work_id !== expected.work_id || record.claim.intent_anchor_digest !== expected.intent_anchor_digest || record.claim.repository !== expected.repository || record.claim.checks?.commit !== expected.head_commit || record.claim.evaluation_digest !== expected.readiness_digest || builderBinding?.report_digest !== expected.builder_report_digest) throw new Error("nyra_core_join_binding_mismatch");
-          return { schema_version: "host_native_core_join_verdict_v1", ...expected, trusted: true, allowed: true, verdict_digest: record.claim_digest };
+          return withEnforcedSoftwareCoreJoin(expected.tenant_id, expected.work_id, claim?.verdict_id, async (record) => {
+            const builderBinding = record.claim.closure_attestation?.report_bindings?.find((binding) => binding.task_kind === "builder");
+            if (!hostNativeGovernance.verifyCoreJoinVerdict(record) || record.claim.work_id !== expected.work_id || record.claim.intent_anchor_digest !== expected.intent_anchor_digest || record.claim.repository !== expected.repository || record.claim.checks?.commit !== expected.head_commit || record.claim.evaluation_digest !== expected.readiness_digest || builderBinding?.report_digest !== expected.builder_report_digest) throw new Error("nyra_core_join_binding_mismatch");
+            return { schema_version: "host_native_core_join_verdict_v1", ...expected, trusted: true, allowed: true, verdict_digest: record.claim_digest };
+          });
         });
         const mergeReadbackResolver = options.nyraWorkAutomationMergeReadbackResolver || (async (input) => {
           const { ticket, authorization } = await finalizedTicket({ tenant_id: input.tenant_id, ticket_id: input.ticket_id, host_session_fingerprint: input.host_session_fingerprint });
@@ -6536,7 +6548,7 @@ export function createUniversalCoreService(options = {}) {
       ? createBootstrapReleasePreparationService({
           normalPathAttempt: async ({ authenticated_tenant_id, normal_action_request }) => {
             try {
-              await hostNativeGovernance.issueActionTicket({
+              await issueHostNativeActionTicket({
                 ...normal_action_request,
                 tenant_id: authenticated_tenant_id,
               });
@@ -6638,9 +6650,10 @@ export function createUniversalCoreService(options = {}) {
         verifyActionLease: causalActionLeaseVerifier,
       })
       : null);
+  let causalContinuityInitialization = Promise.resolve();
   if (causalContinuityRuntime) {
     causalContinuityInitializationStartedAtMs = performance.now();
-    void Promise.resolve(causalContinuityRuntime.initialize())
+    causalContinuityInitialization = Promise.resolve(causalContinuityRuntime.initialize())
       .then(() => { causalContinuityState = "ready"; })
       .catch((error) => {
         causalContinuityState = "initialization_failed";
@@ -6656,6 +6669,27 @@ export function createUniversalCoreService(options = {}) {
       return causalContinuityRuntime.invoke(capability, identity, input);
     },
   } : null;
+  let softwareCognitionMode;
+  try { softwareCognitionMode = normalizeSoftwareCognitionMode(options.softwareCognitionMode ?? process.env.SOFTWARE_COGNITION_MODE); }
+  catch { softwareCognitionMode = "INVALID"; }
+  const softwareCognitionEnabled = softwareCognitionMode !== "OFF" && softwareCognitionMode !== "INVALID";
+  const softwareCognitionStore = softwareCognitionEnabled && (options.softwareCognitionStore
+    || (nyraPolicyRegistryPostgresPool
+      ? createPostgresSoftwareCognitionStore({ pool: nyraPolicyRegistryPostgresPool })
+      : null));
+  const softwareCognitionRuntime = softwareCognitionEnabled && (options.softwareCognitionRuntime
+    || (softwareCognitionStore ? createSoftwareCognitionRuntime({ store: softwareCognitionStore }) : null));
+  let softwareCognitionState = softwareCognitionMode === "INVALID" ? "configuration_invalid" : softwareCognitionRuntime ? "initializing" : "disabled";
+  let softwareCognitionInitializationError = softwareCognitionMode === "INVALID" ? "software_cognition_mode_invalid" : null;
+  if (softwareCognitionRuntime) {
+    void causalContinuityInitialization.then(() => softwareCognitionRuntime.initialize())
+      .then(() => { softwareCognitionState = "ready"; })
+      .catch((error) => {
+        softwareCognitionState = "initialization_failed";
+        softwareCognitionInitializationError = String(error?.code || error?.message || "software_cognition_initialization_failed").slice(0, 160);
+        try { audit.append("core_software_cognition_unavailable", { reason: softwareCognitionInitializationError }); } catch { /* readiness state is authoritative */ }
+      });
+  }
   const causalBranchEnforcer = causalContinuityRuntime && causalContinuityStore && dttAgentIdentityReceiptService?.configured
     ? createCausalBranchEnforcer({
         store: causalContinuityStore,
@@ -6962,6 +6996,23 @@ export function createUniversalCoreService(options = {}) {
         return dttAgentIdentityReceiptService.verifyContext(token, tenantId);
       },
       audit: (event) => audit.append("core_causal_continuity_invoked", event),
+    });
+  }
+  if (softwareCognitionRuntime) {
+    registerSoftwareCognitionRoutes({
+      app,
+      authFor: (access) => coreAuth(access === "read" ? SCOPES.READ_DECISION : SCOPES.WRITE_DECISION),
+      runtime: {
+        invoke(capability, identity, input) {
+          if (softwareCognitionState !== "ready") throw new Error("software_cognition_runtime_not_ready");
+          return softwareCognitionRuntime.invoke(capability, identity, input);
+        },
+      },
+      resolveAgentContext: (token, tenantId) => {
+        if (!dttAgentIdentityReceiptService?.configured) throw new Error("dtt_agent_identity_not_ready");
+        return dttAgentIdentityReceiptService.verifyContext(token, tenantId);
+      },
+      audit: (event) => audit.append("core_software_cognition_invoked", event),
     });
   }
 
@@ -8378,6 +8429,16 @@ export function createUniversalCoreService(options = {}) {
         ...causalContinuityHealth,
         production_required: causalContinuityProductionRequired,
         feature_flag_default: "SHADOW",
+      },
+      software_cognition: {
+        schema_version: "nyra_software_cognition_v1",
+        state: softwareCognitionState,
+        ready: softwareCognitionState === "ready",
+        backend: softwareCognitionStore ? "postgresql_append_only_v1" : "unavailable",
+        rollout_mode: softwareCognitionMode,
+        execution_authorized: false,
+        authority: "universal_core",
+        error: softwareCognitionInitializationError,
       },
       dynamic_task_tree: {
         state_backend: dynamicTaskTreeStateStore.kind || "injected",
@@ -10486,13 +10547,14 @@ export function createUniversalCoreService(options = {}) {
           run_id: _runId,
           ...input
         } = req.body || {};
-        const actionTicket = await hostNativeGovernance.reserveStandingReleaseRunTicket({
-          ...input,
-          tenant_id: req.tenantId,
-          run_id: req.params.runId,
-          dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
-          dtt_session_fingerprint: dttWorkSessionFingerprint(req),
-        });
+        const actionTicket = await withEnforcedSoftwareActionTicket(req.tenantId, input.ticket_id,
+          async (_ticket, trusted) => hostNativeGovernance.reserveStandingReleaseRunTicket({
+            ...input,
+            tenant_id: req.tenantId,
+            run_id: req.params.runId,
+            dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
+            dtt_session_fingerprint: dttWorkSessionFingerprint(req),
+          }, trusted));
         const githubAction = actionTicket?.ticket?.action;
         const githubExecutionClaim = githubWorkerExecutionSigningSecret &&
           ["git.push.branch", "github.draft_pr", "github.ready", "github.merge"].includes(githubAction?.kind)
@@ -10560,13 +10622,14 @@ export function createUniversalCoreService(options = {}) {
             run_id: _runId,
             ...input
           } = req.body || {};
-          const actionTicket = await hostNativeGovernance[method]({
-            ...input,
-            tenant_id: req.tenantId,
-            run_id: req.params.runId,
-            dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
-            dtt_session_fingerprint: dttWorkSessionFingerprint(req),
-          });
+          const actionTicket = await withEnforcedSoftwareActionTicket(req.tenantId, input.ticket_id,
+            async (_ticket, trusted) => hostNativeGovernance[method]({
+              ...input,
+              tenant_id: req.tenantId,
+              run_id: req.params.runId,
+              dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
+              dtt_session_fingerprint: dttWorkSessionFingerprint(req),
+            }, trusted));
           audit.append(auditEvent, {
             tenant_id: req.tenantId,
             key_id: req.coreKey.key_id,
@@ -10619,13 +10682,16 @@ export function createUniversalCoreService(options = {}) {
             run_id: _runId,
             ...input
           } = req.body || {};
-          const record = await hostNativeGovernance[method]({
+          const mutateRun = (trusted) => hostNativeGovernance[method]({
             ...input,
             tenant_id: req.tenantId,
             run_id: req.params.runId,
             dtt_request_binding_digest: dttWorkRequestBindingDigest(req),
             dtt_session_fingerprint: dttWorkSessionFingerprint(req),
-          });
+          }, trusted);
+          const record = ["bind-ticket", "advance"].includes(suffix)
+            ? await withEnforcedSoftwareActionTicket(req.tenantId, input.ticket_id, async (_ticket, trusted) => mutateRun(trusted))
+            : await mutateRun();
           audit.append(auditEvent, {
             tenant_id: req.tenantId,
             key_id: req.coreKey.key_id,
@@ -10673,10 +10739,11 @@ export function createUniversalCoreService(options = {}) {
       }
       if (!requireHostNativeGovernance(res)) return;
       try {
-        const { tenant_id: _tenantId, ...input } = req.body || {};
-        const coreJoinVerdict = await hostNativeGovernance.issueCoreJoinVerdict({
-          ...input,
-          tenant_id: req.tenantId,
+        const { tenant_id: _tenantId, software_closure_digest: _callerSoftwareClosureDigest, ...input } = req.body || {};
+        const coreJoinVerdict = await withSoftwareCognitionClosure(req.tenantId, String(input.work_id || "").trim().toLowerCase(), async (softwareClosure) => {
+          return hostNativeGovernance.issueCoreJoinVerdict({ ...input, tenant_id: req.tenantId,
+            ...(softwareClosure ? { software_closure_digest: softwareClosure.payload.closure_digest,
+              software_closure_fresh_until: softwareClosure.payload.evidence_fresh_until } : {}) });
         });
         audit.append("core_host_native_core_join_issued", {
           tenant_id: req.tenantId,
@@ -10714,6 +10781,83 @@ export function createUniversalCoreService(options = {}) {
   };
   const genericWorkCoreJoinFailureStatus = (code) => genericWorkCoreJoinInfrastructureCode(code) ? 503 : 409;
 
+  const withSoftwareCognitionClosure = async (tenantId, workId, operation) => {
+    if (softwareCognitionMode === "INVALID") throw new Error("software_cognition_mode_invalid");
+    if (softwareCognitionMode !== "ENFORCED") return operation(null);
+    if (!softwareCognitionStore || softwareCognitionState !== "ready" || typeof softwareCognitionStore.withClosureAuthorityLock !== "function") {
+      throw new Error("software_cognition_closure_unavailable");
+    }
+    return softwareCognitionStore.withClosureAuthorityLock({ tenant_id: tenantId, work_id: workId }, async (lockedStore) => {
+      const closure = await requireCurrentSoftwareClosure({ store: lockedStore, tenant_id: tenantId, work_id: workId });
+      const result = await operation(closure);
+      const issuedAt = result?.verdict?.issued_at || result?.ticket?.issued_at || result?.issued_at;
+      await lockedStore.assertClosureFresh({ fresh_until: closure.payload.evidence_fresh_until, issued_at: issuedAt });
+      return result;
+    });
+  };
+
+  const withEnforcedSoftwareCoreJoin = async (tenantId, workId, verdictId, operation) => {
+    const wrapped = await withSoftwareCognitionClosure(tenantId, workId, async (softwareClosure) => {
+      const record = await hostNativeGovernance.readCoreJoinVerdict({ tenant_id: tenantId, verdict_id: verdictId });
+      if (softwareClosure && (
+        !hostNativeGovernance.verifyCoreJoinVerdict(record) ||
+        record.tenant_id !== tenantId || record.verdict_id !== verdictId ||
+        record.claim?.work_id !== workId || record.verdict?.work_id !== workId ||
+        record.claim_digest !== hostNativeDigest(record.claim) ||
+        record.verdict?.claim_digest !== record.claim_digest ||
+        record.claim?.schema_version !== "host_native_core_join_claim_v2" ||
+        record.verdict?.schema_version !== "host_native_core_join_v2" ||
+        record.claim?.software_closure_digest !== softwareClosure.payload.closure_digest ||
+        record.verdict?.software_closure_digest !== softwareClosure.payload.closure_digest ||
+        record.claim?.software_closure_fresh_until !== softwareClosure.payload.evidence_fresh_until ||
+        record.verdict?.software_closure_fresh_until !== softwareClosure.payload.evidence_fresh_until
+      )) throw new Error("software_cognition_core_join_binding_mismatch");
+      const result = await operation(record, softwareClosure);
+      return { software_consumer_result: result, issued_at: result?.ticket?.issued_at || record.verdict?.issued_at };
+    });
+    return wrapped.software_consumer_result;
+  };
+
+  const issueHostNativeActionTicket = async (input) => {
+    const verdictId = input?.release_manifest?.verification?.core_join_verdict_id;
+    const softwareReleaseAction = ["git.push.protected", "github.merge", "render.deploy", "render.rollback", "render.observe"]
+      .includes(input?.action?.kind);
+    if (softwareCognitionMode === "ENFORCED" && softwareReleaseAction && !verdictId) {
+      throw new Error("software_cognition_core_join_binding_mismatch");
+    }
+    if (!verdictId || softwareCognitionMode !== "ENFORCED") {
+      if (softwareCognitionMode === "INVALID") throw new Error("software_cognition_mode_invalid");
+      return hostNativeGovernance.issueActionTicket(input);
+    }
+    return withEnforcedSoftwareCoreJoin(input.tenant_id, input.work_id, verdictId,
+      async (_record, softwareClosure) => hostNativeGovernance.issueActionTicket(input, {
+        software_closure_fresh_until: softwareClosure.payload.evidence_fresh_until,
+      }));
+  };
+
+  const withEnforcedSoftwareActionTicket = async (tenantId, ticketId, operation) => {
+    const ticket = await hostNativeGovernance.readActionTicket({ tenant_id: tenantId, ticket_id: ticketId });
+    if (!hostNativeGovernance.verifyActionTicket(ticket?.ticket) ||
+        ticket.ticket.tenant_id !== tenantId || ticket.ticket.ticket_id !== ticketId ||
+        !String(ticket.ticket.work_id || "").trim()) {
+      throw new Error("software_cognition_action_ticket_binding_mismatch");
+    }
+    const verdictId = ticket?.ticket?.core_join_verdict_id;
+    const softwareReleaseAction = ["git.push.protected", "github.merge", "render.deploy", "render.rollback", "render.observe"]
+      .includes(ticket?.ticket?.action?.kind);
+    if (softwareCognitionMode === "ENFORCED" && softwareReleaseAction && !verdictId) {
+      throw new Error("software_cognition_core_join_binding_mismatch");
+    }
+    if (!verdictId || softwareCognitionMode !== "ENFORCED") {
+      if (softwareCognitionMode === "INVALID") throw new Error("software_cognition_mode_invalid");
+      return operation(ticket);
+    }
+    return withEnforcedSoftwareCoreJoin(tenantId, ticket.ticket.work_id, verdictId,
+      async (_record, softwareClosure) => operation(ticket, {
+        software_closure_fresh_until: softwareClosure.payload.evidence_fresh_until,
+      }));
+  };
+
   const issueGenericWorkCoreJoin = async (req, res) => {
       if (!isMcpTenantGatewayRecord(req.coreKey)) return publicError(res, 403, "core_join_mcp_gateway_required");
       const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
@@ -10735,10 +10879,15 @@ export function createUniversalCoreService(options = {}) {
         }
         issueSequence = ++genericWorkCoreJoinIssueSequence;
         const { tenant_id: _tenantId, work_id: _callerWorkId, ...input } = req.body || {};
-        const issuance = await genericWorkCoreJoinAuthority.issueDetailed({
-          ...input,
-          tenant_id: req.tenantId,
-          work_id: req.genericWorkCoreJoinWorkId,
+        const issuance = await withSoftwareCognitionClosure(req.tenantId, req.genericWorkCoreJoinWorkId, async (softwareClosure) => {
+          if (softwareClosure && (!Array.isArray(input.evidence_digests) || !input.evidence_digests.includes(softwareClosure.payload.closure_digest))) {
+            throw new Error("software_cognition_closure_digest_mismatch");
+          }
+          return genericWorkCoreJoinAuthority.issueDetailed(
+            { ...input, tenant_id: req.tenantId, work_id: req.genericWorkCoreJoinWorkId },
+            softwareClosure ? { softwareClosure: { digest: softwareClosure.payload.closure_digest,
+              fresh_until: softwareClosure.payload.evidence_fresh_until } } : {},
+          );
         });
         const verdict = issuance.verdict;
         genericWorkCoreJoinVerifier.verify({ verdict, expected: { tenant_id: req.tenantId, work_id: verdict.work_id, adapter: verdict.adapter, idempotency_digest: verdict.idempotency_digest } });
@@ -10901,7 +11050,7 @@ export function createUniversalCoreService(options = {}) {
       if (!requireHostNativeGovernance(res)) return;
       try {
         const { tenant_id: _tenantId, ...input } = req.body || {};
-        const actionTicket = await hostNativeGovernance.issueActionTicket({
+        const actionTicket = await issueHostNativeActionTicket({
           ...input,
           tenant_id: req.tenantId,
         });
@@ -10958,11 +11107,12 @@ export function createUniversalCoreService(options = {}) {
             throw new Error("standing_release_run_reservation_route_required");
           }
           const { tenant_id: _tenantId, ticket_id: _ticketId, ...input } = req.body || {};
-          const actionTicket = await hostNativeGovernance[method]({
-            ...input,
-            tenant_id: req.tenantId,
-            ticket_id: req.params.ticketId,
-          });
+          const actionTicket = await withEnforcedSoftwareActionTicket(req.tenantId, req.params.ticketId,
+            async (_ticket, trusted) => hostNativeGovernance[method]({
+              ...input,
+              tenant_id: req.tenantId,
+              ticket_id: req.params.ticketId,
+            }, trusted));
           audit.append(`core_host_native_action_${suffix}`, {
             tenant_id: req.tenantId,
             key_id: req.coreKey.key_id,
@@ -10984,11 +11134,12 @@ export function createUniversalCoreService(options = {}) {
       if (!requireHostNativeGovernance(res)) return;
       try {
         const { tenant_id: _tenantId, ticket_id: _ticketId, ...input } = req.body || {};
-        const actionTicket = await hostNativeGovernance.observeUnreservedActionEffect({
-          ...input,
-          tenant_id: req.tenantId,
-          ticket_id: req.params.ticketId,
-        });
+        const actionTicket = await withEnforcedSoftwareActionTicket(req.tenantId, req.params.ticketId,
+          async (_ticket, trusted) => hostNativeGovernance.observeUnreservedActionEffect({
+            ...input,
+            tenant_id: req.tenantId,
+            ticket_id: req.params.ticketId,
+          }, trusted));
         audit.append("core_host_native_action_observed_unreserved", {
           tenant_id: req.tenantId,
           key_id: req.coreKey.key_id,
@@ -11008,11 +11159,12 @@ export function createUniversalCoreService(options = {}) {
     async (req, res) => {
       if (!requireHostNativeGovernance(res)) return;
       try {
-        const finalizeAuthorization = await hostNativeGovernance.authorizeFinalize({
-          tenant_id: req.tenantId,
-          ticket_id: req.params.ticketId,
-          host_session_fingerprint: req.body?.host_session_fingerprint,
-        });
+        const finalizeAuthorization = await withEnforcedSoftwareActionTicket(req.tenantId, req.params.ticketId,
+          async (_ticket, trusted) => hostNativeGovernance.authorizeFinalize({
+            tenant_id: req.tenantId,
+            ticket_id: req.params.ticketId,
+            host_session_fingerprint: req.body?.host_session_fingerprint,
+          }, trusted));
         audit.append("core_host_native_finalize_authorized", {
           tenant_id: req.tenantId,
           key_id: req.coreKey.key_id,

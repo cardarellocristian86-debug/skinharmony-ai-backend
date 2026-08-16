@@ -102,9 +102,9 @@ test("signed OAuth owner profile passes the gateway and receives vertical regist
     const branchResult = await branchResponse.json();
     assert.equal(branchResponse.status, 200);
     assert.equal(branchResult.branch_package.owner_profile, "tenant_scoped_verified_owner");
-    assert.equal(branchResult.branch_package.advisory_activation.active_branch_count, 70);
+    assert.equal(branchResult.branch_package.advisory_activation.active_branch_count, 71);
     assert.equal(branchResult.branch_package.advisory_activation.execution_authorized, false);
-    assert.equal(branchResult.branch_package.allowed_branches.length, 70);
+    assert.equal(branchResult.branch_package.allowed_branches.length, 71);
     assert(branchResult.branch_package.allowed_branches.includes("suite_governance"));
     assert(branchResult.branch_package.allowed_branches.includes("smartdesk_operations_guard"));
     assert.equal(branchResult.branch_package.allowed_branches.includes("beauty_protocol_guard"), false);
@@ -122,7 +122,7 @@ test("signed OAuth owner profile passes the gateway and receives vertical regist
     const statusResult = await statusResponse.json();
     assert.equal(statusResponse.status, 200);
     assert.equal(statusResult.active_branches.length, 11);
-    assert.equal(statusResult.owner_active_advisory.active_branch_count, 70);
+    assert.equal(statusResult.owner_active_advisory.active_branch_count, 71);
     assert.equal(statusResult.owner_active_advisory.execution_authorized, false);
 
     const entitlementOwner = ownerContext("codexai", { view: "entitlements" }, "control_plane_read");
@@ -138,7 +138,7 @@ test("signed OAuth owner profile passes the gateway and receives vertical regist
     assert.equal(entitlementResponse.status, 200);
     assert.equal(entitlementResult.entitlement.branches.length, 11);
     assert.equal(entitlementResult.entitlement.advisory_activation, undefined);
-    assert.equal(entitlementResult.owner_active_advisory.active_branch_count, 70);
+    assert.equal(entitlementResult.owner_active_advisory.active_branch_count, 71);
 
     const analyzeBody = { request: "Review the Suite governance posture", work_preflight: result.work_preflight };
     const analyzeOwner = ownerContext("codexai", { ...analyzeBody, branch: "suite_governance" }, "branch_analyze");

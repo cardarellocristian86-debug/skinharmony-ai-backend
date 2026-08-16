@@ -90,6 +90,29 @@ test("awaits an asynchronous signer and verifies its Ed25519 result before persi
   assert.equal(verdict.host_action_authorized, false);
 });
 
+test("expiry during asynchronous signing leaves no durable Generic verdict", async () => {
+  const baseline = fixture();
+  const store = createMemoryGenericWorkCoreJoinStore();
+  const signer = {
+    algorithm: "Ed25519", key_id: KEY_ID, public_key: PUBLIC_KEY, custody: "external_remote_signer",
+    async signDigest(verdictDigest) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return crypto.sign(null, genericWorkCoreJoinSignaturePayload(verdictDigest), KEYS.privateKey).toString("base64url");
+    },
+  };
+  const authority = createGenericWorkCoreJoinAuthority({ signer, now: Date.now, verifyIndependentVerifierReceipt: () => true, store });
+  const input = structuredClone(baseline.input);
+  const closureDigest = d("software-closure");
+  input.evidence_digests = [...input.evidence_digests, closureDigest];
+  input.independent_verifier_receipt.evidence_digest = genericWorkCoreJoinDigest([...input.evidence_digests].sort());
+  input.independent_verifier_receipt.issued_at = new Date(Date.now() - 1_000).toISOString();
+  input.independent_verifier_receipt.expires_at = new Date(Date.now() + 60_000).toISOString();
+  await assert.rejects(() => authority.issueDetailed(input, { softwareClosure: {
+    digest: closureDigest, fresh_until: new Date(Date.now() + 10).toISOString(),
+  } }), /software_cognition_closure_expired_during_issuance/);
+  assert.equal(store.events().length, 0);
+});
+
 test("never persists an invalid or unavailable asynchronous signer result", async () => {
   const baseline = fixture();
   const wrongKeys = crypto.generateKeyPairSync("ed25519");

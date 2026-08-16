@@ -197,7 +197,9 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            services/universal-core-service/package-lock.json
       - name: Validate Render continuity feature flags
         shell: ruby {0}
         run: |
@@ -292,7 +294,7 @@ jobs:
             "NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED" => "false",
             "NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED" => "false",
             "NYRA_POLICY_REGISTRY_SIGNER_MODE" => "disabled",
-            "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PATH" => "/v1/policy-registry/sign",
+            "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PATH" => "/v1/policy-registry/nyra/sign",
             "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE" => "nyra-policy-registry-signer",
             "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PURPOSE" => "nyra.policy_registry.attestation",
             "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_KEY_ID" => "nyra-policy-registry-v1",
@@ -351,6 +353,34 @@ jobs:
             abort("#{key}: Policy Registry MCP Blueprint contract changed") unless
               Array(mcp["envVars"]).count { |entry| entry["key"] == key } == 1 &&
               mcp_env[key] == expected
+          end
+          policy_registry_mcp_signer_values = {
+            "POLICY_REGISTRY_CORE_SIGNER_ENABLED" => "true",
+            "POLICY_REGISTRY_CORE_SIGNER_SERVICE" =>
+              "universal-core-policy-registry-signer",
+            "POLICY_REGISTRY_CORE_SIGNER_KEY_ID" =>
+              "universal-core-policy-registry-v1",
+            "POLICY_REGISTRY_NYRA_SIGNER_ENABLED" => "true",
+            "POLICY_REGISTRY_NYRA_SIGNER_SERVICE" =>
+              "nyra-policy-registry-signer",
+            "POLICY_REGISTRY_NYRA_SIGNER_KEY_ID" =>
+              "nyra-policy-registry-v1",
+          }
+          policy_registry_mcp_signer_values.each do |key, expected|
+            abort("#{key}: Policy Registry MCP signer binding changed") unless
+              Array(mcp["envVars"]).count { |entry| entry["key"] == key } == 1 &&
+              mcp_env.dig(key, "value") == expected
+          end
+          %w[
+            POLICY_REGISTRY_CORE_SIGNER_TARGET_COMMIT
+            POLICY_REGISTRY_CORE_SIGNER_SERVICE_TOKEN
+            POLICY_REGISTRY_CORE_SIGNER_SEED
+            POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
+            POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
+            POLICY_REGISTRY_NYRA_SIGNER_SEED
+          ].each do |key|
+            abort("#{key}: signer custody must remain manually provisioned") unless
+              mcp_env[key] == { "key" => key, "sync" => false }
           end
           policy_registry_core_values = {
             "CORE_NYRA_POLICY_REGISTRY_ENFORCEMENT_MODE" => "advisory_evaluate",
@@ -482,6 +512,25 @@ jobs:
               Array(mcp["envVars"]).count { |entry| entry["key"] == key } == 1 &&
               mcp_env[key] == expected
           end
+          generic_join_mcp_signer_values = {
+            "GENERIC_WORK_CORE_JOIN_CORE_SIGNER_ENABLED" => "true",
+            "GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE" => "universal-core-service",
+            "GENERIC_WORK_CORE_JOIN_CORE_SIGNER_PURPOSE" => "generic_work_core_join_v1",
+            "GENERIC_WORK_CORE_JOIN_CORE_SIGNER_KEY_ID" => "universal-core-generic-join-v1",
+          }
+          generic_join_mcp_signer_values.each do |key, expected|
+            abort("#{key}: Generic Join MCP signer binding changed") unless
+              Array(mcp["envVars"]).count { |entry| entry["key"] == key } == 1 &&
+              mcp_env.dig(key, "value") == expected
+          end
+          %w[
+            GENERIC_WORK_CORE_JOIN_CORE_SIGNER_TARGET_COMMIT
+            GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE_TOKEN
+            GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SEED
+          ].each do |key|
+            abort("#{key}: Generic Join signer custody must remain manually provisioned") unless
+              mcp_env[key] == { "key" => key, "sync" => false }
+          end
           generic_join_core_values = {
             "CORE_GENERIC_WORK_CORE_JOIN_ENABLED" => "true",
             "CORE_GENERIC_WORK_CORE_JOIN_REQUIRED" => "true",
@@ -541,9 +590,11 @@ jobs:
           generic_join_keys = Array(mcp["envVars"]) + Array(core["envVars"])
           forbidden_generic_join_keys = generic_join_keys.filter_map do |entry|
             key = String(entry["key"])
-            key if key.match?(/GENERIC_WORK_CORE_JOIN.*(?:PRIVATE_KEY|TARGET_COMMIT)/)
+            key if key.match?(/GENERIC_WORK_CORE_JOIN.*PRIVATE_KEY/) ||
+              (key.match?(/GENERIC_WORK_CORE_JOIN.*TARGET_COMMIT/) &&
+                entry != { "key" => key, "sync" => false })
           end
-          abort("Generic Join Blueprint contains private key or static target commit") unless
+          abort("Generic Join Blueprint contains private key or non-operator target commit") unless
             forbidden_generic_join_keys.empty?
           shared_security_keys = %w[
             CORE_MCP_TENANT_GATEWAY_KEY
@@ -1065,6 +1116,8 @@ jobs:
       # Root postinstall builds both Render Rust artifacts once.
       - name: Install root deployment dependencies and artifacts
         run: npm ci
+      - name: Install Universal Core locked dependencies
+        run: npm ci --ignore-scripts --prefix services/universal-core-service
       - name: Test Generic Work Core Join remote signer worker
         run: npm run github:standing-release-worker:test
       - name: Verify exact Nyra Deep V2 runtime artifacts

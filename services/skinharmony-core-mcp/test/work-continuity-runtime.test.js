@@ -605,6 +605,7 @@ test("causal lease persists only server-authored authority proof while legacy le
     },
   );
   const persisted = result.lease.policy_authority_scope;
+  assert(persisted.includes("agent:presence:recover"));
   assert(persisted.includes("causal:change:execute"));
   assert(persisted.includes("causal:outcome:reconcile"));
   assert(persisted.includes("causal:obligation:close"));

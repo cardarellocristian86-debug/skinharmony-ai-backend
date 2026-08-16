@@ -221,6 +221,12 @@ Gallery entity binding v1 contains `tenant_id`, Project UUID, state digest, Gene
 
 The branch dispatcher accepts `{causal_context, branch_contract, input_digest, expected_output, required_evidence, forbidden_effects}` and returns the unchanged causal IDs, output digest, proposal/decision, evidence references, residual risks and obligation state. Registry defaults are generated for every branch and fail closed when `requires_causal_context` is true.
 
+## Genesis-bound presence recovery
+
+Genesis continuity does not grant commit, publish, host-action or deployment authority. During a healthy control-plane period, Core may instead issue a single-use Causal Context whose only authority is `agent:presence:recover`. The envelope is bound to the exact tenant, Project, Genesis Intent, approved Intent Revision, Work, Change, actor provenance and environment; its lifetime cannot exceed ten minutes.
+
+Core MCP accepts that envelope only on the sessionless `agent_heartbeat` bootstrap surface and only after Universal Core validates and consumes it. Required inherited constraints are `presence_only`, `no_host_action`, `no_publish` and `no_deploy`. Recovery cannot set a custom display name or capabilities, cannot carry Gallery/action tickets, and cannot add any other authority scope. A successful recovery registers presence only; every later commit, push, merge or deployment still requires the ordinary Core verdict, action ticket, audit and rollback path.
+
 ## Required metrics
 
 Counters/histograms cover registered projects, Work with complete lineage, open Changes, issued/rejected envelopes, stale states, blocked replays, blocked cross-tenant attempts, orphan Gallery items, intent drift, Work requiring rebase, open/verified obligations, reopened closures, evidence mismatches, resume latency, context-validation latency, errors by component, migration outcomes and reconciliation verdicts. Labels are bounded to environment/component/reason/mode; IDs and tenant values are not metric labels.

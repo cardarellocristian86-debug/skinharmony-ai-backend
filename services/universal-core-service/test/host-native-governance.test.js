@@ -69,11 +69,11 @@ function withTestIdempotency(governance) {
     get(target, property, receiver) {
       const value = Reflect.get(target, property, receiver);
       if (!IDEMPOTENT_METHODS.has(property) || typeof value !== "function") return value;
-      return (input = {}) => value.call(target, {
+      return (input = {}, ...args) => value.call(target, {
         ...input,
         idempotency_key: input.idempotency_key ||
           `test-${String(property).toLowerCase()}-${++testIdempotencySequence}`,
-      });
+      }, ...args);
     },
   });
 }
@@ -984,6 +984,17 @@ test("Core join is signed, exact-release-bound, deterministic, and rejects inval
     first.verdict.verdict_id,
     `hnj_${first.claim_digest.slice(0, 40)}`,
   );
+  const softwareBound = await subject.governance.issueCoreJoinVerdict(coreJoinInput(pending, {
+    idempotency_key: "core-join-software-bound-v2",
+    software_closure_digest: H("9"),
+    software_closure_fresh_until: "2099-08-15T12:00:00.000Z",
+  }));
+  assert.equal(softwareBound.claim.schema_version, "host_native_core_join_claim_v2");
+  assert.equal(softwareBound.claim.software_closure_digest, H("9"));
+  assert.equal(softwareBound.claim.software_closure_fresh_until, "2099-08-15T12:00:00.000Z");
+  assert.equal(softwareBound.verdict.schema_version, "host_native_core_join_v2");
+  assert.equal(softwareBound.verdict.software_closure_digest, H("9"));
+  assert.equal(subject.governance.verifyCoreJoinVerdict(softwareBound), true);
 
   const concurrent = await Promise.all([
     subject.governance.issueCoreJoinVerdict({
@@ -1047,6 +1058,55 @@ test("Core join is signed, exact-release-bound, deterministic, and rejects inval
     evidence_digest: H("6"),
     release_manifest: manifestWithWrongIntent,
   }), /core_join_verdict_binding_mismatch/);
+});
+
+test("expired trusted software closure cannot persist a release action ticket", async () => {
+  const store = createInMemoryHostNativeGovernanceStore();
+  const subject = harness({ store });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const manifest = await bindCoreJoinVerdict(
+    subject.governance,
+    buildHostReleaseManifestV2(mergeReleaseManifestInput()),
+  );
+  const request = {
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: "session-fingerprint-expired-software-closure",
+    action: githubMergeAction(),
+    evidence_digest: H("6"),
+    release_manifest: manifest,
+  };
+  const ticketCount = Object.keys(store.readState().tickets).length;
+  await assert.rejects(
+    subject.governance.issueActionTicket(request, {
+      software_closure_fresh_until: new Date(subject.now() - 1).toISOString(),
+    }),
+    /software_cognition_closure_expired_during_consumption/,
+  );
+  assert.equal(Object.keys(store.readState().tickets).length, ticketCount);
+});
+
+test("expiry during asynchronous Native policy resolution leaves no durable verdict", async () => {
+  const store = createInMemoryHostNativeGovernanceStore();
+  let subject;
+  subject = harness({ store, requiredChecksPolicyResolver: async () => {
+    subject.advance(20);
+    return { schema_version: "host_native_required_checks_policy_v1", tenant_id: "codexai", repository: "owner/repo", base_branch: "main",
+      required_checks: ["unit-tests"], check_app: { id: 15368, slug: "github-actions", owner: "github" },
+      workflow: { id: 312527659, name: "Core", path: ".github/workflows/core.yml", sha256: H("7") },
+      allowed_events: ["push"] };
+  } });
+  const pending = buildHostReleaseManifestV2(mergeReleaseManifestInput());
+  await assert.rejects(() => subject.governance.issueCoreJoinVerdict(coreJoinInput(pending, {
+    idempotency_key: "core-join-expiry-during-resolution",
+    software_closure_digest: H("9"),
+    software_closure_fresh_until: new Date(subject.now() + 10).toISOString(),
+  })), /software_cognition_closure_expired_during_issuance/);
+  assert.equal(Object.keys(store.readState().core_join_verdicts).length, 0);
 });
 
 test("Core join is consumed atomically by one reserved release ticket and missing trust fails closed", async () => {

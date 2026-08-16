@@ -44,6 +44,7 @@ const expectedBranchCounts = Object.freeze({
   suite_domain: 8,
   smartdesk_domain: 8,
   analyzer_domain: 17,
+  software_cognition: 11,
 });
 const expectedLevel4Types = Object.freeze(["method", "strategy", "verifier", "metric"]);
 const expectedBranchCount = Object.keys(expectedBranchCounts).length;

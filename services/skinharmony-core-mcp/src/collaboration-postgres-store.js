@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { Pool } from "pg";
 import { redactMemoryText } from "./cloud-memory-store.js";
 import { publicQuarantineReceipt, scanInterAgentHandoff } from "../../shared/handoff-injection-guard.mjs";
+import { authorizePresenceRecovery } from "./presence-recovery.js";
 
 const TTL_MS = 5 * 60 * 1_000;
 const id = (value, name) => {
@@ -66,7 +67,7 @@ async function requireOwnedAgentSession(client, identity, agentId) {
 
 export function createCollaborationPostgresStore(config, options = {}) {
   if (!config.collaborationDatabaseUrl) return null;
-  const { govern, pool: providedPool } = options;
+  const { govern, pool: providedPool, validatePresenceRecoveryContext } = options;
   const pool = providedPool || new Pool({ connectionString: config.collaborationDatabaseUrl, ssl: config.collaborationDatabaseSsl ? { rejectUnauthorized: false } : undefined, max: config.databasePoolMax || 5 });
   let ready;
   const initialize = () => ready ||= pool.query(`
@@ -86,9 +87,25 @@ export function createCollaborationPostgresStore(config, options = {}) {
     CREATE INDEX IF NOT EXISTS agent_tasks_tenant_status_idx ON agent_tasks (tenant_id, status, updated_at DESC);
   `);
   const event = async (client, tenantId, type, agentId, metadata = {}) => client.query("INSERT INTO agent_events (tenant_id,event_type,actor_agent_id,metadata) VALUES ($1,$2,$3,$4::jsonb)", [tenantId, type, agentId || null, JSON.stringify(metadata)]);
-  const governed = async (identity, action, callback) => {
+  const governed = async (identity, action, callback, recovery = null) => {
     if (typeof govern !== "function") throw new Error("governance_unavailable");
-    const gate = await govern(action, identity);
+    // Prove the local durable target is available before consuming the
+    // single-use Core context. This cannot make both databases one
+    // transaction, but avoids burning recovery authority on startup DDL.
+    if (recovery?.context) await initialize();
+    let gate;
+    if (recovery?.context) {
+      gate = await authorizePresenceRecovery({
+        recoveryContext: recovery.context,
+        identity,
+        agentId: recovery.agentId,
+        environment: config.environment,
+        customMetadata: recovery.customMetadata,
+        validateContext: validatePresenceRecoveryContext,
+      });
+    } else {
+      gate = await govern(action, identity);
+    }
     if (!gate?.allowed) throw new Error("core_gate_denied");
     await initialize();
     const client = await pool.connect();
@@ -109,7 +126,7 @@ export function createCollaborationPostgresStore(config, options = {}) {
         if (!session.rowCount) throw new Error("agent_session_conflict");
         const row = await client.query("INSERT INTO agent_presence (tenant_id,agent_id,actor_subject,signature,session_fingerprint,client_type,display_name,capabilities,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9) ON CONFLICT (tenant_id,agent_id) DO UPDATE SET signature=EXCLUDED.signature,session_fingerprint=EXCLUDED.session_fingerprint,client_type=EXCLUDED.client_type,display_name=EXCLUDED.display_name,capabilities=EXCLUDED.capabilities,last_seen_at=now(),expires_at=EXCLUDED.expires_at,version=agent_presence.version+1 WHERE agent_presence.actor_subject=EXCLUDED.actor_subject AND (agent_presence.session_fingerprint IS NULL OR agent_presence.session_fingerprint=EXCLUDED.session_fingerprint OR agent_presence.expires_at<=now()) RETURNING agent_id,signature,session_fingerprint,client_type,display_name,capabilities,last_seen_at,expires_at,version", [identity.tenantId, agentId, actor, signature, fingerprint, args.client_type || "other", String(args.display_name || agentId).slice(0,120), JSON.stringify(args.capabilities || []), expires]);
         if (!row.rows[0]) throw new Error("agent_identity_conflict"); return { agent: { ...row.rows[0], id: row.rows[0].agent_id, active: true, status: "online" }, agent_id: agentId };
-      });
+      }, args.recovery_context ? { context: args.recovery_context, agentId, customMetadata } : null);
     },
     async listAgents(identity) { await initialize(); const rows = await pool.query("SELECT agent_id,client_type,display_name,capabilities,last_seen_at,expires_at,version, CASE WHEN expires_at > now() THEN 'online' ELSE 'offline' END AS status FROM agent_presence WHERE tenant_id=$1 ORDER BY last_seen_at DESC", [identity.tenantId]); return result({ agents: rows.rows.map((row) => ({ ...row, id: row.agent_id, active: row.status === "online" })) }); },
     async createTask(args, identity) { const title = text(args.title, "task_title", 240); const key = String(args.idempotency_key || "").slice(0,120) || null; return governed(identity, boundedCollaborationAction({ action_type:"task.create", operation_class:"owner_confirmed_governed_action", contains_customer_data:true, action_label:`Create shared task ${title}`, target:title }), async (client) => { const row = await client.query("INSERT INTO agent_tasks (tenant_id,id,title,description,priority,idempotency_key) VALUES ($1,gen_random_uuid(),$2,$3,$4,$5) ON CONFLICT (tenant_id,idempotency_key) DO UPDATE SET id=agent_tasks.id RETURNING *", [identity.tenantId,title,String(args.description||"").slice(0,20000),args.priority||"normal",key]); return { task: row.rows[0] }; }); },

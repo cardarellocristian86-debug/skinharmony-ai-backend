@@ -13,7 +13,7 @@ const registry = deterministicBranchRegistry();
 const groups = deterministicBranchGroups();
 const commercial = { tier: "enterprise", allowed_branches: ["horizontal_runtime"] };
 
-test("verified codexai owner profile activates the pinned 70 advisory branches without execution authority", () => {
+test("verified codexai owner profile activates the pinned 71 advisory branches without execution authority", () => {
   const profile = resolveOwnerTenantBranchProfile({
     tenantId: "codexai",
     ownerVerified: true,
@@ -25,9 +25,9 @@ test("verified codexai owner profile activates the pinned 70 advisory branches w
   assert.equal(profile.domain_pack.id, "owner_tenant_scoped");
   assert.equal(profile.commercial_tier, "enterprise");
   assert.equal(profile.advisory_activation.state, "active_advisory");
-  assert.equal(profile.advisory_activation.active_branch_count, 70);
+  assert.equal(profile.advisory_activation.active_branch_count, 71);
   assert.equal(profile.advisory_activation.active_branch_digest, OWNER_ACTIVE_ADVISORY_EXPECTED_DIGEST);
-  assert.equal(profile.allowed_branches.length, 70);
+  assert.equal(profile.allowed_branches.length, 71);
   assert.equal(profile.allowed_branches.includes("beauty_protocol_guard"), false);
   assert.equal(profile.allowed_branches.includes("nyra_finance_beauty_test"), false);
   assert.deepEqual(profile.advisory_activation.excluded_branches, ["beauty_protocol_guard", "nyra_finance_beauty_test"]);
@@ -45,7 +45,7 @@ test("owner advisory activation annotates exactly the active profiles", () => {
   const activation = resolveOwnerActiveAdvisory({ tenantId: "codexai", ownerVerified: true, registry });
   const projected = applyOwnerActiveAdvisory(registry, activation);
   const active = Object.values(projected).filter((profile) => profile.advisory_activation?.state === "active_advisory");
-  assert.equal(active.length, 70);
+  assert.equal(active.length, 71);
   assert(active.every((profile) => profile.production_status === "advisory"));
   assert(active.every((profile) => profile.advisory_activation.execution_authorized === false));
   assert.equal(projected.beauty_protocol_guard.advisory_activation, undefined);

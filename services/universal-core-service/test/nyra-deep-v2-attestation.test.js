@@ -449,7 +449,7 @@ test("attester discovers a six-node L2-to-L4 lineage for every live lazy shard",
     assert.deepEqual(operationalRequirements.requirements, result.core_policy_snapshot_requirements);
     shardCount += 1;
   }
-  assert.equal(shardCount, 326);
+  assert.equal(shardCount, 337);
 });
 
 test("missing evidence produces a valid abstaining package rather than synthetic support", () => {
