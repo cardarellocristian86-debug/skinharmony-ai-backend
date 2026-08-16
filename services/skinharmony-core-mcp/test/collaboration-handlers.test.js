@@ -70,6 +70,80 @@ test("server-derived signed presence can be registered without caller metadata",
   );
 });
 
+test("a consumed causal recovery lease can restore presence but cannot add metadata", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-presence-recovery-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const now = new Date();
+  const recoveryContext = {
+    envelope: {
+      schema_version: "causal_context_envelope_v1",
+      tenant_id: "tenant-a",
+      project_id: "11111111-1111-4111-8111-111111111111",
+      genesis_intent_id: "22222222-2222-4222-8222-222222222222",
+      intent_revision_id: "33333333-3333-4333-8333-333333333333",
+      work_id: "44444444-4444-4444-8444-444444444444",
+      change_id: "55555555-5555-4555-8555-555555555555",
+      actor_id: "codex-recovery",
+      environment: "production",
+      authority_scope: ["agent:presence:recover"],
+      inherited_constraints: ["presence_only", "no_host_action", "no_publish", "no_deploy"],
+      gallery_ticket_ids: [],
+      issued_at: new Date(now.getTime() - 60_000).toISOString(),
+      expires_at: new Date(now.getTime() + 60_000).toISOString(),
+      context_digest: "d".repeat(64),
+    },
+    signature: { key_id: "causal-context-v1", digest: "e".repeat(64) },
+  };
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "auth0|owner",
+    agentPresence: {
+      agent_id: "codex-recovery",
+      client_type: "codex",
+      session_id: "session-recovery",
+      signature: `ags_${"a".repeat(32)}`,
+      session_fingerprint: "b".repeat(64),
+    },
+  };
+  let normalGateCalls = 0;
+  const handlers = createCollaborationHandlers({
+    agentWorkspaceRoot: root,
+    environment: "production",
+    agentSignatureSecret: "presence-recovery-test-signing-secret-1234567890",
+  }, {
+    govern: async () => {
+      normalGateCalls += 1;
+      throw new Error("ordinary_gate_must_not_receive_recovery_context");
+    },
+    validatePresenceRecoveryContext: async () => ({
+      result: {
+        valid: true,
+        consumed: true,
+        context_digest: recoveryContext.envelope.context_digest,
+        project_id: recoveryContext.envelope.project_id,
+        work_id: recoveryContext.envelope.work_id,
+        change_id: recoveryContext.envelope.change_id,
+      },
+    }),
+  });
+  const recovered = payload(await handlers.agent_heartbeat({
+    agent_id: "codex-recovery",
+    client_type: "codex",
+    session_id: "session-recovery",
+    recovery_context: recoveryContext,
+  }, identity));
+  assert.equal(recovered.agent.id, "codex-recovery");
+  assert.equal(recovered.gate.mediation, "consumed_causal_context");
+  assert.equal(normalGateCalls, 0);
+  await assert.rejects(handlers.agent_heartbeat({
+    agent_id: "codex-recovery",
+    client_type: "codex",
+    session_id: "session-recovery",
+    display_name: "Elevated agent",
+    recovery_context: recoveryContext,
+  }, identity), /presence_recovery_metadata_denied/);
+});
+
 test("workspace folders and versioned documents stay inside the authenticated tenant", async (t) => {
   const { handlers } = fixture(t);
   const tenantA = { tenantId: "tenant-a", subject: "auth0|alice" };

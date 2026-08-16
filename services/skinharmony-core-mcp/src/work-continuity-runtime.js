@@ -183,6 +183,7 @@ const LEGACY_SURFACE_KINDS = new Set(["file", "component", "dependency"]);
 const CAUSAL_SURFACE_KINDS = new Set(["causal_project", "causal_change", "causal_obligation"]);
 const SURFACE_KINDS = new Set([...LEGACY_SURFACE_KINDS, ...CAUSAL_SURFACE_KINDS]);
 const CAUSAL_CONTEXT_LEASE_AUTHORITY_SCOPES = new Set([
+  "agent:presence:recover",
   "causal:change:execute",
   "causal:evidence:produce",
   "causal:obligation:execute",

@@ -4,6 +4,7 @@ import path from "node:path";
 import { createAgentPresence } from "./agent-presence.js";
 import { createCollaborationPostgresStore } from "./collaboration-postgres-store.js";
 import { publicQuarantineReceipt, scanInterAgentHandoff } from "../../shared/handoff-injection-guard.mjs";
+import { authorizePresenceRecovery } from "./presence-recovery.js";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const TASK_STATUSES = new Set(["open", "claimed", "in_progress", "blocked", "completed", "cancelled"]);
@@ -231,10 +232,23 @@ export function createCollaborationHandlers(config, options = {}) {
   const postgres = createCollaborationPostgresStore(config, options);
   if (!root && !postgres) throw new Error("agent_workspace_not_configured");
   const govern = options.govern;
+  const validatePresenceRecoveryContext = options.validatePresenceRecoveryContext;
 
-  async function governed(identity, action, mutate) {
+  async function governed(identity, action, mutate, recovery = null) {
     if (typeof govern !== "function") fail("governance_unavailable");
-    const gate = await govern(action, identity);
+    let gate;
+    if (recovery?.context) {
+      gate = await authorizePresenceRecovery({
+        recoveryContext: recovery.context,
+        identity,
+        agentId: recovery.agentId,
+        environment: config.environment,
+        customMetadata: recovery.customMetadata,
+        validateContext: validatePresenceRecoveryContext,
+      });
+    } else {
+      gate = await govern(action, identity);
+    }
     if (!gate?.allowed) fail("core_gate_denied");
     const transaction = await updateState(root, identity.tenantId, async (state) => {
       const result = await mutate(state, gate);
@@ -398,8 +412,8 @@ export function createCollaborationHandlers(config, options = {}) {
       });
     },
 
-    agent_heartbeat: async ({ agent_id, client_type, session_id, display_name = "", capabilities = [] }, identity) => {
-      if (postgres) return postgres.heartbeat({ agent_id, client_type, session_id, display_name, capabilities }, identity);
+    agent_heartbeat: async ({ agent_id, client_type, session_id, display_name = "", capabilities = [], recovery_context }, identity) => {
+      if (postgres) return postgres.heartbeat({ agent_id, client_type, session_id, display_name, capabilities, recovery_context }, identity);
       const presence = createAgentPresence(config, identity, { agent_id, client_type, session_id });
       const agentId = presence.agent_id;
       const clientType = presence.client_type;
@@ -441,7 +455,7 @@ export function createCollaborationHandlers(config, options = {}) {
           record.last_seen_at = timestamp;
         }
         return { agent: publicAgent(record) };
-      });
+      }, recovery_context ? { context: recovery_context, agentId, customMetadata } : null);
     },
 
     agent_list: async (_args, identity) => {

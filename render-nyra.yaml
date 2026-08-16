@@ -122,7 +122,7 @@ services:
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_ORIGIN
         sync: false
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_PATH
-        value: /v1/policy-registry/sign
+        value: /v1/policy-registry/nyra/sign
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_SERVICE
         value: nyra-policy-registry-signer
       - key: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT

@@ -106,7 +106,12 @@ function assertBoundedSafeArguments(
       (capabilityId === "nyra_work_automation_core_join_record" && path === "$.core_join") ||
       (capabilityId === "nyra_work_automation_reconcile" && path === "$.action_receipt")
     );
-    if (FORBIDDEN_ARGUMENT_KEYS.has(key.toLowerCase()) && !releaseManifestTenant && !nyraVerifiedEvidenceTenant) {
+    const signedPresenceRecoveryTenant =
+      capabilityId === "agent_heartbeat" &&
+      path === "$.recovery_context.envelope" &&
+      key === "tenant_id";
+    if (FORBIDDEN_ARGUMENT_KEYS.has(key.toLowerCase()) && !releaseManifestTenant &&
+        !nyraVerifiedEvidenceTenant && !signedPresenceRecoveryTenant) {
       const error = new Error("dynamic_capability_reserved_argument");
       error.argumentPath = `${path}.${key}`;
       throw error;
@@ -248,10 +253,16 @@ export function createDynamicCapabilityHandlers({
   handlers,
   semanticSelect,
   gateAction,
+  internallyGovernedCapabilities = [],
 }) {
   if (!Array.isArray(tools) || !handlers || typeof handlers !== "object") {
     throw new Error("dynamic_capability_router_invalid");
   }
+  if (!Array.isArray(internallyGovernedCapabilities) ||
+      internallyGovernedCapabilities.some((name) => !CAPABILITY_ID.test(String(name || "")))) {
+    throw new Error("dynamic_capability_internal_gate_configuration_invalid");
+  }
+  const internallyGoverned = new Set(internallyGovernedCapabilities);
 
   return {
     core_capability_catalog: async (args, identity) => {
@@ -364,6 +375,7 @@ export function createDynamicCapabilityHandlers({
       const ownerConfirmationRequired = ownerConfirmationRequiredForInvocation(tool, args);
       const dedicatedCoreGate =
         tool._meta?.["skinharmony/dedicatedCoreGate"] === true;
+      const handlerOwnsCoreGate = internallyGoverned.has(tool.name);
       if (
         ownerConfirmationRequired &&
         (args.owner_confirmed !== true || identity.ownerConfirmed !== true)
@@ -372,7 +384,7 @@ export function createDynamicCapabilityHandlers({
       }
       if (!String(args.idempotency_key || "").trim()) throw new Error("idempotency_key_required");
       const callArgs = targetArguments(tool, args, identity);
-      if (!dedicatedCoreGate) {
+      if (!dedicatedCoreGate && !handlerOwnsCoreGate) {
         if (typeof gateAction !== "function") throw new Error("dynamic_capability_gate_unavailable");
         const gateTool = ownerConfirmationRequired
           ? tool
@@ -394,6 +406,12 @@ export function createDynamicCapabilityHandlers({
       }
       const result = await handlers[tool.name](callArgs, identity);
       if (
+        handlerOwnsCoreGate &&
+        result?.structuredContent?.gate?.allowed !== true
+      ) {
+        throw new Error("dynamic_capability_internal_core_gate_unverified");
+      }
+      if (
         dedicatedCoreGate &&
         result?.structuredContent?.dedicated_core_gate?.authorized !== true
       ) {
@@ -410,7 +428,9 @@ export function createDynamicCapabilityHandlers({
             gate_allowed: true,
             gate_source: dedicatedCoreGate
               ? "universal_core_dedicated_route"
-              : "universal_core_action_evaluator",
+              : handlerOwnsCoreGate
+                ? "handler_internal_core_gate"
+                : "universal_core_action_evaluator",
             owner_confirmation_required: ownerConfirmationRequired,
             owner_confirmation_satisfied:
               ownerConfirmationRequired === false || identity.ownerConfirmed === true,

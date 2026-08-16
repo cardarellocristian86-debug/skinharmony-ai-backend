@@ -91,3 +91,17 @@ For a correctable code, test, schema, concurrency, integration, CI or deploy err
 9. repeat without closing the Work.
 
 Transient infrastructure retries are bounded and do not create code commits.
+
+## Pre-issued agent-presence recovery
+
+This procedure must be prepared while the normal Core path is healthy. It cannot be created retroactively after a control-plane outage.
+
+1. Bind the recovery Change and its obligation to the existing Genesis/Intent/Work lineage.
+2. Obtain a persisted action lease whose exact authority scope is only `agent:presence:recover`.
+3. Issue a production Causal Context with a maximum ten-minute TTL, no Gallery tickets, and inherited constraints `presence_only`, `no_host_action`, `no_publish`, `no_deploy`.
+4. Submit the signed envelope only as `agent_heartbeat.recovery_context`, with no custom display name or capabilities.
+5. Core MCP asks Universal Core to validate and atomically consume the context before registering presence.
+6. Verify the returned gate mediation is `consumed_causal_context` and that the recovered agent identity/session match the envelope.
+7. Resume the ordinary preflight. Do not treat presence recovery as authorization for commit, push, merge or deployment.
+
+Fail closed for an expired or replayed context, additional authority, missing constraint, tenant/actor/environment mismatch, changed Genesis/Intent/Work/Change binding, unconsumed validation, custom metadata, or an unavailable Causal verifier. If registration fails after context consumption, issue a new lease through the healthy Core path; never replay or widen the consumed envelope.
