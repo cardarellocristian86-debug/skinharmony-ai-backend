@@ -1116,6 +1116,8 @@ jobs:
       # Root postinstall builds both Render Rust artifacts once.
       - name: Install root deployment dependencies and artifacts
         run: npm ci
+      - name: Verify Core MCP Render runtime dependency boundary
+        run: node -e "import('./services/universal-core-service/src/softwareCognition.js')"
       - name: Install Universal Core locked dependencies
         run: npm ci --ignore-scripts --prefix services/universal-core-service
       - name: Test Generic Work Core Join remote signer worker
