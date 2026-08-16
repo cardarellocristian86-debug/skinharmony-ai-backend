@@ -24,7 +24,12 @@ const VERIFICATION_ALGORITHM = "sha256_canonical_json+ed25519";
 const NYRA_HEALTH_FIELDS = Object.freeze([
   "ok", "service", "version", "runtime_kind", "domain_pack_resolution",
   "auth_required", "auth_configured", "storage_persistent", "suite_bridge_configured",
-  "deep_branch_v2_federation", "policy_registry_attestation",
+  "deep_branch_v2_federation", "policy_registry_attestation", "work_automation",
+]);
+const WORK_AUTOMATION_HEALTH_FIELDS = Object.freeze([
+  "schema_version", "role", "core_final_authority", "maximum_advisory_capabilities",
+  "maximum_parallel_builders", "system_verifier_required", "smart_desk_automation_enabled",
+  "automatic_customer_contact", "provider_execution",
 ]);
 const POLICY_HEALTH_FIELDS = Object.freeze([
   "enabled", "required", "mode", "configuration_valid", "configured", "ready", "state",
@@ -333,6 +338,7 @@ export function createNyraPolicyRegistryClient({
 
   function validateHealth(body) {
     const policy = body?.policy_registry_attestation;
+    const workAutomation = body?.work_automation;
     if (!exactRecord(body, NYRA_HEALTH_FIELDS) || body.ok !== true ||
       body.service !== config.expected.service ||
       typeof body.version !== "string" || body.version.length < 1 || body.version.length > 120 ||
@@ -345,6 +351,16 @@ export function createNyraPolicyRegistryClient({
       !body.deep_branch_v2_federation ||
       typeof body.deep_branch_v2_federation !== "object" ||
       Array.isArray(body.deep_branch_v2_federation) ||
+      !exactRecord(workAutomation, WORK_AUTOMATION_HEALTH_FIELDS) ||
+      workAutomation.schema_version !== "nyra_work_automation_v3" ||
+      workAutomation.role !== "host_native_advisory_selection" ||
+      workAutomation.core_final_authority !== true ||
+      workAutomation.maximum_advisory_capabilities !== 6 ||
+      workAutomation.maximum_parallel_builders !== 1 ||
+      workAutomation.system_verifier_required !== true ||
+      workAutomation.smart_desk_automation_enabled !== false ||
+      workAutomation.automatic_customer_contact !== false ||
+      workAutomation.provider_execution !== false ||
       !exactRecord(policy, POLICY_HEALTH_FIELDS) || policy.enabled !== true ||
       policy.required !== config.required || policy.mode !== "remote" ||
       policy.configuration_valid !== true || policy.configured !== true || policy.ready !== true ||

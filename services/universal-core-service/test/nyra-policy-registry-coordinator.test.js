@@ -114,6 +114,17 @@ function healthBody(overrides = {}) {
       error: null,
       ...overrides,
     },
+    work_automation: {
+      schema_version: "nyra_work_automation_v3",
+      role: "host_native_advisory_selection",
+      core_final_authority: true,
+      maximum_advisory_capabilities: 6,
+      maximum_parallel_builders: 1,
+      system_verifier_required: true,
+      smart_desk_automation_enabled: false,
+      automatic_customer_contact: false,
+      provider_execution: false,
+    },
   };
 }
 
@@ -300,6 +311,30 @@ test("read-only Nyra health probe verifies exact E2E trust and writes no proof d
   });
   assert.equal(await rootDrift.probe(), false);
   assert.equal(rootDrift.status().last_failure, "policy_registry_nyra_health_binding_invalid");
+
+  const automationAuthorityDriftBody = healthBody();
+  automationAuthorityDriftBody.work_automation.core_final_authority = false;
+  const automationAuthorityDrift = createNyraPolicyRegistryClient({
+    env: clientEnv(),
+    fetchImpl: async (url) => jsonResponse(url, automationAuthorityDriftBody),
+  });
+  assert.equal(await automationAuthorityDrift.probe(), false);
+  assert.equal(
+    automationAuthorityDrift.status().last_failure,
+    "policy_registry_nyra_health_binding_invalid",
+  );
+
+  const automationShapeDriftBody = healthBody();
+  automationShapeDriftBody.work_automation.unreviewed_authority = true;
+  const automationShapeDrift = createNyraPolicyRegistryClient({
+    env: clientEnv(),
+    fetchImpl: async (url) => jsonResponse(url, automationShapeDriftBody),
+  });
+  assert.equal(await automationShapeDrift.probe(), false);
+  assert.equal(
+    automationShapeDrift.status().last_failure,
+    "policy_registry_nyra_health_binding_invalid",
+  );
 
   const reverseRequired = createNyraPolicyRegistryClient({
     env: clientEnv({ CORE_NYRA_POLICY_REGISTRY_PROOF_REQUIRED: "false" }),
