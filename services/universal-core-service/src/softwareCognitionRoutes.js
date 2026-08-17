@@ -16,6 +16,12 @@ const ROUTES = Object.freeze([
   ["post", "/v1/software-cognition/challenges/resolve", "software_cognition_challenge_resolve", "write"],
   ["post", "/v1/software-cognition/runtime-observations", "software_cognition_runtime_observe", "write"],
   ["post", "/v1/software-cognition/learning/promote", "software_cognition_learning_promote", "write"],
+  ["post", "/v1/software-cognition/research/plan", "software_cognition_research_plan", "write"],
+  ["post", "/v1/software-cognition/technology/profiles", "software_cognition_technology_profile", "read"],
+  ["post", "/v1/software-cognition/technology/verify", "software_cognition_technology_verify", "write"],
+  ["post", "/v1/software-cognition/research/bind", "software_cognition_research_bind", "write"],
+  ["post", "/v1/software-cognition/precore/decide", "software_cognition_precore_decide", "write"],
+  ["post", "/v1/software-cognition/precore/read", "software_cognition_precore_read", "read"],
   ["post", "/v1/software-cognition/closure/evaluate", "software_cognition_closure_evaluate", "write"],
 ]);
 

@@ -411,6 +411,8 @@ export function createResearchAirlockRuntime(options = {}) {
     const current = await store.getWork(work, baseEvent(context, { operation: "seal_evidence", work }));
     if (!current || current.state !== "DISCOVERY_OPEN" || !current.evidence.length) throw new Error("research_airlock_not_sealable");
     const evidenceDigest = digest(current.evidence);
+    const sourceUrls = [...new Set(current.evidence.map((item) => normalizedPublicSourceUrl(item?.source?.canonical_url)?.toString()).filter(Boolean))].sort();
+    const sourceDomains = [...new Set(sourceUrls.map((value) => new URL(value).hostname.toLowerCase()))].sort();
     const unsigned = {
       schema_version: "research_airlock_evidence_capsule_v1",
       capsule_id: `rec_${crypto.randomUUID()}`,
@@ -419,6 +421,10 @@ export function createResearchAirlockRuntime(options = {}) {
       policy_snapshot_digest: current.policy_snapshot_digest,
       evidence_digest: evidenceDigest,
       evidence_count: current.evidence.length,
+      independent_source_count: sourceUrls.length,
+      independent_domain_count: sourceDomains.length,
+      source_url_digests: sourceUrls.map((value) => digest(value)),
+      source_domain_digests: sourceDomains.map((value) => digest(value)),
       issued_at: now().toISOString(),
       expires_at: current.expires_at,
       source_domain: "public_untrusted",
@@ -558,7 +564,19 @@ export function createResearchAirlockRuntime(options = {}) {
     return left.length === right.length && crypto.timingSafeEqual(left, right);
   }
 
-  return { createPlan, createWork, discover, seal, enterPrivate, authorizeTool, authorizeSessionTool, complete, status, safeReplan, verifyFetchProof, ready, mode, store };
+  function verifyEvidenceCapsule(capsule = {}) {
+    if (!signingKey || capsule?.schema_version !== "research_airlock_evidence_capsule_v1"
+      || capsule?.signature?.algorithm !== "hmac-sha256" || capsule.signature.key_version !== keyVersion
+      || typeof capsule.signature.value !== "string") return false;
+    const { signature, ...unsigned } = capsule;
+    const expected = sign(unsigned);
+    const left = Buffer.from(signature.value, "hex");
+    const right = Buffer.from(expected, "hex");
+    return left.length === right.length && crypto.timingSafeEqual(left, right);
+  }
+
+  return { createPlan, createWork, discover, seal, enterPrivate, authorizeTool, authorizeSessionTool, complete, status, safeReplan,
+    verifyFetchProof, verifyEvidenceCapsule, ready, mode, store };
 }
 
 export function createAirlockTransport({

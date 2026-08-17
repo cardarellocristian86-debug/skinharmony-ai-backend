@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createSoftwareCognitionRuntime, normalizeSoftwareCognitionMode, requireCurrentSoftwareClosure } from "../src/softwareCognitionRuntime.js";
-import { softwareAuthoritySnapshotDigest } from "../src/softwareCognition.js";
+import { softwareAuthoritySnapshotDigest, softwareDigest } from "../src/softwareCognition.js";
 
 const identity = Object.freeze({ tenant_id: "tenant-a", actor_id: "builder-a", provenance: { session_fingerprint: "session-a" } });
 
@@ -103,9 +103,91 @@ test("runtime persists bounded traceability, architecture, event routing and ver
   assert.equal(architecture.architecture_patterns_are_authoritative, false);
   const routed = await runtime.invoke("software_cognition_event_route", identity, { ...base, event: { type: "plan_created" }, max_nodes: 20, max_depth: 1 });
   assert.equal(routed.recommended_capability, "software_cognition_supervise");
+  const researchRoute = await runtime.invoke("software_cognition_event_route", identity, { ...base, event: { type: "knowledge_gap" }, max_nodes: 20, max_depth: 1 });
+  assert.equal(researchRoute.recommended_capability, "software_cognition_research_plan");
   const calibration = await runtime.invoke("software_cognition_calibration_update", identity, { ...base, cases: [{ evidence_digest: "a".repeat(64), outcome_state: "verified" }] });
   assert.equal(calibration.metrics.sample_size, 0);
   assert.equal(calibration.excluded_unverified_cases, 1);
+});
+
+test("NSCT V1.1 plans Airlock research, binds a signed capsule and issues only a provisional decision", async () => {
+  const artifacts = [];
+  const graph = { revision: 2, source_digest: "a".repeat(64), nodes: [{ node_id: "ts-a", kind: "file", source_ref: "src/server.ts" }], edges: [] };
+  let icfSealed = true;
+  const native = { plan_id: "plan-a", plan_digest: "b".repeat(64), status: "planned", change_id: "change-a", base_state_digest: graph.source_digest,
+    agents: [], plan: { software_contract: { change_id: "change-a", base_state_digest: graph.source_digest } } };
+  const snapshot = () => ({
+    project: { active_intent_revision_id: "intent-a", intent_state: "APPROVED", intent_digest: "c".repeat(64), genesis_intent_id: "genesis-a", genesis_digest: "d".repeat(64) },
+    work: { intent_revision_id: "intent-a" }, change: { intent_revision_id: "intent-a" }, graph, native_plan: native, latest_native_plan_id: "plan-a",
+    native_closure: null, obligations: [], evidence: [], challenges: [], db_now: "2026-08-17T12:00:00.000Z",
+    icf: { ledger_head_digest: "e".repeat(64), state: icfSealed
+      ? { closure: "SEALED", core_seal: { seal_id: "seal-a", digest: "f".repeat(64), decision: "ALLOW_CLOSE", signature: "signed", signature_key_id: "production-key" } }
+      : { closure: "OPEN" } },
+    artifacts: Object.fromEntries(["impact", "coverage", "reconciliation", "runtime_observation", "learning", "closure", "traceability", "architecture", "calibration", "supervision", "research_plan", "research_evidence", "technical_evidence", "precore_decision"]
+      .map((kind) => [kind, artifacts.filter((item) => item.kind === kind).map((item) => structuredClone(item.payload))])),
+  });
+  const store = {
+    initialize: async () => ({ ready: true }), readGraph: async () => graph,
+    verifyCausalBinding: async () => ({ work_id: "work-a", change_id: "change-a" }),
+    readNativePlan: async () => native, readClosureSnapshot: async () => snapshot(),
+    writeArtifact: async (item) => { artifacts.push(structuredClone(item)); return item.payload; },
+    readArtifacts: async ({ kind }) => artifacts.filter((item) => item.kind === kind).map((item) => structuredClone(item.payload)),
+    readVerifiedLearningEvidence: async () => ({ fresh_until: "2026-08-17T12:30:00.000Z" }),
+  };
+  const airlock = { ready: true,
+    createPlan: async () => ({ verdict: "ALLOW", plan: { plan_digest: "1".repeat(64), expires_at: "2026-08-17T12:02:00.000Z" }, plan_capability: `rap_${"0".repeat(8)}-${"0".repeat(4)}-${"0".repeat(4)}-${"0".repeat(4)}-${"0".repeat(12)}.${"2".repeat(64)}` }),
+    verifyEvidenceCapsule: () => true };
+  const runtime = createSoftwareCognitionRuntime({ store, researchAirlock: airlock, now: () => Date.parse("2026-08-17T12:00:00.000Z") });
+  const base = { project_id: "project-a", work_id: "work-a", change_id: "change-a", plan_id: "plan-a" };
+  const plan = await runtime.invoke("software_cognition_research_plan", identity, { ...base, question: "Verify the TypeScript runtime behavior",
+    version_context: { typescript: "6.0.3" }, expected_revision: 2 });
+  assert.equal(plan.airlock_policy_enforced, true);
+  assert.equal(plan.execution_authorized, false);
+  const profiles = await runtime.invoke("software_cognition_technology_profile", identity, { project_id: "project-a", work_id: "work-a" });
+  assert.equal(profiles.profiles[0].schema_version, "technology_profile_v1");
+  assert.equal(profiles.execution_authorized, false);
+  const evidence = await runtime.invoke("software_cognition_research_bind", identity, { ...base, research_plan_digest: plan.research_plan_digest,
+    capsule: { schema_version: "research_airlock_evidence_capsule_v1", capsule_id: "capsule-a",
+      work_binding: { tenant_id: "tenant-a", project_id: "project-a", work_id: "work-a", session_id: "session-a" },
+      plan_digest: plan.airlock_plan_digest, evidence_digest: "3".repeat(64), evidence_count: plan.sources.length, independent_source_count: plan.sources.length,
+      independent_domain_count: plan.sources.length, source_url_digests: plan.sources.map((item) => softwareDigest(item.url)),
+      source_domain_digests: plan.sources.map((item) => softwareDigest(new URL(item.url).hostname)), expires_at: "2026-08-17T12:30:00.000Z" } });
+  assert.equal(evidence.verified, true);
+  const adapterReceipt = "4".repeat(64);
+  const technologyEvidence = await runtime.invoke("software_cognition_technology_verify", identity, { ...base,
+    research_plan_digest: plan.research_plan_digest, evidence_digest: "5".repeat(64), profile_results: plan.technology_profiles.map((profile) => ({
+      technology: profile.technology, profile_digest: profile.profile_digest, detected_version: "verified-test-version", passed: true,
+      manifest_digests: ["6".repeat(64)], lockfile_digests: ["7".repeat(64)], frameworks: ["verified-framework"],
+      adapter_receipts: { compiler_type_checker: [adapterReceipt], tests: [adapterReceipt], lint_static_analysis: [adapterReceipt], dependency_inventory: [adapterReceipt] },
+    })) });
+  assert.equal(technologyEvidence.verified, true);
+  const decision = await runtime.invoke("software_cognition_precore_decide", identity, { ...base, disposition: "PROPOSE",
+    recommendation: "Apply the bounded implementation", rationale: ["The sealed sources agree"] });
+  assert.equal(decision.state, "NYRA_PROVISIONAL");
+  assert.equal(decision.core_state, "CORE_PENDING");
+  assert.equal(decision.execution_authorized, false);
+  assert.equal(decision.technology_evidence_digest, technologyEvidence.technology_evidence_digest);
+  assert.equal(decision.bindings.icf.verified, true);
+  icfSealed = false;
+  const challenged = await runtime.invoke("software_cognition_precore_decide", identity, { ...base, disposition: "PROPOSE",
+    recommendation: "Apply the bounded implementation", rationale: ["The sealed sources agree"] });
+  assert.equal(challenged.disposition, "CHALLENGE");
+  assert.equal(challenged.bindings.icf.verified, false);
+  assert.equal(challenged.execution_authorized, false);
+  assert.equal((await runtime.invoke("software_cognition_precore_read", identity, base)).length, 2);
+  icfSealed = true;
+  artifacts.splice(artifacts.findIndex((item) => item.kind === "technical_evidence"), 1);
+  const closure = await runtime.invoke("software_cognition_closure_evaluate", identity, base);
+  assert.equal(closure.verdict, "CLOSURE_DENIED");
+  assert.equal(closure.reasons.includes("technology_adapter_evidence_missing"), true);
+});
+
+test("NSCT V1.1 fails closed when Research Airlock is unavailable", async () => {
+  const store = memoryStore();
+  store.readGraph = async () => ({ revision: 1, source_digest: "a".repeat(64), nodes: [{ kind: "file", source_ref: "src/a.ts" }], edges: [] });
+  const base = { project_id: "project-a", work_id: "work-a", change_id: "change-a", plan_id: "plan-a" };
+  await assert.rejects(() => createSoftwareCognitionRuntime({ store }).invoke("software_cognition_research_plan", identity,
+    { ...base, question: "Check TypeScript" }), /software_research_airlock_not_ready/);
 });
 
 test("Core Join revalidates graph, authority roots and DB-time evidence freshness", async () => {

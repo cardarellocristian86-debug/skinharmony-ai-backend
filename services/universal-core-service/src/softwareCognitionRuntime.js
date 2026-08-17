@@ -3,6 +3,9 @@ import {
   indexSoftwareDiff, predictSoftwareImpact, reconcileSoftwareImpact, resolveSupervisoryChallenge, softwareDigest,
   recoverSoftwareArchitecture, routeSoftwareCognitionEvent, softwareAuthoritySnapshotDigest, superviseWorkerPlan, validateGraphMutation, validateLearningPromotion,
 } from "./softwareCognition.js";
+import {
+  bindSoftwareResearchEvidence, buildSoftwareResearchPlan, buildTechnologyProfiles, createNyraPrecoreDecision, validateTechnologyEvidence,
+} from "./softwareCognitionResearch.js";
 
 function fail(code) { const error = new Error(code); error.code = code; throw error; }
 export function normalizeSoftwareCognitionMode(value = "OFF") {
@@ -43,7 +46,7 @@ export async function requireCurrentSoftwareClosure({ store, tenant_id, work_id 
   return closure;
 }
 
-export function createSoftwareCognitionRuntime({ store } = {}) {
+export function createSoftwareCognitionRuntime({ store, researchAirlock = null, now = () => Date.now() } = {}) {
   if (!store || typeof store.readGraph !== "function") fail("software_cognition_store_required");
   async function persist(identity, input, kind, payload, digest, id = resultId(kind, payload)) {
     return store.writeArtifact({ tenant_id: identity.tenant_id, project_id: input.project_id, work_id: input.work_id,
@@ -202,6 +205,94 @@ export function createSoftwareCognitionRuntime({ store } = {}) {
         evidence_tenant_id: identity.tenant_id, source_work_id: input.work_id });
       await persist(identity, input, "learning", learning, learning.learning_digest); return learning;
     }
+    if (capability === "software_cognition_research_plan") {
+      if (!researchAirlock?.ready || typeof researchAirlock.createPlan !== "function") fail("software_research_airlock_not_ready");
+      const graph = await graphRequired(identity, input.project_id, input.work_id);
+      if (input.expected_revision !== undefined && Number(input.expected_revision) !== Number(graph.revision)) fail("stale_graph_revision");
+      const plan = buildSoftwareResearchPlan({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id,
+        graph, question: input.question, risk_tier: input.risk_tier, technology_hints: input.technology_hints,
+        version_context: input.version_context, additional_source_urls: input.additional_source_urls });
+      if (!plan.technologies.length) fail("software_research_technology_not_identified");
+      const airlock = await researchAirlock.createPlan({ work_binding: { tenant_id: identity.tenant_id, project_id: input.project_id,
+        work_id: input.work_id, session_id: identity.provenance.session_fingerprint }, source_urls: plan.sources.map((item) => item.url) },
+      { tenantId: identity.tenant_id, actor: identity.actor_id });
+      if (airlock?.verdict !== "ALLOW" || !airlock.plan?.plan_digest || !airlock.plan_capability) fail("software_research_airlock_plan_denied");
+      const payload = { ...plan, airlock_plan_digest: airlock.plan.plan_digest, airlock_policy_enforced: true };
+      payload.research_plan_digest = softwareDigest({ ...payload, research_plan_digest: undefined });
+      await persist(identity, input, "research_plan", payload, payload.research_plan_digest);
+      return { ...payload, airlock_plan_capability: airlock.plan_capability, airlock_plan_expires_at: airlock.plan.expires_at };
+    }
+    if (capability === "software_cognition_technology_profile") {
+      const graph = await graphRequired(identity, input.project_id, input.work_id);
+      const profiles = buildTechnologyProfiles({ graph, technology_hints: input.technology_hints });
+      return { schema_version: "software_technology_profiles_v1", ...scope, work_id: input.work_id,
+        graph_revision: graph.revision, graph_digest: graph.source_digest, profiles,
+        knowledge_gap: profiles.length === 0, execution_authorized: false, authoritative_transition_performed: false };
+    }
+    if (capability === "software_cognition_research_bind") {
+      if (!researchAirlock?.ready || typeof researchAirlock.verifyEvidenceCapsule !== "function") fail("software_research_airlock_not_ready");
+      const plans = await store.readArtifacts({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id, kind: "research_plan" });
+      const plan = plans.findLast((item) => item.research_plan_digest === input.research_plan_digest);
+      if (!plan) fail("software_research_plan_not_found");
+      const output = bindSoftwareResearchEvidence({ plan, capsule: input.capsule,
+        verified: researchAirlock.verifyEvidenceCapsule(input.capsule), now: Number(now()) });
+      await persist(identity, input, "research_evidence", output, output.research_evidence_digest); return output;
+    }
+    if (capability === "software_cognition_technology_verify") {
+      const plans = await store.readArtifacts({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id, kind: "research_plan" });
+      const plan = plans.findLast((item) => item.research_plan_digest === input.research_plan_digest);
+      if (!plan) fail("software_research_plan_not_found");
+      const subjectDigest = softwareDigest({ research_plan_digest: input.research_plan_digest, profile_results: input.profile_results || [] });
+      const authority = input.evidence_digest && await store.readVerifiedLearningEvidence({ ...scope, work_id: input.work_id,
+        evidence_digest: input.evidence_digest, subject_digest: subjectDigest });
+      if (!authority) fail("software_technology_evidence_not_authorized");
+      const output = validateTechnologyEvidence({ plan, profile_results: input.profile_results,
+        evidence_authority: { ...authority, evidence_digest: input.evidence_digest } });
+      await persist(identity, input, "technical_evidence", output, output.technology_evidence_digest); return output;
+    }
+    if (capability === "software_cognition_precore_decide") {
+      if (typeof store.readClosureSnapshot !== "function") fail("software_authority_snapshot_required");
+      const snapshot = await store.readClosureSnapshot({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id });
+      if (!snapshot.project || !snapshot.work || !snapshot.change || !snapshot.graph || !snapshot.native_plan?.plan?.software_contract) fail("software_causal_binding_not_found");
+      const native = snapshot.native_plan; const contract = native.plan.software_contract;
+      if (native.status !== "planned" || String(snapshot.latest_native_plan_id) !== String(input.plan_id)
+        || String(native.change_id) !== String(input.change_id) || String(contract.change_id) !== String(input.change_id)
+        || native.base_state_digest !== snapshot.graph.source_digest || contract.base_state_digest !== snapshot.graph.source_digest) fail("software_native_plan_binding_mismatch");
+      const researchPlan = snapshot.artifacts.research_plan?.at(-1) || null;
+      const researchEvidence = snapshot.artifacts.research_evidence?.filter((item) => item.research_plan_digest === researchPlan?.research_plan_digest).at(-1) || null;
+      const technologyEvidence = snapshot.artifacts.technical_evidence?.filter((item) => item.research_plan_digest === researchPlan?.research_plan_digest).at(-1) || null;
+      const issuedAt = new Date(Number(now())).toISOString();
+      const evidenceExpiries = [researchEvidence?.fresh_until, technologyEvidence?.fresh_until].filter((value) => Date.parse(value || "") >= Date.parse(issuedAt));
+      const latestExpiry = evidenceExpiries.length ? new Date(Math.min(...evidenceExpiries.map(Date.parse))).toISOString() : new Date(Number(now()) + 10 * 60_000).toISOString();
+      const intentVerified = snapshot.project.active_intent_revision_id === snapshot.work.intent_revision_id
+        && snapshot.work.intent_revision_id === snapshot.change.intent_revision_id && snapshot.project.intent_state === "APPROVED";
+      const seal = snapshot.icf?.state?.core_seal;
+      const icfVerified = snapshot.icf?.state?.closure === "SEALED" && seal?.decision === "ALLOW_CLOSE" && seal?.signature_key_id !== "development-only";
+      const securityChallenges = (snapshot.challenges || []).filter((item) => item.type === "security_gap" && item.status !== "verified_resolved" && item.status !== "rejected_by_core");
+      const allowedEvidence = new Set([snapshot.graph.source_digest, snapshot.project.intent_digest, seal?.digest,
+        researchEvidence?.research_evidence_digest, researchEvidence?.evidence_digest, technologyEvidence?.technology_evidence_digest,
+        technologyEvidence?.causal_evidence_digest, ...snapshot.evidence.map((item) => item.evidence_digest)].filter(Boolean));
+      for (const ref of input.evidence_refs || []) if (!allowedEvidence.has(ref)) fail("nyra_precore_evidence_not_authorized");
+      let disposition = input.disposition;
+      if (securityChallenges.some((item) => item.severity === "critical")) disposition = "RECOMMEND_BLOCK";
+      else if (!intentVerified || !icfVerified) disposition = "CHALLENGE";
+      const prior = snapshot.artifacts.precore_decision?.at(-1) || null;
+      const output = createNyraPrecoreDecision({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id,
+        disposition, recommendation: input.recommendation, rationale: input.rationale, uncertainties: input.uncertainties,
+        evidence_refs: [...new Set([...(input.evidence_refs || []), snapshot.graph.source_digest, researchEvidence?.research_evidence_digest].filter(Boolean))],
+        research_plan: researchPlan, research_evidence: researchEvidence, technology_evidence: technologyEvidence, issued_at: issuedAt, fresh_until: latestExpiry,
+        supersedes_decision_digest: prior?.decision_digest || null,
+        bindings: { genesis: { id: snapshot.project.genesis_intent_id, digest: snapshot.project.genesis_digest },
+          intent: { id: snapshot.work.intent_revision_id, digest: snapshot.project.intent_digest, verified: intentVerified },
+          icf: { id: seal?.seal_id || null, digest: seal?.digest || null, ledger_head_digest: snapshot.icf?.ledger_head_digest || null, verified: icfVerified },
+          security: { status: securityChallenges.length ? "challenged" : "no_open_security_challenge", challenge_ids: securityChallenges.map((item) => item.challenge_id) },
+          graph: { revision: snapshot.graph.revision, digest: snapshot.graph.source_digest },
+          native_plan: { id: native.plan_id, digest: native.plan_digest }, authority_snapshot_digest: softwareAuthoritySnapshotDigest(snapshot) } });
+      await persist(identity, input, "precore_decision", output, output.decision_digest); return output;
+    }
+    if (capability === "software_cognition_precore_read") {
+      return store.readArtifacts({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id, kind: "precore_decision" });
+    }
     if (capability === "software_cognition_closure_evaluate") {
       if (typeof store.readClosureSnapshot !== "function") fail("software_authority_snapshot_required");
       const snapshot = await store.readClosureSnapshot({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id });
@@ -254,6 +345,15 @@ export function createSoftwareCognitionRuntime({ store } = {}) {
       if (input.intent_binding && (input.intent_binding.id !== authoritativeIntent.id || input.intent_binding.digest !== authoritativeIntent.digest)) closure.reasons.push("intent_binding_substitution");
       if (input.icf_binding && (!authoritativeIcf || input.icf_binding.digest !== authoritativeIcf.digest)) closure.reasons.push("icf_binding_substitution");
       if (snapshot.native_closure?.evaluation?.closed !== true) closure.reasons.push("native_closure_not_verified");
+      const researchPlan = snapshot.artifacts.research_plan?.at(-1);
+      if (researchPlan?.research_required === true) {
+        const researchEvidence = snapshot.artifacts.research_evidence?.filter((item) => item.research_plan_digest === researchPlan.research_plan_digest).at(-1);
+        const technologyEvidence = snapshot.artifacts.technical_evidence?.filter((item) => item.research_plan_digest === researchPlan.research_plan_digest).at(-1);
+        if (!researchEvidence?.verified || Date.parse(researchEvidence.fresh_until || "") < dbNowMs) closure.reasons.push("technical_research_evidence_missing");
+        if ((researchEvidence?.contradictions || []).length) closure.reasons.push("technical_research_contradiction");
+        if (researchPlan.technical_verification_required === true
+          && (!technologyEvidence?.verified || Date.parse(technologyEvidence.fresh_until || "") < dbNowMs)) closure.reasons.push("technology_adapter_evidence_missing");
+      }
       closure.graph_revision = graph.revision;
       closure.graph_digest = graph.source_digest;
       closure.project_id = input.project_id;

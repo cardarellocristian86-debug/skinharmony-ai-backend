@@ -19,6 +19,19 @@ digest esatto del subject.
 - osservazioni runtime e reconciliation;
 - verifier independence e Core Join;
 - event ledger, outbox e learning verificato.
+- piani di ricerca, capsule Airlock e ricevute `technology_profile_v1`;
+- decisioni Nyra pre-Core, sempre non autorizzative.
+
+## Estensione V1.1: minacce ricerca e pre-Core
+
+- **Fonte singola ripetuta:** la capsula firma digest URL e domini distinti; la soglia minima usa entrambi e non il numero grezzo di fetch.
+- **Prompt injection o segreti dal web:** restano bloccati/quarantinati dal Research Airlock prima della sintesi privata; il contenuto raw non attraversa il model boundary.
+- **Sostituzione fonte o capsula:** URL esatti, piano Airlock, tenant/project/Work, firma, scadenza e categorie primary/security sono verificati server-side.
+- **Falso risultato compiler/test:** `software_cognition_technology_verify` richiede una Reality Observation Causal indipendente e fresca sul digest esatto dei risultati adapter.
+- **Comando adapter ostile:** `technology_profile_v1` e solo un contratto strutturato; tutti i comandi richiedono sandbox e non hanno autorita esecutiva.
+- **Decisione Nyra usata come permesso:** lo schema forza `NYRA_PROVISIONAL`, `CORE_PENDING`, `execution_authorized=false` e non effettua transizioni.
+- **ICF/Intent/security bypass:** la decisione rilegge lo snapshot autoritativo; ICF o Intent mancanti forzano challenge e un security gap critico forza `RECOMMEND_BLOCK`.
+- **Closure precedente al nuovo evidence:** receipts di ricerca/tecnologia entrano nell'authority snapshot e rendono stale una closure precedente.
 
 ## Attori e autorita
 

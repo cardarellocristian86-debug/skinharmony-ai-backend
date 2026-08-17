@@ -153,3 +153,16 @@ controllato:
 Registrare exact commit per Universal Core e Core MCP, migration readback,
 health/readiness, request/response digests, verifier receipt e rollback proof.
 Senza queste evidenze lo stato non e `PRODUCTION VERIFIED`.
+
+## Matrice aggiuntiva V1.1
+
+- rilevamento evidence-first e profili completi per Rust, JS/TS, Python, Go, Java/Kotlin, .NET, Ruby, PHP, Swift e C/C++;
+- rifiuto di hint sconosciuti e fonti fuori dai domini ufficiali autorizzati;
+- almeno due domini indipendenti in rischio normale e tre in rischio alto/security;
+- presenza obbligatoria di fonte primaria e advisory security quando richiesta;
+- firma capsula, scope tenant/project/Work, piano, freshness e anti-tamper;
+- ricevute complete di compiler/type checker, test, lint/static analysis, manifest e dependency inventory;
+- evidenza adapter accettata solo con observation Causal indipendente sul subject digest esatto;
+- `ABSTAIN` o `RECOMMEND_BLOCK` senza ricerca/adapter sufficienti;
+- `CHALLENGE` con ICF/Intent non verificati e block con security challenge critica;
+- decisione pre-Core sempre non autorizzativa e closure bloccata senza evidence V1.1 fresca.

@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { softwareDigest } from "./softwareCognition.js";
 
 const MIGRATION = fileURLToPath(new URL("../migrations/20260815_software_cognition_v1.sql", import.meta.url));
-const ARTIFACT_KINDS = new Set(["impact", "coverage", "reconciliation", "runtime_observation", "learning", "closure", "traceability", "architecture", "calibration", "supervision"]);
+const ARTIFACT_KINDS = new Set(["impact", "coverage", "reconciliation", "runtime_observation", "learning", "closure", "traceability", "architecture", "calibration", "supervision",
+  "research_plan", "research_evidence", "technical_evidence", "precore_decision"]);
 function fail(code) { const error = new Error(code); error.code = code; throw error; }
 function receiptUuid(value) { const hex = crypto.createHash("sha256").update(String(value)).digest("hex").slice(0, 32); return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`; }
 

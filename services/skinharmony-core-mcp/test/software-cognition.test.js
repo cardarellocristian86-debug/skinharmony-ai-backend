@@ -11,7 +11,8 @@ const EXPECTED = Object.freeze([
   "software_cognition_impact_predict", "software_cognition_impact_reconcile", "software_cognition_obligation_expand",
   "software_cognition_obligation_coverage", "software_cognition_plan_record", "software_cognition_supervise",
   "software_cognition_challenge_read", "software_cognition_challenge_resolve", "software_cognition_runtime_observe",
-  "software_cognition_learning_promote", "software_cognition_closure_evaluate",
+  "software_cognition_learning_promote", "software_cognition_research_plan", "software_cognition_technology_profile", "software_cognition_technology_verify", "software_cognition_research_bind",
+  "software_cognition_precore_decide", "software_cognition_precore_read", "software_cognition_closure_evaluate",
 ]);
 
 const agentPresence = Object.freeze({

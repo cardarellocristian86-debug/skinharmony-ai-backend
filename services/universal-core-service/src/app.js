@@ -6678,7 +6678,7 @@ export function createUniversalCoreService(options = {}) {
       ? createPostgresSoftwareCognitionStore({ pool: nyraPolicyRegistryPostgresPool })
       : null));
   const softwareCognitionRuntime = softwareCognitionEnabled && (options.softwareCognitionRuntime
-    || (softwareCognitionStore ? createSoftwareCognitionRuntime({ store: softwareCognitionStore }) : null));
+    || (softwareCognitionStore ? createSoftwareCognitionRuntime({ store: softwareCognitionStore, researchAirlock: researchAirlockRuntime }) : null));
   let softwareCognitionState = softwareCognitionMode === "INVALID" ? "configuration_invalid" : softwareCognitionRuntime ? "initializing" : "disabled";
   let softwareCognitionInitializationError = softwareCognitionMode === "INVALID" ? "software_cognition_mode_invalid" : null;
   if (softwareCognitionRuntime) {

@@ -9,6 +9,27 @@ branch Nyra e gate Core Join sono wired nel branch. Il default operativo resta
 Non dichiarare SHADOW, ADVISORY, ENFORCED o production verification finche non
 esiste readback del runtime distribuito.
 
+## Controlli V1.1 pre-Core e ricerca
+
+Prima di abilitare i tool V1.1, Research Airlock deve riportare `ready=true` in
+modalita enforced, con store PostgreSQL durevole e chiave di firma. NSCT deve
+restare `ADVISORY` durante la prima finestra di osservazione in produzione.
+
+Smoke test per un Work governato:
+
+1. creare un `software_cognition_research_plan` bounded e verificare che le fonti corrispondano alla tecnologia osservata;
+2. usare il flusso Airlock open/discover/seal/private-enter per ogni fonte richiesta;
+3. legare la capsula firmata e verificare il conteggio di fonti indipendenti;
+4. eseguire in sandbox gli adapter del `technology_profile_v1`, attestare i risultati con evidenza Causal indipendente e invocare `software_cognition_technology_verify`;
+5. richiedere `software_cognition_precore_decide` e verificare `NYRA_PROVISIONAL`, `CORE_PENDING` ed `execution_authorized=false`;
+6. verificare il rifiuto di capsule o ricevute tecniche mancanti, duplicate, scadute, cross-tenant o alterate;
+7. verificare che la ricevuta provvisoria non emetta host action, publish, deploy o Core Join.
+
+Il rollback non richiede migration distruttive: impostare
+`SOFTWARE_COGNITION_MODE=OFF` disabilita tutte le route NSCT. In alternativa,
+mantenere `ADVISORY` e sospendere l'invocazione dei tool V1.1. Le ricevute
+append-only restano disponibili per audit.
+
 ## Prerequisiti
 
 - branch isolato e baseline `origin/main` registrata;
