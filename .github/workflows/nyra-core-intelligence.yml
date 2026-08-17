@@ -1261,6 +1261,12 @@ jobs:
         run: >-
           node --test
           services/universal-core-service/test/research-airlock-postgres16.test.js
+      - name: Exercise PostgreSQL 16 NSCT and signed pre-Core gate
+        env:
+          SOFTWARE_COGNITION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/continuity_ci
+        run: >-
+          node --test
+          services/universal-core-service/test/software-cognition-postgres16.test.js
       - name: Exercise PostgreSQL 16 Core Policy Registry proof and lifecycle gate
         env:
           POLICY_REGISTRY_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/continuity_ci

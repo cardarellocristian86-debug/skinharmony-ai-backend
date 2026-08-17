@@ -6,6 +6,7 @@ import pg from "pg";
 import { createWorkContinuityRuntime } from "../../skinharmony-core-mcp/src/work-continuity-runtime.js";
 import { createPostgresCausalContinuityStore } from "../src/causalContinuityStore.js";
 import { createIcfPostgresStore } from "../src/icfPostgresStore.js";
+import { createPostgresNyraPrecoreDecisionStore } from "../src/nyraPrecoreDecisionStore.js";
 import { createPostgresSoftwareCognitionStore } from "../src/softwareCognitionStore.js";
 import { deterministicSoftwareId } from "../src/softwareCognition.js";
 
@@ -17,6 +18,25 @@ test("PostgreSQL 16 Atlas extension enforces one CAS winner and composite endpoi
   const causal = createPostgresCausalContinuityStore({ pool });
   const icf = createIcfPostgresStore({ pool });
   const software = createPostgresSoftwareCognitionStore({ pool });
+  const precoreKeys = crypto.generateKeyPairSync("ed25519");
+  const precoreSigner = {
+    algorithm: "Ed25519",
+    authority_scope: "ADVISORY_NON_EXECUTABLE",
+    key_id: "nyra-precore-ci-key",
+    async signPayload(payload) {
+      return crypto.sign(null, payload, precoreKeys.privateKey).toString("base64url");
+    },
+  };
+  const precoreVerifier = {
+    async verifyPayload({ payload, signature, key_id, algorithm, purpose, tenant_id }) {
+      return key_id === precoreSigner.key_id
+        && algorithm === "Ed25519"
+        && purpose === "nyra.precore.decision.v1"
+        && tenant_id === tenant
+        && crypto.verify(null, payload, precoreKeys.publicKey, Buffer.from(signature, "base64url"));
+    },
+  };
+  const precore = createPostgresNyraPrecoreDecisionStore({ pool, signer: precoreSigner, verifier: precoreVerifier });
   const suffix = crypto.randomUUID();
   const tenant = `nsct-${suffix}`.slice(0, 63);
   const project = crypto.randomUUID();
@@ -31,6 +51,7 @@ test("PostgreSQL 16 Atlas extension enforces one CAS winner and composite endpoi
   try {
     assert.match((await pool.query("show server_version")).rows[0].server_version, /^16\./);
     await continuity.initialize(); await causal.initialize(); await icf.initialize(); await software.initialize(); await software.initialize();
+    await precore.initialize(); await precore.initialize();
     await pool.query(`INSERT INTO core_continuity_works(tenant_id,project_id,work_id,session_id,idea,objective,created_by)
       VALUES($1,$2,$3,'session','idea','objective','test')`, [tenant, project, work]);
     await pool.query(`INSERT INTO core_projects(tenant_id,project_id,canonical_name,active_intent_revision_id) VALUES($1,$2,$3,NULL)`, [tenant, project, `project-${suffix}`]);
@@ -46,6 +67,28 @@ test("PostgreSQL 16 Atlas extension enforces one CAS winner and composite endpoi
     await pool.query(`INSERT INTO core_continuity_native_plans(tenant_id,work_id,plan_id,plan,plan_digest,status,created_by,change_id,base_state_digest,contract_schema)
       VALUES($1,$2,$3,$4::jsonb,$5,'planned','test',$6,$5,'worker_plan_contract_v1')`, [tenant, work, plan,
       JSON.stringify({ schema_version: "native_agent_plan_v1", software_contract: { change_id: change, base_state_digest: hash } }), hash, change]);
+    const precoreRefs = Object.fromEntries(["genesis", "intent", "icf", "software_reality_graph", "native_plan", "security_assessment", "research_evidence_bundle", "authority_snapshot"]
+      .map((name) => [name, { id: `${name}:ci`, revision: "revision:1", digest: hash }]));
+    const precoreInput = (idempotencyKey) => ({
+      scope: { tenant_id: tenant, project_id: project, repository_id: `repository:${suffix}`, work_id: work, change_id: change, plan_id: plan },
+      subject: { base_revision: "a".repeat(40), candidate_revision: "b".repeat(40), change_digest: hash },
+      authority_refs: precoreRefs,
+      decision: { kind: "PROPOSE", proposed_next_step: "PROPOSE_TO_CORE_REVIEW", summary: "PostgreSQL 16 signed advisory receipt", risks: [], conditions: [], rollback_requirements: [], open_challenges: [], knowledge_gaps: [] },
+      evidence: { claim_ids: [], tool_result_ids: [], coverage: { sufficient: true }, freshness_evaluated_at: new Date().toISOString(), fresh_until: new Date(Date.now() + 60_000).toISOString(), evidence_digest: hash },
+      agent_instance_id: "nyra:postgres16-ci", expected_sequence: 0, expected_parent_digest: null, idempotency_key: idempotencyKey,
+    });
+    const precoreRace = await Promise.allSettled([
+      precore.generate(precoreInput("precore-race-a")),
+      precore.generate(precoreInput("precore-race-b")),
+    ]);
+    assert.equal(precoreRace.filter((item) => item.status === "fulfilled").length, 1);
+    assert.equal(precoreRace.filter((item) => item.status === "rejected" && /nyra_precore_cas_conflict/.test(item.reason?.message)).length, 1);
+    const precoreRecord = precoreRace.find((item) => item.status === "fulfilled").value;
+    assert.equal((await precore.verify(precoreRecord.scope, precoreRecord.decision_id)).valid, true);
+    assert.equal(Number((await pool.query(`SELECT count(*) AS count FROM core_continuity_native_receipts
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND receipt_type='software_precore_decision'`, [tenant, work, plan])).rows[0].count), 1);
+    assert.equal(Number((await pool.query(`SELECT count(*) AS count FROM core_continuity_events
+      WHERE tenant_id=$1 AND work_id=$2 AND event_type='software_precore_decision_recorded'`, [tenant, work])).rows[0].count), 1);
     await pool.query(`INSERT INTO core_continuity_works(tenant_id,project_id,work_id,session_id,idea,objective,created_by)
       VALUES($1,$2,$3,'session-2','idea','objective','test')`, [tenant, project, otherWork]);
     await pool.query(`INSERT INTO core_work_causal_bindings(tenant_id,work_id,project_id,genesis_intent_id,intent_revision_id,base_state_digest,provenance)
