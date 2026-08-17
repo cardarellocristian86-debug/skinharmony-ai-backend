@@ -158,11 +158,25 @@ Senza queste evidenze lo stato non e `PRODUCTION VERIFIED`.
 
 - rilevamento evidence-first e profili completi per Rust, JS/TS, Python, Go, Java/Kotlin, .NET, Ruby, PHP, Swift e C/C++;
 - rifiuto di hint sconosciuti e fonti fuori dai domini ufficiali autorizzati;
-- almeno due domini indipendenti in rischio normale e tre in rischio alto/security;
-- presenza obbligatoria di fonte primaria e advisory security quando richiesta;
+- almeno due lineage indipendenti in rischio normale e tre in rischio alto/security; mirror e URL derivati non contano due volte;
+- presenza obbligatoria di fonte primaria, advisory vendor e database security indipendente quando richiesta;
+- Research Cortex digest incluso nel piano Airlock e sealed evidence riletto server-side;
 - firma capsula, scope tenant/project/Work, piano, freshness e anti-tamper;
 - ricevute complete di compiler/type checker, test, lint/static analysis, manifest e dependency inventory;
 - evidenza adapter accettata solo con observation Causal indipendente sul subject digest esatto;
 - `ABSTAIN` o `RECOMMEND_BLOCK` senza ricerca/adapter sufficienti;
 - `CHALLENGE` con ICF/Intent non verificati e block con security challenge critica;
-- decisione pre-Core sempre non autorizzativa e closure bloccata senza evidence V1.1 fresca.
+- decisione pre-Core sempre non autorizzativa, catena Ed25519 append-only, CAS/idempotenza/supersession e stale/cross-scope rejection;
+- host-native/Core Join rifiutano una pre-decisione usata come execution credential;
+- closure bloccata senza evidence V1.1 fresca.
+
+La suite pre-Core dedicata e:
+
+```bash
+node --test services/universal-core-service/test/nyra-precore-decision-store.test.js
+```
+
+Il gate Core rilegge il record firmato, verifica nuovamente repository,
+base/candidate, Genesis, Intent, ICF, SRG, assessment security, bundle di ricerca
+e freschezza DB-time. La risposta Core Join e l'audit persistente espongono
+`precore_alignment` con motivazione strutturata; il verdetto Core resta indipendente.

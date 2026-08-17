@@ -36,15 +36,20 @@ export function createPostgresSoftwareCognitionStore({ pool } = {}) {
       FROM core_continuity_atlas_state WHERE tenant_id=$1 AND work_id=$2`, [tenantId, workId]);
     if (!state.rows[0]) return null;
     if (String(state.rows[0].project_id) !== String(projectId)) fail("software_atlas_project_scope_mismatch");
-    const [nodes, edges] = await Promise.all([
+    const [nodes, edges, revisionBinding] = await Promise.all([
       db.query(`SELECT node_id,node_kind,path,symbol,summary,node_digest,context_bytes,metadata,revision,
         source_kind,source_ref,source_digest,provenance FROM core_continuity_atlas_nodes
         WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY node_id`, [tenantId, projectId, workId]),
       db.query(`SELECT edge_id,from_node_id,to_node_id,edge_type,edge_digest,source,provenance,revision
         FROM core_continuity_atlas_edges WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY edge_id`, [tenantId, projectId, workId]),
+      db.query(`SELECT base_commit,head_commit,provenance FROM core_continuity_atlas_revision_history
+        WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND revision=$4`, [tenantId, projectId, workId, state.rows[0].revision]),
     ]);
+    const binding = revisionBinding.rows[0] || {};
     return { schema_version: "nyra_software_cognition_v1", tenant_id: tenantId, project_id: projectId, work_id: workId,
       revision: Number(state.rows[0].revision), source_digest: state.rows[0].source_hash,
+      repository_id: binding.provenance?.repository || binding.provenance?.repository_id || null,
+      base_revision: binding.base_commit || null, candidate_revision: binding.head_commit || null,
       nodes: nodes.rows.map((row) => ({ tenant_id: tenantId, project_id: projectId, work_id: workId, node_id: row.node_id,
         kind: row.node_kind, source_ref: row.source_ref || row.path, source_kind: row.source_kind, provenance: row.provenance,
         payload: row.metadata, digest: row.source_digest || row.node_digest, version: Number(row.revision), tombstoned: false })),
@@ -162,10 +167,13 @@ export function createPostgresSoftwareCognitionStore({ pool } = {}) {
   async function readClosureSnapshot(input, db = null) {
     const { tenant_id, project_id, work_id, change_id, plan_id } = input;
     const load = async (client) => {
-      const [project, work, change, obligations, evidence, icf, graph, nativePlan, nativePlanHead, nativeClosure, clock] = await Promise.all([
+      const [project, repository, work, change, obligations, evidence, icf, graph, nativePlan, nativePlanHead, nativeClosure, clock] = await Promise.all([
         client.query(`SELECT p.project_id,p.active_state_digest,p.active_intent_revision_id,i.genesis_intent_id,i.state AS intent_state,i.canonical_digest AS intent_digest,g.canonical_digest AS genesis_digest
           FROM core_projects p LEFT JOIN core_intent_revisions i ON i.tenant_id=p.tenant_id AND i.intent_revision_id=p.active_intent_revision_id
           LEFT JOIN core_genesis_intents g ON g.tenant_id=p.tenant_id AND g.genesis_intent_id=i.genesis_intent_id WHERE p.tenant_id=$1 AND p.project_id=$2`, [tenant_id, project_id]),
+        client.query(`SELECT resource_id,canonical_identifier,resource_digest,last_verified_at FROM core_project_scope_resources
+          WHERE tenant_id=$1 AND project_id=$2 AND active=true AND lower(resource_type) IN ('repository','source_repository','git_repository')
+          ORDER BY last_verified_at DESC NULLS LAST,first_seen_at DESC`, [tenant_id, project_id]),
         client.query(`SELECT * FROM core_work_causal_bindings WHERE tenant_id=$1 AND work_id=$2 AND project_id=$3`, [tenant_id, work_id, project_id]),
         client.query(`SELECT * FROM core_changes WHERE tenant_id=$1 AND change_id=$2 AND work_id=$3 AND project_id=$4`, [tenant_id, change_id, work_id, project_id]),
         client.query(`SELECT obligation_id,claim,assurance_level,state,obligation_digest,rollback_plan FROM core_causal_obligations WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND change_id=$4 ORDER BY obligation_id`, [tenant_id, project_id, work_id, change_id]),
@@ -180,7 +188,11 @@ export function createPostgresSoftwareCognitionStore({ pool } = {}) {
       ]);
       const artifacts = {};
       for (const kind of ARTIFACT_KINDS) artifacts[kind] = await readArtifacts({ tenant_id, project_id, work_id, change_id, plan_id, kind }, client);
-      return { project: project.rows[0] || null, work: work.rows[0] || null, change: change.rows[0] || null,
+      const graphRepositoryId = String(graph?.repository_id || "");
+      const repositoryMatches = graphRepositoryId ? repository.rows.filter((row) =>
+        String(row.resource_id) === graphRepositoryId || String(row.canonical_identifier) === graphRepositoryId) : [];
+      if (repositoryMatches.length > 1) fail("software_repository_graph_binding_ambiguous");
+      return { project: project.rows[0] || null, repository: repositoryMatches[0] || null, work: work.rows[0] || null, change: change.rows[0] || null,
         obligations: obligations.rows, evidence: evidence.rows, icf: icf.rows[0] || null, graph, native_plan: nativePlan,
         latest_native_plan_id: nativePlanHead.rows[0]?.plan_id || null,
         native_closure: nativeClosure.rows[0] || null,
@@ -239,6 +251,25 @@ export function createPostgresSoftwareCognitionStore({ pool } = {}) {
       return operation(lockedStore);
     });
   }
+  async function withPrecoreAuthorityLock({ tenant_id, project_id, work_id, plan_id }, operation) {
+    if (typeof operation !== "function") fail("software_precore_operation_required");
+    return withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))", [`causal:${tenant_id}`, String(project_id)]);
+      const work = await client.query(`SELECT project_id FROM core_continuity_works
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [tenant_id, work_id]);
+      if (!work.rows[0] || String(work.rows[0].project_id) !== String(project_id)) fail("software_causal_binding_not_found");
+      await client.query("SELECT project_id FROM core_projects WHERE tenant_id=$1 AND project_id=$2 FOR UPDATE", [tenant_id, project_id]);
+      await client.query("SELECT revision FROM core_continuity_atlas_state WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE", [tenant_id, work_id]);
+      await client.query("SELECT plan_id FROM core_continuity_native_plans WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 FOR UPDATE",
+        [tenant_id, work_id, plan_id]);
+      await client.query("SELECT 1 FROM core_icf_work WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE", [tenant_id, work_id]);
+      await client.query(`SELECT resource_id FROM core_project_scope_resources
+        WHERE tenant_id=$1 AND project_id=$2 AND active=true AND lower(resource_type) IN ('repository','source_repository','git_repository')
+        FOR SHARE`, [tenant_id, project_id]);
+      return operation({ readClosureSnapshot: (input) => readClosureSnapshot(input, client), transaction: client });
+    });
+  }
   return Object.freeze({ initialize, readGraph, writeGraph, verifyCausalBinding, readCausalObligations, readSupervisionBindings, readNativePlan, writeArtifact, readArtifacts,
-    writeChallenge, readChallenges, writeChallengeResolution, readClosureSnapshot, readVerifiedLearningEvidence, readReleaseReadyClosure, withClosureAuthorityLock });
+    writeChallenge, readChallenges, writeChallengeResolution, readClosureSnapshot, readVerifiedLearningEvidence, readReleaseReadyClosure,
+    withClosureAuthorityLock, withPrecoreAuthorityLock });
 }

@@ -22,6 +22,10 @@ const ROUTES = Object.freeze([
   ["post", "/v1/software-cognition/research/bind", "software_cognition_research_bind", "write"],
   ["post", "/v1/software-cognition/precore/decide", "software_cognition_precore_decide", "write"],
   ["post", "/v1/software-cognition/precore/read", "software_cognition_precore_read", "read"],
+  ["post", "/v1/nyra-precore-decisions/generate", "nyra_precore_decision_generate", "write"],
+  ["post", "/v1/nyra-precore-decisions/read", "nyra_precore_decision_read", "read"],
+  ["post", "/v1/nyra-precore-decisions/list", "nyra_precore_decision_list", "read"],
+  ["post", "/v1/nyra-precore-decisions/verify", "nyra_precore_decision_verify", "read"],
   ["post", "/v1/software-cognition/closure/evaluate", "software_cognition_closure_evaluate", "write"],
 ]);
 

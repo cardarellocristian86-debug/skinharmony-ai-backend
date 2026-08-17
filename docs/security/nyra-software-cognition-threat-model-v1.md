@@ -24,12 +24,13 @@ digest esatto del subject.
 
 ## Estensione V1.1: minacce ricerca e pre-Core
 
-- **Fonte singola ripetuta:** la capsula firma digest URL e domini distinti; la soglia minima usa entrambi e non il numero grezzo di fetch.
+- **Fonte singola ripetuta:** URL e domini della capsula sono necessari ma non sufficienti; il bundle conta lineage e classi di autorita indipendenti, quindi mirror e feed derivati non aumentano la copertura.
 - **Prompt injection o segreti dal web:** restano bloccati/quarantinati dal Research Airlock prima della sintesi privata; il contenuto raw non attraversa il model boundary.
-- **Sostituzione fonte o capsula:** URL esatti, piano Airlock, tenant/project/Work, firma, scadenza e categorie primary/security sono verificati server-side.
+- **Sostituzione fonte o capsula:** URL esatti, piano Cortex→Airlock, tenant/project/Work, firma, scadenza, sealed evidence server-side, versione e categorie primary/vendor/independent-security sono verificati server-side.
 - **Falso risultato compiler/test:** `software_cognition_technology_verify` richiede una Reality Observation Causal indipendente e fresca sul digest esatto dei risultati adapter.
 - **Comando adapter ostile:** `technology_profile_v1` e solo un contratto strutturato; tutti i comandi richiedono sandbox e non hanno autorita esecutiva.
-- **Decisione Nyra usata come permesso:** lo schema forza `NYRA_PROVISIONAL`, `CORE_PENDING`, `execution_authorized=false` e non effettua transizioni.
+- **Decisione Nyra usata come permesso:** lo schema firmato forza `execution_authorized=false` e `authority_scope=ADVISORY_NON_EXECUTABLE`; i consumer host-native/Core Join la rifiutano esplicitamente come ticket.
+- **Replay o sostituzione della decisione:** sequence, parent digest, record digest, firma Ed25519 purpose-bound, idempotenza, CAS e supersessione dell'head sono verificati sullo scope tenant/project/repository/Work/Change/Plan.
 - **ICF/Intent/security bypass:** la decisione rilegge lo snapshot autoritativo; ICF o Intent mancanti forzano challenge e un security gap critico forza `RECOMMEND_BLOCK`.
 - **Closure precedente al nuovo evidence:** receipts di ricerca/tecnologia entrano nell'authority snapshot e rendono stale una closure precedente.
 

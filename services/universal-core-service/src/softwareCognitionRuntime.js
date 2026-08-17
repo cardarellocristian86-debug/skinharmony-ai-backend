@@ -8,6 +8,7 @@ import {
 } from "./softwareCognitionResearch.js";
 
 function fail(code) { const error = new Error(code); error.code = code; throw error; }
+const PRECORE_AUTHORITY_LOCK = Symbol("precore_authority_lock");
 export function normalizeSoftwareCognitionMode(value = "OFF") {
   const mode = String(value || "OFF").trim().toUpperCase();
   if (!["OFF", "SHADOW", "ADVISORY", "ENFORCED"].includes(mode)) fail("software_cognition_mode_invalid");
@@ -16,7 +17,8 @@ export function normalizeSoftwareCognitionMode(value = "OFF") {
 function resultId(prefix, value) { return `${prefix}_${softwareDigest(value).slice(0, 48)}`; }
 function graphShape(graph) {
   if (!graph) return { revision: 0, nodes: [], edges: [] };
-  return { revision: graph.revision, source_digest: graph.source_digest,
+  return { revision: graph.revision, source_digest: graph.source_digest, repository_id: graph.repository_id || null,
+    base_revision: graph.base_revision || null, candidate_revision: graph.candidate_revision || null,
     nodes: graph.nodes.map((n) => ({ ...n, kind: n.kind || n.node_kind, source_ref: n.source_ref || n.locator })), edges: graph.edges };
 }
 function softwareObligations(rows) {
@@ -24,6 +26,115 @@ function softwareObligations(rows) {
   return rows.map((item) => ({ obligation_id: item.obligation_id, type: String(item.claim || "causal").toLowerCase(),
     criticality: item.assurance_level === "CAL-4" ? "critical" : item.assurance_level === "CAL-3" ? "required" : "normal",
     required: true, blocking: true, status: stateMap[item.state] || "discovered", rollback_plan: item.rollback_plan }));
+}
+
+function missingPrecoreAuthorityRef(name, identity, input) {
+  return { id: `missing:${name}`, revision: "missing", digest: softwareDigest({ name, state: "MISSING",
+    tenant_id: identity.tenant_id, project_id: input.project_id, work_id: input.work_id, change_id: input.change_id }) };
+}
+
+function boundPrecoreRepositoryId(snapshot) {
+  const graphRepository = String(snapshot.graph?.repository_id || "");
+  const resourceId = String(snapshot.repository?.resource_id || "");
+  const canonicalIdentifier = String(snapshot.repository?.canonical_identifier || "");
+  if (!graphRepository || !resourceId || ![resourceId, canonicalIdentifier].includes(graphRepository)) {
+    fail("nyra_precore_repository_graph_binding_mismatch");
+  }
+  return resourceId;
+}
+
+function currentPrecoreAuthorityState(snapshot, identity, input) {
+  const dbNowMs = snapshot.db_now instanceof Date ? snapshot.db_now.getTime() : Date.parse(snapshot.db_now);
+  const researchPlan = snapshot.artifacts?.research_plan?.at(-1) || null;
+  const researchEvidence = snapshot.artifacts?.research_evidence
+    ?.filter((item) => item.research_plan_digest === researchPlan?.research_plan_digest).at(-1) || null;
+  const technologyEvidence = snapshot.artifacts?.technical_evidence
+    ?.filter((item) => item.research_plan_digest === researchPlan?.research_plan_digest).at(-1) || null;
+  const securityChallenges = (snapshot.challenges || []).filter((item) =>
+    (item.challenge_type === "security_gap" || item.type === "security_gap")
+    && item.status !== "verified_resolved" && item.status !== "rejected_by_core");
+  const securityAssessment = (snapshot.evidence || []).filter((item) => item.independence !== "EXECUTOR"
+    && item.contradiction_status === "NONE"
+    && Date.parse(item.observed_at) + Number(item.freshness_seconds || 0) * 1000 >= dbNowMs
+    && (item.baseline?.schema_version === "software_security_assessment_v1"
+      || item.baseline?.subject_kind === "software_security_assessment_v1"))
+    .findLast((item) => item.baseline?.graph_digest === snapshot.graph?.source_digest
+      && item.baseline?.change_id === input.change_id) || null;
+  const seal = snapshot.icf?.state?.core_seal;
+  const missing = (name) => missingPrecoreAuthorityRef(name, identity, input);
+  const refs = {
+    genesis: snapshot.project?.genesis_intent_id && snapshot.project?.genesis_digest
+      ? { id: snapshot.project.genesis_intent_id, revision: "immutable", digest: snapshot.project.genesis_digest } : missing("genesis"),
+    intent: snapshot.work?.intent_revision_id && snapshot.project?.intent_digest
+      ? { id: snapshot.work.intent_revision_id, revision: snapshot.work.intent_revision_id, digest: snapshot.project.intent_digest } : missing("intent"),
+    icf: (seal?.digest || snapshot.icf?.ledger_head_digest)
+      ? { id: seal?.seal_id || `icf:${input.work_id}`, revision: String(snapshot.icf?.version || "unknown"),
+        digest: seal?.digest || snapshot.icf.ledger_head_digest } : missing("icf"),
+    software_reality_graph: snapshot.graph
+      ? { id: String(snapshot.graph.work_id || input.work_id), revision: String(snapshot.graph.revision), digest: snapshot.graph.source_digest }
+      : missing("software_reality_graph"),
+    native_plan: snapshot.native_plan?.plan_id && snapshot.native_plan?.plan_digest
+      ? { id: snapshot.native_plan.plan_id, revision: String(snapshot.native_plan.plan_version || 1), digest: snapshot.native_plan.plan_digest }
+      : missing("native_plan"),
+    security_assessment: securityAssessment
+      ? { id: securityAssessment.observation_id, revision: String(securityAssessment.observed_at), digest: securityAssessment.evidence_digest }
+      : missing("security_assessment"),
+    research_evidence_bundle: researchEvidence?.research_evidence_bundle_digest
+      ? { id: researchEvidence.research_evidence_bundle?.bundle_digest || researchEvidence.research_evidence_bundle_digest,
+        revision: researchEvidence.capsule_id || "capsule", digest: researchEvidence.research_evidence_bundle_digest }
+      : missing("research_evidence_bundle"),
+    authority_snapshot: { id: `snapshot:${input.work_id}:${input.plan_id}`, revision: String(snapshot.graph?.revision || "missing"),
+      digest: softwareAuthoritySnapshotDigest(snapshot) },
+  };
+  return { researchPlan, researchEvidence, technologyEvidence, securityChallenges, securityAssessment, seal, refs, dbNowMs };
+}
+
+export async function verifyCurrentNyraPrecoreDecision({ store, precoreStore, record } = {}) {
+  if (!record || !store?.readClosureSnapshot || !precoreStore?.verify) {
+    return { valid: false, reasons: ["DECISION_UNAVAILABLE"], record: record || null };
+  }
+  const scope = record.scope || {};
+  const input = { project_id: scope.project_id, work_id: scope.work_id, change_id: scope.change_id, plan_id: scope.plan_id };
+  const identity = { tenant_id: scope.tenant_id };
+  const snapshot = await store.readClosureSnapshot({ tenant_id: scope.tenant_id, project_id: scope.project_id,
+    work_id: scope.work_id, change_id: scope.change_id, plan_id: scope.plan_id });
+  const repositoryId = boundPrecoreRepositoryId(snapshot);
+  const authority = currentPrecoreAuthorityState(snapshot, identity, input);
+  const expected = {
+    "scope.tenant_id": scope.tenant_id,
+    "scope.project_id": scope.project_id,
+    "scope.repository_id": String(repositoryId),
+    "scope.work_id": scope.work_id,
+    "scope.change_id": scope.change_id,
+    "scope.plan_id": scope.plan_id,
+    "subject.base_revision": snapshot.graph?.base_revision,
+    "subject.candidate_revision": snapshot.graph?.candidate_revision,
+    "subject.change_digest": snapshot.change?.request_digest,
+    "authority_refs.genesis.digest": authority.refs.genesis.digest,
+    "authority_refs.intent.digest": authority.refs.intent.digest,
+    "authority_refs.icf.digest": authority.refs.icf.digest,
+    "authority_refs.software_reality_graph.digest": authority.refs.software_reality_graph.digest,
+    "authority_refs.native_plan.digest": authority.refs.native_plan.digest,
+    "authority_refs.security_assessment.digest": authority.refs.security_assessment.digest,
+    "authority_refs.research_evidence_bundle.digest": authority.refs.research_evidence_bundle.digest,
+    "authority_refs.authority_snapshot.digest": authority.refs.authority_snapshot.digest,
+  };
+  return precoreStore.verify({ ...scope, repository_id: String(repositoryId) }, record.decision_id, expected);
+}
+
+export function alignNyraPrecoreWithCore({ verification, core_allowed } = {}) {
+  if (!verification?.record) return { schema_version: "nyra_precore_alignment_v1", status: "UNAVAILABLE",
+    decision_id: null, decision_digest: null, reason_codes: ["NO_CURRENT_PRECORE_DECISION"], execution_authorized: false };
+  if (verification.valid !== true) return { schema_version: "nyra_precore_alignment_v1", status: "INVALID",
+    decision_id: verification.record.decision_id, decision_digest: verification.record.chain?.record_digest || null,
+    reason_codes: verification.reasons || ["PRECORE_VERIFICATION_FAILED"], execution_authorized: false };
+  const nyraSupports = verification.record.decision?.kind === "PROPOSE";
+  const agrees = Boolean(core_allowed) === nyraSupports;
+  return { schema_version: "nyra_precore_alignment_v1", status: agrees ? "AGREES" : "OVERRIDES",
+    decision_id: verification.record.decision_id, decision_digest: verification.record.chain.record_digest,
+    reason_codes: agrees ? ["CORE_AND_NYRA_DIRECTION_MATCH"]
+      : [`CORE_${core_allowed ? "ALLOWED" : "DENIED"}_NYRA_${verification.record.decision?.kind || "UNKNOWN"}`],
+    core_independent_decision: true, execution_authorized: false };
 }
 
 export async function requireCurrentSoftwareClosure({ store, tenant_id, work_id }) {
@@ -46,7 +157,7 @@ export async function requireCurrentSoftwareClosure({ store, tenant_id, work_id 
   return closure;
 }
 
-export function createSoftwareCognitionRuntime({ store, researchAirlock = null, now = () => Date.now() } = {}) {
+export function createSoftwareCognitionRuntime({ store, researchAirlock = null, precoreStore = null, precoreMode = "OFF", now = () => Date.now() } = {}) {
   if (!store || typeof store.readGraph !== "function") fail("software_cognition_store_required");
   async function persist(identity, input, kind, payload, digest, id = resultId(kind, payload)) {
     return store.writeArtifact({ tenant_id: identity.tenant_id, project_id: input.project_id, work_id: input.work_id,
@@ -61,6 +172,12 @@ export function createSoftwareCognitionRuntime({ store, researchAirlock = null, 
     if (input.work_id) {
       if (typeof store.verifyCausalBinding !== "function") fail("software_causal_binding_verifier_required");
       await store.verifyCausalBinding({ ...scope, work_id: input.work_id, change_id: input.change_id });
+    }
+    if (["software_cognition_precore_decide", "nyra_precore_decision_generate"].includes(capability)
+      && !input[PRECORE_AUTHORITY_LOCK]) {
+      if (typeof store.withPrecoreAuthorityLock !== "function") fail("software_precore_authority_lock_required");
+      return store.withPrecoreAuthorityLock({ ...scope, work_id: input.work_id, plan_id: input.plan_id },
+        (locked) => invoke(capability, identity, { ...input, [PRECORE_AUTHORITY_LOCK]: locked }));
     }
     if (["software_cognition_graph_upsert", "software_cognition_index_diff"].includes(capability)) {
       const evidenceDigest = input.diff_evidence_digest || input.source_evidence_digest;
@@ -211,10 +328,12 @@ export function createSoftwareCognitionRuntime({ store, researchAirlock = null, 
       if (input.expected_revision !== undefined && Number(input.expected_revision) !== Number(graph.revision)) fail("stale_graph_revision");
       const plan = buildSoftwareResearchPlan({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id,
         graph, question: input.question, risk_tier: input.risk_tier, technology_hints: input.technology_hints,
-        version_context: input.version_context, additional_source_urls: input.additional_source_urls });
-      if (!plan.technologies.length) fail("software_research_technology_not_identified");
+        version_context: input.version_context, additional_source_urls: input.additional_source_urls,
+        repository_id: graph.repository_id, base_revision: graph.base_revision, candidate_revision: graph.candidate_revision });
+      if (!plan.technologies.length) return { ...plan, advisory_disposition: "ABSTAIN" };
       const airlock = await researchAirlock.createPlan({ work_binding: { tenant_id: identity.tenant_id, project_id: input.project_id,
-        work_id: input.work_id, session_id: identity.provenance.session_fingerprint }, source_urls: plan.sources.map((item) => item.url) },
+        work_id: input.work_id, session_id: identity.provenance.session_fingerprint }, source_urls: plan.sources.map((item) => item.url),
+        research_cortex_plan_digest: plan.research_cortex_plan_digest },
       { tenantId: identity.tenant_id, actor: identity.actor_id });
       if (airlock?.verdict !== "ALLOW" || !airlock.plan?.plan_digest || !airlock.plan_capability) fail("software_research_airlock_plan_denied");
       const payload = { ...plan, airlock_plan_digest: airlock.plan.plan_digest, airlock_policy_enforced: true };
@@ -230,11 +349,13 @@ export function createSoftwareCognitionRuntime({ store, researchAirlock = null, 
         knowledge_gap: profiles.length === 0, execution_authorized: false, authoritative_transition_performed: false };
     }
     if (capability === "software_cognition_research_bind") {
-      if (!researchAirlock?.ready || typeof researchAirlock.verifyEvidenceCapsule !== "function") fail("software_research_airlock_not_ready");
+      if (!researchAirlock?.ready || typeof researchAirlock.verifyEvidenceCapsule !== "function"
+        || typeof researchAirlock.readSealedEvidence !== "function") fail("software_research_airlock_not_ready");
       const plans = await store.readArtifacts({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id, kind: "research_plan" });
       const plan = plans.findLast((item) => item.research_plan_digest === input.research_plan_digest);
       if (!plan) fail("software_research_plan_not_found");
-      const output = bindSoftwareResearchEvidence({ plan, capsule: input.capsule,
+      const sealedEvidence = await researchAirlock.readSealedEvidence(input.capsule, { tenantId: identity.tenant_id, actor: identity.actor_id });
+      const output = bindSoftwareResearchEvidence({ plan, capsule: input.capsule, sealed_evidence: sealedEvidence,
         verified: researchAirlock.verifyEvidenceCapsule(input.capsule), now: Number(now()) });
       await persist(identity, input, "research_evidence", output, output.research_evidence_digest); return output;
     }
@@ -250,48 +371,103 @@ export function createSoftwareCognitionRuntime({ store, researchAirlock = null, 
         evidence_authority: { ...authority, evidence_digest: input.evidence_digest } });
       await persist(identity, input, "technical_evidence", output, output.technology_evidence_digest); return output;
     }
-    if (capability === "software_cognition_precore_decide") {
+    if (["software_cognition_precore_decide", "nyra_precore_decision_generate"].includes(capability)) {
+      if (precoreMode !== "ADVISORY" || !precoreStore || typeof precoreStore.generate !== "function") fail("nyra_precore_decision_not_ready");
       if (typeof store.readClosureSnapshot !== "function") fail("software_authority_snapshot_required");
-      const snapshot = await store.readClosureSnapshot({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id });
+      const authorityLock = input[PRECORE_AUTHORITY_LOCK];
+      if (!authorityLock?.readClosureSnapshot || !authorityLock?.transaction) fail("software_precore_authority_lock_required");
+      const snapshot = await authorityLock.readClosureSnapshot({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id });
       if (!snapshot.project || !snapshot.work || !snapshot.change || !snapshot.graph || !snapshot.native_plan?.plan?.software_contract) fail("software_causal_binding_not_found");
       const native = snapshot.native_plan; const contract = native.plan.software_contract;
       if (native.status !== "planned" || String(snapshot.latest_native_plan_id) !== String(input.plan_id)
         || String(native.change_id) !== String(input.change_id) || String(contract.change_id) !== String(input.change_id)
         || native.base_state_digest !== snapshot.graph.source_digest || contract.base_state_digest !== snapshot.graph.source_digest) fail("software_native_plan_binding_mismatch");
-      const researchPlan = snapshot.artifacts.research_plan?.at(-1) || null;
-      const researchEvidence = snapshot.artifacts.research_evidence?.filter((item) => item.research_plan_digest === researchPlan?.research_plan_digest).at(-1) || null;
-      const technologyEvidence = snapshot.artifacts.technical_evidence?.filter((item) => item.research_plan_digest === researchPlan?.research_plan_digest).at(-1) || null;
+      const authorityState = currentPrecoreAuthorityState(snapshot, identity, input);
+      const { researchPlan, researchEvidence, technologyEvidence, securityChallenges, securityAssessment, seal, refs } = authorityState;
       const issuedAt = new Date(Number(now())).toISOString();
       const evidenceExpiries = [researchEvidence?.fresh_until, technologyEvidence?.fresh_until].filter((value) => Date.parse(value || "") >= Date.parse(issuedAt));
       const latestExpiry = evidenceExpiries.length ? new Date(Math.min(...evidenceExpiries.map(Date.parse))).toISOString() : new Date(Number(now()) + 10 * 60_000).toISOString();
       const intentVerified = snapshot.project.active_intent_revision_id === snapshot.work.intent_revision_id
         && snapshot.work.intent_revision_id === snapshot.change.intent_revision_id && snapshot.project.intent_state === "APPROVED";
-      const seal = snapshot.icf?.state?.core_seal;
       const icfVerified = snapshot.icf?.state?.closure === "SEALED" && seal?.decision === "ALLOW_CLOSE" && seal?.signature_key_id !== "development-only";
-      const securityChallenges = (snapshot.challenges || []).filter((item) => item.type === "security_gap" && item.status !== "verified_resolved" && item.status !== "rejected_by_core");
       const allowedEvidence = new Set([snapshot.graph.source_digest, snapshot.project.intent_digest, seal?.digest,
         researchEvidence?.research_evidence_digest, researchEvidence?.evidence_digest, technologyEvidence?.technology_evidence_digest,
         technologyEvidence?.causal_evidence_digest, ...snapshot.evidence.map((item) => item.evidence_digest)].filter(Boolean));
       for (const ref of input.evidence_refs || []) if (!allowedEvidence.has(ref)) fail("nyra_precore_evidence_not_authorized");
       let disposition = input.disposition;
       if (securityChallenges.some((item) => item.severity === "critical")) disposition = "RECOMMEND_BLOCK";
-      else if (!intentVerified || !icfVerified) disposition = "CHALLENGE";
-      const prior = snapshot.artifacts.precore_decision?.at(-1) || null;
+      else if (!intentVerified || !icfVerified || !securityAssessment) disposition = "CHALLENGE";
       const output = createNyraPrecoreDecision({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id,
         disposition, recommendation: input.recommendation, rationale: input.rationale, uncertainties: input.uncertainties,
+        repository_id: snapshot.graph.repository_id, base_revision: snapshot.graph.base_revision, candidate_revision: snapshot.graph.candidate_revision,
+        change_digest: snapshot.change.change_digest || snapshot.change.canonical_digest || null,
+        claim_ids: researchEvidence?.claim_ids || [], tool_result_ids: technologyEvidence?.verified_profiles?.flatMap((item) => Object.values(item.adapter_receipts || {}).flat()) || [],
         evidence_refs: [...new Set([...(input.evidence_refs || []), snapshot.graph.source_digest, researchEvidence?.research_evidence_digest].filter(Boolean))],
         research_plan: researchPlan, research_evidence: researchEvidence, technology_evidence: technologyEvidence, issued_at: issuedAt, fresh_until: latestExpiry,
-        supersedes_decision_digest: prior?.decision_digest || null,
         bindings: { genesis: { id: snapshot.project.genesis_intent_id, digest: snapshot.project.genesis_digest },
           intent: { id: snapshot.work.intent_revision_id, digest: snapshot.project.intent_digest, verified: intentVerified },
-          icf: { id: seal?.seal_id || null, digest: seal?.digest || null, ledger_head_digest: snapshot.icf?.ledger_head_digest || null, verified: icfVerified },
-          security: { status: securityChallenges.length ? "challenged" : "no_open_security_challenge", challenge_ids: securityChallenges.map((item) => item.challenge_id) },
+          icf: { id: seal?.seal_id || (snapshot.icf ? `icf:${input.work_id}` : null), digest: seal?.digest || snapshot.icf?.ledger_head_digest || null,
+            ledger_head_digest: snapshot.icf?.ledger_head_digest || null, verified: icfVerified },
+          security: { id: securityAssessment?.observation_id || null, digest: securityAssessment?.evidence_digest || null,
+            status: securityAssessment && !securityChallenges.length ? "verified_no_critical_gap" : "challenged",
+            critical: securityChallenges.some((item) => item.severity === "critical") || securityAssessment?.baseline?.critical === true,
+            challenge_ids: securityChallenges.map((item) => item.challenge_id) },
           graph: { revision: snapshot.graph.revision, digest: snapshot.graph.source_digest },
           native_plan: { id: native.plan_id, digest: native.plan_digest }, authority_snapshot_digest: softwareAuthoritySnapshotDigest(snapshot) } });
-      await persist(identity, input, "precore_decision", output, output.decision_digest); return output;
+      const repositoryId = boundPrecoreRepositoryId(snapshot);
+      const baseRevision = snapshot.graph.base_revision;
+      const candidateRevision = snapshot.graph.candidate_revision;
+      const changeDigest = snapshot.change.request_digest;
+      if (!repositoryId || !baseRevision || !candidateRevision || !changeDigest) fail("nyra_precore_repository_revision_binding_required");
+      return precoreStore.generate({
+        scope: { tenant_id: identity.tenant_id, project_id: input.project_id, repository_id: String(repositoryId),
+          work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id },
+        subject: { base_revision: baseRevision, candidate_revision: candidateRevision, change_digest: changeDigest }, authority_refs: refs,
+        decision: { kind: output.disposition, proposed_next_step: output.disposition === "PROPOSE" ? "PROPOSE_TO_CORE_REVIEW"
+          : output.disposition === "CHALLENGE" ? "COLLECT_EVIDENCE" : output.disposition === "RECOMMEND_BLOCK" ? "STOP_AND_REVIEW" : "COLLECT_EVIDENCE",
+          summary: output.recommendation, risks: input.risks || [], conditions: input.conditions || [],
+          rollback_requirements: input.rollback_requirements || [], open_challenges: securityChallenges.map((item) => item.challenge_id),
+          knowledge_gaps: output.uncertainties },
+        evidence: { claim_ids: output.evidence.claim_ids, tool_result_ids: output.evidence.tool_result_ids,
+          coverage: { state: output.evidence.coverage_state, research_evidence_digest: output.research_evidence_digest,
+            technology_evidence_digest: output.technology_evidence_digest }, freshness_evaluated_at: issuedAt,
+          fresh_until: latestExpiry, evidence_digest: output.evidence.evidence_digest }, agent_instance_id: identity.actor_id,
+        expected_sequence: Number(input.expected_sequence || 0), expected_parent_digest: input.expected_parent_digest || null,
+        supersedes_decision_id: input.supersedes_decision_id || null,
+        idempotency_key: input.idempotency_key || `precore:${input.change_id}:${candidateRevision}:${output.disposition}`,
+      }, { transaction: authorityLock.transaction });
     }
-    if (capability === "software_cognition_precore_read") {
-      return store.readArtifacts({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id, kind: "precore_decision" });
+    if (["software_cognition_precore_read", "nyra_precore_decision_list"].includes(capability)) {
+      if (precoreMode !== "ADVISORY" || !precoreStore) fail("nyra_precore_decision_not_ready");
+      const snapshot = await store.readClosureSnapshot({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id });
+      const repositoryId = boundPrecoreRepositoryId(snapshot);
+      return precoreStore.list({ ...scope, repository_id: String(repositoryId), work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id },
+        { limit: input.limit, before_sequence: input.before_sequence });
+    }
+    if (capability === "nyra_precore_decision_read") {
+      if (precoreMode !== "ADVISORY" || !precoreStore) fail("nyra_precore_decision_not_ready");
+      const snapshot = await store.readClosureSnapshot({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id });
+      const repositoryId = boundPrecoreRepositoryId(snapshot);
+      return precoreStore.read({ ...scope, repository_id: String(repositoryId || ""), work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id }, input.decision_id);
+    }
+    if (capability === "nyra_precore_decision_verify") {
+      if (precoreMode !== "ADVISORY" || !precoreStore) fail("nyra_precore_decision_not_ready");
+      const snapshot = await store.readClosureSnapshot({ ...scope, work_id: input.work_id, change_id: input.change_id, plan_id: input.plan_id });
+      const repositoryId = boundPrecoreRepositoryId(snapshot);
+      const authorityState = currentPrecoreAuthorityState(snapshot, identity, input);
+      const expected = { "scope.tenant_id": identity.tenant_id, "scope.project_id": input.project_id,
+        "scope.repository_id": String(repositoryId || ""), "scope.work_id": input.work_id, "scope.change_id": input.change_id,
+        "scope.plan_id": input.plan_id, "subject.base_revision": snapshot.graph?.base_revision,
+        "subject.candidate_revision": snapshot.graph?.candidate_revision, "subject.change_digest": snapshot.change?.request_digest,
+        "authority_refs.genesis.digest": snapshot.project?.genesis_digest, "authority_refs.intent.digest": snapshot.project?.intent_digest,
+        "authority_refs.icf.digest": authorityState.refs.icf.digest,
+        "authority_refs.software_reality_graph.digest": snapshot.graph?.source_digest,
+        "authority_refs.native_plan.digest": authorityState.refs.native_plan.digest,
+        "authority_refs.security_assessment.digest": authorityState.refs.security_assessment.digest,
+        "authority_refs.research_evidence_bundle.digest": authorityState.refs.research_evidence_bundle.digest,
+        "authority_refs.authority_snapshot.digest": authorityState.refs.authority_snapshot.digest };
+      return precoreStore.verify({ ...scope, repository_id: String(repositoryId || ""), work_id: input.work_id,
+        change_id: input.change_id, plan_id: input.plan_id }, input.decision_id, expected);
     }
     if (capability === "software_cognition_closure_evaluate") {
       if (typeof store.readClosureSnapshot !== "function") fail("software_authority_snapshot_required");

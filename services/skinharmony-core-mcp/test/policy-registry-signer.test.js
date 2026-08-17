@@ -69,7 +69,7 @@ test("Nyra signer uses an isolated route, purpose, key, and derivation domain", 
     env: nyraEnv,
     prefix: "POLICY_REGISTRY_NYRA_SIGNER",
     route: NYRA_POLICY_REGISTRY_SIGN_ROUTE,
-    allowedPurposes: new Set(["nyra.policy_registry.attestation"]),
+    allowedPurposes: new Set(["nyra.policy_registry.attestation", "nyra.precore.decision.v1"]),
     signatureAlgorithm: "ed25519",
     derivationDomain: "skinharmony-policy-registry-nyra-signer-v1",
   });
@@ -93,6 +93,11 @@ test("Nyra signer uses an isolated route, purpose, key, and derivation domain", 
   signer.handle(request, signed);
   assert.equal(signed.statusCode, 200);
   assert.equal(signed.body.signature_algorithm, "ed25519");
+
+  const precore = response();
+  signer.handle({ ...request, body: { ...request.body, purpose: "nyra.precore.decision.v1" } }, precore);
+  assert.equal(precore.statusCode, 200);
+  assert.equal(precore.body.purpose, "nyra.precore.decision.v1");
 
   const wrongPurpose = response();
   signer.handle({ ...request, body: { ...request.body, purpose: "nyra-policy-registry-core-signer-probe-v1" } }, wrongPurpose);

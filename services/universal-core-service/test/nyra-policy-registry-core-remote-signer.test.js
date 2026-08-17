@@ -122,6 +122,23 @@ test("remote signer rejects private/RSA keys and exact response drift", async ()
   assert.equal(signer.health().signer_state, "rejected");
 });
 
+test("same pinned Nyra signer adapter supports the distinct non-executable pre-Core purpose", async () => {
+  const keys = crypto.generateKeyPairSync("ed25519");
+  const purpose = "nyra.precore.decision.v1";
+  const signer = createNyraPolicyRegistryCoreRemoteSigner({ origin: ORIGIN, path: "/v1/policy-registry/nyra/sign",
+    service: "nyra-policy-registry-signer", targetCommit: COMMIT, keyId: "nyra-policy-key-v1", serviceToken: TOKEN,
+    publicKey: keys.publicKey, allowedPurposes: new Set([purpose]), responseSignatureAlgorithm: "ed25519",
+    authorityScope: "ADVISORY_NON_EXECUTABLE", fetchImpl: async (url, options) => {
+      const request = JSON.parse(options.body);
+      return jsonResponse(url, validSignerResponse(request, keys.privateKey, { signature_algorithm: "ed25519" }));
+    } });
+  const payload = Buffer.from("nyra-precore-record-digest");
+  const signature = await signer.signPayload(payload, purpose);
+  assert.equal(signer.authority_scope, "ADVISORY_NON_EXECUTABLE");
+  assert.equal(await signer.verifyPayload({ payload, signature, key_id: signer.key_id, algorithm: "Ed25519", purpose }), true);
+  assert.equal(await signer.verifyPayload({ payload, signature, key_id: signer.key_id, algorithm: "Ed25519", purpose: "nyra.policy_registry.attestation" }), false);
+});
+
 test("hard deadline retains single-flight and late success cannot promote readiness", async () => {
   const keys = crypto.generateKeyPairSync("ed25519");
   let calls = 0;

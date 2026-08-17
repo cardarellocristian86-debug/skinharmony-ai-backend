@@ -38,6 +38,16 @@ const definitions = [
   ["software_cognition_research_bind", "Bind sealed software research", "Verify and bind an exact signed Research Airlock evidence capsule to the current software Work and Native Plan.", object({ ...base, research_plan_digest: digest, capsule: payload }, ["project_id", "work_id", "change_id", "plan_id", "research_plan_digest", "capsule"]), false],
   ["software_cognition_precore_decide", "Issue provisional Nyra decision", "Issue an append-only evidence-bound Nyra recommendation before Core approval; execution is always unauthorized.", object({ ...base, disposition: { type: "string", enum: ["PROPOSE", "CHALLENGE", "ABSTAIN", "RECOMMEND_BLOCK"] }, recommendation: { type: "string", minLength: 1, maxLength: 8000 }, rationale: { type: "array", maxItems: 50, items: { type: "string", minLength: 1, maxLength: 2000 } }, uncertainties: { type: "array", maxItems: 50, items: { type: "string", minLength: 1, maxLength: 500 } }, evidence_refs: { type: "array", maxItems: 100, uniqueItems: true, items: digest } }, ["project_id", "work_id", "change_id", "plan_id", "disposition", "recommendation"]), false],
   ["software_cognition_precore_read", "Read provisional Nyra decisions", "Read append-only provisional decisions for the exact Work and Native Plan.", object({ ...base }, ["project_id", "work_id", "change_id", "plan_id"]), true],
+  ["nyra_precore_decision_generate", "Generate signed pre-Core decision", "Generate a purpose-signed append-only Nyra advisory decision from server-read authorities; never authorizes execution.", object({ ...base,
+    disposition: { type: "string", enum: ["PROPOSE", "CHALLENGE", "ABSTAIN", "RECOMMEND_BLOCK"] }, recommendation: { type: "string", minLength: 1, maxLength: 8000 },
+    rationale: { type: "array", maxItems: 50, items: { type: "string", minLength: 1, maxLength: 2000 } }, uncertainties: stringList,
+    evidence_refs: { type: "array", maxItems: 100, uniqueItems: true, items: digest }, expected_sequence: { type: "integer", minimum: 0 },
+    expected_parent_digest: { anyOf: [digest, { type: "null" }] }, supersedes_decision_id: identifier, idempotency_key: identifier,
+    risks: stringList, conditions: stringList, rollback_requirements: stringList }, ["project_id", "work_id", "change_id", "plan_id", "disposition", "recommendation", "expected_sequence", "idempotency_key"]), false],
+  ["nyra_precore_decision_read", "Read signed pre-Core decision", "Read one exact signed advisory decision from the Work Continuity receipt chain.", object({ ...base, decision_id: identifier }, ["project_id", "work_id", "change_id", "plan_id", "decision_id"]), true],
+  ["nyra_precore_decision_list", "List signed pre-Core decisions", "List the bounded append-only advisory decision history for an exact Work and Native Plan.", object({ ...base,
+    limit: { type: "integer", minimum: 1, maximum: 200 }, before_sequence: { type: "integer", minimum: 1 } }, ["project_id", "work_id", "change_id", "plan_id"]), true],
+  ["nyra_precore_decision_verify", "Verify signed pre-Core decision", "Verify signature, chain head, scope and current server-read authority bindings; superseded or stale records are invalid.", object({ ...base, decision_id: identifier }, ["project_id", "work_id", "change_id", "plan_id", "decision_id"]), true],
   ["software_cognition_closure_evaluate", "Evaluate software closure", "Re-read Native Plan, Atlas, Causal and ICF evidence in one snapshot and derive advisory readiness.", object({ ...base, intent_binding: payload, icf_required: { type: "boolean" }, icf_binding: payload }, ["project_id", "work_id", "change_id", "plan_id"]), false],
 ];
 
@@ -67,6 +77,10 @@ const paths = Object.freeze({
   software_cognition_research_bind: "/v1/software-cognition/research/bind",
   software_cognition_precore_decide: "/v1/software-cognition/precore/decide",
   software_cognition_precore_read: "/v1/software-cognition/precore/read",
+  nyra_precore_decision_generate: "/v1/nyra-precore-decisions/generate",
+  nyra_precore_decision_read: "/v1/nyra-precore-decisions/read",
+  nyra_precore_decision_list: "/v1/nyra-precore-decisions/list",
+  nyra_precore_decision_verify: "/v1/nyra-precore-decisions/verify",
   software_cognition_closure_evaluate: "/v1/software-cognition/closure/evaluate",
 });
 

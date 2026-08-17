@@ -290,6 +290,10 @@ jobs:
 
           core_env = Array(core["envVars"]).to_h { |entry| [entry["key"], entry] }
           nyra_env = Array(nyra["envVars"]).to_h { |entry| [entry["key"], entry] }
+          abort("SOFTWARE_COGNITION_MODE must remain ADVISORY") unless
+            core_env.dig("SOFTWARE_COGNITION_MODE", "value") == "ADVISORY"
+          abort("NYRA_PRECORE_DECISION_MODE must remain OFF until signer bindings are provisioned") unless
+            core_env.dig("NYRA_PRECORE_DECISION_MODE", "value") == "OFF"
           policy_registry_nyra_values = {
             "NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED" => "false",
             "NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED" => "false",

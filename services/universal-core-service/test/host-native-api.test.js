@@ -176,6 +176,17 @@ function delegationBody() {
   };
 }
 
+test("host-native execution consumers reject a Nyra pre-Core decision as a credential", async () => {
+  await fixture({}, async (request) => {
+    const response = await request("POST", "/v1/host-native/actions/authorize", {
+      credential: { schema_version: "nyra_precore_decision_v1", authority_scope: "ADVISORY_NON_EXECUTABLE",
+        execution_authorized: false, decision_id: "decision-a" },
+    });
+    assert.equal(response.status, 422);
+    assert.equal(response.json.error.code, "nyra_precore_execution_credential_forbidden");
+  });
+});
+
 function releaseManifest(coreJoinVerdictId = "join-api-1") {
   const changedFiles = ["services/universal-core-service/src/app.js"];
   return buildHostReleaseManifestV2({
