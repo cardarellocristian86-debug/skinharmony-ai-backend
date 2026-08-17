@@ -471,6 +471,8 @@ jobs:
               "NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY_FINGERPRINT",
             "CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT" =>
               "NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT",
+            "CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ED25519_PUBLIC_KEY" =>
+              "NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY",
           }.each do |key, producer_key|
             abort("#{key}: must remain pinned to Nyra's verified public contract") unless
               core_env[key] == {
@@ -482,6 +484,21 @@ jobs:
                 },
               }
           end
+          abort("Nyra pre-Core signer origin must stay on Core MCP") unless
+            core_env.dig("CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ORIGIN", "value") ==
+              "https://skinharmony-core-mcp.onrender.com"
+          abort("Nyra pre-Core signer path must use the dedicated Nyra signer") unless
+            core_env.dig("CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PATH", "value") ==
+              "/v1/policy-registry/nyra/sign"
+          abort("Nyra pre-Core signer token must remain service-bound") unless
+            core_env["CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN"] == {
+              "key" => "CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN",
+              "fromService" => {
+                "type" => "web",
+                "name" => "skinharmony-core-mcp",
+                "envVarKey" => "POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN",
+              },
+            }
           abort("Policy Registry receipt secret must remain server generated") unless
             core_env["CORE_NYRA_POLICY_REGISTRY_RECEIPT_SECRET"] == {
               "key" => "CORE_NYRA_POLICY_REGISTRY_RECEIPT_SECRET",

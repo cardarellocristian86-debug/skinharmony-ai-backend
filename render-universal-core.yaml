@@ -245,11 +245,25 @@ services:
         value: nyra-horizontal-runtime
       - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE
         value: nyra-policy-registry-signer
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ORIGIN
+        value: https://skinharmony-core-mcp.onrender.com
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PATH
+        value: /v1/policy-registry/nyra/sign
       - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
         fromService:
           type: web
           name: skinharmony-nyra-core
           envVarKey: NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
+        fromService:
+          type: web
+          name: skinharmony-core-mcp
+          envVarKey: POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
+      - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ED25519_PUBLIC_KEY
+        fromService:
+          type: web
+          name: skinharmony-nyra-core
+          envVarKey: NYRA_POLICY_REGISTRY_NYRA_PUBLIC_KEY
       - key: CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PURPOSE
         value: nyra.policy_registry.attestation
       - key: CORE_NYRA_DEEP_BRANCH_V2_ENABLED
