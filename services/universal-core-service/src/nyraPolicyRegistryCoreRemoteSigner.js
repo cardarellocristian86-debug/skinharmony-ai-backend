@@ -178,6 +178,9 @@ export function createNyraPolicyRegistryCoreRemoteSigner({
   maxResponseBytes,
   probeCooldownMs,
   now = () => Date.now(),
+  allowedPurposes = PURPOSES,
+  responseSignatureAlgorithm = "Ed25519",
+  authorityScope = null,
 } = {}) {
   const resolvedOrigin = normalizeOrigin(origin);
   const resolvedPath = normalizePath(path, resolvedOrigin);
@@ -208,7 +211,7 @@ export function createNyraPolicyRegistryCoreRemoteSigner({
     if (!Buffer.isBuffer(payload) || payload.length < 1 || payload.length > 262_144) {
       fail("policy_registry_core_signer_payload_invalid");
     }
-    if (!PURPOSES.has(purpose)) fail("policy_registry_core_signer_purpose_invalid");
+    if (!(allowedPurposes instanceof Set) || !allowedPurposes.has(purpose)) fail("policy_registry_core_signer_purpose_invalid");
     if (underlyingInFlight) fail("policy_registry_core_signer_busy");
     const digest = crypto.createHash("sha256").update(payload).digest("hex");
     const request = {
@@ -252,7 +255,7 @@ export function createNyraPolicyRegistryCoreRemoteSigner({
       let data;
       try { data = JSON.parse(raw); } catch { fail("policy_registry_core_signer_response_invalid"); }
       exact(data, RESPONSE_FIELDS, "policy_registry_core_signer_response_invalid");
-      if (data.schema_version !== POLICY_REGISTRY_SIGN_RESPONSE_SCHEMA || data.signature_algorithm !== "Ed25519") {
+      if (data.schema_version !== POLICY_REGISTRY_SIGN_RESPONSE_SCHEMA || data.signature_algorithm !== responseSignatureAlgorithm) {
         fail("policy_registry_core_signer_response_invalid");
       }
       if (data.service !== resolvedService) fail("policy_registry_core_signer_service_mismatch");
@@ -334,11 +337,18 @@ export function createNyraPolicyRegistryCoreRemoteSigner({
 
   return Object.freeze({
     algorithm: "Ed25519",
+    authority_scope: authorityScope,
     key_id: resolvedKeyId,
     public_key: pinnedPublicKey,
     public_key_fingerprint: publicKeyFingerprint,
     custody: "external_remote_signer",
     signPayload,
+    async verifyPayload({ payload, signature, key_id, algorithm, purpose } = {}) {
+      if (!Buffer.isBuffer(payload) || key_id !== resolvedKeyId || algorithm !== "Ed25519"
+        || !(allowedPurposes instanceof Set) || !allowedPurposes.has(purpose)) return false;
+      try { return crypto.verify(null, payload, pinnedPublicKey, decodeCanonicalBase64url(signature, 64, "policy_registry_core_signer_signature_invalid")); }
+      catch { return false; }
+    },
     probe,
     health() {
       return Object.freeze({

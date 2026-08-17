@@ -97,6 +97,8 @@ test("server-side discovery, sealing and private entry form an irreversible FSM"
   const sealed = await target.seal({ work_binding: WORK }, { tenantId: TENANT });
   assert.equal(sealed.state, "EVIDENCE_SEALED");
   assert.equal(sealed.web_via_nyra_core_allowed, false);
+  assert.equal(target.verifyEvidenceCapsule(sealed.capsule), true);
+  assert.equal(target.verifyEvidenceCapsule({ ...sealed.capsule, evidence_digest: "0".repeat(64) }), false);
   await assert.rejects(target.discover({ work_binding: WORK, url: "https://www.nist.gov/again" }, { tenantId: TENANT }), /discovery_closed/);
   const entered = await target.enterPrivate({ work_binding: WORK, private_entry_capability: sealed.private_entry_capability }, { tenantId: TENANT });
   assert.equal(entered.state, "PRIVATE_SYNTHESIS");

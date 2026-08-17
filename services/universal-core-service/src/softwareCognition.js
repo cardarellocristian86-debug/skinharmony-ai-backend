@@ -588,7 +588,9 @@ export function routeSoftwareCognitionEvent({ tenant_id, project_id, graph, even
   const routed = nodes.filter((node) => selected.has(node.node_id)).slice(0, Math.min(500, Number(max_nodes)));
   const capabilityByEvent = { diff_observed: "software_cognition_impact_predict", plan_created: "software_cognition_supervise",
     execution_completed: "software_cognition_impact_reconcile", runtime_observed: "software_cognition_closure_evaluate",
-    obligation_reopened: "software_cognition_closure_evaluate", challenge_opened: "software_cognition_challenge_read" };
+    obligation_reopened: "software_cognition_closure_evaluate", challenge_opened: "software_cognition_challenge_read",
+    knowledge_gap: "software_cognition_research_plan", security_gap: "software_cognition_research_plan",
+    provisional_decision_requested: "software_cognition_precore_decide" };
   const result = { schema_version: "software_event_relevance_route_v1", ...scope, event_type: eventType,
     event_digest: softwareDigest(event), recommended_capability: capabilityByEvent[eventType] || "software_cognition_graph_select",
     selected_node_ids: routed.map((node) => node.node_id), selected_nodes: routed.length, max_nodes: Math.min(500, Number(max_nodes)),

@@ -9,6 +9,54 @@ branch Nyra e gate Core Join sono wired nel branch. Il default operativo resta
 Non dichiarare SHADOW, ADVISORY, ENFORCED o production verification finche non
 esiste readback del runtime distribuito.
 
+## Controlli V1.1 pre-Core e ricerca
+
+Prima di abilitare i tool V1.1, Research Airlock deve riportare `ready=true` in
+modalita enforced, con store PostgreSQL durevole e chiave di firma. NSCT deve
+restare `ADVISORY` durante la prima finestra di osservazione in produzione. La
+pre-decisione accetta separatamente soltanto `OFF` o `ADVISORY`:
+
+```text
+SOFTWARE_COGNITION_MODE=ADVISORY
+NYRA_PRECORE_DECISION_MODE=ADVISORY
+```
+
+Un valore sconosciuto disabilita fail-closed il relativo runtime. Non esiste
+una modalita pre-Core `ENFORCED`.
+
+Il Blueprint mantiene inizialmente `NYRA_PRECORE_DECISION_MODE=OFF`. Prima di
+portarlo ad `ADVISORY`, il percorso di firma Nyra gia esistente deve fornire a
+Universal Core, senza creare o copiare chiavi, queste binding operative:
+
+```text
+CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ORIGIN
+CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PATH
+CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE
+CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
+CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
+CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ED25519_PUBLIC_KEY
+CORE_NYRA_POLICY_REGISTRY_NYRA_KEY_ID
+```
+
+Il purpose ammesso deve essere esattamente `nyra.precore.decision.v1`; readiness,
+firma di prova e verifica locale della chiave pubblica devono risultare verdi.
+
+Smoke test per un Work governato:
+
+1. creare un `software_cognition_research_plan` bounded e verificare che le fonti corrispondano alla tecnologia osservata;
+2. usare il flusso Airlock open/discover/seal/private-enter per ogni fonte richiesta;
+3. verificare il digest Research Cortex nel piano Airlock, legare la capsula firmata e verificare classi e lineage indipendenti;
+4. eseguire in sandbox gli adapter del `technology_profile_v1`, attestare i risultati con evidenza Causal indipendente e invocare `software_cognition_technology_verify`;
+5. richiedere `nyra_precore_decision_generate`, poi `read/list/verify`, e verificare firma, sequence/parent/record digest, `authority_scope=ADVISORY_NON_EXECUTABLE` ed `execution_authorized=false`;
+6. verificare il rifiuto di capsule o ricevute tecniche mancanti, duplicate, scadute, cross-tenant o alterate;
+7. verificare che la ricevuta provvisoria non emetta host action, publish, deploy o Core Join.
+
+Il rollback non richiede migration distruttive: impostare
+`NYRA_PRECORE_DECISION_MODE=OFF` disabilita la generazione firmata;
+`SOFTWARE_COGNITION_MODE=OFF` disabilita tutte le route NSCT. In alternativa,
+mantenere `ADVISORY` e sospendere l'invocazione dei tool V1.1. Le ricevute
+append-only restano disponibili per audit.
+
 ## Prerequisiti
 
 - branch isolato e baseline `origin/main` registrata;

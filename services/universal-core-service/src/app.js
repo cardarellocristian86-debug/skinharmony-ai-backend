@@ -248,8 +248,10 @@ import {
 } from "./causalBranchContract.js";
 import { createCausalBranchEnforcer } from "./causalBranchEnforcement.js";
 import { createPostgresSoftwareCognitionStore } from "./softwareCognitionStore.js";
-import { createSoftwareCognitionRuntime, normalizeSoftwareCognitionMode, requireCurrentSoftwareClosure } from "./softwareCognitionRuntime.js";
+import { alignNyraPrecoreWithCore, createSoftwareCognitionRuntime, normalizeSoftwareCognitionMode,
+  requireCurrentSoftwareClosure, verifyCurrentNyraPrecoreDecision } from "./softwareCognitionRuntime.js";
 import { registerSoftwareCognitionRoutes } from "./softwareCognitionRoutes.js";
+import { createPostgresNyraPrecoreDecisionStore, NYRA_PRECORE_SIGNING_PURPOSE } from "./nyraPrecoreDecisionStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_ROOT = path.resolve(__dirname, "../storage");
@@ -269,6 +271,15 @@ const BOOTSTRAP_AUTHORITY_TRUST_PIN_FIELDS = Object.freeze([
   "tenant_id",
 ]);
 const BOOTSTRAP_AUTHORITY_FORBIDDEN_FIELD = /(^|_)(?:private(?:_key)?|secret|password|passphrase|credential|credentials|token|seed|mnemonic|hmac|mac|shared_key|symmetric_key|api_key|access_key|client_secret)(?:_|$)/i;
+
+function containsNyraPrecoreCredential(value, budget = 256) {
+  if (budget < 1 || value === null || value === undefined) return false;
+  if (Array.isArray(value)) return value.some((item) => containsNyraPrecoreCredential(item, budget - 1));
+  if (typeof value !== "object") return false;
+  if (value.schema_version === "nyra_precore_decision_v1" || value.authority_scope === "ADVISORY_NON_EXECUTABLE"
+    && value.execution_authorized === false && value.core_state === "CORE_PENDING") return true;
+  return Object.values(value).some((item) => containsNyraPrecoreCredential(item, budget - 1));
+}
 
 function bootstrapAuthorityFail(code) {
   throw new Error(code);
@@ -6677,19 +6688,65 @@ export function createUniversalCoreService(options = {}) {
     || (nyraPolicyRegistryPostgresPool
       ? createPostgresSoftwareCognitionStore({ pool: nyraPolicyRegistryPostgresPool })
       : null));
+  const nyraPrecoreModeRaw = String(options.nyraPrecoreDecisionMode ?? process.env.NYRA_PRECORE_DECISION_MODE ?? "OFF").trim().toUpperCase();
+  const nyraPrecoreMode = ["OFF", "ADVISORY"].includes(nyraPrecoreModeRaw) ? nyraPrecoreModeRaw : "INVALID";
+  let nyraPrecoreDecisionStore = null;
+  let nyraPrecoreDecisionState = nyraPrecoreMode === "INVALID" ? "configuration_invalid" : "disabled";
+  if (softwareCognitionEnabled && nyraPrecoreMode === "ADVISORY" && nyraPolicyRegistryPostgresPool) {
+    try {
+      const signer = options.nyraPrecoreDecisionSigner || createNyraPolicyRegistryCoreRemoteSigner({
+        origin: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ORIGIN,
+        path: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_PATH,
+        service: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE,
+        targetCommit: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT,
+        keyId: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_KEY_ID,
+        serviceToken: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN,
+        publicKey: process.env.CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ED25519_PUBLIC_KEY,
+        fetchImpl: options.nyraPrecoreDecisionSignerFetch || globalThis.fetch,
+        allowedPurposes: new Set([NYRA_PRECORE_SIGNING_PURPOSE]), responseSignatureAlgorithm: "ed25519",
+        authorityScope: "ADVISORY_NON_EXECUTABLE",
+      });
+      nyraPrecoreDecisionStore = options.nyraPrecoreDecisionStore || createPostgresNyraPrecoreDecisionStore({
+        pool: nyraPolicyRegistryPostgresPool, signer, verifier: signer,
+      });
+      nyraPrecoreDecisionState = "initializing";
+    } catch {
+      nyraPrecoreDecisionStore = null;
+      nyraPrecoreDecisionState = "signer_unavailable";
+    }
+  }
   const softwareCognitionRuntime = softwareCognitionEnabled && (options.softwareCognitionRuntime
-    || (softwareCognitionStore ? createSoftwareCognitionRuntime({ store: softwareCognitionStore }) : null));
+    || (softwareCognitionStore ? createSoftwareCognitionRuntime({ store: softwareCognitionStore, researchAirlock: researchAirlockRuntime,
+      precoreStore: nyraPrecoreDecisionStore, precoreMode: nyraPrecoreMode }) : null));
   let softwareCognitionState = softwareCognitionMode === "INVALID" ? "configuration_invalid" : softwareCognitionRuntime ? "initializing" : "disabled";
   let softwareCognitionInitializationError = softwareCognitionMode === "INVALID" ? "software_cognition_mode_invalid" : null;
   if (softwareCognitionRuntime) {
     void causalContinuityInitialization.then(() => softwareCognitionRuntime.initialize())
-      .then(() => { softwareCognitionState = "ready"; })
+      .then(async () => { if (nyraPrecoreDecisionStore) await nyraPrecoreDecisionStore.initialize(); softwareCognitionState = "ready";
+        if (nyraPrecoreDecisionStore) nyraPrecoreDecisionState = "ready"; })
       .catch((error) => {
         softwareCognitionState = "initialization_failed";
         softwareCognitionInitializationError = String(error?.code || error?.message || "software_cognition_initialization_failed").slice(0, 160);
         try { audit.append("core_software_cognition_unavailable", { reason: softwareCognitionInitializationError }); } catch { /* readiness state is authoritative */ }
       });
   }
+  const evaluateNyraPrecoreAlignment = async (tenantId, workId, coreAllowed) => {
+    if (nyraPrecoreMode !== "ADVISORY" || nyraPrecoreDecisionState !== "ready"
+      || !nyraPrecoreDecisionStore?.readHeadForWork || !softwareCognitionStore) {
+      return alignNyraPrecoreWithCore({ verification: null, core_allowed: coreAllowed });
+    }
+    try {
+      const record = await nyraPrecoreDecisionStore.readHeadForWork({ tenant_id: tenantId, work_id: workId });
+      const verification = record
+        ? await verifyCurrentNyraPrecoreDecision({ store: softwareCognitionStore, precoreStore: nyraPrecoreDecisionStore, record })
+        : null;
+      return alignNyraPrecoreWithCore({ verification, core_allowed: coreAllowed });
+    } catch (error) {
+      return { schema_version: "nyra_precore_alignment_v1", status: "INVALID", decision_id: null,
+        decision_digest: null, reason_codes: [String(error?.code || error?.message || "PRECORE_VERIFICATION_FAILED").slice(0, 160)],
+        core_independent_decision: true, execution_authorized: false };
+    }
+  };
   const causalBranchEnforcer = causalContinuityRuntime && causalContinuityStore && dttAgentIdentityReceiptService?.configured
     ? createCausalBranchEnforcer({
         store: causalContinuityStore,
@@ -6971,6 +7028,14 @@ export function createUniversalCoreService(options = {}) {
   app.disable("x-powered-by");
   app.use(express.json({ limit: process.env.CORE_SERVICE_JSON_LIMIT || "10mb" }));
   app.use(express.urlencoded({ extended: false, limit: "8kb" }));
+  app.use((req, res, next) => {
+    const executionConsumer = /^\/v1\/(?:host-native|work-continuity\/generic-core-join)/.test(req.path);
+    if (executionConsumer && containsNyraPrecoreCredential(req.body)) {
+      return res.status(422).json({ ok: false, error: { code: "nyra_precore_execution_credential_forbidden",
+        message: "A Nyra pre-Core decision is advisory evidence and cannot be consumed as an execution credential." } });
+    }
+    return next();
+  });
   if (causalRouteRuntime) {
     registerCausalContinuityRoutes({
       app,
@@ -8439,6 +8504,10 @@ export function createUniversalCoreService(options = {}) {
         execution_authorized: false,
         authority: "universal_core",
         error: softwareCognitionInitializationError,
+        nyra_precore_decision: { schema_version: "nyra_precore_decision_v1", mode: nyraPrecoreMode,
+          state: nyraPrecoreDecisionState, ready: nyraPrecoreDecisionState === "ready",
+          authority_scope: "ADVISORY_NON_EXECUTABLE", execution_authorized: false,
+          signer_required: true, signer_purpose: NYRA_PRECORE_SIGNING_PURPOSE },
       },
       dynamic_task_tree: {
         state_backend: dynamicTaskTreeStateStore.kind || "injected",
@@ -10745,17 +10814,21 @@ export function createUniversalCoreService(options = {}) {
             ...(softwareClosure ? { software_closure_digest: softwareClosure.payload.closure_digest,
               software_closure_fresh_until: softwareClosure.payload.evidence_fresh_until } : {}) });
         });
+        const precoreAlignment = await evaluateNyraPrecoreAlignment(req.tenantId, coreJoinVerdict.verdict.work_id, true);
         audit.append("core_host_native_core_join_issued", {
           tenant_id: req.tenantId,
           key_id: req.coreKey.key_id,
           verdict_id: coreJoinVerdict.verdict.verdict_id,
           work_id: coreJoinVerdict.verdict.work_id,
           target_commit: coreJoinVerdict.verdict.checks.commit,
+          precore_alignment: precoreAlignment.status,
+          precore_decision_digest: precoreAlignment.decision_digest,
         });
         return res.status(201).json({
           ok: true,
           tenant_id: req.tenantId,
           core_join_verdict: coreJoinVerdict,
+          ...(nyraPrecoreMode === "ADVISORY" ? { precore_alignment: precoreAlignment } : {}),
         });
       } catch (error) {
         return hostNativeFailure(res, error);
@@ -10890,6 +10963,7 @@ export function createUniversalCoreService(options = {}) {
           );
         });
         const verdict = issuance.verdict;
+        const precoreAlignment = await evaluateNyraPrecoreAlignment(req.tenantId, verdict.work_id, true);
         genericWorkCoreJoinVerifier.verify({ verdict, expected: { tenant_id: req.tenantId, work_id: verdict.work_id, adapter: verdict.adapter, idempotency_digest: verdict.idempotency_digest } });
         if (issuance.fresh_signature_verified === true && issuance.durable_record_verified === true) {
           genericWorkCoreJoinSignerRecoverySequence = Math.max(genericWorkCoreJoinSignerRecoverySequence, issueSequence);
@@ -10900,8 +10974,10 @@ export function createUniversalCoreService(options = {}) {
           }
         }
         audit.append("core_generic_work_core_join_issued", { tenant_id: req.tenantId, key_id: req.coreKey.key_id,
-          work_id: verdict.work_id, verdict_id: verdict.verdict_id, adapter: verdict.adapter });
-        return res.status(201).json({ ok: true, verdict });
+          work_id: verdict.work_id, verdict_id: verdict.verdict_id, adapter: verdict.adapter,
+          precore_alignment: precoreAlignment.status, precore_decision_digest: precoreAlignment.decision_digest });
+        return res.status(201).json({ ok: true, verdict,
+          ...(nyraPrecoreMode === "ADVISORY" ? { precore_alignment: precoreAlignment } : {}) });
       } catch (error) {
         const code = genericWorkCoreJoinSafeReason(error, "generic_work_core_join_denied");
         if (genericWorkCoreJoinStoreInfrastructureCode(code)) {

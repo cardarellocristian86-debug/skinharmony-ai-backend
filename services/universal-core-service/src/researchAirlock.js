@@ -252,12 +252,15 @@ export function createResearchAirlockRuntime(options = {}) {
     if (!allowedUrls.length || allowedUrls.length > 20) throw new Error("research_airlock_source_urls_invalid");
     const allowedDomains = [...new Set(allowedUrls.map((value) => publicDomain(new URL(value).hostname)))];
     const issued = now();
+    const cortexPlanDigest = input.research_cortex_plan_digest == null ? null : String(input.research_cortex_plan_digest);
+    if (cortexPlanDigest !== null && !/^[a-f0-9]{64}$/.test(cortexPlanDigest)) throw new Error("research_airlock_cortex_plan_digest_invalid");
     const planId = `rap_${crypto.randomUUID()}`;
     const nonce = crypto.randomBytes(32).toString("hex");
     const planDigest = digest({
       schema_version: "research_airlock_public_plan_v1",
       work_binding: work,
       source_urls: allowedUrls,
+      research_cortex_plan_digest: cortexPlanDigest,
       policy_version: RESEARCH_AIRLOCK_POLICY_VERSION,
     });
     const expiresAt = new Date(issued.getTime() + 120_000).toISOString();
@@ -279,6 +282,7 @@ export function createResearchAirlockRuntime(options = {}) {
       plan: {
         schema_version: "research_airlock_public_plan_v1",
         plan_digest: planDigest,
+        research_cortex_plan_digest: cortexPlanDigest,
         source_url_digests: allowedUrls.map((value) => digest(value)),
         expires_at: expiresAt,
       },
@@ -411,6 +415,8 @@ export function createResearchAirlockRuntime(options = {}) {
     const current = await store.getWork(work, baseEvent(context, { operation: "seal_evidence", work }));
     if (!current || current.state !== "DISCOVERY_OPEN" || !current.evidence.length) throw new Error("research_airlock_not_sealable");
     const evidenceDigest = digest(current.evidence);
+    const sourceUrls = [...new Set(current.evidence.map((item) => normalizedPublicSourceUrl(item?.source?.canonical_url)?.toString()).filter(Boolean))].sort();
+    const sourceDomains = [...new Set(sourceUrls.map((value) => new URL(value).hostname.toLowerCase()))].sort();
     const unsigned = {
       schema_version: "research_airlock_evidence_capsule_v1",
       capsule_id: `rec_${crypto.randomUUID()}`,
@@ -419,6 +425,10 @@ export function createResearchAirlockRuntime(options = {}) {
       policy_snapshot_digest: current.policy_snapshot_digest,
       evidence_digest: evidenceDigest,
       evidence_count: current.evidence.length,
+      independent_source_count: sourceUrls.length,
+      independent_domain_count: sourceDomains.length,
+      source_url_digests: sourceUrls.map((value) => digest(value)),
+      source_domain_digests: sourceDomains.map((value) => digest(value)),
       issued_at: now().toISOString(),
       expires_at: current.expires_at,
       source_domain: "public_untrusted",
@@ -558,7 +568,32 @@ export function createResearchAirlockRuntime(options = {}) {
     return left.length === right.length && crypto.timingSafeEqual(left, right);
   }
 
-  return { createPlan, createWork, discover, seal, enterPrivate, authorizeTool, authorizeSessionTool, complete, status, safeReplan, verifyFetchProof, ready, mode, store };
+  function verifyEvidenceCapsule(capsule = {}) {
+    if (!signingKey || capsule?.schema_version !== "research_airlock_evidence_capsule_v1"
+      || capsule?.signature?.algorithm !== "hmac-sha256" || capsule.signature.key_version !== keyVersion
+      || typeof capsule.signature.value !== "string") return false;
+    const { signature, ...unsigned } = capsule;
+    const expected = sign(unsigned);
+    const left = Buffer.from(signature.value, "hex");
+    const right = Buffer.from(expected, "hex");
+    return left.length === right.length && crypto.timingSafeEqual(left, right);
+  }
+
+  async function readSealedEvidence(capsule = {}, context = {}) {
+    if (!ready || !verifyEvidenceCapsule(capsule)) throw new Error("research_airlock_evidence_capsule_invalid");
+    const work = workIdentity(context.tenantId, capsule.work_binding || {});
+    const current = await store.getWork(work, baseEvent(context, { operation: "read_sealed_evidence", work }));
+    if (!current || current.state !== "EVIDENCE_SEALED" || current.capsule?.capsule_id !== capsule.capsule_id
+      || current.plan_digest !== capsule.plan_digest || current.evidence_digest !== capsule.evidence_digest
+      || digest(current.evidence || []) !== capsule.evidence_digest) throw new Error("research_airlock_evidence_capsule_stale");
+    return { schema_version: "research_airlock_sealed_evidence_read_v1", work_binding: work,
+      capsule_id: capsule.capsule_id, plan_digest: current.plan_digest, evidence_digest: current.evidence_digest,
+      evidence: structuredClone(current.evidence || []), fresh_until: current.expires_at, trust_label: "public_untrusted_sanitized_non_executable",
+      execution_authorized: false };
+  }
+
+  return { createPlan, createWork, discover, seal, enterPrivate, authorizeTool, authorizeSessionTool, complete, status, safeReplan,
+    verifyFetchProof, verifyEvidenceCapsule, readSealedEvidence, ready, mode, store };
 }
 
 export function createAirlockTransport({

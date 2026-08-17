@@ -68,7 +68,7 @@ const policyRegistrySigner = createPolicyRegistrySigner();
 const nyraPolicyRegistrySigner = createPolicyRegistrySigner({
   prefix: "POLICY_REGISTRY_NYRA_SIGNER",
   route: NYRA_POLICY_REGISTRY_SIGN_ROUTE,
-  allowedPurposes: new Set(["nyra.policy_registry.attestation"]),
+  allowedPurposes: new Set(["nyra.policy_registry.attestation", "nyra.precore.decision.v1"]),
   signatureAlgorithm: "ed25519",
   derivationDomain: "skinharmony-policy-registry-nyra-signer-v1",
 });
