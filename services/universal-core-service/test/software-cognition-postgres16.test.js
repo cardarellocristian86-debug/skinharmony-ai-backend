@@ -81,7 +81,9 @@ test("PostgreSQL 16 Atlas extension enforces one CAS winner and composite endpoi
       precore.generate(precoreInput("precore-race-a")),
       precore.generate(precoreInput("precore-race-b")),
     ]);
-    assert.equal(precoreRace.filter((item) => item.status === "fulfilled").length, 1);
+    const precoreRaceErrors = precoreRace.filter((item) => item.status === "rejected")
+      .map((item) => ({ message: item.reason?.message, code: item.reason?.code, constraint: item.reason?.constraint }));
+    assert.equal(precoreRace.filter((item) => item.status === "fulfilled").length, 1, JSON.stringify(precoreRaceErrors));
     assert.equal(precoreRace.filter((item) => item.status === "rejected" && /nyra_precore_cas_conflict/.test(item.reason?.message)).length, 1);
     const precoreRecord = precoreRace.find((item) => item.status === "fulfilled").value;
     assert.equal((await precore.verify(precoreRecord.scope, precoreRecord.decision_id)).valid, true);
