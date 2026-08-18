@@ -71,6 +71,9 @@ import { branchWorkloadIdentityDelegationGuard } from "./branch-workload-identit
 import { branchDecisionProvenanceIntelligence } from "./branch-decision-provenance-intelligence.js";
 import { branchNyraPolicyRegistry } from "./branch-nyra-policy-registry.js";
 import { branchBeautyVerticalOrchestration } from "./branch-beauty-vertical-orchestration.js";
+import { branchOfficeArtifactIntelligence } from "./branch-office-artifact-intelligence.js";
+import { branchTypographyLayoutGuard } from "./branch-typography-layout-guard.js";
+import { branchHumanToneIntelligence } from "./branch-human-tone-intelligence.js";
 import { buildBranchTaxonomyFromRegistry } from "./branch-taxonomy.js";
 import { branchAllowedForDomainPack, resolveDomainPackForKey } from "../src/domainPacks.js";
 
@@ -148,6 +151,9 @@ const BRANCHES = [
   branchNyraPolicyRegistry,
   branchBeautyVerticalOrchestration,
   branchChangeImpactOrchestration,
+  branchOfficeArtifactIntelligence,
+  branchTypographyLayoutGuard,
+  branchHumanToneIntelligence,
 ];
 
 const CODEX_GUARD_BRANCHES = [
@@ -200,6 +206,7 @@ const MARKETING_INTELLIGENCE_BRANCHES = [
   "ramo_testo",
   "translation_governance",
   "translator_marketing_governance",
+  "human_tone_intelligence",
   "cosmetic_chemistry",
   "skinharmony_analyzer",
   "scalp_analyzer",
@@ -273,6 +280,7 @@ const BEAUTY_CORTEX_BRANCHES = [
   "technology_market",
   "marketing_copy",
   "translator_marketing_governance",
+  "human_tone_intelligence",
   "ramo_testo",
   "customer_360_guard",
   "smartdesk_operations_guard",
@@ -302,7 +310,24 @@ export const BRANCH_GROUPS = Object.freeze({
   content_intelligence: {
     label: "Content Intelligence",
     description: "Marketing, claim, traduzione, correzione testo, fonti e publish safety.",
-    branches: ["lexical_semantic_intelligence", "marketing_copy", "content_localization_guard", "translation_governance", "translator_marketing_governance", "ramo_testo", "cosmetic_chemistry", "technology_market"],
+    branches: ["lexical_semantic_intelligence", "marketing_copy", "content_localization_guard", "translation_governance", "translator_marketing_governance", "human_tone_intelligence", "ramo_testo", "cosmetic_chemistry", "technology_market"],
+  },
+  office_artifact_cortex: {
+    label: "Office Artifact Cortex",
+    description: "Pitch, testi umanizzati, Word, PowerPoint, Excel, grafici, immagini, documenti lunghi e interoperabilita Microsoft 365 con verifica visuale completa.",
+    branches: [
+      "office_artifact_intelligence",
+      "typography_layout_guard",
+      "lexical_semantic_intelligence",
+      "marketing_copy",
+      "ramo_testo",
+      "human_tone_intelligence",
+      "translation_governance",
+      "content_localization_guard",
+      "research_evidence_intelligence",
+      "quality_verification_intelligence",
+      "decision_provenance_intelligence",
+    ],
   },
   language_intelligence: {
     label: "Lexical & Semantic Intelligence Cortex",
@@ -313,6 +338,7 @@ export const BRANCH_GROUPS = Object.freeze({
       "translation_governance",
       "content_localization_guard",
       "translator_marketing_governance",
+      "human_tone_intelligence",
       "research_evidence_intelligence",
       "quality_verification_intelligence",
     ],
@@ -342,7 +368,7 @@ export const BRANCH_GROUPS = Object.freeze({
   site_factory: {
     label: "Site Factory",
     description: "Clonazione siti, creazione nodi, template WaaS, layout, UI responsive e brand kit.",
-    branches: ["codex_site_factory_guard", "codex_website_visual_guard", "codex_ui_ux_guard", "data_integration_orchestration", "runtime_deployment_scaling_guard", "suite_governance"],
+    branches: ["codex_site_factory_guard", "codex_website_visual_guard", "codex_ui_ux_guard", "human_tone_intelligence", "translation_governance", "content_localization_guard", "data_integration_orchestration", "runtime_deployment_scaling_guard", "suite_governance"],
   },
   business_governance: {
     label: "Business Governance",
@@ -435,12 +461,12 @@ export const BRANCH_PACKAGES = Object.freeze({
   starter: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES],
   base: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES],
   nyra_native_team: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, ...NYRA_NATIVE_TEAM_BRANCHES],
-  pro: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "email_recall_guard", "content_localization_guard", "translation_governance", "translator_marketing_governance", "ramo_testo", "consent_ledger_guard", "event_taxonomy_guard", "customer_360_guard"],
+  pro: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", "marketing_copy", "email_recall_guard", "content_localization_guard", "translation_governance", "translator_marketing_governance", "human_tone_intelligence", "ramo_testo", "consent_ledger_guard", "event_taxonomy_guard", "customer_360_guard"],
   silver: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "consent_ledger_guard", "event_taxonomy_guard"],
   gold: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "smartdesk_operations_guard", "beauty_protocol_guard", "customer_360_guard", "consent_ledger_guard"],
   network: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard"],
   enterprise: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "change_impact_orchestration"],
-  internal: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "software_cognition", "software_systems_intelligence", "software_binary_intelligence", "hardware_systems_intelligence", "software_security_intelligence", "network_security_intelligence", "infrastructure_runtime_intelligence", "learning_knowledge_intelligence", "beauty_vertical_orchestration", ...CODEX_GUARD_BRANCHES],
+  internal: ["front_desk_base", ...HORIZONTAL_WORK_BRANCHES, "operations_silver", "executive_gold", "suite_governance", ...MARKETING_INTELLIGENCE_BRANCHES, "business_strategy", "nyra_finance_beauty_test", "beauty_value_chain_guard", "brand_distributor_network_guard", "product_inventory_guard", "billing_contract_guard", "support_success_guard", "smartdesk_operations_guard", "beauty_protocol_guard", "software_cognition", "software_systems_intelligence", "software_binary_intelligence", "hardware_systems_intelligence", "software_security_intelligence", "network_security_intelligence", "infrastructure_runtime_intelligence", "learning_knowledge_intelligence", "beauty_vertical_orchestration", "office_artifact_intelligence", "typography_layout_guard", ...CODEX_GUARD_BRANCHES],
   codex_guard: [...HORIZONTAL_WORK_BRANCHES, ...CODEX_GUARD_BRANCHES],
   omni_360: BRANCHES.map((branch) => branch.id),
 });

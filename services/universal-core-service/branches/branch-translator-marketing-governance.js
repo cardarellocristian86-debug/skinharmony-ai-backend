@@ -13,6 +13,7 @@ export const branchTranslatorMarketingGovernance = {
     "Se manca traduzione approvata o il copy non e pronto per locale target, fallback all'italiano o bozza non pubblicabile.",
     "Se il testo tocca promesse, prezzi, sconti, claim, risultati o fattori commerciali, richiedere review marketing + claim/pricing guard.",
     "Non inventare prezzi, offerte locali, testimonianze, prove, product facts o differenze di prodotto tra lingue.",
+    "Dopo fedelta, token e locale, delegare naturalezza e tono a human_tone_intelligence con source/candidate digest esatti; non confondere umanizzazione con riscrittura commerciale.",
     "Produrre output adatto a plugin/app: payload strutturato, metadata superficie, fallback policy, review flags e priorita operative.",
   ],
   guardrails: {
@@ -27,6 +28,7 @@ export const branchTranslatorMarketingGovernance = {
       "medical_claim",
       "rewrite_product_facts",
       "unsafe_locale_offer",
+      "semantic_drift_during_humanization",
     ],
   },
 };

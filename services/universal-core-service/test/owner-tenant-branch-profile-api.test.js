@@ -102,9 +102,9 @@ test("signed OAuth owner profile passes the gateway and receives vertical regist
     const branchResult = await branchResponse.json();
     assert.equal(branchResponse.status, 200);
     assert.equal(branchResult.branch_package.owner_profile, "tenant_scoped_verified_owner");
-    assert.equal(branchResult.branch_package.advisory_activation.active_branch_count, 71);
+    assert.equal(branchResult.branch_package.advisory_activation.active_branch_count, 74);
     assert.equal(branchResult.branch_package.advisory_activation.execution_authorized, false);
-    assert.equal(branchResult.branch_package.allowed_branches.length, 71);
+    assert.equal(branchResult.branch_package.allowed_branches.length, 74);
     assert(branchResult.branch_package.allowed_branches.includes("suite_governance"));
     assert(branchResult.branch_package.allowed_branches.includes("smartdesk_operations_guard"));
     assert.equal(branchResult.branch_package.allowed_branches.includes("beauty_protocol_guard"), false);
@@ -122,7 +122,7 @@ test("signed OAuth owner profile passes the gateway and receives vertical regist
     const statusResult = await statusResponse.json();
     assert.equal(statusResponse.status, 200);
     assert.equal(statusResult.active_branches.length, 11);
-    assert.equal(statusResult.owner_active_advisory.active_branch_count, 71);
+    assert.equal(statusResult.owner_active_advisory.active_branch_count, 74);
     assert.equal(statusResult.owner_active_advisory.execution_authorized, false);
 
     const entitlementOwner = ownerContext("codexai", { view: "entitlements" }, "control_plane_read");
@@ -138,7 +138,7 @@ test("signed OAuth owner profile passes the gateway and receives vertical regist
     assert.equal(entitlementResponse.status, 200);
     assert.equal(entitlementResult.entitlement.branches.length, 11);
     assert.equal(entitlementResult.entitlement.advisory_activation, undefined);
-    assert.equal(entitlementResult.owner_active_advisory.active_branch_count, 71);
+    assert.equal(entitlementResult.owner_active_advisory.active_branch_count, 74);
 
     const analyzeBody = { request: "Review the Suite governance posture", work_preflight: result.work_preflight };
     const analyzeOwner = ownerContext("codexai", { ...analyzeBody, branch: "suite_governance" }, "branch_analyze");
@@ -159,6 +159,34 @@ test("signed OAuth owner profile passes the gateway and receives vertical regist
     assert.equal(analyzeResult.guardrail.execution_allowed, false);
     assert.equal(analyzeResult.causal_continuity.execution_authorized, false);
     assert.equal(analyzeResult.profile.advisory_activation.state, "active_advisory");
+
+    const humanToneBody = {
+      request: "Rendi naturale il testo senza modificarne il significato",
+      source_text: "SkinHarmony organizza il lavoro in 30 minuti con il codice {CENTER_ID}.",
+      candidate_text: "In 30 minuti, SkinHarmony rende il lavoro piu ordinato con il codice {CENTER_ID}.",
+      audience: "Titolari di centri estetici",
+      surface: "site_hero",
+      locale: "it-IT",
+      work_preflight: result.work_preflight,
+    };
+    const humanToneOwner = ownerContext("codexai", { ...humanToneBody, branch: "human_tone_intelligence" }, "branch_analyze");
+    const humanToneResponse = await fetch(`${url}/v1/branches/human_tone_intelligence/analyze`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${gatewayKey}`,
+        "content-type": "application/json",
+        "x-sh-tenant-id": "codexai",
+        "x-sh-tenant-context": tenantContext("codexai"),
+        "x-sh-owner-context": Buffer.from(JSON.stringify(humanToneOwner)).toString("base64url"),
+      },
+      body: JSON.stringify(humanToneBody),
+    });
+    const humanToneResult = await humanToneResponse.json();
+    assert.equal(humanToneResponse.status, 200);
+    assert.equal(humanToneResult.branch_output.status, "REVIEW_REQUIRED");
+    assert.equal(humanToneResult.branch_output.execution_authorized, false);
+    assert.equal(humanToneResult.branch_output.publish_ready, false);
+    assert.equal(humanToneResult.profile.advisory_activation.state, "active_advisory");
 
     const testAnalyzeBody = { request: "Review test branch", work_preflight: result.work_preflight };
     const testAnalyzeOwner = ownerContext("codexai", { ...testAnalyzeBody, branch: "beauty_protocol_guard" }, "branch_analyze");
