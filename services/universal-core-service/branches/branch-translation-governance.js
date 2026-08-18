@@ -15,6 +15,7 @@ export const branchTranslationGovernance = {
     "Non mescolare lingue dentro la stessa stringa salvo brand name, prodotto o termine tecnico approvato.",
     "Ogni traduzione deve sapere source_lang, target_lang, domain, object_id e contesto d'uso.",
     "Se la traduzione modifica tono, promessa o responsabilita commerciale, segnare review_required.",
+    "Applicare human_tone_intelligence dopo la traduzione per naturalezza, mantenendo source e candidate legati da digest e verifica semantica indipendente.",
   ],
   guardrails: {
     destructive_automation: false,

@@ -12,6 +12,7 @@ export const branchContentLocalizationGuard = {
     "Adattare tono, valuta, mercato e CTA senza inventare prezzi, prove o normative locali.",
     "Claim e compliance vanno ricontrollati dopo la localizzazione.",
     "Se manca glossario o revisione lingua, produrre bozza e non publish-safe.",
+    "La naturalezza del locale passa a human_tone_intelligence solo dopo il lock semantico e la conservazione dei token.",
   ],
   guardrails: {
     destructive_automation: false,

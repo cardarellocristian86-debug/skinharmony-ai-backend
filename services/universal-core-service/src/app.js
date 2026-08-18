@@ -78,6 +78,7 @@ import {
   SOFTWARE_LANGUAGE_GATE_VERSION,
   evaluateSoftwareLanguageGate,
 } from "./softwareLanguageGate.js";
+import { analyzeHumanToneTransformation } from "./humanToneIntelligence.js";
 import { buildWorkPreflight } from "./workPreflight.js";
 import {
   AI_WORK_FAILURE_DISPOSITION,
@@ -3120,6 +3121,13 @@ function branchRegistry() {
       production_status: "advisory",
       description: "Valuta traduttore plugin e app surfaces: microcopy, CTA, fallback, review marketing/compliance e sync strutturato.",
     },
+    human_tone_intelligence: {
+      label: "Human Tone Intelligence",
+      domain: "human_tone",
+      tier: "network",
+      production_status: "advisory",
+      description: "Valuta naturalezza e leggibilita di source/candidate senza consentire deriva semantica, esperienze inventate o auto-publish.",
+    },
     ramo_testo: {
       label: "Ramo Testo / Content Guard",
       domain: "content_guard",
@@ -3673,6 +3681,78 @@ function buildBranchPayload(branch, payload = {}) {
       fallback_locale: sourceLocale,
       owner_review_required: !claimRecheck || htmlBlob,
       blocked_if: { html_blob_translation: htmlBlob, unstable_key_path: !stableKeyPath, missing_claim_recheck: !claimRecheck },
+    };
+  } else if (branch === "office_artifact_intelligence") {
+    const artifactKind = textValue(data.artifact_kind || data.kind || data.format).toLowerCase();
+    const plannedUnits = Number(data.planned_units ?? data.page_count ?? data.slide_count ?? data.sheet_count ?? 0);
+    const audience = textValue(data.audience);
+    const purpose = textValue(data.purpose || data.goal);
+    const sections = Array.isArray(data.sections) ? data.sections.slice(0, 80) : [];
+    const hasTemplate = Boolean(data.template_digest || data.template_id);
+    const hasSources = Array.isArray(data.source_refs) && data.source_refs.length > 0;
+    const longForm = plannedUnits > 25;
+    const invalidBudget = !Number.isInteger(plannedUnits) || plannedUnits < 1 || plannedUnits > 200;
+    if (!artifactKind) missing.push("artifact_kind");
+    if (!audience) missing.push("audience");
+    if (!purpose) missing.push("purpose");
+    if (!sections.length) missing.push("sections_with_unit_budgets");
+    if (invalidBudget) missing.push("planned_units_1_to_200");
+    addSignal("brief_completeness", "Completezza brief Office", 100 - missing.length * 18, "office_artifacts", ["brief"]);
+    addSignal("long_context_risk", "Rischio perdita contesto documento lungo", longForm && data.context_ledger_ready !== true ? 88 : 12, "office_artifacts", ["context"]);
+    addSignal("evidence_readiness", "Fonti e claim verificabili", hasSources ? 12 : 68, "office_artifacts", ["evidence"]);
+    addSignal("template_readiness", "Template e design system", hasTemplate ? 10 : 48, "artifact_layout", ["template"]);
+    branchOutput = {
+      office_artifact_mode: "plan_render_verify_advisory",
+      artifact_kind: artifactKind || null,
+      planned_units: invalidBudget ? null : plannedUnits,
+      maximum_units: 200,
+      long_form_context_ledger_required: longForm,
+      full_unit_render_review_required: true,
+      sample_only_approval_allowed: false,
+      companion_branches: [
+        "typography_layout_guard", "human_tone_intelligence", "lexical_semantic_intelligence", "ramo_testo",
+        "research_evidence_intelligence", "quality_verification_intelligence", "decision_provenance_intelligence",
+      ],
+      microsoft_365_write_allowed: false,
+      owner_review_required: true,
+      blocked_if: {
+        incomplete_brief: missing.length > 0,
+        invalid_unit_budget: invalidBudget,
+        missing_long_context_ledger: longForm && data.context_ledger_ready !== true,
+        unverified_claim_sources: !hasSources,
+      },
+    };
+  } else if (branch === "typography_layout_guard") {
+    const renderedUnits = Number(data.rendered_unit_count ?? 0);
+    const plannedUnits = Number(data.planned_unit_count ?? 0);
+    const clipped = Number(data.clipped_text_count ?? 0);
+    const overflow = Number(data.overflow_count ?? 0);
+    const overlaps = Number(data.unintended_overlap_count ?? 0);
+    const blank = Number(data.blank_required_unit_count ?? 0);
+    const placeholders = Number(data.unresolved_placeholder_count ?? 0);
+    const fullInventory = data.full_visual_inventory === true && renderedUnits === plannedUnits && plannedUnits > 0;
+    addSignal("render_completeness", "Render completo pagina-per-pagina", fullInventory ? 8 : 96, "artifact_layout", ["render"]);
+    addSignal("canvas_integrity", "Clipping, overflow e sovrapposizioni", Math.min(100, (clipped + overflow + overlaps) * 25), "artifact_layout", ["geometry"]);
+    addSignal("content_completeness", "Pagine vuote e placeholder", Math.min(100, (blank + placeholders) * 30), "artifact_layout", ["completeness"]);
+    addSignal("accessibility", "Reading order e alt text", data.accessibility_valid === true ? 8 : 72, "accessibility", ["reading_order"]);
+    branchOutput = {
+      typography_layout_mode: "cross_format_render_guard",
+      planned_unit_count: plannedUnits,
+      rendered_unit_count: renderedUnits,
+      full_visual_inventory: fullInventory,
+      sample_only_approval_allowed: false,
+      release_recommendation: fullInventory && clipped + overflow + overlaps + blank + placeholders === 0
+        && data.accessibility_valid === true ? "VISUAL_QA_PASS" : "BLOCKED",
+      owner_review_required: true,
+      blocked_if: {
+        incomplete_render_inventory: !fullInventory,
+        clipped_text: clipped > 0,
+        content_outside_canvas: overflow > 0,
+        unintended_overlap: overlaps > 0,
+        blank_required_unit: blank > 0,
+        unresolved_placeholder: placeholders > 0,
+        accessibility_invalid: data.accessibility_valid !== true,
+      },
     };
   } else if (branch === "codex_site_factory_guard") {
     const sourceUrl = textValue(data.source_url || data.source_site || data.clone_source);
@@ -4260,7 +4340,37 @@ function buildBranchPayload(branch, payload = {}) {
       supported_languages: supportedLanguages,
       fallback_policy: "fallback_to_it",
       review_required: unsupportedLanguage || htmlBlob || alteredProtectedTokens > 0 || unstableKeys > 0,
+      recommended_companion_branches: ["human_tone_intelligence", "content_localization_guard", "ramo_testo"],
     };
+  } else if (branch === "human_tone_intelligence") {
+    try {
+      branchOutput = analyzeHumanToneTransformation({
+        ...data,
+        surface: data.surface || data.surface_type || data.copy_surface,
+        locale: data.locale || data.target_locale || payload.locale,
+      });
+      addSignal(
+        "human_tone_semantic_integrity",
+        "Integrita semantica della trasformazione human-tone",
+        branchOutput.status === "BLOCKED" ? 96 : branchOutput.status === "REVIEW_REQUIRED" ? 62 : 8,
+        "human_tone",
+        ["source_digest", "candidate_digest", "semantic_evidence"],
+      );
+      warnings.push(...branchOutput.defects.map((item) => `${item.code}: ${item.detail}`));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "human_tone_input_invalid";
+      missing.push(message);
+      branchOutput = {
+        schema_version: "human_tone_review_v1",
+        mode: "meaning_locked_human_tone_review",
+        status: "BLOCKED",
+        defects: [{ code: message, severity: "blocker", detail: "required bounded input missing" }],
+        eligible_for_owner_review: false,
+        publish_ready: false,
+        execution_authorized: false,
+      };
+      addSignal("human_tone_input_invalid", "Input human-tone incompleto", 100, "human_tone", ["source_text", "candidate_text", "audience", "surface"]);
+    }
   } else if (branch === "translator_marketing_governance") {
     const items = Array.isArray(data.items) ? data.items : [];
     const surfaceType = textValue(data.surface_type || data.surface || data.copy_surface, "ui_strings");
@@ -4314,7 +4424,7 @@ function buildBranchPayload(branch, payload = {}) {
       claim_review_required: claimReviewRequired,
       owner_review_required: true,
       publish_ready: publishReady,
-      recommended_companion_branches: ["translation_governance", "marketing_copy", "ramo_testo"],
+      recommended_companion_branches: ["translation_governance", "human_tone_intelligence", "marketing_copy", "ramo_testo"],
       blocked_surfaces: htmlBlobItems.length ? ["html_blob"] : [],
       rule: "Usare per plugin traduttore e applicazioni che devono tradurre microcopy strutturato senza perdere guardrail marketing/compliance.",
     };
