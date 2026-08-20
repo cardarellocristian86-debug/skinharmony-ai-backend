@@ -34,6 +34,9 @@ async function main() {
     ["postgresql://user:pass@127.0.0.1:5432/smartdesk", false],
     ["postgresql://[::1]:5432/smartdesk", false],
     ["postgresql://localhost.evil.test:5432/smartdesk", { rejectUnauthorized: false }],
+    ["postgresql://user@localhost:5432@evil.example/smartdesk", { rejectUnauthorized: false }],
+    ["postgresql://user@127.0.0.1:5432@evil.example/smartdesk", { rejectUnauthorized: false }],
+    ["postgresql://user@[::1]:5432@evil.example/smartdesk", { rejectUnauthorized: false }],
     ["postgresql://db.example.test:5432/smartdesk", { rejectUnauthorized: false }]
   ];
   for (const [databaseUrl, expectedSsl] of sslCases) {

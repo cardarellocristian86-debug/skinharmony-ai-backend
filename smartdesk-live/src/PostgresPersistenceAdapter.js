@@ -39,11 +39,17 @@ class PostgresPersistenceAdapter {
     } catch (error) {
       throw new Error("Dipendenza 'pg' non installata. Esegui npm install nel servizio render-smartdesk-live.");
     }
+    let loopbackDatabase = false;
+    try {
+      const parsedDatabaseUrl = new URL(this.databaseUrl);
+      loopbackDatabase = ["postgres:", "postgresql:"].includes(parsedDatabaseUrl.protocol)
+        && ["localhost", "127.0.0.1", "[::1]"].includes(parsedDatabaseUrl.hostname.toLowerCase());
+    } catch {
+      loopbackDatabase = false;
+    }
     this.pool = new Pool({
       connectionString: this.databaseUrl,
-      ssl: /^postgres(?:ql)?:\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/)/i.test(this.databaseUrl)
-        ? false
-        : { rejectUnauthorized: false }
+      ssl: loopbackDatabase ? false : { rejectUnauthorized: false }
     });
     return this.pool;
   }
