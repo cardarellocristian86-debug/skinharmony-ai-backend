@@ -29,6 +29,20 @@ function transactionalPool(query) {
 }
 
 async function main() {
+  const sslCases = [
+    ["postgresql://localhost:5432/smartdesk", false],
+    ["postgresql://user:pass@127.0.0.1:5432/smartdesk", false],
+    ["postgresql://[::1]:5432/smartdesk", false],
+    ["postgresql://localhost.evil.test:5432/smartdesk", { rejectUnauthorized: false }],
+    ["postgresql://db.example.test:5432/smartdesk", { rejectUnauthorized: false }]
+  ];
+  for (const [databaseUrl, expectedSsl] of sslCases) {
+    const sslAdapter = new PostgresPersistenceAdapter(databaseUrl);
+    const sslPool = sslAdapter.createPool();
+    assert.deepEqual(sslPool.options.ssl, expectedSsl);
+    await sslPool.end();
+  }
+
   const sandboxDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "smartdesk-persistence-"));
   const filePath = path.join(sandboxDirectory, "records.json");
   const databaseWrites = [];
@@ -251,7 +265,8 @@ async function main() {
         clientAbortCannotReleaseInFlightTransactionLock: true,
         unrelatedSuccessDoesNotHideFailedCollection: true,
         adapterCanRecoverAfterFailure: true,
-        temporaryFilesAreCleaned: true
+        temporaryFilesAreCleaned: true,
+        loopbackSslPolicyIsExact: true
       },
       performance: {
         atomicWrites: 50,
