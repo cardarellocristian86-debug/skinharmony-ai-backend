@@ -38,6 +38,14 @@ test("keeps agent collaboration disabled until a persistent root is configured",
   assert.equal(enabled.memoryFabricRoot, "/var/data/skinharmony-core-mcp");
   assert(enabled.supportedScopes.includes("core:read"));
   assert(enabled.supportedScopes.includes("core:govern"));
+  assert.equal(enabled.supportedScopes.includes("offline_access"), false);
+  assert(enabled.oauthScopesSupported.includes("offline_access"));
+  const explicitOAuthScope = loadConfig({
+    MCP_SUPPORTED_SCOPES: "core:read,offline_access,core:govern",
+  });
+  assert.equal(explicitOAuthScope.supportedScopes.includes("offline_access"), false);
+  assert.deepEqual(explicitOAuthScope.supportedScopes, ["core:read", "core:govern"]);
+  assert(explicitOAuthScope.oauthScopesSupported.includes("offline_access"));
   assert.equal(enabled.researchCortexRoot, "/var/data/skinharmony-core-mcp");
   const postgresOnly = loadConfig({
     DATABASE_URL: "postgres://existing-service-db",

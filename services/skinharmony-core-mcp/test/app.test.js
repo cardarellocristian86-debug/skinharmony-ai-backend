@@ -359,6 +359,8 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);
+  assert(resource.scopes_supported.includes("offline_access"));
+  assert.equal(config.supportedScopes.includes("offline_access"), false);
   const pathResource = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`).then((r) => r.json());
   assert.deepEqual(pathResource, resource);
   const migrationResource = await fetch(`${base}/.well-known/oauth-protected-resource/mcp-v015`).then((r) => r.json());

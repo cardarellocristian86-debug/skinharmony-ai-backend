@@ -1621,7 +1621,13 @@ export function createApp(config, options = {}) {
     // connector identity; Auth0 tokens are still issued for config.resource.
     resource: config.resource,
     authorization_servers: config.auth0Issuer ? [config.auth0Issuer] : [],
-    scopes_supported: config.supportedScopes,
+    // Advertise `offline_access` without treating it as a Core authorization
+    // entitlement.  OAuth clients need this scope to obtain a refresh token.
+    scopes_supported: [...new Set([
+      ...((config.oauthScopesSupported || config.supportedScopes || [])
+        .filter((scope) => scope !== "offline_access")),
+      "offline_access",
+    ])],
     bearer_methods_supported: ["header"],
     resource_documentation: `${config.publicUrl}/docs/auth`
   });

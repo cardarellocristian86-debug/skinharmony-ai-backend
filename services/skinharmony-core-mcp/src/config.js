@@ -413,6 +413,12 @@ export function loadConfig(env = process.env) {
   // endpoint. Authentication itself still fails closed, while keeping the
   // process alive lets Render observe an explicit 503 and coded blocker.
   if (auth0Issuer && !auth0Audience) throw new Error("AUTH0_AUDIENCE is required with AUTH0_ISSUER");
+  const supportedScopes = csv(env.MCP_SUPPORTED_SCOPES || "core:read,core:govern")
+    .filter((scope) => scope !== "offline_access");
+  // `offline_access` lets an OAuth client request a refresh token.  It is an
+  // OAuth lifecycle scope, not an entitlement to a Core capability, so keep it
+  // separate from `supportedScopes` (which is used by the authorizer).
+  const oauthScopesSupported = [...new Set([...supportedScopes, "offline_access"])];
   return {
     environment,
     production: environment === "production",
@@ -428,7 +434,8 @@ export function loadConfig(env = process.env) {
     jwksUri: auth0Issuer ? `${auth0Issuer}/.well-known/jwks.json` : "",
     codexKeys,
     codexScopes: csv(env.CODEX_BEARER_SCOPES || "core:read,core:govern"),
-    supportedScopes: csv(env.MCP_SUPPORTED_SCOPES || "core:read,core:govern"),
+    supportedScopes,
+    oauthScopesSupported,
     universalCoreUrl,
     githubStandingReleaseWorkerUrl,
     standingReleaseAutoCoordinatorEnabled,
