@@ -41,7 +41,9 @@ class PostgresPersistenceAdapter {
     }
     this.pool = new Pool({
       connectionString: this.databaseUrl,
-      ssl: this.databaseUrl.includes("localhost") ? false : { rejectUnauthorized: false }
+      ssl: /^(?:postgres(?:ql)?:\/\/[^@/]+@)?(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/)/i.test(this.databaseUrl)
+        ? false
+        : { rejectUnauthorized: false }
     });
     return this.pool;
   }
