@@ -9,8 +9,8 @@ import {
 const TOKEN = `github_pat_${"A".repeat(40)}`;
 
 test("workflow rotation binds the current main and reconstructed v3 candidate", () => {
-  assert.equal(HOST_NATIVE_GITHUB_WORKFLOW.sha256, "d558b4e929ae810afff886e8643def1dce68b86f1102889b2e2bef20d4c1c2b0");
-  assert.equal(HOST_NATIVE_GITHUB_WORKFLOW.candidate_sha256, "feb74afe5d943e79f2f8170c8a250f274b375ab4b054a662d160beba8e664dbc");
+  assert.equal(HOST_NATIVE_GITHUB_WORKFLOW.sha256, "feb74afe5d943e79f2f8170c8a250f274b375ab4b054a662d160beba8e664dbc");
+  assert.equal(HOST_NATIVE_GITHUB_WORKFLOW.candidate_sha256, "6a9f8fc105214ff5d674cf2cb7f1ff86f8247ea45abc967daa956e8adf9ce892");
 });
 const GITHUB_REGISTRY = JSON.stringify({
   schema_version: "host_native_github_credential_registry_v1",
