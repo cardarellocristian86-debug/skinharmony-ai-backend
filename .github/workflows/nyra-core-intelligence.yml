@@ -32,6 +32,7 @@ on:
       - "services/github-standing-release-worker/**"
       - "services/skinharmony-core-mcp/**"
       - "services/universal-core-service/**"
+      - "smartdesk-live/**"
       - "universal-core/**"
       - "verification/nyra-deep-branch-v2-verification-spec.json"
       - "docs/architecture/governed-continuity-fabric-v1.md"
@@ -66,6 +67,7 @@ on:
       - "services/github-standing-release-worker/**"
       - "services/skinharmony-core-mcp/**"
       - "services/universal-core-service/**"
+      - "smartdesk-live/**"
       - "universal-core/**"
       - "verification/nyra-deep-branch-v2-verification-spec.json"
       - "docs/architecture/governed-continuity-fabric-v1.md"
@@ -1310,3 +1312,46 @@ jobs:
             services/universal-core-service/test/nyra-work-automation-*.test.js
       - name: Test Core MCP from root install
         run: npm run core:mcp:test
+
+  smartdesk:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: smartdesk_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d smartdesk_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: smartdesk-live
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: smartdesk-live/package-lock.json
+      - run: npm ci
+      - run: npm run test:persistence-p0
+      - run: npm run test:external-ai-gold
+      - run: npm run test:semantic-selection
+      - run: npm run test:cockpit-360-e2e
+      - run: npm run test:enterprise
+      - run: npm run test:gold-18m
+      - run: npm run test:gold-overview
+      - run: npm run test:gold-bridge-cache
+      - run: npm run test:gold-conversation-demand
+      - run: npm run test:hardening
+      - run: npm run test:postgres
+        env:
+          SMARTDESK_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/smartdesk_ci
+      - run: npm run test:reality-closure
+      - run: npm run audit:gold

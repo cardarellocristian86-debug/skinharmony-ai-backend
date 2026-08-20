@@ -1,12 +1,19 @@
 "use strict";
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const assert = require("node:assert");
+const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "smartdesk-enterprise-test-"));
+const originalDataDir = process.env.SMARTDESK_DATA_DIR;
+const originalExportsDir = process.env.SMARTDESK_EXPORTS_DIR;
+process.env.SMARTDESK_DATA_DIR = path.join(sandbox, "data");
+process.env.SMARTDESK_EXPORTS_DIR = path.join(sandbox, "exports");
 const { DesktopMirrorService } = require("../src/DesktopMirrorService");
 const { AssistantService } = require("../src/AssistantService");
 
 (async () => {
+  try {
   const service = new DesktopMirrorService();
   await service.init();
 
@@ -59,6 +66,13 @@ const { AssistantService } = require("../src/AssistantService");
       sections: decisionCenter.sections.length
     }
   }, null, 2));
+  } finally {
+    if (originalDataDir === undefined) delete process.env.SMARTDESK_DATA_DIR;
+    else process.env.SMARTDESK_DATA_DIR = originalDataDir;
+    if (originalExportsDir === undefined) delete process.env.SMARTDESK_EXPORTS_DIR;
+    else process.env.SMARTDESK_EXPORTS_DIR = originalExportsDir;
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
 })().catch((error) => {
   console.error(error?.stack || error?.message || error);
   process.exit(1);

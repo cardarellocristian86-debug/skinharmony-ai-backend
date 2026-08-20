@@ -140,7 +140,7 @@ export function createSmartDeskOperations({
 
     if (entity === "service") {
       const url = id ? `${API_SERVER_URL}/services/${id}` : `${API_SERVER_URL}/services`;
-      await safeJsonFetch(url, id ? `/api/services/${id}` : "/api/services", {
+      await safeJsonFetch(url, id ? `/api/catalog/services/${id}` : "/api/catalog/services", {
         method: id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -151,7 +151,7 @@ export function createSmartDeskOperations({
 
     if (entity === "staff") {
       const url = id ? `${API_SERVER_URL}/staff/${id}` : `${API_SERVER_URL}/staff`;
-      await safeJsonFetch(url, id ? `/api/staff/${id}` : "/api/staff", {
+      await safeJsonFetch(url, id ? `/api/catalog/staff/${id}` : "/api/catalog/staff", {
         method: id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
