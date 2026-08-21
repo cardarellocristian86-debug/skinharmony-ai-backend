@@ -206,6 +206,8 @@ test("flags are byte-strict, default code-dark, and residual config causes zero 
   await disabled.probe({ force: true });
   assert.deepEqual({ enabled: disabled.status().enabled, mode: disabled.status().mode, ready: disabled.status().ready },
     { enabled: false, mode: "disabled", ready: false });
+  assert.equal(disabled.status().configuration_valid, true);
+  assert.equal(disabled.status().state, "disabled");
   assert.equal(outbound, 0);
   assert.equal(replayAccess, 0);
   const invalid = createNyraPolicyRegistryAttester({ env: {
@@ -220,8 +222,16 @@ test("flags are byte-strict, default code-dark, and residual config causes zero 
     NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED: "false",
     NYRA_POLICY_REGISTRY_SIGNER_MODE: "REMOTE",
   } });
-  assert.equal(invalidMode.status().configuration_valid, false);
-  assert.match(invalidMode.status().error, /signer_mode_invalid/);
+  assert.equal(invalidMode.status().configuration_valid, true);
+  assert.equal(invalidMode.status().state, "disabled");
+  assert.equal(invalidMode.status().error, null);
+  const activeInvalidMode = createNyraPolicyRegistryAttester({ env: {
+    NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED: "true",
+    NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED: "true",
+    NYRA_POLICY_REGISTRY_SIGNER_MODE: "REMOTE",
+  } });
+  assert.equal(activeInvalidMode.status().configuration_valid, false);
+  assert.match(activeInvalidMode.status().error, /signer_mode_invalid/);
   const requiredWithoutEnabled = createNyraPolicyRegistryAttester({ env: {
     NYRA_POLICY_REGISTRY_ATTESTATION_ENABLED: "false",
     NYRA_POLICY_REGISTRY_ATTESTATION_REQUIRED: "true",
