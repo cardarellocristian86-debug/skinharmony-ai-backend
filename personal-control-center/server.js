@@ -87,6 +87,7 @@ const NYRA_FINANCE_SHARED_CAPITAL_EUR = Number(process.env.NYRA_FINANCE_SHARED_C
 const nyraHorizontalRuntime = createNyraHorizontalRuntime(process.env);
 const NYRA_SERVICE_NAME = nyraHorizontalRuntime.serviceName;
 const NYRA_SERVICE_VERSION = nyraHorizontalRuntime.version;
+const NYRA_BUILD_COMMIT = /^[a-f0-9]{40}$/i;
 const NYRA_RATE_LIMIT_PER_MINUTE = Math.max(30, Number(process.env.NYRA_RATE_LIMIT_PER_MINUTE || 240));
 const NYRA_BODY_LIMIT = String(process.env.NYRA_BODY_LIMIT || "1mb");
 const nyraRateBuckets = new Map();
@@ -339,7 +340,7 @@ app.use((req, res, next) => {
   res.setHeader("Referrer-Policy", "no-referrer");
   if (req.path.startsWith("/api/")) res.setHeader("Cache-Control", "no-store");
 
-  if (req.path === "/healthz") {
+  if (req.path === "/healthz" || req.path === "/livez") {
     next();
     return;
   }
@@ -379,7 +380,22 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: NYRA_BODY_LIMIT }));
 
+// Render must be able to decide whether the process started even while the
+// strict health contract is still waiting for Core/signer/PostgreSQL recovery.
+// Release closure still reads /healthz and rejects an unhealthy dependency.
+app.get("/livez", (_req, res) => res.status(200).json({
+  ok: true,
+  service: NYRA_SERVICE_NAME,
+  liveness: "process_running",
+}));
+
 app.get("/healthz", async (_req, res) => {
+  const commitSha = String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim();
+  const build = {
+    build_id: String(process.env.RENDER_DEPLOY_ID || "").trim() || null,
+    commit_sha: NYRA_BUILD_COMMIT.test(commitSha) ? commitSha : null,
+    commit_verifiable: NYRA_BUILD_COMMIT.test(commitSha),
+  };
   const deepV2FederationConfig = nyraDeepV2Federation.config();
   const replayStorePersistent = Boolean(
     nyraStorageRoot || configuredNyraDeepV2ReplayPath,
@@ -410,6 +426,7 @@ app.get("/healthz", async (_req, res) => {
     ok: healthy,
     service: NYRA_SERVICE_NAME,
     version: NYRA_SERVICE_VERSION,
+    build,
     runtime_kind: "horizontal_neural_branch_runtime",
     domain_pack_resolution: "universal_core_key_metadata_only",
     auth_required: process.env.NODE_ENV === "production",

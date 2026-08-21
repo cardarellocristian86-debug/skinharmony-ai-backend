@@ -1275,6 +1275,25 @@ CREATE TABLE IF NOT EXISTS core_continuity_works (
 CREATE INDEX IF NOT EXISTS core_continuity_works_project_idx
   ON core_continuity_works (tenant_id, project_id, updated_at DESC);
 
+-- Nyra's operational context is server-owned and deliberately compact. It is
+-- a projection of the authoritative Work ledger, not a second conversational
+-- memory. A fresh chat can therefore resume the same Work without asking a
+-- connected AI to rediscover Gallery, plan, policy and checkpoints.
+CREATE TABLE IF NOT EXISTS core_continuity_control_contexts (
+  tenant_id varchar(64) NOT NULL,
+  work_id uuid NOT NULL,
+  project_id varchar(64) NOT NULL,
+  work_revision bigint NOT NULL,
+  context_digest char(64) NOT NULL,
+  payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, work_id),
+  FOREIGN KEY (tenant_id, work_id) REFERENCES core_continuity_works(tenant_id, work_id)
+);
+CREATE INDEX IF NOT EXISTS core_continuity_control_contexts_project_idx
+  ON core_continuity_control_contexts (tenant_id, project_id, work_revision DESC, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS core_continuity_architecture_versions (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, version bigint NOT NULL,
   architecture jsonb NOT NULL, impact_map jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -2000,6 +2019,48 @@ export function createWorkContinuityRuntime(config, options = {}) {
         fabric_schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
         architecture_version: 1, architecture_digest: architectureDigest,
         intent_digest: intent.intent_digest, event, intent_event: intentEvent };
+  }
+
+  async function upsertControlContext(identity, input = {}) {
+    const context = workContext(identity, input);
+    const projectId = identifier(input.project_id, "project_id", 64);
+    const candidate = cleanJson(input.context || {}, 16_000);
+    if (candidate.schema_version !== "nyra_control_context_v1" ||
+        candidate.tenant_id !== context.tenantId ||
+        candidate.work_id !== context.workId ||
+        candidate.project_id !== projectId ||
+        !/^[a-f0-9]{64}$/.test(String(candidate.context_digest || ""))) {
+      throw new Error("nyra_control_context_invalid");
+    }
+    return transaction(async (client) => {
+      const work = await client.query(`SELECT project_id,current_version,status,next_action
+        FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
+      [context.tenantId, context.workId]);
+      const row = work.rows[0];
+      if (!row) throw new Error("continuity_work_not_found");
+      if (row.project_id !== projectId) throw new Error("continuity_project_mismatch");
+      const unsignedPayload = cleanJson({
+        ...candidate,
+        context_digest: undefined,
+        work_state: String(row.status || candidate.work_state || "unknown"),
+        work_revision: Number(row.current_version || 0),
+        next_action: safeText(row.next_action || candidate.next_action, 360),
+      }, 16_000);
+      const payload = {
+        ...unsignedPayload,
+        context_digest: digest(unsignedPayload),
+      };
+      await client.query(`INSERT INTO core_continuity_control_contexts
+        (tenant_id,work_id,project_id,work_revision,context_digest,payload)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb)
+        ON CONFLICT (tenant_id,work_id) DO UPDATE SET
+          project_id=EXCLUDED.project_id,work_revision=EXCLUDED.work_revision,
+          context_digest=EXCLUDED.context_digest,payload=EXCLUDED.payload,updated_at=now()`, [
+        context.tenantId, context.workId, projectId, Number(row.current_version || 0),
+        payload.context_digest, JSON.stringify(payload),
+      ]);
+      return payload;
+    });
   }
 
   async function ensure(identity, input, options = {}) {
@@ -5114,6 +5175,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     create,
     ensure,
     ensureWithClient,
+    upsertControlContext,
     setWorkEventProjector,
     readIntent,
     resolveStandingReleaseIntentBinding,
