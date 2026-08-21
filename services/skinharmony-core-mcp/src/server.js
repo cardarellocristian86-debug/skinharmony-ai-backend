@@ -34,6 +34,7 @@ import { NYRA_AUTOPILOT_TOOLS } from "./nyra-autopilot-tools.js";
 import { HOST_NATIVE_TOOLS } from "./host-native-tools.js";
 import { NYRA_WORK_AUTOMATION_TOOLS } from "./nyra-work-automation-tools.js";
 import { createNyraWorkAutomationInternal } from "./nyra-work-automation-internal.js";
+import { continuityProjectId } from "./continuity-project-id.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 import { TOOLS } from "./tool-definitions.js";
@@ -533,16 +534,6 @@ async function requireBoundedTenantCoordination(identity, actionType, target, id
     error.code = "core_tenant_coordination_denied";
     throw error;
   }
-}
-
-function continuityProjectId(args = {}) {
-  const raw = String(args.project_id || args.repository || args.target_system || "skinharmony-ai-backend")
-    .trim()
-    .replace(/[^a-zA-Z0-9_.:/-]+/g, "-")
-    .slice(0, 64);
-  return /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,63}$/.test(raw)
-    ? raw
-    : "skinharmony-ai-backend";
 }
 
 function hostType(identity, args = {}) {
