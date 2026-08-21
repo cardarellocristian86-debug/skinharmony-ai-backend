@@ -1120,12 +1120,42 @@ function attachWorkPreflight(result, preflight) {
         resumed: resolvedPayload.continuity.idempotent_replay === true,
       }
       : undefined,
+    // The server-owned compact context is the contract for Nyra and connected
+    // AIs. It is intentionally separate from the complete audit envelope.
+    nyra_control_context: resolvedPayload.nyra_control_context
+      ? {
+        schema_version: resolvedPayload.nyra_control_context.schema_version,
+        context_digest: resolvedPayload.nyra_control_context.context_digest,
+        work_id: resolvedPayload.nyra_control_context.work_id,
+        project_id: resolvedPayload.nyra_control_context.project_id,
+        work_state: resolvedPayload.nyra_control_context.work_state,
+        next_action: resolvedPayload.nyra_control_context.next_action,
+        assignment: resolvedPayload.nyra_control_context.assignment,
+        connector: resolvedPayload.nyra_control_context.connector,
+        execution_authorized: false,
+        external_action_authorized: false,
+      }
+      : undefined,
     tool_routing: resolvedPayload.tool_routing?.preferred_route
       ? { preferred_route: resolvedPayload.tool_routing.preferred_route }
       : resolvedPayload.tool_routing,
     operational_surface: resolvedPayload.operational_surface,
     gallery_version: resolvedPayload.gallery_version,
-    tenant_work_gallery: resolvedPayload.tenant_work_gallery,
+    // The full Gallery is retained by Core. Repeating every Work summary to
+    // every connected AI makes fresh chats spend tokens rediscovering the
+    // same state; the compact control context above identifies the selected
+    // Work and next action instead.
+    tenant_work_gallery: resolvedPayload.tenant_work_gallery
+      ? {
+        schema_version: resolvedPayload.tenant_work_gallery.schema_version,
+        tenant_id: resolvedPayload.tenant_work_gallery.tenant_id,
+        available: resolvedPayload.tenant_work_gallery.available === true,
+        state: resolvedPayload.tenant_work_gallery.state,
+        generated_at: resolvedPayload.tenant_work_gallery.generated_at,
+        tenant_isolated: true,
+        work_count: resolvedPayload.tenant_work_gallery.work_count,
+      }
+      : undefined,
     shared_memory_bootstrap: resolvedPayload.shared_memory_bootstrap
       ? {
         loaded: resolvedPayload.shared_memory_bootstrap.loaded === true,
@@ -1152,6 +1182,8 @@ function attachWorkPreflight(result, preflight) {
       gallery_state: payload.tenant_work_gallery?.state,
       shared_memory_bootstrap_loaded: payload.shared_memory_bootstrap?.loaded === true,
       work_id: payload.continuity?.work_id,
+      control_context_id: payload.nyra_control_context?.context_digest,
+      next_action: payload.nyra_control_context?.next_action,
     },
   };
   return {

@@ -13,7 +13,7 @@ services:
     startCommand: npm run core:service
     # Render needs process liveness during rollout. Governed dependency
     # readiness remains available at /healthz and /readyz.
-    healthCheckPath: /readyz
+    healthCheckPath: /livez
     # A merge/push to the linked main branch deploys only after repository CI
     # checks pass. This trigger does not replace Core or host authorization.
     autoDeployTrigger: checksPass

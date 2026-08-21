@@ -284,6 +284,8 @@ async function main() {
     env: {
       ...process.env,
       NODE_ENV: "production",
+      RENDER_GIT_COMMIT: "a".repeat(40),
+      RENDER_DEPLOY_ID: "deploy-nyra-test",
       PORT: String(nyraPort),
       HOST: "127.0.0.1",
       NYRA_STORAGE_ROOT: storageRoot,
@@ -324,6 +326,14 @@ async function main() {
     assert.equal(health.json.version, "0.9.0-research-cortex");
     assert.equal(health.json.service, "nyra-horizontal-runtime");
     assert.equal(health.json.runtime_kind, "horizontal_neural_branch_runtime");
+    assert.deepEqual(health.json.build, {
+      build_id: "deploy-nyra-test",
+      commit_sha: "a".repeat(40),
+      commit_verifiable: true,
+    });
+    const liveness = await request("/livez");
+    assert.equal(liveness.status, 200);
+    assert.equal(liveness.json.liveness, "process_running");
     assert.deepEqual(health.json.deep_branch_v2_federation, {
       enabled: true,
       configured: true,
