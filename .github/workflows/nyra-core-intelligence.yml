@@ -557,6 +557,7 @@ jobs:
           generic_join_core_values = {
             "CORE_GENERIC_WORK_CORE_JOIN_ENABLED" => "true",
             "CORE_GENERIC_WORK_CORE_JOIN_REQUIRED" => "true",
+            "CORE_GENERIC_WORK_CORE_JOIN_GATES_GLOBAL_READINESS" => "false",
             "CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE" => "remote",
             "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PATH" =>
               "/v1/generic-work-core-join/sign",

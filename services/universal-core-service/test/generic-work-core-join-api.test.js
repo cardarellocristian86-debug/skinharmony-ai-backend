@@ -279,6 +279,34 @@ test("remote signer residue cannot activate Core while signer mode is disabled",
   });
 });
 
+test("a Generic Join signer outage does not make unrelated Core readiness unavailable", async () => {
+  const store = createMemoryGenericWorkCoreJoinStore();
+  store.restart_durable = true;
+  store.distributed = true;
+  store.initialize = async () => {};
+  const unavailableSigner = {
+    key_id: "generic-work-core-join-api-key",
+    public_key: KEYS.publicKey,
+    public_key_fingerprint: PUBLIC_KEY_FINGERPRINT,
+    custody: "external_remote_signer",
+    signer_state: "unavailable",
+    reason: "generic_work_core_join_signer_unavailable",
+    async signDigest() { throw new Error("generic_work_core_join_signer_unavailable"); },
+  };
+  await withService({
+    genericWorkCoreJoinStore: store,
+    genericWorkCoreJoinSigner: unavailableSigner,
+  }, async (request, health) => {
+    const status = await health();
+    assert.equal(status.generic_work_core_join.gates_global_readiness, false);
+    assert.equal(status.generic_work_core_join.ready, false);
+    assert.equal(status.render_ready, true);
+    const denied = await request("/v1/work-continuity/generic-core-join", body());
+    assert.equal(denied.status, 503);
+    assert.equal(denied.json.error, "generic_work_core_join_signing_unavailable");
+  });
+});
+
 test("remote signer reads the canonical PUBLIC_KEY environment name and rejects ambiguous legacy material", async (t) => {
   const canonicalName = "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PUBLIC_KEY";
   const legacyName = "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY";

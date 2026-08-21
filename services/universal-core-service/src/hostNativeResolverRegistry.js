@@ -17,7 +17,7 @@ const RENDER_ORIGIN = /^https:\/\/[a-z0-9][a-z0-9-]*\.onrender\.com$/;
 // when a configuration error keeps the runtime fail-closed.
 export const HOST_NATIVE_GITHUB_WORKFLOW = Object.freeze({
   sha256: "d558b4e929ae810afff886e8643def1dce68b86f1102889b2e2bef20d4c1c2b0",
-  candidate_sha256: "c0794267d11582f09f1a2f8fb688966b6388996bc8aec13636e207d8d7e11a88",
+  candidate_sha256: "24ab8aa44e131300d56da5688d109ae16a10a91e3fd8983f61a053fa6dc03c9a",
 });
 
 function fail(code) {
