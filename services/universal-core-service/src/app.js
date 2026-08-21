@@ -5679,6 +5679,18 @@ export function createUniversalCoreService(options = {}) {
   const genericWorkCoreJoinRequired = genericWorkCoreJoinRequiredFlag.valid
     ? genericWorkCoreJoinRequiredFlag.value
     : true;
+  // Generic Work Core Join is a governed capability, not the availability
+  // boundary for every Core action.  A signer outage must fail only that
+  // capability; otherwise Core cannot issue the ticket needed to recover it.
+  const genericWorkCoreJoinGatesGlobalReadinessFlag = strictGenericWorkCoreJoinBoolean(
+    options.genericWorkCoreJoinGatesGlobalReadiness
+      ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_GATES_GLOBAL_READINESS,
+    false,
+    "generic_work_core_join_global_readiness_flag_invalid",
+  );
+  const genericWorkCoreJoinGatesGlobalReadiness = genericWorkCoreJoinGatesGlobalReadinessFlag.valid
+    ? genericWorkCoreJoinGatesGlobalReadinessFlag.value
+    : true;
   const genericWorkCoreJoinRemoteSignerMode = String(
     options.genericWorkCoreJoinSignerMode
       ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE
@@ -5688,6 +5700,8 @@ export function createUniversalCoreService(options = {}) {
     ? genericWorkCoreJoinEnabledFlag.error
     : !genericWorkCoreJoinRequiredFlag.valid
       ? genericWorkCoreJoinRequiredFlag.error
+      : !genericWorkCoreJoinGatesGlobalReadinessFlag.valid
+        ? genericWorkCoreJoinGatesGlobalReadinessFlag.error
       : genericWorkCoreJoinRequired && !genericWorkCoreJoinEnabled
         ? "generic_work_core_join_required_without_enabled"
         : !["disabled", "remote"].includes(genericWorkCoreJoinRemoteSignerMode)
@@ -8516,7 +8530,9 @@ export function createUniversalCoreService(options = {}) {
       && nyraPolicyRegistryProductionReady
       && researchAirlockProductionReady
       && genericWorkCoreJoinConfigurationError === null
-      && (!genericWorkCoreJoinRequired || genericWorkCoreJoinReady);
+      && (!genericWorkCoreJoinGatesGlobalReadiness
+        || !genericWorkCoreJoinRequired
+        || genericWorkCoreJoinReady);
     const renderReady = nonCausalProductionReady
       && causalContinuityProductionReady;
     const causalInitializationDegraded = causalBootstrapLivenessReady;
@@ -8543,6 +8559,7 @@ export function createUniversalCoreService(options = {}) {
       generic_work_core_join: {
         enabled: genericWorkCoreJoinEnabled,
         required: genericWorkCoreJoinRequired,
+        gates_global_readiness: genericWorkCoreJoinGatesGlobalReadiness,
         configuration_valid: genericWorkCoreJoinConfigurationError === null,
         configuration_error: genericWorkCoreJoinConfigurationError,
         signer_mode: genericWorkCoreJoinRemoteSignerMode,
