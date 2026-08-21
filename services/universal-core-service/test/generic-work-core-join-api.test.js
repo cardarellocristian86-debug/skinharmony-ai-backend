@@ -219,6 +219,7 @@ test("strict feature flags expose invalid configuration and required-only render
     genericWorkCoreJoinTestDefaults: false,
     genericWorkCoreJoinEnabled: true,
     genericWorkCoreJoinRequired: "TRUE",
+    genericWorkCoreJoinGatesGlobalReadiness: true,
   }, async (_request, health) => {
     const status = await health();
     assert.equal(status.generic_work_core_join.required, true);
@@ -230,6 +231,7 @@ test("strict feature flags expose invalid configuration and required-only render
     genericWorkCoreJoinTestDefaults: false,
     genericWorkCoreJoinEnabled: false,
     genericWorkCoreJoinRequired: true,
+    genericWorkCoreJoinGatesGlobalReadiness: true,
   }, async (_request, health) => {
     const status = await health();
     assert.equal(status.generic_work_core_join.configuration_error, "generic_work_core_join_required_without_enabled");
@@ -239,6 +241,7 @@ test("strict feature flags expose invalid configuration and required-only render
     genericWorkCoreJoinTestDefaults: false,
     genericWorkCoreJoinEnabled: true,
     genericWorkCoreJoinRequired: true,
+    genericWorkCoreJoinGatesGlobalReadiness: true,
     genericWorkCoreJoinSignerMode: "REMOTE",
   }, async (_request, health) => {
     const status = await health();
@@ -246,6 +249,20 @@ test("strict feature flags expose invalid configuration and required-only render
     assert.equal(
       status.generic_work_core_join.configuration_error,
       "generic_work_core_join_signer_mode_invalid",
+    );
+    assert.equal(status.render_ready, false);
+  });
+  await withService({
+    genericWorkCoreJoinTestDefaults: false,
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinRequired: true,
+    genericWorkCoreJoinGatesGlobalReadiness: "FALSE",
+  }, async (_request, health) => {
+    const status = await health();
+    assert.equal(status.generic_work_core_join.gates_global_readiness, true);
+    assert.equal(
+      status.generic_work_core_join.configuration_error,
+      "generic_work_core_join_global_readiness_flag_invalid",
     );
     assert.equal(status.render_ready, false);
   });
@@ -304,6 +321,45 @@ test("a Generic Join signer outage does not make unrelated Core readiness unavai
     const denied = await request("/v1/work-continuity/generic-core-join", body());
     assert.equal(denied.status, 503);
     assert.equal(denied.json.error, "generic_work_core_join_signing_unavailable");
+  });
+});
+
+test("a Generic Join signer configuration error is isolated unless the global gate is enabled", async (t) => {
+  const invalidRemoteSigner = () => ({
+    genericWorkCoreJoinStore: createMemoryGenericWorkCoreJoinStore(),
+    genericWorkCoreJoinRemoteSignerConfig: {
+      origin: "https://generic-join-signer.example.invalid",
+    },
+  });
+
+  await t.test("global gate disabled", async () => {
+    await withService(invalidRemoteSigner(), async (request, health) => {
+      const status = await health();
+      assert.equal(status.generic_work_core_join.gates_global_readiness, false);
+      assert.equal(status.generic_work_core_join.configuration_valid, false);
+      assert.equal(
+        status.generic_work_core_join.configuration_error,
+        "generic_work_core_join_signer_path_invalid",
+      );
+      assert.equal(status.generic_work_core_join.ready, false);
+      assert.equal(status.render_ready, true);
+      const denied = await request("/v1/work-continuity/generic-core-join", body());
+      assert.equal(denied.status, 503);
+      assert.equal(denied.json.error, "generic_work_core_join_signer_path_invalid");
+    });
+  });
+
+  await t.test("global gate enabled", async () => {
+    await withService({
+      ...invalidRemoteSigner(),
+      genericWorkCoreJoinGatesGlobalReadiness: true,
+    }, async (_request, health) => {
+      const status = await health();
+      assert.equal(status.generic_work_core_join.gates_global_readiness, true);
+      assert.equal(status.generic_work_core_join.configuration_valid, false);
+      assert.equal(status.generic_work_core_join.ready, false);
+      assert.equal(status.render_ready, false);
+    });
   });
 });
 

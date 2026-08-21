@@ -4688,6 +4688,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
       evidence_digest: evidenceDigest,
       configuration_digest: configurationDigest,
     });
+    // No native plan means no worker has been scheduled and no external
+    // action could have been attempted. Preserve the incident evidence, but
+    // do not deadlock the only Work able to publish the corrective release.
+    const preExecutionPlanLookupFailure =
+      operation === "work_continuity_closure_evaluate" &&
+      errorCode === "NATIVE_AGENT_PLAN_NOT_FOUND" &&
+      !latestPlan.rows[0];
     return recordIncident(identity, {
       work_id: context.workId,
       project_id: projectId,
@@ -4720,6 +4727,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       },
       next_action: safeText(input.next_action, 4_000),
       idempotency_key: `incident-operational-${incidentIdempotencyDigest}`,
+      block_work: !preExecutionPlanLookupFailure,
     });
   }
 
@@ -4754,6 +4762,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
       promotes_only_after_independent_verification: true,
     }, 100_000);
     const runbookDigest = digest(runbook);
+    // Candidate incident evidence is always append-only.  Only failures that
+    // reached an execution-capable plan may move a Work to blocked.
+    const blockWork = input.block_work !== false;
     return transaction(async (client) => {
       const work = await client.query(`SELECT project_id FROM core_continuity_works
         WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [context.tenantId, context.workId]);
@@ -4770,10 +4781,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
       );
       if (existing.rows[0]) {
         if (existing.rows[0].runbook_digest !== runbookDigest) throw new Error("incident_runbook_conflict");
-        await client.query(`UPDATE core_continuity_works
-          SET status='blocked',next_action=$3,updated_at=now()
-          WHERE tenant_id=$1 AND work_id=$2`,
-        [context.tenantId, context.workId, nextAction]);
+        if (blockWork) {
+          await client.query(`UPDATE core_continuity_works
+            SET status='blocked',next_action=$3,updated_at=now()
+            WHERE tenant_id=$1 AND work_id=$2`,
+          [context.tenantId, context.workId, nextAction]);
+        }
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
           tenant_id: context.tenantId,
@@ -4781,6 +4794,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           project_id: projectId,
           fingerprint,
           status: existing.rows[0].status,
+          work_status: blockWork ? "blocked" : "active",
           next_action: nextAction,
           idempotent_replay: true,
         };
@@ -4790,15 +4804,18 @@ export function createWorkContinuityRuntime(config, options = {}) {
         VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,'candidate',$7)`,
       [context.tenantId, projectId, fingerprint, JSON.stringify(scope), JSON.stringify(runbook),
         runbookDigest, context.actor]);
-      await client.query(`UPDATE core_continuity_works
-        SET status='blocked',next_action=$3,updated_at=now()
-        WHERE tenant_id=$1 AND work_id=$2`,
-      [context.tenantId, context.workId, nextAction]);
+      if (blockWork) {
+        await client.query(`UPDATE core_continuity_works
+          SET status='blocked',next_action=$3,updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2`,
+        [context.tenantId, context.workId, nextAction]);
+      }
       const event = await appendEvent(client, context, "incident_recorded", {
         project_id: projectId,
         fingerprint,
         runbook_digest: runbookDigest,
         status: "candidate",
+        work_status: blockWork ? "blocked" : "active",
         next_action: nextAction,
       });
       return {
@@ -4810,6 +4827,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         scope,
         runbook_digest: runbookDigest,
         status: "candidate",
+        work_status: blockWork ? "blocked" : "active",
         next_action: nextAction,
         event,
       };
