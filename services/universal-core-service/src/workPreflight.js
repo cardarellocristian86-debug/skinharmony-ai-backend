@@ -258,6 +258,8 @@ export function buildWorkPreflight({
   ownerConfirmed = false,
   evidenceState = {},
   researchAllowedDomains = [],
+  dynamicCapability = null,
+  workBinding = null,
 } = {}) {
   const normalizedRequest = cleanText(requestText, 20_000);
   if (!normalizedRequest) throw new Error("work_preflight_request_required");
@@ -287,6 +289,20 @@ export function buildWorkPreflight({
     selectedBranches: branchContext?.selected_branches || [],
     allowedDomains: researchAllowedDomains,
   });
+  const boundedDynamicCapability = dynamicCapability && typeof dynamicCapability === "object" &&
+    /^[a-z][a-z0-9_]{1,95}$/.test(String(dynamicCapability.capability_id || "")) &&
+    /^[a-f0-9]{64}$/.test(String(dynamicCapability.argument_digest || ""))
+    ? {
+        capability_id: String(dynamicCapability.capability_id),
+        argument_digest: String(dynamicCapability.argument_digest),
+      }
+    : null;
+  const boundedWorkBinding = workBinding && typeof workBinding === "object" ? {
+    work_id: cleanText(workBinding.work_id, 120),
+    project_id: cleanText(workBinding.project_id, 120),
+    session_id: cleanText(workBinding.session_id, 240),
+    agent_id: cleanText(workBinding.agent_id, 120),
+  } : null;
 
   return {
     schema_version: PREFLIGHT_VERSION,
@@ -307,6 +323,8 @@ export function buildWorkPreflight({
       operation_type: cleanText(operationType, 100) || "advisory_work",
       source_tool: cleanText(toolName, 100) || null,
     },
+    ...(boundedDynamicCapability ? { dynamic_capability: boundedDynamicCapability } : {}),
+    ...(boundedWorkBinding ? { work_binding: boundedWorkBinding } : {}),
     operational_surface: "tenant_work_gallery",
     gallery_version: gallery.schema_version || "tenant_work_gallery_v1",
     tenant_work_gallery: {

@@ -40,6 +40,27 @@ test("advertises explicit confirmation fields only on write tools", () => {
 
 test("routes semantic selection through the mandatory generic preflight", () => {
   assert.equal(requiresGenericWorkPreflight("core_semantic_select"), true);
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_invoke", { capability_id: "workspace_write_document" }),
+    true,
+    "dynamic mutations must receive a server-issued Work Preflight",
+  );
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_invoke", {
+      capability_id: "agent_heartbeat",
+      arguments: { agent_id: "bootstrap", client_type: "codex" },
+    }),
+    false,
+    "the metadata-free heartbeat bootstrap remains the sole invoke exception",
+  );
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_invoke", {
+      capability_id: "agent_heartbeat",
+      arguments: { agent_id: "bootstrap", client_type: "codex", display_name: "Decorated" },
+    }),
+    true,
+    "a decorated heartbeat must receive a server-issued preflight",
+  );
   assert.equal(requiresGenericWorkPreflight("core_health"), false);
   assert.equal(requiresGenericWorkPreflight("work_preflight"), false);
 });

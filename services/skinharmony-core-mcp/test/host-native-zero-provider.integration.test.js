@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createApp } from "../src/app.js";
+import { createApp, requiresGenericWorkPreflight } from "../src/app.js";
 import { createCoreHandlers } from "../src/core-handlers.js";
 import { createDynamicCapabilityHandlers } from "../src/dynamic-capability-router.js";
 import { TOOLS } from "../src/tool-definitions.js";
@@ -666,6 +666,25 @@ test("host-native MCP to Core reaches independently attested closure material wi
     const mcpApp = createApp(config, {
       handlers: { ...baseHandlers, ...dynamicHandlers },
       toolSurface: "compact",
+      beforeToolCall: async ({ identity, toolName, args }) => {
+        if (!requiresGenericWorkPreflight(toolName, args)) return { preflight: null };
+        const targetArgs = toolName === "core_capability_invoke" ? (args.arguments || {}) : args;
+        const result = await coreHandlers.work_preflight({
+          request: `Host-native integration invokes ${toolName}`,
+          operation_type: toolName,
+          tool_name: toolName,
+          response_mode: "full",
+          work_id: targetArgs.work_id,
+          project_id: targetArgs.project_id,
+          session_id: targetArgs.session_id,
+          agent_id: targetArgs.agent_id || "integration-agent",
+          client_type: targetArgs.client_type || "codex",
+          available_capabilities: ["skinharmony_core_mcp", toolName],
+          owner_confirmed: identity.ownerConfirmed === true,
+          confirmation_reference: identity.confirmationReference,
+        }, identity);
+        return { preflight: result.structuredContent };
+      },
     });
     mcpServer = mcpApp.listen(0, "127.0.0.1");
     await new Promise((resolve) => mcpServer.once("listening", resolve));

@@ -21,18 +21,13 @@ import { signEnvironmentDelegation, verifyEnvironmentDelegation } from "./enviro
 
 const SERVER_VERSION = "0.16.0-governed-continuity-fabric";
 const SERVER_INSTRUCTIONS = [
-  "SkinHarmony Nyra & Core is installed as a ChatGPT connector. IMPORTANT: the MCP address is technical and must never be opened in Safari or pasted as a normal web link.",
-  "FIRST INSTALLATION ONLY: in ChatGPT open Settings > Apps & connectors > Advanced settings, enable Developer Mode, choose Create app / Add MCP server, name it SkinHarmony Nyra & Core, paste exactly https://skinharmony-core-mcp.onrender.com/mcp as the server URL, select OAuth and tap Connect. If the connector is already present, use it from a new normal chat.",
-  "WHAT IT DOES: the first host-supplied request becomes a redacted immutable Intent Anchor when continuity capture is enabled. Nyra interprets it, plans bounded specialist work, supervises evidence and asks for correction until the closure criteria are met. Universal Core remains the final policy authority for tenant isolation, budgets, delegation, audit, release and rollback.",
-  "HOST-NATIVE MULTI-AGENT: when the user asks for multi-agent work, Nyra/Core returns a bounded host-native plan. The root ChatGPT or Codex coordinator must create the real children with its native agent capability, then register assignment and result receipts. The server makes zero provider model calls for this path: provider_execution=false, provider_api_key_required=false and server_model_calls=0. A child never inherits owner authority, cannot mint a delegation, and cannot approve its own work. A distinct verifier and a Core closure verdict are required.",
-  "DELEGATED ACTIONS: Nyra may request a bounded, expiring, revocable delegation for exact work, repository, branch, action, evidence and rollback. Core may issue a short one-shot action ticket, but host_policy_override is always false and host_policy_must_allow is always true. Nyra/Core cannot click, bypass or replace ChatGPT/Codex approval, sandbox or auto-review controls.",
-  "CONTINUITY: use the Work Atlas for targeted context, record only verified incident runbooks, checkpoint every blocker with a clear next action, and resume only after digest and drift verification. Do not close work from a caller-provided supervisor boolean.",
-  "OPENAI PROVIDER DISABLED: Nyra and Universal Core operate without an OpenAI API key. Never ask for or accept an API key in chat or a tool argument. Never call provider tools, open setup panels or direct the user to /connect/openai, /agents or /mobile/agents. Old provider links are retired.",
-  "RESEARCH DISTILLATION: for current external evidence, call nyra_research_plan, use the host ChatGPT or Codex web tool, then ingest and distill reviewed evidence in the tenant-isolated shadow workspace. Research never invokes a server-side model provider.",
-  "HOW TO BUILD AN AGENT: define a narrow role, bounded task digest, dependencies, acceptance criteria, budget, cancellation and a host assignment receipt.",
-  "AUTOMATIC: generic flows use preflight, shared memory and continuity; host-native flows use the host coordinator plus Nyra/Core supervision.",
-  "NOT AUTOMATIC: host permission grants, unbounded deployment, browsing or external actions.",
-  "PRIVACY: Never include secrets, raw customer data or full pages; identity comes only from OAuth or the configured Codex bearer, and only redacted reviewed evidence enters memory.",
+  "Nyra/Core is a persistent work coordinator: reuse the Work Identity, compact checkpoint and next action returned by the gateway. Do not rescan the repository, recreate the intent, or ask the user to restate known work.",
+  "Generic tools receive tenant memory, Work selection and preflight automatically. Do not call work_preflight before a normal action. If one operational Work matches the project, it is resumed automatically; ask the owner to choose only when the gateway reports multiple works.",
+  "Treat one verified owner confirmation as the authorization for its exact bounded intent. Continue its approved preparation, verification and ticketed release path without requesting duplicate confirmations. Ask again only when Core reports a new scope, expiry, drift, or an action outside that intent.",
+  "For a recoverable connector/OAuth failure, checkpoint the exact blocker and state the one real recovery action. After the user reconnects, resume the same Work and ticket path; never say that a reconnect alone completed a push, merge or deploy.",
+  "For current research, use nyra_research_plan then the host ChatGPT or Codex web tool; never include secrets in evidence. Nyra and Universal Core operate without an OpenAI API key. Never ask for or accept an API key in chat. Never call provider tools, open setup panels or old provider links. Old provider links are retired.",
+  "Nyra/Core is installed as a ChatGPT connector. Nyra coordinates and Core decides. Neither bypasses ChatGPT/Codex host approvals, sandbox, OAuth, GitHub or Render. Keep prompts and receipts free of secrets and raw customer data; use only host-native agents and no provider API key.",
+  "HOST-NATIVE MULTI-AGENT: HOW TO BUILD AN AGENT: use a narrow role, bounded task, dependencies, acceptance criteria and a host assignment receipt; provider_execution=false and provider_api_key_required=false. AUTOMATIC: preflight, continuity and compact memory. NOT AUTOMATIC: external actions or host approvals; Nyra/Core cannot click, bypass or replace ChatGPT/Codex approval. RESEARCH DISTILLATION uses the tenant-isolated shadow workspace and never invokes a server-side model provider.",
 ].join(" ");
 
 const CONNECTOR_TOOL_NAMESPACE = "skinharmony_nyra_core";
@@ -497,7 +492,6 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "core_capability_catalog",
   "core_branch_registry",
   "core_capability_read",
-  "core_capability_invoke",
   "orchestration_dtt_core_join",
   "nyra_research_airlock_status",
   "nyra_research_airlock_bootstrap",
@@ -516,11 +510,51 @@ const GENERIC_PREFLIGHT_CAPABILITIES = new Set([
 ]);
 
 export function requiresGenericWorkPreflight(toolName, args = {}) {
+  const requestedTool = String(toolName || "");
+  const heartbeatArgs = requestedTool === "core_capability_invoke"
+    ? args?.arguments
+    : args;
+  const metadataFreeHeartbeatBootstrap =
+    (requestedTool === "agent_heartbeat" ||
+      (requestedTool === "core_capability_invoke" && String(args?.capability_id || "") === "agent_heartbeat")) &&
+    heartbeatArgs && typeof heartbeatArgs === "object" && !Array.isArray(heartbeatArgs) &&
+    !Object.hasOwn(heartbeatArgs, "display_name") &&
+    !Object.hasOwn(heartbeatArgs, "capabilities") &&
+    !Object.hasOwn(heartbeatArgs, "recovery_context");
+  if (requestedTool === "agent_heartbeat") return !metadataFreeHeartbeatBootstrap;
+  if (requestedTool === "core_capability_invoke") {
+    // A dynamic mutation must always enter through the server-issued Work
+    // Preflight. The only exception is the metadata-free heartbeat bootstrap,
+    // which establishes the signed presence needed by later work operations.
+    // Any heartbeat that changes metadata or recovers prior state is routed
+    // through Work Preflight like every other dynamic mutation.
+    return !metadataFreeHeartbeatBootstrap;
+  }
   if (
-    String(toolName || "") === "core_capability_read" &&
+    requestedTool === "core_capability_read" &&
     GENERIC_PREFLIGHT_CAPABILITIES.has(String(args?.capability_id || ""))
   ) return true;
-  return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(String(toolName || ""));
+  return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(requestedTool);
+}
+
+function serverIssuedWorkPreflight(preflight, identity) {
+  const envelope = preflight?.work_preflight
+    || preflight?.result?.work_preflight
+    || (preflight?.schema_version === "skinharmony_work_preflight_v1" ? preflight : null);
+  if (
+    !envelope || typeof envelope !== "object" || Array.isArray(envelope) ||
+    envelope.schema_version !== "skinharmony_work_preflight_v1" ||
+    typeof envelope.preflight_id !== "string" || envelope.preflight_id.trim().length < 3 ||
+    envelope.mandatory !== true ||
+    typeof envelope.tenant_id !== "string" || envelope.tenant_id !== identity?.tenantId ||
+    envelope.operational_surface !== "tenant_work_gallery"
+  ) {
+    const error = new Error("work_preflight_binding_invalid");
+    error.code = "work_preflight_binding_invalid";
+    error.status = 422;
+    throw error;
+  }
+  return envelope;
 }
 
 export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstream = {}) {
@@ -711,6 +745,40 @@ function inferClientType(identity) {
   if (kind === "oauth" || kind.includes("chatgpt")) return "chatgpt";
   if (kind.includes("codex")) return "codex";
   return "api_agent";
+}
+
+export function resolveHostTransportPresence({
+  identity,
+  toolName,
+  capabilityId,
+  declaredSessionId,
+  agentPresence,
+  transportAgentPresence,
+} = {}) {
+  if (transportAgentPresence) {
+    return Object.freeze({
+      presence: transportAgentPresence,
+      binding_source: "transport",
+    });
+  }
+  const membership = identity?.authenticatedTenantMembership;
+  const oauthNativePlanCall =
+    toolName === "work_continuity_native_plan" ||
+    (toolName === "core_capability_invoke" && capabilityId === "work_continuity_native_plan");
+  const oauthLogicalSessionBound = Boolean(
+    oauthNativePlanCall &&
+    declaredSessionId &&
+    agentPresence &&
+    identity?.kind === "oauth" &&
+    identity?.oauthOwnerBound === true &&
+    membership?.authenticated === true &&
+    membership?.tenant_id === identity?.tenantId &&
+    membership?.role === "tenant_owner",
+  );
+  return Object.freeze({
+    presence: oauthLogicalSessionBound ? agentPresence : null,
+    binding_source: oauthLogicalSessionBound ? "oauth_declared" : null,
+  });
 }
 
 function normalizeTransportSession(value) {
@@ -1702,7 +1770,11 @@ export function createApp(config, options = {}) {
             ...(tool._meta || {}),
             securitySchemes: schemes,
             "skinharmony/scopes": scopes,
-            ...(genericPreflightRequired ? { "skinharmony/mandatory_first_tool": "work_preflight" } : {}),
+            // The gateway executes this preflight itself immediately before a
+            // generic tool.  Advertising it as a first manual tool caused
+            // hosts to pay for the same preflight twice (once visibly, then
+            // once again during protected execution).
+            ...(genericPreflightRequired ? { "skinharmony/automatic_preflight": true } : {}),
             ...(!genericPreflightRequired ? { "skinharmony/native_governance": "authenticated_tenant_control_plane" } : {}),
             "skinharmony/preflight_entrypoint": tool.name === "work_preflight",
             "skinharmony/shared_memory_lifecycle": "automatic_task_contract_and_checkpoint",
@@ -1805,15 +1877,23 @@ export function createApp(config, options = {}) {
               session_id: transportSessionId,
             })
           : null;
+        const hostTransportPresence = resolveHostTransportPresence({
+          identity,
+          toolName: tool.name,
+          capabilityId: rawArgs.capability_id,
+          declaredSessionId,
+          agentPresence,
+          transportAgentPresence,
+        });
         const attestedAgentPresence = {
           ...agentPresence,
           // Keep the opaque logical session only on the server-side identity.
           // The mandatory presence hook needs it to renew the exact signed
           // session, while the public response can continue to omit it.
           session_id: sessionId,
-          transport_bound: Boolean(transportAgentPresence),
+          transport_bound: Boolean(hostTransportPresence.presence),
           host_transport_session_fingerprint:
-            transportAgentPresence?.session_fingerprint || null,
+            hostTransportPresence.presence?.session_fingerprint || null,
         };
         const logicalPresence = logicalSessionPresences.get(agentPresence.session_fingerprint);
         if (
@@ -1827,7 +1907,9 @@ export function createApp(config, options = {}) {
         const presenceBinding = {
           ...attestedAgentPresence,
           session_id: sessionId,
-          binding_source: transportPresence?.binding_source || (declaredSessionId ? "declared" : transportSessionId ? "transport" : "server_bootstrap"),
+          binding_source: transportPresence?.binding_source ||
+            hostTransportPresence.binding_source ||
+            (declaredSessionId ? "declared" : transportSessionId ? "transport" : "server_bootstrap"),
         };
         setBounded(logicalSessionPresences, agentPresence.session_fingerprint, presenceBinding);
         if (transportSessionId || serverIssuedSessionId) {
@@ -1877,12 +1959,16 @@ export function createApp(config, options = {}) {
           ? (hookContext?.preflight ?? hookContext)
           : null;
         activeToolCall = { ...activeToolCall, hookContext, preflight };
-        // The compact dynamic router accepts a preflight only at its wrapper
-        // boundary. Resolve the server-issued envelope across the two valid
-        // handler shapes and never inspect caller-supplied nested arguments.
-        const serverIssuedPreflight = preflight?.work_preflight
+        // Dynamic invocations receive only an envelope emitted by the local
+        // preflight hook. If that hook is unavailable or malformed, reject
+        // before any dynamic handler or Core gate can be reached.
+        const resolvedPreflight = preflight?.work_preflight
           || preflight?.result?.work_preflight
           || (preflight?.schema_version === "skinharmony_work_preflight_v1" ? preflight : null);
+        const serverIssuedPreflight = tool.name === "core_capability_invoke" &&
+          requiresGenericWorkPreflight(tool.name, args)
+          ? serverIssuedWorkPreflight(preflight, callIdentity)
+          : resolvedPreflight;
         const handlerArgs = serverIssuedPreflight
           ? { ...args, work_preflight: serverIssuedPreflight }
           : args;
@@ -1953,4 +2039,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachWorkPreflight, buildIdentity, inferClientType, resolveConnectorToolName, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, toolFailure, TOOLS };
+export { attachWorkPreflight, buildIdentity, inferClientType, resolveConnectorToolName, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };

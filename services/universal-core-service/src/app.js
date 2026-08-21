@@ -2291,6 +2291,8 @@ function composeMandatoryWorkPreflight(req, {
     ownerConfirmed: body.owner_confirmed === true,
     evidenceState: body.evidence_state || body.research_evidence_state || {},
     researchAllowedDomains: normalizeList(body.research_allowed_domains, 20),
+    dynamicCapability: body.dynamic_capability,
+    workBinding: body.work_binding,
   });
 }
 
@@ -11996,6 +11998,42 @@ export function createUniversalCoreService(options = {}) {
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
     if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const dynamicCapability = req.body?.dynamic_capability;
+    if (dynamicCapability !== undefined) {
+      const preflightGate = validateWorkPreflightEnvelope(req.body || {}, req.tenantId, {
+        requireGallery: true,
+        requireMemory: true,
+      });
+      const capabilityId = String(dynamicCapability?.capability_id || "");
+      const argumentDigest = String(dynamicCapability?.argument_digest || "");
+      const expectedOperation = `dynamic_capability:${capabilityId}`;
+      const bound = preflightGate.preflight?.dynamic_capability;
+      const workBinding = req.body?.work_binding;
+      const preflightWorkBinding = preflightGate.preflight?.work_binding;
+      if (!preflightGate.ok ||
+          !/^[a-z][a-z0-9_]{1,95}$/.test(capabilityId) ||
+          !/^[a-f0-9]{64}$/.test(argumentDigest) ||
+          bound?.capability_id !== capabilityId ||
+          bound?.argument_digest !== argumentDigest ||
+          preflightGate.preflight?.request?.operation_type !== expectedOperation ||
+          preflightGate.preflight?.request?.source_tool !== capabilityId ||
+          !workBinding || typeof workBinding !== "object" || !preflightWorkBinding ||
+          ["work_id", "project_id", "session_id", "agent_id"].some((field) =>
+            String(workBinding[field] || "") !== String(preflightWorkBinding[field] || ""),
+          )) {
+        audit.append("core_dynamic_capability_preflight_denied", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          capability_id: capabilityId.slice(0, 96),
+        });
+        return res.status(428).json({
+          ok: false,
+          error: "DYNAMIC_CAPABILITY_PREFLIGHT_INVALID",
+          execution_allowed: false,
+        });
+      }
+      req.dynamicCapabilityPreflight = preflightGate.preflight;
+    }
     // An owner assertion is a connector capability. An automation key may keep
     // its legacy explicit-confirmation path, but it must never become an owner
     // connector merely by being issued the same named scope.
