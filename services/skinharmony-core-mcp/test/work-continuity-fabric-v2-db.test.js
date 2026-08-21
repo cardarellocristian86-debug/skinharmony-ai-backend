@@ -1960,6 +1960,39 @@ test("operational failures create one exact indexed blocker without raw error te
   assert.match(serialized, /TRUSTED_READBACK_CHECKS_NOT_READY/);
 });
 
+test("missing native plan during pre-execution closure evaluation records evidence without blocking the Work", async () => {
+  const instant = new Date("2026-07-29T14:25:00.000Z");
+  const clock = () => new Date(instant);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "e".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "pre-execution-plan-lookup-session",
+  }, { creationAuthorized: true });
+
+  const result = await runtime.recordOperationalIncident(identity, {
+    work_id: work.work_id,
+    operation: "work_continuity_closure_evaluate",
+    error_code: "native_agent_plan_not_found",
+    evidence_digest: "9".repeat(64),
+    next_action: "Persist the bounded native plan, then re-evaluate closure.",
+  });
+
+  assert.equal(result.status, "candidate");
+  assert.equal(result.work_status, "active");
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "active");
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).at(-1).event_type, "incident_recorded");
+});
+
 test("cross-chat resume preserves same-session plans and supersedes stale coordinator bindings", async () => {
   const instant = new Date("2026-07-29T13:20:00.000Z");
   const clock = () => new Date(instant);
