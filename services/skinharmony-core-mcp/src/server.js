@@ -430,6 +430,52 @@ function summarizeToolRequest(toolName, args = {}) {
   ).slice(0, 20_000);
 }
 
+function stableCanonical(value) {
+  if (Array.isArray(value)) return value.map(stableCanonical);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().flatMap((key) =>
+    value[key] === undefined ? [] : [[key, stableCanonical(value[key])]],
+  ));
+}
+
+function dynamicInvocationTarget(toolName, args = {}, identity = {}) {
+  if (toolName !== "core_capability_invoke") {
+    return { toolName, args, capabilityId: "", argumentDigest: "" };
+  }
+  const capabilityId = String(args?.capability_id || "").trim();
+  const targetArgs = args?.arguments && typeof args.arguments === "object" && !Array.isArray(args.arguments)
+    ? args.arguments
+    : {};
+  const tool = TOOLS.find((item) => item.name === capabilityId);
+  const normalizedArgs = { ...targetArgs };
+  if (tool?._meta?.["skinharmony/tenantBoundedCollaboration"] === true) {
+    const presence = identity.agentPresence || {};
+    normalizedArgs.agent_id = presence.agent_id;
+    normalizedArgs.session_id = presence.session_id;
+    normalizedArgs.client_type = presence.client_type;
+  }
+  if (tool?.inputSchema?.properties?.idempotency_key &&
+      normalizedArgs.idempotency_key === undefined && args.idempotency_key) {
+    normalizedArgs.idempotency_key = args.idempotency_key;
+  }
+  if (tool?._meta?.["skinharmony/ownerConfirmationRequired"] === true) {
+    normalizedArgs.owner_confirmed = args.owner_confirmed === true;
+    if (args.confirmation_reference) normalizedArgs.confirmation_reference = String(args.confirmation_reference).slice(0, 240);
+  }
+  // This digest is derived inside the gateway from the same normalized target
+  // shape that the router will validate and dispatch; it is provenance
+  // metadata, never a client authority claim.
+  const argumentDigest = crypto.createHash("sha256")
+    .update(JSON.stringify(stableCanonical(normalizedArgs)))
+    .digest("hex");
+  return {
+    toolName: capabilityId || toolName,
+    args: normalizedArgs,
+    capabilityId,
+    argumentDigest,
+  };
+}
+
 function requireTenantWorkIdentity(identity) {
   requireTenantWorkCapability(identity, "read");
 }
@@ -609,7 +655,17 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       creationAuthorized: false,
     });
   } catch (error) {
-    if (error?.code !== "continuity_creation_owner_confirmation_required") throw error;
+    if (error?.code === "continuity_resume_selection_required") {
+      continuity = {
+        tenant_id: identity.tenantId,
+        project_id: continuityProjectId(args),
+        work_id: null,
+        state: "work_selection_required",
+        owner_governance_required: false,
+        candidate_work_ids: Array.isArray(error.candidate_work_ids) ? error.candidate_work_ids.slice(0, 2) : [],
+        next_action: "Ask the owner which current Work to continue; do not create a duplicate Work or request a new confirmation.",
+      };
+    } else if (error?.code === "continuity_creation_owner_confirmation_required") {
     continuity = {
       tenant_id: identity.tenantId,
       project_id: continuityProjectId(args),
@@ -618,6 +674,9 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       owner_governance_required: true,
       next_action: "Use work_continuity_create with a fresh, request-bound owner confirmation.",
     };
+    } else {
+      throw error;
+    }
   }
   attachContinuity(preflightResult, continuity);
   return continuity;
@@ -1161,7 +1220,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   internallyGovernedCapabilities: ["agent_heartbeat"],
-  gateAction: ({ tool, identity, catalogRevision, idempotencyKey }) => {
+  gateAction: ({ tool, identity, catalogRevision, idempotencyKey, workPreflight }) => {
     const researchDistillationShadow =
       researchDistillationShadowTools.has(tool.name);
     const externalSideEffect = researchDistillationShadow
@@ -1212,6 +1271,9 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
       actor_authorized_for_target: true,
       catalog_revision: catalogRevision,
       idempotency_key: idempotencyKey,
+      work_preflight: workPreflight,
+      dynamic_capability: workPreflight?.dynamic_capability,
+      work_binding: workPreflight?.work_binding,
       owner_confirmed: ownerConfirmationRequired && identity.ownerConfirmed === true,
       confirmation_reference: identity.confirmationReference,
     }, identity);
@@ -1220,9 +1282,14 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
 const handlers = { ...baseHandlers, ...dynamicHandlers };
 
 function isAgentPresenceBootstrapCall(toolName, args = {}) {
-  return toolName === "agent_heartbeat" ||
+  const heartbeatArgs = toolName === "core_capability_invoke" ? args?.arguments : args;
+  const metadataFree = heartbeatArgs && typeof heartbeatArgs === "object" && !Array.isArray(heartbeatArgs) &&
+    !Object.hasOwn(heartbeatArgs, "display_name") &&
+    !Object.hasOwn(heartbeatArgs, "capabilities") &&
+    !Object.hasOwn(heartbeatArgs, "recovery_context");
+  return metadataFree && (toolName === "agent_heartbeat" ||
     ((toolName === "core_capability_catalog" || toolName === "core_capability_invoke") &&
-      args?.capability_id === "agent_heartbeat");
+      args?.capability_id === "agent_heartbeat"));
 }
 
 const POLICY_REGISTRY_PREFLIGHT_OPERATION = Object.freeze({
@@ -1276,20 +1343,23 @@ const app = createApp(config, {
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
     try {
       if (!requiresGenericWorkPreflight(toolName, args)) return { preflight: null, ledgerContext };
+      const target = dynamicInvocationTarget(toolName, args, identity);
       const result = await coreHandlers.work_preflight({
-        request: summarizeToolRequest(toolName, args),
-        operation_type: POLICY_REGISTRY_PREFLIGHT_OPERATION[toolName] || toolName,
-        tool_name: toolName,
+        request: summarizeToolRequest(target.toolName, target.args),
+        operation_type: target.capabilityId
+          ? `dynamic_capability:${target.capabilityId}`
+          : (POLICY_REGISTRY_PREFLIGHT_OPERATION[toolName] || toolName),
+        tool_name: target.toolName,
         // Dynamic capabilities that require a preflight must receive the
         // complete server-issued envelope. The compact response intentionally
         // omits governance detail and therefore cannot satisfy Universal
         // Core's preflight gate.
         response_mode: "full",
-        work_id: args.work_id,
-        project_id: args.project_id,
-        session_id: identity.agentPresence?.session_id || args.session_id,
-        agent_id: identity.agentPresence?.agent_id || args.agent_id || args.from_agent_id || "connected_ai",
-        client_type: identity.agentPresence?.client_type || args.client_type,
+        work_id: target.args.work_id,
+        project_id: target.args.project_id,
+        session_id: identity.agentPresence?.session_id || target.args.session_id,
+        agent_id: identity.agentPresence?.agent_id || target.args.agent_id || target.args.from_agent_id || "connected_ai",
+        client_type: identity.agentPresence?.client_type || target.args.client_type,
         ...(config.hostNativeAgentProtocolEnabled ? {
           host_type: (identity.agentPresence?.client_type || args.client_type) === "codex"
             ? "codex_native"
@@ -1297,13 +1367,25 @@ const app = createApp(config, {
         } : {}),
         available_capabilities: [
           "skinharmony_core_mcp",
-          toolName,
+          target.toolName,
           ...(config.hostNativeAgentProtocolEnabled ? ["host_native_agents"] : []),
         ],
         owner_confirmed: identity.ownerConfirmed === true,
         confirmation_reference: identity.confirmationReference,
+        ...(target.capabilityId ? {
+          dynamic_capability: {
+            capability_id: target.capabilityId,
+            argument_digest: target.argumentDigest,
+          },
+          work_binding: {
+            work_id: String(target.args.work_id || ""),
+            project_id: String(target.args.project_id || ""),
+            session_id: String(identity.agentPresence?.session_id || target.args.session_id || ""),
+            agent_id: String(identity.agentPresence?.agent_id || target.args.agent_id || ""),
+          },
+        } : {}),
       }, identity);
-      await ensureContinuity(identity, args, toolName, result, { resumeExisting: true });
+      await ensureContinuity(identity, target.args, target.toolName, result, { resumeExisting: true });
       const preflight = result.structuredContent;
       if (ledgerContext) await decisionLedger.append(ledgerContext, "preflight_completed", {
         preflight_id: preflight?.work_preflight?.preflight_id || preflight?.preflight_id,

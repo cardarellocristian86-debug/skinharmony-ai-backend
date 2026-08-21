@@ -3135,6 +3135,12 @@ export function createCoreHandlers(config, options = {}) {
         ...(Array.isArray(args.research_allowed_domains) ? { research_allowed_domains: args.research_allowed_domains } : {}),
         ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
         ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
+        ...(args.dynamic_capability && typeof args.dynamic_capability === "object"
+          ? { dynamic_capability: args.dynamic_capability }
+          : {}),
+        ...(args.work_binding && typeof args.work_binding === "object"
+          ? { work_binding: args.work_binding }
+          : {}),
         owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
         ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
         ...(sharedContext ? { memory_context: sharedContext } : {}),

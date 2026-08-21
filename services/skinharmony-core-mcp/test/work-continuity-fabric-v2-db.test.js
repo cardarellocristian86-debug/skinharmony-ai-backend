@@ -67,6 +67,16 @@ class ContinuityPool {
       const matchesWork = !parameters[3] || row?.work_id === parameters[3];
       return { rows: row && matchesWork ? [{ ...row }] : [], rowCount: row && matchesWork ? 1 : 0 };
     }
+    if (q.startsWith("SELECT work_id FROM core_continuity_works WHERE tenant_id=$1 AND project_id=$2")) {
+      const [tenantId, projectId, statuses] = parameters;
+      const rows = [...this.works.values()]
+        .filter((work) => work.tenant_id === tenantId && work.project_id === projectId && statuses.includes(work.status))
+        .sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)) ||
+          String(right.work_id).localeCompare(String(left.work_id)))
+        .slice(0, 2)
+        .map((work) => ({ work_id: work.work_id }));
+      return { rows, rowCount: rows.length };
+    }
     if (q.startsWith("SELECT a.intent_digest,a.create_request_digest,")) {
       const anchor = this.anchors.get(key(parameters[0], parameters[1]));
       const work = this.works.get(key(parameters[0], parameters[1]));
@@ -1069,6 +1079,59 @@ test("exact Work resume binds new sessions idempotently without duplicating Work
     initialInput.project_id,
     concurrentSession.session_id,
   )).work_id, created.work_id);
+});
+
+test("a fresh chat automatically binds the sole operational Work for its project", async () => {
+  const clock = () => new Date("2026-08-21T10:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = { tenantId: "tenant-a", subject: "codex" };
+  const created = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
+
+  const resumed = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "new-chat-session",
+    initial_message: "Continue the current work from this new chat.",
+    idea: "New chat continuation",
+    objective: "Resume current work",
+    resume_existing: true,
+  }, { trustedSessionFollowup: true });
+
+  assert.equal(resumed.work_id, created.work_id);
+  assert.equal(resumed.resumed_existing, true);
+  assert.equal(resumed.automatic_resume, true);
+  assert.equal(resumed.resume_source, "unambiguous_project_work");
+  assert.equal(pool.bindings.get(key("tenant-a", initialInput.project_id, "new-chat-session")).work_id, created.work_id);
+  assert.deepEqual(pool.events.get(key("tenant-a", created.work_id)).map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+  ]);
+});
+
+test("a fresh chat never creates or confirms duplicate Work when project continuation is ambiguous", async () => {
+  const clock = () => new Date("2026-08-21T10:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = { tenantId: "tenant-a", subject: "codex" };
+  const first = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
+  const second = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "second-active-work",
+    objective: "A separate operational work",
+  }, { creationAuthorized: true });
+
+  await assert.rejects(runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "ambiguous-new-chat",
+    initial_message: "Continue the project.",
+    resume_existing: true,
+  }, { trustedSessionFollowup: true }), (error) => {
+    assert.equal(error.code, "continuity_resume_selection_required");
+    assert.deepEqual(new Set(error.candidate_work_ids), new Set([first.work_id, second.work_id]));
+    return true;
+  });
+  assert.equal(pool.works.size, 2);
+  assert.equal(pool.bindings.has(key("tenant-a", initialInput.project_id, "ambiguous-new-chat")), false);
 });
 
 test("Gallery admits multiple tenant-scoped participants and rejects session impersonation", async () => {

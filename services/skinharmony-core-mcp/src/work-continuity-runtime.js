@@ -151,6 +151,13 @@ export function assertGalleryParticipantBinding(identity = {}, input = {}) {
 const WORK_CATALOG_STATUSES = new Set([
   "active", "verified", "release_ready", "completed", "cancelled", "superseded", "blocked", "failed",
 ]);
+// A new host conversation may safely attach itself only when the project has
+// exactly one still-operational Work.  This is deliberately narrower than the
+// catalog: closed or superseded Work must never become the implicit context of
+// a fresh chat, and two candidates must remain an explicit selection.
+const AUTO_RESUMABLE_WORK_STATUSES = Object.freeze([
+  "active", "verified", "release_ready", "blocked",
+]);
 const STANDING_RELEASE_ELIGIBLE_WORK_STATUSES = new Set([
   "active", "verified", "release_ready",
 ]);
@@ -1827,11 +1834,26 @@ export function createWorkContinuityRuntime(config, options = {}) {
         FROM core_continuity_session_bindings
         WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
       [tenantId, projectId, sessionId]);
-      if (input.resume_existing === true && (binding.rows[0] || input.work_id)) {
+      let autoResumeCandidate = null;
+      let autoResumeCandidates = [];
+      if (input.resume_existing === true && !binding.rows[0] && !input.work_id) {
+        // Do not make the model discover or choose a Work in a new chat.  The
+        // database makes the choice under the same transaction lock used for
+        // the session binding.  More than one operational Work fails closed
+        // into the existing explicit-selection path.
+        const candidates = await client.query(`SELECT work_id FROM core_continuity_works
+          WHERE tenant_id=$1 AND project_id=$2 AND status = ANY($3::varchar[])
+          ORDER BY updated_at DESC,work_id DESC
+          LIMIT 2
+          FOR UPDATE`, [tenantId, projectId, AUTO_RESUMABLE_WORK_STATUSES]);
+        autoResumeCandidates = candidates.rows;
+        if (autoResumeCandidates.length === 1) autoResumeCandidate = autoResumeCandidates[0];
+      }
+      if (input.resume_existing === true && (binding.rows[0] || input.work_id || autoResumeCandidate)) {
         if (binding.rows[0] && input.work_id && binding.rows[0].work_id !== workId) {
           throw new Error("continuity_session_binding_conflict");
         }
-        const resumeWorkId = binding.rows[0]?.work_id || workId;
+        const resumeWorkId = binding.rows[0]?.work_id || input.work_id || autoResumeCandidate.work_id;
         const existing = await client.query(`SELECT a.intent_digest,a.create_request_digest,
             w.project_id,w.status,w.current_version,w.next_action
           FROM core_continuity_intent_anchors a JOIN core_continuity_works w
@@ -1890,9 +1912,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
           architecture_version: Number(existing.rows[0]?.current_version || 0),
           next_action: existing.rows[0]?.next_action || "",
           resumed_existing: true,
+          resume_source: binding.rows[0]
+            ? "session_binding"
+            : input.work_id ? "explicit_work_id" : "unambiguous_project_work",
+          automatic_resume: Boolean(autoResumeCandidate),
           session_binding_created: sessionBindingCreated,
           idempotent_replay: !sessionBindingCreated,
         };
+      }
+      if (input.resume_existing === true && !binding.rows[0] && !input.work_id && autoResumeCandidates.length > 1) {
+        const error = new Error("continuity_resume_selection_required");
+        error.code = "continuity_resume_selection_required";
+        error.candidate_work_ids = autoResumeCandidates.map((candidate) => String(candidate.work_id));
+        throw error;
       }
       const architecture = cleanJson(input.architecture || {});
       const intent = buildIntentAnchor({
