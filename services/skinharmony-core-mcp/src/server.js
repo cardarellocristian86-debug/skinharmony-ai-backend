@@ -24,6 +24,7 @@ import {
 } from "./work-continuity-v2-store.js";
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
 import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
+import { buildNyraControlContext } from "./nyra-control-context.js";
 import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
 import {
   WORK_CONTINUITY_TOOLS,
@@ -543,14 +544,23 @@ function hostType(identity, args = {}) {
     : "chatgpt_native";
 }
 
-function attachContinuity(preflightResult, continuity) {
+function attachContinuity(preflightResult, continuity, persistedControlContext = null) {
   if (!continuity) return preflightResult;
   const structured = preflightResult?.structuredContent;
   if (!structured || typeof structured !== "object") return preflightResult;
+  const controlContext = persistedControlContext || buildNyraControlContext({ continuity });
   if (structured.work_preflight && typeof structured.work_preflight === "object") {
-    structured.work_preflight = { ...structured.work_preflight, continuity };
+    structured.work_preflight = {
+      ...structured.work_preflight,
+      continuity,
+      // Connected AIs consume this compact contract. The detailed Gallery,
+      // evidence and policy graph stay server-side until a diagnostic or an
+      // exact Core decision actually needs them.
+      nyra_control_context: controlContext,
+    };
   } else {
     structured.continuity = continuity;
+    structured.nyra_control_context = controlContext;
   }
   return preflightResult;
 }
@@ -561,43 +571,12 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
   if (!sessionId) throw new Error("continuity_session_required");
   const initialMessage = summarizeToolRequest(toolName, args);
   const host = hostType(identity, args);
-  const continuityGateIdempotencyKey = `continuity-anchor-${crypto.createHash("sha256")
-    .update(`${identity.tenantId}\u0000${continuityProjectId(args)}\u0000${sessionId}`)
-    .digest("hex")
-    .slice(0, 32)}`;
-  const continuityGate = await coreHandlers.core_gate_action({
-    action_label: "Persist a redacted immutable Work Continuity Intent Anchor",
-    action_type: resumeExisting ? "work.continuity.resume_or_bind" : "continuity.update",
-    target: `${continuityProjectId(args)}:${sessionId}`,
-    operation_class: "bounded_internal_coordination_write",
-    external_side_effect: false,
-    contains_customer_data: false,
-    contains_secret: false,
-    secret_value_transmitted: false,
-    cross_tenant: false,
-    configuration_changes: false,
-    destructive: false,
-    bypass_orchestrator: false,
-    provider_execution: false,
-    deploy: false,
-    production_deploy: false,
-    merge: false,
-    delete: false,
-    execution_enabled: false,
-    force: false,
-    admin_bypass: false,
-    bounded_scope: true,
-    low_impact: true,
-    idempotent_or_compensable: true,
-    rollback_ready: true,
-    audit_ready: Boolean(decisionLedger),
-    target_authority_verified: true,
-    actor_authorized_for_target: true,
-    idempotency_key: continuityGateIdempotencyKey,
-    owner_confirmed: false,
-  }, identity);
-  const authorization = continuityGate?.structuredContent?.authorization || {};
-  if (authorization.allowed !== true) throw new Error("continuity_capture_not_authorized");
+  // Resuming or binding an already-authorized Work is an internal,
+  // idempotent ledger operation protected by tenant/session ACLs. Routing it
+  // through Core's external-action gate on *every* tool call caused a second
+  // round trip and an unnecessary model-facing stop. Core gates remain
+  // mandatory for scope changes and external effects (merge, deploy,
+  // permissions, rollback); they are not a tax on normal continuity.
   const acceptanceCriteria = Array.isArray(args.acceptance_criteria) && args.acceptance_criteria.length
     ? args.acceptance_criteria
     : [
@@ -669,7 +648,15 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       throw error;
     }
   }
-  attachContinuity(preflightResult, continuity);
+  let controlContext = null;
+  if (continuity?.work_id && typeof workContinuityRuntime.upsertControlContext === "function") {
+    controlContext = await workContinuityRuntime.upsertControlContext(identity, {
+      work_id: continuity.work_id,
+      project_id: continuity.project_id,
+      context: buildNyraControlContext({ continuity, operation: toolName }),
+    });
+  }
+  attachContinuity(preflightResult, continuity, controlContext);
   return continuity;
 }
 
@@ -690,6 +677,23 @@ function continuityMethod(method) {
 async function reconcileNyraAutopilot(identity, work, triggerType) {
   if (!nyraAutopilotRuntime || !work?.work_id) return null;
   try {
+    // The first owner-governed Work is the tenant's explicit activation of
+    // Nyra. Requiring a second "enable autopilot" turn created a needless
+    // confirmation loop and left new chats without an orchestrator. Normal
+    // resumes never broaden this: they only reuse a previously enabled Nyra.
+    const status = await nyraAutopilotRuntime.status(identity);
+    if (
+      status.enabled !== true &&
+      triggerType === "work_created" &&
+      (identity.ownerConfirmed === true || identity.godMode === true)
+    ) {
+      await nyraAutopilotRuntime.enable(identity, {
+        idempotency_key: `nyra_auto_${crypto.createHash("sha256")
+          .update(`${identity.tenantId}\u0000${work.work_id}`)
+          .digest("hex")
+          .slice(0, 48)}`,
+      });
+    }
     return await nyraAutopilotRuntime.reconcile(identity, {
       work_id: work.work_id,
       project_id: work.project_id,

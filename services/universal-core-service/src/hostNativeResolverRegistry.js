@@ -16,8 +16,8 @@ const RENDER_ORIGIN = /^https:\/\/[a-z0-9][a-z0-9-]*\.onrender\.com$/;
 // provenance anchor without evaluating server code, so it remains useful even
 // when a configuration error keeps the runtime fail-closed.
 export const HOST_NATIVE_GITHUB_WORKFLOW = Object.freeze({
-  sha256: "feb74afe5d943e79f2f8170c8a250f274b375ab4b054a662d160beba8e664dbc",
-  candidate_sha256: "6a9f8fc105214ff5d674cf2cb7f1ff86f8247ea45abc967daa956e8adf9ce892",
+  sha256: "c0794267d11582f09f1a2f8fb688966b6388996bc8aec13636e207d8d7e11a88",
+  candidate_sha256: "02502bf5c0b04824fcfdcc35245004b23d0292b8932e5f2be40f4fe4aedf5f3b",
 });
 
 function fail(code) {

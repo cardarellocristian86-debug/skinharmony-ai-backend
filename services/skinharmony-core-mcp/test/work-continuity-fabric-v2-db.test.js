@@ -55,6 +55,7 @@ class ContinuityPool {
     this.releaseJoins = new Map();
     this.incidents = new Map();
     this.capsules = new Map();
+    this.controlContexts = new Map();
   }
 
   async query(sql, parameters = []) {
@@ -119,6 +120,27 @@ class ContinuityPool {
         intent_anchor_created_at: anchor.created_at,
       } : null;
       return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT project_id,current_version,status,next_action FROM core_continuity_works")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: work ? [{
+        project_id: work.project_id,
+        current_version: work.current_version,
+        status: work.status,
+        next_action: work.next_action,
+      }] : [], rowCount: work ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_control_contexts")) {
+      const [tenantId, workId, projectId, workRevision, contextDigest, payload] = parameters;
+      this.controlContexts.set(key(tenantId, workId), {
+        tenant_id: tenantId,
+        work_id: workId,
+        project_id: projectId,
+        work_revision: workRevision,
+        context_digest: contextDigest,
+        payload: JSON.parse(payload),
+      });
+      return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("INSERT INTO core_continuity_works")) {
       const [
@@ -943,6 +965,37 @@ test("ensure survives runtime restart, is strict by default and isolates tenants
   assert.equal("idea" in catalog.works[0], false);
   assert.equal("objective" in catalog.works[0], false);
   assert.equal("anchor" in catalog.works[0], false);
+});
+
+test("Nyra persists one compact control context per Work without prompt-shaped ledger data", async () => {
+  const clock = () => new Date("2026-08-21T18:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = { tenantId: "tenant-a", subject: "codex" };
+  const created = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
+  const context = await runtime.upsertControlContext(identity, {
+    work_id: created.work_id,
+    project_id: initialInput.project_id,
+    context: {
+      schema_version: "nyra_control_context_v1",
+      tenant_id: "tenant-a",
+      project_id: initialInput.project_id,
+      work_id: created.work_id,
+      work_state: "unknown",
+      next_action: "This exact bounded step is ready.",
+      assignment: null,
+      connector: { state: "healthy" },
+      execution_authorized: false,
+      external_action_authorized: false,
+      context_digest: "c".repeat(64),
+    },
+  });
+  assert.equal(context.work_state, "active");
+  assert.equal(context.work_revision, 1);
+  assert.equal(context.next_action, initialInput.next_action);
+  assert.match(pool.controlContexts.get(key("tenant-a", created.work_id)).context_digest, /^[a-f0-9]{64}$/);
+  assert.notEqual(pool.controlContexts.get(key("tenant-a", created.work_id)).context_digest, "c".repeat(64));
+  assert.equal(JSON.stringify(context).includes("do-not-store"), false);
 });
 
 test("standing release resolves one atomic persisted Work/Intent binding fail-closed", async () => {

@@ -10,7 +10,9 @@ services:
     numInstances: 1
     buildCommand: npm ci && npm run nyra:deep-v2:runtime:verify
     startCommand: npm run nyra:render
-    healthCheckPath: /healthz
+    # Render uses process liveness for rollout. /healthz remains the strict
+    # Nyra/Core dependency contract checked after deployment.
+    healthCheckPath: /livez
     # A merge/push to the linked main branch deploys only after repository CI
     # checks pass. This trigger does not replace Core or host authorization.
     autoDeployTrigger: checksPass
