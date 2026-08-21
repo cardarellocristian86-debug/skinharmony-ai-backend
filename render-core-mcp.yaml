@@ -199,6 +199,11 @@ services:
         value: "true"
       - key: HOST_NATIVE_AGENT_PROTOCOL_ENABLED
         value: "true"
+      # Canonical, non-secret project release scope. Nyra uses this binding to
+      # translate an Autopilot proposal into the one native Core plan that
+      # release closure validates; a new chat never has to rediscover it.
+      - key: NYRA_PROJECT_RELEASE_BINDINGS_JSON
+        value: '{"schema_version":"nyra_project_release_bindings_v1","bindings":[{"tenant_id":"codexai","project_id":"skinharmony-ai-backend","repository":"cardarellocristian86-debug/skinharmony-ai-backend","base_branch":"main","required_checks":["core-mcp","deployment-parity","universal-core"]}]}'
       # Every functional Nyra/Core call creates or refreshes a server-derived
       # signed tenant presence. This is identity registration only: it grants
       # no role, model, tool, credential, merge, deploy or external authority.

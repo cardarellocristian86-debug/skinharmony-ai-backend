@@ -499,3 +499,29 @@ test("rejects invalid Suite key maps", () => {
     SUITE_CONTROL_PLANE_KEYS_JSON: JSON.stringify({ "../tenant": "key" }),
   }), /invalid tenant id/);
 });
+
+test("loads only exact server-owned Nyra project release bindings", () => {
+  const config = loadConfig({
+    NYRA_PROJECT_RELEASE_BINDINGS_JSON: JSON.stringify({
+      schema_version: "nyra_project_release_bindings_v1",
+      bindings: [{
+        tenant_id: "codexai",
+        project_id: "skinharmony-ai-backend",
+        repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+        base_branch: "main",
+        required_checks: ["universal-core", "core-mcp"],
+      }],
+    }),
+  });
+  assert.deepEqual(config.nyraProjectReleaseBindings, [{
+    tenant_id: "codexai",
+    project_id: "skinharmony-ai-backend",
+    repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+    base_branch: "main",
+    required_checks: ["core-mcp", "universal-core"],
+  }]);
+  assert.throws(
+    () => loadConfig({ NYRA_PROJECT_RELEASE_BINDINGS_JSON: "{" }),
+    /must be valid JSON/,
+  );
+});
