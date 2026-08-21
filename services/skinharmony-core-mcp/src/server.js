@@ -36,6 +36,7 @@ import { HOST_NATIVE_TOOLS } from "./host-native-tools.js";
 import { NYRA_WORK_AUTOMATION_TOOLS } from "./nyra-work-automation-tools.js";
 import { createNyraWorkAutomationInternal } from "./nyra-work-automation-internal.js";
 import { continuityProjectId } from "./continuity-project-id.js";
+import { resolveContinuityProjectBinding } from "./continuity-project-binding.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
 import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 import { TOOLS } from "./tool-definitions.js";
@@ -1339,6 +1340,11 @@ const app = createApp(config, {
     try {
       if (!requiresGenericWorkPreflight(toolName, args)) return { preflight: null, ledgerContext };
       const target = dynamicInvocationTarget(toolName, args, identity);
+      const continuityBinding = await resolveContinuityProjectBinding(
+        identity,
+        target.args,
+        workContinuityRuntime,
+      );
       const result = await coreHandlers.work_preflight({
         request: summarizeToolRequest(target.toolName, target.args),
         operation_type: target.capabilityId
@@ -1351,7 +1357,7 @@ const app = createApp(config, {
         // Core's preflight gate.
         response_mode: "full",
         work_id: target.args.work_id,
-        project_id: target.args.project_id,
+        project_id: continuityBinding.projectId,
         session_id: identity.agentPresence?.session_id || target.args.session_id,
         agent_id: identity.agentPresence?.agent_id || target.args.agent_id || target.args.from_agent_id || "connected_ai",
         client_type: identity.agentPresence?.client_type || target.args.client_type,
@@ -1374,13 +1380,19 @@ const app = createApp(config, {
           },
           work_binding: {
             work_id: String(target.args.work_id || ""),
-            project_id: String(target.args.project_id || ""),
+            project_id: continuityBinding.projectId,
             session_id: String(identity.agentPresence?.session_id || target.args.session_id || ""),
             agent_id: String(identity.agentPresence?.agent_id || target.args.agent_id || ""),
           },
         } : {}),
       }, identity);
-      await ensureContinuity(identity, target.args, target.toolName, result, { resumeExisting: true });
+      await ensureContinuity(
+        identity,
+        continuityBinding.continuityArgs,
+        target.toolName,
+        result,
+        { resumeExisting: true },
+      );
       const preflight = result.structuredContent;
       if (ledgerContext) await decisionLedger.append(ledgerContext, "preflight_completed", {
         preflight_id: preflight?.work_preflight?.preflight_id || preflight?.preflight_id,
