@@ -398,6 +398,11 @@ export function createDynamicCapabilityHandlers({
         const gate = await gateAction({
           tool: gateTool,
           args: callArgs,
+          // The public wrapper receives this only from createApp after it has
+          // validated the server-issued Work Preflight. Bind that same
+          // envelope to Core's dynamic-action gate even when the target tool
+          // schema intentionally does not expose it to the target handler.
+          workPreflight: args.work_preflight,
           identity,
           catalogRevision: state.revision,
           idempotencyKey: args.idempotency_key,

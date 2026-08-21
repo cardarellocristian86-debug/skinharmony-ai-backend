@@ -287,6 +287,7 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
   const tool = writeTool();
   let writes = 0;
   let gateAllowed = true;
+  let receivedGatePreflight;
   const handlers = {
     [tool.name]: async () => {
       writes += 1;
@@ -297,9 +298,12 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
     tools: [tool],
     handlers,
     semanticSelect: async () => ({}),
-    gateAction: async () => ({
+    gateAction: async ({ workPreflight }) => {
+      receivedGatePreflight = workPreflight;
+      return {
       structuredContent: { authorization: { allowed: gateAllowed } },
-    }),
+      };
+    },
   });
   const revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
   const args = {
@@ -309,10 +313,18 @@ test("mutations fail closed unless owner confirmation, Core gate, and safe argum
     owner_confirmed: true,
     confirmation_reference: "owner-approved",
     arguments: { value: "safe" },
+    work_preflight: {
+      schema_version: "skinharmony_work_preflight_v1",
+      preflight_id: "preflight-router-gate-binding",
+      tenant_id: "tenant-a",
+      mandatory: true,
+      operational_surface: "tenant_work_gallery",
+    },
   };
 
   await router.core_capability_invoke(args, identity);
   assert.equal(writes, 1);
+  assert.equal(receivedGatePreflight.preflight_id, "preflight-router-gate-binding");
 
   gateAllowed = false;
   await assert.rejects(
