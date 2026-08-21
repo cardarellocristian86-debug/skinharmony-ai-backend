@@ -713,6 +713,40 @@ function inferClientType(identity) {
   return "api_agent";
 }
 
+export function resolveHostTransportPresence({
+  identity,
+  toolName,
+  capabilityId,
+  declaredSessionId,
+  agentPresence,
+  transportAgentPresence,
+} = {}) {
+  if (transportAgentPresence) {
+    return Object.freeze({
+      presence: transportAgentPresence,
+      binding_source: "transport",
+    });
+  }
+  const membership = identity?.authenticatedTenantMembership;
+  const oauthNativePlanCall =
+    toolName === "work_continuity_native_plan" ||
+    (toolName === "core_capability_invoke" && capabilityId === "work_continuity_native_plan");
+  const oauthLogicalSessionBound = Boolean(
+    oauthNativePlanCall &&
+    declaredSessionId &&
+    agentPresence &&
+    identity?.kind === "oauth" &&
+    identity?.oauthOwnerBound === true &&
+    membership?.authenticated === true &&
+    membership?.tenant_id === identity?.tenantId &&
+    membership?.role === "tenant_owner",
+  );
+  return Object.freeze({
+    presence: oauthLogicalSessionBound ? agentPresence : null,
+    binding_source: oauthLogicalSessionBound ? "oauth_declared" : null,
+  });
+}
+
 function normalizeTransportSession(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -1805,15 +1839,23 @@ export function createApp(config, options = {}) {
               session_id: transportSessionId,
             })
           : null;
+        const hostTransportPresence = resolveHostTransportPresence({
+          identity,
+          toolName: tool.name,
+          capabilityId: rawArgs.capability_id,
+          declaredSessionId,
+          agentPresence,
+          transportAgentPresence,
+        });
         const attestedAgentPresence = {
           ...agentPresence,
           // Keep the opaque logical session only on the server-side identity.
           // The mandatory presence hook needs it to renew the exact signed
           // session, while the public response can continue to omit it.
           session_id: sessionId,
-          transport_bound: Boolean(transportAgentPresence),
+          transport_bound: Boolean(hostTransportPresence.presence),
           host_transport_session_fingerprint:
-            transportAgentPresence?.session_fingerprint || null,
+            hostTransportPresence.presence?.session_fingerprint || null,
         };
         const logicalPresence = logicalSessionPresences.get(agentPresence.session_fingerprint);
         if (
@@ -1827,7 +1869,9 @@ export function createApp(config, options = {}) {
         const presenceBinding = {
           ...attestedAgentPresence,
           session_id: sessionId,
-          binding_source: transportPresence?.binding_source || (declaredSessionId ? "declared" : transportSessionId ? "transport" : "server_bootstrap"),
+          binding_source: transportPresence?.binding_source ||
+            hostTransportPresence.binding_source ||
+            (declaredSessionId ? "declared" : transportSessionId ? "transport" : "server_bootstrap"),
         };
         setBounded(logicalSessionPresences, agentPresence.session_fingerprint, presenceBinding);
         if (transportSessionId || serverIssuedSessionId) {
