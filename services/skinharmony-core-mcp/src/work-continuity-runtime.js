@@ -2063,6 +2063,106 @@ export function createWorkContinuityRuntime(config, options = {}) {
     });
   }
 
+  // The control context is the durable handoff between Nyra and a newly
+  // connected host.  It is deliberately a digest-only snapshot: raw Intent,
+  // checkpoint evidence, Gallery prompts and Atlas nodes remain in their
+  // authoritative stores and are fetched only by their bounded capabilities.
+  async function readControlContext(identity, input = {}) {
+    await initialize();
+    const tenantId = tenant(identity.tenantId);
+    const workId = uuid(input.work_id, "work_id");
+    const projectId = identifier(input.project_id, "project_id", 64);
+    const result = await pool.query(`SELECT c.payload,c.context_digest,c.work_revision,
+        w.project_id,w.current_version,w.status,w.next_action
+      FROM core_continuity_control_contexts c
+      JOIN core_continuity_works w ON w.tenant_id=c.tenant_id AND w.work_id=c.work_id
+      WHERE c.tenant_id=$1 AND c.work_id=$2 AND c.project_id=$3`, [tenantId, workId, projectId]);
+    const row = result.rows[0];
+    if (!row) return null;
+    const payload = cleanJson(row.payload || {}, 16_000);
+    const unsignedPayload = cleanJson({ ...payload, context_digest: undefined }, 16_000);
+    if (
+      payload.schema_version !== "nyra_control_context_v1" ||
+      payload.tenant_id !== tenantId || payload.work_id !== workId || payload.project_id !== projectId ||
+      payload.context_digest !== row.context_digest ||
+      !/^[a-f0-9]{64}$/.test(String(payload.context_digest || "")) ||
+      digest(unsignedPayload) !== payload.context_digest
+    ) throw new Error("nyra_control_context_corrupt");
+    const currentRevision = Number(row.current_version || 0);
+    if (Number(payload.work_revision) !== currentRevision || Number(row.work_revision) !== currentRevision) {
+      return null;
+    }
+    return Object.freeze(payload);
+  }
+
+  // One compact local snapshot lets Nyra update its briefing without calling a
+  // model, an external service or the verbose Gallery endpoint. It is the
+  // source for checkpoint, Intent, Gallery and Software Cognition references.
+  async function readNyraOperationalState(identity, input = {}) {
+    await initialize();
+    const tenantId = tenant(identity.tenantId);
+    const workId = uuid(input.work_id, "work_id");
+    const projectId = input.project_id ? identifier(input.project_id, "project_id", 64) : null;
+    const result = await pool.query(`SELECT
+        w.work_id,w.project_id,w.current_version,w.next_action,
+        i.intent_digest,
+        c.capsule_id,c.capsule_digest,
+        a.revision AS atlas_revision,a.source_hash AS atlas_source_hash,
+        r.fingerprint AS incident_fingerprint,r.status AS incident_status,
+        (SELECT count(*)::int FROM core_continuity_works gw
+          WHERE gw.tenant_id=w.tenant_id AND gw.project_id=w.project_id) AS gallery_work_count
+      FROM core_continuity_works w
+      JOIN core_continuity_intent_anchors i
+        ON i.tenant_id=w.tenant_id AND i.work_id=w.work_id
+      LEFT JOIN LATERAL (
+        SELECT capsule_id,capsule_digest FROM core_continuity_capsules
+        WHERE tenant_id=w.tenant_id AND work_id=w.work_id
+        ORDER BY created_at DESC LIMIT 1
+      ) c ON true
+      LEFT JOIN core_continuity_atlas_state a
+        ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
+      LEFT JOIN LATERAL (
+        SELECT fingerprint,status FROM core_continuity_incident_runbooks
+        WHERE tenant_id=w.tenant_id AND project_id=w.project_id
+        ORDER BY updated_at DESC,fingerprint DESC LIMIT 1
+      ) r ON true
+      WHERE w.tenant_id=$1 AND w.work_id=$2 AND ($3::varchar IS NULL OR w.project_id=$3)`, [tenantId, workId, projectId]);
+    const row = result.rows[0];
+    if (!row) throw new Error("continuity_work_not_found");
+    const atlasRevision = row.atlas_revision === null || row.atlas_revision === undefined
+      ? null
+      : Number(row.atlas_revision);
+    return Object.freeze({
+      schema_version: "nyra_operational_state_v1",
+      tenant_id: tenantId,
+      work_id: workId,
+      project_id: projectId,
+      work_revision: Number(row.current_version || 0),
+      intent_digest: String(row.intent_digest || ""),
+      checkpoint: Object.freeze({
+        capsule_id: row.capsule_id || null,
+        capsule_digest: row.capsule_digest || null,
+      }),
+      gallery: Object.freeze({
+        state: "available",
+        work_count: Number(row.gallery_work_count || 0),
+      }),
+      software: Object.freeze({
+        state: atlasRevision === null ? "not_indexed" : "available",
+        atlas_revision: atlasRevision,
+        source_hash: row.atlas_source_hash || null,
+        // A bounded graph selection is event-driven. A new chat must not scan
+        // the complete Atlas merely to compose a conversational briefing.
+        discovery_required: atlasRevision === null,
+      }),
+      incident: Object.freeze({
+        fingerprint: row.incident_fingerprint || null,
+        status: row.incident_status || null,
+      }),
+      next_action: safeText(row.next_action, 360),
+    });
+  }
+
   async function ensure(identity, input, options = {}) {
     return transaction((client) => ensureWithClient(client, identity, input, options));
   }
@@ -5194,6 +5294,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
     ensure,
     ensureWithClient,
     upsertControlContext,
+    readControlContext,
+    readNyraOperationalState,
     setWorkEventProjector,
     readIntent,
     resolveStandingReleaseIntentBinding,

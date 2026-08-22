@@ -175,8 +175,8 @@ function interpretationFixture(tenantId = "tenant-a", preferredReply = "Sì, son
   };
 }
 
-function harness({ preflightResult, interpretationResult } = {}) {
-  const calls = { preflight: [], interpret: [] };
+function harness({ preflightResult, interpretationResult, persistedContext } = {}) {
+  const calls = { preflight: [], interpret: [], readControlContext: [] };
   const handler = createNyraConverseHandler({
     preflight: async (args, authenticatedIdentity) => {
       calls.preflight.push({ args, identity: authenticatedIdentity });
@@ -186,9 +186,43 @@ function harness({ preflightResult, interpretationResult } = {}) {
       calls.interpret.push({ args, identity: authenticatedIdentity });
       return interpretationResult || interpretationFixture(authenticatedIdentity.tenantId);
     },
+    readControlContext: persistedContext === undefined ? null : async (authenticatedIdentity, args) => {
+      calls.readControlContext.push({ args, identity: authenticatedIdentity });
+      return persistedContext;
+    },
   });
   return { handler, calls };
 }
+
+test("reuses the persistent Nyra dialogue without preflight or Core interpretation", async () => {
+  const context = (await import("../src/nyra-control-context.js")).buildNyraControlContext({
+    continuity: {
+      tenant_id: "tenant-a",
+      project_id: "nyra_core",
+      work_id: WORK_ID,
+      state: "active",
+      next_action: "Continue the existing Work.",
+    },
+    operational: { work_revision: 3, gallery: { state: "available", work_count: 1 } },
+  });
+  const { handler, calls } = harness({ persistedContext: context });
+  const result = await handler({
+    message: "Nyra, riprendi il lavoro",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  const payload = result.structuredContent;
+  assert.equal(calls.readControlContext.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(payload.work.preflight_bound, true);
+  assert.equal(payload.interpretation.core.execution_allowed, false);
+  assert.equal(payload.interpretation.core.route, "V0");
+  assert.equal(payload.server_model_calls, 0);
+  const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
+  assert.deepEqual(validateToolArguments(definition.outputSchema, payload), []);
+});
 
 function routerFor(handler) {
   const handlers = { nyra_converse: handler };
@@ -296,6 +330,10 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
   assert.equal(calls.preflight[0].args.session_id, "authenticated-session");
   assert.equal(calls.interpret[0].args.session_id, "authenticated-session");
   assert.equal(calls.interpret[0].args.response_mode, "fast");
+  assert.deepEqual(
+    calls.interpret[0].args.work_preflight,
+    preflightFixture(authenticated.tenantId).structuredContent.work_preflight,
+  );
   assert.equal(payload.schema_version, "nyra_conversation_turn_v1");
   assert.equal(payload.tenant_id, "tenant-a");
   assert.equal(payload.identity_binding.authenticated, true);
@@ -346,6 +384,10 @@ test("consumes the real Universal Core read-only preflight through the productio
 
   assert.equal(calls.preflight.length, 1);
   assert.equal(calls.interpret.length, 1);
+  assert.deepEqual(
+    calls.interpret[0].args.work_preflight,
+    preflightResult.structuredContent.work_preflight,
+  );
   assert.equal(response.structuredContent.work.preflight_bound, true);
   assert.equal(response.structuredContent.work.work_bound, true);
   assert.equal(response.structuredContent.work.work_id, WORK_ID);

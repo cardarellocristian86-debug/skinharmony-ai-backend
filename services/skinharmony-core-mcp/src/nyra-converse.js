@@ -186,6 +186,10 @@ function requireBoundPreflight(result, identity, args) {
   );
 
   return Object.freeze({
+    // This is an internal, server-issued contract. It is deliberately kept
+    // outside the public conversation response and never accepted from tool
+    // callers, but must accompany the trusted MCP-to-Core bridge request.
+    serverIssuedWorkPreflight: envelope,
     work: Object.freeze({
       preflight_bound: true,
       work_bound: Boolean(workId),
@@ -201,6 +205,52 @@ function requireBoundPreflight(result, identity, args) {
       active_lock_count: boundedCount(memory.active_lock_count),
       artifact_count: boundedCount(memory.artifact_count),
     }),
+  });
+}
+
+function requirePersistedConversationContext(value, identity, args) {
+  const context = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const tenantId = requireAuthenticatedIdentity(identity);
+  if (!context ||
+      context.schema_version !== "nyra_control_context_v1" ||
+      context.tenant_id !== tenantId ||
+      !/^[a-f0-9]{64}$/.test(String(context.context_digest || "")) ||
+      !/^[a-f0-9]{64}$/.test(String(context.nyra_dialogue?.dialogue_digest || ""))) return null;
+  const workId = boundedWorkId(context.work_id);
+  const projectId = boundedProjectId(context.project_id);
+  if (!workId || !projectId || (args.work_id && workId !== String(args.work_id)) ||
+      (args.project_id && projectId !== String(args.project_id))) return null;
+  return Object.freeze({
+    work: Object.freeze({
+      // The durable context was itself emitted by the authenticated Work
+      // preflight/materialization path. Preserve the established public
+      // contract so older hosts do not need a second response shape.
+      preflight_bound: true,
+      work_bound: true,
+      work_id: workId,
+      project_id: projectId,
+      state: normalizeWorkState(context.work_state, { workId, selectionRequired: false }),
+      next_action_available: Boolean(boundedString(context.next_action, MAX_SIGNAL_LENGTH)),
+      selection_required: false,
+    }),
+    memory: Object.freeze({
+      loaded: true,
+      active_task_count: 0,
+      active_lock_count: 0,
+      artifact_count: 0,
+      revision: 0,
+      relevant_count: 0,
+      handoff_count: 0,
+      recent_activity_count: 0,
+      raw_memory_returned: false,
+    }),
+    dialogue: Object.freeze({
+      dialogue_id: boundedString(context.nyra_dialogue?.dialogue_id, 80),
+      mode: boundedString(context.nyra_dialogue?.mode, 80),
+      persistent: context.nyra_dialogue?.persistent === true,
+      self_diagnosis_state: boundedString(context.nyra_dialogue?.self_diagnosis?.state, 80) || "unknown",
+    }),
+    assignment_available: Boolean(boundedString(context.assignment?.assignment_id, 80)),
   });
 }
 
@@ -372,7 +422,7 @@ export function createNyraConversePreflight({
   };
 }
 
-export function createNyraConverseHandler({ preflight, interpret } = {}) {
+export function createNyraConverseHandler({ preflight, interpret, readControlContext = null } = {}) {
   if (typeof preflight !== "function" || typeof interpret !== "function") {
     throw new Error("nyra_converse_dependencies_invalid");
   }
@@ -389,23 +439,51 @@ export function createNyraConverseHandler({ preflight, interpret } = {}) {
     const sessionId = String(identity.agentPresence?.session_id || args.session_id || "").trim();
     if (!sessionId) throw fail("nyra_converse_session_required", 400);
 
-    const preflightResult = await preflight({
-      message,
-      ...(args.work_id ? { work_id: args.work_id } : {}),
-      ...(args.project_id ? { project_id: args.project_id } : {}),
-      session_id: sessionId,
-      agent_id: identity.agentPresence?.agent_id,
-      client_type: identity.agentPresence?.client_type,
-    }, identity);
-    const boundedPreflight = requireBoundPreflight(preflightResult, identity, args);
-    const interpretationResult = await interpret({
-      message,
-      session_id: sessionId,
-      ...(boundedPreflight.work.project_id ? { project_id: boundedPreflight.work.project_id } : {}),
-      response_mode: "fast",
-      available_capabilities: ["nyra_converse", "skinharmony_core_mcp"],
-    }, identity);
-    const interpretation = requireTenantBoundInterpretation(interpretationResult, identity);
+    let persisted = null;
+    if (typeof readControlContext === "function" && args.work_id && args.project_id) {
+      persisted = requirePersistedConversationContext(await readControlContext(identity, {
+        work_id: args.work_id,
+        project_id: args.project_id,
+      }), identity, args);
+    }
+    let boundedPreflight = persisted;
+    let interpretation;
+    if (persisted) {
+      interpretation = Object.freeze({
+        // A cached dialogue never claims a fresh Core evaluation. This is the
+        // existing non-executing, no-parity public contract shape.
+        core: Object.freeze({
+          mode: "off",
+          route: "V0",
+          authority: "V0",
+          parity_matched: null,
+          execution_allowed: false,
+        }),
+        selected_action_available: persisted.assignment_available,
+        risk_band: persisted.dialogue.self_diagnosis_state === "recovery_required" ? "blocked" : "low",
+        dialogue_accepted: true,
+        opened_branch_count: 0,
+      });
+    } else {
+      const preflightResult = await preflight({
+        message,
+        ...(args.work_id ? { work_id: args.work_id } : {}),
+        ...(args.project_id ? { project_id: args.project_id } : {}),
+        session_id: sessionId,
+        agent_id: identity.agentPresence?.agent_id,
+        client_type: identity.agentPresence?.client_type,
+      }, identity);
+      boundedPreflight = requireBoundPreflight(preflightResult, identity, args);
+      const interpretationResult = await interpret({
+        message,
+        session_id: sessionId,
+        ...(boundedPreflight.work.project_id ? { project_id: boundedPreflight.work.project_id } : {}),
+        work_preflight: boundedPreflight.serverIssuedWorkPreflight,
+        response_mode: "fast",
+        available_capabilities: ["nyra_converse", "skinharmony_core_mcp"],
+      }, identity);
+      interpretation = requireTenantBoundInterpretation(interpretationResult, identity);
+    }
     const action = actionPolicy(message);
     const replySeed = staticReplySeed(locale, Boolean(boundedPreflight.work.work_id));
     const id = turnId({
