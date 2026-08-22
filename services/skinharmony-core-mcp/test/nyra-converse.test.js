@@ -330,6 +330,10 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
   assert.equal(calls.preflight[0].args.session_id, "authenticated-session");
   assert.equal(calls.interpret[0].args.session_id, "authenticated-session");
   assert.equal(calls.interpret[0].args.response_mode, "fast");
+  assert.deepEqual(
+    calls.interpret[0].args.work_preflight,
+    preflightFixture(authenticated.tenantId).structuredContent.work_preflight,
+  );
   assert.equal(payload.schema_version, "nyra_conversation_turn_v1");
   assert.equal(payload.tenant_id, "tenant-a");
   assert.equal(payload.identity_binding.authenticated, true);
@@ -380,6 +384,10 @@ test("consumes the real Universal Core read-only preflight through the productio
 
   assert.equal(calls.preflight.length, 1);
   assert.equal(calls.interpret.length, 1);
+  assert.deepEqual(
+    calls.interpret[0].args.work_preflight,
+    preflightResult.structuredContent.work_preflight,
+  );
   assert.equal(response.structuredContent.work.preflight_bound, true);
   assert.equal(response.structuredContent.work.work_bound, true);
   assert.equal(response.structuredContent.work.work_id, WORK_ID);
