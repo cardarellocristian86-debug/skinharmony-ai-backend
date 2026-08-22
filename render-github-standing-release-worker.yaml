@@ -50,6 +50,11 @@ services:
         value: generic_work_core_join_v1
       - key: GENERIC_WORK_CORE_JOIN_SIGNER_KEY_ID
         sync: false
+      # The public half of the operator-managed Ed25519 signer. Universal Core
+      # consumes this exact pin through Render's internal service binding; it
+      # is public verifier material, never the private signing key.
+      - key: GENERIC_WORK_CORE_JOIN_SIGNER_ED25519_PUBLIC_KEY
+        sync: false
       # Provision the service credential and Ed25519 private key directly in
       # Render. Neither value belongs in source, logs, health or MCP output.
       - key: GENERIC_WORK_CORE_JOIN_SIGNER_SERVICE_TOKEN

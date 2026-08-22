@@ -76,18 +76,20 @@ services:
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PURPOSE
         value: generic_work_core_join_v1
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID
-        # This is the identity asserted by the remote signing endpoint, not
-        # the key id used by Core-MCP's separate (currently code-dark)
-        # verifier. Keeping the signer id explicit prevents a Blueprint sync
-        # from pinning the correct public JWK to the wrong key id.
-        value: universal-core-generic-join-v1
+        # Keep the remote signer identity coupled to the service that creates
+        # the signature. Core-MCP has a separate code-dark verifier key and
+        # must not supply this worker signer identity.
+        fromService:
+          type: web
+          name: skinharmony-github-standing-release-worker
+          envVarKey: GENERIC_WORK_CORE_JOIN_SIGNER_KEY_ID
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN
         sync: false
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY
         fromService:
           type: web
-          name: skinharmony-core-mcp
-          envVarKey: GENERIC_WORK_CORE_JOIN_ED25519_PUBLIC_KEY
+          name: skinharmony-github-standing-release-worker
+          envVarKey: GENERIC_WORK_CORE_JOIN_SIGNER_ED25519_PUBLIC_KEY
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_TIMEOUT_MS
         value: "1500"
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_MAX_RESPONSE_BYTES
