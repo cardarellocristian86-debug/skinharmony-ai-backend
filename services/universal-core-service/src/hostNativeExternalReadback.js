@@ -698,6 +698,8 @@ function preMergeRulesetRequirements(rules, {
   const rulesetChecks = [];
   const passiveRules = new Set();
   let requiredReviews = 0;
+  let pullRequestRulePresent = false;
+  let threadResolutionRequired = false;
   for (const rule of rules) {
     const type = string(rule?.type);
     if (!Number.isSafeInteger(Number(rule?.ruleset_id)) || Number(rule.ruleset_id) < 1 || !type) {
@@ -722,19 +724,23 @@ function preMergeRulesetRequirements(rules, {
       continue;
     }
     if (type === "pull_request") {
+      pullRequestRulePresent = true;
       const parameters = rule?.parameters;
       const count = Number(parameters?.required_approving_review_count);
       const allowedMergeMethods = stableStrings(parameters?.allowed_merge_methods);
+      const threadResolutionPolicy = parameters?.required_review_thread_resolution;
       const specializedReviewers = Array.isArray(parameters?.required_reviewers)
         ? parameters.required_reviewers.some((entry) => Number(entry?.minimum_approvals) > 0)
         : false;
       if (
-        !Number.isSafeInteger(count) || count < 1 || !allowedMergeMethods.includes(mergeMethod) ||
+        !Number.isSafeInteger(count) || count < 0 || !allowedMergeMethods.includes(mergeMethod) ||
+        ![true, false].includes(threadResolutionPolicy) ||
         parameters?.require_code_owner_review === true ||
         parameters?.require_last_push_approval === true ||
-        parameters?.required_review_thread_resolution === true || specializedReviewers
+        specializedReviewers
       ) error("release_join_verdict_pre_merge_ruleset_unsupported");
       requiredReviews = Math.max(requiredReviews, count);
+      threadResolutionRequired ||= threadResolutionPolicy;
       continue;
     }
     if (allowedPassiveRules.has(type)) {
@@ -750,10 +756,10 @@ function preMergeRulesetRequirements(rules, {
     error("release_join_verdict_pre_merge_ruleset_drift");
   }
   if (authoritative && (
-    !sameStrings(rulesetChecks, requiredChecks) || requiredReviews < 1 ||
+    !sameStrings(rulesetChecks, requiredChecks) || !pullRequestRulePresent ||
     !passiveRules.has("deletion") || !passiveRules.has("non_fast_forward")
   )) error("release_join_verdict_pre_merge_ruleset_drift");
-  return requiredReviews;
+  return { requiredReviews, threadResolutionRequired };
 }
 
 function approvedHeadReviews(reviews, pull, headCommit, requiredCount) {
@@ -854,13 +860,25 @@ async function attestStandingPreMerge({
   ) {
     error("release_join_verdict_pre_merge_protection_drift");
   }
-  const rulesetReviews = preMergeRulesetRequirements(rules, {
+  const rulesetRequirements = preMergeRulesetRequirements(rules, {
     requiredChecks: checks.required_checks,
     checkAppId: Number(policy.check_app.id),
     mergeMethod: string(action.merge_method || "merge"),
     authoritative: protection === null,
   });
-  const requiredReviews = Math.max(classicReviews, rulesetReviews);
+  let reviewCommentCount = null;
+  if (rulesetRequirements.threadResolutionRequired) {
+    const comments = await readGithubPages(
+      getGithub,
+      `/pulls/${Number(action.pull_request)}/comments`,
+      "release_join_verdict_pre_merge_thread_resolution_unproven",
+    );
+    reviewCommentCount = comments.length;
+    if (reviewCommentCount !== 0) {
+      error("release_join_verdict_pre_merge_thread_resolution_unproven");
+    }
+  }
+  const requiredReviews = Math.max(classicReviews, rulesetRequirements.requiredReviews);
   const approvedReviews = approvedHeadReviews(reviews, pull, headCommit, requiredReviews);
   const unsigned = {
     schema_version: "host_native_pre_merge_readback_v1",
@@ -877,6 +895,8 @@ async function attestStandingPreMerge({
     check_app_id: Number(policy.check_app.id),
     approving_reviews_required: requiredReviews,
     approved_reviews: approvedReviews,
+    thread_resolution_required: rulesetRequirements.threadResolutionRequired,
+    review_comment_count: reviewCommentCount,
     active_rules_digest: hostNativeDigest(rules),
     verified_at: isoNow(now),
     provider_execution: false,

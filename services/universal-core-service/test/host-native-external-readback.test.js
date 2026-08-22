@@ -290,6 +290,16 @@ const RULESET_ONLY_RULES = Object.freeze([
     },
   },
 ]);
+const REAL_RULESET_ONLY_RULES = Object.freeze(RULESET_ONLY_RULES.map((rule) =>
+  rule.type === "pull_request" ? {
+    ...rule,
+    ruleset_id: 20861970,
+    parameters: {
+      ...rule.parameters,
+      required_approving_review_count: 0,
+      required_review_thread_resolution: true,
+    },
+  } : { ...rule, ruleset_id: 20861970 }));
 
 function strictTicket() {
   const ticket = mergeTicket();
@@ -2303,6 +2313,8 @@ function standingMergeJoinFetch({
   protectionStatus = 200,
   rules = [],
   branchReadback = { name: "main", protected: true, commit: { sha: BASE } },
+  comments = [],
+  commentsStatus = 200,
   reviews = [{
     id: 501,
     state: "APPROVED",
@@ -2366,6 +2378,9 @@ function standingMergeJoinFetch({
     }
     if (url === `${root}/pulls/42/reviews?per_page=100&page=1`) {
       return jsonResponse(reviews);
+    }
+    if (url === `${root}/pulls/42/comments?per_page=100&page=1`) {
+      return jsonResponse(comments, { status: commentsStatus });
     }
     if (url === `${root}/pulls/42/files?per_page=10&page=1`) {
       return jsonResponse([{ filename: RELEASE_CHANGED_FILES[0], status: "modified" }]);
@@ -2628,6 +2643,8 @@ test("standing merge readback supports ruleset-only protection without weakening
   assert.equal(verified.pre_merge_readback.trusted, true);
   assert.equal(verified.pre_merge_readback.base_commit, BASE);
   assert.equal(verified.pre_merge_readback.approving_reviews_required, 1);
+  assert.equal(verified.pre_merge_readback.thread_resolution_required, false);
+  assert.equal(verified.pre_merge_readback.review_comment_count, null);
   assert.deepEqual(verified.pre_merge_readback.required_checks, STRICT_POLICY.required_checks);
 
   await t.test("missing ruleset checks", async () => assert.rejects(
@@ -2709,6 +2726,51 @@ test("standing merge readback supports ruleset-only protection without weakening
       /trusted_readback_unavailable/,
     ));
   }
+});
+
+test("ruleset-only zero-review policy proves thread resolution conservatively", async (t) => {
+  const resolve = (fetchImpl) => createHostNativeReleaseJoinVerdictResolver({
+    fetchImpl,
+    githubTokenResolver: async () => "standing-merge-token",
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    now: () => Date.parse(VERIFIED_AT),
+  })(standingMergeJoinRequest());
+
+  const verified = await resolve(standingMergeJoinFetch({
+    protectionStatus: 404,
+    rules: REAL_RULESET_ONLY_RULES,
+    reviews: [],
+    comments: [],
+  }));
+  assert.equal(verified.pre_merge_readback.approving_reviews_required, 0);
+  assert.deepEqual(verified.pre_merge_readback.approved_reviews, []);
+  assert.equal(verified.pre_merge_readback.thread_resolution_required, true);
+  assert.equal(verified.pre_merge_readback.review_comment_count, 0);
+
+  await t.test("one review comment leaves thread resolution unproven", async () =>
+    assert.rejects(resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      comments: [{ id: 7001, body: "unresolved or resolution state unavailable" }],
+    })), /release_join_verdict_pre_merge_thread_resolution_unproven/));
+
+  for (const status of [401, 403, 503]) {
+    await t.test(`review comment readback ${status} remains unavailable`, async () =>
+      assert.rejects(resolve(standingMergeJoinFetch({
+        protectionStatus: 404,
+        rules: REAL_RULESET_ONLY_RULES,
+        reviews: [],
+        commentsStatus: status,
+      })), /trusted_readback_unavailable/));
+  }
+
+  await t.test("pull request rule remains mandatory", async () =>
+    assert.rejects(resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES.filter((rule) => rule.type !== "pull_request"),
+      reviews: [],
+    })), /release_join_verdict_pre_merge_ruleset_drift/));
 });
 
 test("production deploy release-join proves exact push source and mixed previous-live state", async () => {
