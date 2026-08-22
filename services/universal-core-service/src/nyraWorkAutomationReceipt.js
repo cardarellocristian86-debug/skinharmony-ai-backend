@@ -158,6 +158,33 @@ export function createNyraWorkAutomationReceiptService({ secret, keyId, now } = 
         provider_execution: false,
       });
     },
+    coreJoinCompatibility(input) {
+      return sign("nyra_host_native_core_join_compatibility_v1", {
+        tenant_id: text(input.tenant_id, "nyra_core_join_tenant_invalid"),
+        work_id: text(input.work_id, "nyra_core_join_work_invalid"),
+        intent_anchor_digest: digest(input.intent_anchor_digest, "nyra_core_join_intent_invalid"),
+        repository: text(input.repository, "nyra_core_join_repository_invalid", 240),
+        head_commit: sha(input.head_commit, "nyra_core_join_head_invalid"),
+        builder_agent_id: text(input.builder_agent_id, "nyra_core_join_builder_invalid", 160),
+        automation_builder_report_digest: digest(
+          input.automation_builder_report_digest,
+          "nyra_core_join_builder_receipt_invalid",
+        ),
+        automation_readiness_digest: digest(
+          input.automation_readiness_digest,
+          "nyra_core_join_readiness_receipt_invalid",
+        ),
+        native_builder_report_digest: digest(
+          input.native_builder_report_digest,
+          "nyra_core_join_native_builder_report_invalid",
+        ),
+        native_evaluation_digest: digest(
+          input.native_evaluation_digest,
+          "nyra_core_join_native_evaluation_invalid",
+        ),
+        provider_execution: false,
+      });
+    },
     finalCriterionProof(input) {
       if (input.proven !== true) fail("nyra_final_criterion_unproven");
       return sign("nyra_final_criterion_proof_v1", {
