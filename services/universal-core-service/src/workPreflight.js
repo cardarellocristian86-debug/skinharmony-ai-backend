@@ -15,7 +15,6 @@ const READ_ONLY_OPERATIONS = new Set([
   "memory_context",
   "memory_search",
   "core_health",
-  "nyra_converse",
   "nyra_runtime_context",
   "nyra_branch_catalog",
   "nyra_v2_preview",
