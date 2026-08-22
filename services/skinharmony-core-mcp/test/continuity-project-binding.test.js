@@ -74,16 +74,39 @@ test("propagates tenant-scoped Work lookup denial instead of falling back to rep
   }]);
 });
 
-test("keeps the legacy repository fallback when no Work binding is available", async () => {
+test("uses the repository basename when no Work binding is available", async () => {
   const args = { repository: "cardarellocristian86-debug/skinharmony-ai-backend" };
   const binding = await resolveContinuityProjectBinding({ tenantId: "tenant-a" }, args, null);
 
-  assert.equal(
-    binding.projectId,
-    "cardarellocristian86-debug/skinharmony-ai-backend",
-  );
+  assert.equal(binding.projectId, "skinharmony-ai-backend");
   assert.equal(binding.continuityArgs, args);
   assert.equal(continuityProjectId({}), "skinharmony-ai-backend");
+});
+
+test("project fallback preserves explicit precedence and target system", () => {
+  assert.equal(continuityProjectId({
+    project_id: "explicit-project",
+    repository: "owner/repository-slug",
+    target_system: "target-system",
+  }), "explicit-project");
+  assert.equal(continuityProjectId({ target_system: "target-system" }), "target-system");
+});
+
+test("project fallback rejects hostile or invalid repository identities", () => {
+  for (const repository of [
+    "../repository",
+    "owner/../repository",
+    "https://example.test/owner/repository",
+    "owner/%2e%2e",
+    "owner\\repository",
+    { owner: "owner", repository: "repository" },
+  ]) {
+    assert.equal(
+      continuityProjectId({ repository }),
+      "skinharmony-ai-backend",
+      `expected fail-safe project id for ${String(repository)}`,
+    );
+  }
 });
 
 test("fails closed when a persisted Work project binding is malformed", async () => {

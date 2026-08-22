@@ -263,6 +263,78 @@ const STRICT_POLICY_DIGEST = hostNativeDigest({
   workflow: { ...STRICT_POLICY.workflow, candidate_sha256: null },
   allowed_events: [...STRICT_POLICY.allowed_events].sort(),
 });
+const RULESET_ONLY_RULES = Object.freeze([
+  { ruleset_id: 901, type: "deletion" },
+  { ruleset_id: 901, type: "non_fast_forward" },
+  {
+    ruleset_id: 901,
+    type: "required_status_checks",
+    parameters: {
+      strict_required_status_checks_policy: true,
+      required_status_checks: STRICT_POLICY.required_checks.map((context) => ({
+        context,
+        integration_id: STRICT_POLICY.check_app.id,
+      })),
+    },
+  },
+  {
+    ruleset_id: 901,
+    type: "pull_request",
+    parameters: {
+      required_approving_review_count: 1,
+      allowed_merge_methods: ["merge"],
+      dismiss_stale_reviews_on_push: true,
+      require_code_owner_review: false,
+      require_extra_approval_for_unattributed_changes: false,
+      require_last_push_approval: false,
+      required_review_thread_resolution: false,
+      required_reviewers: [],
+    },
+  },
+]);
+const REAL_RULESET_ONLY_RULES = Object.freeze(RULESET_ONLY_RULES.map((rule) =>
+  rule.type === "pull_request" ? {
+    ...rule,
+    ruleset_id: 20861970,
+    parameters: {
+      ...rule.parameters,
+      required_approving_review_count: 0,
+      required_review_thread_resolution: true,
+      require_extra_approval_for_unattributed_changes: true,
+    },
+  } : { ...rule, ruleset_id: 20861970 }));
+
+function attributedPullCommit(commitSha, parentSha, overrides = {}) {
+  return {
+    sha: commitSha,
+    parents: [{ sha: parentSha }],
+    author: { login: "author-a" },
+    committer: { login: "committer-a" },
+    commit: {
+      verification: {
+        verified: false,
+        reason: "unsigned",
+        signature: null,
+        payload: null,
+        verified_at: null,
+      },
+    },
+    ...overrides,
+  };
+}
+
+function attributedCommitChain(length) {
+  const commits = [];
+  let parent = BASE;
+  for (let index = 0; index < length; index += 1) {
+    const commitSha = index === length - 1
+      ? HEAD
+      : (index + 10).toString(16).padStart(40, "0");
+    commits.push(attributedPullCommit(commitSha, parent));
+    parent = commitSha;
+  }
+  return commits;
+}
 
 function strictTicket() {
   const ticket = mergeTicket();
@@ -2273,7 +2345,15 @@ function standingMergeJoinRequest(overrides = {}) {
 
 function standingMergeJoinFetch({
   protection = {},
+  protectionStatus = 200,
   rules = [],
+  branchReadback = { name: "main", protected: true, commit: { sha: BASE } },
+  comments = [],
+  commentsStatus = 200,
+  commits = [attributedPullCommit(HEAD, BASE)],
+  commitPages = null,
+  commitsStatus = 200,
+  calls = null,
   reviews = [{
     id: 501,
     state: "APPROVED",
@@ -2283,6 +2363,7 @@ function standingMergeJoinFetch({
   }],
 } = {}) {
   return async (url) => {
+    calls?.push(url);
     const root = "https://api.github.com/repos/owner/repo";
     if (url === `${root}/git/commits/${HEAD}`) {
       return jsonResponse({ sha: HEAD, tree: { sha: TREE } });
@@ -2311,7 +2392,7 @@ function standingMergeJoinFetch({
       }));
     }
     if (url === `${root}/branches/main`) {
-      return jsonResponse({ name: "main", protected: true, commit: { sha: BASE } });
+      return jsonResponse(branchReadback);
     }
     if (url === `${root}/branches/main/protection`) {
       return jsonResponse({
@@ -2330,13 +2411,21 @@ function standingMergeJoinFetch({
         allow_force_pushes: { enabled: false },
         allow_deletions: { enabled: false },
         ...protection,
-      });
+      }, { status: protectionStatus });
     }
     if (url === `${root}/rules/branches/main?per_page=100&page=1`) {
       return jsonResponse(rules);
     }
     if (url === `${root}/pulls/42/reviews?per_page=100&page=1`) {
       return jsonResponse(reviews);
+    }
+    if (url === `${root}/pulls/42/comments?per_page=100&page=1`) {
+      return jsonResponse(comments, { status: commentsStatus });
+    }
+    if (url.startsWith(`${root}/pulls/42/commits?per_page=100&page=`)) {
+      const page = Number(new URL(url).searchParams.get("page"));
+      const payload = commitPages ? (commitPages[page - 1] || []) : (page === 1 ? commits : []);
+      return jsonResponse(payload, { status: commitsStatus });
     }
     if (url === `${root}/pulls/42/files?per_page=10&page=1`) {
       return jsonResponse([{ filename: RELEASE_CHANGED_FILES[0], status: "modified" }]);
@@ -2581,6 +2670,247 @@ test("standing merge readback is fresh and fails closed on protection or review 
       }],
     }));
     assert.equal(resolution.pre_merge_readback.approved_reviews[0].review_id, 502);
+  });
+});
+
+test("standing merge readback supports ruleset-only protection without weakening gates", async (t) => {
+  const resolve = (fetchImpl) => createHostNativeReleaseJoinVerdictResolver({
+    fetchImpl,
+    githubTokenResolver: async () => "standing-merge-token",
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    now: () => Date.parse(VERIFIED_AT),
+  })(standingMergeJoinRequest());
+
+  const verified = await resolve(standingMergeJoinFetch({
+    protectionStatus: 404,
+    rules: RULESET_ONLY_RULES,
+  }));
+  assert.equal(verified.pre_merge_readback.trusted, true);
+  assert.equal(verified.pre_merge_readback.base_commit, BASE);
+  assert.equal(verified.pre_merge_readback.approving_reviews_required, 1);
+  assert.equal(verified.pre_merge_readback.thread_resolution_required, false);
+  assert.equal(verified.pre_merge_readback.review_comment_count, null);
+  assert.deepEqual(verified.pre_merge_readback.required_checks, STRICT_POLICY.required_checks);
+
+  await t.test("missing ruleset checks", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.filter((rule) => rule.type !== "required_status_checks"),
+    })),
+    /release_join_verdict_pre_merge_ruleset_drift/,
+  ));
+  await t.test("missing ruleset review", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.filter((rule) => rule.type !== "pull_request"),
+    })),
+    /release_join_verdict_pre_merge_ruleset_drift/,
+  ));
+  await t.test("missing non-fast-forward protection", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.filter((rule) => rule.type !== "non_fast_forward"),
+    })),
+    /release_join_verdict_pre_merge_ruleset_drift/,
+  ));
+  await t.test("merge method must be admitted by the ruleset", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.map((rule) => rule.type === "pull_request" ? {
+        ...rule,
+        parameters: { ...rule.parameters, allowed_merge_methods: ["squash"] },
+      } : rule),
+    })),
+    /release_join_verdict_pre_merge_ruleset_unsupported/,
+  ));
+  await t.test("wrong ruleset check app", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.map((rule) => rule.type === "required_status_checks" ? {
+        ...rule,
+        parameters: {
+          ...rule.parameters,
+          required_status_checks: rule.parameters.required_status_checks.map((check, index) =>
+            index === 0 ? { ...check, integration_id: 999 } : check),
+        },
+      } : rule),
+    })),
+    /release_join_verdict_pre_merge_ruleset_drift/,
+  ));
+  await t.test("wrong ruleset checks", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.map((rule) => rule.type === "required_status_checks" ? {
+        ...rule,
+        parameters: {
+          ...rule.parameters,
+          required_status_checks: rule.parameters.required_status_checks.slice(1),
+        },
+      } : rule),
+    })),
+    /release_join_verdict_pre_merge_ruleset_drift/,
+  ));
+  await t.test("unsupported active rule", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: [...RULESET_ONLY_RULES, { ruleset_id: 901, type: "merge_queue" }],
+    })),
+    /release_join_verdict_pre_merge_ruleset_unsupported/,
+  ));
+  await t.test("unknown pull request parameter", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.map((rule) => rule.type === "pull_request" ? {
+        ...rule,
+        parameters: { ...rule.parameters, unknown_future_parameter: true },
+      } : rule),
+    })),
+    /release_join_verdict_pre_merge_ruleset_unsupported/,
+  ));
+  await t.test("branch identity remains exact", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES,
+      branchReadback: { name: "main", protected: true, commit: { sha: ALTERNATE } },
+    })),
+    /release_join_verdict_pre_merge_protection_drift/,
+  ));
+  for (const status of [401, 403]) {
+    await t.test(`classic protection ${status} remains unavailable`, async () => assert.rejects(
+      resolve(standingMergeJoinFetch({ protectionStatus: status, rules: RULESET_ONLY_RULES })),
+      /trusted_readback_unavailable/,
+    ));
+  }
+});
+
+test("ruleset-only zero-review policy proves thread resolution conservatively", async (t) => {
+  const resolve = (fetchImpl) => createHostNativeReleaseJoinVerdictResolver({
+    fetchImpl,
+    githubTokenResolver: async () => "standing-merge-token",
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    now: () => Date.parse(VERIFIED_AT),
+  })(standingMergeJoinRequest());
+
+  const verified = await resolve(standingMergeJoinFetch({
+    protectionStatus: 404,
+    rules: REAL_RULESET_ONLY_RULES,
+    reviews: [],
+    comments: [],
+  }));
+  assert.equal(verified.pre_merge_readback.approving_reviews_required, 0);
+  assert.deepEqual(verified.pre_merge_readback.approved_reviews, []);
+  assert.equal(verified.pre_merge_readback.thread_resolution_required, true);
+  assert.equal(verified.pre_merge_readback.review_comment_count, 0);
+  assert.equal(verified.pre_merge_readback.extra_approval_for_unattributed_changes_required, true);
+  assert.equal(verified.pre_merge_readback.commit_count, 1);
+  assert.equal(verified.pre_merge_readback.unattributed_commit_count, 0);
+
+  await t.test("one review comment leaves thread resolution unproven", async () =>
+    assert.rejects(resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      comments: [{ id: 7001, body: "unresolved or resolution state unavailable" }],
+    })), /release_join_verdict_pre_merge_thread_resolution_unproven/));
+
+  for (const status of [401, 403, 503]) {
+    await t.test(`review comment readback ${status} remains unavailable`, async () =>
+      assert.rejects(resolve(standingMergeJoinFetch({
+        protectionStatus: 404,
+        rules: REAL_RULESET_ONLY_RULES,
+        reviews: [],
+        commentsStatus: status,
+      })), /trusted_readback_unavailable/));
+  }
+
+  await t.test("pull request rule remains mandatory", async () =>
+    assert.rejects(resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES.filter((rule) => rule.type !== "pull_request"),
+      reviews: [],
+    })), /release_join_verdict_pre_merge_ruleset_drift/));
+
+  for (const identity of ["author", "committer"]) {
+    await t.test(`null ${identity} remains unattributed`, async () => {
+      const commit = attributedPullCommit(HEAD, BASE, { [identity]: null });
+      await assert.rejects(resolve(standingMergeJoinFetch({
+        protectionStatus: 404,
+        rules: REAL_RULESET_ONLY_RULES,
+        reviews: [],
+        commits: [commit],
+      })), /release_join_verdict_pre_merge_unattributed_changes_unproven/);
+    });
+  }
+
+  await t.test("malformed verification object is unproven", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      commits: [attributedPullCommit(HEAD, BASE, { commit: { verification: null } })],
+    })),
+    /release_join_verdict_pre_merge_unattributed_changes_unproven/,
+  ));
+
+  await t.test("commit list must terminate at the PR head", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      commits: [attributedPullCommit(ALTERNATE, BASE)],
+    })),
+    /release_join_verdict_pre_merge_unattributed_changes_unproven/,
+  ));
+
+  await t.test("empty commit list is unproven", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      commits: [],
+    })),
+    /release_join_verdict_pre_merge_unattributed_changes_unproven/,
+  ));
+
+  await t.test("commit readback is complete across pages", async () => {
+    const chain = attributedCommitChain(101);
+    const resolution = await resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      commitPages: [chain.slice(0, 100), chain.slice(100)],
+    }));
+    assert.equal(resolution.pre_merge_readback.commit_count, 101);
+    assert.equal(resolution.pre_merge_readback.unattributed_commit_count, 0);
+  });
+
+  await t.test("commit fetch error remains unproven", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      commitsStatus: 503,
+    })),
+    /release_join_verdict_pre_merge_unattributed_changes_unproven/,
+  ));
+
+  await t.test("flag false performs no commit readback", async () => {
+    const calls = [];
+    const resolution = await resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES,
+      calls,
+    }));
+    assert.equal(
+      calls.some((url) => url.includes("/pulls/42/commits?")),
+      false,
+    );
+    assert.equal(
+      resolution.pre_merge_readback.extra_approval_for_unattributed_changes_required,
+      false,
+    );
+    assert.equal(resolution.pre_merge_readback.commit_count, null);
+    assert.equal(resolution.pre_merge_readback.unattributed_commit_count, null);
   });
 });
 
