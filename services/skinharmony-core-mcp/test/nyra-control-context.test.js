@@ -19,11 +19,24 @@ test("Nyra control context is compact and carries only the next bounded action",
     autopilot: {
       assignments: [{ assignment_id: "22222222-2222-4222-8222-222222222222", role: "executor_specialist", status: "offered" }],
     },
+    operational: {
+      work_revision: 7,
+      checkpoint: { capsule_id: "capsule-1", capsule_digest: "b".repeat(64) },
+      gallery: { state: "available", work_count: 2 },
+      software: { state: "available", atlas_revision: 4, source_hash: "c".repeat(64) },
+    },
   });
   assert.equal(context.schema_version, NYRA_CONTROL_CONTEXT_SCHEMA_VERSION);
   assert.equal(context.work_id, "11111111-1111-4111-8111-111111111111");
   assert.equal(context.assignment.role, "executor_specialist");
   assert.equal(context.execution_authorized, false);
+  assert.equal(context.nyra_dialogue.mode, "automatic_work_briefing");
+  assert.equal(context.nyra_dialogue.persistent, true);
+  assert.equal(context.nyra_dialogue.work.checkpoint.capsule_id, "capsule-1");
+  assert.equal(context.nyra_dialogue.work.gallery.work_count, 2);
+  assert.equal(context.nyra_dialogue.work.software.atlas_revision, 4);
+  assert.equal(context.nyra_dialogue.self_diagnosis.state, "healthy");
+  assert.match(context.nyra_dialogue.dialogue_digest, /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(context).includes("not exported"), false);
   assert.match(context.context_digest, /^[a-f0-9]{64}$/);
 });
@@ -41,6 +54,8 @@ test("a reconnect context exposes one recovery action and preserves the Work", (
   assert.equal(context.connector.state, "reconnect_required");
   assert.equal(context.work_id, "11111111-1111-4111-8111-111111111111");
   assert.match(context.next_action, /Reconnect the existing OAuth session/);
+  assert.equal(context.nyra_dialogue.self_diagnosis.state, "recovery_required");
+  assert.equal(context.nyra_dialogue.self_diagnosis.automatic_correction, "context_preserved");
 });
 
 test("the connector returns the compact context instead of a full Work Gallery", () => {
