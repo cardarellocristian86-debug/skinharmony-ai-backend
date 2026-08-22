@@ -283,7 +283,9 @@ const RULESET_ONLY_RULES = Object.freeze([
     parameters: {
       required_approving_review_count: 1,
       allowed_merge_methods: ["merge"],
+      dismiss_stale_reviews_on_push: true,
       require_code_owner_review: false,
+      require_extra_approval_for_unattributed_changes: false,
       require_last_push_approval: false,
       required_review_thread_resolution: false,
       required_reviewers: [],
@@ -298,8 +300,41 @@ const REAL_RULESET_ONLY_RULES = Object.freeze(RULESET_ONLY_RULES.map((rule) =>
       ...rule.parameters,
       required_approving_review_count: 0,
       required_review_thread_resolution: true,
+      require_extra_approval_for_unattributed_changes: true,
     },
   } : { ...rule, ruleset_id: 20861970 }));
+
+function attributedPullCommit(commitSha, parentSha, overrides = {}) {
+  return {
+    sha: commitSha,
+    parents: [{ sha: parentSha }],
+    author: { login: "author-a" },
+    committer: { login: "committer-a" },
+    commit: {
+      verification: {
+        verified: false,
+        reason: "unsigned",
+        signature: null,
+        payload: null,
+        verified_at: null,
+      },
+    },
+    ...overrides,
+  };
+}
+
+function attributedCommitChain(length) {
+  const commits = [];
+  let parent = BASE;
+  for (let index = 0; index < length; index += 1) {
+    const commitSha = index === length - 1
+      ? HEAD
+      : (index + 10).toString(16).padStart(40, "0");
+    commits.push(attributedPullCommit(commitSha, parent));
+    parent = commitSha;
+  }
+  return commits;
+}
 
 function strictTicket() {
   const ticket = mergeTicket();
@@ -2315,6 +2350,10 @@ function standingMergeJoinFetch({
   branchReadback = { name: "main", protected: true, commit: { sha: BASE } },
   comments = [],
   commentsStatus = 200,
+  commits = [attributedPullCommit(HEAD, BASE)],
+  commitPages = null,
+  commitsStatus = 200,
+  calls = null,
   reviews = [{
     id: 501,
     state: "APPROVED",
@@ -2324,6 +2363,7 @@ function standingMergeJoinFetch({
   }],
 } = {}) {
   return async (url) => {
+    calls?.push(url);
     const root = "https://api.github.com/repos/owner/repo";
     if (url === `${root}/git/commits/${HEAD}`) {
       return jsonResponse({ sha: HEAD, tree: { sha: TREE } });
@@ -2381,6 +2421,11 @@ function standingMergeJoinFetch({
     }
     if (url === `${root}/pulls/42/comments?per_page=100&page=1`) {
       return jsonResponse(comments, { status: commentsStatus });
+    }
+    if (url.startsWith(`${root}/pulls/42/commits?per_page=100&page=`)) {
+      const page = Number(new URL(url).searchParams.get("page"));
+      const payload = commitPages ? (commitPages[page - 1] || []) : (page === 1 ? commits : []);
+      return jsonResponse(payload, { status: commitsStatus });
     }
     if (url === `${root}/pulls/42/files?per_page=10&page=1`) {
       return jsonResponse([{ filename: RELEASE_CHANGED_FILES[0], status: "modified" }]);
@@ -2712,6 +2757,16 @@ test("standing merge readback supports ruleset-only protection without weakening
     })),
     /release_join_verdict_pre_merge_ruleset_unsupported/,
   ));
+  await t.test("unknown pull request parameter", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.map((rule) => rule.type === "pull_request" ? {
+        ...rule,
+        parameters: { ...rule.parameters, unknown_future_parameter: true },
+      } : rule),
+    })),
+    /release_join_verdict_pre_merge_ruleset_unsupported/,
+  ));
   await t.test("branch identity remains exact", async () => assert.rejects(
     resolve(standingMergeJoinFetch({
       protectionStatus: 404,
@@ -2746,6 +2801,9 @@ test("ruleset-only zero-review policy proves thread resolution conservatively", 
   assert.deepEqual(verified.pre_merge_readback.approved_reviews, []);
   assert.equal(verified.pre_merge_readback.thread_resolution_required, true);
   assert.equal(verified.pre_merge_readback.review_comment_count, 0);
+  assert.equal(verified.pre_merge_readback.extra_approval_for_unattributed_changes_required, true);
+  assert.equal(verified.pre_merge_readback.commit_count, 1);
+  assert.equal(verified.pre_merge_readback.unattributed_commit_count, 0);
 
   await t.test("one review comment leaves thread resolution unproven", async () =>
     assert.rejects(resolve(standingMergeJoinFetch({
@@ -2771,6 +2829,89 @@ test("ruleset-only zero-review policy proves thread resolution conservatively", 
       rules: REAL_RULESET_ONLY_RULES.filter((rule) => rule.type !== "pull_request"),
       reviews: [],
     })), /release_join_verdict_pre_merge_ruleset_drift/));
+
+  for (const identity of ["author", "committer"]) {
+    await t.test(`null ${identity} remains unattributed`, async () => {
+      const commit = attributedPullCommit(HEAD, BASE, { [identity]: null });
+      await assert.rejects(resolve(standingMergeJoinFetch({
+        protectionStatus: 404,
+        rules: REAL_RULESET_ONLY_RULES,
+        reviews: [],
+        commits: [commit],
+      })), /release_join_verdict_pre_merge_unattributed_changes_unproven/);
+    });
+  }
+
+  await t.test("malformed verification object is unproven", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      commits: [attributedPullCommit(HEAD, BASE, { commit: { verification: null } })],
+    })),
+    /release_join_verdict_pre_merge_unattributed_changes_unproven/,
+  ));
+
+  await t.test("commit list must terminate at the PR head", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      commits: [attributedPullCommit(ALTERNATE, BASE)],
+    })),
+    /release_join_verdict_pre_merge_unattributed_changes_unproven/,
+  ));
+
+  await t.test("empty commit list is unproven", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      commits: [],
+    })),
+    /release_join_verdict_pre_merge_unattributed_changes_unproven/,
+  ));
+
+  await t.test("commit readback is complete across pages", async () => {
+    const chain = attributedCommitChain(101);
+    const resolution = await resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      commitPages: [chain.slice(0, 100), chain.slice(100)],
+    }));
+    assert.equal(resolution.pre_merge_readback.commit_count, 101);
+    assert.equal(resolution.pre_merge_readback.unattributed_commit_count, 0);
+  });
+
+  await t.test("commit fetch error remains unproven", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: REAL_RULESET_ONLY_RULES,
+      reviews: [],
+      commitsStatus: 503,
+    })),
+    /release_join_verdict_pre_merge_unattributed_changes_unproven/,
+  ));
+
+  await t.test("flag false performs no commit readback", async () => {
+    const calls = [];
+    const resolution = await resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES,
+      calls,
+    }));
+    assert.equal(
+      calls.some((url) => url.includes("/pulls/42/commits?")),
+      false,
+    );
+    assert.equal(
+      resolution.pre_merge_readback.extra_approval_for_unattributed_changes_required,
+      false,
+    );
+    assert.equal(resolution.pre_merge_readback.commit_count, null);
+    assert.equal(resolution.pre_merge_readback.unattributed_commit_count, null);
+  });
 });
 
 test("production deploy release-join proves exact push source and mixed previous-live state", async () => {

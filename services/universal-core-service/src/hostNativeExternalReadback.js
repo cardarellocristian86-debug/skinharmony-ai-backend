@@ -53,6 +53,12 @@ function sameStrings(left, right) {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+function exactObjectKeys(value, allowed, code) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) error(code);
+  const keys = Object.keys(value);
+  if (keys.length !== allowed.size || keys.some((key) => !allowed.has(key))) error(code);
+}
+
 function isoNow(now) {
   const instant = new Date(typeof now === "function" ? now() : Date.now());
   if (Number.isNaN(instant.getTime())) error("trusted_readback_clock_invalid");
@@ -695,11 +701,22 @@ function preMergeRulesetRequirements(rules, {
   authoritative = false,
 }) {
   const allowedPassiveRules = new Set(["deletion", "non_fast_forward"]);
+  const pullRequestParameterKeys = new Set([
+    "allowed_merge_methods",
+    "dismiss_stale_reviews_on_push",
+    "require_code_owner_review",
+    "require_extra_approval_for_unattributed_changes",
+    "require_last_push_approval",
+    "required_approving_review_count",
+    "required_review_thread_resolution",
+    "required_reviewers",
+  ]);
   const rulesetChecks = [];
   const passiveRules = new Set();
   let requiredReviews = 0;
   let pullRequestRulePresent = false;
   let threadResolutionRequired = false;
+  let extraApprovalForUnattributedChangesRequired = false;
   for (const rule of rules) {
     const type = string(rule?.type);
     if (!Number.isSafeInteger(Number(rule?.ruleset_id)) || Number(rule.ruleset_id) < 1 || !type) {
@@ -726,21 +743,31 @@ function preMergeRulesetRequirements(rules, {
     if (type === "pull_request") {
       pullRequestRulePresent = true;
       const parameters = rule?.parameters;
+      exactObjectKeys(
+        parameters,
+        pullRequestParameterKeys,
+        "release_join_verdict_pre_merge_ruleset_unsupported",
+      );
       const count = Number(parameters?.required_approving_review_count);
       const allowedMergeMethods = stableStrings(parameters?.allowed_merge_methods);
       const threadResolutionPolicy = parameters?.required_review_thread_resolution;
+      const extraApprovalPolicy = parameters?.require_extra_approval_for_unattributed_changes;
+      const dismissStaleReviews = parameters?.dismiss_stale_reviews_on_push;
       const specializedReviewers = Array.isArray(parameters?.required_reviewers)
         ? parameters.required_reviewers.some((entry) => Number(entry?.minimum_approvals) > 0)
         : false;
       if (
         !Number.isSafeInteger(count) || count < 0 || !allowedMergeMethods.includes(mergeMethod) ||
         ![true, false].includes(threadResolutionPolicy) ||
+        ![true, false].includes(extraApprovalPolicy) ||
+        ![true, false].includes(dismissStaleReviews) ||
         parameters?.require_code_owner_review === true ||
         parameters?.require_last_push_approval === true ||
         specializedReviewers
       ) error("release_join_verdict_pre_merge_ruleset_unsupported");
       requiredReviews = Math.max(requiredReviews, count);
       threadResolutionRequired ||= threadResolutionPolicy;
+      extraApprovalForUnattributedChangesRequired ||= extraApprovalPolicy;
       continue;
     }
     if (allowedPassiveRules.has(type)) {
@@ -759,7 +786,43 @@ function preMergeRulesetRequirements(rules, {
     !sameStrings(rulesetChecks, requiredChecks) || !pullRequestRulePresent ||
     !passiveRules.has("deletion") || !passiveRules.has("non_fast_forward")
   )) error("release_join_verdict_pre_merge_ruleset_drift");
-  return { requiredReviews, threadResolutionRequired };
+  return {
+    requiredReviews,
+    threadResolutionRequired,
+    extraApprovalForUnattributedChangesRequired,
+  };
+}
+
+function attributedPullRequestCommitCount(commits, headCommit) {
+  if (!Array.isArray(commits) || commits.length === 0) {
+    error("release_join_verdict_pre_merge_unattributed_changes_unproven");
+  }
+  const seen = new Set();
+  let previousCommit = null;
+  for (const entry of commits) {
+    const commitSha = sha(entry?.sha);
+    const parents = Array.isArray(entry?.parents) ? entry.parents.map((parent) => sha(parent?.sha)) : null;
+    const verification = entry?.commit?.verification;
+    const verifiedAt = verification?.verified_at;
+    if (
+      !commitSha || seen.has(commitSha) || !parents?.length || parents.some((parent) => !parent) ||
+      (previousCommit && !parents.includes(previousCommit)) ||
+      !string(entry?.author?.login) || !string(entry?.committer?.login) ||
+      !verification || typeof verification !== "object" || Array.isArray(verification) ||
+      typeof verification.verified !== "boolean" || !string(verification.reason) ||
+      !(verification.signature === null || typeof verification.signature === "string") ||
+      !(verification.payload === null || typeof verification.payload === "string") ||
+      !(verifiedAt === null || (
+        typeof verifiedAt === "string" && Number.isFinite(Date.parse(verifiedAt))
+      ))
+    ) error("release_join_verdict_pre_merge_unattributed_changes_unproven");
+    seen.add(commitSha);
+    previousCommit = commitSha;
+  }
+  if (previousCommit !== headCommit) {
+    error("release_join_verdict_pre_merge_unattributed_changes_unproven");
+  }
+  return commits.length;
 }
 
 function approvedHeadReviews(reviews, pull, headCommit, requiredCount) {
@@ -878,6 +941,22 @@ async function attestStandingPreMerge({
       error("release_join_verdict_pre_merge_thread_resolution_unproven");
     }
   }
+  let commitCount = null;
+  let unattributedCommitCount = null;
+  if (rulesetRequirements.extraApprovalForUnattributedChangesRequired) {
+    let commits;
+    try {
+      commits = await readGithubPages(
+        getGithub,
+        `/pulls/${Number(action.pull_request)}/commits`,
+        "release_join_verdict_pre_merge_unattributed_changes_unproven",
+      );
+    } catch {
+      error("release_join_verdict_pre_merge_unattributed_changes_unproven");
+    }
+    commitCount = attributedPullRequestCommitCount(commits, headCommit);
+    unattributedCommitCount = 0;
+  }
   const requiredReviews = Math.max(classicReviews, rulesetRequirements.requiredReviews);
   const approvedReviews = approvedHeadReviews(reviews, pull, headCommit, requiredReviews);
   const unsigned = {
@@ -897,6 +976,10 @@ async function attestStandingPreMerge({
     approved_reviews: approvedReviews,
     thread_resolution_required: rulesetRequirements.threadResolutionRequired,
     review_comment_count: reviewCommentCount,
+    extra_approval_for_unattributed_changes_required:
+      rulesetRequirements.extraApprovalForUnattributedChangesRequired,
+    commit_count: commitCount,
+    unattributed_commit_count: unattributedCommitCount,
     active_rules_digest: hostNativeDigest(rules),
     verified_at: isoNow(now),
     provider_execution: false,
