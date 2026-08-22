@@ -38,6 +38,14 @@ test("keeps agent collaboration disabled until a persistent root is configured",
   assert.equal(enabled.memoryFabricRoot, "/var/data/skinharmony-core-mcp");
   assert(enabled.supportedScopes.includes("core:read"));
   assert(enabled.supportedScopes.includes("core:govern"));
+  assert.equal(enabled.supportedScopes.includes("offline_access"), false);
+  assert(enabled.oauthScopesSupported.includes("offline_access"));
+  const explicitOAuthScope = loadConfig({
+    MCP_SUPPORTED_SCOPES: "core:read,offline_access,core:govern",
+  });
+  assert.equal(explicitOAuthScope.supportedScopes.includes("offline_access"), false);
+  assert.deepEqual(explicitOAuthScope.supportedScopes, ["core:read", "core:govern"]);
+  assert(explicitOAuthScope.oauthScopesSupported.includes("offline_access"));
   assert.equal(enabled.researchCortexRoot, "/var/data/skinharmony-core-mcp");
   const postgresOnly = loadConfig({
     DATABASE_URL: "postgres://existing-service-db",
@@ -490,4 +498,30 @@ test("rejects invalid Suite key maps", () => {
   assert.throws(() => loadConfig({
     SUITE_CONTROL_PLANE_KEYS_JSON: JSON.stringify({ "../tenant": "key" }),
   }), /invalid tenant id/);
+});
+
+test("loads only exact server-owned Nyra project release bindings", () => {
+  const config = loadConfig({
+    NYRA_PROJECT_RELEASE_BINDINGS_JSON: JSON.stringify({
+      schema_version: "nyra_project_release_bindings_v1",
+      bindings: [{
+        tenant_id: "codexai",
+        project_id: "skinharmony-ai-backend",
+        repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+        base_branch: "main",
+        required_checks: ["universal-core", "core-mcp"],
+      }],
+    }),
+  });
+  assert.deepEqual(config.nyraProjectReleaseBindings, [{
+    tenant_id: "codexai",
+    project_id: "skinharmony-ai-backend",
+    repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+    base_branch: "main",
+    required_checks: ["core-mcp", "universal-core"],
+  }]);
+  assert.throws(
+    () => loadConfig({ NYRA_PROJECT_RELEASE_BINDINGS_JSON: "{" }),
+    /must be valid JSON/,
+  );
 });

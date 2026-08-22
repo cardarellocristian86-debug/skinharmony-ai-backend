@@ -252,15 +252,17 @@ jobs:
             abort("#{service["name"]}: release branch must remain main") unless
               service["branch"] == "main"
           end
-          # MCP exposes process-only deployment liveness at /livez. Universal
-          # Core exposes governed dependency readiness at /readyz. Nyra has
-          # no separate process-only endpoint and keeps its /healthz contract.
+          # Render's rollout check must only prove that the process is alive.
+          # Core/Nyra dependency readiness stays fail-closed at /readyz and
+          # /healthz and is checked by the governed release readback after
+          # the service is live. Using dependency readiness here deadlocks a
+          # rolling deploy when a peer is briefly restarting.
           abort("#{mcp["name"]}: deployment liveness check must remain /livez") unless
             mcp["healthCheckPath"] == "/livez"
-          abort("#{core["name"]}: deployment readiness check must remain /readyz") unless
-            core["healthCheckPath"] == "/readyz"
-          abort("#{nyra["name"]}: health check must remain /healthz") unless
-            nyra["healthCheckPath"] == "/healthz"
+          abort("#{core["name"]}: deployment liveness check must remain /livez") unless
+            core["healthCheckPath"] == "/livez"
+          abort("#{nyra["name"]}: deployment liveness check must remain /livez") unless
+            nyra["healthCheckPath"] == "/livez"
 
           mcp_env = Array(mcp["envVars"]).to_h { |entry| [entry["key"], entry] }
           %w[
@@ -557,6 +559,7 @@ jobs:
           generic_join_core_values = {
             "CORE_GENERIC_WORK_CORE_JOIN_ENABLED" => "true",
             "CORE_GENERIC_WORK_CORE_JOIN_REQUIRED" => "true",
+            "CORE_GENERIC_WORK_CORE_JOIN_GATES_GLOBAL_READINESS" => "false",
             "CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE" => "remote",
             "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PATH" =>
               "/v1/generic-work-core-join/sign",

@@ -791,6 +791,97 @@ const policyRegistryToolOptions = {
   },
 };
 
+const nyraConverseNullableText = (maxLength) => ({
+  type: ["string", "null"],
+  maxLength,
+});
+const nyraConverseOutputSchema = object({
+  schema_version: { const: "nyra_conversation_turn_v1" },
+  ok: { const: true },
+  tenant_id: { type: "string", minLength: 1, maxLength: 160 },
+  turn_id: { type: "string", pattern: "^nyra_turn_[a-f0-9]{24}$" },
+  identity_binding: object({
+    authenticated: { const: true },
+    tenant_bound: { const: true },
+    principal_kind: { type: "string", enum: ["oauth", "codex", "service", "other"] },
+    client_type: { type: "string", enum: ["chatgpt", "codex", "api_agent", "other"] },
+    caller_authority_accepted: { const: false },
+  }, ["authenticated", "tenant_bound", "principal_kind", "client_type", "caller_authority_accepted"]),
+  work: object({
+    preflight_bound: { const: true },
+    work_bound: { type: "boolean" },
+    work_id: nyraConverseNullableText(80),
+    project_id: nyraConverseNullableText(80),
+    state: {
+      type: "string",
+      enum: ["active", "blocked", "verified", "release_ready", "completed", "failed", "selection_required", "unbound", "unknown"],
+    },
+    next_action_available: { type: "boolean" },
+    selection_required: { type: "boolean" },
+  }, ["preflight_bound", "work_bound", "work_id", "project_id", "state", "next_action_available", "selection_required"]),
+  memory: object({
+    loaded: { type: "boolean" },
+    active_task_count: { type: "integer", minimum: 0, maximum: 100_000 },
+    active_lock_count: { type: "integer", minimum: 0, maximum: 100_000 },
+    artifact_count: { type: "integer", minimum: 0, maximum: 100_000 },
+    revision: { type: "integer", minimum: 0, maximum: 100_000 },
+    relevant_count: { type: "integer", minimum: 0, maximum: 100_000 },
+    handoff_count: { type: "integer", minimum: 0, maximum: 100_000 },
+    recent_activity_count: { type: "integer", minimum: 0, maximum: 100_000 },
+    raw_memory_returned: { const: false },
+  }, [
+    "loaded", "active_task_count", "active_lock_count", "artifact_count", "revision",
+    "relevant_count", "handoff_count", "recent_activity_count", "raw_memory_returned",
+  ]),
+  interpretation: object({
+    core: object({
+      mode: { type: "string", enum: ["active", "shadow", "off"] },
+      route: { type: "string", enum: ["V0", "V1", "V2"] },
+      authority: { type: "string", enum: ["V0", "V1", "V2"] },
+      parity_matched: { type: ["boolean", "null"] },
+      execution_allowed: { const: false },
+    }, ["mode", "route", "authority", "parity_matched", "execution_allowed"]),
+    selected_action_available: { type: "boolean" },
+    risk_band: { type: "string", enum: ["low", "medium", "high", "blocked", "unknown"] },
+    dialogue_accepted: { type: "boolean" },
+    opened_branch_count: { type: "integer", minimum: 0, maximum: 100_000 },
+  }, ["core", "selected_action_available", "risk_band", "dialogue_accepted", "opened_branch_count"]),
+  action_policy: object({
+    consequential_request_detected: { type: "boolean" },
+    categories: {
+      type: "array",
+      maxItems: 6,
+      uniqueItems: true,
+      items: { type: "string", enum: ["release", "communication", "destructive", "financial", "scheduling", "access"] },
+    },
+    mode: { type: "string", enum: ["advisory_only", "proposal_only"] },
+    classification_only: { const: true },
+    external_action_authorized: { const: false },
+    consequential_action_performed: { const: false },
+  }, [
+    "consequential_request_detected", "categories", "mode", "classification_only",
+    "external_action_authorized", "consequential_action_performed",
+  ]),
+  host_response_contract: object({
+    speaker: { const: "Nyra" },
+    renderer: { const: "connected_host_model" },
+    response_language: { type: "string", enum: ["it", "en", "match_user"] },
+    response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
+    reply_seed: { type: "string", minLength: 1, maxLength: 1_200 },
+    instructions: { type: "array", minItems: 3, maxItems: 3, items: { type: "string", maxLength: 500 } },
+  }, ["speaker", "renderer", "response_language", "response_style", "reply_seed", "instructions"]),
+  execution_authorized: { const: false },
+  external_action_authorized: { const: false },
+  provider_execution: { const: false },
+  provider_api_key_required: { const: false },
+  server_model_calls: { const: 0 },
+  dynamic_capability: { type: "object", additionalProperties: true },
+}, [
+  "schema_version", "ok", "tenant_id", "turn_id", "identity_binding", "work", "memory",
+  "interpretation", "action_policy", "host_response_contract", "execution_authorized",
+  "external_action_authorized", "provider_execution", "provider_api_key_required", "server_model_calls",
+]);
+
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
   tool("core_runtime_hierarchy_status", "Read Universal Core runtime hierarchy", "Use this when you need the live V7/V0/V1/V2 hierarchy mode and worker status. It is tenant-scoped, read-only and never authorizes execution.", object(), ["core:read"], true, true, { outputSchema: { type: "object", properties: { ok: { type: "boolean" }, tenant_id: { type: "string" }, runtime: { type: "object", additionalProperties: true } }, required: ["ok", "tenant_id"], additionalProperties: true } }),
@@ -804,7 +895,7 @@ export const TOOLS = [
       evidence_state: runtimeEvidenceState,
     }, additionalProperties: false },
   }, ["request"]), ["core:read"], true, true, { outputSchema: object({ ok: { type: "boolean" }, tenant_id: { type: "string" }, core_runtime: coreRuntimeOutputSchema }, ["ok", "tenant_id", "core_runtime"]) }),
-  tool("work_preflight", "Open Tenant Work Gallery and route work", "Use this as the first step for generic Nyra/Core work. It opens the authenticated tenant's PostgreSQL Tenant Work Gallery as the operational surface, recalls canonical tenant memory, exposes current work/presence/branch/lease counts, resumes an existing Work Identity when one is already anchored, or reports the owner-governed bootstrap required for a new one. It opens Nyra/Core branches, builds a bounded host-native task graph and returns fail-closed governance gates. Host-native children are created only by ChatGPT/Codex and require no provider API key. The optional provider workflow remains separate. Never ask the user for a separate Gallery or shared-memory loading prompt.", object({
+  tool("work_preflight", "Inspect automatic Tenant Work routing", "Before every generic Nyra/Core action, the gateway automatically opens the authenticated tenant's PostgreSQL Tenant Work Gallery, recalls canonical tenant memory, resumes an unambiguous existing Work Identity, and applies fail-closed governance. Do not call this manually before a normal action: use it only to inspect or diagnose the current route. It can report an owner-governed bootstrap when no existing work is unambiguous. Host-native children are created only by ChatGPT/Codex and require no provider API key. Never ask the user for a separate Gallery or shared-memory loading prompt.", object({
     request: text(),
     target_system: { type: "string", maxLength: 100 },
     operation_type: { type: "string", maxLength: 100 },
@@ -865,6 +956,21 @@ export const TOOLS = [
     destructive: false,
   }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
+  tool("nyra_converse", "Talk with Nyra", "Use this for a natural conversation with Nyra. The connected host model renders Nyra's answer from authenticated, tenant-bound Work continuity, bounded memory counts and existing Core interpretation signals. It never calls a provider model, accepts caller authority, or authorizes or performs an external action.", object({
+    message: text(12_000),
+    work_id: { type: "string", format: "uuid" },
+    project_id: identifier,
+    locale: { type: "string", enum: ["auto", "it", "en"] },
+    response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
+  }, ["message"]), ["core:read"], true, true, {
+    outputSchema: nyraConverseOutputSchema,
+    meta: {
+      "skinharmony/providerExecution": false,
+      "skinharmony/externalSideEffect": false,
+      "openai/toolInvocation/invoking": "Nyra sta ascoltando…",
+      "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
+    },
+  }),
   tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
   tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded connector capabilities by functional group. The catalog never accepts arbitrary paths, never exposes admin/bootstrap/secret surfaces and leaves Universal Core as final authority.", object({
     group: identifier,

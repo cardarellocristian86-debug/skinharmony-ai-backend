@@ -151,6 +151,13 @@ export function assertGalleryParticipantBinding(identity = {}, input = {}) {
 const WORK_CATALOG_STATUSES = new Set([
   "active", "verified", "release_ready", "completed", "cancelled", "superseded", "blocked", "failed",
 ]);
+// A new host conversation may safely attach itself only when the project has
+// exactly one still-operational Work.  This is deliberately narrower than the
+// catalog: closed or superseded Work must never become the implicit context of
+// a fresh chat, and two candidates must remain an explicit selection.
+const AUTO_RESUMABLE_WORK_STATUSES = Object.freeze([
+  "active", "verified", "release_ready", "blocked",
+]);
 const STANDING_RELEASE_ELIGIBLE_WORK_STATUSES = new Set([
   "active", "verified", "release_ready",
 ]);
@@ -1268,6 +1275,25 @@ CREATE TABLE IF NOT EXISTS core_continuity_works (
 CREATE INDEX IF NOT EXISTS core_continuity_works_project_idx
   ON core_continuity_works (tenant_id, project_id, updated_at DESC);
 
+-- Nyra's operational context is server-owned and deliberately compact. It is
+-- a projection of the authoritative Work ledger, not a second conversational
+-- memory. A fresh chat can therefore resume the same Work without asking a
+-- connected AI to rediscover Gallery, plan, policy and checkpoints.
+CREATE TABLE IF NOT EXISTS core_continuity_control_contexts (
+  tenant_id varchar(64) NOT NULL,
+  work_id uuid NOT NULL,
+  project_id varchar(64) NOT NULL,
+  work_revision bigint NOT NULL,
+  context_digest char(64) NOT NULL,
+  payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, work_id),
+  FOREIGN KEY (tenant_id, work_id) REFERENCES core_continuity_works(tenant_id, work_id)
+);
+CREATE INDEX IF NOT EXISTS core_continuity_control_contexts_project_idx
+  ON core_continuity_control_contexts (tenant_id, project_id, work_revision DESC, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS core_continuity_architecture_versions (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, version bigint NOT NULL,
   architecture jsonb NOT NULL, impact_map jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -1827,11 +1853,26 @@ export function createWorkContinuityRuntime(config, options = {}) {
         FROM core_continuity_session_bindings
         WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
       [tenantId, projectId, sessionId]);
-      if (input.resume_existing === true && (binding.rows[0] || input.work_id)) {
+      let autoResumeCandidate = null;
+      let autoResumeCandidates = [];
+      if (input.resume_existing === true && !binding.rows[0] && !input.work_id) {
+        // Do not make the model discover or choose a Work in a new chat.  The
+        // database makes the choice under the same transaction lock used for
+        // the session binding.  More than one operational Work fails closed
+        // into the existing explicit-selection path.
+        const candidates = await client.query(`SELECT work_id FROM core_continuity_works
+          WHERE tenant_id=$1 AND project_id=$2 AND status = ANY($3::varchar[])
+          ORDER BY updated_at DESC,work_id DESC
+          LIMIT 2
+          FOR UPDATE`, [tenantId, projectId, AUTO_RESUMABLE_WORK_STATUSES]);
+        autoResumeCandidates = candidates.rows;
+        if (autoResumeCandidates.length === 1) autoResumeCandidate = autoResumeCandidates[0];
+      }
+      if (input.resume_existing === true && (binding.rows[0] || input.work_id || autoResumeCandidate)) {
         if (binding.rows[0] && input.work_id && binding.rows[0].work_id !== workId) {
           throw new Error("continuity_session_binding_conflict");
         }
-        const resumeWorkId = binding.rows[0]?.work_id || workId;
+        const resumeWorkId = binding.rows[0]?.work_id || input.work_id || autoResumeCandidate.work_id;
         const existing = await client.query(`SELECT a.intent_digest,a.create_request_digest,
             w.project_id,w.status,w.current_version,w.next_action
           FROM core_continuity_intent_anchors a JOIN core_continuity_works w
@@ -1890,9 +1931,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
           architecture_version: Number(existing.rows[0]?.current_version || 0),
           next_action: existing.rows[0]?.next_action || "",
           resumed_existing: true,
+          resume_source: binding.rows[0]
+            ? "session_binding"
+            : input.work_id ? "explicit_work_id" : "unambiguous_project_work",
+          automatic_resume: Boolean(autoResumeCandidate),
           session_binding_created: sessionBindingCreated,
           idempotent_replay: !sessionBindingCreated,
         };
+      }
+      if (input.resume_existing === true && !binding.rows[0] && !input.work_id && autoResumeCandidates.length > 1) {
+        const error = new Error("continuity_resume_selection_required");
+        error.code = "continuity_resume_selection_required";
+        error.candidate_work_ids = autoResumeCandidates.map((candidate) => String(candidate.work_id));
+        throw error;
       }
       const architecture = cleanJson(input.architecture || {});
       const intent = buildIntentAnchor({
@@ -1968,6 +2019,48 @@ export function createWorkContinuityRuntime(config, options = {}) {
         fabric_schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
         architecture_version: 1, architecture_digest: architectureDigest,
         intent_digest: intent.intent_digest, event, intent_event: intentEvent };
+  }
+
+  async function upsertControlContext(identity, input = {}) {
+    const context = workContext(identity, input);
+    const projectId = identifier(input.project_id, "project_id", 64);
+    const candidate = cleanJson(input.context || {}, 16_000);
+    if (candidate.schema_version !== "nyra_control_context_v1" ||
+        candidate.tenant_id !== context.tenantId ||
+        candidate.work_id !== context.workId ||
+        candidate.project_id !== projectId ||
+        !/^[a-f0-9]{64}$/.test(String(candidate.context_digest || ""))) {
+      throw new Error("nyra_control_context_invalid");
+    }
+    return transaction(async (client) => {
+      const work = await client.query(`SELECT project_id,current_version,status,next_action
+        FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
+      [context.tenantId, context.workId]);
+      const row = work.rows[0];
+      if (!row) throw new Error("continuity_work_not_found");
+      if (row.project_id !== projectId) throw new Error("continuity_project_mismatch");
+      const unsignedPayload = cleanJson({
+        ...candidate,
+        context_digest: undefined,
+        work_state: String(row.status || candidate.work_state || "unknown"),
+        work_revision: Number(row.current_version || 0),
+        next_action: safeText(row.next_action || candidate.next_action, 360),
+      }, 16_000);
+      const payload = {
+        ...unsignedPayload,
+        context_digest: digest(unsignedPayload),
+      };
+      await client.query(`INSERT INTO core_continuity_control_contexts
+        (tenant_id,work_id,project_id,work_revision,context_digest,payload)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb)
+        ON CONFLICT (tenant_id,work_id) DO UPDATE SET
+          project_id=EXCLUDED.project_id,work_revision=EXCLUDED.work_revision,
+          context_digest=EXCLUDED.context_digest,payload=EXCLUDED.payload,updated_at=now()`, [
+        context.tenantId, context.workId, projectId, Number(row.current_version || 0),
+        payload.context_digest, JSON.stringify(payload),
+      ]);
+      return payload;
+    });
   }
 
   async function ensure(identity, input, options = {}) {
@@ -4595,6 +4688,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
       evidence_digest: evidenceDigest,
       configuration_digest: configurationDigest,
     });
+    // No native plan means no worker has been scheduled and no external
+    // action could have been attempted. Preserve the incident evidence, but
+    // do not deadlock the only Work able to publish the corrective release.
+    const preExecutionPlanLookupFailure =
+      operation === "work_continuity_closure_evaluate" &&
+      errorCode === "NATIVE_AGENT_PLAN_NOT_FOUND" &&
+      !latestPlan.rows[0];
     return recordIncident(identity, {
       work_id: context.workId,
       project_id: projectId,
@@ -4627,6 +4727,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       },
       next_action: safeText(input.next_action, 4_000),
       idempotency_key: `incident-operational-${incidentIdempotencyDigest}`,
+      block_work: !preExecutionPlanLookupFailure,
     });
   }
 
@@ -4661,6 +4762,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
       promotes_only_after_independent_verification: true,
     }, 100_000);
     const runbookDigest = digest(runbook);
+    // Candidate incident evidence is always append-only.  Only failures that
+    // reached an execution-capable plan may move a Work to blocked.
+    const blockWork = input.block_work !== false;
     return transaction(async (client) => {
       const work = await client.query(`SELECT project_id FROM core_continuity_works
         WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [context.tenantId, context.workId]);
@@ -4677,10 +4781,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
       );
       if (existing.rows[0]) {
         if (existing.rows[0].runbook_digest !== runbookDigest) throw new Error("incident_runbook_conflict");
-        await client.query(`UPDATE core_continuity_works
-          SET status='blocked',next_action=$3,updated_at=now()
-          WHERE tenant_id=$1 AND work_id=$2`,
-        [context.tenantId, context.workId, nextAction]);
+        if (blockWork) {
+          await client.query(`UPDATE core_continuity_works
+            SET status='blocked',next_action=$3,updated_at=now()
+            WHERE tenant_id=$1 AND work_id=$2`,
+          [context.tenantId, context.workId, nextAction]);
+        }
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
           tenant_id: context.tenantId,
@@ -4688,6 +4794,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           project_id: projectId,
           fingerprint,
           status: existing.rows[0].status,
+          work_status: blockWork ? "blocked" : "active",
           next_action: nextAction,
           idempotent_replay: true,
         };
@@ -4697,15 +4804,18 @@ export function createWorkContinuityRuntime(config, options = {}) {
         VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,'candidate',$7)`,
       [context.tenantId, projectId, fingerprint, JSON.stringify(scope), JSON.stringify(runbook),
         runbookDigest, context.actor]);
-      await client.query(`UPDATE core_continuity_works
-        SET status='blocked',next_action=$3,updated_at=now()
-        WHERE tenant_id=$1 AND work_id=$2`,
-      [context.tenantId, context.workId, nextAction]);
+      if (blockWork) {
+        await client.query(`UPDATE core_continuity_works
+          SET status='blocked',next_action=$3,updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2`,
+        [context.tenantId, context.workId, nextAction]);
+      }
       const event = await appendEvent(client, context, "incident_recorded", {
         project_id: projectId,
         fingerprint,
         runbook_digest: runbookDigest,
         status: "candidate",
+        work_status: blockWork ? "blocked" : "active",
         next_action: nextAction,
       });
       return {
@@ -4717,6 +4827,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         scope,
         runbook_digest: runbookDigest,
         status: "candidate",
+        work_status: blockWork ? "blocked" : "active",
         next_action: nextAction,
         event,
       };
@@ -5082,6 +5193,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     create,
     ensure,
     ensureWithClient,
+    upsertControlContext,
     setWorkEventProjector,
     readIntent,
     resolveStandingReleaseIntentBinding,

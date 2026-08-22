@@ -24,6 +24,19 @@ import {
 } from "./work-continuity-v2-store.js";
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
 import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
+import {
+  createNyraConverseHandler,
+  createNyraConversePreflight,
+} from "./nyra-converse.js";
+import {
+  buildNyraNativePlanRequest,
+  resolveNyraProjectReleaseBinding,
+} from "./nyra-native-plan-bridge.js";
+import { buildNyraControlContext } from "./nyra-control-context.js";
+import {
+  continuityProjectId,
+  resolveContinuityProjectBinding,
+} from "./continuity-project-binding.js";
 import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
 import {
   WORK_CONTINUITY_TOOLS,
@@ -430,6 +443,52 @@ function summarizeToolRequest(toolName, args = {}) {
   ).slice(0, 20_000);
 }
 
+function stableCanonical(value) {
+  if (Array.isArray(value)) return value.map(stableCanonical);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().flatMap((key) =>
+    value[key] === undefined ? [] : [[key, stableCanonical(value[key])]],
+  ));
+}
+
+function dynamicInvocationTarget(toolName, args = {}, identity = {}) {
+  if (toolName !== "core_capability_invoke") {
+    return { toolName, args, capabilityId: "", argumentDigest: "" };
+  }
+  const capabilityId = String(args?.capability_id || "").trim();
+  const targetArgs = args?.arguments && typeof args.arguments === "object" && !Array.isArray(args.arguments)
+    ? args.arguments
+    : {};
+  const tool = TOOLS.find((item) => item.name === capabilityId);
+  const normalizedArgs = { ...targetArgs };
+  if (tool?._meta?.["skinharmony/tenantBoundedCollaboration"] === true) {
+    const presence = identity.agentPresence || {};
+    normalizedArgs.agent_id = presence.agent_id;
+    normalizedArgs.session_id = presence.session_id;
+    normalizedArgs.client_type = presence.client_type;
+  }
+  if (tool?.inputSchema?.properties?.idempotency_key &&
+      normalizedArgs.idempotency_key === undefined && args.idempotency_key) {
+    normalizedArgs.idempotency_key = args.idempotency_key;
+  }
+  if (tool?._meta?.["skinharmony/ownerConfirmationRequired"] === true) {
+    normalizedArgs.owner_confirmed = args.owner_confirmed === true;
+    if (args.confirmation_reference) normalizedArgs.confirmation_reference = String(args.confirmation_reference).slice(0, 240);
+  }
+  // This digest is derived inside the gateway from the same normalized target
+  // shape that the router will validate and dispatch; it is provenance
+  // metadata, never a client authority claim.
+  const argumentDigest = crypto.createHash("sha256")
+    .update(JSON.stringify(stableCanonical(normalizedArgs)))
+    .digest("hex");
+  return {
+    toolName: capabilityId || toolName,
+    args: normalizedArgs,
+    capabilityId,
+    argumentDigest,
+  };
+}
+
 function requireTenantWorkIdentity(identity) {
   requireTenantWorkCapability(identity, "read");
 }
@@ -489,16 +548,6 @@ async function requireBoundedTenantCoordination(identity, actionType, target, id
   }
 }
 
-function continuityProjectId(args = {}) {
-  const raw = String(args.project_id || args.repository || args.target_system || "skinharmony-ai-backend")
-    .trim()
-    .replace(/[^a-zA-Z0-9_.:/-]+/g, "-")
-    .slice(0, 64);
-  return /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,63}$/.test(raw)
-    ? raw
-    : "skinharmony-ai-backend";
-}
-
 function hostType(identity, args = {}) {
   if (args.host_type === "codex_native" || args.host_type === "chatgpt_native") return args.host_type;
   return (identity.agentPresence?.client_type || args.client_type) === "codex"
@@ -506,14 +555,23 @@ function hostType(identity, args = {}) {
     : "chatgpt_native";
 }
 
-function attachContinuity(preflightResult, continuity) {
+function attachContinuity(preflightResult, continuity, persistedControlContext = null) {
   if (!continuity) return preflightResult;
   const structured = preflightResult?.structuredContent;
   if (!structured || typeof structured !== "object") return preflightResult;
+  const controlContext = persistedControlContext || buildNyraControlContext({ continuity });
   if (structured.work_preflight && typeof structured.work_preflight === "object") {
-    structured.work_preflight = { ...structured.work_preflight, continuity };
+    structured.work_preflight = {
+      ...structured.work_preflight,
+      continuity,
+      // Connected AIs consume this compact contract. The detailed Gallery,
+      // evidence and policy graph stay server-side until a diagnostic or an
+      // exact Core decision actually needs them.
+      nyra_control_context: controlContext,
+    };
   } else {
     structured.continuity = continuity;
+    structured.nyra_control_context = controlContext;
   }
   return preflightResult;
 }
@@ -524,43 +582,12 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
   if (!sessionId) throw new Error("continuity_session_required");
   const initialMessage = summarizeToolRequest(toolName, args);
   const host = hostType(identity, args);
-  const continuityGateIdempotencyKey = `continuity-anchor-${crypto.createHash("sha256")
-    .update(`${identity.tenantId}\u0000${continuityProjectId(args)}\u0000${sessionId}`)
-    .digest("hex")
-    .slice(0, 32)}`;
-  const continuityGate = await coreHandlers.core_gate_action({
-    action_label: "Persist a redacted immutable Work Continuity Intent Anchor",
-    action_type: resumeExisting ? "work.continuity.resume_or_bind" : "continuity.update",
-    target: `${continuityProjectId(args)}:${sessionId}`,
-    operation_class: "bounded_internal_coordination_write",
-    external_side_effect: false,
-    contains_customer_data: false,
-    contains_secret: false,
-    secret_value_transmitted: false,
-    cross_tenant: false,
-    configuration_changes: false,
-    destructive: false,
-    bypass_orchestrator: false,
-    provider_execution: false,
-    deploy: false,
-    production_deploy: false,
-    merge: false,
-    delete: false,
-    execution_enabled: false,
-    force: false,
-    admin_bypass: false,
-    bounded_scope: true,
-    low_impact: true,
-    idempotent_or_compensable: true,
-    rollback_ready: true,
-    audit_ready: Boolean(decisionLedger),
-    target_authority_verified: true,
-    actor_authorized_for_target: true,
-    idempotency_key: continuityGateIdempotencyKey,
-    owner_confirmed: false,
-  }, identity);
-  const authorization = continuityGate?.structuredContent?.authorization || {};
-  if (authorization.allowed !== true) throw new Error("continuity_capture_not_authorized");
+  // Resuming or binding an already-authorized Work is an internal,
+  // idempotent ledger operation protected by tenant/session ACLs. Routing it
+  // through Core's external-action gate on *every* tool call caused a second
+  // round trip and an unnecessary model-facing stop. Core gates remain
+  // mandatory for scope changes and external effects (merge, deploy,
+  // permissions, rollback); they are not a tax on normal continuity.
   const acceptanceCriteria = Array.isArray(args.acceptance_criteria) && args.acceptance_criteria.length
     ? args.acceptance_criteria
     : [
@@ -609,7 +636,17 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       creationAuthorized: false,
     });
   } catch (error) {
-    if (error?.code !== "continuity_creation_owner_confirmation_required") throw error;
+    if (error?.code === "continuity_resume_selection_required") {
+      continuity = {
+        tenant_id: identity.tenantId,
+        project_id: continuityProjectId(args),
+        work_id: null,
+        state: "work_selection_required",
+        owner_governance_required: false,
+        candidate_work_ids: Array.isArray(error.candidate_work_ids) ? error.candidate_work_ids.slice(0, 2) : [],
+        next_action: "Ask the owner which current Work to continue; do not create a duplicate Work or request a new confirmation.",
+      };
+    } else if (error?.code === "continuity_creation_owner_confirmation_required") {
     continuity = {
       tenant_id: identity.tenantId,
       project_id: continuityProjectId(args),
@@ -618,8 +655,19 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       owner_governance_required: true,
       next_action: "Use work_continuity_create with a fresh, request-bound owner confirmation.",
     };
+    } else {
+      throw error;
+    }
   }
-  attachContinuity(preflightResult, continuity);
+  let controlContext = null;
+  if (continuity?.work_id && typeof workContinuityRuntime.upsertControlContext === "function") {
+    controlContext = await workContinuityRuntime.upsertControlContext(identity, {
+      work_id: continuity.work_id,
+      project_id: continuity.project_id,
+      context: buildNyraControlContext({ continuity, operation: toolName }),
+    });
+  }
+  attachContinuity(preflightResult, continuity, controlContext);
   return continuity;
 }
 
@@ -640,11 +688,94 @@ function continuityMethod(method) {
 async function reconcileNyraAutopilot(identity, work, triggerType) {
   if (!nyraAutopilotRuntime || !work?.work_id) return null;
   try {
-    return await nyraAutopilotRuntime.reconcile(identity, {
+    // The first owner-governed Work is the tenant's explicit activation of
+    // Nyra. Requiring a second "enable autopilot" turn created a needless
+    // confirmation loop and left new chats without an orchestrator. Normal
+    // resumes never broaden this: they only reuse a previously enabled Nyra.
+    const status = await nyraAutopilotRuntime.status(identity);
+    if (
+      status.enabled !== true &&
+      triggerType === "work_created" &&
+      (identity.ownerConfirmed === true || identity.godMode === true)
+    ) {
+      await nyraAutopilotRuntime.enable(identity, {
+        idempotency_key: `nyra_auto_${crypto.createHash("sha256")
+          .update(`${identity.tenantId}\u0000${work.work_id}`)
+          .digest("hex")
+          .slice(0, 48)}`,
+      });
+    }
+    const autopilot = await nyraAutopilotRuntime.reconcile(identity, {
       work_id: work.work_id,
       project_id: work.project_id,
       trigger_type: triggerType,
     });
+    // Autopilot is a planner, not a second continuity authority.  Its run id
+    // must never be handed to the native closure path: Core validates only a
+    // Core-issued native plan.  Materialize that canonical plan immediately
+    // when the server has an exact tenant/project release binding.
+    if (autopilot?.status !== "materialized") return autopilot;
+    const binding = resolveNyraProjectReleaseBinding(config.nyraProjectReleaseBindings, {
+      tenantId: identity.tenantId,
+      projectId: work.project_id,
+    });
+    if (!binding) {
+      return {
+        ...autopilot,
+        native_plan: {
+          status: "deferred",
+          retryable: false,
+          code: "nyra_project_release_binding_not_found",
+          execution_authorized: false,
+        },
+      };
+    }
+    try {
+      const intent = await workContinuityRuntime.readIntent(identity, { work_id: work.work_id });
+      const request = buildNyraNativePlanRequest({ identity, work, intent, autopilot, binding });
+      const corePlanResult = await coreHandlers.host_native_work_plan_create({
+        work_id: request.work_id,
+        intent_anchor_digest: intent.intent_digest,
+        repository: request.repository,
+        base_branch: request.base_branch,
+        objective: intent.anchor?.objective,
+        required_checks: request.required_checks,
+        agents: request.tasks.map((task) => ({
+          agent_id: task.task_id,
+          role: task.kind,
+          task: task.instruction,
+          depends_on: task.dependencies || [],
+          capabilities: [],
+        })),
+        max_parallel: request.max_parallel,
+      }, identity);
+      const corePlan = corePlanResult?.structuredContent?.plan;
+      if (!corePlan) throw new Error("core_host_native_work_plan_required");
+      const nativePlan = await workContinuityRuntime.planNativeAgents(identity, request, { corePlan });
+      return {
+        ...autopilot,
+        native_plan: {
+          status: "planned",
+          plan_id: nativePlan.plan.plan_id,
+          plan_digest: nativePlan.plan_digest,
+          idempotent_replay: nativePlan.idempotent_replay === true,
+          execution_authorized: false,
+        },
+      };
+    } catch (error) {
+      // The Work remains usable and the same deterministic request is retried
+      // on the next reconcile.  Do not turn a transient Core outage into a
+      // fake completed Autopilot plan or ask the owner to recreate the Work.
+      return {
+        ...autopilot,
+        native_plan: {
+          status: "deferred",
+          retryable: true,
+          code: String(error?.message || "nyra_native_plan_unavailable").slice(0, 160),
+          execution_authorized: false,
+        },
+      };
+    }
   } catch (error) {
     // Work Continuity is authoritative: a temporary Autopilot outage must
     // never make the already-persisted Work look as if it failed. The owner
@@ -665,8 +796,20 @@ function withTenantWorkAcl(identity) {
   return { ...identity, tenant_work_acl: deriveAuthenticatedTenantWorkAcl(identity) };
 }
 
+const nyraConverseHandler = createNyraConverseHandler({
+  preflight: createNyraConversePreflight({
+    workPreflight: (args, identity) => coreHandlers.work_preflight(args, identity),
+    ensureContinuity,
+    resolveContinuityProjectBinding,
+    workContinuityRuntime,
+    hostType,
+  }),
+  interpret: (args, identity) => coreHandlers.nyra_interpret_request(args, identity),
+});
+
 const baseHandlers = {
   ...nyraWorkAutomationHandlers,
+  nyra_converse: nyraConverseHandler,
   web_compatibility_manifest: async (_args, identity) => ({
     structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
     content: [{ type: "text", text: JSON.stringify({ ok: true, manifest: webCompatibilityManifest() }) }],
@@ -1161,7 +1304,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   internallyGovernedCapabilities: ["agent_heartbeat"],
-  gateAction: ({ tool, identity, catalogRevision, idempotencyKey }) => {
+  gateAction: ({ tool, identity, catalogRevision, idempotencyKey, workPreflight }) => {
     const researchDistillationShadow =
       researchDistillationShadowTools.has(tool.name);
     const externalSideEffect = researchDistillationShadow
@@ -1212,6 +1355,9 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
       actor_authorized_for_target: true,
       catalog_revision: catalogRevision,
       idempotency_key: idempotencyKey,
+      work_preflight: workPreflight,
+      dynamic_capability: workPreflight?.dynamic_capability,
+      work_binding: workPreflight?.work_binding,
       owner_confirmed: ownerConfirmationRequired && identity.ownerConfirmed === true,
       confirmation_reference: identity.confirmationReference,
     }, identity);
@@ -1220,9 +1366,14 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
 const handlers = { ...baseHandlers, ...dynamicHandlers };
 
 function isAgentPresenceBootstrapCall(toolName, args = {}) {
-  return toolName === "agent_heartbeat" ||
+  const heartbeatArgs = toolName === "core_capability_invoke" ? args?.arguments : args;
+  const metadataFree = heartbeatArgs && typeof heartbeatArgs === "object" && !Array.isArray(heartbeatArgs) &&
+    !Object.hasOwn(heartbeatArgs, "display_name") &&
+    !Object.hasOwn(heartbeatArgs, "capabilities") &&
+    !Object.hasOwn(heartbeatArgs, "recovery_context");
+  return metadataFree && (toolName === "agent_heartbeat" ||
     ((toolName === "core_capability_catalog" || toolName === "core_capability_invoke") &&
-      args?.capability_id === "agent_heartbeat");
+      args?.capability_id === "agent_heartbeat"));
 }
 
 const POLICY_REGISTRY_PREFLIGHT_OPERATION = Object.freeze({
@@ -1276,20 +1427,28 @@ const app = createApp(config, {
     const ledgerContext = decisionLedger ? await decisionLedger.startWork(identity, toolName, args) : null;
     try {
       if (!requiresGenericWorkPreflight(toolName, args)) return { preflight: null, ledgerContext };
+      const target = dynamicInvocationTarget(toolName, args, identity);
+      const continuityBinding = await resolveContinuityProjectBinding(
+        identity,
+        target.args,
+        workContinuityRuntime,
+      );
       const result = await coreHandlers.work_preflight({
-        request: summarizeToolRequest(toolName, args),
-        operation_type: POLICY_REGISTRY_PREFLIGHT_OPERATION[toolName] || toolName,
-        tool_name: toolName,
+        request: summarizeToolRequest(target.toolName, target.args),
+        operation_type: target.capabilityId
+          ? `dynamic_capability:${target.capabilityId}`
+          : (POLICY_REGISTRY_PREFLIGHT_OPERATION[toolName] || toolName),
+        tool_name: target.toolName,
         // Dynamic capabilities that require a preflight must receive the
         // complete server-issued envelope. The compact response intentionally
         // omits governance detail and therefore cannot satisfy Universal
         // Core's preflight gate.
         response_mode: "full",
-        work_id: args.work_id,
-        project_id: args.project_id,
-        session_id: identity.agentPresence?.session_id || args.session_id,
-        agent_id: identity.agentPresence?.agent_id || args.agent_id || args.from_agent_id || "connected_ai",
-        client_type: identity.agentPresence?.client_type || args.client_type,
+        work_id: target.args.work_id,
+        project_id: continuityBinding.projectId,
+        session_id: identity.agentPresence?.session_id || target.args.session_id,
+        agent_id: identity.agentPresence?.agent_id || target.args.agent_id || target.args.from_agent_id || "connected_ai",
+        client_type: identity.agentPresence?.client_type || target.args.client_type,
         ...(config.hostNativeAgentProtocolEnabled ? {
           host_type: (identity.agentPresence?.client_type || args.client_type) === "codex"
             ? "codex_native"
@@ -1297,13 +1456,31 @@ const app = createApp(config, {
         } : {}),
         available_capabilities: [
           "skinharmony_core_mcp",
-          toolName,
+          target.toolName,
           ...(config.hostNativeAgentProtocolEnabled ? ["host_native_agents"] : []),
         ],
         owner_confirmed: identity.ownerConfirmed === true,
         confirmation_reference: identity.confirmationReference,
+        ...(target.capabilityId ? {
+          dynamic_capability: {
+            capability_id: target.capabilityId,
+            argument_digest: target.argumentDigest,
+          },
+          work_binding: {
+            work_id: String(target.args.work_id || ""),
+            project_id: continuityBinding.projectId,
+            session_id: String(identity.agentPresence?.session_id || target.args.session_id || ""),
+            agent_id: String(identity.agentPresence?.agent_id || target.args.agent_id || ""),
+          },
+        } : {}),
       }, identity);
-      await ensureContinuity(identity, args, toolName, result, { resumeExisting: true });
+      await ensureContinuity(
+        identity,
+        continuityBinding.continuityArgs,
+        target.toolName,
+        result,
+        { resumeExisting: true },
+      );
       const preflight = result.structuredContent;
       if (ledgerContext) await decisionLedger.append(ledgerContext, "preflight_completed", {
         preflight_id: preflight?.work_preflight?.preflight_id || preflight?.preflight_id,

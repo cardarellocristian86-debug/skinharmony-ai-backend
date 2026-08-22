@@ -221,7 +221,7 @@ import { createPostgresGenericWorkCoreJoinStore } from "./genericWorkCoreJoinSto
 import { createPostgresBootstrapAuthorityStore } from "./bootstrapAuthorityPostgresStore.js";
 import { createBootstrapDeadlockVerdictStore } from "./bootstrapDeadlockVerdictStore.js";
 import { createBootstrapRequiredChecksReadback } from "./bootstrapRequiredChecksReadback.js";
-import { createNyraWorkAutomationAuthoritativeIssuers, createNyraWorkAutomationCoordinator } from "./nyraWorkAutomationCoordinator.js";
+import { createNyraWorkAutomationAuthoritativeIssuers, createNyraWorkAutomationCoordinator, createNyraWorkAutomationCoreJoinVerifier } from "./nyraWorkAutomationCoordinator.js";
 import { createNyraWorkAutomationReadback } from "./nyraWorkAutomationReadback.js";
 import { createNyraWorkAutomationReceiptService } from "./nyraWorkAutomationReceipt.js";
 import {
@@ -2154,10 +2154,12 @@ function buildBootstrapProfile({ keyRecord, tenant = null, tenantPolicy = null, 
     },
     gate_mode: metadata.gate_mode || "hard_gating",
     connector_contract: {
-      init_command: "sh-core-codex init --setup-token SHX-SETUP-...",
+      preferred_connection: "skinharmony_nyra_core_mcp_plugin",
+      setup_instruction: "Use the connected SkinHarmony Nyra & Core plugin; no local CLI or copied credential is required.",
+      legacy_local_cli_supported: false,
       profile_endpoint: "GET /v1/bootstrap/profile",
       sensitive_actions_require_core: true,
-      local_doctor_required: true,
+      plugin_health_required: true,
     },
   };
 }
@@ -2291,6 +2293,8 @@ function composeMandatoryWorkPreflight(req, {
     ownerConfirmed: body.owner_confirmed === true,
     evidenceState: body.evidence_state || body.research_evidence_state || {},
     researchAllowedDomains: normalizeList(body.research_allowed_domains, 20),
+    dynamicCapability: body.dynamic_capability,
+    workBinding: body.work_binding,
   });
 }
 
@@ -2478,7 +2482,7 @@ function buildConnectorSdkManifest() {
     },
     adapters: ["wordpress", "site_suite", "smart_desk", "crm", "ecommerce", "files", "external_api"],
     required_client_behaviour: [
-      "call_work_preflight_before_any_ai_work",
+      "gateway_automatically_resolves_work_preflight_before_any_connected_ai_action",
       "recall_tenant_memory_before_planning",
       "send_tenant_id_on_every_request",
       "never_execute_when_executionAllowed_false",
@@ -5677,6 +5681,18 @@ export function createUniversalCoreService(options = {}) {
   const genericWorkCoreJoinRequired = genericWorkCoreJoinRequiredFlag.valid
     ? genericWorkCoreJoinRequiredFlag.value
     : true;
+  // Generic Work Core Join is a governed capability, not the availability
+  // boundary for every Core action.  A signer outage must fail only that
+  // capability; otherwise Core cannot issue the ticket needed to recover it.
+  const genericWorkCoreJoinGatesGlobalReadinessFlag = strictGenericWorkCoreJoinBoolean(
+    options.genericWorkCoreJoinGatesGlobalReadiness
+      ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_GATES_GLOBAL_READINESS,
+    false,
+    "generic_work_core_join_global_readiness_flag_invalid",
+  );
+  const genericWorkCoreJoinGatesGlobalReadiness = genericWorkCoreJoinGatesGlobalReadinessFlag.valid
+    ? genericWorkCoreJoinGatesGlobalReadinessFlag.value
+    : true;
   const genericWorkCoreJoinRemoteSignerMode = String(
     options.genericWorkCoreJoinSignerMode
       ?? process.env.CORE_GENERIC_WORK_CORE_JOIN_SIGNER_MODE
@@ -5686,6 +5702,8 @@ export function createUniversalCoreService(options = {}) {
     ? genericWorkCoreJoinEnabledFlag.error
     : !genericWorkCoreJoinRequiredFlag.valid
       ? genericWorkCoreJoinRequiredFlag.error
+      : !genericWorkCoreJoinGatesGlobalReadinessFlag.valid
+        ? genericWorkCoreJoinGatesGlobalReadinessFlag.error
       : genericWorkCoreJoinRequired && !genericWorkCoreJoinEnabled
         ? "generic_work_core_join_required_without_enabled"
         : !["disabled", "remote"].includes(genericWorkCoreJoinRemoteSignerMode)
@@ -6562,14 +6580,15 @@ export function createUniversalCoreService(options = {}) {
           if (action.kind !== expected.action_kind || ticket.ticket.repository !== expected.repository || action.branch !== expected.branch || authorization.target_commit !== expected.commit || authorization.host_session_fingerprint !== expected.session_fingerprint) throw new Error("nyra_push_ticket_binding_mismatch");
           return { schema_version: "host_native_action_completion_receipt_v1", ...expected, receipt_digest: authorization.authorization_digest };
         });
-        const coreJoinVerifier = options.nyraWorkAutomationCoreJoinVerifier || (async (claim, expected) => {
-          if (!hostNativeGovernance) throw new Error("nyra_core_join_governance_unavailable");
-          return withEnforcedSoftwareCoreJoin(expected.tenant_id, expected.work_id, claim?.verdict_id, async (record) => {
-            const builderBinding = record.claim.closure_attestation?.report_bindings?.find((binding) => binding.task_kind === "builder");
-            if (!hostNativeGovernance.verifyCoreJoinVerdict(record) || record.claim.work_id !== expected.work_id || record.claim.intent_anchor_digest !== expected.intent_anchor_digest || record.claim.repository !== expected.repository || record.claim.checks?.commit !== expected.head_commit || record.claim.evaluation_digest !== expected.readiness_digest || builderBinding?.report_digest !== expected.builder_report_digest) throw new Error("nyra_core_join_binding_mismatch");
-            return { schema_version: "host_native_core_join_verdict_v1", ...expected, trusted: true, allowed: true, verdict_digest: record.claim_digest };
+        const coreJoinVerifier = options.nyraWorkAutomationCoreJoinVerifier ||
+          createNyraWorkAutomationCoreJoinVerifier({
+            receipts: nyraReceipts,
+            hostNativeGovernance,
+            hostNativeDigest,
+            // The enforced resolver is initialized later in service setup;
+            // defer its lookup until the first Core Join verification.
+            resolveCoreJoin: (...args) => withEnforcedSoftwareCoreJoin(...args),
           });
-        });
         const mergeReadbackResolver = options.nyraWorkAutomationMergeReadbackResolver || (async (input) => {
           const { ticket, authorization } = await finalizedTicket({ tenant_id: input.tenant_id, ticket_id: input.ticket_id, host_session_fingerprint: input.host_session_fingerprint });
           if (ticket.ticket.action.kind !== "github.merge" || authorization.github_readback?.merged !== true) throw new Error("nyra_merge_ticket_invalid");
@@ -8513,8 +8532,12 @@ export function createUniversalCoreService(options = {}) {
       && nyraPolicyRegistryProofConfigurationError === null
       && nyraPolicyRegistryProductionReady
       && researchAirlockProductionReady
-      && genericWorkCoreJoinConfigurationError === null
-      && (!genericWorkCoreJoinRequired || genericWorkCoreJoinReady);
+      // When the operator excludes Generic Join from global readiness, every
+      // failure in that capability remains local so Core can authorize its
+      // recovery. An invalid gate flag resolves to true and still fails closed.
+      && (!genericWorkCoreJoinGatesGlobalReadiness
+        || (genericWorkCoreJoinConfigurationError === null
+          && (!genericWorkCoreJoinRequired || genericWorkCoreJoinReady)));
     const renderReady = nonCausalProductionReady
       && causalContinuityProductionReady;
     const causalInitializationDegraded = causalBootstrapLivenessReady;
@@ -8541,6 +8564,7 @@ export function createUniversalCoreService(options = {}) {
       generic_work_core_join: {
         enabled: genericWorkCoreJoinEnabled,
         required: genericWorkCoreJoinRequired,
+        gates_global_readiness: genericWorkCoreJoinGatesGlobalReadiness,
         configuration_valid: genericWorkCoreJoinConfigurationError === null,
         configuration_error: genericWorkCoreJoinConfigurationError,
         signer_mode: genericWorkCoreJoinRemoteSignerMode,
@@ -11996,6 +12020,42 @@ export function createUniversalCoreService(options = {}) {
     if (!domainPackAccess.ok) return publicError(res, 403, domainPackAccess.error);
     const memoryContext = normalizeTenantMemoryContext(req.body?.memory_context, req.tenantId);
     if (!memoryContext.ok) return publicError(res, 403, memoryContext.error);
+    const dynamicCapability = req.body?.dynamic_capability;
+    if (dynamicCapability !== undefined) {
+      const preflightGate = validateWorkPreflightEnvelope(req.body || {}, req.tenantId, {
+        requireGallery: true,
+        requireMemory: true,
+      });
+      const capabilityId = String(dynamicCapability?.capability_id || "");
+      const argumentDigest = String(dynamicCapability?.argument_digest || "");
+      const expectedOperation = `dynamic_capability:${capabilityId}`;
+      const bound = preflightGate.preflight?.dynamic_capability;
+      const workBinding = req.body?.work_binding;
+      const preflightWorkBinding = preflightGate.preflight?.work_binding;
+      if (!preflightGate.ok ||
+          !/^[a-z][a-z0-9_]{1,95}$/.test(capabilityId) ||
+          !/^[a-f0-9]{64}$/.test(argumentDigest) ||
+          bound?.capability_id !== capabilityId ||
+          bound?.argument_digest !== argumentDigest ||
+          preflightGate.preflight?.request?.operation_type !== expectedOperation ||
+          preflightGate.preflight?.request?.source_tool !== capabilityId ||
+          !workBinding || typeof workBinding !== "object" || !preflightWorkBinding ||
+          ["work_id", "project_id", "session_id", "agent_id"].some((field) =>
+            String(workBinding[field] || "") !== String(preflightWorkBinding[field] || ""),
+          )) {
+        audit.append("core_dynamic_capability_preflight_denied", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          capability_id: capabilityId.slice(0, 96),
+        });
+        return res.status(428).json({
+          ok: false,
+          error: "DYNAMIC_CAPABILITY_PREFLIGHT_INVALID",
+          execution_allowed: false,
+        });
+      }
+      req.dynamicCapabilityPreflight = preflightGate.preflight;
+    }
     // An owner assertion is a connector capability. An automation key may keep
     // its legacy explicit-confirmation path, but it must never become an owner
     // connector merely by being issued the same named scope.

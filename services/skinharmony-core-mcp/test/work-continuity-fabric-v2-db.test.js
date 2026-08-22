@@ -55,6 +55,7 @@ class ContinuityPool {
     this.releaseJoins = new Map();
     this.incidents = new Map();
     this.capsules = new Map();
+    this.controlContexts = new Map();
   }
 
   async query(sql, parameters = []) {
@@ -66,6 +67,16 @@ class ContinuityPool {
       const row = this.bindings.get(key(parameters[0], parameters[1], parameters[2]));
       const matchesWork = !parameters[3] || row?.work_id === parameters[3];
       return { rows: row && matchesWork ? [{ ...row }] : [], rowCount: row && matchesWork ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT work_id FROM core_continuity_works WHERE tenant_id=$1 AND project_id=$2")) {
+      const [tenantId, projectId, statuses] = parameters;
+      const rows = [...this.works.values()]
+        .filter((work) => work.tenant_id === tenantId && work.project_id === projectId && statuses.includes(work.status))
+        .sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)) ||
+          String(right.work_id).localeCompare(String(left.work_id)))
+        .slice(0, 2)
+        .map((work) => ({ work_id: work.work_id }));
+      return { rows, rowCount: rows.length };
     }
     if (q.startsWith("SELECT a.intent_digest,a.create_request_digest,")) {
       const anchor = this.anchors.get(key(parameters[0], parameters[1]));
@@ -109,6 +120,27 @@ class ContinuityPool {
         intent_anchor_created_at: anchor.created_at,
       } : null;
       return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT project_id,current_version,status,next_action FROM core_continuity_works")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: work ? [{
+        project_id: work.project_id,
+        current_version: work.current_version,
+        status: work.status,
+        next_action: work.next_action,
+      }] : [], rowCount: work ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_control_contexts")) {
+      const [tenantId, workId, projectId, workRevision, contextDigest, payload] = parameters;
+      this.controlContexts.set(key(tenantId, workId), {
+        tenant_id: tenantId,
+        work_id: workId,
+        project_id: projectId,
+        work_revision: workRevision,
+        context_digest: contextDigest,
+        payload: JSON.parse(payload),
+      });
+      return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("INSERT INTO core_continuity_works")) {
       const [
@@ -935,6 +967,37 @@ test("ensure survives runtime restart, is strict by default and isolates tenants
   assert.equal("anchor" in catalog.works[0], false);
 });
 
+test("Nyra persists one compact control context per Work without prompt-shaped ledger data", async () => {
+  const clock = () => new Date("2026-08-21T18:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = { tenantId: "tenant-a", subject: "codex" };
+  const created = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
+  const context = await runtime.upsertControlContext(identity, {
+    work_id: created.work_id,
+    project_id: initialInput.project_id,
+    context: {
+      schema_version: "nyra_control_context_v1",
+      tenant_id: "tenant-a",
+      project_id: initialInput.project_id,
+      work_id: created.work_id,
+      work_state: "unknown",
+      next_action: "This exact bounded step is ready.",
+      assignment: null,
+      connector: { state: "healthy" },
+      execution_authorized: false,
+      external_action_authorized: false,
+      context_digest: "c".repeat(64),
+    },
+  });
+  assert.equal(context.work_state, "active");
+  assert.equal(context.work_revision, 1);
+  assert.equal(context.next_action, initialInput.next_action);
+  assert.match(pool.controlContexts.get(key("tenant-a", created.work_id)).context_digest, /^[a-f0-9]{64}$/);
+  assert.notEqual(pool.controlContexts.get(key("tenant-a", created.work_id)).context_digest, "c".repeat(64));
+  assert.equal(JSON.stringify(context).includes("do-not-store"), false);
+});
+
 test("standing release resolves one atomic persisted Work/Intent binding fail-closed", async () => {
   const clock = () => new Date("2026-08-14T12:00:00.000Z");
   const pool = new ContinuityPool(clock);
@@ -1069,6 +1132,59 @@ test("exact Work resume binds new sessions idempotently without duplicating Work
     initialInput.project_id,
     concurrentSession.session_id,
   )).work_id, created.work_id);
+});
+
+test("a fresh chat automatically binds the sole operational Work for its project", async () => {
+  const clock = () => new Date("2026-08-21T10:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = { tenantId: "tenant-a", subject: "codex" };
+  const created = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
+
+  const resumed = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "new-chat-session",
+    initial_message: "Continue the current work from this new chat.",
+    idea: "New chat continuation",
+    objective: "Resume current work",
+    resume_existing: true,
+  }, { trustedSessionFollowup: true });
+
+  assert.equal(resumed.work_id, created.work_id);
+  assert.equal(resumed.resumed_existing, true);
+  assert.equal(resumed.automatic_resume, true);
+  assert.equal(resumed.resume_source, "unambiguous_project_work");
+  assert.equal(pool.bindings.get(key("tenant-a", initialInput.project_id, "new-chat-session")).work_id, created.work_id);
+  assert.deepEqual(pool.events.get(key("tenant-a", created.work_id)).map((event) => event.event_type), [
+    "work_created",
+    "intent_anchored",
+  ]);
+});
+
+test("a fresh chat never creates or confirms duplicate Work when project continuation is ambiguous", async () => {
+  const clock = () => new Date("2026-08-21T10:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = { tenantId: "tenant-a", subject: "codex" };
+  const first = await runtime.ensure(identity, initialInput, { creationAuthorized: true });
+  const second = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "second-active-work",
+    objective: "A separate operational work",
+  }, { creationAuthorized: true });
+
+  await assert.rejects(runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "ambiguous-new-chat",
+    initial_message: "Continue the project.",
+    resume_existing: true,
+  }, { trustedSessionFollowup: true }), (error) => {
+    assert.equal(error.code, "continuity_resume_selection_required");
+    assert.deepEqual(new Set(error.candidate_work_ids), new Set([first.work_id, second.work_id]));
+    return true;
+  });
+  assert.equal(pool.works.size, 2);
+  assert.equal(pool.bindings.has(key("tenant-a", initialInput.project_id, "ambiguous-new-chat")), false);
 });
 
 test("Gallery admits multiple tenant-scoped participants and rejects session impersonation", async () => {
@@ -1842,6 +1958,39 @@ test("operational failures create one exact indexed blocker without raw error te
   const serialized = JSON.stringify([...pool.incidents.values()]);
   assert.doesNotMatch(serialized, /token|password|raw error/i);
   assert.match(serialized, /TRUSTED_READBACK_CHECKS_NOT_READY/);
+});
+
+test("missing native plan during pre-execution closure evaluation records evidence without blocking the Work", async () => {
+  const instant = new Date("2026-07-29T14:25:00.000Z");
+  const clock = () => new Date(instant);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "e".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "pre-execution-plan-lookup-session",
+  }, { creationAuthorized: true });
+
+  const result = await runtime.recordOperationalIncident(identity, {
+    work_id: work.work_id,
+    operation: "work_continuity_closure_evaluate",
+    error_code: "native_agent_plan_not_found",
+    evidence_digest: "9".repeat(64),
+    next_action: "Persist the bounded native plan, then re-evaluate closure.",
+  });
+
+  assert.equal(result.status, "candidate");
+  assert.equal(result.work_status, "active");
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "active");
+  assert.equal((pool.events.get(key("tenant-a", work.work_id)) || []).at(-1).event_type, "incident_recorded");
 });
 
 test("cross-chat resume preserves same-session plans and supersedes stale coordinator bindings", async () => {

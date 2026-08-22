@@ -4,9 +4,9 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, resolveHostTransportPresence, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
-import { COMPACT_MCP_TOOL_NAMES } from "../src/dynamic-capability-router.js";
+import { COMPACT_MCP_TOOL_NAMES, createDynamicCapabilityHandlers, dynamicCapabilityCatalogSnapshot } from "../src/dynamic-capability-router.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
@@ -32,6 +32,118 @@ const config = {
   defaultTenantId: "owner-private",
   supportedScopes: ["core:read", "core:govern"]
 };
+
+function signedTestJwt(privateKey, kid, payload) {
+  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid })).toString("base64url");
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const input = `${header}.${body}`;
+  const signature = crypto.sign("RSA-SHA256", Buffer.from(input), privateKey).toString("base64url");
+  return `${input}.${signature}`;
+}
+
+test("binds an authenticated OAuth owner logical session as host transport presence", () => {
+  const agentPresence = Object.freeze({
+    agent_id: "oauth-owner-agent",
+    session_fingerprint: "a".repeat(24),
+    signature: `ags_${"b".repeat(32)}`,
+  });
+  const resolved = resolveHostTransportPresence({
+    identity: {
+      kind: "oauth",
+      tenantId: "tenant-a",
+      oauthOwnerBound: true,
+      authenticatedTenantMembership: {
+        authenticated: true,
+        tenant_id: "tenant-a",
+        role: "tenant_owner",
+      },
+    },
+    toolName: "core_capability_invoke",
+    capabilityId: "work_continuity_native_plan",
+    declaredSessionId: "logical-owner-session",
+    agentPresence,
+    transportAgentPresence: null,
+  });
+  assert.equal(resolved.presence, agentPresence);
+  assert.equal(resolved.binding_source, "oauth_declared");
+});
+
+test("does not promote caller-declared sessions without an authenticated OAuth owner binding", () => {
+  const agentPresence = Object.freeze({
+    agent_id: "untrusted-agent",
+    session_fingerprint: "a".repeat(24),
+    signature: `ags_${"b".repeat(32)}`,
+  });
+  for (const identity of [
+    { kind: "codex", tenantId: "tenant-a" },
+    {
+      kind: "oauth",
+      tenantId: "tenant-a",
+      authenticatedTenantMembership: {
+        authenticated: true,
+        tenant_id: "tenant-a",
+        role: "member",
+      },
+    },
+    {
+      kind: "oauth",
+      tenantId: "tenant-a",
+      oauthOwnerBound: true,
+      authenticatedTenantMembership: {
+        authenticated: true,
+        tenant_id: "tenant-b",
+        role: "tenant_owner",
+      },
+    },
+  ]) {
+    const resolved = resolveHostTransportPresence({
+      identity,
+      toolName: "core_capability_invoke",
+      capabilityId: "work_continuity_native_plan",
+      declaredSessionId: "caller-controlled-session",
+      agentPresence,
+      transportAgentPresence: null,
+    });
+    assert.equal(resolved.presence, null);
+    assert.equal(resolved.binding_source, null);
+  }
+});
+
+test("prefers the actual MCP transport binding over an OAuth logical session", () => {
+  const logicalPresence = Object.freeze({ session_fingerprint: "a".repeat(24) });
+  const transportPresence = Object.freeze({ session_fingerprint: "b".repeat(24) });
+  const resolved = resolveHostTransportPresence({
+    identity: { kind: "oauth", oauthOwnerBound: true },
+    toolName: "work_continuity_native_report",
+    declaredSessionId: "logical-owner-session",
+    agentPresence: logicalPresence,
+    transportAgentPresence: transportPresence,
+  });
+  assert.equal(resolved.presence, transportPresence);
+  assert.equal(resolved.binding_source, "transport");
+});
+
+test("does not promote an OAuth owner logical session outside native coordinator planning", () => {
+  const resolved = resolveHostTransportPresence({
+    identity: {
+      kind: "oauth",
+      tenantId: "tenant-a",
+      oauthOwnerBound: true,
+      authenticatedTenantMembership: {
+        authenticated: true,
+        tenant_id: "tenant-a",
+        role: "tenant_owner",
+      },
+    },
+    toolName: "core_capability_invoke",
+    capabilityId: "work_continuity_native_report",
+    declaredSessionId: "logical-owner-session",
+    agentPresence: { session_fingerprint: "a".repeat(24) },
+    transportAgentPresence: null,
+  });
+  assert.equal(resolved.presence, null);
+  assert.equal(resolved.binding_source, null);
+});
 
 function canonicalHealthDigest(value) {
   const normalize = (item) => {
@@ -359,6 +471,8 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   const resource = await fetch(`${base}/.well-known/oauth-protected-resource`).then((r) => r.json());
   assert.equal(resource.resource, config.resource);
   assert.deepEqual(resource.authorization_servers, [config.auth0Issuer]);
+  assert(resource.scopes_supported.includes("offline_access"));
+  assert.equal(config.supportedScopes.includes("offline_access"), false);
   const pathResource = await fetch(`${base}/.well-known/oauth-protected-resource/mcp`).then((r) => r.json());
   assert.deepEqual(pathResource, resource);
   const migrationResource = await fetch(`${base}/.well-known/oauth-protected-resource/mcp-v015`).then((r) => r.json());
@@ -1397,7 +1511,8 @@ test("keeps Codex bearer compatibility and exposes MCP security schemes", async 
   assert.equal(preflight._meta["openai/outputTemplate"], undefined);
   assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
   const genericTool = body.result.tools.find((tool) => tool.name === "memory_document_upsert");
-  assert.equal(genericTool._meta["skinharmony/mandatory_first_tool"], "work_preflight");
+  assert.equal(genericTool._meta["skinharmony/mandatory_first_tool"], undefined);
+  assert.equal(genericTool._meta["skinharmony/automatic_preflight"], true);
   assert.equal(genericTool._meta["skinharmony/native_governance"], undefined);
   const gate = body.result.tools.find((tool) => tool.name === "core_gate_action");
   assert.deepEqual(gate.securitySchemes.find((scheme) => scheme.type === "oauth2").scopes, ["core:govern"]);
@@ -1627,6 +1742,146 @@ test("preserves the Gallery preflight envelope for Core action mediation", () =>
     requiresGenericWorkPreflight("core_capability_read", { capability_id: "core_health" }),
     false,
   );
+});
+
+test("requires generic preflight for dynamic invoke except the signed heartbeat bootstrap", () => {
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_invoke", { capability_id: "workspace_write_document" }),
+    true,
+  );
+  assert.equal(
+    requiresGenericWorkPreflight("core_capability_invoke", {
+      capability_id: "agent_heartbeat",
+      arguments: { agent_id: "bootstrap", client_type: "codex" },
+    }),
+    false,
+  );
+});
+
+test("injects a server-issued preflight into dynamic invoke", async () => {
+  let received;
+  const app = createApp(config, {
+    toolSurface: "compact",
+    handlers: {
+      core_capability_invoke: async (args) => {
+        received = args;
+        return { structuredContent: { ok: true }, content: [] };
+      },
+    },
+    beforeToolCall: async ({ toolName, args }) => requiresGenericWorkPreflight(toolName, args)
+      ? {
+          work_preflight: {
+            schema_version: "skinharmony_work_preflight_v1",
+            preflight_id: "preflight-server-issued-dynamic-invoke",
+            tenant_id: "owner-private",
+            mandatory: true,
+            operational_surface: "tenant_work_gallery",
+          },
+        }
+      : { preflight: null },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": "mcp-dynamic-invoke-preflight",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 32,
+        method: "tools/call",
+        params: {
+          name: "core_capability_invoke",
+          arguments: {
+            capability_id: "workspace_write_document",
+            catalog_revision: "a".repeat(64),
+            idempotency_key: "dynamic-invoke-preflight",
+            arguments: { path: "audit.md", content: "bounded" },
+          },
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(received.work_preflight.preflight_id, "preflight-server-issued-dynamic-invoke");
+    assert.equal(received.work_preflight.tenant_id, "owner-private");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("fails closed when dynamic invoke receives no server-issued preflight", async () => {
+  let handlerCalled = false;
+  const app = createApp(config, {
+    toolSurface: "compact",
+    handlers: {
+      core_capability_invoke: async () => {
+        handlerCalled = true;
+        return { structuredContent: { ok: true }, content: [] };
+      },
+    },
+    beforeToolCall: async () => ({ preflight: null }),
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": "mcp-dynamic-invoke-no-preflight",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 33,
+        method: "tools/call",
+        params: {
+          name: "core_capability_invoke",
+          arguments: {
+            capability_id: "workspace_write_document",
+            catalog_revision: "a".repeat(64),
+            idempotency_key: "dynamic-invoke-no-preflight",
+            arguments: { path: "audit.md", content: "must not execute" },
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.result.isError, true);
+    assert.equal(body.result.structuredContent.error.code, "work_preflight_binding_invalid");
+    assert.equal(handlerCalled, false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("rejects malformed or cross-tenant dynamic preflight envelopes", () => {
+  const identity = { tenantId: "owner-private" };
+  const valid = {
+    schema_version: "skinharmony_work_preflight_v1",
+    preflight_id: "preflight-negative-case",
+    tenant_id: "owner-private",
+    mandatory: true,
+    operational_surface: "tenant_work_gallery",
+  };
+  for (const invalid of [
+    null,
+    { ...valid, mandatory: false },
+    { ...valid, tenant_id: "other-tenant" },
+    { ...valid, preflight_id: "" },
+    { ...valid, operational_surface: "caller_supplied" },
+  ]) {
+    assert.throws(
+      () => serverIssuedWorkPreflight({ work_preflight: invalid }, identity),
+      /work_preflight_binding_invalid/,
+    );
+  }
+  assert.deepEqual(serverIssuedWorkPreflight({ work_preflight: valid }, identity), valid);
 });
 
 test("injects mandatory server preflight into the compact action-mediation route", async () => {
@@ -1917,6 +2172,155 @@ test("keeps one logical chat signature stable across rotated MCP transports", as
     assert.equal(identityConflict.body.error.message, "agent_presence_conflict");
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("binds only an authenticated OAuth owner logical session for native coordinator planning", async () => {
+  const planTool = WORK_CONTINUITY_TOOLS.find(
+    (tool) => tool.name === "work_continuity_native_plan",
+  );
+  assert.ok(planTool);
+  const existingIndex = TOOLS.findIndex((tool) => tool.name === planTool.name);
+  if (existingIndex < 0) TOOLS.push(planTool);
+
+  const captured = [];
+  const targetHandlers = {
+    work_continuity_native_plan: async (args, identity) => {
+      captured.push({ args, identity });
+      return { structuredContent: { ok: true }, content: [] };
+    },
+  };
+  const dynamicHandlers = createDynamicCapabilityHandlers({
+    tools: TOOLS,
+    handlers: targetHandlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({
+      structuredContent: { authorization: { allowed: true } },
+    }),
+  });
+  const catalogRevision = dynamicCapabilityCatalogSnapshot(
+    TOOLS,
+    targetHandlers,
+  ).catalog_revision;
+
+  const subject = "oauth-owner-native-plan";
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  });
+  const jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = "oauth-owner-native-plan-key";
+  const now = Math.floor(Date.now() / 1_000);
+  const token = signedTestJwt(privateKey, jwk.kid, {
+    iss: "https://tenant.auth0.com/",
+    aud: "https://core",
+    sub: subject,
+    iat: now,
+    auth_time: now,
+    exp: now + 60,
+    scope: "core:read core:govern",
+    "https://skinharmony.it/tenant_id": "caller-tenant-claim",
+  });
+  const app = createApp({
+    ...config,
+    tenantClaim: "https://skinharmony.it/tenant_id",
+    oauthOwnerTenantBindings: { [subject]: "tenant-a" },
+    agentSignatureSecret: "oauth-owner-native-plan-presence-secret",
+  }, {
+    jwksCache: { get: async () => jwk },
+    handlers: { ...targetHandlers, ...dynamicHandlers },
+    toolSurface: "compact",
+    beforeToolCall: async ({ identity, toolName, args }) => requiresGenericWorkPreflight(toolName, args)
+      ? {
+          work_preflight: {
+            schema_version: "skinharmony_work_preflight_v1",
+            preflight_id: "preflight-oauth-native-plan",
+            tenant_id: identity.tenantId,
+            mandatory: true,
+            operational_surface: "tenant_work_gallery",
+          },
+        }
+      : { preflight: null },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const invoke = async ({ authorization, agentId, sessionId, id }) => {
+    const response = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: {
+          name: "core_capability_invoke",
+          arguments: {
+            agent_id: agentId,
+            client_type: authorization === "Bearer codex-key" ? "codex" : "chatgpt",
+            session_id: sessionId,
+            capability_id: "work_continuity_native_plan",
+            catalog_revision: catalogRevision,
+            idempotency_key: `native-plan-presence-${id}`,
+            arguments: {
+              work_id: "11111111-1111-4111-8111-111111111111",
+              repository: "SkinHarmony/smart-desk",
+              base_branch: "main",
+              host_type: "codex_native",
+              required_checks: ["core-mcp"],
+              tasks: [{
+                task_id: "build",
+                kind: "builder",
+                instruction: "Implement the bounded transport regression.",
+              }],
+            },
+          },
+        },
+      }),
+    });
+    return { response, body: await response.json() };
+  };
+
+  try {
+    const oauth = await invoke({
+      authorization: `Bearer ${token}`,
+      agentId: "oauth-native-coordinator",
+      sessionId: "oauth-native-plan-session",
+      id: "oauth-owner",
+    });
+    assert.equal(oauth.response.status, 200, JSON.stringify(oauth.body));
+    assert.equal(oauth.body.error, undefined, JSON.stringify(oauth.body));
+    assert.equal(captured.length, 1, JSON.stringify(oauth.body));
+    const oauthPresence = captured[0].identity.agentPresence;
+    assert.equal(captured[0].identity.tenantId, "tenant-a");
+    assert.equal(oauthPresence.transport_bound, true);
+    assert.equal(
+      oauthPresence.host_transport_session_fingerprint,
+      oauthPresence.session_fingerprint,
+    );
+    assert.equal(oauthPresence.binding_source, "oauth_declared");
+
+    const codex = await invoke({
+      authorization: "Bearer codex-key",
+      agentId: "codex-unbound-coordinator",
+      sessionId: "codex-declared-only-session",
+      id: "codex-declared",
+    });
+    assert.equal(codex.response.status, 200, JSON.stringify(codex.body));
+    assert.equal(codex.body.error, undefined, JSON.stringify(codex.body));
+    assert.equal(captured.length, 2);
+    const codexPresence = captured[1].identity.agentPresence;
+    assert.equal(codexPresence.transport_bound, false);
+    assert.equal(codexPresence.host_transport_session_fingerprint, null);
+    assert.equal(codexPresence.binding_source, "declared");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (existingIndex < 0) {
+      const index = TOOLS.indexOf(planTool);
+      if (index >= 0) TOOLS.splice(index, 1);
+    }
   }
 });
 

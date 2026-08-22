@@ -38,6 +38,6 @@ test("Universal Core mounts tenant-authenticated Work Automation v3 routes", () 
   assert.match(source, /nyraDedicatedCoreGate/);
   assert.match(source, /dedicated_core_gate: nyraDedicatedCoreGate/);
   const render = fs.readFileSync(new URL("../../../render-universal-core.yaml", import.meta.url), "utf8");
-  assert.match(render, /healthCheckPath: \/readyz/);
-  assert.doesNotMatch(render, /healthCheckPath: \/livez/);
+  assert.match(render, /healthCheckPath: \/livez/);
+  assert.doesNotMatch(render, /healthCheckPath: \/readyz/);
 });

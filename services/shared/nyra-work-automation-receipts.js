@@ -10,6 +10,7 @@ export const NYRA_WORK_AUTOMATION_RECEIPT_TYPES = Object.freeze([
   "nyra_ci_verification_attestation_v2",
   "nyra_criterion_proof_policy_v1",
   "nyra_ci_criterion_proofs_v1",
+  "nyra_host_native_core_join_compatibility_v1",
   "nyra_final_criterion_proof_v1",
   "intent_final_acceptance_proof_v1",
 ]);
