@@ -1,5 +1,7 @@
 "use strict";
 
+const crypto = require("node:crypto");
+
 const DEFAULT_NYRA_URL = "https://skinharmony-nyra-core.onrender.com";
 const DEFAULT_TIMEOUT_MS = 12000;
 
@@ -270,6 +272,11 @@ class ExternalAiGoldBridge {
 
   async buildReadout({ mode = "gold", question = "", context = {}, session = null } = {}) {
     const centerId = cleanText(session?.centerId || session?.supportTargetUsername || session?.username || "smartdesk", "smartdesk", 120);
+    const preflightScope = {
+      center_id: centerId,
+      user_id: cleanText(session?.userId || session?.username, "anonymous", 120),
+      session_id: crypto.createHash("sha256").update(String(session?.token || "no-session")).digest("hex")
+    };
     const requestedBranches = smartDeskBranchPackage(mode);
     const branchData = smartDeskBranchData({ mode, context, question, centerId });
     const corePayload = {
@@ -292,8 +299,18 @@ class ExternalAiGoldBridge {
         require_confirmation: mode !== "silver",
         safety_mode: true,
         operator_must_confirm: true
-      }
+      },
+      _preflight_scope: preflightScope
     };
+    const usesCoreNyraBridge = typeof this.universalCoreBridge?.nyraInterpret === "function" && this.universalCoreBridge?.isConfigured?.();
+    const preflightNyra = usesCoreNyraBridge
+      ? await this.universalCoreBridge.nyraInterpret({
+        message: question || "Prepara una lettura operativa Smart Desk in sola proposta.",
+        mode,
+        centerScope: centerId,
+        _preflight_scope: preflightScope
+      })
+      : null;
     const core = this.universalCoreBridge?.isConfigured?.()
       ? await this.universalCoreBridge.decision(corePayload)
       : { success: false, code: "universal_core_not_configured", message: "Universal Core server non configurato." };
@@ -303,7 +320,8 @@ class ExternalAiGoldBridge {
         try {
           return await this.universalCoreBridge.branchAnalyze(branch, {
             data: { ...branchData, branch },
-            metadata: { mode, center_id: centerId, sector: branchData.sector, source: "smartdesk_live_external_ai_gold" }
+            metadata: { mode, center_id: centerId, sector: branchData.sector, source: "smartdesk_live_external_ai_gold" },
+            _preflight_scope: preflightScope
           });
         } catch (error) {
           return { success: false, branch, code: "branch_analyze_failed", message: error instanceof Error ? error.message : "branch analyze failed" };
@@ -311,13 +329,8 @@ class ExternalAiGoldBridge {
       }))
       : [];
     const nyraPrompt = this.buildNyraPrompt({ mode, question, context, core: normalizedCore.output, branchAnalyses });
-    const usesCoreNyraBridge = typeof this.universalCoreBridge?.nyraInterpret === "function" && this.universalCoreBridge?.isConfigured?.();
     const nyra = usesCoreNyraBridge
-      ? await this.universalCoreBridge.nyraInterpret({
-        message: question || "Prepara una lettura operativa Smart Desk in sola proposta.",
-        mode,
-        centerScope: centerId,
-      })
+      ? preflightNyra
       : await this.callNyraTextChat({ text: nyraPrompt, sessionId: `smartdesk-${mode}-${centerId}` });
     const nyraResult = nyra.result || {};
     const content = usesCoreNyraBridge

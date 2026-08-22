@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const { CoreliaBridge } = require("./corelia/CoreliaBridge");
 const { NyraDialogueAdapter } = require("./nyra/NyraDialogueAdapter");
 const { ExternalAiGoldBridge } = require("./ExternalAiGoldBridge");
@@ -31,6 +32,15 @@ const ACTIONS = [
   "filter_appointments",
   "filter_clients"
 ];
+
+function corePreflightScope(session = null) {
+  const tokenDigest = crypto.createHash("sha256").update(String(session?.token || "no-session")).digest("hex");
+  return {
+    center_id: String(session?.centerId || "smartdesk"),
+    user_id: String(session?.userId || session?.username || "anonymous"),
+    session_id: tokenDigest
+  };
+}
 
 const ACTION_PERMISSIONS = {
   open_dashboard: "UI_NAVIGATION",
@@ -852,9 +862,9 @@ class AssistantService {
   }
 
   getDashboardSafe(session = null) {
-    if (!this.desktopMirror?.getDashboardStats) return {};
+    if (!this.desktopMirror?.computeDashboardStats) return {};
     try {
-      return this.desktopMirror.getDashboardStats({}, session) || {};
+      return this.desktopMirror.computeDashboardStats({}, session) || {};
     } catch {
       return {};
     }
@@ -870,18 +880,55 @@ class AssistantService {
   }
 
   getGoldCapabilitiesSafe(session = null) {
-    if (!this.desktopMirror?.getGoldCapabilities) return null;
+    if (!this.desktopMirror?.getPlanLevel) return null;
     try {
-      return this.desktopMirror.getGoldCapabilities(session) || null;
+      const currentPlan = this.desktopMirror.getPlanLevel(session);
+      const settings = this.getSettingsSafe(session);
+      const goldEnabled = ["gold", "enterprise"].includes(currentPlan);
+      return {
+        goldEnabled,
+        silverCoreEnabled: currentPlan === "silver" || goldEnabled,
+        currentPlan,
+        sourceLayer: "persisted_settings_read_only",
+        limits: {
+          whatsappEnabled: goldEnabled && String(settings.whatsappGoldMode || "") === "active",
+          maxMessagesPerMonth: Number(settings.whatsappMonthlyQuota || 0),
+          monthlyUsed: Number(settings.whatsappMonthlyUsed || 0),
+          automationAllowed: false
+        },
+        rules: {
+          execution: {
+            allowedActions: ["ACT_NOW", "SUGGEST"],
+            requiresOperatorConfirmation: true
+          }
+        }
+      };
     } catch {
       return null;
     }
   }
 
   getGoldDecisionContextSafe(session = null) {
-    if (!this.desktopMirror?.getGoldDecisionContext) return null;
+    if (!this.desktopMirror?.goldStateRepository || !this.desktopMirror?.getGoldStateRecordId) return null;
     try {
-      return this.desktopMirror.getGoldDecisionContext({}, session) || null;
+      const centerId = this.desktopMirror.getCenterId(session);
+      const state = this.desktopMirror.goldStateRepository.findById(
+        this.desktopMirror.getGoldStateRecordId(centerId)
+      );
+      if (!state) return null;
+      const decision = state.decision || {};
+      return {
+        goldEnabled: true,
+        sourceLayer: "persisted_gold_state_read_only",
+        eventSeq: Number(state.eventSeq || 0),
+        primaryAction: decision.primaryAction || null,
+        secondaryActions: decision.secondaryActions || [],
+        blockedActions: decision.blockedActions || [],
+        topSignals: decision.topSignals || state.signals || [],
+        globalConfidence: Number(decision.globalConfidence || state.components?.Conf || 0),
+        systemRisk: Number(decision.systemRisk || 0),
+        lastUpdate: state.updatedAt || ""
+      };
     } catch {
       return null;
     }
@@ -1948,6 +1995,7 @@ class AssistantService {
     const risk = decisionContext.risk || capabilities.risk || {};
     const topSignals = Array.isArray(decisionContext.topSignals) ? decisionContext.topSignals : [];
     return {
+      _preflight_scope: corePreflightScope(session),
       domain: "smartdesk_ai_gold",
       signals: [
         { id: "question", value: question || "richiesta AI Gold", weight: 0.7 },
@@ -2064,9 +2112,16 @@ class AssistantService {
       let universalCore = null;
       let resolvedStructured = structured;
       if (this.universalCoreBridge?.isConfigured?.()) {
-        universalCore = await this.universalCoreBridge.decision(
-          this.buildUniversalCoreDecisionPayload(payload, structured, context || {}, session)
-        );
+        const corePayload = this.buildUniversalCoreDecisionPayload(payload, structured, context || {}, session);
+        if (typeof this.universalCoreBridge.nyraInterpret === "function") {
+          await this.universalCoreBridge.nyraInterpret({
+            message: question || "Prepara una lettura governata Smart Desk in sola proposta.",
+            mode: "gold",
+            centerScope: corePayload._preflight_scope.center_id,
+            _preflight_scope: corePayload._preflight_scope
+          });
+        }
+        universalCore = await this.universalCoreBridge.decision(corePayload);
         if (universalCore?.success) {
           resolvedStructured = this.normalizeUniversalCoreOutput(universalCore, structured);
         }
@@ -2096,19 +2151,23 @@ class AssistantService {
   }
 
   buildAiGoldExternalContext(payload = {}, session = null) {
-    const snapshot = this.desktopMirror.getBusinessSnapshot
-      ? this.desktopMirror.getBusinessSnapshot(payload.period || {}, session)
-      : null;
     const goldCapabilities = this.getGoldCapabilitiesSafe(session);
     const goldDecisionContext = this.getGoldDecisionContextSafe(session);
     const settings = this.getSettingsSafe(session);
     const dashboard = this.getDashboardSafe(session);
-    if (snapshot?.snapshotAvailable) {
-      return { businessSnapshot: snapshot, goldCapabilities, goldDecisionContext, dashboard, settings };
-    }
+    const centerId = this.desktopMirror?.getCenterId?.(session) || "";
+    const state = this.desktopMirror?.goldStateRepository?.findById?.(
+      this.desktopMirror?.getGoldStateRecordId?.(centerId)
+    ) || null;
     return {
-      marketing: this.desktopMirror.getAiGoldMarketing(session),
-      profitability: this.desktopMirror.getAiGoldProfitability(payload.period || {}, session),
+      businessSnapshot: state ? {
+        snapshotAvailable: true,
+        sourceLayer: "persisted_gold_state_read_only",
+        eventSeq: Number(state.eventSeq || 0),
+        snapshots: state.snapshots || {},
+        signals: state.signals || {},
+        decision: state.decision || null
+      } : null,
       goldCapabilities,
       goldDecisionContext,
       dashboard,

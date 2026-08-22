@@ -1,5 +1,13 @@
 "use strict";
 
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "smartdesk-gold-audit-"));
+const originalDataDir = process.env.SMARTDESK_DATA_DIR;
+const originalExportsDir = process.env.SMARTDESK_EXPORTS_DIR;
+process.env.SMARTDESK_DATA_DIR = path.join(sandbox, "data");
+process.env.SMARTDESK_EXPORTS_DIR = path.join(sandbox, "exports");
 const { DesktopMirrorService } = require("../src/DesktopMirrorService");
 const { AssistantService } = require("../src/AssistantService");
 const {
@@ -23,26 +31,34 @@ function buildSession(service) {
 }
 
 async function main() {
-  const service = new DesktopMirrorService();
-  await service.init();
-  const assistant = new AssistantService(service);
-  const audit = new NyraSmartDeskGoldAudit({
-    desktopMirror: service,
-    assistantService: assistant,
-    rootDir: process.cwd()
-  });
-  const report = await audit.run(buildSession(service));
-  const reportPath = writeNyraSmartDeskGoldAuditReport(report);
-  console.log(JSON.stringify({
-    ok: report.ok,
-    verdict: report.verdict,
-    summary: report.summary,
-    tenant: report.tenant,
-    reportPath,
-    failedChecks: report.checks.filter((item) => item.status === "fail").map((item) => item.id),
-    warningChecks: report.checks.filter((item) => item.status === "warn").map((item) => item.id)
-  }, null, 2));
-  if (report.verdict === "fail") process.exitCode = 1;
+  try {
+    const service = new DesktopMirrorService();
+    await service.init();
+    const assistant = new AssistantService(service);
+    const audit = new NyraSmartDeskGoldAudit({
+      desktopMirror: service,
+      assistantService: assistant,
+      rootDir: process.cwd()
+    });
+    const report = await audit.run(buildSession(service));
+    const reportPath = writeNyraSmartDeskGoldAuditReport(report);
+    console.log(JSON.stringify({
+      ok: report.ok,
+      verdict: report.verdict,
+      summary: report.summary,
+      tenant: report.tenant,
+      reportPath,
+      failedChecks: report.checks.filter((item) => item.status === "fail").map((item) => item.id),
+      warningChecks: report.checks.filter((item) => item.status === "warn").map((item) => item.id)
+    }, null, 2));
+    if (report.verdict === "fail") process.exitCode = 1;
+  } finally {
+    if (originalDataDir === undefined) delete process.env.SMARTDESK_DATA_DIR;
+    else process.env.SMARTDESK_DATA_DIR = originalDataDir;
+    if (originalExportsDir === undefined) delete process.env.SMARTDESK_EXPORTS_DIR;
+    else process.env.SMARTDESK_EXPORTS_DIR = originalExportsDir;
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
 }
 
 if (require.main === module) {
