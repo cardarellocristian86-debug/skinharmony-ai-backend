@@ -76,10 +76,11 @@ services:
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_PURPOSE
         value: generic_work_core_join_v1
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID
-        fromService:
-          type: web
-          name: skinharmony-core-mcp
-          envVarKey: GENERIC_WORK_CORE_JOIN_ED25519_KEY_ID
+        # This is the identity asserted by the remote signing endpoint, not
+        # the key id used by Core-MCP's separate (currently code-dark)
+        # verifier. Keeping the signer id explicit prevents a Blueprint sync
+        # from pinning the correct public JWK to the wrong key id.
+        value: universal-core-generic-join-v1
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN
         sync: false
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY
@@ -144,7 +145,7 @@ services:
       # equality claim; Core selects the binding and verifies the exact GitHub
       # Actions app, workflow run, event, branch and commit itself.
       - key: CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON
-        value: '{"schema_version":"host_native_required_checks_registry_v1","bindings":[{"tenant_id":"codexai","repository":"cardarellocristian86-debug/skinharmony-ai-backend","base_branch":"main","required_checks":["core-mcp","deployment-parity","universal-core"],"check_app":{"id":15368,"slug":"github-actions","owner":"github"},"workflow":{"id":312527659,"name":"Nyra Core Intelligence","path":".github/workflows/nyra-core-intelligence.yml","sha256":"24ab8aa44e131300d56da5688d109ae16a10a91e3fd8983f61a053fa6dc03c9a","candidate_sha256":"89cc3fd32f46fcf22546d2e2b098ccc7dc044bc9139bc9ec1d4195a02f23a62e"},"allowed_events":["pull_request","push"]}]}'
+        value: '{"schema_version":"host_native_required_checks_registry_v1","bindings":[{"tenant_id":"codexai","repository":"cardarellocristian86-debug/skinharmony-ai-backend","base_branch":"main","required_checks":["core-mcp","deployment-parity","universal-core"],"check_app":{"id":15368,"slug":"github-actions","owner":"github"},"workflow":{"id":312527659,"name":"Nyra Core Intelligence","path":".github/workflows/nyra-core-intelligence.yml","sha256":"24ab8aa44e131300d56da5688d109ae16a10a91e3fd8983f61a053fa6dc03c9a","candidate_sha256":"462b49774ded7d44bb07e37ec75b2a9901479fc712a353c0e64dcdea047bfa99"},"allowed_events":["pull_request","push"]}]}'
       - key: CORE_RUNTIME_V2_MODE
         value: active
       - key: LEXICAL_SEMANTIC_MODE
