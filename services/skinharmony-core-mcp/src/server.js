@@ -576,6 +576,53 @@ function attachContinuity(preflightResult, continuity, persistedControlContext =
   return preflightResult;
 }
 
+// Materialize Nyra's work-scoped dialogue once in the durable control context.
+// This is intentionally local/Postgres-only: an ordinary tool call never
+// triggers nyra_converse, a provider model or a Universal Core round trip.
+async function materializeNyraControlContext(identity, continuity, operation, {
+  autopilot = null,
+  force = false,
+} = {}) {
+  if (!continuity?.work_id || !workContinuityRuntime?.upsertControlContext) return null;
+  let projectId = continuity.project_id || null;
+  const expectedRevision = Number(continuity.architecture_version || continuity.work_revision || 0);
+  if (!force && projectId && typeof workContinuityRuntime.readControlContext === "function") {
+    const existing = await workContinuityRuntime.readControlContext(identity, {
+      work_id: continuity.work_id,
+      project_id: projectId,
+    });
+    if (
+      existing &&
+      existing.nyra_dialogue?.schema_version === "nyra_dialogue_context_v1" &&
+      existing.nyra_dialogue?.persistent === true &&
+      (!expectedRevision || Number(existing.work_revision) === expectedRevision) &&
+      String(existing.next_action || "") === String(continuity.next_action || existing.next_action || "")
+    ) return existing;
+  }
+  const operational = typeof workContinuityRuntime.readNyraOperationalState === "function"
+    ? await workContinuityRuntime.readNyraOperationalState(identity, {
+      work_id: continuity.work_id,
+      ...(projectId ? { project_id: projectId } : {}),
+    })
+    : null;
+  projectId = projectId || operational?.project_id || null;
+  if (!projectId) return null;
+  return workContinuityRuntime.upsertControlContext(identity, {
+    work_id: continuity.work_id,
+    project_id: projectId,
+    context: buildNyraControlContext({
+      continuity: {
+        ...continuity,
+        project_id: projectId,
+        ...(operational?.next_action ? { next_action: operational.next_action } : {}),
+      },
+      autopilot,
+      operational,
+      operation,
+    }),
+  });
+}
+
 async function ensureContinuity(identity, args, toolName, preflightResult, { resumeExisting = false } = {}) {
   if (!workContinuityRuntime || !config.workContinuityAutoCaptureEnabled) return null;
   const sessionId = identity.agentPresence?.session_id || args.session_id;
@@ -659,14 +706,7 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       throw error;
     }
   }
-  let controlContext = null;
-  if (continuity?.work_id && typeof workContinuityRuntime.upsertControlContext === "function") {
-    controlContext = await workContinuityRuntime.upsertControlContext(identity, {
-      work_id: continuity.work_id,
-      project_id: continuity.project_id,
-      context: buildNyraControlContext({ continuity, operation: toolName }),
-    });
-  }
+  const controlContext = await materializeNyraControlContext(identity, continuity, toolName);
   attachContinuity(preflightResult, continuity, controlContext);
   return continuity;
 }
@@ -805,6 +845,7 @@ const nyraConverseHandler = createNyraConverseHandler({
     hostType,
   }),
   interpret: (args, identity) => coreHandlers.nyra_interpret_request(args, identity),
+  readControlContext: (identity, args) => workContinuityRuntime.readControlContext(identity, args),
 });
 
 const baseHandlers = {
@@ -869,6 +910,12 @@ const baseHandlers = {
       await requireOwnerGovernance(identity, "work.continuity.create", args.project_id);
       const payload = { ok: true, result: await workContinuityRuntime.create(identity, args) };
       payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_created");
+      payload.result.nyra_control_context = await materializeNyraControlContext(
+        identity,
+        payload.result,
+        "work_created",
+        { autopilot: payload.result.nyra_autopilot, force: true },
+      );
       payload.dedicated_core_gate = {
         authorized: true,
         authority: "universal_core",
@@ -881,6 +928,12 @@ const baseHandlers = {
       await requireOwnerGovernance(identity, "work.continuity.record_change", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.recordChange(identity, args) };
       payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_changed");
+      payload.result.nyra_control_context = await materializeNyraControlContext(
+        identity,
+        payload.result,
+        "work_changed",
+        { autopilot: payload.result.nyra_autopilot, force: true },
+      );
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_checkpoint: async (args, identity) => {
@@ -900,6 +953,12 @@ const baseHandlers = {
         gate.structuredContent?.result?.authorization || {};
       if (authorization.allowed !== true) throw new Error("work_continuity_checkpoint_not_authorized");
       const payload = { ok: true, result: await workContinuityRuntime.checkpoint(identity, args) };
+      payload.result.nyra_control_context = await materializeNyraControlContext(
+        identity,
+        { ...payload.result, project_id: args.project_id, next_action: args.next_action },
+        "checkpoint_created",
+        { force: true },
+      );
       payload.dedicated_core_gate = {
         authorized: true,
         authority: "universal_core",
@@ -929,6 +988,12 @@ const baseHandlers = {
       if (authorization.allowed !== true) throw new Error("work_continuity_resume_not_authorized");
       const payload = { ok: true, result: await workContinuityRuntime.resume(identity, args, authorization) };
       payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
+      payload.result.nyra_control_context = await materializeNyraControlContext(
+        identity,
+        payload.result,
+        "work_resumed",
+        { autopilot: payload.result.nyra_autopilot, force: true },
+      );
       payload.dedicated_core_gate = {
         authorized: true,
         authority: "universal_core",
@@ -1382,6 +1447,36 @@ const POLICY_REGISTRY_PREFLIGHT_OPERATION = Object.freeze({
   nyra_policy_registry_reconcile: "policy.snapshot.reconcile",
 });
 
+// Read-only dialogue preparation must stay cheap. Only persisted Work changes
+// invalidate the briefing; ordinary reads and `nyra_converse` itself never do.
+const NYRA_DIALOGUE_MATERIAL_CHANGE_TOOLS = new Set([
+  "work_continuity_native_plan",
+  "work_continuity_native_bind",
+  "work_continuity_native_report",
+  "nyra_autopilot_reconcile",
+  "nyra_work_assignment_submit",
+  "software_cognition_graph_upsert",
+  "software_cognition_index_diff",
+  "software_cognition_traceability_build",
+  "software_cognition_architecture_recover",
+  "software_cognition_calibration_update",
+  "software_cognition_impact_reconcile",
+  "software_cognition_runtime_observe",
+  "software_cognition_learning_promote",
+  "software_cognition_research_bind",
+  "software_cognition_precore_decide",
+]);
+
+async function refreshNyraDialogueAfterMaterialChange(event = {}) {
+  if (!NYRA_DIALOGUE_MATERIAL_CHANGE_TOOLS.has(event.toolName)) return null;
+  const payload = event.preflight?.work_preflight || event.preflight || {};
+  const continuity = payload.continuity && typeof payload.continuity === "object"
+    ? payload.continuity
+    : null;
+  if (!continuity?.work_id || !continuity?.project_id) return null;
+  return materializeNyraControlContext(event.identity, continuity, event.toolName, { force: true });
+}
+
 const app = createApp(config, {
   handlers,
   toolSurface: "compact",
@@ -1499,6 +1594,7 @@ const app = createApp(config, {
     // returned. A projection outage must not turn a successful connector side
     // effect into a client-visible failure that encourages an unsafe replay.
     await Promise.allSettled([
+      refreshNyraDialogueAfterMaterialChange(event),
       decisionLedger && event.hookContext?.ledgerContext
         ? decisionLedger.finishWork(event.hookContext.ledgerContext, event)
         : Promise.resolve(),

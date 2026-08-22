@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { buildNyraOperationalDialogue } from "./nyra-operational-dialogue.js";
 
 // This is the only conversational payload that a connected AI needs for an
 // already-known Work.  The full Work, plan, receipts and preflight remain in
@@ -29,7 +30,7 @@ function firstReadyAssignment(autopilot = {}) {
   };
 }
 
-export function buildNyraControlContext({ continuity = {}, autopilot = null, operation = "continue" } = {}) {
+export function buildNyraControlContext({ continuity = {}, autopilot = null, operational = null, operation = "continue" } = {}) {
   const workId = clean(continuity.work_id, 64) || null;
   const projectId = clean(continuity.project_id, 80) || null;
   const intentDigest = clean(continuity.intent_digest, 64) || null;
@@ -61,6 +62,14 @@ export function buildNyraControlContext({ continuity = {}, autopilot = null, ope
       state: connectorState,
       ...(connectorState === "reconnect_required" ? { recovery_action: clean(continuity?.connector_state?.recovery_action, 240) } : {}),
     },
+    // This is server-emitted on every bound Work. A connected AI never has to
+    // remember a special Nyra tool in order to receive the orchestration.
+    nyra_dialogue: buildNyraOperationalDialogue({
+      continuity,
+      operational: operational || {},
+      assignment,
+      operation,
+    }),
     execution_authorized: false,
     external_action_authorized: false,
   };
