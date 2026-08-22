@@ -504,6 +504,7 @@ test("direct Nyra interpretation accepts only the Core bridge hierarchy verdict"
   }, { tenantId: "tenant-a" });
 
   assert.deepEqual(calls.map((call) => call.path), ["/v1/nira/core-bridge"]);
+  assert.equal(calls[0].body.work_preflight, undefined);
   assert.equal("core_runtime" in calls[0].body, false);
   assert.equal("selected_authority" in calls[0].body, false);
   assert.equal(result.structuredContent.core_runtime.selected_authority, "V2");
@@ -518,6 +519,52 @@ test("direct Nyra interpretation accepts only the Core bridge hierarchy verdict"
     analysis_id: result.structuredContent.analysis_id,
   }, { tenantId: "tenant-a" });
   assert.equal(cached.structuredContent.core_runtime.selected_authority, "V2");
+});
+
+test("direct Nyra interpretation forwards a server-issued work preflight only internally", async () => {
+  const calls = [];
+  const workPreflight = {
+    schema_version: "skinharmony_work_preflight_v1",
+    preflight_id: "preflight-server-issued",
+    tenant_id: "tenant-a",
+    mandatory: true,
+    operational_surface: "tenant_work_gallery",
+    state: "ready_read_only",
+    governance: { execution_allowed_by_preflight: false },
+  };
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+  }, {
+    fetchImpl: async (url, init) => {
+      const path = new URL(url).pathname;
+      const body = init.body ? JSON.parse(init.body) : null;
+      calls.push({ path, body });
+      return new Response(JSON.stringify({
+        ok: true,
+        tenant_id: "tenant-a",
+        result: {
+          core_runtime: {
+            hierarchy_version: "core_runtime_hierarchy_v1",
+            mode: "active",
+            router: { route: "V2" },
+            selected_authority: "V2",
+            parity: { attempted: true, matched: true, fallback: null },
+            execution_allowed: false,
+          },
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  await handlers.nyra_interpret_request({
+    message: "Analizza la richiesta",
+    session_id: "session-nyra-preflight",
+    work_preflight: workPreflight,
+  }, { tenantId: "tenant-a" });
+
+  assert.deepEqual(calls.map((call) => call.path), ["/v1/nira/core-bridge"]);
+  assert.deepEqual(calls[0].body.work_preflight, workPreflight);
 });
 
 test("direct Nyra interpretation fails closed when the Core bridge hierarchy is unavailable", async () => {
