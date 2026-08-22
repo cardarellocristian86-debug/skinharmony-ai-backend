@@ -500,13 +500,19 @@ function createNyraPolicyRegistryAttester({
   const enabled = enabledFlag.value;
   const required = requiredFlag.value;
   const mode = enabled ? requestedMode : "disabled";
+  // A disabled feature must be inert.  Render keeps environment variables across
+  // revisions, so validating an unused signer mode here would turn stale
+  // configuration into a false health warning (and invite an unnecessary
+  // operator intervention).  The signer mode becomes relevant only when the
+  // feature is being activated or either control flag is itself malformed.
+  const signerModeRelevant = enabled || required || Boolean(enabledFlag.error) || Boolean(requiredFlag.error);
   const production = env.NODE_ENV === "production";
   const runtimeCommit = String(env.RENDER_GIT_COMMIT || env.GIT_COMMIT || "").trim().toLowerCase();
   const configuredSignerTargetCommit = String(
     env.NYRA_POLICY_REGISTRY_REMOTE_SIGNER_TARGET_COMMIT || runtimeCommit,
   ).trim().toLowerCase();
   let configurationError = enabledFlag.error || requiredFlag.error ||
-    (modeValid ? null : "nyra_policy_attestation_signer_mode_invalid");
+    (!signerModeRelevant || modeValid ? null : "nyra_policy_attestation_signer_mode_invalid");
   if (!configurationError && production &&
     (injectedReplayStore !== undefined || postgresPool !== undefined)) {
     configurationError = "nyra_policy_attestation_production_dependency_injection_forbidden";

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { continuityProjectId } from "../src/continuity-project-id.js";
-import { resolveContinuityProjectBinding } from "../src/continuity-project-binding.js";
+import {
+  continuityProjectId,
+  resolveContinuityProjectBinding,
+} from "../src/continuity-project-binding.js";
 
 test("resolves an existing Work project without mutating dynamic capability arguments", async () => {
   const identity = { tenantId: "tenant-a" };
@@ -91,4 +93,39 @@ test("fails closed when a persisted Work project binding is malformed", async ()
     }, runtime),
     /continuity_project_binding_invalid/,
   );
+});
+
+test("preserves an explicit project id over repository and target fallbacks", () => {
+  assert.equal(
+    continuityProjectId({
+      project_id: "explicit-project",
+      repository: "owner/repository-slug",
+      target_system: "target-system",
+    }),
+    "explicit-project",
+  );
+});
+
+test("preserves target_system when repository is absent", () => {
+  assert.equal(
+    continuityProjectId({ target_system: "target-system" }),
+    "target-system",
+  );
+});
+
+test("fails safe for hostile or invalid repository identifiers", () => {
+  for (const repository of [
+    "../repository",
+    "owner/../repository",
+    "https://example.test/owner/repository",
+    "owner/%2e%2e",
+    "owner\\repository",
+    { owner: "owner", repository: "repository" },
+  ]) {
+    assert.equal(
+      continuityProjectId({ repository }),
+      "skinharmony-ai-backend",
+      `expected fail-safe project id for ${String(repository)}`,
+    );
+  }
 });

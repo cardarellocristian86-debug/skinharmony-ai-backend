@@ -2154,10 +2154,12 @@ function buildBootstrapProfile({ keyRecord, tenant = null, tenantPolicy = null, 
     },
     gate_mode: metadata.gate_mode || "hard_gating",
     connector_contract: {
-      init_command: "sh-core-codex init --setup-token SHX-SETUP-...",
+      preferred_connection: "skinharmony_nyra_core_mcp_plugin",
+      setup_instruction: "Use the connected SkinHarmony Nyra & Core plugin; no local CLI or copied credential is required.",
+      legacy_local_cli_supported: false,
       profile_endpoint: "GET /v1/bootstrap/profile",
       sensitive_actions_require_core: true,
-      local_doctor_required: true,
+      plugin_health_required: true,
     },
   };
 }
@@ -2480,7 +2482,7 @@ function buildConnectorSdkManifest() {
     },
     adapters: ["wordpress", "site_suite", "smart_desk", "crm", "ecommerce", "files", "external_api"],
     required_client_behaviour: [
-      "call_work_preflight_before_any_ai_work",
+      "gateway_automatically_resolves_work_preflight_before_any_connected_ai_action",
       "recall_tenant_memory_before_planning",
       "send_tenant_id_on_every_request",
       "never_execute_when_executionAllowed_false",
@@ -8529,10 +8531,12 @@ export function createUniversalCoreService(options = {}) {
       && nyraPolicyRegistryProofConfigurationError === null
       && nyraPolicyRegistryProductionReady
       && researchAirlockProductionReady
-      && genericWorkCoreJoinConfigurationError === null
+      // When the operator excludes Generic Join from global readiness, every
+      // failure in that capability remains local so Core can authorize its
+      // recovery. An invalid gate flag resolves to true and still fails closed.
       && (!genericWorkCoreJoinGatesGlobalReadiness
-        || !genericWorkCoreJoinRequired
-        || genericWorkCoreJoinReady);
+        || (genericWorkCoreJoinConfigurationError === null
+          && (!genericWorkCoreJoinRequired || genericWorkCoreJoinReady)));
     const renderReady = nonCausalProductionReady
       && causalContinuityProductionReady;
     const causalInitializationDegraded = causalBootstrapLivenessReady;
