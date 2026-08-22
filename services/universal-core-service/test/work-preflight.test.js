@@ -118,6 +118,25 @@ test("marks tenant-scoped reads ready without a redundant confirmation gate", ()
   assert.equal(result.task_graph.nodes.find((node) => node.id === "execute_approved_scope").status, "ready_read_only");
 });
 
+test("marks nyra_converse read-only when authenticated tenant memory is present", () => {
+  const result = buildWorkPreflight({
+    tenantId: "tenant-conversation",
+    requestText: "Nyra, rispondi alla mia domanda nel Work corrente",
+    operationType: "nyra.converse",
+    toolName: "nyra_converse",
+    memoryContext: {
+      tenant_id: "tenant-conversation",
+      revision: 3,
+      relevant_memories: [],
+      pending_handoffs: [],
+    },
+  });
+
+  assert.equal(result.state, "ready_read_only");
+  assert.equal(result.governance.execution_allowed_by_preflight, true);
+  assert.equal(result.governance.core_verdict_required_before_execution, false);
+});
+
 test("keeps Deep V2 evaluation read-only while research and distillation remain Core-gated", () => {
   for (const operationType of [
     "nyra_v2_preview",
