@@ -24,6 +24,10 @@ import {
 } from "./work-continuity-v2-store.js";
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
 import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
+import {
+  buildNyraNativePlanRequest,
+  resolveNyraProjectReleaseBinding,
+} from "./nyra-native-plan-bridge.js";
 import { buildNyraControlContext } from "./nyra-control-context.js";
 import {
   continuityProjectId,
@@ -697,11 +701,77 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
           .slice(0, 48)}`,
       });
     }
-    return await nyraAutopilotRuntime.reconcile(identity, {
+    const autopilot = await nyraAutopilotRuntime.reconcile(identity, {
       work_id: work.work_id,
       project_id: work.project_id,
       trigger_type: triggerType,
     });
+    // Autopilot is a planner, not a second continuity authority.  Its run id
+    // must never be handed to the native closure path: Core validates only a
+    // Core-issued native plan.  Materialize that canonical plan immediately
+    // when the server has an exact tenant/project release binding.
+    if (autopilot?.status !== "materialized") return autopilot;
+    const binding = resolveNyraProjectReleaseBinding(config.nyraProjectReleaseBindings, {
+      tenantId: identity.tenantId,
+      projectId: work.project_id,
+    });
+    if (!binding) {
+      return {
+        ...autopilot,
+        native_plan: {
+          status: "deferred",
+          retryable: false,
+          code: "nyra_project_release_binding_not_found",
+          execution_authorized: false,
+        },
+      };
+    }
+    try {
+      const intent = await workContinuityRuntime.readIntent(identity, { work_id: work.work_id });
+      const request = buildNyraNativePlanRequest({ identity, work, intent, autopilot, binding });
+      const corePlanResult = await coreHandlers.host_native_work_plan_create({
+        work_id: request.work_id,
+        intent_anchor_digest: intent.intent_digest,
+        repository: request.repository,
+        base_branch: request.base_branch,
+        objective: intent.anchor?.objective,
+        required_checks: request.required_checks,
+        agents: request.tasks.map((task) => ({
+          agent_id: task.task_id,
+          role: task.kind,
+          task: task.instruction,
+          depends_on: task.dependencies || [],
+          capabilities: [],
+        })),
+        max_parallel: request.max_parallel,
+      }, identity);
+      const corePlan = corePlanResult?.structuredContent?.plan;
+      if (!corePlan) throw new Error("core_host_native_work_plan_required");
+      const nativePlan = await workContinuityRuntime.planNativeAgents(identity, request, { corePlan });
+      return {
+        ...autopilot,
+        native_plan: {
+          status: "planned",
+          plan_id: nativePlan.plan.plan_id,
+          plan_digest: nativePlan.plan_digest,
+          idempotent_replay: nativePlan.idempotent_replay === true,
+          execution_authorized: false,
+        },
+      };
+    } catch (error) {
+      // The Work remains usable and the same deterministic request is retried
+      // on the next reconcile.  Do not turn a transient Core outage into a
+      // fake completed Autopilot plan or ask the owner to recreate the Work.
+      return {
+        ...autopilot,
+        native_plan: {
+          status: "deferred",
+          retryable: true,
+          code: String(error?.message || "nyra_native_plan_unavailable").slice(0, 160),
+          execution_authorized: false,
+        },
+      };
+    }
   } catch (error) {
     // Work Continuity is authoritative: a temporary Autopilot outage must
     // never make the already-persisted Work look as if it failed. The owner

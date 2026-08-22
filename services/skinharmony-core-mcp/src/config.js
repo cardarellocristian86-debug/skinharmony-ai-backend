@@ -1,3 +1,5 @@
+import { parseNyraProjectReleaseBindings } from "./nyra-native-plan-bridge.js";
+
 function csv(value) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
 }
@@ -297,6 +299,9 @@ export function loadConfig(env = process.env) {
   const selfServiceTenantsEnabled = flag(env.MCP_SELF_SERVICE_TENANTS_ENABLED, false);
   const sharedMemoryRoot = String(env.SHARED_WORK_MEMORY_ROOT || new URL("../../../shared-work-memory", import.meta.url).pathname).trim();
   const databaseUrl = String(env.DATABASE_URL || "").trim();
+  const nyraProjectReleaseBindings = parseNyraProjectReleaseBindings(
+    env.NYRA_PROJECT_RELEASE_BINDINGS_JSON,
+  );
   const genericWorkCoreJoinEnabledFlag = strictFlag(
     env.GENERIC_WORK_CORE_JOIN_ENABLED,
     false,
@@ -467,6 +472,7 @@ export function loadConfig(env = process.env) {
     tenantOwnerRoles: csv(env.MCP_TENANT_OWNER_ROLES || "tenant_owner,tenant_admin,owner_root"),
     sharedMemoryRoot,
     databaseUrl,
+    nyraProjectReleaseBindings,
     genericWorkCoreJoinEnabled,
     genericWorkCoreJoinRequired,
     genericWorkCoreJoinConfigurationValid: genericWorkCoreJoinConfigurationError === null,
