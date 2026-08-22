@@ -118,11 +118,12 @@ function createBoundedCache(maximumEntries = 64) {
   });
 }
 
-async function readResponseJson(fetchImpl, url, init, timeoutMs) {
+async function readResponseJson(fetchImpl, url, init, timeoutMs, { allowNotFound = false } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(url, { ...init, signal: controller.signal });
+    if (allowNotFound === true && response?.status === 404) return null;
     if (!response || response.ok !== true) error("trusted_readback_unavailable");
     const contentType = string(response.headers?.get?.("content-type") || response.headers?.["content-type"]);
     if (!/(^|\s|;)application\/(?:[a-z0-9.+-]*\+)?json(?:\s|;|$)/i.test(contentType)) {
@@ -199,12 +200,17 @@ async function resolveGithubToken(githubTokenResolver, scope) {
 
 function githubClient({ fetchImpl, token, repository, timeoutMs }) {
   const safeRepository = repositoryPath(repository);
-  return async (path) => readResponseJson(
-    fetchImpl,
-    `${GITHUB_ORIGIN}/repos/${safeRepository}${path}`,
-    { method: "GET", redirect: "error", headers: githubHeaders(token) },
-    timeoutMs,
-  );
+  return async (path, { allowClassicProtectionNotFound = false } = {}) => {
+    const allowNotFound = allowClassicProtectionNotFound === true &&
+      /^\/branches\/[^/?]+\/protection$/.test(path);
+    return readResponseJson(
+      fetchImpl,
+      `${GITHUB_ORIGIN}/repos/${safeRepository}${path}`,
+      { method: "GET", redirect: "error", headers: githubHeaders(token) },
+      timeoutMs,
+      { allowNotFound },
+    );
+  };
 }
 
 function ensureChecks(payload, commit, requiredChecks, strict = null) {
@@ -652,6 +658,11 @@ function preMergeProtectionRequirements({
   requiredChecks,
   checkAppId,
 }) {
+  if (
+    string(branchReadback?.name) !== baseBranch ||
+    branchReadback?.protected !== true ||
+    sha(branchReadback?.commit?.sha) !== baseCommit
+  ) error("release_join_verdict_pre_merge_protection_drift");
   const statusChecks = protection?.required_status_checks;
   const checkBindings = Array.isArray(statusChecks?.checks)
     ? statusChecks.checks.map((check) => ({
@@ -665,8 +676,6 @@ function preMergeProtectionRequirements({
     total + (Array.isArray(bypass[key]) ? bypass[key].length : 0), 0);
   const approvingReviews = Number(reviews?.required_approving_review_count);
   if (
-    string(branchReadback?.name) !== baseBranch ||
-    branchReadback?.protected !== true || sha(branchReadback?.commit?.sha) !== baseCommit ||
     statusChecks?.strict !== true || !Number.isSafeInteger(checkAppId) ||
     checkBindings.length !== requiredChecks.length ||
     !sameStrings(checkBindings.map((check) => check.context), requiredChecks) ||
@@ -679,9 +688,15 @@ function preMergeProtectionRequirements({
   return approvingReviews;
 }
 
-function preMergeRulesetRequirements(rules, { requiredChecks, checkAppId, mergeMethod }) {
+function preMergeRulesetRequirements(rules, {
+  requiredChecks,
+  checkAppId,
+  mergeMethod,
+  authoritative = false,
+}) {
   const allowedPassiveRules = new Set(["deletion", "non_fast_forward"]);
   const rulesetChecks = [];
+  const passiveRules = new Set();
   let requiredReviews = 0;
   for (const rule of rules) {
     const type = string(rule?.type);
@@ -722,16 +737,22 @@ function preMergeRulesetRequirements(rules, { requiredChecks, checkAppId, mergeM
       requiredReviews = Math.max(requiredReviews, count);
       continue;
     }
-    if (!allowedPassiveRules.has(type)) {
-      // The current readback does not pretend to certify merge queues,
-      // deployments, code scanning, signatures, workflow rules, or pattern
-      // rules.  Any such active rule blocks autonomous merge fail-closed.
-      error("release_join_verdict_pre_merge_ruleset_unsupported");
+    if (allowedPassiveRules.has(type)) {
+      passiveRules.add(type);
+      continue;
     }
+    // The current readback does not pretend to certify merge queues,
+    // deployments, code scanning, signatures, workflow rules, or pattern
+    // rules.  Any such active rule blocks autonomous merge fail-closed.
+    error("release_join_verdict_pre_merge_ruleset_unsupported");
   }
   if (rulesetChecks.length > 0 && !sameStrings(rulesetChecks, requiredChecks)) {
     error("release_join_verdict_pre_merge_ruleset_drift");
   }
+  if (authoritative && (
+    !sameStrings(rulesetChecks, requiredChecks) || requiredReviews < 1 ||
+    !passiveRules.has("deletion") || !passiveRules.has("non_fast_forward")
+  )) error("release_join_verdict_pre_merge_ruleset_drift");
   return requiredReviews;
 }
 
@@ -798,7 +819,9 @@ async function attestStandingPreMerge({
   const encodedBranch = encodeURIComponent(baseBranch);
   const [branchReadback, protection, rules, reviews] = await Promise.all([
     getGithub(`/branches/${encodedBranch}`),
-    getGithub(`/branches/${encodedBranch}/protection`),
+    getGithub(`/branches/${encodedBranch}/protection`, {
+      allowClassicProtectionNotFound: true,
+    }),
     readGithubPages(
       getGithub,
       `/rules/branches/${encodedBranch}`,
@@ -815,18 +838,27 @@ async function attestStandingPreMerge({
     !validateMergePullRequest(pull, action, repository, null, { merged: false }) ||
     sha(action.head_commit) !== headCommit
   ) error("release_join_verdict_pull_request_mismatch");
-  const classicReviews = preMergeProtectionRequirements({
-    branchReadback,
-    protection,
-    baseBranch,
-    baseCommit,
-    requiredChecks: checks.required_checks,
-    checkAppId: Number(policy.check_app.id),
-  });
+  let classicReviews = 0;
+  if (protection) {
+    classicReviews = preMergeProtectionRequirements({
+      branchReadback,
+      protection,
+      baseBranch,
+      baseCommit,
+      requiredChecks: checks.required_checks,
+      checkAppId: Number(policy.check_app.id),
+    });
+  } else if (
+    string(branchReadback?.name) !== baseBranch || branchReadback?.protected !== true ||
+    sha(branchReadback?.commit?.sha) !== baseCommit
+  ) {
+    error("release_join_verdict_pre_merge_protection_drift");
+  }
   const rulesetReviews = preMergeRulesetRequirements(rules, {
     requiredChecks: checks.required_checks,
     checkAppId: Number(policy.check_app.id),
     mergeMethod: string(action.merge_method || "merge"),
+    authoritative: protection === null,
   });
   const requiredReviews = Math.max(classicReviews, rulesetReviews);
   const approvedReviews = approvedHeadReviews(reviews, pull, headCommit, requiredReviews);

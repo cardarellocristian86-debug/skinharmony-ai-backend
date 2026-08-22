@@ -263,6 +263,33 @@ const STRICT_POLICY_DIGEST = hostNativeDigest({
   workflow: { ...STRICT_POLICY.workflow, candidate_sha256: null },
   allowed_events: [...STRICT_POLICY.allowed_events].sort(),
 });
+const RULESET_ONLY_RULES = Object.freeze([
+  { ruleset_id: 901, type: "deletion" },
+  { ruleset_id: 901, type: "non_fast_forward" },
+  {
+    ruleset_id: 901,
+    type: "required_status_checks",
+    parameters: {
+      strict_required_status_checks_policy: true,
+      required_status_checks: STRICT_POLICY.required_checks.map((context) => ({
+        context,
+        integration_id: STRICT_POLICY.check_app.id,
+      })),
+    },
+  },
+  {
+    ruleset_id: 901,
+    type: "pull_request",
+    parameters: {
+      required_approving_review_count: 1,
+      allowed_merge_methods: ["merge"],
+      require_code_owner_review: false,
+      require_last_push_approval: false,
+      required_review_thread_resolution: false,
+      required_reviewers: [],
+    },
+  },
+]);
 
 function strictTicket() {
   const ticket = mergeTicket();
@@ -2273,7 +2300,9 @@ function standingMergeJoinRequest(overrides = {}) {
 
 function standingMergeJoinFetch({
   protection = {},
+  protectionStatus = 200,
   rules = [],
+  branchReadback = { name: "main", protected: true, commit: { sha: BASE } },
   reviews = [{
     id: 501,
     state: "APPROVED",
@@ -2311,7 +2340,7 @@ function standingMergeJoinFetch({
       }));
     }
     if (url === `${root}/branches/main`) {
-      return jsonResponse({ name: "main", protected: true, commit: { sha: BASE } });
+      return jsonResponse(branchReadback);
     }
     if (url === `${root}/branches/main/protection`) {
       return jsonResponse({
@@ -2330,7 +2359,7 @@ function standingMergeJoinFetch({
         allow_force_pushes: { enabled: false },
         allow_deletions: { enabled: false },
         ...protection,
-      });
+      }, { status: protectionStatus });
     }
     if (url === `${root}/rules/branches/main?per_page=100&page=1`) {
       return jsonResponse(rules);
@@ -2582,6 +2611,104 @@ test("standing merge readback is fresh and fails closed on protection or review 
     }));
     assert.equal(resolution.pre_merge_readback.approved_reviews[0].review_id, 502);
   });
+});
+
+test("standing merge readback supports ruleset-only protection without weakening gates", async (t) => {
+  const resolve = (fetchImpl) => createHostNativeReleaseJoinVerdictResolver({
+    fetchImpl,
+    githubTokenResolver: async () => "standing-merge-token",
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    now: () => Date.parse(VERIFIED_AT),
+  })(standingMergeJoinRequest());
+
+  const verified = await resolve(standingMergeJoinFetch({
+    protectionStatus: 404,
+    rules: RULESET_ONLY_RULES,
+  }));
+  assert.equal(verified.pre_merge_readback.trusted, true);
+  assert.equal(verified.pre_merge_readback.base_commit, BASE);
+  assert.equal(verified.pre_merge_readback.approving_reviews_required, 1);
+  assert.deepEqual(verified.pre_merge_readback.required_checks, STRICT_POLICY.required_checks);
+
+  await t.test("missing ruleset checks", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.filter((rule) => rule.type !== "required_status_checks"),
+    })),
+    /release_join_verdict_pre_merge_ruleset_drift/,
+  ));
+  await t.test("missing ruleset review", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.filter((rule) => rule.type !== "pull_request"),
+    })),
+    /release_join_verdict_pre_merge_ruleset_drift/,
+  ));
+  await t.test("missing non-fast-forward protection", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.filter((rule) => rule.type !== "non_fast_forward"),
+    })),
+    /release_join_verdict_pre_merge_ruleset_drift/,
+  ));
+  await t.test("merge method must be admitted by the ruleset", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.map((rule) => rule.type === "pull_request" ? {
+        ...rule,
+        parameters: { ...rule.parameters, allowed_merge_methods: ["squash"] },
+      } : rule),
+    })),
+    /release_join_verdict_pre_merge_ruleset_unsupported/,
+  ));
+  await t.test("wrong ruleset check app", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.map((rule) => rule.type === "required_status_checks" ? {
+        ...rule,
+        parameters: {
+          ...rule.parameters,
+          required_status_checks: rule.parameters.required_status_checks.map((check, index) =>
+            index === 0 ? { ...check, integration_id: 999 } : check),
+        },
+      } : rule),
+    })),
+    /release_join_verdict_pre_merge_ruleset_drift/,
+  ));
+  await t.test("wrong ruleset checks", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES.map((rule) => rule.type === "required_status_checks" ? {
+        ...rule,
+        parameters: {
+          ...rule.parameters,
+          required_status_checks: rule.parameters.required_status_checks.slice(1),
+        },
+      } : rule),
+    })),
+    /release_join_verdict_pre_merge_ruleset_drift/,
+  ));
+  await t.test("unsupported active rule", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: [...RULESET_ONLY_RULES, { ruleset_id: 901, type: "merge_queue" }],
+    })),
+    /release_join_verdict_pre_merge_ruleset_unsupported/,
+  ));
+  await t.test("branch identity remains exact", async () => assert.rejects(
+    resolve(standingMergeJoinFetch({
+      protectionStatus: 404,
+      rules: RULESET_ONLY_RULES,
+      branchReadback: { name: "main", protected: true, commit: { sha: ALTERNATE } },
+    })),
+    /release_join_verdict_pre_merge_protection_drift/,
+  ));
+  for (const status of [401, 403]) {
+    await t.test(`classic protection ${status} remains unavailable`, async () => assert.rejects(
+      resolve(standingMergeJoinFetch({ protectionStatus: status, rules: RULESET_ONLY_RULES })),
+      /trusted_readback_unavailable/,
+    ));
+  }
 });
 
 test("production deploy release-join proves exact push source and mixed previous-live state", async () => {
