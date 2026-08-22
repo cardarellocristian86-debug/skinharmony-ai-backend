@@ -7596,6 +7596,16 @@ class DesktopMirrorService {
     );
   }
 
+  getPersistenceCollectionDefinitions() {
+    return Object.values(this)
+      .filter((value) => value instanceof JsonFileRepository && value.collectionName)
+      .map((repository) => ({
+        name: repository.collectionName,
+        filePath: repository.filePath,
+        defaultValue: repository.defaultValue
+      }));
+  }
+
   async commitRepositorySnapshots(changes = []) {
     if (!this.persistenceAdapter) {
       changes.forEach(({ repository, payload }) => repository.write(payload));
@@ -7640,32 +7650,21 @@ class DesktopMirrorService {
 
   async init() {
     if (this.persistenceAdapter) {
-      await this.persistenceAdapter.init([
-        { name: "clients", filePath: path.join(DATA_DIR, "clients.json"), defaultValue: [] },
-        { name: "appointments", filePath: path.join(DATA_DIR, "appointments.json"), defaultValue: [] },
-        { name: "services", filePath: path.join(DATA_DIR, "services.json"), defaultValue: [] },
-        { name: "staff", filePath: path.join(DATA_DIR, "staff.json"), defaultValue: [] },
-        { name: "shifts", filePath: path.join(DATA_DIR, "shifts.json"), defaultValue: [] },
-        { name: "shift_templates", filePath: path.join(DATA_DIR, "shift_templates.json"), defaultValue: [] },
-        { name: "resources", filePath: path.join(DATA_DIR, "resources.json"), defaultValue: [] },
-        { name: "inventory", filePath: path.join(DATA_DIR, "inventory.json"), defaultValue: [] },
-        { name: "inventory_movements", filePath: path.join(DATA_DIR, "inventory_movements.json"), defaultValue: [] },
-        { name: "payments", filePath: path.join(DATA_DIR, "payments.json"), defaultValue: [] },
-        { name: "cash_closures", filePath: path.join(DATA_DIR, "cash_closures.json"), defaultValue: [] },
-        { name: "treatments", filePath: path.join(DATA_DIR, "treatments.json"), defaultValue: [] },
-        { name: "protocols", filePath: path.join(DATA_DIR, "protocols.json"), defaultValue: [] },
-        { name: "ai_marketing_actions", filePath: path.join(DATA_DIR, "ai_marketing_actions.json"), defaultValue: [] },
-        { name: "dashboard_snapshots", filePath: path.join(DATA_DIR, "dashboard_snapshots.json"), defaultValue: [] },
-        { name: "gold_state", filePath: path.join(DATA_DIR, "gold_state.json"), defaultValue: [] },
-        { name: "gold_decision_history", filePath: path.join(DATA_DIR, "gold_decision_history.json"), defaultValue: [] },
-        { name: "gold_action_outcomes", filePath: path.join(DATA_DIR, "gold_action_outcomes.json"), defaultValue: [] },
-        { name: "gold_imports", filePath: path.join(DATA_DIR, "gold_imports.json"), defaultValue: [] },
-        { name: "whatsapp_messages", filePath: path.join(DATA_DIR, "whatsapp_messages.json"), defaultValue: [] },
-        { name: "client_recall_profiles", filePath: path.join(DATA_DIR, "client_recall_profiles.json"), defaultValue: [] },
-        { name: "users", filePath: path.join(DATA_DIR, "users.json"), defaultValue: [] },
-        { name: "sales", filePath: path.join(DATA_DIR, "sales.json"), defaultValue: [] },
-        { name: "settings", filePath: path.join(DATA_DIR, "settings.json"), defaultValue: defaultSettings }
-      ]);
+      const persistenceDefinitions = this.getPersistenceCollectionDefinitions();
+      await this.persistenceAdapter.init(persistenceDefinitions);
+      const missingRevisions = persistenceDefinitions
+        .map(({ name }) => name)
+        .filter((name) => {
+          const revision = Number(this.persistenceAdapter.getRevision(name));
+          return !Number.isSafeInteger(revision) || revision < 1;
+        });
+      if (missingRevisions.length) {
+        const error = new Error(`Bootstrap PostgreSQL incompleto: ${missingRevisions.join(", ")}`);
+        error.code = "persistence_revision_missing";
+        error.bootstrapIncomplete = true;
+        error.failedCollections = missingRevisions;
+        throw error;
+      }
       Object.values(this).forEach((value) => {
         if (value instanceof JsonFileRepository && value.collectionName) {
           value.setRevision(this.persistenceAdapter.getRevision(value.collectionName));
