@@ -15,6 +15,38 @@ automatically in `core_capability_catalog`; clients select them through
 Adding an internal capability therefore changes the catalog revision, not the
 OAuth app or the MCP `tools/list` surface.
 
+### Conversational Nyra
+
+`nyra_converse` is the read-only conversational entrypoint for a connected
+ChatGPT, Codex or compatible MCP host. The host discovers it in
+`core_capability_catalog` and invokes it through `core_capability_read` with the
+current catalog revision; it does not add an eleventh compact connector tool.
+The target handler performs its own authenticated Work preflight, resumes an
+unambiguous tenant Work when continuity policy permits, recalls only bounded
+memory context and reuses the existing Nyra interpretation plus Universal Core
+runtime signals. Caller arguments cannot select a tenant, owner, provider,
+model, authorization or preflight envelope.
+
+The MCP does not generate language with a server-side provider. It returns a
+small host-response contract that tells the already-connected host model to
+answer directly in first person as Nyra and in the user's language. The reply
+seed and safety instructions are static server-authored text: upstream preferred
+replies, selected-action labels, risk strings, Work state strings and next-action
+text are never copied into the response. Risk, Work state and Core runtime use
+closed enums; only availability booleans and bounded counts survive. Raw memory,
+customer records, secrets and provider credentials are not returned.
+
+Conversation fails closed unless both the authenticated Work preflight and the
+Nyra interpretation report `ok=true` for the exact tenant. Preflight must be
+`ready_read_only`; memory-recall, unavailable, malformed and non-ready states
+are rejected. Core runtime must identify a valid V0/V1/V2 route and authority,
+an `active`, `shadow` or `off` mode, and `execution_allowed=false`. Every turn
+fixes `execution_authorized=false`, `external_action_authorized=false`,
+`provider_execution=false`, `provider_api_key_required=false` and
+`server_model_calls=0`. Requests to deploy, publish, send, delete, pay, book or
+change access remain proposal-only; any real side effect needs its separate
+governed action tool, bounded Core authority and host approval.
+
 Dynamic routing never accepts a URL, HTTP method, tenant id, credential or
 arbitrary handler name. Every capability must exist in the server registry,
 match its current catalog revision and pass its original schema and scopes.
