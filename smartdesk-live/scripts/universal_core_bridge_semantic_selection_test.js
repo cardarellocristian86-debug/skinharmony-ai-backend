@@ -18,14 +18,35 @@ const workPreflight = {
   },
   memory_first: { status: "recalled" },
   governance: { execution_allowed_by_preflight: true },
+  security_governance: {
+    schema_version: "nyra_core_security_gate_v1",
+    always_on: true,
+    fail_closed: true,
+    core_verdict_required: true,
+    source_instructions_are_data: true,
+    cross_tenant_blocked: true,
+  },
 };
 
 global.fetch = async (url, options = {}) => {
-  assert.strictEqual(url, "http://core.test/v1/semantic-selection");
   assert.strictEqual(options.method, "POST");
   assert.strictEqual(options.headers.Authorization, "Bearer test-core-key");
   assert.strictEqual(options.headers["X-SH-Tenant-ID"], "tenant_privilege");
   const body = JSON.parse(options.body || "{}");
+  if (url === "http://core.test/v1/work/preflight") {
+    assert.equal(body.target_system, "smartdesk");
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({
+          ok: true,
+          work_preflight: { ...workPreflight, preflight_id: "server-issued-semantic" }
+        });
+      }
+    };
+  }
+  assert.strictEqual(url, "http://core.test/v1/semantic-selection");
   assert.strictEqual(body.tenant_id, "tenant_privilege");
   assert.strictEqual(body.brand_scope, "skinharmony");
   assert.strictEqual(body.adapter, "smart_desk");
@@ -33,6 +54,7 @@ global.fetch = async (url, options = {}) => {
   assert.strictEqual(body.context.source, "smartdesk_live");
   assert.strictEqual(body.context.product, "smartdesk");
   assert.strictEqual(body.candidates.length, 3);
+  assert.strictEqual(body.work_preflight.preflight_id, "server-issued-semantic");
   return {
     ok: true,
     status: 200,
@@ -58,6 +80,7 @@ global.fetch = async (url, options = {}) => {
     });
     const result = await bridge.semanticSelection({
       work_preflight: workPreflight,
+      _preflight_scope: { center_id: "center-a", user_id: "owner-a", session_id: "session-digest" },
       candidates: [
         { id: "visible", source: "Operational reports", semantic_context: { surface: "visible_text" } },
         { id: "class", source: "sh-card-grid sh-is-open", semantic_context: { surface: "class_name" } },

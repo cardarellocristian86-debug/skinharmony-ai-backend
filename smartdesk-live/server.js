@@ -464,6 +464,16 @@ function readToken(req) {
   return String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
 }
 
+function corePreflightScope(req) {
+  const session = req?.session || {};
+  const tokenDigest = crypto.createHash("sha256").update(String(session.token || readToken(req) || "no-session")).digest("hex");
+  return {
+    center_id: String(session.centerId || "smartdesk"),
+    user_id: String(session.userId || session.username || "anonymous"),
+    session_id: tokenDigest
+  };
+}
+
 function readBridgeKey(req) {
   const headerKey = String(req.headers["x-skinharmony-bridge-key"] || "").trim();
   if (headerKey) return headerKey;
@@ -871,6 +881,29 @@ function verifyWooCommerceWebhook(req) {
   return { ok: true };
 }
 
+function verifyTwilioWebhookRequest(req, authToken = process.env.TWILIO_AUTH_TOKEN) {
+  const secret = String(authToken || "").trim();
+  if (!secret) return { ok: false, status: 503, code: "twilio_webhook_not_configured" };
+  const provided = String(req.headers?.["x-twilio-signature"] || "").trim();
+  if (!provided) return { ok: false, status: 401, code: "twilio_signature_required" };
+  const configuredUrl = String(process.env.TWILIO_WEBHOOK_URL || "").trim();
+  const forwardedProto = String(req.headers?.["x-forwarded-proto"] || req.protocol || "https").split(",")[0].trim();
+  const host = String(req.headers?.["x-forwarded-host"] || req.headers?.host || "").split(",")[0].trim();
+  const requestUrl = configuredUrl || `${forwardedProto}://${host}${req.originalUrl || req.url || ""}`;
+  const parameters = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+  const canonical = Object.keys(parameters).sort().reduce((value, key) => {
+    const entries = Array.isArray(parameters[key]) ? parameters[key] : [parameters[key]];
+    return `${value}${key}${entries.map((entry) => String(entry ?? "")).join("")}`;
+  }, requestUrl);
+  const expected = crypto.createHmac("sha1", secret).update(canonical, "utf8").digest("base64");
+  const expectedBuffer = Buffer.from(expected);
+  const providedBuffer = Buffer.from(provided);
+  const valid = expectedBuffer.length === providedBuffer.length && crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+  return valid
+    ? { ok: true, status: 200, code: "twilio_signature_valid" }
+    : { ok: false, status: 401, code: "twilio_signature_invalid" };
+}
+
 const DEFAULT_SMARTDESK_ORIGINS = [
   "https://skinharmony-smartdesk-live.onrender.com",
   "https://skinharmony.it",
@@ -883,7 +916,6 @@ const LOCAL_SMARTDESK_ORIGINS = [
   "http://localhost:10000",
   "http://localhost:5173"
 ];
-const MUTATING_HTTP_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 function normalizeOrigin(value) {
   const candidate = String(value || "").trim();
@@ -996,9 +1028,62 @@ function createCorsMiddleware(resolveOrigins = resolveAllowedOrigins) {
   };
 }
 
-function createPersistenceCommitBarrier(resolveAdapter = () => persistenceAdapter) {
+const READ_ONLY_POST_PATHS = new Set([
+  "/api/assistant/chat",
+  "/api/assistant/query",
+  "/api/support-assistant/chat",
+  "/api/clients/duplicate-suggestions",
+  "/api/corelia/dialog",
+  "/api/ai-gold/ask",
+  "/api/ai-gold/command",
+  "/api/ai-gold/protocols/draft",
+  "/api/ai-gold/whatsapp/preview",
+  "/api/ai-gold/whatsapp/test-twilio",
+  "/api/suite-bridge/activate",
+  "/api/suite-bridge/config-bundle",
+  "/api/suite-bridge/pulse",
+  "/api/universal-core/customer-intelligence/readiness",
+  "/api/universal-core/decision"
+]);
+
+const WRITE_PRODUCING_GET_PATHS = new Set([
+  "/api/assistant/brief",
+  "/api/dashboard/stats",
+  "/api/business-snapshot",
+  "/api/profitability/overview",
+  "/api/ai-gold/cockpit",
+  "/api/ai-gold/decision-center",
+  "/api/ai-gold/decision-context",
+  "/api/ai-gold/marketing",
+  "/api/ai-gold/profitability",
+  "/api/ai-gold/progressive-intelligence",
+  "/api/ai-gold/state",
+  "/api/ai-gold/state/decision",
+  "/api/ai-gold/state/signals",
+  "/api/ai-gold/state/snapshots",
+  "/api/corelia/decision-center",
+  "/api/corelia/decision-context"
+]);
+
+function requestMayWriteLocalState(req) {
+  const method = String(req.method || "GET").toUpperCase();
+  const requestPath = String(req.path || "");
+  if (!requestPath.startsWith("/api") || requestPath === "/api/health") return false;
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+    return WRITE_PRODUCING_GET_PATHS.has(requestPath);
+  }
+  if (method === "POST" && READ_ONLY_POST_PATHS.has(requestPath)) return false;
+  if (method === "POST" && requestPath.startsWith("/api/universal-core/branches/")) return false;
+  return ["POST", "PUT", "PATCH", "DELETE"].includes(method);
+}
+
+function createPersistenceCommitBarrier(
+  resolveAdapter = () => persistenceAdapter,
+  options = {}
+) {
+  const shouldTrack = options.shouldTrack || requestMayWriteLocalState;
   return (req, res, next) => {
-    if (!req.path.startsWith("/api") || !MUTATING_HTTP_METHODS.has(req.method)) {
+    if (!shouldTrack(req)) {
       return next();
     }
 
@@ -1014,7 +1099,11 @@ function createPersistenceCommitBarrier(resolveAdapter = () => persistenceAdapte
       let commitStarted = false;
 
       const commitThenSend = (send) => {
-        if (commitStarted || context.outcomes.length === 0) {
+        if (commitStarted) {
+          return send();
+        }
+        if (!adapter.hasTrackedWrites(context)) {
+          adapter.releaseTrackedWrites(context);
           return send();
         }
 
@@ -1022,9 +1111,11 @@ function createPersistenceCommitBarrier(resolveAdapter = () => persistenceAdapte
         void adapter.flushTrackedWrites(context).then(
           () => {
             res.setHeader("X-SmartDesk-Persistence", "confirmed");
+            adapter.releaseTrackedWrites(context);
             send();
           },
           () => {
+            adapter.releaseTrackedWrites(context);
             if (res.headersSent) {
               res.destroy();
               return;
@@ -1060,6 +1151,22 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: false, limit: "1mb" }));
 app.use(createPersistenceCommitBarrier());
+
+function isWriteFreezeEnabled() {
+  return ["1", "true", "yes", "on"].includes(String(process.env.SMARTDESK_WRITE_FREEZE || "").toLowerCase());
+}
+
+app.use((req, res, next) => {
+  if (!isWriteFreezeEnabled() || !req.path.startsWith("/api") || req.path === "/api/health") {
+    return next();
+  }
+  res.setHeader("Retry-After", "120");
+  return res.status(503).json({
+    success: false,
+    code: "smartdesk_maintenance_write_freeze",
+    message: "Smart Desk e temporaneamente in manutenzione controllata. Riprova tra pochi minuti."
+  });
+});
 
 app.use((req, res, next) => {
   if (!req.path.startsWith("/api")) return next();
@@ -1105,6 +1212,29 @@ app.get("/health", (_req, res) => {
     persistence: persistenceAdapter
       ? persistenceAdapter.getPersistenceStatus()
       : { configured: false, healthy: true, pendingWrites: 0 }
+  });
+});
+
+app.get("/healthz", async (_req, res) => {
+  const commitSha = String(process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "").trim().toLowerCase();
+  const commitVerifiable = /^[a-f0-9]{40}$/.test(commitSha);
+  const persistence = persistenceAdapter
+    ? await persistenceAdapter.probeHealth()
+    : { configured: false, healthy: true, pendingWrites: 0 };
+  const productionRuntime = process.env.NODE_ENV === "production" || String(process.env.RENDER || "").toLowerCase() === "true";
+  const persistenceReady = persistence.healthy !== false
+    && persistence.pendingWrites === 0
+    && (!productionRuntime || (persistence.configured === true && persistence.databaseReachable === true));
+  const ready = Boolean(service) && persistenceReady && commitVerifiable;
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(ready ? 200 : 503).json({
+    ok: ready,
+    service: "skinharmony-smartdesk-live",
+    build: {
+      commit_sha: commitVerifiable ? commitSha : null,
+      commit_verifiable: commitVerifiable
+    },
+    persistence
   });
 });
 
@@ -1181,10 +1311,10 @@ app.get("/web-preview", (_req, res) => {
   res.redirect(302, "/web-preview/");
 });
 
-app.post("/api/auth/login", loginRateLimit, (req, res) => {
+app.post("/api/auth/login", loginRateLimit, async (req, res) => {
   const usernameHint = String(req.body?.username || req.body?.email || req.body?.user || "").trim();
   try {
-    const session = service.login(req.body || {});
+    const session = await service.login(req.body || {});
     service.recordControlAuditEvent({
       session,
       action: "login_success",
@@ -1219,7 +1349,7 @@ app.get("/api/auth/trial-config", (_req, res) => {
 
 app.post("/api/auth/request-trial", trialRateLimit, async (req, res) => {
   try {
-    const result = service.requestTrial(req.body || {});
+    const result = await service.requestTrial(req.body || {});
     let emailDelivery = { status: "disabled" };
     if (result.verification?.required && result.verification?.token) {
       emailDelivery = await sendTrialVerificationMail({
@@ -1246,9 +1376,9 @@ app.post("/api/auth/request-trial", trialRateLimit, async (req, res) => {
   }
 });
 
-app.post("/api/auth/verify-trial-email", (req, res) => {
+app.post("/api/auth/verify-trial-email", async (req, res) => {
   try {
-    const result = service.verifyTrialEmailToken(req.body || {});
+    const result = await service.verifyTrialEmailToken(req.body || {});
     void sendTrialWelcomeMail({
       email: result.user.contactEmail || "",
       centerName: result.user.centerName || "",
@@ -1263,7 +1393,7 @@ app.post("/api/auth/verify-trial-email", (req, res) => {
 
 app.post("/api/auth/forgot-password", passwordRateLimit, async (req, res) => {
   try {
-    const result = service.requestPasswordReset(req.body || {});
+    const result = await service.requestPasswordReset(req.body || {});
     if (result.delivery?.email && result.delivery?.token) {
       await sendPasswordResetMail({
         email: result.delivery.email,
@@ -1278,7 +1408,7 @@ app.post("/api/auth/forgot-password", passwordRateLimit, async (req, res) => {
 
 app.post("/api/auth/reset-password", passwordRateLimit, async (req, res) => {
   try {
-    const result = service.resetPasswordWithToken(req.body || {});
+    const result = await service.resetPasswordWithToken(req.body || {});
     if (result.user.contactEmail) {
       await sendPasswordChangedMail({ email: result.user.contactEmail });
     }
@@ -1331,17 +1461,17 @@ app.get("/api/enterprise/control", requireAuth, requireSuperAdmin, (req, res) =>
   }
 });
 
-app.post("/api/auth/users", requireAuth, (req, res) => {
+app.post("/api/auth/users", requireAuth, async (req, res) => {
   try {
-    res.status(201).json(service.createAccessUser(req.body || {}, req.session));
+    res.status(201).json(await service.createAccessUser(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile creare l'accesso");
   }
 });
 
-app.post("/api/auth/users/:id/status", requireAuth, (req, res) => {
+app.post("/api/auth/users/:id/status", requireAuth, async (req, res) => {
   try {
-    res.json(service.updateAccessUserStatus(req.params.id, req.body || {}, req.session));
+    res.json(await service.updateAccessUserStatus(req.params.id, req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare lo stato utente");
   }
@@ -1355,21 +1485,21 @@ app.post("/api/auth/users/:id/support-session", requireAuth, (req, res) => {
   }
 });
 
-app.post("/api/auth/subscription/request-change", requireAuth, (req, res) => {
+app.post("/api/auth/subscription/request-change", requireAuth, async (req, res) => {
   try {
-    res.json(service.requestSubscriptionChange(req.body || {}, req.session));
+    res.json(await service.requestSubscriptionChange(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile inviare la richiesta abbonamento");
   }
 });
 
-app.post("/api/integrations/woocommerce/order-paid", (req, res) => {
+app.post("/api/integrations/woocommerce/order-paid", async (req, res) => {
   const verification = verifyWooCommerceWebhook(req);
   if (!verification.ok) {
     return res.status(401).json({ success: false, ...verification });
   }
   try {
-    res.json(service.activateSubscriptionFromWooCommerceOrder(req.body || {}));
+    res.json(await service.activateSubscriptionFromWooCommerceOrder(req.body || {}));
   } catch (error) {
     res.status(400).json({
       success: false,
@@ -1378,14 +1508,17 @@ app.post("/api/integrations/woocommerce/order-paid", (req, res) => {
   }
 });
 
-app.post("/api/integrations/twilio/whatsapp-webhook", (req, res) => {
-  const expectedToken = String(process.env.TWILIO_WEBHOOK_TOKEN || "").trim();
-  const providedToken = String(req.query.token || req.headers["x-smartdesk-webhook-token"] || "").trim();
-  if (expectedToken && providedToken !== expectedToken) {
-    return res.status(401).json({ success: false, message: "Webhook non autorizzato" });
+app.post("/api/integrations/twilio/whatsapp-webhook", async (req, res) => {
+  const verification = verifyTwilioWebhookRequest(req);
+  if (!verification.ok) {
+    return res.status(verification.status).json({
+      success: false,
+      code: verification.code,
+      message: "Webhook WhatsApp non autorizzato"
+    });
   }
   try {
-    res.json(service.handleWhatsappWebhook(req.body || {}, whatsappService));
+    res.json(await service.handleWhatsappWebhook(req.body || {}, whatsappService));
   } catch (error) {
     res.status(400).json({
       success: false,
@@ -1477,7 +1610,7 @@ app.get("/api/universal-core/pulse", requireAuth, async (_req, res) => {
 
 app.post("/api/universal-core/decision", requireAuth, async (req, res) => {
   try {
-    const result = await universalCoreBridge.decision(req.body || {});
+    const result = await universalCoreBridge.decision({ ...(req.body || {}), _preflight_scope: corePreflightScope(req) });
     return res.status(result.success ? 200 : 400).json(result);
   } catch (error) {
     return res.status(400).json({
@@ -1490,7 +1623,10 @@ app.post("/api/universal-core/decision", requireAuth, async (req, res) => {
 
 app.post("/api/universal-core/branches/:branch", requireAuth, async (req, res) => {
   try {
-    const result = await universalCoreBridge.branchAnalyze(req.params.branch, req.body || {});
+    const result = await universalCoreBridge.branchAnalyze(req.params.branch, {
+      ...(req.body || {}),
+      _preflight_scope: corePreflightScope(req)
+    });
     return res.status(result.success ? 200 : 400).json(result);
   } catch (error) {
     return res.status(400).json({
@@ -1516,7 +1652,10 @@ app.get("/api/universal-core/customer-intelligence/contract", requireAuth, async
 
 app.post("/api/universal-core/customer-intelligence/readiness", requireAuth, async (req, res) => {
   try {
-    const result = await universalCoreBridge.customerIntelligenceReadiness(req.body || {});
+    const result = await universalCoreBridge.customerIntelligenceReadiness({
+      ...(req.body || {}),
+      _preflight_scope: corePreflightScope(req)
+    });
     return res.status(result.success ? 200 : 400).json(result);
   } catch (error) {
     return res.status(400).json({
@@ -2296,17 +2435,17 @@ app.post("/api/clients/merge", (req, res) => {
   }
 });
 
-app.post("/api/clients", (req, res) => {
+app.post("/api/clients", async (req, res) => {
   try {
-    res.status(201).json(service.saveClient(req.body || {}, req.session));
+    res.status(201).json(await service.saveClient(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il cliente");
   }
 });
 
-app.put("/api/clients/:id", (req, res) => {
+app.put("/api/clients/:id", async (req, res) => {
   try {
-    res.json(service.saveClient({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveClient({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare il cliente");
   }
@@ -2346,96 +2485,96 @@ app.get("/api/appointments", (req, res) => {
   }));
 });
 
-app.post("/api/appointments", (req, res) => {
+app.post("/api/appointments", async (req, res) => {
   try {
-    res.status(201).json(service.saveAppointment(req.body || {}, req.session));
+    res.status(201).json(await service.saveAppointment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare l'appuntamento");
   }
 });
 
-app.put("/api/appointments/:id", (req, res) => {
+app.put("/api/appointments/:id", async (req, res) => {
   try {
-    res.json(service.saveAppointment({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveAppointment({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare l'appuntamento");
   }
 });
 
-app.delete("/api/appointments/:id", (req, res) => {
-  res.json(service.deleteAppointment(req.params.id, req.session));
+app.delete("/api/appointments/:id", async (req, res) => {
+  res.json(await service.deleteAppointment(req.params.id, req.session));
 });
 
 app.get("/api/catalog/services", (req, res) => {
   res.json(service.listServices(req.session));
 });
 
-app.post("/api/catalog/services", (req, res) => {
+app.post("/api/catalog/services", async (req, res) => {
   try {
-    res.status(201).json(service.saveService(req.body || {}, req.session));
+    res.status(201).json(await service.saveService(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il servizio");
   }
 });
 
-app.put("/api/catalog/services/:id", (req, res) => {
+app.put("/api/catalog/services/:id", async (req, res) => {
   try {
-    res.json(service.saveService({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveService({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare il servizio");
   }
 });
 
-app.delete("/api/catalog/services/:id", (req, res) => {
-  res.json(service.deleteService(req.params.id, req.session));
+app.delete("/api/catalog/services/:id", async (req, res) => {
+  res.json(await service.deleteService(req.params.id, req.session));
 });
 
 app.get("/api/catalog/staff", (req, res) => {
   res.json(service.listStaff(req.session));
 });
 
-app.post("/api/catalog/staff", (req, res) => {
+app.post("/api/catalog/staff", async (req, res) => {
   try {
-    res.status(201).json(service.saveStaff(req.body || {}, req.session));
+    res.status(201).json(await service.saveStaff(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare l'operatore");
   }
 });
 
-app.put("/api/catalog/staff/:id", (req, res) => {
+app.put("/api/catalog/staff/:id", async (req, res) => {
   try {
-    res.json(service.saveStaff({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveStaff({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare l'operatore");
   }
 });
 
-app.delete("/api/catalog/staff/:id", (req, res) => {
-  res.json(service.deleteStaff(req.params.id, req.session));
+app.delete("/api/catalog/staff/:id", async (req, res) => {
+  res.json(await service.deleteStaff(req.params.id, req.session));
 });
 
 app.get("/api/shifts", (req, res) => {
   res.json(service.listShifts(req.query.view || "month", req.query.anchorDate || new Date().toISOString(), req.query.staffId || "", req.session));
 });
 
-app.post("/api/shifts", (req, res) => {
+app.post("/api/shifts", async (req, res) => {
   try {
-    res.status(201).json(service.saveShift(req.body || {}, req.session));
+    res.status(201).json(await service.saveShift(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il turno");
   }
 });
 
-app.put("/api/shifts/:id", (req, res) => {
+app.put("/api/shifts/:id", async (req, res) => {
   try {
-    res.json(service.saveShift({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveShift({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare il turno");
   }
 });
 
-app.delete("/api/shifts/:id", (req, res) => {
-  res.json(service.deleteShift(req.params.id, req.session));
+app.delete("/api/shifts/:id", async (req, res) => {
+  res.json(await service.deleteShift(req.params.id, req.session));
 });
 
 app.get("/api/shifts/export", requirePlan("silver"), (req, res) => {
@@ -2450,24 +2589,24 @@ app.get("/api/shifts/templates", requirePlan("silver"), (req, res) => {
   res.json(service.listShiftTemplates(req.session));
 });
 
-app.post("/api/shifts/templates", requirePlan("silver"), (req, res) => {
+app.post("/api/shifts/templates", requirePlan("silver"), async (req, res) => {
   try {
-    res.status(201).json(service.saveShiftTemplate(req.body || {}, req.session));
+    res.status(201).json(await service.saveShiftTemplate(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare lo schema turni");
   }
 });
 
-app.put("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
+app.put("/api/shifts/templates/:id", requirePlan("silver"), async (req, res) => {
   try {
-    res.json(service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveShiftTemplate({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare lo schema turni");
   }
 });
 
-app.delete("/api/shifts/templates/:id", requirePlan("silver"), (req, res) => {
-  res.json(service.deleteShiftTemplate(req.params.id, req.session));
+app.delete("/api/shifts/templates/:id", requirePlan("silver"), async (req, res) => {
+  res.json(await service.deleteShiftTemplate(req.params.id, req.session));
 });
 
 app.post("/api/shifts/templates/generate", requirePlan("silver"), (req, res) => {
@@ -2482,57 +2621,57 @@ app.get("/api/catalog/resources", (req, res) => {
   res.json(service.listResources(req.session));
 });
 
-app.post("/api/catalog/resources", (req, res) => {
+app.post("/api/catalog/resources", async (req, res) => {
   try {
-    res.status(201).json(service.saveResource(req.body || {}, req.session));
+    res.status(201).json(await service.saveResource(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare la risorsa");
   }
 });
 
-app.put("/api/catalog/resources/:id", (req, res) => {
+app.put("/api/catalog/resources/:id", async (req, res) => {
   try {
-    res.json(service.saveResource({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveResource({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare la risorsa");
   }
 });
 
-app.delete("/api/catalog/resources/:id", (req, res) => {
-  res.json(service.deleteResource(req.params.id, req.session));
+app.delete("/api/catalog/resources/:id", async (req, res) => {
+  res.json(await service.deleteResource(req.params.id, req.session));
 });
 
 app.get("/api/inventory/items", (req, res) => {
   res.json(service.listInventoryItems(req.session));
 });
 
-app.post("/api/inventory/items", (req, res) => {
+app.post("/api/inventory/items", async (req, res) => {
   try {
-    res.status(201).json(service.saveInventoryItem(req.body || {}, req.session));
+    res.status(201).json(await service.saveInventoryItem(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare l'articolo");
   }
 });
 
-app.put("/api/inventory/items/:id", (req, res) => {
+app.put("/api/inventory/items/:id", async (req, res) => {
   try {
-    res.json(service.saveInventoryItem({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveInventoryItem({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile aggiornare l'articolo");
   }
 });
 
-app.delete("/api/inventory/items/:id", (req, res) => {
-  res.json(service.deleteInventoryItem(req.params.id, req.session));
+app.delete("/api/inventory/items/:id", async (req, res) => {
+  res.json(await service.deleteInventoryItem(req.params.id, req.session));
 });
 
 app.get("/api/inventory/movements", requirePlan("silver"), (req, res) => {
   res.json(service.listInventoryMovements(String(req.query.itemId || ""), req.session));
 });
 
-app.post("/api/inventory/movements", requirePlan("silver"), (req, res) => {
+app.post("/api/inventory/movements", requirePlan("silver"), async (req, res) => {
   try {
-    res.status(201).json(service.createInventoryMovement(req.body || {}, req.session));
+    res.status(201).json(await service.createInventoryMovement(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile registrare il movimento");
   }
@@ -2729,7 +2868,10 @@ app.get("/api/ai-gold/customer-intelligence", requirePlan("gold"), async (req, r
     const payload = service.buildCustomerIntelligenceCorePayload(req.session);
     const [contract, readiness] = await Promise.all([
       universalCoreBridge.customerIntelligenceContract(),
-      universalCoreBridge.customerIntelligenceReadiness(payload)
+      universalCoreBridge.customerIntelligenceReadiness({
+        ...payload,
+        _preflight_scope: corePreflightScope(req)
+      })
     ]);
     return res.status(contract.success || readiness.success ? 200 : 400).json({
       success: contract.success || readiness.success,
@@ -2858,7 +3000,7 @@ app.post("/api/ai-gold/onboarding/analyze", requirePlan("gold"), (req, res) => {
   }
 });
 
-app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), (req, res) => {
+app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), async (req, res) => {
   if (isSafeModeActive()) {
     return res.status(429).json(safeModePayload("Sistema sotto carico: import Gold temporaneamente limitato"));
   }
@@ -2877,7 +3019,7 @@ app.post("/api/ai-gold/onboarding/confirm", requirePlan("gold"), (req, res) => {
         limit: GOLD_ONBOARDING_SYNC_RECORD_LIMIT
       });
     }
-    res.json(service.confirmGoldOnboardingImport(req.body || {}, req.session));
+    res.json(await service.confirmGoldOnboardingImport(req.body || {}, req.session));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Impossibile completare import Gold";
     res.status(400).json({
@@ -2975,10 +3117,10 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async
     return res.status(429).json(safeModePayload("Sistema sotto carico: generazione marketing temporaneamente limitata"));
   }
   try {
-    const generated = service.generateAiMarketingAutopilotActions(req.session);
+    const generated = await service.generateAiMarketingAutopilotActions(req.session);
     const enhanced = await assistantService.enhanceMarketingAutopilotActions(generated.actions || [], req.session);
     if (enhanced.actions?.length) {
-      service.updateAiMarketingActionDrafts(enhanced.actions, req.session);
+      await service.updateAiMarketingActionDrafts(enhanced.actions, req.session);
     }
     res.json({
       ...service.getAiMarketingAutopilot(req.session),
@@ -2990,9 +3132,9 @@ app.post("/api/ai-gold/marketing/autopilot/generate", requirePlan("gold"), async
   }
 });
 
-app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), (req, res) => {
+app.post("/api/ai-gold/marketing/autopilot/:id/status", requirePlan("gold"), async (req, res) => {
   try {
-    res.json(service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
+    res.json(await service.updateAiMarketingActionStatus(req.params.id, req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare l'azione marketing");
   }
@@ -3078,9 +3220,9 @@ app.get("/api/treatments", requirePlan("silver"), (req, res) => {
   res.json(service.listTreatments(req.query.clientId, req.session));
 });
 
-app.post("/api/treatments", requirePlan("silver"), (req, res) => {
+app.post("/api/treatments", requirePlan("silver"), async (req, res) => {
   try {
-    res.status(201).json(service.createTreatment(req.body || {}, req.session));
+    res.status(201).json(await service.createTreatment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile salvare il trattamento");
   }
@@ -3090,24 +3232,24 @@ app.get("/api/protocols", (req, res) => {
   res.json(service.listProtocols(req.query.clientId, req.session));
 });
 
-app.post("/api/protocols", (req, res) => {
+app.post("/api/protocols", async (req, res) => {
   try {
-    res.status(201).json(service.saveProtocol(req.body || {}, req.session));
+    res.status(201).json(await service.saveProtocol(req.body || {}, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile salvare il protocollo");
   }
 });
 
-app.put("/api/protocols/:id", (req, res) => {
+app.put("/api/protocols/:id", async (req, res) => {
   try {
-    res.json(service.saveProtocol({ ...(req.body || {}), id: req.params.id }, req.session));
+    res.json(await service.saveProtocol({ ...(req.body || {}), id: req.params.id }, req.session));
   } catch (error) {
     res.status(400).send(error instanceof Error ? error.message : "Impossibile aggiornare il protocollo");
   }
 });
 
-app.delete("/api/protocols/:id", (req, res) => {
-  res.json(service.deleteProtocol(req.params.id, req.session));
+app.delete("/api/protocols/:id", async (req, res) => {
+  res.json(await service.deleteProtocol(req.params.id, req.session));
 });
 
 app.get("/api/payments", (req, res) => {
@@ -3142,25 +3284,25 @@ app.get("/api/payments/unlinked", (req, res) => {
   }));
 });
 
-app.post("/api/payments/cash-close", (req, res) => {
+app.post("/api/payments/cash-close", async (req, res) => {
   try {
-    res.json(service.closeCashdesk(req.body || {}, req.session));
+    res.json(await service.closeCashdesk(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile chiudere la cassa");
   }
 });
 
-app.post("/api/payments", (req, res) => {
+app.post("/api/payments", async (req, res) => {
   try {
-    res.status(201).json(service.createPayment(req.body || {}, req.session));
+    res.status(201).json(await service.createPayment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile registrare il pagamento");
   }
 });
 
-app.post("/api/sales", (req, res) => {
+app.post("/api/sales", async (req, res) => {
   try {
-    res.status(201).json(service.createPayment(req.body || {}, req.session));
+    res.status(201).json(await service.createPayment(req.body || {}, req.session));
   } catch (error) {
     sendBadRequest(res, error, "Impossibile registrare la vendita");
   }
@@ -3302,12 +3444,16 @@ async function bootstrap() {
   whatsappService = new WhatsappService();
   suiteAppKeyBridge = new SuiteAppKeyBridge();
 
-  return app.listen(port, () => {
-    console.log(`SkinHarmony Smart Desk live su http://localhost:${port}`);
-    console.log(`[SmartDesk] Persistence: ${process.env.DATABASE_URL ? "Postgres (DATABASE_URL)" : "JSON locale"}`);
-    console.log(`[SmartDesk] WhatsApp Twilio: ${whatsappService.isConfigured() ? "configurato" : "fallback copia"}`);
-    console.log(`[SmartDesk] Suite App Key Bridge: ${suiteAppKeyBridge.isConfigured() ? suiteAppKeyBridge.baseUrl : "non configurato"}`);
-    console.log(`[SmartDesk] External Universal Core Bridge: ${universalCoreBridge.isConfigured() ? universalCoreBridge.baseUrl : "non configurato"}`);
+  return new Promise((resolve, reject) => {
+    const listener = app.listen(port, () => {
+      console.log(`SkinHarmony Smart Desk live su http://localhost:${port}`);
+      console.log(`[SmartDesk] Persistence: ${process.env.DATABASE_URL ? "Postgres (DATABASE_URL)" : "JSON locale"}`);
+      console.log(`[SmartDesk] WhatsApp Twilio: ${whatsappService.isConfigured() ? "configurato" : "fallback copia"}`);
+      console.log(`[SmartDesk] Suite App Key Bridge: ${suiteAppKeyBridge.isConfigured() ? suiteAppKeyBridge.baseUrl : "non configurato"}`);
+      console.log(`[SmartDesk] External Universal Core Bridge: ${universalCoreBridge.isConfigured() ? universalCoreBridge.baseUrl : "non configurato"}`);
+      resolve(listener);
+    });
+    listener.once("error", reject);
   });
 }
 
@@ -3324,5 +3470,7 @@ module.exports = {
   bootstrap,
   createCorsMiddleware,
   createPersistenceCommitBarrier,
-  resolveAllowedOrigins
+  requestMayWriteLocalState,
+  resolveAllowedOrigins,
+  verifyTwilioWebhookRequest
 };

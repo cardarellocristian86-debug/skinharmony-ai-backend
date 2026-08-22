@@ -1,4 +1,6 @@
 const fs = require("fs");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const { atomicWriteJson } = require("./JsonFileRepository");
 
 function formatBytes(bytes) {
   const value = Number(bytes || 0);
@@ -15,8 +17,14 @@ class PostgresPersistenceAdapter {
     this.tenantId = String(options.tenantId || process.env.SMARTDESK_TENANT_ID || "smartdesk").trim() || "smartdesk";
     this.poolFactory = options.poolFactory || null;
     this.revisions = new Map();
-    this.legacyWriteChains = new Map();
+    this.writeChains = new Map();
+    this.writeTracking = new AsyncLocalStorage();
     this.pool = null;
+    this.pendingWrites = 0;
+    this.failedCollections = new Set();
+    this.lastWriteAt = null;
+    this.lastFailureAt = null;
+    this.mutationTail = Promise.resolve();
   }
 
   createPool() {
@@ -31,9 +39,17 @@ class PostgresPersistenceAdapter {
     } catch (error) {
       throw new Error("Dipendenza 'pg' non installata. Esegui npm install nel servizio render-smartdesk-live.");
     }
+    let loopbackDatabase = false;
+    try {
+      const parsedDatabaseUrl = new URL(this.databaseUrl);
+      loopbackDatabase = ["postgres:", "postgresql:"].includes(parsedDatabaseUrl.protocol)
+        && ["localhost", "127.0.0.1", "[::1]"].includes(parsedDatabaseUrl.hostname.toLowerCase());
+    } catch {
+      loopbackDatabase = false;
+    }
     this.pool = new Pool({
       connectionString: this.databaseUrl,
-      ssl: this.databaseUrl.includes("localhost") ? false : { rejectUnauthorized: false }
+      ssl: loopbackDatabase ? false : { rejectUnauthorized: false }
     });
     return this.pool;
   }
@@ -74,7 +90,7 @@ class PostgresPersistenceAdapter {
 
   ensureLocalFile(filePath, defaultValue) {
     if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, JSON.stringify(defaultValue, null, 2));
+      atomicWriteJson(filePath, defaultValue);
     }
   }
 
@@ -84,7 +100,7 @@ class PostgresPersistenceAdapter {
   }
 
   writeLocalPayload(filePath, payload) {
-    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2));
+    atomicWriteJson(filePath, payload);
   }
 
   async bootstrapCollection({ name, filePath, defaultValue }) {
@@ -245,15 +261,172 @@ class PostgresPersistenceAdapter {
   // Transitional compatibility only. Critical endpoints must call writeCollection
   // through JsonFileRepository.writeDurable and await the result.
   enqueueLegacyWrite(name, payload) {
-    const current = this.legacyWriteChains.get(name) || Promise.resolve();
-    const next = current
-      .catch(() => undefined)
-      .then(() => this.writeCollection(name, payload, this.getRevision(name)))
-      .catch((error) => {
-        console.error(`[SmartDesk][DB][legacy] Sync fallita per ${name}:`, error.message);
+    return this.enqueueWrite(name, payload);
+  }
+
+  enqueueWrite(name, payload) {
+    if (!this.databaseUrl) return Promise.resolve({ ok: true, collection: name, skipped: true });
+    const snapshot = JSON.parse(JSON.stringify(payload));
+    if (this.stageWrite(name, snapshot, this.getRevision(name))) {
+      return Promise.resolve({ ok: true, collection: name, staged: true });
+    }
+    const current = this.writeChains.get(name) || Promise.resolve();
+    this.pendingWrites += 1;
+    const operation = current.catch(() => undefined).then(() => (
+      this.writeCollection(name, snapshot, this.getRevision(name))
+    ));
+    const outcome = operation.then(
+      () => {
+        this.failedCollections.delete(name);
+        this.lastWriteAt = new Date().toISOString();
+        return { ok: true, collection: name, skipped: false };
+      },
+      () => {
+        this.failedCollections.add(name);
+        this.lastFailureAt = new Date().toISOString();
+        return { ok: false, collection: name, code: "persistence_write_failed" };
+      }
+    ).then((result) => {
+      this.pendingWrites = Math.max(0, this.pendingWrites - 1);
+      return result;
+    });
+    const chain = outcome.then(() => undefined);
+    this.writeChains.set(name, chain);
+    void chain.then(() => {
+      if (this.writeChains.get(name) === chain) this.writeChains.delete(name);
+    });
+    const context = this.writeTracking.getStore();
+    if (context) {
+      context.outcomes.push(outcome);
+    } else {
+      void outcome.then((result) => {
+        if (!result.ok) console.error(`[SmartDesk][DB] Sync fallita per ${name}: persistence_write_failed`);
       });
-    this.legacyWriteChains.set(name, next);
-    return next;
+    }
+    return outcome;
+  }
+
+  runWithWriteTracking(callback) {
+    let release;
+    const turn = new Promise((resolve) => { release = resolve; });
+    const previous = this.mutationTail;
+    this.mutationTail = previous.catch(() => undefined).then(() => turn);
+    return previous.catch(() => undefined).then(() => {
+      const context = {
+        outcomes: [],
+        stagedWrites: new Map(),
+        rollbacks: new Map(),
+        flushPromise: null,
+        flushSettled: false,
+        released: false,
+        release
+      };
+      return this.writeTracking.run(context, () => callback(context));
+    });
+  }
+
+  releaseTrackedWrites(context = this.writeTracking.getStore()) {
+    if (!context || context.released) return false;
+    if (this.hasTrackedWrites(context) && !context.flushSettled) return false;
+    context.released = true;
+    context.release();
+    return true;
+  }
+
+  stageWrite(name, payload, expectedRevision, onCommit = null) {
+    const context = this.writeTracking.getStore();
+    if (!context || !this.databaseUrl) return false;
+    const existing = context.stagedWrites.get(name);
+    context.stagedWrites.set(name, {
+      name,
+      payload: JSON.parse(JSON.stringify(payload)),
+      expectedRevision: existing?.expectedRevision ?? expectedRevision ?? this.getRevision(name),
+      onCommit: [...(existing?.onCommit || []), ...(typeof onCommit === "function" ? [onCommit] : [])]
+    });
+    return true;
+  }
+
+  trackLocalRollback(key, rollback) {
+    const context = this.writeTracking.getStore();
+    if (!context || typeof rollback !== "function" || context.rollbacks.has(key)) return false;
+    context.rollbacks.set(key, rollback);
+    return true;
+  }
+
+  hasTrackedWrites(context = this.writeTracking.getStore()) {
+    return Boolean(context && (context.outcomes.length || context.stagedWrites.size));
+  }
+
+  flushTrackedWrites(context = this.writeTracking.getStore()) {
+    if (!context) return Promise.resolve([]);
+    if (context.flushPromise) return context.flushPromise;
+    context.flushPromise = (async () => {
+      const results = [];
+      try {
+        let cursor = 0;
+        while (cursor < context.outcomes.length) {
+          const batch = context.outcomes.slice(cursor);
+          cursor += batch.length;
+          results.push(...await Promise.all(batch));
+        }
+        const failures = results.filter((result) => !result.ok);
+        if (failures.length) {
+          const error = new Error("Persistenza dati non confermata.");
+          error.code = "persistence_sync_failed";
+          error.failedCollections = failures.map((result) => result.collection);
+          throw error;
+        }
+        if (context.stagedWrites.size) {
+          this.pendingWrites += context.stagedWrites.size;
+          const committed = await this.writeCollectionsAtomically([...context.stagedWrites.values()]);
+          for (const entry of context.stagedWrites.values()) {
+            const revision = committed.get(entry.name);
+            entry.onCommit.forEach((callback) => callback(revision));
+            this.failedCollections.delete(entry.name);
+            results.push({ ok: true, collection: entry.name, revision });
+          }
+          this.pendingWrites = Math.max(0, this.pendingWrites - context.stagedWrites.size);
+          this.lastWriteAt = new Date().toISOString();
+        }
+        context.rollbacks.clear();
+        return results;
+      } catch (cause) {
+        this.pendingWrites = Math.max(0, this.pendingWrites - context.stagedWrites.size);
+        context.stagedWrites.forEach((_entry, name) => this.failedCollections.add(name));
+        this.lastFailureAt = new Date().toISOString();
+        [...context.rollbacks.values()].reverse().forEach((rollback) => rollback());
+        const error = new Error("Persistenza dati non confermata.");
+        error.code = "persistence_sync_failed";
+        error.failedCollections = [...context.stagedWrites.keys()];
+        error.cause = cause;
+        throw error;
+      }
+    })().finally(() => {
+      context.flushSettled = true;
+    });
+    return context.flushPromise;
+  }
+
+  getPersistenceStatus() {
+    return {
+      configured: Boolean(this.databaseUrl),
+      healthy: this.failedCollections.size === 0,
+      pendingWrites: this.pendingWrites,
+      failedCollections: this.failedCollections.size,
+      lastWriteAt: this.lastWriteAt,
+      lastFailureAt: this.lastFailureAt
+    };
+  }
+
+  async probeHealth() {
+    const status = this.getPersistenceStatus();
+    if (!this.databaseUrl) return { ...status, databaseReachable: false };
+    try {
+      await this.createPool().query("SELECT 1 AS smartdesk_health");
+      return { ...this.getPersistenceStatus(), databaseReachable: true };
+    } catch {
+      return { ...this.getPersistenceStatus(), healthy: false, databaseReachable: false };
+    }
   }
 
   async getDatabaseUsage(options = {}) {

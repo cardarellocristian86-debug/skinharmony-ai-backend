@@ -274,14 +274,14 @@ export function createDataOrchestrator(deps) {
     appointments: async () => safeJsonFetch(`${API_SERVER_URL}/appointments`, "/api/appointments"),
     services: async () => safeJsonFetch(`${API_SERVER_URL}/api/catalog/services`, "/api/catalog/services"),
     staff: async () => safeJsonFetch(`${API_SERVER_URL}/api/catalog/staff`, "/api/catalog/staff"),
-    inventoryItems: async () => safeJsonFetch(`${API_SERVER_URL}/api/inventory/items`, "/api/inventory"),
+    inventoryItems: async () => safeJsonFetch(`${API_SERVER_URL}/api/inventory/items`, "/api/inventory/items"),
     inventoryMovements: async () => safeJsonFetch(`${API_SERVER_URL}/api/inventory/movements`, null).catch(() => []),
     inventoryOverview: async () => safeJsonFetch(`${API_SERVER_URL}/api/inventory/overview`, null).catch(() => null),
     sales: async () => readJson("/api/payments", []),
     history: async () => readJson("/api/history", []),
     assistant: async () => readJson("/api/assistant/brief", null),
-    goldCapabilities: async () => safeJsonFetch(`${API_SERVER_URL}/api/ai-gold/capabilities`, "/api/gold-state/decision").catch(() => null),
-    goldDecisionContext: async () => safeJsonFetch(`${API_SERVER_URL}/api/ai-gold/decision-context`, "/api/gold-state/decision").catch(() => null),
+    goldCapabilities: async () => safeJsonFetch(`${API_SERVER_URL}/api/ai-gold/capabilities`, "/api/ai-gold/capabilities").catch(() => null),
+    goldDecisionContext: async () => safeJsonFetch(`${API_SERVER_URL}/api/ai-gold/decision-context`, "/api/ai-gold/decision-context").catch(() => null),
     controlTenants: async () => {
       const response = await controlFetch("/api/control-room/tenants", {});
       if (response && Array.isArray(response.data)) {
