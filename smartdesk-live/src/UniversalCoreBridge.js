@@ -1,5 +1,7 @@
 "use strict";
 
+const crypto = require("node:crypto");
+
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_PREFLIGHT_TTL_MS = 90_000;
 
@@ -32,8 +34,7 @@ class UniversalCoreBridge {
     this.tenantId = cleanText(options.tenantId || process.env.UNIVERSAL_CORE_TENANT_ID || "smartdesk", "smartdesk", 120);
     this.brandScope = cleanText(options.brandScope || process.env.UNIVERSAL_CORE_BRAND_SCOPE || "skinharmony", "skinharmony", 120);
     this.timeoutMs = cleanNumber(options.timeoutMs || process.env.UNIVERSAL_CORE_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
-    this.lastWorkPreflight = null;
-    this.workPreflightExpiresAt = 0;
+    this.workPreflightCache = new Map();
     this.preflightTtlMs = cleanNumber(options.preflightTtlMs || process.env.SMARTDESK_WORK_PREFLIGHT_TTL_MS, DEFAULT_PREFLIGHT_TTL_MS);
   }
 
@@ -112,10 +113,11 @@ class UniversalCoreBridge {
   }
 
   async branchAnalyze(branch, payload = {}) {
+    const { work_preflight: _ignoredPreflight, _preflight_scope: _ignoredScope, ...safePayload } = payload;
     return this.governedRequest("POST", `/v1/branches/${encodeURIComponent(branch)}/analyze`, {
       tenant_id: this.tenantId,
       brand_scope: this.brandScope,
-      data: payload.data || payload,
+      data: payload.data || safePayload,
       metadata: {
         source: "smartdesk_live",
         ...(payload.metadata || {})
@@ -128,7 +130,7 @@ class UniversalCoreBridge {
     if (!text) {
       return { success: false, code: "nyra_bridge_message_required", message: "Serve una richiesta Smart Desk sintetica." };
     }
-    const response = await this.governedRequest("POST", "/v1/nira/core-bridge", {
+    return this.governedRequest("POST", "/v1/nira/core-bridge", {
       text,
       request: text,
       target_system: "smartdesk",
@@ -142,14 +144,11 @@ class UniversalCoreBridge {
         center_scope: cleanText(payload.centerScope, "", 120),
       },
     }, payload);
-    this.rememberWorkPreflight(response?.work_preflight || response?.core_router?.work_preflight || null);
-    return response;
   }
 
   async governedRequest(method, path, body, payload = {}) {
-    const explicitPreflight = payload.work_preflight || null;
-    if (explicitPreflight) this.rememberWorkPreflight(explicitPreflight);
-    const workPreflight = explicitPreflight || this.getWorkPreflight();
+    const scope = payload._preflight_scope;
+    const workPreflight = await this.establishWorkPreflight({ method, path, body, scope });
     if (!workPreflight) {
       return {
         success: false,
@@ -161,19 +160,86 @@ class UniversalCoreBridge {
     return this.request(method, path, { ...body, work_preflight: workPreflight });
   }
 
-  rememberWorkPreflight(preflight) {
-    if (!preflight || typeof preflight !== "object") return;
-    this.lastWorkPreflight = preflight;
-    this.workPreflightExpiresAt = Date.now() + Math.max(1_000, this.preflightTtlMs);
+  async establishWorkPreflight({ method, path, body, scope } = {}) {
+    const scopeKey = this.preflightScopeKey(scope);
+    if (!scopeKey) return null;
+    const requestSummary = safeNyraText(
+      body?.request || body?.text || body?.domain || `${method || "POST"} ${path || "/"}`,
+      500
+    );
+    const response = await this.request("POST", "/v1/work/preflight", {
+      request: requestSummary || "Smart Desk governed advisory request",
+      target_system: "smartdesk",
+      operation_type: "read_only_advisory",
+      tool_name: "smartdesk_bridge",
+      available_capabilities: ["smartdesk_ui"],
+      metadata: {
+        center_scope: cleanText(scope?.center_id, "", 120),
+        user_scope: cleanText(scope?.user_id, "", 120),
+        work_id: cleanText(scope?.work_id, "", 160) || null
+      }
+    });
+    const preflight = response?.work_preflight || null;
+    if (!this.rememberWorkPreflight(preflight, scope)) return null;
+    return this.getWorkPreflight(scope, { consume: true });
   }
 
-  getWorkPreflight() {
-    if (!this.lastWorkPreflight || Date.now() >= this.workPreflightExpiresAt) {
-      this.lastWorkPreflight = null;
-      this.workPreflightExpiresAt = 0;
+  preflightScopeKey(scope) {
+    const values = scope && typeof scope === "object"
+      ? [scope.center_id, scope.user_id, scope.session_id, scope.work_id].map((item) => cleanText(item, "", 160))
+      : [cleanText(scope, "", 500)];
+    if (!values.some(Boolean)) return "";
+    return `${this.tenantId}:${crypto.createHash("sha256").update(JSON.stringify(values)).digest("hex")}`;
+  }
+
+  rememberWorkPreflight(preflight, scope) {
+    const scopeKey = this.preflightScopeKey(scope);
+    const security = preflight?.security_governance;
+    const gallery = preflight?.tenant_work_gallery;
+    if (
+      !scopeKey
+      || !preflight
+      || typeof preflight !== "object"
+      || preflight.schema_version !== "skinharmony_work_preflight_v1"
+      || preflight.mandatory !== true
+      || cleanText(preflight.tenant_id, "", 120) !== this.tenantId
+      || preflight.operational_surface !== "tenant_work_gallery"
+      || gallery?.tenant_id !== this.tenantId
+      || gallery?.available !== true
+      || preflight.memory_first?.status !== "recalled"
+      || security?.schema_version !== "nyra_core_security_gate_v1"
+      || security?.always_on !== true
+      || security?.fail_closed !== true
+      || security?.core_verdict_required !== true
+    ) return false;
+    const now = Date.now();
+    for (const [key, entry] of this.workPreflightCache.entries()) {
+      if (!entry || now >= entry.expiresAt) this.workPreflightCache.delete(key);
+    }
+    while (this.workPreflightCache.size >= 256) {
+      this.workPreflightCache.delete(this.workPreflightCache.keys().next().value);
+    }
+    this.workPreflightCache.set(scopeKey, {
+      preflight,
+      expiresAt: now + Math.max(1_000, this.preflightTtlMs),
+      consumed: false
+    });
+    return true;
+  }
+
+  getWorkPreflight(scope, options = {}) {
+    const scopeKey = this.preflightScopeKey(scope);
+    if (!scopeKey) return null;
+    const entry = this.workPreflightCache.get(scopeKey);
+    if (!entry || entry.consumed || Date.now() >= entry.expiresAt) {
+      this.workPreflightCache.delete(scopeKey);
       return null;
     }
-    return this.lastWorkPreflight;
+    if (options.consume === true) {
+      entry.consumed = true;
+      this.workPreflightCache.delete(scopeKey);
+    }
+    return entry.preflight;
   }
 
   async request(method, path, body) {
