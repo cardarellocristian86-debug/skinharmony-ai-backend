@@ -25,6 +25,10 @@ import {
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
 import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
 import {
+  createNyraConverseHandler,
+  createNyraConversePreflight,
+} from "./nyra-converse.js";
+import {
   buildNyraNativePlanRequest,
   resolveNyraProjectReleaseBinding,
 } from "./nyra-native-plan-bridge.js";
@@ -792,8 +796,20 @@ function withTenantWorkAcl(identity) {
   return { ...identity, tenant_work_acl: deriveAuthenticatedTenantWorkAcl(identity) };
 }
 
+const nyraConverseHandler = createNyraConverseHandler({
+  preflight: createNyraConversePreflight({
+    workPreflight: (args, identity) => coreHandlers.work_preflight(args, identity),
+    ensureContinuity,
+    resolveContinuityProjectBinding,
+    workContinuityRuntime,
+    hostType,
+  }),
+  interpret: (args, identity) => coreHandlers.nyra_interpret_request(args, identity),
+});
+
 const baseHandlers = {
   ...nyraWorkAutomationHandlers,
+  nyra_converse: nyraConverseHandler,
   web_compatibility_manifest: async (_args, identity) => ({
     structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
     content: [{ type: "text", text: JSON.stringify({ ok: true, manifest: webCompatibilityManifest() }) }],
