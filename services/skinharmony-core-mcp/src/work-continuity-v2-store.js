@@ -1230,7 +1230,7 @@ export function createWorkContinuityV2Store({
         Math.abs(authoritativeUpdatedAtMs - projectedUpdatedAtMs) > 5 * 60_000;
       const stale = classifyStaleWork({ ...work,
         updated_at: authoritativeTimestampValid ? authoritativeUpdatedAt : null,
-        ...activity });
+        ...activity }, now());
       const authoritativeV2Status = authoritativeStatus
         ? mapLegacyStatus(authoritativeStatus)
         : null;

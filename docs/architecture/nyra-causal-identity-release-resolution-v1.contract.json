@@ -1,0 +1,46 @@
+{
+  "contract": {
+    "schema_version": "causal_identity_release_phase_a_contract_v1",
+    "authority": "universal_core",
+    "caller_authoritative_release_fields": [],
+    "lookup_fields": [
+      "tenant_id",
+      "project_id",
+      "project_state_digest",
+      "genesis_intent_id",
+      "intent_revision_id",
+      "work_id",
+      "change_id",
+      "pull_request"
+    ],
+    "release_tuple_schema_version": "causal_release_tuple_resolution_v1",
+    "authoritative_release_fields": [
+      "base_branch",
+      "delivery_branch",
+      "pull_request",
+      "base_commit",
+      "head_commit",
+      "merge_commit",
+      "tree_sha",
+      "diff_digest",
+      "changed_files",
+      "delivery_method",
+      "services",
+      "rollback",
+      "observations"
+    ],
+    "persistence_table": "core_release_tuple_resolutions",
+    "event_type": "RELEASE_TUPLE_RESOLVED",
+    "projection_type": "RELEASE_TUPLE_RESOLUTION",
+    "append_only": true,
+    "tenant_project_scoped": true,
+    "stale_state_blocked": true,
+    "purpose_change_requires_derived_project": true,
+    "phase_b_minimum_capabilities": [
+      "project_identity_spine_read",
+      "release_tuple_resolve",
+      "release_tuple_read"
+    ]
+  },
+  "handoff_digest": "ec112671db4b200b2c74f182e2ed75436a5112f9fe2f8204908bcd795e49afb9"
+}
