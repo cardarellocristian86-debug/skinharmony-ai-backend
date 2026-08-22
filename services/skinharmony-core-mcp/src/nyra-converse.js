@@ -186,6 +186,10 @@ function requireBoundPreflight(result, identity, args) {
   );
 
   return Object.freeze({
+    // This is an internal, server-issued contract. It is deliberately kept
+    // outside the public conversation response and never accepted from tool
+    // callers, but must accompany the trusted MCP-to-Core bridge request.
+    serverIssuedWorkPreflight: envelope,
     work: Object.freeze({
       preflight_bound: true,
       work_bound: Boolean(workId),
@@ -402,6 +406,7 @@ export function createNyraConverseHandler({ preflight, interpret } = {}) {
       message,
       session_id: sessionId,
       ...(boundedPreflight.work.project_id ? { project_id: boundedPreflight.work.project_id } : {}),
+      work_preflight: boundedPreflight.serverIssuedWorkPreflight,
       response_mode: "fast",
       available_capabilities: ["nyra_converse", "skinharmony_core_mcp"],
     }, identity);

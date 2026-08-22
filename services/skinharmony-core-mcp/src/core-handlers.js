@@ -3855,6 +3855,7 @@ export function createCoreHandlers(config, options = {}) {
         ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
         ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
         ...(sharedContext ? { memory_context: sharedContext } : {}),
+        ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
         tenant_id: identity.tenantId
         }
       });
