@@ -6,6 +6,20 @@ import { createNyraWorkAutomationCoordinator } from "../src/nyraWorkAutomationCo
 import { createNyraWorkAutomationReceiptService } from "../src/nyraWorkAutomationReceipt.js";
 import { createNyraWorkAutomationRuntime } from "../src/nyraWorkAutomationRuntime.js";
 function withDigest(value, field = "readback_digest") { return { ...value, [field]: nyraDigest(value) }; }
+function pinnedChallenges(policy, record, commit) {
+  const unsigned = {
+    schema_version: "nyra_criterion_evidence_challenges_v1",
+    phase: "readiness",
+    tenant_id: record.tenant_id,
+    work_id: record.work_id,
+    intent_anchor_digest: record.intent_anchor_digest,
+    policy_digest: policy.receipt_digest,
+    criterion_policy: structuredClone(policy),
+    commit,
+    criteria: policy.criteria.map(({ criterion_id, criterion_digest }) => ({ criterion_id, criterion_digest })),
+  };
+  return { ...unsigned, challenge_digest: nyraDigest(unsigned) };
+}
 
 test("coordinator derives the task objective from the immutable intent", async () => {
   const objective = "Governed objective"; const digest = "a".repeat(64); const sha = "b".repeat(40);
@@ -48,6 +62,7 @@ test("readiness and final acceptance require the exact non-empty server criterio
   const receipts = createNyraWorkAutomationReceiptService({ secret: "s".repeat(64) });
   const policy = receipts.criterionPolicy({ tenant_id: "t", work_id: "w", intent_anchor_digest: digest, criteria: [{ criterion_id: "required", criterion_digest: digest }, { criterion_id: "also-required", criterion_digest: "c".repeat(64) }] });
   const record = { tenant_id: "t", work_id: "w", intent_anchor_digest: digest, repository: "owner/repo", artifacts: { commit_attestation: { commit: head }, ci_attestation: { receipt_digest: digest }, service_observations: { schema_version: "nyra_service_observations_v1", live_commit: head } } };
+  record.artifacts.criterion_readiness_challenges = pinnedChallenges(policy, record, head);
   const runtime = { create: async () => ({}), read: async () => record, transition: async () => assert.fail("transition must not be reached") };
   const coordinator = createNyraWorkAutomationCoordinator({ runtime, receipts, readback: { commit: async () => ({}) }, criterionPolicyResolver: async () => policy });
   await assert.rejects(coordinator.recordReadiness({ tenant_id: "t", work_id: "w" }), /criterion_readiness_issuer_unavailable/);
@@ -60,12 +75,12 @@ test("readiness and final acceptance require the exact non-empty server criterio
 
 test("push, Core Join and merge reject near-miss authoritative bindings", async () => {
   const digest = "a".repeat(64); const head = "b".repeat(40);
-  const record = { tenant_id: "t", work_id: "w", intent_anchor_digest: digest, repository: "owner/repo", delivery_branch: "agent/work", artifacts: { commit_attestation: { commit: head }, criterion_readiness: { receipt_digest: digest }, builder_report: { receipt_digest: digest } } };
+  const record = { tenant_id: "t", work_id: "w", intent_anchor_digest: digest, repository: "owner/repo", delivery_branch: "agent/work", active_builder: "builder", artifacts: { commit_attestation: { commit: head }, criterion_readiness: { receipt_digest: digest }, builder_report: { receipt_digest: digest } } };
   const runtime = { create: async () => ({}), read: async () => record, transition: async () => assert.fail("transition must not be reached") };
   const common = { runtime, receipts: createNyraWorkAutomationReceiptService({ secret: "s".repeat(64) }), readback: { commit: async () => ({}) } };
   const push = createNyraWorkAutomationCoordinator({ ...common, actionReceiptVerifier: async (_receipt, expected) => ({ schema_version: "host_native_action_completion_receipt_v1", ...expected, branch: "agent/other", receipt_digest: digest }) });
   await assert.rejects(push.recordPush({ tenant_id: "t", work_id: "w", session_fingerprint: "session", action_receipt: {} }), /action_receipt_invalid/);
-  const join = createNyraWorkAutomationCoordinator({ ...common, coreJoinVerifier: async (_receipt, expected) => ({ schema_version: "host_native_core_join_verdict_v1", ...expected, head_commit: "c".repeat(40), trusted: true, allowed: true, verdict_digest: digest }) });
+  const join = createNyraWorkAutomationCoordinator({ ...common, coreJoinVerifier: async (_receipt, expected) => ({ schema_version: "host_native_core_join_verdict_v1", trusted: true, allowed: true, verdict_digest: digest, compatibility_receipt: common.receipts.coreJoinCompatibility({ ...expected, head_commit: "c".repeat(40), native_builder_report_digest: "d".repeat(64), native_evaluation_digest: "e".repeat(64) }) }) });
   await assert.rejects(join.recordCoreJoin({ tenant_id: "t", work_id: "w", core_join: {} }), /core_join_required/);
   const merge = createNyraWorkAutomationCoordinator({ ...common, mergeReadbackResolver: async () => withDigest({ schema_version: "nyra_authoritative_merge_readback_v1", repository: "owner/repo", head_commit: "c".repeat(40), merge_commit: head, ticket_finalized: true, authorization_digest: digest }) });
   await assert.rejects(merge.recordMerge({ tenant_id: "t", work_id: "w" }), /merge_readback_invalid/);

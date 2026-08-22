@@ -2,12 +2,13 @@ import { nyraDigest } from "../../shared/nyra-work-automation-receipts.js";
 import { assertNyraAutomationPaths } from "./nyraWorkAutomationRuntime.js";
 
 const DIGEST = /^[a-f0-9]{64}$/;
+const PINNED_CRITERION_POLICY_MAX_AGE_MS = 12 * 60 * 60_000;
 
 function fail(code) { throw new Error(code); }
 function requireMethod(value, method, code) { if (typeof value?.[method] !== "function") fail(code); }
 function selfDigest(value, field) { return DIGEST.test(String(value?.[field] || "")) && value[field] === nyraDigest({ ...value, [field]: undefined }); }
 function criterionChallenges({ phase, record, policy, commit }) {
-  const unsigned = { schema_version: "nyra_criterion_evidence_challenges_v1", phase, tenant_id: record.tenant_id, work_id: record.work_id, intent_anchor_digest: record.intent_anchor_digest, policy_digest: policy.receipt_digest, commit, criteria: policy.criteria.map(({ criterion_id, criterion_digest }) => ({ criterion_id, criterion_digest })) };
+  const unsigned = { schema_version: "nyra_criterion_evidence_challenges_v1", phase, tenant_id: record.tenant_id, work_id: record.work_id, intent_anchor_digest: record.intent_anchor_digest, policy_digest: policy.receipt_digest, criterion_policy: structuredClone(policy), commit, criteria: policy.criteria.map(({ criterion_id, criterion_digest }) => ({ criterion_id, criterion_digest })) };
   return { ...unsigned, challenge_digest: nyraDigest(unsigned) };
 }
 
@@ -67,6 +68,102 @@ export function createNyraWorkAutomationAuthoritativeIssuers({ receipts, hostNat
   });
 }
 
+export function createNyraWorkAutomationCoreJoinVerifier({
+  receipts,
+  hostNativeGovernance,
+  hostNativeDigest,
+  resolveCoreJoin,
+} = {}) {
+  requireMethod(receipts, "coreJoinCompatibility", "nyra_core_join_receipts_unavailable");
+  requireMethod(hostNativeGovernance, "verifyCoreJoinVerdict", "nyra_core_join_governance_unavailable");
+  if (typeof hostNativeDigest !== "function") fail("nyra_core_join_digest_unavailable");
+  if (typeof resolveCoreJoin !== "function") fail("nyra_core_join_resolver_unavailable");
+  return async (claim, expected) => resolveCoreJoin(
+    expected.tenant_id,
+    expected.work_id,
+    claim?.verdict_id,
+    async (record) => {
+      const nativeClaim = record?.claim;
+      const verdict = record?.verdict;
+      const claimBuilderBindings = Array.isArray(nativeClaim?.closure_attestation?.report_bindings)
+        ? nativeClaim.closure_attestation.report_bindings.filter((binding) => binding?.task_kind === "builder")
+        : [];
+      const verdictBuilderBindings = Array.isArray(verdict?.closure_attestation?.report_bindings)
+        ? verdict.closure_attestation.report_bindings.filter((binding) => binding?.task_kind === "builder")
+        : [];
+      const builderBinding = claimBuilderBindings[0];
+      const verdictBuilderBinding = verdictBuilderBindings[0];
+      const coherentSchemas = (
+        nativeClaim?.schema_version === "host_native_core_join_claim_v1" &&
+        verdict?.schema_version === "host_native_core_join_v1"
+      ) || (
+        nativeClaim?.schema_version === "host_native_core_join_claim_v2" &&
+        verdict?.schema_version === "host_native_core_join_v2"
+      );
+      if (
+        record?.schema_version !== "host_native_core_join_record_v1" ||
+        record?.state !== "active" ||
+        record?.uses !== 0 ||
+        record?.tenant_id !== expected.tenant_id ||
+        record?.verdict_id !== claim?.verdict_id ||
+        verdict?.verdict_id !== record?.verdict_id ||
+        !hostNativeGovernance.verifyCoreJoinVerdict(record) ||
+        !coherentSchemas ||
+        record?.claim_digest !== hostNativeDigest(nativeClaim) ||
+        verdict?.claim_digest !== record?.claim_digest ||
+        verdict?.authority !== "universal_core" ||
+        verdict?.allowed !== true ||
+        nativeClaim?.provider_execution !== false ||
+        verdict?.provider_execution !== false ||
+        nativeClaim?.tenant_id !== expected.tenant_id ||
+        verdict?.tenant_id !== expected.tenant_id ||
+        nativeClaim?.work_id !== expected.work_id ||
+        verdict?.work_id !== expected.work_id ||
+        nativeClaim?.intent_anchor_digest !== expected.intent_anchor_digest ||
+        verdict?.intent_anchor_digest !== expected.intent_anchor_digest ||
+        nativeClaim?.repository !== expected.repository ||
+        verdict?.repository !== expected.repository ||
+        nativeClaim?.checks?.commit !== expected.head_commit ||
+        verdict?.checks?.commit !== expected.head_commit ||
+        nativeClaim?.closure_attestation?.schema_version !== "host_native_closure_attestation_v1" ||
+        verdict?.closure_attestation?.schema_version !== "host_native_closure_attestation_v1" ||
+        nativeClaim?.closure_attestation?.provider_execution !== false ||
+        verdict?.closure_attestation?.provider_execution !== false ||
+        nativeClaim?.closure_attestation?.target_commit !== expected.head_commit ||
+        verdict?.closure_attestation?.target_commit !== expected.head_commit ||
+        claimBuilderBindings.length !== 1 ||
+        verdictBuilderBindings.length !== 1 ||
+        nativeClaim?.builder_report?.agent_id !== expected.builder_agent_id ||
+        verdict?.builder_report?.agent_id !== expected.builder_agent_id ||
+        nativeClaim?.builder_report?.target_commit !== expected.head_commit ||
+        verdict?.builder_report?.target_commit !== expected.head_commit ||
+        builderBinding?.agent_id !== expected.builder_agent_id ||
+        verdictBuilderBinding?.agent_id !== expected.builder_agent_id ||
+        !DIGEST.test(String(nativeClaim?.builder_report?.report_digest || "")) ||
+        builderBinding?.report_digest !== nativeClaim?.builder_report?.report_digest ||
+        verdict?.builder_report?.report_digest !== nativeClaim?.builder_report?.report_digest ||
+        verdictBuilderBinding?.report_digest !== nativeClaim?.builder_report?.report_digest ||
+        !DIGEST.test(String(nativeClaim?.evaluation_digest || "")) ||
+        verdict?.evaluation_digest !== nativeClaim?.evaluation_digest
+      ) fail("nyra_core_join_binding_mismatch");
+      const compatibilityReceipt = receipts.coreJoinCompatibility({
+        ...expected,
+        native_builder_report_digest: builderBinding.report_digest,
+        native_evaluation_digest: record.claim.evaluation_digest,
+      });
+      return {
+        schema_version: "host_native_core_join_verdict_v1",
+        tenant_id: expected.tenant_id,
+        work_id: expected.work_id,
+        trusted: true,
+        allowed: true,
+        verdict_digest: record.claim_digest,
+        compatibility_receipt: compatibilityReceipt,
+      };
+    },
+  );
+}
+
 export function createNyraWorkAutomationCoordinator({
   runtime, receipts, readback,
   criterionPolicyResolver = null,
@@ -84,6 +181,7 @@ export function createNyraWorkAutomationCoordinator({
 } = {}) {
   requireMethod(runtime, "create", "nyra_coordinator_runtime_unavailable");
   requireMethod(receipts, "commitAttestation", "nyra_coordinator_receipts_unavailable");
+  requireMethod(receipts, "coreJoinCompatibility", "nyra_coordinator_receipts_unavailable");
   requireMethod(readback, "commit", "nyra_coordinator_readback_unavailable");
   async function current(input, privateState = true) {
     return runtime.read({ tenant_id: input.tenant_id, work_id: input.work_id, includePrivate: privateState });
@@ -91,6 +189,36 @@ export function createNyraWorkAutomationCoordinator({
   function assertBuilder(record, input) {
     const binding = record.artifacts?.builder_binding;
     if (!binding || record.active_builder !== input.builder_agent_id || binding.builder_agent_id !== input.builder_agent_id || binding.session_fingerprint !== input.session_fingerprint || Date.parse(binding.expires_at || "") <= Date.now()) fail("nyra_coordinator_builder_mismatch");
+  }
+  function pinnedCriterionPolicy(record) {
+    const challenges = record.artifacts?.criterion_readiness_challenges;
+    const policy = challenges?.criterion_policy;
+    if (
+      challenges?.schema_version !== "nyra_criterion_evidence_challenges_v1" ||
+      challenges.phase !== "readiness" ||
+      !selfDigest(challenges, "challenge_digest") ||
+      !policy ||
+      policy.receipt_digest !== challenges.policy_digest
+    ) fail("nyra_coordinator_criterion_policy_not_pinned");
+    const signed = receipts.verify(policy, {
+      expectedSchemaVersion: "nyra_criterion_proof_policy_v1",
+      expected: {
+        tenant_id: record.tenant_id,
+        work_id: record.work_id,
+        intent_anchor_digest: record.intent_anchor_digest,
+      },
+      // The policy was fresh and signature-verified before it was placed in
+      // the append-only automation chain. Later stages verify those exact
+      // bytes instead of asking the resolver to mint a time-varying receipt,
+      // but the pin remains bounded to one maximum delegation window.
+      maximumAgeMs: PINNED_CRITERION_POLICY_MAX_AGE_MS,
+    });
+    if (
+      signed.server_owned !== true ||
+      signed.wildcard_allowed !== false ||
+      JSON.stringify(signed.criteria).includes("*")
+    ) fail("nyra_coordinator_criterion_policy_invalid");
+    return signed;
   }
   return Object.freeze({
     async plan(input) {
@@ -167,12 +295,9 @@ export function createNyraWorkAutomationCoordinator({
       return runtime.transition({ ...input, expected_state: "VERIFIER_PENDING", next_state: "READINESS_PENDING", actor_id: input.verifier_agent_id, evidence_digest: challenges.challenge_digest, artifact_name: "criterion_readiness_challenges", artifact: challenges });
     },
     async recordReadiness(input) {
-      if (typeof criterionPolicyResolver !== "function") fail("nyra_coordinator_criterion_policy_unavailable");
       if (typeof criterionReadinessIssuer !== "function") fail("nyra_coordinator_criterion_readiness_issuer_unavailable");
       const record = await current(input);
-      const policy = await criterionPolicyResolver({ tenant_id: input.tenant_id, work_id: input.work_id, intent_anchor_digest: record.intent_anchor_digest });
-      const signedPolicy = receipts.verify(policy, { expectedSchemaVersion: "nyra_criterion_proof_policy_v1", expected: { tenant_id: input.tenant_id, work_id: input.work_id, intent_anchor_digest: record.intent_anchor_digest } });
-      if (signedPolicy.server_owned !== true || signedPolicy.wildcard_allowed !== false || JSON.stringify(signedPolicy.criteria).includes("*")) fail("nyra_coordinator_criterion_policy_invalid");
+      const signedPolicy = pinnedCriterionPolicy(record);
       const issued = await criterionReadinessIssuer({ record, policy: signedPolicy, evidence: input.criterion_evidence });
       const proofs = receipts.verify(issued, { expectedSchemaVersion: "nyra_ci_criterion_proofs_v1", expected: { tenant_id: input.tenant_id, work_id: input.work_id, intent_anchor_digest: record.intent_anchor_digest, policy_digest: signedPolicy.receipt_digest, head_commit: record.artifacts?.commit_attestation?.commit } });
       if (proofs.final === true || proofs.readiness_only !== true) fail("nyra_coordinator_readiness_not_final");
@@ -187,9 +312,25 @@ export function createNyraWorkAutomationCoordinator({
       const commit = record.artifacts?.commit_attestation;
       const readiness = record.artifacts?.criterion_readiness;
       const report = record.artifacts?.builder_report;
-      const expected = { tenant_id: record.tenant_id, work_id: record.work_id, intent_anchor_digest: record.intent_anchor_digest, repository: record.repository, head_commit: commit?.commit, builder_report_digest: report?.receipt_digest, readiness_digest: readiness?.receipt_digest };
+      const expected = { tenant_id: record.tenant_id, work_id: record.work_id, intent_anchor_digest: record.intent_anchor_digest, repository: record.repository, head_commit: commit?.commit, builder_agent_id: record.active_builder, automation_builder_report_digest: report?.receipt_digest, automation_readiness_digest: readiness?.receipt_digest };
       const verified = await coreJoinVerifier(input.core_join, expected);
-      if (verified?.schema_version !== "host_native_core_join_verdict_v1" || verified.allowed !== true || verified.trusted !== true || Object.entries(expected).some(([key, value]) => verified[key] !== value) || !DIGEST.test(String(verified.verdict_digest || ""))) fail("nyra_coordinator_core_join_required");
+      let compatibility;
+      try {
+        compatibility = receipts.verify(verified?.compatibility_receipt, {
+          expectedSchemaVersion: "nyra_host_native_core_join_compatibility_v1",
+          expected,
+        });
+      } catch {
+        fail("nyra_coordinator_core_join_required");
+      }
+      if (
+        verified?.schema_version !== "host_native_core_join_verdict_v1" ||
+        verified.allowed !== true || verified.trusted !== true ||
+        !DIGEST.test(String(verified.verdict_digest || "")) ||
+        !DIGEST.test(String(compatibility.native_builder_report_digest || "")) ||
+        !DIGEST.test(String(compatibility.native_evaluation_digest || "")) ||
+        compatibility.provider_execution !== false
+      ) fail("nyra_coordinator_core_join_required");
       return runtime.transition({ ...input, expected_state: "CORE_JOIN_PENDING", next_state: "MERGE_PENDING", evidence_digest: verified.verdict_digest, artifact_name: "core_join", artifact: verified });
     },
     async recordMerge(input) {
@@ -222,8 +363,7 @@ export function createNyraWorkAutomationCoordinator({
       const expectedSet = (deployment.services || []).map((service) => `${service.service_id}\u0000${service.environment}`).sort();
       const observedSet = services.map((service) => `${service?.service_id}\u0000${service?.environment}`).sort();
       if (!services.length || observedSet.length !== expectedSet.length || observedSet.some((value, index) => value !== expectedSet[index]) || services.some((service) => service?.schema_version !== "nyra_authoritative_service_observation_v1" || service?.health_status !== "healthy" || service?.live_commit !== deployment.live_commit || !selfDigest(service, "readback_digest"))) fail("nyra_coordinator_live_services_not_verified");
-      if (typeof criterionPolicyResolver !== "function") fail("nyra_coordinator_criterion_policy_unavailable");
-      const policy = receipts.verify(await criterionPolicyResolver({ tenant_id: record.tenant_id, work_id: record.work_id, intent_anchor_digest: record.intent_anchor_digest }), { expectedSchemaVersion: "nyra_criterion_proof_policy_v1", expected: { tenant_id: record.tenant_id, work_id: record.work_id, intent_anchor_digest: record.intent_anchor_digest } });
+      const policy = pinnedCriterionPolicy(record);
       const challenges = criterionChallenges({ phase: "final", record, policy, commit: deployment.live_commit });
       const unsignedObservations = { schema_version: "nyra_service_observations_v1", live_commit: deployment.live_commit, deployment_readback_digest: deployment.readback_digest, services, criterion_challenges: challenges };
       const observations = { ...unsignedObservations, readback_digest: nyraDigest(unsignedObservations) };
@@ -234,8 +374,7 @@ export function createNyraWorkAutomationCoordinator({
       const observations = record.artifacts?.service_observations;
       if (observations?.schema_version !== "nyra_service_observations_v1" || !/^[a-f0-9]{40}$/.test(String(observations.live_commit || ""))) fail("nyra_coordinator_service_observations_required");
       if (input.live_commit && input.live_commit !== observations.live_commit) fail("nyra_coordinator_final_acceptance_commit_mismatch");
-      if (typeof criterionPolicyResolver !== "function") fail("nyra_coordinator_criterion_policy_unavailable");
-      const policy = receipts.verify(await criterionPolicyResolver({ tenant_id: input.tenant_id, work_id: input.work_id, intent_anchor_digest: record.intent_anchor_digest }), { expectedSchemaVersion: "nyra_criterion_proof_policy_v1", expected: { tenant_id: input.tenant_id, work_id: input.work_id, intent_anchor_digest: record.intent_anchor_digest } });
+      const policy = pinnedCriterionPolicy(record);
       const expectedCriteria = policy.criteria.map(({ criterion_id, criterion_digest }) => `${criterion_id}\u0000${criterion_digest}`).sort();
       const actualCriteria = (input.criteria || []).map(({ criterion_id, criterion_digest }) => `${criterion_id}\u0000${criterion_digest}`).sort();
       if (!expectedCriteria.length || actualCriteria.length !== expectedCriteria.length || actualCriteria.some((value, index) => value !== expectedCriteria[index]) || typeof finalCriterionIssuer !== "function") fail("nyra_coordinator_final_acceptance_policy_mismatch");
