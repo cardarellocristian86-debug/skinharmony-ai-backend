@@ -221,7 +221,7 @@ import { createPostgresGenericWorkCoreJoinStore } from "./genericWorkCoreJoinSto
 import { createPostgresBootstrapAuthorityStore } from "./bootstrapAuthorityPostgresStore.js";
 import { createBootstrapDeadlockVerdictStore } from "./bootstrapDeadlockVerdictStore.js";
 import { createBootstrapRequiredChecksReadback } from "./bootstrapRequiredChecksReadback.js";
-import { createNyraWorkAutomationAuthoritativeIssuers, createNyraWorkAutomationCoordinator } from "./nyraWorkAutomationCoordinator.js";
+import { createNyraWorkAutomationAuthoritativeIssuers, createNyraWorkAutomationCoordinator, createNyraWorkAutomationCoreJoinVerifier } from "./nyraWorkAutomationCoordinator.js";
 import { createNyraWorkAutomationReadback } from "./nyraWorkAutomationReadback.js";
 import { createNyraWorkAutomationReceiptService } from "./nyraWorkAutomationReceipt.js";
 import {
@@ -6580,14 +6580,15 @@ export function createUniversalCoreService(options = {}) {
           if (action.kind !== expected.action_kind || ticket.ticket.repository !== expected.repository || action.branch !== expected.branch || authorization.target_commit !== expected.commit || authorization.host_session_fingerprint !== expected.session_fingerprint) throw new Error("nyra_push_ticket_binding_mismatch");
           return { schema_version: "host_native_action_completion_receipt_v1", ...expected, receipt_digest: authorization.authorization_digest };
         });
-        const coreJoinVerifier = options.nyraWorkAutomationCoreJoinVerifier || (async (claim, expected) => {
-          if (!hostNativeGovernance) throw new Error("nyra_core_join_governance_unavailable");
-          return withEnforcedSoftwareCoreJoin(expected.tenant_id, expected.work_id, claim?.verdict_id, async (record) => {
-            const builderBinding = record.claim.closure_attestation?.report_bindings?.find((binding) => binding.task_kind === "builder");
-            if (!hostNativeGovernance.verifyCoreJoinVerdict(record) || record.claim.work_id !== expected.work_id || record.claim.intent_anchor_digest !== expected.intent_anchor_digest || record.claim.repository !== expected.repository || record.claim.checks?.commit !== expected.head_commit || record.claim.evaluation_digest !== expected.readiness_digest || builderBinding?.report_digest !== expected.builder_report_digest) throw new Error("nyra_core_join_binding_mismatch");
-            return { schema_version: "host_native_core_join_verdict_v1", ...expected, trusted: true, allowed: true, verdict_digest: record.claim_digest };
+        const coreJoinVerifier = options.nyraWorkAutomationCoreJoinVerifier ||
+          createNyraWorkAutomationCoreJoinVerifier({
+            receipts: nyraReceipts,
+            hostNativeGovernance,
+            hostNativeDigest,
+            // The enforced resolver is initialized later in service setup;
+            // defer its lookup until the first Core Join verification.
+            resolveCoreJoin: (...args) => withEnforcedSoftwareCoreJoin(...args),
           });
-        });
         const mergeReadbackResolver = options.nyraWorkAutomationMergeReadbackResolver || (async (input) => {
           const { ticket, authorization } = await finalizedTicket({ tenant_id: input.tenant_id, ticket_id: input.ticket_id, host_session_fingerprint: input.host_session_fingerprint });
           if (ticket.ticket.action.kind !== "github.merge" || authorization.github_readback?.merged !== true) throw new Error("nyra_merge_ticket_invalid");
