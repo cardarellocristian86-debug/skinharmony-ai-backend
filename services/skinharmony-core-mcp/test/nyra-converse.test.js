@@ -13,6 +13,7 @@ import {
   MAX_MESSAGE_LENGTH,
 } from "../src/nyra-converse.js";
 import { resolveContinuityProjectBinding } from "../src/continuity-project-binding.js";
+import { NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 import { TOOLS } from "../src/tool-definitions.js";
 import { buildWorkPreflight } from "../../universal-core-service/src/workPreflight.js";
@@ -222,6 +223,8 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.match(payload.host_response_contract.reply_seed, /^Prossimo passo proposto: Continue the existing Work\./);
   assert.equal(payload.host_response_contract.rendering_policy, "server_next_action_first_v1");
   assert.equal(result.content[0].text, payload.host_response_contract.reply_seed);
+  assert.equal(result._meta.ui.resourceUri, NYRA_DIALOGUE_WIDGET_URI);
+  assert.equal(result._meta["openai/outputTemplate"], NYRA_DIALOGUE_WIDGET_URI);
   assert.equal(result.content[0].text.includes(WORK_ID), false);
   assert.equal(payload.interpretation.core.execution_allowed, false);
   assert.equal(payload.interpretation.core.route, "V0");
@@ -286,6 +289,31 @@ test("binds an existing conversational Work to its persisted canonical project",
   assert.equal(calls.continuity[0][1].work_id, WORK_ID);
   assert.equal(calls.continuity[0][2], "nyra_converse");
   assert.deepEqual(calls.continuity[0][4], { resumeExisting: true });
+});
+
+test("binds direct Nyra conversation to Work project when the host sends a stale project hint", async () => {
+  const calls = { preflight: [], continuity: [] };
+  const authenticatedIdentity = identity();
+  const preflight = createNyraConversePreflight({
+    workPreflight: async (args) => {
+      calls.preflight.push(args);
+      return preflightFixture(authenticatedIdentity.tenantId);
+    },
+    ensureContinuity: async (...args) => calls.continuity.push(args),
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: { readIntent: async () => ({ project_id: "nyra_core" }) },
+    hostType: () => "chatgpt_native",
+  });
+
+  await preflight({
+    message: "Nyra, riprendi il Work",
+    work_id: WORK_ID,
+    project_id: "stale-host-project",
+  }, authenticatedIdentity);
+
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(calls.preflight[0].project_id, "nyra_core");
+  assert.equal(calls.continuity[0][1].project_id, "nyra_core");
 });
 
 test("publishes nyra_converse as a direct compact resume tool without discovery", async () => {

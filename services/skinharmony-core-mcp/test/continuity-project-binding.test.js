@@ -49,6 +49,35 @@ test("preserves an explicit project so the strict Work mismatch check remains au
   assert.equal(binding.continuityArgs, args);
 });
 
+test("direct Nyra conversation prefers the authenticated Work project over a stale client hint", async () => {
+  const args = {
+    work_id: "11111111-1111-4111-8111-111111111111",
+    project_id: "stale-host-project",
+  };
+  const reads = [];
+  const runtime = {
+    readIntent: async (receivedIdentity, receivedArgs) => {
+      reads.push({ receivedIdentity, receivedArgs });
+      return { project_id: "nyra_core" };
+    },
+  };
+
+  const binding = await resolveContinuityProjectBinding(
+    { tenantId: "tenant-a" },
+    args,
+    runtime,
+    { preferPersistedWorkProject: true },
+  );
+
+  assert.deepEqual(reads, [{
+    receivedIdentity: { tenantId: "tenant-a" },
+    receivedArgs: { work_id: "11111111-1111-4111-8111-111111111111" },
+  }]);
+  assert.equal(binding.projectId, "nyra_core");
+  assert.equal(binding.continuityArgs.project_id, "nyra_core");
+  assert.equal(args.project_id, "stale-host-project");
+});
+
 test("propagates tenant-scoped Work lookup denial instead of falling back to repository", async () => {
   const denied = new Error("continuity_intent_anchor_not_found");
   denied.code = "continuity_intent_anchor_not_found";
