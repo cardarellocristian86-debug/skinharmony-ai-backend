@@ -44,6 +44,36 @@ const { AssistantService } = require("../src/AssistantService");
   const snapshot = service.getBusinessSnapshot({}, session);
   assert.notStrictEqual(snapshot.snapshotAvailable, false);
 
+  service.goldStateRepository.create({
+    id: "gold_state:center-selected-a",
+    centerId: "center-selected-a",
+    centerName: "Selected A",
+    eventSeq: 3,
+    components: {},
+    counters: {},
+    dirty: { components: [], snapshots: [], signals: [] },
+    snapshots: { business: { revenueCents: 11100 } },
+    decision: { primaryAction: null, secondaryActions: [], blockedActions: [] }
+  });
+  service.goldStateRepository.create({
+    id: "gold_state:center-selected-b",
+    centerId: "center-selected-b",
+    centerName: "Selected B",
+    eventSeq: 4,
+    components: {},
+    counters: {},
+    dirty: { components: [], snapshots: [], signals: [] },
+    snapshots: { business: { revenueCents: 99900 } },
+    decision: { primaryAction: null, secondaryActions: [], blockedActions: [] }
+  });
+  const selectedCenterOverview = service.getAiOverviewReadModel({
+    ...session,
+    centerId: "center-selected-a",
+    selectedCenterId: "center-selected-b"
+  });
+  assert.strictEqual(selectedCenterOverview.summary.revenueCents, 11100);
+  assert.notStrictEqual(selectedCenterOverview.summary.revenueCents, 99900);
+
   const assistant = new AssistantService(service);
   const support = await assistant.supportChat({ message: "Cosa include il mio piano?" }, session);
   assert.match(String(support.message || ""), /Enterprise/i);

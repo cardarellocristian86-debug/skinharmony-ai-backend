@@ -2012,6 +2012,16 @@ function hashToken(token) {
   return crypto.createHash("sha256").update(String(token || "")).digest("hex");
 }
 
+function boundedIdempotencyKey(value) {
+  const key = String(value || "").trim();
+  if (key.length < 8 || key.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(key)) {
+    const error = new Error("Idempotency-Key mancante o non valido");
+    error.code = "trial_idempotency_key_invalid";
+    throw error;
+  }
+  return key;
+}
+
 function verifyPassword(password, passwordHash) {
   if (!passwordHash || typeof passwordHash !== "string") return false;
   const [scheme, salt, storedHash] = passwordHash.split(":");
@@ -2149,14 +2159,18 @@ function readBooleanEnv(name, fallback = false) {
 }
 
 function getTrialPaymentConfig() {
+  const paymentUrl = String(process.env.NEXI_PAYMENT_URL || process.env.NEXI_CHECKOUT_URL || "");
+  const configured = Boolean(paymentUrl);
   return {
     method: "card_nexi",
     provider: "nexi",
     enabled: true,
-    configured: Boolean(process.env.NEXI_PAYMENT_URL || process.env.NEXI_CHECKOUT_URL),
-    paymentUrl: String(process.env.NEXI_PAYMENT_URL || process.env.NEXI_CHECKOUT_URL || ""),
+    configured,
+    paymentUrl,
     label: "Pagamento con carta Nexi",
-    note: "Dopo la prova puoi attivare Base o Silver con carta Nexi. Gold resta in attivazione guidata."
+    note: configured
+      ? "Il checkout WordPress/WooCommerce usa Nexi per Base o Silver. Gold resta in attivazione guidata."
+      : "Il checkout Nexi non è disponibile in questo runtime. Richiedi l'attivazione assistita tramite il sito o la Suite."
   };
 }
 
@@ -2225,6 +2239,7 @@ class DesktopMirrorService {
     // operator review only; it is never a messaging queue.
     this.clientRecallProfilesRepository = this.createRepository("client_recall_profiles", []);
     this.usersRepository = this.createRepository("users", []);
+    this.commerceReceiptsRepository = this.createRepository("commerce_receipts", []);
     this.salesRepository = this.createRepository("sales", []);
     this.settingsRepository = this.createRepository("settings", defaultSettings);
     this.controlAuditRepository = this.createRepository("control_room_audit", []);
@@ -2236,6 +2251,13 @@ class DesktopMirrorService {
     // from the analytical caches: opening the page must never fan out into
     // Core/Nyra calls or rebuild a tenant's historical state.
     this.goldOverviewReadCache = new Map();
+    // Silver does not own a persisted Gold State event ledger. Keep a bounded
+    // tenant-local revision for its cached read model so HTTP validators can
+    // still prove that the response belongs to the current runtime state.
+    this.silverOverviewEventSeq = new Map();
+    this.silverOverviewReadCache = new Map();
+    this.woocommerceOrderActivations = new Map();
+    this.trialRequestActivations = new Map();
     this.analyticsCache = new Map();
     this.analyticsDirtyBlocks = new Map();
     this.dashboardRefreshLocks = new Set();
@@ -3848,11 +3870,20 @@ class DesktopMirrorService {
     if (!centerId) {
       this.businessSnapshotCache.clear();
       this.goldOverviewReadCache.clear();
+      this.silverOverviewReadCache.clear();
       this.analyticsCache.clear();
       this.analyticsDirtyBlocks.clear();
+      for (const [tenantId, revision] of this.silverOverviewEventSeq.entries()) {
+        this.silverOverviewEventSeq.set(tenantId, Math.max(1, Number(revision || 1)) + 1);
+      }
       return;
     }
     const normalizedCenterId = String(centerId || DEFAULT_CENTER_ID);
+    this.silverOverviewReadCache.delete(normalizedCenterId);
+    this.silverOverviewEventSeq.set(
+      normalizedCenterId,
+      Math.max(1, Number(this.silverOverviewEventSeq.get(normalizedCenterId) || 1)) + 1
+    );
     this.markAnalyticsBlocksStale(normalizedCenterId, dirtyBlocks);
     if (this.shouldInvalidateDashboardForBlocks(dirtyBlocks)) {
       this.invalidateDashboardSnapshotsForCenter(normalizedCenterId, "dependent_data_changed");
@@ -4018,6 +4049,13 @@ class DesktopMirrorService {
     return `\"gold-overview-${tenantDigest}-${Math.max(0, Number(eventSeq || 0))}\"`;
   }
 
+  getAiOverviewEtag(session = null, eventSeq = 0) {
+    const centerId = this.getCenterId(session);
+    const tenantDigest = crypto.createHash("sha256").update(String(centerId || "")).digest("base64url").slice(0, 16);
+    const plan = this.getPlanLevel(session);
+    return `\"ai-overview-${tenantDigest}-${plan}-${Math.max(0, Number(eventSeq || 0))}\"`;
+  }
+
   buildGoldOverviewReadModel(state = {}, session = null) {
     const business = state.snapshots?.business || {};
     const profitability = state.snapshots?.profitability || {};
@@ -4133,6 +4171,280 @@ class DesktopMirrorService {
     const payload = this.buildGoldOverviewReadModel(state, session);
     this.goldOverviewReadCache.set(centerId, { eventSeq, payload });
     return { ...payload, cache: { hit: false, eventSeq } };
+  }
+
+  getAiOverviewReadModel(session = null) {
+    this.assertCanOperate(session);
+    const plan = this.getPlanLevel(session);
+    if (plan === "base") {
+      return {
+        enabled: false,
+        goldEnabled: false,
+        silverCoreEnabled: false,
+        currentPlan: plan,
+        requiredPlan: "silver",
+        sourceLayer: "plan_gate",
+        eventSeq: 0,
+        cache: { hit: false, eventSeq: 0 }
+      };
+    }
+    if (plan === "silver") {
+      const centerId = this.getCenterId(session);
+      const eventSeq = Math.max(1, Number(this.silverOverviewEventSeq.get(centerId) || 1));
+      this.silverOverviewEventSeq.set(centerId, eventSeq);
+      const cached = this.silverOverviewReadCache.get(centerId);
+      const cacheHit = Boolean(cached && cached.eventSeq === eventSeq);
+      const context = cacheHit ? cached.context : this.buildSilverOverviewReadContext(session);
+      if (!cacheHit) this.silverOverviewReadCache.set(centerId, { eventSeq, context });
+      const capabilities = {
+        goldEnabled: false,
+        silverCoreEnabled: true,
+        currentPlan: "silver",
+        version: "silver_core_bounded_read_v1",
+        features: {
+          hasCoreReadOnlyPriorities: true,
+          hasDecisionMatrix: false,
+          hasAutomaticExecution: false
+        },
+        rules: {
+          execution: {
+            requiresOperatorConfirmation: true,
+            automaticExecutionAllowed: false
+          }
+        }
+      };
+      const compatibility = {
+        state: {
+          goldEnabled: false,
+          silverCoreEnabled: true,
+          eventSeq,
+          marketingActions: { actions: [], suggestions: [] }
+        },
+        cockpit: {
+          goldEnabled: false,
+          silverCoreEnabled: true,
+          sourceLayer: "smartdesk_local_silver_snapshot",
+          summary: context.metrics || {},
+          guardrails: { readOnly: true, automaticExecutionAllowed: false }
+        },
+        profitability: { sourceLayer: "overview_projection", summary: {}, readOnly: true },
+        marketingAutopilot: { sourceLayer: "overview_projection", actions: [], readOnly: true },
+        decisionCenter: { ...context, sourceLayer: "overview_projection" }
+      };
+      return {
+        enabled: true,
+        goldEnabled: false,
+        silverCoreEnabled: true,
+        currentPlan: plan,
+        version: "silver_core_overview_v1",
+        sourceLayer: "smartdesk_local_silver_snapshot",
+        generatedAt: context.meta?.generatedAt || nowIso(),
+        eventSeq,
+        summary: {
+          primaryActionLabel: context.primaryAction?.label || "",
+          signalCount: Array.isArray(context.topSignals) ? context.topSignals.length : 0,
+          globalConfidence: Number(context.globalConfidence || 0),
+          systemRisk: Number(context.systemRisk || 0)
+        },
+        capabilities,
+        context,
+        compatibility,
+        provenance: {
+          authority: "smartdesk_local_deterministic",
+          coreVerdict: false,
+          externalCoreCalled: false,
+          boundedReadOnly: true
+        },
+        guardrails: {
+          readOnly: true,
+          automaticExecutionAllowed: false,
+          externalAiCalled: false,
+          operatorConfirmationRequired: true
+        },
+        cache: {
+          hit: cacheHit,
+          eventSeq,
+          ageMs: Number(context.meta?.cacheAgeMs || 0),
+          ttlMs: Number(context.meta?.cacheTtlMs || SNAPSHOT_CACHE_TTL_MS)
+        }
+      };
+    }
+
+    const persisted = this.getGoldOverviewReadModel(session);
+    const decision = persisted.decision || {};
+    const context = {
+      goldEnabled: true,
+      silverCoreEnabled: true,
+      currentPlan: plan,
+      sourceLayer: persisted.sourceLayer,
+      summary: persisted.summary || {},
+      primaryAction: decision.primaryAction || null,
+      secondaryActions: decision.secondaryActions || [],
+      blockedActions: decision.blockedActions || [],
+      topSignals: [decision.primaryAction, ...(decision.secondaryActions || [])].filter(Boolean),
+      globalConfidence: Number(decision.globalConfidence || persisted.summary?.confidence || 0),
+      systemRisk: Number(decision.systemRisk || 0),
+      progressiveIntelligence: persisted.progressive || null,
+      externalAi: {
+        skipped: true,
+        reason: "bounded_overview_read",
+        primary: false
+      }
+    };
+    const marketingSnapshot = persisted.snapshots?.marketing || {};
+    const compatibility = {
+      state: {
+        goldEnabled: true,
+        eventSeq: Number(persisted.eventSeq || 0),
+        updatedAt: persisted.updatedAt || "",
+        sourceLayer: "persisted_gold_state_overview_projection",
+        marketingActions: {
+          ...(marketingSnapshot.summary || {}),
+          actions: Array.isArray(marketingSnapshot.priorityClients) ? marketingSnapshot.priorityClients : [],
+          suggestions: Array.isArray(marketingSnapshot.priorityClients) ? marketingSnapshot.priorityClients : []
+        }
+      },
+      cockpit: {
+        goldEnabled: true,
+        cockpitVersion: "gold_overview_projection_v1",
+        sourceLayer: "persisted_gold_state_overview_projection",
+        summary: persisted.summary || {},
+        decision: persisted.decision || null,
+        guardrails: { readOnly: true, automaticExecutionAllowed: false }
+      },
+      profitability: {
+        ...(persisted.snapshots?.profitability || {}),
+        sourceLayer: "persisted_gold_state_overview_projection",
+        readOnly: true
+      },
+      marketingAutopilot: {
+        sourceLayer: "persisted_gold_state_overview_projection",
+        actions: Array.isArray(marketingSnapshot.priorityClients) ? marketingSnapshot.priorityClients : [],
+        readOnly: true
+      },
+      decisionCenter: {
+        ...context,
+        sourceLayer: "persisted_gold_state_overview_projection"
+      }
+    };
+    return {
+      ...persisted,
+      enabled: true,
+      currentPlan: plan,
+      silverCoreEnabled: true,
+      guardrails: {
+        ...(persisted.guardrails || {}),
+        readOnly: true,
+        automaticExecutionAllowed: false,
+        externalAiCalled: false,
+        operatorConfirmationRequired: true
+      },
+      capabilities: {
+        goldEnabled: true,
+        silverCoreEnabled: true,
+        currentPlan: plan,
+        version: "gold_overview_capabilities_v1",
+        engineName: "Persisted Gold State",
+        features: {
+          hasDecisionMatrix: Boolean(persisted.decision),
+          hasCoreSignals: Boolean(persisted.decision),
+          hasCoreReadOnlyPriorities: true
+        },
+        rules: {
+          execution: {
+            requiresOperatorConfirmation: true
+          }
+        }
+      },
+      context,
+      compatibility
+    };
+  }
+
+  buildSilverOverviewReadContext(session = null) {
+    const clients = this.filterByCenter(this.clientsRepository.list(), session);
+    const appointments = this.filterByCenter(this.appointmentsRepository.list(), session);
+    const payments = this.filterByCenter(this.paymentsRepository.list(), session);
+    const services = this.filterByCenter(this.servicesRepository.list(), session);
+    const clientsMissingContact = clients.filter((item) => !this.goldClientHasContact(item)).length;
+    const unlinkedPayments = payments.filter((item) => this.goldPaymentIsUnlinked(item)).length;
+    const servicesMissingCosts = services.filter((item) => !this.goldServiceHasCost(item)).length;
+    const today = nowIso().slice(0, 10);
+    const todayAppointments = appointments.filter((item) => String(item.date || item.startAt || "").slice(0, 10) === today).length;
+    const candidates = [
+      clientsMissingContact > 0 ? {
+        domain: "clients",
+        label: `${clientsMissingContact} clienti senza contatto verificato`,
+        suggestedAction: "verifica i dati cliente prima dei richiami",
+        priority: 0.78,
+        confidence: 0.96,
+        risk: 0.32,
+        action: "SUGGEST"
+      } : null,
+      unlinkedPayments > 0 ? {
+        domain: "cash",
+        label: `${unlinkedPayments} pagamenti da collegare`,
+        suggestedAction: "verifica i collegamenti in cassa",
+        priority: 0.86,
+        confidence: 0.98,
+        risk: 0.48,
+        action: "SUGGEST"
+      } : null,
+      servicesMissingCosts > 0 ? {
+        domain: "profitability",
+        label: `${servicesMissingCosts} servizi senza costo verificato`,
+        suggestedAction: "completa i costi prima di leggere i margini",
+        priority: 0.72,
+        confidence: 0.94,
+        risk: 0.4,
+        action: "SUGGEST"
+      } : null,
+      {
+        domain: "agenda",
+        label: todayAppointments > 0 ? `${todayAppointments} appuntamenti oggi` : "Nessun appuntamento oggi",
+        suggestedAction: todayAppointments > 0 ? "verifica agenda e conferme" : "controlla agenda e disponibilità",
+        priority: todayAppointments > 0 ? 0.62 : 0.38,
+        confidence: 0.99,
+        risk: 0.12,
+        action: "SUGGEST"
+      }
+    ].filter(Boolean).sort((left, right) => Number(right.priority || 0) - Number(left.priority || 0));
+    const primaryAction = candidates[0] || null;
+    return {
+      goldEnabled: false,
+      silverCoreEnabled: true,
+      currentPlan: "silver",
+      source: "smartdesk_local_silver_runtime",
+      sourceLayer: "smartdesk_local_silver_snapshot",
+      primaryAction,
+      secondaryActions: candidates.slice(1, 4),
+      blockedActions: [],
+      topSignals: candidates.slice(0, 5),
+      globalConfidence: Number(primaryAction?.confidence || 0),
+      systemRisk: Math.max(...candidates.map((item) => Number(item.risk || 0)), 0),
+      metrics: {
+        clients: clients.length,
+        appointments: appointments.length,
+        payments: payments.length,
+        services: services.length,
+        clientsMissingContact,
+        unlinkedPayments,
+        servicesMissingCosts,
+        todayAppointments
+      },
+      externalAi: {
+        skipped: true,
+        reason: "bounded_local_read",
+        primary: false
+      },
+      meta: {
+        sourceLayer: "smartdesk_local_silver_snapshot",
+        authority: "smartdesk_local_deterministic",
+        coreVerdict: false,
+        generatedAt: nowIso(),
+        cacheTtlMs: SNAPSHOT_CACHE_TTL_MS
+      }
+    };
   }
 
   bootstrapGoldStateFromRepositories(baseState = {}, session = null) {
@@ -7238,6 +7550,7 @@ class DesktopMirrorService {
       accessState: normalized.accessState,
       trialStartsAt: normalized.trialStartsAt || "",
       trialEndsAt: normalized.trialEndsAt || "",
+      trialDays: Number(normalized.trialDays || DEFAULT_TRIAL_DAYS),
       trialRemainingDays: normalized.trialRemainingDays || 0,
       businessModel: normalized.businessModel || "",
       ownerName: normalized.ownerName || "",
@@ -7320,12 +7633,22 @@ class DesktopMirrorService {
   }
 
   getTrialPublicConfig() {
+    const payment = getTrialPaymentConfig();
     return {
       trialDays: DEFAULT_TRIAL_DAYS,
       trialPlan: "silver",
       emailVerificationEnabled: isTrialEmailVerificationConfigured(),
       verificationWindowMinutes: DEFAULT_TRIAL_VERIFICATION_MINUTES,
-      payment: getTrialPaymentConfig()
+      acquisitionAuthority: "wordpress_site_suite",
+      checkoutAuthority: "wordpress_woocommerce_nexi",
+      renderCapturesPayments: false,
+      payment: {
+        ...payment,
+        checkoutAvailable: Boolean(payment.configured && payment.paymentUrl),
+        nextAction: payment.configured && payment.paymentUrl
+          ? "open_wordpress_nexi_checkout"
+          : "request_suite_assisted_activation"
+      }
     };
   }
 
@@ -8019,8 +8342,12 @@ class DesktopMirrorService {
       accountStatus: String(payload.accountStatus || (planType === "active" ? "active" : "trial")),
       emailVerifiedAt: String(payload.emailVerifiedAt || ""),
       emailVerificationCode: String(payload.emailVerificationCode || ""),
+      emailVerificationTokenHash: String(payload.emailVerificationTokenHash || ""),
       emailVerificationExpiresAt: String(payload.emailVerificationExpiresAt || ""),
       emailVerificationSentAt: String(payload.emailVerificationSentAt || ""),
+      trialReceiptId: String(payload.trialReceiptId || ""),
+      trialIdempotencyDigest: String(payload.trialIdempotencyDigest || ""),
+      trialDeliveryBindingDigest: String(payload.trialDeliveryBindingDigest || ""),
       activatedAt: planType === "active" ? String(payload.activatedAt || now) : "",
       createdAt: now,
       updatedAt: now
@@ -8041,6 +8368,12 @@ class DesktopMirrorService {
       { repository: this.usersRepository, payload: [user, ...userItems] },
       { repository: this.settingsRepository, payload: { ...settingsStore, [centerId]: settings } }
     ];
+    if (payload.trialReceipt && typeof payload.trialReceipt === "object") {
+      changes.push({
+        repository: this.commerceReceiptsRepository,
+        payload: [{ ...payload.trialReceipt, userId: user.id, centerId }, ...this.commerceReceiptsRepository.list()]
+      });
+    }
     if (!staffItems.some((item) => this.belongsToCenter(item, centerId))) {
       changes.push({
         repository: this.staffRepository,
@@ -8066,6 +8399,103 @@ class DesktopMirrorService {
     const privacyConsent = Boolean(payload.privacyConsent);
     const policyConsent = Boolean(payload.policyConsent);
     const emailConfirmed = Boolean(payload.emailConfirmed);
+    const idempotencyKey = boundedIdempotencyKey(payload.idempotencyKey);
+    const idempotencyDigest = hashToken(`smartdesk_trial_idempotency_v1:${idempotencyKey}`);
+    const deliveryBindingDigest = hashToken(JSON.stringify({
+      contract: "smartdesk_trial_delivery_v1",
+      centerName,
+      ownerName,
+      contactEmail,
+      contactPhone,
+      businessModel,
+      chosenUsername
+    }));
+    const existingReceipt = this.commerceReceiptsRepository.findById(`trial:${idempotencyDigest}`);
+    if (existingReceipt) return this.buildTrialReplayResponse(existingReceipt, deliveryBindingDigest);
+    const inFlight = this.trialRequestActivations.get(idempotencyDigest);
+    if (inFlight) {
+      if (inFlight.deliveryBindingDigest !== deliveryBindingDigest) {
+        const error = new Error("Idempotency-Key già associata a una consegna differente");
+        error.code = "trial_idempotency_conflict";
+        throw error;
+      }
+      return inFlight.promise;
+    }
+    const operation = this.createTrialRequest({
+      payload,
+      centerName,
+      ownerName,
+      contactEmail,
+      confirmEmail,
+      contactPhone,
+      businessModel,
+      chosenUsername,
+      chosenPassword,
+      privacyConsent,
+      policyConsent,
+      emailConfirmed,
+      idempotencyDigest,
+      deliveryBindingDigest
+    }).catch((error) => {
+      if (error?.code === "persistence_conflict") {
+        const committed = this.commerceReceiptsRepository.findById(`trial:${idempotencyDigest}`);
+        if (committed) return this.buildTrialReplayResponse(committed, deliveryBindingDigest);
+      }
+      throw error;
+    }).finally(() => this.trialRequestActivations.delete(idempotencyDigest));
+    this.trialRequestActivations.set(idempotencyDigest, { deliveryBindingDigest, promise: operation });
+    return operation;
+  }
+
+  buildTrialReplayResponse(receipt = {}, deliveryBindingDigest = "") {
+    if (String(receipt.deliveryBindingDigest || "") !== deliveryBindingDigest) {
+      const error = new Error("Idempotency-Key già associata a una consegna differente");
+      error.code = "trial_idempotency_conflict";
+      throw error;
+    }
+    const user = this.usersRepository.findById(receipt.userId);
+    if (!user || String(user.trialReceiptId || "") !== String(receipt.id || "")) {
+      const error = new Error("Receipt trial priva della consegna atomica associata");
+      error.code = "trial_delivery_incomplete";
+      throw error;
+    }
+    return this.buildTrialResponse({ user: this.serializeUserSummary(user), receipt, verificationToken: "", replayed: true });
+  }
+
+  buildTrialResponse({ user = {}, receipt = {}, verificationToken = "", replayed = false } = {}) {
+    const verificationRequired = String(user.emailVerifiedAt || "") === "";
+    return {
+      success: true,
+      message: replayed
+        ? "Richiesta trial già consegnata: restituito il receipt persistito."
+        : verificationRequired
+          ? `Ti abbiamo inviato un codice email. Dopo la verifica, la prova gratuita Silver durerà ${DEFAULT_TRIAL_DAYS} giorni.`
+          : `Prova gratuita Silver attivata per ${DEFAULT_TRIAL_DAYS} giorni`,
+      credentials: { username: user.username },
+      verification: {
+        required: verificationRequired,
+        email: user.contactEmail,
+        token: replayed ? "" : verificationToken
+      },
+      payment: getTrialPaymentConfig(),
+      delivery: {
+        contract: "smartdesk_trial_delivery_v1",
+        status: replayed ? "idempotent_replay" : "created",
+        receiptId: receipt.id,
+        bindingDigest: receipt.deliveryBindingDigest,
+        idempotencyDigest: receipt.idempotencyDigest,
+        committedAt: receipt.committedAt
+      },
+      user
+    };
+  }
+
+  async createTrialRequest(input = {}) {
+    const {
+      centerName, ownerName, contactEmail, confirmEmail, contactPhone, businessModel,
+      chosenUsername, chosenPassword, privacyConsent, policyConsent, emailConfirmed,
+      idempotencyDigest, deliveryBindingDigest
+    } = input;
     if (!centerName) throw new Error("Nome centro obbligatorio");
     if (!ownerName) throw new Error("Nome referente obbligatorio");
     if (!contactEmail) throw new Error("Email obbligatoria");
@@ -8082,10 +8512,21 @@ class DesktopMirrorService {
       throw new Error("Username già presente");
     }
     const centerId = makeId("center");
-    const trialDays = Number(payload.trialDays || DEFAULT_TRIAL_DAYS);
+    // Public trial duration is server authority. Administrative provisioning
+    // remains independently governed by createAccessUser().
+    const trialDays = DEFAULT_TRIAL_DAYS;
     const verificationEnabled = isTrialEmailVerificationConfigured();
     const verificationToken = verificationEnabled ? makeSecureToken() : "";
     const verificationRequestedAt = nowIso();
+    const receipt = {
+      id: `trial:${idempotencyDigest}`,
+      type: "trial_delivery",
+      contract: "smartdesk_trial_delivery_v1",
+      idempotencyDigest,
+      deliveryBindingDigest,
+      status: "committed",
+      committedAt: verificationRequestedAt
+    };
     const user = await this.createAccessUser({
       username: chosenUsername,
       password: chosenPassword,
@@ -8106,24 +8547,18 @@ class DesktopMirrorService {
       emailVerificationCode: "",
       emailVerificationTokenHash: verificationEnabled ? hashToken(verificationToken) : "",
       emailVerificationExpiresAt: verificationEnabled ? addMinutesIso(verificationRequestedAt, DEFAULT_TRIAL_VERIFICATION_MINUTES) : "",
-      emailVerificationSentAt: verificationEnabled ? verificationRequestedAt : ""
+      emailVerificationSentAt: verificationEnabled ? verificationRequestedAt : "",
+      trialReceiptId: receipt.id,
+      trialIdempotencyDigest: idempotencyDigest,
+      trialDeliveryBindingDigest: deliveryBindingDigest,
+      trialReceipt: receipt
     }, { role: "superadmin", centerId: DEFAULT_CENTER_ID, centerName: DEFAULT_CENTER_NAME });
-    return {
-      success: true,
-      message: verificationEnabled
-        ? `Ti abbiamo inviato un codice email. Dopo la verifica, la prova gratuita Silver durerà ${trialDays} giorni.`
-        : `Prova gratuita Silver attivata per ${trialDays} giorni`,
-      credentials: {
-        username: chosenUsername
-      },
-      verification: {
-        required: verificationEnabled,
-        email: contactEmail,
-        token: verificationToken
-      },
-      payment: getTrialPaymentConfig(),
-      user
-    };
+    return this.buildTrialResponse({
+      user,
+      receipt: { ...receipt, userId: user.id, centerId },
+      verificationToken,
+      replayed: false
+    });
   }
 
   async verifyTrialEmailToken(payload = {}) {
@@ -8304,25 +8739,22 @@ class DesktopMirrorService {
 
   getSmartDeskPlanFromWooCommerceOrder(order = {}) {
     const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
-    const candidates = lineItems.map((item) => {
-      const sku = normalizeText(item.sku || "");
-      const name = normalizeText(item.name || "");
-      return `${sku} ${name}`;
-    });
-    const text = candidates.join(" ");
-    const plan = text.includes("gold")
-      ? "gold"
-      : text.includes("silver")
-        ? "silver"
-        : text.includes("base")
-          ? "base"
-          : "";
-    const cycle = text.includes("year") || text.includes("annuale")
-      ? "yearly"
-      : text.includes("month") || text.includes("mensile")
-        ? "monthly"
-        : "";
-    return { plan, cycle };
+    const canonical = new Map([
+      ["sh-smartdesk-base-monthly", { plan: "base", cycle: "monthly" }],
+      ["sh-smartdesk-base-yearly", { plan: "base", cycle: "yearly" }],
+      ["sh-smartdesk-silver-monthly", { plan: "silver", cycle: "monthly" }],
+      ["sh-smartdesk-silver-yearly", { plan: "silver", cycle: "yearly" }],
+      ["sh-smartdesk-gold-monthly", { plan: "gold", cycle: "monthly" }],
+      ["sh-smartdesk-gold-yearly", { plan: "gold", cycle: "yearly" }],
+      ["sh-smartdesk-enterprise-monthly", { plan: "enterprise", cycle: "monthly" }],
+      ["sh-smartdesk-enterprise-yearly", { plan: "enterprise", cycle: "yearly" }]
+    ]);
+    if (!lineItems.length) return { plan: "", cycle: "", canonical: false, reason: "missing_line_items" };
+    const matches = lineItems.map((item) => canonical.get(String(item?.sku || "").trim().toLowerCase()) || null);
+    if (matches.some((item) => !item)) return { plan: "", cycle: "", canonical: false, reason: "unsupported_sku" };
+    const contracts = new Set(matches.map((item) => `${item.plan}:${item.cycle}`));
+    if (contracts.size !== 1) return { plan: "", cycle: "", canonical: false, reason: "conflicting_skus" };
+    return { ...matches[0], canonical: true, reason: "canonical_sku" };
   }
 
   async activateSubscriptionFromWooCommerceOrder(order = {}) {
@@ -8335,32 +8767,122 @@ class DesktopMirrorService {
         orderId: order.id || ""
       };
     }
-    const { plan, cycle } = this.getSmartDeskPlanFromWooCommerceOrder(order);
-    if (!plan) {
+    const { plan, cycle, canonical, reason: classificationReason } = this.getSmartDeskPlanFromWooCommerceOrder(order);
+    if (!plan || !canonical) {
       return {
         success: true,
         ignored: true,
-        reason: "Ordine pagato ma nessun piano Smart Desk riconosciuto",
+        reason: `Ordine non autorizzato per attivazione Smart Desk: ${classificationReason || "sku_non_canonico"}`,
         orderId: order.id || ""
       };
     }
-    const email = String(order.billing?.email || order.customer?.email || "").trim().toLowerCase();
-    if (!email) {
-      throw new Error("Email cliente WooCommerce mancante");
+    if (plan === "gold") {
+      return {
+        success: true,
+        ignored: true,
+        matched: false,
+        action: "guided_activation_required",
+        reason: "Gold richiede attivazione guidata e non viene attivato da un ordine WooCommerce.",
+        orderId: String(order.id || ""),
+        plan
+      };
     }
-    const user = this.usersRepository.list().find((item) =>
-      String(item.contactEmail || "").trim().toLowerCase() === email ||
-      String(item.username || "").trim().toLowerCase() === email
-    );
-    if (!user) {
+    if (plan === "enterprise") {
+      throw new Error("woocommerce_plan_not_supported:enterprise");
+    }
+    if (!["base", "silver"].includes(plan)) {
+      throw new Error("woocommerce_plan_not_supported");
+    }
+    const orderId = String(order.id || "").trim();
+    if (!orderId) throw new Error("woocommerce_order_id_missing");
+    const receiptId = `woocommerce:${hashToken(orderId)}`;
+    const existingReceipt = this.commerceReceiptsRepository.findById(receiptId);
+    if (existingReceipt) return this.buildWooCommerceReplayResponse(existingReceipt, { order, plan, cycle });
+    if (this.woocommerceOrderActivations.has(receiptId)) {
+      return this.woocommerceOrderActivations.get(receiptId);
+    }
+    const operation = this.activatePaidWooCommerceOrder({ order, orderId, receiptId, plan, cycle })
+      .catch((error) => {
+        if (error?.code === "persistence_conflict") {
+          const committed = this.commerceReceiptsRepository.findById(receiptId);
+          if (committed) return this.buildWooCommerceReplayResponse(committed, { order, plan, cycle });
+        }
+        throw error;
+      })
+      .finally(() => this.woocommerceOrderActivations.delete(receiptId));
+    this.woocommerceOrderActivations.set(receiptId, operation);
+    return operation;
+  }
+
+  buildWooCommerceReplayResponse(receipt = {}, { order = {}, plan = "", cycle = "" } = {}) {
+    const metadata = Array.isArray(order.meta_data) ? order.meta_data : [];
+    const deliveryCenterId = String(
+      order.smartdesk_center_id
+      || metadata.find((item) => ["smartdesk_center_id", "smartdesk_tenant_id"].includes(String(item?.key || "")))?.value
+      || ""
+    ).trim();
+    if (!deliveryCenterId) throw new Error("woocommerce_delivery_tenant_binding_required");
+    if (deliveryCenterId !== String(receipt.centerId || "")) throw new Error("woocommerce_delivery_tenant_mismatch");
+    const email = String(order.billing?.email || order.customer?.email || "").trim().toLowerCase();
+    const emailDigest = hashToken(email);
+    if (receipt.emailDigest !== emailDigest || receipt.plan !== plan || receipt.cycle !== cycle) {
+      throw new Error("woocommerce_order_replay_conflict");
+    }
+    const user = this.usersRepository.findById(receipt.userId);
+    if (!user || String(user.centerId || "") !== String(receipt.centerId || "")) throw new Error("woocommerce_delivery_incomplete");
+    return {
+      success: true,
+      matched: true,
+      idempotentReplay: true,
+      action: "account_already_activated",
+      orderId: String(order.id || ""),
+      receiptId: receipt.id,
+      email,
+      plan,
+      cycle,
+      user: this.serializeUserSummary(user)
+    };
+  }
+
+  async activatePaidWooCommerceOrder({ order = {}, orderId = "", receiptId = "", plan = "", cycle = "" } = {}) {
+    const email = String(order.billing?.email || order.customer?.email || "").trim().toLowerCase();
+    if (!email) throw new Error("Email cliente WooCommerce mancante");
+    const metadata = Array.isArray(order.meta_data) ? order.meta_data : [];
+    const deliveryCenterId = String(
+      order.smartdesk_center_id
+      || metadata.find((item) => ["smartdesk_center_id", "smartdesk_tenant_id"].includes(String(item?.key || "")))?.value
+      || ""
+    ).trim();
+    if (!deliveryCenterId) {
       return {
         success: true,
         matched: false,
         action: "pending_manual_activation",
-        message: "Pagamento ricevuto, ma nessun account Smart Desk trovato con la stessa email.",
-        orderId: order.id || "",
-        email,
+        reason: "woocommerce_delivery_tenant_binding_required",
+        orderId,
         plan,
+        cycle: cycle || "unknown"
+      };
+    }
+    const matchingUsers = this.usersRepository.list().filter((item) => (
+      String(item.contactEmail || "").trim().toLowerCase() === email
+      || String(item.username || "").trim().toLowerCase() === email
+    ) && String(item.centerId || DEFAULT_CENTER_ID) === deliveryCenterId);
+    if (matchingUsers.length > 1) throw new Error("woocommerce_delivery_tenant_ambiguous");
+    const user = matchingUsers[0];
+    if (!user) throw new Error("woocommerce_delivery_tenant_mismatch");
+    const planRank = { base: 1, silver: 2 };
+    const currentPlan = String(user.subscriptionPlan || "").trim().toLowerCase();
+    if (["gold", "enterprise"].includes(currentPlan) || (planRank[currentPlan] || 0) > planRank[plan]) {
+      return {
+        success: true,
+        matched: true,
+        ignored: true,
+        action: "downgrade_denied",
+        reason: "woocommerce_plan_monotonicity_required",
+        orderId,
+        plan,
+        currentPlan,
         cycle: cycle || "unknown"
       };
     }
@@ -8371,8 +8893,8 @@ class DesktopMirrorService {
         ? addMonthsIso(now, 1)
         : user.subscriptionEndsAt || "";
     const total = Number(order.total || 0);
-    const next = await this.usersRepository.updateDurable(user.id, (current) => this.normalizeUserAccount({
-      ...current,
+    const next = this.normalizeUserAccount({
+      ...user,
       active: true,
       planType: "active",
       subscriptionPlan: plan,
@@ -8381,21 +8903,46 @@ class DesktopMirrorService {
       subscriptionChangeStatus: "",
       paymentStatus: "paid",
       accountStatus: "active",
-      activatedAt: current.activatedAt || now,
-      subscriptionBillingCycle: cycle || current.subscriptionBillingCycle || "",
-      subscriptionStartedAt: current.subscriptionStartedAt || now,
+      activatedAt: user.activatedAt || now,
+      subscriptionBillingCycle: cycle,
+      subscriptionStartedAt: user.subscriptionStartedAt || now,
       subscriptionEndsAt,
       subscriptionSource: "woocommerce",
-      subscriptionLastOrderId: String(order.id || ""),
+      subscriptionLastOrderId: orderId,
+      subscriptionLastOrderEmailDigest: hashToken(email),
+      subscriptionLastOrderPlan: plan,
       subscriptionLastPaymentAt: now,
       subscriptionLastAmountCents: Math.round(total * 100),
       updatedAt: now
-    }));
+    });
+    const receipt = {
+      id: receiptId,
+      type: "woocommerce_activation",
+      contract: "smartdesk_woocommerce_activation_v1",
+      orderIdDigest: hashToken(orderId),
+      emailDigest: hashToken(email),
+      plan,
+      cycle,
+      userId: user.id,
+      centerId: String(user.centerId || DEFAULT_CENTER_ID),
+      status: "committed",
+      committedAt: now
+    };
+    const userItems = this.usersRepository.list();
+    const userIndex = userItems.findIndex((item) => String(item.id || "") === String(user.id || ""));
+    if (userIndex < 0) throw new Error("woocommerce_delivery_incomplete");
+    const nextUsers = [...userItems];
+    nextUsers[userIndex] = next;
+    await this.commitRepositorySnapshots([
+      { repository: this.usersRepository, payload: nextUsers },
+      { repository: this.commerceReceiptsRepository, payload: [receipt, ...this.commerceReceiptsRepository.list()] }
+    ]);
     return {
       success: true,
       matched: true,
       action: "account_activated",
-      orderId: order.id || "",
+      orderId,
+      receiptId,
       email,
       plan,
       cycle: cycle || "unknown",
@@ -13462,7 +14009,9 @@ class DesktopMirrorService {
         ...cached,
         meta: {
           ...(cached.meta || {}),
-          sourceLayer: "silver_core_snapshot"
+          sourceLayer: "smartdesk_local_silver_snapshot",
+          authority: "smartdesk_local_deterministic",
+          coreVerdict: false
         }
       };
     }
@@ -13604,7 +14153,7 @@ class DesktopMirrorService {
       goldEnabled: false,
       silverCoreEnabled: true,
       currentPlan: "silver",
-      source: "silver_core_runtime",
+      source: "smartdesk_local_silver_runtime",
       primaryAction,
       secondaryActions,
       blockedActions: [],
@@ -13617,7 +14166,9 @@ class DesktopMirrorService {
       dataQuality,
       progressiveIntelligence,
       meta: {
-        sourceLayer: "silver_core_snapshot",
+        sourceLayer: "smartdesk_local_silver_snapshot",
+        authority: "smartdesk_local_deterministic",
+        coreVerdict: false,
         generatedAt: nowIso(),
         cacheTtlMs: SNAPSHOT_CACHE_TTL_MS
       }

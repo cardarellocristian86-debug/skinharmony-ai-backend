@@ -20,6 +20,10 @@ function session(centerId) {
   };
 }
 
+function silverSession(centerId) {
+  return { ...session(centerId), subscriptionPlan: "silver" };
+}
+
 function state(centerId, eventSeq, revenueCents) {
   return {
     id: `gold_state:${centerId}`,
@@ -68,6 +72,26 @@ try {
   assert.strictEqual(changed.eventSeq, 8);
   assert.strictEqual(changed.summary.revenueCents, 130000);
   assert.strictEqual(service.getGoldOverviewReadModel(tenantB).cache.hit, true);
+  const unifiedGold = service.getAiOverviewReadModel(tenantA);
+  assert.strictEqual(unifiedGold.compatibility.state.eventSeq, 8);
+  assert.strictEqual(unifiedGold.compatibility.cockpit.guardrails.readOnly, true);
+  assert.strictEqual(unifiedGold.compatibility.profitability.readOnly, true);
+  assert.strictEqual(unifiedGold.compatibility.marketingAutopilot.readOnly, true);
+  assert.strictEqual(unifiedGold.compatibility.decisionCenter.sourceLayer, "persisted_gold_state_overview_projection");
+
+  // Silver owns the same bounded entry contract without reading or rebuilding
+  // persisted Gold State. Its validator revision must advance after mutations,
+  // including a global invalidation, so an old browser ETag cannot mask change.
+  const silver = silverSession("tenant-silver");
+  const silverFirst = service.getAiOverviewReadModel(silver);
+  assert.strictEqual(silverFirst.currentPlan, "silver");
+  assert.strictEqual(silverFirst.guardrails.readOnly, true);
+  assert.strictEqual(silverFirst.guardrails.externalAiCalled, false);
+  const silverFirstEtag = service.getAiOverviewEtag(silver, silverFirst.eventSeq);
+  service.invalidateBusinessSnapshot();
+  const silverChanged = service.getAiOverviewReadModel(silver);
+  assert.ok(silverChanged.eventSeq > silverFirst.eventSeq);
+  assert.notStrictEqual(service.getAiOverviewEtag(silver, silverChanged.eventSeq), silverFirstEtag);
 
   console.log(JSON.stringify({ ok: true, runner: "gold_overview_read_model_test" }));
 } finally {
