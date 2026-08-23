@@ -410,6 +410,40 @@ function textResult(payload) {
   };
 }
 
+// A fresh host session has no caller-owned work_id.  Nyra must not make the
+// connected AI enumerate the Gallery and guess: when the authenticated tenant
+// has exactly one active Work, the server can safely and deterministically
+// restore that identity before the one governed preflight.  More than one
+// active Work remains deliberately unbound so Core can request a selection.
+async function resolveSingleActiveWork(identity, args, workContinuityRuntime) {
+  if (boundedWorkId(args.work_id) || typeof workContinuityRuntime?.listWorks !== "function") {
+    return args;
+  }
+  let catalog;
+  try {
+    catalog = await workContinuityRuntime.listWorks(identity, { status: "active", limit: 2 });
+  } catch {
+    // This optimisation must never turn an otherwise valid read-only Nyra
+    // turn into an outage.  The normal preflight retains its fail-closed
+    // unbound/selection behaviour if the compact catalog is unavailable.
+    return args;
+  }
+  const works = Array.isArray(catalog?.works)
+    ? catalog.works
+      .map((work) => ({
+        work_id: boundedWorkId(work?.work_id),
+        project_id: boundedProjectId(work?.project_id),
+      }))
+      .filter((work) => work.work_id && work.project_id)
+    : [];
+  if (works.length !== 1 || catalog?.next_cursor) return args;
+  return Object.freeze({
+    ...args,
+    work_id: works[0].work_id,
+    project_id: works[0].project_id,
+  });
+}
+
 export function createNyraConversePreflight({
   workPreflight,
   ensureContinuity,
@@ -429,18 +463,19 @@ export function createNyraConversePreflight({
     // `core_capability_read` is intentionally exempt from generic preflight.
     // Conversation obtains its authenticated Work binding inside the target
     // handler and accepts no caller-made preflight or authority envelope.
+    const resumeArgs = await resolveSingleActiveWork(identity, args, workContinuityRuntime);
     const preflightArgs = {
-      request: args.message,
+      request: resumeArgs.message,
       target_system: "nyra_conversational_runtime",
       operation_type: "nyra.converse",
       tool_name: "nyra_converse",
       response_mode: "full",
-      ...(args.work_id ? { work_id: args.work_id } : {}),
-      ...(args.project_id ? { project_id: args.project_id } : {}),
-      session_id: identity.agentPresence?.session_id || args.session_id,
-      agent_id: identity.agentPresence?.agent_id || args.agent_id || "connected_ai",
-      client_type: identity.agentPresence?.client_type || args.client_type,
-      host_type: hostType(identity, args),
+      ...(resumeArgs.work_id ? { work_id: resumeArgs.work_id } : {}),
+      ...(resumeArgs.project_id ? { project_id: resumeArgs.project_id } : {}),
+      session_id: identity.agentPresence?.session_id || resumeArgs.session_id,
+      agent_id: identity.agentPresence?.agent_id || resumeArgs.agent_id || "connected_ai",
+      client_type: identity.agentPresence?.client_type || resumeArgs.client_type,
+      host_type: hostType(identity, resumeArgs),
       available_capabilities: ["nyra_converse", "skinharmony_core_mcp"],
     };
     const continuityBinding = await resolveContinuityProjectBinding(
