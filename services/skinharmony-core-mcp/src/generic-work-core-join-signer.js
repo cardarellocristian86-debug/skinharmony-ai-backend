@@ -32,6 +32,31 @@ function signingKey(seed) {
   });
 }
 
+function resolveTargetCommit(env) {
+  const productionOrRender = String(env.NODE_ENV || "").trim().toLowerCase() === "production"
+    || String(env.RENDER || "").trim().toLowerCase() === "true";
+  const explicit = String(env.GENERIC_WORK_CORE_JOIN_CORE_SIGNER_TARGET_COMMIT || "").trim().toLowerCase();
+  const renderCommit = String(env.RENDER_GIT_COMMIT || "").trim().toLowerCase();
+  if (productionOrRender && !TARGET_COMMIT.test(renderCommit)) {
+    throw new Error("generic_work_core_join_signer_build_commit_unverifiable");
+  }
+  if (!productionOrRender && renderCommit && !TARGET_COMMIT.test(renderCommit)) {
+    throw new Error("generic_work_core_join_signer_build_commit_unverifiable");
+  }
+  const verifiedLiveCommit = TARGET_COMMIT.test(renderCommit) ? renderCommit : "";
+  if (explicit && !TARGET_COMMIT.test(explicit)) {
+    throw new Error("generic_work_core_join_signer_binding_invalid");
+  }
+  if (explicit && verifiedLiveCommit && explicit !== verifiedLiveCommit) {
+    throw new Error("generic_work_core_join_signer_target_commit_mismatch");
+  }
+  const targetCommit = verifiedLiveCommit || explicit;
+  if (!TARGET_COMMIT.test(targetCommit)) {
+    throw new Error("generic_work_core_join_signer_binding_invalid");
+  }
+  return targetCommit;
+}
+
 export function createGenericWorkCoreJoinSigner({ env = process.env } = {}) {
   let state = { configured: false, ready: false, error: "generic_work_core_join_signer_disabled" };
   let key = null;
@@ -48,7 +73,7 @@ export function createGenericWorkCoreJoinSigner({ env = process.env } = {}) {
     service = String(env.GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE || "");
     purpose = String(env.GENERIC_WORK_CORE_JOIN_CORE_SIGNER_PURPOSE || "");
     keyId = String(env.GENERIC_WORK_CORE_JOIN_CORE_SIGNER_KEY_ID || "");
-    targetCommit = String(env.GENERIC_WORK_CORE_JOIN_CORE_SIGNER_TARGET_COMMIT || "").toLowerCase();
+    targetCommit = resolveTargetCommit(env);
     token = String(env.GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE_TOKEN || "");
     if (!SERVICE.test(service) || !PURPOSE.test(purpose) || !ID.test(keyId) || !TARGET_COMMIT.test(targetCommit)) {
       throw new Error("generic_work_core_join_signer_binding_invalid");
