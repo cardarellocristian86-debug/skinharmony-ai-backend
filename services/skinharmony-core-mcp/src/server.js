@@ -607,6 +607,21 @@ async function materializeNyraControlContext(identity, continuity, operation, {
     : null;
   projectId = projectId || operational?.project_id || null;
   if (!projectId) return null;
+  // A material change (claim, submit, incident or Atlas update) must expose
+  // the actual current assignment. Read the local Autopilot ledger once;
+  // this is neither a Core call nor a model invocation.
+  if (!autopilot && typeof nyraAutopilotRuntime?.readWork === "function") {
+    try {
+      autopilot = await nyraAutopilotRuntime.readWork(identity, {
+        work_id: continuity.work_id,
+      });
+    } catch {
+      // The continuity context remains useful even if Autopilot is disabled
+      // or has no run for this Work. Do not turn a completed local update into
+      // a false failure.
+      autopilot = null;
+    }
+  }
   return workContinuityRuntime.upsertControlContext(identity, {
     work_id: continuity.work_id,
     project_id: projectId,
@@ -723,6 +738,31 @@ function continuityMethod(method) {
     ok: true,
     result: await workContinuityRuntime[method](identity, args),
   });
+}
+
+// Mutation handlers return the freshly persisted briefing in the same answer.
+// This avoids making the connected AI perform a follow-up read merely to learn
+// the next state, while materializeNyraControlContext remains local/DB-only.
+function continuityMethodWithNyraContext(method) {
+  return async (args, identity) => {
+    const result = await workContinuityRuntime[method](identity, args);
+    const workId = result?.work_id || args.work_id;
+    const projectId = result?.project_id || args.project_id;
+    const nyraControlContext = workId
+      ? await materializeNyraControlContext(identity, {
+        ...result,
+        work_id: workId,
+        project_id: projectId,
+      }, method, { force: true })
+      : null;
+    return continuityTextResult({
+      ok: true,
+      result: {
+        ...result,
+        ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}),
+      },
+    });
+  };
 }
 
 async function reconcileNyraAutopilot(identity, work, triggerType) {
@@ -1265,10 +1305,10 @@ const baseHandlers = {
         result: await workContinuityRuntime.finalizeClosure(identity, args, authorization),
       });
     },
-    work_continuity_atlas_upsert: continuityMethod("upsertAtlas"),
+    work_continuity_atlas_upsert: continuityMethodWithNyraContext("upsertAtlas"),
     work_continuity_atlas_select: continuityMethod("selectAtlas"),
-    work_continuity_incident_record: continuityMethod("recordIncident"),
-    work_continuity_incident_verify: continuityMethod("verifyIncident"),
+    work_continuity_incident_record: continuityMethodWithNyraContext("recordIncident"),
+    work_continuity_incident_verify: continuityMethodWithNyraContext("verifyIncident"),
     work_continuity_incident_resolve: continuityMethod("resolveIncident"),
   } : {}),
   ...(nyraNativeTeamRuntime ? {
@@ -1318,12 +1358,17 @@ const baseHandlers = {
     },
     nyra_autopilot_reconcile: async (args, identity) => {
       await requireOwnerGovernance(identity, "nyra.autopilot.reconcile", args.work_id);
+      const result = await nyraAutopilotRuntime.reconcile(identity, {
+        ...args,
+        trigger_type: "reconcile",
+      });
+      const nyraControlContext = await materializeNyraControlContext(identity, result, "nyra_autopilot_reconcile", {
+        autopilot: result,
+        force: true,
+      });
       return continuityTextResult({
         ok: true,
-        result: await nyraAutopilotRuntime.reconcile(identity, {
-          ...args,
-          trigger_type: "reconcile",
-        }),
+        result: { ...result, ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}) },
         execution_authorized: false,
       });
     },
@@ -1333,11 +1378,15 @@ const baseHandlers = {
     },
     nyra_work_assignment_claim: async (args, identity) => {
       await requireBoundedTenantCoordination(identity, "nyra.assignment.claim", args.work_id);
-      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.claim(identity, args) });
+      const result = await nyraAutopilotRuntime.claim(identity, args);
+      const nyraControlContext = await materializeNyraControlContext(identity, result, "nyra_work_assignment_claim", { force: true });
+      return continuityTextResult({ ok: true, result: { ...result, ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}) } });
     },
     nyra_work_assignment_submit: async (args, identity) => {
       await requireBoundedTenantCoordination(identity, "nyra.assignment.submit", args.work_id);
-      return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.submit(identity, args) });
+      const result = await nyraAutopilotRuntime.submit(identity, args);
+      const nyraControlContext = await materializeNyraControlContext(identity, result, "nyra_work_assignment_submit", { force: true });
+      return continuityTextResult({ ok: true, result: { ...result, ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}) } });
     },
   } : {}),
 };
@@ -1454,7 +1503,11 @@ const NYRA_DIALOGUE_MATERIAL_CHANGE_TOOLS = new Set([
   "work_continuity_native_bind",
   "work_continuity_native_report",
   "nyra_autopilot_reconcile",
+  "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",
+  "work_continuity_atlas_upsert",
+  "work_continuity_incident_record",
+  "work_continuity_incident_verify",
   "software_cognition_graph_upsert",
   "software_cognition_index_diff",
   "software_cognition_traceability_build",

@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 
 import {
   buildNyraOperationalDialogue,
   diagnoseNyraOperationalState,
+  NYRA_OPERATING_MANUAL_DIGEST,
   NYRA_OPERATING_MANUAL_VERSION,
 } from "../src/nyra-operational-dialogue.js";
+import { NYRA_OPERATING_MANUAL } from "../src/nyra-operating-manual.js";
 
 const continuity = {
   tenant_id: "tenant-a",
@@ -43,6 +46,8 @@ test("Nyra dialogue binds Intent, checkpoint, Gallery and software cognition wit
   assert.equal(dialogue.work.software.atlas_revision, 12);
   assert.match(dialogue.dialogue_digest, /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(dialogue).includes("must not be carried"), false);
+  assert.equal(dialogue.manual.digest, NYRA_OPERATING_MANUAL_DIGEST);
+  assert.equal(NYRA_OPERATING_MANUAL.version, NYRA_OPERATING_MANUAL_VERSION);
 });
 
 test("Nyra self-diagnosis preserves recovery state instead of blindly repeating work", () => {
@@ -69,4 +74,31 @@ test("an unresolved local incident routes Nyra to Core instead of a new free-for
   assert.equal(diagnosis.state, "diagnosis_pending");
   assert.match(diagnosis.local_action, /exact incident fingerprint/i);
   assert.match(diagnosis.core_action, /Core/);
+});
+
+test("Nyra diagnoses incomplete local state without asking an AI to rediscover the Work", () => {
+  const cases = [
+    [{}, "intent_anchor_incomplete", "read_intent_anchor"],
+    [{ intent_digest: "a".repeat(64), checkpoint: { capsule_id: "only-id" } }, "checkpoint_incomplete", "verify_or_create_checkpoint"],
+    [{ intent_digest: "a".repeat(64), gallery: { state: "available", work_count: 0 } }, "gallery_projection_stale", "refresh_work_gallery"],
+    [{ intent_digest: "a".repeat(64), gallery: { state: "available", work_count: 1 }, work_revision: 2 }, "work_snapshot_stale", "refresh_work_snapshot"],
+    [{ intent_digest: "a".repeat(64), gallery: { state: "available", work_count: 1 }, work_revision: 1, software: { state: "not_indexed" } }, "software_context_required", "bounded_atlas_select"],
+  ];
+  for (const [operational, state, remaining] of cases) {
+    const diagnosis = diagnoseNyraOperationalState({
+      continuity: { ...continuity, architecture_version: 1 },
+      operational: state === "software_context_required" ? { ...operational, software: { ...operational.software, required: true } } : operational,
+    });
+    assert.equal(diagnosis.state, state);
+    assert.equal(diagnosis.remaining_action, remaining);
+    assert.equal(diagnosis.automatic_correction, "context_refreshed");
+  }
+});
+
+test("the reviewed manual declares every canonical runtime section", () => {
+  const markdown = fs.readFileSync(new URL("../../../docs/architecture/nyra-persistent-operating-dialogue-v1.md", import.meta.url), "utf8");
+  assert.match(markdown, new RegExp(NYRA_OPERATING_MANUAL_VERSION));
+  for (const section of NYRA_OPERATING_MANUAL.sections) {
+    assert(markdown.includes(section.doc_anchor), `manual must cover ${section.id}`);
+  }
 });

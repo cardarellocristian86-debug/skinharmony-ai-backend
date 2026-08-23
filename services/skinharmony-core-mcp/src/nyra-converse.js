@@ -114,6 +114,29 @@ function normalizeRisk(value) {
   return new Set(["low", "medium", "high", "blocked"]).has(risk) ? risk : "unknown";
 }
 
+// The direct conversation never returns raw evidence, but it must carry the
+// same compact operational briefing that automatic Work calls deliver.
+function publicNyraDialogue(value) {
+  const dialogue = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const work = dialogue.work && typeof dialogue.work === "object" ? dialogue.work : {};
+  const checkpoint = work.checkpoint && typeof work.checkpoint === "object" ? work.checkpoint : {};
+  const gallery = work.gallery && typeof work.gallery === "object" ? work.gallery : {};
+  const software = work.software && typeof work.software === "object" ? work.software : {};
+  const diagnosis = dialogue.self_diagnosis && typeof dialogue.self_diagnosis === "object" ? dialogue.self_diagnosis : {};
+  return Object.freeze({
+    dialogue_id: boundedString(dialogue.dialogue_id, 80) || null,
+    manual_digest: /^[a-f0-9]{64}$/.test(String(dialogue.manual?.digest || "")) ? dialogue.manual.digest : null,
+    work_revision: Number.isSafeInteger(Number(work.work_revision)) ? Number(work.work_revision) : null,
+    intent_digest: /^[a-f0-9]{64}$/.test(String(work.intent_digest || "")) ? work.intent_digest : null,
+    checkpoint_available: checkpoint.available === true,
+    gallery_work_count: boundedCount(gallery.work_count),
+    software_state: boundedString(software.state, 40) || "not_indexed",
+    atlas_revision: Number.isSafeInteger(Number(software.atlas_revision)) ? Number(software.atlas_revision) : null,
+    diagnosis_state: boundedString(diagnosis.state, 80) || "unknown",
+    next_action_available: true,
+  });
+}
+
 function requireBoundPreflight(result, identity, args) {
   const payload = structured(result);
   const envelope = payload.work_preflight && typeof payload.work_preflight === "object" &&
@@ -205,6 +228,7 @@ function requireBoundPreflight(result, identity, args) {
       active_lock_count: boundedCount(memory.active_lock_count),
       artifact_count: boundedCount(memory.artifact_count),
     }),
+    dialogue: publicNyraDialogue(control.nyra_dialogue),
   });
 }
 
@@ -215,11 +239,17 @@ function requirePersistedConversationContext(value, identity, args) {
       context.schema_version !== "nyra_control_context_v1" ||
       context.tenant_id !== tenantId ||
       !/^[a-f0-9]{64}$/.test(String(context.context_digest || "")) ||
+      context.nyra_dialogue?.schema_version !== "nyra_dialogue_context_v1" ||
+      context.nyra_dialogue?.persistent !== true ||
       !/^[a-f0-9]{64}$/.test(String(context.nyra_dialogue?.dialogue_digest || ""))) return null;
   const workId = boundedWorkId(context.work_id);
   const projectId = boundedProjectId(context.project_id);
   if (!workId || !projectId || (args.work_id && workId !== String(args.work_id)) ||
-      (args.project_id && projectId !== String(args.project_id))) return null;
+      (args.project_id && projectId !== String(args.project_id)) ||
+      context.nyra_dialogue?.work?.work_id !== workId ||
+      context.nyra_dialogue?.work?.project_id !== projectId ||
+      !Number.isSafeInteger(Number(context.nyra_dialogue?.work?.work_revision)) ||
+      Number(context.nyra_dialogue.work.work_revision) < 1) return null;
   return Object.freeze({
     work: Object.freeze({
       // The durable context was itself emitted by the authenticated Work
@@ -244,12 +274,7 @@ function requirePersistedConversationContext(value, identity, args) {
       recent_activity_count: 0,
       raw_memory_returned: false,
     }),
-    dialogue: Object.freeze({
-      dialogue_id: boundedString(context.nyra_dialogue?.dialogue_id, 80),
-      mode: boundedString(context.nyra_dialogue?.mode, 80),
-      persistent: context.nyra_dialogue?.persistent === true,
-      self_diagnosis_state: boundedString(context.nyra_dialogue?.self_diagnosis?.state, 80) || "unknown",
-    }),
+    dialogue: publicNyraDialogue(context.nyra_dialogue),
     assignment_available: Boolean(boundedString(context.assignment?.assignment_id, 80)),
   });
 }
@@ -525,6 +550,7 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
         dialogue_accepted: interpretation.dialogue_accepted,
         opened_branch_count: interpretation.opened_branch_count,
       }),
+      nyra_dialogue: boundedPreflight.dialogue,
       action_policy: action,
       host_response_contract: Object.freeze({
         speaker: "Nyra",

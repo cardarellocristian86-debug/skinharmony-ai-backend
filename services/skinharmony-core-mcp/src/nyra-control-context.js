@@ -21,12 +21,15 @@ function firstReadyAssignment(autopilot = {}) {
     : Array.isArray(autopilot?.materialization?.assignments)
       ? autopilot.materialization.assignments
       : [];
-  const assignment = assignments.find((item) => item?.status === "offered") || null;
+  // A claimed assignment is still the current bounded step. Returning only
+  // offered work made Nyra appear idle immediately after a worker accepted it.
+  const assignment = assignments.find((item) => item?.status === "claimed") ||
+    assignments.find((item) => item?.status === "offered") || null;
   if (!assignment) return null;
   return {
     assignment_id: clean(assignment.assignment_id, 64) || null,
     role: clean(assignment.role, 80) || null,
-    state: "ready",
+    state: clean(assignment.status, 40) || "ready",
   };
 }
 

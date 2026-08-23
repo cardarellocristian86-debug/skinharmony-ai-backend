@@ -88,6 +88,10 @@ test("the connector returns the compact context instead of a full Work Gallery",
   });
   const preflight = result.structuredContent.work_preflight;
   assert.equal(preflight.nyra_control_context.context_digest, context.context_digest);
+  assert.equal(preflight.nyra_control_context.nyra_dialogue.dialogue_digest, context.nyra_dialogue.dialogue_digest);
+  assert.equal(preflight.nyra_control_context.nyra_dialogue.work.checkpoint.capsule_id, null);
+  assert.equal(preflight.nyra_control_context.nyra_dialogue.self_diagnosis.state, "intent_anchor_incomplete");
+  assert.equal(JSON.stringify(preflight.nyra_control_context.nyra_dialogue).includes("must not reach"), false);
   assert.equal(preflight.tenant_work_gallery.work_count, 1);
   assert.equal(Object.hasOwn(preflight.tenant_work_gallery, "works"), false);
 });
