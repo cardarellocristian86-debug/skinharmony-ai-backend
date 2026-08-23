@@ -971,7 +971,7 @@ export const TOOLS = [
     destructive: false,
   }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
-  tool("nyra_converse", "Talk with Nyra", "Use this for a natural conversation with Nyra. The connected host model renders Nyra's answer from authenticated, tenant-bound Work continuity, bounded memory counts and existing Core interpretation signals. It never calls a provider model, accepts caller authority, or authorizes or performs an external action.", object({
+  tool("nyra_converse", "Nyra: resume or guide the current Work", "Use this as the first and only read tool when the user addresses Nyra or asks to resume, continue, understand, diagnose, or coordinate a Work. It is the conversational front door: the server automatically performs the authenticated read-only preflight, resumes one unambiguous persisted Work, and returns Nyra's bounded next step. Do not call a preflight, Gallery, branch registry, or capability catalog first. It never calls a provider model, accepts caller authority, or authorizes or performs an external action.", object({
     message: text(12_000),
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,

@@ -221,6 +221,8 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.equal(payload.host_response_contract.next_action, "Continue the existing Work.");
   assert.match(payload.host_response_contract.reply_seed, /^Prossimo passo proposto: Continue the existing Work\./);
   assert.equal(payload.host_response_contract.rendering_policy, "server_next_action_first_v1");
+  assert.equal(result.content[0].text, payload.host_response_contract.reply_seed);
+  assert.equal(result.content[0].text.includes(WORK_ID), false);
   assert.equal(payload.interpretation.core.execution_allowed, false);
   assert.equal(payload.interpretation.core.route, "V0");
   assert.equal(payload.nyra_dialogue.work_revision, 3);
@@ -309,8 +311,9 @@ test("publishes nyra_converse as a direct compact resume tool without discovery"
   const allHandlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({})]));
   const compact = compactMcpTools(TOOLS, allHandlers);
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 11);
+  assert.equal(compact.length, 10);
   assert.equal(compact.some((tool) => tool.name === "nyra_converse"), true);
+  assert.equal(compact.some((tool) => tool.name === "work_preflight"), false);
 });
 
 test("returns a successful Italian Nyra turn through catalog revision plus core_capability_read", async () => {

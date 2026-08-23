@@ -1639,7 +1639,7 @@ test("accepts only exact connector namespace aliases for visible registered tool
     };
     const aliasCalls = [
       ["core_health", {}],
-      ["work_preflight", { request: "Verify connector namespace compatibility" }],
+      ["nyra_converse", { message: "Nyra, riprendi il Work" }],
       ["core_capability_catalog", {}],
     ];
     for (const [index, [name, args]] of aliasCalls.entries()) {
@@ -1657,6 +1657,7 @@ test("accepts only exact connector namespace aliases for visible registered tool
     }
     for (const [index, name] of [
       "skinharmony_nyra_core.not_registered",
+      "skinharmony_nyra_core.work_preflight",
       "skinharmony_nyra_core_evil.core_health",
       "skinharmony_nyra_core.skinharmony_nyra_core.core_health",
     ].entries()) {
@@ -1673,7 +1674,7 @@ test("accepts only exact connector namespace aliases for visible registered tool
       assert.equal(body.error.code, -32602);
       assert.equal(body.error.message, "Unknown tool");
     }
-    assert.deepEqual(called, ["core_health", "work_preflight", "core_capability_catalog"]);
+    assert.deepEqual(called, ["core_health", "nyra_converse", "core_capability_catalog"]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
