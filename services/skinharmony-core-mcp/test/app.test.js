@@ -1655,9 +1655,23 @@ test("accepts only exact connector namespace aliases for visible registered tool
       }).then((response) => response.json());
       assert.equal(body.result.structuredContent.tool, name);
     }
+    const legacyPreflight = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 319,
+        method: "tools/call",
+        params: {
+          name: "skinharmony_nyra_core.work_preflight",
+          arguments: { request: "Nyra, riprendi il Work" },
+        },
+      }),
+    }).then((response) => response.json());
+    assert.equal(legacyPreflight.result.structuredContent.tool, "nyra_converse");
+
     for (const [index, name] of [
       "skinharmony_nyra_core.not_registered",
-      "skinharmony_nyra_core.work_preflight",
       "skinharmony_nyra_core_evil.core_health",
       "skinharmony_nyra_core.skinharmony_nyra_core.core_health",
     ].entries()) {
@@ -1674,7 +1688,7 @@ test("accepts only exact connector namespace aliases for visible registered tool
       assert.equal(body.error.code, -32602);
       assert.equal(body.error.message, "Unknown tool");
     }
-    assert.deepEqual(called, ["core_health", "nyra_converse", "core_capability_catalog"]);
+    assert.deepEqual(called, ["core_health", "nyra_converse", "core_capability_catalog", "nyra_converse"]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -2408,7 +2422,7 @@ test("binds native reports to the child transport and exact native agent id", as
 test("bootstraps authenticated stateless hosts without a transport session header", async () => {
   const app = createApp(config, {
     handlers: {
-      work_preflight: async () => ({ structuredContent: { ok: true }, content: [] }),
+      nyra_converse: async () => ({ structuredContent: { ok: true }, content: [] }),
       core_health: async () => ({ structuredContent: { ok: true }, content: [] }),
       nyra_runtime_context: async () => ({ structuredContent: { ok: true }, content: [] }),
     },
@@ -2435,7 +2449,7 @@ test("bootstraps authenticated stateless hosts without a transport session heade
       return { response, body: await response.json() };
     };
 
-    const first = await call("work_preflight", { request: "Bootstrap this authenticated chat" });
+    const first = await call("nyra_converse", { message: "Nyra, riprendi il Work" });
     const replay = await call("core_health", { agent_id: "untrusted-agent-label", client_type: "other" });
     const blockedStateful = await call("nyra_runtime_context");
     const resumedStateful = await call("nyra_runtime_context", {}, first.response.headers.get("mcp-session-id"));
