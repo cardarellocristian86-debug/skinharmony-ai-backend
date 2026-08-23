@@ -18,6 +18,10 @@ import {
   normalizePostgresMajorVerification,
 } from "../../shared/postgres-major-version.js";
 import { signEnvironmentDelegation, verifyEnvironmentDelegation } from "./environment-delegation.js";
+import {
+  NYRA_DIALOGUE_WIDGET_HTML,
+  NYRA_DIALOGUE_WIDGET_RESOURCE,
+} from "./nyra-operating-dialogue-widget.js";
 
 const SERVER_VERSION = "0.16.0-governed-continuity-fabric";
 const SERVER_INSTRUCTIONS = [
@@ -1923,8 +1927,20 @@ export function createApp(config, options = {}) {
         return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "skinharmony-core-mcp", version: SERVER_VERSION }, instructions: SERVER_INSTRUCTIONS } });
       }
       if (method === "notifications/initialized") return res.status(202).end();
-      if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: { resources: [] } });
-      if (method === "resources/read") return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown resource" } });
+      if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: {
+        resources: [NYRA_DIALOGUE_WIDGET_RESOURCE],
+      } });
+      if (method === "resources/read") {
+        if (params.uri !== NYRA_DIALOGUE_WIDGET_RESOURCE.uri) {
+          return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown resource" } });
+        }
+        return res.json({ jsonrpc: "2.0", id, result: { contents: [{
+          uri: NYRA_DIALOGUE_WIDGET_RESOURCE.uri,
+          mimeType: NYRA_DIALOGUE_WIDGET_RESOURCE.mimeType,
+          text: NYRA_DIALOGUE_WIDGET_HTML,
+          _meta: { ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } } },
+        }] } });
+      }
       if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: requestVisibleTools.map(({ scopes, ...tool }) => {
         const schemes = securitySchemes(scopes);
         const genericPreflightRequired = requiresGenericWorkPreflight(tool.name);
