@@ -489,12 +489,17 @@ function resolveConnectorToolName(value, tools = []) {
 const CHATGPT_NYRA_FRONT_DOOR_TOOL_NAMES = new Set(["nyra_converse"]);
 const STALE_CHATGPT_NYRA_READ_TOOL_NAMES = new Set([
   "work_preflight",
-  "core_health",
   "core_capability_catalog",
   "core_branch_registry",
   "core_semantic_select",
   "core_capability_read",
 ]);
+
+function connectorToolCandidate(value) {
+  const requested = String(value || "");
+  const prefix = `${CONNECTOR_TOOL_NAMESPACE}.`;
+  return requested.startsWith(prefix) ? requested.slice(prefix.length) : requested;
+}
 
 // ChatGPT must address Nyra, not assemble a plan from Core implementation
 // tools. Codex and server-to-server clients retain their normal surfaces.
@@ -509,10 +514,18 @@ function filterToolsForClient(tools = [], identity) {
 // and route them to Nyra's conversational front door. Mutating tools are never
 // translated, so this cannot bypass governance or owner confirmation.
 function isStaleNyraReadToolName(value) {
-  const requested = String(value || "");
-  const prefix = `${CONNECTOR_TOOL_NAMESPACE}.`;
-  const candidate = requested.startsWith(prefix) ? requested.slice(prefix.length) : requested;
-  return STALE_CHATGPT_NYRA_READ_TOOL_NAMES.has(candidate);
+  return STALE_CHATGPT_NYRA_READ_TOOL_NAMES.has(connectorToolCandidate(value));
+}
+
+// `core_health` is intentionally not conversational. A chat that still has
+// the old descriptor may read it, but it must reach the real, read-only health
+// handler instead of being validated as a Nyra conversation.
+function resolveStaleChatGptReadTool(value, identity, visibleTools = []) {
+  if (inferClientType(identity) !== "chatgpt") return null;
+  const candidate = connectorToolCandidate(value);
+  if (visibleTools.some((tool) => tool.name === candidate)) return null;
+  if (candidate === "core_health") return "core_health";
+  return isStaleNyraReadToolName(value) ? "nyra_converse" : null;
 }
 
 function isLegacyNyraPreflightToolName(value) {
@@ -1412,7 +1425,8 @@ function toolFailure(error) {
 
 function configureToolForRuntime(tool, config) {
   if (config.environmentRoutingRequired !== true ||
-    POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name)) return tool;
+    POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name) ||
+    tool.name === "nyra_converse") return tool;
   return {
     ...tool,
     inputSchema: {
@@ -1935,13 +1949,17 @@ export function createApp(config, options = {}) {
         };
       }) } });
       if (method === "tools/call") {
-        const staleNyraRead = isStaleNyraReadToolName(params.name) &&
+        const staleChatGptReadTool = resolveStaleChatGptReadTool(params.name, identity, requestVisibleTools);
+        const staleNyraRead = !staleChatGptReadTool && isStaleNyraReadToolName(params.name) &&
           !requestVisibleTools.some((item) => item.name === "work_preflight") &&
-          (inferClientType(identity) === "chatgpt" || isLegacyNyraPreflightToolName(params.name));
-        const canonicalToolName = staleNyraRead
+          isLegacyNyraPreflightToolName(params.name);
+        const canonicalToolName = staleChatGptReadTool || (staleNyraRead
           ? "nyra_converse"
-          : resolveConnectorToolName(params.name, requestVisibleTools);
-        const tool = requestVisibleTools.find((item) => item.name === canonicalToolName);
+          : resolveConnectorToolName(params.name, requestVisibleTools));
+        const tool = requestVisibleTools.find((item) => item.name === canonicalToolName) ||
+          (staleChatGptReadTool === "core_health"
+            ? baseVisibleTools.find((item) => item.name === "core_health")
+            : null);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
@@ -2197,4 +2215,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachWorkPreflight, buildIdentity, filterToolsForClient, inferClientType, resolveConnectorToolName, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };
+export { attachWorkPreflight, buildIdentity, configureToolForRuntime, filterToolsForClient, inferClientType, resolveConnectorToolName, resolveStaleChatGptReadTool, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };
