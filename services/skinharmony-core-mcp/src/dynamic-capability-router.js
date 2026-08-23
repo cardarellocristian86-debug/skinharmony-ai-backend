@@ -6,6 +6,10 @@ import { validateToolArguments } from "./schema-validation.js";
 export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "core_health",
   "work_preflight",
+  // Conversational resume is a first-class Nyra entrypoint. Hiding it behind
+  // capability discovery made a new chat spend an avoidable read/tool turn
+  // before it could receive its persisted Work briefing.
+  "nyra_converse",
   "core_capability_catalog",
   "core_branch_registry",
   "core_semantic_select",
@@ -16,7 +20,10 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "nyra_policy_registry_reconcile",
 ]);
 
-const DIRECT_ONLY = new Set(COMPACT_MCP_TOOL_NAMES);
+// `nyra_converse` is directly advertised to avoid discovery on a new chat,
+// while remaining catalog-addressable for already-connected hosts that still
+// use the backwards-compatible core_capability_read route.
+const DIRECT_ONLY = new Set(COMPACT_MCP_TOOL_NAMES.filter((name) => name !== "nyra_converse"));
 const FORBIDDEN_DYNAMIC_TOOLS = new Set([
   "core_gate_action",
 ]);

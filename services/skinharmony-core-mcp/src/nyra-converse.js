@@ -207,6 +207,12 @@ function requireBoundPreflight(result, identity, args) {
     continuity.state === "work_selection_required" ||
     Number(gallery.work_count || 0) > 1
   );
+  // A response without a bound Work must never inherit a stale action from a
+  // compact control projection. That would make Nyra sound as though it had
+  // resumed work it has not authenticated for this turn.
+  const nextAction = workId
+    ? boundedString(control.next_action || continuity.next_action, MAX_SIGNAL_LENGTH)
+    : null;
 
   return Object.freeze({
     // This is an internal, server-issued contract. It is deliberately kept
@@ -219,8 +225,8 @@ function requireBoundPreflight(result, identity, args) {
       work_id: workId,
       project_id: projectId,
       state: normalizeWorkState(control.work_state || continuity.state, { workId, selectionRequired }),
-      next_action: boundedString(control.next_action || continuity.next_action, MAX_SIGNAL_LENGTH),
-      next_action_available: Boolean(boundedString(control.next_action || continuity.next_action, MAX_SIGNAL_LENGTH)),
+      next_action: nextAction,
+      next_action_available: Boolean(nextAction),
       selection_required: selectionRequired,
     }),
     memory: Object.freeze({
@@ -356,20 +362,19 @@ function responseLanguage(locale) {
 
 function staticReplySeed(locale, workBound, nextAction = null) {
   const proposedNextAction = boundedString(nextAction, MAX_SIGNAL_LENGTH);
+  const nextActionTerminal = /[.!?]$/.test(proposedNextAction) ? "" : ".";
   if (locale === "en") {
-    const prefix = workBound
-      ? "I have read the request in the authenticated Work context. I can provide analysis or a governed proposal, but this conversation has not authorized or performed any external action."
-      : "I have read the request. No Work is currently bound; I can provide advisory analysis, but this conversation has not authorized or performed any external action.";
     return proposedNextAction
-      ? `${prefix} The proposed next step is: ${proposedNextAction}`
-      : prefix;
+      ? `Proposed next step: ${proposedNextAction}${nextActionTerminal} No external action has been authorized or performed.`
+      : workBound
+        ? "No server-issued next step is currently available. No external action has been authorized or performed."
+        : "No Work is currently bound. No external action has been authorized or performed.";
   }
-  const prefix = workBound
-    ? "Ho letto la richiesta nel contesto Work autenticato. Posso fornire un'analisi o una proposta governata, ma questa conversazione non ha autorizzato né eseguito azioni esterne."
-    : "Ho letto la richiesta. Nessun Work è attualmente associato; posso fornire un'analisi consultiva, ma questa conversazione non ha autorizzato né eseguito azioni esterne.";
   return proposedNextAction
-    ? `${prefix} Il prossimo passo proposto è: ${proposedNextAction}`
-    : prefix;
+    ? `Prossimo passo proposto: ${proposedNextAction}${nextActionTerminal} Nessuna azione esterna è stata autorizzata o eseguita.`
+    : workBound
+      ? "Nessun prossimo passo server-emesso è al momento disponibile. Nessuna azione esterna è stata autorizzata o eseguita."
+      : "Nessun Work è attualmente associato. Nessuna azione esterna è stata autorizzata o eseguita.";
 }
 
 function turnId({ tenantId, sessionId, message, workId, projectId, locale, style }) {
@@ -392,6 +397,7 @@ function textResult(payload) {
     response_language: contract.response_language,
     reply_seed: contract.reply_seed,
     next_action: contract.next_action,
+    rendering_policy: contract.rendering_policy,
     action_mode: payload.action_policy.mode,
     work_id: payload.work.work_id,
     core_authority: payload.interpretation.core.authority,
@@ -532,9 +538,9 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
       style,
     });
     const instructions = [
-      "Answer the user directly in first person as Nyra and match the requested language and style.",
-      "Use only the bounded Work, memory counts and Core interpretation signals in this contract. When next_action is present, state it as the proposed next step; do not invent state or evidence.",
-      "Keep the answer advisory. Never claim an external or consequential action was authorized, attempted or completed; a separate governed action tool and host approval are always required.",
+      "Render host_response_contract.reply_seed as the complete operational answer before adding any optional explanation.",
+      "When next_action is present, preserve it verbatim after 'Prossimo passo proposto'. Do not cite PRs, CI, plans, checkpoints or history unless those exact facts are separately present in the server contract.",
+      "Do not say that Nyra has resumed, will proceed, started work, verified a result, or performed an external action. This turn is advisory only; a separate governed tool and host approval are required for any action.",
     ];
     return textResult(Object.freeze({
       schema_version: "nyra_conversation_turn_v1",
@@ -570,6 +576,7 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
         response_style: style,
         reply_seed: replySeed,
         next_action: nextAction,
+        rendering_policy: "server_next_action_first_v1",
         instructions: Object.freeze(instructions),
       }),
       execution_authorized: false,

@@ -219,7 +219,8 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.equal(payload.work.preflight_bound, true);
   assert.equal(payload.work.next_action, "Continue the existing Work.");
   assert.equal(payload.host_response_contract.next_action, "Continue the existing Work.");
-  assert.match(payload.host_response_contract.reply_seed, /Il prossimo passo proposto è: Continue the existing Work\./);
+  assert.match(payload.host_response_contract.reply_seed, /^Prossimo passo proposto: Continue the existing Work\./);
+  assert.equal(payload.host_response_contract.rendering_policy, "server_next_action_first_v1");
   assert.equal(payload.interpretation.core.execution_allowed, false);
   assert.equal(payload.interpretation.core.route, "V0");
   assert.equal(payload.nyra_dialogue.work_revision, 3);
@@ -285,7 +286,7 @@ test("binds an existing conversational Work to its persisted canonical project",
   assert.deepEqual(calls.continuity[0][4], { resumeExisting: true });
 });
 
-test("publishes nyra_converse in the governed catalog without adding an eleventh compact tool", async () => {
+test("publishes nyra_converse as a direct compact resume tool without discovery", async () => {
   const { handler } = harness();
   const { router, revision } = routerFor(handler);
   const catalog = await router.core_capability_catalog({
@@ -308,8 +309,8 @@ test("publishes nyra_converse in the governed catalog without adding an eleventh
   const allHandlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({})]));
   const compact = compactMcpTools(TOOLS, allHandlers);
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 10);
-  assert.equal(compact.some((tool) => tool.name === "nyra_converse"), false);
+  assert.equal(compact.length, 11);
+  assert.equal(compact.some((tool) => tool.name === "nyra_converse"), true);
 });
 
 test("returns a successful Italian Nyra turn through catalog revision plus core_capability_read", async () => {
@@ -350,10 +351,10 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
   assert.equal(payload.host_response_contract.speaker, "Nyra");
   assert.equal(payload.host_response_contract.renderer, "connected_host_model");
   assert.equal(payload.host_response_contract.response_language, "it");
-  assert.match(payload.host_response_contract.reply_seed, /^Ho letto la richiesta nel contesto Work autenticato\./);
+  assert.match(payload.host_response_contract.reply_seed, /^Prossimo passo proposto: Answer the owner\./);
   assert.equal(payload.work.next_action, "Answer the owner");
   assert.equal(payload.host_response_contract.next_action, "Answer the owner");
-  assert.match(payload.host_response_contract.reply_seed, /Il prossimo passo proposto è: Answer the owner/);
+  assert.match(payload.host_response_contract.reply_seed, /Prossimo passo proposto: Answer the owner/);
   assert.equal(payload.interpretation.core.authority, "V2");
   assert.equal(payload.interpretation.selected_action_available, true);
   assert.equal(payload.interpretation.risk_band, "low");
@@ -467,7 +468,7 @@ test("keeps smuggled deploy and send requests proposal-only and never repeats a 
   assert.equal(payload.action_policy.classification_only, true);
   assert.equal(payload.action_policy.external_action_authorized, false);
   assert.equal(payload.action_policy.consequential_action_performed, false);
-  assert.match(payload.host_response_contract.reply_seed, /non ha autorizzato né eseguito/);
+  assert.match(payload.host_response_contract.reply_seed, /Nessuna azione esterna è stata autorizzata o eseguita/);
   assert.equal(JSON.stringify(response).includes("Deploy completato"), false);
   assert.equal(payload.execution_authorized, false);
   assert.equal(payload.external_action_authorized, false);
@@ -592,7 +593,7 @@ test("serializes the bounded server-issued next action but excludes unrelated up
   assert.equal(payload.work.next_action_available, true);
   assert.equal(payload.work.next_action, "Answer the owner");
   assert.equal(payload.host_response_contract.next_action, "Answer the owner");
-  assert.match(payload.host_response_contract.reply_seed, /Il prossimo passo proposto è: Answer the owner/);
+  assert.match(payload.host_response_contract.reply_seed, /Prossimo passo proposto: Answer the owner/);
   assert.equal(payload.interpretation.selected_action_available, true);
   assert.equal(Object.hasOwn(payload.interpretation, "selected_action"), false);
   assert.equal(payload.interpretation.risk_band, "unknown");
@@ -625,7 +626,7 @@ test("vague wording cannot surface an upstream completion claim or imply an unbo
   assert.equal(payload.work.state, "unbound");
   assert.match(payload.host_response_contract.reply_seed, /Nessun Work è attualmente associato/);
   assert.doesNotMatch(payload.host_response_contract.reply_seed, /autenticato/);
-  assert.match(payload.host_response_contract.instructions[2], /Never claim/);
+  assert.match(payload.host_response_contract.instructions[2], /Do not say/);
   assert.equal(payload.execution_authorized, false);
   assert.equal(payload.external_action_authorized, false);
 });
