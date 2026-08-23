@@ -563,7 +563,7 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
       action_policy: action,
       host_response_contract: Object.freeze({
         speaker: "Nyra",
-        renderer: "connected_host_model",
+        renderer: "nyra_widget_with_host_fallback",
         response_language: responseLanguage(locale),
         response_style: style,
         reply_seed: replySeed,

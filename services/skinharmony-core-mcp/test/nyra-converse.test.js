@@ -352,7 +352,7 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
   assert.equal(payload.work.preflight_bound, true);
   assert.equal(payload.work.work_bound, true);
   assert.equal(payload.host_response_contract.speaker, "Nyra");
-  assert.equal(payload.host_response_contract.renderer, "connected_host_model");
+  assert.equal(payload.host_response_contract.renderer, "nyra_widget_with_host_fallback");
   assert.equal(payload.host_response_contract.response_language, "it");
   assert.match(payload.host_response_contract.reply_seed, /^Prossimo passo proposto: Answer the owner\./);
   assert.equal(payload.work.next_action, "Answer the owner");

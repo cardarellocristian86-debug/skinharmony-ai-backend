@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, resolveHostTransportPresence, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { NYRA_DIALOGUE_WIDGET_MIME_TYPE, NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES, createDynamicCapabilityHandlers, dynamicCapabilityCatalogSnapshot } from "../src/dynamic-capability-router.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
@@ -1596,7 +1597,12 @@ test("production compact mode exposes only the stable connector surface", async 
         },
         body: JSON.stringify({ jsonrpc: "2.0", id: 220 + index, method: "resources/list" }),
       }).then((result) => result.json());
-      assert.deepEqual(resources.result.resources, []);
+      assert.deepEqual(resources.result.resources, [{
+        uri: NYRA_DIALOGUE_WIDGET_URI,
+        name: "Nyra operating dialogue",
+        description: "Authoritative Nyra Work response rendered from bounded server output.",
+        mimeType: NYRA_DIALOGUE_WIDGET_MIME_TYPE,
+      }]);
 
       const retiredTool = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
         method: "POST",
@@ -2815,13 +2821,27 @@ test("returns an explicit client error for a cloud-memory checksum mismatch", as
 });
 
 
-test("retires the OpenAI setup resource from the MCP surface", async () => serve(async (base) => {
+test("publishes only the Nyra dialogue resource and keeps retired provider setup unavailable", async () => serve(async (base) => {
   const resources = await fetch(`${base}/mcp`, {
     method: "POST",
     headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-retired-openai-panel" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 41, method: "resources/list" }),
   }).then((response) => response.json());
-  assert.deepEqual(resources.result.resources, []);
+  assert.deepEqual(resources.result.resources, [{
+    uri: NYRA_DIALOGUE_WIDGET_URI,
+    name: "Nyra operating dialogue",
+    description: "Authoritative Nyra Work response rendered from bounded server output.",
+    mimeType: NYRA_DIALOGUE_WIDGET_MIME_TYPE,
+  }]);
+
+  const nyraRead = await fetch(`${base}/mcp`, {
+    method: "POST",
+    headers: { authorization: "Bearer codex-key", "content-type": "application/json", "mcp-session-id": "mcp-nyra-dialogue" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 411, method: "resources/read", params: { uri: NYRA_DIALOGUE_WIDGET_URI } }),
+  }).then((response) => response.json());
+  assert.equal(nyraRead.result.contents[0].mimeType, NYRA_DIALOGUE_WIDGET_MIME_TYPE);
+  assert.match(nyraRead.result.contents[0].text, /ui\/notifications\/tool-result/);
+  assert.equal(nyraRead.result.contents[0]._meta.ui.prefersBorder, true);
 
   const read = await fetch(`${base}/mcp`, {
     method: "POST",

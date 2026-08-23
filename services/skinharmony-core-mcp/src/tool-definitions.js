@@ -1,3 +1,5 @@
+import { NYRA_DIALOGUE_WIDGET_URI } from "./nyra-operating-dialogue-widget.js";
+
 function annotations(readOnly, idempotent = false, openWorld = false, destructive = false) {
   return { readOnlyHint: readOnly, destructiveHint: destructive, openWorldHint: openWorld, idempotentHint: idempotent };
 }
@@ -877,7 +879,7 @@ const nyraConverseOutputSchema = object({
   ]),
   host_response_contract: object({
     speaker: { const: "Nyra" },
-    renderer: { const: "connected_host_model" },
+    renderer: { const: "nyra_widget_with_host_fallback" },
     response_language: { type: "string", enum: ["it", "en", "match_user"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
     reply_seed: { type: "string", minLength: 1, maxLength: 1_200 },
@@ -982,6 +984,8 @@ export const TOOLS = [
     meta: {
       "skinharmony/providerExecution": false,
       "skinharmony/externalSideEffect": false,
+      ui: { resourceUri: NYRA_DIALOGUE_WIDGET_URI },
+      "openai/outputTemplate": NYRA_DIALOGUE_WIDGET_URI,
       "openai/toolInvocation/invoking": "Nyra sta ascoltando…",
       "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
     },
