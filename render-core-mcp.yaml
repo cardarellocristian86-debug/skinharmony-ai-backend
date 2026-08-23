@@ -154,8 +154,6 @@ services:
         value: generic_work_core_join_v1
       - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_KEY_ID
         value: universal-core-generic-join-v1
-      - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_TARGET_COMMIT
-        sync: false
       - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE_TOKEN
         sync: false
       - key: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SEED
