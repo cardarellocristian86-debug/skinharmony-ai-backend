@@ -2108,7 +2108,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
         i.intent_digest,
         c.capsule_id,c.capsule_digest,
         a.revision AS atlas_revision,a.source_hash AS atlas_source_hash,
-        r.fingerprint AS incident_fingerprint,r.status AS incident_status,
+        e.payload->>'fingerprint' AS incident_fingerprint,
+        CASE e.event_type
+          WHEN 'incident_runbook_verified' THEN 'verified'
+          WHEN 'incident_runbook_quarantined' THEN 'quarantined'
+          ELSE coalesce(e.payload->>'status','candidate')
+        END AS incident_status,
         (SELECT count(*)::int FROM core_continuity_works gw
           WHERE gw.tenant_id=w.tenant_id AND gw.project_id=w.project_id) AS gallery_work_count
       FROM core_continuity_works w
@@ -2121,11 +2126,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
       ) c ON true
       LEFT JOIN core_continuity_atlas_state a
         ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
+      -- A runbook can be reusable at project level, but the active incident
+      -- shown to Nyra must belong to this exact Work. The Work event ledger is
+      -- the authoritative association and prevents sibling Work contamination.
       LEFT JOIN LATERAL (
-        SELECT fingerprint,status FROM core_continuity_incident_runbooks
-        WHERE tenant_id=w.tenant_id AND project_id=w.project_id
-        ORDER BY updated_at DESC,fingerprint DESC LIMIT 1
-      ) r ON true
+        SELECT event_type,payload FROM core_continuity_events
+        WHERE tenant_id=w.tenant_id AND work_id=w.work_id
+          AND event_type IN ('incident_recorded','incident_runbook_verified','incident_runbook_quarantined')
+        ORDER BY sequence_number DESC LIMIT 1
+      ) e ON true
       WHERE w.tenant_id=$1 AND w.work_id=$2 AND ($3::varchar IS NULL OR w.project_id=$3)`, [tenantId, workId, projectId]);
     const row = result.rows[0];
     if (!row) throw new Error("continuity_work_not_found");
@@ -2136,7 +2145,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       schema_version: "nyra_operational_state_v1",
       tenant_id: tenantId,
       work_id: workId,
-      project_id: projectId,
+      project_id: row.project_id,
       work_revision: Number(row.current_version || 0),
       intent_digest: String(row.intent_digest || ""),
       checkpoint: Object.freeze({
