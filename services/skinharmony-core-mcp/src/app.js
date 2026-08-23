@@ -1963,7 +1963,12 @@ export function createApp(config, options = {}) {
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
-        const rawArgs = staleNyraRead
+        // Both legacy Codex preflight descriptors and stale ChatGPT read
+        // descriptors are deliberately translated to Nyra's narrow input
+        // contract.  The latter used to select `nyra_converse` correctly but
+        // then validate its old `work_preflight` arguments unchanged, causing
+        // a schema error before Nyra could resume the Work.
+        const rawArgs = (staleNyraRead || staleChatGptReadTool === "nyra_converse")
           ? staleNyraReadArguments(params.arguments)
           : params.arguments || {};
         const validationErrors = validateToolArguments(tool.inputSchema, rawArgs);

@@ -1694,6 +1694,83 @@ test("accepts only exact connector namespace aliases for visible registered tool
   }
 });
 
+test("translates a stale ChatGPT work_preflight descriptor into Nyra's conversation contract", async () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = "chatgpt-stale-read-key";
+  const now = Math.floor(Date.now() / 1_000);
+  const token = signedTestJwt(privateKey, jwk.kid, {
+    iss: "https://tenant.auth0.com/",
+    aud: "https://core",
+    sub: "chatgpt-stale-read-owner",
+    iat: now,
+    auth_time: now,
+    exp: now + 60,
+    scope: "core:read core:govern",
+    "https://skinharmony.it/tenant_id": "tenant-a",
+  });
+  let received;
+  const app = createApp({
+    ...config,
+    tenantClaim: "https://skinharmony.it/tenant_id",
+    oauthOwnerTenantBindings: { "chatgpt-stale-read-owner": "tenant-a" },
+  }, {
+    jwksCache: { get: async () => jwk },
+    toolSurface: "compact",
+    handlers: {
+      nyra_converse: async (args) => {
+        received = args;
+        return { structuredContent: { ok: true, tool: "nyra_converse" }, content: [] };
+      },
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "mcp-session-id": "chatgpt-stale-work-preflight",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 340,
+        method: "tools/call",
+        params: {
+          name: "work_preflight",
+          arguments: {
+            request: "Nyra, riprendi il Work",
+            environment: "production",
+            work_id: "11111111-1111-4111-8111-111111111111",
+            project_id: "skinharmony-ai-backend",
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.equal(body.result.structuredContent.tool, "nyra_converse");
+    assert.deepEqual({
+      message: received.message,
+      work_id: received.work_id,
+      project_id: received.project_id,
+      locale: received.locale,
+      response_style: received.response_style,
+    }, {
+      message: "Nyra, riprendi il Work",
+      work_id: "11111111-1111-4111-8111-111111111111",
+      project_id: "skinharmony-ai-backend",
+      locale: "auto",
+      response_style: "concise",
+    });
+    assert.equal(Object.hasOwn(received, "environment"), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("publishes the governed host-browsing research sequence", async () => serve(async (base) => {
   const response = await fetch(`${base}/mcp`, {
     method: "POST",
