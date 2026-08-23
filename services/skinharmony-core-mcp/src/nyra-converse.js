@@ -196,6 +196,7 @@ function requireBoundPreflight(result, identity, args) {
       work_id: workId,
       project_id: projectId,
       state: normalizeWorkState(control.work_state || continuity.state, { workId, selectionRequired }),
+      next_action: boundedString(control.next_action || continuity.next_action, MAX_SIGNAL_LENGTH),
       next_action_available: Boolean(boundedString(control.next_action || continuity.next_action, MAX_SIGNAL_LENGTH)),
       selection_required: selectionRequired,
     }),
@@ -230,6 +231,7 @@ function requirePersistedConversationContext(value, identity, args) {
       work_id: workId,
       project_id: projectId,
       state: normalizeWorkState(context.work_state, { workId, selectionRequired: false }),
+      next_action: boundedString(context.next_action, MAX_SIGNAL_LENGTH),
       next_action_available: Boolean(boundedString(context.next_action, MAX_SIGNAL_LENGTH)),
       selection_required: false,
     }),
@@ -327,15 +329,22 @@ function responseLanguage(locale) {
   return locale === "it" || locale === "en" ? locale : "match_user";
 }
 
-function staticReplySeed(locale, workBound) {
+function staticReplySeed(locale, workBound, nextAction = null) {
+  const proposedNextAction = boundedString(nextAction, MAX_SIGNAL_LENGTH);
   if (locale === "en") {
-    return workBound
+    const prefix = workBound
       ? "I have read the request in the authenticated Work context. I can provide analysis or a governed proposal, but this conversation has not authorized or performed any external action."
       : "I have read the request. No Work is currently bound; I can provide advisory analysis, but this conversation has not authorized or performed any external action.";
+    return proposedNextAction
+      ? `${prefix} The proposed next step is: ${proposedNextAction}`
+      : prefix;
   }
-  return workBound
+  const prefix = workBound
     ? "Ho letto la richiesta nel contesto Work autenticato. Posso fornire un'analisi o una proposta governata, ma questa conversazione non ha autorizzato né eseguito azioni esterne."
     : "Ho letto la richiesta. Nessun Work è attualmente associato; posso fornire un'analisi consultiva, ma questa conversazione non ha autorizzato né eseguito azioni esterne.";
+  return proposedNextAction
+    ? `${prefix} Il prossimo passo proposto è: ${proposedNextAction}`
+    : prefix;
 }
 
 function turnId({ tenantId, sessionId, message, workId, projectId, locale, style }) {
@@ -357,6 +366,7 @@ function textResult(payload) {
     speaker: contract.speaker,
     response_language: contract.response_language,
     reply_seed: contract.reply_seed,
+    next_action: contract.next_action,
     action_mode: payload.action_policy.mode,
     work_id: payload.work.work_id,
     core_authority: payload.interpretation.core.authority,
@@ -485,7 +495,8 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
       interpretation = requireTenantBoundInterpretation(interpretationResult, identity);
     }
     const action = actionPolicy(message);
-    const replySeed = staticReplySeed(locale, Boolean(boundedPreflight.work.work_id));
+    const nextAction = boundedPreflight.work.next_action;
+    const replySeed = staticReplySeed(locale, Boolean(boundedPreflight.work.work_id), nextAction);
     const id = turnId({
       tenantId,
       sessionId,
@@ -497,7 +508,7 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
     });
     const instructions = [
       "Answer the user directly in first person as Nyra and match the requested language and style.",
-      "Use only the bounded Work, memory counts and Core interpretation signals in this contract; do not invent state or evidence.",
+      "Use only the bounded Work, memory counts and Core interpretation signals in this contract. When next_action is present, state it as the proposed next step; do not invent state or evidence.",
       "Keep the answer advisory. Never claim an external or consequential action was authorized, attempted or completed; a separate governed action tool and host approval are always required.",
     ];
     return textResult(Object.freeze({
@@ -532,6 +543,7 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
         response_language: responseLanguage(locale),
         response_style: style,
         reply_seed: replySeed,
+        next_action: nextAction,
         instructions: Object.freeze(instructions),
       }),
       execution_authorized: false,

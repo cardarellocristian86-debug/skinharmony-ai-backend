@@ -217,6 +217,9 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.equal(calls.preflight.length, 0);
   assert.equal(calls.interpret.length, 0);
   assert.equal(payload.work.preflight_bound, true);
+  assert.equal(payload.work.next_action, "Continue the existing Work.");
+  assert.equal(payload.host_response_contract.next_action, "Continue the existing Work.");
+  assert.match(payload.host_response_contract.reply_seed, /Il prossimo passo proposto è: Continue the existing Work\./);
   assert.equal(payload.interpretation.core.execution_allowed, false);
   assert.equal(payload.interpretation.core.route, "V0");
   assert.equal(payload.server_model_calls, 0);
@@ -345,6 +348,9 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
   assert.equal(payload.host_response_contract.renderer, "connected_host_model");
   assert.equal(payload.host_response_contract.response_language, "it");
   assert.match(payload.host_response_contract.reply_seed, /^Ho letto la richiesta nel contesto Work autenticato\./);
+  assert.equal(payload.work.next_action, "Answer the owner");
+  assert.equal(payload.host_response_contract.next_action, "Answer the owner");
+  assert.match(payload.host_response_contract.reply_seed, /Il prossimo passo proposto è: Answer the owner/);
   assert.equal(payload.interpretation.core.authority, "V2");
   assert.equal(payload.interpretation.selected_action_available, true);
   assert.equal(payload.interpretation.risk_band, "low");
@@ -555,13 +561,11 @@ test("rejects unsuccessful, tenant-less and malformed Core interpretations", asy
   );
 });
 
-test("never serializes free-form upstream text and normalizes unknown states", async () => {
+test("serializes the bounded server-issued next action but excludes unrelated upstream text", async () => {
   const marker = "SECRET_MARKER_9f83f572_unique";
   const preflight = preflightFixture();
   preflight.structuredContent.work_preflight.continuity.state = marker;
-  preflight.structuredContent.work_preflight.continuity.next_action = marker;
   preflight.structuredContent.work_preflight.nyra_control_context.work_state = marker;
-  preflight.structuredContent.work_preflight.nyra_control_context.next_action = marker;
   const interpretation = interpretationFixture("tenant-a", marker);
   interpretation.structuredContent.result.selected_by_core.primary_action_label = marker;
   interpretation.structuredContent.result.selected_by_core.risk_band = marker;
@@ -583,7 +587,9 @@ test("never serializes free-form upstream text and normalizes unknown states", a
   assert.equal(JSON.stringify(response).includes(marker), false);
   assert.equal(payload.work.state, "unknown");
   assert.equal(payload.work.next_action_available, true);
-  assert.equal(Object.hasOwn(payload.work, "next_action"), false);
+  assert.equal(payload.work.next_action, "Answer the owner");
+  assert.equal(payload.host_response_contract.next_action, "Answer the owner");
+  assert.match(payload.host_response_contract.reply_seed, /Il prossimo passo proposto è: Answer the owner/);
   assert.equal(payload.interpretation.selected_action_available, true);
   assert.equal(Object.hasOwn(payload.interpretation, "selected_action"), false);
   assert.equal(payload.interpretation.risk_band, "unknown");
