@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachWorkPreflight, requiresGenericWorkPreflight, TOOLS } from "../src/app.js";
+import { attachWorkPreflight, filterToolsForClient, requiresGenericWorkPreflight, TOOLS } from "../src/app.js";
+
+test("gives ChatGPT a Nyra-only front door while preserving the Codex tool surface", () => {
+  const chatgptTools = filterToolsForClient(TOOLS, { kind: "oauth" });
+  assert.deepEqual(chatgptTools.map((tool) => tool.name), ["nyra_converse"]);
+  assert.equal(filterToolsForClient(TOOLS, { kind: "codex" }).length, TOOLS.length);
+});
 
 test("advertises explicit confirmation fields only on write tools", () => {
   const readTools = TOOLS.filter((tool) => tool.annotations.readOnlyHint === true);

@@ -2190,7 +2190,7 @@ test("keeps one logical chat signature stable across rotated MCP transports", as
   }
 });
 
-test("binds only an authenticated OAuth owner logical session for native coordinator planning", async () => {
+test("keeps ChatGPT on Nyra's front door while Codex retains native coordinator planning", async () => {
   const planTool = WORK_CONTINUITY_TOOLS.find(
     (tool) => tool.name === "work_continuity_native_plan",
   );
@@ -2306,16 +2306,8 @@ test("binds only an authenticated OAuth owner logical session for native coordin
       id: "oauth-owner",
     });
     assert.equal(oauth.response.status, 200, JSON.stringify(oauth.body));
-    assert.equal(oauth.body.error, undefined, JSON.stringify(oauth.body));
-    assert.equal(captured.length, 1, JSON.stringify(oauth.body));
-    const oauthPresence = captured[0].identity.agentPresence;
-    assert.equal(captured[0].identity.tenantId, "tenant-a");
-    assert.equal(oauthPresence.transport_bound, true);
-    assert.equal(
-      oauthPresence.host_transport_session_fingerprint,
-      oauthPresence.session_fingerprint,
-    );
-    assert.equal(oauthPresence.binding_source, "oauth_declared");
+    assert.equal(oauth.body.error?.message, "Unknown tool", JSON.stringify(oauth.body));
+    assert.equal(captured.length, 0, JSON.stringify(oauth.body));
 
     const codex = await invoke({
       authorization: "Bearer codex-key",
@@ -2325,8 +2317,8 @@ test("binds only an authenticated OAuth owner logical session for native coordin
     });
     assert.equal(codex.response.status, 200, JSON.stringify(codex.body));
     assert.equal(codex.body.error, undefined, JSON.stringify(codex.body));
-    assert.equal(captured.length, 2);
-    const codexPresence = captured[1].identity.agentPresence;
+    assert.equal(captured.length, 1);
+    const codexPresence = captured[0].identity.agentPresence;
     assert.equal(codexPresence.transport_bound, false);
     assert.equal(codexPresence.host_transport_session_fingerprint, null);
     assert.equal(codexPresence.binding_source, "declared");
