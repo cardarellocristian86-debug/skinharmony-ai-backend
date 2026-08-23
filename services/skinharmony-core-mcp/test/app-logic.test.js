@@ -1,11 +1,35 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachWorkPreflight, filterToolsForClient, requiresGenericWorkPreflight, TOOLS } from "../src/app.js";
+import {
+  attachWorkPreflight,
+  configureToolForRuntime,
+  filterToolsForClient,
+  requiresGenericWorkPreflight,
+  resolveStaleChatGptReadTool,
+  TOOLS,
+} from "../src/app.js";
 
 test("gives ChatGPT a Nyra-only front door while preserving the Codex tool surface", () => {
   const chatgptTools = filterToolsForClient(TOOLS, { kind: "oauth" });
   assert.deepEqual(chatgptTools.map((tool) => tool.name), ["nyra_converse"]);
   assert.equal(filterToolsForClient(TOOLS, { kind: "codex" }).length, TOOLS.length);
+});
+
+test("keeps Nyra local while routing stale ChatGPT health reads to health", () => {
+  const nyra = TOOLS.find((tool) => tool.name === "nyra_converse");
+  const health = TOOLS.find((tool) => tool.name === "core_health");
+  const routedNyra = configureToolForRuntime(nyra, { environmentRoutingRequired: true });
+  const routedHealth = configureToolForRuntime(health, { environmentRoutingRequired: true });
+  assert.equal(routedNyra.inputSchema.required.includes("environment"), false);
+  assert.equal(routedHealth.inputSchema.required.includes("environment"), true);
+  assert.equal(
+    resolveStaleChatGptReadTool("skinharmony_nyra_core.core_health", { kind: "oauth" }, [nyra]),
+    "core_health",
+  );
+  assert.equal(
+    resolveStaleChatGptReadTool("skinharmony_nyra_core.work_preflight", { kind: "oauth" }, [nyra]),
+    "nyra_converse",
+  );
 });
 
 test("advertises explicit confirmation fields only on write tools", () => {
