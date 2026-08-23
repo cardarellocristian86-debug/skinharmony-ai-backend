@@ -24,7 +24,6 @@ export function renderProtocolsView(deps) {
 
   const treatments = Array.isArray(state.treatments) ? state.treatments : [];
   const planId = currentPlanId();
-  const quotaLabel = planId === "silver" ? t("protocolsView.quotaSilver") : planId === "gold" || planId === "enterprise" ? t("protocolsView.quotaGold") : t("protocolsView.aiProtocolManual");
   const planNote = planId === "silver" ? t("protocolsView.planSilver") : planId === "gold" || planId === "enterprise" ? t("protocolsView.planGold") : t("protocolsView.planBase");
 
   return `
@@ -56,9 +55,7 @@ export function renderProtocolsView(deps) {
             ${renderModuleStateCard({ key: "protocols", title: t("protocolsView.title"), enabledCopy: t("servicesView.protocolsEnabled"), lockedCopy: t("servicesView.protocolsLocked") })}
             ${renderModuleStateCard({ key: "treatments", title: t("servicesView.treatmentsTitle"), enabledCopy: t("servicesView.treatmentsEnabled"), lockedCopy: t("servicesView.treatmentsLocked") })}
           </div>
-          <div class="module-pills mt-16">
-            <div class="module-pill ${planId === "base" ? "" : "active"}">${t("protocolsView.aiProtocolStatus")} · ${quotaLabel}</div>
-          </div>
+          <div class="settings-note mt-16">${t("protocolsView.aiProtocolStandby")}</div>
         </section>
       </div>
 

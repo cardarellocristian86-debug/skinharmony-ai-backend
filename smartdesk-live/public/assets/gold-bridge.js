@@ -4,6 +4,7 @@
   // AI Gold owns its own overview read model. Keeping this dashboard bridge
   // off that route prevents duplicate fan-out on every Gold page entry.
   const ROUTES = new Set(["/", "/dashboard"]);
+  const OVERVIEW_READ_ROUTES = new Set(["/", "/dashboard", "/ai-gold"]);
   const SETTINGS_PANEL_ID = "skinharmony-admin-tools-bridge";
   const ENTERPRISE_HOME_PANEL_ID = "skinharmony-enterprise-home-bridge";
   const ENTERPRISE_SETTINGS_PANEL_ID = "skinharmony-enterprise-settings-bridge";
@@ -11,9 +12,10 @@
   const ENTERPRISE_SURFACE_PANEL_ID = "skinharmony-enterprise-surface-bridge";
   const TOPBAR_MENU_BUTTON_ID = "skinharmony-topbar-menu-toggle";
   const TOPBAR_MENU_STORAGE_KEY = "skinharmony-topbar-menu-expanded";
+  const nativeFetch = window.fetch.bind(window);
   let renderToken = 0;
-  let goldRenderTimers = [];
-  let settingsRenderTimers = [];
+  let renderScheduled = false;
+  let pendingRenderOptions = {};
   // The bridge is mounted alongside the React application. Keep its read model in
   // this tab instead of rebuilding it for every DOM mutation React emits.
   const GOLD_OVERVIEW_TTL_MS = 2 * 60 * 1000;
@@ -583,11 +585,6 @@
     });
   }
 
-  function clearTimers(list) {
-    list.forEach((id) => window.clearTimeout(id));
-    list.length = 0;
-  }
-
   function runWithMutationLock(fn) {
     mutationLockDepth += 1;
     try {
@@ -815,23 +812,35 @@
   function sourceStatus(context = {}, capabilities = {}) {
     const external = context?.externalAi || {};
     const primary = Boolean(external.primary || context?.summary?.externalPrimary || context?.decisionAuthority === "core_nyra_render_primary");
-    const provider = cleanDisplayText(external.provider || context?.summary?.externalProvider || capabilities?.engineName || "", copy("Lettura dati Smart Desk", "Smart Desk data reading", "Smart-Desk-Datenlesung"));
+    const degraded = !primary && Boolean(external.attempted && (external.failed || external.error));
+    const provider = primary
+      ? cleanDisplayText(external.provider || context?.summary?.externalProvider || capabilities?.engineName || "", "Core/Nyra server")
+      : copy("Smart Desk locale", "Local Smart Desk", "Lokaler Smart Desk");
     return {
       primary,
       provider,
-      label: primary ? copy("Fonte primaria", "Primary source", "Primärquelle") : copy("Lettura prudente", "Careful reading", "Vorsichtige Lesung"),
-      title: primary ? copy("Core/Nyra server in alto", "Core/Nyra server on top", "Core/Nyra-Server als Hauptquelle") : copy("Core/Nyra server non pienamente disponibili", "Core/Nyra server not fully available", "Core/Nyra-Server nicht vollständig verfügbar"),
+      label: primary
+        ? copy("Fonte primaria", "Primary source", "Primärquelle")
+        : degraded
+          ? copy("Fonte esterna degradata", "External source degraded", "Externe Quelle beeinträchtigt")
+          : copy("Dati osservati", "Observed data", "Beobachtete Daten"),
+      title: primary
+        ? copy("Core/Nyra server in alto", "Core/Nyra server on top", "Core/Nyra-Server als Hauptquelle")
+        : degraded
+          ? copy("Tentativo Core/Nyra non disponibile", "Core/Nyra attempt unavailable", "Core/Nyra-Versuch nicht verfügbar")
+          : copy("Smart Desk locale · dati osservati", "Local Smart Desk · observed data", "Lokaler Smart Desk · beobachtete Daten"),
       copy: primary
         ? copy("Smart Desk legge i dati del centro; Core server decide la priorita; Nyra server spiega cosa fare. OpenAI rifinisce solo la forma se disponibile.", "Smart Desk reads the center data; Core server decides the priority; Nyra server explains what to do. OpenAI only refines the wording when available.", "Smart Desk liest die Center-Daten; der Core-Server entscheidet die Priorität; der Nyra-Server erklärt, was zu tun ist. OpenAI verfeinert nur die Formulierung, wenn verfügbar.")
-        : copy("Smart Desk sta mostrando una lettura prudente dai dati locali. Controlla dati mancanti e riprova la lettura esterna.", "Smart Desk is showing a careful reading from local data. Check missing data and retry the external reading.", "Smart Desk zeigt eine vorsichtige Lesung aus lokalen Daten. Fehlende Daten prüfen und die externe Lesung erneut starten."),
-      className: primary ? "" : "fallback"
+        : degraded
+          ? copy("La lettura locale resta disponibile; riprova Core/Nyra solo per un'azione che richiede autorità esterna.", "The local reading remains available; retry Core/Nyra only for an action requiring external authority.", "Die lokale Auswertung bleibt verfügbar; Core/Nyra nur für Aktionen erneut versuchen, die externe Autorität benötigen.")
+          : copy("La panoramica usa dati locali verificabili. Core è richiesto separatamente solo per verdict autoritativi o azioni sensibili.", "The overview uses verifiable local data. Core is required separately only for authoritative verdicts or sensitive actions.", "Die Übersicht nutzt überprüfbare lokale Daten. Core ist separat nur für autoritative Urteile oder sensible Aktionen erforderlich."),
+      className: degraded ? "fallback" : ""
     };
   }
 
   function sanitizeGoldUiText(root = document.getElementById("root")) {
     if (!root) return;
     if (!uiLanguageReady) return;
-    if (isPublicAuthRoute() && !isEnglish() && !isGerman()) return;
     const counted = (singular, plural) => (_match, count) => `${count} ${Number(count) === 1 ? singular : plural}`;
     const replacements = new Map([
       ["Universal Core Decision Engine", copy("AI Gold - Core/Nyra server", "AI Gold - Core/Nyra server", "AI Gold - Core/Nyra-Server")],
@@ -849,7 +858,14 @@
       ["Non ci sono priorità urgenti da mostrare.", copy("Non ci sono urgenze forti: controlla cosa manca e la prossima azione manuale.", "There are no strong urgent items: check what is missing and the next manual action.", "Es gibt keine starke Dringlichkeit: prüfe, was fehlt, und die nächste manuelle Aktion.")],
       ["Gold continua a leggere il centro e riapparirà solo quando serve un'azione.", copy("Gold resta attivo: se mancano dati, mostra cosa completare; se i dati sono coerenti, indica la prossima verifica utile.", "Gold stays active: if data is missing, it shows what to complete; if data is coherent, it points to the next useful check.", "Gold bleibt aktiv: wenn Daten fehlen, zeigt es, was zu ergänzen ist; wenn die Daten stimmig sind, zeigt es die nächste sinnvolle Prüfung.")],
       ["Centro sotto controllo", copy("Centro letto da Smart Desk", "Center read by Smart Desk", "Center von Smart Desk gelesen")],
-      ["AI priority alerts", copy("AI Gold - cosa fare ora", "AI Gold - what to do now", "AI Gold - was jetzt zu tun ist")]
+      ["AI priority alerts", copy("AI Gold - cosa fare ora", "AI Gold - what to do now", "AI Gold - was jetzt zu tun ist")],
+      ["Base: protocolli manuali. Silver: protocolli AI guidati fino a 7 analisi. Gold: stanza piu ampia con AI operativa sopra i dati reali.", copy("Base, Silver e Gold mantengono i protocolli manuali. La generazione AI dei protocolli è in standby e non espone quote.", "Base, Silver and Gold keep manual protocols available. AI protocol generation is in standby and exposes no quota.", "Base, Silver und Gold behalten manuelle Protokolle. Die KI-Protokollerstellung ist im Standby und weist kein Kontingent aus.")],
+      ["Base: manual protocols. Silver: guided AI protocols up to 7 analyses. Gold: wider room with operational AI on top of real data.", copy("Base, Silver e Gold mantengono i protocolli manuali. La generazione AI dei protocolli è in standby e non espone quote.", "Base, Silver and Gold keep manual protocols available. AI protocol generation is in standby and exposes no quota.", "Base, Silver und Gold behalten manuelle Protokolle. Die KI-Protokollerstellung ist im Standby und weist kein Kontingent aus.")],
+      ["Dopo la prova, puoi scegliere Base o Silver con carta tramite Nexi. Gold resta in attivazione guidata.", copy("Dopo la prova, Base o Silver si attivano tramite WordPress/Suite. Nexi è mostrato solo se il checkout è configurato.", "After the trial, Base or Silver are activated through WordPress/Suite. Nexi is shown only when checkout is configured.", "Nach der Testphase werden Base oder Silver über WordPress/Suite aktiviert. Nexi wird nur bei konfiguriertem Checkout angezeigt.")],
+      ["After the trial, you can choose Base or Silver by Nexi card. Gold remains guided activation.", copy("Dopo la prova, Base o Silver si attivano tramite WordPress/Suite. Nexi è mostrato solo se il checkout è configurato.", "After the trial, Base or Silver are activated through WordPress/Suite. Nexi is shown only when checkout is configured.", "Nach der Testphase werden Base oder Silver über WordPress/Suite aktiviert. Nexi wird nur bei konfiguriertem Checkout angezeigt.")],
+      ["Dopo la prova puoi attivare Base o Silver con carta Nexi. Gold resta in attivazione guidata.", copy("Dopo la prova, l'attivazione passa da WordPress/Suite; Nexi è disponibile solo se configurato.", "After the trial, activation goes through WordPress/Suite; Nexi is available only when configured.", "Nach der Testphase erfolgt die Aktivierung über WordPress/Suite; Nexi ist nur verfügbar, wenn es konfiguriert ist.")],
+      ["Il pagamento dopo la prova avverrà solo con carta tramite Nexi. Il link viene inviato o mostrato al momento dell’attivazione di Base o Silver.", copy("Dopo la prova, Base o Silver si attivano tramite WordPress/Suite. Nexi compare solo quando il checkout è configurato; altrimenti prosegui con l’assistenza SkinHarmony.", "After the trial, Base or Silver are activated through WordPress/Suite. Nexi appears only when checkout is configured; otherwise continue with SkinHarmony support.", "Nach der Testphase werden Base oder Silver über WordPress/Suite aktiviert. Nexi erscheint nur bei konfiguriertem Checkout; andernfalls hilft der SkinHarmony-Support weiter.")],
+      ["Payment after the trial will be made only by card through Nexi. The link is sent or shown when activating Base or Silver.", copy("Dopo la prova, Base o Silver si attivano tramite WordPress/Suite. Nexi compare solo quando il checkout è configurato; altrimenti prosegui con l’assistenza SkinHarmony.", "After the trial, Base or Silver are activated through WordPress/Suite. Nexi appears only when checkout is configured; otherwise continue with SkinHarmony support.", "Nach der Testphase werden Base oder Silver über WordPress/Suite aktiviert. Nexi erscheint nur bei konfiguriertem Checkout; andernfalls hilft der SkinHarmony-Support weiter.")]
     ]);
     const regexReplacements = isGerman()
       ? [
@@ -1094,15 +1110,12 @@
         [/\bFinally the reusable center patterns\./g, "Zum Schluss die wiederverwendbaren Center-Muster."],
         [/\bInfine gli schemi riutilizzabili del centro\./g, "Zum Schluss die wiederverwendbaren Center-Muster."],
         [/\bProtocols with clearer levels\b|\bProtocolli con livelli piu chiari\b|\bProtocolli con livelli più chiari\b/g, "Protokolle mit klareren Ebenen"],
-        [/\bLibrary, client profile and AI draft must feel like three distinct levels, not one very long page\./g, "Bibliothek, Kundenprofil und AI-Entwurf müssen wie drei getrennte Ebenen wirken, nicht wie eine sehr lange Seite."],
-        [/\bLibreria, scheda cliente e bozza AI devono sembrare tre livelli distinti, non una pagina unica lunghissima\./g, "Bibliothek, Kundenprofil und AI-Entwurf müssen wie drei getrennte Ebenen wirken, nicht wie eine sehr lange Seite."],
         [/\bLibrary\b|\bLibreria\b/g, "Bibliothek"],
         [/\bFirst see what already exists and what is missing\./g, "Zuerst sehen, was schon existiert und was fehlt."],
         [/\bPrima vedi cosa esiste gia e cosa manca\./g, "Zuerst sehen, was schon existiert und was fehlt."],
         [/\bClient\b|\bCliente\b/g, "Kunde"],
         [/\bThen history, sensitivity and area\./g, "Dann Historie, Sensibilität und Zone."],
         [/\bPoi storico, sensibilita e zona\./g, "Dann Historie, Sensibilität und Zone."],
-        [/\bAI draft\b|\bBozza AI\b/g, "AI-Entwurf"],
         [/\bOnly then come suggestion and operator confirmation\./g, "Erst danach kommen Vorschlag und Bestätigung durch den Operator."],
         [/\bSolo dopo arrivano suggerimento e conferma operatore\./g, "Erst danach kommen Vorschlag und Bestätigung durch den Operator."],
         [/\b(\d+)\s+clienti? senza telefono o email\b|\b(\d+)\s+clients? without phone or email\b/g, (_match, itCount, enCount) => counted("Kunde ohne Telefon oder E-Mail", "Kunden ohne Telefon oder E-Mail")(_match, itCount || enCount)],
@@ -1373,7 +1386,7 @@
   }
 
   async function fetchJson(url) {
-    const response = await fetch(url, {
+    const response = await nativeFetch(url, {
       credentials: "include",
       headers: buildAuthHeaders({ Accept: "application/json" })
     });
@@ -1384,24 +1397,70 @@
   }
 
   function goldOverviewIsFresh() {
-    return Boolean(goldOverviewCache && goldOverviewCache.expiresAt > Date.now());
+    return Boolean(
+      goldOverviewCache
+      && goldOverviewCache.sessionKey === overviewSessionKey()
+      && goldOverviewCache.expiresAt > Date.now()
+    );
   }
 
-  async function buildGoldOverview(state) {
-    const [capabilities, context] = await Promise.all([
-      fetchJson("/api/ai-gold/capabilities"),
-      fetchJson("/api/ai-gold/decision-context")
-    ]);
+  function overviewSessionKey() {
+    const token = String(window.localStorage.getItem("skinharmony-web-token") || "");
+    let digest = 2166136261;
+    for (let index = 0; index < token.length; index += 1) {
+      digest ^= token.charCodeAt(index);
+      digest = Math.imul(digest, 16777619);
+    }
+    return String(digest >>> 0);
+  }
+
+  function trialRequestIdempotencyKey(body = "") {
+    let email = "anonymous";
+    try {
+      const payload = JSON.parse(String(body || "{}"));
+      email = String(payload.email || payload.contactEmail || "anonymous").trim().toLowerCase();
+    } catch (_error) {
+      // The server remains the final bounded-header validator.
+    }
+    let digest = 2166136261;
+    for (let index = 0; index < email.length; index += 1) {
+      digest ^= email.charCodeAt(index);
+      digest = Math.imul(digest, 16777619);
+    }
+    const storageKey = `smartdesk-trial-idempotency-${String(digest >>> 0)}`;
+    const existing = window.localStorage.getItem(storageKey);
+    if (existing) return existing;
+    const generated = `trial-${window.crypto.randomUUID()}`;
+    window.localStorage.setItem(storageKey, generated);
+    return generated;
+  }
+
+  async function fetchAiOverview(etag = "") {
+    const response = await nativeFetch("/api/ai-gold/overview", {
+      credentials: "include",
+      headers: buildAuthHeaders({
+        Accept: "application/json",
+        ...(etag ? { "If-None-Match": etag } : {})
+      })
+    });
+    if (response.status === 304 && goldOverviewCache) {
+      return {
+        ...goldOverviewCache,
+        expiresAt: Date.now() + GOLD_OVERVIEW_TTL_MS,
+        cache: { ...(goldOverviewCache.cache || {}), hit: true, revalidated: true }
+      };
+    }
+    if (!response.ok) throw new Error(String(response.status));
+    const payload = await response.json();
     return {
-      state,
-      tenantKey: String(state?.centerId || state?.tenantId || ""),
-      eventSeq: Number(state?.eventSeq || 0),
-      capabilities,
-      context,
-      // Customer intelligence is intentionally lazy. It is an expensive Core
-      // read and belongs to an explicit customer action, not to page opening.
-      customerIntelligence: null,
-      expiresAt: Date.now() + GOLD_OVERVIEW_TTL_MS
+      ...payload,
+      sessionKey: overviewSessionKey(),
+      etag: response.headers.get("ETag") || "",
+      payloadBytes: Number(response.headers.get("X-SmartDesk-Payload-Bytes") || 0),
+      expiresAt: Date.now() + GOLD_OVERVIEW_TTL_MS,
+      // Customer intelligence and other large projections remain explicit
+      // detail reads. Opening the plan dashboard never loads them.
+      customerIntelligence: null
     };
   }
 
@@ -1412,22 +1471,63 @@
     if (goldOverviewInFlight) return goldOverviewInFlight;
 
     goldOverviewInFlight = (async () => {
-      // State is the small tenant-scoped version marker. We only re-read the
-      // full Gold projections when its event sequence actually changes.
-      const state = await fetchJson("/api/ai-gold/state");
-      const tenantKey = String(state?.centerId || state?.tenantId || "");
-      const eventSeq = Number(state?.eventSeq || 0);
-      if (!force && goldOverviewCache && goldOverviewCache.tenantKey === tenantKey && goldOverviewCache.eventSeq === eventSeq) {
-        goldOverviewCache.expiresAt = Date.now() + GOLD_OVERVIEW_TTL_MS;
-        return goldOverviewCache;
-      }
-      const overview = await buildGoldOverview(state);
+      const sessionChanged = goldOverviewCache?.sessionKey !== overviewSessionKey();
+      const etag = !force && !sessionChanged ? String(goldOverviewCache?.etag || "") : "";
+      const overview = await fetchAiOverview(etag);
       goldOverviewCache = overview;
       return overview;
     })().finally(() => {
       goldOverviewInFlight = null;
     });
     return goldOverviewInFlight;
+  }
+
+  function installOverviewCompatibilityRead() {
+    window.fetch = async function (input, options = {}) {
+      const method = String(options?.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
+      const rawUrl = typeof input === "string" ? input : input?.url || "";
+      let pathname = "";
+      try {
+        pathname = new URL(rawUrl, window.location.origin).pathname;
+      } catch (_error) {
+        return nativeFetch(input, options);
+      }
+      if (method === "POST" && pathname === "/api/auth/request-trial") {
+        const headers = new Headers(options.headers || {});
+        if (!headers.has("Idempotency-Key")) {
+          headers.set("Idempotency-Key", trialRequestIdempotencyKey(options.body));
+        }
+        return nativeFetch(input, { ...options, headers });
+      }
+      const selector = pathname === "/api/ai-gold/capabilities"
+        ? "capabilities"
+        : pathname === "/api/ai-gold/decision-context"
+          ? "context"
+          : pathname === "/api/ai-gold/state"
+            ? "compatibility.state"
+            : pathname === "/api/ai-gold/cockpit"
+              ? "compatibility.cockpit"
+              : pathname === "/api/ai-gold/profitability"
+                ? "compatibility.profitability"
+                : pathname === "/api/ai-gold/marketing/autopilot"
+                  ? "compatibility.marketingAutopilot"
+                  : pathname === "/api/ai-gold/decision-center"
+                    ? "compatibility.decisionCenter"
+                    : "";
+      if (method !== "GET" || !selector || !OVERVIEW_READ_ROUTES.has(window.location.pathname || "/")) {
+        return nativeFetch(input, options);
+      }
+      const overview = await getGoldOverview();
+      const payload = selector.split(".").reduce((value, key) => value?.[key], overview) || {};
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "X-SmartDesk-Overview-Reused": "1",
+          "X-SmartDesk-Event-Seq": String(overview?.eventSeq || 0)
+        }
+      });
+    };
   }
 
   async function refreshUiLanguage(settingsPayload = null, options = {}) {
@@ -1540,9 +1640,19 @@
     return root.firstElementChild;
   }
 
-  function buildPanel(context, capabilities, customerIntelligence) {
+  function buildPanel(context, capabilities, customerIntelligence, currentPlan = "gold") {
+    const silver = String(currentPlan || "").toLowerCase() === "silver";
     const primary = context?.primaryAction || capabilities?.primaryAction || null;
-    const source = sourceStatus(context, capabilities);
+    const source = silver
+      ? {
+          primary: false,
+          provider: "Smart Desk locale",
+          label: copy("Sola lettura", "Read-only", "Nur lesend"),
+          title: copy("Smart Desk locale · sola lettura", "Local Smart Desk · read-only", "Lokaler Smart Desk · nur lesend"),
+          copy: copy("La lettura Silver è deterministica e locale: non è un verdict Core e non esegue azioni.", "The Silver reading is deterministic and local: it is not a Core verdict and executes no actions.", "Die Silver-Auswertung ist deterministisch und lokal: sie ist kein Core-Urteil und führt keine Aktionen aus."),
+          className: ""
+        }
+      : sourceStatus(context, capabilities);
     const summary = context?.summary || {};
     const secondary = Array.isArray(context?.secondaryActions) ? context.secondaryActions : [];
     const blocked = Array.isArray(context?.blockedActions) ? context.blockedActions : [];
@@ -1560,7 +1670,7 @@
     const explanationText = localizeGeneratedText(cleanDisplayText(primary?.explanationShort || context?.explanationShort || summary.title, copy("Cosa manca: verifica dati economici, costi servizi/operatori, agenda e cassa prima della prossima decisione.", "What is missing: check economic data, service/operator costs, agenda and cash desk before the next decision.")));
     const primaryRoute = routeForGoldAction(primary?.action || primaryText, primary?.domain, primary || {});
     const actionRoute = routeForGoldAction(primary?.suggestedAction || primary?.action || actionText, primary?.domain, primary || {});
-    const explanationRoute = routeForDomain(primary?.domain, "/ai-gold");
+    const explanationRoute = routeForDomain(primary?.domain, silver ? "/" : "/ai-gold");
 
     const panel = document.createElement("section");
     panel.id = PANEL_ID;
@@ -1575,11 +1685,11 @@
       </div>
       <div class="gold-bridge-header">
         <div>
-          <div class="gold-bridge-title">${copy("AI Gold - cosa fare ora", "AI Gold - what to do now", "AI Gold - was jetzt zu tun ist")}</div>
-          <div class="gold-bridge-subtitle">${copy("Il gestionale dice cosa sta succedendo. AI Gold dice cosa fare, cosa manca e quale controllo aprire.", "The management system says what is happening. AI Gold says what to do, what is missing and which control to open.", "Das Managementsystem zeigt, was passiert. AI Gold sagt, was zu tun ist, was fehlt und welche Kontrolle zu öffnen ist.")}</div>
+          <div class="gold-bridge-title">${silver ? copy("Core Silver - cosa controllare ora", "Silver Core - what to check now", "Silver Core - was jetzt zu prüfen ist") : copy("AI Gold - cosa fare ora", "AI Gold - what to do now", "AI Gold - was jetzt zu tun ist")}</div>
+          <div class="gold-bridge-subtitle">${silver ? copy("Lettura bounded e sola lettura: segnala priorita, dati mancanti e modulo da aprire senza automatismi.", "Bounded read-only view: it identifies priorities, missing data and the module to open without automation.", "Begrenzte Nur-Lese-Ansicht: Prioritäten, fehlende Daten und das zu öffnende Modul werden ohne Automatisierung angezeigt.") : copy("Il gestionale dice cosa sta succedendo. AI Gold dice cosa fare, cosa manca e quale controllo aprire.", "The management system says what is happening. AI Gold says what to do, what is missing and which control to open.", "Das Managementsystem zeigt, was passiert. AI Gold sagt, was zu tun ist, was fehlt und welche Kontrolle zu öffnen ist.")}</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
-          <button type="button" class="sh-topbar-menu-toggle" data-gold-refresh aria-label="${copy("Aggiorna AI Gold", "Refresh AI Gold", "AI Gold aktualisieren")}">${copy("Aggiorna", "Refresh", "Aktualisieren")}</button>
+          <button type="button" class="sh-topbar-menu-toggle" data-gold-refresh aria-label="${silver ? copy("Aggiorna Core Silver", "Refresh Silver Core", "Silver Core aktualisieren") : copy("Aggiorna AI Gold", "Refresh AI Gold", "AI Gold aktualisieren")}">${copy("Aggiorna", "Refresh", "Aktualisieren")}</button>
           <div class="gold-bridge-pill">${riskLabel(risk.band)}</div>
         </div>
       </div>
@@ -1588,9 +1698,9 @@
           <div class="gold-bridge-label">${copy("Prossima azione", "Next action", "Nächste Aktion")}</div>
           <div class="gold-bridge-value">${escapeHtml(primaryText)}</div>
         </div>
-        <div class="gold-bridge-metric" data-gold-route="/ai-gold" role="button" tabindex="0" aria-label="${copy("Apri AI Gold", "Open AI Gold")}">
+        <div class="gold-bridge-metric" data-gold-route="${silver ? "/" : "/ai-gold"}" role="button" tabindex="0" aria-label="${silver ? copy("Resta nella lettura Core Silver", "Stay in the Silver Core view") : copy("Apri AI Gold", "Open AI Gold")}">
           <div class="gold-bridge-label">${copy("Fonte", "Source", "Quelle")}</div>
-          <div class="gold-bridge-value">${source.primary ? copy("Core/Nyra server", "Core/Nyra server", "Core/Nyra-Server") : copy("Fallback dati", "Data fallback", "Daten-Fallback")}</div>
+          <div class="gold-bridge-value">${silver ? copy("Smart Desk locale", "Local Smart Desk", "Lokaler Smart Desk") : source.primary ? copy("Core/Nyra server", "Core/Nyra server", "Core/Nyra-Server") : copy("Fallback dati", "Data fallback", "Daten-Fallback")}</div>
         </div>
         <div class="gold-bridge-metric" data-gold-route="${actionRoute}" role="button" tabindex="0" aria-label="${copy("Apri azione suggerita da AI Gold", "Open the action suggested by AI Gold")}">
           <div class="gold-bridge-label">${copy("Cosa controllare", "What to check", "Was prüfen")}</div>
@@ -1663,7 +1773,7 @@
         const anchor = findAnchor();
         if (!anchor) return;
         sanitizeGoldUiText();
-        const panel = buildPanel(overview.context, overview.capabilities, overview.customerIntelligence);
+        const panel = buildPanel(overview.context, overview.capabilities, overview.customerIntelligence, overview.currentPlan);
         const existing = document.getElementById(PANEL_ID);
         runWithMutationLock(() => {
           if (existing) {
@@ -2064,7 +2174,7 @@
       },
       "/protocols": {
         title: copy("Protocolli con livelli piu chiari", "Protocols with clearer levels"),
-        subtitle: copy("Libreria, scheda cliente e bozza AI devono sembrare tre livelli distinti, non una pagina unica lunghissima.", "Library, client profile and AI draft must feel like three distinct levels, not one very long page."),
+        subtitle: copy("Libreria, scheda cliente e protocollo manuale restano separati e verificabili. Le funzioni AI sono in standby.", "Library, client profile and manual protocol remain separate and verifiable. AI features are on standby."),
         actions: [
           { label: copy("Protocolli", "Protocols"), href: "/protocols", active: true },
           { label: copy("Servizi", "Services"), href: "/services" },
@@ -2073,7 +2183,7 @@
         cards: [
           [copy("Libreria", "Library"), copy("Prima vedi cosa esiste gia e cosa manca.", "First see what already exists and what is missing."), "/protocols"],
           [copy("Cliente", "Client"), copy("Poi storico, sensibilita e zona.", "Then history, sensitivity and area."), "/clients"],
-          [copy("Bozza AI", "AI draft"), copy("Solo dopo arrivano suggerimento e conferma operatore.", "Only then come suggestion and operator confirmation."), "/ai-gold"]
+          [copy("Protocollo manuale", "Manual protocol"), copy("Salva solo dati inseriti e confermati dall'operatore; nessuna quota o generazione AI è promessa.", "Save only operator-entered and confirmed data; no AI quota or generation is promised."), "/protocols"]
         ]
       }
     }[route];
@@ -2223,26 +2333,35 @@
   }
 
   function scheduleRender(options = {}) {
-    clearTimers(goldRenderTimers);
-    clearTimers(settingsRenderTimers);
-    window.setTimeout(enhanceTopbarMenu, 80);
-    // React produces several mutations for a single navigation. One debounced
-    // reconciliation is enough; getGoldOverview single-flights the network read.
-    goldRenderTimers = [
-      window.setTimeout(() => refreshLanguageAndSanitize({ force: Boolean(options.forceLanguage) }), 40),
-      window.setTimeout(() => {
-        void renderGoldBridge({
-          // A route/session transition checks the tenant event marker. DOM
-          // mutations only reattach the cached panel and never re-read Gold.
-          revalidate: !options.fromMutation,
-          force: Boolean(options.forceGold)
-        });
-      }, 180)
-    ];
-    settingsRenderTimers = [
-      window.setTimeout(renderEnterprisePanels, 180),
-      window.setTimeout(renderSettingsTools, 180)
-    ];
+    if (renderScheduled) {
+      pendingRenderOptions = {
+        fromMutation: Boolean(pendingRenderOptions.fromMutation) && Boolean(options.fromMutation),
+        forceGold: Boolean(pendingRenderOptions.forceGold || options.forceGold),
+        forceLanguage: Boolean(pendingRenderOptions.forceLanguage || options.forceLanguage)
+      };
+      return;
+    }
+    pendingRenderOptions = {
+      fromMutation: Boolean(options.fromMutation),
+      forceGold: Boolean(options.forceGold),
+      forceLanguage: Boolean(options.forceLanguage)
+    };
+    renderScheduled = true;
+    // Coalesce React mutation bursts in the current turn without adding an
+    // artificial page-entry delay. The bounded network read remains single-flight.
+    queueMicrotask(() => {
+      const next = pendingRenderOptions;
+      pendingRenderOptions = {};
+      renderScheduled = false;
+      enhanceTopbarMenu();
+      void refreshLanguageAndSanitize({ force: next.forceLanguage });
+      void renderGoldBridge({
+        revalidate: !next.fromMutation,
+        force: next.forceGold
+      });
+      void renderEnterprisePanels();
+      void renderSettingsTools();
+    });
   }
 
   const observer = new MutationObserver(() => {
@@ -2283,7 +2402,7 @@
     if (observerStarted) return;
     const root = document.getElementById("root");
     if (!root) {
-      window.setTimeout(startObserver, 120);
+      document.addEventListener("DOMContentLoaded", startObserver, { once: true });
       return;
     }
     observer.observe(root, { childList: true, subtree: true });
@@ -2292,5 +2411,6 @@
   }
 
   startObserver();
+  installOverviewCompatibilityRead();
   scheduleRender({ revalidate: true, forceLanguage: true });
 })();
