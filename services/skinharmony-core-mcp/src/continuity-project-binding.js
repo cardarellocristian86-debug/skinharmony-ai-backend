@@ -28,9 +28,18 @@ export function continuityProjectId(args = {}) {
   return normalizedProjectId(args.target_system || DEFAULT_PROJECT_ID);
 }
 
-export async function resolveContinuityProjectBinding(identity, args = {}, workContinuityRuntime = null) {
+export async function resolveContinuityProjectBinding(
+  identity,
+  args = {},
+  workContinuityRuntime = null,
+  { preferPersistedWorkProject = false } = {},
+) {
   const fallbackProjectId = continuityProjectId(args);
-  if (args.project_id || !args.work_id || typeof workContinuityRuntime?.readIntent !== "function") {
+  if (
+    (!preferPersistedWorkProject && args.project_id) ||
+    !args.work_id ||
+    typeof workContinuityRuntime?.readIntent !== "function"
+  ) {
     return {
       projectId: fallbackProjectId,
       continuityArgs: args,

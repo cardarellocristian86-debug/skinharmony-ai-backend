@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { NYRA_DIALOGUE_WIDGET_URI } from "./nyra-operating-dialogue-widget.js";
 
 const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_SIGNAL_LENGTH = 500;
@@ -189,9 +190,9 @@ function requireBoundPreflight(result, identity, args) {
   if (args.work_id && workId !== String(args.work_id)) {
     throw fail("nyra_converse_work_binding_mismatch", 409);
   }
-  if (args.project_id && projectId && projectId !== String(args.project_id)) {
-    throw fail("nyra_converse_project_binding_mismatch", 409);
-  }
+  // In a direct Nyra conversation project_id is only a client-side lookup
+  // hint. The authenticated Work binding above is authoritative, so a stale
+  // host hint must not force the model through a second, redundant retry.
 
   const memory = envelope.shared_memory_bootstrap && typeof envelope.shared_memory_bootstrap === "object"
     ? envelope.shared_memory_bootstrap
@@ -394,6 +395,13 @@ function textResult(payload) {
   const contract = payload.host_response_contract;
   return {
     structuredContent: payload,
+    // The descriptor is not enough for hosts that cached a previous tool
+    // list. Bind the resource on the actual result as well, using both the
+    // MCP Apps field and ChatGPT's compatibility alias.
+    _meta: {
+      ui: { resourceUri: NYRA_DIALOGUE_WIDGET_URI },
+      "openai/outputTemplate": NYRA_DIALOGUE_WIDGET_URI,
+    },
     // Keep the model-facing narration deliberately final and small. The
     // structured payload remains available for a governed follow-up, but
     // listing Work ids, authority levels or diagnostics here tempted hosts to
@@ -439,6 +447,7 @@ export function createNyraConversePreflight({
       identity,
       preflightArgs,
       workContinuityRuntime,
+      { preferPersistedWorkProject: true },
     );
     const result = await workPreflight({
       ...preflightArgs,
