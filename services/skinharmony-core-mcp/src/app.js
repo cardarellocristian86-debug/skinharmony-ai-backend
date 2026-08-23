@@ -486,6 +486,30 @@ function resolveConnectorToolName(value, tools = []) {
   return visibleNames.has(candidate) ? candidate : null;
 }
 
+// ChatGPT can retain a connector tool descriptor for an already-open app
+// session after the server removes that descriptor from tools/list. The old
+// `work_preflight` was a public implementation detail; accept precisely that
+// stale name as a read-only compatibility request and route it to Nyra's
+// conversational front door. It is deliberately not advertised and cannot
+// reopen the manual preflight path.
+function isLegacyNyraPreflightToolName(value) {
+  const requested = String(value || "");
+  return requested === "work_preflight" ||
+    requested === `${CONNECTOR_TOOL_NAMESPACE}.work_preflight`;
+}
+
+function legacyNyraPreflightArguments(value) {
+  const args = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const request = typeof args.request === "string" ? args.request.trim() : "";
+  return {
+    message: request || "Nyra, riprendi il Work",
+    ...(typeof args.work_id === "string" ? { work_id: args.work_id } : {}),
+    ...(typeof args.project_id === "string" ? { project_id: args.project_id } : {}),
+    locale: "auto",
+    response_style: "concise",
+  };
+}
+
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "work_preflight",
   // nyra_converse owns a strict cache-or-one-preflight protocol. Letting the
@@ -717,6 +741,10 @@ export function buildGenericWorkCoreJoinHealth(config = {}, options = {}, upstre
 const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   "agent_heartbeat",
   "work_preflight",
+  // The Nyra front door is read-only and performs its own authenticated
+  // cache-or-one-preflight protocol, so a fresh ChatGPT conversation may
+  // establish its opaque session through it.
+  "nyra_converse",
   "core_health",
   "nyra_branch_catalog",
   "core_capability_catalog",
@@ -1880,12 +1908,18 @@ export function createApp(config, options = {}) {
         };
       }) } });
       if (method === "tools/call") {
-        const canonicalToolName = resolveConnectorToolName(params.name, requestVisibleTools);
+        const legacyNyraPreflight = isLegacyNyraPreflightToolName(params.name) &&
+          !requestVisibleTools.some((item) => item.name === "work_preflight");
+        const canonicalToolName = legacyNyraPreflight
+          ? "nyra_converse"
+          : resolveConnectorToolName(params.name, requestVisibleTools);
         const tool = requestVisibleTools.find((item) => item.name === canonicalToolName);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
-        const rawArgs = params.arguments || {};
+        const rawArgs = legacyNyraPreflight
+          ? legacyNyraPreflightArguments(params.arguments)
+          : params.arguments || {};
         const validationErrors = validateToolArguments(tool.inputSchema, rawArgs);
         if (validationErrors.length) {
           return res.json({
