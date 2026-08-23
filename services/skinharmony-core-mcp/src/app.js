@@ -486,23 +486,46 @@ function resolveConnectorToolName(value, tools = []) {
   return visibleNames.has(candidate) ? candidate : null;
 }
 
-// ChatGPT can retain a connector tool descriptor for an already-open app
-// session after the server removes that descriptor from tools/list. The old
-// `work_preflight` was a public implementation detail; accept precisely that
-// stale name as a read-only compatibility request and route it to Nyra's
-// conversational front door. It is deliberately not advertised and cannot
-// reopen the manual preflight path.
-function isLegacyNyraPreflightToolName(value) {
-  const requested = String(value || "");
-  return requested === "work_preflight" ||
-    requested === `${CONNECTOR_TOOL_NAMESPACE}.work_preflight`;
+const CHATGPT_NYRA_FRONT_DOOR_TOOL_NAMES = new Set(["nyra_converse"]);
+const STALE_CHATGPT_NYRA_READ_TOOL_NAMES = new Set([
+  "work_preflight",
+  "core_health",
+  "core_capability_catalog",
+  "core_branch_registry",
+  "core_semantic_select",
+  "core_capability_read",
+]);
+
+// ChatGPT must address Nyra, not assemble a plan from Core implementation
+// tools. Codex and server-to-server clients retain their normal surfaces.
+// OAuth identities are the verified ChatGPT connector path in this gateway.
+function filterToolsForClient(tools = [], identity) {
+  if (inferClientType(identity) !== "chatgpt") return tools;
+  return tools.filter((tool) => CHATGPT_NYRA_FRONT_DOOR_TOOL_NAMES.has(tool.name));
 }
 
-function legacyNyraPreflightArguments(value) {
+// ChatGPT can retain connector descriptors for an already-open app session
+// after its tool surface is reduced to Nyra. Accept only stale *read* entries
+// and route them to Nyra's conversational front door. Mutating tools are never
+// translated, so this cannot bypass governance or owner confirmation.
+function isStaleNyraReadToolName(value) {
+  const requested = String(value || "");
+  const prefix = `${CONNECTOR_TOOL_NAMESPACE}.`;
+  const candidate = requested.startsWith(prefix) ? requested.slice(prefix.length) : requested;
+  return STALE_CHATGPT_NYRA_READ_TOOL_NAMES.has(candidate);
+}
+
+function isLegacyNyraPreflightToolName(value) {
+  const requested = String(value || "");
+  return requested === "work_preflight" || requested === `${CONNECTOR_TOOL_NAMESPACE}.work_preflight`;
+}
+
+function staleNyraReadArguments(value) {
   const args = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const message = typeof args.message === "string" ? args.message.trim() : "";
   const request = typeof args.request === "string" ? args.request.trim() : "";
   return {
-    message: request || "Nyra, riprendi il Work",
+    message: message || request || "Nyra, riprendi il Work",
     ...(typeof args.work_id === "string" ? { work_id: args.work_id } : {}),
     ...(typeof args.project_id === "string" ? { project_id: args.project_id } : {}),
     locale: "auto",
@@ -1549,15 +1572,18 @@ export function createApp(config, options = {}) {
     return buildPolicyRegistryLifecycleHealth(config, options, upstream);
   }
 
-  async function visibleToolsForRequest({ forcePolicyProbe = false } = {}) {
+  async function visibleToolsForRequest({ forcePolicyProbe = false, identity = null } = {}) {
+    let tools;
     if (!policyRegistryLocallyEligible) {
-      return baseVisibleTools.filter((tool) => !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name));
+      tools = baseVisibleTools.filter((tool) => !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name));
+    } else {
+      const upstream = await probeUniversalCoreHealth({ force: forcePolicyProbe });
+      const lifecycle = policyRegistryHealth(upstream);
+      tools = lifecycle.ready
+        ? baseVisibleTools
+        : baseVisibleTools.filter((tool) => !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name));
     }
-    const upstream = await probeUniversalCoreHealth({ force: forcePolicyProbe });
-    const lifecycle = policyRegistryHealth(upstream);
-    return lifecycle.ready
-      ? baseVisibleTools
-      : baseVisibleTools.filter((tool) => !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name));
+    return filterToolsForClient(tools, identity);
   }
   // A host can rotate the MCP transport between tool calls from one logical chat.
   // Keep the transport binding for anti-switch protection, while correlating the
@@ -1871,8 +1897,9 @@ export function createApp(config, options = {}) {
     const requestVisibleTools = ["tools/list", "tools/call"].includes(method)
       ? await visibleToolsForRequest({
           forcePolicyProbe: POLICY_REGISTRY_LIFECYCLE_TOOLS.has(requestedBaseTool),
+          identity,
         })
-      : baseVisibleTools;
+      : filterToolsForClient(baseVisibleTools, identity);
     let activeToolCall = null;
     let afterToolCallAttempted = false;
     try {
@@ -1908,17 +1935,18 @@ export function createApp(config, options = {}) {
         };
       }) } });
       if (method === "tools/call") {
-        const legacyNyraPreflight = isLegacyNyraPreflightToolName(params.name) &&
-          !requestVisibleTools.some((item) => item.name === "work_preflight");
-        const canonicalToolName = legacyNyraPreflight
+        const staleNyraRead = isStaleNyraReadToolName(params.name) &&
+          !requestVisibleTools.some((item) => item.name === "work_preflight") &&
+          (inferClientType(identity) === "chatgpt" || isLegacyNyraPreflightToolName(params.name));
+        const canonicalToolName = staleNyraRead
           ? "nyra_converse"
           : resolveConnectorToolName(params.name, requestVisibleTools);
         const tool = requestVisibleTools.find((item) => item.name === canonicalToolName);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
         if (!handlers[tool.name]) return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message: "Tool backend unavailable" } });
-        const rawArgs = legacyNyraPreflight
-          ? legacyNyraPreflightArguments(params.arguments)
+        const rawArgs = staleNyraRead
+          ? staleNyraReadArguments(params.arguments)
           : params.arguments || {};
         const validationErrors = validateToolArguments(tool.inputSchema, rawArgs);
         if (validationErrors.length) {
@@ -2169,4 +2197,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachWorkPreflight, buildIdentity, inferClientType, resolveConnectorToolName, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };
+export { attachWorkPreflight, buildIdentity, filterToolsForClient, inferClientType, resolveConnectorToolName, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };
