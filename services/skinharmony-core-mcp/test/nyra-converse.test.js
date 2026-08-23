@@ -316,6 +316,83 @@ test("binds direct Nyra conversation to Work project when the host sends a stale
   assert.equal(calls.continuity[0][1].project_id, "nyra_core");
 });
 
+test("restores the sole active Work before Nyra's single governed preflight", async () => {
+  const calls = { catalog: [], intent: [], preflight: [], continuity: [] };
+  const authenticatedIdentity = identity();
+  const preflight = createNyraConversePreflight({
+    workPreflight: async (args) => {
+      calls.preflight.push(args);
+      return preflightFixture(authenticatedIdentity.tenantId);
+    },
+    ensureContinuity: async (...args) => calls.continuity.push(args),
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: {
+      listWorks: async (receivedIdentity, input) => {
+        calls.catalog.push({ identity: receivedIdentity, input });
+        return {
+          works: [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }],
+          next_cursor: null,
+        };
+      },
+      readIntent: async (receivedIdentity, args) => {
+        calls.intent.push({ identity: receivedIdentity, args });
+        return { project_id: "nyra_core" };
+      },
+    },
+    hostType: () => "chatgpt_native",
+  });
+
+  await preflight({ message: "Nyra, riprendi il Work" }, authenticatedIdentity);
+
+  assert.deepEqual(calls.catalog, [{
+    identity: authenticatedIdentity,
+    input: { status: "active", limit: 2 },
+  }]);
+  assert.deepEqual(calls.intent, [{
+    identity: authenticatedIdentity,
+    args: { work_id: WORK_ID },
+  }]);
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(calls.preflight[0].work_id, WORK_ID);
+  assert.equal(calls.preflight[0].project_id, "nyra_core");
+  assert.equal(calls.continuity.length, 1);
+  assert.equal(calls.continuity[0][1].work_id, WORK_ID);
+  assert.equal(calls.continuity[0][1].project_id, "nyra_core");
+});
+
+test("does not guess a Work when the active Gallery has more than one candidate", async () => {
+  const calls = { intent: [], preflight: [] };
+  const preflight = createNyraConversePreflight({
+    workPreflight: async (args) => {
+      calls.preflight.push(args);
+      return preflightFixture();
+    },
+    ensureContinuity: async () => {},
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: {
+      listWorks: async () => ({
+        works: [
+          { work_id: WORK_ID, project_id: "nyra_core", status: "active" },
+          { work_id: "d8f1e821-4f45-4e1f-a9e9-633a3eaa5eaf", project_id: "other", status: "active" },
+        ],
+        next_cursor: null,
+      }),
+      readIntent: async (...args) => {
+        calls.intent.push(args);
+        return { project_id: "must-not-be-used" };
+      },
+    },
+    hostType: () => "chatgpt_native",
+  });
+
+  await preflight({ message: "Nyra, riprendi il Work" }, identity());
+
+  assert.deepEqual(calls.intent, []);
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(calls.preflight[0].work_id, undefined);
+  assert.equal(calls.preflight[0].project_id, "nyra_conversational_runtime");
+});
+
 test("publishes nyra_converse as a direct compact resume tool without discovery", async () => {
   const { handler } = harness();
   const { router, revision } = routerFor(handler);
@@ -397,6 +474,8 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
   assert.equal(payload.provider_api_key_required, false);
   assert.equal(payload.server_model_calls, 0);
   assert.equal(payload.dynamic_capability.capability_id, "nyra_converse");
+  assert.equal(response._meta.ui.resourceUri, NYRA_DIALOGUE_WIDGET_URI);
+  assert.equal(response._meta["openai/outputTemplate"], NYRA_DIALOGUE_WIDGET_URI);
   assert.match(payload.turn_id, /^nyra_turn_[a-f0-9]{24}$/);
   assert.equal(JSON.stringify(response).includes("must-not-be-returned"), false);
 
