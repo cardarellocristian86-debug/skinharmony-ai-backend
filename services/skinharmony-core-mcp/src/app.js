@@ -488,6 +488,9 @@ function resolveConnectorToolName(value, tools = []) {
 
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "work_preflight",
+  // nyra_converse owns a strict cache-or-one-preflight protocol. Letting the
+  // generic hook preflight it as well duplicates Core calls on stale context.
+  "nyra_converse",
   "core_health",
   "nyra_branch_catalog",
   "core_capability_catalog",
@@ -1098,6 +1101,63 @@ function resolveWorkPreflight(result, payload) {
   };
 }
 
+// Whitelist the durable Nyra briefing field-by-field. It is enough for a new
+// AI to continue the Work, while raw Intent, evidence, Gallery records and
+// Atlas nodes remain server-side.
+function projectNyraDialogue(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const work = value.work && typeof value.work === "object" ? value.work : {};
+  const checkpoint = work.checkpoint && typeof work.checkpoint === "object" ? work.checkpoint : {};
+  const gallery = work.gallery && typeof work.gallery === "object" ? work.gallery : {};
+  const software = work.software && typeof work.software === "object" ? work.software : {};
+  const diagnosis = value.self_diagnosis && typeof value.self_diagnosis === "object" ? value.self_diagnosis : {};
+  const manual = value.manual && typeof value.manual === "object" ? value.manual : {};
+  const learning = value.learning && typeof value.learning === "object" ? value.learning : {};
+  return {
+    schema_version: value.schema_version,
+    dialogue_id: value.dialogue_id || null,
+    mode: value.mode,
+    persistent: value.persistent === true,
+    session_strategy: value.session_strategy,
+    activation: value.activation,
+    manual: { version: manual.version || null, digest: manual.digest || null },
+    work: {
+      work_id: work.work_id || null,
+      project_id: work.project_id || null,
+      work_revision: Number.isSafeInteger(Number(work.work_revision)) ? Number(work.work_revision) : null,
+      intent_digest: work.intent_digest || null,
+      checkpoint: { capsule_id: checkpoint.capsule_id || null, capsule_digest: checkpoint.capsule_digest || null, available: checkpoint.available === true },
+      gallery: { state: gallery.state || "unknown", work_count: Number(gallery.work_count || 0) },
+      software: {
+        state: software.state || "not_indexed",
+        atlas_revision: Number.isSafeInteger(Number(software.atlas_revision)) ? Number(software.atlas_revision) : null,
+        source_hash: software.source_hash || null,
+        context_digest: software.context_digest || null,
+        discovery_required: software.discovery_required === true,
+      },
+    },
+    self_diagnosis: {
+      schema_version: diagnosis.schema_version,
+      state: diagnosis.state || "unknown",
+      source: diagnosis.source || "unknown",
+      local_action: diagnosis.local_action || "Refresh the bounded Nyra context.",
+      core_action: diagnosis.core_action || "Consult Core only when a policy or integrity decision is needed.",
+      automatic_correction: diagnosis.automatic_correction || "context_refreshed",
+      ...(diagnosis.remaining_action ? { remaining_action: diagnosis.remaining_action } : {}),
+    },
+    connected_ai_instruction: Array.isArray(value.connected_ai_instruction) ? value.connected_ai_instruction.slice(0, 3) : [],
+    learning: {
+      mode: learning.mode || "local_verified_evidence",
+      update_on: learning.update_on || "verified_outcome_or_incident_verification",
+      model_weight_training: false,
+    },
+    operation: value.operation || "continue",
+    dialogue_digest: value.dialogue_digest || null,
+    execution_authorized: false,
+    external_action_authorized: false,
+  };
+}
+
 function attachWorkPreflight(result, preflight) {
   const originalPayload = preflight?.work_preflight || preflight;
   if (!originalPayload || result?.structuredContent?.work_preflight) return result;
@@ -1133,6 +1193,9 @@ function attachWorkPreflight(result, preflight) {
         next_action: resolvedPayload.nyra_control_context.next_action,
         assignment: resolvedPayload.nyra_control_context.assignment,
         connector: resolvedPayload.nyra_control_context.connector,
+        // This is the compact, server-issued Nyra briefing for a newly
+        // connected AI. Do not replace it with the full Work/Gallery/Atlas.
+        nyra_dialogue: projectNyraDialogue(resolvedPayload.nyra_control_context.nyra_dialogue),
         execution_authorized: false,
         external_action_authorized: false,
       }

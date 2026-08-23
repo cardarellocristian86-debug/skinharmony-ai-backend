@@ -846,6 +846,18 @@ const nyraConverseOutputSchema = object({
     dialogue_accepted: { type: "boolean" },
     opened_branch_count: { type: "integer", minimum: 0, maximum: 100_000 },
   }, ["core", "selected_action_available", "risk_band", "dialogue_accepted", "opened_branch_count"]),
+  nyra_dialogue: object({
+    dialogue_id: nyraConverseNullableText(80),
+    manual_digest: nyraConverseNullableText(64),
+    work_revision: { type: ["integer", "null"], minimum: 1, maximum: 100_000 },
+    intent_digest: nyraConverseNullableText(64),
+    checkpoint_available: { type: "boolean" },
+    gallery_work_count: { type: "integer", minimum: 0, maximum: 100_000 },
+    software_state: { type: "string", enum: ["available", "not_indexed", "unknown"] },
+    atlas_revision: { type: ["integer", "null"], minimum: 0, maximum: 100_000 },
+    diagnosis_state: { type: "string", minLength: 1, maxLength: 80 },
+    next_action_available: { type: "boolean" },
+  }, ["dialogue_id", "manual_digest", "work_revision", "intent_digest", "checkpoint_available", "gallery_work_count", "software_state", "atlas_revision", "diagnosis_state", "next_action_available"]),
   action_policy: object({
     consequential_request_detected: { type: "boolean" },
     categories: {
@@ -878,7 +890,7 @@ const nyraConverseOutputSchema = object({
   dynamic_capability: { type: "object", additionalProperties: true },
 }, [
   "schema_version", "ok", "tenant_id", "turn_id", "identity_binding", "work", "memory",
-  "interpretation", "action_policy", "host_response_contract", "execution_authorized",
+  "interpretation", "nyra_dialogue", "action_policy", "host_response_contract", "execution_authorized",
   "external_action_authorized", "provider_execution", "provider_api_key_required", "server_model_calls",
 ]);
 

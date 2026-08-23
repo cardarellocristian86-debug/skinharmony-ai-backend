@@ -68,7 +68,10 @@ software capability only when the Work needs it.
 ## Persistent manual and change control
 
 This manual is versioned as `nyra_operating_manual_v1` and its digest is
-included in every dialogue context. The implementation is in:
+included in every dialogue context. Its canonical machine-readable source is
+`services/skinharmony-core-mcp/src/nyra-operating-manual.js`; the Markdown is
+the detailed reviewed guide and tests verify the runtime manual version and
+all canonical sections. The implementation is in:
 
 - `services/skinharmony-core-mcp/src/nyra-operational-dialogue.js`
 - `services/skinharmony-core-mcp/src/nyra-control-context.js`

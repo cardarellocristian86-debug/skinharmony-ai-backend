@@ -219,6 +219,9 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.equal(payload.work.preflight_bound, true);
   assert.equal(payload.interpretation.core.execution_allowed, false);
   assert.equal(payload.interpretation.core.route, "V0");
+  assert.equal(payload.nyra_dialogue.work_revision, 3);
+  assert.equal(payload.nyra_dialogue.gallery_work_count, 1);
+  assert.equal(payload.nyra_dialogue.diagnosis_state, "intent_anchor_incomplete");
   assert.equal(payload.server_model_calls, 0);
   const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
   assert.deepEqual(validateToolArguments(definition.outputSchema, payload), []);

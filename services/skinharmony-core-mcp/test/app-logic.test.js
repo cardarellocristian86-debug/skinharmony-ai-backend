@@ -63,6 +63,11 @@ test("routes semantic selection through the mandatory generic preflight", () => 
   );
   assert.equal(requiresGenericWorkPreflight("core_health"), false);
   assert.equal(requiresGenericWorkPreflight("work_preflight"), false);
+  assert.equal(
+    requiresGenericWorkPreflight("nyra_converse"),
+    false,
+    "Nyra conversation owns its cache-or-one-preflight protocol",
+  );
 });
 
 test("Airlock controls never invoke generic preflight before the public plan is open", () => {

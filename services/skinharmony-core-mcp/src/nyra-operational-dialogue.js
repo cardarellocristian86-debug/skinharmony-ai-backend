@@ -1,9 +1,13 @@
 import crypto from "node:crypto";
+import {
+  NYRA_OPERATING_MANUAL,
+  NYRA_OPERATING_MANUAL_VERSION,
+} from "./nyra-operating-manual.js";
 
 // Nyra's manual is intentionally versioned separately from the recovery
 // registry.  The manual explains how Nyra works; the recovery registry is
 // consulted only when an observed failure requires it.
-export const NYRA_OPERATING_MANUAL_VERSION = "nyra_operating_manual_v1";
+export { NYRA_OPERATING_MANUAL_VERSION } from "./nyra-operating-manual.js";
 export const NYRA_DIALOGUE_CONTEXT_SCHEMA_VERSION = "nyra_dialogue_context_v1";
 export const NYRA_RECOVERY_REGISTRY_VERSION = "nyra_recovery_registry_v1";
 
@@ -15,16 +19,7 @@ function digest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-const MANUAL = Object.freeze({
-  schema_version: NYRA_OPERATING_MANUAL_VERSION,
-  identity: "Nyra owns Work continuity, the operational brief and delegation order.",
-  core_relationship: "Universal Core verifies policy, authority and consequential actions.",
-  memory: "Intent, checkpoint, Gallery and bounded software evidence are reused instead of reconstructed.",
-  orchestration: "Connected AIs receive one bounded next step and return evidence to Nyra.",
-  learning: "Verified local outcomes, incidents and software evidence improve future Work context without model-weight training.",
-});
-
-export const NYRA_OPERATING_MANUAL_DIGEST = digest(MANUAL);
+export const NYRA_OPERATING_MANUAL_DIGEST = digest(NYRA_OPERATING_MANUAL);
 
 function normalizeOperationalState(operational = {}) {
   const checkpoint = operational?.checkpoint && typeof operational.checkpoint === "object"
@@ -72,6 +67,7 @@ function normalizeOperationalState(operational = {}) {
 
 export function diagnoseNyraOperationalState({ continuity = {}, operational = {} } = {}) {
   const normalized = normalizeOperationalState(operational);
+  const continuityRevision = Number(continuity.architecture_version || continuity.work_revision || 0);
   const reconnect = continuity?.connector_state?.state === "reconnect_required";
   if (reconnect) {
     return Object.freeze({
@@ -93,6 +89,62 @@ export function diagnoseNyraOperationalState({ continuity = {}, operational = {}
       automatic_correction: "context_refreshed",
     });
   }
+  if (!/^[a-f0-9]{64}$/.test(String(normalized.intent_digest || ""))) {
+    return Object.freeze({
+      schema_version: NYRA_RECOVERY_REGISTRY_VERSION,
+      state: "intent_anchor_incomplete",
+      source: "intent_anchor",
+      local_action: "Refresh the Work briefing from the immutable Intent Anchor; do not reconstruct the request in chat.",
+      core_action: "Ask Core to validate or repair the existing Work binding only if the immutable anchor is unavailable.",
+      automatic_correction: "context_refreshed",
+      remaining_action: "read_intent_anchor",
+    });
+  }
+  if (normalized.checkpoint.capsule_id !== null && normalized.checkpoint.capsule_digest === null) {
+    return Object.freeze({
+      schema_version: NYRA_RECOVERY_REGISTRY_VERSION,
+      state: "checkpoint_incomplete",
+      source: "continuity_checkpoint",
+      local_action: "Keep the current Work evidence and refresh the bounded context; do not claim a checkpoint is usable.",
+      core_action: "Ask Core only if checkpoint integrity must be adjudicated.",
+      automatic_correction: "context_refreshed",
+      remaining_action: "verify_or_create_checkpoint",
+    });
+  }
+  if (normalized.gallery.state !== "available" || normalized.gallery.work_count < 1) {
+    return Object.freeze({
+      schema_version: NYRA_RECOVERY_REGISTRY_VERSION,
+      state: "gallery_projection_stale",
+      source: "work_gallery",
+      local_action: "Refresh the tenant-scoped Work projection; do not create a replacement Work.",
+      core_action: "Consult Core only if the authoritative Work cannot be resolved.",
+      automatic_correction: "context_refreshed",
+      remaining_action: "refresh_work_gallery",
+    });
+  }
+  if (continuityRevision > 0 && normalized.work_revision !== null && continuityRevision !== normalized.work_revision) {
+    return Object.freeze({
+      schema_version: NYRA_RECOVERY_REGISTRY_VERSION,
+      state: "work_snapshot_stale",
+      source: "work_revision",
+      local_action: "Regenerate the Nyra briefing from the current Work revision before continuing.",
+      core_action: "No Core call is required unless the revision cannot be read.",
+      automatic_correction: "context_refreshed",
+      remaining_action: "refresh_work_snapshot",
+    });
+  }
+  if (operational?.software?.required === true &&
+      (normalized.software.state !== "available" || normalized.software.atlas_revision === null)) {
+    return Object.freeze({
+      schema_version: NYRA_RECOVERY_REGISTRY_VERSION,
+      state: "software_context_required",
+      source: "software_cognition",
+      local_action: "Request one bounded Software Cognition selection from verified Work seeds; never scan the whole project for chat context.",
+      core_action: "Consult Core only if the bounded software evidence conflicts with policy or integrity.",
+      automatic_correction: "context_refreshed",
+      remaining_action: "bounded_atlas_select",
+    });
+  }
   return Object.freeze({
     schema_version: NYRA_RECOVERY_REGISTRY_VERSION,
     state: "healthy",
@@ -110,7 +162,15 @@ export function buildNyraOperationalDialogue({ continuity = {}, operational = {}
     ...operational,
     intent_digest: operational.intent_digest || continuity.intent_digest,
   });
-  const diagnosis = diagnoseNyraOperationalState({ continuity, operational: normalized });
+  // Preserve the local `software.required` signal for diagnosis while the
+  // dialogue itself uses the normalized, bounded projection.
+  const diagnosis = diagnoseNyraOperationalState({
+    continuity,
+    operational: {
+      ...operational,
+      intent_digest: normalized.intent_digest,
+    },
+  });
   const base = {
     schema_version: NYRA_DIALOGUE_CONTEXT_SCHEMA_VERSION,
     dialogue_id: workId && projectId ? `nyra-work-${digest({ workId, projectId }).slice(0, 32)}` : null,
@@ -150,4 +210,3 @@ export function buildNyraOperationalDialogue({ continuity = {}, operational = {}
   };
   return Object.freeze({ ...base, dialogue_digest: digest(base) });
 }
-
