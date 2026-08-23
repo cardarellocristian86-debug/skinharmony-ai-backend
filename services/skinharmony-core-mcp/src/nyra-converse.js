@@ -392,21 +392,13 @@ function turnId({ tenantId, sessionId, message, workId, projectId, locale, style
 
 function textResult(payload) {
   const contract = payload.host_response_contract;
-  const narration = {
-    speaker: contract.speaker,
-    response_language: contract.response_language,
-    reply_seed: contract.reply_seed,
-    next_action: contract.next_action,
-    rendering_policy: contract.rendering_policy,
-    action_mode: payload.action_policy.mode,
-    work_id: payload.work.work_id,
-    core_authority: payload.interpretation.core.authority,
-    execution_authorized: false,
-    external_action_authorized: false,
-  };
   return {
     structuredContent: payload,
-    content: [{ type: "text", text: JSON.stringify(narration) }],
+    // Keep the model-facing narration deliberately final and small. The
+    // structured payload remains available for a governed follow-up, but
+    // listing Work ids, authority levels or diagnostics here tempted hosts to
+    // perform their own multi-tool investigation after a simple Nyra resume.
+    content: [{ type: "text", text: contract.reply_seed }],
   };
 }
 

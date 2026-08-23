@@ -6,6 +6,7 @@ import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import { NYRA_WORK_AUTOMATION_TOOLS } from "../src/nyra-work-automation-tools.js";
 import {
   COMPACT_MCP_TOOL_NAMES,
+  INTERNAL_ONLY_TOOL_NAMES,
   compactMcpTools,
   createDynamicCapabilityHandlers,
   dynamicCapabilityCatalogSnapshot,
@@ -118,9 +119,19 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   const compact = compactMcpTools(TOOLS, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 11);
+  assert.equal(compact.length, 10);
+  assert.deepEqual([...INTERNAL_ONLY_TOOL_NAMES], ["work_preflight"]);
+  assert.equal(compact.some((tool) => INTERNAL_ONLY_TOOL_NAMES.has(tool.name)), false);
   assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
   assert(Buffer.byteLength(JSON.stringify({ tools: compact })) < 64 * 1024);
+});
+
+test("keeps the generic preflight internal instead of exposing it through dynamic discovery", () => {
+  const preflight = TOOLS.find((tool) => tool.name === "work_preflight");
+  const snapshot = dynamicCapabilityCatalogSnapshot([preflight], {
+    work_preflight: async () => ({}),
+  });
+  assert.deepEqual(snapshot.capabilities, []);
 });
 
 test("adds capabilities through the catalog without changing the connector surface", () => {
