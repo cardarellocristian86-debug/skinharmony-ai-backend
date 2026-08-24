@@ -43,6 +43,11 @@ const leaseSurface = object({
 }, ["kind", "value"]);
 
 const TENANT_WORK_COORDINATION_ACTION_TYPES = Object.freeze({
+  // A review is the only pre-Work mutation: it stores a short-lived,
+  // tenant-bound duplicate check and never creates or changes a Work.
+  // Give it a distinct Core action type so it cannot be forced through the
+  // generic continuity path, which requires the Work binding it establishes.
+  tenant_work_open_review: "work.bootstrap.review",
   tenant_work_gallery_join: "work.participant.join",
   tenant_work_gallery_heartbeat: "work.participant.heartbeat",
   tenant_work_branch_open: "work.branch.open",
