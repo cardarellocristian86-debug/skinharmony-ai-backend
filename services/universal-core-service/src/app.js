@@ -56,6 +56,7 @@ import { buildSuitePolicy } from "./suitePolicy.js";
 import { getTenantPolicy } from "./tenantRegistry.js";
 import { checkDomainPackRequest, listDomainPacks, publicDomainPack, resolveDomainPackForKey } from "./domainPacks.js";
 import { nyraBranchCatalog, routeNyraBranches } from "./nyraBranchNetwork.js";
+import { createNyraPersistentSelfModelStore } from "./nyraPersistentSelfModel.js";
 import { multiAgentRegistry, planMultiAgentRun } from "./multiAgentArchitecture.js";
 import {
   AI_GATEWAY_ADAPTERS,
@@ -4885,6 +4886,10 @@ export function createUniversalCoreService(options = {}) {
   ensureDir(storageRoot);
 
   const audit = createAudit(storageRoot);
+  const nyraPersistentSelfModel = createNyraPersistentSelfModelStore({
+    storageRoot,
+    signingSecret: process.env.CORE_EVIDENCE_SIGNING_SECRET || "",
+  });
   const keyStore = createKeyStore(storageRoot, audit);
   const providerSetupLinkBootstrapKey = String(
     options.providerSetupLinkBootstrapKey ?? process.env.CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY ?? "",
@@ -9143,6 +9148,21 @@ export function createUniversalCoreService(options = {}) {
       branch_count: catalog.branches.length,
     });
     res.json({ ok: true, tenant_id: req.tenantId, catalog });
+  });
+
+  // Read-only introspection deliberately does not require a Work preflight: a
+  // fresh AI must be able to learn Nyra's own boundaries before it can resume
+  // or create a Work.  It cannot issue execution authority or mutate memory.
+  app.get("/v1/nira/self-model", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+    const current = resolveDomainPackForKey(req.coreKey);
+    const catalog = nyraBranchCatalog(current.id);
+    const selfModel = nyraPersistentSelfModel.readOrRefresh({ tenantId: req.tenantId, catalog });
+    audit.append("core_nyra_self_model_read", { tenant_id: req.tenantId, key_id: req.coreKey.key_id, branch_count: catalog.branches.length });
+    return res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      self_model: { ...selfModel, read_only: true },
+    });
   });
 
   app.post("/v1/research/plan", coreAuth(SCOPES.READ_DECISION), (req, res) => {
