@@ -316,7 +316,7 @@ test("binds direct Nyra conversation to Work project when the host sends a stale
   assert.equal(calls.continuity[0][1].project_id, "nyra_core");
 });
 
-test("restores the sole active Work before Nyra's single governed preflight", async () => {
+test("restores the sole operational Work before Nyra's single governed preflight", async () => {
   const calls = { catalog: [], intent: [], preflight: [], continuity: [] };
   const authenticatedIdentity = identity();
   const preflight = createNyraConversePreflight({
@@ -344,10 +344,10 @@ test("restores the sole active Work before Nyra's single governed preflight", as
 
   await preflight({ message: "Nyra, riprendi il Work" }, authenticatedIdentity);
 
-  assert.deepEqual(calls.catalog, [{
+  assert.deepEqual(calls.catalog, ["active", "verified", "release_ready", "blocked"].map((status) => ({
     identity: authenticatedIdentity,
-    input: { status: "active", limit: 2 },
-  }]);
+    input: { status, limit: 2 },
+  })));
   assert.deepEqual(calls.intent, [{
     identity: authenticatedIdentity,
     args: { work_id: WORK_ID },
@@ -391,6 +391,37 @@ test("does not guess a Work when the active Gallery has more than one candidate"
   assert.equal(calls.preflight.length, 1);
   assert.equal(calls.preflight[0].work_id, undefined);
   assert.equal(calls.preflight[0].project_id, "nyra_conversational_runtime");
+});
+
+test("does not guess an active Work when another operational Work is blocked", async () => {
+  const calls = { intent: [], preflight: [] };
+  const preflight = createNyraConversePreflight({
+    workPreflight: async (args) => {
+      calls.preflight.push(args);
+      return preflightFixture();
+    },
+    ensureContinuity: async () => {},
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: {
+      listWorks: async (_identity, input) => ({
+        works: input.status === "active"
+          ? [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }]
+          : input.status === "blocked"
+            ? [{ work_id: "d8f1e821-4f45-4e1f-a9e9-633a3eaa5eaf", project_id: "other", status: "blocked" }]
+            : [],
+        next_cursor: null,
+      }),
+      readIntent: async (...args) => {
+        calls.intent.push(args);
+        return { project_id: "must-not-be-used" };
+      },
+    },
+    hostType: () => "chatgpt_native",
+  });
+
+  await preflight({ message: "Nyra, riprendi il Work" }, identity());
+  assert.deepEqual(calls.intent, []);
+  assert.equal(calls.preflight[0].work_id, undefined);
 });
 
 test("publishes nyra_converse as a direct compact resume tool without discovery", async () => {

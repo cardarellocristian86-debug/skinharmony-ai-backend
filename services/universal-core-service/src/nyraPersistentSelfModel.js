@@ -5,9 +5,18 @@ import { ensureDir } from "./audit.js";
 
 const SCHEMA_VERSION = "nyra_persistent_self_model_v1";
 
-const canonical = (value) => JSON.stringify(value, Object.keys(value || {}).sort());
+// Deterministic at every depth: both the digest and the signature must cover
+// every nested capability and requirement, not only the top-level envelope.
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (!value || typeof value !== "object") return JSON.stringify(value);
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+}
+
 const sha256 = (value) => crypto.createHash("sha256").update(value).digest("hex");
-const safeTenant = (value) => String(value || "").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || "unknown";
+// Tenant ids are never used as a lossy filename. The digest is complete,
+// collision-resistant for this purpose and does not disclose the tenant name.
+const tenantStorageKey = (tenantId) => sha256(`nyra-self-model-tenant-v1\0${String(tenantId || "")}`);
 
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
@@ -20,9 +29,10 @@ function writeJsonAtomic(file, value) {
   fs.renameSync(temporary, file);
 }
 
-export function buildNyraSelfModel({ tenantId, catalog }) {
-  const ids = new Set((catalog?.branches || []).map((branch) => branch.id));
-  const available = (...required) => required.every((id) => ids.has(id));
+export function buildNyraSelfModel({ tenantId, catalog, authorizedBranchIds = [] }) {
+  const authorized = new Set(authorizedBranchIds);
+  const catalogIds = new Set((catalog?.branches || []).map((branch) => branch.id));
+  const available = (...required) => required.every((id) => catalogIds.has(id) && authorized.has(id));
   const capabilities = [
     ["next_step_planning", available("planning_prioritization", "execution_planning")],
     ["connected_ai_orchestration", available("ai_orchestration", "agent_orchestration")],
@@ -44,30 +54,46 @@ export function buildNyraSelfModel({ tenantId, catalog }) {
     required_infrastructure,
     next_recommended_capability: required_infrastructure[0].id,
     catalog_revision: catalog?.schema_version || "unknown",
+    authorized_branches_digest: sha256(canonical([...authorized].sort())),
   };
 }
 
 export function createNyraPersistentSelfModelStore({ storageRoot, signingSecret = "" }) {
   const root = path.join(storageRoot, "nyra-self-model");
   const key = Buffer.byteLength(signingSecret, "utf8") >= 32 ? signingSecret : "local-self-model-unsigned";
-  const fileFor = (tenantId) => path.join(root, `${safeTenant(tenantId)}.json`);
+  const fileFor = (tenantId) => path.join(root, `${tenantStorageKey(tenantId)}.json`);
   const sign = (payload) => crypto.createHmac("sha256", key).update(canonical(payload)).digest("hex");
+  const validRecord = (record, profile) => Boolean(
+    record &&
+    Number.isSafeInteger(Number(record.revision)) && Number(record.revision) > 0 &&
+    record.payload_digest === sha256(canonical(profile)) &&
+    record.signature === sign(profile) &&
+    canonical(Object.fromEntries(Object.keys(profile).map((keyName) => [keyName, record[keyName]]))) === canonical(profile),
+  );
   return {
-    readOrRefresh({ tenantId, catalog }) {
-      const profile = buildNyraSelfModel({ tenantId, catalog });
-      const payloadDigest = sha256(canonical(profile));
+    read({ tenantId, catalog, authorizedBranchIds = [] }) {
+      const profile = buildNyraSelfModel({ tenantId, catalog, authorizedBranchIds });
       const current = readJson(fileFor(tenantId));
-      if (current?.payload_digest === payloadDigest && current?.signature === sign(profile)) return current;
+      return validRecord(current, profile) ? current : null;
+    },
+    refresh({ tenantId, catalog, authorizedBranchIds = [] }) {
+      const profile = buildNyraSelfModel({ tenantId, catalog, authorizedBranchIds });
+      const current = readJson(fileFor(tenantId));
+      if (validRecord(current, profile)) return current;
+      const previousRevision = Number.isSafeInteger(Number(current?.revision)) && Number(current.revision) > 0
+        ? Number(current.revision)
+        : 0;
       const record = {
         ...profile,
-        revision: Number(current?.revision || 0) + 1,
+        revision: previousRevision + 1,
         generated_at: new Date().toISOString(),
-        payload_digest: payloadDigest,
+        payload_digest: sha256(canonical(profile)),
         signature: sign(profile),
       };
       writeJsonAtomic(fileFor(tenantId), record);
       return record;
     },
+    fileFor,
   };
 }
 
