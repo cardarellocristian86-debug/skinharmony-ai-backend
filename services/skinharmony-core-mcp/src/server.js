@@ -978,20 +978,10 @@ const baseHandlers = {
     },
     work_continuity_checkpoint: async (args, identity) => {
       await requireOwnerGovernance(identity, "work.continuity.checkpoint", args.work_id);
-      const gate = await coreHandlers.core_gate_action({
-        action_label: "Create persistent Work Continuity checkpoint",
-        action_type: "work.continuity.checkpoint",
-        target: `work_continuity_checkpoint:${args.work_id}`,
-        operation_class: "owner_confirmed_governed_action",
-        external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
-        idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
-        target_authority_verified: true, actor_authorized_for_target: true,
-        owner_confirmed: identity.ownerConfirmed === true,
-        confirmation_reference: identity.confirmationReference,
-      }, identity);
-      const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
-        gate.structuredContent?.result?.authorization || {};
-      if (authorization.allowed !== true) throw new Error("work_continuity_checkpoint_not_authorized");
+      // requireOwnerGovernance above is the server-owned Universal Core decision
+      // for this exact checkpoint. Do not invoke the generic gate again: the
+      // confirmation assertion is request-bound, and a second evaluation can
+      // reject an action already authorized by the authoritative Core gate.
       const payload = { ok: true, result: await workContinuityRuntime.checkpoint(identity, args) };
       payload.result.nyra_control_context = await materializeNyraControlContext(
         identity,

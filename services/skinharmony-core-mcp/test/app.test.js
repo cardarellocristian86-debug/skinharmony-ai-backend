@@ -368,6 +368,19 @@ test("limits the dynamic presence bootstrap exemption to the exact agent heartbe
   );
 });
 
+test("continuity checkpoint relies on exactly one server-owned Universal Core gate", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const checkpointStart = serverSource.indexOf("work_continuity_checkpoint: async");
+  const checkpointEnd = serverSource.indexOf("work_continuity_read: async", checkpointStart);
+  assert.ok(checkpointStart >= 0);
+  assert.ok(checkpointEnd > checkpointStart);
+  const checkpointHandler = serverSource.slice(checkpointStart, checkpointEnd);
+
+  assert.match(checkpointHandler, /await requireOwnerGovernance\(identity, "work\.continuity\.checkpoint", args\.work_id\)/);
+  assert.doesNotMatch(checkpointHandler, /coreHandlers\.core_gate_action/);
+  assert.match(checkpointHandler, /dedicated_core_gate\s*=\s*\{\s*authorized: true,\s*authority: "universal_core"/);
+});
+
 test("allows server-issued MCP session bootstrap for agent heartbeat", () => {
   const heartbeat = TOOLS.find((tool) => tool.name === "agent_heartbeat");
   assert.ok(heartbeat);
