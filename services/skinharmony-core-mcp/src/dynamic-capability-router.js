@@ -72,6 +72,11 @@ function sha256(value) {
 }
 
 function capabilityGroup(name) {
+  // The persistent self-model is Nyra introspection, not a general
+  // conversational operation. A dedicated group lets a narrow ChatGPT
+  // capability lookup discover precisely this read-only surface without
+  // reopening the rest of Nyra's implementation catalog.
+  if (name === "nyra_self_model") return "self_model";
   const prefixes = [
     ["work_continuity_", "continuity"],
     ["host_native_", "continuity"],

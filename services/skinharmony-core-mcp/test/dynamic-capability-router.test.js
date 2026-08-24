@@ -134,6 +134,40 @@ test("keeps the generic preflight internal instead of exposing it through dynami
   assert.deepEqual(snapshot.capabilities, []);
 });
 
+test("discovers and reads Nyra's persistent self-model through a narrow dynamic path", async () => {
+  const tool = TOOLS.find((item) => item.name === "nyra_self_model");
+  let calls = 0;
+  const handlers = {
+    nyra_self_model: async () => {
+      calls += 1;
+      return { structuredContent: { ok: true, self_model: { persistent: true } } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  const catalog = await router.core_capability_catalog({
+    group: "self_model",
+    include_schema: true,
+  }, identity);
+  const capability = catalog.structuredContent.capabilities[0];
+  assert.equal(catalog.structuredContent.total, 1);
+  assert.equal(capability.capability_id, "nyra_self_model");
+  assert.equal(capability.group, "self_model");
+  assert.equal(capability.access_mode, "read");
+
+  const result = await router.core_capability_read({
+    capability_id: "nyra_self_model",
+    catalog_revision: catalog.structuredContent.catalog_revision,
+    arguments: {},
+  }, identity);
+  assert.equal(calls, 1);
+  assert.equal(result.structuredContent.self_model.persistent, true);
+  assert.equal(result.structuredContent.dynamic_capability.capability_id, "nyra_self_model");
+});
+
 test("adds capabilities through the catalog without changing the connector surface", () => {
   const firstTools = [readTool()];
   const firstHandlers = { nyra_dynamic_read: async () => ({}) };
