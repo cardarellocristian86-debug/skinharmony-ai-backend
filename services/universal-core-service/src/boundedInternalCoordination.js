@@ -4,6 +4,10 @@ export const BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES = Object.freeze([
   "task.update",
   "message.acknowledge",
   "continuity.update",
+  // The create-only review is allowed before a Work exists. It has one exact
+  // MCP target and retains all bounded-write constraints below; it cannot
+  // create a Work, execute an action, or widen tenant authority.
+  "work.bootstrap.review",
   "work.continuity.resume_or_bind",
   "work.participant.join",
   "work.participant.heartbeat",
@@ -41,6 +45,7 @@ function targetMatchesAction(actionType, value) {
     return target.startsWith("work_continuity_") ||
       /^[a-z0-9][a-z0-9._/-]{1,63}:[a-z0-9][a-z0-9._-]{1,63}$/i.test(target);
   }
+  if (actionType === "work.bootstrap.review") return target === "tenant_work_open_review";
   if (actionType === "work.continuity.resume_or_bind") {
     return /^[a-z0-9][a-z0-9._:/-]{1,63}:[a-z0-9][a-z0-9._-]{1,63}$/i.test(target);
   }

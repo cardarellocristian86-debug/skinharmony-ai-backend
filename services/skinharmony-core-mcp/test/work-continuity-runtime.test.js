@@ -802,8 +802,9 @@ test("Gallery join locks the Work row before the advisory work lock", async () =
   assert.ok(workAdvisoryLock < participantLock);
 });
 
-test("Gallery mutations use bounded Core action types instead of generic continuity update", () => {
+test("Gallery and bootstrap-review mutations use bounded Core action types instead of generic continuity update", () => {
   assert.deepEqual({
+    tenant_work_open_review: tenantWorkCoordinationActionType("tenant_work_open_review"),
     tenant_work_gallery_join: tenantWorkCoordinationActionType("tenant_work_gallery_join"),
     tenant_work_gallery_heartbeat: tenantWorkCoordinationActionType("tenant_work_gallery_heartbeat"),
     tenant_work_branch_open: tenantWorkCoordinationActionType("tenant_work_branch_open"),
@@ -812,6 +813,7 @@ test("Gallery mutations use bounded Core action types instead of generic continu
     tenant_work_lease_release: tenantWorkCoordinationActionType("tenant_work_lease_release"),
     tenant_work_message_post: tenantWorkCoordinationActionType("tenant_work_message_post"),
   }, {
+    tenant_work_open_review: "work.bootstrap.review",
     tenant_work_gallery_join: "work.participant.join",
     tenant_work_gallery_heartbeat: "work.participant.heartbeat",
     tenant_work_branch_open: "work.branch.open",

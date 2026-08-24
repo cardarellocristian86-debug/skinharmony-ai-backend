@@ -1155,8 +1155,14 @@ const baseHandlers = {
       result: await workContinuityV2Store.readWork(withTenantWorkAcl(identity), args) }),
     tenant_work_gallery_list_v2: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.listWorks(withTenantWorkAcl(identity), args) }),
-    tenant_work_open_review: async (args, identity) => continuityTextResult({ ok: true,
-      result: await workContinuityV2Store.openWorkReview(withTenantWorkAcl(identity), args) }),
+    tenant_work_open_review: async (args, identity) => {
+      // This is deliberately the only pre-Work write. It may persist a
+      // short-lived duplicate review, but never creates or mutates a Work;
+      // creation remains on the dedicated Universal Core route below.
+      requireTenantWorkCapability(identity, "coordinate");
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.openWorkReview(withTenantWorkAcl(identity), args) });
+    },
     tenant_work_task_record: async (args, identity) => {
       requireTenantWorkCapability(identity, "operate");
       return continuityTextResult({ ok: true, result: await workContinuityV2Store.recordTask(withTenantWorkAcl(identity), args) });
