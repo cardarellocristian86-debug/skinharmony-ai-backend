@@ -55,10 +55,27 @@ const TENANT_WORK_COORDINATION_ACTION_TYPES = Object.freeze({
   tenant_work_lease_renew: "work.lease.renew",
   tenant_work_lease_release: "work.lease.release",
   tenant_work_message_post: "work.message.post",
+  // Task state is a bounded coordination update; evidence stays on the
+  // continuity path but receives a Core-valid, server-derived target below.
+  tenant_work_task_record: "task.update",
+  tenant_work_evidence_record: "continuity.update",
 });
 
 export function tenantWorkCoordinationActionType(toolName) {
   return TENANT_WORK_COORDINATION_ACTION_TYPES[String(toolName || "")] || null;
+}
+
+const WORK_ID_TARGET = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+
+// Core validates the action type against this target. Never accept a caller
+// target: derive the only permitted target shape from the validated Work id.
+export function tenantWorkCoordinationTarget(toolName, args = {}) {
+  const name = String(toolName || "");
+  const workId = String(args?.work_id || "").trim().toLowerCase();
+  if (!WORK_ID_TARGET.test(workId)) return name;
+  if (name === "tenant_work_task_record") return `task:${workId}`;
+  if (name === "tenant_work_evidence_record") return `work_continuity_evidence:${workId}`;
+  return name;
 }
 
 function tool(name, title, description, inputSchema, readOnly, options = {}) {
