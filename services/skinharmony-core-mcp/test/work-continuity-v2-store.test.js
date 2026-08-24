@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import test from "node:test";
 import {
   ADDITIVE_SCHEMA_SQL,
@@ -26,6 +27,14 @@ test("v2 store schema is additive and preserves legacy tables", () => {
   assert.match(ADDITIVE_SCHEMA_SQL, /tenant_work_code_sequence/);
   assert.match(ADDITIVE_SCHEMA_SQL, /tenant_work_core_join/);
   assert.doesNotMatch(ADDITIVE_SCHEMA_SQL, /DROP\s+TABLE|DELETE\s+FROM/i);
+});
+
+test("DTT task upsert gives PostgreSQL an explicit type for its reused status parameter", () => {
+  const source = fs.readFileSync(new URL("../src/work-continuity-v2-store.js", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /CASE WHEN \$6::varchar='completed' THEN now\(\) ELSE NULL END/,
+  );
 });
 
 test("actor requires a server-derived tenant ACL envelope", () => {

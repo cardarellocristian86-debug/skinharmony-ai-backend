@@ -1121,7 +1121,7 @@ export function createWorkContinuityV2Store({
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canRecordTask, work, actor);
       await client.query(`INSERT INTO tenant_work_task (tenant_id,task_id,work_id,title,weight,status,required,acceptance_verified,completed_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,false,CASE WHEN $6='completed' THEN now() ELSE NULL END)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,false,CASE WHEN $6::varchar='completed' THEN now() ELSE NULL END)
         ON CONFLICT (tenant_id,task_id) DO UPDATE SET title=EXCLUDED.title,weight=EXCLUDED.weight,status=EXCLUDED.status,required=EXCLUDED.required,completed_at=EXCLUDED.completed_at`,
       [actor.tenant_id, taskId, workId, text(input.title, "task_title_invalid", 2_000), Math.max(1, Number(input.weight) || 1),
         input.status === "completed" ? "completed" : "planned", input.required !== false]);
