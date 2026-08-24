@@ -154,6 +154,22 @@ class AtomicWorkPool {
       }
       return { rows: [structuredClone(row)], rowCount: 1 };
     }
+    if (q.startsWith("UPDATE tenant_work SET work_name=$3,work_type=$4")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        work_name: parameters[2], work_type: parameters[3], project_id: parameters[4],
+        owner_user_id: parameters[5], created_by_user_id: parameters[5], team_id: parameters[6],
+        assigned_user_ids: JSON.parse(parameters[7]), supervising_user_ids: JSON.parse(parameters[8]),
+        agent_ids: JSON.parse(parameters[9]), visibility_scope: parameters[10], priority: parameters[11],
+        priority_score: parameters[12], priority_version: parameters[13], priority_context: JSON.parse(parameters[14]),
+        intent_digest: parameters[15], objective: parameters[16], next_action: parameters[17],
+        created_by_agent_id: parameters[18], created_by_session_fingerprint: parameters[19],
+        acceptance_criteria: JSON.parse(parameters[20]), legacy_projection_sequence: null,
+        legacy_projection_event_hash: null, legacy_projection_updated_at: null,
+      });
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
     if (q.startsWith("INSERT INTO tenant_work_task")) {
       const row = { tenant_id: parameters[0], task_id: parameters[1], work_id: parameters[2],
         title: parameters[3], weight: parameters[4], status: "planned", required: parameters[5], acceptance_verified: false };
@@ -233,6 +249,28 @@ function legacyRuntime(pool) {
   } };
 }
 
+function legacyRuntimeWithConcurrentProjection(pool) {
+  return { initialize: async () => {}, ensureWithClient: async (client, who, input) => {
+    const row = client.insertLegacy(who, input);
+    // Mirrors the compatibility projector racing immediately after legacy
+    // creation, before the V2 coordinator reaches its insert.
+    if (!pool.works.has(key(who.tenantId, input.work_id))) {
+      pool.works.set(key(who.tenantId, input.work_id), {
+        tenant_id: who.tenantId, work_id: input.work_id, legacy_work_id: input.work_id,
+        work_code: "NYRA-20260808-0001", work_name: input.idea, work_type: "legacy",
+        project_id: input.project_id, owner_user_id: null, created_by_user_id: null,
+        assigned_user_ids: [], supervising_user_ids: [], agent_ids: [], visibility_scope: "private",
+        status: "ACTIVE", priority: "P4", priority_score: 0, intent_digest: null,
+        objective: input.objective, next_action: input.next_action, acceptance_criteria: [], progress_bp: 0,
+        legacy_projection_sequence: 2, legacy_projection_event_hash: "c".repeat(64),
+        legacy_projection_updated_at: "2026-08-08T10:00:00.000Z",
+      });
+    }
+    return { work_id: row.work_id, intent_digest: row.intent_digest,
+      event: { event_hash: "b".repeat(64) } };
+  } };
+}
+
 async function reviewed(store, input) {
   const review = await store.openWorkReview(identity(), { intent_type: "CREATE_WORK",
     request: `${input.work_name} ${input.objective}`, create_request: input });
@@ -269,6 +307,24 @@ test("exact retry converges on one linked legacy/V2 identity and one consumed re
   assert.equal(pool.tasks.size, 1);
   assert.equal(pool.events.size, 2);
   assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_work_id, first.work.work_id);
+});
+
+test("coordinated create promotes a concurrent legacy projection to the requested V2 identity", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntimeWithConcurrentProjection(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  const first = await store.createNewWork(identity(), input);
+  const row = pool.works.get(key("tenant-a", first.work.work_id));
+  assert.equal(first.work.work_name, input.work_name);
+  assert.equal(first.work.work_type, input.work_type);
+  assert.equal(first.work.intent_digest, input.intent_digest);
+  assert.deepEqual(first.work.acceptance_criteria, input.acceptance_criteria);
+  assert.equal(row.legacy_projection_sequence, null);
+  assert.equal(pool.tasks.size, 1);
+  const replay = await store.createNewWork(identity(), input);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(pool.tasks.size, 1, "an exact retry must not duplicate DTT tasks");
 });
 
 test("significant overlap requires an owner decision and does not consume on denial", async () => {

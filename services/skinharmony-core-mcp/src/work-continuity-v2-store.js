@@ -621,7 +621,7 @@ export function createWorkContinuityV2Store({
       near_closure_state: Math.min(100, Math.floor(Number(work.progress_bp || 0) / 100)),
     };
   }
-  async function createWorkWithClient(client, actor, input = {}, { legacyWorkId = null } = {}) {
+  async function createWorkWithClient(client, actor, input = {}, { legacyWorkId = null, promoteLegacyProjection = false } = {}) {
     const workId = input.work_id ? uuid(input.work_id) : crypto.randomUUID();
     const projectId = text(input.project_id, "project_id_invalid", 128);
     const workName = text(input.work_name, "work_name_invalid", 1_000);
@@ -636,10 +636,42 @@ export function createWorkContinuityV2Store({
     const supervisingUserIds = stringArray(input.supervising_user_ids, "supervising_user_ids_invalid");
     const tasks = Array.isArray(input.tasks) ? input.tasks : [];
     if (!tasks.length || tasks.length > 250) fail("work_tasks_required");
+    const insertTasks = async () => {
+      for (const task of tasks) {
+        await client.query(`INSERT INTO tenant_work_task
+          (tenant_id,task_id,work_id,title,weight,status,required,acceptance_verified)
+          VALUES ($1,$2,$3,$4,$5,'planned',$6,false)`, [actor.tenant_id,
+          task.task_id ? uuid(task.task_id, "task_id_invalid") : crypto.randomUUID(), workId,
+          text(task.title, "task_title_invalid", 2_000), Math.max(1, Number(task.weight) || 1), task.required !== false]);
+      }
+    };
     const existing = await client.query("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]);
     if (existing.rows[0]) {
       const row = normalizeWork(existing.rows[0]);
       if (legacyWorkId && row.legacy_work_id !== legacyWorkId) fail("tenant_work_legacy_link_conflict");
+      // The compatibility bridge can project the just-created legacy work in a
+      // concurrent transaction. Promote only that bridge-owned projection: a
+      // genuine V2 identity remains immutable and exact retries stay no-ops.
+      const canPromoteLegacyProjection = promoteLegacyProjection === true &&
+        legacyWorkId && row.legacy_work_id === legacyWorkId && row.work_type === "legacy";
+      if (canPromoteLegacyProjection) {
+        await client.query(`UPDATE tenant_work SET
+          work_name=$3,work_type=$4,project_id=$5,owner_user_id=$6,created_by_user_id=$6,team_id=$7,
+          assigned_user_ids=$8::jsonb,supervising_user_ids=$9::jsonb,agent_ids=$10::jsonb,visibility_scope=$11,
+          priority=$12,priority_score=$13,priority_version=$14,priority_context=$15::jsonb,intent_digest=$16,
+          objective=$17,next_action=$18,created_by_agent_id=$19,created_by_session_fingerprint=$20,
+          acceptance_criteria=$21::jsonb,legacy_projection_sequence=NULL,legacy_projection_event_hash=NULL,
+          legacy_projection_updated_at=NULL,updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId,
+          workName, workType, projectId, actor.user_id, input.team_id || null,
+          JSON.stringify(assignedUserIds), JSON.stringify(supervisingUserIds), JSON.stringify(actor.agent_id ? [actor.agent_id] : []), visibilityScope,
+          priority.priority, priority.priority_score, priority.priority_version, JSON.stringify(priorityFacts),
+          input.intent_digest ? digest(input.intent_digest, "intent_digest_invalid") : null,
+          String(input.objective || "").slice(0, 8_000) || null, String(input.next_action || "").slice(0, 4_000) || null,
+          actor.agent_id, actor.session_fingerprint, JSON.stringify(acceptanceCriteria)]);
+        await insertTasks();
+        return { work: await loadWork(client, actor, workId), created: true };
+      }
       return { work: row, created: false };
     }
       const workCode = await allocateCode(client, actor, projectId);
@@ -654,13 +686,7 @@ export function createWorkContinuityV2Store({
         String(input.objective || "").slice(0, 8_000) || null, String(input.next_action || "").slice(0, 4_000) || null,
         actor.agent_id, actor.session_fingerprint, JSON.stringify(acceptanceCriteria)]);
       await injectFailure("v2_work_created", { tenant_id: actor.tenant_id, work_id: workId });
-      for (const task of tasks) {
-        await client.query(`INSERT INTO tenant_work_task
-          (tenant_id,task_id,work_id,title,weight,status,required,acceptance_verified)
-          VALUES ($1,$2,$3,$4,$5,'planned',$6,false)`, [actor.tenant_id,
-          task.task_id ? uuid(task.task_id, "task_id_invalid") : crypto.randomUUID(), workId,
-          text(task.title, "task_title_invalid", 2_000), Math.max(1, Number(task.weight) || 1), task.required !== false]);
-      }
+      await insertTasks();
       await injectFailure("v2_tasks_created", { tenant_id: actor.tenant_id, work_id: workId });
       return { work: await loadWork(client, actor, workId), created: true };
   }
@@ -730,7 +756,11 @@ export function createWorkContinuityV2Store({
       });
       if (legacy.work_id !== workId) fail("legacy_work_identity_mismatch");
       await injectFailure("legacy_created", { tenant_id: actor.tenant_id, work_id: workId, review_id: reviewId });
-      const v2 = await createWorkWithClient(client, actor, { ...input, work_id: workId }, { legacyWorkId: workId });
+      const v2 = await createWorkWithClient(client, actor, {
+        ...input,
+        work_id: workId,
+        intent_digest: input.intent_digest || legacy.intent_digest || null,
+      }, { legacyWorkId: workId, promoteLegacyProjection: true });
       if (v2.created) {
         await appendV2Event(client, actor, workId, "open_work_review_consumed", {
           review_id: reviewId, review_digest: review.review.review_digest,
