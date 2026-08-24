@@ -1415,7 +1415,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   internallyGovernedCapabilities: ["agent_heartbeat"],
-  gateAction: ({ tool, identity, catalogRevision, idempotencyKey, workPreflight }) => {
+  gateAction: ({ tool, args, identity, catalogRevision, idempotencyKey, workPreflight }) => {
     const researchDistillationShadow =
       researchDistillationShadowTools.has(tool.name);
     const externalSideEffect = researchDistillationShadow
