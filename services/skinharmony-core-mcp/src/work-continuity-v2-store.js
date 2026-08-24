@@ -660,8 +660,7 @@ export function createWorkContinuityV2Store({
           assigned_user_ids=$8::jsonb,supervising_user_ids=$9::jsonb,agent_ids=$10::jsonb,visibility_scope=$11,
           priority=$12,priority_score=$13,priority_version=$14,priority_context=$15::jsonb,intent_digest=$16,
           objective=$17,next_action=$18,created_by_agent_id=$19,created_by_session_fingerprint=$20,
-          acceptance_criteria=$21::jsonb,legacy_projection_sequence=NULL,legacy_projection_event_hash=NULL,
-          legacy_projection_updated_at=NULL,updated_at=now()
+          acceptance_criteria=$21::jsonb,updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId,
           workName, workType, projectId, actor.user_id, input.team_id || null,
           JSON.stringify(assignedUserIds), JSON.stringify(supervisingUserIds), JSON.stringify(actor.agent_id ? [actor.agent_id] : []), visibilityScope,
@@ -819,6 +818,10 @@ export function createWorkContinuityV2Store({
       }
       if (existing.rows[0]) {
         const current = normalizeWork(existing.rows[0]);
+        // A linked V2 identity is authoritative for its V2 fields. The
+        // compatibility projector must not later turn it back into a legacy
+        // projection when a delayed legacy event is observed.
+        if (current.legacy_work_id === legacyId && current.work_type !== "legacy") return current;
         const projectedSequence = Number(current.legacy_projection_sequence || 0);
         if (projectedSequence >= sourceEvent.sequence_number) return current;
         if (ARCHIVE_STATUSES.has(current.status) && !ARCHIVE_STATUSES.has(status)) {

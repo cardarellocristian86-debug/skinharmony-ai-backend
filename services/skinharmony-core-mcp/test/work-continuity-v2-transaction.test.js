@@ -165,8 +165,7 @@ class AtomicWorkPool {
         priority_score: parameters[12], priority_version: parameters[13], priority_context: JSON.parse(parameters[14]),
         intent_digest: parameters[15], objective: parameters[16], next_action: parameters[17],
         created_by_agent_id: parameters[18], created_by_session_fingerprint: parameters[19],
-        acceptance_criteria: JSON.parse(parameters[20]), legacy_projection_sequence: null,
-        legacy_projection_event_hash: null, legacy_projection_updated_at: null,
+        acceptance_criteria: JSON.parse(parameters[20]),
       });
       return { rows: [structuredClone(row)], rowCount: 1 };
     }
@@ -320,8 +319,15 @@ test("coordinated create promotes a concurrent legacy projection to the requeste
   assert.equal(first.work.work_type, input.work_type);
   assert.equal(first.work.intent_digest, input.intent_digest);
   assert.deepEqual(first.work.acceptance_criteria, input.acceptance_criteria);
-  assert.equal(row.legacy_projection_sequence, null);
+  assert.equal(row.legacy_projection_sequence, 2, "the compatibility cursor must remain durable");
   assert.equal(pool.tasks.size, 1);
+  Object.assign(pool.legacy.get(key("tenant-a", first.work.work_id)), {
+    source_sequence_number: 3, source_event_type: "work_updated", source_event_hash: "d".repeat(64),
+    source_event_payload: {},
+  });
+  await store.preflightGallery(identity(), { project_id: input.project_id });
+  assert.equal(pool.works.get(key("tenant-a", first.work.work_id)).work_type, input.work_type,
+    "a delayed legacy event must not overwrite the promoted V2 identity");
   const replay = await store.createNewWork(identity(), input);
   assert.equal(replay.idempotent_replay, true);
   assert.equal(pool.tasks.size, 1, "an exact retry must not duplicate DTT tasks");
