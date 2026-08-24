@@ -56,6 +56,7 @@ import { buildSuitePolicy } from "./suitePolicy.js";
 import { getTenantPolicy } from "./tenantRegistry.js";
 import { checkDomainPackRequest, listDomainPacks, publicDomainPack, resolveDomainPackForKey } from "./domainPacks.js";
 import { nyraBranchCatalog, routeNyraBranches } from "./nyraBranchNetwork.js";
+import { createNyraPersistentSelfModelStore } from "./nyraPersistentSelfModel.js";
 import { multiAgentRegistry, planMultiAgentRun } from "./multiAgentArchitecture.js";
 import {
   AI_GATEWAY_ADAPTERS,
@@ -4885,6 +4886,10 @@ export function createUniversalCoreService(options = {}) {
   ensureDir(storageRoot);
 
   const audit = createAudit(storageRoot);
+  const nyraPersistentSelfModel = createNyraPersistentSelfModelStore({
+    storageRoot,
+    signingSecret: process.env.CORE_EVIDENCE_SIGNING_SECRET || "",
+  });
   const keyStore = createKeyStore(storageRoot, audit);
   const providerSetupLinkBootstrapKey = String(
     options.providerSetupLinkBootstrapKey ?? process.env.CORE_PROVIDER_SETUP_LINK_BOOTSTRAP_KEY ?? "",
@@ -9143,6 +9148,67 @@ export function createUniversalCoreService(options = {}) {
       branch_count: catalog.branches.length,
     });
     res.json({ ok: true, tenant_id: req.tenantId, catalog });
+  });
+
+  // Read-only introspection deliberately does not require a Work preflight: a
+  // fresh AI must be able to learn Nyra's own boundaries before it can resume
+  // or create a Work. It is a pure read: creation/refresh is a separate,
+  // owner-confirmed Core mutation below.
+  app.get("/v1/nira/self-model", coreAuth(SCOPES.READ_DECISION), (req, res) => {
+    const current = resolveDomainPackForKey(req.coreKey);
+    const catalog = nyraBranchCatalog(current.id);
+    const branchResolution = verifiedOwnerBranchProfile(
+      req, [], "nyra_self_model_read", ownerContextSigningSecret,
+    );
+    const selfModel = nyraPersistentSelfModel.read({
+      tenantId: req.tenantId,
+      catalog,
+      authorizedBranchIds: branchResolution.allowed_branches,
+    });
+    audit.append("core_nyra_self_model_read", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      branch_count: catalog.branches.length,
+      materialized: Boolean(selfModel),
+    });
+    return res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      self_model: selfModel ? { ...selfModel, read_only: true } : null,
+      materialization_required: !selfModel,
+      execution_allowed: false,
+    });
+  });
+
+  // Persisting the model is tenant state. It therefore needs a write-capable
+  // key plus a request-bound verified owner assertion; this endpoint is the
+  // auditable replacement for write-on-GET.
+  app.post("/v1/nira/self-model/refresh", coreAuth(SCOPES.WRITE_DECISION), (req, res) => {
+    const ownerBranches = verifiedOwnerBranchProfile(
+      req, [], "nyra_self_model_refresh", ownerContextSigningSecret,
+    );
+    if (ownerBranches.owner_profile !== "tenant_scoped_verified_owner") {
+      return publicError(res, 403, "verified_owner_confirmation_required");
+    }
+    const current = resolveDomainPackForKey(req.coreKey);
+    const catalog = nyraBranchCatalog(current.id);
+    const selfModel = nyraPersistentSelfModel.refresh({
+      tenantId: req.tenantId,
+      catalog,
+      authorizedBranchIds: ownerBranches.allowed_branches,
+    });
+    audit.append("core_nyra_self_model_refreshed", {
+      tenant_id: req.tenantId,
+      key_id: req.coreKey.key_id,
+      revision: selfModel.revision,
+      branch_count: ownerBranches.allowed_branches.length,
+    });
+    return res.json({
+      ok: true,
+      tenant_id: req.tenantId,
+      self_model: { ...selfModel, read_only: false },
+      execution_allowed: false,
+    });
   });
 
   app.post("/v1/research/plan", coreAuth(SCOPES.READ_DECISION), (req, res) => {

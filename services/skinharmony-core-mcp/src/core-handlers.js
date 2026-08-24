@@ -3222,6 +3222,9 @@ export function createCoreHandlers(config, options = {}) {
       }));
     },
     nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
+    // This is the only MCP exposure for the server-owned persistent profile.
+    // It is a pure read; a connected AI cannot materialize or refresh it.
+    nyra_self_model: async (_args, identity) => textResult(await coreRequest("/v1/nira/self-model", identity.tenantId)),
     core_capability_catalog: async (args, identity) => textResult({
       ...readCoreCapabilityCatalog(args),
       tenant_id: identity.tenantId,
