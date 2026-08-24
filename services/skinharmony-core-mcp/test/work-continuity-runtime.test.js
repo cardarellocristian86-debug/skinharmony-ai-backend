@@ -14,6 +14,7 @@ import { TOOLS as BASE_TOOLS } from "../src/tool-definitions.js";
 import {
   WORK_CONTINUITY_TOOLS,
   tenantWorkCoordinationActionType,
+  tenantWorkCoordinationTarget,
 } from "../src/work-continuity-tools.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 
@@ -802,7 +803,7 @@ test("Gallery join locks the Work row before the advisory work lock", async () =
   assert.ok(workAdvisoryLock < participantLock);
 });
 
-test("Gallery and bootstrap-review mutations use bounded Core action types instead of generic continuity update", () => {
+test("Gallery and DTT mutations use bounded Core action types and derived Core-valid targets", () => {
   assert.deepEqual({
     tenant_work_open_review: tenantWorkCoordinationActionType("tenant_work_open_review"),
     tenant_work_gallery_join: tenantWorkCoordinationActionType("tenant_work_gallery_join"),
@@ -812,6 +813,8 @@ test("Gallery and bootstrap-review mutations use bounded Core action types inste
     tenant_work_lease_renew: tenantWorkCoordinationActionType("tenant_work_lease_renew"),
     tenant_work_lease_release: tenantWorkCoordinationActionType("tenant_work_lease_release"),
     tenant_work_message_post: tenantWorkCoordinationActionType("tenant_work_message_post"),
+    tenant_work_task_record: tenantWorkCoordinationActionType("tenant_work_task_record"),
+    tenant_work_evidence_record: tenantWorkCoordinationActionType("tenant_work_evidence_record"),
   }, {
     tenant_work_open_review: "work.bootstrap.review",
     tenant_work_gallery_join: "work.participant.join",
@@ -821,6 +824,11 @@ test("Gallery and bootstrap-review mutations use bounded Core action types inste
     tenant_work_lease_renew: "work.lease.renew",
     tenant_work_lease_release: "work.lease.release",
     tenant_work_message_post: "work.message.post",
+    tenant_work_task_record: "task.update",
+    tenant_work_evidence_record: "continuity.update",
   });
+  assert.equal(tenantWorkCoordinationTarget("tenant_work_task_record", { work_id: WORK_ID }), `task:${WORK_ID}`);
+  assert.equal(tenantWorkCoordinationTarget("tenant_work_evidence_record", { work_id: WORK_ID }), `work_continuity_evidence:${WORK_ID}`);
+  assert.equal(tenantWorkCoordinationTarget("tenant_work_task_record", { work_id: "not-a-work-id" }), "tenant_work_task_record");
   assert.equal(tenantWorkCoordinationActionType("unknown_internal_write"), null);
 });

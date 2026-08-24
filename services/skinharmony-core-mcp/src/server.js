@@ -41,6 +41,7 @@ import { createWorkContinuityAutomation } from "./work-continuity-automation.js"
 import {
   WORK_CONTINUITY_TOOLS,
   tenantWorkCoordinationActionType,
+  tenantWorkCoordinationTarget,
 } from "./work-continuity-tools.js";
 import { NYRA_NATIVE_TEAM_TOOLS } from "./nyra-native-team-tools.js";
 import { NYRA_AUTOPILOT_TOOLS } from "./nyra-autopilot-tools.js";
@@ -1434,7 +1435,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
         : ownerConfirmationRequired
           ? "dynamic_capability.invoke"
           : internalCoordinationActionType(tool.name),
-      target: tool.name,
+      target: tenantWorkCoordinationTarget(tool.name, args),
       operation_class: researchDistillationShadow
         ? "sandboxed_scoped_work"
         : ownerConfirmationRequired
