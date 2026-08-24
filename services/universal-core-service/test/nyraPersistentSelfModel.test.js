@@ -22,6 +22,12 @@ test("Nyra persistent self-model is signed, tenant-scoped and refreshed only by 
   assert.equal(second.revision, 1);
   assert.equal(first.signature, second.signature);
   assert.equal(first.execution_allowed, false);
+  assert.equal(first.cognitive_engine_contract.reasoning_owner, "nyra_core");
+  assert.equal(first.cognitive_engine_contract.connected_ai_role, "interchangeable_cognitive_and_linguistic_engine");
+  assert.equal(first.cognitive_engine_contract.final_authority, "universal_core");
+  assert.equal(first.structural_autonomy_requirement.id, "software_architecture_atlas");
+  assert.equal(first.structural_autonomy_requirement.current_state_source, "work_scoped_operational_dialogue");
+  assert.match(first.structural_autonomy_requirement.required_coverage.join(","), /components,files,dependencies,services,apis,events,databases,changes,impacts/);
   assert.equal(second.next_recommended_capability, "verified_outcome_learning_loop");
   assert.ok(fs.existsSync(store.fileFor("tenant-a")));
   assert.notEqual(store.fileFor("tenant/a"), store.fileFor("tenant_a"));

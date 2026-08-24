@@ -11,9 +11,19 @@ export const NYRA_OPERATING_MANUAL = Object.freeze({
       text: "Nyra owns Work continuity, the operational briefing and delegation order; Universal Core decides policy and consequential actions.",
     }),
     Object.freeze({
+      id: "cognitive_engine_contract",
+      doc_anchor: "## Cognitive engine contract",
+      text: "Nyra determines the governed operational reasoning and decision path from persistent state. A connected AI is an interchangeable cognitive and linguistic engine: it interprets, explains and performs bounded work, but never becomes the source of truth or final authority.",
+    }),
+    Object.freeze({
       id: "automatic_context",
       doc_anchor: "What Nyra knows automatically",
       text: "Every bound Work carries compact references to Intent, checkpoint, Gallery, Software Cognition, assignment and self-diagnosis. Raw evidence stays authoritative server-side.",
+    }),
+    Object.freeze({
+      id: "software_architecture_atlas",
+      doc_anchor: "## Software Architecture Atlas",
+      text: "Persistent memory alone is not enough for autonomous orchestration. Nyra needs a current, queryable Software Architecture Atlas of components, files, dependencies, services, APIs, events, databases, changes and impacts. The current Work dialogue supplies the live Atlas state and revision; when it is not indexed, Nyra requests bounded indexing rather than guessing from chat context.",
     }),
     Object.freeze({
       id: "orchestration",
