@@ -381,6 +381,15 @@ test("continuity checkpoint relies on exactly one server-owned Universal Core ga
   assert.match(checkpointHandler, /dedicated_core_gate\s*=\s*\{\s*authorized: true,\s*authority: "universal_core"/);
 });
 
+test("bounded DTT Core gates derive their target from the router-normalized arguments", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(
+    serverSource,
+    /gateAction: \(\{ tool, args, identity, catalogRevision, idempotencyKey, workPreflight \}\) =>/,
+  );
+  assert.match(serverSource, /target: tenantWorkCoordinationTarget\(tool\.name, args\)/);
+});
+
 test("allows server-issued MCP session bootstrap for agent heartbeat", () => {
   const heartbeat = TOOLS.find((tool) => tool.name === "agent_heartbeat");
   assert.ok(heartbeat);
