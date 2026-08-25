@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS tenant_work_final_report (
 );
 
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_work_id uuid;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS idea text;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS architecture jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS objective text;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS next_action text;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS created_by_agent_id varchar(128);

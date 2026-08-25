@@ -378,6 +378,35 @@ function replayOutcomeReceipt({ receipt, request_digest, scope_digest, requested
   return clone(result);
 }
 
+// A failed outcome may already have selected a governed recovery route. The
+// readiness projection must preserve that route rather than treating the node
+// as a fresh evidence draft: a retry and a fallback both require Core review,
+// while a quarantined envelope requires the security-review path.
+function readinessRecoveryRoute(node) {
+  if (node.status === "retry_proposed") {
+    return {
+      state: "retry_proposed",
+      next_steps: ["requires_core_review"],
+      attempt: node.attempts,
+      max_attempts: node.retry_policy.max_attempts,
+    };
+  }
+  if (node.status === "quarantined") {
+    return {
+      state: "quarantined",
+      next_steps: ["manual_security_review"],
+    };
+  }
+  if (node.status === "failed" && node.fallback_node_id) {
+    return {
+      state: "fallback_proposed",
+      next_steps: ["requires_core_review"],
+      fallback_node_id: node.fallback_node_id,
+    };
+  }
+  return null;
+}
+
 export function buildDynamicTaskTreeContract({ tenant_id, work_id, objective, nodes, limits = {} } = {}) {
   const tenantId = requireText(tenant_id, "tenant_id", 120);
   const workId = requireWorkId(work_id);
@@ -837,6 +866,7 @@ export function createDynamicTaskTreeRuntime({
         const allowedVerifierIds = node.kind === "verification"
           ? [...node.verification_policy.allowed_verifier_ids]
           : [];
+        const recovery = readinessRecoveryRoute(node);
         const nodeBlocked = ["failed", "quarantined", "cancelled", "pruned"].includes(node.status);
         const verified = node.status === "verified";
         nodes.push({
@@ -851,22 +881,32 @@ export function createDynamicTaskTreeRuntime({
           assigned_verifier_ids: assignedVerifierIds,
           assignment_count: assignedVerifierIds.length,
           evidence_recorded: verified,
-          state: verified
-            ? "verified"
-            : nodeBlocked
-              ? "blocked"
-              : "evidence_pending",
-          next_steps: verified
-            ? []
-            : nodeBlocked
-              ? ["replan_or_cancel"]
-              : [
-                "register_immutable_artifact",
-                "prepare_work_bound_evidence_draft",
-                "assign_independent_verifier",
-                "collect_signed_attestations",
-                "record_verified_outcome",
-              ],
+          ...(recovery ? {
+            state: recovery.state,
+            next_steps: recovery.next_steps,
+            ...(Number.isInteger(recovery.attempt) ? {
+              attempt: recovery.attempt,
+              max_attempts: recovery.max_attempts,
+            } : {}),
+            ...(recovery.fallback_node_id ? { fallback_node_id: recovery.fallback_node_id } : {}),
+          } : {
+            state: verified
+              ? "verified"
+              : nodeBlocked
+                ? "blocked"
+                : "evidence_pending",
+            next_steps: verified
+              ? []
+              : nodeBlocked
+                ? ["replan_or_cancel"]
+                : [
+                  "register_immutable_artifact",
+                  "prepare_work_bound_evidence_draft",
+                  "assign_independent_verifier",
+                  "collect_signed_attestations",
+                  "record_verified_outcome",
+                ],
+          }),
           execution_authorized: false,
         });
       }
@@ -920,6 +960,9 @@ export function createDynamicTaskTreeRuntime({
       }
       const blocked = nodes.find((node) => node.state === "blocked");
       const pending = nodes.find((node) => node.state === "evidence_pending");
+      const manualSecurityReview = nodes.find((node) => node.state === "quarantined");
+      const coreRecoveryReview = nodes.find((node) =>
+        node.state === "retry_proposed" || node.state === "fallback_proposed");
       return clone({
         schema_version: "dynamic_task_tree_verification_readiness_v1",
         tenant_id: tree.tenant_id,
@@ -934,13 +977,17 @@ export function createDynamicTaskTreeRuntime({
             : "reconcile_core_join_verdict"
           : tree.status === "cancelled"
             ? "tree_cancelled"
-            : blocked
-              ? "replan_or_cancel"
-              : pending
-                ? "complete_persisted_evidence_flow"
-                : coreJoin.ready
-                  ? "request_core_join"
-                  : "inspect_core_join_blocker",
+            : manualSecurityReview
+              ? "manual_security_review"
+              : coreRecoveryReview
+                ? "requires_core_review"
+                : blocked
+                  ? "replan_or_cancel"
+                  : pending
+                    ? "complete_persisted_evidence_flow"
+                    : coreJoin.ready
+                      ? "request_core_join"
+                      : "inspect_core_join_blocker",
         persistence: {
           durable: ["verifier_assignments", "recorded_outcomes", "core_join"],
           intentionally_ephemeral: ["evidence_drafts", "unsubmitted_identity_receipts"],

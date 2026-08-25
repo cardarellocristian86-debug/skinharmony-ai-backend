@@ -178,10 +178,11 @@ class AtomicWorkPool {
     }
     if (q.startsWith("INSERT INTO tenant_work ")) {
       let row;
-      if (parameters.length === 23) {
+      if (parameters.length === 25) {
         const [tenantId, workId, legacyWorkId, workCode, workName, workType, projectId, ownerUserId,
           teamId, assigned, supervising, agents, visibility, priority, priorityScore, priorityVersion,
-          priorityContext, intentDigest, objective, nextAction, agentId, sessionFingerprint, criteria] = parameters;
+          priorityContext, intentDigest, objective, nextAction, agentId, sessionFingerprint, criteria,
+          idea, architecture] = parameters;
         row = { tenant_id: tenantId, work_id: workId, legacy_work_id: legacyWorkId, work_code: workCode,
           work_name: workName, work_type: workType, project_id: projectId, owner_user_id: ownerUserId,
           created_by_user_id: ownerUserId, team_id: teamId, assigned_user_ids: JSON.parse(assigned),
@@ -190,7 +191,8 @@ class AtomicWorkPool {
           priority, priority_score: priorityScore, priority_version: priorityVersion,
           priority_context: JSON.parse(priorityContext), intent_digest: intentDigest, objective, next_action: nextAction,
           created_by_agent_id: agentId, created_by_session_fingerprint: sessionFingerprint,
-          acceptance_criteria: JSON.parse(criteria), progress_bp: 0, created_at: "2026-08-08T10:00:00.000Z",
+          acceptance_criteria: JSON.parse(criteria), idea, architecture: JSON.parse(architecture),
+          progress_bp: 0, created_at: "2026-08-08T10:00:00.000Z",
           updated_at: "2026-08-08T10:00:00.000Z" };
       } else {
         const [tenantId, workId, workCode, workName, projectId, createdAt, updatedAt, status,
@@ -232,7 +234,7 @@ class AtomicWorkPool {
         priority_score: parameters[12], priority_version: parameters[13], priority_context: JSON.parse(parameters[14]),
         intent_digest: parameters[15], objective: parameters[16], next_action: parameters[17],
         created_by_agent_id: parameters[18], created_by_session_fingerprint: parameters[19],
-        acceptance_criteria: JSON.parse(parameters[20]),
+        acceptance_criteria: JSON.parse(parameters[20]), idea: parameters[21], architecture: JSON.parse(parameters[22]),
       });
       return { rows: [structuredClone(row)], rowCount: 1 };
     }
@@ -309,6 +311,14 @@ class AtomicWorkPool {
         ["open_work_review_consumed", "work_v2_created"].includes(event.event_type))
         .sort((left, right) => left.sequence_number - right.sequence_number);
       return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT tenant_id,work_id,sequence_number,event_type,payload,") &&
+        q.includes("event_type='work_archived_v3'") && q.includes("idempotency_key_digest")) {
+      const row = [...this.events.values()]
+        .filter((event) => event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
+          event.event_type === "work_archived_v3" && event.payload?.idempotency_key_digest === parameters[2])
+        .sort((left, right) => right.sequence_number - left.sequence_number)[0];
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("SELECT sequence_number,event_hash FROM tenant_work_event")) {
       const rows = [...this.events.values()].filter((event) => event.tenant_id === parameters[0] && event.work_id === parameters[1])
@@ -841,15 +851,19 @@ test("Gallery V3 queues, archives, and reopens native Work without restoring exe
   const queued = await store.queueNewWork(identity(), input);
   assert.equal(queued.work.status, "PLANNED");
   assert.equal(queued.work.legacy_work_id, null);
+  assert.equal(queued.work.idea, input.idea);
+  assert.deepEqual(queued.work.architecture, input.architecture);
   assert.equal((await store.listWorks(identity(), { view: "operational" })).length, 1);
 
   const archived = await store.archiveWork(identity(), {
     work_id: queued.work.work_id,
     reason: "In attesa di una decisione di priorità.",
+    idempotency_key: "gallery-archive-0001",
   });
   assert.equal(archived.work.status, "ARCHIVED");
   assert.equal(archived.work.archived_from_status, "PLANNED");
   assert.equal(archived.released_lease_count, 0);
+  assert.equal(archived.idempotent_replay, false);
   assert.equal((await store.listWorks(identity(), { view: "operational" })).length, 0);
   assert.equal((await store.listWorks(identity(), { view: "archive" }))[0].work_id, queued.work.work_id);
 
@@ -865,6 +879,88 @@ test("Gallery V3 queues, archives, and reopens native Work without restoring exe
   assert.deepEqual([...pool.events.values()].map((event) => event.event_type), [
     "work_queued_v3", "work_archived_v3", "work_reopened_v3",
   ]);
+});
+
+test("Gallery V3 archive replays one committed archive and rejects key reuse with a different reason", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
+  const request = {
+    work_id: queued.work.work_id,
+    reason: "Archiviato in attesa della nuova priorità.",
+    idempotency_key: "gallery-archive-replay-0001",
+  };
+
+  const archived = await store.archiveWork(identity(), request);
+  const replay = await store.archiveWork(identity(), request);
+  assert.equal(replay.idempotent_replay, true);
+  assert.deepEqual(replay.work, archived.work);
+  assert.equal(replay.released_lease_count, archived.released_lease_count);
+  assert.deepEqual(replay.event, archived.event);
+  assert.equal([...pool.events.values()].filter((event) => event.event_type === "work_archived_v3").length, 1);
+
+  await assert.rejects(store.archiveWork(identity(), {
+    ...request,
+    reason: "Una diversa motivazione non può riutilizzare la stessa chiave.",
+  }), /work_archive_idempotency_conflict/);
+  assert.equal([...pool.events.values()].filter((event) => event.event_type === "work_archived_v3").length, 1);
+});
+
+test("a private Gallery assignment loses agent read access on archive, reopen, and reassignment", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
+  const workId = queued.work.work_id;
+  const codex = identity("codex", "member");
+  codex.agentPresence.client_type = "codex";
+  await store.assignQueuedWork(identity(), {
+    work_id: workId,
+    target_agent_id: "agent-codex",
+    target_client_type: "codex",
+  });
+  await store.acceptQueuedWorkAssignment(codex, { work_id: workId });
+  assert.deepEqual((await store.listWorks(codex, { view: "my" })).map((work) => work.work_id), [workId]);
+
+  await store.archiveWork(identity(), {
+    work_id: workId,
+    reason: "Ferma il lavoro prima della nuova assegnazione.",
+    idempotency_key: "gallery-acl-archive-0001",
+  });
+  assert.deepEqual(await store.listWorks(codex, { view: "archive" }), []);
+
+  await store.reopenWork(identity(), {
+    work_id: workId,
+    reason: "La priorità è stata rivalutata.",
+  });
+  assert.deepEqual(await store.listWorks(codex, { view: "operational" }), []);
+
+  await store.assignQueuedWork(identity(), {
+    work_id: workId,
+    target_agent_id: "agent-other",
+    target_client_type: "codex",
+  });
+  const other = identity("other", "member");
+  other.agentPresence.client_type = "codex";
+  await store.acceptQueuedWorkAssignment(other, { work_id: workId });
+  assert.deepEqual(await store.listWorks(codex, { view: "operational" }), []);
+  assert.deepEqual((await store.listWorks(other, { view: "my" })).map((work) => work.work_id), [workId]);
+  assert.deepEqual((await store.listWorks(identity(), { view: "my" })).map((work) => work.work_id), [workId]);
+});
+
+test("Gallery V3 rejects a queue whose reviewed idea or architecture changed", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+
+  await assert.rejects(store.queueNewWork(identity(), {
+    ...input,
+    idea: "A different idea must not reuse the review.",
+  }), /open_work_review_request_binding_invalid/);
+  await assert.rejects(store.queueNewWork(identity(), {
+    ...input,
+    architecture: { component: "changed-after-review" },
+  }), /open_work_review_request_binding_invalid/);
+  assert.equal(pool.works.size, 0);
 });
 
 test("Gallery V3 rejects a caller-supplied Work id already bound to another Work", async () => {

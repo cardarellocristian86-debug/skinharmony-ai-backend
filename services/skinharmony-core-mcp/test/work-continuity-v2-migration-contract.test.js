@@ -17,6 +17,8 @@ test("Work Continuity V2 migration is additive, idempotent, and registry compati
     "tenant_work_bootstrap_request", "tenant_work_event", "core_schema_migrations",
   ]) assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
   assert.match(migration, /ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_work_id/);
+  assert.match(migration, /ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS idea/);
+  assert.match(migration, /ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS architecture/);
   assert.match(migration, /ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS acceptance_criteria/);
   assert.match(migration, /ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_at/);
   assert.match(migration, /ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_from_status/);
@@ -35,7 +37,7 @@ test("Work Continuity V2 migration is additive, idempotent, and registry compati
 
 test("startup DDL and executable migration contain the same acceptance, archive and review contract", () => {
   for (const fragment of [
-    "acceptance_criteria", "archived_at", "archived_from_status", "assignment_status",
+    "idea", "architecture", "acceptance_criteria", "archived_at", "archived_from_status", "assignment_status",
     "tenant_work_open_review", "subject_user_id", "request_id", "review_result", "decision_digest",
     "consumed_work_id", "tenant_work_bootstrap_request", "tenant_work_event",
     "tenant_work_open_review_request_identity_idx", "20260825_work_bootstrap_request_backfill_v2",
