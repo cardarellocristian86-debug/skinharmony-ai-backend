@@ -548,8 +548,9 @@ jobs:
               Array(mcp["envVars"]).count { |entry| entry["key"] == key } == 1 &&
               mcp_env.dig(key, "value") == expected
           end
+          abort("Generic Join target commit must derive from the verified live build") if
+            mcp_env.key?("GENERIC_WORK_CORE_JOIN_CORE_SIGNER_TARGET_COMMIT")
           %w[
-            GENERIC_WORK_CORE_JOIN_CORE_SIGNER_TARGET_COMMIT
             GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE_TOKEN
             GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SEED
           ].each do |key|
@@ -575,13 +576,20 @@ jobs:
               Array(core["envVars"]).count { |entry| entry["key"] == key } == 1 &&
               core_env.dig(key, "value") == expected
           end
-          %w[
-            CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ORIGIN
-            CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN
-          ].each do |key|
-            abort("#{key}: must remain a manually provisioned value") unless
-              core_env[key] == { "key" => key, "sync" => false }
-          end
+          abort("Generic Join remote signer origin must remain pinned to Core MCP") unless
+            core_env["CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ORIGIN"] == {
+              "key" => "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ORIGIN",
+              "value" => "https://skinharmony-core-mcp.onrender.com",
+            }
+          abort("Generic Join remote signer token must inherit Core MCP custody") unless
+            core_env["CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN"] == {
+              "key" => "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN",
+              "fromService" => {
+                "type" => "web",
+                "name" => "skinharmony-core-mcp",
+                "envVarKey" => "GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE_TOKEN",
+              },
+            }
           abort("Generic Join remote signer key id must identify the remote signer, not Core-MCP's verifier") unless
             core_env["CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID"] == {
               "key" => "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID",
