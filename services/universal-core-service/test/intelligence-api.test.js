@@ -21,7 +21,13 @@ function ownerRequestBinding(purpose, body) {
   return `${purpose}\u0000${JSON.stringify(stableCanonical(payload))}`;
 }
 
-function signedOwnerContext(key, tenantId, body, purpose = "intelligence_outcome_record") {
+function signedOwnerContext(
+  key,
+  tenantId,
+  body,
+  purpose = "intelligence_outcome_record",
+  issuedAt = new Date().toISOString(),
+) {
   const binding = ownerRequestBinding(purpose, body);
   const context = {
     assertion_version: "owner_context_assertion_v1",
@@ -31,7 +37,10 @@ function signedOwnerContext(key, tenantId, body, purpose = "intelligence_outcome
     role: "owner_root",
     delegated_actor: "integration_test",
     owner_verified: true,
-    issued_at: new Date().toISOString(),
+    owner_subject_fingerprint: `osf_${crypto.createHmac("sha256", key)
+      .update(`test-owner-fingerprint\u0000${tenantId}`)
+      .digest("hex")}`,
+    issued_at: issuedAt,
     binding_version: "owner_request_binding_v1",
     binding_hash: crypto.createHash("sha256").update(binding).digest("hex"),
   };
@@ -43,6 +52,7 @@ function signedOwnerContext(key, tenantId, body, purpose = "intelligence_outcome
     role: context.role,
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
+    owner_subject_fingerprint: context.owner_subject_fingerprint,
     issued_at: context.issued_at,
     binding_version: context.binding_version,
     binding_hash: context.binding_hash,
@@ -305,6 +315,99 @@ test("action evaluator rejects a caller boolean and accepts only a scoped reques
     owner_context: signedOwnerContext(ownerScoped.json.key, "codexai", signedBody, "core_action_evaluator"),
   }, ownerScoped.json.key);
   assert.equal(replay.json.authorization.allowed, false);
+}));
+
+test("canonical Work authorization replays one durable Core receipt before consuming a fresh owner assertion", async () => fixture(async (request) => {
+  const owner = await request("POST", "/v1/keys/generate", {
+    tenant_id: "tenant-work-replay",
+    key_type: "connector",
+    allowed_scopes: ["read:decision", "owner:assertion"],
+  });
+  const body = {
+    action_label: "Govern work.continuity.v2.create",
+    action_type: "work.continuity.v2.create",
+    target: "work_bootstrap:create:chatgpt_prod:stable-request-digest",
+    operation_class: "owner_confirmed_governed_action",
+    idempotency_key: "nyra_cont_core_action_replay_001",
+    owner_confirmed: true,
+    confirmation_reference: "fresh owner confirmation for canonical Work",
+    external_side_effect: false,
+    contains_customer_data: false,
+    contains_secret: false,
+    secret_value_transmitted: false,
+    cross_tenant: false,
+    destructive: false,
+    bypass_orchestrator: false,
+    configuration_changes: false,
+    bounded_scope: true,
+    idempotent_or_compensable: true,
+    rollback_ready: true,
+    audit_ready: true,
+    target_authority_verified: true,
+    actor_authorized_for_target: true,
+    provider_execution: false,
+  };
+  const first = await request("POST", "/v1/action-evaluator", {
+    ...body,
+    owner_context: signedOwnerContext(
+      owner.json.key,
+      "tenant-work-replay",
+      body,
+      "core_action_evaluator",
+      new Date(Date.now() - 1_000).toISOString(),
+    ),
+  }, owner.json.key);
+  assert.equal(first.status, 200);
+  assert.equal(first.json.authorization.allowed, true);
+  assert.equal(first.json.idempotent_replay, false);
+  assert.match(first.json.authorization.decision_id, /^cae_[a-f0-9]{40}$/);
+  assert.equal(first.json.authorization_receipt.authorization_id,
+    first.json.authorization.decision_id);
+
+  const replay = await request("POST", "/v1/action-evaluator", {
+    ...body,
+    owner_context: signedOwnerContext(
+      owner.json.key,
+      "tenant-work-replay",
+      body,
+      "core_action_evaluator",
+      new Date().toISOString(),
+    ),
+  }, owner.json.key);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.json.idempotent_replay, true);
+  assert.equal(replay.json.authorization.decision_id, first.json.authorization.decision_id);
+  assert.equal(replay.json.authorization_receipt.receipt_digest,
+    first.json.authorization_receipt.receipt_digest);
+  assert.equal(replay.json.authorization_attempt_receipt.idempotent_replay, true);
+
+  const changed = { ...body, target: "work_bootstrap:create:substituted" };
+  const conflict = await request("POST", "/v1/action-evaluator", {
+    ...changed,
+    owner_context: signedOwnerContext(
+      owner.json.key,
+      "tenant-work-replay",
+      changed,
+      "core_action_evaluator",
+    ),
+  }, owner.json.key);
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.json.error, "core_action_idempotency_conflict");
+
+  const forgedContext = signedOwnerContext(
+    owner.json.key,
+    "tenant-work-replay",
+    body,
+    "core_action_evaluator",
+  );
+  forgedContext.assertion = `ocs_${"0".repeat(64)}`;
+  const forged = await request("POST", "/v1/action-evaluator", {
+    ...body,
+    owner_context: forgedContext,
+  }, owner.json.key);
+  assert.equal(forged.status, 200);
+  assert.equal(forged.json.authorization.allowed, false);
+  assert.equal(forged.json.authorization_receipt, undefined);
 }));
 
 test("Core admin bootstrap configuration requires an exact signed owner envelope and emits safe audit fields", async () => fixture(async (request, { storageRoot }) => {

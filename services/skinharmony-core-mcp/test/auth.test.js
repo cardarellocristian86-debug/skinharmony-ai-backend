@@ -7,6 +7,7 @@ import {
   requireScopes,
   verifyAuth0Jwt,
 } from "../src/auth.js";
+import { parseHostAppRegistry } from "../src/host-app-registry.js";
 
 function jwt(privateKey, kid, payload) {
   const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid })).toString("base64url");
@@ -38,8 +39,58 @@ function auth0Fixture(overrides = {}) {
 
 test("accepts a scoped Codex bearer without exposing it", async () => {
   const auth = createAuthenticator({ codexKeys: ["secret"], codexScopes: ["core:read"], auth0Issuer: "", defaultTenantId: "owner-private" });
-  assert.deepEqual(await auth("Bearer secret"), { kind: "codex", subject: "codex", tenantId: "owner-private", scopes: ["core:read"] });
+  const identity = await auth("Bearer secret");
+  assert.deepEqual({ kind: identity.kind, subject: identity.subject, tenantId: identity.tenantId, scopes: identity.scopes },
+    { kind: "codex", subject: "codex", tenantId: "owner-private", scopes: ["core:read"] });
+  assert.equal(identity.authenticatedHostPrincipal.host_kind, "codex_native");
+  assert.equal(identity.authenticatedHostPrincipal.registered, true);
   await assert.rejects(auth("Bearer wrong"), /bearer_invalid/);
+});
+
+test("binds Codex to exact registry capabilities and keeps legacy keys read-only when compatibility is disabled", async () => {
+  const secret = "registered-codex-bearer-0123456789abcdef";
+  const hostAppRegistry = parseHostAppRegistry(JSON.stringify({
+    schema_version: "mcp_host_app_registry_v1",
+    apps: [{
+      app_id: "codex",
+      auth_kind: "bearer",
+      credential_env: "MCP_HOST_APP_TOKEN_CODEX",
+      tenant_id: "tenant-a",
+      service_role: "member",
+      host_kind: "codex_native",
+      client_type: "codex",
+      interaction_mode: "native_tooling",
+      capabilities: ["work.read", "work.coordinate"],
+      scopes: ["core:read", "core:govern"],
+      enabled: true,
+    }],
+  }), { MCP_HOST_APP_TOKEN_CODEX: secret });
+  const registered = await createAuthenticator({
+    hostAppRegistry,
+    codexKeys: [],
+    auth0Issuer: "",
+    serviceTenantMembershipTtlSeconds: 300,
+  })(`Bearer ${secret}`);
+  assert.equal(registered.kind, "codex");
+  assert.equal(registered.tenantId, "tenant-a");
+  assert.equal(registered.authenticatedHostPrincipal.registered, true);
+  assert.deepEqual(registered.authenticatedHostPrincipal.capabilities, ["work.coordinate", "work.read"]);
+  assert.equal(registered.authenticatedTenantMembership.authenticated, true);
+  assert.equal(registered.authenticatedTenantMembership.tenant_id, "tenant-a");
+  assert.equal(registered.authenticatedTenantMembership.subject, "codex");
+  assert.equal(registered.authenticatedTenantMembership.role, "member");
+
+  const legacy = await createAuthenticator({
+    hostAppRegistry,
+    codexKeys: ["legacy-secret"],
+    codexScopes: ["core:read", "core:govern"],
+    auth0Issuer: "",
+    defaultTenantId: "tenant-a",
+    legacyCodexHostPrincipalEnabled: false,
+  })("Bearer legacy-secret");
+  assert.equal(legacy.authenticatedHostPrincipal.registered, false);
+  assert.equal(legacy.authenticatedHostPrincipal.host_kind, null);
+  assert.deepEqual(legacy.authenticatedHostPrincipal.capabilities, ["work.read"]);
 });
 
 test("activates owner_root only for the isolated owner tenant and an allowed Codex delegate", async () => {
@@ -62,6 +113,43 @@ test("activates owner_root only for the isolated owner tenant and an allowed Cod
   assert.deepEqual(identity.scopes, ["core:read", "core:govern", "workspace:write", "owner:root"]);
 });
 
+test("Good Mode cannot expand the configured scopes of a registered Codex app", async () => {
+  const secret = "registered-good-mode-codex-0123456789abcdef";
+  const hostAppRegistry = parseHostAppRegistry(JSON.stringify({
+    schema_version: "mcp_host_app_registry_v1",
+    apps: [{
+      app_id: "codex",
+      auth_kind: "bearer",
+      credential_env: "MCP_HOST_APP_TOKEN_CODEX",
+      tenant_id: "codexai",
+      service_role: "member",
+      host_kind: "codex_native",
+      client_type: "codex",
+      interaction_mode: "native_tooling",
+      capabilities: ["work.read"],
+      scopes: ["core:read"],
+      enabled: true,
+    }],
+  }), { MCP_HOST_APP_TOKEN_CODEX: secret });
+  const auth = createAuthenticator({
+    hostAppRegistry,
+    codexKeys: [],
+    auth0Issuer: "",
+    supportedScopes: ["core:read", "core:govern", "workspace:write"],
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeTenantIds: ["codexai"],
+    godModeCodexEnabled: true,
+  });
+  const identity = await auth(`Bearer ${secret}`);
+
+  assert.equal(identity.role, "owner_root");
+  assert.equal(identity.godMode, true);
+  assert.deepEqual(identity.scopes, ["core:read", "owner:root"]);
+  assert.deepEqual(identity.authenticatedHostPrincipal.capabilities, ["work.read"]);
+  assert.throws(() => requireScopes(identity, ["core:govern"]), /insufficient_scope/);
+});
+
 test("the emergency stop disables owner_root immediately", async () => {
   const auth = createAuthenticator({
     codexKeys: ["secret"], codexScopes: ["core:read"], auth0Issuer: "",
@@ -69,9 +157,11 @@ test("the emergency stop disables owner_root immediately", async () => {
     godModeEnabled: true, godModeEmergencyStop: true, godModeTenantIds: ["owner-private", "codexai"],
     godModeSubjects: [], godModeClientIds: [], godModeCodexEnabled: true,
   });
-  assert.deepEqual(await auth("Bearer secret"), {
+  const identity = await auth("Bearer secret");
+  assert.deepEqual({ kind: identity.kind, subject: identity.subject, tenantId: identity.tenantId, scopes: identity.scopes }, {
     kind: "codex", subject: "codex", tenantId: "owner-private", scopes: ["core:read"],
   });
+  assert.equal(identity.authenticatedHostPrincipal.host_kind, "codex_native");
 });
 
 test("recognizes a host-native Codex Good Mode delegation only under the exact tenant policy", async () => {

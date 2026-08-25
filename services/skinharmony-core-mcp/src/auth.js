@@ -1,4 +1,8 @@
 import crypto from "node:crypto";
+import {
+  attachAuthenticatedHostPrincipal,
+  registeredBearerApp,
+} from "./host-app-registry.js";
 
 function b64json(value) {
   return JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
@@ -42,11 +46,20 @@ function applyOwnerRoot(identity, config) {
     // explicitly; an empty subject allowlist fails closed.
     : identity.oauthOwnerBound === true && (config.godModeSubjects || []).includes(identity.subject);
   if (!enabled || !tenantMatch || !subjectAllowed) return identity;
+  const registeredApp = identity.authenticatedHostPrincipal?.registered === true;
   return {
     ...identity,
     role: "owner_root",
     godMode: true,
-    scopes: [...new Set([...identity.scopes, ...config.supportedScopes, "owner:root"])],
+    // Good Mode can establish the tenant owner role, but a registered app's
+    // configured scopes remain an immutable upper bound. Legacy Codex keeps
+    // the historical scope expansion only until it is moved into the app
+    // registry.
+    scopes: [...new Set([
+      ...identity.scopes,
+      ...(!registeredApp ? config.supportedScopes : []),
+      "owner:root",
+    ])],
   };
 }
 
@@ -141,7 +154,19 @@ function elevateOAuthOwner(identity, proof, config, consumed) {
   const role = identity.godMode === true && identity.role === "owner_root"
     ? "owner_root"
     : "tenant_owner";
-  return { ...identity, role, oauthOwnerElevated: true, ownerConfirmationReference: reference };
+  return {
+    ...identity,
+    role,
+    oauthOwnerElevated: true,
+    ownerConfirmationReference: reference,
+    // A production gateway may delegate this already-verified confirmation
+    // to the exact signed staging request. Carry only digests/timestamps; the
+    // receiver must never re-consume or reinterpret the browser assertion.
+    ownerConfirmationBindingDigest: crypto.createHash("sha256")
+      .update(requestBinding)
+      .digest("hex"),
+    ownerConfirmationVerifiedAt: new Date(now * 1_000).toISOString(),
+  };
 }
 
 export class JwksCache {
@@ -255,11 +280,57 @@ export function createAuthenticator(config, options = {}) {
     const match = String(header || "").match(/^Bearer\s+(.+)$/i);
     if (!match) throw new Error("bearer_required");
     const token = match[1].trim();
+    const registeredBearer = registeredBearerApp(token, config.hostAppRegistry);
+    if (registeredBearer) {
+      const issuedAt = Math.floor(Date.now() / 1_000);
+      const ttl = Number(config.serviceTenantMembershipTtlSeconds || 300);
+      const app = registeredBearer.app;
+      if (app.app_id === "codex" && app.client_type === "codex" &&
+          app.host_kind === "codex_native") {
+        const memberCodex = attachAuthenticatedTenantMembership({
+          kind: "codex",
+          subject: "codex",
+          tenantId: app.tenant_id,
+          role: app.service_role,
+          registeredServiceMemberBound: true,
+          tenantMembershipRole: app.service_role,
+          scopes: [...app.scopes],
+          authenticatedHostPrincipal: registeredBearer.principal,
+        }, {
+          role: "member",
+          issuedAt,
+          expiresAt: issuedAt + ttl,
+        });
+        return attachCodexTenantMembership(applyOwnerRoot(memberCodex, config), config);
+      }
+      const serviceIdentity = attachAuthenticatedTenantMembership({
+        kind: "service",
+        subject: `app:${app.app_id}`,
+        tenantId: app.tenant_id,
+        role: app.service_role,
+        registeredServiceMemberBound: true,
+        tenantMembershipRole: app.service_role,
+        scopes: [...app.scopes],
+        authenticatedHostPrincipal: registeredBearer.principal,
+      }, {
+        role: "member",
+        issuedAt,
+        expiresAt: issuedAt + ttl,
+      });
+      return serviceIdentity;
+    }
     if (config.codexKeys.some((key) => safeEqual(key, token))) {
-      return attachCodexTenantMembership(applyOwnerRoot({ kind: "codex", subject: "codex", tenantId: config.defaultTenantId, scopes: config.codexScopes }, config), config);
+      return attachAuthenticatedHostPrincipal(
+        attachCodexTenantMembership(applyOwnerRoot({ kind: "codex", subject: "codex", tenantId: config.defaultTenantId, scopes: config.codexScopes }, config), config),
+        config.hostAppRegistry,
+        { allowLegacyCodex: config.legacyCodexHostPrincipalEnabled !== false },
+      );
     }
     if (!config.auth0Issuer) throw new Error("bearer_invalid");
-    return applyTenantMemberRole(applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config), config);
+    return attachAuthenticatedHostPrincipal(
+      applyTenantMemberRole(applyOwnerRoot(await verifyAuth0Jwt(token, jwtConfig, cache), config), config),
+      config.hostAppRegistry,
+    );
   };
   authenticate.elevateOAuthOwner = (identity, proof) => elevateOAuthOwner(identity, proof, config, consumedOwnerConfirmations);
   return authenticate;

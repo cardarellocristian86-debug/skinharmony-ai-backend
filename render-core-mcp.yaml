@@ -56,6 +56,18 @@ services:
         sync: false
       - key: CODEX_BEARER_SCOPES
         value: core:read,core:govern,workspace:read,workspace:write,task:read,task:write,agent:coordinate
+      # Compatibility is explicit during the registry migration so this code
+      # deploy does not revoke active Codex work. After the Codex bearer is
+      # moved to the exact host-app registry entry, set this false and remove
+      # the old CODEX_BEARER_KEYS value.
+      - key: MCP_LEGACY_CODEX_HOST_PRINCIPAL_ENABLED
+        value: "true"
+      # Strict server-owned app registry. Provision it atomically with its
+      # referenced bearer variables; never place bearer values inside JSON.
+      - key: MCP_HOST_APP_REGISTRY_JSON
+        sync: false
+      - key: MCP_HOST_APP_TOKEN_CODEX
+        sync: false
       - key: NYRA_GOD_MODE_ENABLED
         value: "true"
       - key: NYRA_GOD_MODE_TENANT_IDS
@@ -80,6 +92,14 @@ services:
       # Presence signatures and fingerprints must never reuse a Core bearer or
       # another host-native secret.
       - key: AGENT_SIGNATURE_SECRET
+        generateValue: true
+      # First rollout preserves v1 fingerprints/tickets. After the bounded
+      # authority TTL drains, promote to v2 before enabling continuation.
+      - key: AGENT_PRESENCE_SIGNATURE_VERSION
+        value: "v1"
+      - key: NYRA_GOVERNED_CONTINUE_ENABLED
+        value: "false"
+      - key: NYRA_GOVERNED_CONTINUE_SIGNING_SECRET
         generateValue: true
       - key: CORE_MCP_TENANT_GATEWAY_KEY
         generateValue: true
@@ -204,6 +224,12 @@ services:
       # release closure validates; a new chat never has to rediscover it.
       - key: NYRA_PROJECT_RELEASE_BINDINGS_JSON
         value: '{"schema_version":"nyra_project_release_bindings_v1","bindings":[{"tenant_id":"codexai","project_id":"skinharmony-ai-backend","repository":"cardarellocristian86-debug/skinharmony-ai-backend","base_branch":"main","required_checks":["core-mcp","deployment-parity","universal-core"]}]}'
+      # The Software/Architecture Atlas accepts a repository only from this
+      # server-owned project binding. It is deliberately public metadata, not
+      # a GitHub credential; private repositories require a separate tenant
+      # credential mapping provisioned only in Render.
+      - key: NYRA_ATLAS_REPOSITORY_BINDINGS_JSON
+        value: '{"skinharmony-ai-backend":{"repository":"cardarellocristian86-debug/skinharmony-ai-backend","branch":"main"},"nyra_conversational_runtime":{"repository":"cardarellocristian86-debug/skinharmony-ai-backend","branch":"main"}}'
       # Every functional Nyra/Core call creates or refreshes a server-derived
       # signed tenant presence. This is identity registration only: it grants
       # no role, model, tool, credential, merge, deploy or external authority.

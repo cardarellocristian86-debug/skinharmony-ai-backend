@@ -17,22 +17,37 @@ import {
 import {
   normalizePostgresMajorVerification,
 } from "../../shared/postgres-major-version.js";
-import { signEnvironmentDelegation, verifyEnvironmentDelegation } from "./environment-delegation.js";
+import {
+  createMemoryEnvironmentDelegationNonceStore,
+  signEnvironmentDelegation,
+  verifyEnvironmentDelegation,
+} from "./environment-delegation.js";
 import {
   NYRA_DIALOGUE_WIDGET_HTML,
   NYRA_DIALOGUE_WIDGET_RESOURCE,
 } from "./nyra-operating-dialogue-widget.js";
+import { NYRA_SERVER_CONNECTOR_HINT } from "./nyra-converse.js";
+import {
+  authenticatedClientType,
+  HOST_APP_CAPABILITIES,
+  hostPrincipalAllows,
+} from "./host-app-registry.js";
+import {
+  dynamicHostCapabilityTarget,
+  hostAppCanAccessTool,
+  requireHostAppToolCapability,
+} from "./host-app-authorization.js";
 
-const SERVER_VERSION = "0.16.0-governed-continuity-fabric";
+const SERVER_VERSION = "0.17.0-nyra-conversational-orchestration";
 const SERVER_INSTRUCTIONS = [
   "Nyra/Core is a persistent work coordinator: reuse the Work Identity, compact checkpoint and next action returned by the gateway. Do not rescan the repository, recreate the intent, or ask the user to restate known work.",
-  "A bound Work automatically carries Nyra's persistent operational dialogue: use its next action, checkpoint/Intent references, self-diagnosis and assignment before requesting more context. Do not make the AI rediscover or explicitly call Nyra for ordinary Work orchestration. When the user specifically addresses Nyra conversationally, invoke the direct read-only nyra_converse tool; it reuses the persisted context when it is current and falls back to Core only when it is stale. Render its server-issued next_action as the proposed next step. Do not replace it with PR history, an invented plan, or a claim that work has started or will autonomously continue.",
+  "A bound Work automatically carries Nyra's persistent operational dialogue. When the user addresses Nyra or asks to resume, diagnose or coordinate a Work, invoke only the read-only nyra_converse front door. It reuses persisted context only for a pure resume; every new technical request receives a fresh preflight/Core interpretation plus bounded Work tasks and evidence. Render the server-issued orchestration_directive: Nyra states the problem and needs, directs the authenticated connected AI's bounded preparation, and identifies the Universal Core authority gate. RESUME, PROCEED_READ_ONLY and PREPARE_BOUNDED_WORK never authorize execution. Do not replace the directive with PR history, an invented plan or a completion claim.",
   "Generic tools receive tenant memory, Work selection and preflight automatically. Do not call work_preflight before a normal action. If one operational Work matches the project, it is resumed automatically; ask the owner to choose only when the gateway reports multiple works.",
   "Treat one verified owner confirmation as the authorization for its exact bounded intent. Continue its approved preparation, verification and ticketed release path without requesting duplicate confirmations. Ask again only when Core reports a new scope, expiry, drift, or an action outside that intent.",
   "For a recoverable connector/OAuth failure, checkpoint the exact blocker and state the one real recovery action. After the user reconnects, resume the same Work and ticket path; never say that a reconnect alone completed a push, merge or deploy.",
-  "For current research, use nyra_research_plan then the host ChatGPT or Codex web tool; never include secrets in evidence. Nyra and Universal Core operate without an OpenAI API key. Never ask for or accept an API key in chat. Never call provider tools, open setup panels or old provider links. Old provider links are retired.",
-  "Nyra/Core is installed as a ChatGPT connector. Nyra coordinates and Core decides. Neither bypasses ChatGPT/Codex host approvals, sandbox, OAuth, GitHub or Render. Keep prompts and receipts free of secrets and raw customer data; use only host-native agents and no provider API key.",
-  "HOST-NATIVE MULTI-AGENT: HOW TO BUILD AN AGENT: use a narrow role, bounded task, dependencies, acceptance criteria and a host assignment receipt; provider_execution=false and provider_api_key_required=false. AUTOMATIC: preflight, continuity and compact memory. NOT AUTOMATIC: external actions or host approvals; Nyra/Core cannot click, bypass or replace ChatGPT/Codex approval. RESEARCH DISTILLATION uses the tenant-isolated shadow workspace and never invokes a server-side model provider.",
+  "For current research, use nyra_research_plan then the authenticated host's web tool when available; never include secrets in evidence. Nyra and Universal Core operate without an OpenAI API key. Never ask for or accept an API key in chat. Never call provider tools, open setup panels or old provider links. Old provider links are retired.",
+  "Nyra/Core is exposed through a governed MCP connector. Nyra coordinates and Core decides. Neither bypasses the registered host's approvals, sandbox, OAuth, GitHub or Render. Keep prompts and receipts free of secrets and raw customer data; use only registered host-native agents supported by the current runtime and no provider API key.",
+  "HOST-NATIVE MULTI-AGENT: HOW TO BUILD AN AGENT: use a narrow role, bounded task, dependencies, acceptance criteria and a host assignment receipt; provider_execution=false and provider_api_key_required=false. AUTOMATIC: preflight, continuity and compact memory. NOT AUTOMATIC: external actions or host approvals; Nyra/Core cannot click, bypass or replace the registered host's approval. RESEARCH DISTILLATION uses the tenant-isolated shadow workspace and never invokes a server-side model provider.",
 ].join(" ");
 
 const CONNECTOR_TOOL_NAMESPACE = "skinharmony_nyra_core";
@@ -47,6 +62,7 @@ const RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_SCHEMA = "research_airlock_bootstrap_guar
 const RESEARCH_AIRLOCK_BOOTSTRAP_GUARD_PURPOSE = "causal_initialization_liveness";
 const RESEARCH_AIRLOCK_POLICY_VERSION = "nyra_core_research_airlock_policy_v1";
 const MAX_CORE_HEALTH_RESPONSE_BYTES = 64 * 1024;
+const MAX_STAGING_MCP_RESPONSE_BYTES = 1024 * 1024;
 export const POLICY_REGISTRY_LIFECYCLE_TOOLS = new Set([
   "nyra_policy_registry_activate",
   "nyra_policy_registry_rollback",
@@ -508,9 +524,52 @@ function connectorToolCandidate(value) {
 // ChatGPT must address Nyra, not assemble a plan from Core implementation
 // tools. Codex and server-to-server clients retain their normal surfaces.
 // OAuth identities are the verified ChatGPT connector path in this gateway.
+function usesNyraConversationalSurface(identity) {
+  const mode = String(identity?.authenticatedHostPrincipal?.interaction_mode || "");
+  return mode === "nyra_conversational" || inferClientType(identity) === "chatgpt";
+}
+
 function filterToolsForClient(tools = [], identity) {
-  if (inferClientType(identity) !== "chatgpt") return tools;
-  return tools.filter((tool) => CHATGPT_NYRA_FRONT_DOOR_TOOL_NAMES.has(tool.name));
+  const principal = identity?.authenticatedHostPrincipal;
+  const mutationCapabilities = [
+    HOST_APP_CAPABILITIES.CORE_OPERATE,
+    HOST_APP_CAPABILITIES.CORE_ADMIN,
+    HOST_APP_CAPABILITIES.WORK_COORDINATE,
+    HOST_APP_CAPABILITIES.WORK_REVIEW,
+    HOST_APP_CAPABILITIES.WORK_OPERATE,
+    HOST_APP_CAPABILITIES.WORK_CREATE,
+    HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
+    HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
+  ];
+  const capabilityFiltered = tools.filter((tool) => {
+    // Dynamic wrappers are authorized against their exact capability_id at
+    // call time. Keep only the wrapper modes for which the registered app has
+    // at least one possible target; the dynamic catalog independently filters
+    // every exact target through the same host-app policy.
+    if (tool.name === "core_capability_read") {
+      if (!principal) return true;
+      return principal?.registered === true && [
+        HOST_APP_CAPABILITIES.CORE_READ,
+        HOST_APP_CAPABILITIES.WORK_READ,
+      ].some((capability) => hostPrincipalAllows(identity, capability));
+    }
+    if (tool.name === "core_capability_invoke") {
+      if (!principal) return true;
+      return principal?.registered === true &&
+        mutationCapabilities.some((capability) => hostPrincipalAllows(identity, capability));
+    }
+    return hostAppCanAccessTool({
+      identity,
+      toolName: tool.name,
+      tools,
+    });
+  });
+  if (!usesNyraConversationalSurface(identity)) return capabilityFiltered;
+  return capabilityFiltered.filter((tool) => (
+    CHATGPT_NYRA_FRONT_DOOR_TOOL_NAMES.has(tool.name) ||
+    (tool.name === "nyra_governed_continue" &&
+      hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE))
+  ));
 }
 
 // ChatGPT can retain connector descriptors for an already-open app session
@@ -521,32 +580,13 @@ function isStaleNyraReadToolName(value) {
   return STALE_CHATGPT_NYRA_READ_TOOL_NAMES.has(connectorToolCandidate(value));
 }
 
-// `core_health` is intentionally not conversational. A chat that still has
-// the old descriptor may read it, but it must reach the real, read-only health
-// handler instead of being validated as a Nyra conversation.
-function isStaleNyraSelfModelRead(value, args = {}) {
-  const candidate = connectorToolCandidate(value);
-  if (candidate === "core_capability_catalog") {
-    const group = typeof args?.group === "string" ? args.group : null;
-    const capabilityId = typeof args?.capability_id === "string" ? args.capability_id : null;
-    // The dynamic catalog prioritizes capability_id. Accept a stale request
-    // only when every selector, if present, names the same self-model.
-    return (group === "self_model" || capabilityId === "nyra_self_model") &&
-      (!group || group === "self_model") &&
-      (!capabilityId || capabilityId === "nyra_self_model");
-  }
-  return candidate === "core_capability_read" && args?.capability_id === "nyra_self_model";
-}
-
 function resolveStaleChatGptReadTool(value, identity, visibleTools = [], args = {}) {
-  if (inferClientType(identity) !== "chatgpt") return null;
+  if (!usesNyraConversationalSurface(identity)) return null;
   const candidate = connectorToolCandidate(value);
   if (visibleTools.some((tool) => tool.name === candidate)) return null;
-  // A cached ChatGPT connector can still use the capability-discovery/read
-  // pair after the public surface is narrowed to Nyra. Preserve only this
-  // exact, read-only self-model path; translating it to nyra_converse loses
-  // the persisted profile and makes Nyra incorrectly report it unavailable.
-  if (isStaleNyraSelfModelRead(value, args)) return candidate;
+  // `core_health` is intentionally not conversational. Every other stale
+  // ChatGPT read, including self-model discovery, goes through Nyra so the
+  // connected host cannot reconstruct an orchestration plan from raw tools.
   if (candidate === "core_health") return "core_health";
   return isStaleNyraReadToolName(value) ? "nyra_converse" : null;
 }
@@ -556,12 +596,32 @@ function isLegacyNyraPreflightToolName(value) {
   return requested === "work_preflight" || requested === `${CONNECTOR_TOOL_NAMESPACE}.work_preflight`;
 }
 
-function staleNyraReadArguments(value) {
+function staleNyraReadArguments(value, requestedToolName = "") {
   const args = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const message = typeof args.message === "string" ? args.message.trim() : "";
   const request = typeof args.request === "string" ? args.request.trim() : "";
+  const candidate = connectorToolCandidate(requestedToolName);
+  const capabilityId = typeof args.capability_id === "string" &&
+    /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(args.capability_id)
+    ? args.capability_id
+    : null;
+  const group = typeof args.group === "string" &&
+    /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(args.group)
+    ? args.group
+    : null;
+  let translatedIntent = "Nyra, riprendi il Work e indicami problema, cosa serve e prossimo passo";
+  if (candidate === "core_capability_catalog" || candidate === "core_capability_read") {
+    const selector = capabilityId || group;
+    translatedIntent = selector
+      ? `Nyra, diagnostica se la capability governata ${selector} serve per continuare il Work; indicami problema, requisiti e prossimo passo`
+      : "Nyra, diagnostica le capability governate necessarie per continuare il Work; indicami problema, requisiti e prossimo passo";
+  } else if (candidate === "core_branch_registry") {
+    translatedIntent = "Nyra, diagnostica le risorse Core necessarie per continuare il Work; indicami problema, requisiti e prossimo passo";
+  } else if (candidate === "core_semantic_select") {
+    translatedIntent = "Nyra, seleziona e spiegami il prossimo passo governato del Work, inclusi problema e requisiti mancanti";
+  }
   return {
-    message: message || request || "Nyra, riprendi il Work",
+    message: message || request || translatedIntent,
     ...(typeof args.work_id === "string" ? { work_id: args.work_id } : {}),
     ...(typeof args.project_id === "string" ? { project_id: args.project_id } : {}),
     locale: "auto",
@@ -569,29 +629,27 @@ function staleNyraReadArguments(value) {
   };
 }
 
-// A ChatGPT connector session can retain an old, host-enriched descriptor
-// after the public surface has been reduced.  The Core capability handlers
-// deliberately do not accept transport metadata such as `environment`.
-// Keep only the schemas of the two exact, read-only self-model requests that
-// are allowed through the stale-read bridge.
-function staleNyraSelfModelArguments(value, toolName) {
+function staleNyraServerHint(value, requestedToolName = "") {
   const args = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  if (toolName === "core_capability_catalog") {
-    return Object.fromEntries([
-      "group",
-      "capability_id",
-      "include_schema",
-      "cursor",
-      "limit",
-      "environment",
-    ].filter((key) => Object.hasOwn(args, key)).map((key) => [key, args[key]]));
-  }
-  return Object.fromEntries([
-    "capability_id",
-    "catalog_revision",
-    "arguments",
-    "environment",
-  ].filter((key) => Object.hasOwn(args, key)).map((key) => [key, args[key]]));
+  const candidate = connectorToolCandidate(requestedToolName);
+  const requestKind = candidate === "core_capability_catalog"
+    ? "capability_discovery"
+    : candidate === "core_capability_read"
+      ? "capability_read"
+      : candidate === "core_branch_registry"
+        ? "branch_diagnosis"
+        : candidate === "core_semantic_select"
+          ? "semantic_selection"
+          : candidate === "work_preflight" ? "work_preflight" : null;
+  const capabilityHint = typeof args.capability_id === "string" &&
+    /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(args.capability_id)
+    ? args.capability_id
+    : null;
+  return Object.freeze({
+    server_issued: true,
+    request_kind: requestKind,
+    capability_hint: capabilityHint,
+  });
 }
 
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
@@ -599,6 +657,9 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   // nyra_converse owns a strict cache-or-one-preflight protocol. Letting the
   // generic hook preflight it as well duplicates Core calls on stale context.
   "nyra_converse",
+  // This consumes the signed, revision-bound candidate issued by
+  // nyra_converse and re-reads the Work before using dedicated Core routes.
+  "nyra_governed_continue",
   "core_health",
   "nyra_branch_catalog",
   "core_capability_catalog",
@@ -844,16 +905,20 @@ function isAgentPresenceBootstrapCall(toolName, args = {}) {
 }
 const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "core_capability_invoke",
+  "nyra_governed_continue",
   "host_native_delegation_issue",
   "host_native_delegation_revoke",
   ...POLICY_REGISTRY_LIFECYCLE_TOOLS,
   "work_continuity_create",
   "work_continuity_start_or_resume",
+  "work_continuity_v2_create",
   "tenant_work_legacy_reconcile_close",
   "core_block_remediation_resubmit",
 ]);
 
 function inferClientType(identity) {
+  const authenticated = authenticatedClientType(identity);
+  if (authenticated) return authenticated;
   const kind = String(identity?.kind || "").toLowerCase();
   // This gateway reserves verified OAuth identities for the ChatGPT connector;
   // Codex uses its scoped server-side bearer path below. The distinction is
@@ -1012,6 +1077,21 @@ export function buildReadiness(config = {}, options = {}) {
     );
   const hostNativeAgentSignatureIndependent =
     hostNativeAgentSignatureConfigured && !hostNativeAgentSignatureReused;
+  const governedMultiHostRequired = config.nyraGovernedContinueEnabled === true;
+  const governedMultiHostRegistryConfigured =
+    config.hostAppRegistry?.configured === true &&
+    /^[a-f0-9]{64}$/i.test(String(config.hostAppRegistry?.revision || ""));
+  const governedMultiHostSigningConfigured =
+    Buffer.byteLength(
+      String(config.nyraGovernedContinueSigningSecret || "").trim(),
+      "utf8",
+    ) >= 32;
+  const governedMultiHostProtocolEnabled =
+    config.hostNativeAgentProtocolEnabled === true;
+  const governedMultiHostConfigured =
+    config.nyraGovernedContinueConfigurationValid === true &&
+    governedMultiHostRegistryConfigured &&
+    governedMultiHostSigningConfigured;
   const components = {
     build_identity: {
       required: true,
@@ -1052,6 +1132,34 @@ export function buildReadiness(config = {}, options = {}) {
           hostNativeDttIdentitySigningConfigured &&
           hostNativeAgentSignatureIndependent
         ),
+    },
+    governed_multi_host: {
+      required: governedMultiHostRequired,
+      configured: governedMultiHostConfigured,
+      registry_configured: governedMultiHostRegistryConfigured,
+      registry_revision: governedMultiHostRegistryConfigured
+        ? config.hostAppRegistry.revision
+        : null,
+      registered_app_count: governedMultiHostRegistryConfigured
+        ? config.hostAppRegistry.apps.length
+        : 0,
+      signing_configured: governedMultiHostSigningConfigured,
+      agent_presence_signature_version:
+        config.agentPresenceSignatureVersion || "v1",
+      agent_presence_v2_required: governedMultiHostRequired,
+      host_native_protocol_enabled: governedMultiHostProtocolEnabled,
+      legacy_codex_host_principal_enabled:
+        config.legacyCodexHostPrincipalEnabled === true,
+      legacy_codex_bearer_count: Array.isArray(config.codexKeys)
+        ? config.codexKeys.length
+        : 0,
+      codex_registry_app_configured: config.hostAppRegistry?.apps?.some((app) =>
+        app.enabled === true && app.app_id === "codex" &&
+        app.client_type === "codex" && app.host_kind === "codex_native"
+      ) === true,
+      ready: !governedMultiHostRequired || (
+        governedMultiHostConfigured && governedMultiHostProtocolEnabled
+      ),
     },
     postgresql_version: {
       required: postgresMajorVersionRequired,
@@ -1115,6 +1223,15 @@ export function buildReadiness(config = {}, options = {}) {
     hostNativeAgentSignatureReused
   ) {
     reasons.push("host_native_agent_signature_reused");
+  }
+  if (governedMultiHostRequired && !governedMultiHostConfigured) {
+    reasons.push(
+      config.nyraGovernedContinueConfigurationError ||
+      "governed_multi_host_not_configured",
+    );
+  }
+  if (governedMultiHostRequired && !governedMultiHostProtocolEnabled) {
+    reasons.push("governed_multi_host_protocol_disabled");
   }
   if (
     postgresMajorVersionRequired &&
@@ -1438,10 +1555,16 @@ function inferredToolFailureStatus(code) {
 function toolFailure(error) {
   const raw = String(error?.code || error?.message || "tool_execution_failed");
   const core = raw.match(/^core_request_failed:(\d{3}):([a-zA-Z0-9_-]+)$/);
+  const hostCapability = raw === "host_app_capability_required" &&
+    Object.values(HOST_APP_CAPABILITIES).includes(error?.required_capability)
+    ? error.required_capability
+    : null;
   const mappedStatus = TOOL_FAILURE_STATUS_BY_CODE[raw];
   const status = Number(
     error?.status ?? error?.statusCode ??
-      (core ? core[1] : mappedStatus ?? inferredToolFailureStatus(raw) ?? 500),
+      (core ? core[1] : raw === "host_app_capability_required"
+        ? 403
+        : mappedStatus ?? inferredToolFailureStatus(raw) ?? 500),
   );
   const code = core?.[2] || (/^[a-zA-Z0-9_-]{3,80}$/.test(raw) ? raw : "tool_execution_failed");
   const retryable = error?.retryable === true ||
@@ -1462,6 +1585,7 @@ function toolFailure(error) {
       message,
       retryable,
       ...(Number.isFinite(status) ? { status } : {}),
+      ...(hostCapability ? { required_capability: hostCapability } : {}),
     },
   };
   return {
@@ -1474,7 +1598,8 @@ function toolFailure(error) {
 function configureToolForRuntime(tool, config) {
   if (config.environmentRoutingRequired !== true ||
     POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name) ||
-    tool.name === "nyra_converse") return tool;
+    tool.name === "nyra_converse" ||
+    tool.name === "nyra_governed_continue") return tool;
   return {
     ...tool,
     inputSchema: {
@@ -1488,6 +1613,53 @@ function configureToolForRuntime(tool, config) {
 export function createApp(config, options = {}) {
   const app = express();
   const authenticate = createAuthenticator(config, options);
+  const environmentDelegationNonceStore = options.environmentDelegationNonceStore ||
+    createMemoryEnvironmentDelegationNonceStore();
+  if (config.environmentDelegationReceiverEnabled === true && config.production === true &&
+      (environmentDelegationNonceStore.distributed !== true ||
+        environmentDelegationNonceStore.restart_durable !== true)) {
+    throw new Error("environment_delegation_distributed_nonce_store_required");
+  }
+  async function environmentDelegationNonceHealth() {
+    const required = config.environmentDelegationReceiverEnabled === true;
+    if (!required) return Object.freeze({
+      required: false,
+      ready: true,
+      backend: "disabled",
+      distributed: false,
+      restart_durable: false,
+      schema_verified: false,
+    });
+    try {
+      const status = await environmentDelegationNonceStore.initialize();
+      const ready = status?.ready === true && (
+        config.production !== true || (
+          status.schema_verified === true &&
+          environmentDelegationNonceStore.distributed === true &&
+          environmentDelegationNonceStore.restart_durable === true
+        )
+      );
+      return Object.freeze({
+        required: true,
+        ready,
+        backend: environmentDelegationNonceStore.kind || "unknown",
+        distributed: environmentDelegationNonceStore.distributed === true,
+        restart_durable: environmentDelegationNonceStore.restart_durable === true,
+        schema_verified: status?.schema_verified === true,
+        schema_version: environmentDelegationNonceStore.schema_version || null,
+      });
+    } catch (error) {
+      return Object.freeze({
+        required: true,
+        ready: false,
+        backend: environmentDelegationNonceStore.kind || "unknown",
+        distributed: environmentDelegationNonceStore.distributed === true,
+        restart_durable: environmentDelegationNonceStore.restart_durable === true,
+        schema_verified: false,
+        error: String(error?.code || error?.message || "nonce_store_unavailable").slice(0, 120),
+      });
+    }
+  }
   const handlers = options.handlers || {};
   const beforeToolCall = options.beforeToolCall;
   const afterToolCall = options.afterToolCall;
@@ -1653,7 +1825,6 @@ export function createApp(config, options = {}) {
   // Client-provided ids are correlation data only and never grant authorization.
   const logicalSessionPresences = new Map();
   const transportPresenceBindings = new Map();
-  const consumedEnvironmentDelegations = new Map();
   app.use(express.json({
     limit: MCP_POLICY_ACTIVATE_REQUEST_LIMIT_BYTES,
     verify(req, _res, buffer) {
@@ -1696,6 +1867,7 @@ export function createApp(config, options = {}) {
   });
 
   const serveHealth = async (_req, res, { strictReadiness = false } = {}) => {
+    const environmentDelegationNonce = await environmentDelegationNonceHealth();
     const postgresMajorVersion = await resolvePostgresMajorVersion(
       config,
       options,
@@ -1775,14 +1947,16 @@ export function createApp(config, options = {}) {
     const combinedReady = readiness.ready
       && (!airlockRequired || researchAirlock.core_ready)
       && (!genericWorkCoreJoin.required || genericWorkCoreJoin.ready)
-      && (!policyRegistryLifecycle.required || policyRegistryLifecycle.ready);
+      && (!policyRegistryLifecycle.required || policyRegistryLifecycle.ready)
+      && (!environmentDelegationNonce.required || environmentDelegationNonce.ready);
     const requiredLifecycleUnavailable = policyRegistryLifecycle.required
       && !policyRegistryLifecycle.ready;
     const degradedLivenessReady = readiness.ready
       && airlockRequired
       && researchAirlock.upstream_bootstrap_initializing === true
       && (!genericWorkCoreJoin.required || genericWorkCoreJoin.ready)
-      && (!policyRegistryLifecycle.required || policyRegistryLifecycle.ready);
+      && (!policyRegistryLifecycle.required || policyRegistryLifecycle.ready)
+      && (!environmentDelegationNonce.required || environmentDelegationNonce.ready);
     const healthReady = combinedReady
       || (!strictReadiness && degradedLivenessReady);
     const status = (readiness.enforced && !healthReady) || requiredLifecycleUnavailable ? 503 : 200;
@@ -1799,6 +1973,7 @@ export function createApp(config, options = {}) {
     },
     generic_work_core_join: genericWorkCoreJoin,
     nyra_policy_registry_lifecycle: policyRegistryLifecycle,
+    environment_delegation_nonce: environmentDelegationNonce,
     readiness: {
       enforced: readiness.enforced,
       ready: readiness.ready,
@@ -1937,12 +2112,38 @@ export function createApp(config, options = {}) {
       const delegation = req.headers["x-skinharmony-environment-delegation"];
       if (delegation) {
         if (config.environmentDelegationReceiverEnabled !== true) throw new Error("environment_delegation_disabled");
-        const verified = verifyEnvironmentDelegation(delegation, { key: config.environmentDelegationKey, consumed: consumedEnvironmentDelegations });
+        if (req.body?.method !== "tools/call") throw new Error("environment_delegation_invalid");
         const delegatedToolName = resolveConnectorToolName(req.body?.params?.name, baseVisibleTools);
-        if (req.body?.method === "tools/call" && verified.toolName !== delegatedToolName) throw new Error("environment_delegation_invalid");
+        if (!delegatedToolName) throw new Error("environment_delegation_invalid");
+        const delegatedArgs = req.body?.params?.arguments || {};
+        const exactTarget = dynamicHostCapabilityTarget(delegatedToolName, delegatedArgs);
+        const verified = await verifyEnvironmentDelegation(delegation, {
+          key: config.environmentDelegationKey,
+          nonceStore: environmentDelegationNonceStore,
+          request: {
+            method: req.body.method,
+            toolName: delegatedToolName,
+            exactTarget,
+            args: delegatedArgs,
+            requestId: req.body?.id ?? null,
+            transportSessionId: req.headers["mcp-session-id"]
+              ? String(req.headers["mcp-session-id"])
+              : null,
+          },
+        });
+        if (verified.toolName !== delegatedToolName || verified.exactTarget !== exactTarget) {
+          throw new Error("environment_delegation_invalid");
+        }
         identity = verified.identity;
       } else identity = await authenticate(req.headers.authorization);
-    } catch {
+    } catch (error) {
+      if (error?.code === "environment_delegation_nonce_store_unavailable") {
+        return res.status(503).json({
+          jsonrpc: "2.0",
+          id: req.body?.id ?? null,
+          error: { code: -32003, message: "Environment delegation unavailable" },
+        });
+      }
       res.set("WWW-Authenticate", challenge(
         config,
         "invalid_token",
@@ -2022,9 +2223,7 @@ export function createApp(config, options = {}) {
           ? "nyra_converse"
           : resolveConnectorToolName(params.name, requestVisibleTools));
         const tool = requestVisibleTools.find((item) => item.name === canonicalToolName) ||
-          ((staleChatGptReadTool === "core_health" ||
-            staleChatGptReadTool === "core_capability_catalog" ||
-            staleChatGptReadTool === "core_capability_read")
+          (staleChatGptReadTool === "core_health"
             ? baseVisibleTools.find((item) => item.name === staleChatGptReadTool)
             : null);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
@@ -2036,10 +2235,8 @@ export function createApp(config, options = {}) {
         // then validate its old `work_preflight` arguments unchanged, causing
         // a schema error before Nyra could resume the Work.
         const rawArgs = (staleNyraRead || staleChatGptReadTool === "nyra_converse")
-          ? staleNyraReadArguments(params.arguments)
-          : (staleChatGptReadTool === "core_capability_catalog" || staleChatGptReadTool === "core_capability_read")
-            ? staleNyraSelfModelArguments(params.arguments, tool.name)
-            : params.arguments || {};
+          ? staleNyraReadArguments(params.arguments, params.name)
+          : params.arguments || {};
         const validationErrors = validateToolArguments(tool.inputSchema, rawArgs);
         if (validationErrors.length) {
           return res.json({
@@ -2052,7 +2249,26 @@ export function createApp(config, options = {}) {
             },
           });
         }
+        if (staleNyraRead || staleChatGptReadTool === "nyra_converse") {
+          Object.defineProperty(rawArgs, NYRA_SERVER_CONNECTOR_HINT, {
+            value: staleNyraServerHint(params.arguments, params.name),
+            enumerable: true,
+          });
+        }
+        // The server-side app grant is an upper bound independent of OAuth,
+        // tenant ownership and Core scopes. Resolve dynamic wrappers to their
+        // exact target and reject before consuming an owner confirmation or
+        // forwarding any request/delegation material to staging. The server
+        // hook repeats this check immediately before execution as
+        // defense-in-depth.
+        requireHostAppToolCapability({
+          identity,
+          toolName: tool.name,
+          args: rawArgs,
+          tools: TOOLS,
+        });
         if (identity.kind === "oauth" && identity.oauthOwnerBound === true &&
+          identity.environmentDelegationBound !== true &&
           OAUTH_OWNER_ELEVATION_TOOLS.has(tool.name) && rawArgs.owner_confirmed === true) {
           identity = authenticate.elevateOAuthOwner(identity, {
             confirmed: true,
@@ -2063,14 +2279,89 @@ export function createApp(config, options = {}) {
         if (config.environmentRoutingRequired === true && rawArgs.environment === "staging") {
           const forwardedArgs = { ...rawArgs };
           delete forwardedArgs.environment;
+          const endpoint = new URL("/mcp", config.stagingMcpUrl).toString();
+          const forwardedBody = {
+            jsonrpc: "2.0",
+            id,
+            method: "tools/call",
+            params: { name: tool.name, arguments: forwardedArgs },
+          };
+          const exactTarget = dynamicHostCapabilityTarget(tool.name, forwardedArgs);
+          const controller = new AbortController();
+          const timeoutMilliseconds = Math.min(Math.max(
+            Number(options.environmentDelegationTimeoutMs || 5_000),
+            100,
+          ), 5_000);
+          const timer = setTimeout(() => controller.abort(), timeoutMilliseconds);
           let upstream;
+          let body;
           try {
-            upstream = await fetch(`${config.stagingMcpUrl}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json", "x-skinharmony-environment-delegation": signEnvironmentDelegation({ identity, toolName: tool.name, key: config.environmentDelegationKey }), ...(req.headers["mcp-session-id"] ? { "mcp-session-id": String(req.headers["mcp-session-id"]) } : {}) }, body: JSON.stringify({ ...req.body, params: { ...params, name: tool.name, arguments: forwardedArgs } }) });
-          } catch {
+            upstream = await (options.fetchImpl || globalThis.fetch)(endpoint, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                accept: "application/json",
+                "x-skinharmony-environment-delegation": signEnvironmentDelegation({
+                  identity,
+                  toolName: tool.name,
+                  exactTarget,
+                  args: forwardedArgs,
+                  requestId: id,
+                  transportSessionId: req.headers["mcp-session-id"]
+                    ? String(req.headers["mcp-session-id"])
+                    : null,
+                  method: "tools/call",
+                  key: config.environmentDelegationKey,
+                }),
+                ...(req.headers["mcp-session-id"]
+                  ? { "mcp-session-id": String(req.headers["mcp-session-id"]) }
+                  : {}),
+              },
+              body: JSON.stringify(forwardedBody),
+              redirect: "error",
+              signal: controller.signal,
+            });
+            if (!upstream || upstream.redirected === true || upstream.url !== endpoint) {
+              throw new Error("staging_delegation_redirect_denied");
+            }
+            const contentType = String(upstream.headers?.get?.("content-type") || "")
+              .trim().toLowerCase();
+            if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/.test(contentType)) {
+              throw new Error("staging_delegation_content_type_invalid");
+            }
+            const rawLength = upstream.headers?.get?.("content-length");
+            if (rawLength !== null && rawLength !== undefined && rawLength !== "") {
+              if (!/^\d+$/.test(String(rawLength)) ||
+                  Number(rawLength) > MAX_STAGING_MCP_RESPONSE_BYTES) {
+                throw new Error("staging_delegation_response_too_large");
+              }
+            }
+            if (!upstream.body || typeof upstream.body.getReader !== "function") {
+              throw new Error("staging_delegation_response_stream_required");
+            }
+            const reader = upstream.body.getReader();
+            const chunks = [];
+            let receivedBytes = 0;
+            while (true) {
+              const part = await reader.read();
+              if (part.done) break;
+              const chunk = Buffer.from(part.value);
+              receivedBytes += chunk.byteLength;
+              if (receivedBytes > MAX_STAGING_MCP_RESPONSE_BYTES) {
+                void reader.cancel().catch(() => {});
+                throw new Error("staging_delegation_response_too_large");
+              }
+              chunks.push(chunk);
+            }
+            body = JSON.parse(Buffer.concat(chunks, receivedBytes).toString("utf8"));
+            if (!body || typeof body !== "object" || Array.isArray(body)) {
+              throw new Error("staging_delegation_response_invalid");
+            }
+          } catch (cause) {
             const error = new Error("staging_delegation_unavailable"); error.code = "staging_delegation_unavailable"; throw error;
+          } finally {
+            clearTimeout(timer);
           }
-          const body = await upstream.json().catch(() => null);
-          if (!body) { const error = new Error("staging_delegation_unavailable"); error.code = "staging_delegation_unavailable"; throw error; }
           const upstreamSession = upstream.headers.get("mcp-session-id");
           if (upstreamSession) res.set("Mcp-Session-Id", upstreamSession);
           return res.status(upstream.status).json(body);
@@ -2117,7 +2408,10 @@ export function createApp(config, options = {}) {
           `agent_${crypto.createHash("sha256").update(`${identity.subject || identity.kind || "client"}\u0000${sessionId}`).digest("hex").slice(0, 20)}`;
         const presenceInput = {
           agent_id: requestedAgentId,
-          client_type: (!serverIssuedBootstrap && rawArgs.client_type) || transportPresence?.client_type || inferClientType(identity),
+          // `client_type` is transport metadata, but downstream host-native
+          // code historically treated it as an audience selector. Derive it
+          // only from the authenticated host principal and ignore caller input.
+          client_type: transportPresence?.client_type || inferClientType(identity),
           session_id: sessionId,
         };
         const agentPresence = createAgentPresence(config, identity, presenceInput);
@@ -2174,7 +2468,8 @@ export function createApp(config, options = {}) {
         // OAuth tenant-owner elevation.
         const explicitOAuthOwnerConfirmation =
           OAUTH_OWNER_ELEVATION_TOOLS.has(tool.name) &&
-          identity.oauthOwnerElevated === true &&
+          (identity.oauthOwnerElevated === true ||
+            identity.environmentDelegatedOwnerConfirmation?.verified === true) &&
           args.owner_confirmed === true;
         const codexGoodModeHostNativeDelegation =
           ["host_native_delegation_issue", "host_native_delegation_revoke"].includes(tool.name) &&
@@ -2192,7 +2487,9 @@ export function createApp(config, options = {}) {
           confirmationReference: explicitOwnerConfirmation
             ? (codexGoodModeHostNativeDelegation
               ? "god_mode_codex"
-              : String(args.confirmation_reference || "").slice(0, 240))
+              : identity.environmentDelegatedOwnerConfirmation?.verified === true
+                ? `environment_delegation:${identity.environmentDelegatedOwnerConfirmation.confirmation_reference_digest}`
+                : String(args.confirmation_reference || "").slice(0, 240))
             : "",
         };
         activeToolCall = { identity: callIdentity, toolName: tool.name, args, hookContext: null, preflight: null };

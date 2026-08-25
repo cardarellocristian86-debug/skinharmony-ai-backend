@@ -797,8 +797,297 @@ const nyraConverseNullableText = (maxLength) => ({
   type: ["string", "null"],
   maxLength,
 });
+const nyraConverseSignalList = {
+  type: "array",
+  maxItems: 8,
+  uniqueItems: true,
+  items: { type: "string", minLength: 1, maxLength: 240 },
+};
+const nyraConverseActionCategory = {
+  type: "string",
+  enum: ["release", "communication", "destructive", "financial", "scheduling", "access"],
+};
+const nyraDirectiveCode = { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,159}$" };
+const nyraDirectiveDigest = { type: ["string", "null"], pattern: "^[a-f0-9]{64}$" };
+const nyraDirectiveActionClass = {
+  type: "string",
+  enum: [
+    "NONE", "WORKSPACE_CHANGE", "GIT_PUSH", "PULL_REQUEST_OPEN", "GIT_MERGE",
+    "DEPLOY", "PUBLISH", "WORK_BOOTSTRAP", "EXTERNAL_MUTATION", "TICKET_RESERVE",
+  ],
+};
+const nyraDirectiveBinding = object({
+  tenant_id: { type: "string", minLength: 1, maxLength: 160 },
+  work_id: nyraConverseNullableText(80),
+  project_id: nyraConverseNullableText(80),
+  work_revision: { type: ["integer", "null"], minimum: 1, maximum: 100_000 },
+  intent_digest: nyraDirectiveDigest,
+  context_digest: nyraDirectiveDigest,
+}, ["tenant_id", "work_id", "project_id", "work_revision", "intent_digest", "context_digest"]);
+const nyraGovernedContinuationSchema = object({
+  schema_version: { const: "nyra_governed_continuation_v1" },
+  available: { type: "boolean" },
+  submit_tool: { type: ["string", "null"], enum: ["nyra_governed_continue", null] },
+  candidate_attestation: { type: ["string", "null"], maxLength: 8_192 },
+  expires_at: { type: ["string", "null"], format: "date-time" },
+  reason: { type: ["string", "null"], maxLength: 160 },
+}, [
+  "schema_version", "available", "submit_tool", "candidate_attestation",
+  "expires_at", "reason",
+]);
+const nyraContinueSha256 = { type: "string", pattern: "^[a-f0-9]{64}$" };
+const nyraContinueHostKind = { type: "string", pattern: "^[a-z][a-z0-9_]{1,62}_native$" };
+const nyraContinueRepository = {
+  type: "string",
+  pattern: "^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$",
+};
+const nyraContinueBranch = { type: "string", minLength: 1, maxLength: 240 };
+const nyraContinueActionKind = {
+  type: "string",
+  enum: [
+    "git.push.branch", "git.push.protected", "github.draft_pr", "github.ready",
+    "github.merge", "github.release", "render.deploy", "render.promote",
+  ],
+};
+const nyraContinueDelegationRequest = object({
+  work_id: { type: "string", format: "uuid" },
+  intent_anchor_digest: nyraContinueSha256,
+  repository: nyraContinueRepository,
+  audience: {
+    type: "array", minItems: 1, maxItems: 1, uniqueItems: true,
+    items: nyraContinueHostKind,
+  },
+  allowed_branches: {
+    type: "array", minItems: 1, maxItems: 32, uniqueItems: true,
+    items: nyraContinueBranch,
+  },
+  protected_branches: {
+    type: "array", maxItems: 16, uniqueItems: true,
+    items: nyraContinueBranch,
+  },
+  allowed_path_prefixes: {
+    type: "array", minItems: 1, maxItems: 128, uniqueItems: true,
+    items: { type: "string", minLength: 1, maxLength: 500 },
+  },
+  allowed_actions: {
+    type: "array", minItems: 1, maxItems: 8, uniqueItems: true,
+    items: nyraContinueActionKind,
+  },
+  budget: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      max_agents: { type: "integer", minimum: 1, maximum: 3 },
+      max_parallel: { type: "integer", minimum: 1, maximum: 2 },
+      max_commits: { type: "integer", minimum: 0, maximum: 100 },
+      max_pushes: { type: "integer", minimum: 0, maximum: 100 },
+      max_deploys: { type: "integer", minimum: 0, maximum: 100 },
+      max_total_actions: { type: "integer", minimum: 1, maximum: 1_000 },
+    },
+  },
+  release_policy: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      manifest_required_for_protected_push: { type: "boolean" },
+      manifest_required_for_induced_deploy: { type: "boolean" },
+      manifest_required_for_deploy: { type: "boolean" },
+      independent_verifier_required: { type: "boolean" },
+      rollback_required: { type: "boolean" },
+      required_checks: {
+        type: "array", maxItems: 100, uniqueItems: true,
+        items: { type: "string", minLength: 1, maxLength: 240 },
+      },
+    },
+  },
+  ttl_seconds: { type: "integer", minimum: 60, maximum: 43_200 },
+}, [
+  "work_id", "intent_anchor_digest", "repository", "audience", "allowed_branches",
+  "allowed_path_prefixes", "allowed_actions", "ttl_seconds",
+]);
+const nyraContinueActionRequest = object({
+  delegation_id: { type: "string", pattern: "^hnd_[A-Za-z0-9._-]{8,160}$" },
+  work_id: { type: "string", format: "uuid" },
+  intent_anchor_digest: nyraContinueSha256,
+  repository: nyraContinueRepository,
+  action: { type: "object", minProperties: 1, maxProperties: 40, additionalProperties: true },
+  evidence_digest: nyraContinueSha256,
+  release_manifest: { type: "object", maxProperties: 40, additionalProperties: true },
+  predecessor_ticket_id: { type: "string", pattern: "^hnt_[A-Za-z0-9-]{8,160}$" },
+}, [
+  "delegation_id", "work_id", "intent_anchor_digest", "repository", "action",
+  "evidence_digest",
+]);
+const nyraWorkBootstrapSpec = object({
+  request_id: { type: "string", minLength: 2, maxLength: 160, pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,159}$" },
+  work_name: { type: "string", minLength: 1, maxLength: 1_000 },
+  work_type: {
+    type: "string",
+    enum: [
+      "software_git", "software_non_git", "deployment", "research", "document",
+      "commercial_crm", "hardware", "generic",
+    ],
+  },
+  idea: { type: "string", minLength: 1, maxLength: 8_000 },
+  objective: { type: "string", minLength: 1, maxLength: 8_000 },
+  architecture: { type: "object", maxProperties: 250, additionalProperties: true },
+  next_action: { type: "string", minLength: 1, maxLength: 4_000 },
+  acceptance_criteria: {
+    type: "array", minItems: 1, maxItems: 250, uniqueItems: true,
+    items: { type: "string", minLength: 1, maxLength: 2_000 },
+  },
+  constraints: {
+    type: "array", maxItems: 100, uniqueItems: true,
+    items: { type: "string", minLength: 1, maxLength: 1_000 },
+  },
+  tasks: {
+    type: "array", minItems: 1, maxItems: 250,
+    items: object({
+      title: { type: "string", minLength: 1, maxLength: 2_000 },
+      weight: { type: "integer", minimum: 1, maximum: 10_000 },
+      required: { type: "boolean" },
+    }, ["title"]),
+  },
+}, [
+  "request_id", "work_name", "work_type", "idea", "objective", "architecture",
+  "next_action", "acceptance_criteria", "tasks",
+]);
+const nyraOrchestrationDirectiveSchema = object({
+  schema_version: { const: "nyra_orchestration_directive_v1" },
+  directive_id: { type: "string", pattern: "^nyra_dir_[a-f0-9]{24}$" },
+  request_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  source: { type: "string", enum: ["PERSISTED_WORK", "FRESH_CORE", "LEGACY_CONNECTOR_HINT"] },
+  problem: {
+    anyOf: [
+      { type: "null" },
+      object({
+        kind: {
+          type: "string",
+          enum: ["RESUME", "TECHNICAL_REQUEST", "CONSEQUENTIAL_REQUEST", "WORK_BINDING", "WORK_BOOTSTRAP", "CORE_BLOCK", "MANUAL_MERGE"],
+        },
+        code: nyraDirectiveCode,
+        summary: { type: "string", minLength: 1, maxLength: 500 },
+        capability_hint: nyraConverseNullableText(64),
+      }, ["kind", "code", "summary", "capability_hint"]),
+    ],
+  },
+  needs: {
+    type: "array",
+    maxItems: 8,
+    items: object({
+      code: nyraDirectiveCode,
+      kind: { type: "string", enum: ["CONTEXT", "EVIDENCE", "CONFIRMATION", "AUTHORITY", "CAPABILITY", "MANUAL_ACTION"] },
+      state: { type: "string", enum: ["REQUIRED", "MISSING", "STALE", "BLOCKED"] },
+      authority: { type: "string", enum: ["WORK_CONTINUITY", "NYRA", "UNIVERSAL_CORE", "HOST", "OWNER"] },
+      detail: { type: "string", minLength: 1, maxLength: 500 },
+      source_digest: nyraDirectiveDigest,
+    }, ["code", "kind", "state", "authority", "detail", "source_digest"]),
+  },
+  next_actions: {
+    type: "array",
+    maxItems: 8,
+    items: object({
+      order: { type: "integer", minimum: 1, maximum: 8 },
+      actor: { type: "string", enum: ["NYRA", "CODEX", "UNIVERSAL_CORE", "HOST", "OWNER"] },
+      stage: { type: "string", enum: ["CONTEXT", "REASONING", "AUTHORITY", "EXECUTION", "EVIDENCE"] },
+      code: nyraDirectiveCode,
+      summary: { type: "string", minLength: 1, maxLength: 500 },
+      mode: { type: "string", enum: ["READ_ONLY", "BOUNDED_WORKSPACE", "PROPOSAL_ONLY", "CORE_GOVERNED", "MANUAL"] },
+      status: { type: "string", enum: ["READY", "WAITING_ON_NEED", "HELD", "MANUAL"] },
+      requires: { type: "array", maxItems: 8, uniqueItems: true, items: nyraDirectiveCode },
+      external_side_effect: { type: "boolean" },
+    }, ["order", "actor", "stage", "code", "summary", "mode", "status", "requires", "external_side_effect"]),
+  },
+  decision: object({
+    disposition: {
+      type: "string",
+      enum: [
+        "RESUME", "PROCEED_READ_ONLY", "PREPARE_BOUNDED_WORK", "REQUEST_CORE_TICKET",
+        "REQUEST_WORK_BOOTSTRAP", "MANUAL_HANDOFF", "HOLD", "BLOCK", "INSUFFICIENT_CONTEXT", "COMPLETE",
+      ],
+    },
+    recommendation_authority: { const: "NYRA" },
+    final_authority: { const: "UNIVERSAL_CORE" },
+    core_verdict: { type: "string", enum: ["NOT_APPLICABLE", "NOT_REQUESTED", "HOLD", "BLOCK", "INSUFFICIENT_CONTEXT"] },
+    reason_codes: { type: "array", maxItems: 16, uniqueItems: true, items: nyraDirectiveCode },
+    execution_authorized: { const: false },
+    external_action_authorized: { const: false },
+  }, [
+    "disposition", "recommendation_authority", "final_authority", "core_verdict",
+    "reason_codes", "execution_authorized", "external_action_authorized",
+  ]),
+  work_context: object({
+    available: { type: "boolean" },
+    work_id: nyraConverseNullableText(80),
+    project_id: nyraConverseNullableText(80),
+    work_revision: { type: ["integer", "null"], minimum: 1, maximum: 100_000 },
+    intent_digest: nyraDirectiveDigest,
+    context_digest: nyraDirectiveDigest,
+    status: nyraConverseNullableText(24),
+    acceptance_criteria_count: { type: "integer", minimum: 0, maximum: 250 },
+    required_task_count: { type: "integer", minimum: 0, maximum: 64 },
+    pending_required_task_count: { type: "integer", minimum: 0, maximum: 64 },
+    required_evidence_count: { type: "integer", minimum: 0, maximum: 128 },
+    unverified_required_evidence_count: { type: "integer", minimum: 0, maximum: 128 },
+    next_required_task: {
+      anyOf: [
+        { type: "null" },
+        object({
+          task_id: { type: "string", format: "uuid" },
+          title: { type: "string", minLength: 1, maxLength: 500 },
+          status: { type: "string", enum: ["planned", "completed"] },
+          acceptance_verified: { type: "boolean" },
+        }, ["task_id", "title", "status", "acceptance_verified"]),
+      ],
+    },
+    closure_verified: { type: "boolean" },
+  }, [
+    "available", "work_id", "project_id", "work_revision", "intent_digest", "context_digest",
+    "status", "acceptance_criteria_count", "required_task_count", "pending_required_task_count",
+    "required_evidence_count", "unverified_required_evidence_count", "next_required_task", "closure_verified",
+  ]),
+  permitted_progress: {
+    type: "array",
+    maxItems: 5,
+    uniqueItems: true,
+    items: {
+      type: "string",
+      enum: ["DISAMBIGUATION", "WORK_BOOTSTRAP_REVIEW", "READ_ONLY", "ANALYSIS", "EVIDENCE", "BOUNDED_WORKSPACE", "PROPOSAL"],
+    },
+  },
+  can_continue: { type: "boolean" },
+  ticket_request: object({
+    schema_version: { const: "core_ticket_request_candidate_v1" },
+    required: { type: "boolean" },
+    state: { type: "string", enum: ["NOT_REQUIRED", "NEEDS_CONTEXT", "WORK_BOOTSTRAP_READY", "READY_FOR_CORE_REVIEW", "AWAITING_CORE", "BLOCKED", "MANUAL_ONLY"] },
+    action_class: nyraDirectiveActionClass,
+    capability_hint: nyraConverseNullableText(64),
+    capability_resolution: { type: "string", enum: ["NOT_REQUIRED", "SERVER_SIDE_REQUIRED", "SERVER_SIDE_RESOLVED"] },
+    binding: nyraDirectiveBinding,
+    prerequisite_codes: { type: "array", maxItems: 32, uniqueItems: true, items: nyraDirectiveCode },
+    owner_confirmation_required: { type: "boolean" },
+    host_approval_required: { type: "boolean" },
+    core_independent_verification_required: { const: true },
+    merge_policy: { type: "string", enum: ["NOT_APPLICABLE", "MANUAL_ONLY"] },
+    work_bootstrap_request_digest: nyraDirectiveDigest,
+    request_digest: nyraDirectiveDigest,
+    ticket_id: { type: "null" },
+    ticket_issued: { const: false },
+    execution_authorized: { const: false },
+    continuation: nyraGovernedContinuationSchema,
+  }, [
+    "schema_version", "required", "state", "action_class", "capability_hint", "capability_resolution",
+    "binding", "prerequisite_codes", "owner_confirmation_required", "host_approval_required",
+    "core_independent_verification_required", "merge_policy", "work_bootstrap_request_digest", "request_digest", "ticket_id",
+    "ticket_issued", "execution_authorized", "continuation",
+  ]),
+  execution_authorized: { const: false },
+}, [
+  "schema_version", "directive_id", "request_digest", "source", "problem", "needs", "next_actions",
+  "decision", "work_context", "permitted_progress", "can_continue", "ticket_request", "execution_authorized",
+]);
 const nyraConverseOutputSchema = object({
-  schema_version: { const: "nyra_conversation_turn_v1" },
+  schema_version: { const: "nyra_conversation_turn_v2" },
   ok: { const: true },
   tenant_id: { type: "string", minLength: 1, maxLength: 160 },
   turn_id: { type: "string", pattern: "^nyra_turn_[a-f0-9]{24}$" },
@@ -807,8 +1096,15 @@ const nyraConverseOutputSchema = object({
     tenant_bound: { const: true },
     principal_kind: { type: "string", enum: ["oauth", "codex", "service", "other"] },
     client_type: { type: "string", enum: ["chatgpt", "codex", "api_agent", "other"] },
+    host_registered: { type: "boolean" },
+    app_id: nyraConverseNullableText(64),
+    host_kind: nyraConverseNullableText(80),
+    host_registry_revision: nyraDirectiveDigest,
     caller_authority_accepted: { const: false },
-  }, ["authenticated", "tenant_bound", "principal_kind", "client_type", "caller_authority_accepted"]),
+  }, [
+    "authenticated", "tenant_bound", "principal_kind", "client_type", "host_registered",
+    "app_id", "host_kind", "host_registry_revision", "caller_authority_accepted",
+  ]),
   work: object({
     preflight_bound: { const: true },
     work_bound: { type: "boolean" },
@@ -844,11 +1140,28 @@ const nyraConverseOutputSchema = object({
       parity_matched: { type: ["boolean", "null"] },
       execution_allowed: { const: false },
     }, ["mode", "route", "authority", "parity_matched", "execution_allowed"]),
+    selected_action_id: nyraConverseNullableText(160),
+    selected_action: nyraConverseNullableText(500),
     selected_action_available: { type: "boolean" },
+    core_state: { type: "string", enum: ["observe", "ok", "attention", "critical", "protection", "blocked"] },
+    core_control: { type: "string", enum: ["observe", "suggest", "confirm", "execute_allowed", "blocked"] },
     risk_band: { type: "string", enum: ["low", "medium", "high", "blocked", "unknown"] },
+    blocked_reasons: nyraConverseSignalList,
+    unmet_conditions: nyraConverseSignalList,
+    evidence_requirements: nyraConverseSignalList,
+    allowed_alternatives: nyraConverseSignalList,
+    next_step: nyraConverseNullableText(500),
+    runbook_candidate: nyraConverseNullableText(160),
+    owner_confirmation_required: { type: "boolean" },
     dialogue_accepted: { type: "boolean" },
     opened_branch_count: { type: "integer", minimum: 0, maximum: 100_000 },
-  }, ["core", "selected_action_available", "risk_band", "dialogue_accepted", "opened_branch_count"]),
+  }, [
+    "core", "selected_action_id", "selected_action", "selected_action_available", "core_state",
+    "core_control", "risk_band",
+    "blocked_reasons", "unmet_conditions", "evidence_requirements", "allowed_alternatives",
+    "next_step", "runbook_candidate", "owner_confirmation_required", "dialogue_accepted",
+    "opened_branch_count",
+  ]),
   nyra_dialogue: object({
     dialogue_id: nyraConverseNullableText(80),
     manual_digest: nyraConverseNullableText(64),
@@ -867,16 +1180,26 @@ const nyraConverseOutputSchema = object({
       type: "array",
       maxItems: 6,
       uniqueItems: true,
-      items: { type: "string", enum: ["release", "communication", "destructive", "financial", "scheduling", "access"] },
+      items: nyraConverseActionCategory,
     },
+    action_class: nyraDirectiveActionClass,
+    capability_hint: nyraConverseNullableText(64),
+    merge_requested: { type: "boolean" },
+    ticket_reserve_requested: { type: "boolean" },
+    work_bootstrap_requested: { type: "boolean" },
+    work_bootstrap_spec_provided: { type: "boolean" },
+    manual_owner_execution_requested: { type: "boolean" },
     mode: { type: "string", enum: ["advisory_only", "proposal_only"] },
     classification_only: { const: true },
     external_action_authorized: { const: false },
     consequential_action_performed: { const: false },
   }, [
-    "consequential_request_detected", "categories", "mode", "classification_only",
+    "consequential_request_detected", "categories", "action_class", "capability_hint",
+    "merge_requested", "ticket_reserve_requested", "work_bootstrap_requested",
+    "work_bootstrap_spec_provided", "manual_owner_execution_requested", "mode", "classification_only",
     "external_action_authorized", "consequential_action_performed",
   ]),
+  orchestration_directive: nyraOrchestrationDirectiveSchema,
   host_response_contract: object({
     speaker: { const: "Nyra" },
     renderer: { const: "nyra_widget_with_host_fallback" },
@@ -884,7 +1207,7 @@ const nyraConverseOutputSchema = object({
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
     reply_seed: { type: "string", minLength: 1, maxLength: 1_200 },
     next_action: nyraConverseNullableText(500),
-    rendering_policy: { const: "server_next_action_first_v1" },
+    rendering_policy: { const: "server_orchestration_directive_first_v2" },
     instructions: { type: "array", minItems: 3, maxItems: 3, items: { type: "string", maxLength: 500 } },
   }, ["speaker", "renderer", "response_language", "response_style", "reply_seed", "next_action", "rendering_policy", "instructions"]),
   execution_authorized: { const: false },
@@ -895,7 +1218,8 @@ const nyraConverseOutputSchema = object({
   dynamic_capability: { type: "object", additionalProperties: true },
 }, [
   "schema_version", "ok", "tenant_id", "turn_id", "identity_binding", "work", "memory",
-  "interpretation", "nyra_dialogue", "action_policy", "host_response_contract", "execution_authorized",
+  "interpretation", "nyra_dialogue", "action_policy", "orchestration_directive",
+  "host_response_contract", "execution_authorized",
   "external_action_authorized", "provider_execution", "provider_api_key_required", "server_model_calls",
 ]);
 
@@ -922,7 +1246,7 @@ export const TOOLS = [
     session_id: identifier,
     project_id: identifier,
     agent_id: identifier,
-    host_type: { type: "string", enum: ["chatgpt_native", "codex_native"] },
+    host_type: { type: "string", pattern: "^[a-z][a-z0-9_]{1,62}_native$" },
     acceptance_criteria: { type: "array", maxItems: 100, items: text(1_000) },
     constraints: { type: "array", maxItems: 100, items: text(1_000) },
     response_mode: { type: "string", enum: ["compact", "full"] },
@@ -973,10 +1297,11 @@ export const TOOLS = [
     destructive: false,
   }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
-  tool("nyra_converse", "Nyra: resume or guide the current Work", "Use this as the first and only read tool when the user addresses Nyra or asks to resume, continue, understand, diagnose, or coordinate a Work. It is the conversational front door: the server automatically performs the authenticated read-only preflight, resumes one unambiguous persisted Work, and returns Nyra's bounded next step. Do not call a preflight, Gallery, branch registry, or capability catalog first. It never calls a provider model, accepts caller authority, or authorizes or performs an external action.", object({
+  tool("nyra_converse", "Nyra: resume or guide the current Work", "Use this as the first and only read tool when the user addresses Nyra or asks to resume, continue, understand, diagnose, or coordinate a Work. It is the conversational front door: the server performs authenticated preflight, binds one canonical Work, reads bounded Work tasks/evidence, and returns Nyra's problem, needs, ordered actors, progress disposition and revision-bound Universal Core ticket candidate. Do not call a preflight, Gallery, branch registry, self-model read or capability catalog first. PREPARE_BOUNDED_WORK permits local analysis, tests and evidence but never an external mutation. Merge is always MANUAL_ONLY for the owner after the Core gate. Nyra never calls a provider model, accepts caller authority, issues a ticket, or authorizes or performs an external action.", object({
     message: text(12_000),
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,
+    work_bootstrap: nyraWorkBootstrapSpec,
     locale: { type: "string", enum: ["auto", "it", "en"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
   }, ["message"]), ["core:read"], true, true, {
@@ -988,6 +1313,26 @@ export const TOOLS = [
       "openai/outputTemplate": NYRA_DIALOGUE_WIDGET_URI,
       "openai/toolInvocation/invoking": "Nyra sta ascoltando…",
       "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
+    },
+  }),
+  tool("nyra_governed_continue", "Nyra: submit one governed continuation", "Submit only the short-lived candidate attestation returned by nyra_converse. A registered ChatGPT, Codex or future AI may request a duplicate review and owner-governed canonical V2 Work bootstrap, one bounded host delegation, or one exact action ticket. Work creation is two-phase and private by default; registration never grants owner authority. The tool never reserves or executes a ticket, never calls GitHub/Render, and never performs merge, deploy or publish. Unknown apps, forged client/host types, drift and replay fail closed.", object({
+    operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action"] },
+    candidate_attestation: { type: "string", minLength: 100, maxLength: 8_192 },
+    work_bootstrap: nyraWorkBootstrapSpec,
+    review_id: { type: "string", format: "uuid" },
+    review_digest: nyraContinueSha256,
+    review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
+    delegation_request: nyraContinueDelegationRequest,
+    action_request: nyraContinueActionRequest,
+    idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+    ...ownerConfirmationProperties,
+  }, ["operation", "candidate_attestation", "idempotency_key"]), ["core:govern"], false, true, {
+    ownerConfirmationRequired: false,
+    meta: {
+      "skinharmony/dedicatedCoreGate": true,
+      "skinharmony/externalSideEffect": false,
+      "skinharmony/providerExecution": false,
+      "skinharmony/nyraGovernedContinuation": true,
     },
   }),
   tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),

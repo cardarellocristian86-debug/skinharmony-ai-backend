@@ -65,7 +65,11 @@ export function tenantWorkCoordinationActionType(toolName) {
   return TENANT_WORK_COORDINATION_ACTION_TYPES[String(toolName || "")] || null;
 }
 
-const WORK_ID_TARGET = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+// Keep this in lockstep with work-continuity-runtime.js: canonical Work ids
+// accept UUID versions 1 through 8.  A narrower target validator would turn a
+// valid v6/v7/v8 Work into the generic tool name and make Atlas coordination
+// fail closed in Universal Core.
+const WORK_ID_TARGET = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 
 // Core validates the action type against this target. Never accept a caller
 // target: derive the only permitted target shape from the validated Work id.
@@ -73,6 +77,10 @@ export function tenantWorkCoordinationTarget(toolName, args = {}) {
   const name = String(toolName || "");
   const workId = String(args?.work_id || "").trim().toLowerCase();
   if (!WORK_ID_TARGET.test(workId)) return name;
+  // Repository Atlas bootstrap is a bounded internal graph mutation. Its
+  // public capability name intentionally does not contain `atlas`, so derive
+  // the Core-recognised Atlas target from the validated Work identifier.
+  if (name === "software_cognition_repository_bootstrap") return `work_atlas:${workId}`;
   if (name === "tenant_work_task_record") return `task:${workId}`;
   if (name === "tenant_work_evidence_record") return `work_continuity_evidence:${workId}`;
   return name;
@@ -116,7 +124,7 @@ function tool(name, title, description, inputSchema, readOnly, options = {}) {
 
 export const WORK_CONTINUITY_TOOLS = [
   tool("work_continuity_create", "Create persistent work continuity",
-    "Create tenant-scoped Work Identity and the first architecture-map version with a hash-chained event ledger.",
+    "Retired legacy creation entrypoint. It fails closed with canonical_work_bootstrap_v2_required; use Nyra's duplicate-reviewed canonical V2 bootstrap.",
     object({
       project_id: identifier, work_id: uuid, session_id: identifier, parent_work_id: uuid,
       idea: text(8_000), objective: text(8_000), architecture: { type: "object", additionalProperties: true },
@@ -234,11 +242,11 @@ export const WORK_CONTINUITY_TOOLS = [
       limit: { type: "integer", minimum: 1, maximum: 200 },
     }, ["work_id", "session_id", "agent_id"]), true),
   tool("work_continuity_start_or_resume", "Anchor or resume governed work",
-    "Create or resume a tenant-scoped Work Identity through a fresh, request-bound owner confirmation; the immutable Intent Anchor is never overwritten.",
+    "Resume an existing tenant-scoped Work Identity only. It never creates; absence requires Nyra's duplicate-reviewed canonical V2 bootstrap.",
     object({
       work_id: uuid, parent_work_id: uuid, project_id: identifier, session_id: identifier,
       initial_message: text(20_000), idea: text(8_000), objective: text(8_000),
-      acceptance_criteria: { type: "array", maxItems: 100, items: text(1_000) },
+      acceptance_criteria: { type: "array", maxItems: 250, items: text(2_000) },
       constraints: { type: "array", maxItems: 100, items: text(1_000) },
       architecture: { type: "object", additionalProperties: true }, next_action: text(4_000),
       host_type: nativeHost, resume_existing: { type: "boolean" },
@@ -263,6 +271,7 @@ export const WORK_CONTINUITY_TOOLS = [
     "Create one owner-governed generic or adapter-backed Work Identity while retaining a linked legacy continuity record.",
     object({
       intent_type: { type: "string", const: "CREATE_WORK" }, request_id: text(160),
+      idempotency_key: text(240),
       review_id: uuid, review_digest: hash,
       review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
       project_id: identifier, work_id: uuid, session_id: identifier, work_name: text(1_000),
@@ -273,6 +282,7 @@ export const WORK_CONTINUITY_TOOLS = [
       assigned_user_ids: { type: "array", maxItems: 100, uniqueItems: true, items: { type: "string", maxLength: 128 } },
       supervising_user_ids: { type: "array", maxItems: 100, uniqueItems: true, items: { type: "string", maxLength: 128 } },
       acceptance_criteria: { type: "array", minItems: 1, maxItems: 250, items: text(2_000) },
+      constraints: { type: "array", maxItems: 100, items: text(1_000) },
       tasks: { type: "array", minItems: 1, maxItems: 250, items: object({
         task_id: uuid, title: text(2_000), weight: { type: "integer", minimum: 1, maximum: 10_000 }, required: { type: "boolean" },
       }, ["title"]) },

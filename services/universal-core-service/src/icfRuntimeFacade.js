@@ -1,6 +1,53 @@
 import { assertIcfStoreContract } from "./icfStoreContract.js";
 import { CORE_JOIN_POSTGRES_BACKEND } from "./coreJoinPostgresStore.js";
 
+export function buildIcfPostgresStoreReadiness(store) {
+  const backend = typeof store?.kind === "string" && store.kind
+    ? store.kind
+    : "unavailable";
+  const initialized = store?.initialized === true;
+  const readyFlag = store?.ready === true;
+  const initializationState = String(store?.initialization_state || "unavailable");
+  const migrationVerified = store?.migration?.migration_id === "20260825_002_icf_event_digest_v2"
+    && store?.migration?.application_state === "COMPLETED"
+    && store?.migration?.checkpoint === "READBACK_VERIFIED"
+    && /^[a-f0-9]{64}$/u.test(String(store?.migration?.sql_digest || ""));
+  let state = "unavailable";
+  let reason = "icf_postgres_store_unavailable";
+  if (backend !== "postgresql") {
+    state = "unavailable";
+  } else if (initializationState === "failed") {
+    state = "failed";
+    reason = "icf_event_digest_v2_migration_unavailable";
+  } else if (!initialized || !readyFlag || initializationState !== "ready") {
+    state = initializationState === "uninitialized" ? "uninitialized" : "initializing";
+    reason = "icf_postgres_store_initializing";
+  } else if (!migrationVerified) {
+    state = "migration_unverified";
+    reason = "icf_event_digest_v2_migration_unverified";
+  } else if (store?.restart_durable !== true) {
+    state = "durability_unavailable";
+    reason = "icf_postgres_store_not_restart_durable";
+  } else if (store?.distributed !== true) {
+    state = "distributed_store_unavailable";
+    reason = "icf_postgres_store_not_distributed";
+  } else {
+    state = "ready";
+    reason = null;
+  }
+  return Object.freeze({
+    ready: state === "ready",
+    state,
+    reason,
+    backend,
+    initialized,
+    migration_verified: migrationVerified,
+    restart_durable: store?.restart_durable === true,
+    distributed: store?.distributed === true,
+    migration: store?.migration || null,
+  });
+}
+
 export function buildIcfGenericWorkCoreJoinReadiness(coreJoinStore) {
   const backend = typeof coreJoinStore?.kind === "string" && coreJoinStore.kind
     ? coreJoinStore.kind
@@ -54,16 +101,18 @@ export function createIcfRuntimeFacade({ kernel, store, mode = "advisory", coreJ
   const enforced = String(mode).toLowerCase() === "enforced";
   return {
     readiness() {
+      const postgresStore = buildIcfPostgresStoreReadiness(store);
       const genericJoin = buildIcfGenericWorkCoreJoinReadiness(coreJoinStore);
       return {
         contract,
         store_kind: store?.kind || "unavailable",
         restart_durable: store?.restart_durable === true,
         distributed: store?.distributed === true,
+        postgres_store: postgresStore,
         generic_work_core_join: genericJoin,
         enforcement_allowed: enforced
           && contract.ok
-          && store?.kind === "postgresql"
+          && postgresStore.ready === true
           && genericJoin.ready === true,
       };
     },

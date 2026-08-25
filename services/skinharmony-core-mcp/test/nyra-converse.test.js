@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 
 import {
@@ -11,6 +12,7 @@ import {
   createNyraConverseHandler,
   createNyraConversePreflight,
   MAX_MESSAGE_LENGTH,
+  NYRA_SERVER_CONNECTOR_HINT,
 } from "../src/nyra-converse.js";
 import { resolveContinuityProjectBinding } from "../src/continuity-project-binding.js";
 import { NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
@@ -19,14 +21,40 @@ import { TOOLS } from "../src/tool-definitions.js";
 import { buildWorkPreflight } from "../../universal-core-service/src/workPreflight.js";
 
 const WORK_ID = "c1139091-40d9-4f4e-b788-842fbc23a778";
+const TASK_ID = "91f9ea3c-c6fd-4d7b-8b03-f9937405106d";
+const EVIDENCE_ID = "a4c8e893-1a86-4ed3-bd85-5150d451af72";
+const INTENT_DIGEST = "1".repeat(64);
+
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+}
+
+function canonicalDigest(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
 
 function identity(tenantId = "tenant-a") {
   return {
     kind: "oauth",
     tenantId,
+    oauthOwnerBound: true,
     scopes: ["core:read"],
     subject: "must-not-be-returned",
     role: "tenant_owner",
+    authenticatedTenantMembership: {
+      schema_version: "tenant_membership_binding_v1",
+      authenticated: true,
+      tenant_id: tenantId,
+      subject: "must-not-be-returned",
+      role: "tenant_owner",
+      team_ids: [],
+      managed_team_ids: [],
+      assigned_work_ids: [],
+      issued_at: new Date(Date.now() - 1_000).toISOString(),
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    },
     agentPresence: {
       agent_id: "connected-host-agent",
       session_id: "authenticated-session",
@@ -35,6 +63,41 @@ function identity(tenantId = "tenant-a") {
     },
   };
 }
+
+test("rejects claim-only OAuth before cache, Gallery discovery, preflight or continuity mutation", async () => {
+  const calls = { catalog: 0, preflight: 0, continuity: 0, cache: 0, interpret: 0 };
+  const unbound = {
+    ...identity(),
+    oauthOwnerBound: false,
+    authenticatedTenantMembership: undefined,
+    role: "member",
+  };
+  const preflight = createNyraConversePreflight({
+    workPreflight: async () => { calls.preflight += 1; return preflightFixture(); },
+    ensureContinuity: async () => { calls.continuity += 1; },
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: {
+      listWorks: async () => { calls.catalog += 1; return { works: [] }; },
+    },
+    hostType: () => "chatgpt_native",
+  });
+  await assert.rejects(preflight({
+    message: "Nyra, riprendi il Work",
+    session_id: "claim-only-session",
+  }, unbound), /tenant_work_membership_required/);
+
+  const handler = createNyraConverseHandler({
+    preflight: async () => { calls.preflight += 1; return preflightFixture(); },
+    interpret: async () => { calls.interpret += 1; return interpretationFixture(); },
+    readControlContext: async () => { calls.cache += 1; return null; },
+  });
+  await assert.rejects(handler({
+    message: "Nyra, riprendi il Work",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, unbound), /tenant_work_membership_required/);
+  assert.deepEqual(calls, { catalog: 0, preflight: 0, continuity: 0, cache: 0, interpret: 0 });
+});
 
 function preflightFixture(tenantId = "tenant-a") {
   return {
@@ -155,9 +218,25 @@ function interpretationFixture(tenantId = "tenant-a", preferredReply = "Sì, son
       },
       result: {
         selected_by_core: {
+          state: "ok",
+          control_level: "observe",
+          primary_action_id: "action:respond_conversationally",
           primary_action_label: "Respond conversationally",
           risk_band: "low",
+          can_execute: false,
+          requires_owner_confirmation: false,
+          blocked_reasons: [],
+          unmet_conditions: [],
+          evidence_requirements: [],
+          allowed_alternatives: [],
           private_reasoning: "must-not-be-returned",
+        },
+        automation_plan: {
+          execution_allowed: false,
+          next_step: "Proceed in read-only analysis",
+          runbook_candidate: "respond_conversationally",
+          audit_required: true,
+          owner_confirmation_required: false,
         },
         deep_nyra_runtime: {
           dialogue: {
@@ -176,8 +255,62 @@ function interpretationFixture(tenantId = "tenant-a", preferredReply = "Sì, son
   };
 }
 
-function harness({ preflightResult, interpretationResult, persistedContext } = {}) {
-  const calls = { preflight: [], interpret: [], readControlContext: [] };
+function directiveContextFixture({
+  tenantId = "tenant-a",
+  projectId = "nyra_core",
+  workRevision = 4,
+  status = "ACTIVE",
+  taskStatus = "planned",
+  acceptanceVerified = false,
+  evidenceVerified = false,
+  closureVerification = null,
+} = {}) {
+  return {
+    schema_version: "work_continuity_v2",
+    work_revision: workRevision,
+    work: {
+      tenant_id: tenantId,
+      work_id: WORK_ID,
+      project_id: projectId,
+      status,
+      intent_digest: INTENT_DIGEST,
+      objective: "Prepare the canonical Entity 360 architecture and governed delivery",
+      next_action: "E360-02 — ADR boundaries",
+      acceptance_criteria: ["Architecture and acceptance criteria are verified"],
+    },
+    tasks: [{
+      tenant_id: tenantId,
+      task_id: TASK_ID,
+      work_id: WORK_ID,
+      title: "Verify the Nyra orchestration contract and CI evidence",
+      status: taskStatus,
+      required: true,
+      acceptance_verified: acceptanceVerified,
+    }],
+    evidence: [{
+      tenant_id: tenantId,
+      evidence_id: EVIDENCE_ID,
+      work_id: WORK_ID,
+      kind: "test_report",
+      digest: "2".repeat(64),
+      required: true,
+      independently_verified: evidenceVerified,
+      metadata: { raw_customer_data: "must-not-be-returned" },
+    }],
+    closure_receipt: null,
+    closure_verification: closureVerification,
+    final_report: null,
+  };
+}
+
+function harness({
+  preflightResult,
+  interpretationResult,
+  persistedContext,
+  directiveContext,
+  issueContinuation,
+} = {}) {
+  const calls = { preflight: [], interpret: [], readControlContext: [], readDirectiveContext: [] };
   const handler = createNyraConverseHandler({
     preflight: async (args, authenticatedIdentity) => {
       calls.preflight.push({ args, identity: authenticatedIdentity });
@@ -191,6 +324,11 @@ function harness({ preflightResult, interpretationResult, persistedContext } = {
       calls.readControlContext.push({ args, identity: authenticatedIdentity });
       return persistedContext;
     },
+    readDirectiveContext: directiveContext === undefined ? null : async (authenticatedIdentity, args) => {
+      calls.readDirectiveContext.push({ args, identity: authenticatedIdentity });
+      return directiveContext;
+    },
+    issueContinuation,
   });
   return { handler, calls };
 }
@@ -220,8 +358,13 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.equal(payload.work.preflight_bound, true);
   assert.equal(payload.work.next_action, "Continue the existing Work.");
   assert.equal(payload.host_response_contract.next_action, "Continue the existing Work.");
-  assert.match(payload.host_response_contract.reply_seed, /^Prossimo passo proposto: Continue the existing Work\./);
-  assert.equal(payload.host_response_contract.rendering_policy, "server_next_action_first_v1");
+  assert.match(payload.host_response_contract.reply_seed, /^Possiamo continuare\. Host, Continue the existing Work\./);
+  assert.equal(payload.host_response_contract.rendering_policy, "server_orchestration_directive_first_v2");
+  assert.equal(payload.orchestration_directive.source, "PERSISTED_WORK");
+  assert.equal(payload.orchestration_directive.decision.disposition, "RESUME");
+  assert.equal(payload.orchestration_directive.decision.recommendation_authority, "NYRA");
+  assert.equal(payload.orchestration_directive.decision.final_authority, "UNIVERSAL_CORE");
+  assert.equal(payload.orchestration_directive.execution_authorized, false);
   assert.equal(result.content[0].text, payload.host_response_contract.reply_seed);
   assert.equal(result._meta.ui.resourceUri, NYRA_DIALOGUE_WIDGET_URI);
   assert.equal(result._meta["openai/outputTemplate"], NYRA_DIALOGUE_WIDGET_URI);
@@ -234,6 +377,540 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.equal(payload.server_model_calls, 0);
   const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
   assert.deepEqual(validateToolArguments(definition.outputSchema, payload), []);
+});
+
+test("does not let a cached Work step dominate a new technical orchestration request", async () => {
+  const context = (await import("../src/nyra-control-context.js")).buildNyraControlContext({
+    continuity: {
+      tenant_id: "tenant-a",
+      project_id: "nyra_core",
+      work_id: WORK_ID,
+      state: "active",
+      next_action: "E360-02 — stale cached step",
+    },
+    operational: { work_revision: 4, gallery: { state: "available", work_count: 1 } },
+  });
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.primary_action_id = "action:software_verification";
+  interpretation.structuredContent.result.selected_by_core.primary_action_label = "Verify patch and regressions";
+  interpretation.structuredContent.result.automation_plan.next_step = "Prepare verified PR and CI evidence";
+  const { handler, calls } = harness({
+    persistedContext: context,
+    interpretationResult: interpretation,
+  });
+
+  const response = await handler({
+    message: "Nyra, diagnostica il problema del merge e dimmi cosa serve a Codex",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  const payload = response.structuredContent;
+
+  assert.equal(calls.readControlContext.length, 0);
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(calls.interpret.length, 1);
+  assert.equal(payload.orchestration_directive.source, "FRESH_CORE");
+  assert.equal(payload.orchestration_directive.decision.disposition, "PREPARE_BOUNDED_WORK");
+  assert.equal(payload.host_response_contract.next_action, "Prepare verified PR and CI evidence");
+  assert.equal(JSON.stringify(response).includes("stale cached step"), false);
+  assert.deepEqual(
+    payload.orchestration_directive.next_actions.map((item) => item.actor),
+    ["HOST", "UNIVERSAL_CORE", "OWNER"],
+  );
+  assert.equal(payload.orchestration_directive.ticket_request.required, true);
+  assert.match(payload.host_response_contract.reply_seed, /Mi serve:/);
+  assert.match(payload.host_response_contract.reply_seed, /Il candidate per il ticket Core richiede ancora i prerequisiti indicati/);
+});
+
+test("never treats a server-routed stale capability request as a pure resume", async () => {
+  const context = (await import("../src/nyra-control-context.js")).buildNyraControlContext({
+    continuity: {
+      tenant_id: "tenant-a",
+      project_id: "nyra_core",
+      work_id: WORK_ID,
+      state: "active",
+      next_action: "Cached resume step",
+    },
+    operational: { work_revision: 4, gallery: { state: "available", work_count: 1 } },
+  });
+  const { handler, calls } = harness({ persistedContext: context });
+  const args = {
+    message: "continua",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  };
+  Object.defineProperty(args, NYRA_SERVER_CONNECTOR_HINT, {
+    value: {
+      server_issued: true,
+      request_kind: "capability_read",
+      capability_hint: "host_native_action_reserve",
+    },
+    enumerable: true,
+  });
+
+  const response = await handler(args, identity());
+  assert.equal(calls.readControlContext.length, 0);
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(calls.interpret.length, 1);
+  assert.equal(response.structuredContent.orchestration_directive.source, "LEGACY_CONNECTOR_HINT");
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.action_class, "TICKET_RESERVE");
+});
+
+test("honors the persisted recovery diagnosis on a pure resume", async () => {
+  const context = (await import("../src/nyra-control-context.js")).buildNyraControlContext({
+    continuity: {
+      tenant_id: "tenant-a",
+      project_id: "nyra_core",
+      work_id: WORK_ID,
+      state: "active",
+      work_revision: 3,
+      next_action: "Continue",
+      connector_state: { state: "reconnect_required", recovery_action: "Reconnect the connector" },
+    },
+    operational: { work_revision: 3, gallery: { state: "available", work_count: 1 } },
+  });
+  const { handler, calls } = harness({ persistedContext: context });
+  const payload = (await handler({
+    message: "Nyra, riprendi il lavoro",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(payload.nyra_dialogue.diagnosis_state, "recovery_required");
+  assert.equal(payload.interpretation.risk_band, "blocked");
+  assert.equal(payload.orchestration_directive.decision.disposition, "BLOCK");
+  assert.equal(payload.orchestration_directive.can_continue, true);
+});
+
+test("keeps a requested merge manual for the owner and gives the registered host bounded preparation work", async () => {
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.primary_action_id = "action:deployment_runbook";
+  interpretation.structuredContent.result.selected_by_core.primary_action_label = "Prepare release runbook";
+  interpretation.structuredContent.result.selected_by_core.requires_owner_confirmation = true;
+  interpretation.structuredContent.result.automation_plan.next_step = "Prepare the PR and attach CI evidence";
+  interpretation.structuredContent.result.automation_plan.owner_confirmation_required = true;
+  const response = await harness({ interpretationResult: interpretation }).handler({
+    message: "Nyra, prepara il lavoro ma il merge lo faccio io manualmente",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  const payload = response.structuredContent;
+
+  assert.equal(payload.action_policy.manual_owner_execution_requested, true);
+  assert.equal(payload.orchestration_directive.decision.disposition, "PREPARE_BOUNDED_WORK");
+  assert.equal(payload.orchestration_directive.ticket_request.required, true);
+  assert.equal(payload.orchestration_directive.ticket_request.owner_confirmation_required, true);
+  assert.deepEqual(
+    payload.orchestration_directive.next_actions.map((item) => item.actor),
+    ["HOST", "UNIVERSAL_CORE", "OWNER"],
+  );
+  assert.equal(payload.orchestration_directive.next_actions[0].status, "READY");
+  assert.equal(payload.orchestration_directive.next_actions[2].mode, "MANUAL");
+  assert.equal(payload.orchestration_directive.ticket_request.merge_policy, "MANUAL_ONLY");
+  assert.match(payload.host_response_contract.reply_seed, /Il merge deve essere eseguito manualmente dall'owner dopo il gate Core/);
+  assert.equal(payload.execution_authorized, false);
+});
+
+test("reports missing evidence as insufficient context while keeping remediation open", async () => {
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.unmet_conditions = ["required_checks_not_verified"];
+  interpretation.structuredContent.result.selected_by_core.evidence_requirements = ["pg16_ci_evidence"];
+  interpretation.structuredContent.result.selected_by_core.allowed_alternatives = ["Prepare the missing CI evidence"];
+  const response = await harness({ interpretationResult: interpretation }).handler({
+    message: "Nyra, dimmi cosa manca per continuare",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  const directive = response.structuredContent.orchestration_directive;
+
+  assert.equal(directive.decision.disposition, "INSUFFICIENT_CONTEXT");
+  assert.equal(directive.decision.core_verdict, "INSUFFICIENT_CONTEXT");
+  assert.equal(directive.problem.code, "required_context_missing");
+  assert.deepEqual(directive.needs.map((item) => item.detail), [
+    "Condizione richiesta: required_checks_not_verified",
+    "Evidenza richiesta: pg16_ci_evidence",
+  ]);
+  assert.equal(directive.next_actions[0].summary, "Prepare the missing CI evidence");
+  assert.equal(directive.next_actions[1].stage, "EVIDENCE");
+  assert.equal(directive.ticket_request.required, false);
+  assert.equal(directive.can_continue, true);
+});
+
+test("surfaces a Core block as a remediable block, never as execution authority", async () => {
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.risk_band = "blocked";
+  interpretation.structuredContent.result.selected_by_core.blocked_reasons = ["cross_tenant_scope_denied"];
+  interpretation.structuredContent.result.selected_by_core.allowed_alternatives = ["Restore the tenant-scoped binding"];
+  const response = await harness({ interpretationResult: interpretation }).handler({
+    message: "Nyra, diagnostica il blocco",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  const directive = response.structuredContent.orchestration_directive;
+
+  assert.equal(directive.decision.disposition, "BLOCK");
+  assert.equal(directive.decision.core_verdict, "BLOCK");
+  assert.equal(directive.problem.code, "universal_core_blocked_action");
+  assert.deepEqual(directive.needs.map((item) => item.detail), ["Risoluzione Core: cross_tenant_scope_denied"]);
+  assert.equal(directive.next_actions[0].summary, "Restore the tenant-scoped binding");
+  assert.equal(directive.can_continue, true);
+  assert.equal(directive.execution_authorized, false);
+});
+
+test("classifies live, production and distribution wording as governed release work", async () => {
+  for (const [message, actionClass] of [
+    ["Nyra, portalo live", "DEPLOY"],
+    ["Nyra, mettilo in produzione", "DEPLOY"],
+    ["Nyra, serve la distribuzione software", "DEPLOY"],
+    ["Nyra, rilascialo", "PUBLISH"],
+    ["Nyra, fai push", "GIT_PUSH"],
+    ["Nyra, publish", "PUBLISH"],
+  ]) {
+    const payload = (await harness().handler({
+      message,
+      work_id: WORK_ID,
+      project_id: "nyra_core",
+      locale: "it",
+    }, identity())).structuredContent;
+    assert.equal(payload.action_policy.consequential_request_detected, true, message);
+    assert.equal(payload.action_policy.action_class, actionClass, message);
+    assert.equal(payload.orchestration_directive.decision.disposition, "PREPARE_BOUNDED_WORK", message);
+    assert.equal(payload.orchestration_directive.ticket_request.required, true, message);
+    assert.equal(payload.orchestration_directive.ticket_request.ticket_id, null, message);
+    assert.equal(payload.orchestration_directive.execution_authorized, false, message);
+  }
+});
+
+test("makes every merge manual even when the user does not say manually", async () => {
+  const payload = (await harness().handler({
+    message: "Nyra, prepara il merge",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+
+  assert.equal(payload.action_policy.merge_requested, true);
+  assert.equal(payload.action_policy.manual_owner_execution_requested, true);
+  assert.equal(payload.orchestration_directive.ticket_request.action_class, "GIT_MERGE");
+  assert.equal(payload.orchestration_directive.ticket_request.merge_policy, "MANUAL_ONLY");
+  assert.equal(payload.orchestration_directive.next_actions.at(-1).actor, "OWNER");
+  assert.equal(payload.orchestration_directive.next_actions.at(-1).mode, "MANUAL");
+  assert.equal(payload.orchestration_directive.next_actions.at(-1).external_side_effect, true);
+  assert.equal(payload.orchestration_directive.ticket_request.ticket_issued, false);
+});
+
+test("turns a server-issued reserve capability hint into an insufficient ticket prerequisite", async () => {
+  const payload = (await harness().handler({
+    message: "Nyra, dimmi cosa manca per continuare",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+    [NYRA_SERVER_CONNECTOR_HINT]: {
+      server_issued: true,
+      request_kind: "capability_discovery",
+      capability_hint: "host_native_action_reserve",
+    },
+  }, identity())).structuredContent;
+  const directive = payload.orchestration_directive;
+
+  assert.equal(directive.source, "LEGACY_CONNECTOR_HINT");
+  assert.equal(payload.action_policy.ticket_reserve_requested, true);
+  assert.equal(directive.ticket_request.action_class, "TICKET_RESERVE");
+  assert.equal(directive.ticket_request.capability_hint, "host_native_action_reserve");
+  assert.equal(directive.ticket_request.capability_resolution, "SERVER_SIDE_RESOLVED");
+  assert.equal(directive.ticket_request.state, "NEEDS_CONTEXT");
+  assert.equal(directive.ticket_request.prerequisite_codes.includes("existing_core_ticket_required"), true);
+  assert.equal(directive.needs.some((item) => item.code === "existing_core_ticket_required"), true);
+  assert.equal(directive.ticket_request.ticket_id, null);
+  assert.equal(directive.execution_authorized, false);
+});
+
+test("expands an E360 checkpoint into the real pending Work task and bounded evidence state", async () => {
+  const context = directiveContextFixture();
+  const { handler, calls } = harness({ directiveContext: context });
+  const payload = (await handler({
+    message: "Nyra, prepara il merge",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+  const directive = payload.orchestration_directive;
+
+  assert.equal(calls.readDirectiveContext.length, 1);
+  assert.deepEqual(calls.readDirectiveContext[0].args, {
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    work_revision: null,
+    intent_digest: null,
+  });
+  assert.equal(directive.work_context.available, true);
+  assert.equal(directive.work_context.work_revision, 4);
+  assert.equal(directive.work_context.intent_digest, INTENT_DIGEST);
+  assert.equal(directive.work_context.pending_required_task_count, 1);
+  assert.equal(directive.work_context.unverified_required_evidence_count, 1);
+  assert.equal(directive.work_context.next_required_task.task_id, TASK_ID);
+  assert.equal(directive.next_actions[0].summary,
+    "Completare il task canonico: Verify the Nyra orchestration contract and CI evidence");
+  assert.equal(directive.ticket_request.state, "NEEDS_CONTEXT");
+  assert.deepEqual(directive.ticket_request.prerequisite_codes, [
+    "required_work_tasks_incomplete",
+    "required_evidence_unverified",
+  ]);
+  assert.equal(JSON.stringify(payload).includes("E360-02"), false);
+  assert.equal(JSON.stringify(payload).includes("raw_customer_data"), false);
+  assert.match(directive.work_context.context_digest, /^[a-f0-9]{64}$/);
+});
+
+test("emits a deterministic revision-bound manual ticket candidate only after prerequisites are verified", async () => {
+  const ready = directiveContextFixture({
+    taskStatus: "completed",
+    acceptanceVerified: true,
+    evidenceVerified: true,
+  });
+  const first = await harness({ directiveContext: ready }).handler({
+    message: "Nyra, prepara il merge",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  const second = await harness({ directiveContext: ready }).handler({
+    message: "Nyra, prepara il merge",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  const directive = first.structuredContent.orchestration_directive;
+
+  assert.equal(directive.decision.disposition, "MANUAL_HANDOFF");
+  assert.equal(directive.ticket_request.state, "MANUAL_ONLY");
+  assert.deepEqual(directive.ticket_request.prerequisite_codes, []);
+  assert.deepEqual(directive.ticket_request.binding, {
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    work_revision: 4,
+    intent_digest: INTENT_DIGEST,
+    context_digest: directive.work_context.context_digest,
+  });
+  assert.match(directive.ticket_request.request_digest, /^[a-f0-9]{64}$/);
+  assert.equal(directive.ticket_request.ticket_id, null);
+  assert.equal(directive.ticket_request.execution_authorized, false);
+  assert.equal(
+    directive.directive_id,
+    second.structuredContent.orchestration_directive.directive_id,
+  );
+  const changed = await harness({
+    directiveContext: directiveContextFixture({
+      taskStatus: "completed",
+      acceptanceVerified: true,
+      evidenceVerified: false,
+    }),
+  }).handler({
+    message: "Nyra, prepara il merge",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  assert.notEqual(directive.directive_id, changed.structuredContent.orchestration_directive.directive_id);
+});
+
+test("rejects cross-bound or revision-drifted Work directive context", async () => {
+  await assert.rejects(
+    harness({ directiveContext: directiveContextFixture({ tenantId: "tenant-b" }) }).handler({
+      message: "Nyra, diagnostica il Work",
+      work_id: WORK_ID,
+      project_id: "nyra_core",
+    }, identity()),
+    /nyra_converse_directive_context_binding_invalid/,
+  );
+  const persisted = (await import("../src/nyra-control-context.js")).buildNyraControlContext({
+    continuity: {
+      tenant_id: "tenant-a",
+      project_id: "nyra_core",
+      work_id: WORK_ID,
+      state: "active",
+      work_revision: 3,
+      next_action: "Continue",
+    },
+    operational: { work_revision: 3, gallery: { state: "available", work_count: 1 } },
+  });
+  await assert.rejects(
+    harness({
+      persistedContext: persisted,
+      directiveContext: directiveContextFixture({ workRevision: 4 }),
+    }).handler({
+      message: "Nyra, riprendi il lavoro",
+      work_id: WORK_ID,
+      project_id: "nyra_core",
+    }, identity()),
+    /nyra_converse_directive_context_revision_mismatch/,
+  );
+});
+
+test("rejects malformed execution claims and quarantines upstream completion language", async () => {
+  for (const mutate of [
+    (fixture) => { delete fixture.structuredContent.result.selected_by_core.can_execute; },
+    (fixture) => { fixture.structuredContent.result.selected_by_core.can_execute = true; },
+    (fixture) => { delete fixture.structuredContent.result.automation_plan.execution_allowed; },
+    (fixture) => { fixture.structuredContent.result.automation_plan.execution_allowed = true; },
+  ]) {
+    const interpretation = interpretationFixture();
+    mutate(interpretation);
+    await assert.rejects(
+      harness({ interpretationResult: interpretation }).handler({
+        message: "Nyra, diagnostica",
+        work_id: WORK_ID,
+        project_id: "nyra_core",
+      }, identity()),
+      /nyra_converse_interpretation_execution_claim_invalid/,
+    );
+  }
+  for (const [field, value] of [
+    ["state", "ready"],
+    ["control_level", "caller"],
+    ["risk_band", "certain"],
+  ]) {
+    const interpretation = interpretationFixture();
+    interpretation.structuredContent.result.selected_by_core[field] = value;
+    await assert.rejects(
+      harness({ interpretationResult: interpretation }).handler({
+        message: "Nyra, diagnostica",
+        work_id: WORK_ID,
+        project_id: "nyra_core",
+      }, identity()),
+      /nyra_converse_interpretation_contract_invalid/,
+    );
+  }
+  for (const field of ["blocked_reasons", "unmet_conditions", "evidence_requirements", "allowed_alternatives"]) {
+    for (const invalidValue of [undefined, "none", { code: "none" }]) {
+      const interpretation = interpretationFixture();
+      if (invalidValue === undefined) delete interpretation.structuredContent.result.selected_by_core[field];
+      else interpretation.structuredContent.result.selected_by_core[field] = invalidValue;
+      await assert.rejects(
+        harness({ interpretationResult: interpretation }).handler({
+          message: "Nyra, diagnostica",
+          work_id: WORK_ID,
+          project_id: "nyra_core",
+        }, identity()),
+        /nyra_converse_interpretation_contract_invalid/,
+      );
+    }
+    for (const invalidList of [
+      [null],
+      [{ code: "hidden_block" }],
+      [""],
+      ["x".repeat(241)],
+      ["duplicate", "duplicate"],
+      Array.from({ length: 9 }, (_, index) => `signal-${index}`),
+    ]) {
+      const interpretation = interpretationFixture();
+      interpretation.structuredContent.result.selected_by_core[field] = invalidList;
+      await assert.rejects(
+        harness({ interpretationResult: interpretation }).handler({
+          message: "Nyra, diagnostica",
+          work_id: WORK_ID,
+          project_id: "nyra_core",
+        }, identity()),
+        /nyra_converse_interpretation_contract_invalid/,
+      );
+    }
+  }
+  for (const [target, field] of [
+    ["selected_by_core", "requires_owner_confirmation"],
+    ["automation_plan", "owner_confirmation_required"],
+  ]) {
+    for (const invalidValue of [undefined, "false", 0]) {
+      const interpretation = interpretationFixture();
+      if (invalidValue === undefined) delete interpretation.structuredContent.result[target][field];
+      else interpretation.structuredContent.result[target][field] = invalidValue;
+      await assert.rejects(
+        harness({ interpretationResult: interpretation }).handler({
+          message: "Nyra, diagnostica",
+          work_id: WORK_ID,
+          project_id: "nyra_core",
+        }, identity()),
+        /nyra_converse_interpretation_contract_invalid/,
+      );
+    }
+  }
+  const poisoned = interpretationFixture();
+  poisoned.structuredContent.result.selected_by_core.primary_action_label = "Deploy completato";
+  poisoned.structuredContent.result.automation_plan.next_step = "Merge eseguito";
+  const response = await harness({ interpretationResult: poisoned }).handler({
+    message: "Nyra, che cosa facciamo?",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, identity());
+  assert.equal(JSON.stringify(response).includes("Deploy completato"), false);
+  assert.equal(JSON.stringify(response).includes("Merge eseguito"), false);
+  assert.equal(response.structuredContent.host_response_contract.next_action, "Answer the owner");
+});
+
+test("requires a verified closure before reporting a completed Work", async () => {
+  const preflight = preflightFixture();
+  preflight.structuredContent.work_preflight.continuity.state = "completed";
+  preflight.structuredContent.work_preflight.nyra_control_context.work_state = "completed";
+  const unverifiedContext = directiveContextFixture({
+    status: "COMPLETED",
+    taskStatus: "completed",
+    acceptanceVerified: true,
+    evidenceVerified: true,
+  });
+  unverifiedContext.closure_receipt = {
+    work_id: WORK_ID,
+    receipt_digest: "3".repeat(64),
+    core_join_digest: "4".repeat(64),
+    final_evidence_digest: "5".repeat(64),
+  };
+  const incomplete = await harness({
+    preflightResult: preflight,
+    directiveContext: unverifiedContext,
+  }).handler({
+    message: "Nyra, qual è lo stato?",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, identity());
+  assert.equal(incomplete.structuredContent.orchestration_directive.decision.disposition, "INSUFFICIENT_CONTEXT");
+  assert.equal(incomplete.structuredContent.orchestration_directive.problem.code, "verified_closure_required");
+
+  const closureProjection = {
+    schema_version: "tenant_work_closure_verification_v1",
+    verified: true,
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    status: "COMPLETED",
+    receipt_digest: "3".repeat(64),
+    report_digest: "4".repeat(64),
+    core_join_digest: "5".repeat(64),
+    final_evidence_digest: "6".repeat(64),
+    closure_event_hash: "7".repeat(64),
+    failure_codes: [],
+  };
+  const verified = await harness({
+    preflightResult: preflight,
+    directiveContext: directiveContextFixture({
+      status: "COMPLETED",
+      taskStatus: "completed",
+      acceptanceVerified: true,
+      evidenceVerified: true,
+      closureVerification: {
+        ...closureProjection,
+        verification_digest: canonicalDigest(closureProjection),
+      },
+    }),
+  }).handler({
+    message: "Nyra, qual è lo stato?",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+  }, identity());
+  assert.equal(verified.structuredContent.orchestration_directive.decision.disposition, "COMPLETE");
+  assert.match(verified.structuredContent.host_response_contract.reply_seed, /closure verificata/);
 });
 
 function routerFor(handler) {
@@ -360,6 +1037,96 @@ test("restores the sole operational Work before Nyra's single governed preflight
   assert.equal(calls.continuity[0][1].project_id, "nyra_core");
 });
 
+test("routes an unbound explicit bootstrap to duplicate review instead of auto-binding the sole project Work", async () => {
+  const calls = { catalog: [], intent: [], preflight: [], continuity: [] };
+  const authenticatedIdentity = identity();
+  const preflight = createNyraConversePreflight({
+    workPreflight: async (args) => {
+      calls.preflight.push(args);
+      const result = preflightFixture(authenticatedIdentity.tenantId);
+      delete result.structuredContent.work_preflight.continuity.work_id;
+      delete result.structuredContent.work_preflight.nyra_control_context.work_id;
+      return result;
+    },
+    ensureContinuity: async (...args) => calls.continuity.push(args),
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: {
+      listWorks: async (...args) => {
+        calls.catalog.push(args);
+        return {
+          works: [{ work_id: WORK_ID, project_id: "nyra_core", status: "active" }],
+          next_cursor: null,
+        };
+      },
+      readIntent: async (...args) => {
+        calls.intent.push(args);
+        return { project_id: "nyra_core" };
+      },
+    },
+    hostType: () => "chatgpt_native",
+  });
+  const bootstrap = {
+    request_id: "new-work-review-001",
+    work_name: "A semantically different Work",
+  };
+
+  await preflight({
+    message: "Nyra, crea il nuovo Work",
+    project_id: "nyra_core",
+    work_bootstrap: bootstrap,
+  }, authenticatedIdentity);
+
+  assert.deepEqual(calls.catalog, [], "semantic duplicate review owns discovery for explicit bootstrap");
+  assert.deepEqual(calls.intent, []);
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(calls.preflight[0].work_id, undefined);
+  assert.equal(calls.preflight[0].project_id, "nyra_core");
+  assert.deepEqual(calls.continuity, [], "bootstrap review cannot implicitly resume or create a Work");
+});
+
+test("does not bind a tenant-wide Work from another project during bootstrap", async () => {
+  const calls = { catalog: [], intent: [], preflight: [] };
+  const authenticatedIdentity = identity();
+  const preflight = createNyraConversePreflight({
+    workPreflight: async (args) => {
+      calls.preflight.push(args);
+      return preflightFixture(authenticatedIdentity.tenantId);
+    },
+    ensureContinuity: async () => {},
+    resolveContinuityProjectBinding,
+    workContinuityRuntime: {
+      listWorks: async (_receivedIdentity, input) => {
+        calls.catalog.push(input);
+        return {
+          // Deliberately ignore the requested project like a stale adapter;
+          // Nyra must still filter the response before binding a Work.
+          works: [{ work_id: WORK_ID, project_id: "other_project", status: input.status }],
+          next_cursor: null,
+        };
+      },
+      readIntent: async (...args) => {
+        calls.intent.push(args);
+        return { project_id: "must-not-be-used" };
+      },
+    },
+    hostType: () => "chatgpt_native",
+  });
+
+  await preflight({
+    message: "Nyra, crea il Work per il nuovo progetto",
+    project_id: "new_project",
+  }, authenticatedIdentity);
+
+  assert.deepEqual(calls.catalog, ["active", "verified", "release_ready", "blocked"].map((status) => ({
+    status,
+    limit: 2,
+    project_id: "new_project",
+  })));
+  assert.deepEqual(calls.intent, []);
+  assert.equal(calls.preflight[0].work_id, undefined);
+  assert.equal(calls.preflight[0].project_id, "new_project");
+});
+
 test("does not guess a Work when the active Gallery has more than one candidate", async () => {
   const calls = { intent: [], preflight: [] };
   const preflight = createNyraConversePreflight({
@@ -447,7 +1214,7 @@ test("publishes nyra_converse as a direct compact resume tool without discovery"
   const allHandlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({})]));
   const compact = compactMcpTools(TOOLS, allHandlers);
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 10);
+  assert.equal(compact.length, 11);
   assert.equal(compact.some((tool) => tool.name === "nyra_converse"), true);
   assert.equal(compact.some((tool) => tool.name === "work_preflight"), false);
 });
@@ -480,7 +1247,7 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
     calls.interpret[0].args.work_preflight,
     preflightFixture(authenticated.tenantId).structuredContent.work_preflight,
   );
-  assert.equal(payload.schema_version, "nyra_conversation_turn_v1");
+  assert.equal(payload.schema_version, "nyra_conversation_turn_v2");
   assert.equal(payload.tenant_id, "tenant-a");
   assert.equal(payload.identity_binding.authenticated, true);
   assert.equal(payload.identity_binding.caller_authority_accepted, false);
@@ -490,14 +1257,19 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
   assert.equal(payload.host_response_contract.speaker, "Nyra");
   assert.equal(payload.host_response_contract.renderer, "nyra_widget_with_host_fallback");
   assert.equal(payload.host_response_contract.response_language, "it");
-  assert.match(payload.host_response_contract.reply_seed, /^Prossimo passo proposto: Answer the owner\./);
+  assert.match(payload.host_response_contract.reply_seed, /^Possiamo continuare\. Host, Respond conversationally\./);
   assert.equal(payload.work.next_action, "Answer the owner");
-  assert.equal(payload.host_response_contract.next_action, "Answer the owner");
-  assert.match(payload.host_response_contract.reply_seed, /Prossimo passo proposto: Answer the owner/);
+  assert.equal(payload.host_response_contract.next_action, "Respond conversationally");
+  assert.match(payload.host_response_contract.reply_seed, /Host, Respond conversationally/);
   assert.equal(payload.interpretation.core.authority, "V2");
+  assert.equal(payload.interpretation.selected_action_id, "action:respond_conversationally");
+  assert.equal(payload.interpretation.selected_action, "Respond conversationally");
   assert.equal(payload.interpretation.selected_action_available, true);
   assert.equal(payload.interpretation.risk_band, "low");
   assert.equal(payload.work.next_action_available, true);
+  assert.equal(payload.orchestration_directive.source, "FRESH_CORE");
+  assert.equal(payload.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+  assert.equal(payload.orchestration_directive.ticket_request.required, false);
   assert.equal(payload.memory.relevant_count, 3);
   assert.equal(payload.execution_authorized, false);
   assert.equal(payload.external_action_authorized, false);
@@ -609,7 +1381,14 @@ test("keeps smuggled deploy and send requests proposal-only and never repeats a 
   assert.equal(payload.action_policy.classification_only, true);
   assert.equal(payload.action_policy.external_action_authorized, false);
   assert.equal(payload.action_policy.consequential_action_performed, false);
-  assert.match(payload.host_response_contract.reply_seed, /Nessuna azione esterna è stata autorizzata o eseguita/);
+  assert.equal(payload.orchestration_directive.decision.disposition, "PREPARE_BOUNDED_WORK");
+  assert.equal(payload.orchestration_directive.can_continue, true);
+  assert.equal(payload.orchestration_directive.ticket_request.required, true);
+  assert.equal(payload.orchestration_directive.ticket_request.state, "NEEDS_CONTEXT");
+  assert.equal(payload.orchestration_directive.ticket_request.action_class, "DEPLOY");
+  assert.deepEqual(payload.action_policy.categories, ["release", "communication"]);
+  assert.match(payload.host_response_contract.reply_seed, /Possiamo continuare subito nel workspace bounded/);
+  assert.match(payload.host_response_contract.reply_seed, /non autorizza né esegue azioni esterne/);
   assert.equal(JSON.stringify(response).includes("Deploy completato"), false);
   assert.equal(payload.execution_authorized, false);
   assert.equal(payload.external_action_authorized, false);
@@ -713,7 +1492,7 @@ test("serializes the bounded server-issued next action but excludes unrelated up
   preflight.structuredContent.work_preflight.nyra_control_context.work_state = marker;
   const interpretation = interpretationFixture("tenant-a", marker);
   interpretation.structuredContent.result.selected_by_core.primary_action_label = marker;
-  interpretation.structuredContent.result.selected_by_core.risk_band = marker;
+  interpretation.structuredContent.result.selected_by_core.primary_action_id = marker;
   interpretation.structuredContent.core_runtime.private_detail = marker;
   interpretation.structuredContent.core_runtime.latency_ms = marker;
   interpretation.structuredContent.core_runtime.parity.fallback = marker;
@@ -733,11 +1512,12 @@ test("serializes the bounded server-issued next action but excludes unrelated up
   assert.equal(payload.work.state, "unknown");
   assert.equal(payload.work.next_action_available, true);
   assert.equal(payload.work.next_action, "Answer the owner");
-  assert.equal(payload.host_response_contract.next_action, "Answer the owner");
-  assert.match(payload.host_response_contract.reply_seed, /Prossimo passo proposto: Answer the owner/);
-  assert.equal(payload.interpretation.selected_action_available, true);
-  assert.equal(Object.hasOwn(payload.interpretation, "selected_action"), false);
-  assert.equal(payload.interpretation.risk_band, "unknown");
+  assert.equal(payload.host_response_contract.next_action, "Proceed in read-only analysis");
+  assert.match(payload.host_response_contract.reply_seed, /Host, Proceed in read-only analysis/);
+  assert.equal(payload.interpretation.selected_action_available, false);
+  assert.equal(payload.interpretation.selected_action_id, null);
+  assert.equal(payload.interpretation.selected_action, null);
+  assert.equal(payload.interpretation.risk_band, "low");
   assert.deepEqual(payload.interpretation.core, {
     mode: "active",
     route: "V2",
@@ -765,9 +1545,120 @@ test("vague wording cannot surface an upstream completion claim or imply an unbo
   assert.equal(payload.work.work_id, null);
   assert.equal(payload.work.work_bound, false);
   assert.equal(payload.work.state, "unbound");
-  assert.match(payload.host_response_contract.reply_seed, /Nessun Work è attualmente associato/);
+  assert.match(payload.host_response_contract.reply_seed, /Nessun Work canonico tenant-scoped è associato a questo turno/);
   assert.doesNotMatch(payload.host_response_contract.reply_seed, /autenticato/);
-  assert.match(payload.host_response_contract.instructions[2], /Do not say/);
+  assert.match(payload.host_response_contract.instructions[2], /Do not claim/);
   assert.equal(payload.execution_authorized, false);
   assert.equal(payload.external_action_authorized, false);
+});
+
+test("offers a signed two-phase V2 bootstrap only for an explicit structured new Work", async () => {
+  const preflight = preflightFixture();
+  delete preflight.structuredContent.work_preflight.continuity.work_id;
+  delete preflight.structuredContent.work_preflight.nyra_control_context.work_id;
+  preflight.structuredContent.work_preflight.tenant_work_gallery.work_count = 0;
+  const caller = identity();
+  caller.agentPresence.session_fingerprint = "f".repeat(64);
+  caller.authenticatedHostPrincipal = {
+    schema_version: "authenticated_host_principal_v1",
+    registered: true,
+    registry_revision: "a".repeat(64),
+    app_id: "chatgpt_prod",
+    auth_kind: "oauth",
+    host_kind: "chatgpt_native",
+    client_type: "chatgpt",
+    interaction_mode: "nyra_conversational",
+    capabilities: ["work.read", "work.create", "governed_continue"],
+  };
+  const candidates = [];
+  const { handler } = harness({
+    preflightResult: preflight,
+    issueContinuation: ({ directive }) => {
+      candidates.push(directive);
+      return {
+        schema_version: "nyra_governed_continuation_v1",
+        available: true,
+        submit_tool: "nyra_governed_continue",
+        candidate_attestation: "signed-bootstrap-candidate",
+        expires_at: "2026-08-25T12:05:00.000Z",
+        reason: null,
+      };
+    },
+  });
+  const workBootstrap = {
+    request_id: "entity-360-bootstrap-001",
+    work_name: "Entità 360",
+    work_type: "software_git",
+    idea: "Build the governed Entity 360 context layer",
+    objective: "Create the canonical Entity 360 Work without duplicates",
+    architecture: { layer: "context_evidence" },
+    next_action: "Review the canonical architecture",
+    acceptance_criteria: ["The Work has one persistent identity"],
+    constraints: ["Universal Core remains final authority"],
+    tasks: [{ title: "Review architecture", required: true }],
+  };
+  const response = await handler({
+    message: "Nyra, crea il nuovo Work Entità 360",
+    project_id: "nyra_core",
+    work_bootstrap: workBootstrap,
+    locale: "it",
+  }, caller);
+  const payload = response.structuredContent;
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].ticket_request.state, "WORK_BOOTSTRAP_READY");
+  assert.equal(candidates[0].ticket_request.action_class, "WORK_BOOTSTRAP");
+  assert.match(candidates[0].ticket_request.work_bootstrap_request_digest, /^[a-f0-9]{64}$/);
+  assert.equal(payload.orchestration_directive.decision.disposition, "REQUEST_WORK_BOOTSTRAP");
+  assert.equal(payload.action_policy.work_bootstrap_requested, true);
+  assert.equal(payload.action_policy.work_bootstrap_spec_provided, true);
+  assert.equal(payload.orchestration_directive.ticket_request.continuation.available, true);
+  assert.equal(payload.orchestration_directive.execution_authorized, false);
+  assert.equal(payload.external_action_authorized, false);
+  const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
+  assert.deepEqual(validateToolArguments(definition.outputSchema, payload), []);
+});
+
+test("an existing canonical Work wins over an explicit create request and no bootstrap candidate is issued", async () => {
+  const caller = identity();
+  caller.agentPresence.session_fingerprint = "f".repeat(64);
+  caller.authenticatedHostPrincipal = {
+    schema_version: "authenticated_host_principal_v1",
+    registered: true,
+    registry_revision: "a".repeat(64),
+    app_id: "future_ai",
+    auth_kind: "oauth",
+    host_kind: "future_ai_native",
+    client_type: "other",
+    interaction_mode: "nyra_conversational",
+    capabilities: ["work.read", "work.create", "governed_continue"],
+  };
+  let candidates = 0;
+  const { handler } = harness({
+    directiveContext: directiveContextFixture(),
+    issueContinuation: () => {
+      candidates += 1;
+      return null;
+    },
+  });
+  const response = await handler({
+    message: "Nyra, crea un nuovo Work",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    work_bootstrap: {
+      request_id: "duplicate-attempt-001",
+      work_name: "Duplicate",
+      work_type: "generic",
+      idea: "Duplicate",
+      objective: "Duplicate",
+      architecture: {},
+      next_action: "Do nothing",
+      acceptance_criteria: ["No duplicate"],
+      tasks: [{ title: "Do not create" }],
+    },
+  }, caller);
+  assert.equal(response.structuredContent.work.work_id, WORK_ID);
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.required, false);
+  assert.equal(response.structuredContent.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+  assert.equal(candidates, 1, "the signer may be consulted but must receive a NOT_REQUIRED directive");
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.available, false);
 });

@@ -27,6 +27,7 @@ import { createNyraAutopilotRuntime } from "./nyra-autopilot-runtime.js";
 import {
   createNyraConverseHandler,
   createNyraConversePreflight,
+  normalizeNyraDirectiveContext,
 } from "./nyra-converse.js";
 import {
   buildNyraNativePlanRequest,
@@ -49,7 +50,10 @@ import { HOST_NATIVE_TOOLS } from "./host-native-tools.js";
 import { NYRA_WORK_AUTOMATION_TOOLS } from "./nyra-work-automation-tools.js";
 import { createNyraWorkAutomationInternal } from "./nyra-work-automation-internal.js";
 import { createSuiteHandlers } from "./suite-handlers.js";
-import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
+import {
+  requireTenantWorkCapability,
+  requireTenantWorkRequestAuthorization,
+} from "./tenant-work-authorization.js";
 import { TOOLS } from "./tool-definitions.js";
 import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js";
 import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
@@ -65,6 +69,10 @@ import {
   createSoftwareCognitionHandlers,
 } from "./software-cognition.js";
 import {
+  ENTITY_360_TOOLS,
+  createEntity360Handlers,
+} from "./entity-360.js";
+import {
   POLICY_REGISTRY_SIGN_ROUTE,
   POLICY_REGISTRY_SIGNER_HEALTH_ROUTE,
   NYRA_POLICY_REGISTRY_SIGN_ROUTE,
@@ -76,8 +84,36 @@ import {
   GENERIC_WORK_CORE_JOIN_SIGNER_HEALTH_ROUTE,
   createGenericWorkCoreJoinSigner,
 } from "./generic-work-core-join-signer.js";
+import {
+  HOST_APP_CAPABILITIES,
+  authenticatedHostKind,
+  hostPrincipalAllows,
+} from "./host-app-registry.js";
+import {
+  hostAppCanAccessTool,
+  requireHostAppToolCapability,
+} from "./host-app-authorization.js";
+import {
+  createNyraGovernedContinueAttestor,
+  createNyraGovernedContinueHandler,
+} from "./nyra-governed-continue.js";
+import {
+  bindWorkBootstrapRequestToAuthenticatedHost,
+  governedWorkBootstrapAuthorizationTarget,
+} from "./work-bootstrap-contract.js";
+import {
+  createPostgresEnvironmentDelegationNonceStore,
+} from "./environment-delegation.js";
 
 const config = loadConfig();
+const nyraGovernedContinueAttestor =
+  config.nyraGovernedContinueEnabled === true &&
+  config.nyraGovernedContinueConfigurationValid === true &&
+  config.hostNativeAgentProtocolEnabled === true
+    ? createNyraGovernedContinueAttestor({
+        secret: config.nyraGovernedContinueSigningSecret,
+      })
+    : null;
 const policyRegistrySigner = createPolicyRegistrySigner();
 const nyraPolicyRegistrySigner = createPolicyRegistrySigner({
   prefix: "POLICY_REGISTRY_NYRA_SIGNER",
@@ -118,6 +154,7 @@ if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...HOST_NATIVE_TO
 if (config.hostNativeAgentProtocolEnabled === true) TOOLS.push(...NYRA_WORK_AUTOMATION_TOOLS);
 TOOLS.push(...CAUSAL_CONTINUITY_TOOLS);
 TOOLS.push(...SOFTWARE_COGNITION_TOOLS);
+TOOLS.push(...ENTITY_360_TOOLS);
 
 const primaryDatabasePool = config.databaseUrl
   ? new Pool({
@@ -129,6 +166,10 @@ const primaryDatabasePool = config.databaseUrl
 const postgresMajorVersionProbe = primaryDatabasePool
   ? createPostgresMajorVersionProbe({ pool: primaryDatabasePool })
   : null;
+const environmentDelegationNonceStore =
+  config.environmentDelegationReceiverEnabled === true && primaryDatabasePool
+    ? createPostgresEnvironmentDelegationNonceStore({ pool: primaryDatabasePool })
+    : null;
 const cloudMemoryStore = createCloudMemoryStore(config, {
   pool: primaryDatabasePool,
 });
@@ -419,6 +460,15 @@ const softwareCognitionHandlers = createSoftwareCognitionHandlers({
     agent_presence,
   }),
 });
+const entity360Handlers = createEntity360Handlers({
+  coreRequest: coreHandlers.dttCoreRequest,
+  issueAgentContext: ({ tenant_id, work_id, agent_presence }) => issueDttAgentContext({
+    secret: config.dttAgentIdentitySigningSecret,
+    tenant_id,
+    work_id,
+    agent_presence,
+  }),
+});
 const genericWorkCoreJoinCoordinator = createGenericWorkCoreJoinMcpCoordinator({
   enabled: genericWorkCoreJoinActivationEnabled,
   store: workContinuityV2Store,
@@ -496,7 +546,7 @@ function requireTenantWorkIdentity(identity) {
   requireTenantWorkCapability(identity, "read");
 }
 
-async function requireOwnerGovernance(identity, actionType, target) {
+async function requireOwnerGovernance(identity, actionType, target, idempotencyKey) {
   const decision = await govern({
     action_label: `Govern ${actionType}`,
     action_type: actionType,
@@ -511,12 +561,14 @@ async function requireOwnerGovernance(identity, actionType, target) {
     audit_ready: Boolean(decisionLedger),
     target_authority_verified: true,
     actor_authorized_for_target: true,
+    ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
   }, identity);
   if (decision.allowed !== true) {
     const error = new Error("core_owner_authorization_required");
     error.code = "core_owner_authorization_required";
     throw error;
   }
+  return decision;
 }
 
 async function requireBoundedTenantCoordination(identity, actionType, target, idempotencyKey) {
@@ -551,11 +603,20 @@ async function requireBoundedTenantCoordination(identity, actionType, target, id
   }
 }
 
-function hostType(identity, args = {}) {
-  if (args.host_type === "codex_native" || args.host_type === "chatgpt_native") return args.host_type;
-  return (identity.agentPresence?.client_type || args.client_type) === "codex"
-    ? "codex_native"
-    : "chatgpt_native";
+function hostType(identity, _args = {}) {
+  if (identity?.authenticatedHostPrincipal) {
+    try {
+      return authenticatedHostKind(identity);
+    } catch {
+      // Unregistered OAuth clients may still use Nyra's read-only resume path,
+      // but never acquire host-native authority. This fallback is continuity
+      // correlation only; ticket/delegation handlers require registration.
+      return identity.kind === "codex" ? "codex_native" : "chatgpt_native";
+    }
+  }
+  // Compatibility for direct internal callers predating the gateway principal
+  // envelope. Public MCP requests always carry that envelope.
+  return identity?.kind === "codex" ? "codex_native" : "chatgpt_native";
 }
 
 function attachContinuity(preflightResult, continuity, persistedControlContext = null) {
@@ -647,6 +708,11 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
   if (!sessionId) throw new Error("continuity_session_required");
   const initialMessage = summarizeToolRequest(toolName, args);
   const host = hostType(identity, args);
+  const authorizedResumeWorkIds = resumeExisting
+    ? args.work_id
+      ? (await requireCanonicalWorkRead(identity, args.work_id), [args.work_id])
+      : await canonicalVisibleWorkIds(identity, { project_id: continuityProjectId(args) })
+    : undefined;
   // Resuming or binding an already-authorized Work is an internal,
   // idempotent ledger operation protected by tenant/session ACLs. Routing it
   // through Core's external-action gate on *every* tool call caused a second
@@ -675,7 +741,7 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       acceptance_criteria: acceptanceCriteria,
       constraints: [
         ...(Array.isArray(args.constraints) ? args.constraints : []),
-        "Use ChatGPT/Codex host-native agents; do not require a provider API key.",
+        "Use only server-registered host-native applications supported by the current runtime; do not require a provider API key.",
         "Nyra supervises; Universal Core remains final policy authority.",
         "Host sandbox, approval and auto-review policy cannot be bypassed.",
       ],
@@ -687,7 +753,7 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
         provider_execution: false,
         provider_api_key_required: false,
         host_policy_override: false,
-        compact_mcp_surface_size: 13,
+        compact_mcp_surface_size: 11,
       },
       next_action: `Continue ${toolName} through Nyra supervision and the Universal Core gate.`,
       host_type: host,
@@ -699,6 +765,7 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       // one. Bootstrap is an explicit, fresh owner-governed action.
       trustedSessionFollowup: resumeExisting,
       creationAuthorized: false,
+      ...(resumeExisting ? { authorizedResumeWorkIds } : {}),
     });
   } catch (error) {
     if (error?.code === "continuity_resume_selection_required") {
@@ -718,7 +785,7 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       work_id: null,
       state: "owner_bootstrap_required",
       owner_governance_required: true,
-      next_action: "Use work_continuity_create with a fresh, request-bound owner confirmation.",
+      next_action: "Ask Nyra to prepare the duplicate-reviewed canonical V2 Work bootstrap, then continue with fresh owner confirmation and Universal Core verification.",
     };
     } else {
       throw error;
@@ -814,7 +881,7 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
       };
     }
     try {
-      const intent = await workContinuityRuntime.readIntent(identity, { work_id: work.work_id });
+      const intent = await readLegacyIntentAuthorized(identity, { work_id: work.work_id });
       const request = buildNyraNativePlanRequest({ identity, work, intent, autopilot, binding });
       const corePlanResult = await coreHandlers.host_native_work_plan_create({
         work_id: request.work_id,
@@ -879,21 +946,318 @@ function withTenantWorkAcl(identity) {
   return { ...identity, tenant_work_acl: deriveAuthenticatedTenantWorkAcl(identity) };
 }
 
+function legacyWorkAclError(code, status = 403) {
+  const error = new Error(code);
+  error.code = code;
+  error.status = status;
+  return error;
+}
+
+async function requireCanonicalWorkRead(identity, workId) {
+  requireTenantWorkCapability(identity, "read");
+  if (!workContinuityV2Store?.readWork) {
+    throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+  }
+  try {
+    await workContinuityV2Store.readWork(withTenantWorkAcl(identity), { work_id: workId });
+  } catch (error) {
+    const reason = String(error?.code || error?.message || "");
+    if (reason === "work_acl_denied" || reason === "tenant_work_not_found" ||
+        reason === "legacy_work_not_found" || reason.startsWith("tenant_work_membership_")) {
+      throw legacyWorkAclError("continuity_work_acl_denied");
+    }
+    throw error;
+  }
+}
+
+async function canonicalVisibleWorkIds(identity, { project_id } = {}) {
+  requireTenantWorkCapability(identity, "read");
+  if (!workContinuityV2Store?.listWorks) {
+    throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+  }
+  const aclIdentity = withTenantWorkAcl(identity);
+  const [operational, archive] = await Promise.all([
+    workContinuityV2Store.listWorks(aclIdentity, { view: "operational", project_id }),
+    workContinuityV2Store.listWorks(aclIdentity, { view: "archive", project_id }),
+  ]);
+  const ids = [...new Set([...operational, ...archive].map((work) => String(work?.work_id || ""))
+    .filter(Boolean))];
+  if (ids.length > 10_000) {
+    throw legacyWorkAclError("continuity_work_acl_scope_too_large", 503);
+  }
+  return ids;
+}
+
+async function readLegacyWorkAuthorized(identity, args) {
+  await requireCanonicalWorkRead(identity, args.work_id);
+  return workContinuityRuntime.read(identity, args);
+}
+
+async function readLegacyIntentAuthorized(identity, args) {
+  await requireCanonicalWorkRead(identity, args.work_id);
+  return workContinuityRuntime.readIntent(identity, args);
+}
+
+async function listLegacyWorksAuthorized(identity, args = {}) {
+  if (typeof workContinuityRuntime?.listWorksAuthorized !== "function") {
+    throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+  }
+  const workIds = await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
+  return workContinuityRuntime.listWorksAuthorized(identity, args, {
+    schema_version: "legacy_work_read_authorization_v1",
+    server_derived: true,
+    tenant_id: identity.tenantId,
+    work_ids: workIds,
+  });
+}
+
+async function galleryLegacyWorksAuthorized(identity, args = {}) {
+  if (typeof workContinuityRuntime?.galleryAuthorized !== "function") {
+    throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+  }
+  const workIds = await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
+  return workContinuityRuntime.galleryAuthorized(identity, args, {
+    schema_version: "legacy_work_read_authorization_v1",
+    server_derived: true,
+    tenant_id: identity.tenantId,
+    work_ids: workIds,
+  });
+}
+
+const governedLegacyReadRuntime = workContinuityRuntime ? Object.freeze({
+  listWorks: listLegacyWorksAuthorized,
+  readIntent: readLegacyIntentAuthorized,
+}) : null;
+
+function requireHostWorkCreateCapability(identity) {
+  if (identity?.authenticatedHostPrincipal &&
+      !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE)) {
+    const error = new Error("registered_host_work_create_capability_required");
+    error.code = "registered_host_work_create_capability_required";
+    error.status = 403;
+    throw error;
+  }
+}
+
+async function reviewCanonicalWorkCreation(args, identity) {
+  if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+  requireHostWorkCreateCapability(identity);
+  const request = bindWorkBootstrapRequestToAuthenticatedHost({
+    request: args?.create_request || {},
+    identity,
+  });
+  await requireBoundedTenantCoordination(
+    identity,
+    "work.bootstrap.review",
+    governedWorkBootstrapAuthorizationTarget({
+      phase: "review",
+      request,
+      identity,
+    }),
+    args.idempotency_key,
+  );
+  return continuityTextResult({
+    ok: true,
+    result: await workContinuityV2Store.openWorkReview(withTenantWorkAcl(identity), {
+      request: args.request,
+      intent_type: "CREATE_WORK",
+      create_request: request,
+    }),
+    dedicated_core_gate: {
+      authorized: true,
+      authority: "universal_core",
+      route: "/v1/action-evaluator",
+      server_owned: true,
+    },
+  });
+}
+
+async function createCanonicalWorkGoverned(args, identity) {
+  if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+  requireHostWorkCreateCapability(identity);
+  const boundRequest = bindWorkBootstrapRequestToAuthenticatedHost({ request: args, identity });
+  const governanceIdempotencyKey = String(boundRequest.idempotency_key || "").trim() ||
+    `work_bootstrap_${crypto.createHash("sha256").update(JSON.stringify(stableCanonical({
+      tenant_id: identity.tenantId,
+      subject: identity.subject,
+      project_id: boundRequest.project_id,
+      request_id: boundRequest.request_id || boundRequest.session_id,
+    }))).digest("hex").slice(0, 48)}`;
+  const request = Object.freeze({
+    ...boundRequest,
+    idempotency_key: governanceIdempotencyKey,
+  });
+  const authorizationTarget = governedWorkBootstrapAuthorizationTarget({
+    phase: "create",
+    request,
+    identity,
+  });
+  // Exact retries first consult the durable tenant+subject+request mapping.
+  // This readback is evidence, never renewed authority: it permits recovery
+  // after the short Core receipt expires without invoking Core again or
+  // creating/mutating a Work. Every binding and event digest is independently
+  // revalidated by the V2 store.
+  if (typeof workContinuityV2Store.readCreatedWorkByBootstrapRequest === "function") {
+    const persisted = await workContinuityV2Store.readCreatedWorkByBootstrapRequest(
+      withTenantWorkAcl(identity),
+      request,
+    );
+    if (persisted) {
+      if (persisted.persisted_core_authorization_receipt?.target !== authorizationTarget) {
+        const error = new Error("work_bootstrap_replay_evidence_invalid");
+        error.code = "work_bootstrap_replay_evidence_invalid";
+        error.status = 503;
+        throw error;
+      }
+      return continuityTextResult({
+        ok: true,
+        result: persisted,
+        legacy_work_id: persisted.legacy_work_id,
+        core_authorization_receipt: null,
+        core_authorization_attempt_receipt: null,
+        dedicated_core_gate: {
+          authorized: false,
+          authority: "universal_core",
+          route: "durable_work_bootstrap_readback",
+          server_owned: true,
+          readback_only: true,
+        },
+      });
+    }
+  }
+  const coreDecision = await requireOwnerGovernance(
+    identity,
+    "work.continuity.v2.create",
+    authorizationTarget,
+    request.idempotency_key,
+  );
+  if (!coreDecision.core_authorization_receipt ||
+      coreDecision.core_authorization_receipt.authority !== "universal_core") {
+    const error = new Error("core_authorization_receipt_required");
+    error.code = "core_authorization_receipt_required";
+    error.status = 503;
+    throw error;
+  }
+  const receiptMaterial = {
+    schema_version: "work_bootstrap_core_authorization_receipt_v2",
+    authority: "universal_core",
+    route: "/v1/action-evaluator",
+    target: authorizationTarget,
+    decision_id: coreDecision.decision_id || null,
+    decision: coreDecision.decision,
+    mediation: coreDecision.mediation,
+    owner_confirmation_required: coreDecision.owner_confirmation_required === true,
+    confirmation_satisfied: coreDecision.confirmation_satisfied === true,
+    core_authorization_receipt: coreDecision.core_authorization_receipt,
+  };
+  const coreAuthorizationReceipt = Object.freeze({
+    ...receiptMaterial,
+    receipt_digest: crypto.createHash("sha256")
+      .update(JSON.stringify(stableCanonical(receiptMaterial)))
+      .digest("hex"),
+  });
+  const result = await workContinuityV2Store.createNewWork(withTenantWorkAcl(identity), {
+    ...request,
+    _core_authorization_receipt: coreAuthorizationReceipt,
+  });
+  const attemptMaterial = {
+    schema_version: "work_bootstrap_core_authorization_attempt_v1",
+    authority: "universal_core",
+    work_bootstrap_authorization_receipt: coreAuthorizationReceipt,
+    core_authorization_attempt_receipt: coreDecision.core_authorization_attempt_receipt,
+    core_idempotent_replay: coreDecision.idempotent_replay === true,
+  };
+  const coreAuthorizationAttemptReceipt = Object.freeze({
+    ...attemptMaterial,
+    attempt_digest: crypto.createHash("sha256")
+      .update(JSON.stringify(stableCanonical(attemptMaterial)))
+      .digest("hex"),
+  });
+  return continuityTextResult({
+    ok: true,
+    result,
+    legacy_work_id: result.legacy_work_id,
+    // Only a newly persisted creation owns the durable receipt. An exact
+    // replay still has a fresh Core attempt decision, exposed separately,
+    // without rewriting or misattributing the original Work event evidence.
+    core_authorization_receipt: result.core_authorization_receipt,
+    core_authorization_attempt_receipt: coreAuthorizationAttemptReceipt,
+    dedicated_core_gate: {
+      authorized: true,
+      authority: "universal_core",
+      route: "/v1/action-evaluator",
+      server_owned: true,
+    },
+  });
+}
+
+async function readNyraDirectiveContext(identity, args) {
+  if (!workContinuityV2Store) return null;
+  try {
+    const tenantWorkIdentity = withTenantWorkAcl(identity);
+    const context = await workContinuityV2Store.readWork(
+      tenantWorkIdentity,
+      { work_id: args.work_id },
+    );
+    const status = String(context?.work?.status || "").toUpperCase();
+    if (["COMPLETED", "ARCHIVED"].includes(status) &&
+        typeof workContinuityV2Store.verifyWorkClosure === "function") {
+      return {
+        ...context,
+        closure_verification: await workContinuityV2Store.verifyWorkClosure(
+          tenantWorkIdentity,
+          { work_id: args.work_id },
+        ),
+      };
+    }
+    return context;
+  } catch (error) {
+    // A legacy Work may not have a V2 projection for a non-admin reader yet.
+    // Keep advisory work available, but leave every consequential ticket in
+    // NEEDS_CONTEXT until the governed projection exists. ACL/binding errors
+    // are never converted into absence.
+    if (String(error?.message || "") === "tenant_work_not_found") return null;
+    throw error;
+  }
+}
+
 const nyraConverseHandler = createNyraConverseHandler({
   preflight: createNyraConversePreflight({
     workPreflight: (args, identity) => coreHandlers.work_preflight(args, identity),
     ensureContinuity,
     resolveContinuityProjectBinding,
-    workContinuityRuntime,
+    workContinuityRuntime: governedLegacyReadRuntime,
     hostType,
   }),
   interpret: (args, identity) => coreHandlers.nyra_interpret_request(args, identity),
-  readControlContext: (identity, args) => workContinuityRuntime.readControlContext(identity, args),
+  readControlContext: async (identity, args) => {
+    await requireCanonicalWorkRead(identity, args.work_id);
+    return workContinuityRuntime.readControlContext(identity, args);
+  },
+  readDirectiveContext: readNyraDirectiveContext,
+  issueContinuation: nyraGovernedContinueAttestor
+    ? ({ identity, directive }) => nyraGovernedContinueAttestor.issue({ identity, directive })
+    : null,
 });
+
+const nyraGovernedContinueHandler = nyraGovernedContinueAttestor
+  ? createNyraGovernedContinueHandler({
+      attestor: nyraGovernedContinueAttestor,
+      readDirectiveContext: readNyraDirectiveContext,
+      normalizeDirectiveContext: normalizeNyraDirectiveContext,
+      issueDelegation: (args, identity) => coreHandlers.host_native_delegation_issue(args, identity),
+      authorizeAction: (args, identity) => coreHandlers.host_native_action_authorize(args, identity),
+      reviewWorkBootstrap: reviewCanonicalWorkCreation,
+      createWorkBootstrap: createCanonicalWorkGoverned,
+    })
+  : null;
 
 const baseHandlers = {
   ...nyraWorkAutomationHandlers,
   nyra_converse: nyraConverseHandler,
+  ...(nyraGovernedContinueHandler
+    ? { nyra_governed_continue: nyraGovernedContinueHandler }
+    : {}),
   web_compatibility_manifest: async (_args, identity) => ({
     structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
     content: [{ type: "text", text: JSON.stringify({ ok: true, manifest: webCompatibilityManifest() }) }],
@@ -934,9 +1298,20 @@ const baseHandlers = {
   ...coreHandlers,
   ...causalContinuityHandlers,
   ...softwareCognitionHandlers,
+  ...entity360Handlers,
   work_preflight: async (args, identity) => {
-    const result = await coreHandlers.work_preflight(args, identity);
-    await ensureContinuity(identity, args, "work_preflight", result, { resumeExisting: true });
+    const continuityBinding = await resolveContinuityProjectBinding(
+      identity,
+      args,
+      governedLegacyReadRuntime,
+      { preferPersistedWorkProject: true },
+    );
+    const result = await coreHandlers.work_preflight({
+      ...args,
+      project_id: continuityBinding.projectId,
+    }, identity);
+    await ensureContinuity(identity, continuityBinding.continuityArgs, "work_preflight", result,
+      { resumeExisting: true });
     return result;
   },
   ...createMemoryHandlers(config, { researchCortex, cloudMemoryStore }),
@@ -950,24 +1325,14 @@ const baseHandlers = {
   } } : {}),
   ...(workContinuityRuntime ? {
     work_continuity_create: async (args, identity) => {
-      await requireOwnerGovernance(identity, "work.continuity.create", args.project_id);
-      const payload = { ok: true, result: await workContinuityRuntime.create(identity, args) };
-      payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_created");
-      payload.result.nyra_control_context = await materializeNyraControlContext(
-        identity,
-        payload.result,
-        "work_created",
-        { autopilot: payload.result.nyra_autopilot, force: true },
-      );
-      payload.dedicated_core_gate = {
-        authorized: true,
-        authority: "universal_core",
-        route: "/v1/action-evaluator",
-        server_owned: true,
-      };
-      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+      requireHostWorkCreateCapability(identity);
+      const error = new Error("canonical_work_bootstrap_v2_required");
+      error.code = "canonical_work_bootstrap_v2_required";
+      error.status = 409;
+      throw error;
     },
     work_continuity_record_change: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       await requireOwnerGovernance(identity, "work.continuity.record_change", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.recordChange(identity, args) };
       payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_changed");
@@ -980,6 +1345,7 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_checkpoint: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       await requireOwnerGovernance(identity, "work.continuity.checkpoint", args.work_id);
       // requireOwnerGovernance above is the server-owned Universal Core decision
       // for this exact checkpoint. Do not invoke the generic gate again: the
@@ -1001,10 +1367,11 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_read: async (args, identity) => {
-      const payload = { ok: true, result: await workContinuityRuntime.read(identity, args) };
+      const payload = { ok: true, result: await readLegacyWorkAuthorized(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_resume: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       const gate = await coreHandlers.core_gate_action({
         action_label: "Resume persistent Work Continuity work",
         action_type: "work.continuity.resume",
@@ -1036,16 +1403,17 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_verify_memory: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       await requireOwnerGovernance(identity, "work.continuity.verify_memory", args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.verifyMemory(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_list: async (args, identity) => {
-      requireTenantWorkIdentity(identity);
-      const payload = { ok: true, result: await workContinuityRuntime.gallery(identity, args) };
+      const payload = { ok: true, result: await galleryLegacyWorksAuthorized(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_join: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       await requireBoundedTenantCoordination(
         identity,
         "work.participant.join",
@@ -1056,6 +1424,7 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_gallery_heartbeat: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       await requireBoundedTenantCoordination(
         identity,
         "work.participant.heartbeat",
@@ -1066,6 +1435,7 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_branch_open: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       await requireBoundedTenantCoordination(
         identity,
         "work.branch.open",
@@ -1076,6 +1446,7 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_acquire: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       await requireBoundedTenantCoordination(
         identity,
         "work.lease.acquire",
@@ -1086,6 +1457,7 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_renew: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       await requireBoundedTenantCoordination(
         identity,
         "work.lease.renew",
@@ -1096,6 +1468,7 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_lease_release: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       await requireBoundedTenantCoordination(
         identity,
         "work.lease.release",
@@ -1106,6 +1479,7 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_message_post: async (args, identity) => {
+      await requireCanonicalWorkRead(identity, args.work_id);
       await requireBoundedTenantCoordination(
         identity,
         "work.message.post",
@@ -1116,16 +1490,38 @@ const baseHandlers = {
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     tenant_work_inbox: async (args, identity) => {
-      requireTenantWorkIdentity(identity);
+      await requireCanonicalWorkRead(identity, args.work_id);
       const payload = { ok: true, result: await workContinuityRuntime.inbox(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
     work_continuity_start_or_resume: async (args, identity) => {
-      requireTenantWorkCapability(identity, "read");
-      await requireOwnerGovernance(identity, "work.continuity.start_or_resume", args.project_id);
+      const authorizedResumeWorkIds = args.work_id
+        ? (await requireCanonicalWorkRead(identity, args.work_id), [args.work_id])
+        : await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
+      const resumeIdempotencyKey = `work_resume_${crypto.createHash("sha256")
+        .update(JSON.stringify(stableCanonical({
+          tenant_id: identity.tenantId,
+          work_id: args.work_id || null,
+          project_id: args.project_id,
+          session_id: identity.agentPresence?.session_id || args.session_id,
+        })))
+        .digest("hex").slice(0, 40)}`;
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.continuity.start_or_resume",
+        String(args.work_id || args.project_id || "resume_existing"),
+        resumeIdempotencyKey,
+      );
       return continuityTextResult({
         ok: true,
-        result: await workContinuityRuntime.ensure(identity, args, { creationAuthorized: true }),
+        result: await workContinuityRuntime.ensure(identity, {
+          ...args,
+          resume_existing: true,
+        }, {
+          creationAuthorized: false,
+          trustedSessionFollowup: true,
+          authorizedResumeWorkIds,
+        }),
         dedicated_core_gate: {
           authorized: true,
           authority: "universal_core",
@@ -1134,16 +1530,11 @@ const baseHandlers = {
         },
       });
     },
-    work_continuity_intent_read: continuityMethod("readIntent"),
-    work_continuity_work_catalog: continuityMethod("listWorks"),
-    work_continuity_v2_create: async (args, identity) => {
-      if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
-      await requireOwnerGovernance(identity, "work.continuity.v2.create", args.project_id);
-      const aclIdentity = withTenantWorkAcl(identity);
-      const result = await workContinuityV2Store.createNewWork(aclIdentity, args);
-      return continuityTextResult({ ok: true, result, legacy_work_id: result.legacy_work_id,
-        dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/action-evaluator", server_owned: true } });
-    },
+    work_continuity_intent_read: async (args, identity) => continuityTextResult({ ok: true,
+      result: await readLegacyIntentAuthorized(identity, args) }),
+    work_continuity_work_catalog: async (args, identity) => continuityTextResult({ ok: true,
+      result: await listLegacyWorksAuthorized(identity, args) }),
+    work_continuity_v2_create: createCanonicalWorkGoverned,
     tenant_work_queue_create_v3: async (args, identity) => {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
       await requireBoundedTenantCoordination(
@@ -1207,9 +1598,10 @@ const baseHandlers = {
       // This is deliberately the only pre-Work write. It may persist a
       // short-lived duplicate review, but never creates or mutates a Work;
       // creation remains on the dedicated Universal Core route below.
-      requireTenantWorkCapability(identity, "coordinate");
-      return continuityTextResult({ ok: true,
-        result: await workContinuityV2Store.openWorkReview(withTenantWorkAcl(identity), args) });
+      return reviewCanonicalWorkCreation({
+        ...args,
+        idempotency_key: args.idempotency_key || `review_${crypto.randomUUID()}`,
+      }, identity);
     },
     tenant_work_task_record: async (args, identity) => {
       requireTenantWorkCapability(identity, "operate");
@@ -1248,35 +1640,56 @@ const baseHandlers = {
       result: await workContinuityV2Store.finalizeGenericClosure(withTenantWorkAcl(identity), args),
       dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work/core-join-verdicts", server_owned: true } }),
     work_continuity_native_plan: async (args, identity) => {
-      const intent = await workContinuityRuntime.readIntent(identity, {
-        work_id: args.work_id,
+      requireHostAppToolCapability({
+        identity,
+        toolName: "work_continuity_native_plan",
+        tools: TOOLS,
+      });
+      const nativeArgs = identity?.authenticatedHostPrincipal
+        ? { ...args, host_type: authenticatedHostKind(identity) }
+        : args;
+      const intent = await readLegacyIntentAuthorized(identity, {
+        work_id: nativeArgs.work_id,
       });
       const corePlanResult = await coreHandlers.host_native_work_plan_create({
-        work_id: args.work_id,
+        work_id: nativeArgs.work_id,
         intent_anchor_digest: intent.intent_digest,
-        repository: args.repository,
-        base_branch: args.base_branch,
+        repository: nativeArgs.repository,
+        base_branch: nativeArgs.base_branch,
         objective: intent.anchor?.objective,
-        required_checks: args.required_checks,
-        agents: args.tasks.map((task) => ({
+        required_checks: nativeArgs.required_checks,
+        agents: nativeArgs.tasks.map((task) => ({
           agent_id: task.task_id,
           role: task.kind,
           task: task.instruction,
           depends_on: task.dependencies || [],
           capabilities: [],
         })),
-        max_parallel: args.max_parallel,
+        max_parallel: nativeArgs.max_parallel,
       }, identity);
       const corePlan = corePlanResult?.structuredContent?.plan;
       if (!corePlan) throw new Error("core_host_native_work_plan_required");
       return continuityTextResult({
         ok: true,
-        result: await workContinuityRuntime.planNativeAgents(identity, args, {
+        result: await workContinuityRuntime.planNativeAgents(identity, nativeArgs, {
           corePlan,
         }),
       });
     },
-    work_continuity_native_bind: continuityMethod("bindNativeAgent"),
+    work_continuity_native_bind: async (args, identity) => {
+      requireHostAppToolCapability({
+        identity,
+        toolName: "work_continuity_native_bind",
+        tools: TOOLS,
+      });
+      const nativeArgs = identity?.authenticatedHostPrincipal
+        ? { ...args, host_type: authenticatedHostKind(identity) }
+        : args;
+      return continuityTextResult({
+        ok: true,
+        result: await workContinuityRuntime.bindNativeAgent(identity, nativeArgs),
+      });
+    },
     work_continuity_native_report: continuityMethod("reportNativeAgent"),
     work_continuity_closure_evaluate: async (args, identity) => {
       const evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
@@ -1453,7 +1866,9 @@ function internalCoordinationActionType(toolName) {
   if (toolName.includes("native_bind")) return "native_agent.bind";
   if (toolName.includes("native_report")) return "native_agent.report";
   if (toolName.includes("closure")) return "native_agent.verify";
-  if (toolName.includes("atlas")) return "work_atlas.update";
+  // The repository bootstrap is the initial bounded Atlas write. Its name
+  // predates the common `atlas` suffix, therefore classify it explicitly.
+  if (toolName === "software_cognition_repository_bootstrap" || toolName.includes("atlas")) return "work_atlas.update";
   if (toolName.includes("incident")) return "incident.record";
   if (toolName.includes("delegation_consume")) return "delegation.consume";
   return "continuity.update";
@@ -1472,6 +1887,11 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   internallyGovernedCapabilities: ["agent_heartbeat"],
+  capabilityVisible: ({ tool, identity }) => hostAppCanAccessTool({
+    identity,
+    toolName: tool.name,
+    tools: TOOLS,
+  }),
   gateAction: ({ tool, args, identity, catalogRevision, idempotencyKey, workPreflight }) => {
     const researchDistillationShadow =
       researchDistillationShadowTools.has(tool.name);
@@ -1588,6 +2008,7 @@ async function refreshNyraDialogueAfterMaterialChange(event = {}) {
 const app = createApp(config, {
   handlers,
   toolSurface: "compact",
+  ...(environmentDelegationNonceStore ? { environmentDelegationNonceStore } : {}),
   readiness: startupReadiness,
   genericWorkCoreJoin: {
     storeConfigured: Boolean(workContinuityV2Store),
@@ -1595,6 +2016,32 @@ const app = createApp(config, {
   },
   postgresMajorVersionProbe,
   beforeToolCall: async ({ identity, toolName, args }) => {
+    // Enforce the authenticated application policy before presence, cache,
+    // preflight, dynamic dispatch or any other read/write side effect. The
+    // dynamic wrappers are resolved to their exact capability here, so an app
+    // cannot inherit a user's Work permissions or bypass its registry grant.
+    const hostAuthorization = requireHostAppToolCapability({
+      identity, toolName, args, tools: TOOLS,
+    });
+    // Every path that can discover, bind or create generic Work context must
+    // first prove subject membership. This runs before presence, the decision
+    // ledger, Core preflight, Gallery lookup and continuity, even when the
+    // exact dynamic target is not itself a Work-prefixed tool.
+    requireTenantWorkRequestAuthorization(identity, {
+      hostAuthorization,
+      toolName,
+      genericWorkPreflightRequired: requiresGenericWorkPreflight(toolName, args),
+    });
+    // Exact Work visibility precedes presence registration, Airlock/Core
+    // calls, ledger writes and continuity session bindings. A generic or
+    // dynamic tool must not use preflight as a tenant-only read oracle for a
+    // private canonical Work.
+    if (requiresGenericWorkPreflight(toolName, args)) {
+      const authorizationTarget = dynamicInvocationTarget(toolName, args, identity);
+      if (authorizationTarget.args.work_id) {
+        await requireCanonicalWorkRead(identity, authorizationTarget.args.work_id);
+      }
+    }
     // Native reports are authenticated by the child transport binding plus the
     // one-time assignment capability, exact task binding and lease in the
     // continuity runtime. Re-registering that child in the generic presence
@@ -1634,7 +2081,8 @@ const app = createApp(config, {
       const continuityBinding = await resolveContinuityProjectBinding(
         identity,
         target.args,
-        workContinuityRuntime,
+        governedLegacyReadRuntime,
+        { preferPersistedWorkProject: true },
       );
       const result = await coreHandlers.work_preflight({
         request: summarizeToolRequest(target.toolName, target.args),
@@ -1653,9 +2101,7 @@ const app = createApp(config, {
         agent_id: identity.agentPresence?.agent_id || target.args.agent_id || target.args.from_agent_id || "connected_ai",
         client_type: identity.agentPresence?.client_type || target.args.client_type,
         ...(config.hostNativeAgentProtocolEnabled ? {
-          host_type: (identity.agentPresence?.client_type || args.client_type) === "codex"
-            ? "codex_native"
-            : "chatgpt_native",
+          host_type: hostType(identity, target.args),
         } : {}),
         available_capabilities: [
           "skinharmony_core_mcp",

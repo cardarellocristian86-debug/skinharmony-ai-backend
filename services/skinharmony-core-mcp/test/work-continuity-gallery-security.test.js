@@ -92,16 +92,23 @@ test("Gallery writes expose only bounded coordination and cap participant leases
     assert.equal(tools[name]._meta["skinharmony/ownerConfirmationRequired"], false);
     assert.equal(tools[name].inputSchema.properties.ttl_seconds.maximum, 3_600);
   }
-  assert.deepEqual(tenantWorkCapabilities({
+  const memberIdentity = {
     kind: "oauth",
+    tenantId: "tenant-a",
+    subject: "member-a",
     oauthTenantMemberBound: true,
     tenantMembershipRole: "member",
-  }), ["read", "coordinate"]);
-  assert.doesNotThrow(() => requireTenantWorkCapability({
-    kind: "oauth",
-    oauthTenantMemberBound: true,
-    tenantMembershipRole: "member",
-  }, "coordinate"));
+    authenticatedTenantMembership: {
+      schema_version: "tenant_membership_binding_v1",
+      authenticated: true,
+      tenant_id: "tenant-a",
+      subject: "member-a",
+      role: "member",
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    },
+  };
+  assert.deepEqual(tenantWorkCapabilities(memberIdentity), ["read", "coordinate"]);
+  assert.doesNotThrow(() => requireTenantWorkCapability(memberIdentity, "coordinate"));
   assert.throws(() => requireTenantWorkCapability({ kind: "oauth" }, "coordinate"),
     /tenant_work_membership_required/);
 });
