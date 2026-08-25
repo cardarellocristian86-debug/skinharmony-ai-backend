@@ -246,7 +246,6 @@ async function readSnapshotFile(fetchImpl, repository, commit, path, token) {
 function mergeIndexedBatch(items) {
   const nodes = [...new Map(items.flatMap((item) => item.nodes_added_or_updated).map((node) => [node.node_id, node])).values()];
   const edges = [...new Map(items.flatMap((item) => item.edges_added).map((edge) => [`${edge.edge_type}:${edge.from_node_id}:${edge.to_node_id}`, edge])).values()];
-  if (!nodes.length) bootstrapFail("software_atlas_batch_empty");
   return { nodes, edges };
 }
 
