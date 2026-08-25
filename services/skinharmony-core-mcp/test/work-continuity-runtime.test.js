@@ -107,6 +107,114 @@ test("continuity digests are deterministic across object key order", () => {
   assert.notEqual(digest({ a: 1 }), digest({ a: 2 }));
 });
 
+test("legacy catalog accepts only a server-derived canonical Work ACL intersection", async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
+      if (/FROM core_continuity_works w/.test(sql) && /ORDER BY w\.updated_at DESC/.test(sql)) {
+        return { rows: [{
+          work_id: WORK_ID,
+          project_id: "project-a",
+          session_id: "session-a",
+          status: "active",
+          current_version: 1,
+          next_action: "continue",
+          updated_at: "2026-08-25T10:00:00.000Z",
+        }] };
+      }
+      throw new Error("unexpected_legacy_acl_query");
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const authorization = {
+    schema_version: "legacy_work_read_authorization_v1",
+    server_derived: true,
+    tenant_id: "tenant-a",
+    work_ids: [WORK_ID],
+  };
+  const catalog = await runtime.listWorksAuthorized(
+    { tenantId: "tenant-a" },
+    { project_id: "project-a", limit: 25 },
+    authorization,
+  );
+  assert.deepEqual(catalog.works.map((work) => work.work_id), [WORK_ID]);
+  const select = calls.find((call) => /FROM core_continuity_works w/.test(call.sql) &&
+    /ORDER BY w\.updated_at DESC/.test(call.sql));
+  assert.match(select.sql, /w\.work_id = ANY\(\$2::uuid\[\]\)/);
+  assert.deepEqual(select.params[1], [WORK_ID]);
+  await assert.rejects(runtime.listWorksAuthorized(
+    { tenantId: "tenant-a" }, {}, { ...authorization, tenant_id: "tenant-b" },
+  ), /continuity_work_read_authorization_invalid/);
+});
+
+test("legacy resume rejects an unauthorized session binding before persisting a new binding", async () => {
+  const hiddenWorkId = "22222222-2222-4222-8222-222222222222";
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
+      if (/SELECT pg_advisory_xact_lock/.test(sql)) return { rows: [{}] };
+      if (/SELECT work_id,create_request_digest\s+FROM core_continuity_session_bindings/.test(sql)) {
+        return { rows: [{ work_id: hiddenWorkId, create_request_digest: "a".repeat(64) }] };
+      }
+      throw new Error("unauthorized_resume_queried_past_binding");
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  await assert.rejects(runtime.ensure({ tenantId: "tenant-a", subject: "member-a" }, {
+    project_id: "project-a",
+    session_id: "session-a",
+    resume_existing: true,
+  }, {
+    creationAuthorized: false,
+    trustedSessionFollowup: true,
+    authorizedResumeWorkIds: [WORK_ID],
+  }), /continuity_work_acl_denied/);
+  assert.equal(calls.some((call) => /INSERT INTO core_continuity_session_bindings/.test(call.sql)), false);
+});
+
+test("legacy Gallery prompt fields and blockers are restricted to canonical visible Work ids", async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
+      if (/count\(DISTINCT p\.session_id\)/.test(sql)) return { rows: [{
+        tenant_id: "tenant-a", project_id: "project-a", work_id: WORK_ID,
+        idea: "authorized idea", objective: "authorized objective", status: "active",
+        current_version: 1, next_action: "continue", updated_at: "2026-08-25T10:00:00.000Z",
+        active_participants: 0, active_leases: 0, active_branches: 0,
+      }] };
+      if (/FROM core_continuity_remediations/.test(sql)) return { rows: [{
+        work_id: WORK_ID, remediation_id: "rem-1", status: "open", block_class: "policy",
+      }] };
+      throw new Error("unexpected_authorized_gallery_query");
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const result = await runtime.galleryAuthorized({ tenantId: "tenant-a" }, {
+    project_id: "project-a",
+  }, {
+    schema_version: "legacy_work_read_authorization_v1",
+    server_derived: true,
+    tenant_id: "tenant-a",
+    work_ids: [WORK_ID],
+  });
+  assert.deepEqual(result.works.map((work) => work.work_id), [WORK_ID]);
+  const workRead = calls.find((call) => /count\(DISTINCT p\.session_id\)/.test(call.sql));
+  const blockerRead = calls.find((call) => /FROM core_continuity_remediations/.test(call.sql));
+  assert.match(workRead.sql, /w\.work_id = ANY\(\$5::uuid\[\]\)/);
+  assert.deepEqual(workRead.params[4], [WORK_ID]);
+  assert.match(blockerRead.sql, /work_id = ANY\(\$3::uuid\[\]\)/);
+  assert.deepEqual(blockerRead.params[2], [WORK_ID]);
+});
+
 function standingReleaseAnchor(overrides = {}) {
   return {
     schema_version: "intent_anchor_v1",

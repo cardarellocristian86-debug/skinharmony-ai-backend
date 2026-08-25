@@ -23,6 +23,7 @@ export const SCOPES = Object.freeze({
   READ_CONTROL_PLANE: "read:control_plane",
   WRITE_RUNBOOK: "write:runbook",
   READ_EVIDENCE: "read:evidence",
+  ENTITY360_CONFIGURE: "entity360:configure",
 });
 
 export const DEFAULT_CONNECTOR_SCOPES = [

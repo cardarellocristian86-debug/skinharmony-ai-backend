@@ -1822,6 +1822,13 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
   const identity = {
     tenantId: "tenant-a",
     subject: "coordinator",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      host_kind: "codex_native",
+      client_type: "codex",
+      capabilities: ["work.operate", "host_native.authorize"],
+    },
     agentPresence: {
       agent_id: "codex-coordinator",
       client_type: "codex",
@@ -1883,6 +1890,7 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
       client_type: "codex",
       session_fingerprint: "1".repeat(64),
       host_transport_session_fingerprint: "1".repeat(64),
+      host_kind: "codex_native",
       signature: `ags_${"1".repeat(32)}`,
       transport_bound: true,
     },
@@ -2094,11 +2102,19 @@ test("local closure becomes release-ready and external completion needs exact Co
   const identity = {
     tenantId: "tenant-a",
     subject: "coordinator",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      host_kind: "chatgpt_native",
+      client_type: "chatgpt",
+      capabilities: ["work.operate", "host_native.authorize"],
+    },
     agentPresence: {
       agent_id: "codex-coordinator",
       client_type: "codex",
       session_fingerprint: "d".repeat(64),
       host_transport_session_fingerprint: "7".repeat(64),
+      host_kind: "chatgpt_native",
       transport_bound: true,
     },
   };
@@ -2275,10 +2291,37 @@ test("local closure becomes release-ready and external completion needs exact Co
       client_type: "codex",
       session_fingerprint: "1".repeat(64),
       host_transport_session_fingerprint: "1".repeat(64),
+      host_kind: "chatgpt_native",
       signature: `ags_${"1".repeat(32)}`,
       transport_bound: true,
     },
   };
+  const wrongHostBuilderIdentity = {
+    ...builderIdentity,
+    authenticatedHostPrincipal: {
+      ...builderIdentity.authenticatedHostPrincipal,
+      host_kind: "codex_native",
+      client_type: "codex",
+    },
+    agentPresence: {
+      ...builderIdentity.agentPresence,
+      host_kind: "codex_native",
+    },
+  };
+  await assert.rejects(runtime.reportNativeAgent(wrongHostBuilderIdentity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    native_agent_id: "codex-builder",
+    host_task_id: "/root/build",
+    assignment_capability: builderBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "A Codex host must not report a ChatGPT-bound assignment.",
+      commit_sha: "e".repeat(40),
+      tests: [{ name: "node --test", passed: true }],
+      evidence_refs: ["commit:pending"],
+    },
+  }), /native_agent_reporter_host_scope_mismatch/);
   await assert.rejects(runtime.reportNativeAgent(identity, {
     work_id: work.work_id,
     plan_id: planId,
@@ -2354,6 +2397,7 @@ test("local closure becomes release-ready and external completion needs exact Co
       client_type: "codex",
       session_fingerprint: "2".repeat(64),
       host_transport_session_fingerprint: "2".repeat(64),
+      host_kind: "chatgpt_native",
       signature: `ags_${"3".repeat(32)}`,
       transport_bound: true,
     },

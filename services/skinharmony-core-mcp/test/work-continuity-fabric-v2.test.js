@@ -16,6 +16,11 @@ import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 const COMMIT = "c".repeat(40);
 const COORDINATOR_SESSION = "a".repeat(64);
 
+function boundedUniqueText(prefix, index, length) {
+  const marker = `${prefix}-${String(index).padStart(3, "0")}-`;
+  return `${marker}${"x".repeat(length - marker.length)}`;
+}
+
 function nativePlan() {
   return buildNativeAgentPlan({
     host_type: "codex_native",
@@ -143,6 +148,61 @@ test("Intent Anchor is deterministic, immutable-shaped and redacts sensitive req
   assert.match(first.anchor.initial_message, /\[REDACTED\]/);
   assert.doesNotMatch(first.anchor.initial_message, /do-not-store/);
   assert.match(first.intent_digest, /^[a-f0-9]{64}$/);
+});
+
+test("bootstrap text limits are equivalent across direct V2, legacy Intent Anchor and Nyra contracts", () => {
+  const direct = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_v2_create");
+  const legacy = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_start_or_resume");
+  assert.equal(direct.inputSchema.additionalProperties, false);
+  assert.deepEqual(direct.inputSchema.properties.acceptance_criteria, {
+    type: "array",
+    minItems: 1,
+    maxItems: 250,
+    items: { type: "string", minLength: 1, maxLength: 2_000 },
+  });
+  assert.deepEqual(direct.inputSchema.properties.constraints, {
+    type: "array",
+    maxItems: 100,
+    items: { type: "string", minLength: 1, maxLength: 1_000 },
+  });
+  assert.equal(legacy.inputSchema.properties.acceptance_criteria.maxItems,
+    direct.inputSchema.properties.acceptance_criteria.maxItems);
+  assert.equal(legacy.inputSchema.properties.acceptance_criteria.items.maxLength,
+    direct.inputSchema.properties.acceptance_criteria.items.maxLength);
+  assert.equal(legacy.inputSchema.properties.constraints.maxItems,
+    direct.inputSchema.properties.constraints.maxItems);
+  assert.equal(legacy.inputSchema.properties.constraints.items.maxLength,
+    direct.inputSchema.properties.constraints.items.maxLength);
+});
+
+test("legacy Intent Anchor accepts exact bootstrap boundaries and rejects every overflow", () => {
+  const base = {
+    project_id: "skinharmony",
+    session_id: "anchor-bootstrap-boundary",
+    initial_message: "Preserve the exact canonical Work.",
+    idea: "Bounded Work bootstrap",
+    objective: "Keep every bootstrap representation equivalent.",
+    acceptance_criteria: Array.from({ length: 250 }, (_, index) =>
+      boundedUniqueText("acceptance", index, 2_000)),
+    constraints: Array.from({ length: 100 }, (_, index) =>
+      boundedUniqueText("constraint", index, 1_000)),
+    host_type: "codex_native",
+  };
+  const boundary = buildIntentAnchor(base);
+  assert.equal(boundary.anchor.acceptance_criteria.length, 250);
+  assert.equal(boundary.anchor.acceptance_criteria.at(-1).length, 2_000);
+  assert.equal(boundary.anchor.constraints.length, 100);
+  assert.equal(boundary.anchor.constraints.at(-1).length, 1_000);
+
+  const negativeCases = [
+    [{ ...base, acceptance_criteria: [...base.acceptance_criteria, "overflow"] }, /acceptance_criteria_invalid/],
+    [{ ...base, acceptance_criteria: ["x".repeat(2_001)] }, /acceptance_criteria_invalid/],
+    [{ ...base, constraints: [...base.constraints, "overflow"] }, /constraints_invalid/],
+    [{ ...base, constraints: ["x".repeat(1_001)] }, /constraints_invalid/],
+  ];
+  for (const [input, expected] of negativeCases) {
+    assert.throws(() => buildIntentAnchor(input), expected);
+  }
 });
 
 test("native plan is host-only, bounded and rejects provider-shaped or unsafe topology", () => {

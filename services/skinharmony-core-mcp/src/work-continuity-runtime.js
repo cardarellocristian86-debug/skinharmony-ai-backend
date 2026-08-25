@@ -305,6 +305,21 @@ function stringList(value, name, { maxItems = 100, maxLength = 240 } = {}) {
   }))];
 }
 
+function bootstrapStringList(value, name, { maxItems, maxLength }) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > maxItems) throw new Error(`${name}_invalid`);
+  return [...new Set(value.map((item) => {
+    // MCP maxLength is a rejection boundary. The immutable Intent Anchor must
+    // not silently truncate a caller-bypassed value into a different intent.
+    if (typeof item !== "string" || item.length > maxLength) {
+      throw new Error(`${name}_invalid`);
+    }
+    const normalized = safeText(item, maxLength).trim();
+    if (!normalized) throw new Error(`${name}_invalid`);
+    return normalized;
+  }))];
+}
+
 function requireObject(value, name) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name}_invalid`);
   return value;
@@ -394,11 +409,14 @@ function canonicalIntentInput(input = {}) {
     initial_message: safeText(input.initial_message || input.request || input.idea, 20_000),
     idea: safeText(input.idea, 8_000),
     objective: safeText(input.objective, 8_000),
-    acceptance_criteria: stringList(input.acceptance_criteria, "acceptance_criteria", {
+    acceptance_criteria: bootstrapStringList(input.acceptance_criteria, "acceptance_criteria", {
+      maxItems: 250,
+      maxLength: 2_000,
+    }),
+    constraints: bootstrapStringList(input.constraints, "constraints", {
       maxItems: 100,
       maxLength: 1_000,
     }),
-    constraints: stringList(input.constraints, "constraints", { maxItems: 100, maxLength: 1_000 }),
   };
 }
 
@@ -1708,6 +1726,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   function nativeReporterPresence(identity, agentId) {
     const presence = identity?.agentPresence;
+    const principal = identity?.authenticatedHostPrincipal;
+    const principalHostKind = String(principal?.host_kind || "");
+    const presenceHostKind = String(presence?.host_kind || "");
     const fingerprint = String(
       presence?.host_transport_session_fingerprint || "",
     );
@@ -1715,6 +1736,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
     if (
       presence?.transport_bound !== true ||
       presence?.agent_id !== agentId ||
+      principal?.registered !== true ||
+      !NATIVE_HOST_TYPES.has(principalHostKind) ||
+      presenceHostKind !== principalHostKind ||
       !/^[a-f0-9]{16,64}$/i.test(fingerprint) ||
       !/^ags_[a-f0-9]{32}$/.test(signature)
     ) {
@@ -1722,6 +1746,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     }
     return {
       agent_id: agentId,
+      host_type: principalHostKind,
       client_type: String(presence.client_type || ""),
       session_fingerprint: fingerprint,
       signature,
@@ -1866,6 +1891,20 @@ export function createWorkContinuityRuntime(config, options = {}) {
         FROM core_continuity_session_bindings
         WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
       [tenantId, projectId, sessionId]);
+      let authorizedResumeWorkIds = null;
+      if (options.authorizedResumeWorkIds !== undefined) {
+        if (!Array.isArray(options.authorizedResumeWorkIds) ||
+            options.authorizedResumeWorkIds.length > 10_000) {
+          throw new Error("continuity_work_read_authorization_invalid");
+        }
+        authorizedResumeWorkIds = new Set(options.authorizedResumeWorkIds.map((candidate) =>
+          uuid(candidate, "work_id")));
+        if (input.resume_existing === true &&
+            ((binding.rows[0] && !authorizedResumeWorkIds.has(String(binding.rows[0].work_id))) ||
+             (input.work_id && !authorizedResumeWorkIds.has(workId)))) {
+          throw new Error("continuity_work_acl_denied");
+        }
+      }
       let autoResumeCandidate = null;
       let autoResumeCandidates = [];
       if (input.resume_existing === true && !binding.rows[0] && !input.work_id) {
@@ -1873,11 +1912,16 @@ export function createWorkContinuityRuntime(config, options = {}) {
         // database makes the choice under the same transaction lock used for
         // the session binding.  More than one operational Work fails closed
         // into the existing explicit-selection path.
+        const candidateParameters = [tenantId, projectId, AUTO_RESUMABLE_WORK_STATUSES];
+        const authorizedPredicate = authorizedResumeWorkIds === null
+          ? ""
+          : ` AND work_id = ANY($${candidateParameters.push([...authorizedResumeWorkIds])}::uuid[])`;
         const candidates = await client.query(`SELECT work_id FROM core_continuity_works
           WHERE tenant_id=$1 AND project_id=$2 AND status = ANY($3::varchar[])
+          ${authorizedPredicate}
           ORDER BY updated_at DESC,work_id DESC
           LIMIT 2
-          FOR UPDATE`, [tenantId, projectId, AUTO_RESUMABLE_WORK_STATUSES]);
+          FOR UPDATE`, candidateParameters);
         autoResumeCandidates = candidates.rows;
         if (autoResumeCandidates.length === 1) autoResumeCandidate = autoResumeCandidates[0];
       }
@@ -2278,7 +2322,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   // Compact tenant-wide index. Deliberately excludes idea, objective, anchor,
   // reports, evidence and every other prompt-shaped field.
-  async function listWorks(identity, input = {}) {
+  async function listWorksInternal(identity, input = {}, authorizedWorkIds = null) {
     await initialize();
     const tenantId = tenant(identity.tenantId);
     const projectId = input.project_id
@@ -2290,6 +2334,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const cursor = decodeCatalogCursor(input.cursor);
     const parameters = [tenantId];
     const predicates = ["w.tenant_id=$1"];
+    if (authorizedWorkIds !== null) {
+      parameters.push(authorizedWorkIds);
+      predicates.push(`w.work_id = ANY($${parameters.length}::uuid[])`);
+    }
     if (projectId) {
       parameters.push(projectId);
       predicates.push(`w.project_id=$${parameters.length}`);
@@ -2367,6 +2415,32 @@ export function createWorkContinuityRuntime(config, options = {}) {
         : null,
       raw_prompt_fields_returned: false,
     };
+  }
+
+  async function listWorks(identity, input = {}) {
+    return listWorksInternal(identity, input, null);
+  }
+
+  // Server-only ACL intersection for legacy compatibility reads. The public
+  // tool argument never reaches this third authority input: the MCP derives
+  // the allowed V2 identities from authenticated membership and passes only
+  // those UUIDs here. This preserves the legacy response shape without
+  // allowing its tenant-only catalog to bypass canonical Work visibility.
+  function normalizeLegacyReadAuthorization(identity, authorization = {}) {
+    const tenantId = tenant(identity.tenantId);
+    if (authorization?.schema_version !== "legacy_work_read_authorization_v1" ||
+        authorization.server_derived !== true ||
+        authorization.tenant_id !== tenantId ||
+        !Array.isArray(authorization.work_ids) || authorization.work_ids.length > 10_000) {
+      throw new Error("continuity_work_read_authorization_invalid");
+    }
+    return [...new Set(authorization.work_ids.map((workId) =>
+      uuid(workId, "work_id")))];
+  }
+
+  async function listWorksAuthorized(identity, input = {}, authorization = {}) {
+    const authorizedWorkIds = normalizeLegacyReadAuthorization(identity, authorization);
+    return listWorksInternal(identity, input, authorizedWorkIds);
   }
 
   async function recordChange(identity, input) {
@@ -2692,7 +2766,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return expired.rows;
   }
 
-  async function gallery(identity, input = {}) {
+  async function galleryInternal(identity, input = {}, authorizedWorkIds = null) {
     await initialize();
     const tenantId = tenant(identity.tenantId);
     const limit = positiveInteger(input.limit, 50, 200);
@@ -2721,8 +2795,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
         AND ($3::varchar IS NULL OR w.status=$3)
         AND ($4::text IS NULL OR w.idea ILIKE '%'||$4||'%' OR
           w.objective ILIKE '%'||$4||'%' OR w.next_action ILIKE '%'||$4||'%')
+        AND ($5::uuid[] IS NULL OR w.work_id = ANY($5::uuid[]))
       GROUP BY w.tenant_id,w.project_id,w.work_id
-      ORDER BY w.updated_at DESC LIMIT $5`, [tenantId, projectId, status, query, limit]);
+      ORDER BY w.updated_at DESC LIMIT $6`, [tenantId, projectId, status, query,
+        authorizedWorkIds, limit]);
     const remediationRows = await pool.query(`SELECT work_id,remediation_id,original_decision_id,
         status,block_class,payload->'original_decision'->>'block_code' AS block_code,
         payload->'nyra_explanation'->>'plain_summary' AS summary,
@@ -2732,8 +2808,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         created_at,updated_at
       FROM core_continuity_remediations
       WHERE tenant_id=$1 AND ($2::varchar IS NULL OR project_id=$2)
+        AND ($3::uuid[] IS NULL OR work_id = ANY($3::uuid[]))
         AND status NOT IN ('closed','cancelled','expired')
-      ORDER BY updated_at DESC`, [tenantId, projectId]);
+      ORDER BY updated_at DESC`, [tenantId, projectId, authorizedWorkIds]);
     const blockersByWork = new Map();
     for (const row of remediationRows.rows) {
       const blockers = blockersByWork.get(row.work_id) || [];
@@ -2763,6 +2840,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
         blocker_count: (blockersByWork.get(String(work.work_id)) || []).length,
       })),
     };
+  }
+
+  async function gallery(identity, input = {}) {
+    return galleryInternal(identity, input, null);
+  }
+
+  async function galleryAuthorized(identity, input = {}, authorization = {}) {
+    return galleryInternal(identity, input,
+      normalizeLegacyReadAuthorization(identity, authorization));
   }
 
   async function join(identity, input) {
@@ -3608,6 +3694,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
       const row = current.rows[0];
       if (!row) throw new Error("native_agent_binding_not_found");
       if (row.plan_status !== "planned") throw new Error("native_agent_plan_not_open");
+      if (row.host_type !== reporterPresence.host_type) {
+        throw new Error("native_agent_reporter_host_scope_mismatch");
+      }
       if (row.host_task_id !== hostTaskId) throw new Error("native_agent_host_task_mismatch");
       if (
         row.status === "expired" ||
@@ -5374,6 +5463,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     readIntent,
     resolveStandingReleaseIntentBinding,
     listWorks,
+    listWorksAuthorized,
     recordChange,
     checkpoint,
     read,
@@ -5394,6 +5484,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     resolveIncident,
     remediationStore,
     gallery,
+    galleryAuthorized,
     resolveDttWorkLeaseBinding,
     resolveGenericWorkCoreJoinLeaseBinding,
     join,

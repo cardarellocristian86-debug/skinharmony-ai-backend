@@ -69,6 +69,9 @@ export type NiraBridgeResult = {
     can_execute: boolean;
     requires_owner_confirmation: boolean;
     blocked_reasons: string[];
+    unmet_conditions: string[];
+    evidence_requirements: string[];
+    allowed_alternatives: string[];
   };
   automation_plan: {
     execution_allowed: boolean;
@@ -223,6 +226,9 @@ export function runNiraUniversalCoreBridge(request: NiraBridgeRequest): NiraBrid
       can_execute: canExecute,
       requires_owner_confirmation: ownerConfirmationRequired,
       blocked_reasons: coreOutput.blocked_reasons,
+      unmet_conditions: [],
+      evidence_requirements: [],
+      allowed_alternatives: [],
     },
     automation_plan: {
       execution_allowed: canExecute,

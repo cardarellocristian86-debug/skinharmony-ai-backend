@@ -14,6 +14,7 @@ import {
   createFileHostNativeGovernanceStore,
   createHostNativeGovernance,
   createHostNativeDomainSigner,
+  createHostNativeDomainVerifier,
   createInMemoryHostNativeGovernanceStore,
   deriveHostReleaseIntentV1,
   hostNativeDigest,
@@ -46,6 +47,27 @@ test("host-native domain signer binds causal envelopes to their exact purpose an
   assert.equal(await signer.verify(envelope, signature, { purpose: "causal_context_envelope_v1" }), true);
   assert.equal(await signer.verify({ ...envelope, work_id: "work-b" }, signature, { purpose: "causal_context_envelope_v1" }), false);
   assert.equal(await signer.verify(envelope, signature, { purpose: "other-purpose" }), false);
+});
+
+test("host-native verification keyring preserves historical proofs across rotation", () => {
+  const oldSecret = "host-native-old-domain-test-secret-01234567890123456789";
+  const newSecret = "host-native-new-domain-test-secret-01234567890123456789";
+  const oldSigner = createHostNativeDomainSigner({ signingSecret: oldSecret, keyId: "host-key-old" });
+  const newSigner = createHostNativeDomainSigner({ signingSecret: newSecret, keyId: "host-key-active" });
+  const verifier = createHostNativeDomainVerifier({ verificationKeys: {
+    [oldSigner.key_id]: oldSecret,
+    [newSigner.key_id]: newSecret,
+  } });
+  const payload = { schema_version: "rotation_test_v1", digest: "a".repeat(64) };
+  const purpose = "rotation-test-v1";
+  const oldProof = oldSigner.sign(payload, { purpose });
+  const newProof = newSigner.sign(payload, { purpose });
+  assert.equal(verifier.verify(payload, oldProof, { purpose, key_id: oldSigner.key_id }), true);
+  assert.equal(verifier.verify(payload, newProof, { purpose, key_id: newSigner.key_id }), true);
+  assert.equal(verifier.verify(payload, oldProof, { purpose, key_id: newSigner.key_id }), false);
+  assert.equal(verifier.verify(payload, oldProof, { purpose, key_id: "host-key-unknown" }), false);
+  assert.equal(verifier.verify(payload, oldProof, { purpose: "other-purpose", key_id: oldSigner.key_id }), false);
+  assert.equal(Object.hasOwn(verifier, "sign"), false);
 });
 
 const H = (value) => String(value).repeat(64);
@@ -1506,6 +1528,49 @@ test("all ticket lifecycle mutations are idempotent and conflicting key reuse fa
   await assert.rejects(reconcileSubject.governance.reconcileActionTicket({
     ...reconcileInput,
     readback_digest: H("c"),
+  }), /idempotency_key_conflict/);
+});
+
+test("delegation retries bind semantic TTL and owner identity, not volatile expiry or assertion", async () => {
+  const subject = harness();
+  const firstInput = {
+    ...subject.delegationInput,
+    idempotency_key: "idem-delegation-semantic-retry",
+    requested_ttl_seconds: 3_600,
+    owner_confirmation: {
+      ...subject.delegationInput.owner_confirmation,
+      purpose: "host_native_delegation_issue",
+      request_binding_hash: H("e"),
+    },
+  };
+  delete firstInput.expires_at;
+  const first = await subject.governance.issueDelegation(firstInput);
+  subject.advance(2_000);
+  const replay = await subject.governance.issueDelegation({
+    ...firstInput,
+    owner_confirmation: {
+      ...firstInput.owner_confirmation,
+      consent_nonce: "fresh-owner-consent-nonce-retry",
+      confirmation_reference: "fresh request-bound owner confirmation",
+      request_binding_hash: H("f"),
+    },
+  });
+  assert.deepEqual(replay, first);
+  await assert.rejects(subject.governance.issueDelegation({
+    ...firstInput,
+    requested_ttl_seconds: 1_800,
+    owner_confirmation: {
+      ...firstInput.owner_confirmation,
+      consent_nonce: "fresh-owner-consent-nonce-mutated-ttl",
+    },
+  }), /idempotency_key_conflict/);
+  await assert.rejects(subject.governance.issueDelegation({
+    ...firstInput,
+    owner_confirmation: {
+      ...firstInput.owner_confirmation,
+      owner_subject_fingerprint: `osf_${H("b")}`,
+      consent_nonce: "fresh-owner-consent-nonce-mutated-owner",
+    },
   }), /idempotency_key_conflict/);
 });
 

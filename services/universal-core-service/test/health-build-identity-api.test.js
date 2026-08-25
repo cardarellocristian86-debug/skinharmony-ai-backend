@@ -44,6 +44,25 @@ function healthyPostgresPool() {
   };
 }
 
+function healthyActionEvaluatorIdempotencyStore() {
+  return {
+    kind: "postgresql",
+    restart_durable: true,
+    distributed: true,
+    schema_version: "action_evaluator_idempotency_v1",
+    schema_digest: "a".repeat(64),
+    async initialize() {
+      return {
+        schema_version: this.schema_version,
+        schema_digest: this.schema_digest,
+        schema_verified: true,
+        append_only_enforced: true,
+      };
+    },
+    async begin() { throw new Error("not_used"); },
+  };
+}
+
 function causalProductionBootstrapOptions(initialize, overrides = {}) {
   const policyPool = overrides.nyraPolicyRegistryPostgresPool || healthyPostgresPool();
   const researchPool = overrides.researchAirlockPostgresPool || healthyPostgresPool();
@@ -70,6 +89,8 @@ function causalProductionBootstrapOptions(initialize, overrides = {}) {
       health: async () => ({ ok: true, backend: "test_persistent" }),
       invoke: async () => ({ ok: true }),
     },
+    actionEvaluatorIdempotencyStore:
+      overrides.actionEvaluatorIdempotencyStore || healthyActionEvaluatorIdempotencyStore(),
     ...overrides,
     nyraPolicyRegistryPostgresPool: policyPool,
     researchAirlockPostgresPool: researchPool,
@@ -160,6 +181,8 @@ function causalProductionOptions(initialize, overrides = {}) {
       health: async () => ({ ok: true, backend: "test_persistent" }),
       invoke: async () => ({ ok: true }),
     },
+    actionEvaluatorIdempotencyStore:
+      overrides.actionEvaluatorIdempotencyStore || healthyActionEvaluatorIdempotencyStore(),
     ...overrides,
   };
 }
@@ -975,6 +998,67 @@ test("timed-out strict health flights are generation-safe and retry a recovered 
       const second = await fetch(`${service.base}/readyz`);
       assert.equal(second.status, 200);
       assert.equal(calls, 2);
+    } finally {
+      await service.close();
+    }
+  });
+});
+
+test("action evaluator readiness exposes schema state and retries transient initialization", async () => {
+  await withEnv({
+    NODE_ENV: "production",
+    CORE_EVIDENCE_SIGNING_SECRET: "e".repeat(32),
+    CORE_HOST_NATIVE_GOVERNANCE_ENABLED: "false",
+    GOVERNED_AGENT_DATABASE_URL: "postgresql://core.test/governance",
+    CORE_SERVICE_BUILD_ID: undefined,
+    RENDER_GIT_COMMIT: undefined,
+    GIT_COMMIT: "a".repeat(40),
+  }, async () => {
+    const createService = await freshUniversalCoreService("action-idempotency-readiness-retry");
+    let attempts = 0;
+    const actionStore = healthyActionEvaluatorIdempotencyStore();
+    actionStore.initialize = async function initialize() {
+      attempts += 1;
+      if (attempts === 1 || attempts === 3) {
+        const error = new Error(attempts === 3
+          ? "core_action_idempotency_schema_unverified"
+          : "core_action_idempotency_store_unavailable");
+        error.code = error.message;
+        throw error;
+      }
+      return {
+        schema_version: this.schema_version,
+        schema_digest: this.schema_digest,
+        schema_verified: true,
+        append_only_enforced: true,
+      };
+    };
+    const service = await startHealthService(causalProductionOptions(
+      async () => {},
+      { actionEvaluatorIdempotencyStore: actionStore },
+    ), createService);
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      const firstResponse = await fetch(`${service.base}/readyz`);
+      const first = await firstResponse.json();
+      assert.equal(firstResponse.status, 503);
+      assert.equal(first.action_evaluator_idempotency.ready, false);
+      assert.equal(first.action_evaluator_idempotency.state, "unavailable");
+      const secondResponse = await fetch(`${service.base}/readyz`);
+      const second = await secondResponse.json();
+      assert.equal(secondResponse.status, 200);
+      assert.equal(second.action_evaluator_idempotency.ready, true);
+      assert.equal(second.action_evaluator_idempotency.schema_verified, true);
+      assert.equal(second.action_evaluator_idempotency.append_only_enforced, true);
+      assert.equal(attempts, 2);
+      const driftedResponse = await fetch(`${service.base}/readyz`);
+      const drifted = await driftedResponse.json();
+      assert.equal(driftedResponse.status, 503);
+      assert.equal(drifted.action_evaluator_idempotency.ready, false);
+      assert.equal(drifted.action_evaluator_idempotency.state, "unavailable");
+      assert.equal(drifted.action_evaluator_idempotency.error,
+        "core_action_idempotency_schema_unverified");
+      assert.equal(attempts, 3);
     } finally {
       await service.close();
     }

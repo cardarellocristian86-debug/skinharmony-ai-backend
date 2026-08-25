@@ -32,11 +32,13 @@ export const NYRA_DIALOGUE_WIDGET_HTML = String.raw`<!doctype html>
     const contract = data?.host_response_contract || {};
     const work = data?.work || {};
     const dialogue = data?.nyra_dialogue || {};
+    const directive = data?.orchestration_directive || {};
     if (!data || data.ok !== true) { reply.hidden = true; details.hidden = true; empty.hidden = false; return; }
     empty.hidden = true; reply.hidden = false; reply.textContent = safe(contract.reply_seed, "Nyra non ha emesso un prossimo passo.");
-    state.textContent = safe(work.state, "unknown");
+    state.textContent = safe(directive.decision?.disposition, safe(work.state, "unknown"));
     const rows = [
-      ["Work", work.work_id], ["Progetto", work.project_id], ["Diagnosi", dialogue.diagnosis_state],
+      ["Work", work.work_id], ["Progetto", work.project_id], ["Problema", directive.problem?.summary],
+      ["Diagnosi", dialogue.diagnosis_state],
       ["Checkpoint", dialogue.checkpoint_available === true ? "disponibile" : "non disponibile"],
       ["Software", dialogue.software_state],
     ].filter(([, value]) => value !== null && value !== undefined && value !== "");

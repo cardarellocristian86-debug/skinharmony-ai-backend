@@ -2,7 +2,8 @@ import crypto from "node:crypto";
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 const CLIENT_TYPES = new Set(["chatgpt", "codex", "api_agent", "other"]);
-const SIGNATURE_VERSION = "v1";
+const SIGNATURE_VERSION = "v2";
+const SIGNATURE_VERSIONS = new Set(["v1", "v2"]);
 
 function fail(code) {
   const error = new Error(code);
@@ -67,15 +68,39 @@ export function createAgentPresence(config, identity, input = {}) {
   const agentId = safeId(input.agent_id, "agent");
   const clientType = String(input.client_type || "").trim().toLowerCase();
   if (!CLIENT_TYPES.has(clientType)) fail("client_type_invalid");
+  const principal = identity?.authenticatedHostPrincipal;
+  const principalClientType = String(principal?.client_type || "").trim().toLowerCase();
+  if (principalClientType && principalClientType !== clientType) {
+    fail("client_type_principal_mismatch");
+  }
   const sessionId = safeId(input.session_id, "session");
   const tenantId = safeId(identity?.tenantId, "tenant");
   const key = signingKey(config);
-  const sessionFingerprint = digest(key, "session", JSON.stringify([SIGNATURE_VERSION, tenantId, actor(identity), sessionId]), 24);
+  const signatureVersion = String(
+    config.agentPresenceSignatureVersion || SIGNATURE_VERSION,
+  ).trim().toLowerCase();
+  if (!SIGNATURE_VERSIONS.has(signatureVersion)) fail("agent_signature_version_invalid");
+  const v2 = signatureVersion === "v2";
+  const sessionFingerprint = digest(key, "session", JSON.stringify(v2
+    ? [
+        signatureVersion,
+        tenantId,
+        actor(identity),
+        principal?.app_id || null,
+        principal?.host_kind || null,
+        sessionId,
+      ]
+    : [signatureVersion, tenantId, actor(identity), sessionId]), 24);
   const canonical = JSON.stringify({
-    version: SIGNATURE_VERSION,
+    version: signatureVersion,
     environment: process.env.NODE_ENV || "development",
     tenant_id: tenantId,
     actor_subject: actor(identity),
+    ...(v2 ? {
+      host_app_id: principal?.app_id || null,
+      host_kind: principal?.host_kind || null,
+      host_registry_revision: principal?.registry_revision || null,
+    } : {}),
     agent_id: agentId,
     client_type: clientType,
     session_fingerprint: sessionFingerprint,
@@ -87,10 +112,15 @@ export function createAgentPresence(config, identity, input = {}) {
     agent_id: agentId,
     opaque_agent_id: opaqueAgentId,
     actor_provenance: actorProvenance,
+    host_app_id: principal?.app_id || null,
+    host_kind: principal?.host_kind || null,
+    host_registry_revision: principal?.registry_revision || null,
+    host_registered: principal?.registered === true,
     client_type: clientType,
     session_fingerprint: sessionFingerprint,
     signature,
-    signature_version: SIGNATURE_VERSION,
+    signature_version: signatureVersion,
+    session_binding_version: signatureVersion,
   };
 }
 

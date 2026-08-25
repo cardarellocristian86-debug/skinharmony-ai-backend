@@ -4,10 +4,12 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, resolveHostTransportPresence, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, filterToolsForClient, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, resolveHostTransportPresence, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
 import { NYRA_DIALOGUE_WIDGET_MIME_TYPE, NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES, createDynamicCapabilityHandlers, dynamicCapabilityCatalogSnapshot } from "../src/dynamic-capability-router.js";
+import { HOST_APP_CAPABILITIES } from "../src/host-app-registry.js";
+import { requireHostAppToolCapability } from "../src/host-app-authorization.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
@@ -21,6 +23,7 @@ import {
   createPostgresMajorVersionProbe,
 } from "../../shared/postgres-major-version.js";
 import { createGenericWorkCoreJoinVerifier } from "../src/work-continuity-v2-store.js";
+import { NYRA_SERVER_CONNECTOR_HINT } from "../src/nyra-converse.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -368,6 +371,23 @@ test("limits the dynamic presence bootstrap exemption to the exact agent heartbe
   );
 });
 
+test("orders generic Work subject authorization before every Work side effect", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const hookStart = serverSource.indexOf("beforeToolCall: async");
+  const hookEnd = serverSource.indexOf("afterToolCall: async", hookStart);
+  const hook = serverSource.slice(hookStart, hookEnd);
+  const authorization = hook.indexOf("requireTenantWorkRequestAuthorization(identity");
+  assert.ok(authorization >= 0);
+  for (const effect of [
+    "registerAuthenticatedPresence(identity)",
+    "decisionLedger.startWork(identity",
+    "coreHandlers.work_preflight({",
+    "ensureContinuity(",
+  ]) {
+    assert.ok(hook.indexOf(effect) > authorization, `${effect} must follow the subject gate`);
+  }
+});
+
 test("continuity checkpoint relies on exactly one server-owned Universal Core gate", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const checkpointStart = serverSource.indexOf("work_continuity_checkpoint: async");
@@ -388,6 +408,49 @@ test("bounded DTT Core gates derive their target from the router-normalized argu
     /gateAction: \(\{ tool, args, identity, catalogRevision, idempotencyKey, workPreflight \}\) =>/,
   );
   assert.match(serverSource, /target: tenantWorkCoordinationTarget\(tool\.name, args\)/);
+});
+
+test("canonical Work bootstrap separates persisted evidence from a replay attempt receipt", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(serverSource, /core_authorization_receipt: result\.core_authorization_receipt/);
+  assert.match(serverSource, /core_authorization_attempt_receipt: coreAuthorizationAttemptReceipt/);
+  assert.match(serverSource, /bindWorkBootstrapRequestToAuthenticatedHost\(\{ request: args, identity \}\)/);
+  assert.match(serverSource, /core_authorization_receipt: coreDecision\.core_authorization_receipt/);
+  const createStart = serverSource.indexOf("async function createCanonicalWorkGoverned");
+  const createEnd = serverSource.indexOf("async function readNyraDirectiveContext", createStart);
+  const createHandler = serverSource.slice(createStart, createEnd);
+  assert.ok(createHandler.indexOf("readCreatedWorkByBootstrapRequest") >= 0);
+  assert.ok(createHandler.indexOf("readCreatedWorkByBootstrapRequest") <
+    createHandler.indexOf("const coreDecision = await requireOwnerGovernance"));
+  assert.match(createHandler, /route: "durable_work_bootstrap_readback"/);
+  assert.match(createHandler, /authorized: false/);
+});
+
+test("legacy Work reads and auto-resume intersect canonical V2 visibility", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(serverSource, /work_continuity_read: async[\s\S]*?readLegacyWorkAuthorized\(identity, args\)/);
+  assert.match(serverSource, /work_continuity_intent_read: async[\s\S]*?readLegacyIntentAuthorized\(identity, args\)/);
+  assert.match(serverSource, /work_continuity_work_catalog: async[\s\S]*?listLegacyWorksAuthorized\(identity, args\)/);
+  assert.match(serverSource, /tenant_work_gallery_list: async[\s\S]*?galleryLegacyWorksAuthorized\(identity, args\)/);
+  assert.match(serverSource, /workContinuityV2Store\.listWorks\(aclIdentity, \{ view: "operational", project_id \}\)/);
+  assert.match(serverSource, /authorizedResumeWorkIds,/);
+  assert.match(serverSource, /const governedLegacyReadRuntime = workContinuityRuntime \? Object\.freeze\(\{[\s\S]*?listWorks: listLegacyWorksAuthorized,[\s\S]*?readIntent: readLegacyIntentAuthorized/);
+  assert.match(serverSource, /resolveContinuityProjectBinding\([\s\S]*?governedLegacyReadRuntime,[\s\S]*?preferPersistedWorkProject: true/);
+  const hookStart = serverSource.indexOf("beforeToolCall: async");
+  const hookEnd = serverSource.indexOf("afterToolCall: async", hookStart);
+  const hook = serverSource.slice(hookStart, hookEnd);
+  assert.ok(hook.indexOf("await requireCanonicalWorkRead(identity, authorizationTarget.args.work_id)") <
+    hook.indexOf("registerAuthenticatedPresence(identity)"));
+  for (const handler of [
+    "tenant_work_gallery_join", "tenant_work_gallery_heartbeat", "tenant_work_branch_open",
+    "tenant_work_lease_acquire", "tenant_work_lease_renew", "tenant_work_lease_release",
+    "tenant_work_message_post", "tenant_work_inbox",
+  ]) {
+    const start = serverSource.indexOf(`${handler}: async`);
+    const end = serverSource.indexOf("},\n    ", start);
+    assert.match(serverSource.slice(start, end), /await requireCanonicalWorkRead\(identity, args\.work_id\)/,
+      `${handler} must authorize the exact canonical Work before any legacy mutation/read`);
+  }
 });
 
 test("allows server-issued MCP session bootstrap for agent heartbeat", () => {
@@ -456,6 +519,113 @@ test("keeps only genuine transient failures retryable", () => {
   assert.equal(unexpected.structuredContent.error.message, "The governed request failed.");
 });
 
+test("preserves a bounded machine-readable host capability failure", () => {
+  for (const capability of Object.values(HOST_APP_CAPABILITIES)) {
+    const result = toolFailure(Object.assign(
+      new Error(`host_app_capability_required:${capability}`),
+      {
+        code: "host_app_capability_required",
+        required_capability: capability,
+        secret: "must-not-leak",
+      },
+    ));
+    assert.equal(result.structuredContent.error.code, "host_app_capability_required");
+    assert.equal(result.structuredContent.error.required_capability, capability);
+    assert.equal(result.structuredContent.error.status, 403);
+    assert.equal(result.structuredContent.error.retryable, false);
+    assert.equal(JSON.stringify(result).includes("must-not-leak"), false);
+  }
+
+  for (const unknown of [
+    "private.customer42.token123",
+    `work.${"x".repeat(200)}`,
+    "work.operate:secret",
+  ]) {
+    const unbounded = toolFailure(Object.assign(
+      new Error(`host_app_capability_required:${unknown}`),
+      { code: "host_app_capability_required", required_capability: unknown },
+    ));
+    assert.equal(unbounded.structuredContent.error.code, "host_app_capability_required");
+    assert.equal(unbounded.structuredContent.error.status, 403);
+    assert.equal(Object.hasOwn(unbounded.structuredContent.error, "required_capability"), false);
+    assert.equal(JSON.stringify(unbounded).includes(unknown), false);
+  }
+
+  let producerError;
+  try {
+    requireHostAppToolCapability({
+      identity: { authenticatedHostPrincipal: { registered: true, capabilities: [] } },
+      toolName: "work_continuity_v2_read",
+      tools: [{ name: "work_continuity_v2_read", annotations: { readOnlyHint: true } }],
+    });
+  } catch (error) {
+    producerError = error;
+  }
+  const integrated = toolFailure(producerError);
+  assert.equal(integrated.structuredContent.error.code, "host_app_capability_required");
+  assert.equal(integrated.structuredContent.error.required_capability, "work.read");
+  assert.equal(integrated.structuredContent.error.status, 403);
+});
+
+test("filters direct tools and dynamic wrapper modes by the registered app upper bound", () => {
+  const tool = (name, readOnlyHint) => ({ name, annotations: { readOnlyHint } });
+  const available = [
+    tool("core_health", true),
+    tool("work_continuity_v2_read", true),
+    tool("tenant_work_task_record", false),
+    tool("memory_context", true),
+    tool("memory_checkpoint", false),
+    tool("agent_heartbeat", false),
+    tool("nyra_policy_registry_activate", false),
+    tool("core_capability_read", true),
+    tool("core_capability_invoke", false),
+  ];
+  const identityFor = (capabilities) => ({
+    kind: "codex",
+    authenticatedHostPrincipal: {
+      registered: true,
+      host_kind: "codex_native",
+      client_type: "codex",
+      interaction_mode: "native_tooling",
+      capabilities,
+    },
+  });
+  const namesFor = (capabilities) => filterToolsForClient(
+    available,
+    identityFor(capabilities),
+  ).map(({ name }) => name);
+
+  assert.deepEqual(namesFor(["work.read"]), [
+    "core_health",
+    "work_continuity_v2_read",
+    "core_capability_read",
+  ]);
+  assert.deepEqual(namesFor(["work.read", "work.operate"]), [
+    "core_health",
+    "work_continuity_v2_read",
+    "tenant_work_task_record",
+    "core_capability_read",
+    "core_capability_invoke",
+  ]);
+  assert.deepEqual(namesFor(["core.read", "core.operate"]), [
+    "core_health",
+    "memory_context",
+    "memory_checkpoint",
+    "core_capability_read",
+    "core_capability_invoke",
+  ]);
+  assert.deepEqual(namesFor(["work.coordinate"]), [
+    "core_health",
+    "agent_heartbeat",
+    "core_capability_invoke",
+  ]);
+  assert.deepEqual(namesFor(["core.admin"]), [
+    "core_health",
+    "nyra_policy_registry_activate",
+    "core_capability_invoke",
+  ]);
+});
+
 test("publishes protected-resource and PKCE S256 metadata", async () => serve(async (base) => {
   const health = await fetch(`${base}/healthz`).then((r) => r.json());
   assert.equal(health.ok, true);
@@ -468,7 +638,7 @@ test("publishes protected-resource and PKCE S256 metadata", async () => serve(as
   assert.equal(health.health_contract_digest, HOST_NATIVE_HEALTH_CONTRACT_DIGEST);
   assert.equal(HOST_NATIVE_HEALTH_CONTRACT_VERSION, CORE_HEALTH_CONTRACT_VERSION);
   assert.equal(HOST_NATIVE_HEALTH_CONTRACT_DIGEST, CORE_HEALTH_CONTRACT_DIGEST);
-  assert.equal(health.version, "0.16.0-governed-continuity-fabric");
+  assert.equal(health.version, "0.17.0-nyra-conversational-orchestration");
   assert.equal(health.build, null);
   assert.equal(health.memory_fabric_configured, false);
   assert.equal(health.research_cortex_configured, false);
@@ -1219,6 +1389,12 @@ test("production MCP readiness rejects PostgreSQL 15 and probe errors", async ()
   ]) {
     const app = createApp(productionConfig, {
       handlers,
+      fetchImpl: async () => new Response(JSON.stringify({
+        ok: true,
+        render_ready: true,
+        research_airlock: { ready: false, operational_safe: true, mode: "shadow", state_backend: "unavailable" },
+        build: { commit_sha: "a".repeat(40), commit_verifiable: true },
+      }), { status: 200, headers: { "content-type": "application/json" } }),
       readiness: {
         continuityInitialized: true,
         decisionLedgerInitialized: true,
@@ -1370,6 +1546,41 @@ test("host-native security prerequisites are production-and-feature scoped", () 
     development.reasons.some((reason) => reason.startsWith("host_native_")),
     false,
   );
+});
+
+test("governed multi-host readiness requires registry, independent signing, and host protocol", () => {
+  const base = {
+    environment: "development",
+    runtimeBuildCommit: "b".repeat(40),
+    codexKeys: ["codex-key"],
+    universalCoreUrl: "https://core.example.test",
+    universalCoreKey: "tenant-core-secret",
+    nyraGovernedContinueEnabled: true,
+  };
+  const missing = buildReadiness(base);
+  assert.equal(missing.components.governed_multi_host.required, true);
+  assert.equal(missing.components.governed_multi_host.ready, false);
+  assert(missing.reasons.includes("governed_multi_host_not_configured"));
+  assert(missing.reasons.includes("governed_multi_host_protocol_disabled"));
+
+  const ready = buildReadiness({
+    ...base,
+    hostNativeAgentProtocolEnabled: true,
+    databaseUrl: "postgres://configured",
+    hostAppRegistry: {
+      configured: true,
+      revision: "a".repeat(64),
+      apps: [{ app_id: "chatgpt_prod" }, { app_id: "future_ai" }],
+    },
+    nyraGovernedContinueSigningSecret: "n".repeat(32),
+    nyraGovernedContinueConfigurationValid: true,
+  }, {
+    readiness: { continuityInitialized: true },
+  });
+  assert.equal(ready.components.governed_multi_host.ready, true);
+  assert.equal(ready.components.governed_multi_host.registered_app_count, 2);
+  assert.equal(ready.components.governed_multi_host.registry_revision, "a".repeat(64));
+  assert.equal(ready.ready, true);
 });
 
 test("production host-native readiness fails closed for missing, short, and reused AGENT_SIGNATURE_SECRET", () => {
@@ -1799,7 +2010,7 @@ test("translates a stale ChatGPT work_preflight descriptor into Nyra's conversat
   }
 });
 
-test("preserves the stale ChatGPT self-model discovery and read path", async () => {
+test("routes stale ChatGPT self-model discovery and reads through Nyra's unique front door", async () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = publicKey.export({ format: "jwk" });
   jwk.kid = "chatgpt-stale-self-model-key";
@@ -1862,7 +2073,7 @@ test("preserves the stale ChatGPT self-model discovery and read path", async () 
         } },
       }),
     }).then((response) => response.json());
-    assert.equal(catalog.result?.structuredContent?.tool, "core_capability_catalog", JSON.stringify(catalog));
+    assert.equal(catalog.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(catalog));
 
     const read = await fetch(`${base}/mcp`, {
       method: "POST",
@@ -1879,7 +2090,7 @@ test("preserves the stale ChatGPT self-model discovery and read path", async () 
         } },
       }),
     }).then((response) => response.json());
-    assert.equal(read.result?.structuredContent?.tool, "core_capability_read", JSON.stringify(read));
+    assert.equal(read.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(read));
 
     const conflictingCatalog = await fetch(`${base}/mcp`, {
       method: "POST",
@@ -1897,29 +2108,44 @@ test("preserves the stale ChatGPT self-model discovery and read path", async () 
     }).then((response) => response.json());
     assert.equal(conflictingCatalog.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(conflictingCatalog));
 
-    assert.deepEqual(received.map(([name]) => name), ["catalog", "read", "nyra_converse"]);
-    assert.deepEqual({
-      group: received[0][1].group,
-      include_schema: received[0][1].include_schema,
-      limit: received[0][1].limit,
-      environment_present: Object.hasOwn(received[0][1], "environment"),
-    }, {
-      group: "self_model",
-      include_schema: true,
-      limit: 100,
-      environment_present: false,
+    const reserveHint = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 353,
+        method: "tools/call",
+        params: { name: "core_capability_catalog", arguments: {
+          capability_id: "host_native_action_reserve",
+          request: "Nyra, dimmi cosa manca per continuare",
+          catalog_revision: "b".repeat(64),
+          arguments: { owner_confirmed: true },
+          environment: "production",
+        } },
+      }),
+    }).then((response) => response.json());
+    assert.equal(reserveHint.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(reserveHint));
+
+    assert.deepEqual(received.map(([name]) => name), [
+      "nyra_converse", "nyra_converse", "nyra_converse", "nyra_converse",
+    ]);
+    assert.match(received[0][1].message, /capability governata self_model/);
+    assert.match(received[1][1].message, /capability governata nyra_self_model/);
+    assert.match(received[2][1].message, /capability governata core_control_plane_read/);
+    assert.equal(received[3][1].message, "Nyra, dimmi cosa manca per continuare");
+    assert.deepEqual(received[3][1][NYRA_SERVER_CONNECTOR_HINT], {
+      server_issued: true,
+      request_kind: "capability_discovery",
+      capability_hint: "host_native_action_reserve",
     });
-    assert.deepEqual({
-      capability_id: received[1][1].capability_id,
-      catalog_revision: received[1][1].catalog_revision,
-      arguments: received[1][1].arguments,
-      environment_present: Object.hasOwn(received[1][1], "environment"),
-    }, {
-      capability_id: "nyra_self_model",
-      catalog_revision: "a".repeat(64),
-      arguments: {},
-      environment_present: false,
-    });
+    for (const [index, [, args]] of received.entries()) {
+      if (index < 3) assert.match(args.message, /problema, requisiti e prossimo passo/);
+      assert.equal(args.locale, "auto");
+      assert.equal(args.response_style, "concise");
+      for (const key of ["group", "include_schema", "limit", "catalog_revision", "arguments", "environment"]) {
+        assert.equal(Object.hasOwn(args, key), false, key);
+      }
+    }
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -1934,9 +2160,9 @@ test("publishes the governed host-browsing research sequence", async () => serve
   const body = await response.json();
   assert.equal(response.headers.get("mcp-session-id"), "mcp-app-test-session");
   assert.match(body.result.instructions, /nyra_research_plan/);
-  assert.match(body.result.instructions, /host ChatGPT or Codex web tool/);
+  assert.match(body.result.instructions, /authenticated host's web tool/);
   assert.match(body.result.instructions, /never include secrets/i);
-  assert.match(body.result.instructions, /installed as a ChatGPT connector/);
+  assert.match(body.result.instructions, /governed MCP connector/);
   assert.match(body.result.instructions, /Never ask for or accept an API key in chat/);
   assert.match(body.result.instructions, /Nyra and Universal Core operate without an OpenAI API key/);
   assert.match(body.result.instructions, /Never call provider tools, open setup panels/);
@@ -1952,7 +2178,7 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.match(body.result.instructions, /HOST-NATIVE MULTI-AGENT/);
   assert.match(body.result.instructions, /provider_execution=false/);
   assert.match(body.result.instructions, /provider_api_key_required=false/);
-  assert.match(body.result.instructions, /cannot click, bypass or replace ChatGPT\/Codex approval/i);
+  assert.match(body.result.instructions, /cannot click, bypass or replace the registered host's approval/i);
   assert.match(body.result.instructions, /RESEARCH DISTILLATION/);
   assert.match(body.result.instructions, /tenant-isolated shadow workspace/);
   assert.match(body.result.instructions, /never invokes a server-side model provider/i);
