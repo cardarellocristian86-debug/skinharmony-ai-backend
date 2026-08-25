@@ -142,21 +142,8 @@ function verifySchemaReadback(readback, expectedDigest) {
   const missingTables = ENTITY360_TABLES.filter((name) => !readback.tables.includes(name));
   const missingGuards = ENTITY360_APPEND_ONLY_TABLES.filter((name) =>
     !readback.append_only_tables.includes(name));
-  if (missingTables.length || missingGuards.length) {
-    fail("entity360_migration_readback_failed", {
-      missing_tables: missingTables,
-      missing_append_only_guards: missingGuards,
-    });
-  }
   if (readback.migration?.sql_digest !== expectedDigest) {
     fail("entity360_migration_digest_mismatch");
-  }
-  if (!readback.snapshot_tenant_fk || !readback.snapshot_chain_guard || !readback.backfill_tenant_fk ||
-      !readback.feature_enforcement_guard || !readback.backfill_non_destructive_guard ||
-      !readback.backfill_cursor_binding_guard || !readback.backfill_state_guard ||
-      !readback.backfill_create_guard ||
-      !readback.backfill_checkpoint_truncate_guard) {
-    fail("entity360_migration_integrity_readback_failed");
   }
   if (!readback.schema_manifest_matches
     || readback.schema_manifest_digest !== readback.expected_schema_manifest_digest) {
@@ -164,6 +151,19 @@ function verifySchemaReadback(readback, expectedDigest) {
       observed_schema_manifest_digest: readback.schema_manifest_digest,
       expected_schema_manifest_digest: readback.expected_schema_manifest_digest,
     });
+  }
+  if (missingTables.length || missingGuards.length) {
+    fail("entity360_migration_readback_failed", {
+      missing_tables: missingTables,
+      missing_append_only_guards: missingGuards,
+    });
+  }
+  if (!readback.snapshot_tenant_fk || !readback.snapshot_chain_guard || !readback.backfill_tenant_fk ||
+      !readback.feature_enforcement_guard || !readback.backfill_non_destructive_guard ||
+      !readback.backfill_cursor_binding_guard || !readback.backfill_state_guard ||
+      !readback.backfill_create_guard ||
+      !readback.backfill_checkpoint_truncate_guard) {
+    fail("entity360_migration_integrity_readback_failed");
   }
   return readback;
 }

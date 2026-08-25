@@ -191,6 +191,15 @@ test("public migration verification requires the terminal governed registry chec
       && error.details?.observed_application_state === applicationState
       && error.details?.observed_checkpoint === checkpoint);
   }
+  assert.throws(() => verifyEntity360CompletedMigrationReadback({
+    ...readback,
+    append_only_tables: readback.append_only_tables.filter((name) =>
+      name !== "core_entity360_snapshots"),
+    schema_manifest_matches: false,
+    schema_manifest_digest: "a".repeat(64),
+  }, sqlDigest), (error) => error.code === "entity360_migration_schema_manifest_mismatch"
+    && error.status === 503,
+  "exact manifest drift remains the authoritative error when a trigger is disabled");
 });
 
 test("snapshot write is tenant-scoped, CAS-bound and exactly idempotent", async () => {
