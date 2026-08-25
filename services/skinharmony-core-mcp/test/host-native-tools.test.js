@@ -8,4 +8,11 @@ test("host-native work automation remains zero-provider and single-builder", () 
   assert.equal(HOST_NATIVE_NYRA_WORK_AUTOMATION.maximum_parallel_builders, 1);
   assert.equal(HOST_NATIVE_NYRA_WORK_AUTOMATION.provider_execution, false);
   assert.ok(HOST_NATIVE_TOOLS.some((tool) => tool.name === "host_native_action_reconcile"));
+  const quarantine = HOST_NATIVE_TOOLS.find(
+    (tool) => tool.name === "host_native_action_quarantine_expired",
+  );
+  assert.ok(quarantine);
+  assert.deepEqual(quarantine.inputSchema.required, [
+    "ticket_id", "reservation_id", "readback_digest", "idempotency_key",
+  ]);
 });

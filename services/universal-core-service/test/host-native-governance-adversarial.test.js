@@ -605,6 +605,78 @@ test("expired observation lease rejects all closure paths without mutating autho
   assert.deepEqual(after, before);
 });
 
+test("expired generic reservation can only be quarantined with exact readback evidence", async () => {
+  let clockValue = START;
+  let sequence = 0;
+  const clock = () => clockValue;
+  const governance = governanceFactory({
+    clock,
+    idFactory: () => `generic-quarantine-${++sequence}`,
+    reservationLeaseMs: 60_000,
+  });
+  const delegation = await governance.issueDelegation(delegationInput(clockValue));
+  const pending = pendingManifest();
+  const join = await governance.issueCoreJoinVerdict(
+    coreJoinInput(pending, "generic-quarantine-join"),
+  );
+  const issued = await issueReleaseTicket(governance, {
+    delegationId: delegation.delegation_id,
+    manifest: bindJoin(pending, join.verdict.verdict_id),
+    session: "generic-quarantine-session",
+    idempotencyKey: "generic-quarantine-ticket",
+  });
+  const reserved = await governance.reserveActionTicket({
+    tenant_id: "tenant-a",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    idempotency_key: "generic-quarantine-reserve",
+  });
+  const before = await governance.readActionTicket({
+    tenant_id: "tenant-a",
+    ticket_id: issued.ticket.ticket_id,
+  });
+
+  clockValue += 60_001;
+  const quarantineInput = {
+    tenant_id: "tenant-a",
+    ticket_id: issued.ticket.ticket_id,
+    reservation_id: reserved.reservation_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+    readback_digest: H("f"),
+    idempotency_key: "generic-quarantine-close",
+  };
+  await assert.rejects(governance.quarantineExpiredActionTicket({
+    ...quarantineInput,
+    reservation_id: "hnr_wrong-reservation",
+    idempotency_key: "generic-quarantine-wrong-reservation",
+  }), /host_session_mismatch/);
+  assert.deepEqual(
+    await governance.readActionTicket({
+      tenant_id: "tenant-a",
+      ticket_id: issued.ticket.ticket_id,
+    }),
+    before,
+  );
+
+  const quarantined = await governance.quarantineExpiredActionTicket(quarantineInput);
+  assert.equal(quarantined.state, "quarantined");
+  assert.equal(quarantined.observed_outcome, "unknown");
+  assert.equal(quarantined.outcome, before.outcome);
+  assert.equal(quarantined.result_commit, before.result_commit);
+  assert.equal(quarantined.host_readback_digest, H("f"));
+  assert.equal(quarantined.uses, before.uses);
+  assert.match(quarantined.quarantine_reason_digest, /^[a-f0-9]{64}$/);
+  assert.deepEqual(
+    await governance.quarantineExpiredActionTicket(quarantineInput),
+    quarantined,
+  );
+  await assert.rejects(governance.authorizeFinalize({
+    tenant_id: "tenant-a",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+  }), /action_ticket_reservation_expired/);
+});
+
 test("final receipt replays while fresh and expired evidence is retained on re-attestation", async () => {
   let clockValue = START;
   let sequence = 0;
