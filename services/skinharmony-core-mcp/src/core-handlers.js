@@ -32,6 +32,7 @@ import {
   signNyraDeepV2McpRequest,
 } from "./nyra-deep-v2-mcp-request.js";
 import { isCodexGoodModeDelegation } from "./auth.js";
+import { authenticatedHostKind } from "./host-app-registry.js";
 import {
   AI_WORK_QUALITY_SCHEMA_VERSION,
   mediateFailureObservation,
@@ -1077,13 +1078,19 @@ export function createCoreHandlers(config, options = {}) {
       if (allowFailurePayload) {
         return { ok: false, status: response.status, payload };
       }
-      const candidateUpstreamCode = typeof payload.error === "string" &&
-        /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/.test(payload.error)
+      const nestedEntity360Code = payload.error && typeof payload.error === "object"
+        && !Array.isArray(payload.error)
+        && Object.keys(payload.error).every((key) => ["code", "message"].includes(key))
+        && /^entity360_[a-z0-9_]{1,148}$/u.test(String(payload.error.code || ""))
+        ? String(payload.error.code)
+        : null;
+      const candidateUpstreamCode = typeof payload.error === "string"
+        && /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,119}$/.test(payload.error)
         ? payload.error
-        : "unknown";
-      const upstreamCode = strictTransport && !POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS.has(candidateUpstreamCode)
-        ? "unknown"
-        : candidateUpstreamCode;
+        : nestedEntity360Code || "unknown";
+      const upstreamCode = strictTransport && !nestedEntity360Code
+        && !POLICY_REGISTRY_SAFE_UPSTREAM_ERRORS.has(candidateUpstreamCode)
+        ? "unknown" : candidateUpstreamCode;
       const error = new Error(`core_request_failed:${response.status}:${upstreamCode}`);
       error.code = upstreamCode === "unknown" ? "core_request_failed" : upstreamCode;
       error.status = response.status;
@@ -1489,10 +1496,13 @@ export function createCoreHandlers(config, options = {}) {
         binding_version: "owner_request_binding_v1",
         binding_hash: crypto.createHash("sha256").update(String(requestBinding)).digest("hex"),
       }),
-      ...(hostNativeOwner || isVerifiedOwnerRoot(identity)
+      ...(hostNativeOwner || isVerifiedOwnerRoot(identity) ||
+          (allowOAuthTenantOwner && isVerifiedOAuthTenantOwner(identity))
             ? {
           owner_subject_fingerprint: `osf_${crypto.createHmac("sha256", signingKey)
-            .update(`${hostNativeCodexGoodMode ? "host-native-codex-owner" : "host-native-owner"}\u0000${String(identity.subject).trim()}`)
+            .update(`${hostNativeOwner
+              ? (hostNativeCodexGoodMode ? "host-native-codex-owner" : "host-native-owner")
+              : "core-action-owner"}\u0000${String(identity.subject).trim()}`)
             .digest("hex")}`,
         }
         : {}),
@@ -1737,10 +1747,15 @@ export function createCoreHandlers(config, options = {}) {
   }
 
   function hostNativeKind(identity) {
-    const clientType = String(identity?.agentPresence?.client_type || "").toLowerCase();
-    if (clientType === "codex") return "codex_native";
-    if (clientType === "chatgpt") return "chatgpt_native";
-    throw new Error("host_native_client_type_required");
+    if (identity?.authenticatedHostPrincipal) {
+      return authenticatedHostKind(identity);
+    }
+    // Compatibility for direct internal/test invocation. Public MCP calls
+    // always carry a server-derived principal, so `agentPresence.client_type`
+    // and caller `host_type` can no longer select a delegation audience.
+    if (identity?.kind === "codex") return "codex_native";
+    if (identity?.kind === "oauth") return "chatgpt_native";
+    throw new Error("registered_host_principal_required");
   }
 
   async function trustedHostNativeTicketRecord(ticketId, identity, allowedStates) {
@@ -1769,7 +1784,7 @@ export function createCoreHandlers(config, options = {}) {
       typeof ticket.work_id !== "string" || ticket.work_id.length < 1 ||
       !/^[a-f0-9]{64}$/i.test(String(ticket.intent_anchor_digest || "")) ||
       typeof ticket.repository !== "string" || ticket.repository.length < 1 ||
-      !["codex_native", "chatgpt_native"].includes(ticket.host_kind) ||
+      ticket.host_kind !== hostNativeKind(identity) ||
       ticket.host_session_fingerprint !== sessionFingerprint ||
       !ticket.action || typeof ticket.action !== "object" || Array.isArray(ticket.action) ||
       typeof ticket.action.kind !== "string" || ticket.action.kind.length < 1 ||
@@ -2918,7 +2933,11 @@ export function createCoreHandlers(config, options = {}) {
         ...(args.budget ? { budget: args.budget } : {}),
         ...(args.release_policy ? { release_policy: args.release_policy } : {}),
         idempotency_key: args.idempotency_key,
-        expires_at: new Date(Date.now() + ttlSeconds * 1_000).toISOString(),
+        // Keep the semantic duration separate from the transport timestamp.
+        // Universal Core uses it for idempotency, so a retry that necessarily
+        // carries a fresh expires_at and owner assertion still replays the
+        // original bounded delegation instead of widening its lifetime.
+        requested_ttl_seconds: ttlSeconds,
         owner_confirmed: true,
         confirmation_reference: hostNativeConfirmationReference(
           identity,
@@ -2927,16 +2946,33 @@ export function createCoreHandlers(config, options = {}) {
           args.idempotency_key,
         ),
       };
-      const payload = await coreRequest("/v1/host-native/delegations", identity.tenantId, {
+      const submit = (body) => coreRequest("/v1/host-native/delegations", identity.tenantId, {
         method: "POST",
         body: {
-          ...requestBody,
+          ...body,
           owner_context: ownerContext(identity, {
             hostNativeOwner: true,
-            requestBinding: ownerRequestBinding("host_native_delegation_issue", requestBody),
+            requestBinding: ownerRequestBinding("host_native_delegation_issue", body),
           }),
         },
       });
+      let payload;
+      try {
+        payload = await submit(requestBody);
+      } catch (error) {
+        // Compatibility is deliberately narrow: only a pre-TTL-contract Core
+        // rejecting this exact new field may receive the legacy absolute
+        // expiry. Every other error remains fail-closed.
+        if (error?.code !== "unknown_field:requested_ttl_seconds") throw error;
+        const {
+          requested_ttl_seconds: _requestedTtlSeconds,
+          ...legacyRequestBody
+        } = requestBody;
+        payload = await submit({
+          ...legacyRequestBody,
+          expires_at: new Date(Date.now() + ttlSeconds * 1_000).toISOString(),
+        });
+      }
       return dedicatedCoreTextResult(payload, "/v1/host-native/delegations");
     },
     host_native_delegation_read: async (args, identity) => textResult(
@@ -3123,6 +3159,14 @@ export function createCoreHandlers(config, options = {}) {
     work_preflight: async (args, identity) => {
       const coreRuntime = await runtimeHierarchyEvaluate(args, identity, args.operation_type || "work_preflight");
       const agentPresence = identity.agentPresence || createAgentPresence(config, identity, args);
+      const registeredPrincipal = identity.authenticatedHostPrincipal?.registered === true;
+      const resolvedHostType = identity.authenticatedHostPrincipal
+        ? (registeredPrincipal
+            ? authenticatedHostKind(identity)
+            : identity.kind === "codex" ? "codex_native" : "chatgpt_native")
+        : (identity.kind === "codex" || agentPresence.client_type === "codex")
+          ? "codex_native"
+          : "chatgpt_native";
       const bootstrap = sharedMemoryBootstrap
         ? await sharedMemoryBootstrap.load(identity)
         : { loaded: false, tenant_id: identity.tenantId, missing_files: [], reason: "shared_memory_bootstrap_unavailable" };
@@ -3144,8 +3188,10 @@ export function createCoreHandlers(config, options = {}) {
         ...(Array.isArray(args.acceptance_criteria) ? { acceptance_criteria: args.acceptance_criteria } : {}),
         ...(Array.isArray(args.constraints) ? { constraints: args.constraints } : {}),
         host_native: {
-          requested: args.host_type === "chatgpt_native" || args.host_type === "codex_native",
-          host_type: args.host_type || (agentPresence.client_type === "codex" ? "codex_native" : "chatgpt_native"),
+          requested: identity.authenticatedHostPrincipal
+            ? registeredPrincipal
+            : args.host_type === "chatgpt_native" || args.host_type === "codex_native",
+          host_type: resolvedHostType,
           provider_execution: false,
           provider_api_key_required: false,
           server_model_calls: 0,
@@ -3979,7 +4025,11 @@ export function createCoreHandlers(config, options = {}) {
       // cannot be supplied through the public tool schema.
       const tenantWorkBootstrap =
         args.internal_owner_assertion_scope === "tenant_work_bootstrap" &&
-        ["work.continuity.create", "work.continuity.start_or_resume"].includes(
+        [
+          "work.continuity.create",
+          "work.continuity.start_or_resume",
+          "work.continuity.v2.create",
+        ].includes(
           String(args.action_type || ""),
         );
       const confirmationOptions = { allowOAuthTenantOwner: tenantWorkBootstrap };
@@ -4003,9 +4053,18 @@ export function createCoreHandlers(config, options = {}) {
         internal_owner_assertion_scope: _internalOwnerAssertionScope,
         ...safeArgs
       } = args;
+      const correlatedRequestId = safeArgs.idempotency_key
+        ? `action_${crypto.createHash("sha256")
+          .update(`core-action-request-v1\u0000${identity.tenantId}\u0000${String(safeArgs.action_type || "")}\u0000${String(safeArgs.idempotency_key)}`)
+          .digest("hex")
+          .slice(0, 48)}`
+        : safeArgs.request_id || `action_${crypto.randomUUID()}`;
       const requestBody = sanitizeCoreBody({
         ...safeArgs,
-        request_id: safeArgs.request_id || `action_${crypto.randomUUID()}`,
+        // A governed idempotency key owns request correlation. Deriving the
+        // request id here keeps retries byte-stable across MCP replicas while
+        // Universal Core still detects semantic substitution independently.
+        request_id: correlatedRequestId,
         ...(sharedContext ? { memory_context: sharedContext } : {}),
         tenant_id: identity.tenantId,
         owner_confirmed: boundedInternalCoordination ? false : confirmed,
@@ -4408,6 +4467,15 @@ export function createCoreHandlers(config, options = {}) {
     configurable: false,
     writable: false,
   });
+  // Entity 360 is Work-bound at the v1 transport boundary. Reuse the exact
+  // active-lease/DTT Work context transport without exposing it as an MCP
+  // capability.
+  Object.defineProperty(handlers, "dttCoreRequest", {
+    value: dttCoreRequest,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
   // Work Automation v3 shares the hardened Core transport.  Keeping the seam
   // non-enumerable prevents it from becoming an MCP capability by accident.
   Object.defineProperty(handlers, "nyraWorkAutomationCoreRequest", {
@@ -4451,7 +4519,8 @@ export function createCoreWriteGuard(config, options = {}) {
     const actionType = String(action.action_type || "").toLowerCase();
     const tenantWorkBootstrap =
       actionType === "work.continuity.create" ||
-      actionType === "work.continuity.start_or_resume";
+      actionType === "work.continuity.start_or_resume" ||
+      actionType === "work.continuity.v2.create";
     const operationClass = action.operation_class ||
       (autonomousInternalActionTypes.has(actionType)
         ? "bounded_internal_coordination_write"
@@ -4522,6 +4591,17 @@ export function createCoreWriteGuard(config, options = {}) {
       allowed,
       decision,
       mediation,
+      decision_id: String(
+        authorization.decision_id || contract.decision_id || payload.decision_id || "",
+      ).slice(0, 240) || null,
+      core_authorization_receipt:
+        payload.authorization_receipt && typeof payload.authorization_receipt === "object"
+          ? payload.authorization_receipt : null,
+      core_authorization_attempt_receipt:
+        payload.authorization_attempt_receipt &&
+        typeof payload.authorization_attempt_receipt === "object"
+          ? payload.authorization_attempt_receipt : null,
+      idempotent_replay: payload.idempotent_replay === true,
       owner_confirmation_required: confirmationRequired,
       confirmation_satisfied: confirmationSatisfied,
     };

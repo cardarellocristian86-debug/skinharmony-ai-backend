@@ -1,4 +1,5 @@
 import { digest } from "./work-continuity-runtime.js";
+import { authenticatedHostKind } from "./host-app-registry.js";
 
 const TENANT = /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/;
 const PROJECT = /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/;
@@ -58,7 +59,14 @@ export function buildNyraNativePlanRequest({ identity, work, intent, autopilot, 
     throw new Error("nyra_autopilot_plan_invalid");
   }
   const objective = text(intent?.anchor?.objective || work?.objective || "Complete the bounded Work safely.", 4_000);
-  const host_type = identity?.agentPresence?.client_type === "chatgpt" ? "chatgpt_native" : "codex_native";
+  // Public MCP calls carry a registry-authenticated host principal. Never
+  // relabel an unfamiliar future host as Codex merely because it is not
+  // ChatGPT. The fallback remains only for direct legacy/internal callers.
+  const host_type = identity?.authenticatedHostPrincipal
+    ? authenticatedHostKind(identity)
+    : identity?.kind === "codex" || identity?.agentPresence?.client_type === "codex"
+      ? "codex_native"
+      : "chatgpt_native";
   const release = plan.intent?.release === true;
   const implementation = plan.intent?.implementation === true;
   const builderInstruction = [

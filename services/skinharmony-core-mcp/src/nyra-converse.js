@@ -1,8 +1,17 @@
 import crypto from "node:crypto";
 import { NYRA_DIALOGUE_WIDGET_URI } from "./nyra-operating-dialogue-widget.js";
+import {
+  governedWorkBootstrapDigest,
+  materializeGovernedWorkBootstrapRequest,
+} from "./work-bootstrap-contract.js";
+import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 
 const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_SIGNAL_LENGTH = 500;
+const MAX_DIRECTIVE_ITEMS = 8;
+const CORE_ACTION_ID_PATTERN = /^action:[a-zA-Z0-9][a-zA-Z0-9:._-]{0,158}$/;
+const PUBLIC_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
+const FALSE_COMPLETION_CLAIM_PATTERN = /\b(?:deploy(?:ed|\s+complet\w*)|merge\s+(?:eseguit\w*|complet\w*|done)|publish(?:ed|\s+complet\w*)|pubblicat\w*|inviat\w*|sent|completed|completat\w*|eseguit\w*)\b/iu;
 const RESERVED_AUTHORITY_KEYS = new Set([
   "api_key",
   "authenticated_tenant_id",
@@ -22,13 +31,23 @@ const RESERVED_AUTHORITY_KEYS = new Set([
 ]);
 
 const CONSEQUENTIAL_PATTERNS = Object.freeze([
-  ["release", /\b(?:deploy|deployment|merge|push|publish|release|distribuisc\w*|pubblic\w*|rilasci\w*)\b/iu],
+  ["release", /\b(?:deploy\w*|deployment|merge|push|publish\w*|release|distribuisc\w*|distribuzion\w*|pubblic\w*|rilasci\w*|live|produzione)\b/iu],
   ["communication", /\b(?:send|email|message|notify|invia\w*|manda\w*|messaggi\w*|notific\w*)\b/iu],
   ["destructive", /\b(?:delete|remove|destroy|elimina\w*|cancella\w*|distrugg\w*)\b/iu],
   ["financial", /\b(?:pay|purchase|buy|refund|paga\w*|acquista\w*|rimborsa\w*)\b/iu],
   ["scheduling", /\b(?:book|schedule|invite|prenota\w*|calendar\w*|invita\w*)\b/iu],
   ["access", /\b(?:grant|revoke|permission|accesso|permess\w*|abilita\w*|revoca\w*)\b/iu],
 ]);
+
+const MANUAL_OWNER_ACTION_PATTERN = /\b(?:manual\w*|lo\s+faccio\s+io|faccio\s+io|owner\s+esegue|i(?:'|’)ll\s+do\s+it)\b/iu;
+const MERGE_PATTERN = /\bmerge\w*\b/iu;
+const GIT_PUSH_PATTERN = /\bpush\w*\b/iu;
+const PULL_REQUEST_PATTERN = /\b(?:pull\s+request|pr)\b/iu;
+const DEPLOY_PATTERN = /\b(?:deploy\w*|deployment|distribuisc\w*|distribuzion\w*|live|produzione)\b/iu;
+const PUBLISH_PATTERN = /\b(?:publish\w*|pubblic\w*|rilasci\w*|release)\b/iu;
+const WORK_BOOTSTRAP_PATTERN = /(?:\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:nuov\w*|new)\b)/iu;
+
+export const NYRA_SERVER_CONNECTOR_HINT = Symbol("nyra_server_connector_hint");
 
 function fail(code, status = 422) {
   const error = new Error(code);
@@ -59,6 +78,52 @@ function assertNoCallerAuthority(value, path = "$", depth = 0) {
 function boundedString(value, maximum = MAX_SIGNAL_LENGTH) {
   const text = typeof value === "string" ? value.trim() : "";
   return text ? text.slice(0, maximum) : null;
+}
+
+function boundedPublicText(value, maximum = MAX_SIGNAL_LENGTH) {
+  const text = boundedString(value, maximum);
+  return text && !PUBLIC_TEXT_CONTROL_PATTERN.test(text) ? text : null;
+}
+
+function strictCoreSignalList(value) {
+  if (!Array.isArray(value) || value.length > MAX_DIRECTIVE_ITEMS) {
+    throw fail("nyra_converse_interpretation_contract_invalid", 409);
+  }
+  const output = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw fail("nyra_converse_interpretation_contract_invalid", 409);
+    }
+    const text = item.trim();
+    if (!text || text.length > 240 || PUBLIC_TEXT_CONTROL_PATTERN.test(text) || output.includes(text)) {
+      throw fail("nyra_converse_interpretation_contract_invalid", 409);
+    }
+    output.push(text);
+  }
+  return Object.freeze(output);
+}
+
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+}
+
+function deterministicDigest(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
+
+function safeActionText(value, maximum = MAX_SIGNAL_LENGTH) {
+  const text = boundedPublicText(value, maximum);
+  return text && !FALSE_COMPLETION_CLAIM_PATTERN.test(text) ? text : null;
+}
+
+function directiveCode(value, fallback = "unspecified") {
+  const normalized = String(value || "")
+    .replace(/[^a-zA-Z0-9_.:-]+/g, "_")
+    .replace(/^[_:.-]+|[_:.-]+$/g, "")
+    .slice(0, 160);
+  return normalized || fallback;
 }
 
 function boundedWorkId(value) {
@@ -113,6 +178,20 @@ function normalizeWorkState(value, { workId, selectionRequired }) {
 function normalizeRisk(value) {
   const risk = String(value || "").trim().toLowerCase();
   return new Set(["low", "medium", "high", "blocked"]).has(risk) ? risk : "unknown";
+}
+
+function normalizeCoreState(value) {
+  const state = String(value || "").trim().toLowerCase();
+  return new Set(["observe", "ok", "attention", "critical", "protection", "blocked"]).has(state)
+    ? state
+    : null;
+}
+
+function normalizeCoreControl(value) {
+  const control = String(value || "").trim().toLowerCase();
+  return new Set(["observe", "suggest", "confirm", "execute_allowed", "blocked"]).has(control)
+    ? control
+    : null;
 }
 
 // The direct conversation never returns raw evidence, but it must carry the
@@ -204,7 +283,7 @@ function requireBoundPreflight(result, identity, args) {
     : payload.tenant_work_gallery && typeof payload.tenant_work_gallery === "object"
       ? payload.tenant_work_gallery
       : {};
-  const selectionRequired = !workId && (
+  const selectionRequired = args.work_bootstrap === undefined && !workId && (
     continuity.state === "work_selection_required" ||
     Number(gallery.work_count || 0) > 1
   );
@@ -311,8 +390,29 @@ function requireTenantBoundInterpretation(result, identity) {
     runtime.execution_allowed !== false
   ) throw fail("nyra_converse_core_runtime_binding_invalid", 409);
   const selected = payload.result?.selected_by_core || {};
+  const automation = payload.result?.automation_plan || {};
   const deep = payload.result?.deep_nyra_runtime || {};
   const memory = payload.received_memory || payload.result?.memory_context || {};
+  const selectedState = normalizeCoreState(selected.state);
+  const selectedControl = normalizeCoreControl(selected.control_level);
+  const selectedRisk = normalizeRisk(selected.risk_band);
+  if (selected.can_execute !== false || automation.execution_allowed !== false) {
+    throw fail("nyra_converse_interpretation_execution_claim_invalid", 409);
+  }
+  if (!selectedState || !selectedControl || selectedRisk === "unknown" ||
+      !Array.isArray(selected.blocked_reasons) ||
+      !Array.isArray(selected.unmet_conditions) ||
+      !Array.isArray(selected.evidence_requirements) ||
+      !Array.isArray(selected.allowed_alternatives) ||
+      typeof selected.requires_owner_confirmation !== "boolean" ||
+      typeof automation.owner_confirmation_required !== "boolean") {
+    throw fail("nyra_converse_interpretation_contract_invalid", 409);
+  }
+  const actionId = boundedPublicText(selected.primary_action_id, 160);
+  const actionLabel = safeActionText(selected.primary_action_label, MAX_SIGNAL_LENGTH);
+  const selectedActionValid = Boolean(
+    actionId && CORE_ACTION_ID_PATTERN.test(actionId) && actionLabel,
+  );
   return Object.freeze({
     core: Object.freeze({
       mode: runtime.mode,
@@ -321,8 +421,20 @@ function requireTenantBoundInterpretation(result, identity) {
       parity_matched: typeof runtime.parity?.matched === "boolean" ? runtime.parity.matched : null,
       execution_allowed: false,
     }),
-    selected_action_available: Boolean(boundedString(selected.primary_action_label, MAX_SIGNAL_LENGTH)),
-    risk_band: normalizeRisk(selected.risk_band),
+    selected_action_id: selectedActionValid ? actionId : null,
+    selected_action: selectedActionValid ? actionLabel : null,
+    selected_action_available: selectedActionValid,
+    core_state: selectedState,
+    core_control: selectedControl,
+    risk_band: selectedRisk,
+    blocked_reasons: strictCoreSignalList(selected.blocked_reasons),
+    unmet_conditions: strictCoreSignalList(selected.unmet_conditions),
+    evidence_requirements: strictCoreSignalList(selected.evidence_requirements),
+    allowed_alternatives: strictCoreSignalList(selected.allowed_alternatives),
+    next_step: safeActionText(automation.next_step, MAX_SIGNAL_LENGTH),
+    runbook_candidate: boundedPublicText(automation.runbook_candidate, 160),
+    owner_confirmation_required:
+      selected.requires_owner_confirmation === true || automation.owner_confirmation_required === true,
     dialogue_accepted: deep.dialogue?.validator?.accepted === true,
     opened_branch_count: boundedCount(deep.cognition?.opened_branch_count),
     memory: Object.freeze({
@@ -334,14 +446,66 @@ function requireTenantBoundInterpretation(result, identity) {
   });
 }
 
-function actionPolicy(message) {
+function serverConnectorHint(args) {
+  const hint = args?.[NYRA_SERVER_CONNECTOR_HINT];
+  if (!hint || typeof hint !== "object" || Array.isArray(hint) || hint.server_issued !== true) {
+    return Object.freeze({ request_kind: null, capability_hint: null });
+  }
+  const requestKind = new Set([
+    "capability_discovery",
+    "capability_read",
+    "branch_diagnosis",
+    "semantic_selection",
+    "work_preflight",
+  ]).has(hint.request_kind) ? hint.request_kind : null;
+  const capabilityHint = typeof hint.capability_hint === "string" &&
+    /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(hint.capability_hint)
+    ? hint.capability_hint
+    : null;
+  return Object.freeze({ request_kind: requestKind, capability_hint: capabilityHint });
+}
+
+function requestedActionClass(message, connectorHint, workBootstrapProvided = false) {
+  if (workBootstrapProvided || WORK_BOOTSTRAP_PATTERN.test(message)) return "WORK_BOOTSTRAP";
+  if (connectorHint.capability_hint === "host_native_action_reserve") return "TICKET_RESERVE";
+  if (MERGE_PATTERN.test(message)) return "GIT_MERGE";
+  if (GIT_PUSH_PATTERN.test(message)) return "GIT_PUSH";
+  if (PULL_REQUEST_PATTERN.test(message)) return "PULL_REQUEST_OPEN";
+  if (DEPLOY_PATTERN.test(message)) return "DEPLOY";
+  if (PUBLISH_PATTERN.test(message)) return "PUBLISH";
+  return "NONE";
+}
+
+function actionPolicy(
+  message,
+  connectorHint,
+  coreOwnerConfirmationRequired = false,
+  workBootstrapProvided = false,
+) {
   const categories = CONSEQUENTIAL_PATTERNS
     .filter(([, pattern]) => pattern.test(message))
     .map(([category]) => category);
+  const classifiedAction = requestedActionClass(message, connectorHint, workBootstrapProvided);
+  const actionClass = classifiedAction === "NONE" && (categories.length > 0 || coreOwnerConfirmationRequired)
+    ? "EXTERNAL_MUTATION"
+    : classifiedAction;
+  const mergeRequested = actionClass === "GIT_MERGE";
+  const ticketReserveRequested = actionClass === "TICKET_RESERVE";
+  const workBootstrapRequested = actionClass === "WORK_BOOTSTRAP";
+  const consequential = categories.length > 0 || ticketReserveRequested ||
+    workBootstrapRequested || coreOwnerConfirmationRequired;
   return Object.freeze({
-    consequential_request_detected: categories.length > 0,
+    consequential_request_detected: consequential,
     categories: Object.freeze(categories),
-    mode: categories.length ? "proposal_only" : "advisory_only",
+    action_class: actionClass,
+    capability_hint: connectorHint.capability_hint,
+    merge_requested: mergeRequested,
+    ticket_reserve_requested: ticketReserveRequested,
+    work_bootstrap_requested: workBootstrapRequested,
+    work_bootstrap_spec_provided: workBootstrapProvided,
+    manual_owner_execution_requested:
+      mergeRequested || (categories.includes("release") && MANUAL_OWNER_ACTION_PATTERN.test(message)),
+    mode: consequential ? "proposal_only" : "advisory_only",
     classification_only: true,
     external_action_authorized: false,
     consequential_action_performed: false,
@@ -361,21 +525,714 @@ function responseLanguage(locale) {
   return locale === "it" || locale === "en" ? locale : "match_user";
 }
 
-function staticReplySeed(locale, workBound, nextAction = null) {
-  const proposedNextAction = boundedString(nextAction, MAX_SIGNAL_LENGTH);
-  const nextActionTerminal = /[.!?]$/.test(proposedNextAction) ? "" : ".";
-  if (locale === "en") {
-    return proposedNextAction
-      ? `Proposed next step: ${proposedNextAction}${nextActionTerminal} No external action has been authorized or performed.`
-      : workBound
-        ? "No server-issued next step is currently available. No external action has been authorized or performed."
-        : "No Work is currently bound. No external action has been authorized or performed.";
+function pureResumeRequest(message) {
+  const normalized = String(message || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9à-ÿ]+/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized || normalized.length > 160) return false;
+  return /^(?:nyra\s+)?(?:riprendi|continua|resume|continue)(?:\s+(?:(?:il|lo|la|questo|questa|the|this|current|existing|corrente|attuale)\s+)?(?:work|lavoro))?(?:\s+(?:esistente|corrente|attuale|current|existing))?$/u.test(normalized);
+}
+
+function sentence(value) {
+  const text = boundedPublicText(value, MAX_SIGNAL_LENGTH);
+  if (!text) return null;
+  return `${text}${/[.!?]$/.test(text) ? "" : "."}`;
+}
+
+function unavailableWorkDirectiveContext(work, dialogue) {
+  return Object.freeze({
+    available: false,
+    work_id: work.work_id,
+    project_id: work.project_id,
+    work_revision: dialogue.work_revision,
+    intent_digest: dialogue.intent_digest,
+    context_digest: null,
+    status: null,
+    acceptance_criteria_count: 0,
+    required_task_count: 0,
+    pending_required_task_count: 0,
+    required_evidence_count: 0,
+    unverified_required_evidence_count: 0,
+    next_required_task: null,
+    closure_verified: false,
+  });
+}
+
+function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
+  if (!value) return unavailableWorkDirectiveContext(workBinding, dialogue);
+  const tenantId = requireAuthenticatedIdentity(identity);
+  const work = value.work && typeof value.work === "object" && !Array.isArray(value.work)
+    ? value.work
+    : null;
+  if (
+    value.schema_version !== "work_continuity_v2" ||
+    !work ||
+    work.tenant_id !== tenantId ||
+    boundedWorkId(work.work_id) !== workBinding.work_id ||
+    (workBinding.project_id && work.project_id !== workBinding.project_id)
+  ) throw fail("nyra_converse_directive_context_binding_invalid", 409);
+  const suppliedRevision = Number(value.work_revision);
+  const dialogueRevision = Number(dialogue.work_revision);
+  if (
+    Number.isSafeInteger(suppliedRevision) && suppliedRevision > 0 &&
+    Number.isSafeInteger(dialogueRevision) && dialogueRevision > 0 &&
+    suppliedRevision !== dialogueRevision
+  ) throw fail("nyra_converse_directive_context_revision_mismatch", 409);
+  const workRevision = Number.isSafeInteger(dialogueRevision) && dialogueRevision > 0
+    ? dialogueRevision
+    : Number.isSafeInteger(suppliedRevision) && suppliedRevision > 0 ? suppliedRevision : null;
+  const workIntentDigest = /^[a-f0-9]{64}$/.test(String(work.intent_digest || ""))
+    ? String(work.intent_digest)
+    : null;
+  if (dialogue.intent_digest && workIntentDigest && dialogue.intent_digest !== workIntentDigest) {
+    throw fail("nyra_converse_directive_context_intent_mismatch", 409);
   }
-  return proposedNextAction
-    ? `Prossimo passo proposto: ${proposedNextAction}${nextActionTerminal} Nessuna azione esterna è stata autorizzata o eseguita.`
-    : workBound
-      ? "Nessun prossimo passo server-emesso è al momento disponibile. Nessuna azione esterna è stata autorizzata o eseguita."
-      : "Nessun Work è attualmente associato. Nessuna azione esterna è stata autorizzata o eseguita.";
+  const intentDigest = dialogue.intent_digest || workIntentDigest;
+  const status = String(work.status || "").trim().toUpperCase();
+  if (!new Set([
+    "PLANNED", "ACTIVE", "PAUSED", "BLOCKED", "HANDOFF", "COMPLETED",
+    "CANCELLED", "SUPERSEDED", "ARCHIVED",
+  ]).has(status)) throw fail("nyra_converse_directive_context_status_invalid", 409);
+  if (!Array.isArray(work.acceptance_criteria) || work.acceptance_criteria.length > 250) {
+    throw fail("nyra_converse_directive_context_acceptance_invalid", 409);
+  }
+  const acceptanceCriteria = [];
+  for (const item of work.acceptance_criteria) {
+    const criterion = boundedPublicText(item, 240);
+    if (!criterion) throw fail("nyra_converse_directive_context_acceptance_invalid", 409);
+    acceptanceCriteria.push(criterion);
+  }
+  if (Array.isArray(value.tasks) && value.tasks.length > 64) {
+    throw fail("nyra_converse_directive_context_task_limit_exceeded", 409);
+  }
+  const tasks = [];
+  for (const item of Array.isArray(value.tasks) ? value.tasks.slice(0, 64) : []) {
+    const taskId = boundedWorkId(item?.task_id);
+    const title = boundedPublicText(item?.title, 500);
+    const taskStatus = String(item?.status || "").trim().toLowerCase();
+    if (!taskId || !title || !new Set(["planned", "completed"]).has(taskStatus)) {
+      throw fail("nyra_converse_directive_context_task_invalid", 409);
+    }
+    tasks.push(Object.freeze({
+      task_id: taskId,
+      title,
+      status: taskStatus,
+      required: item.required !== false,
+      acceptance_verified: item.acceptance_verified === true,
+    }));
+  }
+  if (Array.isArray(value.evidence) && value.evidence.length > 128) {
+    throw fail("nyra_converse_directive_context_evidence_limit_exceeded", 409);
+  }
+  const evidence = [];
+  for (const item of Array.isArray(value.evidence) ? value.evidence.slice(0, 128) : []) {
+    const evidenceId = boundedWorkId(item?.evidence_id);
+    const kind = boundedPublicText(item?.kind, 80);
+    const evidenceDigest = /^[a-f0-9]{64}$/.test(String(item?.digest || ""))
+      ? String(item.digest)
+      : null;
+    if (!evidenceId || !kind || !evidenceDigest) {
+      throw fail("nyra_converse_directive_context_evidence_invalid", 409);
+    }
+    evidence.push(Object.freeze({
+      evidence_id: evidenceId,
+      kind,
+      digest: evidenceDigest,
+      required: item.required !== false,
+      independently_verified: item.independently_verified === true,
+    }));
+  }
+  const requiredTasks = tasks.filter((item) => item.required);
+  const pendingRequiredTasks = requiredTasks.filter((item) => (
+    item.status !== "completed" || item.acceptance_verified !== true
+  ));
+  const requiredEvidence = evidence.filter((item) => item.required);
+  const unverifiedEvidence = requiredEvidence.filter((item) => !item.independently_verified);
+  const closureProjection = value.closure_verification &&
+    typeof value.closure_verification === "object" &&
+    !Array.isArray(value.closure_verification)
+    ? value.closure_verification
+    : null;
+  const closureProjectionFields = [
+    "schema_version", "verified", "tenant_id", "work_id", "status",
+    "receipt_digest", "report_digest", "core_join_digest",
+    "final_evidence_digest", "closure_event_hash", "failure_codes",
+    "verification_digest",
+  ];
+  const closureProjectionExact = closureProjection &&
+    Object.keys(closureProjection).sort().join("\0") === closureProjectionFields.sort().join("\0");
+  const closureProjectionUnsigned = closureProjectionExact
+    ? Object.fromEntries(Object.entries(closureProjection).filter(([key]) => key !== "verification_digest"))
+    : null;
+  const closureVerified = Boolean(
+    closureProjectionExact && closureProjection.verified === true &&
+    closureProjection.schema_version === "tenant_work_closure_verification_v1" &&
+    closureProjection.tenant_id === tenantId &&
+    boundedWorkId(closureProjection.work_id) === workBinding.work_id &&
+    closureProjection.status === status &&
+    [
+      closureProjection.receipt_digest,
+      closureProjection.report_digest,
+      closureProjection.core_join_digest,
+      closureProjection.final_evidence_digest,
+      closureProjection.closure_event_hash,
+      closureProjection.verification_digest,
+    ].every((item) => /^[a-f0-9]{64}$/.test(String(item || ""))) &&
+    Array.isArray(closureProjection.failure_codes) &&
+    closureProjection.failure_codes.length === 0 &&
+    deterministicDigest(closureProjectionUnsigned) === closureProjection.verification_digest,
+  );
+  const compact = {
+    schema_version: "nyra_work_directive_context_v1",
+    tenant_id: tenantId,
+    work_id: workBinding.work_id,
+    project_id: workBinding.project_id,
+    work_revision: workRevision,
+    intent_digest: intentDigest,
+    status,
+    objective: boundedPublicText(work.objective, 500),
+    work_next_action: boundedPublicText(work.next_action, 500),
+    acceptance_criteria_digests: acceptanceCriteria.map((item) => deterministicDigest(item)),
+    tasks,
+    evidence,
+    closure_verified: closureVerified,
+    closure_verification_digest: closureVerified ? closureProjection.verification_digest : null,
+  };
+  return Object.freeze({
+    available: true,
+    work_id: workBinding.work_id,
+    project_id: workBinding.project_id,
+    work_revision: workRevision,
+    intent_digest: intentDigest,
+    context_digest: deterministicDigest(compact),
+    status,
+    acceptance_criteria_count: acceptanceCriteria.length,
+    required_task_count: requiredTasks.length,
+    pending_required_task_count: pendingRequiredTasks.length,
+    required_evidence_count: requiredEvidence.length,
+    unverified_required_evidence_count: unverifiedEvidence.length,
+    next_required_task: pendingRequiredTasks[0]
+      ? Object.freeze({
+          task_id: pendingRequiredTasks[0].task_id,
+          title: pendingRequiredTasks[0].title,
+          status: pendingRequiredTasks[0].status,
+          acceptance_verified: pendingRequiredTasks[0].acceptance_verified,
+        })
+      : null,
+    closure_verified: closureVerified,
+  });
+}
+
+export function normalizeNyraDirectiveContext(value, identity, binding = {}) {
+  return requireWorkDirectiveContext(
+    value,
+    identity,
+    {
+      work_id: binding.work_id,
+      project_id: binding.project_id,
+    },
+    {
+      work_revision: binding.work_revision,
+      intent_digest: binding.intent_digest,
+    },
+  );
+}
+
+function orchestrationDirective({
+  tenantId,
+  message,
+  work,
+  dialogue,
+  workContext,
+  interpretation,
+  action,
+  connectorHint,
+  workBootstrapRequestDigest = null,
+}) {
+  const workBound = Boolean(work.work_id);
+  const coreBlocked = interpretation.risk_band === "blocked" ||
+    interpretation.core_state === "blocked" || interpretation.core_control === "blocked" ||
+    interpretation.blocked_reasons.length > 0;
+  const coreMissingContext = interpretation.unmet_conditions.length > 0 ||
+    interpretation.evidence_requirements.length > 0;
+  const workBootstrapRequested = action.work_bootstrap_requested === true;
+  const workBootstrapCandidate = workBootstrapRequested && !workBound;
+  // A request to create a Work never creates a duplicate over an already
+  // bound identity. In that case Nyra resumes the canonical Work and does not
+  // issue a bootstrap candidate.
+  const ticketRequired = workBootstrapRequested
+    ? workBootstrapCandidate
+    : action.consequential_request_detected || interpretation.owner_confirmation_required;
+  const mergeManual = action.action_class === "GIT_MERGE";
+  const binding = Object.freeze({
+    tenant_id: tenantId,
+    work_id: work.work_id,
+    project_id: work.project_id,
+    work_revision: workContext.work_revision,
+    intent_digest: workContext.intent_digest,
+    context_digest: workContext.context_digest,
+  });
+
+  const prerequisiteCodes = [];
+  function prerequisite(code) {
+    if (!prerequisiteCodes.includes(code)) prerequisiteCodes.push(code);
+  }
+  if (ticketRequired) {
+    if (workBootstrapCandidate) {
+      if (work.selection_required) prerequisite("work_selection_required");
+      if (!work.project_id) prerequisite("project_binding_required");
+      if (!/^[a-f0-9]{64}$/.test(String(workBootstrapRequestDigest || ""))) {
+        prerequisite("work_bootstrap_spec_required");
+      }
+    } else {
+      if (!workBound) prerequisite("work_binding_required");
+      if (!work.project_id) prerequisite("project_binding_required");
+      if (!workContext.work_revision) prerequisite("work_revision_required");
+      if (!workContext.intent_digest) prerequisite("intent_digest_required");
+      if (!workContext.available) prerequisite("work_directive_context_required");
+      if (workContext.available && workContext.acceptance_criteria_count === 0) {
+        prerequisite("acceptance_criteria_required");
+      }
+      if (workContext.available && workContext.required_task_count === 0) {
+        prerequisite("required_work_tasks_missing");
+      }
+      if (workContext.pending_required_task_count > 0) prerequisite("required_work_tasks_incomplete");
+      if (workContext.available && workContext.required_evidence_count === 0) {
+        prerequisite("required_evidence_missing");
+      }
+      if (workContext.unverified_required_evidence_count > 0) {
+        prerequisite("required_evidence_unverified");
+      }
+    }
+    for (const item of interpretation.unmet_conditions) {
+      prerequisite(`core_condition_${item}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120));
+    }
+    for (const item of interpretation.evidence_requirements) {
+      prerequisite(`core_evidence_${item}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120));
+    }
+    if (action.ticket_reserve_requested) prerequisite("existing_core_ticket_required");
+  }
+
+  let ticketState = "NOT_REQUIRED";
+  if (ticketRequired && coreBlocked) ticketState = "BLOCKED";
+  else if (ticketRequired && prerequisiteCodes.length > 0) ticketState = "NEEDS_CONTEXT";
+  else if (ticketRequired && workBootstrapCandidate) ticketState = "WORK_BOOTSTRAP_READY";
+  else if (ticketRequired && mergeManual) ticketState = "MANUAL_ONLY";
+  else if (ticketRequired) ticketState = "READY_FOR_CORE_REVIEW";
+
+  let disposition = interpretation.source === "persisted_work_context" ? "RESUME" : "PROCEED_READ_ONLY";
+  let problem = null;
+  if (work.selection_required) {
+    disposition = "INSUFFICIENT_CONTEXT";
+    problem = Object.freeze({
+      kind: "WORK_BINDING",
+      code: "work_selection_required",
+      summary: "Non posso identificare in modo deterministico un unico Work canonico",
+      capability_hint: action.capability_hint,
+    });
+  } else if (!workBound && ticketState === "WORK_BOOTSTRAP_READY") {
+    disposition = "REQUEST_WORK_BOOTSTRAP";
+    problem = Object.freeze({
+      kind: "WORK_BOOTSTRAP",
+      code: "governed_work_bootstrap_required",
+      summary: "La specifica è pronta per la review anti-duplicato e il gate owner di Universal Core",
+      capability_hint: action.capability_hint,
+    });
+  } else if (!workBound) {
+    disposition = "INSUFFICIENT_CONTEXT";
+    problem = Object.freeze({
+      kind: "WORK_BINDING",
+      code: "work_binding_required",
+      summary: "Nessun Work canonico tenant-scoped è associato a questo turno",
+      capability_hint: action.capability_hint,
+    });
+  } else if (coreBlocked || work.state === "failed") {
+    disposition = "BLOCK";
+    problem = Object.freeze({
+      kind: "CORE_BLOCK",
+      code: coreBlocked ? "universal_core_blocked_action" : "work_failed",
+      summary: "L'azione è bloccata, ma diagnosi, evidenze e remediation non mutante possono continuare",
+      capability_hint: action.capability_hint,
+    });
+  } else if (work.state === "completed" && !workContext.closure_verified) {
+    disposition = "INSUFFICIENT_CONTEXT";
+    problem = Object.freeze({
+      kind: "TECHNICAL_REQUEST",
+      code: "verified_closure_required",
+      summary: "Il Work dichiara completamento ma manca una closure receipt verificata",
+      capability_hint: action.capability_hint,
+    });
+  } else if (work.state === "completed" && workContext.closure_verified) {
+    disposition = "COMPLETE";
+  } else if (ticketRequired && ticketState === "READY_FOR_CORE_REVIEW") {
+    disposition = "REQUEST_CORE_TICKET";
+    problem = Object.freeze({
+      kind: "CONSEQUENTIAL_REQUEST",
+      code: "core_ticket_required",
+      summary: "La preparazione è pronta per la verifica indipendente di Universal Core",
+      capability_hint: action.capability_hint,
+    });
+  } else if (ticketRequired && ticketState === "MANUAL_ONLY") {
+    disposition = "MANUAL_HANDOFF";
+    problem = Object.freeze({
+      kind: "MANUAL_MERGE",
+      code: "manual_merge_core_gate_required",
+      summary: "Il merge resta manuale all'owner dopo la verifica e il ticket esatto di Universal Core",
+      capability_hint: action.capability_hint,
+    });
+  } else if (ticketRequired) {
+    disposition = "PREPARE_BOUNDED_WORK";
+    problem = Object.freeze({
+      kind: mergeManual ? "MANUAL_MERGE" : "CONSEQUENTIAL_REQUEST",
+      code: "governed_action_prerequisites_required",
+      summary: "La mutazione esterna è in attesa, mentre il lavoro preparatorio bounded può continuare",
+      capability_hint: action.capability_hint,
+    });
+  } else if (coreMissingContext) {
+    disposition = "INSUFFICIENT_CONTEXT";
+    problem = Object.freeze({
+      kind: "TECHNICAL_REQUEST",
+      code: "required_context_missing",
+      summary: "Mancano condizioni o evidenze richieste da Core",
+      capability_hint: action.capability_hint,
+    });
+  } else if (work.state === "blocked") {
+    disposition = "HOLD";
+    problem = Object.freeze({
+      kind: "TECHNICAL_REQUEST",
+      code: "work_blocked",
+      summary: "Il Work è bloccato ma può proseguire con diagnosi, evidenze e remediation",
+      capability_hint: action.capability_hint,
+    });
+  }
+
+  let coreVerdict = "NOT_APPLICABLE";
+  if (coreBlocked) coreVerdict = "BLOCK";
+  else if (coreMissingContext) coreVerdict = "INSUFFICIENT_CONTEXT";
+  else if (interpretation.owner_confirmation_required) coreVerdict = "HOLD";
+  else if (ticketRequired) coreVerdict = "NOT_REQUESTED";
+
+  const needs = [];
+  function appendNeed(code, kind, state, authority, detail, sourceDigest = null) {
+    if (needs.some((item) => item.code === code) || needs.length >= MAX_DIRECTIVE_ITEMS) return;
+    needs.push(Object.freeze({
+      code,
+      kind,
+      state,
+      authority,
+      detail: boundedPublicText(detail, MAX_SIGNAL_LENGTH),
+      source_digest: /^[a-f0-9]{64}$/.test(String(sourceDigest || "")) ? sourceDigest : null,
+    }));
+  }
+  if (work.selection_required) {
+    appendNeed("work_selection_required", "CONTEXT", "MISSING", "OWNER",
+      "Selezionare esplicitamente il Work Identity canonico persistente");
+  } else if (workBootstrapCandidate && prerequisiteCodes.includes("work_bootstrap_spec_required")) {
+    appendNeed("work_bootstrap_spec_required", "CONTEXT", "MISSING", "NYRA",
+      "Specificare Intent, architecture, acceptance criteria e task graph del nuovo Work");
+  } else if (workBootstrapCandidate) {
+    appendNeed("work_bootstrap_core_review_required", "AUTHORITY", "REQUIRED", "UNIVERSAL_CORE",
+      "Review anti-duplicato e gate owner per il Work canonico V2", workBootstrapRequestDigest);
+  } else if (!workBound) {
+    appendNeed("work_binding_required", "CONTEXT", "MISSING", "WORK_CONTINUITY",
+      "Associare un Work Identity canonico tenant-scoped senza creare duplicati");
+  }
+  if (workContext.next_required_task) {
+    appendNeed(
+      `task_${workContext.next_required_task.task_id}`,
+      "CONTEXT",
+      "REQUIRED",
+      "WORK_CONTINUITY",
+      workContext.next_required_task.title,
+      workContext.context_digest,
+    );
+  }
+  if (prerequisiteCodes.includes("acceptance_criteria_required")) {
+    appendNeed("acceptance_criteria_required", "CONTEXT", "MISSING", "WORK_CONTINUITY",
+      "Acceptance criteria canonici e versionati", workContext.context_digest);
+  }
+  if (prerequisiteCodes.includes("required_evidence_missing") ||
+      prerequisiteCodes.includes("required_evidence_unverified")) {
+    appendNeed("verified_evidence_required", "EVIDENCE", "MISSING", "WORK_CONTINUITY",
+      "Evidenze richieste con verifica indipendente", workContext.context_digest);
+  }
+  if (action.ticket_reserve_requested) {
+    appendNeed("existing_core_ticket_required", "AUTHORITY", "MISSING", "UNIVERSAL_CORE",
+      "Ticket Universal Core esistente e verificato prima di qualsiasi reserve");
+  }
+  if (ticketRequired && !workBootstrapCandidate) {
+    appendNeed("exact_core_ticket_required", "AUTHORITY",
+      ticketState === "BLOCKED" ? "BLOCKED" : "REQUIRED", "UNIVERSAL_CORE",
+      "Ticket esatto e vincolato a tenant, Work, revisione, Intent e azione");
+  }
+  if (mergeManual) {
+    appendNeed("manual_merge_required", "MANUAL_ACTION", "REQUIRED", "OWNER",
+      "Merge manuale dell'owner soltanto dopo il gate Core");
+  }
+  if (interpretation.owner_confirmation_required || workBootstrapCandidate) {
+    appendNeed("owner_confirmation_required", "CONFIRMATION", "REQUIRED", "OWNER",
+      workBootstrapCandidate
+        ? "Conferma owner fresca e request-bound prima della creazione V2"
+        : "Conferma owner riferita alla specifica azione esterna");
+  }
+  for (const item of interpretation.blocked_reasons) {
+    appendNeed(`core_block_${item}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120),
+      "AUTHORITY", "BLOCKED", "UNIVERSAL_CORE", `Risoluzione Core: ${item}`);
+  }
+  for (const item of interpretation.unmet_conditions) {
+    appendNeed(`core_condition_${item}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120),
+      "CONTEXT", "MISSING", "UNIVERSAL_CORE", `Condizione richiesta: ${item}`);
+  }
+  for (const item of interpretation.evidence_requirements) {
+    appendNeed(`core_evidence_${item}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120),
+      "EVIDENCE", "MISSING", "UNIVERSAL_CORE", `Evidenza richiesta: ${item}`);
+  }
+
+  const requestDigest = deterministicDigest({
+    schema_version: "nyra_orchestration_request_v1",
+    tenant_id: tenantId,
+    message_digest: deterministicDigest(String(message || "")),
+    binding,
+    action_class: action.action_class,
+    capability_hint: action.capability_hint,
+    prerequisite_codes: prerequisiteCodes,
+    work_bootstrap_request_digest: workBootstrapRequestDigest,
+  });
+  const ticketRequestDigest = ticketRequired &&
+    ["READY_FOR_CORE_REVIEW", "MANUAL_ONLY", "WORK_BOOTSTRAP_READY"].includes(ticketState)
+    ? deterministicDigest({
+        schema_version: "core_ticket_request_candidate_v1",
+        binding,
+        action_class: action.action_class,
+        capability_hint: action.capability_hint,
+        prerequisite_codes: prerequisiteCodes,
+        merge_policy: mergeManual ? "MANUAL_ONLY" : "NOT_APPLICABLE",
+        work_bootstrap_request_digest: workBootstrapRequestDigest,
+      })
+    : null;
+
+  let recommendedAction = workContext.next_required_task
+    ? `Completare il task canonico: ${workContext.next_required_task.title}`
+    : interpretation.allowed_alternatives[0] ||
+      (ticketRequired
+        ? interpretation.next_step || interpretation.selected_action
+        : interpretation.selected_action || interpretation.next_step) ||
+      work.next_action;
+  if (!recommendedAction && disposition !== "COMPLETE") {
+    recommendedAction = "Diagnosticare lo stato corrente e preparare una proposta verificabile";
+  }
+
+  const nextActions = [];
+  function appendAction(actor, stage, code, summary, mode, status, requires = [], externalSideEffect = false) {
+    const actionText = safeActionText(summary, MAX_SIGNAL_LENGTH);
+    if (!actionText || nextActions.length >= MAX_DIRECTIVE_ITEMS) return;
+    nextActions.push(Object.freeze({
+      order: nextActions.length + 1,
+      actor,
+      stage,
+      code,
+      summary: actionText,
+      mode,
+      status,
+      requires: Object.freeze([...new Set(requires)].slice(0, MAX_DIRECTIVE_ITEMS)),
+      external_side_effect: externalSideEffect,
+    }));
+  }
+  if (work.selection_required) {
+    appendAction("OWNER", "CONTEXT", "select_canonical_work",
+      "Selezionare esplicitamente il Work canonico senza crearne uno nuovo",
+      "READ_ONLY", "WAITING_ON_NEED", needs.map((item) => item.code));
+  } else if (workBootstrapCandidate) {
+    appendAction("HOST", "CONTEXT",
+      prerequisiteCodes.includes("work_bootstrap_spec_required")
+        ? "provide_work_bootstrap_spec"
+        : "submit_work_bootstrap_review",
+      prerequisiteCodes.includes("work_bootstrap_spec_required")
+        ? "Ripresentare a Nyra la specifica strutturata con Intent, architecture, acceptance criteria e task graph"
+        : "Sottoporre la specifica attestata alla review anti-duplicato; non creare ancora il Work",
+      "CORE_GOVERNED",
+      ticketState === "WORK_BOOTSTRAP_READY" ? "READY" : "WAITING_ON_NEED",
+      prerequisiteCodes, false);
+  } else if (!workBound) {
+    appendAction("OWNER", "CONTEXT", "bind_canonical_work",
+      "Associare un Work canonico esistente senza crearne un duplicato",
+      "READ_ONLY", "WAITING_ON_NEED", needs.map((item) => item.code));
+  } else if (recommendedAction && disposition !== "COMPLETE") {
+    appendAction("HOST", workContext.next_required_task ? "CONTEXT" : "REASONING",
+      workContext.next_required_task ? "complete_next_work_task" : "prepare_bounded_work",
+      recommendedAction, ticketRequired ? "BOUNDED_WORKSPACE" : "READ_ONLY", "READY",
+      workContext.next_required_task ? [`task_${workContext.next_required_task.task_id}`] : []);
+  }
+  if (coreMissingContext || workContext.unverified_required_evidence_count > 0 ||
+      prerequisiteCodes.includes("required_evidence_missing")) {
+    appendAction("HOST", "EVIDENCE", "collect_missing_evidence",
+      "Raccogliere e collegare al Work le evidenze mancanti con verifica indipendente",
+      "BOUNDED_WORKSPACE", "READY",
+      needs.filter((item) => item.kind === "EVIDENCE").map((item) => item.code));
+  }
+  if (ticketRequired && workBootstrapCandidate) {
+    appendAction("UNIVERSAL_CORE", "AUTHORITY", "review_work_bootstrap",
+      "Verificare la review anti-duplicato e richiedere una conferma owner request-bound prima della creazione V2",
+      "CORE_GOVERNED",
+      ticketState === "WORK_BOOTSTRAP_READY" ? "READY" : "HELD",
+      prerequisiteCodes, false);
+  } else if (ticketRequired) {
+    appendAction("UNIVERSAL_CORE", "AUTHORITY", "review_ticket_candidate",
+      "Verificare indipendentemente prerequisiti e candidate prima di emettere il ticket esatto",
+      "CORE_GOVERNED",
+      ["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"].includes(ticketState) ? "READY" : "HELD",
+      prerequisiteCodes, false);
+  }
+  if (mergeManual) {
+    appendAction("OWNER", "EXECUTION", "manual_merge_after_core_gate",
+      "Eseguire manualmente il merge soltanto dopo ticket Core verificato e host approval",
+      "MANUAL", "MANUAL", ["exact_core_ticket_required"], true);
+  } else if (ticketRequired && !workBootstrapCandidate) {
+    appendAction("HOST", "EXECUTION", "bounded_external_action_after_core_gate",
+      "Eseguire l'azione bounded soltanto dopo ticket Core verificato e host approval",
+      "CORE_GOVERNED", "HELD", ["exact_core_ticket_required"], true);
+  }
+
+  const permittedProgress = work.selection_required || (!workBound && !workBootstrapCandidate)
+    ? ["DISAMBIGUATION"]
+    : workBootstrapCandidate
+      ? (ticketState === "WORK_BOOTSTRAP_READY" ? ["WORK_BOOTSTRAP_REVIEW"] : ["DISAMBIGUATION"])
+    : disposition === "COMPLETE"
+      ? []
+      : ["READ_ONLY", "ANALYSIS", "EVIDENCE", "BOUNDED_WORKSPACE", "PROPOSAL"];
+  const reasonCodes = [
+    ...(problem ? [problem.code] : []),
+    ...interpretation.blocked_reasons,
+    ...prerequisiteCodes,
+  ].map((item) => directiveCode(item))
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .slice(0, 16);
+  const source = connectorHint.request_kind
+    ? "LEGACY_CONNECTOR_HINT"
+    : interpretation.source === "persisted_work_context" ? "PERSISTED_WORK" : "FRESH_CORE";
+  const decision = Object.freeze({
+    disposition,
+    recommendation_authority: "NYRA",
+    final_authority: "UNIVERSAL_CORE",
+    core_verdict: coreVerdict,
+    reason_codes: Object.freeze(reasonCodes),
+    execution_authorized: false,
+    external_action_authorized: false,
+  });
+  const ticketRequest = Object.freeze({
+    schema_version: "core_ticket_request_candidate_v1",
+    required: ticketRequired,
+    state: ticketState,
+    action_class: action.action_class,
+    capability_hint: action.capability_hint,
+    capability_resolution: !ticketRequired
+      ? "NOT_REQUIRED"
+      : action.capability_hint ? "SERVER_SIDE_RESOLVED" : "SERVER_SIDE_REQUIRED",
+    binding,
+    prerequisite_codes: Object.freeze(prerequisiteCodes),
+    owner_confirmation_required:
+      interpretation.owner_confirmation_required || workBootstrapCandidate,
+    host_approval_required: ticketRequired,
+    core_independent_verification_required: true,
+    merge_policy: mergeManual ? "MANUAL_ONLY" : "NOT_APPLICABLE",
+    work_bootstrap_request_digest: workBootstrapRequestDigest,
+    request_digest: ticketRequestDigest,
+    ticket_id: null,
+    ticket_issued: false,
+    execution_authorized: false,
+  });
+  const directiveId = `nyra_dir_${deterministicDigest({ request_digest: requestDigest, decision, ticket_request: ticketRequest }).slice(0, 24)}`;
+
+  return Object.freeze({
+    schema_version: "nyra_orchestration_directive_v1",
+    directive_id: directiveId,
+    request_digest: requestDigest,
+    source,
+    problem,
+    needs: Object.freeze(needs),
+    next_actions: Object.freeze(nextActions),
+    decision,
+    work_context: workContext,
+    permitted_progress: Object.freeze(permittedProgress),
+    can_continue: disposition !== "COMPLETE",
+    ticket_request: ticketRequest,
+    execution_authorized: false,
+  });
+}
+
+function directiveReplySeed(locale, directive, workBound) {
+  const english = locale === "en";
+  const parts = [];
+  const disposition = directive.decision.disposition;
+  if (["RESUME", "PROCEED_READ_ONLY"].includes(disposition)) {
+    parts.push(english ? "We can continue." : "Possiamo continuare.");
+  } else if (disposition === "PREPARE_BOUNDED_WORK") {
+    parts.push(english
+      ? "We can keep working now inside the bounded workspace."
+      : "Possiamo continuare subito nel workspace bounded.");
+  } else if (disposition === "REQUEST_CORE_TICKET") {
+    parts.push(english
+      ? "The preparation is ready for Universal Core review."
+      : "La preparazione è pronta per la verifica di Universal Core.");
+  } else if (disposition === "REQUEST_WORK_BOOTSTRAP") {
+    parts.push(english
+      ? "The new Work specification is ready for duplicate review."
+      : "La specifica del nuovo Work è pronta per la review anti-duplicato.");
+  } else if (disposition === "MANUAL_HANDOFF") {
+    parts.push(english ? "The merge remains a manual owner handoff." : "Il merge resta un handoff manuale all'owner.");
+  } else if (disposition === "COMPLETE") {
+    parts.push(english ? "The Work has a verified closure." : "Il Work ha una closure verificata.");
+  } else if (directive.problem) {
+    parts.push(english
+      ? `Problem: ${sentence(directive.problem.summary)}`
+      : `Problema: ${sentence(directive.problem.summary)}`);
+  } else if (!workBound) {
+    parts.push(english ? "No canonical Work is bound." : "Nessun Work canonico è associato.");
+  }
+  if (directive.needs.length > 0) {
+    const details = directive.needs.slice(0, 3).map((item) => item.detail).filter(Boolean);
+    if (details.length) parts.push(english ? `Required: ${details.join("; ")}.` : `Mi serve: ${details.join("; ")}.`);
+  }
+  const first = directive.next_actions[0];
+  if (first) {
+    const actor = first.actor === "CODEX" ? "Codex" :
+      first.actor === "OWNER" ? "Owner" :
+        first.actor === "UNIVERSAL_CORE" ? "Universal Core" :
+          first.actor === "HOST" ? "Host" : "Nyra";
+    parts.push(`${actor}, ${sentence(first.summary)}`);
+  }
+  if (directive.ticket_request.required) {
+    if (directive.ticket_request.state === "WORK_BOOTSTRAP_READY") {
+      parts.push(english
+        ? "The registered host may submit the exact bootstrap candidate; creation still requires duplicate review and a fresh owner confirmation."
+        : "L'host registrato può sottoporre il candidate di bootstrap esatto; la creazione richiede ancora review anti-duplicato e conferma owner fresca.");
+    } else if (["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"].includes(directive.ticket_request.state)) {
+      parts.push(english
+        ? "Universal Core can now review the revision-bound ticket candidate; no ticket has been issued yet."
+        : "Universal Core può ora verificare il candidate vincolato alla revisione; nessun ticket è stato ancora emesso.");
+    } else {
+      parts.push(english
+        ? "The Core ticket candidate still needs the listed prerequisites; read-only analysis, evidence and proposals can continue."
+        : "Il candidate per il ticket Core richiede ancora i prerequisiti indicati; lettura, analisi, evidenze e proposta possono continuare.");
+    }
+  }
+  if (directive.ticket_request.continuation?.available === true) {
+    parts.push(english
+      ? "The authenticated host can now submit this exact candidate to Universal Core through Nyra's governed continuation tool."
+      : "L'host autenticato può ora sottoporre questo candidate esatto a Universal Core tramite la continuazione governata di Nyra.");
+  }
+  if (directive.ticket_request.merge_policy === "MANUAL_ONLY") {
+    parts.push(english
+      ? "The merge must be performed manually by the owner after the Core gate."
+      : "Il merge deve essere eseguito manualmente dall'owner dopo il gate Core.");
+  }
+  parts.push(english
+    ? "This conversational turn neither authorizes nor performs external actions."
+    : "Questo turno conversazionale non autorizza né esegue azioni esterne.");
+  return parts.join(" ").slice(0, 1_200);
 }
 
 function turnId({ tenantId, sessionId, message, workId, projectId, locale, style }) {
@@ -421,10 +1278,20 @@ async function resolveSingleActiveWork(identity, args, workContinuityRuntime) {
   if (boundedWorkId(args.work_id) || typeof workContinuityRuntime?.listWorks !== "function") {
     return args;
   }
+  // An explicit bootstrap specification must enter the semantic duplicate
+  // review. A sole, unrelated Work in the same project is not sufficient
+  // evidence that it is the requested identity. An explicit work_id still
+  // wins above and resumes that exact canonical Work.
+  if (args.work_bootstrap !== undefined) return args;
+  const requestedProjectId = boundedProjectId(args.project_id);
   let catalogs;
   try {
     catalogs = await Promise.all(["active", "verified", "release_ready", "blocked"].map((status) => (
-      workContinuityRuntime.listWorks(identity, { status, limit: 2 })
+      workContinuityRuntime.listWorks(identity, {
+        status,
+        limit: 2,
+        ...(requestedProjectId ? { project_id: requestedProjectId } : {}),
+      })
     )));
   } catch {
     // This optimisation must never turn an otherwise valid read-only Nyra
@@ -439,7 +1306,9 @@ async function resolveSingleActiveWork(identity, args, workContinuityRuntime) {
     for (const work of Array.isArray(catalog?.works) ? catalog.works : []) {
       const work_id = boundedWorkId(work?.work_id);
       const project_id = boundedProjectId(work?.project_id);
-      if (work_id && project_id) workById.set(work_id, { work_id, project_id });
+      if (work_id && project_id && (!requestedProjectId || project_id === requestedProjectId)) {
+        workById.set(work_id, { work_id, project_id });
+      }
     }
   }
   const works = [...workById.values()];
@@ -467,6 +1336,9 @@ export function createNyraConversePreflight({
     throw new Error("nyra_converse_preflight_dependencies_invalid");
   }
   return async function nyraConversePreflight(args = {}, identity = {}) {
+    // A signed tenant claim is routing metadata, not Gallery membership. Stop
+    // before automatic Work discovery, legacy continuity reads or writes.
+    requireTenantWorkCapability(identity, "read");
     // `core_capability_read` is intentionally exempt from generic preflight.
     // Conversation obtains its authenticated Work binding inside the target
     // handler and accepts no caller-made preflight or authority envelope.
@@ -495,23 +1367,35 @@ export function createNyraConversePreflight({
       ...preflightArgs,
       project_id: continuityBinding.projectId,
     }, identity);
-    await ensureContinuity(
-      identity,
-      continuityBinding.continuityArgs,
-      "nyra_converse",
-      result,
-      { resumeExisting: true },
-    );
+    if (resumeArgs.work_bootstrap === undefined || resumeArgs.work_id) {
+      await ensureContinuity(
+        identity,
+        continuityBinding.continuityArgs,
+        "nyra_converse",
+        result,
+        { resumeExisting: true },
+      );
+    }
     return result;
   };
 }
 
-export function createNyraConverseHandler({ preflight, interpret, readControlContext = null } = {}) {
+export function createNyraConverseHandler({
+  preflight,
+  interpret,
+  readControlContext = null,
+  readDirectiveContext = null,
+  issueContinuation = null,
+} = {}) {
   if (typeof preflight !== "function" || typeof interpret !== "function") {
     throw new Error("nyra_converse_dependencies_invalid");
   }
   return async function nyraConverse(args = {}, identity = {}) {
+    // Defense in depth for direct/internal callers: no cached dialogue,
+    // preflight or auto-resume may run without a server-bound membership.
+    requireTenantWorkCapability(identity, "read");
     assertNoCallerAuthority(args);
+    const connectorHint = serverConnectorHint(args);
     const tenantId = requireAuthenticatedIdentity(identity);
     const message = typeof args.message === "string" ? args.message.trim() : "";
     if (!message) throw fail("nyra_converse_message_required");
@@ -524,7 +1408,14 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
     if (!sessionId) throw fail("nyra_converse_session_required", 400);
 
     let persisted = null;
-    if (typeof readControlContext === "function" && args.work_id && args.project_id) {
+    if (
+      pureResumeRequest(message) &&
+      connectorHint.request_kind === null &&
+      connectorHint.capability_hint === null &&
+      typeof readControlContext === "function" &&
+      args.work_bootstrap === undefined &&
+      args.work_id && args.project_id
+    ) {
       persisted = requirePersistedConversationContext(await readControlContext(identity, {
         work_id: args.work_id,
         project_id: args.project_id,
@@ -536,6 +1427,7 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
       interpretation = Object.freeze({
         // A cached dialogue never claims a fresh Core evaluation. This is the
         // existing non-executing, no-parity public contract shape.
+        source: "persisted_work_context",
         core: Object.freeze({
           mode: "off",
           route: "V0",
@@ -543,16 +1435,34 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
           parity_matched: null,
           execution_allowed: false,
         }),
-        selected_action_available: persisted.assignment_available,
-        risk_band: persisted.dialogue.self_diagnosis_state === "recovery_required" ? "blocked" : "low",
+        selected_action_id: null,
+        selected_action: null,
+        selected_action_available: false,
+        core_state: "observe",
+        core_control: "observe",
+        risk_band: persisted.dialogue.diagnosis_state === "recovery_required" ? "blocked" : "low",
+        blocked_reasons: Object.freeze([]),
+        unmet_conditions: Object.freeze([]),
+        evidence_requirements: Object.freeze([]),
+        allowed_alternatives: Object.freeze([]),
+        next_step: null,
+        runbook_candidate: null,
+        owner_confirmation_required: false,
         dialogue_accepted: true,
         opened_branch_count: 0,
+        memory: Object.freeze({
+          revision: 0,
+          relevant_count: 0,
+          handoff_count: 0,
+          recent_activity_count: 0,
+        }),
       });
     } else {
       const preflightResult = await preflight({
         message,
         ...(args.work_id ? { work_id: args.work_id } : {}),
         ...(args.project_id ? { project_id: args.project_id } : {}),
+        ...(args.work_bootstrap !== undefined ? { work_bootstrap: args.work_bootstrap } : {}),
         session_id: sessionId,
         agent_id: identity.agentPresence?.agent_id,
         client_type: identity.agentPresence?.client_type,
@@ -567,10 +1477,89 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
         available_capabilities: ["nyra_converse", "skinharmony_core_mcp"],
       }, identity);
       interpretation = requireTenantBoundInterpretation(interpretationResult, identity);
+      interpretation = Object.freeze({
+        ...interpretation,
+        source: "fresh_core_interpretation",
+      });
     }
-    const action = actionPolicy(message);
-    const nextAction = boundedPreflight.work.next_action;
-    const replySeed = staticReplySeed(locale, Boolean(boundedPreflight.work.work_id), nextAction);
+    let workContext = unavailableWorkDirectiveContext(
+      boundedPreflight.work,
+      boundedPreflight.dialogue,
+    );
+    if (boundedPreflight.work.work_id && typeof readDirectiveContext === "function") {
+      const rawDirectiveContext = await readDirectiveContext(identity, {
+        work_id: boundedPreflight.work.work_id,
+        project_id: boundedPreflight.work.project_id,
+        work_revision: boundedPreflight.dialogue.work_revision,
+        intent_digest: boundedPreflight.dialogue.intent_digest,
+      });
+      workContext = requireWorkDirectiveContext(
+        rawDirectiveContext,
+        identity,
+        boundedPreflight.work,
+        boundedPreflight.dialogue,
+      );
+    }
+    let workBootstrapRequestDigest = null;
+    if (args.work_bootstrap !== undefined) {
+      const workBootstrapRequest = materializeGovernedWorkBootstrapRequest({
+        spec: args.work_bootstrap,
+        identity,
+        projectId: boundedPreflight.work.project_id,
+      });
+      workBootstrapRequestDigest = governedWorkBootstrapDigest(workBootstrapRequest);
+    }
+    const action = actionPolicy(
+      message,
+      connectorHint,
+      interpretation.owner_confirmation_required,
+      args.work_bootstrap !== undefined,
+    );
+    const baseDirective = orchestrationDirective({
+      tenantId,
+      message,
+      work: boundedPreflight.work,
+      dialogue: boundedPreflight.dialogue,
+      workContext,
+      interpretation,
+      action,
+      connectorHint,
+      workBootstrapRequestDigest,
+    });
+    let continuation = Object.freeze({
+      schema_version: "nyra_governed_continuation_v1",
+      available: false,
+      submit_tool: null,
+      candidate_attestation: null,
+      expires_at: null,
+      reason: "continuation_signer_unavailable",
+    });
+    if (typeof issueContinuation === "function") {
+      try {
+        const candidate = issueContinuation({ identity, directive: baseDirective });
+        if (candidate?.schema_version === "nyra_governed_continuation_v1") {
+          continuation = candidate;
+        }
+      } catch {
+        continuation = Object.freeze({
+          ...continuation,
+          reason: "continuation_attestation_failed",
+        });
+      }
+    }
+    const directive = Object.freeze({
+      ...baseDirective,
+      ticket_request: Object.freeze({
+        ...baseDirective.ticket_request,
+        continuation,
+      }),
+    });
+    const nextAction = directive.next_actions[0]?.summary || null;
+    const replySeed = directiveReplySeed(
+      locale,
+      directive,
+      Boolean(boundedPreflight.work.work_id),
+    );
     const id = turnId({
       tenantId,
       sessionId,
@@ -581,12 +1570,12 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
       style,
     });
     const instructions = [
-      "Render host_response_contract.reply_seed as the complete operational answer before adding any optional explanation.",
-      "When next_action is present, preserve it verbatim after 'Prossimo passo proposto'. Do not cite PRs, CI, plans, checkpoints or history unless those exact facts are separately present in the server contract.",
-      "Do not say that Nyra has resumed, will proceed, started work, verified a result, or performed an external action. This turn is advisory only; a separate governed tool and host approval are required for any action.",
+      "Render host_response_contract.reply_seed as Nyra's complete operational answer before adding any optional explanation.",
+      "Follow orchestration_directive actors, ordering and gates exactly; RESUME, PROCEED_READ_ONLY and PREPARE_BOUNDED_WORK permit only their stated bounded progress and are never execution authority.",
+      "Do not claim that Nyra, Codex, Core or the owner performed an action unless separately verified evidence is present; this turn never authorizes an external action.",
     ];
     return textResult(Object.freeze({
-      schema_version: "nyra_conversation_turn_v1",
+      schema_version: "nyra_conversation_turn_v2",
       ok: true,
       tenant_id: tenantId,
       turn_id: id,
@@ -595,6 +1584,12 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
         tenant_bound: true,
         principal_kind: normalizedIdentityKind(identity),
         client_type: normalizedClientType(identity),
+        host_registered: identity.authenticatedHostPrincipal?.registered === true,
+        app_id: boundedString(identity.authenticatedHostPrincipal?.app_id, 64),
+        host_kind: boundedString(identity.authenticatedHostPrincipal?.host_kind, 80),
+        host_registry_revision: /^[a-f0-9]{64}$/.test(String(
+          identity.authenticatedHostPrincipal?.registry_revision || "",
+        )) ? identity.authenticatedHostPrincipal.registry_revision : null,
         caller_authority_accepted: false,
       }),
       work: boundedPreflight.work,
@@ -605,13 +1600,25 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
       }),
       interpretation: Object.freeze({
         core: interpretation.core,
+        selected_action_id: interpretation.selected_action_id,
+        selected_action: interpretation.selected_action,
         selected_action_available: interpretation.selected_action_available,
+        core_state: interpretation.core_state,
+        core_control: interpretation.core_control,
         risk_band: interpretation.risk_band,
+        blocked_reasons: interpretation.blocked_reasons,
+        unmet_conditions: interpretation.unmet_conditions,
+        evidence_requirements: interpretation.evidence_requirements,
+        allowed_alternatives: interpretation.allowed_alternatives,
+        next_step: interpretation.next_step,
+        runbook_candidate: interpretation.runbook_candidate,
+        owner_confirmation_required: interpretation.owner_confirmation_required,
         dialogue_accepted: interpretation.dialogue_accepted,
         opened_branch_count: interpretation.opened_branch_count,
       }),
       nyra_dialogue: boundedPreflight.dialogue,
       action_policy: action,
+      orchestration_directive: directive,
       host_response_contract: Object.freeze({
         speaker: "Nyra",
         renderer: "nyra_widget_with_host_fallback",
@@ -619,7 +1626,7 @@ export function createNyraConverseHandler({ preflight, interpret, readControlCon
         response_style: style,
         reply_seed: replySeed,
         next_action: nextAction,
-        rendering_policy: "server_next_action_first_v1",
+        rendering_policy: "server_orchestration_directive_first_v2",
         instructions: Object.freeze(instructions),
       }),
       execution_authorized: false,

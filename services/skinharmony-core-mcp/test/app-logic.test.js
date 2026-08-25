@@ -15,6 +15,34 @@ test("gives ChatGPT a Nyra-only front door while preserving the Codex tool surfa
   assert.equal(filterToolsForClient(TOOLS, { kind: "codex" }).length, TOOLS.length);
 });
 
+test("adds exactly one governed continuation tool for a registered conversational host", () => {
+  const identity = {
+    kind: "oauth",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      registry_revision: "a".repeat(64),
+      app_id: "chatgpt_prod",
+      host_kind: "chatgpt_native",
+      client_type: "chatgpt",
+      interaction_mode: "nyra_conversational",
+      capabilities: ["work.read", "governed_continue"],
+    },
+  };
+  assert.deepEqual(
+    filterToolsForClient(TOOLS, identity).map((tool) => tool.name),
+    ["nyra_converse", "nyra_governed_continue"],
+  );
+  assert.equal(filterToolsForClient(TOOLS, {
+    ...identity,
+    authenticatedHostPrincipal: {
+      ...identity.authenticatedHostPrincipal,
+      registered: false,
+      capabilities: ["work.read"],
+    },
+  }).some((tool) => tool.name === "nyra_governed_continue"), false);
+});
+
 test("keeps Nyra local while routing stale ChatGPT health reads to health", () => {
   const nyra = TOOLS.find((tool) => tool.name === "nyra_converse");
   const health = TOOLS.find((tool) => tool.name === "core_health");
@@ -41,10 +69,13 @@ test("advertises explicit confirmation fields only on write tools", () => {
   assert(confirmedWrites.every((tool) => tool.inputSchema.properties.owner_confirmed?.type === "boolean"));
   assert(confirmedWrites.every((tool) => tool.inputSchema.properties.confirmation_reference?.type === "string"));
   assert(advisoryWrites
-    .filter((tool) => tool.name !== "core_capability_invoke")
+    .filter((tool) => !["core_capability_invoke", "nyra_governed_continue"].includes(tool.name))
     .every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
+  const governedContinue = advisoryWrites.find((tool) => tool.name === "nyra_governed_continue");
+  assert.equal(governedContinue.inputSchema.properties.owner_confirmed.type, "boolean");
+  assert.equal(governedContinue._meta["skinharmony/nyraGovernedContinuation"], true);
   assert(advisoryWrites
-    .filter((tool) => tool.name !== "core_capability_invoke")
+    .filter((tool) => !["core_capability_invoke", "nyra_governed_continue"].includes(tool.name))
     .every((tool) => tool.inputSchema.properties.confirmation_reference === undefined));
   const dynamicInvoke = advisoryWrites.find((tool) => tool.name === "core_capability_invoke");
   assert.equal(dynamicInvoke.inputSchema.properties.owner_confirmed.type, "boolean");
@@ -52,6 +83,7 @@ test("advertises explicit confirmation fields only on write tools", () => {
   assert.deepEqual(
     advisoryWrites.map((tool) => tool.name),
     [
+      "nyra_governed_continue",
       "core_capability_invoke",
       "orchestration_dtt_core_join",
       "ai_work_quality_observe",

@@ -13,7 +13,8 @@
     "test:core-runtime:parity": "node --experimental-strip-types tools/check-core-runtime-parity.js",
     "test:local-software-agent": "node --test test/ghidra-headless-adapter.test.js test/frida-local-adapter.test.js",
     "benchmark:software": "node tools/benchmark-universal-software.js",
-    "benchmark:software-cognition": "node tools/benchmark-software-cognition.js"
+    "benchmark:software-cognition": "node tools/benchmark-software-cognition.js",
+    "benchmark:entity360": "node tools/benchmark-entity360.js"
   },
   "dependencies": {
     "express": "^5.2.1",

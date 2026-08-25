@@ -39,7 +39,14 @@ const icfStore = icfPool ? createIcfPostgresStore({ pool: icfPool }) : undefined
 const coreJoinSigner = createCoreJoinSigner({ secret: process.env.ICF_GENERIC_JOIN_SIGNING_SECRET, keyId: process.env.ICF_GENERIC_JOIN_KEY_ID || "core-join-hmac-v1" });
 const coreJoinStore = createCoreJoinPostgresStore({ pool: icfPool, signer: coreJoinSigner });
 if (icfStore) {
-  try { await icfStore.initialize(); } catch (error) { console.error(`[UniversalCoreService] ICF PostgreSQL store unavailable: ${error.message}`); }
+  try {
+    await icfStore.initialize();
+    if (icfStore.ready !== true || icfStore.initialization_state !== "ready") {
+      throw new Error("icf_postgres_store_initialization_readback_failed");
+    }
+  } catch (error) {
+    console.error(`[UniversalCoreService] ICF PostgreSQL startup failed closed; Entity 360 remains unavailable (${String(error?.code || "icf_postgres_store_initialization_failed")})`);
+  }
 }
 if (coreJoinStore?.signer_configured === true && typeof coreJoinStore.initialize === "function") {
   try { await coreJoinStore.initialize(); } catch (error) { console.error(`[UniversalCoreService] Generic Core Join store unavailable: ${error.message}`); }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import {
   createWorkContinuityV2Store,
@@ -7,10 +8,19 @@ import {
 
 function key(...parts) { return parts.join("\0"); }
 function cloneMap(map) { return new Map([...map].map(([k, v]) => [k, structuredClone(v)])); }
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+}
+function stableDigest(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
 
 class AtomicWorkPool {
   constructor() {
     this.reviews = new Map();
+    this.bootstrapRequests = new Map();
     this.legacy = new Map();
     this.works = new Map();
     this.tasks = new Map();
@@ -20,10 +30,12 @@ class AtomicWorkPool {
     this.participants = new Map();
     this.leases = new Map();
     this.queries = [];
+    this.queryParameters = [];
+    this.databaseNow = "2026-08-08T10:00:00.000Z";
   }
 
   snapshot() {
-    return Object.fromEntries(["reviews", "legacy", "works", "tasks", "events", "reports", "sequences", "participants", "leases"]
+    return Object.fromEntries(["reviews", "bootstrapRequests", "legacy", "works", "tasks", "events", "reports", "sequences", "participants", "leases"]
       .map((name) => [name, cloneMap(this[name])]));
   }
 
@@ -62,7 +74,60 @@ class AtomicWorkPool {
   async query(sql, parameters = []) {
     const q = sql.replace(/\s+/g, " ").trim();
     this.queries.push(q);
+    this.queryParameters.push({ sql: q, parameters: structuredClone(parameters) });
     if (q.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [], rowCount: 0 };
+    if (q.startsWith("SELECT pg_advisory_xact_lock")) return { rows: [{ pg_advisory_xact_lock: null }], rowCount: 1 };
+    if (q.startsWith("SELECT checked_at,") && q.includes("clock_timestamp()")) {
+      const checkedAt = new Date(this.databaseNow);
+      return { rows: [{
+        checked_at: checkedAt.toISOString(),
+        authorization_current: checkedAt.getTime() < Date.parse(parameters[0]),
+      }], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_bootstrap_request")) {
+      const [tenantId, subjectUserId, requestId, requestDigest, reviewId, consumedWorkId = null] = parameters;
+      const requestKey = key(tenantId, subjectUserId, requestId);
+      if (this.bootstrapRequests.has(requestKey)) return { rows: [], rowCount: 0 };
+      if ([...this.bootstrapRequests.values()].some((row) =>
+        row.tenant_id === tenantId && row.review_id === reviewId)) {
+        throw new Error("tenant_work_bootstrap_request_review_id_key");
+      }
+      const row = { tenant_id: tenantId, subject_user_id: subjectUserId, request_id: requestId,
+        request_digest: requestDigest, review_id: reviewId, consumed_work_id: consumedWorkId,
+        created_at: "2026-08-08T10:00:00.000Z", updated_at: "2026-08-08T10:00:00.000Z" };
+      this.bootstrapRequests.set(requestKey, row);
+      return { rows: q.includes("RETURNING *") ? [structuredClone(row)] : [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT * FROM tenant_work_bootstrap_request")) {
+      const row = this.bootstrapRequests.get(key(parameters[0], parameters[1], parameters[2]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("UPDATE tenant_work_bootstrap_request SET review_id")) {
+      const row = this.bootstrapRequests.get(key(parameters[0], parameters[1], parameters[2]));
+      if (!row || row.request_digest !== parameters[5]) return { rows: [], rowCount: 0 };
+      row.review_id = parameters[3];
+      row.consumed_work_id = parameters[4];
+      row.updated_at = "2026-08-08T10:00:01.000Z";
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work_bootstrap_request SET consumed_work_id")) {
+      const row = this.bootstrapRequests.get(key(parameters[0], parameters[1], parameters[2]));
+      if (!row || row.consumed_work_id || row.request_digest !== parameters[4] || row.review_id !== parameters[5]) {
+        return { rows: [], rowCount: 0 };
+      }
+      row.consumed_work_id = parameters[3];
+      row.updated_at = "2026-08-08T10:00:01.000Z";
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT * FROM tenant_work_open_review") && q.includes("subject_user_id=$2")) {
+      const rows = [...this.reviews.values()].filter((review) =>
+        review.tenant_id === parameters[0] && review.subject_user_id === parameters[1] &&
+        review.request_id === parameters[2]);
+      rows.sort((left, right) => Number(Boolean(right.consumed_work_id)) - Number(Boolean(left.consumed_work_id)) ||
+        String(right.consumed_at || "").localeCompare(String(left.consumed_at || "")) ||
+        String(left.created_at || "").localeCompare(String(right.created_at || "")));
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
     if (q.startsWith("SELECT * FROM tenant_work_open_review")) {
       const row = this.reviews.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
@@ -74,9 +139,10 @@ class AtomicWorkPool {
         request_id: requestId, project_id: projectId, intent_digest: intentDigest,
         request_digest: requestDigest, review_digest: reviewDigest, review_result: JSON.parse(reviewResult),
         decision_required: decisionRequired, expires_at: expiresAt, consumed_at: null,
-        consumed_by_user_id: null, decision: null, decision_digest: null, consumed_work_id: null };
+        consumed_by_user_id: null, decision: null, decision_digest: null, consumed_work_id: null,
+        created_at: "2026-08-08T10:00:00.000Z" };
       this.reviews.set(key(tenantId, reviewId), row);
-      return { rows: [], rowCount: 1 };
+      return { rows: q.includes("RETURNING *") ? [structuredClone(row)] : [], rowCount: 1 };
     }
     if (q.startsWith("UPDATE tenant_work_open_review SET")) {
       const row = this.reviews.get(key(parameters[0], parameters[1]));
@@ -175,6 +241,14 @@ class AtomicWorkPool {
       this.tasks.set(key(row.tenant_id, row.task_id), row);
       return { rows: [], rowCount: 1 };
     }
+    if (q.startsWith("SELECT tenant_id,work_id,sequence_number,event_type,payload,") &&
+        q.includes("open_work_review_consumed") && q.includes("work_v2_created")) {
+      const rows = [...this.events.values()].filter((event) =>
+        event.tenant_id === parameters[0] && event.work_id === parameters[1] &&
+        ["open_work_review_consumed", "work_v2_created"].includes(event.event_type))
+        .sort((left, right) => left.sequence_number - right.sequence_number);
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
     if (q.startsWith("SELECT sequence_number,event_hash FROM tenant_work_event")) {
       const rows = [...this.events.values()].filter((event) => event.tenant_id === parameters[0] && event.work_id === parameters[1])
         .sort((a, b) => a.sequence_number - b.sequence_number);
@@ -240,6 +314,11 @@ function createInput() {
     tasks: [{ title: "transaction", weight: 1, required: true }], intent_digest: "a".repeat(64) };
 }
 
+function boundedUniqueText(prefix, index, length) {
+  const marker = `${prefix}-${String(index).padStart(3, "0")}-`;
+  return `${marker}${"x".repeat(length - marker.length)}`;
+}
+
 function legacyRuntime(pool) {
   return { initialize: async () => {}, ensureWithClient: async (client, who, input) => {
     const row = client.insertLegacy(who, input);
@@ -276,6 +355,87 @@ async function reviewed(store, input) {
   return { ...input, review_id: review.review_id, review_digest: review.review_digest };
 }
 
+function coreAuthorizationReceipt() {
+  const coreMaterial = {
+    schema_version: "core_action_authorization_receipt_v1",
+    authority: "universal_core",
+    authorization_id: `cae_${"1".repeat(40)}`,
+    tenant_id: "tenant-a",
+    action_type: "work.continuity.v2.create",
+    idempotency_key_digest: "2".repeat(64),
+    request_digest: "3".repeat(64),
+    response_digest: "4".repeat(64),
+    issued_at: "2026-08-08T09:59:00.000Z",
+    expires_at: "2026-08-08T10:01:00.000Z",
+  };
+  const coreReceipt = { ...coreMaterial, receipt_digest: stableDigest(coreMaterial) };
+  const material = {
+    schema_version: "work_bootstrap_core_authorization_receipt_v2",
+    authority: "universal_core",
+    route: "/v1/action-evaluator",
+    target: `work_bootstrap:create:chatgpt_prod:chatgpt_native:${"a".repeat(64)}`,
+    decision_id: coreReceipt.authorization_id,
+    decision: "allow",
+    mediation: "allow",
+    owner_confirmation_required: true,
+    confirmation_satisfied: true,
+    core_authorization_receipt: coreReceipt,
+  };
+  return { ...material, receipt_digest: stableDigest(material) };
+}
+
+test("V2 store accepts exact shared bootstrap text boundaries", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({
+    pool,
+    now: () => new Date("2026-08-08T10:00:00.000Z"),
+  });
+  const acceptanceCriteria = Array.from({ length: 250 }, (_, index) =>
+    boundedUniqueText("acceptance", index, 2_000));
+  const constraints = Array.from({ length: 100 }, (_, index) =>
+    boundedUniqueText("constraint", index, 1_000));
+  const created = await store.createWork(identity(), {
+    ...createInput(),
+    acceptance_criteria: acceptanceCriteria,
+    constraints,
+  });
+  assert.equal(created.acceptance_criteria.length, 250);
+  assert.equal(created.acceptance_criteria.at(-1).length, 2_000);
+  assert.equal(pool.works.size, 1);
+});
+
+test("V2 store rejects acceptance and constraint count or item-length overflow", async () => {
+  const acceptanceCriteria = Array.from({ length: 250 }, (_, index) =>
+    boundedUniqueText("acceptance", index, 2_000));
+  const constraints = Array.from({ length: 100 }, (_, index) =>
+    boundedUniqueText("constraint", index, 1_000));
+  const negativeCases = [
+    [{ acceptance_criteria: [...acceptanceCriteria, "overflow"] }, /acceptance_criteria_invalid/],
+    [{ acceptance_criteria: ["x".repeat(2_001)] }, /acceptance_criteria_invalid/],
+    [{ constraints: [...constraints, "overflow"] }, /constraints_invalid/],
+    [{ constraints: ["x".repeat(1_001)] }, /constraints_invalid/],
+  ];
+  for (const [override, expected] of negativeCases) {
+    const pool = new AtomicWorkPool();
+    const store = createWorkContinuityV2Store({
+      pool,
+      now: () => new Date("2026-08-08T10:00:00.000Z"),
+    });
+    const invalidInput = { ...createInput(), ...override };
+    await assert.rejects(store.openWorkReview(identity(), {
+      intent_type: "CREATE_WORK",
+      request: invalidInput.objective,
+      create_request: invalidInput,
+    }), expected);
+    assert.equal(pool.bootstrapRequests.size, 0);
+    assert.equal(pool.reviews.size, 0);
+    await assert.rejects(store.createWork(identity(), {
+      ...invalidInput,
+    }), expected);
+    assert.equal(pool.works.size, 0);
+  }
+});
+
 for (const phase of ["review_consumed", "legacy_created", "v2_work_created", "v2_tasks_created", "v2_events_created"]) {
   test(`coordinated create rolls back every durable phase after ${phase}`, async () => {
     const pool = new AtomicWorkPool();
@@ -297,6 +457,7 @@ test("exact retry converges on one linked legacy/V2 identity and one consumed re
   const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
     now: () => new Date("2026-08-08T10:00:00.000Z") });
   const input = await reviewed(store, createInput());
+  pool.queries.length = 0;
   const first = await store.createNewWork(identity(), input);
   const replay = await store.createNewWork(identity(), input);
   assert.equal(first.work.work_id, replay.work.work_id);
@@ -306,6 +467,267 @@ test("exact retry converges on one linked legacy/V2 identity and one consumed re
   assert.equal(pool.tasks.size, 1);
   assert.equal(pool.events.size, 2);
   assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_work_id, first.work.work_id);
+  assert.equal(pool.bootstrapRequests.get(key("tenant-a", "owner", input.request_id)).consumed_work_id,
+    first.work.work_id);
+  const bindingLock = pool.queries.findIndex((query) =>
+    query.startsWith("SELECT * FROM tenant_work_bootstrap_request"));
+  const reviewLock = pool.queries.findIndex((query) =>
+    query.startsWith("SELECT * FROM tenant_work_open_review"));
+  assert.ok(bindingLock >= 0 && reviewLock > bindingLock,
+    "create must lock the durable request mapping before its review");
+});
+
+test("request identity survives replica restart and consumed-review expiry without minting a duplicate", async () => {
+  const pool = new AtomicWorkPool();
+  let current = new Date("2026-08-08T10:00:00.000Z");
+  const options = { pool, legacyRuntime: legacyRuntime(pool), now: () => current };
+  const firstStore = createWorkContinuityV2Store(options);
+  const request = createInput();
+  const reviewedInput = await reviewed(firstStore, request);
+  const first = await firstStore.createNewWork(identity(), reviewedInput);
+
+  current = new Date("2026-08-08T10:20:00.000Z");
+  const restartedStore = createWorkContinuityV2Store(options);
+  const reopened = await restartedStore.openWorkReview(identity(), {
+    intent_type: "CREATE_WORK",
+    request: `${request.work_name} ${request.objective}`,
+    create_request: request,
+  });
+  assert.equal(reopened.review_id, reviewedInput.review_id);
+  assert.equal(reopened.review_digest, reviewedInput.review_digest);
+  assert.equal(reopened.consumed, true);
+  assert.equal(reopened.consumed_work_id, first.work.work_id);
+  assert.equal(reopened.idempotent_replay, true);
+
+  const replay = await restartedStore.createNewWork(identity(), {
+    ...request,
+    review_id: reopened.review_id,
+    review_digest: reopened.review_digest,
+  });
+  assert.equal(replay.work.work_id, first.work.work_id);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(pool.works.size, 1);
+  assert.equal(pool.legacy.size, 1);
+  assert.equal(pool.reviews.size, 1);
+  assert.equal(pool.bootstrapRequests.size, 1);
+});
+
+test("one request id cannot be rebound to a changed Work specification", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const request = createInput();
+  await store.openWorkReview(identity(), {
+    intent_type: "CREATE_WORK", request: request.objective, create_request: request,
+  });
+  await assert.rejects(store.openWorkReview(identity(), {
+    intent_type: "CREATE_WORK",
+    request: "changed objective",
+    create_request: { ...request, objective: "materially changed objective" },
+  }), /open_work_review_idempotency_conflict/);
+  assert.equal(pool.reviews.size, 1);
+  assert.equal(pool.bootstrapRequests.size, 1);
+});
+
+test("create fails closed when ambiguous legacy reviews have no durable request binding", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  pool.bootstrapRequests.clear();
+  const original = pool.reviews.get(key("tenant-a", input.review_id));
+  const conflictingReviewId = "99999999-9999-4999-8999-999999999999";
+  pool.reviews.set(key("tenant-a", conflictingReviewId), {
+    ...structuredClone(original),
+    review_id: conflictingReviewId,
+    review_digest: "f".repeat(64),
+    request_digest: "e".repeat(64),
+    consumed_work_id: "88888888-8888-4888-8888-888888888888",
+    consumed_at: "2026-08-08T09:59:00.000Z",
+  });
+
+  await assert.rejects(
+    store.createNewWork(identity(), input),
+    /open_work_review_request_binding_invalid/,
+  );
+  assert.equal(pool.bootstrapRequests.size, 0);
+  assert.equal(pool.works.size, 0);
+  assert.equal(pool.legacy.size, 0);
+});
+
+test("persists the bounded Universal Core creation receipt in the Work event ledger", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  const receipt = coreAuthorizationReceipt();
+  const created = await store.createNewWork(identity(), {
+    ...input,
+    _core_authorization_receipt: receipt,
+  });
+  const createdEvent = [...pool.events.values()].find((event) =>
+    event.event_type === "work_v2_created");
+
+  assert.deepEqual(created.core_authorization_receipt, receipt);
+  assert.deepEqual(createdEvent.payload.core_authorization_receipt, receipt);
+  const replay = await store.createNewWork(identity(), {
+    ...input,
+    _core_authorization_receipt: receipt,
+  });
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.core_authorization_receipt, null);
+  assert.deepEqual(createdEvent.payload.core_authorization_receipt, receipt);
+  pool.databaseNow = "2026-08-08T10:05:00.000Z";
+  const durableReadback = await store.readCreatedWorkByBootstrapRequest(identity(), input);
+  assert.equal(durableReadback.work.work_id, created.work.work_id);
+  assert.equal(durableReadback.idempotent_replay, true);
+  assert.equal(durableReadback.replay_source, "durable_bootstrap_mapping");
+  assert.equal(durableReadback.execution_authorized, false);
+  assert.equal(durableReadback.core_authorization_receipt, null);
+  assert.deepEqual(durableReadback.persisted_core_authorization_receipt, receipt);
+  const originalEventHash = createdEvent.event_hash;
+  createdEvent.event_hash = "f".repeat(64);
+  await assert.rejects(
+    store.readCreatedWorkByBootstrapRequest(identity(), input),
+    /work_bootstrap_replay_evidence_invalid/,
+  );
+  createdEvent.event_hash = originalEventHash;
+  await assert.rejects(store.createNewWork(identity(), {
+    ...input,
+    _core_authorization_receipt: { ...receipt, decision: "block" },
+  }), /work_bootstrap_core_authorization_receipt_invalid/);
+  const malformedCore = { ...receipt.core_authorization_receipt, response_digest: "5".repeat(64) };
+  const { receipt_digest: ignoredReceiptDigest, ...receiptMaterial } = receipt;
+  void ignoredReceiptDigest;
+  const malformedMaterial = { ...receiptMaterial, core_authorization_receipt: malformedCore };
+  await assert.rejects(store.createNewWork(identity(), {
+    ...input,
+    _core_authorization_receipt: {
+      ...malformedMaterial,
+      receipt_digest: stableDigest(malformedMaterial),
+    },
+  }), /work_bootstrap_core_authorization_receipt_invalid/);
+});
+
+test("late durable bootstrap replay accepts a request that originally omitted intent_digest", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const request = createInput();
+  delete request.intent_digest;
+  const input = await reviewed(store, request);
+  const created = await store.createNewWork(identity(), {
+    ...input,
+    _core_authorization_receipt: coreAuthorizationReceipt(),
+  });
+
+  assert.equal(created.work.intent_digest, "a".repeat(64));
+  pool.databaseNow = "2026-08-08T10:05:00.000Z";
+  const replay = await store.readCreatedWorkByBootstrapRequest(identity(), input);
+  assert.equal(replay.work.work_id, created.work.work_id);
+  assert.equal(replay.work.intent_digest, "a".repeat(64));
+  assert.equal(replay.replay_source, "durable_bootstrap_mapping");
+  assert.equal(replay.execution_authorized, false);
+  assert.equal(replay.core_authorization_receipt, null);
+});
+
+test("Core receipt expiry is checked with the database clock after lock and before commit", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  const coreMaterial = {
+    schema_version: "core_action_authorization_receipt_v1",
+    authority: "universal_core",
+    authorization_id: `cae_${"1".repeat(40)}`,
+    tenant_id: "tenant-a",
+    action_type: "work.continuity.v2.create",
+    idempotency_key_digest: "2".repeat(64),
+    request_digest: "3".repeat(64),
+    response_digest: "4".repeat(64),
+    issued_at: "2026-08-08T09:59:00.000Z",
+    expires_at: "2026-08-08T10:01:00.000Z",
+  };
+  const coreReceipt = { ...coreMaterial, receipt_digest: stableDigest(coreMaterial) };
+  const material = {
+    schema_version: "work_bootstrap_core_authorization_receipt_v2",
+    authority: "universal_core",
+    route: "/v1/action-evaluator",
+    target: `work_bootstrap:create:chatgpt_prod:chatgpt_native:${"a".repeat(64)}`,
+    decision_id: coreReceipt.authorization_id,
+    decision: "allow",
+    mediation: "allow",
+    owner_confirmation_required: true,
+    confirmation_satisfied: true,
+    core_authorization_receipt: coreReceipt,
+  };
+  const receipt = { ...material, receipt_digest: stableDigest(material) };
+
+  pool.databaseNow = coreMaterial.expires_at;
+  await assert.rejects(store.createNewWork(identity(), {
+    ...input,
+    _core_authorization_receipt: receipt,
+  }), /work_bootstrap_core_authorization_receipt_expired/);
+  assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
+  assert.equal(pool.legacy.size, 0);
+  assert.equal(pool.works.size, 0);
+
+  pool.databaseNow = "2026-08-08T10:00:00.000Z";
+  let checks = 0;
+  const originalQuery = pool.query.bind(pool);
+  pool.query = async (sql, parameters) => {
+    const normalized = sql.replace(/\s+/g, " ").trim();
+    if (normalized.startsWith("SELECT checked_at,") && normalized.includes("clock_timestamp()")) {
+      checks += 1;
+      if (checks === 2) pool.databaseNow = coreMaterial.expires_at;
+    }
+    return originalQuery(sql, parameters);
+  };
+  await assert.rejects(store.createNewWork(identity(), {
+    ...input,
+    _core_authorization_receipt: receipt,
+  }), /work_bootstrap_core_authorization_receipt_expired/);
+  assert.equal(checks, 2);
+  assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
+  assert.equal(pool.legacy.size, 0);
+  assert.equal(pool.works.size, 0);
+  assert.equal(pool.events.size, 0);
+});
+
+test("review digest rejects material Work specification substitution", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  await assert.rejects(
+    store.createNewWork(identity(), {
+      ...input,
+      architecture: { substituted: true },
+    }),
+    /open_work_review_request_binding_invalid/,
+  );
+  assert.equal(pool.works.size, 0);
+  assert.equal(pool.legacy.size, 0);
+  assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
+});
+
+test("review digest binds caller-supplied task identities in the canonical task graph", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const taskA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const taskB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const input = await reviewed(store, {
+    ...createInput(),
+    tasks: [{ task_id: taskA, title: "transaction", weight: 1, required: true }],
+  });
+  await assert.rejects(store.createNewWork(identity(), {
+    ...input,
+    tasks: [{ task_id: taskB, title: "transaction", weight: 1, required: true }],
+  }), /open_work_review_request_binding_invalid/);
+  assert.equal(pool.works.size, 0);
+  assert.equal(pool.tasks.size, 0);
+  assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
 });
 
 test("coordinated create promotes a concurrent legacy projection to the requested V2 identity", async () => {
@@ -348,6 +770,30 @@ test("significant overlap requires an owner decision and does not consume on den
   assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
   const created = await store.createNewWork(identity(), { ...input, review_decision: "CONTINUE_NEW_WORK" });
   assert.equal(created.review.decision, "CONTINUE_NEW_WORK");
+});
+
+test("two no-conflict reviews cannot race into duplicate same-project Works", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const firstInput = await reviewed(store, createInput());
+  const secondInput = await reviewed(store, { ...createInput(), request_id: "request-002",
+    session_id: "session-002" });
+  const first = await store.createNewWork(identity(), firstInput);
+  await assert.rejects(
+    store.createNewWork(identity(), secondInput),
+    /open_work_review_stale_conflict/,
+  );
+  assert.equal(pool.works.size, 1);
+  assert.equal(pool.legacy.size, 1);
+  assert.equal(pool.reviews.get(key("tenant-a", secondInput.review_id)).consumed_at, null);
+  assert.equal(first.work.work_name, "Continuity transaction");
+  assert.equal(pool.queries.some((query) => query.startsWith("SELECT pg_advisory_xact_lock")), true);
+  const lockCall = pool.queryParameters.find((call) =>
+    call.sql.startsWith("SELECT pg_advisory_xact_lock"));
+  assert.match(lockCall.parameters[0], /^tenant_work_bootstrap:[a-f0-9]{64}$/);
+  assert.equal(lockCall.parameters[0].includes("\0"), false,
+    "PostgreSQL text advisory-lock keys must never contain a NUL byte");
 });
 
 test("preflight projects legacy rows without inventing ownership and preserves Gallery v1 shape", async () => {
