@@ -937,6 +937,10 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
   });
   assert.equal(tenantWorkCoordinationTarget("tenant_work_task_record", { work_id: WORK_ID }), `task:${WORK_ID}`);
   assert.equal(tenantWorkCoordinationTarget("tenant_work_evidence_record", { work_id: WORK_ID }), `work_continuity_evidence:${WORK_ID}`);
+  assert.equal(
+    tenantWorkCoordinationTarget("software_cognition_repository_bootstrap", { work_id: WORK_ID }),
+    `work_atlas:${WORK_ID}`,
+  );
   assert.equal(tenantWorkCoordinationTarget("tenant_work_task_record", { work_id: "not-a-work-id" }), "tenant_work_task_record");
   assert.equal(tenantWorkCoordinationActionType("unknown_internal_write"), null);
 });

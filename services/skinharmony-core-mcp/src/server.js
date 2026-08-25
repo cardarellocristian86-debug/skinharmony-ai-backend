@@ -1811,7 +1811,9 @@ function internalCoordinationActionType(toolName) {
   if (toolName.includes("native_bind")) return "native_agent.bind";
   if (toolName.includes("native_report")) return "native_agent.report";
   if (toolName.includes("closure")) return "native_agent.verify";
-  if (toolName.includes("atlas")) return "work_atlas.update";
+  // The repository bootstrap is the initial bounded Atlas write. Its name
+  // predates the common `atlas` suffix, therefore classify it explicitly.
+  if (toolName === "software_cognition_repository_bootstrap" || toolName.includes("atlas")) return "work_atlas.update";
   if (toolName.includes("incident")) return "incident.record";
   if (toolName.includes("delegation_consume")) return "delegation.consume";
   return "continuity.update";

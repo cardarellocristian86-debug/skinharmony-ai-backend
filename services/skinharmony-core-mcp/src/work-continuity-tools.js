@@ -73,6 +73,10 @@ export function tenantWorkCoordinationTarget(toolName, args = {}) {
   const name = String(toolName || "");
   const workId = String(args?.work_id || "").trim().toLowerCase();
   if (!WORK_ID_TARGET.test(workId)) return name;
+  // Repository Atlas bootstrap is a bounded internal graph mutation. Its
+  // public capability name intentionally does not contain `atlas`, so derive
+  // the Core-recognised Atlas target from the validated Work identifier.
+  if (name === "software_cognition_repository_bootstrap") return `work_atlas:${workId}`;
   if (name === "tenant_work_task_record") return `task:${workId}`;
   if (name === "tenant_work_evidence_record") return `work_continuity_evidence:${workId}`;
   return name;
