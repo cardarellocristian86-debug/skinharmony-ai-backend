@@ -45,6 +45,24 @@ test("authorizes a bounded low-impact coordination write without confirmation", 
   assert.equal(result.confirmation_satisfied, false);
 });
 
+test("authorizes a bounded repository Atlas bootstrap only for its Work-derived target", () => {
+  const atlasTarget = "work_atlas:11111111-1111-4111-8111-111111111111";
+  const allowed = buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "work_atlas.update",
+    target: atlasTarget,
+    idempotency_key: "atlas-bootstrap-11111111",
+  });
+  assert.equal(allowed.allowed, true);
+  const denied = buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "work_atlas.update",
+    target: "software_cognition_repository_bootstrap",
+    idempotency_key: "atlas-bootstrap-wrong-target",
+  });
+  assert.equal(denied.allowed, false);
+});
+
 test("preserves the closed legacy and continuity coordination action set", () => {
   const targets = {
     "agent.heartbeat": "tenant_agent_heartbeat",
