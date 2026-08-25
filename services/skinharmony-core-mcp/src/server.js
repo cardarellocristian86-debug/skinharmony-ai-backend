@@ -411,6 +411,8 @@ validatePresenceRecoveryContext = (args, identity) =>
 const softwareCognitionHandlers = createSoftwareCognitionHandlers({
   coreRequest: coreHandlers.causalCoreRequest,
   atlasRuntime: workContinuityRuntime,
+  repositoryBindings: config.nyraAtlasRepositoryBindings,
+  githubTokens: config.nyraAtlasGithubTokens,
   issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
     secret: config.dttAgentIdentitySigningSecret,
     tenant_id,

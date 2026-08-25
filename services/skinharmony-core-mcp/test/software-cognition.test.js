@@ -103,15 +103,18 @@ test("repository bootstrap fetches a bounded snapshot and persists only the deri
   const writes = [];
   const handlers = createSoftwareCognitionHandlers({
     coreRequest: async () => ({ ok: true }), issueAgentContext: () => "signed-context", fetchImpl,
+    repositoryBindings: { "project-a": { repository: "owner/repository", branch: "main", credentialTenantId: null } },
     atlasRuntime: {
       readAtlasGraph: async () => graph.revision ? graph : Promise.reject(new Error("work_atlas_not_found")),
+      readIntent: async () => ({ project_id: "project-a" }),
       upsertAtlas: async (_identity, input) => {
-        assert.equal(input.replace, false);
+        assert.equal(input.replace, true);
         assert.equal(input.expected_revision, graph.revision);
         writes.push(input);
         graph.revision += 1;
         graph.nodes.push(...input.nodes);
         graph.edges.push(...input.edges);
+        graph.bootstrap = input.bootstrap;
         return { revision: graph.revision, total_nodes: graph.nodes.length, total_context_bytes: JSON.stringify(graph.nodes).length };
       },
     },
@@ -126,4 +129,66 @@ test("repository bootstrap fetches a bounded snapshot and persists only the deri
   assert.equal(writes.length, 1);
   assert(writes[0].nodes.some((node) => node.path === "src/app.ts"));
   assert.equal(Object.hasOwn(result.structuredContent, "content"), false);
+});
+
+test("repository bootstrap binds Work/project/repository and pins each continuation to its snapshot", async () => {
+  const commit = "a".repeat(40);
+  const tree = "b".repeat(40);
+  const files = new Map([
+    ["src/a.ts", "export const alpha = 1;\n"],
+    ["src/b.ts", "export const beta = 2;\n"],
+  ]);
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, options });
+    const ref = url.includes(`/commits/${commit}`) ? commit : "main";
+    const json = url.includes("/commits/")
+      ? { sha: commit, commit: { tree: { sha: tree } } }
+      : url.includes(`/git/trees/${tree}`)
+        ? { truncated: false, tree: [...files.keys()].map((path) => ({ path, type: "blob", mode: "100644" })) }
+        : (() => {
+          const path = [...files.keys()].find((item) => url.includes(`/contents/${item}`));
+          return path ? { type: "file", encoding: "base64", content: Buffer.from(files.get(path)).toString("base64") } : null;
+        })();
+    return { ok: Boolean(json), text: async () => JSON.stringify(json || { message: "not found" }) };
+  };
+  const graph = { revision: 0, nodes: [], edges: [], metrics: { total_nodes: 0, total_context_bytes: 0 } };
+  const handlers = createSoftwareCognitionHandlers({
+    coreRequest: async () => ({ ok: true }), issueAgentContext: () => "signed-context", fetchImpl,
+    repositoryBindings: { "project-a": { repository: "owner/repository", branch: "main", credentialTenantId: "tenant-a" } },
+    githubTokens: { "tenant-a": "token-only-on-server-123456789" },
+    atlasRuntime: {
+      readIntent: async () => ({ project_id: "project-a" }),
+      readAtlasGraph: async () => graph.revision ? graph : Promise.reject(new Error("work_atlas_not_found")),
+      upsertAtlas: async (_identity, input) => {
+        graph.revision += 1;
+        graph.nodes.push(...input.nodes);
+        graph.edges.push(...input.edges);
+        graph.bootstrap = input.bootstrap;
+        return { revision: graph.revision, total_nodes: graph.nodes.length, total_context_bytes: 1 };
+      },
+    },
+  });
+  const identity = { tenantId: "tenant-a", agentPresence };
+  const first = await handlers.software_cognition_repository_bootstrap({
+    project_id: "project-a", work_id: "work-a", repository: "owner/repository", file_limit: 1, idempotency_key: "atlas-page-0",
+  }, identity);
+  assert.equal(first.structuredContent.completed, false);
+  assert.equal(first.structuredContent.next_cursor, 1);
+  assert.equal(first.structuredContent.snapshot_commit, commit);
+  const second = await handlers.software_cognition_repository_bootstrap({
+    project_id: "project-a", work_id: "work-a", repository: "owner/repository", cursor: first.structuredContent.next_cursor,
+    snapshot_commit: first.structuredContent.snapshot_commit, snapshot_tree_sha: first.structuredContent.snapshot_tree_sha,
+    file_limit: 1, idempotency_key: "atlas-page-1",
+  }, identity);
+  assert.equal(second.structuredContent.completed, true);
+  assert.equal(second.structuredContent.snapshot_commit, commit);
+  assert(calls.some(({ options }) => options.headers.authorization === "Bearer token-only-on-server-123456789"));
+  assert.equal(JSON.stringify(second.structuredContent).includes("token-only-on-server"), false);
+  await assert.rejects(() => handlers.software_cognition_repository_bootstrap({
+    project_id: "project-a", work_id: "work-a", repository: "unrelated/repository", idempotency_key: "wrong-repo",
+  }, identity), /software_atlas_repository_binding_mismatch/);
+  await assert.rejects(() => handlers.software_cognition_repository_bootstrap({
+    project_id: "other-project", work_id: "work-a", repository: "owner/repository", idempotency_key: "wrong-work",
+  }, identity), /continuity_project_mismatch/);
 });
