@@ -1544,6 +1544,19 @@ CREATE TABLE IF NOT EXISTS core_continuity_atlas_state (
   PRIMARY KEY (tenant_id, work_id),
   FOREIGN KEY (tenant_id, work_id) REFERENCES core_continuity_works(tenant_id, work_id)
 );
+-- A repository bootstrap is resumable but not yet available for reasoning.
+-- Keep its cursor and immutable snapshot separate from graph nodes so a fresh
+-- chat cannot mistake a partial graph for a complete Architecture Atlas.
+ALTER TABLE core_continuity_atlas_state
+  ADD COLUMN IF NOT EXISTS bootstrap_state varchar(24) NOT NULL DEFAULT 'available',
+  ADD COLUMN IF NOT EXISTS bootstrap_repository varchar(240),
+  ADD COLUMN IF NOT EXISTS bootstrap_commit varchar(64),
+  ADD COLUMN IF NOT EXISTS bootstrap_tree_sha varchar(64),
+  ADD COLUMN IF NOT EXISTS bootstrap_source_hash char(64),
+  ADD COLUMN IF NOT EXISTS bootstrap_cursor integer,
+  ADD COLUMN IF NOT EXISTS bootstrap_next_cursor integer,
+  ADD COLUMN IF NOT EXISTS bootstrap_total_files integer,
+  ADD COLUMN IF NOT EXISTS bootstrap_frontier jsonb;
 CREATE INDEX IF NOT EXISTS core_continuity_atlas_project_idx
   ON core_continuity_atlas_state (tenant_id, project_id, updated_at DESC);
 CREATE TABLE IF NOT EXISTS core_continuity_atlas_nodes (
@@ -2108,6 +2121,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         i.intent_digest,
         c.capsule_id,c.capsule_digest,
         a.revision AS atlas_revision,a.source_hash AS atlas_source_hash,
+        a.bootstrap_state AS atlas_bootstrap_state,a.bootstrap_next_cursor AS atlas_bootstrap_next_cursor,
         e.payload->>'fingerprint' AS incident_fingerprint,
         CASE e.event_type
           WHEN 'incident_runbook_verified' THEN 'verified'
@@ -2157,12 +2171,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
         work_count: Number(row.gallery_work_count || 0),
       }),
       software: Object.freeze({
-        state: atlasRevision === null ? "not_indexed" : "available",
+        state: atlasRevision === null ? "not_indexed" : row.atlas_bootstrap_state === "indexing" ? "indexing" : "available",
         atlas_revision: atlasRevision,
         source_hash: row.atlas_source_hash || null,
+        ...(row.atlas_bootstrap_state === "indexing" ? { next_cursor: Number(row.atlas_bootstrap_next_cursor || 0) } : {}),
         // A bounded graph selection is event-driven. A new chat must not scan
         // the complete Atlas merely to compose a conversational briefing.
-        discovery_required: atlasRevision === null,
+        discovery_required: atlasRevision === null || row.atlas_bootstrap_state === "indexing",
       }),
       incident: Object.freeze({
         fingerprint: row.incident_fingerprint || null,
@@ -4337,6 +4352,28 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const edgesInput = Array.isArray(input.edges) ? input.edges : [];
     if (!nodesInput.length || nodesInput.length > 500) throw new Error("work_atlas_nodes_invalid");
     if (edgesInput.length > 2_000) throw new Error("work_atlas_edges_invalid");
+    const bootstrap = input.bootstrap === undefined ? null : cleanJson(input.bootstrap, 100_000);
+    if (bootstrap && (
+      !["indexing", "available"].includes(bootstrap.state) ||
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(bootstrap.repository || "")) ||
+      !/^[a-f0-9]{40}$/.test(String(bootstrap.commit || "")) ||
+      !/^[a-f0-9]{40}$/.test(String(bootstrap.tree_sha || "")) ||
+      !/^[a-f0-9]{64}$/.test(String(bootstrap.source_hash || "")) ||
+      !Number.isSafeInteger(Number(bootstrap.cursor)) || Number(bootstrap.cursor) < 0 ||
+      (bootstrap.total_candidate_files !== null &&
+        (!Number.isSafeInteger(Number(bootstrap.total_candidate_files)) || Number(bootstrap.total_candidate_files) < 1)) ||
+      (bootstrap.next_cursor !== null && (!Number.isSafeInteger(Number(bootstrap.next_cursor)) || Number(bootstrap.next_cursor) <= Number(bootstrap.cursor))) ||
+      (bootstrap.state === "available" && bootstrap.next_cursor !== null) ||
+      (bootstrap.state === "available" && !Number.isSafeInteger(Number(bootstrap.total_candidate_files))) ||
+      (bootstrap.state === "indexing" && (bootstrap.next_cursor === null || !bootstrap.frontier || !Array.isArray(bootstrap.frontier.directories))) ||
+      (bootstrap.frontier !== undefined && (!bootstrap.frontier || typeof bootstrap.frontier !== "object" ||
+        !Array.isArray(bootstrap.frontier.directories) || bootstrap.frontier.directories.length > 2_048 ||
+        !Number.isSafeInteger(Number(bootstrap.frontier.source_files_seen || 0)) || Number(bootstrap.frontier.source_files_seen || 0) < 0 ||
+        bootstrap.frontier.directories.some((entry) => !entry || typeof entry !== "object" ||
+          (String(entry.path || "") && !/^(?!.*(?:^|\/)\.\.?\/)[^\u0000]{1,2000}$/.test(String(entry.path || ""))) ||
+          !/^[a-f0-9]{40}$/.test(String(entry.tree_sha || "")) ||
+          !Number.isSafeInteger(Number(entry.offset)) || Number(entry.offset) < 0)))
+    )) throw new Error("work_atlas_bootstrap_invalid");
     const nodes = nodesInput.map((node) => {
       requireObject(node, "work_atlas_node");
       const nodeId = identifier(node.node_id, "node_id", 160);
@@ -4461,9 +4498,23 @@ export function createWorkContinuityRuntime(config, options = {}) {
         const sourceHash = input.source_hash || digest(nodes.map((node) => node.node_digest));
         if (!/^[a-f0-9]{64}$/.test(sourceHash)) throw new Error("work_atlas_source_hash_invalid");
         await client.query(`UPDATE core_continuity_atlas_state
-          SET revision=$3,total_nodes=$4,total_context_bytes=$5,source_hash=$6,updated_at=now()
+          SET revision=$3,total_nodes=$4,total_context_bytes=$5,source_hash=$6,
+            bootstrap_state=COALESCE($7,bootstrap_state),bootstrap_repository=CASE WHEN $7 IS NULL THEN bootstrap_repository ELSE $8 END,
+            bootstrap_commit=CASE WHEN $7 IS NULL THEN bootstrap_commit ELSE $9 END,
+            bootstrap_tree_sha=CASE WHEN $7 IS NULL THEN bootstrap_tree_sha ELSE $10 END,
+            bootstrap_source_hash=CASE WHEN $7 IS NULL THEN bootstrap_source_hash ELSE $11 END,
+            bootstrap_cursor=CASE WHEN $7 IS NULL THEN bootstrap_cursor ELSE $12 END,
+            bootstrap_next_cursor=CASE WHEN $7 IS NULL THEN bootstrap_next_cursor ELSE $13 END,
+            bootstrap_total_files=CASE WHEN $7 IS NULL THEN bootstrap_total_files ELSE $14 END,
+            bootstrap_frontier=CASE WHEN $7 IS NULL THEN bootstrap_frontier ELSE $15::jsonb END,
+            updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2`,
-        [context.tenantId, context.workId, revision, totalNodes, totalContextBytes, sourceHash]);
+        [context.tenantId, context.workId, revision, totalNodes, totalContextBytes, sourceHash,
+          bootstrap?.state || null, bootstrap?.repository || null, bootstrap?.commit || null, bootstrap?.tree_sha || null,
+          bootstrap?.source_hash || null, bootstrap ? Number(bootstrap.cursor) : null,
+          bootstrap ? bootstrap.next_cursor : null,
+          bootstrap ? (bootstrap.total_candidate_files === null ? null : Number(bootstrap.total_candidate_files)) : null,
+          bootstrap ? JSON.stringify(bootstrap.frontier || null) : null]);
         await client.query(`INSERT INTO core_continuity_atlas_revision_history
           (tenant_id,work_id,project_id,revision,source_digest,base_commit,head_commit,node_count,edge_count,provenance)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`, [context.tenantId, context.workId, work.rows[0].project_id,
@@ -4478,6 +4529,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           total_nodes: totalNodes,
           total_context_bytes: totalContextBytes,
           incremental: input.replace !== true,
+          ...(bootstrap ? { bootstrap_state: bootstrap.state, bootstrap_next_cursor: bootstrap.next_cursor } : {}),
         });
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
@@ -4726,7 +4778,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const tenantId = tenant(identity.tenantId);
     const workId = uuid(input.work_id, "work_id");
     const projectId = identifier(input.project_id, "project_id", 64);
-    const state = await pool.query(`SELECT revision,source_hash,total_nodes,total_context_bytes FROM core_continuity_atlas_state
+    const state = await pool.query(`SELECT revision,source_hash,total_nodes,total_context_bytes,
+        bootstrap_state,bootstrap_repository,bootstrap_commit,bootstrap_tree_sha,bootstrap_source_hash,
+        bootstrap_cursor,bootstrap_next_cursor,bootstrap_total_files,bootstrap_frontier FROM core_continuity_atlas_state
       WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3`, [tenantId, projectId, workId]);
     if (!state.rows[0]) throw new Error("work_atlas_not_found");
     const [nodes, edges] = await Promise.all([
@@ -4740,6 +4794,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return {
       schema_version: "software_reality_graph_atlas_v1", tenant_id: tenantId, project_id: projectId, work_id: workId,
       revision: Number(state.rows[0].revision), source_digest: state.rows[0].source_hash,
+      bootstrap: {
+        state: state.rows[0].bootstrap_state || "available",
+        repository: state.rows[0].bootstrap_repository || null,
+        commit: state.rows[0].bootstrap_commit || null,
+        tree_sha: state.rows[0].bootstrap_tree_sha || null,
+        source_hash: state.rows[0].bootstrap_source_hash || null,
+        cursor: state.rows[0].bootstrap_cursor === null ? null : Number(state.rows[0].bootstrap_cursor),
+        next_cursor: state.rows[0].bootstrap_next_cursor === null ? null : Number(state.rows[0].bootstrap_next_cursor),
+        total_candidate_files: state.rows[0].bootstrap_total_files === null ? null : Number(state.rows[0].bootstrap_total_files),
+        frontier: state.rows[0].bootstrap_frontier || null,
+      },
       nodes: nodes.rows.map((row) => ({ tenant_id: tenantId, project_id: projectId, work_id: workId, node_id: row.node_id,
         kind: row.node_kind, source_ref: row.source_ref, source_kind: row.source_kind, provenance: row.provenance,
         payload: row.metadata, digest: row.source_digest, version: Number(row.revision), tombstoned: false })),

@@ -411,6 +411,8 @@ validatePresenceRecoveryContext = (args, identity) =>
 const softwareCognitionHandlers = createSoftwareCognitionHandlers({
   coreRequest: coreHandlers.causalCoreRequest,
   atlasRuntime: workContinuityRuntime,
+  repositoryBindings: config.nyraAtlasRepositoryBindings,
+  githubTokens: config.nyraAtlasGithubTokens,
   issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
     secret: config.dttAgentIdentitySigningSecret,
     tenant_id,
@@ -1507,6 +1509,7 @@ const NYRA_DIALOGUE_MATERIAL_CHANGE_TOOLS = new Set([
   "work_continuity_incident_verify",
   "software_cognition_graph_upsert",
   "software_cognition_index_diff",
+  "software_cognition_repository_bootstrap",
   "software_cognition_traceability_build",
   "software_cognition_architecture_recover",
   "software_cognition_calibration_update",
