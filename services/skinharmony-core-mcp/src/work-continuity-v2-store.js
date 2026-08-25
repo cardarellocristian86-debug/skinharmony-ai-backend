@@ -1336,6 +1336,13 @@ export function createWorkContinuityV2Store({
         ...input,
         work_id: workId,
       }, { initialStatus: "PLANNED" });
+      // A caller-selected work_id is never a convenient alias for an
+      // unrelated Gallery row.  The review-to-Work binding above permits one
+      // exact retry only; any fresh request that collides rolls its review
+      // consumption back with the transaction instead of reporting success.
+      if (!queued.created && !review.idempotent_replay) {
+        fail("tenant_work_queue_work_id_collision");
+      }
       if (queued.created) {
         await appendV2Event(client, actor, workId, "work_queued_v3", {
           review_id: reviewId,

@@ -1539,8 +1539,8 @@ const baseHandlers = {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
       await requireBoundedTenantCoordination(
         identity,
-        "work.gallery.queue.create",
-        args.project_id,
+        tenantWorkCoordinationActionType("tenant_work_queue_create_v3"),
+        tenantWorkCoordinationTarget("tenant_work_queue_create_v3", args),
         args.idempotency_key,
       );
       return continuityTextResult({ ok: true,
@@ -1554,8 +1554,8 @@ const baseHandlers = {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
       await requireBoundedTenantCoordination(
         identity,
-        "work.gallery.assignment.offer",
-        args.work_id,
+        tenantWorkCoordinationActionType("tenant_work_assign_v3"),
+        tenantWorkCoordinationTarget("tenant_work_assign_v3", args),
         args.idempotency_key,
       );
       return continuityTextResult({ ok: true,
@@ -1565,8 +1565,8 @@ const baseHandlers = {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
       await requireBoundedTenantCoordination(
         identity,
-        "work.gallery.assignment.accept",
-        args.work_id,
+        tenantWorkCoordinationActionType("tenant_work_assignment_accept_v3"),
+        tenantWorkCoordinationTarget("tenant_work_assignment_accept_v3", args),
         args.idempotency_key,
       );
       return continuityTextResult({ ok: true,
@@ -1576,8 +1576,8 @@ const baseHandlers = {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
       await requireBoundedTenantCoordination(
         identity,
-        "work.gallery.archive",
-        args.work_id,
+        tenantWorkCoordinationActionType("tenant_work_archive_v3"),
+        tenantWorkCoordinationTarget("tenant_work_archive_v3", args),
         args.idempotency_key,
       );
       return continuityTextResult({ ok: true,
@@ -1587,8 +1587,8 @@ const baseHandlers = {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
       await requireBoundedTenantCoordination(
         identity,
-        "work.gallery.reopen",
-        args.work_id,
+        tenantWorkCoordinationActionType("tenant_work_reopen_v3"),
+        tenantWorkCoordinationTarget("tenant_work_reopen_v3", args),
         args.idempotency_key,
       );
       return continuityTextResult({ ok: true,

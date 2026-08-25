@@ -204,6 +204,14 @@ export function createFileDttVerificationTrustStore({ root } = {}) {
         && record.node_id === node_id
       )).map((record) => structuredClone(record));
     },
+    listAssignmentsForTree({ tenant_id, work_id, tree_id }) {
+      const expectedWorkId = workId(work_id);
+      return Object.values(read().assignments).filter((record) => (
+        record.tenant_id === tenant_id
+        && record.work_id === expectedWorkId
+        && record.tree_id === tree_id
+      )).map((record) => structuredClone(record));
+    },
     registerArtifact({ tenant_id, work_id, artifact_id, content, source_reference, registry_reference }) {
       const boundedContent = value(content, "artifact_content", 200_000);
       const record = {
@@ -382,6 +390,14 @@ export function createPostgresDttVerificationTrustStore({ pool } = {}) {
       return (await pool.query(
         "SELECT * FROM dtt_verifier_assignments_v2 WHERE tenant_id=$1 AND work_id=$2::uuid AND tree_id=$3 AND node_id=$4",
         [tenant_id, expectedWorkId, tree_id, node_id],
+      )).rows;
+    },
+    async listAssignmentsForTree({ tenant_id, work_id, tree_id }) {
+      await initialize();
+      const expectedWorkId = workId(work_id);
+      return (await pool.query(
+        "SELECT * FROM dtt_verifier_assignments_v2 WHERE tenant_id=$1 AND work_id=$2::uuid AND tree_id=$3",
+        [tenant_id, expectedWorkId, tree_id],
       )).rows;
     },
     async registerArtifact({ tenant_id, work_id, artifact_id, content, source_reference, registry_reference }) {

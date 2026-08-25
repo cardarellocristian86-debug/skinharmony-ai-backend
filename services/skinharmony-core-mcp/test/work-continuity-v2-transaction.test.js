@@ -867,6 +867,33 @@ test("Gallery V3 queues, archives, and reopens native Work without restoring exe
   ]);
 });
 
+test("Gallery V3 rejects a caller-supplied Work id already bound to another Work", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const existing = await store.queueNewWork(identity(), await reviewed(store, createInput()));
+  const collisionId = existing.work.work_id;
+  const candidate = {
+    ...createInput(),
+    request_id: "request-collision-002",
+    work_id: collisionId,
+    work_name: "Different queued Work",
+    idea: "A distinct Gallery request",
+    objective: "Must not consume a review for an existing Work id",
+  };
+  const reviewedCandidate = await reviewed(store, candidate);
+
+  await assert.rejects(
+    store.queueNewWork(identity(), { ...reviewedCandidate, review_decision: "CONTINUE_NEW_WORK" }),
+    /tenant_work_queue_work_id_collision/,
+  );
+  assert.equal(
+    pool.reviews.get(key("tenant-a", reviewedCandidate.review_id)).consumed_at,
+    null,
+    "the rejected collision must leave its review available for a corrected request",
+  );
+  assert.equal(pool.works.size, 1);
+});
+
 test("an exact Codex agent can accept a Gallery offer, but an impersonating host cannot", async () => {
   const pool = new AtomicWorkPool();
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });

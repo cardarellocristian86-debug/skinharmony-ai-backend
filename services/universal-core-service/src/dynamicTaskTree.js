@@ -26,6 +26,15 @@ const DEFAULT_LIMITS = Object.freeze({
   max_tokens: 100_000,
   max_cost_micros: 10_000_000,
 });
+const VERIFICATION_READINESS_BLOCKERS = new Set([
+  "task_tree_cancelled",
+  "task_tree_already_joined",
+  "task_tree_not_verified",
+  "verification_node_required",
+  "verification_verifier_not_allowlisted",
+  "verification_assignment_duplicate",
+  "verification_evidence_quorum_unsatisfied",
+]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -410,6 +419,8 @@ export function createDynamicTaskTreeRuntime({
   resolve_verifier_identity = null,
   resolve_evidence_artifact = null,
   list_verifier_assignments = null,
+  list_verifier_assignments_for_tree = null,
+  read_core_join_verdict_events = null,
   state_store = null,
 } = {}) {
   const trees = new Map();
@@ -786,10 +797,27 @@ export function createDynamicTaskTreeRuntime({
     // Core Join are all re-read from their authoritative stores instead.
     async inspectVerificationReadiness({ tenant_id, work_id, tree_id }) {
       const tree = await treeFor({ tenant_id, work_id, tree_id });
+      const assignmentsByNode = new Map();
+      if (typeof list_verifier_assignments_for_tree === "function") {
+        const assignments = await list_verifier_assignments_for_tree({
+          tenant_id: tree.tenant_id,
+          work_id: tree.work_id,
+          tree_id: tree.tree_id,
+        });
+        if (!Array.isArray(assignments)) throw new Error("dtt_verifier_assignments_unavailable");
+        for (const assignment of assignments) {
+          const nodeId = typeof assignment?.node_id === "string" ? assignment.node_id.trim() : "";
+          if (!nodeId) throw new Error("dtt_verifier_assignments_unavailable");
+          const current = assignmentsByNode.get(nodeId) || [];
+          current.push(assignment);
+          assignmentsByNode.set(nodeId, current);
+        }
+      }
       const nodes = [];
       for (const node of tree.nodes) {
-        let assignments = [];
-        if (typeof list_verifier_assignments === "function") {
+        let assignments = assignmentsByNode.get(node.node_id) || [];
+        if (typeof list_verifier_assignments_for_tree !== "function" &&
+            typeof list_verifier_assignments === "function") {
           assignments = await list_verifier_assignments({
             tenant_id: tree.tenant_id,
             work_id: tree.work_id,
@@ -844,7 +872,31 @@ export function createDynamicTaskTreeRuntime({
       }
       let coreJoin = { ready: false, state: "blocked", blocker: "task_tree_not_verified" };
       if (tree.status === "core_joined") {
-        coreJoin = { ready: true, state: "joined", blocker: null };
+        if (typeof read_core_join_verdict_events !== "function") {
+          throw new Error("dtt_join_verdict_ledger_unavailable");
+        }
+        const verdictReference = String(tree.core_join?.verdict_reference || "").trim();
+        const events = await read_core_join_verdict_events({
+          tenant_id: tree.tenant_id,
+          work_id: tree.work_id,
+          tree_id: tree.tree_id,
+        });
+        if (!Array.isArray(events)) throw new Error("dtt_join_verdict_ledger_integrity_failed");
+        const issued = events.find((event) =>
+          event?.event_type === "issued" && event.verdict_reference === verdictReference);
+        const consumed = events.some((event) =>
+          event?.event_type === "consumed" && event.verdict_reference === verdictReference);
+        const voided = events.some((event) =>
+          event?.event_type === "voided" && event.verdict_reference === verdictReference);
+        if (!verdictReference || !issued) {
+          coreJoin = { ready: false, state: "reconciliation_required", blocker: "joined_tree_verdict_missing" };
+        } else if (voided) {
+          coreJoin = { ready: false, state: "reconciliation_required", blocker: "joined_tree_verdict_voided" };
+        } else if (!consumed) {
+          coreJoin = { ready: false, state: "reconciliation_required", blocker: "dtt_join_finalization_pending" };
+        } else {
+          coreJoin = { ready: true, state: "joined", blocker: null };
+        }
       } else if (tree.status === "cancelled") {
         coreJoin = { ready: false, state: "unavailable", blocker: "task_tree_cancelled" };
       } else {
@@ -857,10 +909,12 @@ export function createDynamicTaskTreeRuntime({
             evidence_set_digest: readiness.evidence_set_digest,
           };
         } catch (error) {
+          const code = String(error?.message || "task_tree_not_verified");
+          if (!VERIFICATION_READINESS_BLOCKERS.has(code)) throw error;
           coreJoin = {
             ready: false,
             state: "blocked",
-            blocker: String(error?.message || "task_tree_not_verified"),
+            blocker: code,
           };
         }
       }
@@ -875,7 +929,9 @@ export function createDynamicTaskTreeRuntime({
         nodes,
         core_join: coreJoin,
         next_action: tree.status === "core_joined"
-          ? "already_core_joined"
+          ? coreJoin.state === "joined"
+            ? "already_core_joined"
+            : "reconcile_core_join_verdict"
           : tree.status === "cancelled"
             ? "tree_cancelled"
             : blocked

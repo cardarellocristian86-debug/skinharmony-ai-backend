@@ -751,6 +751,17 @@ test("DTT join reconciles a durable joined tree after consume failure and restar
       key,
     );
     assert.equal(joinedBeforeRestart.json.status, "core_joined");
+    const pendingReadiness = await request(
+      first.base,
+      "GET",
+      `/v1/orchestration/dtt/${tree.json.tree_id}/verification-readiness`,
+      undefined,
+      key,
+    );
+    assert.equal(pendingReadiness.status, 200);
+    assert.equal(pendingReadiness.json.core_join.state, "reconciliation_required");
+    assert.equal(pendingReadiness.json.core_join.blocker, "dtt_join_finalization_pending");
+    assert.equal(pendingReadiness.json.next_action, "reconcile_core_join_verdict");
     assert.deepEqual(
       durableLedger.read({ tenant_id: "tenant-orchestration", work_id: DTT_WORK_A, tree_id: tree.json.tree_id })
         .map((event) => event.event_type),

@@ -5665,6 +5665,13 @@ export function createUniversalCoreService(options = {}) {
       : createFileDttVerificationTrustStore({
         root: path.join(storageRoot, "dynamic-task-tree-verification-trust"),
       }));
+  // Install the durable trust schema during application bootstrap.  Readiness
+  // is a read-only route, so it must never be the first operation to issue
+  // DDL or take a schema lock.
+  const dttVerificationTrustStoreInitialization = typeof dttVerificationTrustStore.initialize === "function"
+    ? Promise.resolve().then(() => dttVerificationTrustStore.initialize())
+    : Promise.resolve();
+  void dttVerificationTrustStoreInitialization.catch(() => {});
   const dttAgentIdentityReceiptStore = options.dttAgentIdentityReceiptStore || (dttAgentIdentitySecret
     ? (dttAgentIdentityPostgresPool
       ? createPostgresDttAgentIdentityReceiptStore({ pool: dttAgentIdentityPostgresPool })
@@ -5690,6 +5697,11 @@ export function createUniversalCoreService(options = {}) {
     resolve_verifier_identity: resolveDttVerifierIdentity,
     resolve_evidence_artifact: (input) => dttVerificationTrustStore.verifyArtifact(input),
     list_verifier_assignments: (input) => dttVerificationTrustStore.listAssignments(input),
+    list_verifier_assignments_for_tree:
+      typeof dttVerificationTrustStore.listAssignmentsForTree === "function"
+        ? (input) => dttVerificationTrustStore.listAssignmentsForTree(input)
+        : null,
+    read_core_join_verdict_events: (input) => dynamicTaskTreeJoinVerdictStore.read(input),
   });
   const dynamicTaskTreeRollout = dynamicTaskTreeRolloutConfig(
     options.dynamicTaskTreeEnv || process.env,
@@ -7784,6 +7796,8 @@ export function createUniversalCoreService(options = {}) {
       "dtt_work_binding_unavailable",
       "dtt_work_context_signing_unavailable",
       "dtt_join_finalization_pending",
+      "dtt_join_verdict_ledger_unavailable",
+      "dtt_verifier_assignments_unavailable",
     ].includes(code)) return 503;
     return fallback;
   };

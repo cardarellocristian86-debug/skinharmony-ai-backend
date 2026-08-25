@@ -18,7 +18,15 @@ const identifier = {
   pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,63}$",
 };
 const hash = { type: "string", pattern: "^[a-f0-9]{64}$" };
-const coordinationIdempotencyKey = { type: "string", minLength: 8, maxLength: 160 };
+const coordinationIdempotencyKey = {
+  type: "string",
+  minLength: 8,
+  maxLength: 160,
+  // Keep the public capability schema aligned with Universal Core's bounded
+  // coordination contract: callers that pass schema validation must not be
+  // rejected later solely for a control character in this key.
+  pattern: "^[^\\u0000-\\u001f\\u007f]+$",
+};
 const gitSha = { type: "string", pattern: "^[a-f0-9]{40}$" };
 const exactBranch = {
   type: "string",
@@ -55,6 +63,11 @@ const TENANT_WORK_COORDINATION_ACTION_TYPES = Object.freeze({
   tenant_work_lease_renew: "work.lease.renew",
   tenant_work_lease_release: "work.lease.release",
   tenant_work_message_post: "work.message.post",
+  tenant_work_queue_create_v3: "work.gallery.queue.create",
+  tenant_work_assign_v3: "work.gallery.assignment.offer",
+  tenant_work_assignment_accept_v3: "work.gallery.assignment.accept",
+  tenant_work_archive_v3: "work.gallery.archive",
+  tenant_work_reopen_v3: "work.gallery.reopen",
   // Task state is a bounded coordination update; evidence stays on the
   // continuity path but receives a Core-valid, server-derived target below.
   tenant_work_task_record: "task.update",
@@ -76,7 +89,14 @@ const WORK_ID_TARGET = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]
 export function tenantWorkCoordinationTarget(toolName, args = {}) {
   const name = String(toolName || "");
   const workId = String(args?.work_id || "").trim().toLowerCase();
+  if (name === "tenant_work_queue_create_v3") return name;
   if (!WORK_ID_TARGET.test(workId)) return name;
+  if ([
+    "tenant_work_assign_v3",
+    "tenant_work_assignment_accept_v3",
+    "tenant_work_archive_v3",
+    "tenant_work_reopen_v3",
+  ].includes(name)) return workId;
   // Repository Atlas bootstrap is a bounded internal graph mutation. Its
   // public capability name intentionally does not contain `atlas`, so derive
   // the Core-recognised Atlas target from the validated Work identifier.
@@ -306,7 +326,7 @@ export const WORK_CONTINUITY_TOOLS = [
       tasks: { type: "array", minItems: 1, maxItems: 250, items: object({
         task_id: uuid, title: text(2_000), weight: { type: "integer", minimum: 1, maximum: 10_000 }, required: { type: "boolean" },
       }, ["title"]) },
-      intent_digest: hash, idempotency_key: text(160),
+      intent_digest: hash, idempotency_key: coordinationIdempotencyKey,
     }, ["intent_type", "request_id", "review_id", "review_digest", "project_id", "work_name", "work_type", "idea", "objective", "architecture", "next_action", "acceptance_criteria", "tasks", "idempotency_key"]),
     false, { ownerConfirmationRequired: false, boundedCollaboration: true }),
   tool("work_continuity_v2_read", "Read Work Identity V2",
@@ -321,22 +341,22 @@ export const WORK_CONTINUITY_TOOLS = [
       work_id: uuid,
       target_agent_id: identifier,
       target_client_type: { type: "string", enum: ["chatgpt", "codex", "api_agent", "other"] },
-      idempotency_key: text(160),
+      idempotency_key: coordinationIdempotencyKey,
     }, ["work_id", "target_agent_id", "target_client_type", "idempotency_key"]),
     false, { ownerConfirmationRequired: false, boundedCollaboration: true }),
   tool("tenant_work_assignment_accept_v3", "Accept a Gallery Work offer",
     "Accept an offer only when the authenticated host agent exactly matches its target. Acceptance permits reading and planning only.",
-    object({ work_id: uuid, idempotency_key: text(160) },
+    object({ work_id: uuid, idempotency_key: coordinationIdempotencyKey },
       ["work_id", "idempotency_key"]), false,
     { ownerConfirmationRequired: false, boundedCollaboration: true }),
   tool("tenant_work_archive_v3", "Archive a queued or blocked Work",
     "Move one non-terminal, native Gallery Work out of the operational queue while preserving its history. Active leases for that Work are revoked.",
-    object({ work_id: uuid, reason: text(1_000), idempotency_key: text(160) },
+    object({ work_id: uuid, reason: text(1_000), idempotency_key: coordinationIdempotencyKey },
       ["work_id", "reason", "idempotency_key"]), false,
     { ownerConfirmationRequired: false, boundedCollaboration: true }),
   tool("tenant_work_reopen_v3", "Reopen an archived Work",
     "Return a previously user-archived native Gallery Work to PLANNED. It never restores old leases or execution authority.",
-    object({ work_id: uuid, reason: text(1_000), next_action: text(4_000), idempotency_key: text(160) },
+    object({ work_id: uuid, reason: text(1_000), next_action: text(4_000), idempotency_key: coordinationIdempotencyKey },
       ["work_id", "reason", "idempotency_key"]), false,
     { ownerConfirmationRequired: false, boundedCollaboration: true }),
   tool("tenant_work_open_review", "Review open Work conflicts",

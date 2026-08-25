@@ -184,11 +184,9 @@ test("DTT denies every runtime surface across Works before state changes", async
 test("DTT verification readiness is a durable, Work-bound projection rather than a client draft", async () => {
   const listCalls = [];
   const runtime = createDynamicTaskTreeRuntime({
-    list_verifier_assignments: async (input) => {
+    list_verifier_assignments_for_tree: async (input) => {
       listCalls.push(input);
-      return input.node_id === "verify"
-        ? [{ verifier_id: "verifier-a", session_fingerprint: "ignored-by-readiness" }]
-        : [];
+      return [{ node_id: "verify", verifier_id: "verifier-a", session_fingerprint: "ignored-by-readiness" }];
     },
   });
   const tree = await runtime.create({
@@ -225,8 +223,61 @@ test("DTT verification readiness is a durable, Work-bound projection rather than
     tenant_id: "tenant-a",
     work_id: WORK_A,
     tree_id: tree.tree_id,
-    node_id: "verify",
   }]);
+});
+
+test("DTT readiness directs a joined tree with an unconsumed verdict to reconciliation", async () => {
+  const tree = {
+    tree_id: "joined-tree",
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    status: "core_joined",
+    nodes: [],
+    core_join: { verdict_reference: "verdict-pending" },
+  };
+  const runtime = createDynamicTaskTreeRuntime({
+    state_store: {
+      async load() { return { tree: structuredClone(tree), revision: 1 }; },
+      async save() { throw new Error("unexpected_write"); },
+    },
+    read_core_join_verdict_events: async () => [{
+      event_type: "issued",
+      verdict_reference: "verdict-pending",
+    }],
+  });
+
+  const readiness = await runtime.inspectVerificationReadiness({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    tree_id: tree.tree_id,
+  });
+  assert.equal(readiness.core_join.ready, false);
+  assert.equal(readiness.core_join.state, "reconciliation_required");
+  assert.equal(readiness.core_join.blocker, "dtt_join_finalization_pending");
+  assert.equal(readiness.next_action, "reconcile_core_join_verdict");
+});
+
+test("DTT readiness propagates trust-store failures instead of turning them into a successful blocker response", async () => {
+  const runtime = createDynamicTaskTreeRuntime({
+    list_verifier_assignments_for_tree: async () => {
+      throw new Error("dtt_verification_trust_store_corrupt");
+    },
+  });
+  const tree = await runtime.create({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    objective: "Keep trust failures on the route error path",
+    nodes: [{
+      node_id: "verify",
+      kind: "verification",
+      task: "Verify trust",
+      verification_policy: { required_approvals: 2, allowed_verifier_ids: ["verifier-a", "verifier-b"] },
+    }],
+  });
+  await assert.rejects(
+    runtime.inspectVerificationReadiness({ tenant_id: "tenant-a", work_id: WORK_A, tree_id: tree.tree_id }),
+    /dtt_verification_trust_store_corrupt/,
+  );
 });
 
 test("DTT outcome keys and receipts are independent and Work-bound", async () => {
