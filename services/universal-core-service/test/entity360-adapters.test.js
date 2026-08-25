@@ -1042,10 +1042,15 @@ test("raw Gallery and Architecture payloads are rejected at the policy-bound SQL
       && item.reason_code === "SOURCE_RETRIEVAL_BUDGET_EXCEEDED");
   assert.equal(galleryGap.state, "rejected");
   assert.equal(galleryGap.attempted_retrieval_bytes > galleryGap.retrieval_budget_bytes, true);
-  assert.equal(galleryFlood.fake.queries.some(({ sql, values }) =>
+  const galleryBoundedQuery = galleryFlood.fake.queries.find(({ sql, values }) =>
     /entity360_encoded_rows/u.test(sql)
       && /FROM tenant_work/u.test(sql)
-      && values.at(-1) <= POLICY.budgets.per_source.default.max_bytes), true);
+      && values.at(-1) <= POLICY.budgets.per_source.default.max_bytes);
+  assert.ok(galleryBoundedQuery);
+  assert.match(galleryBoundedQuery.sql,
+    /CASE WHEN entity360_retrieval_total\.storage_bytes <=/u);
+  assert.match(galleryBoundedQuery.sql,
+    /entity360_retrieval_total\.storage_bytes AS entity360_storage_bytes/u);
 
   const architectureFlood = await assembleWork((sql, values) => {
     const response = workRows(sql, values);

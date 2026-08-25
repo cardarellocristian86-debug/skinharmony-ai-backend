@@ -485,12 +485,13 @@ async function optionalQuery(client, text, values, sourceId, report) {
              coalesce(max(storage_bytes),0)::bigint AS storage_bytes
         FROM entity360_encoded_rows
     )
-    SELECT CASE WHEN storage_bytes <= $${budgetParameter}::bigint
-                     AND total_bytes <= $${budgetParameter}::bigint
-                THEN row_data ELSE NULL END
+    SELECT CASE WHEN entity360_retrieval_total.storage_bytes <= $${budgetParameter}::bigint
+                     AND entity360_retrieval_total.total_bytes <= $${budgetParameter}::bigint
+                THEN entity360_encoded_rows.row_data ELSE NULL END
              AS entity360_bounded_row,
-           row_bytes AS entity360_row_bytes,total_bytes AS entity360_total_bytes,
-           storage_bytes AS entity360_storage_bytes
+           entity360_encoded_rows.row_bytes AS entity360_row_bytes,
+           entity360_retrieval_total.total_bytes AS entity360_total_bytes,
+           entity360_retrieval_total.storage_bytes AS entity360_storage_bytes
       FROM entity360_encoded_rows CROSS JOIN entity360_retrieval_total`;
   await client.query(`SAVEPOINT ${savepoint}`);
   let result;
