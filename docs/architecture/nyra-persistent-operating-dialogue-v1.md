@@ -45,7 +45,9 @@ metadata and digests—never source text. Each response contains a cursor plus t
 immutable snapshot checkpoint for the next batch instead of re-scanning the
 repository from chat. A partial bootstrap is marked `indexing`, not available;
 the first page tombstones the previous snapshot so removed nodes cannot silently
-survive a refresh.
+survive a refresh. Repository trees are walked incrementally, with the bounded
+directory frontier persisted in the same checkpoint, so a large repository does
+not require one oversized recursive GitHub response.
 Once present, the Atlas lets Nyra compare
 an agent's proposed activity with the software that actually exists and its
 known impact surface.

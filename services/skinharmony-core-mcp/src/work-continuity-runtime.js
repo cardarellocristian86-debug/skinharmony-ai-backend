@@ -1555,7 +1555,8 @@ ALTER TABLE core_continuity_atlas_state
   ADD COLUMN IF NOT EXISTS bootstrap_source_hash char(64),
   ADD COLUMN IF NOT EXISTS bootstrap_cursor integer,
   ADD COLUMN IF NOT EXISTS bootstrap_next_cursor integer,
-  ADD COLUMN IF NOT EXISTS bootstrap_total_files integer;
+  ADD COLUMN IF NOT EXISTS bootstrap_total_files integer,
+  ADD COLUMN IF NOT EXISTS bootstrap_frontier jsonb;
 CREATE INDEX IF NOT EXISTS core_continuity_atlas_project_idx
   ON core_continuity_atlas_state (tenant_id, project_id, updated_at DESC);
 CREATE TABLE IF NOT EXISTS core_continuity_atlas_nodes (
@@ -4351,7 +4352,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const edgesInput = Array.isArray(input.edges) ? input.edges : [];
     if (!nodesInput.length || nodesInput.length > 500) throw new Error("work_atlas_nodes_invalid");
     if (edgesInput.length > 2_000) throw new Error("work_atlas_edges_invalid");
-    const bootstrap = input.bootstrap === undefined ? null : cleanJson(input.bootstrap, 4_000);
+    const bootstrap = input.bootstrap === undefined ? null : cleanJson(input.bootstrap, 100_000);
     if (bootstrap && (
       !["indexing", "available"].includes(bootstrap.state) ||
       !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(bootstrap.repository || "")) ||
@@ -4359,10 +4360,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
       !/^[a-f0-9]{40}$/.test(String(bootstrap.tree_sha || "")) ||
       !/^[a-f0-9]{64}$/.test(String(bootstrap.source_hash || "")) ||
       !Number.isSafeInteger(Number(bootstrap.cursor)) || Number(bootstrap.cursor) < 0 ||
-      !Number.isSafeInteger(Number(bootstrap.total_candidate_files)) || Number(bootstrap.total_candidate_files) < 1 ||
+      (bootstrap.total_candidate_files !== null &&
+        (!Number.isSafeInteger(Number(bootstrap.total_candidate_files)) || Number(bootstrap.total_candidate_files) < 1)) ||
       (bootstrap.next_cursor !== null && (!Number.isSafeInteger(Number(bootstrap.next_cursor)) || Number(bootstrap.next_cursor) <= Number(bootstrap.cursor))) ||
       (bootstrap.state === "available" && bootstrap.next_cursor !== null) ||
-      (bootstrap.state === "indexing" && bootstrap.next_cursor === null)
+      (bootstrap.state === "available" && !Number.isSafeInteger(Number(bootstrap.total_candidate_files))) ||
+      (bootstrap.state === "indexing" && (bootstrap.next_cursor === null || !bootstrap.frontier || !Array.isArray(bootstrap.frontier.directories))) ||
+      (bootstrap.frontier !== undefined && (!bootstrap.frontier || typeof bootstrap.frontier !== "object" ||
+        !Array.isArray(bootstrap.frontier.directories) || bootstrap.frontier.directories.length > 2_048 ||
+        !Number.isSafeInteger(Number(bootstrap.frontier.source_files_seen || 0)) || Number(bootstrap.frontier.source_files_seen || 0) < 0 ||
+        bootstrap.frontier.directories.some((entry) => !entry || typeof entry !== "object" ||
+          (String(entry.path || "") && !/^(?!.*(?:^|\/)\.\.?\/)[^\u0000]{1,2000}$/.test(String(entry.path || ""))) ||
+          !/^[a-f0-9]{40}$/.test(String(entry.tree_sha || "")) ||
+          !Number.isSafeInteger(Number(entry.offset)) || Number(entry.offset) < 0)))
     )) throw new Error("work_atlas_bootstrap_invalid");
     const nodes = nodesInput.map((node) => {
       requireObject(node, "work_atlas_node");
@@ -4496,12 +4506,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
             bootstrap_cursor=CASE WHEN $7 IS NULL THEN bootstrap_cursor ELSE $12 END,
             bootstrap_next_cursor=CASE WHEN $7 IS NULL THEN bootstrap_next_cursor ELSE $13 END,
             bootstrap_total_files=CASE WHEN $7 IS NULL THEN bootstrap_total_files ELSE $14 END,
+            bootstrap_frontier=CASE WHEN $7 IS NULL THEN bootstrap_frontier ELSE $15::jsonb END,
             updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2`,
         [context.tenantId, context.workId, revision, totalNodes, totalContextBytes, sourceHash,
           bootstrap?.state || null, bootstrap?.repository || null, bootstrap?.commit || null, bootstrap?.tree_sha || null,
           bootstrap?.source_hash || null, bootstrap ? Number(bootstrap.cursor) : null,
-          bootstrap ? bootstrap.next_cursor : null, bootstrap ? Number(bootstrap.total_candidate_files) : null]);
+          bootstrap ? bootstrap.next_cursor : null, bootstrap?.total_candidate_files === null ? null : Number(bootstrap?.total_candidate_files),
+          bootstrap ? JSON.stringify(bootstrap.frontier || null) : null]);
         await client.query(`INSERT INTO core_continuity_atlas_revision_history
           (tenant_id,work_id,project_id,revision,source_digest,base_commit,head_commit,node_count,edge_count,provenance)
           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)`, [context.tenantId, context.workId, work.rows[0].project_id,
@@ -4767,7 +4779,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const projectId = identifier(input.project_id, "project_id", 64);
     const state = await pool.query(`SELECT revision,source_hash,total_nodes,total_context_bytes,
         bootstrap_state,bootstrap_repository,bootstrap_commit,bootstrap_tree_sha,bootstrap_source_hash,
-        bootstrap_cursor,bootstrap_next_cursor,bootstrap_total_files FROM core_continuity_atlas_state
+        bootstrap_cursor,bootstrap_next_cursor,bootstrap_total_files,bootstrap_frontier FROM core_continuity_atlas_state
       WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3`, [tenantId, projectId, workId]);
     if (!state.rows[0]) throw new Error("work_atlas_not_found");
     const [nodes, edges] = await Promise.all([
@@ -4790,6 +4802,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         cursor: state.rows[0].bootstrap_cursor === null ? null : Number(state.rows[0].bootstrap_cursor),
         next_cursor: state.rows[0].bootstrap_next_cursor === null ? null : Number(state.rows[0].bootstrap_next_cursor),
         total_candidate_files: state.rows[0].bootstrap_total_files === null ? null : Number(state.rows[0].bootstrap_total_files),
+        frontier: state.rows[0].bootstrap_frontier || null,
       },
       nodes: nodes.rows.map((row) => ({ tenant_id: tenantId, project_id: projectId, work_id: workId, node_id: row.node_id,
         kind: row.node_kind, source_ref: row.source_ref, source_kind: row.source_kind, provenance: row.provenance,

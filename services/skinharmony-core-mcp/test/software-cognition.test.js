@@ -184,6 +184,7 @@ test("repository bootstrap binds Work/project/repository and pins each continuat
   assert.equal(second.structuredContent.completed, true);
   assert.equal(second.structuredContent.snapshot_commit, commit);
   assert(calls.some(({ options }) => options.headers.authorization === "Bearer token-only-on-server-123456789"));
+  assert(calls.every(({ url }) => !url.includes("?recursive=")), "tree walking must be incremental");
   assert.equal(JSON.stringify(second.structuredContent).includes("token-only-on-server"), false);
   await assert.rejects(() => handlers.software_cognition_repository_bootstrap({
     project_id: "project-a", work_id: "work-a", repository: "unrelated/repository", idempotency_key: "wrong-repo",

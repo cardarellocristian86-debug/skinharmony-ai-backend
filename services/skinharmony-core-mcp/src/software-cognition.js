@@ -13,6 +13,8 @@ const GITHUB_SHA = /^[a-f0-9]{40}$/;
 const ATLAS_BOOTSTRAP_FILE_LIMIT = 8;
 const ATLAS_BOOTSTRAP_FILE_BYTES = 96_000;
 const ATLAS_BOOTSTRAP_TOTAL_BYTES = 1_000_000;
+const ATLAS_BOOTSTRAP_FRONTIER_LIMIT = 2_048;
+const ATLAS_BOOTSTRAP_DIRECTORY_READ_LIMIT = 128;
 
 function tool(name, title, description, inputSchema, readOnly) {
   return {
@@ -146,6 +148,28 @@ function analyzableSourcePath(path) {
   return /\.[cm]?[jt]sx?$/i.test(path);
 }
 
+function treePath(parent, name) {
+  return parent ? `${parent}/${name}` : name;
+}
+
+function normalizeTreeFrontier(value, rootTreeSha) {
+  const source = value && typeof value === "object" ? value : {};
+  const directories = Array.isArray(source.directories) ? source.directories : [{ path: "", tree_sha: rootTreeSha, offset: 0 }];
+  if (!directories.length || directories.length > ATLAS_BOOTSTRAP_FRONTIER_LIMIT) bootstrapFail("software_atlas_tree_frontier_invalid");
+  const normalized = directories.map((entry) => {
+    const path = String(entry?.path || "");
+    const treeSha = String(entry?.tree_sha || "").toLowerCase();
+    const offset = Number(entry?.offset || 0);
+    if ((path && bootstrapPath(path) !== path) || !GITHUB_SHA.test(treeSha) || !Number.isSafeInteger(offset) || offset < 0) {
+      bootstrapFail("software_atlas_tree_frontier_invalid");
+    }
+    return { path, tree_sha: treeSha, offset };
+  });
+  const sourceFilesSeen = Number(source.source_files_seen || 0);
+  if (!Number.isSafeInteger(sourceFilesSeen) || sourceFilesSeen < 0) bootstrapFail("software_atlas_tree_frontier_invalid");
+  return { directories: normalized, source_files_seen: sourceFilesSeen };
+}
+
 async function githubJson(fetchImpl, url, token = "") {
   const response = await fetchImpl(url, {
     method: "GET",
@@ -169,17 +193,43 @@ async function readRepositorySnapshot(fetchImpl, repository, ref, expectedTreeSh
   const treeSha = String(commit?.commit?.tree?.sha || "").toLowerCase();
   if (!GITHUB_SHA.test(commitSha) || !GITHUB_SHA.test(treeSha)) bootstrapFail("software_atlas_repository_commit_invalid");
   if (expectedTreeSha && treeSha !== expectedTreeSha) bootstrapFail("software_atlas_snapshot_tree_mismatch");
-  const tree = await githubJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${repository}/git/trees/${treeSha}?recursive=1`, token);
-  if (tree?.truncated === true || !Array.isArray(tree?.tree)) bootstrapFail("software_atlas_repository_tree_incomplete");
-  const paths = tree.tree
-    .filter((entry) => entry?.type === "blob" && String(entry?.mode || "") !== "120000")
-    .map((entry) => bootstrapPath(entry.path))
-    .filter(indexableSnapshotPath)
-    .sort((left, right) => left.localeCompare(right));
-  // Configuration-only repositories are not a meaningful architecture Atlas.
-  // Refuse them explicitly instead of reporting an empty or misleading index.
-  if (!paths.some(analyzableSourcePath)) bootstrapFail("software_atlas_repository_unsupported");
-  return { commit: commitSha, tree_sha: treeSha, paths };
+  return { commit: commitSha, tree_sha: treeSha };
+}
+
+async function readRepositoryPathsBatch(fetchImpl, repository, treeSha, frontierValue, fileLimit, token) {
+  const frontier = normalizeTreeFrontier(frontierValue, treeSha);
+  const paths = [];
+  let directoryReads = 0;
+  while (paths.length < fileLimit && frontier.directories.length) {
+    if (directoryReads >= ATLAS_BOOTSTRAP_DIRECTORY_READ_LIMIT) bootstrapFail("software_atlas_tree_walk_limit");
+    const current = frontier.directories[0];
+    const tree = await githubJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${repository}/git/trees/${current.tree_sha}`, token);
+    if (tree?.truncated === true || !Array.isArray(tree?.tree)) bootstrapFail("software_atlas_repository_tree_incomplete");
+    directoryReads += 1;
+    const entries = [...tree.tree].sort((left, right) => String(left?.path || "").localeCompare(String(right?.path || "")));
+    for (let index = current.offset; index < entries.length; index += 1) {
+      const entry = entries[index] || {};
+      current.offset = index + 1;
+      const name = bootstrapPath(entry.path);
+      const path = treePath(current.path, name);
+      const entrySha = String(entry.sha || "").toLowerCase();
+      if (entry.type === "tree") {
+        if (!GITHUB_SHA.test(entrySha)) bootstrapFail("software_atlas_repository_tree_invalid");
+        frontier.directories.push({ path, tree_sha: entrySha, offset: 0 });
+        if (frontier.directories.length > ATLAS_BOOTSTRAP_FRONTIER_LIMIT) bootstrapFail("software_atlas_tree_frontier_limit");
+        continue;
+      }
+      if (entry.type !== "blob" || String(entry.mode || "") === "120000" || !indexableSnapshotPath(path)) continue;
+      if (analyzableSourcePath(path)) frontier.source_files_seen += 1;
+      paths.push(path);
+      if (paths.length >= fileLimit) break;
+    }
+    if (current.offset >= entries.length) frontier.directories.shift();
+  }
+  if (!paths.length && !frontier.directories.length && !frontier.source_files_seen) {
+    bootstrapFail("software_atlas_repository_unsupported");
+  }
+  return { paths, frontier, completed: frontier.directories.length === 0 };
 }
 
 async function readSnapshotFile(fetchImpl, repository, commit, path, token) {
@@ -243,8 +293,6 @@ async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImp
   }
   const snapshot = await readRepositorySnapshot(fetchImpl, repository, cursor > 0 ? suppliedCommit : branch, cursor > 0 ? suppliedTreeSha : "", token);
   if (cursor > 0 && snapshot.commit !== suppliedCommit) bootstrapFail("software_atlas_snapshot_commit_mismatch");
-  const paths = snapshot.paths.slice(cursor, cursor + fileLimit);
-  if (!snapshot.paths.length) bootstrapFail("software_atlas_repository_unsupported");
   const sourceHash = softwareDigest({ schema_version: "software_repository_snapshot_v1", repository, commit: snapshot.commit, tree_sha: snapshot.tree_sha });
   let graph;
   try { graph = await atlasRuntime.readAtlasGraph(identity, { project_id: projectId, work_id: workId }); }
@@ -267,6 +315,26 @@ async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImp
       total_nodes: Number(graph.metrics?.total_nodes || 0), total_context_bytes: Number(graph.metrics?.total_context_bytes || 0) });
   }
   if (cursor > nextPersistedCursor) bootstrapFail("software_atlas_cursor_out_of_sequence");
+  if (cursor > 0 && (bootstrap?.state !== "indexing" || !bootstrap?.frontier)) {
+    bootstrapFail("software_atlas_snapshot_binding_mismatch");
+  }
+  const enumeration = await readRepositoryPathsBatch(
+    fetchImpl,
+    repository,
+    snapshot.tree_sha,
+    cursor > 0 ? bootstrap.frontier : null,
+    fileLimit,
+    token,
+  );
+  // A repository made only of supported-looking configuration files is not an
+  // architecture source index.  Do not mark it available merely because the
+  // final page happened to contain a non-source file: at least one JS/TS
+  // source file must have been observed across the pinned snapshot.
+  if (enumeration.completed && !enumeration.frontier.source_files_seen) {
+    bootstrapFail("software_atlas_repository_unsupported");
+  }
+  const paths = enumeration.paths;
+  if (!paths.length) bootstrapFail("software_atlas_repository_empty_batch");
   let revision = Number(graph.revision || 0);
   const indexed = [];
   const skipped = [];
@@ -283,7 +351,7 @@ async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImp
   }
   const batch = mergeIndexedBatch(indexed);
   if (batch.nodes.length > 500 || batch.edges.length > 2_000) bootstrapFail("software_atlas_batch_too_large");
-  const completed = cursor + paths.length >= snapshot.paths.length;
+  const completed = enumeration.completed;
   const nextCursor = completed ? null : cursor + paths.length;
   const firstPage = cursor === 0;
   const batchNodeIds = new Set(batch.nodes.map((node) => node.node_id));
@@ -293,14 +361,15 @@ async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImp
     allow_existing_edge_nodes: !firstPage, replace: firstPage, source_hash: sourceHash,
     base_commit: snapshot.commit, head_commit: snapshot.commit,
     bootstrap: { state: completed ? "available" : "indexing", repository, commit: snapshot.commit, tree_sha: snapshot.tree_sha,
-      source_hash: sourceHash, cursor, next_cursor: nextCursor, total_candidate_files: snapshot.paths.length },
+      source_hash: sourceHash, cursor, next_cursor: nextCursor, total_candidate_files: completed ? cursor + paths.length : null,
+      frontier: enumeration.frontier },
     idempotency_key: `atlas-bootstrap-${softwareDigest({ workId, sourceHash, cursor, nodes: batch.nodes.map((node) => node.node_id) })}`,
   });
   revision = Number(written.revision);
   return bootstrapResult({ tenant_id: tenantId, project_id: projectId, work_id: workId,
     repository, branch, snapshot_commit: snapshot.commit, snapshot_tree_sha: snapshot.tree_sha, source_hash: sourceHash,
-    cursor, next_cursor: cursor + paths.length < snapshot.paths.length ? cursor + paths.length : null,
-    completed, total_candidate_files: snapshot.paths.length,
+    cursor, next_cursor: nextCursor,
+    completed, total_candidate_files: completed ? cursor + paths.length : null,
     processed_files: indexed.length, skipped_paths: skipped, bytes_analyzed: totalBytes,
     atlas_revision: revision, total_nodes: written?.total_nodes || Number(graph?.metrics?.total_nodes || 0),
     total_context_bytes: written?.total_context_bytes || Number(graph?.metrics?.total_context_bytes || 0),
