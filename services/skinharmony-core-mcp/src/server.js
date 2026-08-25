@@ -41,6 +41,7 @@ import { createWorkContinuityAutomation } from "./work-continuity-automation.js"
 import {
   WORK_CONTINUITY_TOOLS,
   tenantWorkCoordinationActionType,
+  tenantWorkCoordinationTarget,
 } from "./work-continuity-tools.js";
 import { NYRA_NATIVE_TEAM_TOOLS } from "./nyra-native-team-tools.js";
 import { NYRA_AUTOPILOT_TOOLS } from "./nyra-autopilot-tools.js";
@@ -978,20 +979,10 @@ const baseHandlers = {
     },
     work_continuity_checkpoint: async (args, identity) => {
       await requireOwnerGovernance(identity, "work.continuity.checkpoint", args.work_id);
-      const gate = await coreHandlers.core_gate_action({
-        action_label: "Create persistent Work Continuity checkpoint",
-        action_type: "work.continuity.checkpoint",
-        target: `work_continuity_checkpoint:${args.work_id}`,
-        operation_class: "owner_confirmed_governed_action",
-        external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
-        idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
-        target_authority_verified: true, actor_authorized_for_target: true,
-        owner_confirmed: identity.ownerConfirmed === true,
-        confirmation_reference: identity.confirmationReference,
-      }, identity);
-      const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
-        gate.structuredContent?.result?.authorization || {};
-      if (authorization.allowed !== true) throw new Error("work_continuity_checkpoint_not_authorized");
+      // requireOwnerGovernance above is the server-owned Universal Core decision
+      // for this exact checkpoint. Do not invoke the generic gate again: the
+      // confirmation assertion is request-bound, and a second evaluation can
+      // reject an action already authorized by the authoritative Core gate.
       const payload = { ok: true, result: await workContinuityRuntime.checkpoint(identity, args) };
       payload.result.nyra_control_context = await materializeNyraControlContext(
         identity,
@@ -1155,8 +1146,14 @@ const baseHandlers = {
       result: await workContinuityV2Store.readWork(withTenantWorkAcl(identity), args) }),
     tenant_work_gallery_list_v2: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.listWorks(withTenantWorkAcl(identity), args) }),
-    tenant_work_open_review: async (args, identity) => continuityTextResult({ ok: true,
-      result: await workContinuityV2Store.openWorkReview(withTenantWorkAcl(identity), args) }),
+    tenant_work_open_review: async (args, identity) => {
+      // This is deliberately the only pre-Work write. It may persist a
+      // short-lived duplicate review, but never creates or mutates a Work;
+      // creation remains on the dedicated Universal Core route below.
+      requireTenantWorkCapability(identity, "coordinate");
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.openWorkReview(withTenantWorkAcl(identity), args) });
+    },
     tenant_work_task_record: async (args, identity) => {
       requireTenantWorkCapability(identity, "operate");
       return continuityTextResult({ ok: true, result: await workContinuityV2Store.recordTask(withTenantWorkAcl(identity), args) });
@@ -1418,7 +1415,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   internallyGovernedCapabilities: ["agent_heartbeat"],
-  gateAction: ({ tool, identity, catalogRevision, idempotencyKey, workPreflight }) => {
+  gateAction: ({ tool, args, identity, catalogRevision, idempotencyKey, workPreflight }) => {
     const researchDistillationShadow =
       researchDistillationShadowTools.has(tool.name);
     const externalSideEffect = researchDistillationShadow
@@ -1438,7 +1435,7 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
         : ownerConfirmationRequired
           ? "dynamic_capability.invoke"
           : internalCoordinationActionType(tool.name),
-      target: tool.name,
+      target: tenantWorkCoordinationTarget(tool.name, args),
       operation_class: researchDistillationShadow
         ? "sandboxed_scoped_work"
         : ownerConfirmationRequired

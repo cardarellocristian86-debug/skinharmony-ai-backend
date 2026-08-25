@@ -368,6 +368,28 @@ test("limits the dynamic presence bootstrap exemption to the exact agent heartbe
   );
 });
 
+test("continuity checkpoint relies on exactly one server-owned Universal Core gate", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const checkpointStart = serverSource.indexOf("work_continuity_checkpoint: async");
+  const checkpointEnd = serverSource.indexOf("work_continuity_read: async", checkpointStart);
+  assert.ok(checkpointStart >= 0);
+  assert.ok(checkpointEnd > checkpointStart);
+  const checkpointHandler = serverSource.slice(checkpointStart, checkpointEnd);
+
+  assert.match(checkpointHandler, /await requireOwnerGovernance\(identity, "work\.continuity\.checkpoint", args\.work_id\)/);
+  assert.doesNotMatch(checkpointHandler, /coreHandlers\.core_gate_action/);
+  assert.match(checkpointHandler, /dedicated_core_gate\s*=\s*\{\s*authorized: true,\s*authority: "universal_core"/);
+});
+
+test("bounded DTT Core gates derive their target from the router-normalized arguments", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  assert.match(
+    serverSource,
+    /gateAction: \(\{ tool, args, identity, catalogRevision, idempotencyKey, workPreflight \}\) =>/,
+  );
+  assert.match(serverSource, /target: tenantWorkCoordinationTarget\(tool\.name, args\)/);
+});
+
 test("allows server-issued MCP session bootstrap for agent heartbeat", () => {
   const heartbeat = TOOLS.find((tool) => tool.name === "agent_heartbeat");
   assert.ok(heartbeat);
@@ -1772,6 +1794,132 @@ test("translates a stale ChatGPT work_preflight descriptor into Nyra's conversat
       response_style: "concise",
     });
     assert.equal(Object.hasOwn(received, "environment"), false);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("preserves the stale ChatGPT self-model discovery and read path", async () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  jwk.kid = "chatgpt-stale-self-model-key";
+  const now = Math.floor(Date.now() / 1_000);
+  const token = signedTestJwt(privateKey, jwk.kid, {
+    iss: "https://tenant.auth0.com/",
+    aud: "https://core",
+    sub: "chatgpt-stale-self-model-owner",
+    iat: now,
+    auth_time: now,
+    exp: now + 60,
+    scope: "core:read core:govern",
+    "https://skinharmony.it/tenant_id": "tenant-a",
+  });
+  const received = [];
+  const app = createApp({
+    ...config,
+    environmentRoutingRequired: true,
+    tenantClaim: "https://skinharmony.it/tenant_id",
+    oauthOwnerTenantBindings: { "chatgpt-stale-self-model-owner": "tenant-a" },
+  }, {
+    jwksCache: { get: async () => jwk },
+    toolSurface: "compact",
+    handlers: {
+      nyra_converse: async (args) => {
+        received.push(["nyra_converse", args]);
+        return { structuredContent: { ok: true, tool: "nyra_converse" }, content: [] };
+      },
+      core_capability_catalog: async (args) => {
+        received.push(["catalog", args]);
+        return { structuredContent: { ok: true, tool: "core_capability_catalog", capability_id: "nyra_self_model" }, content: [] };
+      },
+      core_capability_read: async (args) => {
+        received.push(["read", args]);
+        return { structuredContent: { ok: true, tool: "core_capability_read", self_model: { persistent: true } }, content: [] };
+      },
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const headers = {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "mcp-session-id": "chatgpt-stale-self-model-read",
+    };
+    const catalog = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 350,
+        method: "tools/call",
+        params: { name: "core_capability_catalog", arguments: {
+          group: "self_model",
+          include_schema: true,
+          limit: 100,
+          environment: "production",
+        } },
+      }),
+    }).then((response) => response.json());
+    assert.equal(catalog.result?.structuredContent?.tool, "core_capability_catalog", JSON.stringify(catalog));
+
+    const read = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 351,
+        method: "tools/call",
+        params: { name: "core_capability_read", arguments: {
+          capability_id: "nyra_self_model",
+          catalog_revision: "a".repeat(64),
+          arguments: {},
+          environment: "production",
+        } },
+      }),
+    }).then((response) => response.json());
+    assert.equal(read.result?.structuredContent?.tool, "core_capability_read", JSON.stringify(read));
+
+    const conflictingCatalog = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 352,
+        method: "tools/call",
+        params: { name: "core_capability_catalog", arguments: {
+          group: "self_model",
+          capability_id: "core_control_plane_read",
+          environment: "production",
+        } },
+      }),
+    }).then((response) => response.json());
+    assert.equal(conflictingCatalog.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(conflictingCatalog));
+
+    assert.deepEqual(received.map(([name]) => name), ["catalog", "read", "nyra_converse"]);
+    assert.deepEqual({
+      group: received[0][1].group,
+      include_schema: received[0][1].include_schema,
+      limit: received[0][1].limit,
+      environment_present: Object.hasOwn(received[0][1], "environment"),
+    }, {
+      group: "self_model",
+      include_schema: true,
+      limit: 100,
+      environment_present: false,
+    });
+    assert.deepEqual({
+      capability_id: received[1][1].capability_id,
+      catalog_revision: received[1][1].catalog_revision,
+      arguments: received[1][1].arguments,
+      environment_present: Object.hasOwn(received[1][1], "environment"),
+    }, {
+      capability_id: "nyra_self_model",
+      catalog_revision: "a".repeat(64),
+      arguments: {},
+      environment_present: false,
+    });
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }

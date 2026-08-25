@@ -524,10 +524,29 @@ function isStaleNyraReadToolName(value) {
 // `core_health` is intentionally not conversational. A chat that still has
 // the old descriptor may read it, but it must reach the real, read-only health
 // handler instead of being validated as a Nyra conversation.
-function resolveStaleChatGptReadTool(value, identity, visibleTools = []) {
+function isStaleNyraSelfModelRead(value, args = {}) {
+  const candidate = connectorToolCandidate(value);
+  if (candidate === "core_capability_catalog") {
+    const group = typeof args?.group === "string" ? args.group : null;
+    const capabilityId = typeof args?.capability_id === "string" ? args.capability_id : null;
+    // The dynamic catalog prioritizes capability_id. Accept a stale request
+    // only when every selector, if present, names the same self-model.
+    return (group === "self_model" || capabilityId === "nyra_self_model") &&
+      (!group || group === "self_model") &&
+      (!capabilityId || capabilityId === "nyra_self_model");
+  }
+  return candidate === "core_capability_read" && args?.capability_id === "nyra_self_model";
+}
+
+function resolveStaleChatGptReadTool(value, identity, visibleTools = [], args = {}) {
   if (inferClientType(identity) !== "chatgpt") return null;
   const candidate = connectorToolCandidate(value);
   if (visibleTools.some((tool) => tool.name === candidate)) return null;
+  // A cached ChatGPT connector can still use the capability-discovery/read
+  // pair after the public surface is narrowed to Nyra. Preserve only this
+  // exact, read-only self-model path; translating it to nyra_converse loses
+  // the persisted profile and makes Nyra incorrectly report it unavailable.
+  if (isStaleNyraSelfModelRead(value, args)) return candidate;
   if (candidate === "core_health") return "core_health";
   return isStaleNyraReadToolName(value) ? "nyra_converse" : null;
 }
@@ -548,6 +567,31 @@ function staleNyraReadArguments(value) {
     locale: "auto",
     response_style: "concise",
   };
+}
+
+// A ChatGPT connector session can retain an old, host-enriched descriptor
+// after the public surface has been reduced.  The Core capability handlers
+// deliberately do not accept transport metadata such as `environment`.
+// Keep only the schemas of the two exact, read-only self-model requests that
+// are allowed through the stale-read bridge.
+function staleNyraSelfModelArguments(value, toolName) {
+  const args = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  if (toolName === "core_capability_catalog") {
+    return Object.fromEntries([
+      "group",
+      "capability_id",
+      "include_schema",
+      "cursor",
+      "limit",
+      "environment",
+    ].filter((key) => Object.hasOwn(args, key)).map((key) => [key, args[key]]));
+  }
+  return Object.fromEntries([
+    "capability_id",
+    "catalog_revision",
+    "arguments",
+    "environment",
+  ].filter((key) => Object.hasOwn(args, key)).map((key) => [key, args[key]]));
 }
 
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
@@ -1965,7 +2009,12 @@ export function createApp(config, options = {}) {
         };
       }) } });
       if (method === "tools/call") {
-        const staleChatGptReadTool = resolveStaleChatGptReadTool(params.name, identity, requestVisibleTools);
+        const staleChatGptReadTool = resolveStaleChatGptReadTool(
+          params.name,
+          identity,
+          requestVisibleTools,
+          params.arguments || {},
+        );
         const staleNyraRead = !staleChatGptReadTool && isStaleNyraReadToolName(params.name) &&
           !requestVisibleTools.some((item) => item.name === "work_preflight") &&
           isLegacyNyraPreflightToolName(params.name);
@@ -1973,8 +2022,10 @@ export function createApp(config, options = {}) {
           ? "nyra_converse"
           : resolveConnectorToolName(params.name, requestVisibleTools));
         const tool = requestVisibleTools.find((item) => item.name === canonicalToolName) ||
-          (staleChatGptReadTool === "core_health"
-            ? baseVisibleTools.find((item) => item.name === "core_health")
+          ((staleChatGptReadTool === "core_health" ||
+            staleChatGptReadTool === "core_capability_catalog" ||
+            staleChatGptReadTool === "core_capability_read")
+            ? baseVisibleTools.find((item) => item.name === staleChatGptReadTool)
             : null);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
@@ -1986,7 +2037,9 @@ export function createApp(config, options = {}) {
         // a schema error before Nyra could resume the Work.
         const rawArgs = (staleNyraRead || staleChatGptReadTool === "nyra_converse")
           ? staleNyraReadArguments(params.arguments)
-          : params.arguments || {};
+          : (staleChatGptReadTool === "core_capability_catalog" || staleChatGptReadTool === "core_capability_read")
+            ? staleNyraSelfModelArguments(params.arguments, tool.name)
+            : params.arguments || {};
         const validationErrors = validateToolArguments(tool.inputSchema, rawArgs);
         if (validationErrors.length) {
           return res.json({

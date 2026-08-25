@@ -412,31 +412,38 @@ function textResult(payload) {
 
 // A fresh host session has no caller-owned work_id.  Nyra must not make the
 // connected AI enumerate the Gallery and guess: when the authenticated tenant
-// has exactly one active Work, the server can safely and deterministically
-// restore that identity before the one governed preflight.  More than one
-// active Work remains deliberately unbound so Core can request a selection.
+// has exactly one operational Work, the server can safely and deterministically
+// restore that identity before the one governed preflight. More than one
+// operational Work remains deliberately unbound so Core can request a
+// selection. Do not query only `active`: a blocked, verified or release-ready
+// Work is still operational and must make this selection explicit.
 async function resolveSingleActiveWork(identity, args, workContinuityRuntime) {
   if (boundedWorkId(args.work_id) || typeof workContinuityRuntime?.listWorks !== "function") {
     return args;
   }
-  let catalog;
+  let catalogs;
   try {
-    catalog = await workContinuityRuntime.listWorks(identity, { status: "active", limit: 2 });
+    catalogs = await Promise.all(["active", "verified", "release_ready", "blocked"].map((status) => (
+      workContinuityRuntime.listWorks(identity, { status, limit: 2 })
+    )));
   } catch {
     // This optimisation must never turn an otherwise valid read-only Nyra
     // turn into an outage.  The normal preflight retains its fail-closed
     // unbound/selection behaviour if the compact catalog is unavailable.
     return args;
   }
-  const works = Array.isArray(catalog?.works)
-    ? catalog.works
-      .map((work) => ({
-        work_id: boundedWorkId(work?.work_id),
-        project_id: boundedProjectId(work?.project_id),
-      }))
-      .filter((work) => work.work_id && work.project_id)
-    : [];
-  if (works.length !== 1 || catalog?.next_cursor) return args;
+  const workById = new Map();
+  let hasMore = false;
+  for (const catalog of catalogs) {
+    hasMore ||= Boolean(catalog?.next_cursor);
+    for (const work of Array.isArray(catalog?.works) ? catalog.works : []) {
+      const work_id = boundedWorkId(work?.work_id);
+      const project_id = boundedProjectId(work?.project_id);
+      if (work_id && project_id) workById.set(work_id, { work_id, project_id });
+    }
+  }
+  const works = [...workById.values()];
+  if (works.length !== 1 || hasMore) return args;
   return Object.freeze({
     ...args,
     work_id: works[0].work_id,

@@ -52,6 +52,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "task.update": "tenant_task_queue",
     "message.acknowledge": "tenant_message_queue",
     "continuity.update": "work_continuity_checkpoint",
+    "work.bootstrap.review": "tenant_work_open_review",
     "work.continuity.resume_or_bind": "skinharmony-ai-backend:chat-session-1",
     "work.participant.join": "tenant_work_gallery_join",
     "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
@@ -68,7 +69,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "incident.record": "work_continuity_incident_record",
     "delegation.consume": "work_continuity_delegation_consume",
   };
-  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 20);
+  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 21);
   for (const actionType of BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES) {
     const authorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
@@ -80,7 +81,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     assert.equal(authorization.confirmation_required, false, actionType);
   }
   for (const actionType of Object.keys(targets).filter((value) => value.startsWith("work.") &&
-    value !== "work.continuity.resume_or_bind")) {
+    !["work.continuity.resume_or_bind", "work.bootstrap.review"].includes(value))) {
     const innerAuthorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
       action_type: actionType,
@@ -95,6 +96,26 @@ test("preserves the closed legacy and continuity coordination action set", () =>
       idempotency_key: `wrong-target-${actionType}-0001`,
     });
     assert.equal(wrongTarget.allowed, false, `${actionType}:wrong_target`);
+  }
+  const bootstrapReview = buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "work.bootstrap.review",
+    target: "tenant_work_open_review",
+    idempotency_key: "bootstrap-review-0001",
+  });
+  assert.equal(bootstrapReview.allowed, true);
+  for (const target of [
+    "tenant_work_gallery_join",
+    "11111111-1111-4111-8111-111111111111",
+    "work_continuity_v2_create",
+  ]) {
+    const wrongTarget = buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: "work.bootstrap.review",
+      target,
+      idempotency_key: `bootstrap-review-wrong-${target}`,
+    });
+    assert.equal(wrongTarget.allowed, false, `work.bootstrap.review:${target}`);
   }
 });
 test("keeps hard blocks, higher risk and unsafe internal writes closed", () => {

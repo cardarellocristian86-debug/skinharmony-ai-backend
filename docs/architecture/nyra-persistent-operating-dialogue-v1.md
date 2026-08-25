@@ -5,6 +5,14 @@ outcome, Nyra maintains the plan and continuity, connected AIs perform bounded
 steps, and Universal Core remains the authority for policy and consequential
 actions.
 
+## Cognitive engine contract
+
+Nyra determines the governed operational reasoning and the decision path from
+its persistent state. The connected AI is an interchangeable cognitive and
+linguistic engine: it interprets, explains and performs bounded work, but does
+not become the source of truth or final authority. This keeps the Work
+continuous when the AI model or host changes.
+
 ## What Nyra knows automatically
 
 For every bound Work, Core MCP materializes one `nyra_control_context_v1`.
@@ -22,6 +30,17 @@ The raw Intent, objective, checkpoint evidence, Gallery records and Atlas graph
 remain in their authoritative stores. A new chat receives the compact context
 automatically; it does not need to reconstruct history or remember a special
 Nyra tool.
+
+## Software Architecture Atlas
+
+Persistent memory alone is not enough for autonomous orchestration. Nyra needs
+a current, queryable Software Architecture Atlas of components, files,
+dependencies, services, APIs, events, databases, changes and impacts. The
+bound Work dialogue reports its live `software_state` and `atlas_revision`:
+when it is not indexed, Nyra asks for bounded indexing from verified seed nodes
+instead of guessing from chat context. Once present, the Atlas lets Nyra compare
+an agent's proposed activity with the software that actually exists and its
+known impact surface.
 
 ## Dialogue and orchestration
 
