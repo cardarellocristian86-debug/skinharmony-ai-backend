@@ -762,12 +762,22 @@ function actorFromIdentity(identity = {}) {
   if (String(acl.user_id || "") !== userId) fail("work_server_acl_subject_mismatch");
   const tenantId = text(identity.tenantId || identity.tenant_id, "tenant_identity_required", 64);
   if (String(acl.tenant_id || "") !== tenantId) fail("work_server_acl_tenant_mismatch");
-  const agentId = String(identity.agentPresence?.agent_id || identity.agentId || "").trim() || null;
+  const presence = identity.agentPresence;
+  const agentId = String(presence?.agent_id || identity.agentId || "").trim() || null;
   const teamIds = acl.team_ids || [];
   const managedTeamIds = acl.managed_team_ids || [];
   if (!Array.isArray(teamIds) || teamIds.some((item) => !String(item || "").trim())) fail("work_actor_team_identity_invalid");
   if (!Array.isArray(managedTeamIds) || managedTeamIds.some((item) => !String(item || "").trim())) fail("work_actor_team_identity_invalid");
-  const sessionFingerprint = String(identity.agentPresence?.session_fingerprint || "").trim() || null;
+  // Native reports persist the transport-bound fingerprint.  Selecting the
+  // ordinary session fingerprint here made a valid independent verifier
+  // invisible to V2 evidence promotion.  Never fall back when a claimed
+  // native transport binding is incomplete: that would turn a server-bound
+  // identity requirement into caller-controlled data.
+  const sessionFingerprint = String(
+    presence?.transport_bound === true
+      ? presence?.host_transport_session_fingerprint || ""
+      : presence?.session_fingerprint || "",
+  ).trim() || null;
   return {
     tenant_id: tenantId,
     user_id: userId,

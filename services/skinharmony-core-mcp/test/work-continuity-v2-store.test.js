@@ -24,6 +24,35 @@ const acl = ({ user_id = "user-a", tenant_id = "tenant-a", ...rest } = {}) => ({
   is_tenant_owner: false, is_super_admin: false, ...rest,
 });
 
+test("V2 evidence identity uses only a server-bound native transport fingerprint", () => {
+  const baseIdentity = {
+    tenantId: "tenant-a",
+    subject: "user-a",
+    tenant_work_acl: acl(),
+  };
+  const native = actorFromIdentity({
+    ...baseIdentity,
+    agentPresence: {
+      agent_id: "native-verifier",
+      session_fingerprint: "regular-session",
+      host_transport_session_fingerprint: "transport-session",
+      transport_bound: true,
+    },
+  });
+  assert.equal(native.session_fingerprint, "transport-session");
+
+  const unbound = actorFromIdentity({
+    ...baseIdentity,
+    agentPresence: {
+      agent_id: "declared-agent",
+      session_fingerprint: "regular-session",
+      host_transport_session_fingerprint: "untrusted-transport-session",
+      transport_bound: false,
+    },
+  });
+  assert.equal(unbound.session_fingerprint, "regular-session");
+});
+
 function canonicalDigest(value) {
   const stable = (item) => {
     if (Array.isArray(item)) return item.map(stable);
