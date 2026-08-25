@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 
 import {
@@ -10,7 +11,14 @@ const TOKEN = `github_pat_${"A".repeat(40)}`;
 
 test("workflow rotation binds the current main and reconstructed v3 candidate", () => {
   assert.equal(HOST_NATIVE_GITHUB_WORKFLOW.sha256, "24ab8aa44e131300d56da5688d109ae16a10a91e3fd8983f61a053fa6dc03c9a");
-  assert.equal(HOST_NATIVE_GITHUB_WORKFLOW.candidate_sha256, "a528f95e9514d9b3017fcc77cb6592c467b88307e2161ef46f0520f04c501ea7");
+  assert.equal(HOST_NATIVE_GITHUB_WORKFLOW.candidate_sha256, "ea33835bf39f5ee6806ed27ecaea411ca5dd30b5e6fe02963469cf98b81b82bc");
+});
+
+test("Generic Join remote signer inherits Core MCP token custody and pins its origin", () => {
+  const blueprint = fs.readFileSync(new URL("../../../render-universal-core.yaml", import.meta.url), "utf8");
+  assert.match(blueprint, /- key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ORIGIN\n\s+value: https:\/\/skinharmony-core-mcp\.onrender\.com/);
+  assert.match(blueprint, /- key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN\n\s+fromService:\n\s+type: web\n\s+name: skinharmony-core-mcp\n\s+envVarKey: GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE_TOKEN/);
+  assert.doesNotMatch(blueprint, /- key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN\n\s+(?:sync: false|value:)/);
 });
 const GITHUB_REGISTRY = JSON.stringify({
   schema_version: "host_native_github_credential_registry_v1",

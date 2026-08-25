@@ -4,6 +4,7 @@ import { redactMemoryText } from "./cloud-memory-store.js";
 const ACTION_OUTCOME_TOOLS = new Set([
   "host_native_action_complete",
   "host_native_action_reconcile",
+  "host_native_action_quarantine_expired",
 ]);
 const OPERATIONAL_FAILURE_TOOLS = new Set([
   "work_continuity_native_bind",
@@ -232,6 +233,7 @@ function confirmedOutcome(event, record) {
 
 function structuredFailure(event, record) {
   if (confirmedOutcome(event, record) === "failure") return true;
+  if (record?.state === "quarantined") return true;
   const payload = structuredPayload(event.result);
   return event.result?.isError === true || payload.ok === false;
 }
@@ -249,6 +251,7 @@ function continuityScope(event) {
 function errorCode(event, record) {
   const payload = structuredPayload(event.result);
   const candidate = event.error?.code || payload.error?.code ||
+    (record?.state === "quarantined" ? "ACTION_RESERVATION_EXPIRED_QUARANTINED" : "") ||
     (record?.observed_outcome === "failure" ? "ACTION_RECONCILED_FAILURE" : "") ||
     (record?.outcome === "failure" ? "ACTION_COMPLETED_FAILURE" : "") ||
     "HOST_NATIVE_ACTION_FAILURE";

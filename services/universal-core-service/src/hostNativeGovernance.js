@@ -4435,6 +4435,53 @@ export function createHostNativeGovernance({
       });
     },
 
+    // Expiry never permits completing, reconciling, retrying, or refunding an
+    // action. This terminal path exists solely so an authenticated host can
+    // preserve its independent readback and close the exact expired lease.
+    async quarantineExpiredActionTicket(input = {}, trusted = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "ticket_id", "reservation_id", "host_session_fingerprint",
+        "readback_digest", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const initial = store.readState();
+      const nowValue = nowMillis(now);
+      const initialRecord = initial.tickets[String(input.ticket_id || "")];
+      if (initialRecord) ensureStandingReleaseRunReservation(initial, initialRecord, input, nowValue);
+      const idempotencyInput = actionLifecycleIdempotencyInput(input);
+      const replay = getIdempotent(initial, tenantId, "quarantineExpiredActionTicket", idempotencyInput);
+      if (replay?.result) return validateStandingReplay(initial, replay.result, nowValue);
+      assertSoftwareConsumerFresh(trusted);
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(state, tenantId, "quarantineExpiredActionTicket", idempotencyInput);
+        if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
+        const record = state.tickets[String(input.ticket_id || "")];
+        if (!record || record.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
+        ensureStandingReleaseRunReservation(state, record, input, nowValue);
+        verifyActionTicketLifecycleRecord(record);
+        if (!["reserved", "reconciliation_required"].includes(record.state)) fail("not_quarantinable");
+        if (record.reservation_id !== input.reservation_id || record.ticket.host_session_fingerprint !== input.host_session_fingerprint) fail("host_session_mismatch");
+        if (record.state === "reconciliation_required" && record.outcome !== "unknown") fail("not_quarantinable");
+        const reservationExpiresAt = Date.parse(record.reservation_expires_at || "");
+        if (!Number.isFinite(reservationExpiresAt) || reservationExpiresAt > nowValue) {
+          fail("action_ticket_reservation_not_expired");
+        }
+        record.state = "quarantined";
+        record.observed_outcome = "unknown";
+        record.host_readback_digest = digest(input.readback_digest);
+        record.quarantined_at = iso(nowValue);
+        record.quarantine_reason_digest = hostNativeDigest({
+          schema_version: "host_native_expired_reservation_quarantine_v1",
+          ticket_id: record.ticket.ticket_id,
+          reservation_id: record.reservation_id,
+          reservation_expires_at: record.reservation_expires_at,
+          readback_digest: record.host_readback_digest,
+        });
+        signActionTicketLifecycleRecord(record);
+        return saveIdempotent(state, descriptor, record);
+      });
+    },
+
     // This is deliberately not a reservation recovery path. It records an
     // independently observed effect that occurred after a valid ticket was
     // issued but before the host reserved it. The original ticket timestamps

@@ -3066,6 +3066,28 @@ export function createCoreHandlers(config, options = {}) {
         throw attachTrustedHostNativeTicket(error, ticketRecord);
       }
     },
+    host_native_action_quarantine_expired: async (args, identity) => {
+      const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/quarantine-expired`;
+      const ticketRecord = await trustedHostNativeTicketRecord(
+        args.ticket_id,
+        identity,
+        ["reserved", "reconciliation_required"],
+      );
+      try {
+        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+          method: "POST",
+          useTenantGateway: true,
+          body: {
+            reservation_id: args.reservation_id,
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            readback_digest: args.readback_digest,
+            idempotency_key: args.idempotency_key,
+          },
+        }), route);
+      } catch (error) {
+        throw attachTrustedHostNativeTicket(error, ticketRecord);
+      }
+    },
     host_native_action_observe_unreserved: async (args, identity) => {
       const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/observe-unreserved`;
       const ticketRecord = await trustedHostNativeTicketRecord(args.ticket_id, identity, ["issued"]);
