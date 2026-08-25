@@ -82,7 +82,13 @@ services:
         # from pinning the correct public JWK to the wrong key id.
         value: universal-core-generic-join-v1
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN
-        sync: false
+        # Consume the worker-owned signer credential at Blueprint sync time.
+        # This removes a manually duplicated secret without exposing its value
+        # in source or in the Core runtime configuration.
+        fromService:
+          type: web
+          name: skinharmony-github-standing-release-worker
+          envVarKey: GENERIC_WORK_CORE_JOIN_SIGNER_SERVICE_TOKEN
       - key: CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ED25519_PUBLIC_KEY
         fromService:
           type: web
