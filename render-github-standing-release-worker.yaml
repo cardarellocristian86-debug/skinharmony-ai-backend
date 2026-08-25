@@ -34,10 +34,10 @@ services:
       - key: GITHUB_APP_PRIVATE_KEY
         sync: false
       - key: CORE_GITHUB_WORKER_EXECUTION_SIGNING_SECRET
-        fromService:
-          type: web
-          name: skinharmony-universal-core
-          envVarKey: CORE_GITHUB_WORKER_EXECUTION_SIGNING_SECRET
+        # Worker-owned producer: Core consumes this through fromService. This
+        # keeps a single generated credential while making the bootstrap graph
+        # one-directional (worker → Core).
+        generateValue: true
       - key: GITHUB_WORKER_LEDGER_ROOT
         value: /var/data/github-standing-release-worker
       - key: GITHUB_WORKER_LEDGER_SIGNING_SECRET
