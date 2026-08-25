@@ -1941,13 +1941,23 @@ const NYRA_DIALOGUE_MATERIAL_CHANGE_TOOLS = new Set([
 ]);
 
 async function refreshNyraDialogueAfterMaterialChange(event = {}) {
-  if (!NYRA_DIALOGUE_MATERIAL_CHANGE_TOOLS.has(event.toolName)) return null;
-  const payload = event.preflight?.work_preflight || event.preflight || {};
+  // `afterToolCall` also runs on rejected gates and handler failures. Those
+  // paths must record their incident, but must never publish a self-model that
+  // claims a material mutation was applied.
+  if (event.error) return null;
+  // The app hook observes the public wrapper (`core_capability_invoke`), not
+  // its dynamic capability. Resolve the server-owned inner target so an Atlas
+  // write actually invalidates Nyra's cached self-model.
+  const target = dynamicInvocationTarget(event.toolName, event.args, event.identity);
+  const materialToolName = target.toolName;
+  if (!NYRA_DIALOGUE_MATERIAL_CHANGE_TOOLS.has(materialToolName)) return null;
+  const payload = event.preflight?.preflight?.work_preflight ||
+    event.preflight?.preflight || event.preflight?.work_preflight || event.preflight || {};
   const continuity = payload.continuity && typeof payload.continuity === "object"
     ? payload.continuity
     : null;
   if (!continuity?.work_id || !continuity?.project_id) return null;
-  return materializeNyraControlContext(event.identity, continuity, event.toolName, { force: true });
+  return materializeNyraControlContext(event.identity, continuity, materialToolName, { force: true });
 }
 
 const app = createApp(config, {

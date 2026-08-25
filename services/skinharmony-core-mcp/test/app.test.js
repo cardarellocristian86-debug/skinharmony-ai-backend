@@ -410,6 +410,17 @@ test("bounded DTT Core gates derive their target from the router-normalized argu
   assert.match(serverSource, /target: tenantWorkCoordinationTarget\(tool\.name, args\)/);
 });
 
+test("dynamic Atlas writes refresh Nyra's durable dialogue from the inner capability and preflight", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const refreshStart = serverSource.indexOf("async function refreshNyraDialogueAfterMaterialChange");
+  const refreshEnd = serverSource.indexOf("const app = createApp", refreshStart);
+  const refresh = serverSource.slice(refreshStart, refreshEnd);
+  assert.match(refresh, /if \(event\.error\) return null/);
+  assert.match(refresh, /dynamicInvocationTarget\(event\.toolName, event\.args, event\.identity\)/);
+  assert.match(refresh, /event\.preflight\?\.preflight\?\.work_preflight/);
+  assert.match(refresh, /materializeNyraControlContext\(event\.identity, continuity, materialToolName, \{ force: true \}\)/);
+});
+
 test("canonical Work bootstrap separates persisted evidence from a replay attempt receipt", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   assert.match(serverSource, /core_authorization_receipt: result\.core_authorization_receipt/);
