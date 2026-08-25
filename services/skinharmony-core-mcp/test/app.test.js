@@ -453,6 +453,19 @@ test("legacy Work reads and auto-resume intersect canonical V2 visibility", () =
   }
 });
 
+test("start-or-resume uses the bounded Core resume-or-bind contract", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const handlerStart = serverSource.indexOf("work_continuity_start_or_resume: async");
+  const handlerEnd = serverSource.indexOf("work_continuity_intent_read: async", handlerStart);
+  assert.ok(handlerStart >= 0);
+  assert.ok(handlerEnd > handlerStart);
+  const handler = serverSource.slice(handlerStart, handlerEnd);
+
+  assert.match(handler, /"work\.continuity\.resume_or_bind"/);
+  assert.match(handler, /`\$\{args\.project_id\}:\$\{args\.session_id\}`/);
+  assert.doesNotMatch(handler, /"work\.continuity\.start_or_resume"/);
+});
+
 test("allows server-issued MCP session bootstrap for agent heartbeat", () => {
   const heartbeat = TOOLS.find((tool) => tool.name === "agent_heartbeat");
   assert.ok(heartbeat);
