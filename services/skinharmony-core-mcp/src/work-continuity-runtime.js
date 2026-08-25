@@ -4512,7 +4512,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         [context.tenantId, context.workId, revision, totalNodes, totalContextBytes, sourceHash,
           bootstrap?.state || null, bootstrap?.repository || null, bootstrap?.commit || null, bootstrap?.tree_sha || null,
           bootstrap?.source_hash || null, bootstrap ? Number(bootstrap.cursor) : null,
-          bootstrap ? bootstrap.next_cursor : null, bootstrap?.total_candidate_files === null ? null : Number(bootstrap?.total_candidate_files),
+          bootstrap ? bootstrap.next_cursor : null,
+          bootstrap ? (bootstrap.total_candidate_files === null ? null : Number(bootstrap.total_candidate_files)) : null,
           bootstrap ? JSON.stringify(bootstrap.frontier || null) : null]);
         await client.query(`INSERT INTO core_continuity_atlas_revision_history
           (tenant_id,work_id,project_id,revision,source_digest,base_commit,head_commit,node_count,edge_count,provenance)
