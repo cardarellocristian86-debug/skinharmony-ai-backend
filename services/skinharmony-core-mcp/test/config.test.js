@@ -2,6 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadConfig } from "../src/config.js";
 
+test("Atlas repository bindings are server-owned and tenant credentials never enter the public config", () => {
+  const config = loadConfig({
+    NYRA_ATLAS_REPOSITORY_BINDINGS_JSON: JSON.stringify({
+      "skinharmony-ai-backend": {
+        repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+        branch: "main",
+        credential_tenant_id: "tenant-a",
+      },
+    }),
+    NYRA_ATLAS_GITHUB_TOKENS_JSON: JSON.stringify({ "tenant-a": "token-only-on-server-123456789" }),
+  });
+  assert.deepEqual(config.nyraAtlasRepositoryBindings["skinharmony-ai-backend"], {
+    repository: "cardarellocristian86-debug/skinharmony-ai-backend", branch: "main", credentialTenantId: "tenant-a",
+  });
+  assert.equal(config.nyraAtlasGithubTokens["tenant-a"], "token-only-on-server-123456789");
+  assert.throws(() => loadConfig({
+    NYRA_ATLAS_REPOSITORY_BINDINGS_JSON: '{"project":"not a repo"}',
+  }), /NYRA_ATLAS_REPOSITORY_BINDINGS_JSON contains an invalid project repository binding/);
+});
+
 test("uses CORE_BASE_URL as a compatibility fallback for Universal Core", () => {
   const config = loadConfig({
     CORE_BASE_URL: "https://core.example.test/"

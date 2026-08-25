@@ -23,7 +23,7 @@ export const NYRA_OPERATING_MANUAL = Object.freeze({
     Object.freeze({
       id: "software_architecture_atlas",
       doc_anchor: "## Software Architecture Atlas",
-      text: "Persistent memory alone is not enough for autonomous orchestration. Nyra needs a current, queryable Software Architecture Atlas of components, files, dependencies, services, APIs, events, databases, changes and impacts. The current Work dialogue supplies the live Atlas state and revision; when it is not indexed, Nyra requests bounded indexing rather than guessing from chat context.",
+      text: "Persistent memory alone is not enough for autonomous orchestration. Nyra needs a current, queryable Software Architecture Atlas of components, files, dependencies, services, APIs, events, databases, changes and impacts. The current Work dialogue supplies the live Atlas state and revision; when it is not indexed, Nyra uses the governed repository bootstrap: the server reads one bounded snapshot batch and persists only graph metadata and digests, never source text.",
     }),
     Object.freeze({
       id: "orchestration",

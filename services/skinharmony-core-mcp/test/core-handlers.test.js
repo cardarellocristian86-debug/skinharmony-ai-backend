@@ -1013,6 +1013,12 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     readback_digest: "f".repeat(64),
     observed_commit: "c".repeat(40),
   }, identity);
+  await handlers.host_native_action_quarantine_expired({
+    ticket_id: "hnt_ticket-12345678",
+    reservation_id: "hnr_reservation-12345678",
+    readback_digest: "2".repeat(64),
+    idempotency_key: "quarantine-expired-ticket",
+  }, identity);
   const closure = await handlers.host_native_action_closure_receipt({
     ticket_id: "hnt_ticket-12345678",
   }, identity);
@@ -1026,6 +1032,8 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     "/v1/host-native/actions/hnt_ticket-12345678/complete",
     "/v1/host-native/actions/hnt_ticket-12345678",
     "/v1/host-native/actions/hnt_ticket-12345678/reconcile",
+    "/v1/host-native/actions/hnt_ticket-12345678",
+    "/v1/host-native/actions/hnt_ticket-12345678/quarantine-expired",
     "/v1/host-native/actions/hnt_ticket-12345678/authorize-finalize",
   ]);
   assert.equal(calls[0].body.owner_confirmed, true);
@@ -1035,6 +1043,12 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     .update("host-native-owner\u0000auth0|verified-owner")
     .digest("hex")}`;
   assert.equal(ownerContext.owner_subject_fingerprint, expectedOwnerFingerprint);
+  assert.deepEqual(calls[8].body, {
+    reservation_id: "hnr_reservation-12345678",
+    host_session_fingerprint: "a".repeat(64),
+    readback_digest: "2".repeat(64),
+    idempotency_key: "quarantine-expired-ticket",
+  });
   const ownerCanonical = JSON.stringify({
     version: ownerContext.assertion_version,
     audience: ownerContext.audience,
@@ -1058,11 +1072,11 @@ test("binds host-native delegation and action routes to OAuth owner and server p
   assert.equal(calls[2].body.host_session_fingerprint, "a".repeat(64));
   assert.equal(calls[4].body.result_commit, "c".repeat(40));
   assert.equal(calls[6].body.observed_commit, "c".repeat(40));
-  assert.equal(calls[7].body.host_session_fingerprint, "a".repeat(64));
+  assert.equal(calls[8].body.host_session_fingerprint, "a".repeat(64));
   assert.equal(closure.structuredContent.finalize_authorization.trusted, true);
   assert.equal(calls[0].headers.authorization, "Bearer tenant-core-key");
   assert.equal(calls[0].headers["x-sh-tenant-id"], undefined);
-  for (const call of calls.slice(1, 8)) {
+  for (const call of calls.slice(1, 10)) {
     assert.equal(call.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
     assert.equal(call.headers["x-sh-tenant-id"], "tenant-a");
     const tenantContext = JSON.parse(Buffer.from(

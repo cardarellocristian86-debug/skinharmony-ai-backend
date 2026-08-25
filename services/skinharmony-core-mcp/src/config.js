@@ -24,6 +24,40 @@ function jsonObject(value, name) {
   }
 }
 
+function parseNyraAtlasRepositoryBindings(value, name) {
+  const parsed = jsonObject(value, name);
+  const result = {};
+  for (const [projectValue, bindingValue] of Object.entries(parsed)) {
+    const projectId = String(projectValue || "").trim();
+    const binding = typeof bindingValue === "string" ? { repository: bindingValue } : bindingValue;
+    const repository = String(binding?.repository || "").trim();
+    const branch = String(binding?.branch || "main").trim();
+    const credentialTenantId = String(binding?.credential_tenant_id || "").trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,63}$/.test(projectId) ||
+        !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) ||
+        !branch || branch.length > 240 || branch.includes("\u0000") ||
+        (credentialTenantId && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(credentialTenantId))) {
+      throw new Error(`${name} contains an invalid project repository binding`);
+    }
+    result[projectId] = Object.freeze({ repository, branch, credentialTenantId: credentialTenantId || null });
+  }
+  return Object.freeze(result);
+}
+
+function parseNyraAtlasGithubTokens(value, name) {
+  const parsed = jsonObject(value, name);
+  const result = {};
+  for (const [tenantValue, tokenValue] of Object.entries(parsed)) {
+    const tenantId = String(tenantValue || "").trim();
+    const token = String(tokenValue || "").trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(tenantId) || token.length < 20) {
+      throw new Error(`${name} contains an invalid tenant credential`);
+    }
+    result[tenantId] = token;
+  }
+  return Object.freeze(result);
+}
+
 function parseOauthOwnerTenantBindings(value, name) {
   if (!value) return {};
   let parsed;
@@ -302,6 +336,16 @@ export function loadConfig(env = process.env) {
   const nyraProjectReleaseBindings = parseNyraProjectReleaseBindings(
     env.NYRA_PROJECT_RELEASE_BINDINGS_JSON,
   );
+  // Atlas repository scope is server-owned. A connected AI can request a
+  // project Work, but can never substitute an arbitrary repository or token.
+  const nyraAtlasRepositoryBindings = parseNyraAtlasRepositoryBindings(
+    env.NYRA_ATLAS_REPOSITORY_BINDINGS_JSON,
+    "NYRA_ATLAS_REPOSITORY_BINDINGS_JSON",
+  );
+  const nyraAtlasGithubTokens = parseNyraAtlasGithubTokens(
+    env.NYRA_ATLAS_GITHUB_TOKENS_JSON,
+    "NYRA_ATLAS_GITHUB_TOKENS_JSON",
+  );
   const genericWorkCoreJoinEnabledFlag = strictFlag(
     env.GENERIC_WORK_CORE_JOIN_ENABLED,
     false,
@@ -473,6 +517,8 @@ export function loadConfig(env = process.env) {
     sharedMemoryRoot,
     databaseUrl,
     nyraProjectReleaseBindings,
+    nyraAtlasRepositoryBindings,
+    nyraAtlasGithubTokens,
     genericWorkCoreJoinEnabled,
     genericWorkCoreJoinRequired,
     genericWorkCoreJoinConfigurationValid: genericWorkCoreJoinConfigurationError === null,

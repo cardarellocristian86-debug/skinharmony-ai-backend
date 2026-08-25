@@ -11365,6 +11365,7 @@ export function createUniversalCoreService(options = {}) {
     ["reserve", "reserveActionTicket"],
     ["complete", "completeActionTicket"],
     ["reconcile", "reconcileActionTicket"],
+    ["quarantine-expired", "quarantineExpiredActionTicket"],
   ]) {
     app.post(
       `/v1/host-native/actions/:ticketId/${suffix}`,
@@ -11373,7 +11374,7 @@ export function createUniversalCoreService(options = {}) {
         if (!requireHostNativeGovernance(res)) return;
         try {
           if (
-            ["reserve", "complete", "reconcile"].includes(suffix) &&
+            ["reserve", "complete", "reconcile", "quarantine-expired"].includes(suffix) &&
             [
               "standing_release_run_id",
               "standing_release_run_version",
