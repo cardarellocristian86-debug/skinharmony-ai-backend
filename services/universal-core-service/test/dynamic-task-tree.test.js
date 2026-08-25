@@ -168,6 +168,7 @@ test("DTT denies every runtime surface across Works before state changes", async
     }),
     () => runtime.cancel({ tenant_id: "tenant-a", work_id: WORK_B, tree_id: tree.tree_id }),
     () => runtime.inspectCoreJoin({ tenant_id: "tenant-a", work_id: WORK_B, tree_id: tree.tree_id }),
+    () => runtime.inspectVerificationReadiness({ tenant_id: "tenant-a", work_id: WORK_B, tree_id: tree.tree_id }),
     () => runtime.coreJoin({
       tenant_id: "tenant-a", work_id: WORK_B, tree_id: tree.tree_id,
       core_verdict: { allowed: true, authority: "universal_core", verdict_reference: "cross-work" },
@@ -178,6 +179,54 @@ test("DTT denies every runtime surface across Works before state changes", async
   assert.equal(unchanged.status, "advisory_ready");
   assert(unchanged.nodes.every((node) => node.attempts === 0 && node.status === "proposed"));
   assert.equal(unchanged.execution.authorized, false);
+});
+
+test("DTT verification readiness is a durable, Work-bound projection rather than a client draft", async () => {
+  const listCalls = [];
+  const runtime = createDynamicTaskTreeRuntime({
+    list_verifier_assignments: async (input) => {
+      listCalls.push(input);
+      return input.node_id === "verify"
+        ? [{ verifier_id: "verifier-a", session_fingerprint: "ignored-by-readiness" }]
+        : [];
+    },
+  });
+  const tree = await runtime.create({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    objective: "Make the next proof step durable and discoverable",
+    nodes: [{
+      node_id: "verify",
+      kind: "verification",
+      task: "Independent verification",
+      verification_policy: {
+        required_approvals: 2,
+        allowed_verifier_ids: ["verifier-a", "verifier-b"],
+      },
+    }],
+  });
+  const readiness = await runtime.inspectVerificationReadiness({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    tree_id: tree.tree_id,
+  });
+
+  assert.equal(readiness.schema_version, "dynamic_task_tree_verification_readiness_v1");
+  assert.equal(readiness.next_action, "complete_persisted_evidence_flow");
+  assert.equal(readiness.core_join.ready, false);
+  assert.equal(readiness.core_join.blocker, "task_tree_not_verified");
+  assert.deepEqual(readiness.nodes[0].assigned_verifier_ids, ["verifier-a"]);
+  assert.deepEqual(readiness.nodes[0].unassigned_verifier_ids, ["verifier-b"]);
+  assert.equal(readiness.nodes[0].evidence_recorded, false);
+  assert.deepEqual(readiness.persistence.durable, ["verifier_assignments", "recorded_outcomes", "core_join"]);
+  assert.deepEqual(readiness.persistence.intentionally_ephemeral, ["evidence_drafts", "unsubmitted_identity_receipts"]);
+  assert.equal(readiness.execution_authorized, false);
+  assert.deepEqual(listCalls, [{
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    tree_id: tree.tree_id,
+    node_id: "verify",
+  }]);
 });
 
 test("DTT outcome keys and receipts are independent and Work-bound", async () => {

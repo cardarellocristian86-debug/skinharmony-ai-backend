@@ -120,7 +120,8 @@ class AtomicWorkPool {
           work_name: workName, work_type: workType, project_id: projectId, owner_user_id: ownerUserId,
           created_by_user_id: ownerUserId, team_id: teamId, assigned_user_ids: JSON.parse(assigned),
           supervising_user_ids: JSON.parse(supervising), agent_ids: JSON.parse(agents), visibility_scope: visibility,
-          status: "ACTIVE", priority, priority_score: priorityScore, priority_version: priorityVersion,
+          status: q.includes("'PLANNED'") ? "PLANNED" : "ACTIVE",
+          priority, priority_score: priorityScore, priority_version: priorityVersion,
           priority_context: JSON.parse(priorityContext), intent_digest: intentDigest, objective, next_action: nextAction,
           created_by_agent_id: agentId, created_by_session_fingerprint: sessionFingerprint,
           acceptance_criteria: JSON.parse(criteria), progress_bp: 0, created_at: "2026-08-08T10:00:00.000Z",
@@ -168,6 +169,66 @@ class AtomicWorkPool {
         acceptance_criteria: JSON.parse(parameters[20]),
       });
       return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET assignment_target_agent_id=$3")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row || row.status !== parameters[4]) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        assignment_target_agent_id: parameters[2],
+        assignment_target_client_type: parameters[3],
+        assignment_status: "OFFERED",
+        assignment_offered_at: "2026-08-08T10:00:02.000Z",
+        assignment_accepted_at: null,
+      });
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET agent_ids=$3::jsonb,assignment_status='ACCEPTED'")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row || row.assignment_status !== "OFFERED" ||
+          row.assignment_target_agent_id !== parameters[3] ||
+          row.assignment_target_client_type !== parameters[4]) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        agent_ids: JSON.parse(parameters[2]),
+        assignment_status: "ACCEPTED",
+        assignment_accepted_at: "2026-08-08T10:00:03.000Z",
+      });
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET status='ARCHIVED'")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row || row.status !== parameters[4]) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        status: "ARCHIVED",
+        archived_at: "2026-08-08T10:00:02.000Z",
+        archived_from_status: parameters[2],
+        archived_reason: parameters[3],
+        assignment_status: "REVOKED",
+        updated_at: "2026-08-08T10:00:02.000Z",
+      });
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET status='PLANNED'")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row || row.status !== "ARCHIVED") return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        status: "PLANNED",
+        archived_at: null,
+        archived_from_status: null,
+        archived_reason: null,
+        assignment_target_agent_id: null,
+        assignment_target_client_type: null,
+        assignment_status: null,
+        assignment_offered_at: null,
+        assignment_accepted_at: null,
+        reopened_at: "2026-08-08T10:00:03.000Z",
+        reopen_count: Number(row.reopen_count || 0) + 1,
+        next_action: parameters[2],
+        updated_at: "2026-08-08T10:00:03.000Z",
+      });
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_leases SET status='released'")) {
+      return { rows: [], rowCount: 0 };
     }
     if (q.startsWith("INSERT INTO tenant_work_task")) {
       const row = { tenant_id: parameters[0], task_id: parameters[1], work_id: parameters[2],
@@ -348,6 +409,111 @@ test("significant overlap requires an owner decision and does not consume on den
   assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
   const created = await store.createNewWork(identity(), { ...input, review_decision: "CONTINUE_NEW_WORK" });
   assert.equal(created.review.decision, "CONTINUE_NEW_WORK");
+});
+
+test("Gallery V3 queues, archives, and reopens native Work without restoring execution state", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+
+  const queued = await store.queueNewWork(identity(), input);
+  assert.equal(queued.work.status, "PLANNED");
+  assert.equal(queued.work.legacy_work_id, null);
+  assert.equal((await store.listWorks(identity(), { view: "operational" })).length, 1);
+
+  const archived = await store.archiveWork(identity(), {
+    work_id: queued.work.work_id,
+    reason: "In attesa di una decisione di priorità.",
+  });
+  assert.equal(archived.work.status, "ARCHIVED");
+  assert.equal(archived.work.archived_from_status, "PLANNED");
+  assert.equal(archived.released_lease_count, 0);
+  assert.equal((await store.listWorks(identity(), { view: "operational" })).length, 0);
+  assert.equal((await store.listWorks(identity(), { view: "archive" }))[0].work_id, queued.work.work_id);
+
+  const reopened = await store.reopenWork(identity(), {
+    work_id: queued.work.work_id,
+    reason: "La priorità è stata confermata.",
+    next_action: "Assegna il Work a Codex per il piano.",
+  });
+  assert.equal(reopened.work.status, "PLANNED");
+  assert.equal(reopened.work.archived_at, null);
+  assert.equal(reopened.work.reopen_count, 1);
+  assert.equal(reopened.work.next_action, "Assegna il Work a Codex per il piano.");
+  assert.deepEqual([...pool.events.values()].map((event) => event.event_type), [
+    "work_queued_v3", "work_archived_v3", "work_reopened_v3",
+  ]);
+});
+
+test("an exact Codex agent can accept a Gallery offer, but an impersonating host cannot", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const queued = await store.queueNewWork(identity(), await reviewed(store, createInput()));
+  const offer = await store.assignQueuedWork(identity(), {
+    work_id: queued.work.work_id,
+    target_agent_id: "agent-codex",
+    target_client_type: "codex",
+  });
+  assert.equal(offer.work.assignment_status, "OFFERED");
+
+  const wrongHost = identity("wrong-host");
+  wrongHost.agentPresence.client_type = "codex";
+  await assert.rejects(store.acceptQueuedWorkAssignment(wrongHost, {
+    work_id: queued.work.work_id,
+  }), /work_assignment_acceptance_denied/);
+
+  const codex = identity("codex");
+  codex.agentPresence.client_type = "codex";
+  const accepted = await store.acceptQueuedWorkAssignment(codex, {
+    work_id: queued.work.work_id,
+  });
+  assert.equal(accepted.work.assignment_status, "ACCEPTED");
+  assert.deepEqual(accepted.work.agent_ids.sort(), ["agent-codex", "agent-owner"]);
+  assert.equal(accepted.work.status, "PLANNED");
+});
+
+test("a blocked Work requires a review decision but does not prevent an independent queued Work", async () => {
+  const pool = new AtomicWorkPool();
+  pool.works.set(key("tenant-a", "11111111-1111-4111-8111-111111111111"), {
+    tenant_id: "tenant-a", work_id: "11111111-1111-4111-8111-111111111111", legacy_work_id: null,
+    work_code: "NYRA-20260808-0001", work_name: "Blocked legacy concern", work_type: "generic",
+    project_id: "nyra-core", owner_user_id: "owner", created_by_user_id: "owner", assigned_user_ids: [],
+    supervising_user_ids: [], agent_ids: [], visibility_scope: "private", status: "BLOCKED",
+    priority: "P4", priority_score: 0, progress_bp: 0, next_action: "resolve separate blocker",
+    updated_at: "2026-08-08T09:00:00.000Z",
+  });
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, {
+    ...createInput(),
+    request_id: "request-queued-after-block",
+    work_name: "Gallery workflow cleanup",
+    idea: "Separate backlog work",
+    objective: "Make the gallery queue manageable",
+  });
+  const queued = await store.queueNewWork(identity(), {
+    ...input,
+    review_decision: "CONTINUE_NEW_WORK",
+  });
+  assert.equal(queued.work.status, "PLANNED");
+  assert.equal(pool.works.size, 2);
+});
+
+test("completed archives remain immutable and cannot be reopened", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "55555555-5555-4555-8555-555555555555";
+  pool.works.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, legacy_work_id: null,
+    work_code: "NYRA-20260808-0008", work_name: "Completed", work_type: "generic",
+    project_id: "nyra-core", owner_user_id: "owner", created_by_user_id: "owner",
+    assigned_user_ids: [], supervising_user_ids: [], agent_ids: [], visibility_scope: "private",
+    status: "ARCHIVED", archived_at: "2026-08-08T09:00:00.000Z", archived_from_status: null,
+    priority: "P4", priority_score: 0, progress_bp: 10000, updated_at: "2026-08-08T09:00:00.000Z",
+  });
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
+  await assert.rejects(store.reopenWork(identity(), {
+    work_id: workId,
+    reason: "Do not rewrite completed history.",
+  }), /work_reopen_status_invalid/);
 });
 
 test("preflight projects legacy rows without inventing ownership and preserves Gallery v1 shape", async () => {

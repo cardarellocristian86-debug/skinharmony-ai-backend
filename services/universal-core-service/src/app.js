@@ -5590,6 +5590,7 @@ export function createUniversalCoreService(options = {}) {
     state_store: dynamicTaskTreeStateStore,
     resolve_verifier_identity: resolveDttVerifierIdentity,
     resolve_evidence_artifact: (input) => dttVerificationTrustStore.verifyArtifact(input),
+    list_verifier_assignments: (input) => dttVerificationTrustStore.listAssignments(input),
   });
   const dynamicTaskTreeRollout = dynamicTaskTreeRolloutConfig(
     options.dynamicTaskTreeEnv || process.env,
@@ -12962,6 +12963,32 @@ export function createUniversalCoreService(options = {}) {
       return res.json({ ...tree, ok: true, tenant_id: req.tenantId, work_id: req.workId, execution_authorized: false });
     } catch (error) {
       const code = error.message || "dynamic_task_tree_read_failed";
+      return publicError(res, dttStatusForError(code), code);
+    }
+  });
+
+  // A stable, no-side-effect path for connected hosts to resume a Work's
+  // evidence flow. It reports only durable progress and the exact governed
+  // next step; it never turns a draft, a receipt or a queue assignment into
+  // execution authority.
+  app.get("/v1/orchestration/dtt/:treeId/verification-readiness", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
+    try {
+      const readiness = await dynamicTaskTreeRuntime.inspectVerificationReadiness({
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        tree_id: req.params.treeId,
+      });
+      audit.append("dynamic_task_tree_verification_readiness_read", {
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        key_id: req.coreKey.key_id,
+        tree_id: readiness.tree_id,
+        tree_status: readiness.tree_status,
+        next_action: readiness.next_action,
+      });
+      return res.json({ ...readiness, ok: true, execution_authorized: false });
+    } catch (error) {
+      const code = error.message || "dynamic_task_tree_verification_readiness_failed";
       return publicError(res, dttStatusForError(code), code);
     }
   });

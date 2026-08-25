@@ -108,6 +108,15 @@ ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS priority_version varchar(64) NO
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS priority_context jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS acceptance_criteria jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_from_status varchar(24);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_reason text;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS reopened_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS reopen_count integer NOT NULL DEFAULT 0;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_target_agent_id varchar(128);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_target_client_type varchar(32);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_status varchar(24);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_offered_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_accepted_at timestamptz;
 ALTER TABLE tenant_work_task ADD COLUMN IF NOT EXISTS required boolean NOT NULL DEFAULT true;
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS weight integer NOT NULL DEFAULT 1 CHECK (weight > 0);
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS verified_by_agent_id varchar(128);

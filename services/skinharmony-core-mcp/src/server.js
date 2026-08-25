@@ -1144,10 +1144,65 @@ const baseHandlers = {
       return continuityTextResult({ ok: true, result, legacy_work_id: result.legacy_work_id,
         dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/action-evaluator", server_owned: true } });
     },
+    tenant_work_queue_create_v3: async (args, identity) => {
+      if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.gallery.queue.create",
+        args.project_id,
+        args.idempotency_key,
+      );
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.queueNewWork(withTenantWorkAcl(identity), args) });
+    },
     work_continuity_v2_read: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.readWork(withTenantWorkAcl(identity), args) }),
     tenant_work_gallery_list_v2: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.listWorks(withTenantWorkAcl(identity), args) }),
+    tenant_work_assign_v3: async (args, identity) => {
+      if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.gallery.assignment.offer",
+        args.work_id,
+        args.idempotency_key,
+      );
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.assignQueuedWork(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_assignment_accept_v3: async (args, identity) => {
+      if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.gallery.assignment.accept",
+        args.work_id,
+        args.idempotency_key,
+      );
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.acceptQueuedWorkAssignment(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_archive_v3: async (args, identity) => {
+      if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.gallery.archive",
+        args.work_id,
+        args.idempotency_key,
+      );
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.archiveWork(withTenantWorkAcl(identity), args) });
+    },
+    tenant_work_reopen_v3: async (args, identity) => {
+      if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.gallery.reopen",
+        args.work_id,
+        args.idempotency_key,
+      );
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.reopenWork(withTenantWorkAcl(identity), args) });
+    },
     tenant_work_open_review: async (args, identity) => {
       // This is deliberately the only pre-Work write. It may persist a
       // short-lived duplicate review, but never creates or mutates a Work;

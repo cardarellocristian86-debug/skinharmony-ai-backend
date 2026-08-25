@@ -409,6 +409,7 @@ export function buildDynamicTaskTreeContract({ tenant_id, work_id, objective, no
 export function createDynamicTaskTreeRuntime({
   resolve_verifier_identity = null,
   resolve_evidence_artifact = null,
+  list_verifier_assignments = null,
   state_store = null,
 } = {}) {
   const trees = new Map();
@@ -776,6 +777,120 @@ export function createDynamicTaskTreeRuntime({
     async inspectCoreJoin({ tenant_id, work_id, tree_id }) {
       const tree = await treeFor({ tenant_id, work_id, tree_id });
       return clone(await validateTreeForCoreJoin(tree));
+    },
+
+    // This is deliberately a read-only projection of durable state. Evidence
+    // drafts and unsubmitted receipts are intentionally excluded: treating a
+    // client-held draft as durable progress would let a stale or substituted
+    // proof make a Work look ready. Assignments, recorded outcomes and the
+    // Core Join are all re-read from their authoritative stores instead.
+    async inspectVerificationReadiness({ tenant_id, work_id, tree_id }) {
+      const tree = await treeFor({ tenant_id, work_id, tree_id });
+      const nodes = [];
+      for (const node of tree.nodes) {
+        let assignments = [];
+        if (typeof list_verifier_assignments === "function") {
+          assignments = await list_verifier_assignments({
+            tenant_id: tree.tenant_id,
+            work_id: tree.work_id,
+            tree_id: tree.tree_id,
+            node_id: node.node_id,
+          });
+          if (!Array.isArray(assignments)) throw new Error("dtt_verifier_assignments_unavailable");
+        }
+        const assignedVerifierIds = [...new Set(assignments
+          .map((assignment) => typeof assignment?.verifier_id === "string"
+            ? assignment.verifier_id.trim()
+            : "")
+          .filter(Boolean))].sort();
+        const requiredApprovals = node.kind === "verification"
+          ? node.verification_policy.required_approvals
+          : 1;
+        const allowedVerifierIds = node.kind === "verification"
+          ? [...node.verification_policy.allowed_verifier_ids]
+          : [];
+        const nodeBlocked = ["failed", "quarantined", "cancelled", "pruned"].includes(node.status);
+        const verified = node.status === "verified";
+        nodes.push({
+          node_id: node.node_id,
+          kind: node.kind,
+          status: node.status,
+          required_approvals: requiredApprovals,
+          ...(node.kind === "verification" ? {
+            allowed_verifier_ids: allowedVerifierIds,
+            unassigned_verifier_ids: allowedVerifierIds.filter((id) => !assignedVerifierIds.includes(id)),
+          } : {}),
+          assigned_verifier_ids: assignedVerifierIds,
+          assignment_count: assignedVerifierIds.length,
+          evidence_recorded: verified,
+          state: verified
+            ? "verified"
+            : nodeBlocked
+              ? "blocked"
+              : "evidence_pending",
+          next_steps: verified
+            ? []
+            : nodeBlocked
+              ? ["replan_or_cancel"]
+              : [
+                "register_immutable_artifact",
+                "prepare_work_bound_evidence_draft",
+                "assign_independent_verifier",
+                "collect_signed_attestations",
+                "record_verified_outcome",
+              ],
+          execution_authorized: false,
+        });
+      }
+      let coreJoin = { ready: false, state: "blocked", blocker: "task_tree_not_verified" };
+      if (tree.status === "core_joined") {
+        coreJoin = { ready: true, state: "joined", blocker: null };
+      } else if (tree.status === "cancelled") {
+        coreJoin = { ready: false, state: "unavailable", blocker: "task_tree_cancelled" };
+      } else {
+        try {
+          const readiness = await validateTreeForCoreJoin(tree);
+          coreJoin = {
+            ready: readiness.ready === true,
+            state: readiness.ready === true ? "ready" : "blocked",
+            blocker: null,
+            evidence_set_digest: readiness.evidence_set_digest,
+          };
+        } catch (error) {
+          coreJoin = {
+            ready: false,
+            state: "blocked",
+            blocker: String(error?.message || "task_tree_not_verified"),
+          };
+        }
+      }
+      const blocked = nodes.find((node) => node.state === "blocked");
+      const pending = nodes.find((node) => node.state === "evidence_pending");
+      return clone({
+        schema_version: "dynamic_task_tree_verification_readiness_v1",
+        tenant_id: tree.tenant_id,
+        work_id: tree.work_id,
+        tree_id: tree.tree_id,
+        tree_status: tree.status,
+        nodes,
+        core_join: coreJoin,
+        next_action: tree.status === "core_joined"
+          ? "already_core_joined"
+          : tree.status === "cancelled"
+            ? "tree_cancelled"
+            : blocked
+              ? "replan_or_cancel"
+              : pending
+                ? "complete_persisted_evidence_flow"
+                : coreJoin.ready
+                  ? "request_core_join"
+                  : "inspect_core_join_blocker",
+        persistence: {
+          durable: ["verifier_assignments", "recorded_outcomes", "core_join"],
+          intentionally_ephemeral: ["evidence_drafts", "unsubmitted_identity_receipts"],
+        },
+        execution_authorized: false,
+      });
     },
 
     async coreJoin({ tenant_id, work_id, tree_id, core_verdict, verification = {} }) {

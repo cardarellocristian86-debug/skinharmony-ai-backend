@@ -3512,6 +3512,11 @@ export function createCoreHandlers(config, options = {}) {
       args,
       identity,
     )),
+    orchestration_dtt_verification_readiness: async (args, identity) => textResult(await dttCoreRequest(
+      `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/verification-readiness`,
+      args,
+      identity,
+    )),
     orchestration_dtt_expansion_propose: async (args, identity) => textResult(await dttCoreRequest(
       `/v1/orchestration/dtt/${encodeURIComponent(args.tree_id)}/expansion-proposals`,
       args,
