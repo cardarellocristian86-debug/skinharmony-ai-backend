@@ -577,11 +577,19 @@ jobs:
           end
           %w[
             CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_ORIGIN
-            CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN
           ].each do |key|
             abort("#{key}: must remain a manually provisioned value") unless
               core_env[key] == { "key" => key, "sync" => false }
           end
+          abort("Generic Join signer token must reference the worker-owned credential") unless
+            core_env["CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN"] == {
+              "key" => "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_SERVICE_TOKEN",
+              "fromService" => {
+                "type" => "web",
+                "name" => "skinharmony-github-standing-release-worker",
+                "envVarKey" => "GENERIC_WORK_CORE_JOIN_SIGNER_SERVICE_TOKEN",
+              },
+            }
           abort("Generic Join remote signer key id must identify the remote signer, not Core-MCP's verifier") unless
             core_env["CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID"] == {
               "key" => "CORE_GENERIC_WORK_CORE_JOIN_REMOTE_SIGNER_KEY_ID",
