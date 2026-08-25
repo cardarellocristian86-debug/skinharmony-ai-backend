@@ -37,8 +37,11 @@ Persistent memory alone is not enough for autonomous orchestration. Nyra needs
 a current, queryable Software Architecture Atlas of components, files,
 dependencies, services, APIs, events, databases, changes and impacts. The
 bound Work dialogue reports its live `software_state` and `atlas_revision`:
-when it is not indexed, Nyra asks for bounded indexing from verified seed nodes
-instead of guessing from chat context. Once present, the Atlas lets Nyra compare
+when it is not indexed, Nyra uses the governed repository bootstrap. The server
+reads one bounded repository snapshot batch, derives the graph and persists only
+metadata and digests—never source text. Each response contains a cursor and
+checkpoint for the next batch instead of re-scanning the repository from chat.
+Once present, the Atlas lets Nyra compare
 an agent's proposed activity with the software that actually exists and its
 known impact surface.
 

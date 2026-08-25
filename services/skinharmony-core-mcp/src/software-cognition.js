@@ -3,6 +3,12 @@ const digest = { type: "string", pattern: "^[a-f0-9]{64}$" };
 const stringList = { type: "array", maxItems: 500, uniqueItems: true, items: identifier };
 const object = (properties = {}, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 const payload = { type: "object", maxProperties: 300, additionalProperties: true };
+const GITHUB_ORIGIN = "https://api.github.com";
+const GITHUB_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const GITHUB_SHA = /^[a-f0-9]{40}$/;
+const ATLAS_BOOTSTRAP_FILE_LIMIT = 40;
+const ATLAS_BOOTSTRAP_FILE_BYTES = 96_000;
+const ATLAS_BOOTSTRAP_TOTAL_BYTES = 1_000_000;
 
 function tool(name, title, description, inputSchema, readOnly) {
   return {
@@ -51,7 +57,15 @@ const definitions = [
   ["software_cognition_closure_evaluate", "Evaluate software closure", "Re-read Native Plan, Atlas, Causal and ICF evidence in one snapshot and derive advisory readiness.", object({ ...base, intent_binding: payload, icf_required: { type: "boolean" }, icf_binding: payload }, ["project_id", "work_id", "change_id", "plan_id"]), false],
 ];
 
-export const SOFTWARE_COGNITION_TOOLS = Object.freeze(definitions.map((entry) => tool(...entry)));
+const atlasBootstrapDefinition = ["software_cognition_repository_bootstrap", "Bootstrap Software/Architecture Atlas", "Read one bounded, server-fetched repository snapshot batch and persist only the derived Work Atlas graph and digests. Source text is never returned or persisted. Continue with the returned cursor until completed.", object({
+  project_id: identifier, work_id: identifier, repository: identifier,
+  branch: { type: "string", minLength: 1, maxLength: 240 },
+  cursor: { type: "integer", minimum: 0 },
+  file_limit: { type: "integer", minimum: 1, maximum: ATLAS_BOOTSTRAP_FILE_LIMIT },
+  idempotency_key: identifier,
+}, ["project_id", "work_id", "repository", "idempotency_key"]), false];
+
+export const SOFTWARE_COGNITION_TOOLS = Object.freeze([...definitions.map((entry) => tool(...entry)), tool(...atlasBootstrapDefinition)]);
 
 const paths = Object.freeze({
   software_cognition_graph_upsert: "/v1/software-cognition/graphs/upsert",
@@ -95,9 +109,153 @@ function atlasNode(node) {
 function atlasEdge(edge) { return { from_node_id: edge.from_node_id, to_node_id: edge.to_node_id, edge_type: edge.edge_type,
   provenance: edge.provenance || {}, verification_state: "inferred_candidate", confidence: 0.7 }; }
 
-export function createSoftwareCognitionHandlers({ coreRequest, issueAgentContext, atlasRuntime } = {}) {
+function bootstrapFail(code) { throw new Error(code); }
+
+function bootstrapRepository(value) {
+  const repository = String(value || "").trim();
+  if (!GITHUB_REPOSITORY.test(repository)) bootstrapFail("software_atlas_repository_invalid");
+  return repository;
+}
+
+function bootstrapBranch(value) {
+  const branch = String(value || "main").trim();
+  if (!branch || branch.length > 240 || branch.includes("\u0000")) bootstrapFail("software_atlas_branch_invalid");
+  return branch;
+}
+
+function bootstrapPath(value) {
+  const path = String(value || "").replaceAll("\\", "/").replace(/^\.\//, "");
+  if (!path || path.length > 2_000 || path.includes("\u0000") || path.split("/").some((part) => !part || part === "." || part === "..")) {
+    bootstrapFail("software_atlas_source_path_invalid");
+  }
+  return path;
+}
+
+function indexableSnapshotPath(path) {
+  if (/(^|\/)(?:node_modules|\.git|dist|build|coverage|vendor)(?:\/|$)/i.test(path)) return false;
+  return /(?:\.[cm]?[jt]sx?|\.json|\.ya?ml|\.sql|\.md)$/i.test(path);
+}
+
+async function githubJson(fetchImpl, url) {
+  const response = await fetchImpl(url, {
+    method: "GET",
+    redirect: "error",
+    headers: {
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "skinharmony-nyra-atlas-bootstrap-v1",
+    },
+  });
+  if (!response?.ok) bootstrapFail("software_atlas_repository_read_unavailable");
+  const body = await response.text();
+  if (Buffer.byteLength(body, "utf8") > ATLAS_BOOTSTRAP_TOTAL_BYTES) bootstrapFail("software_atlas_repository_response_too_large");
+  try { return JSON.parse(body); } catch { bootstrapFail("software_atlas_repository_response_invalid"); }
+}
+
+async function readRepositorySnapshot(fetchImpl, repository, branch) {
+  const commit = await githubJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${repository}/commits/${encodeURIComponent(branch)}`);
+  const commitSha = String(commit?.sha || "").toLowerCase();
+  const treeSha = String(commit?.commit?.tree?.sha || "").toLowerCase();
+  if (!GITHUB_SHA.test(commitSha) || !GITHUB_SHA.test(treeSha)) bootstrapFail("software_atlas_repository_commit_invalid");
+  const tree = await githubJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${repository}/git/trees/${treeSha}?recursive=1`);
+  if (tree?.truncated === true || !Array.isArray(tree?.tree)) bootstrapFail("software_atlas_repository_tree_incomplete");
+  const paths = tree.tree
+    .filter((entry) => entry?.type === "blob" && String(entry?.mode || "") !== "120000")
+    .map((entry) => bootstrapPath(entry.path))
+    .filter(indexableSnapshotPath)
+    .sort((left, right) => left.localeCompare(right));
+  return { commit: commitSha, tree_sha: treeSha, paths };
+}
+
+async function readSnapshotFile(fetchImpl, repository, commit, path) {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  const payload = await githubJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${repository}/contents/${encodedPath}?ref=${commit}`);
+  if (payload?.type !== "file" || payload?.encoding !== "base64" || typeof payload?.content !== "string") {
+    bootstrapFail("software_atlas_source_file_invalid");
+  }
+  const content = Buffer.from(payload.content.replace(/\s/g, ""), "base64");
+  if (!content.length || content.length > ATLAS_BOOTSTRAP_FILE_BYTES || content.includes(0)) return null;
+  return { path, status: "modified", content: content.toString("utf8") };
+}
+
+function mergeIndexedBatch(items) {
+  const nodes = [...new Map(items.flatMap((item) => item.nodes_added_or_updated).map((node) => [node.node_id, node])).values()];
+  const edges = [...new Map(items.flatMap((item) => item.edges_added).map((edge) => [`${edge.edge_type}:${edge.from_node_id}:${edge.to_node_id}`, edge])).values()];
+  if (!nodes.length) bootstrapFail("software_atlas_batch_empty");
+  return { nodes, edges };
+}
+
+async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImpl }) {
+  if (!atlasRuntime || typeof atlasRuntime.readAtlasGraph !== "function" || typeof atlasRuntime.upsertAtlas !== "function") {
+    bootstrapFail("software_atlas_runtime_required");
+  }
+  if (typeof fetchImpl !== "function") bootstrapFail("software_atlas_repository_fetch_unavailable");
+  const tenantId = String(identity?.tenantId || "").trim();
+  if (!tenantId || !identity.agentPresence) bootstrapFail("agent_presence_session_required");
+  const projectId = String(args.project_id || "").trim();
+  const workId = String(args.work_id || "").trim();
+  const repository = bootstrapRepository(args.repository);
+  const branch = bootstrapBranch(args.branch);
+  const cursor = Number(args.cursor || 0);
+  const fileLimit = Math.min(Math.max(Number(args.file_limit || 20), 1), ATLAS_BOOTSTRAP_FILE_LIMIT);
+  if (!Number.isSafeInteger(cursor) || cursor < 0) bootstrapFail("software_atlas_cursor_invalid");
+  const snapshot = await readRepositorySnapshot(fetchImpl, repository, branch);
+  const paths = snapshot.paths.slice(cursor, cursor + fileLimit);
+  const sourceHash = softwareDigest({ schema_version: "software_repository_snapshot_v1", repository, commit: snapshot.commit, tree_sha: snapshot.tree_sha });
+  let graph;
+  try { graph = await atlasRuntime.readAtlasGraph(identity, { project_id: projectId, work_id: workId }); }
+  catch (error) { if (error?.message !== "work_atlas_not_found") throw error; graph = { revision: 0, nodes: [], edges: [] }; }
+  let revision = Number(graph.revision || 0);
+  const indexed = [];
+  const skipped = [];
+  let totalBytes = 0;
+  for (const path of paths) {
+    const file = await readSnapshotFile(fetchImpl, repository, snapshot.commit, path);
+    if (!file) { skipped.push(path); continue; }
+    totalBytes += Buffer.byteLength(file.content, "utf8");
+    if (totalBytes > ATLAS_BOOTSTRAP_TOTAL_BYTES) { skipped.push(path); continue; }
+    const result = indexSoftwareDiff({ tenant_id: tenantId, project_id: projectId, work_id: workId, repository,
+      base_commit: snapshot.commit, head_commit: snapshot.commit, known_graph_revision: revision, changed_files: [file] });
+    if (result.nodes_added_or_updated.length > 500 || result.edges_added.length > 2_000) bootstrapFail("software_atlas_file_too_complex");
+    indexed.push(result);
+  }
+  const batches = [];
+  let current = [];
+  for (const item of indexed) {
+    const candidate = mergeIndexedBatch([...current, item]);
+    if (current.length && (candidate.nodes.length > 450 || candidate.edges.length > 1_800)) {
+      batches.push(mergeIndexedBatch(current));
+      current = [item];
+    } else current.push(item);
+  }
+  if (current.length) batches.push(mergeIndexedBatch(current));
+  let written = null;
+  for (let index = 0; index < batches.length; index += 1) {
+    const batch = batches[index];
+    if (batch.nodes.length > 500 || batch.edges.length > 2_000) bootstrapFail("software_atlas_batch_too_large");
+    written = await atlasRuntime.upsertAtlas(identity, {
+      work_id: workId, expected_revision: revision, nodes: batch.nodes.map(atlasNode), edges: batch.edges.map(atlasEdge),
+      allow_existing_edge_nodes: true, replace: false, source_hash: sourceHash,
+      base_commit: snapshot.commit, head_commit: snapshot.commit,
+      idempotency_key: `atlas-bootstrap-${softwareDigest({ workId, sourceHash, cursor, index, nodes: batch.nodes.map((node) => node.node_id) })}`,
+    });
+    revision = Number(written.revision);
+  }
+  return textResult({ schema_version: "software_repository_atlas_bootstrap_v1", tenant_id: tenantId, project_id: projectId, work_id: workId,
+    repository, branch, commit: snapshot.commit, tree_sha: snapshot.tree_sha, source_hash: sourceHash,
+    cursor, next_cursor: cursor + paths.length < snapshot.paths.length ? cursor + paths.length : null,
+    completed: cursor + paths.length >= snapshot.paths.length, total_candidate_files: snapshot.paths.length,
+    processed_files: indexed.length, skipped_paths: skipped, bytes_analyzed: totalBytes,
+    atlas_revision: revision, total_nodes: written?.total_nodes || Number(graph?.metrics?.total_nodes || 0),
+    total_context_bytes: written?.total_context_bytes || Number(graph?.metrics?.total_context_bytes || 0),
+    seed_node_ids: indexed.flatMap((item) => item.affected_seeds).slice(0, 20),
+    source_text_persisted: false, execution_authorized: false, external_action_authorized: false,
+  });
+}
+
+export function createSoftwareCognitionHandlers({ coreRequest, issueAgentContext, atlasRuntime, fetchImpl = globalThis.fetch } = {}) {
   if (typeof coreRequest !== "function" || typeof issueAgentContext !== "function") throw new TypeError("software cognition transport required");
-  return Object.fromEntries(definitions.map(([capabilityId]) => [capabilityId, async (args = {}, identity = {}) => {
+  const handlers = Object.fromEntries(definitions.map(([capabilityId]) => [capabilityId, async (args = {}, identity = {}) => {
     const tenantId = String(identity?.tenantId || "").trim();
     if (!tenantId || !identity.agentPresence) throw new Error("agent_presence_session_required");
     const agentContext = issueAgentContext({ tenant_id: tenantId, agent_presence: identity.agentPresence });
@@ -154,5 +312,9 @@ export function createSoftwareCognitionHandlers({ coreRequest, issueAgentContext
     const value = await coreRequest(paths[capabilityId], tenantId, { method: "POST", body, additionalHeaders: { "x-sh-dtt-agent-context": agentContext } });
     return textResult(value);
   }]));
+  handlers.software_cognition_repository_bootstrap = async (args = {}, identity = {}) => bootstrapRepositoryAtlas({
+    args, identity, atlasRuntime, fetchImpl,
+  });
+  return handlers;
 }
 import { indexSoftwareDiff, softwareDigest, validateGraphMutation } from "../../universal-core-service/src/softwareCognition.js";
