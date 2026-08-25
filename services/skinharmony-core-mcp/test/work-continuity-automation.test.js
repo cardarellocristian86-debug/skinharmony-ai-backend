@@ -289,6 +289,32 @@ test("records a candidate for a Core-confirmed 200 failure and never updates Atl
   assert.equal(fake.calls.incidents[0].input.scope.error_code, "ACTION_COMPLETED_FAILURE");
 });
 
+test("expired reservation quarantine records an incident and never updates Atlas", async () => {
+  const fake = fakeRuntime();
+  const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
+  const record = ticketRecord({
+    record: {
+      state: "quarantined",
+      outcome: null,
+      observed_outcome: "unknown",
+      result_commit: null,
+      quarantine_reason_digest: "9".repeat(64),
+    },
+  });
+  await hook({
+    identity: identity(),
+    toolName: "host_native_action_quarantine_expired",
+    result: coreResult(record),
+  });
+
+  assert.equal(fake.calls.incidents.length, 1);
+  assert.equal(fake.calls.atlases.length, 0);
+  assert.equal(
+    fake.calls.incidents[0].input.scope.error_code,
+    "ACTION_RESERVATION_EXPIRED_QUARANTINED",
+  );
+});
+
 test("replay produces the same incident fingerprint scope, runbook and idempotency key", async () => {
   const fake = fakeRuntime();
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });

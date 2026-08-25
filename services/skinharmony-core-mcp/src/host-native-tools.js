@@ -749,6 +749,24 @@ export const HOST_NATIVE_TOOLS = [
     ]),
   ),
   tool(
+    "host_native_action_quarantine_expired",
+    "Quarantine an expired Core action reservation",
+    "Close only the exact expired reservation with host-derived readback. Core records an unknown effect, never retries, refunds budget, or authorizes finalization.",
+    object({
+      ticket_id: actionTicketId,
+      reservation_id: {
+        type: "string",
+        pattern: "^hnr_[a-zA-Z0-9-]{8,160}$",
+      },
+      readback_digest: sha256,
+      idempotency_key: {
+        type: "string",
+        minLength: 1,
+        maxLength: 160,
+      },
+    }, ["ticket_id", "reservation_id", "readback_digest", "idempotency_key"]),
+  ),
+  tool(
     "host_native_action_observe_unreserved",
     "Record observed unreserved host effect",
     "Record, without creating a reservation, a verified host effect that occurred after ticket issuance but before reservation. Core defaults to BLOCKED and only an explicit exception verdict can authorize continuation.",
