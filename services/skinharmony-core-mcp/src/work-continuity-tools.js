@@ -65,7 +65,11 @@ export function tenantWorkCoordinationActionType(toolName) {
   return TENANT_WORK_COORDINATION_ACTION_TYPES[String(toolName || "")] || null;
 }
 
-const WORK_ID_TARGET = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+// Keep this in lockstep with work-continuity-runtime.js: canonical Work ids
+// accept UUID versions 1 through 8.  A narrower target validator would turn a
+// valid v6/v7/v8 Work into the generic tool name and make Atlas coordination
+// fail closed in Universal Core.
+const WORK_ID_TARGET = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 
 // Core validates the action type against this target. Never accept a caller
 // target: derive the only permitted target shape from the validated Work id.
