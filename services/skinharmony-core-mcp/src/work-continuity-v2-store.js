@@ -787,11 +787,15 @@ function actorFromIdentity(identity = {}) {
       ? presence?.host_transport_session_fingerprint || ""
       : presence?.session_fingerprint || "",
   ).trim() || null;
+  const clientType = String(presence?.client_type || "").trim() || null;
   return {
     tenant_id: tenantId,
     user_id: userId,
     agent_id: agentId,
-    client_type: String(identity.agentPresence?.client_type || "").trim() || null,
+    // Preserve the legacy actor shape when a host type is absent. Assignment
+    // acceptance still fails closed below unless a transport-bound client type
+    // is actually present.
+    ...(clientType ? { client_type: clientType } : {}),
     session_fingerprint: sessionFingerprint,
     team_ids: [...new Set(teamIds.map((item) => String(item).trim()))],
     managed_team_ids: [...new Set(managedTeamIds.map((item) => String(item).trim()))],
