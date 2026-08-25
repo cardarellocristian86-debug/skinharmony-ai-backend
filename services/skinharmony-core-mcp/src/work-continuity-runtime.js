@@ -4439,7 +4439,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const context = workContext(identity, input);
     const nodesInput = Array.isArray(input.nodes) ? input.nodes : [];
     const edgesInput = Array.isArray(input.edges) ? input.edges : [];
-    if (!nodesInput.length || nodesInput.length > 500) throw new Error("work_atlas_nodes_invalid");
+    // A repository page can contain only binary, empty, or over-size files.  It
+    // still needs an atomic progress checkpoint so a resumable bootstrap does
+    // not retry that page forever. This can also be its first page. It is
+    // deliberately narrower than a generic empty Atlas mutation: it has no
+    // edges and carries a validated bootstrap cursor below.
+    const isBootstrapProgressCheckpoint = input.bootstrap !== undefined && nodesInput.length === 0 && edgesInput.length === 0;
+    if ((!nodesInput.length && !isBootstrapProgressCheckpoint) || nodesInput.length > 500) {
+      throw new Error("work_atlas_nodes_invalid");
+    }
     if (edgesInput.length > 2_000) throw new Error("work_atlas_edges_invalid");
     const bootstrap = input.bootstrap === undefined ? null : cleanJson(input.bootstrap, 100_000);
     if (bootstrap && (

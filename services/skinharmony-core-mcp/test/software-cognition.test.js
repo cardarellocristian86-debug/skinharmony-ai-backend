@@ -193,3 +193,57 @@ test("repository bootstrap binds Work/project/repository and pins each continuat
     project_id: "other-project", work_id: "work-a", repository: "owner/repository", idempotency_key: "wrong-work",
   }, identity), /continuity_project_mismatch/);
 });
+
+test("repository bootstrap checkpoints a non-indexable page and continues without dropping the snapshot", async () => {
+  const commit = "a".repeat(40);
+  const tree = "b".repeat(40);
+  const files = new Map([
+    ["assets/logo.md", Buffer.from([0, 1, 2])],
+    ["src/app.ts", Buffer.from("export const app = true;\n")],
+  ]);
+  const fetchImpl = async (url) => {
+    const json = url.includes("/commits/")
+      ? { sha: commit, commit: { tree: { sha: tree } } }
+      : url.includes(`/git/trees/${tree}`)
+        ? { truncated: false, tree: [...files.keys()].map((path) => ({ path, type: "blob", mode: "100644" })) }
+        : (() => {
+          const path = [...files.keys()].find((item) => url.includes(`/contents/${item}`));
+          return path ? { type: "file", encoding: "base64", content: files.get(path).toString("base64") } : null;
+        })();
+    return { ok: Boolean(json), text: async () => JSON.stringify(json || { message: "not found" }) };
+  };
+  const graph = { revision: 0, nodes: [], edges: [], metrics: { total_nodes: 0, total_context_bytes: 0 } };
+  const writes = [];
+  const handlers = createSoftwareCognitionHandlers({
+    coreRequest: async () => ({ ok: true }), issueAgentContext: () => "signed-context", fetchImpl,
+    repositoryBindings: { "project-a": { repository: "owner/repository", branch: "main" } },
+    atlasRuntime: {
+      readIntent: async () => ({ project_id: "project-a" }),
+      readAtlasGraph: async () => graph.revision ? graph : Promise.reject(new Error("work_atlas_not_found")),
+      upsertAtlas: async (_identity, input) => {
+        writes.push(input);
+        graph.revision += 1;
+        graph.nodes.push(...input.nodes);
+        graph.edges.push(...input.edges);
+        graph.bootstrap = input.bootstrap;
+        return { revision: graph.revision, total_nodes: graph.nodes.length, total_context_bytes: 1 };
+      },
+    },
+  });
+  const identity = { tenantId: "tenant-a", agentPresence };
+  const skipped = await handlers.software_cognition_repository_bootstrap({
+    project_id: "project-a", work_id: "work-a", repository: "owner/repository", file_limit: 1, idempotency_key: "atlas-skip-0",
+  }, identity);
+  assert.equal(skipped.structuredContent.processed_files, 0);
+  assert.deepEqual(skipped.structuredContent.skipped_paths, ["assets/logo.md"]);
+  assert.equal(skipped.structuredContent.next_cursor, 1);
+  assert.equal(writes[0].replace, true);
+  assert.deepEqual(writes[0].nodes, []);
+  const indexed = await handlers.software_cognition_repository_bootstrap({
+    project_id: "project-a", work_id: "work-a", repository: "owner/repository", cursor: 1,
+    snapshot_commit: commit, snapshot_tree_sha: tree, file_limit: 1, idempotency_key: "atlas-skip-1",
+  }, identity);
+  assert.equal(indexed.structuredContent.completed, true);
+  assert.equal(indexed.structuredContent.processed_files, 1);
+  assert.equal(writes[1].replace, false);
+});
