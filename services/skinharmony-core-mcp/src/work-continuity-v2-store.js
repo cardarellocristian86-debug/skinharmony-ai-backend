@@ -14,6 +14,8 @@ import {
 const ADDITIVE_SCHEMA_SQL = `
 ${WORK_CONTINUITY_V2_SCHEMA_SQL}
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_work_id uuid;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS idea text;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS architecture jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS objective text;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS next_action text;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS created_by_agent_id varchar(128);
@@ -42,6 +44,15 @@ CREATE TABLE IF NOT EXISTS core_schema_migrations (
 );
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS acceptance_criteria jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_from_status varchar(24);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_reason text;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS reopened_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS reopen_count integer NOT NULL DEFAULT 0;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_target_agent_id varchar(128);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_target_client_type varchar(32);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_status varchar(24);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_offered_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_accepted_at timestamptz;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_projection_sequence bigint NOT NULL DEFAULT 0;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_projection_event_hash char(64);
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_projection_updated_at timestamptz;
@@ -150,6 +161,11 @@ function fail(code) { throw new Error(code); }
 function text(value, code, max = 8_000) {
   const normalized = String(value || "").trim();
   if (!normalized || normalized.length > max) fail(code);
+  return normalized;
+}
+function galleryIdempotencyKey(value, code) {
+  const normalized = text(value, code, 160);
+  if (normalized.length < 8 || /[\u0000-\u001f\u007f]/u.test(normalized)) fail(code);
   return normalized;
 }
 function uuid(value, code = "work_id_invalid") {
@@ -778,10 +794,15 @@ function actorFromIdentity(identity = {}) {
       ? presence?.host_transport_session_fingerprint || ""
       : presence?.session_fingerprint || "",
   ).trim() || null;
+  const clientType = String(presence?.client_type || "").trim() || null;
   return {
     tenant_id: tenantId,
     user_id: userId,
     agent_id: agentId,
+    // Preserve the legacy actor shape when a host type is absent. Assignment
+    // acceptance still fails closed below unless a transport-bound client type
+    // is actually present.
+    ...(clientType ? { client_type: clientType } : {}),
     session_fingerprint: sessionFingerprint,
     team_ids: [...new Set(teamIds.map((item) => String(item).trim()))],
     managed_team_ids: [...new Set(managedTeamIds.map((item) => String(item).trim()))],
@@ -797,9 +818,20 @@ function sameTenant(work, actor) {
   return Boolean(actor?.tenant_id) && String(work?.tenant_id || "") === actor.tenant_id;
 }
 function isNamedPrincipal(work, actor) {
-  return [work.owner_user_id, work.created_by_user_id]
+  const namedUser = [work.owner_user_id, work.created_by_user_id]
     .concat(work.assigned_user_ids || [], work.supervising_user_ids || [])
     .filter(Boolean).includes(actor.user_id);
+  // `agent_ids` records historical participation as well as the current
+  // assignment.  Only the exact, actively accepted assignment grants an
+  // agent access to a private Work; archive, reopen, and reassignment all
+  // invalidate that grant without widening owner or creator access.
+  const acceptedAssignment = Boolean(
+    actor.agent_id &&
+    work.assignment_status === "ACCEPTED" &&
+    work.assignment_target_agent_id === actor.agent_id &&
+    (work.agent_ids || []).includes(actor.agent_id),
+  );
+  return namedUser || acceptedAssignment;
 }
 export function canRead(work, actor) {
   if (!sameTenant(work, actor)) return false;
@@ -1030,6 +1062,71 @@ export function createWorkContinuityV2Store({
       sequence, eventType, JSON.stringify(event.payload), event.previous_event_hash, eventHash, actor.user_id]);
     return { sequence_number: sequence, event_type: eventType, event_hash: eventHash };
   }
+  function archiveRequestDigest(actor, workId, reason) {
+    return objectDigest({
+      schema_version: "tenant_work_gallery_archive_request_v1",
+      tenant_id: actor.tenant_id,
+      work_id: workId,
+      reason,
+    });
+  }
+  function archiveIdempotencyKeyDigest(actor, workId, idempotencyKey) {
+    return objectDigest({
+      schema_version: "tenant_work_gallery_archive_idempotency_v1",
+      tenant_id: actor.tenant_id,
+      work_id: workId,
+      idempotency_key: idempotencyKey,
+    });
+  }
+  function archiveReplayOutcome(row, {
+    tenantId,
+    workId,
+    reason,
+    requestDigest,
+    idempotencyKeyDigest,
+  }) {
+    const payload = row?.payload;
+    const material = {
+      tenant_id: row?.tenant_id,
+      work_id: row?.work_id,
+      sequence_number: Number(row?.sequence_number),
+      event_type: row?.event_type,
+      payload: stable(payload),
+      previous_event_hash: row?.previous_event_hash || null,
+    };
+    if (!plainRecord(payload) ||
+        payload.schema_version !== "tenant_work_gallery_archive_event_v1" ||
+        !plainRecord(payload.work) ||
+        !Number.isSafeInteger(Number(row?.sequence_number)) ||
+        row?.event_type !== "work_archived_v3" ||
+        objectDigest(material) !== row?.event_hash) {
+      fail("work_archive_replay_evidence_invalid");
+    }
+    if (payload.request_digest !== requestDigest ||
+        payload.idempotency_key_digest !== idempotencyKeyDigest ||
+        payload.reason !== reason) {
+      fail("work_archive_idempotency_conflict");
+    }
+    if (payload.work.tenant_id !== tenantId || payload.work.work_id !== workId ||
+        payload.work.status !== "ARCHIVED" || payload.work.archived_reason !== reason) {
+      fail("work_archive_replay_evidence_invalid");
+    }
+    if (!Number.isSafeInteger(Number(payload.released_lease_count)) ||
+        Number(payload.released_lease_count) < 0) {
+      fail("work_archive_replay_evidence_invalid");
+    }
+    return {
+      schema_version: "tenant_work_gallery_v3",
+      work: normalizeWork(payload.work),
+      released_lease_count: Number(payload.released_lease_count),
+      event: {
+        sequence_number: Number(row.sequence_number),
+        event_type: row.event_type,
+        event_hash: row.event_hash,
+      },
+      idempotent_replay: true,
+    };
+  }
   async function derivePersistedPriorityFacts(client, actor, work) {
     const relations = await client.query(`SELECT
         count(*) FILTER (WHERE parent_work_id=$2 AND status = ANY($3))::int AS dependent_work_count,
@@ -1043,11 +1140,19 @@ export function createWorkContinuityV2Store({
       near_closure_state: Math.min(100, Math.floor(Number(work.progress_bp || 0) / 100)),
     };
   }
-  async function createWorkWithClient(client, actor, input = {}, { legacyWorkId = null, promoteLegacyProjection = false } = {}) {
+  async function createWorkWithClient(client, actor, input = {}, {
+    legacyWorkId = null,
+    promoteLegacyProjection = false,
+    initialStatus = "ACTIVE",
+  } = {}) {
+    if (!["PLANNED", "ACTIVE"].includes(initialStatus)) fail("work_initial_status_invalid");
     const workId = input.work_id ? uuid(input.work_id) : crypto.randomUUID();
     const projectId = text(input.project_id, "project_id_invalid", 128);
     const workName = text(input.work_name, "work_name_invalid", 1_000);
     const workType = text(input.work_type, "work_type_invalid", 80);
+    const idea = text(input.idea, "work_idea_invalid", 8_000);
+    if (!plainRecord(input.architecture)) fail("work_architecture_invalid");
+    const architecture = stable(input.architecture);
     const visibilityScope = ["private", "shared", "team", "tenant"].includes(input.visibility_scope) ? input.visibility_scope : "private";
     if (visibilityScope === "team" && !text(input.team_id, "team_id_required", 128)) fail("team_id_required");
     const priorityFacts = { dependent_work_count: 0, blocking_dependencies: 0, stale_duration: 0, near_closure_state: 0 };
@@ -1084,14 +1189,15 @@ export function createWorkContinuityV2Store({
           assigned_user_ids=$8::jsonb,supervising_user_ids=$9::jsonb,agent_ids=$10::jsonb,visibility_scope=$11,
           priority=$12,priority_score=$13,priority_version=$14,priority_context=$15::jsonb,intent_digest=$16,
           objective=$17,next_action=$18,created_by_agent_id=$19,created_by_session_fingerprint=$20,
-          acceptance_criteria=$21::jsonb,updated_at=now()
+          acceptance_criteria=$21::jsonb,idea=$22,architecture=$23::jsonb,updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId,
           workName, workType, projectId, actor.user_id, input.team_id || null,
           JSON.stringify(assignedUserIds), JSON.stringify(supervisingUserIds), JSON.stringify(actor.agent_id ? [actor.agent_id] : []), visibilityScope,
           priority.priority, priority.priority_score, priority.priority_version, JSON.stringify(priorityFacts),
           input.intent_digest ? digest(input.intent_digest, "intent_digest_invalid") : null,
           String(input.objective || "").slice(0, 8_000) || null, String(input.next_action || "").slice(0, 4_000) || null,
-          actor.agent_id, actor.session_fingerprint, JSON.stringify(acceptanceCriteria)]);
+          actor.agent_id, actor.session_fingerprint, JSON.stringify(acceptanceCriteria),
+          idea, JSON.stringify(architecture)]);
         await insertTasks();
         return { work: await loadWork(client, actor, workId), created: true };
       }
@@ -1100,14 +1206,14 @@ export function createWorkContinuityV2Store({
       const workCode = await allocateCode(client, actor, projectId);
       await client.query(`INSERT INTO tenant_work
         (tenant_id,work_id,legacy_work_id,work_code,work_name,work_type,project_id,owner_user_id,created_by_user_id,team_id,
-         assigned_user_ids,supervising_user_ids,agent_ids,visibility_scope,started_at,status,priority,priority_score,priority_version,priority_context,intent_digest,objective,next_action,created_by_agent_id,created_by_session_fingerprint,acceptance_criteria)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,now(),'ACTIVE',$14,$15,$16,$17::jsonb,$18,$19,$20,$21,$22,$23::jsonb)`,
+         assigned_user_ids,supervising_user_ids,agent_ids,visibility_scope,started_at,status,priority,priority_score,priority_version,priority_context,intent_digest,objective,next_action,created_by_agent_id,created_by_session_fingerprint,acceptance_criteria,idea,architecture)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,now(),'${initialStatus}',$14,$15,$16,$17::jsonb,$18,$19,$20,$21,$22,$23::jsonb,$24,$25::jsonb)`,
       [actor.tenant_id, workId, legacyWorkId, workCode, workName, workType, projectId, actor.user_id, input.team_id || null,
         JSON.stringify(assignedUserIds), JSON.stringify(supervisingUserIds), JSON.stringify(actor.agent_id ? [actor.agent_id] : []), visibilityScope,
         priority.priority, priority.priority_score, priority.priority_version, JSON.stringify(priorityFacts),
         input.intent_digest ? digest(input.intent_digest, "intent_digest_invalid") : null,
         String(input.objective || "").slice(0, 8_000) || null, String(input.next_action || "").slice(0, 4_000) || null,
-        actor.agent_id, actor.session_fingerprint, JSON.stringify(acceptanceCriteria)]);
+        actor.agent_id, actor.session_fingerprint, JSON.stringify(acceptanceCriteria), idea, JSON.stringify(architecture)]);
       await injectFailure("v2_work_created", { tenant_id: actor.tenant_id, work_id: workId });
       await insertTasks();
       await injectFailure("v2_tasks_created", { tenant_id: actor.tenant_id, work_id: workId });
@@ -1297,6 +1403,46 @@ export function createWorkContinuityV2Store({
         // receipt was not persisted as the original creation event.
         core_authorization_receipt: v2.created ? coreAuthorizationReceipt : null,
         idempotent_replay: review.idempotent_replay && !v2.created,
+      };
+    });
+  }
+  async function queueNewWork(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    if (!isAdmin(actor)) fail("work_creation_owner_required");
+    if (String(input.intent_type || "CREATE_WORK") !== "CREATE_WORK" || input.resume_existing === true) {
+      fail("open_work_review_create_intent_required");
+    }
+    const requestDigest = createRequestDigest(input);
+    const reviewId = uuid(input.review_id, "open_work_review_id_required");
+    const workId = input.work_id ? uuid(input.work_id) : deterministicWorkId(actor.tenant_id, reviewId, requestDigest);
+    return transaction(async (client) => {
+      const review = await consumeOpenReviewWithClient(client, actor, input, workId);
+      const queued = await createWorkWithClient(client, actor, {
+        ...input,
+        work_id: workId,
+      }, { initialStatus: "PLANNED" });
+      // A caller-selected work_id is never a convenient alias for an
+      // unrelated Gallery row.  The review-to-Work binding above permits one
+      // exact retry only; any fresh request that collides rolls its review
+      // consumption back with the transaction instead of reporting success.
+      if (!queued.created && !review.idempotent_replay) {
+        fail("tenant_work_queue_work_id_collision");
+      }
+      if (queued.created) {
+        await appendV2Event(client, actor, workId, "work_queued_v3", {
+          review_id: reviewId,
+          review_digest: review.review.review_digest,
+          request_digest: requestDigest,
+          decision: review.decision,
+          status: "PLANNED",
+        });
+      }
+      return {
+        schema_version: "tenant_work_gallery_v3",
+        work: queued.work,
+        review: { review_id: reviewId, decision: review.decision, consumed: true },
+        idempotent_replay: review.idempotent_replay && !queued.created,
       };
     });
   }
@@ -1586,6 +1732,157 @@ export function createWorkContinuityV2Store({
       final_evidence_digest: row.report_final_evidence_digest || null,
     }]));
     return visible.map((work) => ({ ...work, final_report_summary: summaries.get(String(work.work_id)) || null }));
+  }
+  async function assignQueuedWork(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    const targetAgentId = text(input.target_agent_id, "work_assignment_agent_required", 128);
+    const targetClientType = text(input.target_client_type, "work_assignment_client_type_required", 32);
+    if (!["chatgpt", "codex", "api_agent", "other"].includes(targetClientType)) {
+      fail("work_assignment_client_type_invalid");
+    }
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canAdminister, work, actor);
+      if (work.legacy_work_id) fail("work_assignment_legacy_bridge_unsupported");
+      if (!OPERATIONAL_STATUSES.has(work.status)) fail("work_assignment_status_invalid");
+      const assigned = await client.query(`UPDATE tenant_work SET
+          assignment_target_agent_id=$3,assignment_target_client_type=$4,assignment_status='OFFERED',
+          assignment_offered_at=now(),assignment_accepted_at=NULL,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND status=$5::varchar
+        RETURNING *`, [actor.tenant_id, workId, targetAgentId, targetClientType, work.status]);
+      if (!assigned.rows[0]) fail("work_assignment_status_conflict");
+      const event = await appendV2Event(client, actor, workId, "work_assignment_offered_v3", {
+        target_agent_id: targetAgentId,
+        target_client_type: targetClientType,
+        status: "OFFERED",
+      });
+      return { schema_version: "tenant_work_gallery_v3", work: normalizeWork(assigned.rows[0]), event };
+    });
+  }
+  async function acceptQueuedWorkAssignment(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    if (!actor.agent_id || !actor.client_type) fail("work_assignment_host_identity_required");
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      if (!sameTenant(work, actor) || work.legacy_work_id || !OPERATIONAL_STATUSES.has(work.status) ||
+          work.assignment_status !== "OFFERED" ||
+          work.assignment_target_agent_id !== actor.agent_id ||
+          work.assignment_target_client_type !== actor.client_type) {
+        fail("work_assignment_acceptance_denied");
+      }
+      const agentIds = [...new Set([...(work.agent_ids || []), actor.agent_id])];
+      const accepted = await client.query(`UPDATE tenant_work SET
+          agent_ids=$3::jsonb,assignment_status='ACCEPTED',assignment_accepted_at=now(),updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND assignment_status='OFFERED'
+          AND assignment_target_agent_id=$4 AND assignment_target_client_type=$5
+        RETURNING *`, [actor.tenant_id, workId, JSON.stringify(agentIds), actor.agent_id, actor.client_type]);
+      if (!accepted.rows[0]) fail("work_assignment_acceptance_conflict");
+      const event = await appendV2Event(client, actor, workId, "work_assignment_accepted_v3", {
+        target_agent_id: actor.agent_id,
+        target_client_type: actor.client_type,
+        status: "ACCEPTED",
+      });
+      return { schema_version: "tenant_work_gallery_v3", work: normalizeWork(accepted.rows[0]), event };
+    });
+  }
+  async function archiveWork(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    const reason = text(input.reason, "work_archive_reason_required", 1_000);
+    const idempotencyKey = galleryIdempotencyKey(
+      input.idempotency_key,
+      "work_archive_idempotency_key_required",
+    );
+    const requestDigest = archiveRequestDigest(actor, workId, reason);
+    const idempotencyKeyDigest = archiveIdempotencyKeyDigest(actor, workId, idempotencyKey);
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canAdminister, work, actor);
+      if (work.legacy_work_id) fail("work_archive_legacy_bridge_unsupported");
+      // The event ledger is the durable result record. Check it before the
+      // current status so a response-lost retry succeeds even though the
+      // original transition already made the Work terminal.
+      const replay = await client.query(`SELECT tenant_id,work_id,sequence_number,event_type,payload,
+          previous_event_hash,event_hash
+        FROM tenant_work_event
+        WHERE tenant_id=$1 AND work_id=$2
+          AND event_type='work_archived_v3'
+          AND payload->>'idempotency_key_digest'=$3
+        ORDER BY sequence_number DESC LIMIT 1`,
+      [actor.tenant_id, workId, idempotencyKeyDigest]);
+      if (replay.rows[0]) return archiveReplayOutcome(replay.rows[0], {
+        tenantId: actor.tenant_id,
+        workId,
+        reason,
+        requestDigest,
+        idempotencyKeyDigest,
+      });
+      if (!OPERATIONAL_STATUSES.has(work.status)) fail("work_archive_status_invalid");
+      const archived = await client.query(`UPDATE tenant_work SET
+          status='ARCHIVED',archived_at=now(),archived_from_status=$3::varchar,archived_reason=$4,
+          assignment_status='REVOKED',updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND status=$5::varchar
+        RETURNING *`, [actor.tenant_id, workId, work.status, reason, work.status]);
+      if (!archived.rows[0]) fail("work_archive_status_conflict");
+      const released = await client.query(`UPDATE core_continuity_leases
+        SET status='released',released_at=coalesce(released_at,now())
+        WHERE tenant_id=$1 AND work_id=$2 AND status='active'
+        RETURNING lease_id`, [actor.tenant_id, workId]);
+      const event = await appendV2Event(client, actor, workId, "work_archived_v3", {
+        schema_version: "tenant_work_gallery_archive_event_v1",
+        from_status: work.status,
+        reason,
+        request_digest: requestDigest,
+        idempotency_key_digest: idempotencyKeyDigest,
+        work: normalizeWork(archived.rows[0]),
+        released_lease_count: released.rowCount,
+      });
+      return {
+        schema_version: "tenant_work_gallery_v3",
+        work: normalizeWork(archived.rows[0]),
+        released_lease_count: released.rowCount,
+        event,
+        idempotent_replay: false,
+      };
+    });
+  }
+  async function reopenWork(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    const reason = text(input.reason, "work_reopen_reason_required", 1_000);
+    const nextAction = input.next_action === undefined
+      ? null
+      : text(input.next_action, "work_reopen_next_action_invalid", 4_000);
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canAdminister, work, actor);
+      if (work.legacy_work_id) fail("work_reopen_legacy_bridge_unsupported");
+      if (work.status !== "ARCHIVED" || !OPERATIONAL_STATUSES.has(work.archived_from_status)) {
+        fail("work_reopen_status_invalid");
+      }
+      const resumedNextAction = nextAction || work.next_action || "Review the Work and assign the next bounded action.";
+      const reopened = await client.query(`UPDATE tenant_work SET
+          status='PLANNED',archived_at=NULL,archived_from_status=NULL,archived_reason=NULL,
+          assignment_target_agent_id=NULL,assignment_target_client_type=NULL,assignment_status=NULL,
+          assignment_offered_at=NULL,assignment_accepted_at=NULL,
+          reopened_at=now(),reopen_count=reopen_count+1,next_action=$3,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND status='ARCHIVED'
+        RETURNING *`, [actor.tenant_id, workId, resumedNextAction]);
+      if (!reopened.rows[0]) fail("work_reopen_status_conflict");
+      const event = await appendV2Event(client, actor, workId, "work_reopened_v3", {
+        archived_from_status: work.archived_from_status,
+        reason,
+        next_action: resumedNextAction,
+        status: "PLANNED",
+      });
+      return { schema_version: "tenant_work_gallery_v3", work: normalizeWork(reopened.rows[0]), event };
+    });
   }
   async function openWorkReview(identity, input = {}) {
     await initialize();
@@ -2501,10 +2798,10 @@ export function createWorkContinuityV2Store({
       return { receipt: finalized.receipt, final_report: finalized.final_report, idempotent_replay: false, archive_status: "ARCHIVED" };
     });
   }
-  return Object.freeze({ initialize, createWork, createNewWork, readCreatedWorkByBootstrapRequest,
-    projectLegacyWork, projectLegacyCatalog,
-    projectLegacyEvent, backfillLegacyProjection,
-    readWork, verifyWorkClosure, listWorks, preflightGallery, openWorkReview,
+  return Object.freeze({ initialize, createWork, createNewWork, readCreatedWorkByBootstrapRequest, queueNewWork,
+    projectLegacyWork, projectLegacyCatalog, projectLegacyEvent, backfillLegacyProjection,
+    readWork, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork, reopenWork,
+    preflightGallery, openWorkReview,
     recordTask, recordEvidence, persistCoreJoin, refreshDerived, reconcileStaleDryRun,
     reconcileLegacyClosed,
     evaluateGenericClosure, buildGenericCoreJoinRequest, finalizeGenericClosure,

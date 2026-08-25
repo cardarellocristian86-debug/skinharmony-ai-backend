@@ -921,6 +921,11 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     tenant_work_lease_renew: tenantWorkCoordinationActionType("tenant_work_lease_renew"),
     tenant_work_lease_release: tenantWorkCoordinationActionType("tenant_work_lease_release"),
     tenant_work_message_post: tenantWorkCoordinationActionType("tenant_work_message_post"),
+    tenant_work_queue_create_v3: tenantWorkCoordinationActionType("tenant_work_queue_create_v3"),
+    tenant_work_assign_v3: tenantWorkCoordinationActionType("tenant_work_assign_v3"),
+    tenant_work_assignment_accept_v3: tenantWorkCoordinationActionType("tenant_work_assignment_accept_v3"),
+    tenant_work_archive_v3: tenantWorkCoordinationActionType("tenant_work_archive_v3"),
+    tenant_work_reopen_v3: tenantWorkCoordinationActionType("tenant_work_reopen_v3"),
     tenant_work_task_record: tenantWorkCoordinationActionType("tenant_work_task_record"),
     tenant_work_evidence_record: tenantWorkCoordinationActionType("tenant_work_evidence_record"),
   }, {
@@ -932,11 +937,25 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     tenant_work_lease_renew: "work.lease.renew",
     tenant_work_lease_release: "work.lease.release",
     tenant_work_message_post: "work.message.post",
+    tenant_work_queue_create_v3: "work.gallery.queue.create",
+    tenant_work_assign_v3: "work.gallery.assignment.offer",
+    tenant_work_assignment_accept_v3: "work.gallery.assignment.accept",
+    tenant_work_archive_v3: "work.gallery.archive",
+    tenant_work_reopen_v3: "work.gallery.reopen",
     tenant_work_task_record: "task.update",
     tenant_work_evidence_record: "continuity.update",
   });
   assert.equal(tenantWorkCoordinationTarget("tenant_work_task_record", { work_id: WORK_ID }), `task:${WORK_ID}`);
   assert.equal(tenantWorkCoordinationTarget("tenant_work_evidence_record", { work_id: WORK_ID }), `work_continuity_evidence:${WORK_ID}`);
+  assert.equal(tenantWorkCoordinationTarget("tenant_work_queue_create_v3", {}), "tenant_work_queue_create_v3");
+  for (const name of [
+    "tenant_work_assign_v3",
+    "tenant_work_assignment_accept_v3",
+    "tenant_work_archive_v3",
+    "tenant_work_reopen_v3",
+  ]) {
+    assert.equal(tenantWorkCoordinationTarget(name, { work_id: WORK_ID }), WORK_ID, name);
+  }
   assert.equal(
     tenantWorkCoordinationTarget("software_cognition_repository_bootstrap", { work_id: WORK_ID }),
     `work_atlas:${WORK_ID}`,
@@ -948,4 +967,22 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
   );
   assert.equal(tenantWorkCoordinationTarget("tenant_work_task_record", { work_id: "not-a-work-id" }), "tenant_work_task_record");
   assert.equal(tenantWorkCoordinationActionType("unknown_internal_write"), null);
+});
+
+test("Gallery V3 schemas admit only Core-valid bounded idempotency keys", () => {
+  const names = [
+    "tenant_work_queue_create_v3",
+    "tenant_work_assign_v3",
+    "tenant_work_assignment_accept_v3",
+    "tenant_work_archive_v3",
+    "tenant_work_reopen_v3",
+  ];
+  for (const name of names) {
+    const schema = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === name).inputSchema.properties.idempotency_key;
+    assert.equal(schema.minLength, 8, name);
+    assert.equal(schema.maxLength, 160, name);
+    const pattern = new RegExp(schema.pattern);
+    assert.equal(pattern.test("valid-key-0001"), true, name);
+    assert.equal(pattern.test("invalid\u0000key"), false, name);
+  }
 });

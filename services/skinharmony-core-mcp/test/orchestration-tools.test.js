@@ -88,6 +88,7 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-a
     nodes: [{ node_id: "verify", kind: "verification", task: "Verify" }],
   }, identity);
   await handlers.orchestration_dtt_read({ work_id: workId, tree_id: "dtt_test" }, identity);
+  await handlers.orchestration_dtt_verification_readiness({ work_id: workId, tree_id: "dtt_test" }, identity);
   await handlers.orchestration_dtt_expansion_propose({
     work_id: workId,
     tree_id: "dtt_test",
@@ -163,6 +164,7 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-a
     "/v1/orchestration/relational/evaluate",
     "/v1/orchestration/dtt/plan",
     "/v1/orchestration/dtt/dtt_test",
+    "/v1/orchestration/dtt/dtt_test/verification-readiness",
     "/v1/orchestration/dtt/dtt_test/expansion-proposals",
     "/v1/orchestration/dtt/dtt_test/replan-proposals",
     "/v1/orchestration/dtt/dtt_test/nodes/verify/outcomes",
@@ -199,8 +201,8 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-a
   }
   assert.equal("tenant_id" in JSON.parse(calls[1].init.body), false);
   assert.equal("tenant_id" in JSON.parse(calls[2].init.body), false);
-  assert.equal("tenant_id" in JSON.parse(calls[4].init.body), false);
-  assert.equal(JSON.parse(calls[6].init.body).idempotency_key, "outcome-verify-v1");
+  assert.equal("tenant_id" in JSON.parse(calls[5].init.body), false);
+  assert.equal(JSON.parse(calls[7].init.body).idempotency_key, "outcome-verify-v1");
   assert.equal("authority" in JSON.parse(calls.at(-1).init.body), false);
   assert.equal("verdict_reference" in JSON.parse(calls.at(-1).init.body), false);
 
@@ -209,6 +211,7 @@ test("orchestration MCP tools expose accurate mutation hints and map to tenant-a
     "orchestration_relational_evaluate",
     "orchestration_dtt_plan",
     "orchestration_dtt_read",
+    "orchestration_dtt_verification_readiness",
     "orchestration_dtt_expansion_propose",
     "orchestration_dtt_replan_propose",
     "orchestration_dtt_evidence_prepare",

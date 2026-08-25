@@ -1535,6 +1535,10 @@ export const TOOLS = [
     work_id: dttWorkId,
     tree_id: dttReference,
   }, ["work_id", "tree_id"]), ["core:read"], true, true),
+  tool("orchestration_dtt_verification_readiness", "Read persistent DTT verification readiness", "Read only the durable evidence progress for one tenant-and-Work-bound DTT: verifier assignments, recorded outcomes, Core Join state and the exact next governed step. Evidence drafts and unsubmitted receipts remain intentionally non-durable until recorded, so this tool never reports speculative progress as ready.", object({
+    work_id: dttWorkId,
+    tree_id: dttReference,
+  }, ["work_id", "tree_id"]), ["core:read"], true, true),
   tool("orchestration_dtt_expansion_propose", "Propose DTT expansion", "Validate and return a bounded expansion proposal for Core review. The proposal is not applied and authorizes no execution.", object({
     work_id: dttWorkId,
     tree_id: dttReference,

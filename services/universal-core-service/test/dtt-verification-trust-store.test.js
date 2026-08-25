@@ -56,6 +56,7 @@ test("DTT file trust V2 scopes assignments and artifacts by Work and preserves l
   const store = createFileDttVerificationTrustStore({ root });
 
   const assignmentA = store.assignVerifier(assignment(WORK_A));
+  const assignmentASecondNode = store.assignVerifier({ ...assignment(WORK_A), node_id: "verify-second" });
   const assignmentB = store.assignVerifier(assignment(WORK_B));
   assert.notEqual(assignmentA.assignment_id, assignmentB.assignment_id);
   assert.equal(assignmentA.work_id, WORK_A);
@@ -70,6 +71,11 @@ test("DTT file trust V2 scopes assignments and artifacts by Work and preserves l
   assert.deepEqual(store.listAssignments({
     tenant_id: "tenant-a", work_id: WORK_A, tree_id: assignmentA.tree_id, node_id: assignmentA.node_id,
   }).map((record) => record.assignment_id), [assignmentA.assignment_id]);
+  assert.deepEqual(
+    store.listAssignmentsForTree({ tenant_id: "tenant-a", work_id: WORK_A, tree_id: assignmentA.tree_id })
+      .map((record) => record.node_id).sort(),
+    [assignmentA.node_id, assignmentASecondNode.node_id],
+  );
   assert.deepEqual(store.listAssignments({
     tenant_id: "tenant-a", work_id: WORK_B, tree_id: assignmentB.tree_id, node_id: assignmentB.node_id,
   }).map((record) => record.assignment_id), [assignmentB.assignment_id]);
@@ -173,6 +179,12 @@ class FakeTrustPostgresPool {
       ));
       return { rowCount: rows.length, rows: structuredClone(rows) };
     }
+    if (/WHERE tenant_id=\$1 AND work_id=\$2::uuid AND tree_id=\$3/.test(sql)) {
+      const rows = [...this.assignments.values()].filter((record) => (
+        record.tenant_id === params[0] && record.work_id === params[1] && record.tree_id === params[2]
+      ));
+      return { rowCount: rows.length, rows: structuredClone(rows) };
+    }
     if (/INSERT INTO dtt_evidence_artifacts_v2/.test(sql)) {
       const [registry_id, tenant_id, work_id, artifact_id, content_digest,
         source_reference, registry_reference] = params;
@@ -232,6 +244,9 @@ test("DTT PostgreSQL trust V2 uses Work-scoped versioned tables and queries", as
   );
   assert.deepEqual((await store.listAssignments({
     tenant_id: "tenant-a", work_id: WORK_A, tree_id: assignmentA.tree_id, node_id: assignmentA.node_id,
+  })).map((record) => record.assignment_id), [assignmentA.assignment_id]);
+  assert.deepEqual((await store.listAssignmentsForTree({
+    tenant_id: "tenant-a", work_id: WORK_A, tree_id: assignmentA.tree_id,
   })).map((record) => record.assignment_id), [assignmentA.assignment_id]);
 
   const artifactA = await store.registerArtifact(artifact(WORK_A));

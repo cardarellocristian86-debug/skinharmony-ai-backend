@@ -751,6 +751,17 @@ test("DTT join reconciles a durable joined tree after consume failure and restar
       key,
     );
     assert.equal(joinedBeforeRestart.json.status, "core_joined");
+    const pendingReadiness = await request(
+      first.base,
+      "GET",
+      `/v1/orchestration/dtt/${tree.json.tree_id}/verification-readiness`,
+      undefined,
+      key,
+    );
+    assert.equal(pendingReadiness.status, 200);
+    assert.equal(pendingReadiness.json.core_join.state, "reconciliation_required");
+    assert.equal(pendingReadiness.json.core_join.blocker, "dtt_join_finalization_pending");
+    assert.equal(pendingReadiness.json.next_action, "reconcile_core_join_verdict");
     assert.deepEqual(
       durableLedger.read({ tenant_id: "tenant-orchestration", work_id: DTT_WORK_A, tree_id: tree.json.tree_id })
         .map((event) => event.event_type),
@@ -841,6 +852,18 @@ test("signed assigned agents complete artifact registry, draft, quorum, outcome 
       }],
     }, key);
     assert.equal(tree.status, 200);
+    const initialReadiness = await request(
+      base,
+      "GET",
+      `/v1/orchestration/dtt/${tree.json.tree_id}/verification-readiness`,
+      undefined,
+      key,
+    );
+    assert.equal(initialReadiness.status, 200);
+    assert.equal(initialReadiness.json.next_action, "complete_persisted_evidence_flow");
+    assert.equal(initialReadiness.json.nodes[0].node_id, "verify");
+    assert.equal(initialReadiness.json.nodes[0].assignment_count, 0);
+    assert.equal(initialReadiness.json.execution_authorized, false);
     const deniedAssignment = await request(
       base,
       "POST",
@@ -964,11 +987,32 @@ test("signed assigned agents complete artifact registry, draft, quorum, outcome 
     );
     assert.equal(outcome.status, 200);
     assert.equal(outcome.json.execution_authorized, false);
+    const readyForJoin = await request(
+      base,
+      "GET",
+      `/v1/orchestration/dtt/${tree.json.tree_id}/verification-readiness`,
+      undefined,
+      key,
+    );
+    assert.equal(readyForJoin.status, 200);
+    assert.equal(readyForJoin.json.next_action, "request_core_join");
+    assert.equal(readyForJoin.json.core_join.ready, true);
+    assert.equal(readyForJoin.json.nodes[0].evidence_recorded, true);
     const joined = await request(
       base, "POST", `/v1/orchestration/dtt/${tree.json.tree_id}/core-join`, {}, key,
     );
     assert.equal(joined.status, 200);
     assert.equal(joined.json.status, "core_joined");
+    const joinedReadiness = await request(
+      base,
+      "GET",
+      `/v1/orchestration/dtt/${tree.json.tree_id}/verification-readiness`,
+      undefined,
+      key,
+    );
+    assert.equal(joinedReadiness.status, 200);
+    assert.equal(joinedReadiness.json.next_action, "already_core_joined");
+    assert.equal(joinedReadiness.json.core_join.state, "joined");
   } finally {
     await new Promise((resolve) => server.close(resolve));
     if (previousAdmin === undefined) delete process.env.CORE_SERVICE_ADMIN_KEY;

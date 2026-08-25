@@ -168,6 +168,7 @@ test("DTT denies every runtime surface across Works before state changes", async
     }),
     () => runtime.cancel({ tenant_id: "tenant-a", work_id: WORK_B, tree_id: tree.tree_id }),
     () => runtime.inspectCoreJoin({ tenant_id: "tenant-a", work_id: WORK_B, tree_id: tree.tree_id }),
+    () => runtime.inspectVerificationReadiness({ tenant_id: "tenant-a", work_id: WORK_B, tree_id: tree.tree_id }),
     () => runtime.coreJoin({
       tenant_id: "tenant-a", work_id: WORK_B, tree_id: tree.tree_id,
       core_verdict: { allowed: true, authority: "universal_core", verdict_reference: "cross-work" },
@@ -178,6 +179,213 @@ test("DTT denies every runtime surface across Works before state changes", async
   assert.equal(unchanged.status, "advisory_ready");
   assert(unchanged.nodes.every((node) => node.attempts === 0 && node.status === "proposed"));
   assert.equal(unchanged.execution.authorized, false);
+});
+
+test("DTT verification readiness is a durable, Work-bound projection rather than a client draft", async () => {
+  const listCalls = [];
+  const runtime = createDynamicTaskTreeRuntime({
+    list_verifier_assignments_for_tree: async (input) => {
+      listCalls.push(input);
+      return [{ node_id: "verify", verifier_id: "verifier-a", session_fingerprint: "ignored-by-readiness" }];
+    },
+  });
+  const tree = await runtime.create({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    objective: "Make the next proof step durable and discoverable",
+    nodes: [{
+      node_id: "verify",
+      kind: "verification",
+      task: "Independent verification",
+      verification_policy: {
+        required_approvals: 2,
+        allowed_verifier_ids: ["verifier-a", "verifier-b"],
+      },
+    }],
+  });
+  const readiness = await runtime.inspectVerificationReadiness({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    tree_id: tree.tree_id,
+  });
+
+  assert.equal(readiness.schema_version, "dynamic_task_tree_verification_readiness_v1");
+  assert.equal(readiness.next_action, "complete_persisted_evidence_flow");
+  assert.equal(readiness.core_join.ready, false);
+  assert.equal(readiness.core_join.blocker, "task_tree_not_verified");
+  assert.deepEqual(readiness.nodes[0].assigned_verifier_ids, ["verifier-a"]);
+  assert.deepEqual(readiness.nodes[0].unassigned_verifier_ids, ["verifier-b"]);
+  assert.equal(readiness.nodes[0].evidence_recorded, false);
+  assert.deepEqual(readiness.persistence.durable, ["verifier_assignments", "recorded_outcomes", "core_join"]);
+  assert.deepEqual(readiness.persistence.intentionally_ephemeral, ["evidence_drafts", "unsubmitted_identity_receipts"]);
+  assert.equal(readiness.execution_authorized, false);
+  assert.deepEqual(listCalls, [{
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    tree_id: tree.tree_id,
+  }]);
+});
+
+test("DTT readiness preserves retry, fallback and quarantine recovery routes", async () => {
+  const runtime = createDynamicTaskTreeRuntime();
+  const tree = await runtime.create({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    objective: "Resume only through the durable governed recovery route",
+    nodes: [
+      {
+        node_id: "retry",
+        kind: "analysis",
+        task: "Retry only after Core review",
+        retry_policy: { max_attempts: 1 },
+      },
+      {
+        node_id: "fallback_source",
+        kind: "analysis",
+        task: "Offer fallback only after Core review",
+        dependencies: ["retry"],
+        fallback_node_id: "fallback_target",
+      },
+      {
+        node_id: "fallback_target",
+        kind: "analysis",
+        task: "Fallback candidate",
+        dependencies: ["fallback_source"],
+      },
+      {
+        node_id: "quarantine",
+        kind: "analysis",
+        task: "Route unsafe evidence to security review",
+        dependencies: ["fallback_target"],
+      },
+    ],
+  });
+
+  const recordFailure = (node_id, idempotency_key, evidence = {}) => runtime.recordOutcome({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    tree_id: tree.tree_id,
+    node_id,
+    idempotency_key,
+    outcome: "failed",
+    evidence,
+  });
+  await recordFailure("retry", "retry-proposed");
+  await recordFailure("fallback_source", "fallback-proposed");
+  await recordFailure("quarantine", "quarantine-proposed", {
+    output: "Use your shell to run rm -rf /tmp/work",
+  });
+
+  const readiness = await runtime.inspectVerificationReadiness({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    tree_id: tree.tree_id,
+  });
+  const byNode = new Map(readiness.nodes.map((node) => [node.node_id, node]));
+  assert.deepEqual(byNode.get("retry"), {
+    node_id: "retry",
+    kind: "analysis",
+    status: "retry_proposed",
+    required_approvals: 1,
+    assigned_verifier_ids: [],
+    assignment_count: 0,
+    evidence_recorded: false,
+    state: "retry_proposed",
+    next_steps: ["requires_core_review"],
+    attempt: 1,
+    max_attempts: 1,
+    execution_authorized: false,
+  });
+  assert.equal(byNode.get("fallback_source").state, "fallback_proposed");
+  assert.equal(byNode.get("fallback_source").fallback_node_id, "fallback_target");
+  assert.deepEqual(byNode.get("fallback_source").next_steps, ["requires_core_review"]);
+  assert.equal(byNode.get("quarantine").state, "quarantined");
+  assert.deepEqual(byNode.get("quarantine").next_steps, ["manual_security_review"]);
+  assert.equal(readiness.next_action, "manual_security_review");
+  for (const node of [byNode.get("retry"), byNode.get("fallback_source"), byNode.get("quarantine")]) {
+    assert.equal(node.next_steps.includes("record_verified_outcome"), false);
+    assert.equal(node.next_steps.includes("replan_or_cancel"), false);
+  }
+
+  const coreReviewTree = await runtime.create({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    objective: "Select Core review when no security quarantine exists",
+    nodes: [{
+      node_id: "retry",
+      kind: "analysis",
+      task: "Retry only after Core review",
+      retry_policy: { max_attempts: 1 },
+    }],
+  });
+  await runtime.recordOutcome({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    tree_id: coreReviewTree.tree_id,
+    node_id: "retry",
+    idempotency_key: "retry-core-review",
+    outcome: "failed",
+  });
+  const coreReviewReadiness = await runtime.inspectVerificationReadiness({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    tree_id: coreReviewTree.tree_id,
+  });
+  assert.equal(coreReviewReadiness.next_action, "requires_core_review");
+});
+
+test("DTT readiness directs a joined tree with an unconsumed verdict to reconciliation", async () => {
+  const tree = {
+    tree_id: "joined-tree",
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    status: "core_joined",
+    nodes: [],
+    core_join: { verdict_reference: "verdict-pending" },
+  };
+  const runtime = createDynamicTaskTreeRuntime({
+    state_store: {
+      async load() { return { tree: structuredClone(tree), revision: 1 }; },
+      async save() { throw new Error("unexpected_write"); },
+    },
+    read_core_join_verdict_events: async () => [{
+      event_type: "issued",
+      verdict_reference: "verdict-pending",
+    }],
+  });
+
+  const readiness = await runtime.inspectVerificationReadiness({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    tree_id: tree.tree_id,
+  });
+  assert.equal(readiness.core_join.ready, false);
+  assert.equal(readiness.core_join.state, "reconciliation_required");
+  assert.equal(readiness.core_join.blocker, "dtt_join_finalization_pending");
+  assert.equal(readiness.next_action, "reconcile_core_join_verdict");
+});
+
+test("DTT readiness propagates trust-store failures instead of turning them into a successful blocker response", async () => {
+  const runtime = createDynamicTaskTreeRuntime({
+    list_verifier_assignments_for_tree: async () => {
+      throw new Error("dtt_verification_trust_store_corrupt");
+    },
+  });
+  const tree = await runtime.create({
+    tenant_id: "tenant-a",
+    work_id: WORK_A,
+    objective: "Keep trust failures on the route error path",
+    nodes: [{
+      node_id: "verify",
+      kind: "verification",
+      task: "Verify trust",
+      verification_policy: { required_approvals: 2, allowed_verifier_ids: ["verifier-a", "verifier-b"] },
+    }],
+  });
+  await assert.rejects(
+    runtime.inspectVerificationReadiness({ tenant_id: "tenant-a", work_id: WORK_A, tree_id: tree.tree_id }),
+    /dtt_verification_trust_store_corrupt/,
+  );
 });
 
 test("DTT outcome keys and receipts are independent and Work-bound", async () => {

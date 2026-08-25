@@ -5665,6 +5665,13 @@ export function createUniversalCoreService(options = {}) {
       : createFileDttVerificationTrustStore({
         root: path.join(storageRoot, "dynamic-task-tree-verification-trust"),
       }));
+  // Install the durable trust schema during application bootstrap.  Readiness
+  // is a read-only route, so it must never be the first operation to issue
+  // DDL or take a schema lock.
+  const dttVerificationTrustStoreInitialization = typeof dttVerificationTrustStore.initialize === "function"
+    ? Promise.resolve().then(() => dttVerificationTrustStore.initialize())
+    : Promise.resolve();
+  void dttVerificationTrustStoreInitialization.catch(() => {});
   const dttAgentIdentityReceiptStore = options.dttAgentIdentityReceiptStore || (dttAgentIdentitySecret
     ? (dttAgentIdentityPostgresPool
       ? createPostgresDttAgentIdentityReceiptStore({ pool: dttAgentIdentityPostgresPool })
@@ -5689,6 +5696,12 @@ export function createUniversalCoreService(options = {}) {
     state_store: dynamicTaskTreeStateStore,
     resolve_verifier_identity: resolveDttVerifierIdentity,
     resolve_evidence_artifact: (input) => dttVerificationTrustStore.verifyArtifact(input),
+    list_verifier_assignments: (input) => dttVerificationTrustStore.listAssignments(input),
+    list_verifier_assignments_for_tree:
+      typeof dttVerificationTrustStore.listAssignmentsForTree === "function"
+        ? (input) => dttVerificationTrustStore.listAssignmentsForTree(input)
+        : null,
+    read_core_join_verdict_events: (input) => dynamicTaskTreeJoinVerdictStore.read(input),
   });
   const dynamicTaskTreeRollout = dynamicTaskTreeRolloutConfig(
     options.dynamicTaskTreeEnv || process.env,
@@ -7783,6 +7796,8 @@ export function createUniversalCoreService(options = {}) {
       "dtt_work_binding_unavailable",
       "dtt_work_context_signing_unavailable",
       "dtt_join_finalization_pending",
+      "dtt_join_verdict_ledger_unavailable",
+      "dtt_verifier_assignments_unavailable",
     ].includes(code)) return 503;
     return fallback;
   };
@@ -13717,6 +13732,32 @@ export function createUniversalCoreService(options = {}) {
       return res.json({ ...tree, ok: true, tenant_id: req.tenantId, work_id: req.workId, execution_authorized: false });
     } catch (error) {
       const code = error.message || "dynamic_task_tree_read_failed";
+      return publicError(res, dttStatusForError(code), code);
+    }
+  });
+
+  // A stable, no-side-effect path for connected hosts to resume a Work's
+  // evidence flow. It reports only durable progress and the exact governed
+  // next step; it never turns a draft, a receipt or a queue assignment into
+  // execution authority.
+  app.get("/v1/orchestration/dtt/:treeId/verification-readiness", coreAuth(SCOPES.READ_DECISION), dttWorkAuth, async (req, res) => {
+    try {
+      const readiness = await dynamicTaskTreeRuntime.inspectVerificationReadiness({
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        tree_id: req.params.treeId,
+      });
+      audit.append("dynamic_task_tree_verification_readiness_read", {
+        tenant_id: req.tenantId,
+        work_id: req.workId,
+        key_id: req.coreKey.key_id,
+        tree_id: readiness.tree_id,
+        tree_status: readiness.tree_status,
+        next_action: readiness.next_action,
+      });
+      return res.json({ ...readiness, ok: true, execution_authorized: false });
+    } catch (error) {
+      const code = error.message || "dynamic_task_tree_verification_readiness_failed";
       return publicError(res, dttStatusForError(code), code);
     }
   });
