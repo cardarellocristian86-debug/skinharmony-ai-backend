@@ -204,6 +204,12 @@ services:
       # release closure validates; a new chat never has to rediscover it.
       - key: NYRA_PROJECT_RELEASE_BINDINGS_JSON
         value: '{"schema_version":"nyra_project_release_bindings_v1","bindings":[{"tenant_id":"codexai","project_id":"skinharmony-ai-backend","repository":"cardarellocristian86-debug/skinharmony-ai-backend","base_branch":"main","required_checks":["core-mcp","deployment-parity","universal-core"]}]}'
+      # The Software/Architecture Atlas accepts a repository only from this
+      # server-owned project binding. It is deliberately public metadata, not
+      # a GitHub credential; private repositories require a separate tenant
+      # credential mapping provisioned only in Render.
+      - key: NYRA_ATLAS_REPOSITORY_BINDINGS_JSON
+        value: '{"skinharmony-ai-backend":{"repository":"cardarellocristian86-debug/skinharmony-ai-backend","branch":"main"},"nyra_conversational_runtime":{"repository":"cardarellocristian86-debug/skinharmony-ai-backend","branch":"main"}}'
       # Every functional Nyra/Core call creates or refreshes a server-derived
       # signed tenant presence. This is identity registration only: it grants
       # no role, model, tool, credential, merge, deploy or external authority.
