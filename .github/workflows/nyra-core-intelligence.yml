@@ -588,7 +588,6 @@ jobs:
               mcp_env.dig(key, "value") == expected
           end
           %w[
-            GENERIC_WORK_CORE_JOIN_CORE_SIGNER_TARGET_COMMIT
             GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SERVICE_TOKEN
             GENERIC_WORK_CORE_JOIN_CORE_SIGNER_SEED
           ].each do |key|
