@@ -1145,6 +1145,45 @@ export function createCoreHandlers(config, options = {}) {
     });
   }
 
+  async function entity360ShadowEnableCoreRequest(args = {}, identity = {}) {
+    const tenantId = String(identity?.tenantId || "").trim();
+    if (!tenantId) throw new Error("entity360_authenticated_tenant_required");
+    const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+    const activation = {
+      mode: "SHADOW",
+      enabled: true,
+      expected_revision: args.expected_revision,
+      idempotency_key: args.idempotency_key,
+      owner_confirmed: true,
+      confirmation_reference: hostNativeConfirmationReference(
+        identity,
+        ownerMode,
+        "entity360_feature_flag_write",
+        args.idempotency_key,
+      ),
+    };
+    const owner = ownerContext(identity, {
+      requestBinding: ownerRequestBinding("entity360_feature_flag_write", activation),
+      hostNativeOwner: true,
+    });
+    if (owner.owner_verified !== true) throw new Error("owner_confirmation_required");
+    const payload = await coreRequest("/v1/entity-360/admin/feature-flag", tenantId, {
+      method: "POST",
+      useTenantGateway: true,
+      body: { ...activation, owner_context: owner },
+    });
+    return {
+      ...payload,
+      dedicated_core_gate: {
+        authorized: payload?.ok === true,
+        authority: "universal_core",
+        route: "entity_360_shadow_enable",
+        provider_execution: false,
+        host_policy_override: false,
+      },
+    };
+  }
+
   async function persistedStandingReleaseIntent(identity, workIdValue, callerDigestValue) {
     const rawWorkId = typeof workIdValue === "string" ? workIdValue : "";
     const workId = rawWorkId.trim().toLowerCase();
@@ -4477,6 +4516,16 @@ export function createCoreHandlers(config, options = {}) {
   // capability.
   Object.defineProperty(handlers, "dttCoreRequest", {
     value: dttCoreRequest,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  // Tenant-wide Entity 360 SHADOW activation has a distinct Core-owned
+  // authority path: fresh host-native owner confirmation, signed request
+  // binding and the tenant gateway. It intentionally does not inherit a DTT
+  // lease and never exposes a generic configuration transport to MCP tools.
+  Object.defineProperty(handlers, "entity360ShadowEnableCoreRequest", {
+    value: entity360ShadowEnableCoreRequest,
     enumerable: false,
     configurable: false,
     writable: false,

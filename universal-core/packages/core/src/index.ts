@@ -274,10 +274,16 @@ export function runUniversalCore(input: UniversalCoreInput): UniversalCoreOutput
 
   const observeMode = shouldObserve(input, severity, riskScore, confidence);
   const rawControlLevel = observeMode ? "observe" : resolveControlLevel(input, confidence, riskScore);
-  const controlLevel = raiseControlLevel(
+  const derivedControlLevel = raiseControlLevel(
     capControlLevel(rawControlLevel, input.constraints.max_control_level),
     input.constraints.min_control_level,
   );
+  // Same semantics as the calibrated and elastic decision engines: safety
+  // mode is visible as a confirmation guard, and cannot leak an executable
+  // profile merely because the normal control policy selected it.
+  const controlLevel = input.constraints.safety_mode && derivedControlLevel === "execute_allowed"
+    ? "confirm"
+    : derivedControlLevel;
   const profile = executionProfile(controlLevel, `Control level ${controlLevel} derived from confidence ${confidence.toFixed(1)} and risk ${riskScore.toFixed(1)}.`);
 
   const hasSpecificSemanticSignal = input.signals.some(

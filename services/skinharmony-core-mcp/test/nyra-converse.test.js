@@ -597,6 +597,28 @@ test("treats legacy safety_mode as an explainable guard, not a fictitious Core b
   assert.deepEqual(validateToolArguments(TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
 });
 
+test("keeps owner confirmation on a consequential ticket while Core is on HOLD", async () => {
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.state = "critical";
+  interpretation.structuredContent.result.selected_by_core.control_level = "confirm";
+  interpretation.structuredContent.result.selected_by_core.risk_band = "medium";
+  interpretation.structuredContent.result.selected_by_core.requires_owner_confirmation = false;
+  interpretation.structuredContent.result.selected_by_core.governance_diagnostics = {
+    guard_mode: "confirmation_required",
+    blocking_causes: [],
+  };
+  interpretation.structuredContent.result.automation_plan.owner_confirmation_required = false;
+  const payload = (await harness({ interpretationResult: interpretation }).handler({
+    message: "Nyra, prepara il deploy in produzione.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+  assert.equal(payload.orchestration_directive.decision.core_verdict, "HOLD");
+  assert.equal(payload.orchestration_directive.ticket_request.required, true);
+  assert.equal(payload.orchestration_directive.ticket_request.owner_confirmation_required, true);
+});
+
 test("returns the exact hard Core signal and its remediation owner", async () => {
   const interpretation = interpretationFixture();
   interpretation.structuredContent.result.selected_by_core.risk_band = "blocked";
@@ -648,6 +670,35 @@ test("classifies live, production and distribution wording as governed release w
     assert.equal(payload.orchestration_directive.ticket_request.ticket_id, null, message);
     assert.equal(payload.orchestration_directive.execution_authorized, false, message);
   }
+});
+
+test("keeps read-only architecture questions advisory when they mention production or denied external actions", async () => {
+  for (const message of [
+    "Nyra, in sola lettura indica cosa è già operativo in produzione e cosa serve per orchestrare una AI. Non creare o modificare Work, ticket, branch, PR, merge, deploy o permessi.",
+    "Nyra, diagnostica il ticket Core senza fare deploy o merge. Dimmi soltanto la causa e il prossimo passo.",
+  ]) {
+    const payload = (await harness().handler({
+      message,
+      work_id: WORK_ID,
+      project_id: "nyra_core",
+      locale: "it",
+    }, identity())).structuredContent;
+    assert.equal(payload.action_policy.consequential_request_detected, false, message);
+    assert.equal(payload.action_policy.action_class, "NONE", message);
+    assert.equal(payload.action_policy.mode, "advisory_only", message);
+    assert.equal(payload.orchestration_directive.ticket_request.required, false, message);
+  }
+});
+
+test("still governs an affirmative action after a read-only boundary", async () => {
+  const payload = (await harness().handler({
+    message: "Nyra, non fare deploy ora. Prima analizza; poi fai il merge.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+  assert.equal(payload.action_policy.action_class, "GIT_MERGE");
+  assert.equal(payload.orchestration_directive.ticket_request.required, true);
 });
 
 test("makes every merge manual even when the user does not say manually", async () => {
@@ -1679,6 +1730,51 @@ test("offers a signed two-phase V2 bootstrap only for an explicit structured new
   assert.equal(payload.external_action_authorized, false);
   const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
   assert.deepEqual(validateToolArguments(definition.outputSchema, payload), []);
+});
+
+test("keeps an explicit structured bootstrap ahead of merge or deploy words in its prose", async () => {
+  const preflight = preflightFixture();
+  delete preflight.structuredContent.work_preflight.continuity.work_id;
+  delete preflight.structuredContent.work_preflight.nyra_control_context.work_id;
+  preflight.structuredContent.work_preflight.tenant_work_gallery.work_count = 0;
+  const caller = identity();
+  caller.agentPresence.session_fingerprint = "f".repeat(64);
+  caller.authenticatedHostPrincipal = {
+    schema_version: "authenticated_host_principal_v1",
+    registered: true,
+    registry_revision: "a".repeat(64),
+    app_id: "chatgpt_prod",
+    auth_kind: "oauth",
+    host_kind: "chatgpt_native",
+    client_type: "chatgpt",
+    interaction_mode: "nyra_conversational",
+    capabilities: ["work.read", "work.create", "governed_continue"],
+  };
+  const handler = createNyraConverseHandler({
+    preflight: async () => preflight,
+    interpret: async () => interpretationFixture(),
+  });
+  const response = await handler({
+    message: "Crea un nuovo Work; dopo la review potremo fare merge e deploy.",
+    project_id: "nyra_core",
+    work_bootstrap: {
+      request_id: "typed-bootstrap-precedence-001",
+      work_name: "Review first",
+      work_type: "software_git",
+      idea: "Review before any release",
+      objective: "Produce a governed review candidate",
+      architecture: {},
+      next_action: "Review the candidate",
+      acceptance_criteria: ["Core reviews the candidate first"],
+      constraints: [],
+      tasks: [{ title: "Review", required: true }],
+    },
+    locale: "it",
+  }, caller);
+  assert.equal(response.structuredContent.action_policy.action_class, "WORK_BOOTSTRAP");
+  assert.equal(response.structuredContent.action_policy.work_bootstrap_requested, true);
+  assert.equal(response.structuredContent.action_policy.consequential_request_detected, true);
+  assert.equal(response.structuredContent.execution_authorized, false);
 });
 
 test("an existing canonical Work wins over an explicit create request and no bootstrap candidate is issued", async () => {

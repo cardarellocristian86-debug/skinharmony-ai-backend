@@ -672,6 +672,12 @@ export function runUniversalCoreDecisionV2Elastic(input: UniversalCoreInput): Un
     controlLevel = "suggest";
     notes.push("learning_shadow_only");
   }
+  // A safety guard is not a hard policy failure, but it must be an effective
+  // ceiling: no decision may advertise execute_allowed while the guard is on.
+  if (input.constraints.safety_mode && controlLevel === "execute_allowed") {
+    controlLevel = "confirm";
+    notes.push("safety_mode_confirmation_guard");
+  }
   const primarySignal = input.signals[0] ?? makeSyntheticSignal(input);
   const action = buildAction(input, primarySignal, riskScore, controlLevel);
   const state = stateFor(controlLevel, severity);

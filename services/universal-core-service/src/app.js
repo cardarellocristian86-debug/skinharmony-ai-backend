@@ -7896,21 +7896,33 @@ export function createUniversalCoreService(options = {}) {
       app,
       authFor: (access) => {
         const authenticate = coreAuth(access === "read" ? SCOPES.READ_SNAPSHOT
-          : access === "configure" ? SCOPES.ENTITY360_CONFIGURE : SCOPES.WRITE_SNAPSHOT);
+          : access === "configure" ? [SCOPES.ENTITY360_CONFIGURE, SCOPES.OWNER_ASSERTION]
+            : SCOPES.WRITE_SNAPSHOT);
         return (req, res, next) => authenticate(req, res, (error) => {
           if (error) return next(error);
           if (access === "configure") {
             // Tenant configuration uses independently authenticated platform
             // authority. It must never inherit authority from a DTT token.
+            const mcpGateway = isMcpTenantGatewayRecord(req.coreKey);
+            let confirmation;
+            try {
+              confirmation = verifyEntity360FeatureFlagOwnerConfirmation(req);
+            } catch {
+              return publicError(res, 403, "entity360_owner_confirmation_required");
+            }
+            const actorId = `core-owner:${crypto.createHash("sha256")
+              .update(String(confirmation.owner_subject_fingerprint))
+              .digest("hex")}`;
+            const sessionFingerprint = String(confirmation.owner_subject_fingerprint);
             res.locals.entity360OperatorIdentity = Object.freeze({
               tenant_id: req.tenantId,
-              actor_id: `core-key:${req.coreKey.key_id}`,
+              actor_id: actorId,
               actor_role: "universal_core_operator",
               authority_scope: Object.freeze([ENTITY_360_FEATURE_FLAG_AUTHORITY_SCOPE]),
               provenance: Object.freeze({
-                session_fingerprint: String(req.coreKey.key_id),
+                session_fingerprint: sessionFingerprint,
                 actor_provenance: "universal_core_platform_auth",
-                client_type: "core_operator",
+                client_type: mcpGateway ? "mcp_owner_confirmed" : "core_operator_owner_confirmed",
               }),
             });
             return next();
@@ -10989,6 +11001,39 @@ export function createUniversalCoreService(options = {}) {
       consent_nonce: String(context.assertion || ""),
       confirmation_reference: textValue(req.body?.confirmation_reference),
       purpose,
+      request_binding_hash: String(context.binding_hash || ""),
+    };
+  }
+
+  function verifyEntity360FeatureFlagOwnerConfirmation(req) {
+    const mcpGateway = isMcpTenantGatewayRecord(req.coreKey);
+    if (
+      req.coreKey?.key_type !== "connector" ||
+      !hasScope(req.coreKey, SCOPES.OWNER_ASSERTION) ||
+      (!mcpGateway && !hasScope(req.coreKey, SCOPES.ENTITY360_CONFIGURE)) ||
+      req.body?.owner_confirmed !== true
+    ) {
+      throw new Error("verified_owner_confirmation_required");
+    }
+    const context = req.body?.owner_context;
+    if (
+      !verifyOwnerContextAssertion(
+        context,
+        ownerContextSigningSecret,
+        req.tenantId,
+        ownerRequestBinding("entity360_feature_flag_write", req.body || {}),
+      ) ||
+      !PROVIDER_SETUP_LINK_OWNER_SUBJECT_PATTERN.test(String(context?.owner_subject_fingerprint || ""))
+    ) {
+      throw new Error("verified_owner_confirmation_required");
+    }
+    return {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: context.owner_subject_fingerprint,
+      consent_nonce: String(context.assertion || ""),
+      confirmation_reference: textValue(req.body?.confirmation_reference),
+      purpose: "entity360_feature_flag_write",
       request_binding_hash: String(context.binding_hash || ""),
     };
   }

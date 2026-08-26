@@ -281,6 +281,18 @@ test("non-Work reads, mutations and policy administration use separate app upper
     }));
   }
 
+  for (const invocation of [
+    ["entity_360_shadow_enable", {}],
+    ["core_capability_invoke", { capability_id: "entity_360_shadow_enable" }],
+  ]) {
+    assert.throws(() => requireHostAppToolCapability({
+      identity: identity(["work.operate"]), toolName: invocation[0], args: invocation[1], tools: TOOLS,
+    }), /host_app_capability_required:core\.operate/);
+    assert.doesNotThrow(() => requireHostAppToolCapability({
+      identity: identity(["core.operate"]), toolName: invocation[0], args: invocation[1], tools: TOOLS,
+    }));
+  }
+
   for (const capability_id of [
     "memory_checkpoint",
     "task_update",

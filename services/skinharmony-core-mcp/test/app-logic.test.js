@@ -59,24 +59,36 @@ test("keeps claim-only OAuth on Nyra while granting a tenant-bound governed read
   assert.equal(filterToolsForClient(TOOLS, { kind: "codex" }).length, TOOLS.length);
 });
 
-test("adds exactly one governed continuation tool for a registered conversational host", () => {
+test("keeps governed reads and one governed continuation tool for a registered conversational host", () => {
   const identity = {
     kind: "oauth",
+    subject: "chatgpt-user",
+    tenantId: "tenant-a",
+    authenticatedTenantMembership: {
+      schema_version: "tenant_membership_binding_v1",
+      authenticated: true,
+      tenant_id: "tenant-a",
+      subject: "chatgpt-user",
+    },
     authenticatedHostPrincipal: {
       schema_version: "authenticated_host_principal_v1",
       registered: true,
       registry_revision: "a".repeat(64),
       app_id: "chatgpt_prod",
+      auth_kind: "oauth",
       host_kind: "chatgpt_native",
       client_type: "chatgpt",
       interaction_mode: "nyra_conversational",
       capabilities: ["work.read", "governed_continue"],
     },
   };
-  assert.deepEqual(
-    filterToolsForClient(TOOLS, identity).map((tool) => tool.name),
-    ["nyra_converse", "nyra_governed_continue"],
-  );
+  const names = filterToolsForClient(TOOLS, identity).map((tool) => tool.name);
+  for (const name of [
+    "nyra_converse", "nyra_governed_continue", "core_health",
+    "core_capability_catalog", "core_branch_registry", "core_semantic_select",
+    "core_capability_read",
+  ]) assert.equal(names.includes(name), true, name);
+  assert.equal(names.includes("work_preflight"), false, "preflight remains cached/internal");
   assert.equal(filterToolsForClient(TOOLS, {
     ...identity,
     authenticatedHostPrincipal: {
@@ -98,6 +110,19 @@ test("routes only verified tenant-bound stale governed reads to Core", () => {
     resolveStaleChatGptReadTool("skinharmony_nyra_core.core_health", tenantBoundChatGptCompatibilityIdentity(), [nyra]),
     "core_health",
   );
+  const registered = tenantBoundChatGptCompatibilityIdentity({
+    authenticatedHostPrincipal: {
+      ...tenantBoundChatGptCompatibilityIdentity().authenticatedHostPrincipal,
+      registered: true,
+    },
+  });
+  for (const toolName of ["core_health", "core_capability_catalog", "core_branch_registry", "core_semantic_select"]) {
+    assert.equal(
+      resolveStaleChatGptReadTool(`skinharmony_nyra_core.${toolName}`, registered, [nyra]),
+      toolName,
+      `${toolName} stays a direct governed read for a registered host`,
+    );
+  }
   assert.equal(
     resolveStaleChatGptReadTool("skinharmony_nyra_core.work_preflight", tenantBoundChatGptCompatibilityIdentity(), [nyra]),
     "work_preflight",

@@ -868,6 +868,52 @@ test("opens the tenant Gallery and shared memory on the first work_preflight cal
   assert.equal(preflightCall.body.gallery_context.works[0].next_action, "run canary");
 });
 
+test("Entity 360 SHADOW activation is owner-bound, tenant-gateway-only and cannot select another mode", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { codexai: "codexai-commercial-key" },
+    tenantGatewayKey: "g".repeat(48),
+    tenantContextSigningSecret: "t".repeat(48),
+    ownerContextSigningSecret: "o".repeat(48),
+    godModeEnabled: true,
+    godModeEmergencyStop: false,
+    godModeCodexEnabled: true,
+    godModeTenantIds: ["codexai"],
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url: new URL(url), init, body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true, result: {
+        mode: "SHADOW", enabled: true, execution_authorized: false,
+        production_decision_changed: false,
+      } }), { status: 201, headers: { "content-type": "application/json" } });
+    },
+  });
+  const owner = { tenantId: "codexai", kind: "codex", role: "owner_root",
+    godMode: true, subject: "codex", ownerConfirmed: true };
+  const result = await handlers.entity360ShadowEnableCoreRequest({
+    expected_revision: 0,
+    idempotency_key: "entity360-shadow-enable-a",
+  }, owner);
+  assert.equal(result.result.mode, "SHADOW");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.pathname, "/v1/entity-360/admin/feature-flag");
+  assert.equal(calls[0].init.headers.authorization, `Bearer ${"g".repeat(48)}`);
+  assert.ok(calls[0].init.headers["x-sh-tenant-context"]);
+  assert.equal(calls[0].body.mode, "SHADOW");
+  assert.equal(calls[0].body.enabled, true);
+  assert.equal(calls[0].body.expected_revision, 0);
+  assert.equal(calls[0].body.idempotency_key, "entity360-shadow-enable-a");
+  assert.equal(calls[0].body.owner_confirmed, true);
+  assert.match(calls[0].body.confirmation_reference, /^god_mode_codex:/u);
+  assert.equal(calls[0].body.owner_context.owner_verified, true);
+  await assert.rejects(() => handlers.entity360ShadowEnableCoreRequest({
+    expected_revision: 1,
+    idempotency_key: "entity360-shadow-enable-b",
+  }, { ...owner, kind: "oauth", ownerConfirmed: false }), /owner_confirmation_required/u);
+  assert.equal(calls.length, 1);
+});
+
 test("binds host-native delegation and action routes to OAuth owner and server presence", async () => {
   const calls = [];
   let ticketReadCount = 0;

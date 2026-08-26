@@ -116,7 +116,14 @@ export function hasTenantBoundChatGptReadCompatibility(identity, toolName = "") 
   const principal = identity?.authenticatedHostPrincipal;
   const membership = identity?.authenticatedTenantMembership;
   return identity?.kind === "oauth" &&
-    principal?.registered === false &&
+    // The fixed governed-read allowlist is safe for a tenant-bound ChatGPT
+    // principal whether the app is an OAuth compatibility principal or a
+    // registered production host.  Requiring `registered === false` here
+    // made a correctly registered ChatGPT lose health/catalog/registry reads
+    // and route every stale descriptor to Nyra's conversational tool.
+    // Registration is not authority by itself: the exact work.read grant,
+    // authenticated membership and exact allowlist still all apply.
+    (principal?.registered === false || principal?.registered === true) &&
     principal?.auth_kind === "oauth" &&
     principal?.client_type === "chatgpt" &&
     Array.isArray(principal?.capabilities) &&
@@ -146,6 +153,10 @@ function workSurface(name) {
 
 export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []) {
   const name = dynamicHostCapabilityTarget(toolName, args);
+  // This is a tenant-wide configuration action, not a Work mutation.  Keep it
+  // above the entity_360_ Work prefix so both direct and compact dynamic
+  // invocation require the Core-wide grant.
+  if (name === "entity_360_shadow_enable") return HOST_APP_CAPABILITIES.CORE_OPERATE;
   if (name === "nyra_governed_continue") {
     return HOST_APP_CAPABILITIES.GOVERNED_CONTINUE;
   }

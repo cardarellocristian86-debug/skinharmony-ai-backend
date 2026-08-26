@@ -154,6 +154,10 @@ export function runUniversalCoreDecisionV1Calibrated(input: UniversalCoreInput):
   const hasPriceRisk = maxSignal(input, "price:") >= 90;
 
   if (!hasClaimRisk && !hasPriceRisk && riskScore <= 20 && severity < 30) {
+    // Safety mode is a real execution ceiling, not a synthetic policy
+    // failure.  A low-risk action may still be proposed, but it must wait for
+    // the owner confirmation that the guard advertises.
+    const safetyGuarded = input.constraints.safety_mode === true;
     return buildOutput({
       input,
       state: "ok",
@@ -161,10 +165,12 @@ export function runUniversalCoreDecisionV1Calibrated(input: UniversalCoreInput):
       confidence,
       riskScore,
       riskBand: "low",
-      controlLevel: "execute_allowed",
-      canExecute: true,
-      requiresUserConfirmation: false,
-      notes: ["override_green_light"],
+      controlLevel: safetyGuarded ? "confirm" : "execute_allowed",
+      canExecute: !safetyGuarded,
+      requiresUserConfirmation: safetyGuarded,
+      notes: safetyGuarded
+        ? ["override_green_light", "safety_mode_confirmation_guard"]
+        : ["override_green_light"],
     });
   }
 

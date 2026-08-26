@@ -931,6 +931,7 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "work_continuity_v2_create",
   "tenant_work_legacy_reconcile_close",
   "core_block_remediation_resubmit",
+  "entity_360_shadow_enable",
 ]);
 
 function inferClientType(identity) {
