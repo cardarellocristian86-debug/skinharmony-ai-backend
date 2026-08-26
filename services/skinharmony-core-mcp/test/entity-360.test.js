@@ -79,6 +79,8 @@ test("Entity 360 MCP tools are strict, tenant-free context contracts", () => {
   assert.equal(toolNamed("entity_360_shadow_enable").annotations.readOnlyHint, false);
   assert.equal(toolNamed("entity_360_shadow_enable")
     ._meta["skinharmony/ownerConfirmationRequired"], true);
+  assert.equal(toolNamed("entity_360_shadow_enable")
+    ._meta["skinharmony/dedicatedCoreGate"], true);
   for (const name of EXPECTED.filter((item) => ![
     "entity_360_snapshot_assemble",
     "entity_360_shadow_compare",
@@ -213,7 +215,10 @@ test("Entity 360 SHADOW enable is a separate owner-confirmed Core transport", as
     shadowEnableCoreRequest: async (args, identity) => {
       calls.push({ args, identity });
       return { ok: true, mode: "SHADOW", enabled: true,
-        production_decision_changed: false, execution_authorized: false };
+        production_decision_changed: false, execution_authorized: false,
+        dedicated_core_gate: { authorized: true, authority: "universal_core",
+          route: "entity_360_shadow_enable", provider_execution: false,
+          host_policy_override: false } };
     },
   });
   const identity = { tenantId: "tenant-authenticated", ownerConfirmed: true };

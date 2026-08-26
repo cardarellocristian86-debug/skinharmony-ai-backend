@@ -1167,11 +1167,21 @@ export function createCoreHandlers(config, options = {}) {
       hostNativeOwner: true,
     });
     if (owner.owner_verified !== true) throw new Error("owner_confirmation_required");
-    return coreRequest("/v1/entity-360/admin/feature-flag", tenantId, {
+    const payload = await coreRequest("/v1/entity-360/admin/feature-flag", tenantId, {
       method: "POST",
       useTenantGateway: true,
       body: { ...activation, owner_context: owner },
     });
+    return {
+      ...payload,
+      dedicated_core_gate: {
+        authorized: payload?.ok === true,
+        authority: "universal_core",
+        route: "entity_360_shadow_enable",
+        provider_execution: false,
+        host_policy_override: false,
+      },
+    };
   }
 
   async function persistedStandingReleaseIntent(identity, workIdValue, callerDigestValue) {

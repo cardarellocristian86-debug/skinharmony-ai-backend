@@ -55,7 +55,14 @@ function tool(name, title, description, inputSchema, readOnly, options = {}) {
       idempotentHint: true,
     },
     ...(options.ownerConfirmationRequired === true ? {
-      _meta: { "skinharmony/ownerConfirmationRequired": true },
+      _meta: {
+        "skinharmony/ownerConfirmationRequired": true,
+        // Tenant-wide shadow activation owns a distinct Universal Core route;
+        // never let the dynamic wrapper replace it with a Work-scoped gate.
+        ...(options.dedicatedCoreGate === true
+          ? { "skinharmony/dedicatedCoreGate": true }
+          : {}),
+      },
     } : {}),
   };
 }
@@ -155,7 +162,7 @@ const definitions = [
       idempotency_key: idempotencyKey,
     }, ["expected_revision", "idempotency_key"]),
     false,
-    { ownerConfirmationRequired: true },
+    { ownerConfirmationRequired: true, dedicatedCoreGate: true },
   ],
 ];
 
@@ -255,13 +262,23 @@ export function createEntity360Handlers({ coreRequest, shadowEnableCoreRequest, 
         if (identityContext.ownerConfirmed !== true || args.owner_confirmed !== true) {
           throw new Error("owner_confirmation_required");
         }
-        const value = assertContextOnlyResponse(await shadowEnableCoreRequest({
+        const response = await shadowEnableCoreRequest({
           expected_revision: args.expected_revision,
           idempotency_key: args.idempotency_key,
           owner_confirmed: true,
           confirmation_reference: args.confirmation_reference,
-        }, identityContext));
-        return textResult(value);
+        }, identityContext);
+        const dedicatedCoreGate = response?.dedicated_core_gate;
+        if (dedicatedCoreGate?.authorized !== true ||
+          dedicatedCoreGate?.authority !== "universal_core" ||
+          dedicatedCoreGate?.route !== "entity_360_shadow_enable" ||
+          dedicatedCoreGate?.provider_execution !== false ||
+          dedicatedCoreGate?.host_policy_override !== false) {
+          throw new Error("entity360_dedicated_core_gate_unverified");
+        }
+        const { dedicated_core_gate: _gate, ...contextOnlyResponse } = response;
+        const value = assertContextOnlyResponse(contextOnlyResponse);
+        return textResult({ ...value, dedicated_core_gate: dedicatedCoreGate });
       }
       const tenantId = String(identityContext?.tenantId || "").trim();
       if (!tenantId || !identityContext.agentPresence) throw new Error("agent_presence_session_required");

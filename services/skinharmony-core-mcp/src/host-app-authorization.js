@@ -153,6 +153,10 @@ function workSurface(name) {
 
 export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []) {
   const name = dynamicHostCapabilityTarget(toolName, args);
+  // This is a tenant-wide configuration action, not a Work mutation.  Keep it
+  // above the entity_360_ Work prefix so both direct and compact dynamic
+  // invocation require the Core-wide grant.
+  if (name === "entity_360_shadow_enable") return HOST_APP_CAPABILITIES.CORE_OPERATE;
   if (name === "nyra_governed_continue") {
     return HOST_APP_CAPABILITIES.GOVERNED_CONTINUE;
   }
