@@ -2279,7 +2279,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
     ) {
       throw new Error("standing_release_intent_binding_corrupt");
     }
-    const workStatus = String(row.work_status || "");
+    // The legacy/V2 Work projection serializes lifecycle states in uppercase
+    // (for example, `ACTIVE`), while the continuity ledger persists its
+    // canonical enum in lowercase. Status is not an authority-bearing input,
+    // but the release binding must compare the two representations
+    // canonically; otherwise an active Work is incorrectly rejected before
+    // Core can evaluate the ticket.
+    const workStatus = String(row.work_status || "").trim().toLowerCase();
     if (!STANDING_RELEASE_ELIGIBLE_WORK_STATUSES.has(workStatus)) {
       throw new Error("standing_release_intent_work_status_ineligible");
     }

@@ -16,6 +16,10 @@ import {
   canonicalGenericWorkCoreJoinContextBody,
   issueGenericWorkCoreJoinContext,
 } from "../../shared/generic-work-core-join-context.js";
+import {
+  GENERIC_WORK_CORE_JOIN_BUILD_READ_HEADER,
+  GENERIC_WORK_CORE_JOIN_BUILD_READ_PURPOSE,
+} from "../../shared/generic-work-core-join-signer-health.js";
 
 const TENANT = "tenant-host-native";
 const WORK_ID = "11111111-1111-8111-8111-111111111111";
@@ -166,7 +170,7 @@ async function withService(options, run) {
     });
     return { status: response.status, json: await response.json() };
   };
-  const health = async () => (await fetch(`http://127.0.0.1:${server.address().port}/healthz`)).json();
+  const health = async (headers = {}) => (await fetch(`http://127.0.0.1:${server.address().port}/healthz`, { headers })).json();
   try { await run(request, health); } finally { await new Promise((resolve) => server.close(resolve)); fs.rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -466,6 +470,31 @@ test("startup signer challenge is single-flight and retries only after cooldown"
     assert.equal(recovered.generic_work_core_join.signer_probe_attempts, 2);
     assert.equal(recovered.generic_work_core_join.ready, true);
     assert.equal(store.events().length, 0);
+  });
+});
+
+test("signer build reads do not recursively probe Core health", async () => {
+  let calls = 0;
+  const store = createMemoryGenericWorkCoreJoinStore();
+  store.restart_durable = true;
+  store.distributed = true;
+  store.initialize = async () => {};
+  const remote = remoteSignerConfig(async (_url, init) => {
+    calls += 1;
+    return remoteSignerResponse(JSON.parse(init.body));
+  });
+  await withService({
+    genericWorkCoreJoinStore: store,
+    genericWorkCoreJoinRemoteSignerConfig: remote,
+  }, async (_request, health) => {
+    const buildRead = await health({
+      [GENERIC_WORK_CORE_JOIN_BUILD_READ_HEADER]: GENERIC_WORK_CORE_JOIN_BUILD_READ_PURPOSE,
+    });
+    assert.ok(buildRead.build);
+    assert.equal(calls, 0);
+    const normal = await health();
+    assert.equal(normal.generic_work_core_join.ready, true);
+    assert.equal(calls, 1);
   });
 });
 

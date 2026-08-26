@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
 
+import {
+  GENERIC_WORK_CORE_JOIN_BUILD_READ_HEADER,
+  GENERIC_WORK_CORE_JOIN_BUILD_READ_PURPOSE,
+} from "../../shared/generic-work-core-join-signer-health.js";
+
 export const GENERIC_WORK_CORE_JOIN_SIGN_ROUTE = "/v1/generic-work-core-join/sign";
 export const GENERIC_WORK_CORE_JOIN_SIGNER_HEALTH_ROUTE = "/v1/generic-work-core-join/signer-health";
 
@@ -81,7 +86,13 @@ function createCoreBuildResolver({ coreOrigin, fetchImpl = globalThis.fetch, tim
       const response = await fetchImpl(endpoint, {
         method: "GET",
         redirect: "error",
-        headers: { accept: "application/json" },
+        // Core probes this signer from its normal health response. Mark this
+        // build-only read so Core can return its immutable build identity
+        // without recursively starting another signer probe.
+        headers: {
+          accept: "application/json",
+          [GENERIC_WORK_CORE_JOIN_BUILD_READ_HEADER]: GENERIC_WORK_CORE_JOIN_BUILD_READ_PURPOSE,
+        },
         signal: controller.signal,
       });
       if (!response || response.ok !== true || response.redirected === true ||
