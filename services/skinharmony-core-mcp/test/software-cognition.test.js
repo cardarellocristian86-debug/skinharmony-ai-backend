@@ -87,8 +87,12 @@ test("repository bootstrap fetches a bounded snapshot and persists only the deri
   const files = new Map([
     ["src/app.ts", "export const endpoint = process.env.API_URL;\n"],
     ["render.yaml", "services:\n  - type: web\n"],
+    ["shared-work-memory/tenant/snapshot.json", "{\"not\":\"architecture\"}\n"],
+    ["test/fixture.ts", "export const fixture = true;\n"],
   ]);
+  const contentRequests = [];
   const fetchImpl = async (url) => {
+    if (url.includes("/contents/")) contentRequests.push(url);
     const json = url.includes(`/commits/main`)
       ? { sha: commit, commit: { tree: { sha: tree } } }
       : url.includes(`/git/trees/${tree}`)
@@ -128,6 +132,8 @@ test("repository bootstrap fetches a bounded snapshot and persists only the deri
   assert.equal(result.structuredContent.atlas_revision, 1);
   assert.equal(writes.length, 1);
   assert(writes[0].nodes.some((node) => node.path === "src/app.ts"));
+  assert.equal(contentRequests.some((url) => url.includes("shared-work-memory")), false);
+  assert.equal(contentRequests.some((url) => url.includes("test/fixture")), false);
   assert.equal(Object.hasOwn(result.structuredContent, "content"), false);
 });
 
