@@ -267,7 +267,11 @@ async function readSnapshotFile(fetchImpl, repository, commit, path, token) {
   );
   if (!payload) return null;
   if (payload?.type !== "file" || payload?.encoding !== "base64" || typeof payload?.content !== "string") {
-    bootstrapFail("software_atlas_source_file_invalid");
+    // A pinned tree entry may become non-readable through the Contents API
+    // (for example an unsupported file representation). It is not an
+    // integrity failure: retain the checkpoint and let a later bounded pass
+    // skip this one path rather than abandoning the whole Atlas bootstrap.
+    return null;
   }
   const content = Buffer.from(payload.content.replace(/\s/g, ""), "base64");
   if (!content.length || content.length > ATLAS_BOOTSTRAP_FILE_BYTES || content.includes(0)) return null;
