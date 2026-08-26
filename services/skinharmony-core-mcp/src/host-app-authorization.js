@@ -38,6 +38,18 @@ const HOST_META_READ_TOOLS = new Set([
   "core_capability_catalog",
 ]);
 
+// This is a transport compatibility allowlist, not a general Core grant. It
+// permits a verified, tenant-bound, unregistered ChatGPT OAuth principal to
+// reach only the read entrypoints needed to resume governed Work operations.
+export const CHATGPT_GOVERNED_READ_TOOL_NAMES = Object.freeze(new Set([
+  "core_health",
+  "work_preflight",
+  "core_capability_catalog",
+  "core_branch_registry",
+  "core_semantic_select",
+  "core_capability_read",
+]));
+
 const CORE_COORDINATION_TOOLS = new Set([
   // Presence is required to enter the bounded Work fabric. It is not a grant
   // to mutate arbitrary tenant state and therefore follows work.coordinate.
@@ -97,6 +109,21 @@ function principalHas(identity, capability, { registrationRequired = true } = {}
     Array.isArray(principal.capabilities) &&
     principal.capabilities.includes(capability)
   );
+}
+
+export function hasTenantBoundChatGptReadCompatibility(identity, toolName = "") {
+  const principal = identity?.authenticatedHostPrincipal;
+  const membership = identity?.authenticatedTenantMembership;
+  return identity?.kind === "oauth" &&
+    principal?.registered === false &&
+    principal?.auth_kind === "oauth" &&
+    principal?.client_type === "chatgpt" &&
+    Array.isArray(principal?.capabilities) &&
+    principal.capabilities.includes(HOST_APP_CAPABILITIES.WORK_READ) &&
+    membership?.authenticated === true &&
+    String(membership.tenant_id || "") === String(identity?.tenantId || "") &&
+    String(membership.subject || "") === String(identity?.subject || "") &&
+    CHATGPT_GOVERNED_READ_TOOL_NAMES.has(String(toolName || ""));
 }
 
 export function dynamicHostCapabilityTarget(toolName, args = {}) {
@@ -174,6 +201,16 @@ export function requireHostAppToolCapability({
   // public MCP request receives it in the authenticated identity layer.
   if (!identity?.authenticatedHostPrincipal) return null;
   const target = dynamicHostCapabilityTarget(toolName, args);
+  // The wrapper itself remains dynamically reauthorized below against its
+  // exact target. Only direct allowlisted tools receive this compatibility;
+  // it does not turn an unregistered OAuth principal into a Core reader.
+  if (target === toolName && hasTenantBoundChatGptReadCompatibility(identity, toolName)) {
+    return Object.freeze({
+      target_tool: target,
+      required_capability: HOST_APP_CAPABILITIES.WORK_READ,
+      required_capabilities: Object.freeze([HOST_APP_CAPABILITIES.WORK_READ]),
+    });
+  }
   const required = requiredHostAppCapabilityForTool(toolName, args, tools);
   if (!required) return null;
   const requiredCapabilities = [required];
@@ -187,6 +224,10 @@ export function requireHostAppToolCapability({
     : null;
   if (governedOperationCapability) requiredCapabilities.push(governedOperationCapability);
   for (const capability of [...new Set(requiredCapabilities)]) {
+    // An unregistered OAuth compatibility principal is intentionally bounded
+    // to work.read. Dynamic Core reads are reclassified above against the
+    // exact capability_id, so a Core read, invoke or mutation cannot inherit
+    // this narrow compatibility grant.
     const readCompatibility = capability === HOST_APP_CAPABILITIES.WORK_READ;
     if (!principalHas(identity, capability, { registrationRequired: !readCompatibility })) {
       fail(`host_app_capability_required:${capability}`, { required_capability: capability });
