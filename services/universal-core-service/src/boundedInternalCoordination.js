@@ -34,6 +34,8 @@ export const BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES = Object.freeze([
 ]);
 
 const ACTION_TYPES = new Set(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES);
+const WORK_BOOTSTRAP_REVIEW_TARGET =
+  /^work_bootstrap:review:[a-z][a-z0-9_-]{1,63}:[a-z][a-z0-9_]{1,62}_native:[a-f0-9]{64}$/;
 
 function validIdempotencyKey(value) {
   const normalized = String(value || "").trim();
@@ -56,7 +58,9 @@ function targetMatchesAction(actionType, value) {
     return target.startsWith("work_continuity_") ||
       /^[a-z0-9][a-z0-9._/-]{1,63}:[a-z0-9][a-z0-9._-]{1,63}$/i.test(target);
   }
-  if (actionType === "work.bootstrap.review") return target === "tenant_work_open_review";
+  if (actionType === "work.bootstrap.review") {
+    return WORK_BOOTSTRAP_REVIEW_TARGET.test(target);
+  }
   if (actionType === "work.continuity.resume_or_bind") {
     return /^[a-z0-9][a-z0-9._:/-]{1,63}:[a-z0-9][a-z0-9._-]{1,63}$/i.test(target);
   }
