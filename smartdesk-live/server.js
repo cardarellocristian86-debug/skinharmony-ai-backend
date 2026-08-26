@@ -1349,7 +1349,10 @@ app.get("/api/auth/trial-config", (_req, res) => {
 
 app.post("/api/auth/request-trial", trialRateLimit, async (req, res) => {
   try {
-    const result = await service.requestTrial(req.body || {});
+    const result = await service.requestTrial({
+      ...(req.body || {}),
+      idempotencyKey: String(req.headers["idempotency-key"] || "")
+    });
     let emailDelivery = { status: "disabled" };
     if (result.verification?.required && result.verification?.token) {
       emailDelivery = await sendTrialVerificationMail({
@@ -1359,7 +1362,7 @@ app.post("/api/auth/request-trial", trialRateLimit, async (req, res) => {
         verificationUrl: `${appBaseUrl(req)}/verify-email?token=${encodeURIComponent(result.verification.token)}`
       });
     }
-    res.status(201).json({
+    res.status(result.delivery?.status === "idempotent_replay" ? 200 : 201).json({
       success: result.success,
       message: result.message,
       credentials: result.credentials,
@@ -1369,10 +1372,17 @@ app.post("/api/auth/request-trial", trialRateLimit, async (req, res) => {
         email: result.verification?.email || "",
         deliveryStatus: emailDelivery.status
       },
-      payment: result.payment
+      payment: result.payment,
+      delivery: result.delivery
     });
   } catch (error) {
-    res.status(400).send(error instanceof Error ? error.message : "Impossibile attivare la prova");
+    const code = String(error?.code || "trial_request_invalid");
+    const status = code === "trial_idempotency_conflict" ? 409 : 400;
+    res.status(status).json({
+      success: false,
+      code,
+      message: error instanceof Error ? error.message : "Impossibile attivare la prova"
+    });
   }
 });
 
@@ -2792,6 +2802,43 @@ app.get("/api/ai-gold/cockpit", requirePlan("gold"), async (req, res) => {
       },
       sections: [],
       message: error instanceof Error ? error.message : "Cockpit Gold non disponibile"
+    });
+  }
+});
+
+app.get("/api/ai-gold/overview", requirePlan("silver"), (req, res) => {
+  const startedAt = process.hrtime.bigint();
+  try {
+    const payload = service.getAiOverviewReadModel(req.session);
+    const eventSeq = Math.max(0, Number(payload.eventSeq || 0));
+    const etag = service.getAiOverviewEtag(req.session, eventSeq);
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+    res.setHeader("Cache-Control", "private, no-cache");
+    res.setHeader("Vary", "Authorization");
+    res.setHeader("ETag", etag);
+    res.setHeader("Server-Timing", `ai-overview;dur=${durationMs.toFixed(2)}`);
+    res.setHeader("X-SmartDesk-Event-Seq", String(eventSeq));
+    res.setHeader("X-SmartDesk-Cache", payload.cache?.hit ? "hit" : "miss");
+    if (String(req.headers["if-none-match"] || "") === etag) {
+      return res.status(304).end();
+    }
+    const body = JSON.stringify({
+      ...payload,
+      transport: {
+        requestCount: 1,
+        durationMs: Number(durationMs.toFixed(2)),
+        eventSeq,
+        cacheHit: Boolean(payload.cache?.hit),
+        lazyDetails: true
+      }
+    });
+    res.setHeader("X-SmartDesk-Payload-Bytes", String(Buffer.byteLength(body, "utf8")));
+    return res.status(200).type("application/json").send(body);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      code: "ai_overview_unavailable",
+      message: "Overview AI temporaneamente non disponibile"
     });
   }
 });

@@ -16,9 +16,11 @@
     "test:gold-overview": "node scripts/gold_overview_read_model_test.js",
     "test:gold-bridge-cache": "node scripts/gold_bridge_cache_test.js",
     "test:gold-conversation-demand": "node scripts/gold_conversation_demand_test.js",
+    "test:plans": "node scripts/plan_overview_acceptance_test.js",
+    "test:trial-checkout": "node scripts/trial_checkout_contract_test.js",
     "test:hardening": "node scripts/persistence_durability_test.js && node scripts/persistence_collection_bootstrap_test.js && node scripts/http_security_policy_test.js",
     "test:postgres": "node scripts/persistence_postgres_integration_test.js",
-    "test:reality-closure": "node scripts/work_preflight_bridge_gate_test.js && node scripts/api_call_contract_test.js && node scripts/smartdesk_reality_closure_test.js"
+    "test:reality-closure": "node scripts/work_preflight_bridge_gate_test.js && node scripts/api_call_contract_test.js && node scripts/plan_overview_acceptance_test.js && node scripts/trial_checkout_contract_test.js && node scripts/smartdesk_reality_closure_test.js"
   },
   "dependencies": {
     "express": "^5.2.1",
