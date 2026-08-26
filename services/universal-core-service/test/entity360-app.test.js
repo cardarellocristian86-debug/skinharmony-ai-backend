@@ -8,6 +8,7 @@ import test from "node:test";
 
 import { createUniversalCoreService } from "../src/app.js";
 import { createIcfPostgresStore } from "../src/icfPostgresStore.js";
+import { createKeyStore } from "../src/keyStore.js";
 
 function stableCanonical(value) {
   if (Array.isArray(value)) return value.map(stableCanonical);
@@ -168,6 +169,59 @@ test("MCP gateway may enable only Entity 360 SHADOW with a fresh bound owner con
     assert.equal(forged.status, 403);
     assert.equal(forged.json.error, "entity360_owner_confirmation_required");
     assert.equal(calls.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test("direct Core operator configuration also requires a fresh bound owner confirmation", async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "entity360-core-operator-owner-"));
+  const ownerSecret = "o".repeat(48);
+  const tenantId = "codexai";
+  const operator = createKeyStore(storageRoot).createKey({
+    tenant_id: tenantId,
+    key_type: "connector",
+    allowed_scopes: ["entity360:configure", "owner:assertion"],
+  });
+  const calls = [];
+  const entity360Runtime = {
+    async initialize() {},
+    async health() { return { ok: true, ready: true, state: "ready", mode: "SHADOW" }; },
+    async invoke(capability, identity, input) {
+      calls.push({ capability, identity, input });
+      return { mode: "SHADOW", enabled: true, execution_authorized: false };
+    },
+  };
+  const { app } = createUniversalCoreService({ storageRoot, entity360Mode: "SHADOW",
+    entity360Runtime, ownerContextSigningSecret: ownerSecret });
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const unsigned = { mode: "SHADOW", enabled: true, expected_revision: 0,
+    idempotency_key: "entity360-direct-owner-a", owner_confirmed: true,
+    confirmation_reference: "direct-owner-confirmation-a" };
+  const request = async (body) => {
+    const response = await fetch(`${base}/v1/entity-360/admin/feature-flag`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${operator.key}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, json: await response.json() };
+  };
+  try {
+    const denied = await request(unsigned);
+    assert.equal(denied.status, 403);
+    assert.equal(denied.json.error, "entity360_owner_confirmation_required");
+    const allowed = await request({ ...unsigned,
+      owner_context: signedOwnerContext(ownerSecret, tenantId, unsigned) });
+    assert.equal(allowed.status, 201);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].identity.provenance.client_type, "core_operator_owner_confirmed");
+    assert.deepEqual(calls[0].input, {
+      mode: "SHADOW", enabled: true, expected_revision: 0,
+      idempotency_key: "entity360-direct-owner-a",
+    });
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(storageRoot, { recursive: true, force: true });

@@ -48,11 +48,11 @@ test("feature configuration uses only the independently authenticated Core opera
   const response = responseHarness();
   response.locals = { entity360OperatorIdentity: {
     tenant_id: "tenant-a",
-    actor_id: "core-key:operator-a",
+    actor_id: "core-owner:operator-a",
     actor_role: "universal_core_operator",
     authority_scope: ["entity360:feature-flag:write"],
-    provenance: { session_fingerprint: "operator-key-a",
-      actor_provenance: "universal_core_platform_auth", client_type: "core_operator" },
+    provenance: { session_fingerprint: "owner-fingerprint-a",
+      actor_provenance: "universal_core_platform_auth", client_type: "core_operator_owner_confirmed" },
   } };
   await handler({ tenantId: "tenant-a", headers: { "x-sh-dtt-agent-context": "signed-dtt" },
     body: { mode: "OFF", enabled: false, expected_revision: 0,
