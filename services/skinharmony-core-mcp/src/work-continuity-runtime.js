@@ -4546,11 +4546,26 @@ export function createWorkContinuityRuntime(config, options = {}) {
         }
         const revision = currentRevision + 1;
         if (input.replace === true) {
-          await client.query(`UPDATE core_continuity_atlas_nodes SET active=false,revision=$3,tombstoned_at=clock_timestamp(),updated_at=clock_timestamp()
-            WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId, revision]);
-          await client.query(`UPDATE core_continuity_atlas_edges
-            SET active=false,revision=$3,tombstoned_at=clock_timestamp(),updated_at=clock_timestamp()
-            WHERE tenant_id=$1 AND work_id=$2 AND active=true`, [context.tenantId, context.workId, revision]);
+          if (input.replace_snapshot_nodes === true) {
+            // A repository re-index refreshes only nodes derived from the
+            // pinned Git snapshot. Keep operational history (commits,
+            // releases, service outcomes) intact across parser-policy
+            // upgrades; snapshot-linked edges are retired with their target.
+            await client.query(`UPDATE core_continuity_atlas_nodes SET active=false,revision=$3,tombstoned_at=clock_timestamp(),updated_at=clock_timestamp()
+              WHERE tenant_id=$1 AND work_id=$2 AND source_kind='git_diff'`, [context.tenantId, context.workId, revision]);
+            await client.query(`UPDATE core_continuity_atlas_edges
+              SET active=false,revision=$3,tombstoned_at=clock_timestamp(),updated_at=clock_timestamp()
+              WHERE tenant_id=$1 AND work_id=$2 AND active=true AND (
+                from_node_id IN (SELECT node_id FROM core_continuity_atlas_nodes WHERE tenant_id=$1 AND work_id=$2 AND source_kind='git_diff') OR
+                to_node_id IN (SELECT node_id FROM core_continuity_atlas_nodes WHERE tenant_id=$1 AND work_id=$2 AND source_kind='git_diff')
+              )`, [context.tenantId, context.workId, revision]);
+          } else {
+            await client.query(`UPDATE core_continuity_atlas_nodes SET active=false,revision=$3,tombstoned_at=clock_timestamp(),updated_at=clock_timestamp()
+              WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId, revision]);
+            await client.query(`UPDATE core_continuity_atlas_edges
+              SET active=false,revision=$3,tombstoned_at=clock_timestamp(),updated_at=clock_timestamp()
+              WHERE tenant_id=$1 AND work_id=$2 AND active=true`, [context.tenantId, context.workId, revision]);
+          }
         }
         let changedNodes = 0;
         for (const node of nodes) {

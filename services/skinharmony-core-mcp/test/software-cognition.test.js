@@ -87,8 +87,15 @@ test("repository bootstrap fetches a bounded snapshot and persists only the deri
   const files = new Map([
     ["src/app.ts", "export const endpoint = process.env.API_URL;\n"],
     ["render.yaml", "services:\n  - type: web\n"],
+    ["shared-work-memory/tenant/snapshot.json", "{\"not\":\"architecture\"}\n"],
+    ["test/fixture.ts", "export const fixture = true;\n"],
+    ["src/component.spec.ts", "export const fixture = true;\n"],
+    ["docs/adr/001-atlas.md", "# Atlas decision\n"],
+    ["docs/CORE_RUNTIME_ARCHITECTURE.md", "# Core architecture\n"],
   ]);
+  const contentRequests = [];
   const fetchImpl = async (url) => {
+    if (url.includes("/contents/")) contentRequests.push(url);
     const json = url.includes(`/commits/main`)
       ? { sha: commit, commit: { tree: { sha: tree } } }
       : url.includes(`/git/trees/${tree}`)
@@ -123,11 +130,16 @@ test("repository bootstrap fetches a bounded snapshot and persists only the deri
     project_id: "project-a", work_id: "work-a", repository: "owner/repository", file_limit: 10, idempotency_key: "atlas-bootstrap-a",
   }, { tenantId: "tenant-a", agentPresence });
   assert.equal(result.structuredContent.completed, true);
-  assert.equal(result.structuredContent.processed_files, 2);
+  assert.equal(result.structuredContent.processed_files, 4);
   assert.equal(result.structuredContent.source_text_persisted, false);
   assert.equal(result.structuredContent.atlas_revision, 1);
   assert.equal(writes.length, 1);
   assert(writes[0].nodes.some((node) => node.path === "src/app.ts"));
+  assert.equal(contentRequests.some((url) => url.includes("shared-work-memory")), false);
+  assert.equal(contentRequests.some((url) => url.includes("test/fixture")), false);
+  assert.equal(contentRequests.some((url) => url.includes("component.spec")), false);
+  assert(contentRequests.some((url) => url.includes("docs/adr/001-atlas")));
+  assert(contentRequests.some((url) => url.includes("CORE_RUNTIME_ARCHITECTURE")));
   assert.equal(Object.hasOwn(result.structuredContent, "content"), false);
 });
 
