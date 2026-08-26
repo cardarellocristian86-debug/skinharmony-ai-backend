@@ -36,6 +36,8 @@ const boundedCoordinationWrite = {
   target_authority_verified: true,
   actor_authorized_for_target: true,
 };
+const bootstrapReviewTarget =
+  `work_bootstrap:review:chatgpt_prod:chatgpt_native:${"a".repeat(64)}`;
 
 test("authorizes a bounded low-impact coordination write without confirmation", () => {
   const result = buildActionAuthorization(contract(), boundedCoordinationWrite);
@@ -70,7 +72,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "task.update": "tenant_task_queue",
     "message.acknowledge": "tenant_message_queue",
     "continuity.update": "work_continuity_checkpoint",
-    "work.bootstrap.review": "tenant_work_open_review",
+    "work.bootstrap.review": bootstrapReviewTarget,
     "work.continuity.resume_or_bind": "skinharmony-ai-backend:chat-session-1",
     "work.participant.join": "tenant_work_gallery_join",
     "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
@@ -123,7 +125,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
   const bootstrapReview = buildActionAuthorization(contract(), {
     ...boundedCoordinationWrite,
     action_type: "work.bootstrap.review",
-    target: "tenant_work_open_review",
+    target: bootstrapReviewTarget,
     idempotency_key: "bootstrap-review-0001",
   });
   assert.equal(bootstrapReview.allowed, true);
@@ -135,9 +137,15 @@ test("preserves the closed legacy and continuity coordination action set", () =>
   });
   assert.equal(galleryV7.allowed, true);
   for (const target of [
+    "tenant_work_open_review",
     "tenant_work_gallery_join",
     "11111111-1111-4111-8111-111111111111",
     "work_continuity_v2_create",
+    `work_bootstrap:create:chatgpt_prod:chatgpt_native:${"a".repeat(64)}`,
+    `work_bootstrap:review:chatgpt_prod:chatgpt_native:${"a".repeat(63)}`,
+    `work_bootstrap:review:chatgpt.prod:chatgpt_native:${"a".repeat(64)}`,
+    `work_bootstrap:review:chatgpt_prod:chatgpt:${"a".repeat(64)}`,
+    `${bootstrapReviewTarget}:extra`,
   ]) {
     const wrongTarget = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
