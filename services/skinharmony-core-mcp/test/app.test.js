@@ -2235,11 +2235,22 @@ test("preserves the Gallery preflight envelope for Core action mediation", () =>
   );
 });
 
-test("requires generic preflight for dynamic invoke except the signed heartbeat bootstrap", () => {
+test("requires generic preflight for dynamic invoke except signed presence and Work bootstrap", () => {
   assert.equal(
     requiresGenericWorkPreflight("core_capability_invoke", { capability_id: "workspace_write_document" }),
     true,
   );
+  for (const capability_id of [
+    "tenant_work_open_review",
+    "work_continuity_v2_create",
+    "tenant_work_queue_create_v3",
+  ]) {
+    assert.equal(
+      requiresGenericWorkPreflight("core_capability_invoke", { capability_id }),
+      false,
+      capability_id,
+    );
+  }
   assert.equal(
     requiresGenericWorkPreflight("core_capability_invoke", {
       capability_id: "agent_heartbeat",
@@ -2247,6 +2258,70 @@ test("requires generic preflight for dynamic invoke except the signed heartbeat 
     }),
     false,
   );
+});
+
+test("dispatches only exact Work bootstrap invokes without injecting generic preflight", async () => {
+  const received = [];
+  const preflightDecisions = [];
+  const app = createApp(config, {
+    toolSurface: "compact",
+    handlers: {
+      core_capability_invoke: async (args) => {
+        received.push(args);
+        return { structuredContent: { ok: true }, content: [] };
+      },
+    },
+    beforeToolCall: async ({ toolName, args }) => {
+      const required = requiresGenericWorkPreflight(toolName, args);
+      preflightDecisions.push({ capability_id: args.capability_id, required });
+      if (required) throw new Error("unexpected_generic_preflight");
+      return { preflight: null };
+    },
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const capabilityIds = [
+      "tenant_work_open_review",
+      "work_continuity_v2_create",
+      "tenant_work_queue_create_v3",
+    ];
+    for (const [index, capability_id] of capabilityIds.entries()) {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer codex-key",
+          "content-type": "application/json",
+          "mcp-session-id": `mcp-work-bootstrap-${index}`,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: `bootstrap-${index}`,
+          method: "tools/call",
+          params: {
+            name: "core_capability_invoke",
+            arguments: {
+              capability_id,
+              catalog_revision: "a".repeat(64),
+              idempotency_key: `bootstrap-${index}`,
+              arguments: {},
+            },
+          },
+        }),
+      });
+      const body = await response.json();
+      assert.equal(response.status, 200, JSON.stringify(body));
+      assert.equal(body.result.structuredContent.ok, true, JSON.stringify(body));
+    }
+    assert.deepEqual(preflightDecisions, capabilityIds.map((capability_id) => ({
+      capability_id,
+      required: false,
+    })));
+    assert.equal(received.length, capabilityIds.length);
+    assert.equal(received.every((args) => args.work_preflight === undefined), true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("injects a server-issued preflight into dynamic invoke", async () => {

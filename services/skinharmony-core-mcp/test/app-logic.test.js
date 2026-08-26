@@ -176,13 +176,40 @@ test("advertises explicit confirmation fields only on write tools", () => {
   assert(readTools.every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
 });
 
-test("routes semantic selection through the mandatory generic preflight", () => {
+test("routes normal actions through generic preflight without deadlocking Work bootstrap", () => {
   assert.equal(requiresGenericWorkPreflight("core_semantic_select"), true);
   assert.equal(
     requiresGenericWorkPreflight("core_capability_invoke", { capability_id: "workspace_write_document" }),
     true,
     "dynamic mutations must receive a server-issued Work Preflight",
   );
+  for (const capability_id of [
+    "tenant_work_open_review",
+    "work_continuity_v2_create",
+    "tenant_work_queue_create_v3",
+  ]) {
+    assert.equal(
+      requiresGenericWorkPreflight("core_capability_invoke", { capability_id }),
+      false,
+      `${capability_id} must reach its dedicated pre-Work Core gate`,
+    );
+    assert.equal(
+      requiresGenericWorkPreflight(capability_id),
+      false,
+      `${capability_id} must remain preflight-free on a direct surface`,
+    );
+  }
+  for (const capability_id of [
+    "tenant_work_open_review_extra",
+    "work_continuity_v2_create_replay",
+    "tenant_work_queue_create_v4",
+  ]) {
+    assert.equal(
+      requiresGenericWorkPreflight("core_capability_invoke", { capability_id }),
+      true,
+      `${capability_id} must not inherit the exact bootstrap exemption`,
+    );
+  }
   assert.equal(
     requiresGenericWorkPreflight("core_capability_invoke", {
       capability_id: "agent_heartbeat",

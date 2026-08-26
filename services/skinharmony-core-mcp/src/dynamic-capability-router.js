@@ -82,6 +82,7 @@ function capabilityGroup(name) {
   if (name === "nyra_self_model") return "self_model";
   const prefixes = [
     ["work_continuity_", "continuity"],
+    ["tenant_work_", "continuity"],
     ["host_native_", "continuity"],
     ["orchestration_dtt_", "orchestration"],
     ["generic_agent_", "agents"],
@@ -287,6 +288,29 @@ function authorizationAllowed(result) {
   return ["allow", "allowed", "allow_controlled", "allow_advisory"].includes(state) || mediation === "allow";
 }
 
+function durableWorkBootstrapReadback(tool, result) {
+  if (tool?.name !== "work_continuity_v2_create") return false;
+  const payload = result?.structuredContent;
+  const gate = payload?.dedicated_core_gate;
+  const readback = payload?.result;
+  const receipt = readback?.persisted_core_authorization_receipt;
+  return gate?.authorized === false &&
+    gate.authority === "universal_core" &&
+    gate.route === "durable_work_bootstrap_readback" &&
+    gate.server_owned === true &&
+    gate.readback_only === true &&
+    readback?.idempotent_replay === true &&
+    readback.replay_source === "durable_bootstrap_mapping" &&
+    readback.execution_authorized === false &&
+    receipt?.schema_version === "work_bootstrap_core_authorization_receipt_v2" &&
+    receipt.authority === "universal_core" &&
+    receipt.route === "/v1/action-evaluator" &&
+    /^work_bootstrap:create:[a-z][a-z0-9_-]{1,63}:[a-z][a-z0-9_]{1,62}_native:[a-f0-9]{64}$/.test(
+      String(receipt.target || ""),
+    ) &&
+    /^[a-f0-9]{64}$/.test(String(receipt.receipt_digest || ""));
+}
+
 export function createDynamicCapabilityHandlers({
   tools,
   handlers,
@@ -466,6 +490,8 @@ export function createDynamicCapabilityHandlers({
         if (!authorizationAllowed(gate)) throw new Error("dynamic_capability_not_authorized");
       }
       const result = await handlers[tool.name](callArgs, identity);
+      const durableReadback = dedicatedCoreGate &&
+        durableWorkBootstrapReadback(tool, result);
       if (
         handlerOwnsCoreGate &&
         result?.structuredContent?.gate?.allowed !== true
@@ -474,7 +500,8 @@ export function createDynamicCapabilityHandlers({
       }
       if (
         dedicatedCoreGate &&
-        result?.structuredContent?.dedicated_core_gate?.authorized !== true
+        result?.structuredContent?.dedicated_core_gate?.authorized !== true &&
+        !durableReadback
       ) {
         throw new Error("dynamic_capability_dedicated_core_gate_unverified");
       }
@@ -486,12 +513,15 @@ export function createDynamicCapabilityHandlers({
             capability_id: tool.name,
             catalog_revision: state.revision,
             access_mode: "invoke",
-            gate_allowed: true,
-            gate_source: dedicatedCoreGate
+            gate_allowed: durableReadback ? false : true,
+            gate_source: durableReadback
+              ? "durable_core_authorization_readback"
+              : dedicatedCoreGate
               ? "universal_core_dedicated_route"
               : handlerOwnsCoreGate
                 ? "handler_internal_core_gate"
                 : "universal_core_action_evaluator",
+            ...(durableReadback ? { readback_only: true } : {}),
             owner_confirmation_required: ownerConfirmationRequired,
             owner_confirmation_satisfied:
               ownerConfirmationRequired === false || identity.ownerConfirmed === true,

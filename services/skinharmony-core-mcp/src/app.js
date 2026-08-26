@@ -655,6 +655,17 @@ function staleNyraServerHint(value, requestedToolName = "") {
   });
 }
 
+// These are the only writes that establish a Work binding rather than consume
+// one. Each handler is independently protected by authenticated tenant/app
+// authorization and a server-owned Core gate, so routing it through generic
+// Work Preflight would create an impossible "Work required to create Work"
+// dependency.
+const DEDICATED_WORK_BOOTSTRAP_TOOLS = new Set([
+  "tenant_work_open_review",
+  "work_continuity_v2_create",
+  "tenant_work_queue_create_v3",
+]);
+
 export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "work_preflight",
   // nyra_converse owns a strict cache-or-one-preflight protocol. Letting the
@@ -678,6 +689,7 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "nyra_research_airlock_private_enter",
   "nyra_research_airlock_tool_authorize",
   "nyra_research_airlock_complete",
+  ...DEDICATED_WORK_BOOTSTRAP_TOOLS,
 ]);
 
 const GENERIC_PREFLIGHT_CAPABILITIES = new Set([
@@ -699,11 +711,13 @@ export function requiresGenericWorkPreflight(toolName, args = {}) {
     !Object.hasOwn(heartbeatArgs, "recovery_context");
   if (requestedTool === "agent_heartbeat") return !metadataFreeHeartbeatBootstrap;
   if (requestedTool === "core_capability_invoke") {
-    // A dynamic mutation must always enter through the server-issued Work
-    // Preflight. The only exception is the metadata-free heartbeat bootstrap,
-    // which establishes the signed presence needed by later work operations.
-    // Any heartbeat that changes metadata or recovers prior state is routed
-    // through Work Preflight like every other dynamic mutation.
+    // A dynamic mutation normally enters through the server-issued Work
+    // Preflight. The only exceptions are the metadata-free presence bootstrap
+    // and the exact server-governed Work bootstrap capabilities above. Any
+    // other heartbeat or mutation remains fail-closed behind Work Preflight.
+    if (DEDICATED_WORK_BOOTSTRAP_TOOLS.has(String(args?.capability_id || ""))) {
+      return false;
+    }
     return !metadataFreeHeartbeatBootstrap;
   }
   if (

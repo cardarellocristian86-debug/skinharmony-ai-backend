@@ -174,11 +174,34 @@ test("future registered AI apps may read, coordinate and create Work without nat
     toolName: "work_continuity_start_or_resume",
     tools: TOOLS,
   }));
-  assert.doesNotThrow(() => requireHostAppToolCapability({
-    identity: future,
-    toolName: "work_continuity_v2_create",
-    tools: TOOLS,
-  }));
+  for (const toolName of [
+    "tenant_work_open_review",
+    "work_continuity_v2_create",
+    "tenant_work_queue_create_v3",
+  ]) {
+    assert.doesNotThrow(() => requireHostAppToolCapability({
+      identity: future,
+      toolName,
+      tools: TOOLS,
+    }), toolName);
+    assert.doesNotThrow(() => requireHostAppToolCapability({
+      identity: future,
+      toolName: "core_capability_invoke",
+      args: { capability_id: toolName },
+      tools: TOOLS,
+    }), `dynamic ${toolName}`);
+    assert.throws(() => requireHostAppToolCapability({
+      identity: identity(["work.read", "work.coordinate"], "future_ai_native"),
+      toolName,
+      tools: TOOLS,
+    }), /host_app_capability_required:work\.create/, toolName);
+    assert.throws(() => requireHostAppToolCapability({
+      identity: identity(["work.read", "work.coordinate"], "future_ai_native"),
+      toolName: "core_capability_invoke",
+      args: { capability_id: toolName },
+      tools: TOOLS,
+    }), /host_app_capability_required:work\.create/, `dynamic ${toolName}`);
+  }
 });
 
 test("governed continuation intersects wrapper, operation and supported-host capabilities", () => {
