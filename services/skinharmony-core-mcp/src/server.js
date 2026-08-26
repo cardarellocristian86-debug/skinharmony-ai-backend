@@ -1557,7 +1557,13 @@ const baseHandlers = {
         args.idempotency_key,
       );
       return continuityTextResult({ ok: true,
-        result: await workContinuityV2Store.queueNewWork(withTenantWorkAcl(identity), args) });
+        result: await workContinuityV2Store.queueNewWork(withTenantWorkAcl(identity), args),
+        dedicated_core_gate: {
+          authorized: true,
+          authority: "universal_core",
+          route: "/v1/action-evaluator",
+          server_owned: true,
+        } });
     },
     work_continuity_v2_read: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.readWork(withTenantWorkAcl(identity), args) }),

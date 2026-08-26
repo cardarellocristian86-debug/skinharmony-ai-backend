@@ -12,6 +12,7 @@ const WORK_CREATE_TOOLS = new Set([
   "work_continuity_create",
   "work_continuity_v2_create",
   "tenant_work_open_review",
+  "tenant_work_queue_create_v3",
 ]);
 
 const WORK_REVIEW_TOOLS = new Set([

@@ -177,6 +177,175 @@ test("discovers and reads Nyra's persistent self-model through a narrow dynamic 
   assert.equal(result.structuredContent.dynamic_capability.capability_id, "nyra_self_model");
 });
 
+test("catalogs every tenant Work capability on the continuity surface", () => {
+  const tenantWorkTools = WORK_CONTINUITY_TOOLS.filter((tool) =>
+    tool.name.startsWith("tenant_work_"));
+  const handlers = Object.fromEntries(tenantWorkTools.map((tool) =>
+    [tool.name, async () => ({})]));
+  const snapshot = dynamicCapabilityCatalogSnapshot(tenantWorkTools, handlers);
+
+  assert(tenantWorkTools.length > 0);
+  assert.equal(snapshot.capabilities.length, tenantWorkTools.length);
+  assert.equal(snapshot.capabilities.every((item) => item.group === "continuity"), true);
+});
+
+test("pre-Work review uses one server-owned Core gate and stable idempotency", async () => {
+  const tool = WORK_CONTINUITY_TOOLS.find((item) =>
+    item.name === "tenant_work_open_review");
+  let genericGateCalls = 0;
+  let includeMarker = true;
+  let received;
+  const handlers = {
+    [tool.name]: async (args) => {
+      received = args;
+      return {
+        structuredContent: {
+          ok: true,
+          ...(includeMarker ? {
+            dedicated_core_gate: {
+              authorized: true,
+              authority: "universal_core",
+              server_owned: true,
+            },
+          } : {}),
+        },
+      };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => {
+      genericGateCalls += 1;
+      return { structuredContent: { authorization: { allowed: true } } };
+    },
+  });
+  const catalog_revision = dynamicCapabilityCatalogSnapshot(
+    [tool], handlers,
+  ).catalog_revision;
+  const invoke = (idempotency_key) => router.core_capability_invoke({
+    capability_id: tool.name,
+    catalog_revision,
+    idempotency_key,
+    arguments: {
+      request: "Create a bounded Work",
+      intent_type: "CREATE_WORK",
+      create_request: { project_id: "nyra-core" },
+    },
+  }, {
+    ...identity,
+    agentPresence: {
+      agent_id: "bootstrap-agent",
+      session_id: "bootstrap-session",
+      client_type: "codex",
+    },
+  });
+
+  const result = await invoke("review-bootstrap-once");
+  assert.equal(genericGateCalls, 0);
+  assert.equal(received.idempotency_key, "review-bootstrap-once");
+  assert.equal(
+    result.structuredContent.dynamic_capability.gate_source,
+    "universal_core_dedicated_route",
+  );
+
+  includeMarker = false;
+  await assert.rejects(
+    invoke("review-bootstrap-without-marker"),
+    /dynamic_capability_dedicated_core_gate_unverified/,
+  );
+  assert.equal(genericGateCalls, 0);
+});
+
+test("canonical Work creation accepts only its verified durable readback on replay", async () => {
+  const tool = WORK_CONTINUITY_TOOLS.find((item) =>
+    item.name === "work_continuity_v2_create");
+  const receipt = {
+    schema_version: "work_bootstrap_core_authorization_receipt_v2",
+    authority: "universal_core",
+    route: "/v1/action-evaluator",
+    target: `work_bootstrap:create:codex:codex_native:${"a".repeat(64)}`,
+    receipt_digest: "b".repeat(64),
+  };
+  let tamper = null;
+  const handlers = {
+    [tool.name]: async () => ({
+      structuredContent: {
+        ok: true,
+        result: {
+          idempotent_replay: true,
+          replay_source: "durable_bootstrap_mapping",
+          execution_authorized: false,
+          persisted_core_authorization_receipt: {
+            ...receipt,
+            ...(tamper || {}),
+          },
+        },
+        dedicated_core_gate: {
+          authorized: false,
+          authority: "universal_core",
+          route: "durable_work_bootstrap_readback",
+          server_owned: true,
+          readback_only: true,
+        },
+      },
+    }),
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => {
+      throw new Error("generic_gate_must_not_run");
+    },
+  });
+  const catalog_revision = dynamicCapabilityCatalogSnapshot(
+    [tool], handlers,
+  ).catalog_revision;
+  const argumentsValue = {
+    intent_type: "CREATE_WORK",
+    request_id: "durable-replay",
+    review_id: "11111111-1111-4111-8111-111111111111",
+    review_digest: "c".repeat(64),
+    project_id: "nyra-core",
+    session_id: "durable-replay-session",
+    work_name: "Durable replay",
+    work_type: "software_git",
+    idea: "Recover a previously created Work.",
+    objective: "Return verified persisted evidence without creating again.",
+    architecture: {},
+    next_action: "Read the existing Work.",
+    acceptance_criteria: ["The same Work is returned."],
+    tasks: [{ title: "Verify durable readback" }],
+  };
+  const invoke = () => router.core_capability_invoke({
+    capability_id: tool.name,
+    catalog_revision,
+    idempotency_key: "durable-work-bootstrap-replay",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmed-replay",
+    arguments: argumentsValue,
+  }, {
+    ...identity,
+    ownerConfirmed: true,
+  });
+
+  const result = await invoke();
+  assert.equal(result.structuredContent.dynamic_capability.gate_allowed, false);
+  assert.equal(result.structuredContent.dynamic_capability.readback_only, true);
+  assert.equal(
+    result.structuredContent.dynamic_capability.gate_source,
+    "durable_core_authorization_readback",
+  );
+
+  tamper = { receipt_digest: "not-a-digest" };
+  await assert.rejects(
+    invoke(),
+    /dynamic_capability_dedicated_core_gate_unverified/,
+  );
+});
+
 test("filters unauthorized application capabilities from catalog, read and invoke routes", async () => {
   const allowed = readTool("work_continuity_v2_read");
   const denied = writeTool("host_native_action_authorize");
@@ -777,6 +946,8 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_checkpoint",
     "work_continuity_resume",
     "work_continuity_v2_create",
+    "tenant_work_queue_create_v3",
+    "tenant_work_open_review",
     "tenant_work_legacy_reconcile_close",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
@@ -796,6 +967,8 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "work_continuity_resume",
     "work_continuity_start_or_resume",
     "work_continuity_v2_create",
+    "tenant_work_queue_create_v3",
+    "tenant_work_open_review",
     "tenant_work_legacy_reconcile_close",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
