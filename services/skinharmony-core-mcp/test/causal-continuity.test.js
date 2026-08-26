@@ -3,7 +3,7 @@ import test from "node:test";
 import { CAUSAL_CONTINUITY_ROUTES, CAUSAL_CONTINUITY_TOOLS, buildGalleryProjection, createCausalContinuityHandlers, verifyGalleryBinding } from "../src/causal-continuity.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 
-const MINIMUM_CAPABILITIES = ["project_identity_resolve", "project_identity_create", "project_scope_read", "project_scope_bind", "project_state_snapshot", "project_state_verify", "genesis_intent_read", "genesis_intent_create", "intent_revision_propose", "intent_revision_approve", "intent_revision_impact", "project_decision_path_read", "work_bind_intent", "change_create", "change_read", "change_transition", "causal_context_issue", "causal_context_validate", "causal_obligation_create", "causal_obligation_read", "causal_obligation_transition", "causal_observation_record", "causal_reconcile", "causal_close", "causal_reopen", "continuity_capsule_build", "continuity_capsule_resume", "project_timeline_read", "gallery_binding_project", "gallery_projection_claim", "gallery_projection_complete", "gallery_projection_fail", "gallery_causal_view_read", "causal_metrics_snapshot", "gallery_binding_verify", "causal_rollout_read", "causal_rollout_set"];
+const MINIMUM_CAPABILITIES = ["project_identity_resolve", "project_identity_create", "project_scope_read", "project_scope_bind", "project_state_snapshot", "project_state_verify", "genesis_intent_read", "genesis_intent_create", "intent_revision_propose", "intent_revision_approve", "intent_revision_impact", "project_decision_path_read", "project_identity_spine_read", "work_bind_intent", "change_create", "change_read", "change_transition", "causal_context_issue", "causal_context_validate", "causal_obligation_create", "causal_obligation_read", "causal_obligation_transition", "causal_observation_record", "causal_reconcile", "causal_close", "causal_reopen", "continuity_capsule_build", "continuity_capsule_resume", "project_timeline_read", "gallery_binding_project", "gallery_projection_claim", "gallery_projection_complete", "gallery_projection_fail", "gallery_causal_view_read", "causal_metrics_snapshot", "gallery_binding_verify", "causal_rollout_read", "causal_rollout_set", "release_tuple_resolve", "release_tuple_read"];
 const agentPresence = { agent_id: "agent-a", session_id: "session-a", session_fingerprint: "fingerprint-a", signature: "signature-a", opaque_agent_id: "opaque-a", actor_provenance: "actor-a", client_type: "codex" };
 function binding(overrides = {}) { return { tenant_id: "tenant-a", project_id: "project-a", project_state_digest: "a".repeat(64), genesis_intent_id: "genesis-a", intent_revision_id: "revision-a", work_id: "work-a", change_id: "change-a", obligation_ids: ["obligation-a"], core_event_sequence: 42, context_digest: "b".repeat(64), ...overrides }; }
 
@@ -62,6 +62,9 @@ test("Gallery projection preserves causal binding and quarantines orphan events"
   assert.equal(crossProject.status, "ORPHAN_GALLERY_ITEM");
   const selfAttested = buildGalleryProjection({ payload: binding() });
   assert.equal(selfAttested.status, "ORPHAN_GALLERY_ITEM"); assert(selfAttested.binding_verification.authoritative_missing.includes("tenant_id"));
+  const releaseEvidence = buildGalleryProjection({ payload: binding() }, { ...authority, event_type: "RELEASE_TUPLE_RESOLVED" });
+  assert.equal(releaseEvidence.entity_type, "EVIDENCE");
+  assert.equal(releaseEvidence.action_authorization_allowed, true);
 });
 
 test("strict MCP schemas round-trip the actual Core runtime shapes", () => {

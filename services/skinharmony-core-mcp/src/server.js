@@ -13,6 +13,7 @@ import { createDecisionLedger } from "./decision-ledger.js";
 import {
   authorizeDttExactWorkRead,
   authorizeGenericWorkCoreJoinExactWorkRead,
+  buildServerOwnedReleaseInput,
   coreJoinIdempotencyKey,
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
@@ -1692,7 +1693,30 @@ const baseHandlers = {
     },
     work_continuity_native_report: continuityMethod("reportNativeAgent"),
     work_continuity_closure_evaluate: async (args, identity) => {
-      const evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
+      let evaluation;
+      try {
+        evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
+      } catch (error) {
+        if (String(error?.message || "") !== "continuity_server_owned_release_resolution_required") throw error;
+      }
+      if (evaluation?.closed !== true) {
+        return continuityTextResult({ ok: true, result: evaluation });
+      }
+      const lookup = {
+        ...args.release_lookup,
+        work_id: args.work_id,
+        idempotency_key: `${args.idempotency_key}-release-resolution`,
+      };
+      const releaseResolutionResult = await causalContinuityHandlers.release_tuple_resolve(
+        lookup,
+        identity,
+      );
+      const release = buildServerOwnedReleaseInput(
+        releaseResolutionResult?.structuredContent,
+        lookup,
+        identity.tenantId,
+      );
+      evaluation = await workContinuityRuntime.evaluateClosure(identity, args, { release });
       if (evaluation.closed !== true) {
         return continuityTextResult({ ok: true, result: evaluation });
       }

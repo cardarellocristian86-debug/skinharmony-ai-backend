@@ -93,6 +93,7 @@ const definitions = [
   ["intent_revision_approve", "Approve intent revision", "Apply the required Core or owner authority to a proposed intent revision.", object({ project_id: identifier, intent_revision_id: identifier, approved: { type: "boolean" }, idempotency_key: identifier }, ["project_id", "intent_revision_id", "approved", "idempotency_key"]), false],
   ["intent_revision_impact", "Analyze intent revision impact", "Classify the impact of an intent revision on open Work identities.", object({ project_id: identifier, intent_revision_id: identifier, work_ids: stringList }, ["project_id", "intent_revision_id"]), true],
   ["project_decision_path_read", "Read project decision path", "Reconstruct the project decision path from authoritative events and records.", object({ project_id: identifier, through_event_sequence: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1, maximum: 500 } }, ["project_id"]), true],
+  ["project_identity_spine_read", "Read authoritative project identity spine", "Read the deterministic Project, state, Genesis Intent and append-only revision spine from Universal Core.", object({ project_id: identifier, limit: { type: "integer", minimum: 1, maximum: 500 } }, ["project_id"]), true],
   ["work_bind_intent", "Bind Work to intent", "Bind a Work identity to one project state and approved intent revision.", object({ project_id: identifier, work_id: identifier, intent_revision_id: identifier, base_state_digest: digest, legacy_binding_state: identifier, provenance: { type: "object", additionalProperties: true }, idempotency_key: identifier }, ["project_id", "work_id", "intent_revision_id", "idempotency_key"]), false],
   ["change_create", "Create causal change", "Create a semantic Change under an existing Work identity.", object({ project_id: identifier, work_id: identifier, base_state_digest: digest, parent_change_id: identifier, alias: identifier, reason: { type: "string", minLength: 1, maxLength: 8000 }, scope: { type: "object", additionalProperties: true }, expected_effects: stringList, forbidden_effects: stringList, expected_target_state: { type: "object", additionalProperties: true }, idempotency_key: identifier }, ["project_id", "work_id", "base_state_digest", "reason", "idempotency_key"]), false],
   ["change_read", "Read causal change", "Read a Change and its state transitions.", object({ change_id: identifier }, ["change_id"]), true],
@@ -118,6 +119,8 @@ const definitions = [
   ["gallery_binding_verify", "Verify Gallery binding", "Verify that a Gallery item is a valid projection of authoritative Core state.", object({ ticket_id: identifier }, ["ticket_id"]), true],
   ["causal_rollout_read", "Read causal rollout", "Read the tenant-scoped causal-continuity rollout mode and version for a project.", object({ project_id: identifier }, ["project_id"]), true],
   ["causal_rollout_set", "Set causal rollout", "Set a tenant-scoped causal-continuity rollout mode with optimistic concurrency.", object({ project_id: identifier, mode: { type: "string", enum: ["SHADOW", "ENFORCE_NEW_WORK", "ENFORCE_ALL_COMPATIBLE"] }, expected_version: { type: "integer", minimum: 1 }, idempotency_key: identifier }, ["project_id", "mode", "expected_version", "idempotency_key"]), false],
+  ["release_tuple_resolve", "Resolve authoritative release tuple", "Resolve and persist release identity from server-owned GitHub, Project Scope, Render/Core and receipt observations; caller supplies only causal lookup keys.", object({ project_id: identifier, project_state_digest: digest, work_id: identifier, change_id: identifier, pull_request: { type: "integer", minimum: 1 }, idempotency_key: identifier }, ["project_id", "project_state_digest", "work_id", "change_id", "pull_request", "idempotency_key"]), false],
+  ["release_tuple_read", "Read authoritative release tuple", "Read one fresh digest-verified server-owned release resolution.", object({ project_id: identifier, work_id: identifier, change_id: identifier, phase: { type: "string", enum: ["PRE_ACTION", "POST_ACTION"] } }, ["project_id", "work_id", "change_id"]), true],
 ];
 
 export const CAUSAL_CONTINUITY_TOOLS = Object.freeze(definitions.map((definition) => tool(...definition)));
@@ -135,6 +138,7 @@ export const CAUSAL_CONTINUITY_ROUTES = Object.freeze({
   intent_revision_approve: { method: "POST", path: "/v1/causal/intents/revisions/approve" },
   intent_revision_impact: { method: "GET", path: "/v1/causal/intents/revisions/impact" },
   project_decision_path_read: { method: "GET", path: "/v1/causal/projects/decision-path" },
+  project_identity_spine_read: { method: "GET", path: "/v1/causal/projects/identity-spine" },
   work_bind_intent: { method: "POST", path: "/v1/causal/works/bind" },
   change_create: { method: "POST", path: "/v1/causal/changes" },
   change_read: { method: "GET", path: "/v1/causal/changes/read" },
@@ -160,6 +164,8 @@ export const CAUSAL_CONTINUITY_ROUTES = Object.freeze({
   gallery_binding_verify: { method: "GET", path: "/v1/causal/gallery/bindings/verify" },
   causal_rollout_read: { method: "GET", path: "/v1/causal/projects/rollout" },
   causal_rollout_set: { method: "POST", path: "/v1/causal/projects/rollout" },
+  release_tuple_resolve: { method: "POST", path: "/v1/causal/releases/resolve" },
+  release_tuple_read: { method: "GET", path: "/v1/causal/releases/read" },
 });
 
 function textResult(payload) {
@@ -226,7 +232,7 @@ export function verifyGalleryBinding(binding, authoritative) {
   return { ok, status: ok ? "BOUND" : "ORPHAN_GALLERY_ITEM", action_authorization_allowed: ok, missing, authoritative_missing, mismatches };
 }
 
-const GALLERY_TYPE_BY_EVENT = Object.freeze({ PROJECT_REGISTERED: "PROJECT_GENESIS", GENESIS_INTENT_CREATED: "PROJECT_GENESIS", INTENT_REVISION_PROPOSED: "INTENT_REVISION", INTENT_REVISION_APPROVED: "INTENT_REVISION", DECISION_RECORDED: "ARCHITECTURE_DECISION", WORK_OPENED: "WORK", CHANGE_OPENED: "CHANGE", EVIDENCE_RECORDED: "EVIDENCE", OUTCOME_RECONCILED: "OUTCOME", CLOSURE_PROVISIONAL: "CLOSURE", CLOSURE_FINAL: "CLOSURE", CLOSURE_REOPENED: "REOPENING", REMEDIATION_STARTED: "REMEDIATION", ROLLBACK_EXECUTED: "ROLLBACK" });
+const GALLERY_TYPE_BY_EVENT = Object.freeze({ PROJECT_REGISTERED: "PROJECT_GENESIS", GENESIS_INTENT_CREATED: "PROJECT_GENESIS", INTENT_REVISION_PROPOSED: "INTENT_REVISION", INTENT_REVISION_APPROVED: "INTENT_REVISION", DECISION_RECORDED: "ARCHITECTURE_DECISION", WORK_OPENED: "WORK", CHANGE_OPENED: "CHANGE", EVIDENCE_RECORDED: "EVIDENCE", RELEASE_TUPLE_RESOLVED: "EVIDENCE", OUTCOME_RECONCILED: "OUTCOME", CLOSURE_PROVISIONAL: "CLOSURE", CLOSURE_FINAL: "CLOSURE", CLOSURE_REOPENED: "REOPENING", REMEDIATION_STARTED: "REMEDIATION", ROLLBACK_EXECUTED: "ROLLBACK" });
 
 export function buildGalleryProjection(event, authoritativeBinding) {
   const source = event && typeof event === "object" ? event : {};
