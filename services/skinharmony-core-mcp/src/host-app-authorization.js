@@ -116,7 +116,14 @@ export function hasTenantBoundChatGptReadCompatibility(identity, toolName = "") 
   const principal = identity?.authenticatedHostPrincipal;
   const membership = identity?.authenticatedTenantMembership;
   return identity?.kind === "oauth" &&
-    principal?.registered === false &&
+    // The fixed governed-read allowlist is safe for a tenant-bound ChatGPT
+    // principal whether the app is an OAuth compatibility principal or a
+    // registered production host.  Requiring `registered === false` here
+    // made a correctly registered ChatGPT lose health/catalog/registry reads
+    // and route every stale descriptor to Nyra's conversational tool.
+    // Registration is not authority by itself: the exact work.read grant,
+    // authenticated membership and exact allowlist still all apply.
+    (principal?.registered === false || principal?.registered === true) &&
     principal?.auth_kind === "oauth" &&
     principal?.client_type === "chatgpt" &&
     Array.isArray(principal?.capabilities) &&

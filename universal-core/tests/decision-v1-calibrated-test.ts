@@ -1,4 +1,6 @@
 import { runUniversalCoreDecisionV1Calibrated } from "../packages/core/src/decisionV1Calibrated.ts";
+import { runUniversalCoreDecisionV2Elastic } from "../packages/core/src/decisionV2Elastic.ts";
+import { runUniversalCore } from "../packages/core/src/index.ts";
 import type { UniversalCoreInput } from "../packages/contracts/src/index.ts";
 
 function input(overrides: Partial<UniversalCoreInput>): UniversalCoreInput {
@@ -38,6 +40,47 @@ const green = runUniversalCoreDecisionV1Calibrated(input({
 }));
 assert(green.state === "ok", "green state should be ok");
 assert(green.control_level === "execute_allowed", "green should execute");
+
+const guardedGreen = runUniversalCoreDecisionV1Calibrated(input({
+  context: { tenant_id: "codexai", metadata: { action_type: "read" } },
+  signals: [{
+    id: "read:guarded-green",
+    source: "test",
+    category: "read",
+    label: "Guarded safe read",
+    value: 12,
+    normalized_score: 12,
+    severity_hint: 12,
+    confidence_hint: 94,
+  }],
+  constraints: { allow_automation: true, require_confirmation: false, safety_mode: true },
+}));
+assert(guardedGreen.control_level === "confirm", "safety mode must cap green execution at confirm");
+assert(guardedGreen.execution_profile.can_execute === false, "safety mode must not leak executable output");
+assert(guardedGreen.execution_profile.requires_user_confirmation === true, "safety mode must require owner confirmation");
+
+for (const [engine, decide] of [
+  ["core-v0", runUniversalCore],
+  ["core-v2-elastic", runUniversalCoreDecisionV2Elastic],
+] as const) {
+  const guarded = decide(input({
+    context: { tenant_id: "codexai", mode: "sandbox", metadata: { action_type: "read" } },
+    signals: [{
+      id: `read:${engine}:guarded`,
+      source: "test",
+      category: "read",
+      label: "Guarded low-risk read",
+      value: 36,
+      normalized_score: 36,
+      severity_hint: 36,
+      confidence_hint: 94,
+    }],
+    constraints: { allow_automation: true, require_confirmation: false, safety_mode: true },
+  }));
+  assert(guarded.control_level !== "execute_allowed", `${engine} safety mode must cap execution`);
+  assert(guarded.execution_profile.can_execute === false, `${engine} safety mode must not expose can_execute`);
+  assert(guarded.execution_profile.requires_user_confirmation === true, `${engine} safety mode must require confirmation`);
+}
 
 const destructive = runUniversalCoreDecisionV1Calibrated(input({
   context: { tenant_id: "codexai", metadata: { action_type: "delete" } },
@@ -109,6 +152,7 @@ console.log(JSON.stringify({
   contract: "decision_contract_v1_calibrated",
   scenarios: {
     green: { state: green.state, control: green.control_level },
+    guarded_green: { state: guardedGreen.state, control: guardedGreen.control_level },
     destructive: { state: destructive.state, control: destructive.control_level },
     claim: { state: claim.state, control: claim.control_level },
     sla: { state: sla.state, control: sla.control_level },

@@ -30,8 +30,11 @@ const RESERVED_AUTHORITY_KEYS = new Set([
   "tenant_id",
 ]);
 
+// Mentioning production or live state is ordinary diagnostic context.  It is
+// not, by itself, a deploy request and must not force an architectural read
+// through the ticket path.
 const CONSEQUENTIAL_PATTERNS = Object.freeze([
-  ["release", /\b(?:deploy\w*|deployment|merge|push|publish\w*|release|distribuisc\w*|distribuzion\w*|pubblic\w*|rilasci\w*|live|produzione)\b/iu],
+  ["release", /\b(?:deploy\w*|deployment|merge|push|publish\w*|release|distribuisc\w*|distribuzion\w*|pubblic\w*|rilasci\w*)\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu],
   ["communication", /\b(?:send|email|message|notify|invia\w*|manda\w*|messaggi\w*|notific\w*)\b/iu],
   ["destructive", /\b(?:delete|remove|destroy|elimina\w*|cancella\w*|distrugg\w*)\b/iu],
   ["financial", /\b(?:pay|purchase|buy|refund|paga\w*|acquista\w*|rimborsa\w*)\b/iu],
@@ -43,10 +46,14 @@ const MANUAL_OWNER_ACTION_PATTERN = /\b(?:manual\w*|lo\s+faccio\s+io|faccio\s+io
 const MERGE_PATTERN = /\bmerge\w*\b/iu;
 const GIT_PUSH_PATTERN = /\bpush\w*\b/iu;
 const PULL_REQUEST_PATTERN = /\b(?:pull\s+request|pr)\b/iu;
-const DEPLOY_PATTERN = /\b(?:deploy\w*|deployment|distribuisc\w*|distribuzion\w*|live|produzione)\b/iu;
+const DEPLOY_PATTERN = /\b(?:deploy\w*|deployment|distribuisc\w*|distribuzion\w*)\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu;
 const PUBLISH_PATTERN = /\b(?:publish\w*|pubblic\w*|rilasci\w*|release)\b/iu;
 const WORK_BOOTSTRAP_PATTERN = /(?:\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:nuov\w*|new)\b)/iu;
 const DIAGNOSTIC_REQUEST_PATTERN = /\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|explain\w*|causa(?:\s+radice)?|root\s+cause|cosa\s+(?:manca|serve))\b/iu;
+// A no-action boundary often lists the exact action words that Nyra must not
+// take.  Strip only that negative sentence.  A later affirmative sentence is
+// intentionally preserved and will still be governed.
+const READ_ONLY_ACTION_DENIAL_PATTERN = /\b(?:non|senza)\s+(?:crea\w*|modifica\w*|esegui\w*|f(?:ai|ar)\w*|effettua\w*|avvia\w*|richied\w*|apri\w*|pubblica\w*|rilascia\w*).{0,600}?(?:[.!?]|$)/giu;
 const GENERIC_GUARD_REASON = "safety_mode";
 
 export const NYRA_SERVER_CONNECTOR_HINT = Symbol("nyra_server_connector_hint");
@@ -527,19 +534,29 @@ function serverConnectorHint(args) {
 }
 
 function requestedActionClass(message, connectorHint, workBootstrapProvided = false) {
+  const actionText = actionRelevantText(message);
   if (connectorHint.capability_hint === "host_native_action_reserve") return "TICKET_RESERVE";
-  if (MERGE_PATTERN.test(message)) return "GIT_MERGE";
-  if (GIT_PUSH_PATTERN.test(message)) return "GIT_PUSH";
-  if (PULL_REQUEST_PATTERN.test(message)) return "PULL_REQUEST_OPEN";
-  if (DEPLOY_PATTERN.test(message)) return "DEPLOY";
-  if (PUBLISH_PATTERN.test(message)) return "PUBLISH";
+  // A structured bootstrap is an explicit, typed request.  Its contract must
+  // win over incidental prose such as "then merge/deploy" in the objective;
+  // otherwise a new-Work review can be incorrectly promoted to an external
+  // mutation before Core has evaluated the candidate.
+  if (workBootstrapProvided) return "WORK_BOOTSTRAP";
+  if (MERGE_PATTERN.test(actionText)) return "GIT_MERGE";
+  if (GIT_PUSH_PATTERN.test(actionText)) return "GIT_PUSH";
+  if (PULL_REQUEST_PATTERN.test(actionText)) return "PULL_REQUEST_OPEN";
+  if (DEPLOY_PATTERN.test(actionText)) return "DEPLOY";
+  if (PUBLISH_PATTERN.test(actionText)) return "PUBLISH";
   // A question about a ticket is diagnostic until it contains an actual
   // mutation request.  Do not turn "why was no ticket issued?" into a Work
   // bootstrap candidate merely because it mentions creation in prose.
-  if (!workBootstrapProvided && DIAGNOSTIC_REQUEST_PATTERN.test(message) &&
-      !WORK_BOOTSTRAP_PATTERN.test(message)) return "NONE";
-  if (workBootstrapProvided || WORK_BOOTSTRAP_PATTERN.test(message)) return "WORK_BOOTSTRAP";
+  if (!workBootstrapProvided && DIAGNOSTIC_REQUEST_PATTERN.test(actionText) &&
+      !WORK_BOOTSTRAP_PATTERN.test(actionText)) return "NONE";
+  if (WORK_BOOTSTRAP_PATTERN.test(actionText)) return "WORK_BOOTSTRAP";
   return "NONE";
+}
+
+function actionRelevantText(message) {
+  return String(message || "").replace(READ_ONLY_ACTION_DENIAL_PATTERN, " ");
 }
 
 function actionPolicy(
@@ -548,8 +565,9 @@ function actionPolicy(
   coreOwnerConfirmationRequired = false,
   workBootstrapProvided = false,
 ) {
+  const actionText = actionRelevantText(message);
   const categories = CONSEQUENTIAL_PATTERNS
-    .filter(([, pattern]) => pattern.test(message))
+    .filter(([, pattern]) => pattern.test(actionText))
     .map(([category]) => category);
   const classifiedAction = requestedActionClass(message, connectorHint, workBootstrapProvided);
   const actionClass = classifiedAction === "NONE" && (categories.length > 0 || coreOwnerConfirmationRequired)
@@ -982,6 +1000,12 @@ function orchestrationDirective({
   else if (interpretation.governance_diagnostics.state === "CONFIRMATION_REQUIRED" ||
            interpretation.owner_confirmation_required) coreVerdict = "HOLD";
   else if (ticketRequired) coreVerdict = "NOT_REQUESTED";
+  // A HOLD is an explicit Core confirmation gate.  It must be preserved on
+  // every consequential ticket candidate even if an older Core response did
+  // not set its legacy boolean field.
+  const ownerConfirmationRequired = interpretation.owner_confirmation_required ||
+    workBootstrapCandidate ||
+    (ticketRequired && coreVerdict === "HOLD");
 
   const needs = [];
   function appendNeed(code, kind, state, authority, detail, sourceDigest = null) {
@@ -1040,7 +1064,7 @@ function orchestrationDirective({
     appendNeed("manual_merge_required", "MANUAL_ACTION", "REQUIRED", "OWNER",
       "Merge manuale dell'owner soltanto dopo il gate Core");
   }
-  if (interpretation.owner_confirmation_required || workBootstrapCandidate) {
+  if (ownerConfirmationRequired) {
     appendNeed("owner_confirmation_required", "CONFIRMATION", "REQUIRED", "OWNER",
       workBootstrapCandidate
         ? "Conferma owner fresca e request-bound prima della creazione V2"
@@ -1214,7 +1238,7 @@ function orchestrationDirective({
     binding,
     prerequisite_codes: Object.freeze(prerequisiteCodes),
     owner_confirmation_required:
-      interpretation.owner_confirmation_required || workBootstrapCandidate,
+      ownerConfirmationRequired,
     host_approval_required: ticketRequired,
     core_independent_verification_required: true,
     merge_policy: mergeManual ? "MANUAL_ONLY" : "NOT_APPLICABLE",
