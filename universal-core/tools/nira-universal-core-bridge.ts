@@ -72,6 +72,14 @@ export type NiraBridgeResult = {
     unmet_conditions: string[];
     evidence_requirements: string[];
     allowed_alternatives: string[];
+    governance_diagnostics: {
+      guard_mode: "normal" | "confirmation_required";
+      blocking_causes: Array<{
+        code: string;
+        component: "universal_core";
+        remediation: string;
+      }>;
+    };
   };
   automation_plan: {
     execution_allowed: boolean;
@@ -229,6 +237,10 @@ export function runNiraUniversalCoreBridge(request: NiraBridgeRequest): NiraBrid
       unmet_conditions: [],
       evidence_requirements: [],
       allowed_alternatives: [],
+      governance_diagnostics: {
+        guard_mode: coreOutput.diagnostics.guard_mode || "normal",
+        blocking_causes: coreOutput.diagnostics.blocking_causes || [],
+      },
     },
     automation_plan: {
       execution_allowed: canExecute,

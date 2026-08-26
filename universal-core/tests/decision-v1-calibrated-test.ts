@@ -87,6 +87,23 @@ const sla = runUniversalCoreDecisionV1Calibrated(input({
 assert(sla.state === "critical", "SLA should be critical");
 assert(sla.control_level === "suggest", "SLA should suggest");
 
+const guardedRead = runUniversalCoreDecisionV1Calibrated(input({
+  context: { tenant_id: "codexai", metadata: { action_type: "read" } },
+  signals: [{
+    id: "read:guarded",
+    source: "test",
+    category: "read",
+    label: "Guarded read",
+    value: 34,
+    normalized_score: 34,
+    severity_hint: 34,
+    confidence_hint: 88,
+  }],
+  constraints: { allow_automation: false, require_confirmation: false, safety_mode: true },
+}));
+assert(!guardedRead.blocked_reasons.includes("safety_mode"), "safety mode must not become a blocker");
+assert(guardedRead.diagnostics.guard_mode === "confirmation_required", "guard posture should remain observable");
+
 console.log(JSON.stringify({
   ok: true,
   contract: "decision_contract_v1_calibrated",
@@ -95,5 +112,6 @@ console.log(JSON.stringify({
     destructive: { state: destructive.state, control: destructive.control_level },
     claim: { state: claim.state, control: claim.control_level },
     sla: { state: sla.state, control: sla.control_level },
+    guarded_read: { state: guardedRead.state, blocked_reasons: guardedRead.blocked_reasons },
   },
 }, null, 2));

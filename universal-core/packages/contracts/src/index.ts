@@ -135,6 +135,15 @@ export type CoreDiagnostics = {
   blocked_signal_count: number;
   blocked_action_count: number;
   notes: string[];
+  // `safety_mode` is a guard posture, not a block reason.  Keep the posture
+  // observable so callers can explain why execution is constrained without
+  // falsely reporting a missing condition or a failed policy rule.
+  guard_mode?: "normal" | "confirmation_required";
+  blocking_causes?: Array<{
+    code: string;
+    component: "universal_core";
+    remediation: string;
+  }>;
 };
 
 export type UniversalCoreOutput = {

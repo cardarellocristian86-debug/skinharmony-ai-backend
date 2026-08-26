@@ -101,6 +101,12 @@ function buildOutput(params: {
       blocked_signal_count: input.signals.filter((signal) => signal.tags?.includes("blocked")).length,
       blocked_action_count: blockedRuleCount(input),
       notes,
+      guard_mode: input.constraints.safety_mode ? "confirmation_required" : "normal",
+      blocking_causes: blockedReasons.map((code) => ({
+        code,
+        component: "universal_core",
+        remediation: "Resolve the named Core rule or risk signal, then re-evaluate the same bounded action.",
+      })),
     },
   };
 }
@@ -204,7 +210,9 @@ export function runUniversalCoreDecisionV1Calibrated(input: UniversalCoreInput):
     controlLevel: "observe",
     canExecute: false,
     requiresUserConfirmation: false,
-    blockedReasons: input.constraints.safety_mode ? ["safety_mode"] : [],
+    // Safety mode means that execution remains guarded.  It is not itself a
+    // failed policy condition and must never masquerade as a hard block.
+    blockedReasons: [],
     notes: ["default_attention_fallback"],
   });
 }
