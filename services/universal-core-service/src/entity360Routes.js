@@ -91,7 +91,9 @@ export function registerEntity360Routes({ app, authFor, runtime, resolveAgentCon
         const identity = await identityFrom(req, res, resolveAgentContext, access);
         const raw = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
         const { tenant_id: _ignoredTenant, tenantId: _ignoredAlias,
-          execution_authorized: _ignoredAuthority, authority: _ignoredAuthorityName, ...input } = raw;
+          execution_authorized: _ignoredAuthority, authority: _ignoredAuthorityName,
+          owner_context: _ignoredOwnerContext, owner_confirmed: _ignoredOwnerConfirmation,
+          confirmation_reference: _ignoredConfirmationReference, ...input } = raw;
         const result = await runtime.invoke(capability, identity, input);
         await audit?.({ capability, tenant_id: identity.tenant_id, actor_id: identity.actor_id,
           ok: true, duration_ms: Date.now() - startedAt, execution_authorized: false });

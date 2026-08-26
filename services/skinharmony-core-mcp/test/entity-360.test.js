@@ -19,7 +19,11 @@ const EXPECTED = Object.freeze([
   "entity_360_shadow_compare",
   "entity_360_policy_read",
   "entity_360_metrics_read",
+  "entity_360_shadow_enable",
 ]);
+
+const DTT_EXPECTED = Object.freeze(EXPECTED.filter((name) =>
+  name !== "entity_360_shadow_enable"));
 
 const PATHS = Object.freeze([
   "/v1/entity-360/resolve",
@@ -72,9 +76,13 @@ test("Entity 360 MCP tools are strict, tenant-free context contracts", () => {
 
   assert.equal(toolNamed("entity_360_snapshot_assemble").annotations.readOnlyHint, false);
   assert.equal(toolNamed("entity_360_shadow_compare").annotations.readOnlyHint, false);
+  assert.equal(toolNamed("entity_360_shadow_enable").annotations.readOnlyHint, false);
+  assert.equal(toolNamed("entity_360_shadow_enable")
+    ._meta["skinharmony/ownerConfirmationRequired"], true);
   for (const name of EXPECTED.filter((item) => ![
     "entity_360_snapshot_assemble",
     "entity_360_shadow_compare",
+    "entity_360_shadow_enable",
   ].includes(item))) {
     assert.equal(toolNamed(name).annotations.readOnlyHint, true, name);
   }
@@ -170,7 +178,7 @@ test("Entity 360 transport derives tenant and DTT context only from authenticate
     work_id: WORK_ID,
     entity_id: ENTITY_ID,
   };
-  for (const capabilityId of EXPECTED) {
+  for (const capabilityId of DTT_EXPECTED) {
     const result = await handlers[capabilityId](callerArgs, {
       tenantId: "tenant-authenticated",
       agentPresence,
@@ -191,10 +199,46 @@ test("Entity 360 transport derives tenant and DTT context only from authenticate
     assert.equal(request.body.tenantScope, undefined);
   }
   assert.equal(callerArgs.tenant_id, "spoofed-a", "bridge must not mutate caller input");
-  assert.equal(issued.length, EXPECTED.length);
+  assert.equal(issued.length, DTT_EXPECTED.length);
   assert(issued.every((value) => value.tenant_id === "tenant-authenticated" &&
     value.work_id === WORK_ID &&
     value.agent_presence === agentPresence));
+});
+
+test("Entity 360 SHADOW enable is a separate owner-confirmed Core transport", async () => {
+  const calls = [];
+  const handlers = createEntity360Handlers({
+    coreRequest: async () => { throw new Error("dtt_transport_must_not_be_used"); },
+    issueAgentContext: () => { throw new Error("dtt_context_must_not_be_issued"); },
+    shadowEnableCoreRequest: async (args, identity) => {
+      calls.push({ args, identity });
+      return { ok: true, mode: "SHADOW", enabled: true,
+        production_decision_changed: false, execution_authorized: false };
+    },
+  });
+  const identity = { tenantId: "tenant-authenticated", ownerConfirmed: true };
+  const result = await handlers.entity_360_shadow_enable({
+    expected_revision: 0,
+    idempotency_key: "entity-360-shadow-enable-a",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmation-a",
+  }, identity);
+  assert.equal(result.structuredContent.mode, "SHADOW");
+  assert.equal(result.structuredContent.execution_authorized, false);
+  assert.deepEqual(calls, [{
+    args: {
+      expected_revision: 0,
+      idempotency_key: "entity-360-shadow-enable-a",
+      owner_confirmed: true,
+      confirmation_reference: "owner-confirmation-a",
+    },
+    identity,
+  }]);
+  await assert.rejects(() => handlers.entity_360_shadow_enable({
+    expected_revision: 0,
+    idempotency_key: "entity-360-shadow-enable-b",
+    owner_confirmed: false,
+  }, identity), /owner_confirmation_required/u);
 });
 
 test("real DTT issuer and verifier preserve the exact tenant, Work and principal binding", async () => {

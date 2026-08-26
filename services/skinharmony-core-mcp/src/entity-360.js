@@ -9,6 +9,10 @@ const digest = { type: "string", pattern: "^[a-f0-9]{64}$" };
 const dateTime = { type: "string", minLength: 20, maxLength: 40, format: "date-time" };
 const idempotencyKey = { type: "string", minLength: 1, maxLength: 240 };
 const scalar = { type: ["string", "number", "boolean"] };
+const ownerConfirmationProperties = Object.freeze({
+  owner_confirmed: { type: "boolean" },
+  confirmation_reference: { type: "string", maxLength: 240 },
+});
 const object = (properties = {}, required = []) => ({
   type: "object",
   properties,
@@ -30,12 +34,18 @@ const projectWorkLinkage = object({
   component_id: identifier,
 });
 
-function tool(name, title, description, inputSchema, readOnly) {
+function tool(name, title, description, inputSchema, readOnly, options = {}) {
+  const schema = options.ownerConfirmationRequired === true
+    ? {
+      ...inputSchema,
+      properties: { ...inputSchema.properties, ...ownerConfirmationProperties },
+    }
+    : inputSchema;
   return {
     name,
     title,
     description,
-    inputSchema,
+    inputSchema: schema,
     outputSchema: { type: "object", additionalProperties: true },
     scopes: [readOnly ? "core:read" : "core:govern"],
     annotations: {
@@ -44,6 +54,9 @@ function tool(name, title, description, inputSchema, readOnly) {
       openWorldHint: false,
       idempotentHint: true,
     },
+    ...(options.ownerConfirmationRequired === true ? {
+      _meta: { "skinharmony/ownerConfirmationRequired": true },
+    } : {}),
   };
 }
 
@@ -133,6 +146,17 @@ const definitions = [
     object({ work_id: workId, project_id: identifier }, ["work_id"]),
     true,
   ],
+  [
+    "entity_360_shadow_enable",
+    "Enable Entity 360 tenant shadow",
+    "Enable the tenant-wide Entity 360 context fabric in non-authoritative SHADOW mode. This requires a fresh owner confirmation and can never enable execution or production decision mutation.",
+    object({
+      expected_revision: { type: "integer", minimum: 0 },
+      idempotency_key: idempotencyKey,
+    }, ["expected_revision", "idempotency_key"]),
+    false,
+    { ownerConfirmationRequired: true },
+  ],
 ];
 
 export const ENTITY_360_TOOLS = Object.freeze(definitions.map((entry) => tool(...entry)));
@@ -215,13 +239,30 @@ function assertContextOnlyResponse(value) {
   return value;
 }
 
-export function createEntity360Handlers({ coreRequest, issueAgentContext } = {}) {
+export function createEntity360Handlers({ coreRequest, shadowEnableCoreRequest, issueAgentContext } = {}) {
   if (typeof coreRequest !== "function" || typeof issueAgentContext !== "function") {
     throw new TypeError("entity 360 transport required");
   }
   return Object.fromEntries(definitions.map(([capabilityId]) => [
     capabilityId,
     async (args = {}, identityContext = {}) => {
+      if (capabilityId === "entity_360_shadow_enable") {
+        if (typeof shadowEnableCoreRequest !== "function") {
+          throw new Error("entity360_configuration_transport_required");
+        }
+        const tenantId = String(identityContext?.tenantId || "").trim();
+        if (!tenantId) throw new Error("entity360_authenticated_tenant_required");
+        if (identityContext.ownerConfirmed !== true || args.owner_confirmed !== true) {
+          throw new Error("owner_confirmation_required");
+        }
+        const value = assertContextOnlyResponse(await shadowEnableCoreRequest({
+          expected_revision: args.expected_revision,
+          idempotency_key: args.idempotency_key,
+          owner_confirmed: true,
+          confirmation_reference: args.confirmation_reference,
+        }, identityContext));
+        return textResult(value);
+      }
       const tenantId = String(identityContext?.tenantId || "").trim();
       if (!tenantId || !identityContext.agentPresence) throw new Error("agent_presence_session_required");
       const boundWorkId = transportWorkId(args);

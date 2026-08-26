@@ -7896,21 +7896,42 @@ export function createUniversalCoreService(options = {}) {
       app,
       authFor: (access) => {
         const authenticate = coreAuth(access === "read" ? SCOPES.READ_SNAPSHOT
-          : access === "configure" ? SCOPES.ENTITY360_CONFIGURE : SCOPES.WRITE_SNAPSHOT);
+          : access === "configure" ? [SCOPES.ENTITY360_CONFIGURE, SCOPES.OWNER_ASSERTION]
+            : SCOPES.WRITE_SNAPSHOT);
         return (req, res, next) => authenticate(req, res, (error) => {
           if (error) return next(error);
           if (access === "configure") {
             // Tenant configuration uses independently authenticated platform
             // authority. It must never inherit authority from a DTT token.
+            const mcpGateway = isMcpTenantGatewayRecord(req.coreKey);
+            let actorId = `core-key:${req.coreKey.key_id}`;
+            let sessionFingerprint = String(req.coreKey.key_id);
+            if (mcpGateway) {
+              let confirmation;
+              try {
+                confirmation = verifyHostNativeOwnerConfirmation(
+                  req,
+                  "entity360_feature_flag_write",
+                );
+              } catch {
+                return publicError(res, 403, "entity360_owner_confirmation_required");
+              }
+              actorId = `core-owner:${crypto.createHash("sha256")
+                .update(String(confirmation.owner_subject_fingerprint))
+                .digest("hex")}`;
+              sessionFingerprint = String(confirmation.owner_subject_fingerprint);
+            } else if (!hasScope(req.coreKey, SCOPES.ENTITY360_CONFIGURE)) {
+              return publicError(res, 403, "entity360_operator_scope_required");
+            }
             res.locals.entity360OperatorIdentity = Object.freeze({
               tenant_id: req.tenantId,
-              actor_id: `core-key:${req.coreKey.key_id}`,
+              actor_id: actorId,
               actor_role: "universal_core_operator",
               authority_scope: Object.freeze([ENTITY_360_FEATURE_FLAG_AUTHORITY_SCOPE]),
               provenance: Object.freeze({
-                session_fingerprint: String(req.coreKey.key_id),
+                session_fingerprint: sessionFingerprint,
                 actor_provenance: "universal_core_platform_auth",
-                client_type: "core_operator",
+                client_type: mcpGateway ? "mcp_owner_confirmed" : "core_operator",
               }),
             });
             return next();

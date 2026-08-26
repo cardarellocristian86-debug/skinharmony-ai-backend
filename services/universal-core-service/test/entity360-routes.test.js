@@ -56,6 +56,8 @@ test("feature configuration uses only the independently authenticated Core opera
   } };
   await handler({ tenantId: "tenant-a", headers: { "x-sh-dtt-agent-context": "signed-dtt" },
     body: { mode: "OFF", enabled: false, expected_revision: 0,
+      owner_context: { caller: "untrusted" }, owner_confirmed: true,
+      confirmation_reference: "owner-confirmation-a",
       idempotency_key: "feature-off" } }, response);
   assert.equal(response.statusCode, 201);
   assert.deepEqual(seenIdentity.authority_scope, ["entity360:feature-flag:write"]);
