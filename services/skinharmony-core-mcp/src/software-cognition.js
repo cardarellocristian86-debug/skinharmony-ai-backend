@@ -187,7 +187,7 @@ function normalizeTreeFrontier(value, rootTreeSha) {
   return { directories: normalized, source_files_seen: sourceFilesSeen };
 }
 
-async function githubJson(fetchImpl, url, token = "") {
+async function githubJson(fetchImpl, url, token = "", { oversizeAsNull = false } = {}) {
   const response = await fetchImpl(url, {
     method: "GET",
     redirect: "error",
@@ -200,7 +200,14 @@ async function githubJson(fetchImpl, url, token = "") {
   });
   if (!response?.ok) bootstrapFail("software_atlas_repository_read_unavailable");
   const body = await response.text();
-  if (Buffer.byteLength(body, "utf8") > ATLAS_BOOTSTRAP_TOTAL_BYTES) bootstrapFail("software_atlas_repository_response_too_large");
+  if (Buffer.byteLength(body, "utf8") > ATLAS_BOOTSTRAP_TOTAL_BYTES) {
+    // A single repository file can legitimately exceed the bounded Atlas
+    // transport budget.  It is not a repository failure: callers that are
+    // reading a source file may record it as skipped and advance the pinned
+    // cursor.  Commit and tree reads remain fail-closed.
+    if (oversizeAsNull) return null;
+    bootstrapFail("software_atlas_repository_response_too_large");
+  }
   try { return JSON.parse(body); } catch { bootstrapFail("software_atlas_repository_response_invalid"); }
 }
 
@@ -252,7 +259,13 @@ async function readRepositoryPathsBatch(fetchImpl, repository, treeSha, frontier
 
 async function readSnapshotFile(fetchImpl, repository, commit, path, token) {
   const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-  const payload = await githubJson(fetchImpl, `${GITHUB_ORIGIN}/repos/${repository}/contents/${encodedPath}?ref=${commit}`, token);
+  const payload = await githubJson(
+    fetchImpl,
+    `${GITHUB_ORIGIN}/repos/${repository}/contents/${encodedPath}?ref=${commit}`,
+    token,
+    { oversizeAsNull: true },
+  );
+  if (!payload) return null;
   if (payload?.type !== "file" || payload?.encoding !== "base64" || typeof payload?.content !== "string") {
     bootstrapFail("software_atlas_source_file_invalid");
   }
