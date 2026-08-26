@@ -461,6 +461,51 @@ test("health dependency probe timeout is bounded below the MCP upstream deadline
   assert.equal(boundedHealthProbeTimeoutMs(Number.POSITIVE_INFINITY), 1_500);
 });
 
+test("server-owned resolver registries drive the Core status projection", async () => {
+  await withEnv({
+    NODE_ENV: "test",
+    CORE_HOST_NATIVE_GOVERNANCE_ENABLED: "true",
+    CORE_HOST_NATIVE_SIGNING_SECRET: "h".repeat(32),
+    DTT_AGENT_IDENTITY_SIGNING_SECRET: "d".repeat(32),
+    CORE_HOST_NATIVE_GITHUB_TOKEN_TEST: "github-test-token",
+    CORE_HOST_NATIVE_GITHUB_CREDENTIAL_REGISTRY_JSON: JSON.stringify({
+      schema_version: "host_native_github_credential_registry_v1",
+      bindings: [{
+        tenant_id: "tenant-test",
+        repository: "owner/repository",
+        token_env: "CORE_HOST_NATIVE_GITHUB_TOKEN_TEST",
+      }],
+    }),
+    CORE_HOST_NATIVE_REQUIRED_CHECKS_REGISTRY_JSON: JSON.stringify({
+      schema_version: "host_native_required_checks_registry_v1",
+      bindings: [{
+        tenant_id: "tenant-test",
+        repository: "owner/repository",
+        base_branch: "main",
+        required_checks: ["ci/test"],
+        check_app: { id: 1, slug: "github-actions", owner: "github" },
+        workflow: {
+          id: 1,
+          name: "CI",
+          path: ".github/workflows/ci.yml",
+          sha256: "a".repeat(64),
+          candidate_sha256: "b".repeat(64),
+        },
+        allowed_events: ["pull_request"],
+      }],
+    }),
+  }, async () => {
+    const { health } = await readHealth();
+    const governance = health.host_native_governance;
+    assert.equal(governance.github_credential_resolver_state, "exact_registry_ready");
+    assert.equal(governance.github_credential_binding_count, 1);
+    assert.equal(governance.required_checks_policy_resolver_state, "exact_registry_ready");
+    assert.equal(governance.required_checks_policy_binding_count, 1);
+    assert.equal(governance.tenant_github_credential_resolver_configured, true);
+    assert.equal(governance.private_repository_readback_ready, true);
+  });
+});
+
 test("production host-native readiness requires gateway, separated signing, DTT, and PostgreSQL", async () => {
   await withEnv({
     NODE_ENV: "production",

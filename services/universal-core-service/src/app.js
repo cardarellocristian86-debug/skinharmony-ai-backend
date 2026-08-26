@@ -6524,6 +6524,33 @@ export function createUniversalCoreService(options = {}) {
     serverResolverRegistry?.github?.resolver
     || options.hostNativeGithubTokenResolver
     || null;
+  // The server-owned registry is the runtime authority for these resolvers.
+  // Keep the diagnostic/readiness projection tied to the resolver actually in
+  // use, rather than to the optional injection seams used by tests. Otherwise
+  // a production registry can be active while health falsely reports it as
+  // absent and downstream Core gates reject an otherwise valid ticket.
+  const hostNativeGithubCredentialResolverState =
+    typeof serverResolverRegistry?.github?.resolver === "function"
+      ? serverResolverRegistry.github.state
+      : options.hostNativeGithubCredentialResolverState
+        || (typeof options.hostNativeGithubTokenResolver === "function"
+          ? "injected_resolver"
+          : "not_configured");
+  const hostNativeGithubCredentialBindingCount =
+    typeof serverResolverRegistry?.github?.resolver === "function"
+      ? Number(serverResolverRegistry.github.binding_count || 0)
+      : Number(options.hostNativeGithubCredentialBindingCount || 0);
+  const hostNativeRequiredChecksPolicyResolverState =
+    typeof serverResolverRegistry?.required_checks?.resolver === "function"
+      ? serverResolverRegistry.required_checks.state
+      : options.hostNativeRequiredChecksPolicyResolverState
+        || (typeof options.hostNativeRequiredChecksPolicyResolver === "function"
+          ? "injected_resolver"
+          : "not_configured");
+  const hostNativeRequiredChecksPolicyBindingCount =
+    typeof serverResolverRegistry?.required_checks?.resolver === "function"
+      ? Number(serverResolverRegistry.required_checks.binding_count || 0)
+      : Number(options.hostNativeRequiredChecksPolicyBindingCount || 0);
   if (
     hostNativeGovernanceEnabled &&
     hostNativeGovernance &&
@@ -6634,7 +6661,7 @@ export function createUniversalCoreService(options = {}) {
     (typeof hostNativeRequiredChecksPolicyResolver === "function"
       ? createBootstrapRequiredChecksReadback({
           fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
-          githubTokenResolver: options.hostNativeGithubTokenResolver || null,
+          githubTokenResolver: hostNativeGithubTokenResolver,
           requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
           timeoutMs: Number(
             options.hostNativeReadbackTimeoutMs ??
@@ -9518,21 +9545,21 @@ export function createUniversalCoreService(options = {}) {
         resolver_configuration_valid: hostNativeResolverConfigurationValid,
         resolver_configuration_error: hostNativeResolverConfigurationError,
         github_credential_resolver_state:
-          options.hostNativeGithubCredentialResolverState || "not_configured",
+          hostNativeGithubCredentialResolverState,
         github_credential_binding_count:
-          Number(options.hostNativeGithubCredentialBindingCount || 0),
+          hostNativeGithubCredentialBindingCount,
         render_origin_resolver_state: hostNativeRenderServiceOriginResolverState,
         render_origin_binding_count:
           Number(options.hostNativeRenderServiceOriginBindingCount || 0),
         required_checks_policy_resolver_state:
-          options.hostNativeRequiredChecksPolicyResolverState || "not_configured",
+          hostNativeRequiredChecksPolicyResolverState,
         required_checks_policy_binding_count:
-          Number(options.hostNativeRequiredChecksPolicyBindingCount || 0),
+          hostNativeRequiredChecksPolicyBindingCount,
         tenant_github_credential_resolver_configured:
-          typeof options.hostNativeGithubTokenResolver === "function",
+          typeof hostNativeGithubTokenResolver === "function",
         public_repository_readback_ready: true,
         private_repository_readback_ready:
-          typeof options.hostNativeGithubTokenResolver === "function",
+          typeof hostNativeGithubTokenResolver === "function",
         caller_supplied_github_token_allowed: false,
         execution_adapter: "host_native",
         provider_execution: false,
@@ -11034,21 +11061,21 @@ export function createUniversalCoreService(options = {}) {
       resolver_configuration_valid: hostNativeResolverConfigurationValid,
       resolver_configuration_error: hostNativeResolverConfigurationError,
       github_credential_resolver_state:
-        options.hostNativeGithubCredentialResolverState || "not_configured",
+        hostNativeGithubCredentialResolverState,
       github_credential_binding_count:
-        Number(options.hostNativeGithubCredentialBindingCount || 0),
+        hostNativeGithubCredentialBindingCount,
       render_origin_resolver_state: hostNativeRenderServiceOriginResolverState,
       render_origin_binding_count:
         Number(options.hostNativeRenderServiceOriginBindingCount || 0),
       required_checks_policy_resolver_state:
-        options.hostNativeRequiredChecksPolicyResolverState || "not_configured",
+        hostNativeRequiredChecksPolicyResolverState,
       required_checks_policy_binding_count:
-        Number(options.hostNativeRequiredChecksPolicyBindingCount || 0),
+        hostNativeRequiredChecksPolicyBindingCount,
       tenant_github_credential_resolver_configured:
-        typeof options.hostNativeGithubTokenResolver === "function",
+        typeof hostNativeGithubTokenResolver === "function",
       public_repository_readback_ready: true,
       private_repository_readback_ready:
-        typeof options.hostNativeGithubTokenResolver === "function",
+        typeof hostNativeGithubTokenResolver === "function",
       caller_supplied_github_token_allowed: false,
       execution_adapter: "host_native",
       provider_execution: false,
