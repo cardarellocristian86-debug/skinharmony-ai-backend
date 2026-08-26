@@ -259,3 +259,43 @@ test("repository bootstrap checkpoints a non-indexable page and continues withou
   assert.equal(indexed.structuredContent.processed_files, 1);
   assert.equal(writes[1].replace, false);
 });
+
+test("repository bootstrap skips an oversize source response and advances its pinned cursor", async () => {
+  const commit = "a".repeat(40);
+  const tree = "b".repeat(40);
+  const fetchImpl = async (url) => {
+    if (url.includes("/contents/src/huge.ts")) {
+      return { ok: true, text: async () => "x".repeat(1_000_001) };
+    }
+    const json = url.includes("/commits/")
+      ? { sha: commit, commit: { tree: { sha: tree } } }
+      : url.includes(`/git/trees/${tree}`)
+        ? { truncated: false, tree: [{ path: "src/huge.ts", type: "blob", mode: "100644" }] }
+        : null;
+    return { ok: Boolean(json), text: async () => JSON.stringify(json || { message: "not found" }) };
+  };
+  const graph = { revision: 0, nodes: [], edges: [], metrics: { total_nodes: 0, total_context_bytes: 0 } };
+  const writes = [];
+  const handlers = createSoftwareCognitionHandlers({
+    coreRequest: async () => ({ ok: true }), issueAgentContext: () => "signed-context", fetchImpl,
+    repositoryBindings: { "project-a": { repository: "owner/repository", branch: "main" } },
+    atlasRuntime: {
+      readIntent: async () => ({ project_id: "project-a" }),
+      readAtlasGraph: async () => graph.revision ? graph : Promise.reject(new Error("work_atlas_not_found")),
+      upsertAtlas: async (_identity, input) => {
+        writes.push(input);
+        graph.revision += 1;
+        graph.bootstrap = input.bootstrap;
+        return { revision: graph.revision, total_nodes: 0, total_context_bytes: 0 };
+      },
+    },
+  });
+  const result = await handlers.software_cognition_repository_bootstrap({
+    project_id: "project-a", work_id: "work-a", repository: "owner/repository", file_limit: 1, idempotency_key: "atlas-oversize-0",
+  }, { tenantId: "tenant-a", agentPresence });
+  assert.equal(result.structuredContent.completed, true);
+  assert.equal(result.structuredContent.processed_files, 0);
+  assert.deepEqual(result.structuredContent.skipped_paths, ["src/huge.ts"]);
+  assert.equal(result.structuredContent.next_cursor, null);
+  assert.deepEqual(writes[0].nodes, []);
+});
