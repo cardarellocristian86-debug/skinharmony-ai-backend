@@ -132,6 +132,22 @@ jobs:
       - name: Install Core MCP dependencies for continuity integration tests
         run: npm ci --prefix ../skinharmony-core-mcp
       - run: npm ci
+      - name: Test Entity 360 context and evidence layer
+        run: >-
+          node --test
+          test/entity360-adapters.test.js
+          test/nyra-precore-decision-store.test.js
+          test/entity360-app.test.js
+          test/entity360-routes.test.js
+          test/entity360-shadow-observation.test.js
+          test/entity360.test.js
+          test/entity360-store.test.js
+          test/icf-event-digest-v2.test.js
+          test/core-research-directive-api.test.js
+      - name: Benchmark deterministic Entity 360 assembly and verification
+        env:
+          ENTITY360_BENCHMARK_ITERATIONS: "250"
+        run: npm run benchmark:entity360
       - name: Install MCP dependencies for staging integration tests
         working-directory: .
         run: npm ci --prefix services/skinharmony-core-mcp
@@ -291,11 +307,34 @@ jobs:
             abort("#{key} must retain the governed Codex Good Mode contract") unless
               mcp_env.dig(key, "value") == expected
           end
+          abort("Legacy Codex principal migration must be explicit during first rollout") unless
+            mcp_env.dig("MCP_LEGACY_CODEX_HOST_PRINCIPAL_ENABLED", "value") == "true"
+          abort("Host-app registry must remain operator-provisioned") unless
+            mcp_env["MCP_HOST_APP_REGISTRY_JSON"] == {
+              "key" => "MCP_HOST_APP_REGISTRY_JSON", "sync" => false,
+            }
+          abort("Codex registry bearer must remain operator-provisioned") unless
+            mcp_env["MCP_HOST_APP_TOKEN_CODEX"] == {
+              "key" => "MCP_HOST_APP_TOKEN_CODEX", "sync" => false,
+            }
+          abort("Agent-presence rollout must preserve v1 before the bounded drain") unless
+            mcp_env.dig("AGENT_PRESENCE_SIGNATURE_VERSION", "value") == "v1"
+          abort("Governed continuation must remain code-dark until registry and v2 presence are promoted") unless
+            mcp_env.dig("NYRA_GOVERNED_CONTINUE_ENABLED", "value") == "false"
+          abort("Governed continuation signer must be independently generated") unless
+            mcp_env["NYRA_GOVERNED_CONTINUE_SIGNING_SECRET"] == {
+              "key" => "NYRA_GOVERNED_CONTINUE_SIGNING_SECRET", "generateValue" => true,
+            }
 
           core_env = Array(core["envVars"]).to_h { |entry| [entry["key"], entry] }
           nyra_env = Array(nyra["envVars"]).to_h { |entry| [entry["key"], entry] }
           abort("SOFTWARE_COGNITION_MODE must remain ADVISORY") unless
             core_env.dig("SOFTWARE_COGNITION_MODE", "value") == "ADVISORY"
+          abort("CORE_ENTITY360_MODE must be declared exactly once as SHADOW") unless
+            Array(core["envVars"]).count { |entry| entry["key"] == "CORE_ENTITY360_MODE" } == 1 &&
+            core_env["CORE_ENTITY360_MODE"] == {
+              "key" => "CORE_ENTITY360_MODE", "value" => "SHADOW",
+            }
           abort("NYRA_PRECORE_DECISION_MODE must remain OFF until signer bindings are provisioned") unless
             core_env.dig("NYRA_PRECORE_DECISION_MODE", "value") == "OFF"
           policy_registry_nyra_values = {
@@ -652,6 +691,16 @@ jobs:
               "key" => "CORE_HOST_NATIVE_SIGNING_SECRET",
               "generateValue" => true,
             }
+          abort("Entity 360 retained verification keyring must remain owner-custodied") unless
+            core_env["CORE_ENTITY360_HOST_NATIVE_VERIFY_KEYRING_JSON"] == {
+              "key" => "CORE_ENTITY360_HOST_NATIVE_VERIFY_KEYRING_JSON",
+              "sync" => false,
+            }
+          abort("NSCT retained verification keyring must remain owner-custodied") unless
+            core_env["CORE_NYRA_PRECORE_VERIFY_KEYRING_JSON"] == {
+              "key" => "CORE_NYRA_PRECORE_VERIFY_KEYRING_JSON",
+              "sync" => false,
+            }
           render_registry_entry = core_env["CORE_HOST_NATIVE_RENDER_ORIGIN_REGISTRY_JSON"]
           abort("Core Render resolver registry must be an explicit non-secret value") unless
             render_registry_entry.is_a?(Hash) &&
@@ -967,6 +1016,11 @@ jobs:
           %w[
             WORK_CONTINUITY_AUTO_CAPTURE_ENABLED
             HOST_NATIVE_AGENT_PROTOCOL_ENABLED
+            MCP_LEGACY_CODEX_HOST_PRINCIPAL_ENABLED
+            MCP_HOST_APP_REGISTRY_JSON
+            AGENT_PRESENCE_SIGNATURE_VERSION
+            NYRA_GOVERNED_CONTINUE_ENABLED
+            NYRA_GOVERNED_CONTINUE_SIGNING_SECRET
           ].each do |key|
             abort("#{key} is present in Blueprint but not implemented") unless mcp_config_source.include?(key)
           end
@@ -1280,6 +1334,13 @@ jobs:
         run: >-
           node --test
           services/universal-core-service/test/software-cognition-postgres16.test.js
+      - name: Exercise PostgreSQL 16 Entity 360 isolation and concurrency gate
+        env:
+          ENTITY360_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/continuity_ci
+        run: >-
+          node --test
+          services/universal-core-service/test/entity360-postgres16.test.js
+          services/universal-core-service/test/icf-event-digest-postgres16.test.js
       - name: Exercise PostgreSQL 16 Core Policy Registry proof and lifecycle gate
         env:
           POLICY_REGISTRY_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/continuity_ci

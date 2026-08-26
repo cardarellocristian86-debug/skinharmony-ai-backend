@@ -158,18 +158,68 @@ function hmac(prefix, secret, value) {
     .digest("hex")}`;
 }
 
+const HOST_NATIVE_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
+
+function hostNativeSigningKeyId(value, signingSecret) {
+  const configured = String(value || "").trim();
+  if (configured) {
+    if (!HOST_NATIVE_KEY_ID.test(configured)) fail("host_native_signing_key_id_invalid");
+    return configured;
+  }
+  // Existing installations did not have a configured key identifier.  A
+  // stable, non-secret fingerprint gives those installations an immediate
+  // rotation-safe identity without embedding signing material in an artifact.
+  return `hnk_${crypto.createHash("sha256").update(signingSecret).digest("hex").slice(0, 32)}`;
+}
+
 // Causal Continuity deliberately shares the already-provisioned host-native
 // governance signing domain.  The caller supplies a purpose label so one
 // signature cannot be replayed as another Core artifact.
-export function createHostNativeDomainSigner({ signingSecret } = {}) {
+export function createHostNativeDomainSigner({ signingSecret, keyId } = {}) {
   const signing = text(signingSecret, "host_native_signing_secret_missing", 8_000);
   if (Buffer.byteLength(signing, "utf8") < 32) fail("host_native_signing_secret_missing");
+  const signingKeyId = hostNativeSigningKeyId(keyId, signing);
   return Object.freeze({
+    algorithm: "hmac-sha256",
+    key_id: signingKeyId,
     sign(value, { purpose } = {}) {
       return hmac("hnc", signing, canonical({ purpose: text(purpose, "signing_purpose_missing", 160), value }));
     },
-    verify(value, signature, { purpose } = {}) {
+    verify(value, signature, { purpose, key_id: expectedKeyId } = {}) {
+      if (expectedKeyId !== undefined && expectedKeyId !== signingKeyId) return false;
       const expected = hmac("hnc", signing, canonical({ purpose: text(purpose, "signing_purpose_missing", 160), value }));
+      return safeEqual(String(signature || ""), expected);
+    },
+  });
+}
+
+/**
+ * Builds a verify-only bounded keyring.  New artifacts are signed by a
+ * separate active signer; retained verification material keeps historical
+ * artifacts auditable across rotations.  Unknown key identifiers fail closed
+ * and verification never falls back to a different key.
+ */
+export function createHostNativeDomainVerifier({ verificationKeys } = {}) {
+  if (!verificationKeys || typeof verificationKeys !== "object"
+    || Array.isArray(verificationKeys)) fail("host_native_verification_keyring_invalid");
+  const entries = Object.entries(verificationKeys);
+  if (entries.length < 1 || entries.length > 32) fail("host_native_verification_keyring_invalid");
+  const keyring = new Map(entries.map(([rawKeyId, rawSecret]) => {
+    const keyId = hostNativeSigningKeyId(rawKeyId, "unused");
+    const secret = text(rawSecret, "host_native_verification_secret_invalid", 8_000);
+    if (Buffer.byteLength(secret, "utf8") < 32) fail("host_native_verification_secret_invalid");
+    return [keyId, secret];
+  }));
+  if (keyring.size !== entries.length) fail("host_native_verification_keyring_invalid");
+  return Object.freeze({
+    algorithm: "hmac-sha256",
+    key_ids: Object.freeze([...keyring.keys()].sort()),
+    verify(value, signature, { purpose, key_id: keyId } = {}) {
+      const normalizedKeyId = String(keyId || "").trim();
+      if (!HOST_NATIVE_KEY_ID.test(normalizedKeyId) || !keyring.has(normalizedKeyId)) return false;
+      const expected = hmac("hnc", keyring.get(normalizedKeyId), canonical({
+        purpose: text(purpose, "signing_purpose_missing", 160), value,
+      }));
       return safeEqual(String(signature || ""), expected);
     },
   });
@@ -614,6 +664,33 @@ function getIdempotent(state, tenantId, method, input) {
   if (!existing) return { key, requestDigest, result: null };
   if (existing.request_digest !== requestDigest) fail("idempotency_key_conflict");
   return { key, requestDigest, result: clone(existing.result) };
+}
+
+function delegationIssueIdempotencyInput(input, grant) {
+  const {
+    expires_at: expiresAt,
+    owner_confirmation: ownerConfirmation,
+    ...semanticGrant
+  } = grant;
+  const semanticOwner = ownerConfirmation && typeof ownerConfirmation === "object"
+    ? {
+        verified: ownerConfirmation.verified === true,
+        request_bound: ownerConfirmation.request_bound === true,
+        owner_subject_fingerprint: ownerConfirmation.owner_subject_fingerprint,
+        purpose: ownerConfirmation.purpose,
+      }
+    : ownerConfirmation;
+  return {
+    ...semanticGrant,
+    // New callers bind the requested duration, not the per-attempt wall-clock
+    // expiry. Legacy callers retain exact expires_at matching so this change
+    // is additive and cannot broaden an older grant on retry.
+    ...(input.requested_ttl_seconds === undefined
+      ? { expires_at: expiresAt }
+      : { requested_ttl_seconds: Number(input.requested_ttl_seconds) }),
+    idempotency_key: String(input.idempotency_key || ""),
+    owner_confirmation: semanticOwner,
+  };
 }
 
 function semanticStandingReleaseIntentBinding(input) {
@@ -1181,11 +1258,25 @@ export function deriveHostReleaseIntentV1(manifest) {
 function normalizeDelegation(input, now) {
   exactKeys(input, new Set([
     "tenant_id", "work_id", "intent_anchor_digest", "repository", "owner_confirmation", "audience",
-    "allowed_branches", "protected_branches", "allowed_path_prefixes", "allowed_actions", "budget", "release_policy", "expires_at", "idempotency_key",
+    "allowed_branches", "protected_branches", "allowed_path_prefixes", "allowed_actions", "budget", "release_policy", "expires_at", "idempotency_key", "requested_ttl_seconds",
   ]));
-  const expires = Date.parse(input.expires_at);
-  if (!Number.isFinite(expires) || expires <= now || expires > now + MAX_DELEGATION_MS) {
-    fail("delegation_expiry_invalid");
+  const requestedTtlProvided = input.requested_ttl_seconds !== undefined;
+  const legacyExpiryProvided = input.expires_at !== undefined;
+  if (requestedTtlProvided === legacyExpiryProvided) fail("delegation_expiry_mode_invalid");
+  let expires;
+  if (requestedTtlProvided) {
+    const requestedTtlSeconds = positiveInteger(
+      input.requested_ttl_seconds,
+      "delegation_ttl_invalid",
+      MAX_DELEGATION_MS / 1_000,
+    );
+    if (requestedTtlSeconds < 60) fail("delegation_ttl_invalid");
+    expires = now + requestedTtlSeconds * 1_000;
+  } else {
+    expires = Date.parse(input.expires_at);
+    if (!Number.isFinite(expires) || expires <= now || expires > now + MAX_DELEGATION_MS) {
+      fail("delegation_expiry_invalid");
+    }
   }
   const allowed_actions = stableStrings(input.allowed_actions, "allowed_actions_invalid", 50);
   if (allowed_actions.some((action) => HOST_NATIVE_ABSOLUTE_DENY_ACTIONS.includes(action))) {
@@ -3151,13 +3242,16 @@ export function createHostNativeGovernance({
 
     async issueDelegation(input = {}) {
       const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
-      const initial = store.readState();
-      const replay = getIdempotent(initial, tenantId, "issueDelegation", input);
-      if (replay?.result) return replay.result;
+      // Validate every attempt before consulting idempotency. A replay may
+      // skip mutation, never schema, TTL, budget or owner-confirmation checks.
       const nowValue = nowMillis(now);
       const grant = normalizeDelegation(input, nowValue);
+      const idempotencyInput = delegationIssueIdempotencyInput(input, grant);
+      const initial = store.readState();
+      const replay = getIdempotent(initial, tenantId, "issueDelegation", idempotencyInput);
+      if (replay?.result) return replay.result;
       return store.mutate((state) => {
-        const descriptor = getIdempotent(state, tenantId, "issueDelegation", input);
+        const descriptor = getIdempotent(state, tenantId, "issueDelegation", idempotencyInput);
         if (descriptor?.result) return descriptor.result;
         const nonce = ownerNonceKey(tenantId, grant.owner_confirmation);
         if (state.owner_nonces[nonce]) fail("owner_confirmation_replayed");
@@ -4430,6 +4524,53 @@ export function createHostNativeGovernance({
         record.host_readback_digest = digest(input.readback_digest);
         record.reconciled_at = iso(nowValue);
         record.state = "reconciled";
+        signActionTicketLifecycleRecord(record);
+        return saveIdempotent(state, descriptor, record);
+      });
+    },
+
+    // Expiry never permits completing, reconciling, retrying, or refunding an
+    // action. This terminal path exists solely so an authenticated host can
+    // preserve its independent readback and close the exact expired lease.
+    async quarantineExpiredActionTicket(input = {}, trusted = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "ticket_id", "reservation_id", "host_session_fingerprint",
+        "readback_digest", "idempotency_key",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const initial = store.readState();
+      const nowValue = nowMillis(now);
+      const initialRecord = initial.tickets[String(input.ticket_id || "")];
+      if (initialRecord) ensureStandingReleaseRunReservation(initial, initialRecord, input, nowValue);
+      const idempotencyInput = actionLifecycleIdempotencyInput(input);
+      const replay = getIdempotent(initial, tenantId, "quarantineExpiredActionTicket", idempotencyInput);
+      if (replay?.result) return validateStandingReplay(initial, replay.result, nowValue);
+      assertSoftwareConsumerFresh(trusted);
+      return store.mutate((state) => {
+        const descriptor = getIdempotent(state, tenantId, "quarantineExpiredActionTicket", idempotencyInput);
+        if (descriptor?.result) return validateStandingReplay(state, descriptor.result, nowValue);
+        const record = state.tickets[String(input.ticket_id || "")];
+        if (!record || record.ticket.tenant_id !== tenantId) fail("action_ticket_not_found");
+        ensureStandingReleaseRunReservation(state, record, input, nowValue);
+        verifyActionTicketLifecycleRecord(record);
+        if (!["reserved", "reconciliation_required"].includes(record.state)) fail("not_quarantinable");
+        if (record.reservation_id !== input.reservation_id || record.ticket.host_session_fingerprint !== input.host_session_fingerprint) fail("host_session_mismatch");
+        if (record.state === "reconciliation_required" && record.outcome !== "unknown") fail("not_quarantinable");
+        const reservationExpiresAt = Date.parse(record.reservation_expires_at || "");
+        if (!Number.isFinite(reservationExpiresAt) || reservationExpiresAt > nowValue) {
+          fail("action_ticket_reservation_not_expired");
+        }
+        record.state = "quarantined";
+        record.observed_outcome = "unknown";
+        record.host_readback_digest = digest(input.readback_digest);
+        record.quarantined_at = iso(nowValue);
+        record.quarantine_reason_digest = hostNativeDigest({
+          schema_version: "host_native_expired_reservation_quarantine_v1",
+          ticket_id: record.ticket.ticket_id,
+          reservation_id: record.reservation_id,
+          reservation_expires_at: record.reservation_expires_at,
+          readback_digest: record.host_readback_digest,
+        });
         signActionTicketLifecycleRecord(record);
         return saveIdempotent(state, descriptor, record);
       });

@@ -100,6 +100,8 @@ CREATE TABLE IF NOT EXISTS tenant_work_final_report (
 );
 
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS legacy_work_id uuid;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS idea text;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS architecture jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS objective text;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS next_action text;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS created_by_agent_id varchar(128);
@@ -108,6 +110,15 @@ ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS priority_version varchar(64) NO
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS priority_context jsonb NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS acceptance_criteria jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_from_status varchar(24);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS archived_reason text;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS reopened_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS reopen_count integer NOT NULL DEFAULT 0;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_target_agent_id varchar(128);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_target_client_type varchar(32);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_status varchar(24);
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_offered_at timestamptz;
+ALTER TABLE tenant_work ADD COLUMN IF NOT EXISTS assignment_accepted_at timestamptz;
 ALTER TABLE tenant_work_task ADD COLUMN IF NOT EXISTS required boolean NOT NULL DEFAULT true;
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS weight integer NOT NULL DEFAULT 1 CHECK (weight > 0);
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS verified_by_agent_id varchar(128);
@@ -170,6 +181,61 @@ ALTER TABLE tenant_work_open_review ADD COLUMN IF NOT EXISTS review_result jsonb
 ALTER TABLE tenant_work_open_review ADD COLUMN IF NOT EXISTS decision_digest char(64);
 ALTER TABLE tenant_work_open_review ADD COLUMN IF NOT EXISTS consumed_work_id uuid;
 
+CREATE TABLE IF NOT EXISTS tenant_work_bootstrap_request (
+  tenant_id varchar(64) NOT NULL,
+  subject_user_id varchar(128) NOT NULL,
+  request_id varchar(160) NOT NULL,
+  request_digest char(64) NOT NULL,
+  review_id uuid NOT NULL,
+  consumed_work_id uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, subject_user_id, request_id),
+  UNIQUE (tenant_id, review_id)
+);
+
+CREATE INDEX IF NOT EXISTS tenant_work_open_review_request_identity_idx
+  ON tenant_work_open_review (tenant_id, subject_user_id, request_id)
+  INCLUDE (request_digest, consumed_work_id)
+  WHERE subject_user_id IS NOT NULL AND request_id IS NOT NULL;
+
+-- Backfill only request identities whose historical review/digest/work
+-- binding is unambiguous. Conflicting legacy duplicates remain available for
+-- audit and are rejected fail-closed by the runtime. The ledger gate and
+-- transaction-scoped advisory lock make the scan one-shot across replicas.
+DO $work_bootstrap_backfill$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('20260825_work_bootstrap_request_backfill_v2', 0));
+  IF NOT EXISTS (
+    SELECT 1 FROM core_schema_migrations
+    WHERE migration_id = '20260825_work_bootstrap_request_backfill_v2'
+  ) THEN
+    INSERT INTO tenant_work_bootstrap_request
+  (tenant_id,subject_user_id,request_id,request_digest,review_id,consumed_work_id)
+SELECT DISTINCT ON (r.tenant_id,r.subject_user_id,r.request_id)
+  r.tenant_id,r.subject_user_id,r.request_id,r.request_digest,r.review_id,r.consumed_work_id
+FROM tenant_work_open_review r
+WHERE r.subject_user_id IS NOT NULL AND r.request_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM tenant_work_open_review other_review
+    WHERE other_review.tenant_id=r.tenant_id
+      AND other_review.subject_user_id=r.subject_user_id
+      AND other_review.request_id=r.request_id
+      AND (
+        other_review.request_digest<>r.request_digest OR
+        (other_review.consumed_work_id IS NOT NULL AND r.consumed_work_id IS NOT NULL
+          AND other_review.consumed_work_id<>r.consumed_work_id)
+      )
+  )
+ORDER BY r.tenant_id,r.subject_user_id,r.request_id,
+  (r.consumed_work_id IS NOT NULL) DESC,r.consumed_at DESC NULLS LAST,r.created_at ASC
+ON CONFLICT DO NOTHING;
+    INSERT INTO core_schema_migrations (migration_id)
+    VALUES ('20260825_work_bootstrap_request_backfill_v2');
+  END IF;
+END;
+$work_bootstrap_backfill$;
+
 CREATE TABLE IF NOT EXISTS tenant_work_event (
   tenant_id varchar(64) NOT NULL,
   work_id uuid NOT NULL,
@@ -188,6 +254,10 @@ CREATE TABLE IF NOT EXISTS tenant_work_event (
 
 INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260808_work_continuity_v2_runtime')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO core_schema_migrations (migration_id)
+VALUES ('20260825_work_bootstrap_request_v1')
 ON CONFLICT DO NOTHING;
 
 COMMIT;

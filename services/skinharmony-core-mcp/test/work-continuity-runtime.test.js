@@ -14,6 +14,7 @@ import { TOOLS as BASE_TOOLS } from "../src/tool-definitions.js";
 import {
   WORK_CONTINUITY_TOOLS,
   tenantWorkCoordinationActionType,
+  tenantWorkCoordinationTarget,
 } from "../src/work-continuity-tools.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 
@@ -104,6 +105,114 @@ test("continuity digests are deterministic across object key order", () => {
   assert.deepEqual(stable({ b: 2, a: { d: 4, c: 3 } }), { a: { c: 3, d: 4 }, b: 2 });
   assert.equal(digest({ b: 2, a: 1 }), digest({ a: 1, b: 2 }));
   assert.notEqual(digest({ a: 1 }), digest({ a: 2 }));
+});
+
+test("legacy catalog accepts only a server-derived canonical Work ACL intersection", async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
+      if (/FROM core_continuity_works w/.test(sql) && /ORDER BY w\.updated_at DESC/.test(sql)) {
+        return { rows: [{
+          work_id: WORK_ID,
+          project_id: "project-a",
+          session_id: "session-a",
+          status: "active",
+          current_version: 1,
+          next_action: "continue",
+          updated_at: "2026-08-25T10:00:00.000Z",
+        }] };
+      }
+      throw new Error("unexpected_legacy_acl_query");
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const authorization = {
+    schema_version: "legacy_work_read_authorization_v1",
+    server_derived: true,
+    tenant_id: "tenant-a",
+    work_ids: [WORK_ID],
+  };
+  const catalog = await runtime.listWorksAuthorized(
+    { tenantId: "tenant-a" },
+    { project_id: "project-a", limit: 25 },
+    authorization,
+  );
+  assert.deepEqual(catalog.works.map((work) => work.work_id), [WORK_ID]);
+  const select = calls.find((call) => /FROM core_continuity_works w/.test(call.sql) &&
+    /ORDER BY w\.updated_at DESC/.test(call.sql));
+  assert.match(select.sql, /w\.work_id = ANY\(\$2::uuid\[\]\)/);
+  assert.deepEqual(select.params[1], [WORK_ID]);
+  await assert.rejects(runtime.listWorksAuthorized(
+    { tenantId: "tenant-a" }, {}, { ...authorization, tenant_id: "tenant-b" },
+  ), /continuity_work_read_authorization_invalid/);
+});
+
+test("legacy resume rejects an unauthorized session binding before persisting a new binding", async () => {
+  const hiddenWorkId = "22222222-2222-4222-8222-222222222222";
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
+      if (/SELECT pg_advisory_xact_lock/.test(sql)) return { rows: [{}] };
+      if (/SELECT work_id,create_request_digest\s+FROM core_continuity_session_bindings/.test(sql)) {
+        return { rows: [{ work_id: hiddenWorkId, create_request_digest: "a".repeat(64) }] };
+      }
+      throw new Error("unauthorized_resume_queried_past_binding");
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  await assert.rejects(runtime.ensure({ tenantId: "tenant-a", subject: "member-a" }, {
+    project_id: "project-a",
+    session_id: "session-a",
+    resume_existing: true,
+  }, {
+    creationAuthorized: false,
+    trustedSessionFollowup: true,
+    authorizedResumeWorkIds: [WORK_ID],
+  }), /continuity_work_acl_denied/);
+  assert.equal(calls.some((call) => /INSERT INTO core_continuity_session_bindings/.test(call.sql)), false);
+});
+
+test("legacy Gallery prompt fields and blockers are restricted to canonical visible Work ids", async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
+      if (/count\(DISTINCT p\.session_id\)/.test(sql)) return { rows: [{
+        tenant_id: "tenant-a", project_id: "project-a", work_id: WORK_ID,
+        idea: "authorized idea", objective: "authorized objective", status: "active",
+        current_version: 1, next_action: "continue", updated_at: "2026-08-25T10:00:00.000Z",
+        active_participants: 0, active_leases: 0, active_branches: 0,
+      }] };
+      if (/FROM core_continuity_remediations/.test(sql)) return { rows: [{
+        work_id: WORK_ID, remediation_id: "rem-1", status: "open", block_class: "policy",
+      }] };
+      throw new Error("unexpected_authorized_gallery_query");
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const result = await runtime.galleryAuthorized({ tenantId: "tenant-a" }, {
+    project_id: "project-a",
+  }, {
+    schema_version: "legacy_work_read_authorization_v1",
+    server_derived: true,
+    tenant_id: "tenant-a",
+    work_ids: [WORK_ID],
+  });
+  assert.deepEqual(result.works.map((work) => work.work_id), [WORK_ID]);
+  const workRead = calls.find((call) => /count\(DISTINCT p\.session_id\)/.test(call.sql));
+  const blockerRead = calls.find((call) => /FROM core_continuity_remediations/.test(call.sql));
+  assert.match(workRead.sql, /w\.work_id = ANY\(\$5::uuid\[\]\)/);
+  assert.deepEqual(workRead.params[4], [WORK_ID]);
+  assert.match(blockerRead.sql, /work_id = ANY\(\$3::uuid\[\]\)/);
+  assert.deepEqual(blockerRead.params[2], [WORK_ID]);
 });
 
 function standingReleaseAnchor(overrides = {}) {
@@ -802,8 +911,9 @@ test("Gallery join locks the Work row before the advisory work lock", async () =
   assert.ok(workAdvisoryLock < participantLock);
 });
 
-test("Gallery mutations use bounded Core action types instead of generic continuity update", () => {
+test("Gallery and DTT mutations use bounded Core action types and derived Core-valid targets", () => {
   assert.deepEqual({
+    tenant_work_open_review: tenantWorkCoordinationActionType("tenant_work_open_review"),
     tenant_work_gallery_join: tenantWorkCoordinationActionType("tenant_work_gallery_join"),
     tenant_work_gallery_heartbeat: tenantWorkCoordinationActionType("tenant_work_gallery_heartbeat"),
     tenant_work_branch_open: tenantWorkCoordinationActionType("tenant_work_branch_open"),
@@ -811,7 +921,15 @@ test("Gallery mutations use bounded Core action types instead of generic continu
     tenant_work_lease_renew: tenantWorkCoordinationActionType("tenant_work_lease_renew"),
     tenant_work_lease_release: tenantWorkCoordinationActionType("tenant_work_lease_release"),
     tenant_work_message_post: tenantWorkCoordinationActionType("tenant_work_message_post"),
+    tenant_work_queue_create_v3: tenantWorkCoordinationActionType("tenant_work_queue_create_v3"),
+    tenant_work_assign_v3: tenantWorkCoordinationActionType("tenant_work_assign_v3"),
+    tenant_work_assignment_accept_v3: tenantWorkCoordinationActionType("tenant_work_assignment_accept_v3"),
+    tenant_work_archive_v3: tenantWorkCoordinationActionType("tenant_work_archive_v3"),
+    tenant_work_reopen_v3: tenantWorkCoordinationActionType("tenant_work_reopen_v3"),
+    tenant_work_task_record: tenantWorkCoordinationActionType("tenant_work_task_record"),
+    tenant_work_evidence_record: tenantWorkCoordinationActionType("tenant_work_evidence_record"),
   }, {
+    tenant_work_open_review: "work.bootstrap.review",
     tenant_work_gallery_join: "work.participant.join",
     tenant_work_gallery_heartbeat: "work.participant.heartbeat",
     tenant_work_branch_open: "work.branch.open",
@@ -819,6 +937,52 @@ test("Gallery mutations use bounded Core action types instead of generic continu
     tenant_work_lease_renew: "work.lease.renew",
     tenant_work_lease_release: "work.lease.release",
     tenant_work_message_post: "work.message.post",
+    tenant_work_queue_create_v3: "work.gallery.queue.create",
+    tenant_work_assign_v3: "work.gallery.assignment.offer",
+    tenant_work_assignment_accept_v3: "work.gallery.assignment.accept",
+    tenant_work_archive_v3: "work.gallery.archive",
+    tenant_work_reopen_v3: "work.gallery.reopen",
+    tenant_work_task_record: "task.update",
+    tenant_work_evidence_record: "continuity.update",
   });
+  assert.equal(tenantWorkCoordinationTarget("tenant_work_task_record", { work_id: WORK_ID }), `task:${WORK_ID}`);
+  assert.equal(tenantWorkCoordinationTarget("tenant_work_evidence_record", { work_id: WORK_ID }), `work_continuity_evidence:${WORK_ID}`);
+  assert.equal(tenantWorkCoordinationTarget("tenant_work_queue_create_v3", {}), "tenant_work_queue_create_v3");
+  for (const name of [
+    "tenant_work_assign_v3",
+    "tenant_work_assignment_accept_v3",
+    "tenant_work_archive_v3",
+    "tenant_work_reopen_v3",
+  ]) {
+    assert.equal(tenantWorkCoordinationTarget(name, { work_id: WORK_ID }), WORK_ID, name);
+  }
+  assert.equal(
+    tenantWorkCoordinationTarget("software_cognition_repository_bootstrap", { work_id: WORK_ID }),
+    `work_atlas:${WORK_ID}`,
+  );
+  const workIdV7 = "018f8d9e-8a2e-7b11-8c4d-123456789abc";
+  assert.equal(
+    tenantWorkCoordinationTarget("software_cognition_repository_bootstrap", { work_id: workIdV7 }),
+    `work_atlas:${workIdV7}`,
+  );
+  assert.equal(tenantWorkCoordinationTarget("tenant_work_task_record", { work_id: "not-a-work-id" }), "tenant_work_task_record");
   assert.equal(tenantWorkCoordinationActionType("unknown_internal_write"), null);
+});
+
+test("Gallery V3 schemas admit only Core-valid bounded idempotency keys", () => {
+  const names = [
+    "tenant_work_queue_create_v3",
+    "tenant_work_assign_v3",
+    "tenant_work_assignment_accept_v3",
+    "tenant_work_archive_v3",
+    "tenant_work_reopen_v3",
+  ];
+  for (const name of names) {
+    const schema = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === name).inputSchema.properties.idempotency_key;
+    assert.equal(schema.minLength, 8, name);
+    assert.equal(schema.maxLength, 160, name);
+    const pattern = new RegExp(schema.pattern);
+    assert.equal(pattern.test("valid-key-0001"), true, name);
+    assert.equal(pattern.test("invalid\u0000key"), false, name);
+  }
 });

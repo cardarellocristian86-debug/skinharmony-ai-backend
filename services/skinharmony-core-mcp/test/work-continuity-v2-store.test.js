@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import fs from "node:fs";
 import test from "node:test";
 import {
   ADDITIVE_SCHEMA_SQL,
@@ -11,14 +12,154 @@ import {
   canRecordTask,
   createGenericWorkCoreJoinVerifier,
   createWorkContinuityV2Store,
+  deriveLegacyFinalReportDigest,
   deriveAuthenticatedTenantWorkAcl,
+  deriveTenantWorkClosureVerification,
   verifyGenericCoreJoinVerdict,
 } from "../src/work-continuity-v2-store.js";
+import { buildGenericClosureArtifacts } from "../src/work-continuity-v2.js";
 
 const acl = ({ user_id = "user-a", tenant_id = "tenant-a", ...rest } = {}) => ({
   server_derived: true, user_id, tenant_id, team_ids: [], managed_team_ids: [],
   is_tenant_owner: false, is_super_admin: false, ...rest,
 });
+
+test("V2 evidence identity uses only a server-bound native transport fingerprint", () => {
+  const baseIdentity = {
+    tenantId: "tenant-a",
+    subject: "user-a",
+    tenant_work_acl: acl(),
+  };
+  const native = actorFromIdentity({
+    ...baseIdentity,
+    agentPresence: {
+      agent_id: "native-verifier",
+      session_fingerprint: "regular-session",
+      host_transport_session_fingerprint: "transport-session",
+      transport_bound: true,
+    },
+  });
+  assert.equal(native.session_fingerprint, "transport-session");
+
+  const unbound = actorFromIdentity({
+    ...baseIdentity,
+    agentPresence: {
+      agent_id: "declared-agent",
+      session_fingerprint: "regular-session",
+      host_transport_session_fingerprint: "untrusted-transport-session",
+      transport_bound: false,
+    },
+  });
+  assert.equal(unbound.session_fingerprint, "regular-session");
+});
+
+function canonicalDigest(value) {
+  const stable = (item) => {
+    if (Array.isArray(item)) return item.map(stable);
+    if (!item || typeof item !== "object") return item;
+    return Object.fromEntries(Object.keys(item).sort().map((key) => [key, stable(item[key])]));
+  };
+  return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
+
+function verifiedClosureFixture() {
+  const tenantId = "tenant-a";
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const receiptId = "22222222-2222-4222-8222-222222222222";
+  const evidenceDigest = "a".repeat(64);
+  const finalEvidenceDigest = canonicalDigest([evidenceDigest]);
+  const coreJoinDigest = "b".repeat(64);
+  const unsignedReceipt = {
+    receipt_id: receiptId,
+    work_id: workId,
+    adapter: "research",
+    core_join_digest: coreJoinDigest,
+    final_evidence_digest: finalEvidenceDigest,
+    issued_at: "2026-08-25T12:00:00.000Z",
+  };
+  const reportReceipt = { ...unsignedReceipt, receipt_digest: canonicalDigest(unsignedReceipt) };
+  const report = {
+    schema_version: "tenant_work_final_report_v1",
+    work_id: workId,
+    work_code: "ENTITY-20260825-0001",
+    work_name: "Entity 360",
+    work_type: "research",
+    tenant_id: tenantId,
+    project_id: "nyra_core",
+    owner_user_id: "owner-a",
+    team_id: null,
+    intent_digest: "d".repeat(64),
+    created_at: "2026-08-25T10:00:00.000Z",
+    started_at: "2026-08-25T10:05:00.000Z",
+    closed_at: "2026-08-25T12:00:00.000Z",
+    final_status: "COMPLETED",
+    progress_bp: 10000,
+    priority: "P1",
+    objective: "Qualify bounded Entity 360 context.",
+    acceptance_criteria: ["Closure is independently verified."],
+    evidence_summary: [{ kind: "test_report", digest: evidenceDigest }],
+    core_join_digest: coreJoinDigest,
+    closure_receipt: reportReceipt,
+    final_evidence_digest: finalEvidenceDigest,
+  };
+  const reportDigest = canonicalDigest(report);
+  const payload = {
+    adapter: "research",
+    archived: true,
+    closure_receipt_digest: reportReceipt.receipt_digest,
+    core_join_digest: coreJoinDigest,
+    final_evidence_digest: finalEvidenceDigest,
+    report_digest: reportDigest,
+  };
+  const eventEnvelope = {
+    tenant_id: tenantId,
+    work_id: workId,
+    sequence_number: 4,
+    event_type: "generic_closure_finalized",
+    payload,
+    previous_event_hash: "c".repeat(64),
+  };
+  const coreJoinContext = {
+    tenant_id: tenantId,
+    work_id: workId,
+    adapter: "research",
+    verdict_digest: coreJoinDigest,
+    authority: "universal_core",
+    decision: "GENERIC_WORK_CORE_JOIN_ELIGIBLE",
+  };
+  return {
+    input: {
+      tenant_id: tenantId,
+      work: {
+        tenant_id: tenantId,
+        work_id: workId,
+        work_code: report.work_code,
+        work_name: report.work_name,
+        work_type: report.work_type,
+        project_id: report.project_id,
+        owner_user_id: report.owner_user_id,
+        team_id: report.team_id,
+        intent_digest: report.intent_digest,
+        created_at: report.created_at,
+        started_at: report.started_at,
+        closed_at: report.closed_at,
+        status: "COMPLETED",
+        progress_bp: report.progress_bp,
+        priority: report.priority,
+        objective: report.objective,
+        acceptance_criteria: report.acceptance_criteria,
+        final_evidence_digest: finalEvidenceDigest,
+      },
+      tasks: [{ tenant_id: tenantId, work_id: workId, required: true, status: "completed", acceptance_verified: true }],
+      evidence: [{ tenant_id: tenantId, work_id: workId, required: true, kind: "test_report", digest: evidenceDigest, independently_verified: true }],
+      core_join: { tenant_id: tenantId, work_id: workId, core_join_digest: coreJoinDigest, core_join_context: coreJoinContext },
+      closure_receipt: { tenant_id: tenantId, ...reportReceipt },
+      final_report: { tenant_id: tenantId, work_id: workId, report, report_digest: reportDigest },
+      closure_event: { ...eventEnvelope, event_hash: canonicalDigest(eventEnvelope) },
+    },
+    coreJoinContext,
+  };
+}
 
 test("v2 store schema is additive and preserves legacy tables", () => {
   assert.match(ADDITIVE_SCHEMA_SQL, /CREATE TABLE IF NOT EXISTS tenant_work/);
@@ -26,6 +167,96 @@ test("v2 store schema is additive and preserves legacy tables", () => {
   assert.match(ADDITIVE_SCHEMA_SQL, /tenant_work_code_sequence/);
   assert.match(ADDITIVE_SCHEMA_SQL, /tenant_work_core_join/);
   assert.doesNotMatch(ADDITIVE_SCHEMA_SQL, /DROP\s+TABLE|DELETE\s+FROM/i);
+});
+
+test("closure verification correlates Work, tasks, evidence, Core Join, receipt, report and terminal event", () => {
+  const fixture = verifiedClosureFixture();
+  const projection = deriveTenantWorkClosureVerification(fixture.input, {
+    verifyCoreJoin: (context) => context === fixture.coreJoinContext,
+  });
+  assert.equal(projection.verified, true);
+  assert.deepEqual(projection.failure_codes, []);
+  assert.equal(projection.tenant_id, "tenant-a");
+  assert.equal(projection.work_id, fixture.input.work.work_id);
+  assert.match(projection.verification_digest, /^[a-f0-9]{64}$/);
+});
+
+test("closure verification fails closed on syntactic, tampered or unverified artifacts", () => {
+  const cases = [
+    (fixture) => { fixture.input.final_report.report_digest = "f".repeat(64); },
+    (fixture) => { fixture.input.closure_receipt.receipt_digest = "e".repeat(64); },
+    (fixture) => { fixture.input.closure_event.payload.report_digest = "d".repeat(64); },
+    (fixture) => { fixture.input.evidence[0].independently_verified = false; },
+    (fixture) => {
+      fixture.input.final_report.report.objective = "Tampered objective";
+      const reportDigest = canonicalDigest(fixture.input.final_report.report);
+      fixture.input.final_report.report_digest = reportDigest;
+      fixture.input.closure_event.payload.report_digest = reportDigest;
+      const { event_hash: ignoredEventHash, ...eventEnvelope } = fixture.input.closure_event;
+      fixture.input.closure_event.event_hash = canonicalDigest(eventEnvelope);
+    },
+  ];
+  for (const mutate of cases) {
+    const fixture = verifiedClosureFixture();
+    mutate(fixture);
+    const projection = deriveTenantWorkClosureVerification(fixture.input, {
+      verifyCoreJoin: (context) => context === fixture.coreJoinContext,
+    });
+    assert.equal(projection.verified, false);
+    assert(projection.failure_codes.length > 0);
+    assert.equal(projection.receipt_digest, null);
+  }
+  const fixture = verifiedClosureFixture();
+  const unverifiedJoin = deriveTenantWorkClosureVerification(fixture.input, {
+    verifyCoreJoin: () => false,
+  });
+  assert.equal(unverifiedJoin.verified, false);
+  assert(unverifiedJoin.failure_codes.includes("closure_core_join_unverified"));
+});
+
+test("legacy final-report digest binds the complete pre-canonical report shape", () => {
+  const fixture = verifiedClosureFixture();
+  const original = deriveLegacyFinalReportDigest(fixture.input.final_report.report);
+  assert.match(original, /^[a-f0-9]{64}$/);
+  fixture.input.final_report.report.evidence_summary[0].kind = "tampered";
+  assert.notEqual(deriveLegacyFinalReportDigest(fixture.input.final_report.report), original);
+});
+
+test("legacy digest recognition exactly reproduces the pre-canonical finalizer", () => {
+  const fixture = verifiedClosureFixture();
+  const work = fixture.input.work;
+  const finalized = buildGenericClosureArtifacts(work, {
+    adapter: work.work_type,
+    server_verified_closure_context: {
+      schema_version: "work_closure_context_v1",
+      server_verified: true,
+      independent_verification: { passed: true },
+      core_join: { received: true, digest: fixture.input.core_join.core_join_digest },
+      final_evidence_digest: work.final_evidence_digest,
+      evidence_summary: fixture.input.evidence.map(({ kind, digest }) => ({ kind, digest })),
+    },
+  });
+  const preCanonicalDigest = crypto.createHash("sha256")
+    .update(JSON.stringify(finalized.final_report)).digest("hex");
+  assert.equal(deriveLegacyFinalReportDigest(finalized.final_report), preCanonicalDigest);
+});
+
+test("DTT task upsert gives PostgreSQL an explicit type for its reused status parameter", () => {
+  const source = fs.readFileSync(new URL("../src/work-continuity-v2-store.js", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /CASE WHEN \$6::varchar='completed' THEN now\(\) ELSE NULL END/,
+  );
+});
+
+test("generic finalization persists the canonical report digest and hash-bound V2 closure event", () => {
+  const source = fs.readFileSync(new URL("../src/work-continuity-v2-store.js", import.meta.url), "utf8");
+  assert.match(source, /const reportDigest = objectDigest\(finalized\.final_report\)/);
+  assert.match(source, /appendV2Event\(client, actor, workId, "generic_closure_finalized"/);
+  assert.match(source, /report_digest: reportDigest/);
+  assert.match(source, /verifyAndBackfillExistingClosure\(client, actor, state, adapter\)/);
+  assert.match(source, /reportRow\.report_digest !== legacyReportDigest/);
+  assert.match(source, /work_closure_projection_backfill_invalid/);
 });
 
 test("actor requires a server-derived tenant ACL envelope", () => {

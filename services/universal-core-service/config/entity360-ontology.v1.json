@@ -1,0 +1,93 @@
+{
+  "schema_version": "entity_360_ontology_v1",
+  "ontology_version": "entity_360_ontology_v1",
+  "kernel_compatibility": "entity_360_kernel_v1",
+  "entity_types": [
+    {
+      "type": "work",
+      "projection": "work_360",
+      "extension": false
+    },
+    {
+      "type": "software_component",
+      "projection": "software_component_360",
+      "extension": false
+    }
+  ],
+  "relationship_types": [
+    "bound_to",
+    "contains",
+    "depends_on",
+    "observed_by",
+    "produced_by",
+    "relates_to",
+    "supersedes"
+  ],
+  "state_classes": [
+    "conflicting",
+    "current",
+    "historical",
+    "stale",
+    "superseded"
+  ],
+  "transition_classes": [
+    "confirmed",
+    "invalidated",
+    "observed",
+    "reconciled",
+    "superseded"
+  ],
+  "dependency_classes": [
+    "architecture",
+    "data",
+    "policy",
+    "provider",
+    "runtime",
+    "work"
+  ],
+  "policy_binding_classes": [
+    "core",
+    "genesis",
+    "icf",
+    "intent",
+    "nsct",
+    "security"
+  ],
+  "evidence_classes": [
+    "analysis",
+    "authoritative_record",
+    "event",
+    "memory",
+    "runtime_observation",
+    "verified_observation"
+  ],
+  "source_classes": [
+    "architecture",
+    "cognition",
+    "continuity",
+    "event_ledger",
+    "governance",
+    "memory",
+    "runtime",
+    "security"
+  ],
+  "trust_boundaries": [
+    "core_internal",
+    "external",
+    "provider",
+    "tenant_internal",
+    "untrusted"
+  ],
+  "temporal_semantics": [
+    "as_of",
+    "recorded_time",
+    "superseded_by",
+    "tombstone",
+    "valid_time"
+  ],
+  "extension_contract": {
+    "mode": "declarative_registry_adapter",
+    "kernel_modification_required": false,
+    "compatibility": "additive_minor_breaking_major"
+  }
+}

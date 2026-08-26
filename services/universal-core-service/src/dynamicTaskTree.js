@@ -26,6 +26,15 @@ const DEFAULT_LIMITS = Object.freeze({
   max_tokens: 100_000,
   max_cost_micros: 10_000_000,
 });
+const VERIFICATION_READINESS_BLOCKERS = new Set([
+  "task_tree_cancelled",
+  "task_tree_already_joined",
+  "task_tree_not_verified",
+  "verification_node_required",
+  "verification_verifier_not_allowlisted",
+  "verification_assignment_duplicate",
+  "verification_evidence_quorum_unsatisfied",
+]);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -369,6 +378,35 @@ function replayOutcomeReceipt({ receipt, request_digest, scope_digest, requested
   return clone(result);
 }
 
+// A failed outcome may already have selected a governed recovery route. The
+// readiness projection must preserve that route rather than treating the node
+// as a fresh evidence draft: a retry and a fallback both require Core review,
+// while a quarantined envelope requires the security-review path.
+function readinessRecoveryRoute(node) {
+  if (node.status === "retry_proposed") {
+    return {
+      state: "retry_proposed",
+      next_steps: ["requires_core_review"],
+      attempt: node.attempts,
+      max_attempts: node.retry_policy.max_attempts,
+    };
+  }
+  if (node.status === "quarantined") {
+    return {
+      state: "quarantined",
+      next_steps: ["manual_security_review"],
+    };
+  }
+  if (node.status === "failed" && node.fallback_node_id) {
+    return {
+      state: "fallback_proposed",
+      next_steps: ["requires_core_review"],
+      fallback_node_id: node.fallback_node_id,
+    };
+  }
+  return null;
+}
+
 export function buildDynamicTaskTreeContract({ tenant_id, work_id, objective, nodes, limits = {} } = {}) {
   const tenantId = requireText(tenant_id, "tenant_id", 120);
   const workId = requireWorkId(work_id);
@@ -409,6 +447,9 @@ export function buildDynamicTaskTreeContract({ tenant_id, work_id, objective, no
 export function createDynamicTaskTreeRuntime({
   resolve_verifier_identity = null,
   resolve_evidence_artifact = null,
+  list_verifier_assignments = null,
+  list_verifier_assignments_for_tree = null,
+  read_core_join_verdict_events = null,
   state_store = null,
 } = {}) {
   const trees = new Map();
@@ -776,6 +817,183 @@ export function createDynamicTaskTreeRuntime({
     async inspectCoreJoin({ tenant_id, work_id, tree_id }) {
       const tree = await treeFor({ tenant_id, work_id, tree_id });
       return clone(await validateTreeForCoreJoin(tree));
+    },
+
+    // This is deliberately a read-only projection of durable state. Evidence
+    // drafts and unsubmitted receipts are intentionally excluded: treating a
+    // client-held draft as durable progress would let a stale or substituted
+    // proof make a Work look ready. Assignments, recorded outcomes and the
+    // Core Join are all re-read from their authoritative stores instead.
+    async inspectVerificationReadiness({ tenant_id, work_id, tree_id }) {
+      const tree = await treeFor({ tenant_id, work_id, tree_id });
+      const assignmentsByNode = new Map();
+      if (typeof list_verifier_assignments_for_tree === "function") {
+        const assignments = await list_verifier_assignments_for_tree({
+          tenant_id: tree.tenant_id,
+          work_id: tree.work_id,
+          tree_id: tree.tree_id,
+        });
+        if (!Array.isArray(assignments)) throw new Error("dtt_verifier_assignments_unavailable");
+        for (const assignment of assignments) {
+          const nodeId = typeof assignment?.node_id === "string" ? assignment.node_id.trim() : "";
+          if (!nodeId) throw new Error("dtt_verifier_assignments_unavailable");
+          const current = assignmentsByNode.get(nodeId) || [];
+          current.push(assignment);
+          assignmentsByNode.set(nodeId, current);
+        }
+      }
+      const nodes = [];
+      for (const node of tree.nodes) {
+        let assignments = assignmentsByNode.get(node.node_id) || [];
+        if (typeof list_verifier_assignments_for_tree !== "function" &&
+            typeof list_verifier_assignments === "function") {
+          assignments = await list_verifier_assignments({
+            tenant_id: tree.tenant_id,
+            work_id: tree.work_id,
+            tree_id: tree.tree_id,
+            node_id: node.node_id,
+          });
+          if (!Array.isArray(assignments)) throw new Error("dtt_verifier_assignments_unavailable");
+        }
+        const assignedVerifierIds = [...new Set(assignments
+          .map((assignment) => typeof assignment?.verifier_id === "string"
+            ? assignment.verifier_id.trim()
+            : "")
+          .filter(Boolean))].sort();
+        const requiredApprovals = node.kind === "verification"
+          ? node.verification_policy.required_approvals
+          : 1;
+        const allowedVerifierIds = node.kind === "verification"
+          ? [...node.verification_policy.allowed_verifier_ids]
+          : [];
+        const recovery = readinessRecoveryRoute(node);
+        const nodeBlocked = ["failed", "quarantined", "cancelled", "pruned"].includes(node.status);
+        const verified = node.status === "verified";
+        nodes.push({
+          node_id: node.node_id,
+          kind: node.kind,
+          status: node.status,
+          required_approvals: requiredApprovals,
+          ...(node.kind === "verification" ? {
+            allowed_verifier_ids: allowedVerifierIds,
+            unassigned_verifier_ids: allowedVerifierIds.filter((id) => !assignedVerifierIds.includes(id)),
+          } : {}),
+          assigned_verifier_ids: assignedVerifierIds,
+          assignment_count: assignedVerifierIds.length,
+          evidence_recorded: verified,
+          ...(recovery ? {
+            state: recovery.state,
+            next_steps: recovery.next_steps,
+            ...(Number.isInteger(recovery.attempt) ? {
+              attempt: recovery.attempt,
+              max_attempts: recovery.max_attempts,
+            } : {}),
+            ...(recovery.fallback_node_id ? { fallback_node_id: recovery.fallback_node_id } : {}),
+          } : {
+            state: verified
+              ? "verified"
+              : nodeBlocked
+                ? "blocked"
+                : "evidence_pending",
+            next_steps: verified
+              ? []
+              : nodeBlocked
+                ? ["replan_or_cancel"]
+                : [
+                  "register_immutable_artifact",
+                  "prepare_work_bound_evidence_draft",
+                  "assign_independent_verifier",
+                  "collect_signed_attestations",
+                  "record_verified_outcome",
+                ],
+          }),
+          execution_authorized: false,
+        });
+      }
+      let coreJoin = { ready: false, state: "blocked", blocker: "task_tree_not_verified" };
+      if (tree.status === "core_joined") {
+        if (typeof read_core_join_verdict_events !== "function") {
+          throw new Error("dtt_join_verdict_ledger_unavailable");
+        }
+        const verdictReference = String(tree.core_join?.verdict_reference || "").trim();
+        const events = await read_core_join_verdict_events({
+          tenant_id: tree.tenant_id,
+          work_id: tree.work_id,
+          tree_id: tree.tree_id,
+        });
+        if (!Array.isArray(events)) throw new Error("dtt_join_verdict_ledger_integrity_failed");
+        const issued = events.find((event) =>
+          event?.event_type === "issued" && event.verdict_reference === verdictReference);
+        const consumed = events.some((event) =>
+          event?.event_type === "consumed" && event.verdict_reference === verdictReference);
+        const voided = events.some((event) =>
+          event?.event_type === "voided" && event.verdict_reference === verdictReference);
+        if (!verdictReference || !issued) {
+          coreJoin = { ready: false, state: "reconciliation_required", blocker: "joined_tree_verdict_missing" };
+        } else if (voided) {
+          coreJoin = { ready: false, state: "reconciliation_required", blocker: "joined_tree_verdict_voided" };
+        } else if (!consumed) {
+          coreJoin = { ready: false, state: "reconciliation_required", blocker: "dtt_join_finalization_pending" };
+        } else {
+          coreJoin = { ready: true, state: "joined", blocker: null };
+        }
+      } else if (tree.status === "cancelled") {
+        coreJoin = { ready: false, state: "unavailable", blocker: "task_tree_cancelled" };
+      } else {
+        try {
+          const readiness = await validateTreeForCoreJoin(tree);
+          coreJoin = {
+            ready: readiness.ready === true,
+            state: readiness.ready === true ? "ready" : "blocked",
+            blocker: null,
+            evidence_set_digest: readiness.evidence_set_digest,
+          };
+        } catch (error) {
+          const code = String(error?.message || "task_tree_not_verified");
+          if (!VERIFICATION_READINESS_BLOCKERS.has(code)) throw error;
+          coreJoin = {
+            ready: false,
+            state: "blocked",
+            blocker: code,
+          };
+        }
+      }
+      const blocked = nodes.find((node) => node.state === "blocked");
+      const pending = nodes.find((node) => node.state === "evidence_pending");
+      const manualSecurityReview = nodes.find((node) => node.state === "quarantined");
+      const coreRecoveryReview = nodes.find((node) =>
+        node.state === "retry_proposed" || node.state === "fallback_proposed");
+      return clone({
+        schema_version: "dynamic_task_tree_verification_readiness_v1",
+        tenant_id: tree.tenant_id,
+        work_id: tree.work_id,
+        tree_id: tree.tree_id,
+        tree_status: tree.status,
+        nodes,
+        core_join: coreJoin,
+        next_action: tree.status === "core_joined"
+          ? coreJoin.state === "joined"
+            ? "already_core_joined"
+            : "reconcile_core_join_verdict"
+          : tree.status === "cancelled"
+            ? "tree_cancelled"
+            : manualSecurityReview
+              ? "manual_security_review"
+              : coreRecoveryReview
+                ? "requires_core_review"
+                : blocked
+                  ? "replan_or_cancel"
+                  : pending
+                    ? "complete_persisted_evidence_flow"
+                    : coreJoin.ready
+                      ? "request_core_join"
+                      : "inspect_core_join_blocker",
+        persistence: {
+          durable: ["verifier_assignments", "recorded_outcomes", "core_join"],
+          intentionally_ephemeral: ["evidence_drafts", "unsubmitted_identity_receipts"],
+        },
+        execution_authorized: false,
+      });
     },
 
     async coreJoin({ tenant_id, work_id, tree_id, core_verdict, verification = {} }) {

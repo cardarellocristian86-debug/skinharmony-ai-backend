@@ -1013,6 +1013,12 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     readback_digest: "f".repeat(64),
     observed_commit: "c".repeat(40),
   }, identity);
+  await handlers.host_native_action_quarantine_expired({
+    ticket_id: "hnt_ticket-12345678",
+    reservation_id: "hnr_reservation-12345678",
+    readback_digest: "2".repeat(64),
+    idempotency_key: "quarantine-expired-ticket",
+  }, identity);
   const closure = await handlers.host_native_action_closure_receipt({
     ticket_id: "hnt_ticket-12345678",
   }, identity);
@@ -1026,15 +1032,25 @@ test("binds host-native delegation and action routes to OAuth owner and server p
     "/v1/host-native/actions/hnt_ticket-12345678/complete",
     "/v1/host-native/actions/hnt_ticket-12345678",
     "/v1/host-native/actions/hnt_ticket-12345678/reconcile",
+    "/v1/host-native/actions/hnt_ticket-12345678",
+    "/v1/host-native/actions/hnt_ticket-12345678/quarantine-expired",
     "/v1/host-native/actions/hnt_ticket-12345678/authorize-finalize",
   ]);
   assert.equal(calls[0].body.owner_confirmed, true);
+  assert.equal(calls[0].body.requested_ttl_seconds, 3_600);
+  assert.equal("expires_at" in calls[0].body, false);
   assert.equal(calls[0].body.owner_context.role, "tenant_owner");
   const ownerContext = calls[0].body.owner_context;
   const expectedOwnerFingerprint = `osf_${crypto.createHmac("sha256", OWNER_CONTEXT_SECRET)
     .update("host-native-owner\u0000auth0|verified-owner")
     .digest("hex")}`;
   assert.equal(ownerContext.owner_subject_fingerprint, expectedOwnerFingerprint);
+  assert.deepEqual(calls[8].body, {
+    reservation_id: "hnr_reservation-12345678",
+    host_session_fingerprint: "a".repeat(64),
+    readback_digest: "2".repeat(64),
+    idempotency_key: "quarantine-expired-ticket",
+  });
   const ownerCanonical = JSON.stringify({
     version: ownerContext.assertion_version,
     audience: ownerContext.audience,
@@ -1058,11 +1074,11 @@ test("binds host-native delegation and action routes to OAuth owner and server p
   assert.equal(calls[2].body.host_session_fingerprint, "a".repeat(64));
   assert.equal(calls[4].body.result_commit, "c".repeat(40));
   assert.equal(calls[6].body.observed_commit, "c".repeat(40));
-  assert.equal(calls[7].body.host_session_fingerprint, "a".repeat(64));
+  assert.equal(calls[8].body.host_session_fingerprint, "a".repeat(64));
   assert.equal(closure.structuredContent.finalize_authorization.trusted, true);
   assert.equal(calls[0].headers.authorization, "Bearer tenant-core-key");
   assert.equal(calls[0].headers["x-sh-tenant-id"], undefined);
-  for (const call of calls.slice(1, 8)) {
+  for (const call of calls.slice(1, 10)) {
     assert.equal(call.headers.authorization, `Bearer ${TENANT_GATEWAY_KEY}`);
     assert.equal(call.headers["x-sh-tenant-id"], "tenant-a");
     const tenantContext = JSON.parse(Buffer.from(
@@ -1186,6 +1202,16 @@ test("validates the real host-native ticket readback shape fail-closed", async (
   const fingerprint = "a".repeat(64);
   const identity = {
     tenantId: "tenant-a",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      registry_revision: "test-host-registry-v1",
+      app_id: "codex_test",
+      host_kind: "codex_native",
+      client_type: "codex",
+      interaction_mode: "native_tooling",
+      capabilities: [],
+    },
     agentPresence: { client_type: "codex", session_fingerprint: fingerprint },
   };
   const validPayload = () => ({
@@ -1286,6 +1312,16 @@ test("host-native action automation fails closed without the tenant gateway and 
       evidence_digest: "d".repeat(64),
     }, {
       tenantId: "tenant-a",
+      authenticatedHostPrincipal: {
+        schema_version: "authenticated_host_principal_v1",
+        registered: true,
+        registry_revision: "test-host-registry-v1",
+        app_id: "codex_test",
+        host_kind: "codex_native",
+        client_type: "codex",
+        interaction_mode: "native_tooling",
+        capabilities: [],
+      },
       agentPresence: {
         client_type: "codex",
         session_fingerprint: "a".repeat(64),
@@ -1634,6 +1670,15 @@ test("write guard preserves bounded coordination idempotency through the Core tr
 
 test("write guard gives a fresh OAuth tenant owner a request-bound continuity bootstrap assertion only", async () => {
   const calls = [];
+  const durableReceipt = {
+    schema_version: "core_action_authorization_receipt_v1",
+    authority: "universal_core",
+    authorization_id: `cae_${"1".repeat(40)}`,
+  };
+  const attemptReceipt = {
+    schema_version: "core_action_authorization_attempt_v1",
+    idempotent_replay: false,
+  };
   const guard = createCoreWriteGuard({
     universalCoreUrl: "https://core.test",
     universalCoreKeys: { "tenant-a": "tenant-a-key" },
@@ -1650,6 +1695,8 @@ test("write guard gives a fresh OAuth tenant owner a request-bound continuity bo
           confirmation_required: true,
           confirmation_satisfied: true,
         },
+        authorization_receipt: durableReceipt,
+        authorization_attempt_receipt: attemptReceipt,
       }), { status: 200, headers: { "content-type": "application/json" } });
     },
   });
@@ -1662,10 +1709,11 @@ test("write guard gives a fresh OAuth tenant owner a request-bound continuity bo
     ownerConfirmed: true,
     confirmationReference: "create the first client Work Identity",
   };
-  const result = await guard({
+  const action = {
     action_label: "Create persistent Work Identity",
-    action_type: "work.continuity.create",
+    action_type: "work.continuity.v2.create",
     target: "client-project",
+    idempotency_key: "work-bootstrap-core-replay-001",
     operation_class: "owner_confirmed_governed_action",
     external_side_effect: false,
     destructive: false,
@@ -1676,14 +1724,20 @@ test("write guard gives a fresh OAuth tenant owner a request-bound continuity bo
     audit_ready: true,
     target_authority_verified: true,
     actor_authorized_for_target: true,
-  }, identity);
+  };
+  const result = await guard(action, identity);
+  await guard(action, identity);
   assert.equal(result.allowed, true);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.equal(calls[0].owner_confirmed, true);
   assert.equal(calls[0].confirmation_reference, identity.confirmationReference);
   assert.equal(calls[0].owner_context.owner_verified, true);
   assert.equal(calls[0].owner_context.role, "tenant_owner");
+  assert.match(calls[0].owner_context.owner_subject_fingerprint, /^osf_[a-f0-9]{64}$/);
   assert.match(calls[0].owner_context.assertion, /^ocs_[a-f0-9]{64}$/);
+  assert.equal(calls[0].request_id, calls[1].request_id);
+  assert.deepEqual(result.core_authorization_receipt, durableReceipt);
+  assert.deepEqual(result.core_authorization_attempt_receipt, attemptReceipt);
   assert.equal("internal_owner_assertion_scope" in calls[0], false);
 });
 

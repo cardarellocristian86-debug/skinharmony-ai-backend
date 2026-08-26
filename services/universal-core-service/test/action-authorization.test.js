@@ -45,6 +45,24 @@ test("authorizes a bounded low-impact coordination write without confirmation", 
   assert.equal(result.confirmation_satisfied, false);
 });
 
+test("authorizes a bounded repository Atlas bootstrap only for its Work-derived target", () => {
+  const atlasTarget = "work_atlas:11111111-1111-4111-8111-111111111111";
+  const allowed = buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "work_atlas.update",
+    target: atlasTarget,
+    idempotency_key: "atlas-bootstrap-11111111",
+  });
+  assert.equal(allowed.allowed, true);
+  const denied = buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "work_atlas.update",
+    target: "software_cognition_repository_bootstrap",
+    idempotency_key: "atlas-bootstrap-wrong-target",
+  });
+  assert.equal(denied.allowed, false);
+});
+
 test("preserves the closed legacy and continuity coordination action set", () => {
   const targets = {
     "agent.heartbeat": "tenant_agent_heartbeat",
@@ -52,6 +70,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "task.update": "tenant_task_queue",
     "message.acknowledge": "tenant_message_queue",
     "continuity.update": "work_continuity_checkpoint",
+    "work.bootstrap.review": "tenant_work_open_review",
     "work.continuity.resume_or_bind": "skinharmony-ai-backend:chat-session-1",
     "work.participant.join": "tenant_work_gallery_join",
     "work.participant.heartbeat": "tenant_work_gallery_heartbeat",
@@ -60,6 +79,11 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "work.lease.renew": "tenant_work_lease_renew",
     "work.lease.release": "tenant_work_lease_release",
     "work.message.post": "tenant_work_message_post",
+    "work.gallery.queue.create": "tenant_work_queue_create_v3",
+    "work.gallery.assignment.offer": "11111111-1111-4111-8111-111111111111",
+    "work.gallery.assignment.accept": "11111111-1111-4111-8111-111111111111",
+    "work.gallery.archive": "11111111-1111-4111-8111-111111111111",
+    "work.gallery.reopen": "11111111-1111-4111-8111-111111111111",
     "native_agent.plan": "work_continuity_native_plan_create",
     "native_agent.bind": "work_continuity_native_bind",
     "native_agent.report": "work_continuity_native_report",
@@ -68,7 +92,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "incident.record": "work_continuity_incident_record",
     "delegation.consume": "work_continuity_delegation_consume",
   };
-  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 20);
+  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 26);
   for (const actionType of BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES) {
     const authorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
@@ -80,7 +104,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     assert.equal(authorization.confirmation_required, false, actionType);
   }
   for (const actionType of Object.keys(targets).filter((value) => value.startsWith("work.") &&
-    value !== "work.continuity.resume_or_bind")) {
+    !["work.continuity.resume_or_bind", "work.bootstrap.review", "work.gallery.queue.create"].includes(value))) {
     const innerAuthorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
       action_type: actionType,
@@ -95,6 +119,33 @@ test("preserves the closed legacy and continuity coordination action set", () =>
       idempotency_key: `wrong-target-${actionType}-0001`,
     });
     assert.equal(wrongTarget.allowed, false, `${actionType}:wrong_target`);
+  }
+  const bootstrapReview = buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "work.bootstrap.review",
+    target: "tenant_work_open_review",
+    idempotency_key: "bootstrap-review-0001",
+  });
+  assert.equal(bootstrapReview.allowed, true);
+  const galleryV7 = buildActionAuthorization(contract(), {
+    ...boundedCoordinationWrite,
+    action_type: "work.gallery.archive",
+    target: "018f8d9e-8a2e-7b11-8c4d-123456789abc",
+    idempotency_key: "gallery-v7-archive-0001",
+  });
+  assert.equal(galleryV7.allowed, true);
+  for (const target of [
+    "tenant_work_gallery_join",
+    "11111111-1111-4111-8111-111111111111",
+    "work_continuity_v2_create",
+  ]) {
+    const wrongTarget = buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: "work.bootstrap.review",
+      target,
+      idempotency_key: `bootstrap-review-wrong-${target}`,
+    });
+    assert.equal(wrongTarget.allowed, false, `work.bootstrap.review:${target}`);
   }
 });
 test("keeps hard blocks, higher risk and unsafe internal writes closed", () => {

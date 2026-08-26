@@ -91,6 +91,32 @@ test("PostgreSQL 16 Atlas extension enforces one CAS winner and composite endpoi
       WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND receipt_type='software_precore_decision'`, [tenant, work, plan])).rows[0].count), 1);
     assert.equal(Number((await pool.query(`SELECT count(*) AS count FROM core_continuity_events
       WHERE tenant_id=$1 AND work_id=$2 AND event_type='software_precore_decision_recorded'`, [tenant, work])).rows[0].count), 1);
+    const nsctAsOfBeforeSuperseder = new Date((await pool.query("SELECT clock_timestamp() AS now"))
+      .rows[0].now).toISOString();
+    const supersederInput = precoreInput("precore-superseder");
+    supersederInput.expected_sequence = 1;
+    supersederInput.expected_parent_digest = precoreRecord.chain.record_digest;
+    supersederInput.supersedes_decision_id = precoreRecord.decision_id;
+    supersederInput.decision = { ...supersederInput.decision, kind: "CHALLENGE",
+      proposed_next_step: "COLLECT_EVIDENCE" };
+    const precoreSuperseder = await precore.generate(supersederInput);
+    const nsctAsOfAfterSuperseder = new Date((await pool.query("SELECT clock_timestamp() AS now"))
+      .rows[0].now).toISOString();
+    const nsctReadLimits = { max_bytes: 262_144, max_records: 16 };
+    const beforeSuperseder = await precore.readVerifiedAsOfForWork({ tenant_id: tenant,
+      work_id: work, as_of: nsctAsOfBeforeSuperseder }, { limits: nsctReadLimits });
+    assert.equal(beforeSuperseder.heads.length, 1);
+    assert.equal(beforeSuperseder.heads[0].decision_ref,
+      `nyra_precore_decision:${precoreRecord.decision_id}`);
+    const afterSuperseder = await precore.readVerifiedAsOfForWork({ tenant_id: tenant,
+      work_id: work, as_of: nsctAsOfAfterSuperseder }, { limits: nsctReadLimits });
+    assert.equal(afterSuperseder.heads[0].decision_ref,
+      `nyra_precore_decision:${precoreSuperseder.decision_id}`);
+    await assert.rejects(() => precore.readVerifiedAsOfForWork({ tenant_id: tenant,
+      work_id: work, as_of: nsctAsOfAfterSuperseder },
+    { limits: { max_bytes: nsctReadLimits.max_bytes, max_records: 1 } }),
+    (error) => error.code === "nyra_precore_as_of_budget_exceeded"
+      && Number(error.attempted_records) === 2);
     await pool.query(`INSERT INTO core_continuity_works(tenant_id,project_id,work_id,session_id,idea,objective,created_by)
       VALUES($1,$2,$3,'session-2','idea','objective','test')`, [tenant, project, otherWork]);
     await pool.query(`INSERT INTO core_work_causal_bindings(tenant_id,work_id,project_id,genesis_intent_id,intent_revision_id,base_state_digest,provenance)

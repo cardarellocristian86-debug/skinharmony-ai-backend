@@ -69,12 +69,20 @@ function reporterIdentity(tenantId, agentId, fingerprint, signatureHex) {
   return {
     tenantId,
     subject: `codex|${agentId}`,
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      host_kind: "codex_native",
+      client_type: "codex",
+      capabilities: ["work.operate"],
+    },
     agentPresence: {
       agent_id: agentId,
       client_type: "codex",
       transport_bound: true,
       host_transport_session_fingerprint: fingerprint,
       session_fingerprint: fingerprint,
+      host_kind: "codex_native",
       signature: `ags_${signatureHex.repeat(32)}`,
     },
   };

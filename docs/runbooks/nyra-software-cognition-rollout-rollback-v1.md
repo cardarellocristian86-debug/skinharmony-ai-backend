@@ -36,10 +36,17 @@ CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_TARGET_COMMIT
 CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_SERVICE_TOKEN
 CORE_NYRA_POLICY_REGISTRY_NYRA_SIGNER_ED25519_PUBLIC_KEY
 CORE_NYRA_POLICY_REGISTRY_NYRA_KEY_ID
+CORE_NYRA_PRECORE_VERIFY_KEYRING_JSON
 ```
 
 Il purpose ammesso deve essere esattamente `nyra.precore.decision.v1`; readiness,
 firma di prova e verifica locale della chiave pubblica devono risultare verdi.
+Il keyring è un oggetto JSON owner-custodied `key_id -> public PEM/JWK`, separato
+dal signer attivo, con massimo 32 chiavi totali inclusa l’attiva e 65.536 byte.
+La chiave attiva non deve essere duplicata nel retained set. Array, primitive,
+ID duplicati/confliggenti, materiale privato, chiavi non Ed25519 e input oltre i
+limiti lasciano NSCT `signer_unavailable`. La rimozione di una chiave retained è
+consentita soltanto dopo la scadenza della retention di ogni receipt che la usa.
 
 Smoke test per un Work governato:
 
@@ -48,8 +55,10 @@ Smoke test per un Work governato:
 3. verificare il digest Research Cortex nel piano Airlock, legare la capsula firmata e verificare classi e lineage indipendenti;
 4. eseguire in sandbox gli adapter del `technology_profile_v1`, attestare i risultati con evidenza Causal indipendente e invocare `software_cognition_technology_verify`;
 5. richiedere `nyra_precore_decision_generate`, poi `read/list/verify`, e verificare firma, sequence/parent/record digest, `authority_scope=ADVISORY_NON_EXECUTABLE` ed `execution_authorized=false`;
-6. verificare il rifiuto di capsule o ricevute tecniche mancanti, duplicate, scadute, cross-tenant o alterate;
-7. verificare che la ricevuta provvisoria non emetta host action, publish, deploy o Core Join.
+6. verificare receipt firmate con chiave attiva e retained, più unknown/removed
+   key id, duplicate/conflict/array/oversize negativi;
+7. verificare il rifiuto di capsule o ricevute tecniche mancanti, duplicate, scadute, cross-tenant o alterate;
+8. verificare che la ricevuta provvisoria non emetta host action, publish, deploy o Core Join.
 
 Il rollback non richiede migration distruttive: impostare
 `NYRA_PRECORE_DECISION_MODE=OFF` disabilita la generazione firmata;

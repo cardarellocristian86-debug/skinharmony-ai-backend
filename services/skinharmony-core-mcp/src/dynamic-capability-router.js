@@ -9,6 +9,9 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   // capability discovery made a new chat spend an avoidable read/tool turn
   // before it could receive its persisted Work briefing.
   "nyra_converse",
+  // The only conversational mutation surface. It consumes a signed Nyra
+  // candidate and is deliberately direct-only, never catalog-addressable.
+  "nyra_governed_continue",
   "core_capability_catalog",
   "core_branch_registry",
   "core_semantic_select",
@@ -72,6 +75,11 @@ function sha256(value) {
 }
 
 function capabilityGroup(name) {
+  // The persistent self-model is Nyra introspection, not a general
+  // conversational operation. A dedicated group lets a narrow ChatGPT
+  // capability lookup discover precisely this read-only surface without
+  // reopening the rest of Nyra's implementation catalog.
+  if (name === "nyra_self_model") return "self_model";
   const prefixes = [
     ["work_continuity_", "continuity"],
     ["host_native_", "continuity"],
@@ -178,6 +186,19 @@ function catalogState(tools, handlers) {
   };
 }
 
+function authorizedCatalogState(tools, handlers, identity, capabilityVisible) {
+  const definitions = dynamicToolDefinitions(tools, handlers)
+    .filter((tool) => capabilityVisible({ tool, identity }) === true);
+  const summaries = definitions.map(summary).sort((left, right) =>
+    left.capability_id.localeCompare(right.capability_id),
+  );
+  return {
+    definitions,
+    summaries,
+    revision: sha256(summaries),
+  };
+}
+
 function textResult(payload) {
   return {
     structuredContent: payload,
@@ -272,6 +293,7 @@ export function createDynamicCapabilityHandlers({
   semanticSelect,
   gateAction,
   internallyGovernedCapabilities = [],
+  capabilityVisible = () => true,
 }) {
   if (!Array.isArray(tools) || !handlers || typeof handlers !== "object") {
     throw new Error("dynamic_capability_router_invalid");
@@ -280,13 +302,29 @@ export function createDynamicCapabilityHandlers({
       internallyGovernedCapabilities.some((name) => !CAPABILITY_ID.test(String(name || "")))) {
     throw new Error("dynamic_capability_internal_gate_configuration_invalid");
   }
+  if (typeof capabilityVisible !== "function") {
+    throw new Error("dynamic_capability_visibility_configuration_invalid");
+  }
   const internallyGoverned = new Set(internallyGovernedCapabilities);
+
+  function stateFor(identity) {
+    return authorizedCatalogState(tools, handlers, identity, capabilityVisible);
+  }
+
+  function exactAuthorizedCapability(state, capabilityId) {
+    if (!CAPABILITY_ID.test(String(capabilityId || ""))) {
+      throw new Error("dynamic_capability_id_invalid");
+    }
+    const tool = state.definitions.find((item) => item.name === capabilityId);
+    if (!tool) throw new Error("dynamic_capability_unavailable");
+    return tool;
+  }
 
   return {
     core_capability_catalog: async (args, identity) => {
-      const state = catalogState(tools, handlers);
+      const state = stateFor(identity);
       if (args.capability_id) {
-        const tool = exactCapability(tools, handlers, args.capability_id);
+        const tool = exactAuthorizedCapability(state, args.capability_id);
         const item = summary(tool);
         return textResult({
           ok: true,
@@ -329,7 +367,7 @@ export function createDynamicCapabilityHandlers({
       }
       const query = String(args.query || "").trim();
       if (!query) throw new Error("dynamic_capability_query_required");
-      const state = catalogState(tools, handlers);
+      const state = stateFor(identity);
       const allowedIds = new Set(
         Array.isArray(args.capability_ids) && args.capability_ids.length
           ? args.capability_ids
@@ -364,9 +402,9 @@ export function createDynamicCapabilityHandlers({
     },
 
     core_capability_read: async (args, identity) => {
-      const state = catalogState(tools, handlers);
+      const state = stateFor(identity);
       assertRevision(args.catalog_revision, state.revision);
-      const tool = exactCapability(tools, handlers, args.capability_id);
+      const tool = exactAuthorizedCapability(state, args.capability_id);
       if (tool.annotations?.readOnlyHint !== true) throw new Error("dynamic_capability_read_only_required");
       requireScopes(identity, tool.scopes || []);
       const callArgs = targetArguments(tool, args, identity);
@@ -385,9 +423,9 @@ export function createDynamicCapabilityHandlers({
     },
 
     core_capability_invoke: async (args, identity) => {
-      const state = catalogState(tools, handlers);
+      const state = stateFor(identity);
       assertRevision(args.catalog_revision, state.revision);
-      const tool = exactCapability(tools, handlers, args.capability_id);
+      const tool = exactAuthorizedCapability(state, args.capability_id);
       if (tool.annotations?.readOnlyHint === true) throw new Error("dynamic_capability_mutation_required");
       requireScopes(identity, tool.scopes || []);
       const ownerConfirmationRequired = ownerConfirmationRequiredForInvocation(tool, args);

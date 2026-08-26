@@ -1,4 +1,5 @@
 import { parseNyraProjectReleaseBindings } from "./nyra-native-plan-bridge.js";
+import { parseHostAppRegistry } from "./host-app-registry.js";
 
 function csv(value) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
@@ -22,6 +23,40 @@ function jsonObject(value, name) {
   } catch {
     throw new Error(`${name} must be a JSON object`);
   }
+}
+
+function parseNyraAtlasRepositoryBindings(value, name) {
+  const parsed = jsonObject(value, name);
+  const result = {};
+  for (const [projectValue, bindingValue] of Object.entries(parsed)) {
+    const projectId = String(projectValue || "").trim();
+    const binding = typeof bindingValue === "string" ? { repository: bindingValue } : bindingValue;
+    const repository = String(binding?.repository || "").trim();
+    const branch = String(binding?.branch || "main").trim();
+    const credentialTenantId = String(binding?.credential_tenant_id || "").trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,63}$/.test(projectId) ||
+        !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) ||
+        !branch || branch.length > 240 || branch.includes("\u0000") ||
+        (credentialTenantId && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(credentialTenantId))) {
+      throw new Error(`${name} contains an invalid project repository binding`);
+    }
+    result[projectId] = Object.freeze({ repository, branch, credentialTenantId: credentialTenantId || null });
+  }
+  return Object.freeze(result);
+}
+
+function parseNyraAtlasGithubTokens(value, name) {
+  const parsed = jsonObject(value, name);
+  const result = {};
+  for (const [tenantValue, tokenValue] of Object.entries(parsed)) {
+    const tenantId = String(tenantValue || "").trim();
+    const token = String(tokenValue || "").trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(tenantId) || token.length < 20) {
+      throw new Error(`${name} contains an invalid tenant credential`);
+    }
+    result[tenantId] = token;
+  }
+  return Object.freeze(result);
 }
 
 function parseOauthOwnerTenantBindings(value, name) {
@@ -196,6 +231,14 @@ export function loadConfig(env = process.env) {
   const auth0Issuer = url(env.AUTH0_ISSUER, "AUTH0_ISSUER");
   const auth0Audience = String(env.AUTH0_AUDIENCE || "").trim();
   const codexKeys = csv(env.CODEX_BEARER_KEYS);
+  const legacyCodexHostPrincipalEnabledFlag = strictFlag(
+    env.MCP_LEGACY_CODEX_HOST_PRINCIPAL_ENABLED,
+    false,
+    "MCP_LEGACY_CODEX_HOST_PRINCIPAL_ENABLED",
+  );
+  const legacyCodexHostPrincipalEnabled = legacyCodexHostPrincipalEnabledFlag.valid
+    ? legacyCodexHostPrincipalEnabledFlag.value
+    : false;
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const githubStandingReleaseWorkerUrl = url(
     env.GITHUB_STANDING_RELEASE_WORKER_URL,
@@ -230,6 +273,12 @@ export function loadConfig(env = process.env) {
     Buffer.byteLength(agentSignatureSecretCandidate, "utf8") >= 32
       ? agentSignatureSecretCandidate
       : "";
+  const agentPresenceSignatureVersion = String(
+    env.AGENT_PRESENCE_SIGNATURE_VERSION || "v1",
+  ).trim().toLowerCase();
+  if (!["v1", "v2"].includes(agentPresenceSignatureVersion)) {
+    throw new Error("AGENT_PRESENCE_SIGNATURE_VERSION must be v1 or v2");
+  }
   const dttAgentIdentitySigningSecretCandidate = String(env.DTT_AGENT_IDENTITY_SIGNING_SECRET || "").trim();
   const dttAgentIdentitySigningSecret = dttAgentIdentitySigningSecretCandidate.length >= 32
     ? dttAgentIdentitySigningSecretCandidate
@@ -254,6 +303,18 @@ export function loadConfig(env = process.env) {
     Buffer.byteLength(tenantContextSigningSecretCandidate, "utf8") >= 32
       ? tenantContextSigningSecretCandidate
       : "";
+  const nyraGovernedContinueEnabledFlag = strictFlag(
+    env.NYRA_GOVERNED_CONTINUE_ENABLED,
+    false,
+    "NYRA_GOVERNED_CONTINUE_ENABLED",
+  );
+  const nyraGovernedContinueSigningSecretCandidate = String(
+    env.NYRA_GOVERNED_CONTINUE_SIGNING_SECRET || "",
+  ).trim();
+  const nyraGovernedContinueSigningSecret =
+    Buffer.byteLength(nyraGovernedContinueSigningSecretCandidate, "utf8") >= 32
+      ? nyraGovernedContinueSigningSecretCandidate
+      : "";
   const runtimeBuildCommit = optionalFullCommit(env.RENDER_GIT_COMMIT || env.GIT_COMMIT, "RENDER_GIT_COMMIT");
   const chatgptTenantId = String(env.MCP_CHATGPT_TENANT_ID || "").trim();
   const chatgptCoreKey = String(env.CORE_MCP_KEY || "").trim();
@@ -264,24 +325,10 @@ export function loadConfig(env = process.env) {
     Buffer.byteLength(tenantGatewayKeyCandidate, "utf8") >= 32
       ? tenantGatewayKeyCandidate
       : "";
+  const environmentDelegationKey = String(env.MCP_ENVIRONMENT_DELEGATION_KEY || "").trim();
   if (chatgptTenantId && chatgptCoreKey && !universalCoreKeys[chatgptTenantId]) {
     universalCoreKeys[chatgptTenantId] = chatgptCoreKey;
   }
-  const agentSignatureSecretReused = Boolean(
-    agentSignatureSecret &&
-    [
-      universalCoreKey,
-      chatgptCoreKey,
-      ...Object.values(universalCoreKeys),
-      tenantGatewayKey,
-      ownerContextSigningSecret,
-      tenantContextSigningSecret,
-      dttAgentIdentitySigningSecret,
-      nyraDeepV2McpRequestSigningSecret,
-      ...codexKeys,
-    ].some((secret) =>
-      String(secret || "").trim() === agentSignatureSecret),
-  );
   const defaultTenantId = String(env.MCP_DEFAULT_TENANT_ID || "owner-private").trim();
   const tenantClaim = String(env.MCP_TENANT_CLAIM || "https://skinharmony.it/tenant_id").trim();
   // Subject-to-tenant ownership is server-side only. Never accept this
@@ -294,6 +341,88 @@ export function loadConfig(env = process.env) {
     env.AUTH0_TENANT_MEMBERSHIPS_JSON,
     "AUTH0_TENANT_MEMBERSHIPS_JSON",
   );
+  // Authentication proves the subject. This independent registry proves
+  // which ChatGPT/Codex/future-AI application is carrying that subject and
+  // which Work/host-native capabilities that application may request. It
+  // never grants an owner role.
+  const hostAppRegistry = parseHostAppRegistry(
+    env.MCP_HOST_APP_REGISTRY_JSON,
+    env,
+  );
+  const hostAppBearerCredentials = hostAppRegistry.apps
+    .filter((app) => app.auth_kind === "bearer")
+    .map((app) => app.credential)
+    .filter(Boolean);
+  const reservedHostCredentialSecrets = [
+    ["CODEX_BEARER_KEYS", codexKeys],
+    ["UNIVERSAL_CORE_KEY", [universalCoreKey]],
+    ["CORE_MCP_KEY", [chatgptCoreKey]],
+    ["UNIVERSAL_CORE_KEYS_JSON", Object.values(universalCoreKeys)],
+    ["CORE_MCP_TENANT_GATEWAY_KEY", [tenantGatewayKey]],
+    ["SUITE_CONTROL_PLANE_KEYS_JSON", Object.values(suiteControlPlaneBindings.keys)],
+    ["AGENT_SIGNATURE_SECRET", [agentSignatureSecret]],
+    ["DTT_AGENT_IDENTITY_SIGNING_SECRET", [dttAgentIdentitySigningSecret]],
+    ["CORE_NYRA_DEEP_BRANCH_V2_MCP_REQUEST_SIGNING_SECRET", [nyraDeepV2McpRequestSigningSecret]],
+    ["CORE_OWNER_CONTEXT_SIGNING_SECRET", [ownerContextSigningSecret]],
+    ["CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET", [tenantContextSigningSecret]],
+    ["NYRA_GOVERNED_CONTINUE_SIGNING_SECRET", [nyraGovernedContinueSigningSecret]],
+    ["MCP_ENVIRONMENT_DELEGATION_KEY", [environmentDelegationKey]],
+  ];
+  for (const credential of hostAppBearerCredentials) {
+    for (const [source, secrets] of reservedHostCredentialSecrets) {
+      if (secrets.some((secret) => String(secret || "").trim() === credential)) {
+        throw new Error(
+          `MCP_HOST_APP_REGISTRY_JSON bearer credential reuses reserved secret ${source}`,
+        );
+      }
+    }
+  }
+  const agentSignatureSecretReused = Boolean(
+    agentSignatureSecret &&
+    [
+      universalCoreKey,
+      chatgptCoreKey,
+      ...Object.values(universalCoreKeys),
+      tenantGatewayKey,
+      ownerContextSigningSecret,
+      tenantContextSigningSecret,
+      dttAgentIdentitySigningSecret,
+      nyraDeepV2McpRequestSigningSecret,
+      nyraGovernedContinueSigningSecret,
+      ...codexKeys,
+      ...hostAppBearerCredentials,
+    ].some((secret) =>
+      String(secret || "").trim() === agentSignatureSecret),
+  );
+  const nyraGovernedContinueSecretReused = Boolean(
+    nyraGovernedContinueSigningSecret && [
+      universalCoreKey,
+      chatgptCoreKey,
+      ...Object.values(universalCoreKeys),
+      tenantGatewayKey,
+      ownerContextSigningSecret,
+      tenantContextSigningSecret,
+      dttAgentIdentitySigningSecret,
+      nyraDeepV2McpRequestSigningSecret,
+      agentSignatureSecret,
+      ...codexKeys,
+      ...hostAppBearerCredentials,
+    ].some((secret) => String(secret || "").trim() === nyraGovernedContinueSigningSecret),
+  );
+  const nyraGovernedContinueEnabled = nyraGovernedContinueEnabledFlag.valid
+    ? nyraGovernedContinueEnabledFlag.value
+    : false;
+  const nyraGovernedContinueConfigurationError = !nyraGovernedContinueEnabledFlag.valid
+    ? nyraGovernedContinueEnabledFlag.error
+    : nyraGovernedContinueEnabled && !nyraGovernedContinueSigningSecret
+      ? "nyra_governed_continue_signing_secret_unavailable"
+      : nyraGovernedContinueEnabled && !hostAppRegistry.configured
+        ? "nyra_governed_continue_host_app_registry_unavailable"
+        : nyraGovernedContinueEnabled && agentPresenceSignatureVersion !== "v2"
+          ? "nyra_governed_continue_agent_presence_v2_required"
+        : nyraGovernedContinueEnabled && nyraGovernedContinueSecretReused
+          ? "nyra_governed_continue_signing_secret_reused"
+          : null;
   // Enabled by the production Blueprint. Keep the code default fail-closed so
   // an existing installation does not silently change tenant routing on update.
   const selfServiceTenantsEnabled = flag(env.MCP_SELF_SERVICE_TENANTS_ENABLED, false);
@@ -301,6 +430,16 @@ export function loadConfig(env = process.env) {
   const databaseUrl = String(env.DATABASE_URL || "").trim();
   const nyraProjectReleaseBindings = parseNyraProjectReleaseBindings(
     env.NYRA_PROJECT_RELEASE_BINDINGS_JSON,
+  );
+  // Atlas repository scope is server-owned. A connected AI can request a
+  // project Work, but can never substitute an arbitrary repository or token.
+  const nyraAtlasRepositoryBindings = parseNyraAtlasRepositoryBindings(
+    env.NYRA_ATLAS_REPOSITORY_BINDINGS_JSON,
+    "NYRA_ATLAS_REPOSITORY_BINDINGS_JSON",
+  );
+  const nyraAtlasGithubTokens = parseNyraAtlasGithubTokens(
+    env.NYRA_ATLAS_GITHUB_TOKENS_JSON,
+    "NYRA_ATLAS_GITHUB_TOKENS_JSON",
   );
   const genericWorkCoreJoinEnabledFlag = strictFlag(
     env.GENERIC_WORK_CORE_JOIN_ENABLED,
@@ -408,12 +547,22 @@ export function loadConfig(env = process.env) {
     300,
     "AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS",
   );
-  const environmentDelegationKey = String(env.MCP_ENVIRONMENT_DELEGATION_KEY || "").trim();
   const environmentRoutingRequired = flag(env.MCP_ENVIRONMENT_ROUTING_REQUIRED, false);
   const environmentDelegationReceiverEnabled = flag(env.MCP_ENVIRONMENT_DELEGATION_RECEIVER_ENABLED, false);
   const stagingMcpUrl = url(env.MCP_STAGING_MCP_URL, "MCP_STAGING_MCP_URL");
   if ((environmentRoutingRequired || environmentDelegationReceiverEnabled) && Buffer.byteLength(environmentDelegationKey, "utf8") < 32) throw new Error("MCP_ENVIRONMENT_DELEGATION_KEY must contain at least 32 bytes when environment routing is enabled");
   if (environmentRoutingRequired && !stagingMcpUrl) throw new Error("MCP_STAGING_MCP_URL is required when environment routing is enabled");
+  if (stagingMcpUrl) {
+    const stagingOrigin = new URL(stagingMcpUrl);
+    if (!["http:", "https:"].includes(stagingOrigin.protocol) ||
+        stagingOrigin.username || stagingOrigin.password || stagingOrigin.search ||
+        stagingOrigin.hash || !["", "/"].includes(stagingOrigin.pathname)) {
+      throw new Error("MCP_STAGING_MCP_URL must be an exact credential-free origin");
+    }
+    if (environment === "production" && stagingOrigin.protocol !== "https:") {
+      throw new Error("MCP_STAGING_MCP_URL must use HTTPS in production");
+    }
+  }
   // Missing production prerequisites are reported by the local readiness
   // endpoint. Authentication itself still fails closed, while keeping the
   // process alive lets Render observe an explicit 503 and coded blocker.
@@ -438,6 +587,9 @@ export function loadConfig(env = process.env) {
     auth0Audience,
     jwksUri: auth0Issuer ? `${auth0Issuer}/.well-known/jwks.json` : "",
     codexKeys,
+    legacyCodexHostPrincipalEnabled,
+    legacyCodexHostPrincipalConfigurationValid: legacyCodexHostPrincipalEnabledFlag.valid,
+    legacyCodexHostPrincipalConfigurationError: legacyCodexHostPrincipalEnabledFlag.error,
     codexScopes: csv(env.CODEX_BEARER_SCOPES || "core:read,core:govern"),
     supportedScopes,
     oauthScopesSupported,
@@ -457,15 +609,22 @@ export function loadConfig(env = process.env) {
     suiteControlPlaneCacheTtlMs: integer(env.SUITE_CONTROL_PLANE_CACHE_TTL_MS, 5_000, 0, 60_000),
     agentSignatureSecret,
     agentSignatureSecretReused,
+    agentPresenceSignatureVersion,
     dttAgentIdentitySigningSecret,
     nyraDeepV2McpRequestSigningSecret,
     ownerContextSigningSecret,
     tenantContextSigningSecret,
+    nyraGovernedContinueEnabled,
+    nyraGovernedContinueSigningSecret,
+    nyraGovernedContinueConfigurationValid:
+      nyraGovernedContinueConfigurationError === null,
+    nyraGovernedContinueConfigurationError,
     runtimeBuildCommit,
     defaultTenantId,
     tenantClaim,
     oauthOwnerTenantBindings,
     oauthTenantMemberships,
+    hostAppRegistry,
     oauthOwnerConfirmationMaxAgeSeconds,
     selfServiceTenantsEnabled,
     tenantOwnerRoleClaim: String(env.MCP_TENANT_OWNER_ROLE_CLAIM || "https://skinharmony.it/role").trim(),
@@ -473,6 +632,8 @@ export function loadConfig(env = process.env) {
     sharedMemoryRoot,
     databaseUrl,
     nyraProjectReleaseBindings,
+    nyraAtlasRepositoryBindings,
+    nyraAtlasGithubTokens,
     genericWorkCoreJoinEnabled,
     genericWorkCoreJoinRequired,
     genericWorkCoreJoinConfigurationValid: genericWorkCoreJoinConfigurationError === null,

@@ -2,12 +2,71 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadConfig } from "../src/config.js";
 
+test("Atlas repository bindings are server-owned and tenant credentials never enter the public config", () => {
+  const config = loadConfig({
+    NYRA_ATLAS_REPOSITORY_BINDINGS_JSON: JSON.stringify({
+      "skinharmony-ai-backend": {
+        repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+        branch: "main",
+        credential_tenant_id: "tenant-a",
+      },
+    }),
+    NYRA_ATLAS_GITHUB_TOKENS_JSON: JSON.stringify({ "tenant-a": "token-only-on-server-123456789" }),
+  });
+  assert.deepEqual(config.nyraAtlasRepositoryBindings["skinharmony-ai-backend"], {
+    repository: "cardarellocristian86-debug/skinharmony-ai-backend", branch: "main", credentialTenantId: "tenant-a",
+  });
+  assert.equal(config.nyraAtlasGithubTokens["tenant-a"], "token-only-on-server-123456789");
+  assert.throws(() => loadConfig({
+    NYRA_ATLAS_REPOSITORY_BINDINGS_JSON: '{"project":"not a repo"}',
+  }), /NYRA_ATLAS_REPOSITORY_BINDINGS_JSON contains an invalid project repository binding/);
+});
+
 test("uses CORE_BASE_URL as a compatibility fallback for Universal Core", () => {
   const config = loadConfig({
     CORE_BASE_URL: "https://core.example.test/"
   });
 
   assert.equal(config.universalCoreUrl, "https://core.example.test");
+});
+
+test("keeps the legacy all-capability Codex principal code-dark by default", () => {
+  assert.equal(loadConfig({}).legacyCodexHostPrincipalEnabled, false);
+  assert.equal(loadConfig({
+    MCP_LEGACY_CODEX_HOST_PRINCIPAL_ENABLED: "true",
+  }).legacyCodexHostPrincipalEnabled, true);
+  const invalid = loadConfig({ MCP_LEGACY_CODEX_HOST_PRINCIPAL_ENABLED: "yes" });
+  assert.equal(invalid.legacyCodexHostPrincipalEnabled, false);
+  assert.equal(invalid.legacyCodexHostPrincipalConfigurationValid, false);
+});
+
+test("rolls agent-presence v2 explicitly and requires it for governed multi-host continuation", () => {
+  assert.equal(loadConfig({}).agentPresenceSignatureVersion, "v1");
+  assert.equal(loadConfig({ AGENT_PRESENCE_SIGNATURE_VERSION: "v2" })
+    .agentPresenceSignatureVersion, "v2");
+  assert.throws(() => loadConfig({ AGENT_PRESENCE_SIGNATURE_VERSION: "v3" }),
+    /must be v1 or v2/);
+  const registry = JSON.stringify({
+    schema_version: "mcp_host_app_registry_v1",
+    apps: [{
+      app_id: "chatgpt_prod",
+      auth_kind: "oauth",
+      oauth_client_id: "chatgpt-client-id",
+      host_kind: "chatgpt_native",
+      client_type: "chatgpt",
+      interaction_mode: "nyra_conversational",
+      capabilities: ["work.read", "governed_continue"],
+      enabled: true,
+    }],
+  });
+  const pending = loadConfig({
+    MCP_HOST_APP_REGISTRY_JSON: registry,
+    NYRA_GOVERNED_CONTINUE_ENABLED: "true",
+    NYRA_GOVERNED_CONTINUE_SIGNING_SECRET: "n".repeat(32),
+  });
+  assert.equal(pending.nyraGovernedContinueConfigurationValid, false);
+  assert.equal(pending.nyraGovernedContinueConfigurationError,
+    "nyra_governed_continue_agent_presence_v2_required");
 });
 
 test("core block remediation mode defaults to shadow and accepts only the bounded enum", () => {
@@ -59,6 +118,118 @@ test("does not enable PostgreSQL collaboration from the generic database URL", (
   const config = loadConfig({ DATABASE_URL: "postgres://existing-service-db" });
   assert.equal(config.collaborationDatabaseUrl, "");
   assert.equal(config.collaborationDatabaseSsl, false);
+});
+
+test("loads a strict host-app registry and keeps governed continuation code-dark until fully configured", () => {
+  const registry = JSON.stringify({
+    schema_version: "mcp_host_app_registry_v1",
+    apps: [{
+      app_id: "chatgpt_prod",
+      auth_kind: "oauth",
+      oauth_client_id: "chatgpt-client-id",
+      host_kind: "chatgpt_native",
+      client_type: "chatgpt",
+      interaction_mode: "nyra_conversational",
+      capabilities: [
+        "work.read", "work.coordinate", "work.review", "work.operate", "work.create",
+        "governed_continue", "host_native.delegate", "host_native.authorize",
+      ],
+      enabled: true,
+    }],
+  });
+  const disabled = loadConfig({ MCP_HOST_APP_REGISTRY_JSON: registry });
+  assert.equal(disabled.hostAppRegistry.configured, true);
+  assert.match(disabled.hostAppRegistry.revision, /^[a-f0-9]{64}$/);
+  assert.equal(disabled.nyraGovernedContinueEnabled, false);
+  assert.equal(disabled.nyraGovernedContinueConfigurationValid, true);
+
+  const missingSecret = loadConfig({
+    MCP_HOST_APP_REGISTRY_JSON: registry,
+    NYRA_GOVERNED_CONTINUE_ENABLED: "true",
+  });
+  assert.equal(missingSecret.nyraGovernedContinueConfigurationValid, false);
+  assert.equal(missingSecret.nyraGovernedContinueConfigurationError,
+    "nyra_governed_continue_signing_secret_unavailable");
+
+  const ready = loadConfig({
+    MCP_HOST_APP_REGISTRY_JSON: registry,
+    NYRA_GOVERNED_CONTINUE_ENABLED: "true",
+    NYRA_GOVERNED_CONTINUE_SIGNING_SECRET: "n".repeat(32),
+    AGENT_PRESENCE_SIGNATURE_VERSION: "v2",
+  });
+  assert.equal(ready.nyraGovernedContinueConfigurationValid, true);
+  assert.equal(ready.nyraGovernedContinueSigningSecret, "n".repeat(32));
+
+  const reused = loadConfig({
+    MCP_HOST_APP_REGISTRY_JSON: registry,
+    NYRA_GOVERNED_CONTINUE_ENABLED: "true",
+    NYRA_GOVERNED_CONTINUE_SIGNING_SECRET: "n".repeat(32),
+    AGENT_SIGNATURE_SECRET: "n".repeat(32),
+    AGENT_PRESENCE_SIGNATURE_VERSION: "v2",
+  });
+  assert.equal(reused.nyraGovernedContinueConfigurationValid, false);
+  assert.equal(reused.nyraGovernedContinueConfigurationError,
+    "nyra_governed_continue_signing_secret_reused");
+
+  const hostBearerSecret = "h".repeat(32);
+  const bearerRegistry = JSON.stringify({
+    schema_version: "mcp_host_app_registry_v1",
+    apps: [{
+      app_id: "service_ai",
+      auth_kind: "bearer",
+      credential_env: "MCP_HOST_APP_TOKEN_SERVICE_AI",
+      tenant_id: "tenant-a",
+      service_role: "member",
+      host_kind: "service_ai_native",
+      client_type: "api_agent",
+      interaction_mode: "nyra_conversational",
+      capabilities: ["work.read", "governed_continue"],
+      scopes: ["core:read"],
+      enabled: true,
+    }],
+  });
+  assert.throws(
+    () => loadConfig({
+      MCP_HOST_APP_REGISTRY_JSON: bearerRegistry,
+      MCP_HOST_APP_TOKEN_SERVICE_AI: hostBearerSecret,
+      NYRA_GOVERNED_CONTINUE_ENABLED: "true",
+      NYRA_GOVERNED_CONTINUE_SIGNING_SECRET: hostBearerSecret,
+    }),
+    /bearer credential reuses reserved secret NYRA_GOVERNED_CONTINUE_SIGNING_SECRET/,
+  );
+});
+
+test("rejects host-app bearer credentials reused by reserved authentication keys", () => {
+  const sharedSecret = "reserved-host-collision-secret-0123456789";
+  const registry = JSON.stringify({
+    schema_version: "mcp_host_app_registry_v1",
+    apps: [{
+      app_id: "service_ai",
+      auth_kind: "bearer",
+      credential_env: "MCP_HOST_APP_TOKEN_SERVICE_AI",
+      tenant_id: "tenant-a",
+      service_role: "member",
+      host_kind: "service_ai_native",
+      client_type: "api_agent",
+      interaction_mode: "native_tooling",
+      capabilities: ["work.read"],
+      scopes: ["core:read"],
+      enabled: true,
+    }],
+  });
+  for (const [reservedEnvironment, source] of [
+    [{ CODEX_BEARER_KEYS: sharedSecret }, "CODEX_BEARER_KEYS"],
+    [{ CORE_MCP_TENANT_GATEWAY_KEY: sharedSecret }, "CORE_MCP_TENANT_GATEWAY_KEY"],
+  ]) {
+    assert.throws(
+      () => loadConfig({
+        MCP_HOST_APP_REGISTRY_JSON: registry,
+        MCP_HOST_APP_TOKEN_SERVICE_AI: sharedSecret,
+        ...reservedEnvironment,
+      }),
+      new RegExp(`bearer credential reuses reserved secret ${source}`),
+    );
+  }
 });
 
 test("configures independent memory storage and bounded retention", () => {
@@ -277,6 +448,30 @@ test("flags AGENT_SIGNATURE_SECRET reuse with a Core bearer or another host-nati
     });
     assert.equal(reused.agentSignatureSecretReused, true);
   }
+
+  assert.throws(
+    () => loadConfig({
+      AGENT_SIGNATURE_SECRET: signatureSecret,
+      MCP_HOST_APP_REGISTRY_JSON: JSON.stringify({
+        schema_version: "mcp_host_app_registry_v1",
+        apps: [{
+          app_id: "service_ai",
+          auth_kind: "bearer",
+          credential_env: "MCP_HOST_APP_TOKEN_SERVICE_AI",
+          tenant_id: "tenant-a",
+          service_role: "member",
+          host_kind: "service_ai_native",
+          client_type: "api_agent",
+          interaction_mode: "native_tooling",
+          capabilities: ["work.read"],
+          scopes: ["core:read"],
+          enabled: true,
+        }],
+      }),
+      MCP_HOST_APP_TOKEN_SERVICE_AI: signatureSecret,
+    }),
+    /bearer credential reuses reserved secret AGENT_SIGNATURE_SECRET/,
+  );
 });
 
 test("maps CORE_MCP_KEY only to the configured ChatGPT tenant", () => {
@@ -461,6 +656,32 @@ test("loads only bounded server-side OAuth tenant memberships", () => {
 test("keeps OAuth owner confirmation usable during a bounded ChatGPT work session", () => {
   const config = loadConfig({});
   assert.equal(config.oauthOwnerConfirmationMaxAgeSeconds, 300);
+});
+
+test("requires an exact credential-free HTTPS staging origin in production", () => {
+  const base = {
+    NODE_ENV: "production",
+    MCP_ENVIRONMENT_ROUTING_REQUIRED: "true",
+    MCP_ENVIRONMENT_DELEGATION_KEY: "e".repeat(32),
+  };
+  assert.equal(loadConfig({
+    ...base,
+    MCP_STAGING_MCP_URL: "https://staging.example.test",
+  }).stagingMcpUrl, "https://staging.example.test");
+  for (const invalid of [
+    "http://staging.example.test",
+    "https://user:password@staging.example.test",
+    "https://staging.example.test/custom-path",
+    "https://staging.example.test?redirect=https://attacker.example",
+  ]) {
+    assert.throws(() => loadConfig({ ...base, MCP_STAGING_MCP_URL: invalid }),
+      /MCP_STAGING_MCP_URL/);
+  }
+  assert.equal(loadConfig({
+    ...base,
+    NODE_ENV: "test",
+    MCP_STAGING_MCP_URL: "http://127.0.0.1:8791",
+  }).stagingMcpUrl, "http://127.0.0.1:8791");
 });
 
 test("maps Suite Control Plane keys only to their configured tenants", () => {

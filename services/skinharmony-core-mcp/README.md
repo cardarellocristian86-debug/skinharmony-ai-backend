@@ -6,60 +6,207 @@ The repository path and package name retain the historical SkinHarmony name for 
 
 ## Stable dynamic connector surface
 
-Version `0.16.0` keeps the ChatGPT connector registration stable while Nyra and
-Core evolve. Production advertises thirteen bounded entrypoints instead of the
-entire internal tool registry. New handler-backed capabilities appear
-automatically in `core_capability_catalog`; clients select them through
-`core_semantic_select`, inspect the exact schema, then use
-`core_capability_read` or the separately governed `core_capability_invoke`.
-Adding an internal capability therefore changes the catalog revision, not the
-OAuth app or the MCP `tools/list` surface.
+Version `0.17.0` keeps the connector registration stable while making Nyra the
+only conversational front door for authenticated conversational clients. An
+unregistered/read-only ChatGPT OAuth client sees only `nyra_converse`; a
+server-registered conversational application with the exact
+`governed_continue` capability sees `nyra_converse` plus the direct
+`nyra_governed_continue` tool. It no longer has to assemble an operational
+answer by calling a preflight, catalog, branch registry or self-model read.
+Codex and registered native-tooling clients retain their bounded native
+surface. Internal capabilities can still evolve behind the governed registry
+without expanding the conversational surface.
+
+An already-open ChatGPT session can retain stale read descriptors. The gateway
+translates the supported stale descriptors into Nyra's narrow input contract
+after schema validation and adds only a server-owned, non-serializable routing
+hint. Raw catalog arguments, tenant fields and caller authority do not cross
+that boundary. `core_health` remains a non-conversational compatibility read;
+mutating descriptors are never translated.
 
 ### Conversational Nyra
 
 `nyra_converse` is the read-only conversational entrypoint for a connected
-ChatGPT, Codex or compatible MCP host. The host discovers it in
-`core_capability_catalog` and invokes it through `core_capability_read` with the
-current catalog revision; it does not add an eleventh compact connector tool.
-The target handler performs its own authenticated Work preflight, resumes an
-unambiguous tenant Work when continuity policy permits, recalls only bounded
-memory context and reuses the existing Nyra interpretation plus Universal Core
-runtime signals. Caller arguments cannot select a tenant, owner, provider,
-model, authorization or preflight envelope.
+ChatGPT, Codex or compatible MCP host. ChatGPT invokes it directly. The handler
+performs its own authenticated Work preflight, resumes one unambiguous tenant
+Work when continuity policy permits and recalls only bounded memory context.
+A pure resume can reuse the current persisted dialogue. Every new technical or
+consequential request receives a fresh preflight and Core interpretation so an
+old checkpoint cannot monopolize the conversation. Caller arguments cannot
+select a tenant, owner, provider, model, authorization or preflight envelope.
+
+The response contains `nyra_orchestration_directive_v1`. Nyra names the
+problem, lists machine-readable needs, orders the next actions by actor and
+states what the authenticated connected AI may continue locally. A bounded Work Continuity V2 projection
+contributes only identity/revision bindings, aggregate criteria/task/evidence
+counts, the next required task and deterministic digests; raw evidence and task
+metadata are not returned. The directive can also prepare a revision-bound
+`core_ticket_request_candidate_v1`, but it never issues a ticket or turns
+provenance, completeness or confidence into authority.
+
+`COMPLETE` requires `tenant_work_closure_verification_v1` from the V2 store.
+That projection rechecks the exact tenant/Work terminal state, required tasks,
+independently verified evidence, signed Core Join, closure receipt, canonical
+final report and hash-bound terminal event. Merely well-formed receipt digests
+are insufficient. A missing, legacy-unprojected or inconsistent artifact stays
+`INSUFFICIENT_CONTEXT` and exposes no raw closure data. Replaying the governed
+finalization of a pre-existing valid closure deterministically canonicalizes
+only its derived report digest and appends the missing V2 terminal event in the
+same transaction; raw report/evidence data is not rewritten. Any failed
+cross-check rolls the forward projection back.
 
 The MCP does not generate language with a server-side provider. It returns a
 small host-response contract that tells the already-connected host model to
-answer directly in first person as Nyra and in the user's language. The reply
-seed and safety instructions are static server-authored text: upstream preferred
-replies, selected-action labels, risk strings, Work state strings and next-action
-text are never copied into the response. Risk, Work state and Core runtime use
-closed enums; only availability booleans and bounded counts survive. Raw memory,
+answer directly in first person as Nyra and in the user's language. All
+operational fields are server-validated, bounded and tied to the authenticated
+Work; false completion claims from upstream text are quarantined. Risk, Work
+state, disposition and Core runtime use closed enums. Raw memory, raw evidence,
 customer records, secrets and provider credentials are not returned.
 
-Conversation fails closed unless both the authenticated Work preflight and the
-Nyra interpretation report `ok=true` for the exact tenant. Preflight must be
-`ready_read_only`; memory-recall, unavailable, malformed and non-ready states
-are rejected. Core runtime must identify a valid V0/V1/V2 route and authority,
-an `active`, `shadow` or `off` mode, and `execution_allowed=false`. Every turn
-fixes `execution_authorized=false`, `external_action_authorized=false`,
+Fresh interpretation fails closed unless the authenticated Work preflight and
+the Nyra/Core interpretation report `ok=true` for the exact tenant. Preflight
+must be `ready_read_only`; unavailable, malformed and non-ready states are
+rejected. Core runtime must identify a valid V0/V1/V2 route and authority, an
+`active`, `shadow` or `off` mode, and `execution_allowed=false`. Every turn fixes
+`execution_authorized=false`, `external_action_authorized=false`,
 `provider_execution=false`, `provider_api_key_required=false` and
-`server_model_calls=0`. Requests to deploy, publish, send, delete, pay, book or
-change access remain proposal-only; any real side effect needs its separate
-governed action tool, bounded Core authority and host approval.
+`server_model_calls=0`. A Core block on an external action does not erase safe
+local analysis, tests or evidence collection: Nyra can return
+`PREPARE_BOUNDED_WORK` with explicit limits. Deploy, live/production release,
+distribution, publish, push and other side effects still need a separate
+governed action, independent Core verification and every host approval. Merge
+is always represented as `MANUAL_ONLY` for the owner; Nyra and the connected AI
+do not perform it through this conversational contract.
 
 Dynamic routing never accepts a URL, HTTP method, tenant id, credential or
 arbitrary handler name. Every capability must exist in the server registry,
 match its current catalog revision and pass its original schema and scopes.
+The authenticated app capability is checked before any cache, preflight or
+dispatch; dynamic catalog/read/invoke resolve and filter the exact target with
+the same policy as a direct call.
 Reads and mutations are separate. Owner-directed mutations require a fresh,
 request-bound owner confirmation, an idempotency key, a Universal Core verdict
 and the target handler's own controls. Narrow internal coordination can proceed
 without repeated owner confirmation only when it matches the server-defined
 tenant, target, idempotency and no-side-effect contract or a previously
 owner-confirmed bounded delegation. The host-native continuity protocol is
-catalog-backed and does not add another direct connector entrypoint, so the
-public surface remains fixed at thirteen tools. There are no provider
-onboarding or execution tools. Retired portal paths return `410 Gone` and do
-not read credentials; they are never a dependency of host-native work.
+catalog-backed. The compact native-tooling surface contains eleven tools; a
+registered conversational host receives exactly the two Nyra tools described
+above, and the continuation tool is not dynamically discoverable. There are no
+provider onboarding or execution tools. Retired portal paths return `410 Gone`
+and do not read credentials; they are never a dependency of host-native work.
+
+### Registered ChatGPT and future-AI Work participation
+
+`MCP_HOST_APP_REGISTRY_JSON` binds a verified OAuth client or dedicated service
+bearer to one `app_id`, `host_kind`, interaction mode and explicit capability
+set. Caller `client_type`, `host_type`, tenant, role and owner fields are never
+accepted as this binding. Effective permission is the intersection of the
+authenticated subject, tenant membership/owner state, registered application
+capabilities, Work ACL and the independent Universal Core verdict.
+
+Nyra always opens the tenant Gallery before creation. One exact canonical Work
+is resumed; ambiguity produces `HOLD`; absence produces a signed, bounded
+bootstrap candidate. Canonical creation then requires an idempotent duplicate
+review followed by the same candidate and specification, a fresh owner
+confirmation, the dedicated Core `work.continuity.v2.create` verdict and a
+durable `(tenant, subject, request_id)` mapping plus transactional
+project-scoped duplicate recheck. Exact replay after process restart or review
+expiry returns the same Work and Nyra reports it as a replay, not a new
+creation. The replay is a read-only, request-bound durable readback with
+`execution_authorized=false`; its persisted Core receipt is historical evidence,
+not renewed authority. Ambiguous historical mappings fail closed. The legacy create-or-resume
+path is not used for this canonical V2 bootstrap:
+`work_continuity_create` fails closed and
+`work_continuity_start_or_resume` is resume-only.
+
+See
+[`docs/architecture/nyra-governed-multi-host-work-v1.md`](../../docs/architecture/nyra-governed-multi-host-work-v1.md)
+for the complete authorization and failure contract.
+
+Example registry shape (OAuth client ids are deployment-specific):
+
+```json
+{
+  "schema_version": "mcp_host_app_registry_v1",
+  "apps": [
+    {
+      "app_id": "chatgpt_prod",
+      "auth_kind": "oauth",
+      "oauth_client_id": "<verified-chatgpt-oauth-client-id>",
+      "host_kind": "chatgpt_native",
+      "client_type": "chatgpt",
+      "interaction_mode": "nyra_conversational",
+      "capabilities": [
+        "work.read",
+        "work.coordinate",
+        "work.review",
+        "work.operate",
+        "work.create",
+        "governed_continue",
+        "host_native.delegate",
+        "host_native.authorize"
+      ],
+      "enabled": true
+    },
+    {
+      "app_id": "codex",
+      "auth_kind": "bearer",
+      "credential_env": "MCP_HOST_APP_TOKEN_CODEX",
+      "tenant_id": "tenant-a",
+      "service_role": "operator",
+      "host_kind": "codex_native",
+      "client_type": "codex",
+      "interaction_mode": "native_tooling",
+      "capabilities": [
+        "core.read",
+        "core.operate",
+        "work.read",
+        "work.coordinate",
+        "work.review",
+        "work.operate",
+        "host_native.delegate",
+        "host_native.authorize"
+      ],
+      "scopes": ["core:read", "core:govern"],
+      "enabled": true
+    },
+    {
+      "app_id": "future_ai",
+      "auth_kind": "oauth",
+      "oauth_client_id": "<verified-future-ai-oauth-client-id>",
+      "host_kind": "future_ai_native",
+      "client_type": "api_agent",
+      "interaction_mode": "nyra_conversational",
+      "capabilities": [
+        "work.read",
+        "work.coordinate",
+        "work.review",
+        "work.create",
+        "governed_continue"
+      ],
+      "enabled": true
+    }
+  ]
+}
+```
+
+An app capability is only an upper bound. `work.create` still requires the
+authenticated subject to be the bound owner, a fresh request confirmation and
+the independent Core create verdict. A service bearer app is configured with a
+dedicated `credential_env`, exact `tenant_id` and non-owner `service_role`; it
+cannot become owner through this registry.
+Enabled bearer values must be unique and cannot equal a Codex, Core, gateway,
+Suite or signing secret. Configuration fails at startup on any cross-trust
+collision without logging the credential.
+
+`core.read`, `core.operate` and `core.admin` are independent from the Work
+grants. They respectively bound non-Work reads, ordinary non-Work mutations
+and Policy Registry lifecycle administration. A Work-only app may use the
+dynamic wrappers for an exact permitted Work target without receiving a Core
+grant. Registered Good Mode/owner roles and OAuth scopes do not expand the
+configured app scopes or capabilities. Keep `core.admin` out of ordinary
+ChatGPT/Codex registrations unless the app is explicitly the policy operator.
 
 ## Governed Continuity Fabric
 
@@ -109,9 +256,14 @@ it does not mark the overall request complete merely because one tool call or
 worker completed. Iterations, specialist fan-out and parallelism remain bounded.
 
 Runtime activation is fail-closed. The MCP recognizes
-`WORK_CONTINUITY_AUTO_CAPTURE_ENABLED` and
-`HOST_NATIVE_AGENT_PROTOCOL_ENABLED`; both default to disabled in code and must
-be enabled explicitly by deployment policy. Universal Core independently gates
+`WORK_CONTINUITY_AUTO_CAPTURE_ENABLED`, `HOST_NATIVE_AGENT_PROTOCOL_ENABLED`
+and `NYRA_GOVERNED_CONTINUE_ENABLED`; all default to disabled in code and must
+be enabled explicitly by deployment policy. Governed continuation additionally
+requires a valid `MCP_HOST_APP_REGISTRY_JSON` and an independent
+`NYRA_GOVERNED_CONTINUE_SIGNING_SECRET`, plus
+`AGENT_PRESENCE_SIGNATURE_VERSION=v2`. Deploy with the default `v1` first to
+preserve in-flight fingerprints, leases and tickets; drain their bounded TTL,
+then switch to v2 and enable continuation. Universal Core independently gates
 its host-native routes with `CORE_HOST_NATIVE_GOVERNANCE_ENABLED`, also disabled
 by default, and signs bounded authority records with the dedicated
 `CORE_HOST_NATIVE_SIGNING_SECRET`. None of these settings enables off-host model
@@ -125,9 +277,10 @@ contract, not a dry-run or a best-effort convention.
 
 ### Production trust and database bindings
 
-The gateway deliberately uses four independent shared secrets. Each must
-contain at least 32 UTF-8 bytes; a shorter or missing value is unavailable and
-production host-native readiness fails closed.
+The baseline host-native gateway uses four independent shared secrets.
+Governed multi-host continuation adds a fifth independent signing secret. Each
+must contain at least 32 UTF-8 bytes; a shorter, missing or cross-purpose reused
+value is unavailable and readiness fails closed when its feature is enabled.
 
 | Variable | Exact use | Render binding |
 | --- | --- | --- |
@@ -135,11 +288,12 @@ production host-native readiness fails closed.
 | `CORE_MCP_TENANT_CONTEXT_SIGNING_SECRET` | HMAC for `x-sh-tenant-context` only | Generated on Core MCP; referenced by Universal Core with `fromService` |
 | `CORE_OWNER_CONTEXT_SIGNING_SECRET` | Request-bound OAuth-owner or exact configured Codex Good Mode context for host-native delegation/revocation | Generated on Core MCP; referenced by Universal Core with `fromService` |
 | `DTT_AGENT_IDENTITY_SIGNING_SECRET` | DTT identity receipts, native assignment capabilities and closure attestations | Generated on Core MCP; referenced by Universal Core with `fromService` |
+| `NYRA_GOVERNED_CONTINUE_SIGNING_SECRET` | Short-lived app/session/Work-bound Nyra continuation and Work-bootstrap candidates | Generated on Core MCP only; never shared with clients |
 
 There is no cross-purpose fallback: tenant context never uses the owner secret,
 host-native owner context never uses the gateway, and assignment/closure signing
 never uses `AGENT_SIGNATURE_SECRET`, owner context or a development literal.
-`CORE_HOST_NATIVE_SIGNING_SECRET` is a fifth, Core-only value for Core
+`CORE_HOST_NATIVE_SIGNING_SECRET` is a separate Core-only value for Core
 delegation, action-ticket and final receipt records and is never copied to MCP.
 Tests and local development must provide explicit fixture values; they do not
 receive a weaker implicit path.
@@ -240,7 +394,11 @@ AI agents or shared with a customer. MCP exposes governed capabilities, not the
 credential itself. See
 [`docs/runbooks/github-app-tenant-onboarding.md`](../../docs/runbooks/github-app-tenant-onboarding.md).
 
-- Codex: `Authorization: Bearer <key>` from `CODEX_BEARER_KEYS`; scopes come only from trusted server configuration.
+- Codex: preferred steady state is a dedicated bearer entry in
+  `MCP_HOST_APP_REGISTRY_JSON` with `app_id=codex`, `client_type=codex` and
+  `host_kind=codex_native`. Legacy `CODEX_BEARER_KEYS` remain transport
+  compatible, but the all-capability legacy host principal is code-dark unless
+  `MCP_LEGACY_CODEX_HOST_PRINCIPAL_ENABLED=true` during a bounded migration.
 - ChatGPT: Auth0 RS256 access token verified against JWKS, exact issuer, audience, expiry and optional `nbf`.
 - OAuth discovery: `/.well-known/oauth-protected-resource` and the RFC 9728 path-specific `/.well-known/oauth-protected-resource/mcp` advertise the protected resource. The compatibility authorization-server endpoint advertises authorization-code flow with PKCE `S256` only.
 - MCP tools expose OAuth `securitySchemes`, minimum per-tool scopes, titles, descriptions and read-only/idempotent impact annotations. Preconfigured Codex bearer tokens remain supported at the transport layer without advertising an unsupported tool-level scheme.
@@ -251,6 +409,12 @@ Required configuration:
 MCP_PUBLIC_URL=https://mcp.example.com
 AUTH0_ISSUER=https://YOUR_TENANT.auth0.com
 AUTH0_AUDIENCE=https://mcp.example.com/mcp
+# Strict server-owned registry for ChatGPT, Codex and future AI applications.
+# JSON references bearer environment-variable names; it never contains secrets.
+MCP_HOST_APP_REGISTRY_JSON=<mcp_host_app_registry_v1 JSON>
+MCP_HOST_APP_TOKEN_CODEX=<dedicated registered Codex bearer>
+# Temporary migration switch only. Disable after registered Codex cutover.
+MCP_LEGACY_CODEX_HOST_PRINCIPAL_ENABLED=true
 CODEX_BEARER_KEYS=<comma-separated secrets>
 CODEX_BEARER_SCOPES=core:read,core:govern
 MCP_SUPPORTED_SCOPES=core:read,core:govern
@@ -273,6 +437,17 @@ MCP_TENANT_CLAIM=https://skinharmony.it/tenant_id
 AUTH0_OWNER_CONFIRMATION_MAX_AGE_SECONDS=300
 SHARED_WORK_MEMORY_ROOT=/app/shared-work-memory
 AGENT_WORKSPACE_ROOT=/var/data/skinharmony-core-mcp
+# Roll out v1 first, drain bounded tickets/leases, then promote to v2.
+AGENT_PRESENCE_SIGNATURE_VERSION=v1
+NYRA_GOVERNED_CONTINUE_ENABLED=false
+NYRA_GOVERNED_CONTINUE_SIGNING_SECRET=<independent random secret, at least 32 bytes>
+# Deploy the staging receiver first; enable the production sender only after
+# v3 exact request/session binding, durable nonce replay denial and owner
+# confirmation delegation are verified.
+MCP_ENVIRONMENT_DELEGATION_RECEIVER_ENABLED=false
+MCP_ENVIRONMENT_ROUTING_REQUIRED=false
+MCP_STAGING_MCP_URL=https://staging-mcp.example.com
+MCP_ENVIRONMENT_DELEGATION_KEY=<shared production-to-staging HMAC, at least 32 bytes>
 MEMORY_FABRIC_ROOT=/var/data/skinharmony-core-mcp
 MEMORY_RETENTION_DAYS=365
 MEMORY_PERSONAL_RETENTION_DAYS=90

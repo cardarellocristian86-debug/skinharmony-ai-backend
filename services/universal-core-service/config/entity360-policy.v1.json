@@ -1,0 +1,318 @@
+{
+  "schema_version": "entity_360_context_policy_v1",
+  "policy_version": "entity_360_reference_policy_v2",
+  "mode": "SHADOW",
+  "source_registry": [
+    {
+      "source_id": "genesis",
+      "source_class": "governance",
+      "trust_class": "core_verified",
+      "trust_boundary": "core_internal",
+      "independence_group": "genesis_authority",
+      "adapter_versions": ["genesis_entity360_adapter_v1"],
+      "allowed_fact_prefixes": ["governance.genesis"],
+      "authoritative": true,
+      "authoritative_fact_prefixes": ["governance.genesis"]
+    },
+    {
+      "source_id": "intent",
+      "source_class": "governance",
+      "trust_class": "core_verified",
+      "trust_boundary": "core_internal",
+      "independence_group": "intent_authority",
+      "adapter_versions": ["intent_entity360_adapter_v1"],
+      "allowed_fact_prefixes": ["governance.intent"],
+      "authoritative": true,
+      "authoritative_fact_prefixes": ["governance.intent"]
+    },
+    {
+      "source_id": "icf",
+      "source_class": "governance",
+      "trust_class": "core_verified",
+      "trust_boundary": "core_internal",
+      "independence_group": "icf_authority",
+      "adapter_versions": ["icf_entity360_adapter_v2"],
+      "allowed_fact_prefixes": ["governance.icf"],
+      "authoritative": true,
+      "authoritative_fact_prefixes": ["governance.icf"]
+    },
+    {
+      "source_id": "universal_core",
+      "source_class": "governance",
+      "trust_class": "core_verified",
+      "trust_boundary": "core_internal",
+      "independence_group": "universal_core_authority",
+      "adapter_versions": ["universal_core_entity360_adapter_v1"],
+      "allowed_fact_prefixes": ["core", "policy"],
+      "authoritative": true,
+      "authoritative_fact_prefixes": ["core", "policy"]
+    },
+    {
+      "source_id": "work_continuity",
+      "source_class": "continuity",
+      "trust_class": "tenant_verified",
+      "trust_boundary": "tenant_internal",
+      "independence_group": "work_continuity_store",
+      "adapter_versions": ["work_continuity_entity360_adapter_v1"],
+      "allowed_fact_prefixes": [
+        "work.identity",
+        "work.current_state",
+        "work.gallery_state_details",
+        "work.continuity_state_details",
+        "work.acceptance_criteria"
+      ],
+      "authoritative": true,
+      "authoritative_fact_prefixes": ["work"]
+    },
+    {
+      "source_id": "architecture_map",
+      "source_class": "architecture",
+      "trust_class": "tenant_verified",
+      "trust_boundary": "tenant_internal",
+      "independence_group": "software_atlas_store",
+      "adapter_versions": ["architecture_map_entity360_adapter_v1"],
+      "allowed_fact_prefixes": ["component", "work.architecture"],
+      "authoritative": true,
+      "authoritative_fact_prefixes": ["component"]
+    },
+    {
+      "source_id": "impact_map",
+      "source_class": "architecture",
+      "trust_class": "tenant_verified",
+      "trust_boundary": "tenant_internal",
+      "independence_group": "software_atlas_store",
+      "adapter_versions": ["impact_map_entity360_adapter_v1"],
+      "allowed_fact_prefixes": ["work.impact_map"],
+      "authoritative": false
+    },
+    {
+      "source_id": "event_ledger",
+      "source_class": "event_ledger",
+      "trust_class": "tenant_verified",
+      "trust_boundary": "tenant_internal",
+      "independence_group": "event_ledger_store",
+      "adapter_versions": ["event_ledger_entity360_adapter_v1"],
+      "allowed_fact_prefixes": ["work.event_ledger_head"],
+      "authoritative": false
+    },
+    {
+      "source_id": "nsct",
+      "source_class": "cognition",
+      "trust_class": "tenant_verified",
+      "trust_boundary": "tenant_internal",
+      "independence_group": "nsct_store",
+      "adapter_versions": ["nsct_entity360_adapter_v1"],
+      "allowed_fact_prefixes": ["nsct"],
+      "authoritative": false,
+      "derived": true
+    },
+    {
+      "source_id": "shared_memory",
+      "source_class": "memory",
+      "trust_class": "advisory",
+      "trust_boundary": "tenant_internal",
+      "independence_group": "shared_memory_store",
+      "adapter_versions": ["shared_memory_entity360_adapter_v1"],
+      "allowed_fact_prefixes": ["memory"],
+      "authoritative": false,
+      "derived": true
+    },
+    {
+      "source_id": "security_intelligence",
+      "source_class": "security",
+      "trust_class": "tenant_verified",
+      "trust_boundary": "tenant_internal",
+      "independence_group": "security_intelligence_store",
+      "adapter_versions": ["security_intelligence_entity360_adapter_v1"],
+      "allowed_fact_prefixes": ["security.signal"],
+      "blocking_conflict_fact_prefixes": ["security.signal"],
+      "authoritative": false
+    },
+    {
+      "source_id": "runtime_state",
+      "source_class": "runtime",
+      "trust_class": "provider_verified",
+      "trust_boundary": "provider",
+      "independence_group": "runtime_provider",
+      "adapter_versions": ["runtime_state_entity360_adapter_v1"],
+      "allowed_fact_prefixes": ["component.runtime_state", "runtime"],
+      "authoritative": false
+    }
+  ],
+  "trust_order": [
+    "core_verified",
+    "tenant_verified",
+    "provider_verified",
+    "advisory"
+  ],
+  "budgets": {
+    "max_sources": 11,
+    "max_entities": 256,
+    "max_evidence": 512,
+    "max_relationship_depth": 4,
+    "max_retrieval_bytes": 1048576,
+    "max_context_tokens": 131072,
+    "per_source": {
+      "default": {
+        "max_contributions": 64,
+        "max_evidence": 128,
+        "max_bytes": 262144,
+        "max_tokens": 32768
+      },
+      "shared_memory": {
+        "max_contributions": 16,
+        "max_evidence": 32,
+        "max_bytes": 65536,
+        "max_tokens": 8192
+      }
+    },
+    "per_source_class": {
+      "default": {
+        "max_contributions": 128,
+        "max_evidence": 256,
+        "max_bytes": 524288,
+        "max_tokens": 65536
+      },
+      "memory": {
+        "max_contributions": 16,
+        "max_evidence": 32,
+        "max_bytes": 65536,
+        "max_tokens": 8192
+      }
+    },
+    "per_trust_class": {
+      "default": {
+        "max_contributions": 128,
+        "max_evidence": 256,
+        "max_bytes": 524288,
+        "max_tokens": 65536
+      },
+      "advisory": {
+        "max_contributions": 16,
+        "max_evidence": 32,
+        "max_bytes": 65536,
+        "max_tokens": 8192
+      }
+    }
+  },
+  "freshness": {
+    "default_max_age_seconds": 86400,
+    "max_clock_skew_seconds": 300,
+    "by_source_class": {
+      "architecture": 86400,
+      "continuity": 3600,
+      "event_ledger": 3600,
+      "governance": 86400,
+      "memory": 21600,
+      "runtime": 900,
+      "security": 3600
+    }
+  },
+  "corroboration": {
+    "default_min_independent_sources": 1,
+    "high_impact_min_independent_sources": 2,
+    "high_impact_eligible_trust_classes": [
+      "core_verified",
+      "tenant_verified",
+      "provider_verified"
+    ],
+    "allow_verified_authoritative": true
+  },
+  "shadow_observation": {
+    "schema_version": "entity_360_shadow_observation_policy_v1",
+    "minimum_interval_ms": 30000,
+    "max_inflight_global": 4,
+    "max_inflight_per_tenant": 2,
+    "window_ms": 60000,
+    "max_starts_per_window": 60,
+    "max_starts_per_tenant_window": 30,
+    "max_tracked_work_keys": 4096,
+    "max_tracked_tenants": 1024,
+    "max_gate_inflight_global": 16,
+    "max_cached_tenant_gates": 1024,
+    "tenant_off_gate_cache_ttl_ms": 5000,
+    "gate_timeout_ms": 5000
+  },
+  "temporal_reconciliation": {
+    "schema_version": "entity_360_temporal_reconciliation_policy_v1",
+    "authority_transitions": []
+  },
+  "required_context": {
+    "work": [
+      {
+        "requirement_id": "work_genesis_binding",
+        "fact_id": "governance.genesis.binding",
+        "evidence_class": "authoritative_record",
+        "source_class": "governance",
+        "mandatory": true,
+        "high_impact": true,
+        "authoritative_required": true
+      },
+      {
+        "requirement_id": "work_identity",
+        "fact_id": "work.identity",
+        "evidence_class": "authoritative_record",
+        "source_class": "continuity",
+        "mandatory": true,
+        "high_impact": true,
+        "authoritative_required": true
+      },
+      {
+        "requirement_id": "work_intent_binding",
+        "fact_id": "governance.intent.binding",
+        "evidence_class": "authoritative_record",
+        "source_class": "governance",
+        "mandatory": true,
+        "high_impact": true,
+        "authoritative_required": true
+      },
+      {
+        "requirement_id": "work_icf_binding",
+        "fact_id": "governance.icf.binding",
+        "evidence_class": "authoritative_record",
+        "source_class": "governance",
+        "mandatory": true,
+        "high_impact": true,
+        "authoritative_required": true
+      },
+      {
+        "requirement_id": "work_current_state",
+        "fact_id": "work.current_state",
+        "evidence_class": "verified_observation",
+        "source_class": "continuity",
+        "mandatory": true,
+        "high_impact": true,
+        "authoritative_required": true
+      }
+    ],
+    "software_component": [
+      {
+        "requirement_id": "component_identity",
+        "fact_id": "component.identity",
+        "evidence_class": "verified_observation",
+        "source_class": "architecture",
+        "mandatory": true,
+        "high_impact": true,
+        "authoritative_required": false
+      },
+      {
+        "requirement_id": "component_revision",
+        "fact_id": "component.revision",
+        "evidence_class": "verified_observation",
+        "source_class": "architecture",
+        "mandatory": true,
+        "high_impact": true,
+        "authoritative_required": false
+      },
+      {
+        "requirement_id": "component_runtime_state",
+        "fact_id": "component.runtime_state",
+        "evidence_class": "runtime_observation",
+        "source_class": "runtime",
+        "mandatory": false,
+        "high_impact": false,
+        "authoritative_required": false
+      }
+    ]
+  }
+}

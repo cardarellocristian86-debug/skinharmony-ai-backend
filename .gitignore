@@ -15,3 +15,4 @@ node_modules/
 universal-core/data/
 .render-rust/
 services/skinharmony-core-mcp/storage/
+services/universal-core-service/storage/

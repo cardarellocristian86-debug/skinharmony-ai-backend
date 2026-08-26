@@ -119,7 +119,8 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   const compact = compactMcpTools(TOOLS, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 10);
+  assert.equal(compact.length, 11);
+  assert(compact.some((tool) => tool.name === "nyra_governed_continue"));
   assert.deepEqual([...INTERNAL_ONLY_TOOL_NAMES], ["work_preflight"]);
   assert.equal(compact.some((tool) => INTERNAL_ONLY_TOOL_NAMES.has(tool.name)), false);
   assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
@@ -132,6 +133,80 @@ test("keeps the generic preflight internal instead of exposing it through dynami
     work_preflight: async () => ({}),
   });
   assert.deepEqual(snapshot.capabilities, []);
+});
+
+test("keeps governed continuation direct-only and outside dynamic discovery", () => {
+  const continuation = TOOLS.find((tool) => tool.name === "nyra_governed_continue");
+  const snapshot = dynamicCapabilityCatalogSnapshot([continuation], {
+    nyra_governed_continue: async () => ({}),
+  });
+  assert.deepEqual(snapshot.capabilities, []);
+});
+
+test("discovers and reads Nyra's persistent self-model through a narrow dynamic path", async () => {
+  const tool = TOOLS.find((item) => item.name === "nyra_self_model");
+  let calls = 0;
+  const handlers = {
+    nyra_self_model: async () => {
+      calls += 1;
+      return { structuredContent: { ok: true, self_model: { persistent: true } } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  const catalog = await router.core_capability_catalog({
+    group: "self_model",
+    include_schema: true,
+  }, identity);
+  const capability = catalog.structuredContent.capabilities[0];
+  assert.equal(catalog.structuredContent.total, 1);
+  assert.equal(capability.capability_id, "nyra_self_model");
+  assert.equal(capability.group, "self_model");
+  assert.equal(capability.access_mode, "read");
+
+  const result = await router.core_capability_read({
+    capability_id: "nyra_self_model",
+    catalog_revision: catalog.structuredContent.catalog_revision,
+    arguments: {},
+  }, identity);
+  assert.equal(calls, 1);
+  assert.equal(result.structuredContent.self_model.persistent, true);
+  assert.equal(result.structuredContent.dynamic_capability.capability_id, "nyra_self_model");
+});
+
+test("filters unauthorized application capabilities from catalog, read and invoke routes", async () => {
+  const allowed = readTool("work_continuity_v2_read");
+  const denied = writeTool("host_native_action_authorize");
+  const handlers = {
+    [allowed.name]: async () => ({ structuredContent: { ok: true } }),
+    [denied.name]: async () => ({ structuredContent: { ok: true } }),
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [allowed, denied],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({ structuredContent: { authorization: { allowed: true } } }),
+    capabilityVisible: ({ tool }) => tool.name === allowed.name,
+  });
+  const catalog = await router.core_capability_catalog({}, identity);
+
+  assert.deepEqual(
+    catalog.structuredContent.capabilities.map((item) => item.capability_id),
+    [allowed.name],
+  );
+  await assert.rejects(router.core_capability_catalog({
+    capability_id: denied.name,
+  }, identity), /dynamic_capability_unavailable/);
+  await assert.rejects(router.core_capability_invoke({
+    capability_id: denied.name,
+    catalog_revision: catalog.structuredContent.catalog_revision,
+    idempotency_key: "denied-invoke",
+    owner_confirmed: true,
+    arguments: { value: "blocked" },
+  }, identity), /dynamic_capability_unavailable/);
 });
 
 test("adds capabilities through the catalog without changing the connector surface", () => {
