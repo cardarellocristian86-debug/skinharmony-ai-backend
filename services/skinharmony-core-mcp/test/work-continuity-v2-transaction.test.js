@@ -176,6 +176,11 @@ class AtomicWorkPool {
       const row = this.works.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT w.project_id,w.status,a.anchor,a.intent_digest")) {
+      const row = this.legacy.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone({ project_id: row.project_id, status: row.status,
+        anchor: row.anchor || null, intent_digest: row.intent_digest || null })] : [], rowCount: row ? 1 : 0 };
+    }
     if (q.startsWith("INSERT INTO tenant_work ")) {
       let row;
       if (parameters.length === 25) {
@@ -237,6 +242,17 @@ class AtomicWorkPool {
         acceptance_criteria: JSON.parse(parameters[20]), idea: parameters[21], architecture: JSON.parse(parameters[22]),
       });
       return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET legacy_projection_sequence=$3")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row || row.legacy_work_id !== parameters[1]) return { rows: [], rowCount: 0 };
+      Object.assign(row, {
+        legacy_projection_sequence: parameters[2],
+        legacy_projection_event_hash: parameters[3],
+        legacy_projection_updated_at: "2026-08-08T10:00:02.000Z",
+        updated_at: "2026-08-08T10:00:02.000Z",
+      });
+      return { rows: [{ work_id: row.work_id }], rowCount: 1 };
     }
     if (q.startsWith("UPDATE tenant_work SET assignment_target_agent_id=$3")) {
       const row = this.works.get(key(parameters[0], parameters[1]));
@@ -398,6 +414,28 @@ function legacyRuntime(pool) {
   } };
 }
 
+function bridgeLegacyRuntime(pool, calls) {
+  return { initialize: async () => {}, ensureWithClient: async (client, who, input) => {
+    calls.push(structuredClone(input));
+    const row = client.insertLegacy(who, input);
+    const anchor = {
+      schema_version: "intent_anchor_v1",
+      initial_message: input.initial_message,
+      idea: input.idea,
+      objective: input.objective,
+      acceptance_criteria: input.acceptance_criteria,
+      constraints: input.constraints,
+      source: { client_type: input.client_type, session_id: input.session_id },
+      immutable: true,
+    };
+    row.anchor = anchor;
+    row.intent_digest = stableDigest(anchor);
+    return { work_id: row.work_id, intent_digest: row.intent_digest,
+      event: { sequence_number: 1, event_hash: "a".repeat(64) },
+      intent_event: { sequence_number: 2, event_hash: "b".repeat(64) } };
+  } };
+}
+
 function legacyRuntimeWithConcurrentProjection(pool) {
   return { initialize: async () => {}, ensureWithClient: async (client, who, input) => {
     const row = client.insertLegacy(who, input);
@@ -546,6 +584,81 @@ test("exact retry converges on one linked legacy/V2 identity and one consumed re
     query.startsWith("SELECT * FROM tenant_work_open_review"));
   assert.ok(bindingLock >= 0 && reviewLock > bindingLock,
     "create must lock the durable request mapping before its review");
+});
+
+test("owner reconstructs a missing legacy bridge from retained V2 fields exactly once", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "11111111-1111-4111-8111-111111111111";
+  pool.works.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, legacy_work_id: workId,
+    work_code: "NYRA-20260808-0001", work_name: "Canonical V2 work", work_type: "software_git",
+    project_id: "nyra-core", owner_user_id: "owner", created_by_user_id: "owner",
+    assigned_user_ids: [], supervising_user_ids: [], agent_ids: [], visibility_scope: "private",
+    status: "ACTIVE", priority: "P4", priority_score: 0, intent_digest: "c".repeat(64),
+    objective: "Restore the missing bridge without changing the V2 identity.",
+    next_action: "Plan the verifier", acceptance_criteria: ["Bridge is tenant-bound and idempotent."],
+    idea: null, architecture: { bounded: true }, progress_bp: 0,
+    legacy_projection_sequence: 2, legacy_projection_event_hash: "d".repeat(64),
+  });
+  const calls = [];
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: bridgeLegacyRuntime(pool, calls),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+
+  const first = await store.ensureLegacyBridge(identity(), {
+    work_id: workId,
+    project_id: "client-controlled-tenant-must-not-be-read",
+  });
+  const replay = await store.ensureLegacyBridge(identity(), { work_id: workId });
+
+  assert.equal(first.state, "reconstructed");
+  assert.equal(first.execution_authorized, false);
+  assert.equal(replay.state, "already_linked");
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].project_id, "nyra-core");
+  assert.equal(calls[0].objective, "Restore the missing bridge without changing the V2 identity.");
+  assert.deepEqual(calls[0].acceptance_criteria, ["Bridge is tenant-bound and idempotent."]);
+  assert.deepEqual(calls[0].architecture, { bounded: true });
+  assert.match(calls[0].session_id, /^v2bridge-[a-f0-9]{48}$/);
+  assert.equal(pool.works.get(key("tenant-a", workId)).legacy_projection_event_hash, "b".repeat(64));
+  assert.equal(pool.events.size, 1);
+});
+
+test("legacy bridge repair fails closed for a non-owner or an inconsistent V2 link", async () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const makeStore = () => {
+    const pool = new AtomicWorkPool();
+    pool.works.set(key("tenant-a", workId), {
+      tenant_id: "tenant-a", work_id: workId, legacy_work_id: workId,
+      work_code: "NYRA-20260808-0001", work_name: "Canonical V2 work", work_type: "software_git",
+      project_id: "nyra-core", owner_user_id: "owner", created_by_user_id: "owner",
+      assigned_user_ids: [], supervising_user_ids: [], agent_ids: [], visibility_scope: "private",
+      status: "ACTIVE", priority: "P4", priority_score: 0, intent_digest: "c".repeat(64),
+      objective: "Restore safely.", next_action: "Plan the verifier", acceptance_criteria: ["bounded"],
+      idea: null, architecture: {}, progress_bp: 0,
+    });
+    return { pool, store: createWorkContinuityV2Store({ pool, legacyRuntime: bridgeLegacyRuntime(pool, []),
+      now: () => new Date("2026-08-08T10:00:00.000Z") }) };
+  };
+  {
+    const { store } = makeStore();
+    await assert.rejects(store.ensureLegacyBridge(identity("member", "member"), { work_id: workId }),
+      /legacy_bridge_owner_required/);
+  }
+  {
+    const { pool, store } = makeStore();
+    pool.works.get(key("tenant-a", workId)).legacy_work_id = "22222222-2222-4222-8222-222222222222";
+    await assert.rejects(store.ensureLegacyBridge(identity(), { work_id: workId }), /legacy_bridge_identity_mismatch/);
+  }
+  {
+    const { pool, store } = makeStore();
+    pool.legacy.set(key("tenant-a", workId), {
+      tenant_id: "tenant-a", work_id: workId, project_id: "nyra-core", status: "active",
+      intent_digest: "d".repeat(64), anchor: null,
+    });
+    await assert.rejects(store.ensureLegacyBridge(identity(), { work_id: workId }),
+      /legacy_bridge_existing_state_invalid/);
+  }
 });
 
 test("request identity survives replica restart and consumed-review expiry without minting a duplicate", async () => {

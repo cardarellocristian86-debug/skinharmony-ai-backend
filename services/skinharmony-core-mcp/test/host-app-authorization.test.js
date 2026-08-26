@@ -2,11 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  hasTenantBoundChatGptReadCompatibility,
   hostAppCanAccessTool,
   requireHostAppToolCapability,
 } from "../src/host-app-authorization.js";
 
 const TOOLS = [
+  { name: "work_preflight", annotations: { readOnlyHint: true } },
+  { name: "core_branch_registry", annotations: { readOnlyHint: true } },
+  { name: "core_semantic_select", annotations: { readOnlyHint: true } },
+  { name: "core_capability_read", annotations: { readOnlyHint: true } },
+  { name: "core_capability_invoke", annotations: { readOnlyHint: false } },
   { name: "work_continuity_v2_read", annotations: { readOnlyHint: true } },
   { name: "host_native_status", annotations: { readOnlyHint: true } },
   { name: "host_native_delegation_issue", annotations: { readOnlyHint: false } },
@@ -36,6 +42,59 @@ function identity(capabilities, hostKind = "chatgpt_native", registered = true) 
     },
   };
 }
+
+function tenantBoundUnregisteredChatGpt(overrides = {}) {
+  return {
+    kind: "oauth",
+    subject: "chatgpt-user",
+    tenantId: "tenant-a",
+    authenticatedTenantMembership: {
+      schema_version: "tenant_membership_binding_v1",
+      authenticated: true,
+      tenant_id: "tenant-a",
+      subject: "chatgpt-user",
+    },
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: false,
+      auth_kind: "oauth",
+      client_type: "chatgpt",
+      interaction_mode: "nyra_conversational",
+      capabilities: ["work.read"],
+    },
+    ...overrides,
+  };
+}
+
+test("limits unregistered tenant-bound ChatGPT OAuth to governed read and exact dynamic reauthorization", () => {
+  const compatible = tenantBoundUnregisteredChatGpt();
+  for (const name of ["work_preflight", "core_branch_registry", "core_semantic_select"]) {
+    assert.equal(hasTenantBoundChatGptReadCompatibility(compatible, name), true, name);
+    assert.doesNotThrow(() => requireHostAppToolCapability({ identity: compatible, toolName: name, tools: TOOLS }));
+  }
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: compatible,
+    toolName: "core_capability_read",
+    args: { capability_id: "work_continuity_v2_read" },
+    tools: TOOLS,
+  }));
+  assert.throws(() => requireHostAppToolCapability({
+    identity: compatible,
+    toolName: "core_capability_read",
+    args: { capability_id: "memory_context", tenant_id: "tenant-b" },
+    tools: TOOLS,
+  }), /host_app_capability_required:core\.read/);
+  assert.throws(() => requireHostAppToolCapability({
+    identity: compatible,
+    toolName: "core_capability_invoke",
+    args: { capability_id: "memory_checkpoint", tenant_id: "tenant-b" },
+    tools: TOOLS,
+  }), /host_app_capability_required:core\.operate/);
+  assert.equal(hasTenantBoundChatGptReadCompatibility({
+    ...compatible,
+    authenticatedTenantMembership: { ...compatible.authenticatedTenantMembership, tenant_id: "tenant-b" },
+  }, "work_preflight"), false);
+});
 
 test("enforces work.read on direct and dynamic Work reads", () => {
   const denied = identity([]);

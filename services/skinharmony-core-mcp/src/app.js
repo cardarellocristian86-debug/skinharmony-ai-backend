@@ -33,8 +33,10 @@ import {
   hostPrincipalAllows,
 } from "./host-app-registry.js";
 import {
+  CHATGPT_GOVERNED_READ_TOOL_NAMES,
   dynamicHostCapabilityTarget,
   hostAppCanAccessTool,
+  hasTenantBoundChatGptReadCompatibility,
   requireHostAppToolCapability,
 } from "./host-app-authorization.js";
 
@@ -507,26 +509,22 @@ function resolveConnectorToolName(value, tools = []) {
 }
 
 const CHATGPT_NYRA_FRONT_DOOR_TOOL_NAMES = new Set(["nyra_converse"]);
-const STALE_CHATGPT_NYRA_READ_TOOL_NAMES = new Set([
-  "work_preflight",
-  "core_capability_catalog",
-  "core_branch_registry",
-  "core_semantic_select",
-  "core_capability_read",
-]);
-
 function connectorToolCandidate(value) {
   const requested = String(value || "");
   const prefix = `${CONNECTOR_TOOL_NAMESPACE}.`;
   return requested.startsWith(prefix) ? requested.slice(prefix.length) : requested;
 }
 
-// ChatGPT must address Nyra, not assemble a plan from Core implementation
-// tools. Codex and server-to-server clients retain their normal surfaces.
-// OAuth identities are the verified ChatGPT connector path in this gateway.
+// Registered hosts select their declared interaction mode. In particular a
+// registered ChatGPT native-tooling principal must retain its capability-bound
+// Core surface instead of being relabelled as conversational by client type.
 function usesNyraConversationalSurface(identity) {
   const mode = String(identity?.authenticatedHostPrincipal?.interaction_mode || "");
-  return mode === "nyra_conversational" || inferClientType(identity) === "chatgpt";
+  if (mode) return mode === "nyra_conversational";
+  // Public requests receive a principal from authentication. Keep direct
+  // legacy/internal OAuth callers fail-closed on Nyra when that envelope is
+  // absent rather than accidentally exposing the unfiltered tool surface.
+  return identity?.kind === "oauth" && inferClientType(identity) === "chatgpt";
 }
 
 function filterToolsForClient(tools = [], identity) {
@@ -542,12 +540,14 @@ function filterToolsForClient(tools = [], identity) {
     HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
   ];
   const capabilityFiltered = tools.filter((tool) => {
+    if (hasTenantBoundChatGptReadCompatibility(identity, tool.name)) return true;
     // Dynamic wrappers are authorized against their exact capability_id at
     // call time. Keep only the wrapper modes for which the registered app has
     // at least one possible target; the dynamic catalog independently filters
     // every exact target through the same host-app policy.
     if (tool.name === "core_capability_read") {
       if (!principal) return true;
+      if (hasTenantBoundChatGptReadCompatibility(identity, tool.name)) return true;
       return principal?.registered === true && [
         HOST_APP_CAPABILITIES.CORE_READ,
         HOST_APP_CAPABILITIES.WORK_READ,
@@ -565,29 +565,32 @@ function filterToolsForClient(tools = [], identity) {
     });
   });
   if (!usesNyraConversationalSurface(identity)) return capabilityFiltered;
+  const governedReadCompatibility = capabilityFiltered.filter((tool) => (
+    hasTenantBoundChatGptReadCompatibility(identity, tool.name) &&
+    // Preflight remains a cached/internal compatibility entrypoint. It must
+    // never become a second public planning tool in tools/list.
+    tool.name !== "work_preflight"
+  ));
   return capabilityFiltered.filter((tool) => (
     CHATGPT_NYRA_FRONT_DOOR_TOOL_NAMES.has(tool.name) ||
     (tool.name === "nyra_governed_continue" &&
       hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE))
-  ));
+  )).concat(governedReadCompatibility);
 }
 
-// ChatGPT can retain connector descriptors for an already-open app session
-// after its tool surface is reduced to Nyra. Accept only stale *read* entries
-// and route them to Nyra's conversational front door. Mutating tools are never
-// translated, so this cannot bypass governance or owner confirmation.
+// ChatGPT can retain connector descriptors for an already-open app session.
+// A verified, tenant-bound OAuth compatibility principal may call only the
+// exact read allowlist; every other stale descriptor continues to Nyra. A
+// mutation is never translated, so this cannot bypass governance.
 function isStaleNyraReadToolName(value) {
-  return STALE_CHATGPT_NYRA_READ_TOOL_NAMES.has(connectorToolCandidate(value));
+  return CHATGPT_GOVERNED_READ_TOOL_NAMES.has(connectorToolCandidate(value));
 }
 
 function resolveStaleChatGptReadTool(value, identity, visibleTools = [], args = {}) {
   if (!usesNyraConversationalSurface(identity)) return null;
   const candidate = connectorToolCandidate(value);
   if (visibleTools.some((tool) => tool.name === candidate)) return null;
-  // `core_health` is intentionally not conversational. Every other stale
-  // ChatGPT read, including self-model discovery, goes through Nyra so the
-  // connected host cannot reconstruct an orchestration plan from raw tools.
-  if (candidate === "core_health") return "core_health";
+  if (hasTenantBoundChatGptReadCompatibility(identity, candidate)) return candidate;
   return isStaleNyraReadToolName(value) ? "nyra_converse" : null;
 }
 
@@ -2223,8 +2226,11 @@ export function createApp(config, options = {}) {
           ? "nyra_converse"
           : resolveConnectorToolName(params.name, requestVisibleTools));
         const tool = requestVisibleTools.find((item) => item.name === canonicalToolName) ||
-          (staleChatGptReadTool === "core_health"
-            ? baseVisibleTools.find((item) => item.name === staleChatGptReadTool)
+          (hasTenantBoundChatGptReadCompatibility(identity, staleChatGptReadTool)
+            ? configureToolForRuntime(
+              TOOLS.find((item) => item.name === staleChatGptReadTool),
+              config,
+            )
             : null);
         if (!tool) return res.json({ jsonrpc: "2.0", id, error: { code: -32602, message: "Unknown tool" } });
         requireScopes(identity, tool.scopes);
@@ -2586,4 +2592,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachWorkPreflight, buildIdentity, configureToolForRuntime, filterToolsForClient, inferClientType, resolveConnectorToolName, resolveStaleChatGptReadTool, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };
+export { attachWorkPreflight, buildIdentity, configureToolForRuntime, filterToolsForClient, hasTenantBoundChatGptReadCompatibility, inferClientType, resolveConnectorToolName, resolveStaleChatGptReadTool, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };

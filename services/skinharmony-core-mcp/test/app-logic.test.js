@@ -4,14 +4,58 @@ import {
   attachWorkPreflight,
   configureToolForRuntime,
   filterToolsForClient,
+  hasTenantBoundChatGptReadCompatibility,
   requiresGenericWorkPreflight,
   resolveStaleChatGptReadTool,
   TOOLS,
 } from "../src/app.js";
 
-test("gives ChatGPT a Nyra-only front door while preserving the Codex tool surface", () => {
-  const chatgptTools = filterToolsForClient(TOOLS, { kind: "oauth" });
-  assert.deepEqual(chatgptTools.map((tool) => tool.name), ["nyra_converse"]);
+function tenantBoundChatGptCompatibilityIdentity(overrides = {}) {
+  return {
+    kind: "oauth",
+    subject: "chatgpt-user",
+    tenantId: "tenant-a",
+    authenticatedTenantMembership: {
+      schema_version: "tenant_membership_binding_v1",
+      authenticated: true,
+      tenant_id: "tenant-a",
+      subject: "chatgpt-user",
+    },
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: false,
+      auth_kind: "oauth",
+      client_type: "chatgpt",
+      interaction_mode: "nyra_conversational",
+      capabilities: ["work.read"],
+    },
+    ...overrides,
+  };
+}
+
+test("keeps claim-only OAuth on Nyra while granting a tenant-bound governed read allowlist", () => {
+  const claimOnlyTools = filterToolsForClient(TOOLS, { kind: "oauth" });
+  assert.deepEqual(claimOnlyTools.map((tool) => tool.name), ["nyra_converse"]);
+
+  const compatibility = tenantBoundChatGptCompatibilityIdentity();
+  const names = filterToolsForClient(TOOLS, compatibility).map((tool) => tool.name);
+  for (const name of [
+    "core_health",
+    "core_capability_catalog",
+    "core_branch_registry",
+    "core_semantic_select",
+    "core_capability_read",
+    "nyra_converse",
+  ]) assert.equal(names.includes(name), true, name);
+  assert.equal(names.includes("work_preflight"), false, "preflight remains cached/internal");
+  for (const name of ["core_capability_invoke", "tenant_work_evidence_record", "host_native_delegation_issue"]) {
+    assert.equal(names.includes(name), false, name);
+  }
+  assert.equal(hasTenantBoundChatGptReadCompatibility(compatibility, "core_capability_read"), true);
+  assert.equal(hasTenantBoundChatGptReadCompatibility({
+    ...compatibility,
+    authenticatedTenantMembership: { ...compatibility.authenticatedTenantMembership, tenant_id: "tenant-b" },
+  }, "core_capability_read"), false, "tenant membership cannot be injected across tenants");
   assert.equal(filterToolsForClient(TOOLS, { kind: "codex" }).length, TOOLS.length);
 });
 
@@ -43,7 +87,7 @@ test("adds exactly one governed continuation tool for a registered conversationa
   }).some((tool) => tool.name === "nyra_governed_continue"), false);
 });
 
-test("keeps Nyra local while routing stale ChatGPT health reads to health", () => {
+test("routes only verified tenant-bound stale governed reads to Core", () => {
   const nyra = TOOLS.find((tool) => tool.name === "nyra_converse");
   const health = TOOLS.find((tool) => tool.name === "core_health");
   const routedNyra = configureToolForRuntime(nyra, { environmentRoutingRequired: true });
@@ -51,13 +95,45 @@ test("keeps Nyra local while routing stale ChatGPT health reads to health", () =
   assert.equal(routedNyra.inputSchema.required.includes("environment"), false);
   assert.equal(routedHealth.inputSchema.required.includes("environment"), true);
   assert.equal(
-    resolveStaleChatGptReadTool("skinharmony_nyra_core.core_health", { kind: "oauth" }, [nyra]),
+    resolveStaleChatGptReadTool("skinharmony_nyra_core.core_health", tenantBoundChatGptCompatibilityIdentity(), [nyra]),
     "core_health",
+  );
+  assert.equal(
+    resolveStaleChatGptReadTool("skinharmony_nyra_core.work_preflight", tenantBoundChatGptCompatibilityIdentity(), [nyra]),
+    "work_preflight",
   );
   assert.equal(
     resolveStaleChatGptReadTool("skinharmony_nyra_core.work_preflight", { kind: "oauth" }, [nyra]),
     "nyra_converse",
   );
+  assert.equal(
+    resolveStaleChatGptReadTool("skinharmony_nyra_core.core_capability_invoke", tenantBoundChatGptCompatibilityIdentity(), [nyra]),
+    null,
+  );
+});
+
+test("preserves a registered ChatGPT native-tooling capability-filtered Core surface", () => {
+  const tools = [
+    { name: "nyra_converse", annotations: { readOnlyHint: true } },
+    { name: "core_health", annotations: { readOnlyHint: true } },
+    { name: "memory_context", annotations: { readOnlyHint: true } },
+    { name: "memory_checkpoint", annotations: { readOnlyHint: false } },
+    { name: "core_capability_read", annotations: { readOnlyHint: true } },
+    { name: "core_capability_invoke", annotations: { readOnlyHint: false } },
+  ];
+  const identity = {
+    kind: "oauth",
+    authenticatedHostPrincipal: {
+      registered: true,
+      auth_kind: "oauth",
+      client_type: "chatgpt",
+      interaction_mode: "native_tooling",
+      capabilities: ["core.read"],
+    },
+  };
+  assert.deepEqual(filterToolsForClient(tools, identity).map((tool) => tool.name), [
+    "core_health", "memory_context", "core_capability_read",
+  ]);
 });
 
 test("advertises explicit confirmation fields only on write tools", () => {

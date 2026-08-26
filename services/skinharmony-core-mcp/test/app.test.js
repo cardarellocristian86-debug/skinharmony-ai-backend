@@ -10,6 +10,7 @@ import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES, createDynamicCapabilityHandlers, dynamicCapabilityCatalogSnapshot } from "../src/dynamic-capability-router.js";
 import { HOST_APP_CAPABILITIES } from "../src/host-app-registry.js";
 import { requireHostAppToolCapability } from "../src/host-app-authorization.js";
+import { requireTenantWorkCapability } from "../src/tenant-work-authorization.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
@@ -462,6 +463,26 @@ test("legacy Work reads and auto-resume intersect canonical V2 visibility", () =
     assert.match(serverSource.slice(start, end), /await requireCanonicalWorkRead\(identity, args\.work_id\)/,
       `${handler} must authorize the exact canonical Work before any legacy mutation/read`);
   }
+});
+
+test("native planning repairs only the server-derived canonical legacy bridge before reading its Intent", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const helperStart = serverSource.indexOf("async function ensureNativePlanLegacyBridge");
+  const helperEnd = serverSource.indexOf("async function listLegacyWorksAuthorized", helperStart);
+  const helper = serverSource.slice(helperStart, helperEnd);
+  assert.match(helper, /requireTenantWorkCapability\(identity, "operate"\)/);
+  assert.match(helper, /ensureLegacyBridge\(withTenantWorkAcl\(identity\), \{ work_id: workId \}\)/);
+  const planStart = serverSource.indexOf("work_continuity_native_plan: async");
+  const planEnd = serverSource.indexOf("work_continuity_native_bind: async", planStart);
+  const planHandler = serverSource.slice(planStart, planEnd);
+  assert.ok(planHandler.indexOf("await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id)") >= 0);
+  assert.ok(planHandler.indexOf("await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id)") <
+    planHandler.indexOf("await readLegacyIntentAuthorized(identity"));
+  const autopilotStart = serverSource.indexOf("async function reconcileNyraAutopilot");
+  const autopilotEnd = serverSource.indexOf("function withTenantWorkAcl", autopilotStart);
+  const autopilot = serverSource.slice(autopilotStart, autopilotEnd);
+  assert.ok(autopilot.indexOf("await ensureNativePlanLegacyBridge(identity, work.work_id)") <
+    autopilot.indexOf("await readLegacyIntentAuthorized(identity, { work_id: work.work_id })"));
 });
 
 test("allows server-issued MCP session bootstrap for agent heartbeat", () => {
@@ -1944,7 +1965,7 @@ test("accepts only exact connector namespace aliases for visible registered tool
   }
 });
 
-test("translates a stale ChatGPT work_preflight descriptor into Nyra's conversation contract", async () => {
+test("allows a verified tenant-bound OAuth ChatGPT preflight without publishing it in tools/list", async () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = publicKey.export({ format: "jwk" });
   jwk.kid = "chatgpt-stale-read-key";
@@ -1968,22 +1989,31 @@ test("translates a stale ChatGPT work_preflight descriptor into Nyra's conversat
     jwksCache: { get: async () => jwk },
     toolSurface: "compact",
     handlers: {
-      nyra_converse: async (args) => {
+      work_preflight: async (args) => {
         received = args;
-        return { structuredContent: { ok: true, tool: "nyra_converse" }, content: [] };
+        return { structuredContent: { ok: true, tool: "work_preflight" }, content: [] };
       },
     },
   });
   const server = app.listen(0);
   await new Promise((resolve) => server.once("listening", resolve));
   try {
-    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const headers = {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      "mcp-session-id": "chatgpt-stale-work-preflight",
+    };
+    const listed = await fetch(`${base}/mcp`, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        "mcp-session-id": "chatgpt-stale-work-preflight",
-      },
+      headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 339, method: "tools/list" }),
+    }).then((response) => response.json());
+    assert.equal(listed.result.tools.some((tool) => tool.name === "work_preflight"), false);
+
+    const response = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers,
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 340,
@@ -1992,7 +2022,6 @@ test("translates a stale ChatGPT work_preflight descriptor into Nyra's conversat
           name: "work_preflight",
           arguments: {
             request: "Nyra, riprendi il Work",
-            environment: "production",
             work_id: "11111111-1111-4111-8111-111111111111",
             project_id: "skinharmony-ai-backend",
           },
@@ -2001,27 +2030,24 @@ test("translates a stale ChatGPT work_preflight descriptor into Nyra's conversat
     });
     const body = await response.json();
     assert.equal(response.status, 200, JSON.stringify(body));
-    assert.equal(body.result.structuredContent.tool, "nyra_converse");
+    assert.equal(body.error, undefined, JSON.stringify(body));
+    assert.equal(body.result.structuredContent.tool, "work_preflight");
     assert.deepEqual({
-      message: received.message,
+      request: received.request,
       work_id: received.work_id,
       project_id: received.project_id,
-      locale: received.locale,
-      response_style: received.response_style,
     }, {
-      message: "Nyra, riprendi il Work",
+      request: "Nyra, riprendi il Work",
       work_id: "11111111-1111-4111-8111-111111111111",
       project_id: "skinharmony-ai-backend",
-      locale: "auto",
-      response_style: "concise",
     });
-    assert.equal(Object.hasOwn(received, "environment"), false);
+    assert.equal(Object.hasOwn(received, "tenant_id"), false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
 });
 
-test("routes stale ChatGPT self-model discovery and reads through Nyra's unique front door", async () => {
+test("routes verified tenant-bound ChatGPT catalog and governed reads to their exact Core handlers", async () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = publicKey.export({ format: "jwk" });
   jwk.kid = "chatgpt-stale-self-model-key";
@@ -2084,7 +2110,7 @@ test("routes stale ChatGPT self-model discovery and reads through Nyra's unique 
         } },
       }),
     }).then((response) => response.json());
-    assert.equal(catalog.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(catalog));
+    assert.equal(catalog.result?.structuredContent?.tool, "core_capability_catalog", JSON.stringify(catalog));
 
     const read = await fetch(`${base}/mcp`, {
       method: "POST",
@@ -2094,69 +2120,51 @@ test("routes stale ChatGPT self-model discovery and reads through Nyra's unique 
         id: 351,
         method: "tools/call",
         params: { name: "core_capability_read", arguments: {
-          capability_id: "nyra_self_model",
+          capability_id: "work_preflight",
           catalog_revision: "a".repeat(64),
           arguments: {},
           environment: "production",
         } },
       }),
     }).then((response) => response.json());
-    assert.equal(read.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(read));
+    assert.equal(read.result?.structuredContent?.tool, "core_capability_read", JSON.stringify(read));
 
-    const conflictingCatalog = await fetch(`${base}/mcp`, {
+    const coreReadDenied = await fetch(`${base}/mcp`, {
       method: "POST",
       headers,
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 352,
-        method: "tools/call",
-        params: { name: "core_capability_catalog", arguments: {
-          group: "self_model",
-          capability_id: "core_control_plane_read",
+        method: "tools/call", params: { name: "core_capability_read", arguments: {
+          capability_id: "memory_context",
+          catalog_revision: "b".repeat(64),
+          arguments: { tenant_id: "tenant-b" },
           environment: "production",
         } },
       }),
     }).then((response) => response.json());
-    assert.equal(conflictingCatalog.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(conflictingCatalog));
+    assert.equal(coreReadDenied.result?.structuredContent?.error?.code, "host_app_capability_required", JSON.stringify(coreReadDenied));
 
-    const reserveHint = await fetch(`${base}/mcp`, {
+    const mutation = await fetch(`${base}/mcp`, {
       method: "POST",
       headers,
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 353,
-        method: "tools/call",
-        params: { name: "core_capability_catalog", arguments: {
+        method: "tools/call", params: { name: "core_capability_invoke", arguments: {
           capability_id: "host_native_action_reserve",
-          request: "Nyra, dimmi cosa manca per continuare",
           catalog_revision: "b".repeat(64),
-          arguments: { owner_confirmed: true },
-          environment: "production",
+          arguments: { tenant_id: "tenant-b" },
+          idempotency_key: "chatgpt-mutation-denied",
         } },
       }),
     }).then((response) => response.json());
-    assert.equal(reserveHint.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(reserveHint));
+    assert.equal(mutation.error?.code, -32602, JSON.stringify(mutation));
 
-    assert.deepEqual(received.map(([name]) => name), [
-      "nyra_converse", "nyra_converse", "nyra_converse", "nyra_converse",
-    ]);
-    assert.match(received[0][1].message, /capability governata self_model/);
-    assert.match(received[1][1].message, /capability governata nyra_self_model/);
-    assert.match(received[2][1].message, /capability governata core_control_plane_read/);
-    assert.equal(received[3][1].message, "Nyra, dimmi cosa manca per continuare");
-    assert.deepEqual(received[3][1][NYRA_SERVER_CONNECTOR_HINT], {
-      server_issued: true,
-      request_kind: "capability_discovery",
-      capability_hint: "host_native_action_reserve",
-    });
-    for (const [index, [, args]] of received.entries()) {
-      if (index < 3) assert.match(args.message, /problema, requisiti e prossimo passo/);
-      assert.equal(args.locale, "auto");
-      assert.equal(args.response_style, "concise");
-      for (const key of ["group", "include_schema", "limit", "catalog_revision", "arguments", "environment"]) {
-        assert.equal(Object.hasOwn(args, key), false, key);
-      }
-    }
+    assert.deepEqual(received.map(([name]) => name), ["catalog", "read"]);
+    assert.equal(received[0][1].group, "self_model");
+    assert.equal(received[1][1].capability_id, "work_preflight");
+    assert.equal(Object.hasOwn(received[1][1].arguments, "tenant_id"), false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -2669,6 +2677,7 @@ test("keeps ChatGPT on Nyra's front door while Codex retains native coordinator 
   const captured = [];
   const targetHandlers = {
     work_continuity_native_plan: async (args, identity) => {
+      requireTenantWorkCapability(identity, "operate");
       captured.push({ args, identity });
       return { structuredContent: { ok: true }, content: [] };
     },
