@@ -139,8 +139,25 @@ function bootstrapPath(value) {
   return path;
 }
 
+function excludedArchitecturePath(path) {
+  return /(^|\/)(?:node_modules|\.git|dist|build|coverage|vendor|shared-work-memory|test|tests|__tests__|fixtures|reports)(?:\/|$)/i.test(path);
+}
+
+function architectureDocumentationPath(path) {
+  if (!path.startsWith("docs/")) return true;
+  if (path.startsWith("docs/architecture/") || path.startsWith("docs/adr/")) return true;
+  const basename = path.slice(path.lastIndexOf("/") + 1);
+  return /(?:^|[_-])(?:architecture|architectural|adr|design|topology|runtime|system|service|boundary|decision)(?:[_\-.]|$)/i.test(basename);
+}
+
 function indexableSnapshotPath(path) {
-  if (/(^|\/)(?:node_modules|\.git|dist|build|coverage|vendor)(?:\/|$)/i.test(path)) return false;
+  // The Atlas represents the architecture of the repository, not mutable
+  // work-memory, test fixtures, reports, or generated delivery artifacts.
+  // Keeping those out avoids a high-volume, low-signal graph while retaining
+  // runtime source, deployment configuration, database definitions and the
+  // architecture documentation that describes their boundaries.
+  if (excludedArchitecturePath(path) || /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(path)) return false;
+  if (!architectureDocumentationPath(path)) return false;
   return /(?:\.[cm]?[jt]sx?|\.json|\.ya?ml|\.sql|\.md)$/i.test(path);
 }
 
@@ -214,6 +231,7 @@ async function readRepositoryPathsBatch(fetchImpl, repository, treeSha, frontier
       const path = treePath(current.path, name);
       const entrySha = String(entry.sha || "").toLowerCase();
       if (entry.type === "tree") {
+        if (excludedArchitecturePath(path)) continue;
         if (!GITHUB_SHA.test(entrySha)) bootstrapFail("software_atlas_repository_tree_invalid");
         frontier.directories.push({ path, tree_sha: entrySha, offset: 0 });
         if (frontier.directories.length > ATLAS_BOOTSTRAP_FRONTIER_LIMIT) bootstrapFail("software_atlas_tree_frontier_limit");
@@ -292,7 +310,7 @@ async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImp
   }
   const snapshot = await readRepositorySnapshot(fetchImpl, repository, cursor > 0 ? suppliedCommit : branch, cursor > 0 ? suppliedTreeSha : "", token);
   if (cursor > 0 && snapshot.commit !== suppliedCommit) bootstrapFail("software_atlas_snapshot_commit_mismatch");
-  const sourceHash = softwareDigest({ schema_version: "software_repository_snapshot_v1", repository, commit: snapshot.commit, tree_sha: snapshot.tree_sha });
+  const sourceHash = softwareDigest({ schema_version: "software_repository_architecture_snapshot_v2", repository, commit: snapshot.commit, tree_sha: snapshot.tree_sha });
   let graph;
   try { graph = await atlasRuntime.readAtlasGraph(identity, { project_id: projectId, work_id: workId }); }
   catch (error) { if (error?.message !== "work_atlas_not_found") throw error; graph = { revision: 0, nodes: [], edges: [] }; }
@@ -307,14 +325,14 @@ async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImp
       cursor, next_cursor: null, completed: true, already_applied: true, atlas_revision: Number(graph.revision || 0),
       total_nodes: Number(graph.metrics?.total_nodes || 0), total_context_bytes: Number(graph.metrics?.total_context_bytes || 0) });
   }
-  if (cursor < nextPersistedCursor) {
+  if (cursor < nextPersistedCursor && bootstrap?.source_hash === sourceHash) {
     return bootstrapResult({ tenant_id: tenantId, project_id: projectId, work_id: workId, repository, branch,
       snapshot_commit: snapshot.commit, snapshot_tree_sha: snapshot.tree_sha, source_hash: sourceHash,
       cursor, next_cursor: nextPersistedCursor, completed: false, already_applied: true, atlas_revision: Number(graph.revision || 0),
       total_nodes: Number(graph.metrics?.total_nodes || 0), total_context_bytes: Number(graph.metrics?.total_context_bytes || 0) });
   }
   if (cursor > nextPersistedCursor) bootstrapFail("software_atlas_cursor_out_of_sequence");
-  if (cursor > 0 && (bootstrap?.state !== "indexing" || !bootstrap?.frontier)) {
+  if (cursor > 0 && (bootstrap?.state !== "indexing" || !bootstrap?.frontier || bootstrap?.source_hash !== sourceHash)) {
     bootstrapFail("software_atlas_snapshot_binding_mismatch");
   }
   const enumeration = await readRepositoryPathsBatch(
@@ -357,7 +375,7 @@ async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImp
   const edges = firstPage ? batch.edges.filter((edge) => batchNodeIds.has(edge.from_node_id) && batchNodeIds.has(edge.to_node_id)) : batch.edges;
   const written = await atlasRuntime.upsertAtlas(identity, {
     work_id: workId, expected_revision: revision, nodes: batch.nodes.map(atlasNode), edges: edges.map(atlasEdge),
-    allow_existing_edge_nodes: !firstPage, replace: firstPage, source_hash: sourceHash,
+    allow_existing_edge_nodes: !firstPage, replace: firstPage, replace_snapshot_nodes: firstPage, source_hash: sourceHash,
     base_commit: snapshot.commit, head_commit: snapshot.commit,
     bootstrap: { state: completed ? "available" : "indexing", repository, commit: snapshot.commit, tree_sha: snapshot.tree_sha,
       source_hash: sourceHash, cursor, next_cursor: nextCursor, total_candidate_files: completed ? cursor + paths.length : null,
