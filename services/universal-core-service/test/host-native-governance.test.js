@@ -861,6 +861,17 @@ test("bounded delegation fixes deny actions, host boundary, expiry, and owner re
   }), /delegation_expiry_invalid/);
 });
 
+test("ordinary branch delegations accept an explicit empty protected-branch list", async () => {
+  const subject = harness();
+  const delegation = await subject.governance.issueDelegation({
+    ...subject.delegationInput,
+    protected_branches: [],
+  });
+
+  assert.deepEqual(delegation.grant.protected_branches, []);
+  assert.equal(subject.governance.verifyDelegation(delegation), true);
+});
+
 test("release manifest v2 uses canonical digest and rejects signed booleans, mutation, and self-review", () => {
   const manifest = buildHostReleaseManifestV2(releaseManifestInput());
   const verified = validateHostReleaseManifestV2(manifest, {

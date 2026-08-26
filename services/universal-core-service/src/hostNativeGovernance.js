@@ -1306,7 +1306,12 @@ function normalizeDelegation(input, now) {
     owner_confirmation: checkOwnerConfirmation(input.owner_confirmation),
     audience: stableStrings(input.audience, "audience_invalid", 10),
     allowed_branches: stableStrings(input.allowed_branches, "allowed_branches_invalid", 30),
-    protected_branches: stableStrings(input.protected_branches, "protected_branches_invalid", 30),
+    // The MCP contract deliberately makes this optional: an ordinary branch
+    // delegation need not name a protected branch. Preserve that distinction
+    // while keeping every supplied protected branch strictly validated.
+    protected_branches: Array.isArray(input.protected_branches) && input.protected_branches.length === 0
+      ? []
+      : stableStrings(input.protected_branches, "protected_branches_invalid", 30),
     allowed_path_prefixes: stableStrings(input.allowed_path_prefixes, "allowed_paths_invalid", 100),
     allowed_actions,
     budget,

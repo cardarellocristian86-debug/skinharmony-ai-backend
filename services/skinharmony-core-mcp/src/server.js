@@ -1508,8 +1508,8 @@ const baseHandlers = {
         .digest("hex").slice(0, 40)}`;
       await requireBoundedTenantCoordination(
         identity,
-        "work.continuity.start_or_resume",
-        String(args.work_id || args.project_id || "resume_existing"),
+        "work.continuity.resume_or_bind",
+        `${args.project_id}:${args.session_id}`,
         resumeIdempotencyKey,
       );
       return continuityTextResult({
