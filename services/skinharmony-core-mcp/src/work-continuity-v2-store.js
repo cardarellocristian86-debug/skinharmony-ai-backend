@@ -1406,6 +1406,109 @@ export function createWorkContinuityV2Store({
       };
     });
   }
+  function legacyBridgeSessionId(workId) {
+    return `v2bridge-${objectDigest({ schema_version: "legacy_work_bridge_session_v1", work_id: workId }).slice(0, 48)}`;
+  }
+  function legacyBridgeInput(work) {
+    const workId = uuid(work.work_id);
+    if (work.legacy_work_id !== workId) fail("legacy_bridge_identity_mismatch");
+    if (!OPERATIONAL_STATUSES.has(work.status)) fail("legacy_bridge_work_not_operational");
+    const workName = text(work.work_name, "legacy_bridge_work_name_invalid", 1_000);
+    const projectId = text(work.project_id, "legacy_bridge_project_id_invalid", 128);
+    const objective = text(work.objective, "legacy_bridge_objective_invalid", 8_000);
+    const { acceptanceCriteria } = workBootstrapTextCollections({
+      acceptance_criteria: work.acceptance_criteria,
+    });
+    const architecture = plainRecord(work.architecture) ? stable(work.architecture) : {};
+    return {
+      // A V2 record does not retain the raw legacy-only prompt or constraints.
+      // Reconstruct a new, explicit immutable anchor from retained canonical
+      // fields only; never claim that the previous legacy digest was recovered.
+      work_id: workId,
+      project_id: projectId,
+      session_id: legacyBridgeSessionId(workId),
+      initial_message: `Canonical V2 Work ${work.work_code || workId} legacy bridge reconstruction`,
+      idea: text(work.idea || `Canonical V2 Work: ${workName}`, "legacy_bridge_idea_invalid", 8_000),
+      objective,
+      acceptance_criteria: acceptanceCriteria,
+      constraints: ["The legacy continuity row was absent; this bridge uses only retained canonical V2 fields."],
+      architecture,
+      next_action: String(work.next_action || "Reconcile the canonical legacy bridge").slice(0, 4_000),
+      client_type: "canonical_v2_bridge",
+    };
+  }
+  async function ensureLegacyBridge(identity, { work_id }) {
+    if (!legacyRuntime || typeof legacyRuntime.ensureWithClient !== "function") {
+      fail("legacy_work_transaction_bridge_unavailable");
+    }
+    await Promise.all([initialize(), legacyRuntime.initialize()]);
+    const actor = actorFromIdentity(identity);
+    if (!isAdmin(actor)) fail("legacy_bridge_owner_required");
+    const workId = uuid(work_id);
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canAdminister, work, actor);
+      if (work.legacy_work_id !== workId) fail("legacy_bridge_identity_mismatch");
+      const existing = await client.query(`SELECT w.project_id,w.status,a.anchor,a.intent_digest
+        FROM core_continuity_works w
+        LEFT JOIN core_continuity_intent_anchors a
+          ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
+        WHERE w.tenant_id=$1 AND w.work_id=$2
+        FOR UPDATE OF w`, [actor.tenant_id, workId]);
+      const legacy = existing.rows[0];
+      if (legacy) {
+        if (legacy.project_id !== work.project_id || !plainRecord(legacy.anchor) ||
+            legacy.anchor.schema_version !== "intent_anchor_v1" || legacy.anchor.immutable !== true ||
+            !HASH.test(String(legacy.intent_digest || "")) ||
+            objectDigest(legacy.anchor) !== legacy.intent_digest) {
+          fail("legacy_bridge_existing_state_invalid");
+        }
+        return {
+          schema_version: "work_continuity_legacy_bridge_v1",
+          work_id: workId,
+          project_id: work.project_id,
+          v2_intent_digest: work.intent_digest,
+          legacy_intent_digest: legacy.intent_digest,
+          state: "already_linked",
+          idempotent_replay: true,
+          execution_authorized: false,
+        };
+      }
+      const reconstructed = await legacyRuntime.ensureWithClient(client, identity, legacyBridgeInput(work), {
+        creationAuthorized: true,
+      });
+      const projectedEvent = reconstructed.intent_event || reconstructed.event;
+      if (reconstructed.work_id !== workId || !HASH.test(String(reconstructed.intent_digest || "")) ||
+          !Number.isSafeInteger(Number(projectedEvent?.sequence_number)) ||
+          Number(projectedEvent.sequence_number) < 1 || !HASH.test(String(projectedEvent.event_hash || ""))) {
+        fail("legacy_bridge_reconstruction_invalid");
+      }
+      const updated = await client.query(`UPDATE tenant_work SET
+          legacy_projection_sequence=$3,legacy_projection_event_hash=$4,legacy_projection_updated_at=now(),updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND legacy_work_id=$2
+        RETURNING work_id`, [actor.tenant_id, workId, Number(projectedEvent.sequence_number), projectedEvent.event_hash]);
+      if (!updated.rows[0]) fail("legacy_bridge_identity_mismatch");
+      const event = await appendV2Event(client, actor, workId, "legacy_bridge_reconstructed", {
+        schema_version: "legacy_work_bridge_v1",
+        source: "retained_canonical_v2_fields",
+        v2_intent_digest: work.intent_digest,
+        legacy_intent_digest: reconstructed.intent_digest,
+        legacy_event_sequence: Number(projectedEvent.sequence_number),
+        legacy_event_hash: projectedEvent.event_hash,
+      });
+      return {
+        schema_version: "work_continuity_legacy_bridge_v1",
+        work_id: workId,
+        project_id: work.project_id,
+        v2_intent_digest: work.intent_digest,
+        legacy_intent_digest: reconstructed.intent_digest,
+        state: "reconstructed",
+        event,
+        idempotent_replay: false,
+        execution_authorized: false,
+      };
+    });
+  }
   async function queueNewWork(identity, input = {}) {
     await initialize();
     const actor = actorFromIdentity(identity);
@@ -2799,6 +2902,7 @@ export function createWorkContinuityV2Store({
     });
   }
   return Object.freeze({ initialize, createWork, createNewWork, readCreatedWorkByBootstrapRequest, queueNewWork,
+    ensureLegacyBridge,
     projectLegacyWork, projectLegacyCatalog, projectLegacyEvent, backfillLegacyProjection,
     readWork, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork, reopenWork,
     preflightGallery, openWorkReview,

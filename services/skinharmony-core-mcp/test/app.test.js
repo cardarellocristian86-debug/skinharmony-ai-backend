@@ -10,6 +10,7 @@ import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES, createDynamicCapabilityHandlers, dynamicCapabilityCatalogSnapshot } from "../src/dynamic-capability-router.js";
 import { HOST_APP_CAPABILITIES } from "../src/host-app-registry.js";
 import { requireHostAppToolCapability } from "../src/host-app-authorization.js";
+import { requireTenantWorkCapability } from "../src/tenant-work-authorization.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
@@ -462,6 +463,26 @@ test("legacy Work reads and auto-resume intersect canonical V2 visibility", () =
     assert.match(serverSource.slice(start, end), /await requireCanonicalWorkRead\(identity, args\.work_id\)/,
       `${handler} must authorize the exact canonical Work before any legacy mutation/read`);
   }
+});
+
+test("native planning repairs only the server-derived canonical legacy bridge before reading its Intent", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const helperStart = serverSource.indexOf("async function ensureNativePlanLegacyBridge");
+  const helperEnd = serverSource.indexOf("async function listLegacyWorksAuthorized", helperStart);
+  const helper = serverSource.slice(helperStart, helperEnd);
+  assert.match(helper, /requireTenantWorkCapability\(identity, "operate"\)/);
+  assert.match(helper, /ensureLegacyBridge\(withTenantWorkAcl\(identity\), \{ work_id: workId \}\)/);
+  const planStart = serverSource.indexOf("work_continuity_native_plan: async");
+  const planEnd = serverSource.indexOf("work_continuity_native_bind: async", planStart);
+  const planHandler = serverSource.slice(planStart, planEnd);
+  assert.ok(planHandler.indexOf("await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id)") >= 0);
+  assert.ok(planHandler.indexOf("await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id)") <
+    planHandler.indexOf("await readLegacyIntentAuthorized(identity"));
+  const autopilotStart = serverSource.indexOf("async function reconcileNyraAutopilot");
+  const autopilotEnd = serverSource.indexOf("function withTenantWorkAcl", autopilotStart);
+  const autopilot = serverSource.slice(autopilotStart, autopilotEnd);
+  assert.ok(autopilot.indexOf("await ensureNativePlanLegacyBridge(identity, work.work_id)") <
+    autopilot.indexOf("await readLegacyIntentAuthorized(identity, { work_id: work.work_id })"));
 });
 
 test("allows server-issued MCP session bootstrap for agent heartbeat", () => {
@@ -2656,6 +2677,7 @@ test("keeps ChatGPT on Nyra's front door while Codex retains native coordinator 
   const captured = [];
   const targetHandlers = {
     work_continuity_native_plan: async (args, identity) => {
+      requireTenantWorkCapability(identity, "operate");
       captured.push({ args, identity });
       return { structuredContent: { ok: true }, content: [] };
     },

@@ -881,6 +881,7 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
       };
     }
     try {
+      await ensureNativePlanLegacyBridge(identity, work.work_id);
       const intent = await readLegacyIntentAuthorized(identity, { work_id: work.work_id });
       const request = buildNyraNativePlanRequest({ identity, work, intent, autopilot, binding });
       const corePlanResult = await coreHandlers.host_native_work_plan_create({
@@ -996,6 +997,16 @@ async function readLegacyWorkAuthorized(identity, args) {
 async function readLegacyIntentAuthorized(identity, args) {
   await requireCanonicalWorkRead(identity, args.work_id);
   return workContinuityRuntime.readIntent(identity, args);
+}
+
+async function ensureNativePlanLegacyBridge(identity, workId) {
+  // A bridge reconstruction writes only the linked tenant Work state. It is
+  // therefore an operator action, never a fictitious generic "govern" role.
+  requireTenantWorkCapability(identity, "operate");
+  if (typeof workContinuityV2Store?.ensureLegacyBridge !== "function") {
+    throw legacyWorkAclError("continuity_legacy_bridge_unavailable", 503);
+  }
+  return workContinuityV2Store.ensureLegacyBridge(withTenantWorkAcl(identity), { work_id: workId });
 }
 
 async function listLegacyWorksAuthorized(identity, args = {}) {
@@ -1648,6 +1659,7 @@ const baseHandlers = {
       const nativeArgs = identity?.authenticatedHostPrincipal
         ? { ...args, host_type: authenticatedHostKind(identity) }
         : args;
+      await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id);
       const intent = await readLegacyIntentAuthorized(identity, {
         work_id: nativeArgs.work_id,
       });

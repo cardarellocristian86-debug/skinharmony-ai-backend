@@ -120,6 +120,26 @@ test("Codex and explicit tenant owners can coordinate without transferring owner
   }, "coordinate"));
 });
 
+test("native bridge repair permits an authenticated owner/operator but denies a coordinator", () => {
+  const membership = (subject, role) => ({
+    schema_version: "tenant_membership_binding_v1", authenticated: true,
+    tenant_id: "tenant-a", subject, role,
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  });
+  assert.doesNotThrow(() => requireTenantWorkCapability({
+    kind: "oauth", tenantId: "tenant-a", subject: "owner-a", oauthOwnerBound: true,
+    authenticatedTenantMembership: membership("owner-a", "tenant_owner"),
+  }, "operate"));
+  assert.doesNotThrow(() => requireTenantWorkCapability({
+    kind: "oauth", tenantId: "tenant-a", subject: "operator-a", oauthTenantMemberBound: true,
+    tenantMembershipRole: "operator", authenticatedTenantMembership: membership("operator-a", "operator"),
+  }, "operate"));
+  assert.throws(() => requireTenantWorkCapability({
+    kind: "oauth", tenantId: "tenant-a", subject: "member-a", oauthTenantMemberBound: true,
+    tenantMembershipRole: "member", authenticatedTenantMembership: membership("member-a", "member"),
+  }, "operate"), /tenant_work_membership_required/);
+});
+
 test("registered Codex honors member, reviewer and operator service roles", () => {
   const registeredCodex = (role) => ({
     kind: "codex",
