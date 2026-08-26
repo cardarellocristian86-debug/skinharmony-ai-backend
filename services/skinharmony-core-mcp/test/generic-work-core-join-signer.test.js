@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import { createGenericWorkCoreJoinSigner } from "../src/generic-work-core-join-signer.js";
+import {
+  GENERIC_WORK_CORE_JOIN_BUILD_READ_HEADER,
+  GENERIC_WORK_CORE_JOIN_BUILD_READ_PURPOSE,
+} from "../../shared/generic-work-core-join-signer-health.js";
 
 const env = {
   GENERIC_WORK_CORE_JOIN_CORE_SIGNER_ENABLED: "true",
@@ -98,6 +102,7 @@ test("generic join signer reads the verified current Core build over bounded HTT
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, "https://universal-core.example.test/healthz");
   assert.equal(requests[0].options.redirect, "error");
+  assert.equal(requests[0].options.headers[GENERIC_WORK_CORE_JOIN_BUILD_READ_HEADER], GENERIC_WORK_CORE_JOIN_BUILD_READ_PURPOSE);
 });
 
 test("generic join signer rejects an unverified Core health response", async () => {

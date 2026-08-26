@@ -249,13 +249,18 @@ function standingReleaseBindingRuntime(row) {
 }
 
 test("standing release Intent read atomically verifies immutable anchor and returns metadata only", async () => {
-  for (const status of ["active", "verified", "release_ready"]) {
+  for (const [persistedStatus, expectedStatus] of [
+    ["active", "active"],
+    ["verified", "verified"],
+    ["release_ready", "release_ready"],
+    ["ACTIVE", "active"],
+  ]) {
     const anchor = standingReleaseAnchor();
     const { runtime, reads } = standingReleaseBindingRuntime({
       tenant_id: "tenant-a",
       work_id: WORK_ID,
       project_id: "project-a",
-      work_status: status,
+      work_status: persistedStatus,
       current_version: "2",
       work_updated_at: "2026-08-14T10:00:00.000Z",
       anchor,
@@ -268,7 +273,7 @@ test("standing release Intent read atomically verifies immutable anchor and retu
     );
     assert.equal(binding.tenant_id, "tenant-a");
     assert.equal(binding.work_id, WORK_ID);
-    assert.equal(binding.work_status, status);
+    assert.equal(binding.work_status, expectedStatus);
     assert.equal(binding.source, "mcp_work_continuity_postgres");
     assert.equal(binding.intent_anchor_digest, digest(anchor));
     assert.equal(binding.intent_anchor_schema_version, "intent_anchor_v1");

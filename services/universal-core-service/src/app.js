@@ -181,6 +181,10 @@ import {
   verifyGenericWorkCoreJoinContext,
 } from "../../shared/generic-work-core-join-context.js";
 import {
+  GENERIC_WORK_CORE_JOIN_BUILD_READ_HEADER,
+  GENERIC_WORK_CORE_JOIN_BUILD_READ_PURPOSE,
+} from "../../shared/generic-work-core-join-signer-health.js";
+import {
   createPostgresMajorVersionProbe,
   normalizePostgresMajorVerification,
 } from "../../shared/postgres-major-version.js";
@@ -8775,7 +8779,7 @@ export function createUniversalCoreService(options = {}) {
     }
   };
 
-  const serveHealth = async (_req, res, { strictReadiness = false } = {}) => {
+  const serveHealth = async (req, res, { strictReadiness = false } = {}) => {
     const production = (process.env.NODE_ENV || "development") === "production";
     const productionBuildReady =
       !production ||
@@ -9199,7 +9203,14 @@ export function createUniversalCoreService(options = {}) {
       actionEvaluatorIdempotencyHealth.schema_verified === true &&
       actionEvaluatorIdempotencyHealth.append_only_enforced === true
     );
-    await ensureGenericWorkCoreJoinSignerReady();
+    // The remote signer reads only Core's already-verifiable build identity
+    // before it signs. A normal health request probes that signer, so probing
+    // again for this bounded GET would create a Core -> signer -> Core cycle.
+    // The marker is intentionally non-authoritative: it is accepted only on
+    // public /healthz and never bypasses the probe for a join issuance route.
+    const genericWorkCoreJoinBuildRead = req.path === "/healthz"
+      && req.get(GENERIC_WORK_CORE_JOIN_BUILD_READ_HEADER) === GENERIC_WORK_CORE_JOIN_BUILD_READ_PURPOSE;
+    if (!genericWorkCoreJoinBuildRead) await ensureGenericWorkCoreJoinSignerReady();
     const genericWorkCoreJoinCurrentSignerHealth = genericWorkCoreJoinSignerFailureLatched
       ? {
           signer_state: genericWorkCoreJoinSignerState,
