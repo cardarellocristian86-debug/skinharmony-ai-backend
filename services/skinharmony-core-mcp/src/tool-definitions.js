@@ -971,6 +971,20 @@ const nyraOrchestrationDirectiveSchema = object({
       }, ["kind", "code", "summary", "capability_hint"]),
     ],
   },
+  core_diagnostics: object({
+    state: { type: "string", enum: ["READY", "CONFIRMATION_REQUIRED", "BLOCKED"] },
+    guard_mode: { type: "string", enum: ["normal", "confirmation_required"] },
+    causes: {
+      type: "array",
+      maxItems: 8,
+      items: object({
+        code: nyraDirectiveCode,
+        component: { type: "string", enum: ["UNIVERSAL_CORE", "OWNER"] },
+        state: { type: "string", enum: ["GUARDED", "CONFIRMATION_REQUIRED", "BLOCKED"] },
+        remediation: { type: "string", minLength: 1, maxLength: 500 },
+      }, ["code", "component", "state", "remediation"]),
+    },
+  }, ["state", "guard_mode", "causes"]),
   needs: {
     type: "array",
     maxItems: 8,
@@ -1083,7 +1097,7 @@ const nyraOrchestrationDirectiveSchema = object({
   ]),
   execution_authorized: { const: false },
 }, [
-  "schema_version", "directive_id", "request_digest", "source", "problem", "needs", "next_actions",
+  "schema_version", "directive_id", "request_digest", "source", "problem", "core_diagnostics", "needs", "next_actions",
   "decision", "work_context", "permitted_progress", "can_continue", "ticket_request", "execution_authorized",
 ]);
 const nyraConverseOutputSchema = object({
@@ -1147,6 +1161,19 @@ const nyraConverseOutputSchema = object({
     core_control: { type: "string", enum: ["observe", "suggest", "confirm", "execute_allowed", "blocked"] },
     risk_band: { type: "string", enum: ["low", "medium", "high", "blocked", "unknown"] },
     blocked_reasons: nyraConverseSignalList,
+    governance_diagnostics: object({
+      state: { type: "string", enum: ["READY", "CONFIRMATION_REQUIRED", "BLOCKED"] },
+      guard_mode: { type: "string", enum: ["normal", "confirmation_required"] },
+      causes: {
+        type: "array", maxItems: 8,
+        items: object({
+          code: nyraDirectiveCode,
+          component: { type: "string", enum: ["UNIVERSAL_CORE", "OWNER"] },
+          state: { type: "string", enum: ["GUARDED", "CONFIRMATION_REQUIRED", "BLOCKED"] },
+          remediation: { type: "string", minLength: 1, maxLength: 500 },
+        }, ["code", "component", "state", "remediation"]),
+      },
+    }, ["state", "guard_mode", "causes"]),
     unmet_conditions: nyraConverseSignalList,
     evidence_requirements: nyraConverseSignalList,
     allowed_alternatives: nyraConverseSignalList,
@@ -1158,7 +1185,7 @@ const nyraConverseOutputSchema = object({
   }, [
     "core", "selected_action_id", "selected_action", "selected_action_available", "core_state",
     "core_control", "risk_band",
-    "blocked_reasons", "unmet_conditions", "evidence_requirements", "allowed_alternatives",
+    "blocked_reasons", "governance_diagnostics", "unmet_conditions", "evidence_requirements", "allowed_alternatives",
     "next_step", "runbook_candidate", "owner_confirmation_required", "dialogue_accepted",
     "opened_branch_count",
   ]),

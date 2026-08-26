@@ -557,10 +557,73 @@ test("surfaces a Core block as a remediable block, never as execution authority"
   assert.equal(directive.decision.disposition, "BLOCK");
   assert.equal(directive.decision.core_verdict, "BLOCK");
   assert.equal(directive.problem.code, "universal_core_blocked_action");
-  assert.deepEqual(directive.needs.map((item) => item.detail), ["Risoluzione Core: cross_tenant_scope_denied"]);
+  assert.deepEqual(directive.needs.map((item) => item.detail), [
+    "Risolvere il segnale Core “cross_tenant_scope_denied”, quindi rivalutare la stessa azione bounded.",
+  ]);
   assert.equal(directive.next_actions[0].summary, "Restore the tenant-scoped binding");
   assert.equal(directive.can_continue, true);
   assert.equal(directive.execution_authorized, false);
+});
+
+test("treats legacy safety_mode as an explainable guard, not a fictitious Core block", async () => {
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.state = "critical";
+  interpretation.structuredContent.result.selected_by_core.control_level = "confirm";
+  interpretation.structuredContent.result.selected_by_core.risk_band = "medium";
+  interpretation.structuredContent.result.selected_by_core.blocked_reasons = ["safety_mode"];
+  const response = await harness({ interpretationResult: interpretation }).handler({
+    message: "Nyra, perché Core non crea il ticket? Diagnostica la causa radice.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  const payload = response.structuredContent;
+  const directive = payload.orchestration_directive;
+
+  assert.equal(payload.action_policy.action_class, "NONE");
+  assert.equal(payload.action_policy.work_bootstrap_requested, false);
+  assert.deepEqual(payload.interpretation.blocked_reasons, []);
+  assert.equal(payload.interpretation.governance_diagnostics.state, "CONFIRMATION_REQUIRED");
+  assert.deepEqual(payload.interpretation.governance_diagnostics.causes, [{
+    code: "safety_mode_guard_only",
+    component: "UNIVERSAL_CORE",
+    state: "GUARDED",
+    remediation: "Non è un blocco: analisi, evidenze e proposta possono continuare. Un ticket e la conferma owner servono solo per una specifica azione esterna.",
+  }]);
+  assert.notEqual(directive.decision.disposition, "BLOCK");
+  assert.equal(directive.decision.core_verdict, "HOLD");
+  assert.equal(directive.ticket_request.required, false);
+  assert.match(payload.host_response_contract.reply_seed, /Diagnosi Core: Non è un blocco/);
+  assert.deepEqual(validateToolArguments(TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("returns the exact hard Core signal and its remediation owner", async () => {
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.risk_band = "blocked";
+  interpretation.structuredContent.result.selected_by_core.blocked_reasons = ["cross_tenant_scope_denied"];
+  interpretation.structuredContent.result.selected_by_core.governance_diagnostics = {
+    guard_mode: "normal",
+    blocking_causes: [{
+      code: "cross_tenant_scope_denied",
+      component: "universal_core",
+      remediation: "Restore the tenant-scoped binding before retrying.",
+    }],
+  };
+  const payload = (await harness({ interpretationResult: interpretation }).handler({
+    message: "Nyra, diagnostica il blocco",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+
+  assert.deepEqual(payload.interpretation.governance_diagnostics.causes, [{
+    code: "cross_tenant_scope_denied",
+    component: "UNIVERSAL_CORE",
+    state: "BLOCKED",
+    remediation: "Restore the tenant-scoped binding before retrying.",
+  }]);
+  assert.equal(payload.orchestration_directive.core_diagnostics.state, "BLOCKED");
+  assert.equal(payload.orchestration_directive.needs[0].detail, "Restore the tenant-scoped binding before retrying.");
 });
 
 test("classifies live, production and distribution wording as governed release work", async () => {

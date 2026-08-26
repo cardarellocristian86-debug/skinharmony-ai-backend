@@ -339,7 +339,6 @@ export function runUniversalCore(input: UniversalCoreInput): UniversalCoreOutput
   const blockedReasons: string[] = [];
   if (riskScore >= 85) blockedReasons.push("risk_too_high");
   if (confidence < 45) blockedReasons.push("confidence_too_low");
-  if (input.constraints.safety_mode) blockedReasons.push("safety_mode");
   for (const rule of input.constraints.blocked_action_rules ?? []) {
     if (rule.blocks_execution) blockedReasons.push(rule.reason_code);
   }
@@ -383,6 +382,12 @@ export function runUniversalCore(input: UniversalCoreInput): UniversalCoreOutput
       blocked_signal_count: input.signals.filter((signal) => signal.tags?.includes("blocked")).length,
       blocked_action_count: input.constraints.blocked_action_rules?.filter((rule) => rule.blocks_execution).length ?? 0,
       notes: [],
+      guard_mode: input.constraints.safety_mode ? "confirmation_required" : "normal",
+      blocking_causes: blockedReasons.map((code) => ({
+        code,
+        component: "universal_core",
+        remediation: "Resolve the named Core rule or risk signal, then re-evaluate the same bounded action.",
+      })),
     },
   };
 }

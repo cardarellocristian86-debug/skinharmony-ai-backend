@@ -46,6 +46,8 @@ const PULL_REQUEST_PATTERN = /\b(?:pull\s+request|pr)\b/iu;
 const DEPLOY_PATTERN = /\b(?:deploy\w*|deployment|distribuisc\w*|distribuzion\w*|live|produzione)\b/iu;
 const PUBLISH_PATTERN = /\b(?:publish\w*|pubblic\w*|rilasci\w*|release)\b/iu;
 const WORK_BOOTSTRAP_PATTERN = /(?:\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:nuov\w*|new)\b)/iu;
+const DIAGNOSTIC_REQUEST_PATTERN = /\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|explain\w*|causa(?:\s+radice)?|root\s+cause|cosa\s+(?:manca|serve))\b/iu;
+const GENERIC_GUARD_REASON = "safety_mode";
 
 export const NYRA_SERVER_CONNECTOR_HINT = Symbol("nyra_server_connector_hint");
 
@@ -101,6 +103,54 @@ function strictCoreSignalList(value) {
     output.push(text);
   }
   return Object.freeze(output);
+}
+
+function normalizeCoreGovernanceDiagnostics(selected, blockedReasons, ownerConfirmationRequired) {
+  const raw = selected?.governance_diagnostics;
+  const requestedGuardMode = raw && typeof raw === "object" && !Array.isArray(raw) &&
+    raw.guard_mode === "confirmation_required"
+    ? "confirmation_required"
+    : "normal";
+  const hardReasonCodes = blockedReasons.filter((code) => code !== GENERIC_GUARD_REASON);
+  const rawCauses = Array.isArray(raw?.blocking_causes) ? raw.blocking_causes.slice(0, MAX_DIRECTIVE_ITEMS) : [];
+  const upstreamRemediation = new Map();
+  for (const item of rawCauses) {
+    const code = boundedPublicText(item?.code, 160);
+    const remediation = boundedPublicText(item?.remediation, MAX_SIGNAL_LENGTH);
+    if (code && remediation && hardReasonCodes.includes(code)) upstreamRemediation.set(code, remediation);
+  }
+  const causes = hardReasonCodes.map((code) => Object.freeze({
+    code,
+    component: "UNIVERSAL_CORE",
+    state: "BLOCKED",
+    remediation: upstreamRemediation.get(code) ||
+      `Risolvere il segnale Core “${code}”, quindi rivalutare la stessa azione bounded.`,
+  }));
+  const genericGuardObserved = blockedReasons.includes(GENERIC_GUARD_REASON) ||
+    requestedGuardMode === "confirmation_required";
+  if (genericGuardObserved) {
+    causes.push(Object.freeze({
+      code: "safety_mode_guard_only",
+      component: "UNIVERSAL_CORE",
+      state: "GUARDED",
+      remediation: "Non è un blocco: analisi, evidenze e proposta possono continuare. Un ticket e la conferma owner servono solo per una specifica azione esterna.",
+    }));
+  }
+  if (ownerConfirmationRequired && !causes.some((cause) => cause.code === "owner_confirmation_required")) {
+    causes.push(Object.freeze({
+      code: "owner_confirmation_required",
+      component: "OWNER",
+      state: "CONFIRMATION_REQUIRED",
+      remediation: "Definire l’azione esterna esatta e ottenere una conferma owner vincolata a Work, revisione e target.",
+    }));
+  }
+  const hardBlocked = hardReasonCodes.length > 0;
+  return Object.freeze({
+    state: hardBlocked ? "BLOCKED" : ownerConfirmationRequired || genericGuardObserved
+      ? "CONFIRMATION_REQUIRED" : "READY",
+    guard_mode: genericGuardObserved ? "confirmation_required" : "normal",
+    causes: Object.freeze(causes),
+  });
 }
 
 function stable(value) {
@@ -413,6 +463,14 @@ function requireTenantBoundInterpretation(result, identity) {
   const selectedActionValid = Boolean(
     actionId && CORE_ACTION_ID_PATTERN.test(actionId) && actionLabel,
   );
+  const blockedReasons = strictCoreSignalList(selected.blocked_reasons);
+  const ownerConfirmationRequired =
+    selected.requires_owner_confirmation === true || automation.owner_confirmation_required === true;
+  const governanceDiagnostics = normalizeCoreGovernanceDiagnostics(
+    selected,
+    blockedReasons,
+    ownerConfirmationRequired,
+  );
   return Object.freeze({
     core: Object.freeze({
       mode: runtime.mode,
@@ -427,14 +485,17 @@ function requireTenantBoundInterpretation(result, identity) {
     core_state: selectedState,
     core_control: selectedControl,
     risk_band: selectedRisk,
-    blocked_reasons: strictCoreSignalList(selected.blocked_reasons),
+    // Legacy Core versions may still return safety_mode. It remains visible
+    // through diagnostics, but it cannot turn a read/proposal turn into a
+    // fictitious hard block.
+    blocked_reasons: Object.freeze(blockedReasons.filter((code) => code !== GENERIC_GUARD_REASON)),
     unmet_conditions: strictCoreSignalList(selected.unmet_conditions),
     evidence_requirements: strictCoreSignalList(selected.evidence_requirements),
     allowed_alternatives: strictCoreSignalList(selected.allowed_alternatives),
     next_step: safeActionText(automation.next_step, MAX_SIGNAL_LENGTH),
     runbook_candidate: boundedPublicText(automation.runbook_candidate, 160),
-    owner_confirmation_required:
-      selected.requires_owner_confirmation === true || automation.owner_confirmation_required === true,
+    owner_confirmation_required: ownerConfirmationRequired,
+    governance_diagnostics: governanceDiagnostics,
     dialogue_accepted: deep.dialogue?.validator?.accepted === true,
     opened_branch_count: boundedCount(deep.cognition?.opened_branch_count),
     memory: Object.freeze({
@@ -466,13 +527,18 @@ function serverConnectorHint(args) {
 }
 
 function requestedActionClass(message, connectorHint, workBootstrapProvided = false) {
-  if (workBootstrapProvided || WORK_BOOTSTRAP_PATTERN.test(message)) return "WORK_BOOTSTRAP";
   if (connectorHint.capability_hint === "host_native_action_reserve") return "TICKET_RESERVE";
   if (MERGE_PATTERN.test(message)) return "GIT_MERGE";
   if (GIT_PUSH_PATTERN.test(message)) return "GIT_PUSH";
   if (PULL_REQUEST_PATTERN.test(message)) return "PULL_REQUEST_OPEN";
   if (DEPLOY_PATTERN.test(message)) return "DEPLOY";
   if (PUBLISH_PATTERN.test(message)) return "PUBLISH";
+  // A question about a ticket is diagnostic until it contains an actual
+  // mutation request.  Do not turn "why was no ticket issued?" into a Work
+  // bootstrap candidate merely because it mentions creation in prose.
+  if (!workBootstrapProvided && DIAGNOSTIC_REQUEST_PATTERN.test(message) &&
+      !WORK_BOOTSTRAP_PATTERN.test(message)) return "NONE";
+  if (workBootstrapProvided || WORK_BOOTSTRAP_PATTERN.test(message)) return "WORK_BOOTSTRAP";
   return "NONE";
 }
 
@@ -753,7 +819,8 @@ function orchestrationDirective({
   workBootstrapRequestDigest = null,
 }) {
   const workBound = Boolean(work.work_id);
-  const coreBlocked = interpretation.risk_band === "blocked" ||
+  const coreBlocked = interpretation.governance_diagnostics.state === "BLOCKED" ||
+    interpretation.risk_band === "blocked" ||
     interpretation.core_state === "blocked" || interpretation.core_control === "blocked" ||
     interpretation.blocked_reasons.length > 0;
   const coreMissingContext = interpretation.unmet_conditions.length > 0 ||
@@ -912,7 +979,8 @@ function orchestrationDirective({
   let coreVerdict = "NOT_APPLICABLE";
   if (coreBlocked) coreVerdict = "BLOCK";
   else if (coreMissingContext) coreVerdict = "INSUFFICIENT_CONTEXT";
-  else if (interpretation.owner_confirmation_required) coreVerdict = "HOLD";
+  else if (interpretation.governance_diagnostics.state === "CONFIRMATION_REQUIRED" ||
+           interpretation.owner_confirmation_required) coreVerdict = "HOLD";
   else if (ticketRequired) coreVerdict = "NOT_REQUESTED";
 
   const needs = [];
@@ -978,9 +1046,20 @@ function orchestrationDirective({
         ? "Conferma owner fresca e request-bound prima della creazione V2"
         : "Conferma owner riferita alla specifica azione esterna");
   }
+  const remediationByCoreCode = new Map(
+    interpretation.governance_diagnostics.causes
+      .filter((cause) => cause.state === "BLOCKED")
+      .map((cause) => [cause.code, cause.remediation]),
+  );
   for (const item of interpretation.blocked_reasons) {
     appendNeed(`core_block_${item}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120),
-      "AUTHORITY", "BLOCKED", "UNIVERSAL_CORE", `Risoluzione Core: ${item}`);
+      "AUTHORITY", "BLOCKED", "UNIVERSAL_CORE",
+      remediationByCoreCode.get(item) || `Risoluzione Core: ${item}`);
+  }
+  for (const cause of interpretation.governance_diagnostics.causes) {
+    if (cause.state !== "BLOCKED") continue;
+    appendNeed(`core_block_${cause.code}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120),
+      "AUTHORITY", "BLOCKED", cause.component, cause.remediation);
   }
   for (const item of interpretation.unmet_conditions) {
     appendNeed(`core_condition_${item}`.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 120),
@@ -1106,6 +1185,7 @@ function orchestrationDirective({
   const reasonCodes = [
     ...(problem ? [problem.code] : []),
     ...interpretation.blocked_reasons,
+    ...interpretation.governance_diagnostics.causes.map((cause) => cause.code),
     ...prerequisiteCodes,
   ].map((item) => directiveCode(item))
     .filter((value, index, values) => values.indexOf(value) === index)
@@ -1152,6 +1232,7 @@ function orchestrationDirective({
     request_digest: requestDigest,
     source,
     problem,
+    core_diagnostics: interpretation.governance_diagnostics,
     needs: Object.freeze(needs),
     next_actions: Object.freeze(nextActions),
     decision,
@@ -1191,6 +1272,15 @@ function directiveReplySeed(locale, directive, workBound) {
       : `Problema: ${sentence(directive.problem.summary)}`);
   } else if (!workBound) {
     parts.push(english ? "No canonical Work is bound." : "Nessun Work canonico è associato.");
+  }
+  const diagnosis = directive.core_diagnostics;
+  if (diagnosis?.causes?.length) {
+    const details = diagnosis.causes.slice(0, 2).map((cause) => cause.remediation).filter(Boolean);
+    if (details.length) {
+      parts.push(english
+        ? `Core diagnosis: ${details.join("; ")}.`
+        : `Diagnosi Core: ${details.join("; ")}.`);
+    }
   }
   if (directive.needs.length > 0) {
     const details = directive.needs.slice(0, 3).map((item) => item.detail).filter(Boolean);
@@ -1442,6 +1532,18 @@ export function createNyraConverseHandler({
         core_control: "observe",
         risk_band: persisted.dialogue.diagnosis_state === "recovery_required" ? "blocked" : "low",
         blocked_reasons: Object.freeze([]),
+        governance_diagnostics: Object.freeze({
+          state: persisted.dialogue.diagnosis_state === "recovery_required" ? "BLOCKED" : "READY",
+          guard_mode: "normal",
+          causes: Object.freeze(persisted.dialogue.diagnosis_state === "recovery_required"
+            ? [Object.freeze({
+              code: "persisted_recovery_required",
+              component: "UNIVERSAL_CORE",
+              state: "BLOCKED",
+              remediation: "Leggere il checkpoint persistito e completare la recovery prevista prima di rivalutare il Work.",
+            })]
+            : []),
+        }),
         unmet_conditions: Object.freeze([]),
         evidence_requirements: Object.freeze([]),
         allowed_alternatives: Object.freeze([]),
@@ -1607,6 +1709,7 @@ export function createNyraConverseHandler({
         core_control: interpretation.core_control,
         risk_band: interpretation.risk_band,
         blocked_reasons: interpretation.blocked_reasons,
+        governance_diagnostics: interpretation.governance_diagnostics,
         unmet_conditions: interpretation.unmet_conditions,
         evidence_requirements: interpretation.evidence_requirements,
         allowed_alternatives: interpretation.allowed_alternatives,
