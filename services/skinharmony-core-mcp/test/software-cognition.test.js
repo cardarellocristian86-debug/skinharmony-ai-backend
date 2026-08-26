@@ -332,4 +332,5 @@ test("repository bootstrap skips an invalid Contents representation and advances
   assert.deepEqual(result.structuredContent.skipped_paths, ["src/unreadable.ts"]);
   assert.equal(result.structuredContent.next_cursor, null);
   assert.deepEqual(writes[0].nodes, []);
+  assert.equal(JSON.stringify(writes).includes("outside.ts"), false, "an unreadable representation must not leak into the persisted Atlas");
 });
