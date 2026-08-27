@@ -5001,7 +5001,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     };
   }
 
-  async function readAtlasGraph(identity, input) {
+  async function readAtlasState(identity, input) {
     await initialize();
     const tenantId = tenant(identity.tenantId);
     const workId = uuid(input.work_id, "work_id");
@@ -5011,16 +5011,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         bootstrap_cursor,bootstrap_next_cursor,bootstrap_total_files,bootstrap_frontier FROM core_continuity_atlas_state
       WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3`, [tenantId, projectId, workId]);
     if (!state.rows[0]) throw new Error("work_atlas_not_found");
-    const [nodes, edges] = await Promise.all([
-      pool.query(`SELECT node_id,node_kind,source_ref,source_kind,source_digest,provenance,metadata,revision
-        FROM core_continuity_atlas_nodes WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY node_id`,
-      [tenantId, projectId, workId]),
-      pool.query(`SELECT edge_id,from_node_id,to_node_id,edge_type,edge_digest,source,provenance
-        FROM core_continuity_atlas_edges WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY edge_id`,
-      [tenantId, projectId, workId]),
-    ]);
     return {
-      schema_version: "software_reality_graph_atlas_v1", tenant_id: tenantId, project_id: projectId, work_id: workId,
+      schema_version: "software_reality_graph_atlas_state_v1", tenant_id: tenantId, project_id: projectId, work_id: workId,
       revision: Number(state.rows[0].revision), source_digest: state.rows[0].source_hash,
       bootstrap: {
         state: state.rows[0].bootstrap_state || "available",
@@ -5033,13 +5025,32 @@ export function createWorkContinuityRuntime(config, options = {}) {
         total_candidate_files: state.rows[0].bootstrap_total_files === null ? null : Number(state.rows[0].bootstrap_total_files),
         frontier: state.rows[0].bootstrap_frontier || null,
       },
+      metrics: { total_nodes: Number(state.rows[0].total_nodes), total_context_bytes: Number(state.rows[0].total_context_bytes) },
+    };
+  }
+
+  async function readAtlasGraph(identity, input) {
+    const atlasState = await readAtlasState(identity, input);
+    const tenantId = atlasState.tenant_id;
+    const projectId = atlasState.project_id;
+    const workId = atlasState.work_id;
+    const [nodes, edges] = await Promise.all([
+      pool.query(`SELECT node_id,node_kind,source_ref,source_kind,source_digest,provenance,metadata,revision
+        FROM core_continuity_atlas_nodes WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY node_id`,
+      [tenantId, projectId, workId]),
+      pool.query(`SELECT edge_id,from_node_id,to_node_id,edge_type,edge_digest,source,provenance
+        FROM core_continuity_atlas_edges WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY edge_id`,
+      [tenantId, projectId, workId]),
+    ]);
+    return {
+      ...atlasState,
+      schema_version: "software_reality_graph_atlas_v1",
       nodes: nodes.rows.map((row) => ({ tenant_id: tenantId, project_id: projectId, work_id: workId, node_id: row.node_id,
         kind: row.node_kind, source_ref: row.source_ref, source_kind: row.source_kind, provenance: row.provenance,
         payload: row.metadata, digest: row.source_digest, version: Number(row.revision), tombstoned: false })),
       edges: edges.rows.map((row) => ({ tenant_id: tenantId, project_id: projectId, work_id: workId, edge_id: row.edge_id,
         from_node_id: row.from_node_id, to_node_id: row.to_node_id, edge_type: row.edge_type,
         digest: row.edge_digest, source: row.source, provenance: row.provenance })),
-      metrics: { total_nodes: Number(state.rows[0].total_nodes), total_context_bytes: Number(state.rows[0].total_context_bytes) },
     };
   }
 
@@ -5616,6 +5627,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     finalizeClosure,
     upsertAtlas,
     selectAtlas,
+    readAtlasState,
     readAtlasGraph,
     recordOperationalIncident,
     recordIncident,

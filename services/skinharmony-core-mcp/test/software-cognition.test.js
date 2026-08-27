@@ -206,6 +206,81 @@ test("repository bootstrap binds Work/project/repository and pins each continuat
   }, identity), /continuity_project_mismatch/);
 });
 
+test("repository bootstrap reads only Atlas state when the runtime exposes the bounded projection", async () => {
+  const commit = "a".repeat(40);
+  const tree = "b".repeat(40);
+  const fetchImpl = async (url) => {
+    const json = url.includes("/commits/")
+      ? { sha: commit, commit: { tree: { sha: tree } } }
+      : url.includes(`/git/trees/${tree}`)
+        ? { truncated: false, tree: [{ path: "src/app.ts", type: "blob", mode: "100644" }] }
+        : url.includes("/contents/src/app.ts")
+          ? { type: "file", encoding: "base64", content: Buffer.from("export const app = true;\n").toString("base64") }
+          : null;
+    return { ok: Boolean(json), text: async () => JSON.stringify(json || { message: "not found" }) };
+  };
+  let stateReads = 0;
+  const handlers = createSoftwareCognitionHandlers({
+    coreRequest: async () => ({ ok: true }), issueAgentContext: () => "signed-context", fetchImpl,
+    repositoryBindings: { "project-a": { repository: "owner/repository", branch: "main" } },
+    atlasRuntime: {
+      readIntent: async () => ({ project_id: "project-a" }),
+      readAtlasState: async () => { stateReads += 1; throw new Error("work_atlas_not_found"); },
+      readAtlasGraph: async () => { throw new Error("full_atlas_graph_must_not_be_materialized"); },
+      upsertAtlas: async () => ({ revision: 1, total_nodes: 1, total_context_bytes: 1 }),
+    },
+  });
+  const result = await handlers.software_cognition_repository_bootstrap({
+    project_id: "project-a", work_id: "work-a", repository: "owner/repository", idempotency_key: "atlas-state-only",
+  }, { tenantId: "tenant-a", agentPresence });
+  assert.equal(result.structuredContent.completed, true);
+  assert.equal(stateReads, 1);
+});
+
+test("repository bootstrap automatically shrinks a complex multi-file batch without dropping cursor progress", async () => {
+  const commit = "a".repeat(40);
+  const tree = "b".repeat(40);
+  const complexSource = (prefix) => Array.from({ length: 300 }, (_, index) =>
+    `import ${prefix}${index} from "./${prefix}-dependency-${index}.js";`).join("\n");
+  const files = new Map([
+    ["src/a.ts", complexSource("alpha")],
+    ["src/b.ts", complexSource("beta")],
+  ]);
+  const fetchImpl = async (url) => {
+    const json = url.includes("/commits/")
+      ? { sha: commit, commit: { tree: { sha: tree } } }
+      : url.includes(`/git/trees/${tree}`)
+        ? { truncated: false, tree: [...files.keys()].map((path) => ({ path, type: "blob", mode: "100644" })) }
+        : (() => {
+          const path = [...files.keys()].find((item) => url.includes(`/contents/${item}`));
+          return path ? { type: "file", encoding: "base64", content: Buffer.from(files.get(path)).toString("base64") } : null;
+        })();
+    return { ok: Boolean(json), text: async () => JSON.stringify(json || { message: "not found" }) };
+  };
+  const writes = [];
+  const handlers = createSoftwareCognitionHandlers({
+    coreRequest: async () => ({ ok: true }), issueAgentContext: () => "signed-context", fetchImpl,
+    repositoryBindings: { "project-a": { repository: "owner/repository", branch: "main" } },
+    atlasRuntime: {
+      readIntent: async () => ({ project_id: "project-a" }),
+      readAtlasState: async () => { throw new Error("work_atlas_not_found"); },
+      upsertAtlas: async (_identity, input) => {
+        writes.push(input);
+        return { revision: 1, total_nodes: input.nodes.length, total_context_bytes: 1 };
+      },
+    },
+  });
+  const result = await handlers.software_cognition_repository_bootstrap({
+    project_id: "project-a", work_id: "work-a", repository: "owner/repository", file_limit: 8,
+    idempotency_key: "atlas-adaptive-batch",
+  }, { tenantId: "tenant-a", agentPresence });
+  assert.equal(result.structuredContent.completed, false);
+  assert.equal(result.structuredContent.processed_files, 1);
+  assert.equal(result.structuredContent.next_cursor, 1);
+  assert.equal(writes.length, 1);
+  assert(writes[0].nodes.length <= 500);
+});
+
 test("repository bootstrap checkpoints a non-indexable page and continues without dropping the snapshot", async () => {
   const commit = "a".repeat(40);
   const tree = "b".repeat(40);
