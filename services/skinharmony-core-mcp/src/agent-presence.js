@@ -81,6 +81,9 @@ export function createAgentPresence(config, identity, input = {}) {
   ).trim().toLowerCase();
   if (!SIGNATURE_VERSIONS.has(signatureVersion)) fail("agent_signature_version_invalid");
   const v2 = signatureVersion === "v2";
+  // V1 remains byte-for-byte compatible while active leases drain. V2 uses the
+  // full HMAC because standing-release authority binds an exact SHA-256 value.
+  const sessionFingerprintLength = v2 ? 64 : 24;
   const sessionFingerprint = digest(key, "session", JSON.stringify(v2
     ? [
         signatureVersion,
@@ -90,7 +93,7 @@ export function createAgentPresence(config, identity, input = {}) {
         principal?.host_kind || null,
         sessionId,
       ]
-    : [signatureVersion, tenantId, actor(identity), sessionId]), 24);
+    : [signatureVersion, tenantId, actor(identity), sessionId]), sessionFingerprintLength);
   const canonical = JSON.stringify({
     version: signatureVersion,
     environment: process.env.NODE_ENV || "development",

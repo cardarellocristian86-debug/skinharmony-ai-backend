@@ -91,8 +91,10 @@ test("preserves exact v1 session and presence identities during the bounded roll
 
   assert.equal(legacy.signature_version, "v1");
   assert.equal(legacy.session_binding_version, "v1");
+  assert.equal(legacy.session_fingerprint, "a38583ad26c77b5e5a6fbe6f");
   assert.equal(legacy.signature, legacyWithoutPrincipal.signature);
   assert.equal(legacy.session_fingerprint, legacyWithoutPrincipal.session_fingerprint);
+  assert.match(v2.session_fingerprint, /^[a-f0-9]{64}$/);
   assert.notEqual(v2.signature, legacy.signature);
   assert.notEqual(v2.session_fingerprint, legacy.session_fingerprint);
 });

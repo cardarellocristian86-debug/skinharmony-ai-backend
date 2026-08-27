@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { createAgentPresence } from "../../skinharmony-core-mcp/src/agent-presence.js";
 import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
   createFileHostNativeGovernanceStore,
@@ -507,6 +508,55 @@ test("derivation rejects unprotected main, service drift, protected paths and se
       verifier_agent_ids: ["builder"],
     })),
     /standing_release_self_verification_denied/,
+  );
+});
+
+test("standing release accepts the MCP v2 fingerprint and rejects the bounded v1 identity", async () => {
+  const authenticatedHostPrincipal = {
+    registered: true,
+    registry_revision: H("a"),
+    app_id: "chatgpt_prod",
+    host_kind: "chatgpt_native",
+    client_type: "chatgpt",
+  };
+  const presence = (version) => createAgentPresence({
+    agentSignatureSecret: "standing-release-presence-secret".repeat(2),
+    agentPresenceSignatureVersion: version,
+  }, {
+    tenantId: "tenant-a",
+    kind: "oauth",
+    subject: "auth0|standing-release-owner",
+    authenticatedHostPrincipal,
+  }, {
+    agent_id: "standing-release-agent",
+    client_type: "chatgpt",
+    session_id: "standing-release-session",
+  });
+  const { governance } = harness();
+  const mandate = await install(governance);
+  const v1 = presence("v1");
+  const v2 = presence("v2");
+
+  assert.match(v1.session_fingerprint, /^[a-f0-9]{24}$/);
+  await assert.rejects(
+    governance.deriveStandingReleaseDelegation(derivationInput(mandate.mandate_id, {
+      host_kind: "chatgpt_native",
+      host_session_fingerprint: v1.session_fingerprint,
+      idempotency_key: "derive-release-v1-fingerprint",
+    })),
+    /standing_release_host_session_invalid/,
+  );
+  assert.match(v2.session_fingerprint, /^[a-f0-9]{64}$/);
+  const delegation = await governance.deriveStandingReleaseDelegation(
+    derivationInput(mandate.mandate_id, {
+      host_kind: "chatgpt_native",
+      host_session_fingerprint: v2.session_fingerprint,
+      idempotency_key: "derive-release-v2-fingerprint",
+    }),
+  );
+  assert.equal(
+    delegation.grant.standing_release_binding.host_session_fingerprint,
+    v2.session_fingerprint,
   );
 });
 

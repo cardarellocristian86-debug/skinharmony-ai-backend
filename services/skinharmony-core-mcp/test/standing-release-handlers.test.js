@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 
+import { createAgentPresence } from "../src/agent-presence.js";
 import { createCoreHandlers } from "../src/core-handlers.js";
 import { HOST_NATIVE_TOOLS } from "../src/host-native-tools.js";
 import {
@@ -75,6 +76,27 @@ function deriveArgs(overrides = {}) {
 }
 
 function identity() {
+  const authenticatedHostPrincipal = {
+    schema_version: "authenticated_host_principal_v1",
+    registered: true,
+    registry_revision: H("a"),
+    app_id: "chatgpt_prod",
+    host_kind: "chatgpt_native",
+    client_type: "chatgpt",
+  };
+  const agentPresence = createAgentPresence({
+    agentSignatureSecret: "standing-release-presence-secret".repeat(2),
+    agentPresenceSignatureVersion: "v2",
+  }, {
+    tenantId: "tenant-a",
+    kind: "oauth",
+    subject: "auth0|standing-release-owner",
+    authenticatedHostPrincipal,
+  }, {
+    agent_id: "standing-release-agent",
+    client_type: "chatgpt",
+    session_id: "standing-release-session",
+  });
   return {
     tenantId: "tenant-a",
     kind: "oauth",
@@ -83,16 +105,12 @@ function identity() {
     oauthOwnerElevated: true,
     ownerConfirmed: true,
     confirmationReference: "confirmed standing release mandate",
+    authenticatedHostPrincipal,
     agentPresence: {
+      ...agentPresence,
       transport_bound: true,
-      client_type: "chatgpt",
       session_id: "standing-release-session",
-      agent_id: "standing-release-agent",
-      session_fingerprint: H("9"),
       host_transport_session_fingerprint: H("8"),
-      signature: `ags_${"7".repeat(32)}`,
-      opaque_agent_id: `ai_${"6".repeat(24)}`,
-      actor_provenance: `ap_${"5".repeat(32)}`,
     },
   };
 }
@@ -696,7 +714,8 @@ test("horizontal runner mutations use fresh exact DTT bindings and peer-provider
     ["tenant-a", RELEASE_WORK], ["tenant-a", RELEASE_WORK],
   ]);
   assert.equal(calls[0].body.host_kind, "chatgpt_native");
-  assert.equal(calls[0].body.host_session_fingerprint, H("9"));
+  assert.equal(calls[0].body.host_session_fingerprint, actor.agentPresence.session_fingerprint);
+  assert.match(calls[0].body.host_session_fingerprint, /^[a-f0-9]{64}$/);
   assert.equal(calls[1].body, undefined);
   for (const call of calls.filter((entry) =>
     entry.method === "POST" || entry.path === `/v1/host-native/standing-release/runs/${runId}`)) {
