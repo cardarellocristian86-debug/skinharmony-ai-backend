@@ -4863,10 +4863,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
       maxLength: 160,
     });
     if (!seedNodeIds.length) throw new Error("work_atlas_seed_required");
-    const maxDepth = Math.min(Math.max(Number(input.max_depth) || 1, 0), 4);
+    const requestedMaxDepth = input.max_depth === undefined ? 1 : Number(input.max_depth);
+    const maxDepth = Math.min(Math.max(Number.isFinite(requestedMaxDepth) ? Math.trunc(requestedMaxDepth) : 1, 0), 4);
     const maxNodes = Math.min(Math.max(Number(input.max_nodes) || 200, 1), 500);
     const edgeTypes = input.edge_types === undefined ? null : stringList(input.edge_types, "edge_types", { maxItems: 40, maxLength: 60 });
-    if (edgeTypes && !edgeTypes.length) throw new Error("work_atlas_edge_types_invalid");
 
     // An explicit work remains an exact snapshot lookup. Project selection is
     // a separate aggregate projection below and never silently substitutes

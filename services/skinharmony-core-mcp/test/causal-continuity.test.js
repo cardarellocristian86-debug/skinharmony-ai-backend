@@ -19,10 +19,29 @@ test("handlers derive tenant exclusively from authenticated identity and return 
   assert.deepEqual(Object.keys(handlers), MINIMUM_CAPABILITIES);
   const result = await handlers.project_identity_resolve({ alias: "repo-a", tenant_id: "spoofed" }, { tenantId: "tenant-a", agentPresence });
   assert.equal(calls[0][0], "/v1/causal/projects/resolve?alias=repo-a"); assert.equal(calls[0][1], "tenant-a"); assert.deepEqual(calls[0][2], { method: "GET", additionalHeaders: { "x-sh-dtt-agent-context": "signed-agent-context" } });
-  assert.deepEqual(issued[0], { tenant_id: "tenant-a", agent_presence: agentPresence });
+  assert.deepEqual(issued[0], { tenant_id: "tenant-a", work_id: undefined, agent_presence: agentPresence });
   assert.deepEqual(result.structuredContent, { ok: true, project_id: "project-a" }); assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
   await assert.rejects(() => handlers.project_identity_resolve({}, {}), /causal_tenant_identity_required/);
   await assert.rejects(() => handlers.project_identity_resolve({}, { tenantId: "tenant-a" }), /agent_presence_session_required/);
+});
+
+test("Work-scoped causal handlers bind the exact Work into the DTT issuer", async () => {
+  const issued = [];
+  const calls = [];
+  const workId = "22222222-2222-4222-8222-222222222222";
+  const handlers = createCausalContinuityHandlers({
+    coreRequest: async (...args) => { calls.push(args); return { ok: true }; },
+    issueAgentContext: (input) => { issued.push(input); return "signed-work-context"; },
+  });
+  await handlers.work_bind_intent({
+    project_id: "11111111-1111-4111-8111-111111111111",
+    work_id: workId,
+    intent_revision_id: "33333333-3333-4333-8333-333333333333",
+    idempotency_key: "bind-work-a",
+  }, { tenantId: "tenant-a", agentPresence });
+  assert.deepEqual(issued, [{ tenant_id: "tenant-a", work_id: workId, agent_presence: agentPresence }]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][2].additionalHeaders["x-sh-dtt-agent-context"], "signed-work-context");
 });
 
 test("handler route map exactly covers Core routes and sends writes in the body", async () => {

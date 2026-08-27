@@ -458,6 +458,7 @@ validatePresenceRecoveryContext = (args, identity) =>
   causalContinuityHandlers.causal_context_validate(args, identity);
 const softwareCognitionHandlers = createSoftwareCognitionHandlers({
   coreRequest: coreHandlers.causalCoreRequest,
+  authorizeAtlasRead: requireCanonicalWorkRead,
   atlasRuntime: workContinuityRuntime,
   repositoryBindings: config.nyraAtlasRepositoryBindings,
   githubTokens: config.nyraAtlasGithubTokens,
@@ -978,7 +979,7 @@ async function requireCanonicalWorkRead(identity, workId) {
     throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
   }
   try {
-    await workContinuityV2Store.readWork(withTenantWorkAcl(identity), { work_id: workId });
+    return await workContinuityV2Store.readWork(withTenantWorkAcl(identity), { work_id: workId });
   } catch (error) {
     const reason = String(error?.code || error?.message || "");
     if (reason === "work_acl_denied" || reason === "tenant_work_not_found" ||

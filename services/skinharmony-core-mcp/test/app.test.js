@@ -518,6 +518,14 @@ test("legacy Work reads and auto-resume intersect canonical V2 visibility", () =
   }
 });
 
+test("local Software Atlas reads are wired to the canonical Work ACL", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const binding = serverSource.indexOf("const softwareCognitionHandlers = createSoftwareCognitionHandlers");
+  assert.ok(binding >= 0);
+  const end = serverSource.indexOf("});", binding);
+  assert.match(serverSource.slice(binding, end), /authorizeAtlasRead:\s*requireCanonicalWorkRead/);
+});
+
 test("native planning repairs only the server-derived canonical legacy bridge before reading its Intent", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const helperStart = serverSource.indexOf("async function ensureNativePlanLegacyBridge");

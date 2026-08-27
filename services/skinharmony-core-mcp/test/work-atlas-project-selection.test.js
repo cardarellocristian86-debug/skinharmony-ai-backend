@@ -156,7 +156,8 @@ class ProjectAtlasPool {
           node.active !== false)
         .map((node) => [node.node_id, node]));
       const exactEdges = this.edges.filter((edge) =>
-        edge.tenant_id === parameters[0] && edge.work_id === parameters[1]);
+        edge.tenant_id === parameters[0] && edge.work_id === parameters[1] &&
+        (parameters[4] === null || parameters[4].includes(edge.edge_type)));
       const depths = new Map(parameters[2].map((nodeId) => [nodeId, 0]));
       let frontier = [...parameters[2]];
       for (let depth = 0; depth < parameters[3] && frontier.length; depth += 1) {
@@ -314,6 +315,24 @@ test("explicit work_id keeps the exact Atlas snapshot instead of applying projec
   assert.equal(result.aggregate, undefined);
   assert.equal(result.nodes[0].summary, "old shared implementation");
   assert.equal(result.nodes[0].source_work_ids, undefined);
+  assert.deepEqual(result.nodes.map((node) => node.node_id), ["shared"]);
+  assert.equal(result.metrics.traversal_depth, 0);
+});
+
+test("explicit empty edge filter is a valid seed-only Atlas selection", async () => {
+  const pool = new ProjectAtlasPool(fixture());
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const result = await runtime.selectAtlas({ tenantId: "tenant-a" }, {
+    work_id: WORK_A1,
+    project_id: "owner/repo",
+    seed_node_ids: ["shared"],
+    edge_types: [],
+    max_depth: 4,
+    max_bytes: 10_000,
+  });
+
+  assert.deepEqual(result.nodes.map((node) => node.node_id), ["shared"]);
+  assert.equal(result.metrics.traversal_depth, 4);
 });
 
 test("project Atlas remains tenant-isolated and returns explicit discovery state without indexes", async () => {

@@ -45,6 +45,20 @@ test("software cognition MCP tools are bounded, strict and never host-authoritat
     project_id: "project-a", work_id: "work-a", change_id: "change-a", plan_id: "plan-a", source_evidence_digest: "a".repeat(64),
     expected_revision: 0, nodes: [{ kind: "file", source_ref: "src/a.js" }], edges: [], idempotency_key: "graph-a", tenant_id: "spoofed",
   }).some((item) => item.code === "additional_property"));
+
+  const selectSchema = SOFTWARE_COGNITION_TOOLS.find((item) => item.name === "software_cognition_graph_select").inputSchema;
+  const selectInput = {
+    project_id: "project-a", work_id: "91e82640-9edc-5424-a3e8-eb7853b0d8dd",
+    seed_node_ids: Array.from({ length: 50 }, (_, index) => `seed-${index}`),
+    edge_types: Array.from({ length: 40 }, (_, index) => `edge-${index}`),
+    max_depth: 0, max_nodes: 500, max_bytes: 128_000,
+  };
+  assert.deepEqual(validateToolArguments(selectSchema, selectInput), []);
+  assert(validateToolArguments(selectSchema, { ...selectInput, seed_node_ids: [...selectInput.seed_node_ids, "seed-50"] })
+    .some((item) => item.code === "max_items"));
+  assert(validateToolArguments(selectSchema, { ...selectInput, edge_types: [...selectInput.edge_types, "edge-40"] })
+    .some((item) => item.code === "max_items"));
+  assert.deepEqual(validateToolArguments(selectSchema, { ...selectInput, edge_types: [] }), []);
 });
 
 test("transport derives tenant and signed DTT context exclusively from authenticated identity", async () => {
@@ -94,10 +108,16 @@ test("graph select alias is a local bounded read and never issues a DTT mutation
   const workId = "91e82640-9edc-5424-a3e8-eb7853b0d8dd";
   let contextIssues = 0;
   let coreCalls = 0;
+  let authorizationCalls = 0;
   const selections = [];
   const handlers = createSoftwareCognitionHandlers({
     coreRequest: async () => { coreCalls += 1; throw new Error("core_must_not_be_called_for_atlas_select"); },
     issueAgentContext: () => { contextIssues += 1; throw new Error("dtt_context_must_not_be_issued_for_atlas_select"); },
+    authorizeAtlasRead: async (identity, authorizedWorkId) => {
+      authorizationCalls += 1;
+      assert.equal(identity.tenantId, "tenant-a");
+      return { work: { work_id: authorizedWorkId, project_id: "nyra_conversational_runtime" } };
+    },
     atlasRuntime: {
       selectAtlas: async (identity, input) => {
         selections.push({ identity, input });
@@ -126,11 +146,37 @@ test("graph select alias is a local bounded read and never issues a DTT mutation
   const result = await handlers.software_cognition_graph_select(input, identity);
   assert.equal(contextIssues, 0);
   assert.equal(coreCalls, 0);
+  assert.equal(authorizationCalls, 1);
   assert.deepEqual(selections, [{ identity, input }]);
   assert.equal(selections[0].input.max_bytes, 8_192);
   assert.equal(result.structuredContent.work_id, workId);
   assert.equal(result.structuredContent.revision, 210);
   assert.equal(result.structuredContent.full_scan_performed, false);
+});
+
+test("graph select denies unreadable or project-confused Work before Atlas access", async () => {
+  const workId = "91e82640-9edc-5424-a3e8-eb7853b0d8dd";
+  let selections = 0;
+  const base = {
+    coreRequest: async () => { throw new Error("core_must_not_be_called_for_atlas_select"); },
+    issueAgentContext: () => { throw new Error("dtt_context_must_not_be_issued_for_atlas_select"); },
+    atlasRuntime: { selectAtlas: async () => { selections += 1; return {}; } },
+  };
+  const args = { project_id: "project-a", work_id: workId, seed_node_ids: ["seed"] };
+  const identity = { tenantId: "tenant-a", agentPresence };
+  const denied = createSoftwareCognitionHandlers({
+    ...base,
+    authorizeAtlasRead: async () => { throw new Error("continuity_work_acl_denied"); },
+  });
+  await assert.rejects(() => denied.software_cognition_graph_select(args, identity), /continuity_work_acl_denied/);
+  assert.equal(selections, 0);
+
+  const confused = createSoftwareCognitionHandlers({
+    ...base,
+    authorizeAtlasRead: async () => ({ work: { work_id: workId, project_id: "project-b" } }),
+  });
+  await assert.rejects(() => confused.software_cognition_graph_select(args, identity), /software_atlas_project_scope_mismatch/);
+  assert.equal(selections, 0);
 });
 
 test("Atlas writer rejects an authorization receipt for a different request", async () => {
