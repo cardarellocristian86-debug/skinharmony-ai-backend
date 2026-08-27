@@ -317,10 +317,18 @@ jobs:
             mcp_env["MCP_HOST_APP_TOKEN_CODEX"] == {
               "key" => "MCP_HOST_APP_TOKEN_CODEX", "sync" => false,
             }
-          abort("Agent-presence rollout must preserve v1 before the bounded drain") unless
-            mcp_env.dig("AGENT_PRESENCE_SIGNATURE_VERSION", "value") == "v1"
-          abort("Governed continuation must remain code-dark until registry and v2 presence are promoted") unless
-            mcp_env.dig("NYRA_GOVERNED_CONTINUE_ENABLED", "value") == "false"
+          agent_presence_version = mcp_env.dig("AGENT_PRESENCE_SIGNATURE_VERSION", "value")
+          governed_continue_enabled = mcp_env.dig("NYRA_GOVERNED_CONTINUE_ENABLED", "value")
+          safe_governed_continue_rollout_states = [
+            ["v1", "false"],
+            ["v2", "false"],
+            ["v2", "true"],
+          ]
+          abort("Agent-presence and governed-continuation rollout state is unsafe") unless
+            safe_governed_continue_rollout_states.include?([
+              agent_presence_version,
+              governed_continue_enabled,
+            ])
           abort("Governed continuation signer must be independently generated") unless
             mcp_env["NYRA_GOVERNED_CONTINUE_SIGNING_SECRET"] == {
               "key" => "NYRA_GOVERNED_CONTINUE_SIGNING_SECRET", "generateValue" => true,
