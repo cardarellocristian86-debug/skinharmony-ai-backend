@@ -2310,7 +2310,8 @@ export function createWorkContinuityV2Store({
       fail("native_verifier_evidence_presence_invalid");
     }
     const native = await client.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.status,a.report,a.report_digest,
-        a.native_session_fingerprint,a.native_presence_signature,p.status AS plan_status
+        a.agent_id,
+        a.native_session_fingerprint,a.native_presence_signature,p.plan,p.status AS plan_status
       FROM core_continuity_native_agents a
       JOIN core_continuity_native_plans p
         ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
@@ -2328,6 +2329,40 @@ export function createWorkContinuityV2Store({
         nativeRow.report?.schema_version !== "native_agent_report_v1" ||
         nativeRow.report?.verdict !== "approved") {
       fail("native_verifier_evidence_source_binding_invalid");
+    }
+    const verifiedTaskIds = Array.isArray(nativeRow.report?.verifies_task_ids)
+      ? [...new Set(nativeRow.report.verifies_task_ids.map((value) => String(value || "").trim()).filter(Boolean))]
+      : [];
+    if (!verifiedTaskIds.length) fail("native_verifier_evidence_source_binding_invalid");
+    const verifiedBuilders = await client.query(`SELECT task_id,agent_id,status,task_digest,report_digest,
+        native_session_fingerprint,native_presence_signature
+      FROM core_continuity_native_agents
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+        AND task_id = ANY($4::varchar[]) AND task_kind='builder'
+      FOR UPDATE`, [tenantId, legacyWorkId, planId, verifiedTaskIds]);
+    const canonicalBuilderTaskDigests = new Map(
+      (Array.isArray(nativeRow.plan?.tasks) ? nativeRow.plan.tasks : [])
+        .filter((task) => task?.kind === "builder")
+        .map((task) => [
+          String(task.task_id || "").trim(),
+          String(task.task_digest || "").trim().toLowerCase(),
+        ]),
+    );
+    const verifiedBuilderTaskIds = new Set(verifiedBuilders.rows.map((row) => row.task_id));
+    if (
+      verifiedBuilders.rowCount !== verifiedTaskIds.length ||
+      verifiedTaskIds.some((task) => !verifiedBuilderTaskIds.has(task)) ||
+      verifiedBuilders.rows.some((row) =>
+        row.status !== "completed" ||
+        !HASH.test(String(row.report_digest || "")) ||
+        !/^[a-f0-9]{16,64}$/i.test(String(row.native_session_fingerprint || "")) ||
+        !/^ags_[a-f0-9]{32}$/.test(String(row.native_presence_signature || "")) ||
+        !HASH.test(String(row.task_digest || "")) ||
+        canonicalBuilderTaskDigests.get(row.task_id) !== String(row.task_digest).toLowerCase() ||
+        row.agent_id === agentId ||
+        row.native_session_fingerprint === sessionFingerprint)
+    ) {
+      fail("native_verifier_evidence_independence_invalid");
     }
     const receipt = await client.query(`SELECT receipt_type,agent_id,payload,payload_digest
       FROM core_continuity_native_receipts
@@ -2353,9 +2388,10 @@ export function createWorkContinuityV2Store({
       WHERE tenant_id=$1 AND work_id=$2 AND legacy_work_id=$2
       FOR UPDATE`, [tenantId, legacyWorkId]);
     const work = linkedWork.rows[0];
-    if (!work || !work.created_by_agent_id || !work.created_by_session_fingerprint ||
-        work.created_by_agent_id === agentId ||
-        work.created_by_session_fingerprint === sessionFingerprint) {
+    if (!work ||
+        (work.created_by_agent_id && work.created_by_agent_id === agentId) ||
+        (work.created_by_session_fingerprint &&
+          work.created_by_session_fingerprint === sessionFingerprint)) {
       fail("native_verifier_evidence_independence_invalid");
     }
     const material = {
@@ -2368,6 +2404,14 @@ export function createWorkContinuityV2Store({
       task_digest: nativeRow.task_digest,
       verifier_agent_id: agentId,
       verifier_session_fingerprint: sessionFingerprint,
+      verified_builder_bindings: verifiedBuilders.rows.map((row) => ({
+        task_id: row.task_id,
+        task_digest: row.task_digest,
+        agent_id: row.agent_id,
+        session_fingerprint: row.native_session_fingerprint,
+        presence_signature: row.native_presence_signature,
+        report_digest: row.report_digest,
+      })).sort((left, right) => left.task_id.localeCompare(right.task_id)),
       native_receipt_id: receiptId,
       native_receipt_digest: receiptDigest,
       report_digest: reportDigest,

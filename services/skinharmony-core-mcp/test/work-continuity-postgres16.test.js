@@ -855,6 +855,13 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       host_type: "codex_native",
       host_task_id: "/root/postgres16-build",
     });
+    const projectedBeforeBridge = await pool.query(`SELECT created_by_agent_id,
+        created_by_session_fingerprint
+      FROM tenant_work WHERE tenant_id=$1 AND work_id=$2`, [tenantId, firstWork.work_id]);
+    assert.deepEqual(projectedBeforeBridge.rows[0], {
+      created_by_agent_id: null,
+      created_by_session_fingerprint: null,
+    });
     const builderReport = await runtime.reportNativeAgent(
       reporterIdentity(tenantId, "codex-builder", "b".repeat(64), "b"),
       {
@@ -991,6 +998,15 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
           server_owned: false,
         }),
         /native_verifier_evidence_server_owned_required/,
+      );
+      await bridgeClient.query(`UPDATE core_continuity_native_agents
+        SET task_digest=$1
+        WHERE tenant_id=$2 AND work_id=$3 AND plan_id=$4 AND task_id='build'`, [
+        "f".repeat(64), tenantId, firstWork.work_id, planned.plan.plan_id,
+      ]);
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, bridgeSource),
+        /native_verifier_evidence_independence_invalid/,
       );
     } finally {
       await bridgeClient.query("ROLLBACK");
