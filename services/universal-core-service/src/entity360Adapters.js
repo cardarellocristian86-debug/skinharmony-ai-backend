@@ -282,7 +282,7 @@ function bindingProjectionFromEvent(result) {
   };
 }
 
-function verifyCausalBindingEvent(row, event) {
+function verifyCausalBindingEvent(row, event, { asOf = null } = {}) {
   try {
     if (!event || event.event_type !== "WORK_OPENED" || event.operation !== "work_bind_intent") {
       return { verified: false };
@@ -312,12 +312,20 @@ function verifyCausalBindingEvent(row, event) {
       || !exactObjectKeys(result, ["tenant_id", "work_id", "project_id", "genesis_intent_id",
         "intent_revision_id", "base_state_digest", "legacy_binding_state", "provenance",
         "created_at", "legacy_binding"])
+      || !actorProvenance || typeof actorProvenance !== "object" || Array.isArray(actorProvenance)
+      || !requiredText(actorProvenance.actor_id, "entity360_causal_event_actor_invalid", 240)
       || causalDigest(payload) !== payloadDigest
       || causalDigest(actorProvenance) !== actorProvenanceDigest) {
       return { verified: false };
     }
     const currentBinding = bindingProjectionFromRow(row);
     const eventBinding = bindingProjectionFromEvent(result);
+    const recordedAt = iso(event.created_at);
+    const observedAt = currentBinding.created_at;
+    if (Date.parse(observedAt) > Date.parse(recordedAt)
+      || asOf && Date.parse(recordedAt) > Date.parse(iso(asOf))) {
+      return { verified: false };
+    }
     const legacyBinding = result.legacy_binding;
     const legacyBindingKeys = legacyBinding?.present
       ? ["present", "state", "project_uuid"] : ["present", "state"];
@@ -346,8 +354,24 @@ function verifyCausalBindingEvent(row, event) {
       previous_event_hash: previousEventHash,
     });
     if (expectedEventHash !== eventHash) return { verified: false };
-    return { verified: true, event_hash: eventHash,
-      event_ref: `causal_event:${eventId}:${sequence}` };
+    return { verified: true,
+      event_hash: eventHash,
+      event_ref: `causal_event:${eventId}:${sequence}`,
+      event_id: eventId,
+      sequence_number: sequence,
+      event_type: event.event_type,
+      operation: event.operation,
+      tenant_id: currentBinding.tenant_id,
+      project_id: currentBinding.project_id,
+      work_id: currentBinding.work_id,
+      request_digest: requestDigest,
+      payload_digest: payloadDigest,
+      actor_provenance_digest: actorProvenanceDigest,
+      idempotency_key_digest: causalDigest(event.idempotency_key),
+      previous_event_hash: previousEventHash,
+      observed_at: observedAt,
+      recorded_at: recordedAt,
+    };
   } catch {
     return { verified: false };
   }
@@ -368,7 +392,7 @@ function reportProjectUuidMismatch(report, continuityProjectUuid, causalProjectU
     causal_project_uuid: causalProjectUuid });
 }
 
-function causalAuthorityState(row, continuityProjectUuid, bindingEvent) {
+function causalAuthorityState(row, continuityProjectUuid, bindingEvent, asOf = null) {
   if (!row) return { eligible: false, reason_code: "CAUSAL_BINDING_MISSING",
     project_uuid: null };
   const projectUuid = optionalProjectUuid(row.project_uuid);
@@ -424,7 +448,7 @@ function causalAuthorityState(row, continuityProjectUuid, bindingEvent) {
   if (!intentDigestVerified) {
     return { eligible: false, reason_code: "CAUSAL_INTENT_DIGEST_MISMATCH", project_uuid: projectUuid };
   }
-  const bindingEventState = verifyCausalBindingEvent(row, bindingEvent);
+  const bindingEventState = verifyCausalBindingEvent(row, bindingEvent, { asOf });
   if (!bindingEventState.verified) {
     return { eligible: false, reason_code: "CAUSAL_BINDING_EVENT_MISMATCH",
       project_uuid: projectUuid };
@@ -888,7 +912,7 @@ async function resolveWorkCandidates(client, tenantId, identity, report, asOf = 
   const bindingEvent = causalRow ? await readCausalBindingEvent(client, {
     tenantId, projectUuid: causalRow.project_uuid, workId: continuityWorkId, asOf,
   }, report) : null;
-  const causalState = causalAuthorityState(causalRow, continuityProjectUuid, bindingEvent);
+  const causalState = causalAuthorityState(causalRow, continuityProjectUuid, bindingEvent, asOf);
   reportCausalAuthorityGap(report, causalState, continuityProjectUuid);
   const candidates = galleryRow ? [{ tenant_id: tenantId, entity_type: "work", identity: {
     work_id: galleryRow.work_id,
@@ -1066,7 +1090,8 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
     tenantId: scope.tenant_id, projectUuid: causalBinding.project_uuid,
     workId: causalWorkId, asOf: scope.as_of,
   }, report) : null;
-  const causalState = causalAuthorityState(causalBinding, continuityProjectUuid, bindingEvent);
+  const causalState = causalAuthorityState(causalBinding, continuityProjectUuid, bindingEvent,
+    scope.as_of);
   reportCausalAuthorityGap(report, causalState, continuityProjectUuid);
   const projectLinkageConflict = resolutionProjectConflict || workProjects.length > 1;
   if (projectLinkageConflict) {
@@ -1333,39 +1358,46 @@ async function discoverWork(client, scope, report, nsctDependency, nsctOwnerRead
       reason_code: "ARCHITECTURE_DIGEST_MISMATCH" });
   }
 
-  const eventResult = assertTenantRows(await optionalQuery(client, `SELECT tenant_id,work_id::text,sequence_number,
-      event_hash,event_type,payload,previous_event_hash,created_at
-    FROM core_continuity_events WHERE tenant_id = $1 AND work_id = $2::uuid
-      AND created_at <= $3::timestamptz
-    ORDER BY sequence_number DESC LIMIT 1`,
-  [scope.tenant_id, gallery?.legacy_work_id || legacyWorkId, scope.as_of], "event_ledger", report), scope.tenant_id);
-  const event = eventResult.rows[0] || null;
-  const eventDigest = String(event?.event_hash || "").toLowerCase();
-  let eventDigestVerified = false;
-  try {
-    eventDigestVerified = Boolean(event && /^[a-f0-9]{64}$/u.test(eventDigest)
-      && String(event.work_id || "").toLowerCase() === (gallery?.legacy_work_id || legacyWorkId)
-      && entity360Digest({ tenant_id: scope.tenant_id,
-        work_id: gallery?.legacy_work_id || legacyWorkId,
-        sequence_number: Number(event.sequence_number), event_type: event.event_type,
-        payload: event.payload, previous_event_hash: event.previous_event_hash || null }) === eventDigest);
-  } catch {
-    eventDigestVerified = false;
-  }
-  if (eventDigestVerified) {
-    const eventEvidenceRef = `event_ledger:${gallery?.work_id || workId}:${event.sequence_number}`;
+  // The causal event ledger is the sole authority for Entity 360's event
+  // observation claim.  The legacy continuity event stream remains a
+  // projection and must not become an alternate evidence authority.
+  const causalObservation = verifyCausalBindingEvent(causalBinding, bindingEvent,
+    { asOf: scope.as_of });
+  if (causalObservation.verified) {
+    const eventEvidenceRef = causalObservation.event_ref;
     contributions.push(contribution({ scope, sourceId: "event_ledger",
-      adapterVersion: "event_ledger_entity360_adapter_v1", observedAt: event.created_at,
-      watermark: `event:${event.sequence_number}:${eventDigest}`, evidenceClass: "event",
-      evidenceDigest: eventDigest,
+      adapterVersion: "event_ledger_entity360_adapter_v2",
+      observedAt: causalObservation.observed_at,
+      recordedAt: causalObservation.recorded_at,
+      watermark: `causal_event:${causalObservation.sequence_number}:${causalObservation.event_hash}`,
+      evidenceClass: "event",
+      evidenceDigest: causalObservation.event_hash,
       evidenceRef: eventEvidenceRef,
-      facts: [{ fact_id: "work.event_ledger_head", value: { sequence: Number(event.sequence_number),
-        event_hash: eventDigest, event_type: event.event_type }, criticality: "normal" }] }));
-    report.push({ source_id: "event_ledger", state: "accepted", evidence_digest: eventDigest,
-      evidence_ref: eventEvidenceRef });
-  } else if (event) {
+      evidenceDigests: [causalObservation.event_hash, causalObservation.request_digest,
+        causalObservation.payload_digest, causalObservation.actor_provenance_digest],
+      evidenceRefs: [eventEvidenceRef,
+        `causal_event_request:${causalObservation.request_digest}`,
+        `causal_event_provenance:${causalObservation.actor_provenance_digest}`],
+      facts: [{ fact_id: "work.event_ledger_head", value: {
+        event_id: causalObservation.event_id,
+        sequence_number: causalObservation.sequence_number,
+        event_type: causalObservation.event_type,
+        operation: causalObservation.operation,
+        tenant_id: causalObservation.tenant_id,
+        project_id: causalObservation.project_id,
+        work_id: causalObservation.work_id,
+        event_hash: causalObservation.event_hash,
+        previous_event_hash: causalObservation.previous_event_hash,
+        request_digest: causalObservation.request_digest,
+        payload_digest: causalObservation.payload_digest,
+        actor_provenance_digest: causalObservation.actor_provenance_digest,
+        idempotency_key_digest: causalObservation.idempotency_key_digest,
+      }, criticality: "normal", valid_from: causalObservation.observed_at }] }));
+    report.push({ source_id: "event_ledger", state: "accepted",
+      evidence_digest: causalObservation.event_hash, evidence_ref: eventEvidenceRef });
+  } else if (causalBinding) {
     report.push({ source_id: "event_ledger", state: "rejected",
-      reason_code: "EVENT_LEDGER_DIGEST_MISMATCH" });
+      reason_code: "CAUSAL_BINDING_EVENT_MISMATCH" });
   }
   contributions.push(...await discoverNsct(client, scope,
     gallery?.legacy_work_id || legacyWorkId, report, nsctDependency, nsctOwnerReadLimits));
@@ -1529,7 +1561,7 @@ export function createPostgresEntity360AdapterRegistry({ pool, policy, nsct = nu
     schema_version: "entity_360_adapter_registry_v1",
     adapter_versions: Object.freeze([
       "architecture_map_entity360_adapter_v1",
-      "event_ledger_entity360_adapter_v1",
+      "event_ledger_entity360_adapter_v2",
       "genesis_entity360_adapter_v1",
       "icf_entity360_adapter_v2",
       "impact_map_entity360_adapter_v1",
