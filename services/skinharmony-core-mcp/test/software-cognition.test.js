@@ -119,12 +119,15 @@ test("graph select alias is a local bounded read and never issues a DTT mutation
     seed_node_ids: ["file:services/skinharmony-core-mcp/src/software-cognition.js"],
     max_depth: 2,
     max_nodes: 12,
-    max_context_bytes: 8_192,
+    max_bytes: 8_192,
   };
+  const tool = SOFTWARE_COGNITION_TOOLS.find((entry) => entry.name === "software_cognition_graph_select");
+  assert.deepEqual(validateToolArguments(tool.inputSchema, input), []);
   const result = await handlers.software_cognition_graph_select(input, identity);
   assert.equal(contextIssues, 0);
   assert.equal(coreCalls, 0);
   assert.deepEqual(selections, [{ identity, input }]);
+  assert.equal(selections[0].input.max_bytes, 8_192);
   assert.equal(result.structuredContent.work_id, workId);
   assert.equal(result.structuredContent.revision, 210);
   assert.equal(result.structuredContent.full_scan_performed, false);
