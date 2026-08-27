@@ -91,6 +91,8 @@ import {
 } from "./host-app-registry.js";
 import {
   hostAppCanAccessTool,
+  isNativeReportChildOperation,
+  nativeReportAssignmentBootstrap,
   requireHostAppToolCapability,
 } from "./host-app-authorization.js";
 import {
@@ -101,6 +103,7 @@ import {
   bindWorkBootstrapRequestToAuthenticatedHost,
   governedWorkBootstrapAuthorizationTarget,
 } from "./work-bootstrap-contract.js";
+import { ensureNyraReadBinding } from "./nyra-read-binding.js";
 import {
   createPostgresEnvironmentDelegationNonceStore,
 } from "./environment-delegation.js";
@@ -799,6 +802,17 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
     } else {
       throw error;
     }
+  }
+  if (resumeExisting && continuity?.work_id) {
+    continuity = {
+      ...continuity,
+      read_binding: await ensureNyraReadBinding({
+        runtime: workContinuityRuntime,
+        authorizeRead: requireCanonicalWorkRead,
+        identity,
+        continuity,
+      }),
+    };
   }
   const controlContext = await materializeNyraControlContext(identity, continuity, toolName);
   attachContinuity(preflightResult, continuity, controlContext);
@@ -1914,11 +1928,16 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   internallyGovernedCapabilities: ["agent_heartbeat"],
-  capabilityVisible: ({ tool, identity }) => hostAppCanAccessTool({
-    identity,
-    toolName: tool.name,
-    tools: TOOLS,
-  }),
+  capabilityVisible: ({ tool, identity }) => {
+    // Once the server has admitted a native child for this request, give the
+    // dynamic router a single-capability view. Do not union it with ordinary
+    // work.read visibility: the assignment is a one-task grant, not a wider
+    // discovery token.
+    if (identity?.nativeReportAdmission?.capability_id === "work_continuity_native_report") {
+      return tool.name === "work_continuity_native_report";
+    }
+    return hostAppCanAccessTool({ identity, toolName: tool.name, tools: TOOLS });
+  },
   gateAction: ({ tool, args, identity, catalogRevision, idempotencyKey, workPreflight }) => {
     const researchDistillationShadow =
       researchDistillationShadowTools.has(tool.name);
@@ -2060,6 +2079,29 @@ const app = createApp(config, {
     const hostAuthorization = requireHostAppToolCapability({
       identity, toolName, args, tools: TOOLS,
     });
+    // The catalog and compact invoke wrapper normally see only the registered
+    // app's ambient upper bound. A spawned child is different: before the
+    // router can expose its sole terminal capability, verify its actual MCP
+    // transport, live lease and signed one-task assignment. The marker is
+    // server-owned on this per-call identity and is never accepted from args.
+    const nativeReportBootstrap = nativeReportAssignmentBootstrap(toolName, args);
+    if (nativeReportBootstrap) {
+      if (!workContinuityRuntime?.admitNativeAgentReport) {
+        const error = new Error("native_agent_report_admission_unavailable");
+        error.code = "native_agent_report_admission_unavailable";
+        throw error;
+      }
+      const admission = await workContinuityRuntime.admitNativeAgentReport(
+        identity,
+        nativeReportBootstrap,
+      );
+      Object.defineProperty(identity, "nativeReportAdmission", {
+        value: admission,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      });
+    }
     // Every path that can discover, bind or create generic Work context must
     // first prove subject membership. This runs before presence, the decision
     // ledger, Core preflight, Gallery lookup and continuity, even when the
@@ -2085,7 +2127,7 @@ const app = createApp(config, {
     // registry first rejects a legitimate independently spawned child because
     // its transport session is intentionally not the coordinator session.
     // Keep mandatory presence for every other operation.
-    const nativeChildReport = toolName === "work_continuity_native_report";
+    const nativeChildReport = isNativeReportChildOperation(toolName, args);
     if (config.mandatoryAgentPresenceEnabled === true &&
         !nativeChildReport &&
         !isAgentPresenceBootstrapCall(toolName, args)) {

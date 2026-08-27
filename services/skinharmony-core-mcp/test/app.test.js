@@ -422,6 +422,26 @@ test("orders generic Work subject authorization before every Work side effect", 
   }
 });
 
+test("exact Work resume establishes only the bounded Nyra read binding after ACL authorization", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const continuityStart = serverSource.indexOf("async function ensureContinuity");
+  const continuityEnd = serverSource.indexOf("async function refreshNyraDialogueAfterMaterialChange", continuityStart);
+  const continuity = serverSource.slice(continuityStart, continuityEnd);
+  const exactResume = continuity.indexOf("if (resumeExisting && continuity?.work_id)");
+  const binding = continuity.indexOf("read_binding: await ensureNyraReadBinding({", exactResume);
+  const acl = continuity.indexOf("authorizeRead: requireCanonicalWorkRead", binding);
+
+  assert.ok(continuityStart >= 0);
+  assert.ok(continuityEnd > continuityStart);
+  assert.ok(exactResume >= 0);
+  assert.ok(binding > exactResume);
+  assert.ok(acl > binding);
+  assert.doesNotMatch(
+    continuity.slice(exactResume, continuity.indexOf("const controlContext", exactResume)),
+    /owner_confirmed|authority_scope|execution_authorized:\s*true|external_action_authorized:\s*true/,
+  );
+});
+
 test("continuity checkpoint relies on exactly one server-owned Universal Core gate", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const checkpointStart = serverSource.indexOf("work_continuity_checkpoint: async");
@@ -664,6 +684,7 @@ test("filters direct tools and dynamic wrapper modes by the registered app upper
     "core_health",
     "work_continuity_v2_read",
     "core_capability_read",
+    "core_capability_invoke",
   ]);
   assert.deepEqual(namesFor(["work.read", "work.operate"]), [
     "core_health",
@@ -2993,6 +3014,130 @@ test("binds native reports to the child transport and exact native agent id", as
       const index = TOOLS.indexOf(reportTool);
       if (index >= 0) TOOLS.splice(index, 1);
     }
+  }
+});
+
+test("derives a dynamic native report presence from the nested child identity", async () => {
+  const captured = [];
+  const app = createApp(config, {
+    handlers: {
+      core_capability_invoke: async (args, identity) => {
+        captured.push({ args, identity });
+        return { content: [{ type: "text", text: "forwarded" }] };
+      },
+    },
+    beforeToolCall: async () => ({
+      schema_version: "skinharmony_work_preflight_v1",
+      preflight_id: "dynamic-native-report-preflight",
+      tenant_id: "owner-private",
+      mandatory: true,
+      operational_surface: "tenant_work_gallery",
+    }),
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": "dynamic-native-child-transport",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "core_capability_invoke",
+          arguments: {
+            capability_id: "work_continuity_native_report",
+            catalog_revision: "a".repeat(64),
+            idempotency_key: "dynamic-native-report-0001",
+            arguments: {
+              work_id: "11111111-1111-4111-8111-111111111111",
+              plan_id: "22222222-2222-4222-8222-222222222222",
+              native_agent_id: "dynamic-native-child",
+              host_task_id: "/root/dynamic-native-child",
+              assignment_capability: `hnac_${"A".repeat(43)}`,
+              status: "completed",
+              report: { summary: "Child prepared bounded evidence." },
+            },
+          },
+        },
+      }),
+    }).then((value) => value.json());
+    assert.equal(response.error, undefined, JSON.stringify(response));
+    assert.notEqual(response.result?.isError, true, JSON.stringify(response));
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].args.agent_id, "dynamic-native-child");
+    assert.equal(captured[0].identity.agentPresence.agent_id, "dynamic-native-child");
+    assert.equal(captured[0].identity.agentPresence.transport_bound, true);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("derives a catalog native-report bootstrap presence from its assignment", async () => {
+  const captured = [];
+  const app = createApp(config, {
+    handlers: {
+      core_capability_catalog: async (args, identity) => {
+        captured.push({ args, identity });
+        return { content: [{ type: "text", text: "catalogued" }] };
+      },
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  const assignment = {
+    work_id: "11111111-1111-4111-8111-111111111111",
+    plan_id: "22222222-2222-4222-8222-222222222222",
+    native_agent_id: "catalog-native-child",
+    host_task_id: "/root/catalog-native-child",
+    assignment_capability: `hnac_${"A".repeat(43)}`,
+  };
+  const call = async (argumentsValue, id) => fetch(
+    `http://127.0.0.1:${server.address().port}/mcp`,
+    {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": "catalog-native-child-transport",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "core_capability_catalog", arguments: argumentsValue },
+      }),
+    },
+  ).then((value) => value.json());
+  try {
+    const accepted = await call({
+      capability_id: "work_continuity_native_report",
+      native_report_assignment: assignment,
+    }, 1);
+    assert.equal(accepted.error, undefined, JSON.stringify(accepted));
+    assert.notEqual(accepted.result?.isError, true, JSON.stringify(accepted));
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].args.agent_id, assignment.native_agent_id);
+    assert.equal(captured[0].identity.agentPresence.agent_id,
+      assignment.native_agent_id);
+    assert.equal(captured[0].identity.agentPresence.transport_bound, true);
+
+    const conflict = await call({
+      agent_id: "catalog-coordinator-alias",
+      capability_id: "work_continuity_native_report",
+      native_report_assignment: assignment,
+    }, 2);
+    assert.equal(conflict.result?.isError, true, JSON.stringify(conflict));
+    assert.equal(conflict.result?.structuredContent?.error?.code,
+      "native_agent_reporter_identity_conflict");
+    assert.equal(captured.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
 });
 

@@ -13,7 +13,7 @@ export const WORK_EVENT_TYPES = new Set([
   "dependency_changed", "checkpoint_created", "handoff_created",
   "test_completed", "defect_found", "correction_verified", "work_resumed",
   "drift_detected", "rollback_prepared", "memory_verified",
-  "participant_joined", "participant_heartbeat", "lease_acquired",
+  "participant_joined", "participant_heartbeat", "participant_transport_rotated", "lease_acquired",
   "lease_renewed", "lease_released", "lease_expired", "lease_conflict",
   "message_posted",
   "intent_anchored", "native_plan_created", "native_agent_bound",
@@ -1757,6 +1757,79 @@ export function createWorkContinuityRuntime(config, options = {}) {
     };
   }
 
+  // Catalog discovery for a spawned child must not borrow the coordinator's
+  // work.operate grant. This is intentionally a pure read: it proves the
+  // same immutable assignment coordinates that reportNativeAgent will prove
+  // again inside its write transaction, but never records presence, consumes
+  // the assignment or changes the lease.
+  async function admitNativeAgentReport(identity, input) {
+    assertNativePayload(input);
+    const context = workContext(identity, input);
+    const planId = uuid(input.plan_id, "plan_id");
+    const agentId = identifier(input.native_agent_id || input.agent_id, "native_agent_id", 120);
+    const hostTaskId = hostTaskIdentifier(input.host_task_id);
+    const reporterPresence = nativeReporterPresence(identity, agentId);
+    const suppliedAssignmentDigest = assignmentCapabilityDigest(
+      input.assignment_capability,
+    );
+    await initialize();
+    const current = await pool.query(`SELECT a.task_id,a.task_digest,a.host_type,a.host_task_id,
+        a.coordinator_session_fingerprint,a.assignment_capability_digest,a.lease_expires_at,
+        p.status AS plan_status
+      FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
+        ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
+      WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=$3 AND a.agent_id=$4`,
+    [context.tenantId, context.workId, planId, agentId]);
+    const row = current.rows[0];
+    if (!row) throw new Error("native_agent_binding_not_found");
+    if (row.plan_status !== "planned") throw new Error("native_agent_plan_not_open");
+    if (row.host_type !== reporterPresence.host_type) {
+      throw new Error("native_agent_reporter_host_scope_mismatch");
+    }
+    if (row.host_task_id !== hostTaskId) throw new Error("native_agent_host_task_mismatch");
+    const leaseExpiresAt = dateValue(row.lease_expires_at, "native_agent_lease");
+    if (leaseExpiresAt.getTime() <= nowDate().getTime()) {
+      throw new Error("native_agent_binding_expired_replan_required");
+    }
+    if (row.coordinator_session_fingerprint === reporterPresence.session_fingerprint) {
+      throw new Error("native_agent_coordinator_report_forbidden");
+    }
+    const expectedAssignment = assignmentCapability({
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      plan_id: planId,
+      task_id: row.task_id,
+      agent_id: agentId,
+      host_type: row.host_type,
+      host_task_id: row.host_task_id,
+      task_digest: row.task_digest,
+      coordinator_session_fingerprint: row.coordinator_session_fingerprint,
+      lease_expires_at: leaseExpiresAt.toISOString(),
+    });
+    if (
+      row.assignment_capability_digest !== suppliedAssignmentDigest ||
+      suppliedAssignmentDigest !== assignmentCapabilityDigest(expectedAssignment) ||
+      input.assignment_capability !== expectedAssignment
+    ) {
+      throw new Error("native_agent_assignment_capability_mismatch");
+    }
+    const reusedPresence = await pool.query(`SELECT task_id FROM core_continuity_native_agents
+      WHERE tenant_id=$1 AND plan_id=$2 AND native_session_fingerprint=$3
+        AND agent_id<>$4 LIMIT 1`,
+    [context.tenantId, planId, reporterPresence.session_fingerprint, agentId]);
+    if (reusedPresence.rows[0]) throw new Error("native_agent_reporter_reuse_denied");
+    return Object.freeze({
+      capability_id: "work_continuity_native_report",
+      work_id: context.workId,
+      plan_id: planId,
+      native_agent_id: agentId,
+      host_task_id: hostTaskId,
+      task_digest: row.task_digest,
+      lease_expires_at: leaseExpiresAt.toISOString(),
+      execution_authorized: false,
+    });
+  }
+
   function nativeCoordinatorFingerprint(identity) {
     const presence = identity?.agentPresence;
     const transportFingerprint = String(
@@ -2699,6 +2772,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
     ) {
       throw new Error("dtt_work_signed_presence_required");
     }
+    const requiredSurface = input.required_lease_surface
+      ? normalizeSurfaces([input.required_lease_surface])[0]
+      : null;
+    const requiredPurpose = requiredSurface
+      ? safeText(input.required_lease_purpose, 2_000)
+      : null;
+    if (requiredSurface && !requiredPurpose) {
+      throw new Error("dtt_work_lease_selector_invalid");
+    }
     const result = await pool.query(`SELECT
         p.session_id,p.agent_id,p.client_type,p.expires_at AS participant_expires_at,
         p.transport_session_fingerprint,l.lease_id,l.expires_at AS lease_expires_at
@@ -2709,6 +2791,24 @@ export function createWorkContinuityRuntime(config, options = {}) {
         AND p.agent_id=$5 AND p.client_type=$6 AND p.transport_session_fingerprint=$7
         AND p.status='active' AND p.expires_at>now()
         AND l.status='active' AND l.expires_at>now()
+        AND ($8::varchar IS NULL OR (
+          l.purpose=$10
+          AND EXISTS (
+            SELECT 1 FROM core_continuity_lease_surfaces required_surface
+            WHERE required_surface.tenant_id=l.tenant_id
+              AND required_surface.work_id=l.work_id
+              AND required_surface.lease_id=l.lease_id
+              AND required_surface.surface_kind=$8
+              AND required_surface.surface_value=$9
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM core_continuity_lease_surfaces other_surface
+            WHERE other_surface.tenant_id=l.tenant_id
+              AND other_surface.work_id=l.work_id
+              AND other_surface.lease_id=l.lease_id
+              AND (other_surface.surface_kind<>$8 OR other_surface.surface_value<>$9)
+          )
+        ))
       ORDER BY l.expires_at,l.lease_id
       LIMIT 1`, [
       context.tenantId,
@@ -2718,6 +2818,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
       binding.agentId,
       binding.clientType,
       binding.transportSessionFingerprint,
+      requiredSurface?.kind || null,
+      requiredSurface?.value || null,
+      requiredPurpose,
     ]);
     const row = result.rows[0];
     if (!row) throw new Error("dtt_work_active_lease_required");
@@ -2747,6 +2850,86 @@ export function createWorkContinuityRuntime(config, options = {}) {
       actor_provenance: String(presence.actor_provenance),
       execution_authorized: false,
     });
+  }
+
+  async function rotateNyraReadParticipant(identity, input = {}) {
+    const context = workContext(identity, input);
+    const binding = assertGalleryParticipantBinding(identity, input);
+    const presence = identity?.agentPresence || {};
+    const logicalSessionFingerprint = String(presence.session_fingerprint || "").toLowerCase();
+    if (!/^[a-f0-9]{16,64}$/.test(logicalSessionFingerprint)) {
+      throw new Error("dtt_work_signed_presence_required");
+    }
+    context.transportSessionFingerprint = binding.transportSessionFingerprint;
+    const ttlSeconds = positiveInteger(input.ttl_seconds, GALLERY_PARTICIPANT_MAX_TTL_SECONDS,
+      GALLERY_PARTICIPANT_MAX_TTL_SECONDS);
+    return transaction(async (client) => withIdempotency(
+      client, context, input.idempotency_key, "nyra_read_transport_rotate", {
+        work_id: context.workId,
+        session_id: binding.sessionId,
+        agent_id: binding.agentId,
+        client_type: binding.clientType,
+        logical_session_fingerprint: logicalSessionFingerprint,
+      }, async () => {
+        await lockGalleryWork(client, context);
+        const current = await client.query(`SELECT
+            session_id,agent_id,client_type,status,expires_at,transport_session_fingerprint,
+            metadata #>> '{profile,logical_session_fingerprint}' AS logical_session_fingerprint
+          FROM core_continuity_participants
+          WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND actor_subject=$4
+          FOR UPDATE`, [context.tenantId, context.workId, binding.sessionId, context.actorSubject]);
+        const participant = current.rows[0];
+        if (!participant || participant.status !== "active"
+            || dateValue(participant.expires_at, "continuity_participant_expires_at").getTime()
+              <= nowDate().getTime()) {
+          return { schema_version: "nyra_read_transport_binding_v1", state: "missing_or_expired" };
+        }
+        if (String(participant.agent_id) !== binding.agentId
+            || String(participant.client_type) !== binding.clientType) {
+          throw new Error("continuity_session_conflict");
+        }
+        if (String(participant.transport_session_fingerprint).toLowerCase()
+            === binding.transportSessionFingerprint) {
+          return { schema_version: "nyra_read_transport_binding_v1", state: "active" };
+        }
+        if (String(participant.logical_session_fingerprint || "").toLowerCase()
+            !== logicalSessionFingerprint) {
+          throw new Error("continuity_read_transport_rotation_unverified");
+        }
+        const expired = await client.query(`UPDATE core_continuity_leases
+          SET status='expired',released_at=coalesce(released_at,now())
+          WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND status='active'
+          RETURNING lease_id,session_id`, [context.tenantId, context.workId, binding.sessionId]);
+        const rotated = await client.query(`UPDATE core_continuity_participants
+          SET transport_session_fingerprint=$5,last_seen_at=now(),
+            expires_at=now()+($6::int*interval '1 second')
+          WHERE tenant_id=$1 AND work_id=$2 AND session_id=$3 AND actor_subject=$4
+            AND agent_id=$7 AND client_type=$8
+          RETURNING session_id,agent_id,client_type,status,last_seen_at,expires_at`,
+        [context.tenantId, context.workId, binding.sessionId, context.actorSubject,
+          binding.transportSessionFingerprint, ttlSeconds, binding.agentId, binding.clientType]);
+        if (!rotated.rows[0]) throw new Error("continuity_session_conflict");
+        if (expired.rows.length) {
+          await appendEvent(client, context, "lease_expired", {
+            reason: "verified_transport_rotation",
+            recovered_leases: expired.rows.map((row) => ({
+              lease_id: row.lease_id,
+              session_id: row.session_id,
+            })),
+          });
+        }
+        const event = await appendEvent(client, context, "participant_transport_rotated", {
+          session_id: binding.sessionId,
+          expired_lease_count: expired.rows.length,
+        });
+        return {
+          schema_version: "nyra_read_transport_binding_v1",
+          state: "rotated",
+          expired_lease_count: expired.rows.length,
+          participant: rotated.rows[0],
+          event,
+        };
+      }));
   }
 
   async function resolveGenericWorkCoreJoinLeaseBinding(identity, input = {}) {
@@ -2829,7 +3012,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         created_at,updated_at
       FROM core_continuity_remediations
       WHERE tenant_id=$1 AND ($2::varchar IS NULL OR project_id=$2)
-        AND ($3::uuid[] IS NULL OR work_id = ANY($3::uuid[]))
+        AND ($3::text[] IS NULL OR work_id = ANY($3::text[]))
         AND status NOT IN ('closed','cancelled','expired')
       ORDER BY updated_at DESC`, [tenantId, projectId, authorizedWorkIds]);
     const blockersByWork = new Map();
@@ -4938,7 +5121,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     };
   }
 
-  async function readAtlasGraph(identity, input) {
+  async function readAtlasState(identity, input) {
     await initialize();
     const tenantId = tenant(identity.tenantId);
     const workId = uuid(input.work_id, "work_id");
@@ -4948,16 +5131,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         bootstrap_cursor,bootstrap_next_cursor,bootstrap_total_files,bootstrap_frontier FROM core_continuity_atlas_state
       WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3`, [tenantId, projectId, workId]);
     if (!state.rows[0]) throw new Error("work_atlas_not_found");
-    const [nodes, edges] = await Promise.all([
-      pool.query(`SELECT node_id,node_kind,source_ref,source_kind,source_digest,provenance,metadata,revision
-        FROM core_continuity_atlas_nodes WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY node_id`,
-      [tenantId, projectId, workId]),
-      pool.query(`SELECT edge_id,from_node_id,to_node_id,edge_type,edge_digest,source,provenance
-        FROM core_continuity_atlas_edges WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY edge_id`,
-      [tenantId, projectId, workId]),
-    ]);
     return {
-      schema_version: "software_reality_graph_atlas_v1", tenant_id: tenantId, project_id: projectId, work_id: workId,
+      schema_version: "software_reality_graph_atlas_state_v1", tenant_id: tenantId, project_id: projectId, work_id: workId,
       revision: Number(state.rows[0].revision), source_digest: state.rows[0].source_hash,
       bootstrap: {
         state: state.rows[0].bootstrap_state || "available",
@@ -4970,13 +5145,32 @@ export function createWorkContinuityRuntime(config, options = {}) {
         total_candidate_files: state.rows[0].bootstrap_total_files === null ? null : Number(state.rows[0].bootstrap_total_files),
         frontier: state.rows[0].bootstrap_frontier || null,
       },
+      metrics: { total_nodes: Number(state.rows[0].total_nodes), total_context_bytes: Number(state.rows[0].total_context_bytes) },
+    };
+  }
+
+  async function readAtlasGraph(identity, input) {
+    const atlasState = await readAtlasState(identity, input);
+    const tenantId = atlasState.tenant_id;
+    const projectId = atlasState.project_id;
+    const workId = atlasState.work_id;
+    const [nodes, edges] = await Promise.all([
+      pool.query(`SELECT node_id,node_kind,source_ref,source_kind,source_digest,provenance,metadata,revision
+        FROM core_continuity_atlas_nodes WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY node_id`,
+      [tenantId, projectId, workId]),
+      pool.query(`SELECT edge_id,from_node_id,to_node_id,edge_type,edge_digest,source,provenance
+        FROM core_continuity_atlas_edges WHERE tenant_id=$1 AND project_id=$2 AND work_id=$3 AND active=true ORDER BY edge_id`,
+      [tenantId, projectId, workId]),
+    ]);
+    return {
+      ...atlasState,
+      schema_version: "software_reality_graph_atlas_v1",
       nodes: nodes.rows.map((row) => ({ tenant_id: tenantId, project_id: projectId, work_id: workId, node_id: row.node_id,
         kind: row.node_kind, source_ref: row.source_ref, source_kind: row.source_kind, provenance: row.provenance,
         payload: row.metadata, digest: row.source_digest, version: Number(row.revision), tombstoned: false })),
       edges: edges.rows.map((row) => ({ tenant_id: tenantId, project_id: projectId, work_id: workId, edge_id: row.edge_id,
         from_node_id: row.from_node_id, to_node_id: row.to_node_id, edge_type: row.edge_type,
         digest: row.edge_digest, source: row.source, provenance: row.provenance })),
-      metrics: { total_nodes: Number(state.rows[0].total_nodes), total_context_bytes: Number(state.rows[0].total_context_bytes) },
     };
   }
 
@@ -5548,12 +5742,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
     verifyMemory,
     planNativeAgents,
     bindNativeAgent,
+    admitNativeAgentReport,
     reportNativeAgent,
     evaluateClosure,
     bindCoreJoinVerdict,
     finalizeClosure,
     upsertAtlas,
     selectAtlas,
+    readAtlasState,
     readAtlasGraph,
     recordOperationalIncident,
     recordIncident,
@@ -5563,6 +5759,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     gallery,
     galleryAuthorized,
     resolveDttWorkLeaseBinding,
+    rotateNyraReadParticipant,
     resolveGenericWorkCoreJoinLeaseBinding,
     join,
     heartbeat,

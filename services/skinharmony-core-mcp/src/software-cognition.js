@@ -303,7 +303,9 @@ function bootstrapResult(value) { return textResult({
 }); }
 
 async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImpl, repositoryBindings, githubTokens }) {
-  if (!atlasRuntime || typeof atlasRuntime.readAtlasGraph !== "function" || typeof atlasRuntime.upsertAtlas !== "function") {
+  if (!atlasRuntime ||
+      (typeof atlasRuntime.readAtlasState !== "function" && typeof atlasRuntime.readAtlasGraph !== "function") ||
+      typeof atlasRuntime.upsertAtlas !== "function") {
     bootstrapFail("software_atlas_runtime_required");
   }
   if (typeof fetchImpl !== "function") bootstrapFail("software_atlas_repository_fetch_unavailable");
@@ -329,7 +331,10 @@ async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImp
   if (cursor > 0 && snapshot.commit !== suppliedCommit) bootstrapFail("software_atlas_snapshot_commit_mismatch");
   const sourceHash = softwareDigest({ schema_version: "software_repository_architecture_snapshot_v2", repository, commit: snapshot.commit, tree_sha: snapshot.tree_sha });
   let graph;
-  try { graph = await atlasRuntime.readAtlasGraph(identity, { project_id: projectId, work_id: workId }); }
+  const readAtlasState = typeof atlasRuntime.readAtlasState === "function"
+    ? atlasRuntime.readAtlasState.bind(atlasRuntime)
+    : atlasRuntime.readAtlasGraph.bind(atlasRuntime);
+  try { graph = await readAtlasState(identity, { project_id: projectId, work_id: workId }); }
   catch (error) { if (error?.message !== "work_atlas_not_found") throw error; graph = { revision: 0, nodes: [], edges: [] }; }
   const bootstrap = graph.bootstrap || null;
   if (bootstrap && (bootstrap.repository !== repository || bootstrap.commit !== snapshot.commit || bootstrap.tree_sha !== snapshot.tree_sha)) {
@@ -352,39 +357,49 @@ async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImp
   if (cursor > 0 && (bootstrap?.state !== "indexing" || !bootstrap?.frontier || bootstrap?.source_hash !== sourceHash)) {
     bootstrapFail("software_atlas_snapshot_binding_mismatch");
   }
-  const enumeration = await readRepositoryPathsBatch(
-    fetchImpl,
-    repository,
-    snapshot.tree_sha,
-    cursor > 0 ? bootstrap.frontier : null,
-    fileLimit,
-    token,
-  );
-  // A repository made only of supported-looking configuration files is not an
-  // architecture source index.  Do not mark it available merely because the
-  // final page happened to contain a non-source file: at least one JS/TS
-  // source file must have been observed across the pinned snapshot.
-  if (enumeration.completed && !enumeration.frontier.source_files_seen) {
-    bootstrapFail("software_atlas_repository_unsupported");
+  let effectiveFileLimit = fileLimit;
+  let analyzed;
+  for (;;) {
+    const enumeration = await readRepositoryPathsBatch(
+      fetchImpl,
+      repository,
+      snapshot.tree_sha,
+      cursor > 0 ? bootstrap.frontier : null,
+      effectiveFileLimit,
+      token,
+    );
+    // A repository made only of supported-looking configuration files is not an
+    // architecture source index.  Do not mark it available merely because the
+    // final page happened to contain a non-source file: at least one JS/TS
+    // source file must have been observed across the pinned snapshot.
+    if (enumeration.completed && !enumeration.frontier.source_files_seen) {
+      bootstrapFail("software_atlas_repository_unsupported");
+    }
+    const paths = enumeration.paths;
+    if (!paths.length) bootstrapFail("software_atlas_repository_empty_batch");
+    const indexed = [];
+    const skipped = [];
+    let totalBytes = 0;
+    for (const path of paths) {
+      const file = await readSnapshotFile(fetchImpl, repository, snapshot.commit, path, token);
+      if (!file) { skipped.push(path); continue; }
+      totalBytes += Buffer.byteLength(file.content, "utf8");
+      if (totalBytes > ATLAS_BOOTSTRAP_TOTAL_BYTES) { skipped.push(path); continue; }
+      const result = indexSoftwareDiff({ tenant_id: tenantId, project_id: projectId, work_id: workId, repository,
+        base_commit: snapshot.commit, head_commit: snapshot.commit, known_graph_revision: Number(graph.revision || 0), changed_files: [file] });
+      if (result.nodes_added_or_updated.length > 500 || result.edges_added.length > 2_000) bootstrapFail("software_atlas_file_too_complex");
+      indexed.push(result);
+    }
+    const batch = mergeIndexedBatch(indexed);
+    if (batch.nodes.length <= 500 && batch.edges.length <= 2_000) {
+      analyzed = { enumeration, paths, indexed, skipped, totalBytes, batch };
+      break;
+    }
+    if (effectiveFileLimit === 1) bootstrapFail("software_atlas_batch_too_large");
+    effectiveFileLimit = Math.max(1, Math.floor(effectiveFileLimit / 2));
   }
-  const paths = enumeration.paths;
-  if (!paths.length) bootstrapFail("software_atlas_repository_empty_batch");
+  const { enumeration, paths, indexed, skipped, totalBytes, batch } = analyzed;
   let revision = Number(graph.revision || 0);
-  const indexed = [];
-  const skipped = [];
-  let totalBytes = 0;
-  for (const path of paths) {
-    const file = await readSnapshotFile(fetchImpl, repository, snapshot.commit, path, token);
-    if (!file) { skipped.push(path); continue; }
-    totalBytes += Buffer.byteLength(file.content, "utf8");
-    if (totalBytes > ATLAS_BOOTSTRAP_TOTAL_BYTES) { skipped.push(path); continue; }
-    const result = indexSoftwareDiff({ tenant_id: tenantId, project_id: projectId, work_id: workId, repository,
-      base_commit: snapshot.commit, head_commit: snapshot.commit, known_graph_revision: revision, changed_files: [file] });
-    if (result.nodes_added_or_updated.length > 500 || result.edges_added.length > 2_000) bootstrapFail("software_atlas_file_too_complex");
-    indexed.push(result);
-  }
-  const batch = mergeIndexedBatch(indexed);
-  if (batch.nodes.length > 500 || batch.edges.length > 2_000) bootstrapFail("software_atlas_batch_too_large");
   const completed = enumeration.completed;
   const nextCursor = completed ? null : cursor + paths.length;
   const firstPage = cursor === 0;

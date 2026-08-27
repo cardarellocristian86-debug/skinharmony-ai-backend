@@ -190,6 +190,127 @@ test("catalogs every tenant Work capability on the continuity surface", () => {
   assert.equal(snapshot.capabilities.every((item) => item.group === "continuity"), true);
 });
 
+test("a server-admitted native child sees only its terminal report capability", async () => {
+  const report = WORK_CONTINUITY_TOOLS.find((tool) =>
+    tool.name === "work_continuity_native_report");
+  const unrelated = delegatedWriteTool("tenant_work_task_record");
+  const handlers = {
+    [report.name]: async () => ({ structuredContent: { ok: true } }),
+    [unrelated.name]: async () => ({ structuredContent: { ok: true } }),
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [report, unrelated],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({ structuredContent: { authorization: { allowed: true } } }),
+    capabilityVisible: ({ tool, identity: caller }) => caller.nativeReportAdmission
+      ? tool.name === "work_continuity_native_report"
+      : false,
+  });
+  const caller = {
+    ...identity,
+    nativeReportAdmission: { capability_id: "work_continuity_native_report" },
+  };
+  const catalog = await router.core_capability_catalog({
+    capability_id: "work_continuity_native_report",
+    include_schema: true,
+  }, caller);
+  assert.equal(catalog.structuredContent.capability.capability_id,
+    "work_continuity_native_report");
+  const revision = catalog.structuredContent.catalog_revision;
+  await assert.rejects(router.core_capability_invoke({
+    capability_id: unrelated.name,
+    catalog_revision: revision,
+    idempotency_key: "native-child-escalation-attempt",
+    arguments: { value: "forbidden" },
+  }, caller), /dynamic_capability_unavailable/);
+});
+
+test("accepts only the exact pre-admission catalog revision for an admitted native report", async () => {
+  const report = delegatedWriteTool("work_continuity_native_report");
+  const unrelated = delegatedWriteTool("tenant_work_task_record");
+  let reports = 0;
+  const handlers = {
+    [report.name]: async () => {
+      reports += 1;
+      return { structuredContent: { ok: true } };
+    },
+    [unrelated.name]: async () => ({ structuredContent: { ok: true } }),
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [report, unrelated],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({ structuredContent: { authorization: { allowed: true } } }),
+    capabilityVisible: ({ tool, identity: caller }) =>
+      caller.nativeReportAdmission?.capability_id === report.name
+      ? tool.name === report.name
+      : true,
+  });
+  const ambientCaller = { ...identity };
+  const ambientCatalog = await router.core_capability_catalog({}, ambientCaller);
+  const ambientRevision = ambientCatalog.structuredContent.catalog_revision;
+  const admittedCaller = {
+    ...identity,
+    nativeReportAdmission: { capability_id: "work_continuity_native_report" },
+  };
+  const admittedCatalog = await router.core_capability_catalog({}, admittedCaller);
+  const admittedRevision = admittedCatalog.structuredContent.catalog_revision;
+  assert.notEqual(ambientRevision, admittedRevision);
+
+  const invoke = (caller, capability_id, catalog_revision, idempotency_key) =>
+    router.core_capability_invoke({
+      capability_id,
+      catalog_revision,
+      idempotency_key,
+      arguments: { value: "bounded evidence" },
+    }, caller);
+
+  const accepted = await invoke(
+    admittedCaller,
+    report.name,
+    ambientRevision,
+    "native-report-ambient-revision",
+  );
+  assert.equal(reports, 1);
+  assert.equal(accepted.structuredContent.dynamic_capability.capability_id, report.name);
+  assert.equal(accepted.structuredContent.dynamic_capability.catalog_revision, admittedRevision);
+
+  await assert.rejects(
+    invoke(admittedCaller, unrelated.name, ambientRevision, "native-report-wrong-target"),
+    /dynamic_capability_catalog_revision_mismatch/,
+  );
+  await assert.rejects(
+    invoke(
+      { ...identity },
+      report.name,
+      admittedRevision,
+      "native-report-no-admission",
+    ),
+    /dynamic_capability_catalog_revision_mismatch/,
+  );
+  await assert.rejects(
+    invoke(
+      {
+        ...identity,
+        nativeReportAdmission: { capability_id: "tenant_work_task_record" },
+      },
+      report.name,
+      admittedRevision,
+      "native-report-invalid-admission",
+    ),
+    /dynamic_capability_catalog_revision_mismatch/,
+  );
+  const alteredRevision = `${ambientRevision.slice(0, -1)}${
+    ambientRevision.endsWith("0") ? "1" : "0"
+  }`;
+  await assert.rejects(
+    invoke(admittedCaller, report.name, alteredRevision, "native-report-altered-revision"),
+    /dynamic_capability_catalog_revision_mismatch/,
+  );
+  assert.equal(reports, 1);
+});
+
 test("pre-Work review uses one server-owned Core gate and stable idempotency", async () => {
   const tool = WORK_CONTINUITY_TOOLS.find((item) =>
     item.name === "tenant_work_open_review");

@@ -211,7 +211,7 @@ test("legacy Gallery prompt fields and blockers are restricted to canonical visi
   const blockerRead = calls.find((call) => /FROM core_continuity_remediations/.test(call.sql));
   assert.match(workRead.sql, /w\.work_id = ANY\(\$5::uuid\[\]\)/);
   assert.deepEqual(workRead.params[4], [WORK_ID]);
-  assert.match(blockerRead.sql, /work_id = ANY\(\$3::uuid\[\]\)/);
+  assert.match(blockerRead.sql, /work_id = ANY\(\$3::text\[\]\)/);
   assert.deepEqual(blockerRead.params[2], [WORK_ID]);
 });
 

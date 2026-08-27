@@ -1370,6 +1370,17 @@ export const TOOLS = [
     include_schema: { type: "boolean" },
     cursor: { type: "string", pattern: "^\\d+$", maxLength: 12 },
     limit: { type: "integer", minimum: 1, maximum: 100 },
+    // A child that was created by a host-native plan has no ambient operate
+    // grant. It may use this redacted proof only to discover its own terminal
+    // report capability; the server validates the signed transport binding,
+    // live lease and assignment before returning any catalog entry.
+    native_report_assignment: object({
+      work_id: { type: "string", format: "uuid" },
+      plan_id: { type: "string", format: "uuid" },
+      native_agent_id: { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{1,119}$" },
+      host_task_id: { type: "string", minLength: 2, maxLength: 240, pattern: "^(?:/[a-zA-Z0-9][a-zA-Z0-9_/-]*|[a-zA-Z0-9][a-zA-Z0-9._:/-]*)$" },
+      assignment_capability: { type: "string", pattern: "^hnac_[A-Za-z0-9_-]{43}$" },
+    }, ["work_id", "plan_id", "native_agent_id", "host_task_id", "assignment_capability"]),
   }), ["core:read"]),
   tool("core_branch_registry", "Read Core branch intelligence", "Read the registry, taxonomy, maturity or authenticated authorization view for Core branches. Tenant and entitlements are derived from the Core key.", object({
     view: { type: "string", enum: ["registry", "taxonomy", "maturity", "authorized"] },

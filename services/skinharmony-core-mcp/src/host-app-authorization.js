@@ -80,6 +80,12 @@ const HOST_NATIVE_OPERATE_TOOLS = new Set([
   "work_continuity_closure_finalize",
 ]);
 
+const NATIVE_REPORT_CAPABILITY = "work_continuity_native_report";
+const NATIVE_ASSIGNMENT_CAPABILITY = /^hnac_[A-Za-z0-9_-]{43}$/;
+const NATIVE_REPORT_WORK_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const NATIVE_REPORT_AGENT_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{1,119}$/;
+const NATIVE_REPORT_HOST_TASK_ID = /^(?:\/[a-zA-Z0-9][a-zA-Z0-9_/-]{1,239}|[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,239})$/;
+
 const WORK_PREFIXES = Object.freeze([
   "work_continuity_",
   "tenant_work_",
@@ -142,6 +148,57 @@ export function dynamicHostCapabilityTarget(toolName, args = {}) {
   return requested;
 }
 
+// A native child has no ambient work.operate grant: its authority is the
+// one-task assignment capability verified again by the continuity runtime.
+// This helper deliberately recognizes only the compact wrapper and only the
+// five immutable assignment coordinates. It never grants a direct native
+// report route or a capability other than the report target.
+export function nativeReportAssignmentBootstrap(toolName, args = {}) {
+  if (String(toolName || "") === "core_capability_catalog") {
+    if (String(args?.capability_id || "") !== NATIVE_REPORT_CAPABILITY) return null;
+  } else if (
+    String(toolName || "") === "core_capability_invoke" &&
+    String(args?.capability_id || "") === NATIVE_REPORT_CAPABILITY
+  ) {
+    args = args?.arguments;
+  } else {
+    return null;
+  }
+  const assignment = String(toolName || "") === "core_capability_catalog"
+    ? args?.native_report_assignment
+    : args;
+  if (!assignment || typeof assignment !== "object" || Array.isArray(assignment)) return null;
+  const workId = String(assignment.work_id || "").trim();
+  const planId = String(assignment.plan_id || "").trim();
+  const agentId = String(assignment.native_agent_id || "").trim();
+  const hostTaskId = String(assignment.host_task_id || "").trim();
+  const capability = String(assignment.assignment_capability || "").trim();
+  if (
+    !NATIVE_REPORT_WORK_ID.test(workId) ||
+    !NATIVE_REPORT_WORK_ID.test(planId) ||
+    !NATIVE_REPORT_AGENT_ID.test(agentId) ||
+    !NATIVE_REPORT_HOST_TASK_ID.test(hostTaskId) ||
+    hostTaskId.includes("..") ||
+    !NATIVE_ASSIGNMENT_CAPABILITY.test(capability)
+  ) return null;
+  return Object.freeze({
+    work_id: workId.toLowerCase(),
+    plan_id: planId.toLowerCase(),
+    native_agent_id: agentId,
+    host_task_id: hostTaskId,
+    assignment_capability: capability,
+  });
+}
+
+// This identifies the two compact bootstrap routes as well as the legacy
+// direct report route for transport-presence handling. It is not an
+// authorization decision: the server still requires the assignment admission
+// above before either compact route receives its one-capability catalog view.
+export function isNativeReportChildOperation(toolName, args = {}) {
+  return String(toolName || "") === NATIVE_REPORT_CAPABILITY ||
+    nativeReportAssignmentBootstrap(toolName, args) !== null;
+}
+
 function toolDefinition(name, tools = []) {
   return Array.isArray(tools) ? tools.find((item) => item?.name === name) : null;
 }
@@ -153,6 +210,13 @@ function workSurface(name) {
 
 export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []) {
   const name = dynamicHostCapabilityTarget(toolName, args);
+  // The server admits this narrow bootstrap only after it has created a
+  // transport-bound child presence and the continuity runtime has verified
+  // the exact assignment, lease and HMAC capability. work.read is therefore
+  // an app-level upper bound, never a substitute for that verification.
+  if (nativeReportAssignmentBootstrap(toolName, args)) {
+    return HOST_APP_CAPABILITIES.WORK_READ;
+  }
   // This is a tenant-wide configuration action, not a Work mutation.  Keep it
   // above the entity_360_ Work prefix so both direct and compact dynamic
   // invocation require the Core-wide grant.

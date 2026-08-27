@@ -406,10 +406,11 @@ function nsctDependency({ value = nsctVerifiedSet(), mode = "ADVISORY", ready = 
     verifier_ready: () => verifierReady }, calls, store };
 }
 
-function snapshotFor({ identity, entityId, discovery }, asOf = AT) {
+function snapshotFor({ identity, entityId, discovery }, asOf = AT,
+  projectWorkLinkage = discovery.project_work_linkage) {
   return assembleEntity360Snapshot({ tenant_id: TENANT, entity_type: "work",
     entity_id: entityId, identity, resolution_candidates: discovery.candidates,
-    project_work_linkage: discovery.project_work_linkage, as_of: asOf, snapshot_version: 1,
+    project_work_linkage: projectWorkLinkage, as_of: asOf, snapshot_version: 1,
     source_contributions: discovery.source_contributions,
     source_discovery: sourceDiscoveryForSnapshot(discovery.source_discovery) },
   { policy: POLICY, ontology: ONTOLOGY, created_at: asOf, require_existing: true,
@@ -497,6 +498,30 @@ test("Work 360 adapters use an exact tenant-bound read-only cut and persist refe
   assert.ok(discovery.source_discovery.some((item) => item.source_id === "genesis"
     && item.state === "accepted" && item.evidence_digest === causalBindingEvent().event_hash
     && item.evidence_ref === `causal_event:${CAUSAL_EVENT_ID}:${CAUSAL_EVENT_SEQUENCE}`));
+  const causalEvent = causalBindingEvent();
+  const eventLedgerContribution = discovery.source_contributions.find((item) =>
+    item.source_id === "event_ledger");
+  assert.deepEqual(eventLedgerContribution.evidence_digests.toSorted(), [causalEvent.event_hash,
+    causalEvent.request_digest, causalEvent.payload_digest,
+    causalEvent.actor_provenance_digest].toSorted());
+  assert.deepEqual(eventLedgerContribution.facts.map((fact) => fact.value), [{
+    event_id: CAUSAL_EVENT_ID,
+    sequence_number: CAUSAL_EVENT_SEQUENCE,
+    event_type: "WORK_OPENED",
+    operation: "work_bind_intent",
+    tenant_id: TENANT,
+    project_id: PROJECT_UUID,
+    work_id: LEGACY_WORK_ID,
+    event_hash: causalEvent.event_hash,
+    previous_event_hash: CAUSAL_PREVIOUS_EVENT_HASH,
+    request_digest: causalEvent.request_digest,
+    payload_digest: causalEvent.payload_digest,
+    actor_provenance_digest: causalEvent.actor_provenance_digest,
+    idempotency_key_digest: causalDigest(causalEvent.idempotency_key),
+  }]);
+  assert.equal(eventLedgerContribution.adapter_version, "event_ledger_entity360_adapter_v2");
+  assert.equal(JSON.stringify(eventLedgerContribution).includes("agent:entity360-test"), false,
+    "only the causal actor provenance digest may leave the ledger boundary");
   assert.deepEqual(intentContribution.facts.map((fact) => fact.value), [{
     intent_anchor_digest: DIGESTS.intent,
     intent_revision_id: INTENT_REVISION_ID,
@@ -529,9 +554,32 @@ test("Work 360 adapters use an exact tenant-bound read-only cut and persist refe
     && /e\.operation='work_bind_intent'/u.test(sql)
     && /predecessor\.sequence_number=e\.sequence_number-1/u.test(sql)), true,
   "causal Work authority must be bound to the append-only WORK_OPENED event and its predecessor");
+  assert.equal(fake.queries.some(({ sql }) => /FROM core_continuity_events/u.test(sql)), false,
+    "legacy continuity events cannot become a parallel Entity 360 evidence authority");
   assert.equal(fake.queries.filter(({ sql }) => sql === "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY").length, 2);
   assert.equal(fake.queries.filter(({ sql }) => sql === "COMMIT").length, 2);
   assert.equal(fake.releaseCount(), 2);
+});
+
+test("causal event observation claims are deterministic under read replay", async () => {
+  const first = await assembleWork();
+  const second = await assembleWork();
+  const claim = (assembled) => assembled.discovery.source_contributions.find((item) =>
+    item.source_id === "event_ledger");
+  assert.deepEqual(claim(second), claim(first));
+  for (const assembled of [first, second]) {
+    assert.equal(assembled.fake.queries.some(({ sql }) =>
+      /^\s*(INSERT|UPDATE|DELETE|ALTER|DROP|CREATE)/u.test(sql)), false);
+  }
+});
+
+test("causal event evidence becomes stale at the event-ledger freshness boundary", async () => {
+  const asOf = "2026-08-25T11:00:00.001Z";
+  const assembled = await assembleWork(workRows, asOf);
+  const snapshot = snapshotFor(assembled, asOf, {});
+  assert.ok(snapshot.stale_state_references.some((item) =>
+    item.fact_id === "work.event_ledger_head"));
+  assert.equal(Object.hasOwn(snapshot.current_state, "work.event_ledger_head"), false);
 });
 
 test("NSCT v1 uses verified legacy Work heads while preserving the canonical Entity 360 identity", async () => {
@@ -1387,22 +1435,43 @@ for (const invalidEvent of [
   { label: "event hash mismatch", rows: () => [causalBindingEvent({
     eventPatch: { event_hash: "a".repeat(64) },
   })] },
+  { label: "cross-tenant event", expected_error: "entity360_adapter_cross_tenant_row", rows: () => [causalBindingEvent({
+    eventPatch: { tenant_id: OTHER_TENANT },
+  })] },
+  { label: "cross-project event", rows: () => [causalBindingEvent({
+    eventPatch: { event_project_uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+  })] },
+  { label: "cross-Work event", rows: () => [causalBindingEvent({
+    resultPatch: { work_id: WORK_ID },
+  })] },
+  { label: "recorded after as-of", asOf: "2026-08-25T10:30:00.000Z", rows: () => [causalBindingEvent({
+    eventPatch: { created_at: "2026-08-25T10:30:00.001Z" },
+  })] },
   { label: "extra authority field", rows: () => [causalBindingEvent({
     resultPatch: { authority_escalation: "forged" },
   })] },
 ]) {
   test(`${invalidEvent.label} causal binding event cannot authorize governance context`, async () => {
-    const assembled = await assembleWork((sql) => {
+    const assemble = () => assembleWork((sql) => {
       if (/FROM core_causal_event_ledger/u.test(sql)) return result(invalidEvent.rows());
       return workRows(sql);
-    });
+    }, invalidEvent.asOf || AT);
+    if (invalidEvent.expected_error) {
+      await assert.rejects(assemble(), (error) => error?.code === invalidEvent.expected_error);
+      return;
+    }
+    const assembled = await assemble();
 
     assert.equal(assembled.discovery.source_contributions.some((item) =>
       ["intent", "genesis"].includes(item.source_id)), false);
+    assert.equal(assembled.discovery.source_contributions.some((item) =>
+      item.source_id === "event_ledger"), false);
     assert.ok(assembled.discovery.source_discovery.some((item) => item.source_id === "genesis"
       && item.state === "rejected" && item.reason_code === "CAUSAL_BINDING_EVENT_MISMATCH"));
+    assert.ok(assembled.discovery.source_discovery.some((item) => item.source_id === "event_ledger"
+      && item.state === "rejected" && item.reason_code === "CAUSAL_BINDING_EVENT_MISMATCH"));
     assert.equal(JSON.stringify(assembled.discovery).includes("authority_escalation"), false);
-    assert.equal(snapshotFor(assembled).context_status, "INCOMPLETE");
+    assert.equal(snapshotFor(assembled, invalidEvent.asOf || AT).context_status, "INCOMPLETE");
   });
 }
 
@@ -1482,14 +1551,6 @@ for (const invalidSource of [
     patch: { architecture: { components: ["poisoned-component"] } },
     forbidden: "poisoned-component",
   },
-  {
-    label: "Event Ledger payload",
-    sourceId: "event_ledger",
-    reason: "EVENT_LEDGER_DIGEST_MISMATCH",
-    query: /FROM core_continuity_events/u,
-    patch: { payload: { status: "POISONED" } },
-    forbidden: "POISONED",
-  },
 ]) {
   test(`a tampered ${invalidSource.label} is rejected before context assembly`, async () => {
     const assembled = await assembleWork((sql) => {
@@ -1519,6 +1580,23 @@ for (const invalidSource of [
       qualification_verifier: QUALIFICATION_VERIFIER }).valid, true);
   });
 }
+
+test("a tampered causal event payload is quarantined before Entity 360 claim assembly", async () => {
+  const assembled = await assembleWork((sql) => {
+    if (/FROM core_causal_event_ledger/u.test(sql)) {
+      const event = causalBindingEvent();
+      event.payload.result.provenance = { marker: "POISONED" };
+      return result([event]);
+    }
+    return workRows(sql);
+  });
+  assert.equal(assembled.discovery.source_contributions.some((item) =>
+    item.source_id === "event_ledger"), false);
+  assert.ok(assembled.discovery.source_discovery.some((item) => item.source_id === "event_ledger"
+    && item.state === "rejected" && item.reason_code === "CAUSAL_BINDING_EVENT_MISMATCH"));
+  assert.equal(JSON.stringify(assembled.discovery).includes("POISONED"), false);
+  assert.equal(snapshotFor(assembled).context_status, "INCOMPLETE");
+});
 
 for (const invalidIcf of [
   { label: "missing ledger head digest", workPatch: { ledger_head_digest: null },

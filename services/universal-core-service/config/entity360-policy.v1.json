@@ -91,7 +91,7 @@
       "trust_class": "tenant_verified",
       "trust_boundary": "tenant_internal",
       "independence_group": "event_ledger_store",
-      "adapter_versions": ["event_ledger_entity360_adapter_v1"],
+      "adapter_versions": ["event_ledger_entity360_adapter_v2"],
       "allowed_fact_prefixes": ["work.event_ledger_head"],
       "authoritative": false
     },

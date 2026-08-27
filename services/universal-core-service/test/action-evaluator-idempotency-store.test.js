@@ -171,8 +171,8 @@ function connectedSchemaPool(query) {
 
 test("PostgreSQL initialization verifies manifest, keys, columns, index and append-only guards", async () => {
   const queries = [];
-  const pool = connectedSchemaPool(async (sql) => {
-      queries.push(sql);
+  const pool = connectedSchemaPool(async (sql, params = []) => {
+      queries.push({ sql, params });
       if (sql.includes("FROM core_action_evaluator_schema_manifest m")) {
         return { rows: [verifiedSchemaRow()] };
       }
@@ -186,8 +186,11 @@ test("PostgreSQL initialization verifies manifest, keys, columns, index and appe
     schema_verified: true,
     append_only_enforced: true,
   });
-  const ddl = queries.find((sql) => sql.includes("CREATE TABLE IF NOT EXISTS core_action_evaluator_receipts"));
-  const verification = queries.find((sql) => sql.includes("FROM core_action_evaluator_schema_manifest m"));
+  const ddl = queries.find(({ sql }) =>
+    sql.includes("CREATE TABLE IF NOT EXISTS core_action_evaluator_receipts"))?.sql;
+  const verification = queries.find(({ sql }) =>
+    sql.includes("FROM core_action_evaluator_schema_manifest m"))?.sql;
+  const scopeProbe = queries.find(({ sql }) => sql.includes("AS scope_probe"));
   assert.match(ddl, /core_action_evaluator_receipts_append_only/);
   assert.match(ddl, /core_action_evaluator_owner_approvals_append_only/);
   assert.match(ddl, /core_action_evaluator_receipts_truncate_guard/);
@@ -200,8 +203,86 @@ test("PostgreSQL initialization verifies manifest, keys, columns, index and appe
   assert.match(verification, /t\.tgtype=34/);
   assert.match(verification, /deny_mutation_function_verified/);
   assert.match(verification, /authorization_expires_at/);
-  assert(queries.includes("SET LOCAL lock_timeout='1s'"));
-  assert(queries.includes("SET LOCAL statement_timeout='5s'"));
+  assert(queries.some(({ sql }) => sql === "SET LOCAL lock_timeout='1s'"));
+  assert(queries.some(({ sql }) => sql === "SET LOCAL statement_timeout='5s'"));
+  assert.match(scopeProbe.params[0], /^[a-f0-9]{64}$/);
+  assert.doesNotMatch(scopeProbe.params[0], /\u0000/);
+});
+
+test("PostgreSQL action scope is NUL-safe without changing durable receipt identity", async () => {
+  const queries = [];
+  const databaseNow = "2026-08-25T12:00:00.000Z";
+  const postgresInput = input({
+    owner_approval: {
+      approval_hash: `sha256:${"b".repeat(64)}`,
+      expires_at: "2026-08-25T12:02:00.123Z",
+    },
+    authorization_expires_at: "2026-08-25T12:02:00.123Z",
+  });
+  let persistedRow = null;
+  const query = async (sql, params = []) => {
+    if (params.some((value) => typeof value === "string" && value.includes("\u0000"))) {
+      const error = new Error('invalid byte sequence for encoding "UTF8": 0x00');
+      error.code = "22021";
+      throw error;
+    }
+    queries.push({ sql, params });
+    if (sql.includes("FROM core_action_evaluator_schema_manifest m")) {
+      return { rows: [verifiedSchemaRow()] };
+    }
+    if (sql.includes("FROM core_action_evaluator_receipts") && sql.includes("FOR UPDATE")) {
+      return { rows: persistedRow ? [persistedRow] : [] };
+    }
+    if (sql.includes("SELECT clock_timestamp() AS now")) {
+      return { rows: [{ now: databaseNow }] };
+    }
+    if (sql.includes("INSERT INTO core_action_evaluator_owner_approvals")) {
+      return { rows: [{ tenant_id: "tenant-a" }] };
+    }
+    if (sql.includes("INSERT INTO core_action_evaluator_receipts")) {
+      persistedRow = {
+        request_digest: params[3],
+        owner_subject_fingerprint: params[4],
+        authorization_id: params[5],
+        authority_response: JSON.parse(params[6]),
+        response_digest: params[7],
+        receipt: JSON.parse(params[8]),
+        // Match node-postgres: timestamptz is returned as a Date, whose String
+        // representation omits the millisecond component retained in JSON.
+        authorization_expires_at: new Date(params[9]),
+      };
+    }
+    return { rows: [] };
+  };
+  const store = createPostgresActionEvaluatorIdempotencyStore({
+    pool: connectedSchemaPool(query),
+  });
+
+  await store.initialize();
+  const session = await store.begin(postgresInput);
+  const completed = await session.commit(response());
+  const lock = queries.find(({ sql }) => sql.includes("pg_advisory_xact_lock"));
+
+  assert.deepEqual(lock.params, [
+    "d740744334a884fd7f357c1155afea4186927dab2a444b2e893f9e426f8e36ef",
+  ]);
+  assert.equal(actionEvaluatorDigest(postgresInput.idempotency_key),
+    "99c9bbc97d7f50f35a963ac103df12a1caeaee3386870a34072401a76087b07b");
+  assert.equal(completed.receipt.authorization_id,
+    "cae_6681f415ef9dd6ac26cfcd78b44e0f24048a2534");
+  assert.equal(completed.authority_response.authorization.decision_id,
+    completed.receipt.authorization_id);
+  const replay = await store.begin({
+    ...postgresInput,
+    owner_approval: {
+      approval_hash: `sha256:${"c".repeat(64)}`,
+      expires_at: "2026-08-25T12:02:00.123Z",
+    },
+  });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.receipt.receipt_digest, completed.receipt.receipt_digest);
+  assert(queries.every(({ params }) =>
+    params.every((value) => typeof value !== "string" || !value.includes("\u0000"))));
 });
 
 test("PostgreSQL initialization fails closed on schema drift and retries transient initialization", async () => {
