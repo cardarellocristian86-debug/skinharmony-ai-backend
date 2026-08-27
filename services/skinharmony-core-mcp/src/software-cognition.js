@@ -75,6 +75,16 @@ const atlasBootstrapDefinition = ["software_cognition_repository_bootstrap", "Bo
 
 export const SOFTWARE_COGNITION_TOOLS = Object.freeze([...definitions.map((entry) => tool(...entry)), tool(...atlasBootstrapDefinition)]);
 
+export function createSoftwareCognitionAgentContextIssuer({ issueContext, signingSecret } = {}) {
+  if (typeof issueContext !== "function") throw new TypeError("DTT context issuer required");
+  return ({ tenant_id, work_id, agent_presence }) => issueContext({
+    secret: signingSecret,
+    tenant_id,
+    work_id,
+    agent_presence,
+  });
+}
+
 const paths = Object.freeze({
   software_cognition_graph_upsert: "/v1/software-cognition/graphs/upsert",
   software_cognition_index_diff: "/v1/software-cognition/graphs/index-diff",

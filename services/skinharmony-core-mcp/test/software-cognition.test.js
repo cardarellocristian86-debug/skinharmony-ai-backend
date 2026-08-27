@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SOFTWARE_COGNITION_TOOLS, createSoftwareCognitionHandlers } from "../src/software-cognition.js";
+import {
+  SOFTWARE_COGNITION_TOOLS,
+  createSoftwareCognitionAgentContextIssuer,
+  createSoftwareCognitionHandlers,
+} from "../src/software-cognition.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 
 const EXPECTED = Object.freeze([
@@ -61,6 +65,29 @@ test("transport derives tenant and signed DTT context exclusively from authentic
   assert.equal(calls[0][2].additionalHeaders["x-sh-dtt-agent-context"], "signed-context");
   assert.deepEqual(result.structuredContent, { ok: true, graph_revision: 1 });
   await assert.rejects(() => handlers.software_cognition_graph_select({ project_id: "project-a", work_id: "work-a", seed_node_ids: [] }, {}), /agent_presence_session_required/);
+});
+
+test("production DTT adapter preserves the exact Work binding", () => {
+  const calls = [];
+  const issueAgentContext = createSoftwareCognitionAgentContextIssuer({
+    signingSecret: "test-signing-secret",
+    issueContext: (value) => {
+      calls.push(value);
+      return "signed-work-context";
+    },
+  });
+  const input = {
+    tenant_id: "tenant-a",
+    work_id: "91e82640-9edc-5424-a3e8-eb7853b0d8dd",
+    agent_presence: agentPresence,
+  };
+  assert.equal(issueAgentContext(input), "signed-work-context");
+  assert.deepEqual(calls, [{
+    secret: "test-signing-secret",
+    tenant_id: input.tenant_id,
+    work_id: input.work_id,
+    agent_presence: input.agent_presence,
+  }]);
 });
 
 test("graph select alias is a local bounded read and never issues a DTT mutation context", async () => {

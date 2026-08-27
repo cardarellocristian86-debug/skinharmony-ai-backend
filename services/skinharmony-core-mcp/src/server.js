@@ -66,6 +66,7 @@ import {
 } from "./causal-continuity.js";
 import {
   SOFTWARE_COGNITION_TOOLS,
+  createSoftwareCognitionAgentContextIssuer,
   createSoftwareCognitionHandlers,
 } from "./software-cognition.js";
 import {
@@ -458,10 +459,9 @@ const softwareCognitionHandlers = createSoftwareCognitionHandlers({
   atlasRuntime: workContinuityRuntime,
   repositoryBindings: config.nyraAtlasRepositoryBindings,
   githubTokens: config.nyraAtlasGithubTokens,
-  issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
-    secret: config.dttAgentIdentitySigningSecret,
-    tenant_id,
-    agent_presence,
+  issueAgentContext: createSoftwareCognitionAgentContextIssuer({
+    issueContext: issueDttAgentContext,
+    signingSecret: config.dttAgentIdentitySigningSecret,
   }),
 });
 const entity360Handlers = createEntity360Handlers({
