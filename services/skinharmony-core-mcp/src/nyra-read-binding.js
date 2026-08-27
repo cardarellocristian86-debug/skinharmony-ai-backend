@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 const DEFAULT_TTL_SECONDS = 3_600;
 const RENEW_BEFORE_MS = 5 * 60 * 1_000;
 const IDEMPOTENCY_BUCKET_MS = 5 * 60 * 1_000;
+const READ_LEASE_PURPOSE = "Nyra governed read-only Work context";
 
 function boundedKey(label, values, nowMs) {
   const bucket = Math.floor(nowMs / IDEMPOTENCY_BUCKET_MS);
@@ -37,6 +38,15 @@ function presenceReady(identity) {
     && Boolean(presence.signature);
 }
 
+function readSurface(identity, continuity, presence) {
+  return {
+    kind: "component",
+    value: `nyra/read/${crypto.createHash("sha256")
+      .update(`${identity.tenantId}\u0000${continuity.work_id}\u0000${presence.session_fingerprint}`)
+      .digest("hex")}`,
+  };
+}
+
 /**
  * Establish the read-only participant/lease binding used by Nyra's governed
  * diagnostic surfaces after an exact Work has already been ACL-authorized.
@@ -58,6 +68,7 @@ export async function ensureNyraReadBinding({
     });
   }
   if (!runtime || typeof runtime.resolveDttWorkLeaseBinding !== "function"
+      || typeof runtime.rotateNyraReadParticipant !== "function"
       || typeof runtime.join !== "function" || typeof runtime.acquireLease !== "function") {
     throw new Error("nyra_read_binding_runtime_unavailable");
   }
@@ -84,12 +95,16 @@ export async function ensureNyraReadBinding({
     client_type: presence.client_type,
     ttl_seconds: DEFAULT_TTL_SECONDS,
   };
+  const surface = readSurface(identity, continuity, presence);
+  const resolveInput = {
+    work_id: continuity.work_id,
+    required_lease_purpose: READ_LEASE_PURPOSE,
+    required_lease_surface: surface,
+  };
 
   let binding = null;
   try {
-    binding = await runtime.resolveDttWorkLeaseBinding(identity, {
-      work_id: continuity.work_id,
-    });
+    binding = await runtime.resolveDttWorkLeaseBinding(identity, resolveInput);
   } catch (error) {
     if (String(error?.code || error?.message || "") !== "dtt_work_active_lease_required") {
       throw error;
@@ -117,39 +132,38 @@ export async function ensureNyraReadBinding({
       idempotency_key: boundedKey("read_renew", [identity.tenantId, continuity.work_id,
         presence.session_fingerprint, binding.lease_id], nowMs),
     });
-    const renewed = await runtime.resolveDttWorkLeaseBinding(identity, {
-      work_id: continuity.work_id,
-    });
+    const renewed = await runtime.resolveDttWorkLeaseBinding(identity, resolveInput);
     return bindingSummary(renewed, "renewed");
   }
 
-  await runtime.join(identity, {
+  const participant = await runtime.rotateNyraReadParticipant(identity, {
     ...common,
-    metadata: {
-      source: "work_preflight",
-      mode: "read_only",
-      execution_authorized: false,
-    },
-    idempotency_key: boundedKey("read_join", [identity.tenantId, continuity.work_id,
-      presence.session_fingerprint], nowMs),
+    idempotency_key: boundedKey("read_transport", [identity.tenantId, continuity.work_id,
+      presence.session_fingerprint, presence.host_transport_session_fingerprint], nowMs),
   });
+  if (participant?.state === "missing_or_expired") {
+    await runtime.join(identity, {
+      ...common,
+      metadata: {
+        source: "work_preflight",
+        mode: "read_only",
+        logical_session_fingerprint: presence.session_fingerprint,
+        execution_authorized: false,
+      },
+      idempotency_key: boundedKey("read_join", [identity.tenantId, continuity.work_id,
+        presence.session_fingerprint], nowMs),
+    });
+  }
   const acquired = await runtime.acquireLease(identity, {
     ...common,
-    purpose: "Nyra governed read-only Work context",
-    surfaces: [{
-      kind: "component",
-      value: `nyra/read/${crypto.createHash("sha256")
-        .update(`${identity.tenantId}\u0000${continuity.work_id}\u0000${presence.session_fingerprint}`)
-        .digest("hex")}`,
-    }],
+    purpose: READ_LEASE_PURPOSE,
+    surfaces: [surface],
     idempotency_key: boundedKey("read_lease", [identity.tenantId, continuity.work_id,
       presence.session_fingerprint], nowMs),
   });
   if (acquired?.acquired !== true && !acquired?.lease?.lease_id) {
     throw new Error("nyra_read_binding_lease_not_acquired");
   }
-  const created = await runtime.resolveDttWorkLeaseBinding(identity, {
-    work_id: continuity.work_id,
-  });
+  const created = await runtime.resolveDttWorkLeaseBinding(identity, resolveInput);
   return bindingSummary(created, "created");
 }
