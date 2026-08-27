@@ -2814,7 +2814,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         created_at,updated_at
       FROM core_continuity_remediations
       WHERE tenant_id=$1 AND ($2::varchar IS NULL OR project_id=$2)
-        AND ($3::uuid[] IS NULL OR work_id = ANY($3::uuid[]))
+        AND ($3::text[] IS NULL OR work_id = ANY($3::text[]))
         AND status NOT IN ('closed','cancelled','expired')
       ORDER BY updated_at DESC`, [tenantId, projectId, authorizedWorkIds]);
     const blockersByWork = new Map();
