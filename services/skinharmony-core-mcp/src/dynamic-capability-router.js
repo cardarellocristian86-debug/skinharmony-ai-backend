@@ -58,6 +58,7 @@ const FORBIDDEN_ARGUMENT_KEYS = new Set([
 ]);
 const CAPABILITY_ID = /^[a-z][a-z0-9_]{1,95}$/;
 const CATALOG_VERSION = "core_dynamic_capabilities_v1";
+const NATIVE_REPORT_CAPABILITY = "work_continuity_native_report";
 
 function stableCanonical(value) {
   if (Array.isArray(value)) return value.map(stableCanonical);
@@ -220,6 +221,24 @@ function assertRevision(expected, actual) {
   }
 }
 
+function hasNativeReportAdmission(identity, capabilityId) {
+  const admission = identity?.nativeReportAdmission;
+  return capabilityId === NATIVE_REPORT_CAPABILITY &&
+    admission &&
+    typeof admission === "object" &&
+    !Array.isArray(admission) &&
+    admission.capability_id === NATIVE_REPORT_CAPABILITY;
+}
+
+function withoutNativeReportAdmission(identity = {}) {
+  // `nativeReportAdmission` is server-owned and non-enumerable in the
+  // production request identity. Delete it explicitly as well so this helper
+  // stays correct for plain-object identities used by in-process callers.
+  const ambientIdentity = { ...identity };
+  delete ambientIdentity.nativeReportAdmission;
+  return ambientIdentity;
+}
+
 function targetArguments(tool, wrapperArgs, identity = {}) {
   assertSystemAssignedCapability(tool, wrapperArgs);
   const args = { ...(wrapperArgs.arguments || {}) };
@@ -344,6 +363,22 @@ export function createDynamicCapabilityHandlers({
     return tool;
   }
 
+  function assertInvokeRevision(args, identity, admittedState) {
+    if (args.catalog_revision === admittedState.revision) return;
+    // A server-admitted native child may have discovered the catalog before
+    // the request-local admission narrowed its view to the sole terminal
+    // report capability. Accept only that exact ambient revision, only for
+    // that exact admitted capability. The returned state remains the
+    // server-admitted single-capability state, so this compatibility path
+    // never widens visibility or dispatches another target.
+    if (hasNativeReportAdmission(identity, args.capability_id)) {
+      const ambientState = stateFor(withoutNativeReportAdmission(identity));
+      assertRevision(args.catalog_revision, ambientState.revision);
+      return;
+    }
+    assertRevision(args.catalog_revision, admittedState.revision);
+  }
+
   return {
     core_capability_catalog: async (args, identity) => {
       const state = stateFor(identity);
@@ -448,7 +483,7 @@ export function createDynamicCapabilityHandlers({
 
     core_capability_invoke: async (args, identity) => {
       const state = stateFor(identity);
-      assertRevision(args.catalog_revision, state.revision);
+      assertInvokeRevision(args, identity, state);
       const tool = exactAuthorizedCapability(state, args.capability_id);
       if (tool.annotations?.readOnlyHint === true) throw new Error("dynamic_capability_mutation_required");
       requireScopes(identity, tool.scopes || []);
