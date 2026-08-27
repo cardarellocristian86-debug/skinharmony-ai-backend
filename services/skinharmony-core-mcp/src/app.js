@@ -934,6 +934,17 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "entity_360_shadow_enable",
 ]);
 
+// A stateless OAuth host does not have a durable MCP transport session to
+// present on every call. Keep the logical-session bridge narrowly limited to
+// the two Entity 360 inspection capabilities used by the governed front door:
+// they are context-only reads and never issue authority, mutations, or
+// execution. Every other Entity 360 capability still requires an actual MCP
+// transport binding.
+const OAUTH_LOGICAL_SESSION_ENTITY360_READ_CAPABILITIES = new Set([
+  "entity_360_policy_read",
+  "entity_360_metrics_read",
+]);
+
 function inferClientType(identity) {
   const authenticated = authenticatedClientType(identity);
   if (authenticated) return authenticated;
@@ -964,8 +975,13 @@ export function resolveHostTransportPresence({
   const oauthNativePlanCall =
     toolName === "work_continuity_native_plan" ||
     (toolName === "core_capability_invoke" && capabilityId === "work_continuity_native_plan");
+  const effectiveCapabilityId = toolName === "core_capability_invoke"
+    ? capabilityId
+    : toolName;
+  const oauthEntity360ReadCall = OAUTH_LOGICAL_SESSION_ENTITY360_READ_CAPABILITIES
+    .has(effectiveCapabilityId);
   const oauthLogicalSessionBound = Boolean(
-    oauthNativePlanCall &&
+    (oauthNativePlanCall || oauthEntity360ReadCall) &&
     declaredSessionId &&
     agentPresence &&
     identity?.kind === "oauth" &&

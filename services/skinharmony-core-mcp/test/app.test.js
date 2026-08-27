@@ -128,26 +128,59 @@ test("prefers the actual MCP transport binding over an OAuth logical session", (
   assert.equal(resolved.binding_source, "transport");
 });
 
-test("does not promote an OAuth owner logical session outside native coordinator planning", () => {
-  const resolved = resolveHostTransportPresence({
-    identity: {
-      kind: "oauth",
-      tenantId: "tenant-a",
-      oauthOwnerBound: true,
-      authenticatedTenantMembership: {
-        authenticated: true,
-        tenant_id: "tenant-a",
-        role: "tenant_owner",
-      },
+test("binds an OAuth owner logical session only for bounded Entity 360 inspection", () => {
+  const identity = {
+    kind: "oauth",
+    tenantId: "tenant-a",
+    oauthOwnerBound: true,
+    authenticatedTenantMembership: {
+      authenticated: true,
+      tenant_id: "tenant-a",
+      role: "tenant_owner",
     },
-    toolName: "core_capability_invoke",
-    capabilityId: "work_continuity_native_report",
-    declaredSessionId: "logical-owner-session",
-    agentPresence: { session_fingerprint: "a".repeat(24) },
-    transportAgentPresence: null,
-  });
-  assert.equal(resolved.presence, null);
-  assert.equal(resolved.binding_source, null);
+  };
+  const agentPresence = { session_fingerprint: "a".repeat(24) };
+  for (const capabilityId of ["entity_360_policy_read", "entity_360_metrics_read"]) {
+    const resolved = resolveHostTransportPresence({
+      identity,
+      toolName: "core_capability_invoke",
+      capabilityId,
+      declaredSessionId: "logical-owner-session",
+      agentPresence,
+      transportAgentPresence: null,
+    });
+    assert.equal(resolved.presence, agentPresence, capabilityId);
+    assert.equal(resolved.binding_source, "oauth_declared", capabilityId);
+  }
+});
+
+test("does not promote an OAuth owner logical session outside the bounded logical-session allowlist", () => {
+  const identity = {
+    kind: "oauth",
+    tenantId: "tenant-a",
+    oauthOwnerBound: true,
+    authenticatedTenantMembership: {
+      authenticated: true,
+      tenant_id: "tenant-a",
+      role: "tenant_owner",
+    },
+  };
+  for (const capabilityId of [
+    "work_continuity_native_report",
+    "entity_360_snapshot_assemble",
+    "entity_360_shadow_compare",
+  ]) {
+    const resolved = resolveHostTransportPresence({
+      identity,
+      toolName: "core_capability_invoke",
+      capabilityId,
+      declaredSessionId: "logical-owner-session",
+      agentPresence: { session_fingerprint: "a".repeat(24) },
+      transportAgentPresence: null,
+    });
+    assert.equal(resolved.presence, null, capabilityId);
+    assert.equal(resolved.binding_source, null, capabilityId);
+  }
 });
 
 function canonicalHealthDigest(value) {
