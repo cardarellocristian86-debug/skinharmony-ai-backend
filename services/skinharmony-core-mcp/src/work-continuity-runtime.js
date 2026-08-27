@@ -3884,7 +3884,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         status,
         report_digest: reportDigest,
         receipt,
-        ...(v2Evidence ? { v2_evidence } : {}),
+        ...(v2Evidence ? { v2_evidence: v2Evidence } : {}),
         event,
       };
     });
