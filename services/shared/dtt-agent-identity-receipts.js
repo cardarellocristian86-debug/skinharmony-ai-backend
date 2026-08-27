@@ -6,6 +6,8 @@ const CONTEXT_VERSION = "dtt_agent_context_v2";
 const RECEIPT_VERSION = "dtt_agent_identity_receipt_v2";
 const CONTEXT_DOMAIN = "dtt-agent-context-v2";
 const RECEIPT_DOMAIN = "dtt-agent-receipt-v2";
+const CAUSAL_IDENTITY_VERSION = "causal_agent_identity_context_v1";
+const CAUSAL_IDENTITY_DOMAIN = "causal-agent-identity-context-v1";
 const WORK_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CONTEXT_KEYS = Object.freeze([
   "actor_provenance",
@@ -47,6 +49,22 @@ const RECEIPT_KEYS = Object.freeze([
   "tree_id",
   "verifier_id",
   "work_id",
+]);
+const CAUSAL_IDENTITY_KEYS = Object.freeze([
+  "actor_provenance",
+  "agent_id",
+  "client_type",
+  "execution_authorized",
+  "expires_at_ms",
+  "host_transport_session_fingerprint",
+  "issued_at_ms",
+  "nonce",
+  "opaque_agent_id",
+  "presence_signature",
+  "schema_version",
+  "session_fingerprint",
+  "session_id",
+  "tenant_id",
 ]);
 
 function text(value, field, max = 500) {
@@ -204,6 +222,68 @@ export function issueDttAgentContext({
     execution_authorized: false,
   };
   return encodeToken("dac", key, CONTEXT_DOMAIN, payload);
+}
+
+// Causal project/change/obligation reads are not necessarily attached to a
+// Work. Their transport still needs a cryptographically authenticated agent
+// identity, but must not invent a Work merely to satisfy DTT's exact-Work
+// contract. This separate token is identity-only, tenant-bound, short-lived,
+// and can never authorize execution.
+export function issueCausalAgentIdentityContext({
+  secret,
+  tenant_id,
+  agent_presence,
+  now_ms = Date.now(),
+  ttl_ms = 120_000,
+  random_bytes = crypto.randomBytes,
+} = {}) {
+  const key = signingSecret(secret);
+  const issuedAt = Number(now_ms);
+  const ttl = Math.min(Math.max(Number(ttl_ms), 5_000), 300_000);
+  const principal = normalizePrincipal(agent_presence, { signatureAlias: true });
+  return encodeToken("cai", key, CAUSAL_IDENTITY_DOMAIN, {
+    schema_version: CAUSAL_IDENTITY_VERSION,
+    tenant_id: text(tenant_id, "tenant_id", 120),
+    ...principal,
+    nonce: random_bytes(18).toString("hex"),
+    issued_at_ms: issuedAt,
+    expires_at_ms: issuedAt + ttl,
+    execution_authorized: false,
+  });
+}
+
+export function verifyCausalAgentIdentityContext({
+  context_token,
+  secret,
+  expected_tenant_id,
+  now = () => Date.now(),
+} = {}) {
+  const key = signingSecret(secret);
+  const payload = exactKeys(
+    decodeToken(context_token, "cai", key, CAUSAL_IDENTITY_DOMAIN),
+    CAUSAL_IDENTITY_KEYS,
+    "causal_agent_identity_payload_invalid",
+  );
+  const current = Number(now());
+  if (payload.schema_version !== CAUSAL_IDENTITY_VERSION) {
+    throw new Error("causal_agent_identity_version_invalid");
+  }
+  if (payload.execution_authorized !== false) {
+    throw new Error("causal_agent_identity_execution_invalid");
+  }
+  if (payload.tenant_id !== text(expected_tenant_id, "tenant_id", 120)) {
+    throw new Error("causal_agent_identity_tenant_mismatch");
+  }
+  if (!Number.isSafeInteger(payload.issued_at_ms) || !Number.isSafeInteger(payload.expires_at_ms)
+      || payload.issued_at_ms > current + 5_000 || payload.expires_at_ms <= current
+      || payload.expires_at_ms <= payload.issued_at_ms) {
+    throw new Error("causal_agent_identity_expired");
+  }
+  normalizePrincipal(payload);
+  if (!/^[0-9a-f]{36}$/.test(String(payload.nonce || ""))) {
+    throw new Error("causal_agent_identity_nonce_invalid");
+  }
+  return Object.freeze(structuredClone(payload));
 }
 
 function validatedContextPayload({ contextToken, secret, expectedTenantId, expectedWorkId, expectedPrincipal, now }) {

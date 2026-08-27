@@ -197,7 +197,7 @@ export function createCausalContinuityHandlers({ coreRequest, issueAgentContext 
     const body = { ...(args && typeof args === "object" ? args : {}) };
     delete body.tenant_id;
     delete body.tenantId;
-    const agentContext = issueAgentContext({ tenant_id: tenantId, work_id: body.work_id, agent_presence: identity.agentPresence });
+    const agentContext = issueAgentContext({ tenant_id: tenantId, agent_presence: identity.agentPresence });
     if (!agentContext) throw new Error("dtt_agent_identity_not_ready");
     const route = CAUSAL_CONTINUITY_ROUTES[capabilityId];
     const path = route.method === "GET" ? queryPath(route.path, body) : route.path;

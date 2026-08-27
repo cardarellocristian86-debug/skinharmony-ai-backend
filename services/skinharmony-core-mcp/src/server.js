@@ -59,7 +59,10 @@ import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js"
 import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
 import { createWebTransport, webCompatibilityManifest } from "./web-agent-compatibility.js";
 import { researchAirlockToolMetadata } from "./research-airlock-reference-monitor.js";
-import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
+import {
+  issueCausalAgentIdentityContext,
+  issueDttAgentContext,
+} from "../../shared/dtt-agent-identity-receipts.js";
 import {
   CAUSAL_CONTINUITY_TOOLS,
   createCausalContinuityHandlers,
@@ -447,10 +450,9 @@ const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === tru
   : {};
 const causalContinuityHandlers = createCausalContinuityHandlers({
   coreRequest: coreHandlers.causalCoreRequest,
-  issueAgentContext: ({ tenant_id, work_id, agent_presence }) => issueDttAgentContext({
+  issueAgentContext: ({ tenant_id, agent_presence }) => issueCausalAgentIdentityContext({
     secret: config.dttAgentIdentitySigningSecret,
     tenant_id,
-    work_id,
     agent_presence,
   }),
 });
@@ -1016,6 +1018,25 @@ async function readLegacyWorkAuthorized(identity, args) {
 async function readLegacyIntentAuthorized(identity, args) {
   await requireCanonicalWorkRead(identity, args.work_id);
   return workContinuityRuntime.readIntent(identity, args);
+}
+
+async function selectLegacyAtlasAuthorized(identity, args) {
+  if (args.work_id) {
+    const canonicalResult = await requireCanonicalWorkRead(identity, args.work_id);
+    const canonical = canonicalResult?.work || canonicalResult;
+    if (!canonical || canonical.work_id !== args.work_id ||
+        (args.project_id && canonical.project_id !== args.project_id)) {
+      throw legacyWorkAclError("continuity_work_acl_denied");
+    }
+    return workContinuityRuntime.selectAtlas(identity, args);
+  }
+  const authorizedWorkIds = await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
+  return workContinuityRuntime.selectAtlas(identity, {
+    ...args,
+    // This scope is server-derived and intentionally absent from the public
+    // schema. Project aggregates must never re-expand beyond canonical V2 ACL.
+    authorized_work_ids: authorizedWorkIds,
+  });
 }
 
 async function ensureNativePlanLegacyBridge(identity, workId) {
@@ -1810,7 +1831,10 @@ const baseHandlers = {
       });
     },
     work_continuity_atlas_upsert: continuityMethodWithNyraContext("upsertAtlas"),
-    work_continuity_atlas_select: continuityMethod("selectAtlas"),
+    work_continuity_atlas_select: async (args, identity) => continuityTextResult({
+      ok: true,
+      result: await selectLegacyAtlasAuthorized(identity, args),
+    }),
     work_continuity_incident_record: continuityMethodWithNyraContext("recordIncident"),
     work_continuity_incident_verify: continuityMethodWithNyraContext("verifyIncident"),
     work_continuity_incident_resolve: continuityMethod("resolveIncident"),
