@@ -7,8 +7,18 @@ import { Entity360Error, entity360Digest } from "./entity360.js";
 
 export const ENTITY360_MIGRATION_ID = "20260825_001_entity360_v1";
 export const ENTITY360_MIGRATION_LOCK = "skinharmony:universal-core:entity360:migration:v1";
+export const ENTITY360_SHADOW_MODE_MIGRATION_ID = "20260827_002_entity360_shadow_mode_guard_v1";
 
-const MIGRATION_URL = new URL("../migrations/20260825_001_entity360_up.sql", import.meta.url);
+export const ENTITY360_MIGRATIONS = Object.freeze([
+  Object.freeze({
+    migration_id: ENTITY360_MIGRATION_ID,
+    url: new URL("../migrations/20260825_001_entity360_up.sql", import.meta.url),
+  }),
+  Object.freeze({
+    migration_id: ENTITY360_SHADOW_MODE_MIGRATION_ID,
+    url: new URL("../migrations/20260827_002_entity360_shadow_mode_guard_up.sql", import.meta.url),
+  }),
+]);
 
 export const ENTITY360_TABLES = Object.freeze([
   "core_entity360_registry",
@@ -138,12 +148,37 @@ function fail(code, details) {
   throw new Entity360Error(code, 503, details);
 }
 
-function verifySchemaReadback(readback, expectedDigest) {
+function expectedMigrationChain(expected) {
+  if (typeof expected === "string") {
+    return [{ migration_id: ENTITY360_MIGRATION_ID, sql_digest: expected }];
+  }
+  if (!Array.isArray(expected) || !expected.length) fail("entity360_migration_chain_invalid");
+  return expected;
+}
+
+function observedMigrationChain(readback) {
+  if (Array.isArray(readback.migrations)) return readback.migrations;
+  return readback.migration ? [readback.migration] : [];
+}
+
+function migrationById(readback, migrationId) {
+  return observedMigrationChain(readback).find((item) => item?.migration_id === migrationId) || null;
+}
+
+function verifySchemaReadback(readback, expected) {
+  const expectedMigrations = expectedMigrationChain(expected);
+  const observedMigrations = observedMigrationChain(readback);
   const missingTables = ENTITY360_TABLES.filter((name) => !readback.tables.includes(name));
   const missingGuards = ENTITY360_APPEND_ONLY_TABLES.filter((name) =>
     !readback.append_only_tables.includes(name));
-  if (readback.migration?.sql_digest !== expectedDigest) {
-    fail("entity360_migration_digest_mismatch");
+  for (const expectedMigration of expectedMigrations) {
+    const observedMigration = observedMigrations.find((item) =>
+      item?.migration_id === expectedMigration.migration_id);
+    if (!observedMigration || observedMigration.sql_digest !== expectedMigration.sql_digest) {
+      fail("entity360_migration_digest_mismatch", {
+        migration_id: expectedMigration.migration_id,
+      });
+    }
   }
   if (!readback.schema_manifest_matches
     || readback.schema_manifest_digest !== readback.expected_schema_manifest_digest) {
@@ -165,33 +200,45 @@ function verifySchemaReadback(readback, expectedDigest) {
       !readback.backfill_checkpoint_truncate_guard) {
     fail("entity360_migration_integrity_readback_failed");
   }
-  return readback;
-}
-
-function verifyPreCompletionReadback(readback, expectedDigest) {
-  verifySchemaReadback(readback, expectedDigest);
-  if (readback.migration?.application_state !== "APPLYING"
-    || readback.migration?.checkpoint !== "SCHEMA_APPLIED") {
-    fail("entity360_migration_precompletion_state_invalid", {
-      expected_application_state: "APPLYING",
-      expected_checkpoint: "SCHEMA_APPLIED",
-      observed_application_state: readback.migration?.application_state || null,
-      observed_checkpoint: readback.migration?.checkpoint || null,
+  if (expectedMigrations.some((item) => item.migration_id === ENTITY360_SHADOW_MODE_MIGRATION_ID)
+    && !readback.feature_shadow_only_guard) {
+    fail("entity360_migration_integrity_readback_failed", {
+      missing_guard: "core_entity360_feature_shadow_only_check",
     });
   }
   return readback;
 }
 
-export function verifyEntity360CompletedMigrationReadback(readback, expectedDigest) {
-  verifySchemaReadback(readback, expectedDigest);
-  if (readback.migration?.application_state !== "COMPLETED"
-    || readback.migration?.checkpoint !== "READBACK_VERIFIED") {
-    fail("entity360_migration_registry_state_invalid", {
-      expected_application_state: "COMPLETED",
-      expected_checkpoint: "READBACK_VERIFIED",
-      observed_application_state: readback.migration?.application_state || null,
-      observed_checkpoint: readback.migration?.checkpoint || null,
+function verifyPreCompletionReadback(readback, expected, targetMigrationId) {
+  verifySchemaReadback(readback, expected);
+  const targetMigration = migrationById(readback, targetMigrationId);
+  if (targetMigration?.application_state !== "APPLYING"
+    || targetMigration?.checkpoint !== "SCHEMA_APPLIED") {
+    fail("entity360_migration_precompletion_state_invalid", {
+      expected_application_state: "APPLYING",
+      expected_checkpoint: "SCHEMA_APPLIED",
+      observed_application_state: targetMigration?.application_state || null,
+      observed_checkpoint: targetMigration?.checkpoint || null,
     });
+  }
+  return readback;
+}
+
+export function verifyEntity360CompletedMigrationReadback(readback, expected) {
+  const expectedMigrations = expectedMigrationChain(expected);
+  verifySchemaReadback(readback, expectedMigrations);
+  for (const expectedMigration of expectedMigrations) {
+    const observedMigration = migrationById(readback, expectedMigration.migration_id);
+    if (observedMigration?.application_state !== "COMPLETED"
+      || observedMigration?.checkpoint !== "READBACK_VERIFIED") {
+      fail("entity360_migration_registry_state_invalid", {
+        migration_id: expectedMigration.migration_id,
+        expected_application_state: "COMPLETED",
+        expected_checkpoint: "READBACK_VERIFIED",
+        observed_application_state: observedMigration?.application_state || null,
+        observed_checkpoint: observedMigration?.checkpoint || null,
+      });
+    }
   }
   return readback;
 }
@@ -200,31 +247,42 @@ export function createEntity360Migrator({ pool } = {}) {
   if (!pool || typeof pool.query !== "function" || typeof pool.connect !== "function") {
     fail("entity360_postgres_required");
   }
-  let expectedManifestDigestPromise = null;
+  const expectedManifestDigestPromises = new Map();
 
-  function expectedManifestDigest(session, sql) {
-    if (!expectedManifestDigestPromise) {
-      expectedManifestDigestPromise = expectedEntity360CatalogManifest(session, sql)
-        .then((manifest) => entity360Digest(manifest))
-        .catch((error) => {
-          expectedManifestDigestPromise = null;
-          throw error;
-        });
-    }
-    return expectedManifestDigestPromise;
+  async function loadMigrationPlan(migrations = ENTITY360_MIGRATIONS) {
+    return Promise.all(migrations.map(async (migration) => {
+      const sql = await readFile(migration.url, "utf8");
+      return Object.freeze({ ...migration, sql,
+        sql_digest: entity360Digest({ migration_id: migration.migration_id, sql }) });
+    }));
   }
 
-  async function readback(client = pool) {
+  function expectedManifestDigest(session, plan) {
+    const key = plan.map((migration) => `${migration.migration_id}:${migration.sql_digest}`).join("|");
+    if (!expectedManifestDigestPromises.has(key)) {
+      const sql = plan.map((migration) => migration.sql).join("\n\n");
+      const pending = expectedEntity360CatalogManifest(session, sql)
+        .then((manifest) => entity360Digest(manifest))
+        .catch((error) => {
+          expectedManifestDigestPromises.delete(key);
+          throw error;
+        });
+      expectedManifestDigestPromises.set(key, pending);
+    }
+    return expectedManifestDigestPromises.get(key);
+  }
+
+  async function readback(client = pool, migrations = ENTITY360_MIGRATIONS) {
     const ownsClient = client === pool;
     const session = ownsClient ? await pool.connect() : client;
     try {
-    const sql = await readFile(MIGRATION_URL, "utf8");
+    const plan = await loadMigrationPlan(migrations);
     const targetSchemaResult = await session.query("SELECT current_schema() AS schema_name");
     const targetSchema = String(targetSchemaResult.rows[0]?.schema_name || "");
     if (!targetSchema) fail("entity360_target_schema_unavailable");
     const observedManifest = await entity360CatalogManifest(session, targetSchema);
     const schemaManifestDigest = entity360Digest(observedManifest);
-    const expectedSchemaManifestDigest = await expectedManifestDigest(session, sql);
+    const expectedSchemaManifestDigest = await expectedManifestDigest(session, plan);
     const tables = await session.query(
       `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname=current_schema() AND c.relkind IN ('r','p')
@@ -246,9 +304,12 @@ export function createEntity360Migrator({ pool } = {}) {
          AND count(*) FILTER (WHERE t.tgname=c.relname || '_truncate_guard' AND t.tgtype=34)=1
        ORDER BY c.relname
     `, [ENTITY360_APPEND_ONLY_TABLES]);
-    const migration = await session.query(
-      "SELECT migration_id,sql_digest,application_state,checkpoint,started_at,completed_at,verifier_evidence FROM core_schema_migrations WHERE migration_id=$1",
-      [ENTITY360_MIGRATION_ID],
+    const migrationsReadback = await session.query(
+      `SELECT migration_id,sql_digest,application_state,checkpoint,started_at,completed_at,verifier_evidence
+         FROM core_schema_migrations
+        WHERE migration_id=ANY($1::text[])
+        ORDER BY migration_id`,
+      [plan.map((migration) => migration.migration_id)],
     );
     const integrity = await session.query(`
       SELECT EXISTS (
@@ -271,6 +332,11 @@ export function createEntity360Migrator({ pool } = {}) {
                 WHERE conrelid=to_regclass('core_entity360_feature_flags')
                   AND conname='core_entity360_feature_enforcement_check'
              ) AS feature_enforcement_guard,
+             EXISTS (
+               SELECT 1 FROM pg_constraint
+                WHERE conrelid=to_regclass('core_entity360_feature_flags')
+                  AND conname='core_entity360_feature_shadow_only_check'
+             ) AS feature_shadow_only_guard,
              EXISTS (
                SELECT 1 FROM pg_constraint
                 WHERE conrelid=to_regclass('core_entity360_backfill_checkpoints')
@@ -301,15 +367,17 @@ export function createEntity360Migrator({ pool } = {}) {
              ) AS backfill_checkpoint_truncate_guard
     `);
     return {
-      schema_version: "entity360_migration_readback_v1",
+      schema_version: "entity360_migration_readback_v2",
       migration_id: ENTITY360_MIGRATION_ID,
       tables: tables.rows.map((row) => row.relname),
       append_only_tables: triggers.rows.map((row) => row.relname),
-      migration: migration.rows[0] || null,
+      migration: migrationsReadback.rows.find((row) => row.migration_id === ENTITY360_MIGRATION_ID) || null,
+      migrations: migrationsReadback.rows,
       snapshot_tenant_fk: integrity.rows[0]?.snapshot_tenant_fk === true,
       snapshot_chain_guard: integrity.rows[0]?.snapshot_chain_guard === true,
       backfill_tenant_fk: integrity.rows[0]?.backfill_tenant_fk === true,
       feature_enforcement_guard: integrity.rows[0]?.feature_enforcement_guard === true,
+      feature_shadow_only_guard: integrity.rows[0]?.feature_shadow_only_guard === true,
       backfill_non_destructive_guard: integrity.rows[0]?.backfill_non_destructive_guard === true,
       backfill_cursor_binding_guard: integrity.rows[0]?.backfill_cursor_binding_guard === true,
       backfill_state_guard: integrity.rows[0]?.backfill_state_guard === true,
@@ -326,66 +394,87 @@ export function createEntity360Migrator({ pool } = {}) {
   }
 
   async function apply() {
-    const sql = await readFile(MIGRATION_URL, "utf8");
-    const sqlDigest = entity360Digest({ migration_id: ENTITY360_MIGRATION_ID, sql });
+    const fullPlan = await loadMigrationPlan();
     const client = await pool.connect();
     let locked = false;
+    let activeMigrationId = null;
+    let applied = false;
     try {
       await acquireBoundedMigrationLock(client, ENTITY360_MIGRATION_LOCK);
       locked = true;
       await ensureCoreSchemaMigrationRegistry(client);
-      const existing = (await client.query(
-        "SELECT migration_id,sql_digest,application_state FROM core_schema_migrations WHERE migration_id=$1",
-        [ENTITY360_MIGRATION_ID],
-      )).rows[0];
-      if (existing && existing.sql_digest !== sqlDigest) fail("entity360_migration_digest_mismatch");
-      if (existing?.application_state === "COMPLETED") {
-        const verified = await readback(client);
-        verifyEntity360CompletedMigrationReadback(verified, sqlDigest);
-        return { applied: false, sql_digest: sqlDigest, readback: verified };
-      }
-      await client.query("BEGIN");
-      try {
+      for (const [index, migration] of fullPlan.entries()) {
+        const chain = fullPlan.slice(0, index + 1);
+        const chainDefinitions = ENTITY360_MIGRATIONS.slice(0, index + 1);
+        activeMigrationId = migration.migration_id;
+        const existing = (await client.query(
+          "SELECT migration_id,sql_digest,application_state FROM core_schema_migrations WHERE migration_id=$1",
+          [migration.migration_id],
+        )).rows[0];
+        if (existing && existing.sql_digest !== migration.sql_digest) {
+          fail("entity360_migration_digest_mismatch", { migration_id: migration.migration_id });
+        }
+        if (existing?.application_state === "COMPLETED") {
+          // A later additive migration intentionally changes the catalog, so
+          // verifying an earlier prefix against the final schema would report
+          // false drift. The full-chain exact manifest is verified below.
+          continue;
+        }
+        await client.query("BEGIN");
+        try {
+          await client.query(
+            `INSERT INTO core_schema_migrations (migration_id,sql_digest,application_state,checkpoint)
+             VALUES ($1,$2,'APPLYING','REGISTRY_VERIFIED')
+             ON CONFLICT (migration_id) DO UPDATE
+               SET application_state='APPLYING',checkpoint='REGISTRY_VERIFIED'`,
+            [migration.migration_id, migration.sql_digest],
+          );
+          await client.query(migration.sql);
+          await client.query(
+            "UPDATE core_schema_migrations SET checkpoint='SCHEMA_APPLIED' WHERE migration_id=$1",
+            [migration.migration_id],
+          );
+          await client.query("COMMIT");
+        } catch (error) {
+          try { await client.query("ROLLBACK"); } catch { /* preserve authoritative error */ }
+          throw error;
+        }
+        const verified = await readback(client, chainDefinitions);
+        verifyPreCompletionReadback(verified, chain, migration.migration_id);
         await client.query(
-          `INSERT INTO core_schema_migrations (migration_id,sql_digest,application_state,checkpoint)
-           VALUES ($1,$2,'APPLYING','REGISTRY_VERIFIED')
-           ON CONFLICT (migration_id) DO UPDATE
-             SET application_state='APPLYING',checkpoint='REGISTRY_VERIFIED'`,
-          [ENTITY360_MIGRATION_ID, sqlDigest],
+          `UPDATE core_schema_migrations
+              SET application_state='COMPLETED',checkpoint='READBACK_VERIFIED',
+                  completed_at=clock_timestamp(),verifier_evidence=$2::jsonb
+            WHERE migration_id=$1`,
+          [migration.migration_id, JSON.stringify({
+            schema_version: verified.schema_version,
+            tables: verified.tables,
+            append_only_tables: verified.append_only_tables,
+            migration_ids: chain.map((item) => item.migration_id),
+          })],
         );
-        await client.query(sql);
-        await client.query(
-          "UPDATE core_schema_migrations SET checkpoint='SCHEMA_APPLIED' WHERE migration_id=$1",
-          [ENTITY360_MIGRATION_ID],
-        );
-        await client.query("COMMIT");
-      } catch (error) {
-        try { await client.query("ROLLBACK"); } catch { /* preserve authoritative error */ }
-        throw error;
+        const completed = await readback(client, chainDefinitions);
+        verifyEntity360CompletedMigrationReadback(completed, chain);
+        applied = true;
       }
-      const verified = await readback(client);
-      verifyPreCompletionReadback(verified, sqlDigest);
-      await client.query(
-        `UPDATE core_schema_migrations
-            SET application_state='COMPLETED',checkpoint='READBACK_VERIFIED',
-                completed_at=clock_timestamp(),verifier_evidence=$2::jsonb
-          WHERE migration_id=$1`,
-        [ENTITY360_MIGRATION_ID, JSON.stringify({
-          schema_version: verified.schema_version,
-          tables: verified.tables,
-          append_only_tables: verified.append_only_tables,
-        })],
-      );
-      const completed = await readback(client);
-      verifyEntity360CompletedMigrationReadback(completed, sqlDigest);
-      return { applied: true, sql_digest: sqlDigest, readback: completed };
+      const finalReadback = await readback(client);
+      verifyEntity360CompletedMigrationReadback(finalReadback, fullPlan);
+      return {
+        applied,
+        sql_digest: fullPlan[0].sql_digest,
+        migration_digests: fullPlan.map((migration) => ({ migration_id: migration.migration_id,
+          sql_digest: migration.sql_digest })),
+        readback: finalReadback,
+      };
     } catch (error) {
-      try {
-        await client.query(
-          "UPDATE core_schema_migrations SET application_state='FAILED' WHERE migration_id=$1 AND application_state<>'COMPLETED'",
-          [ENTITY360_MIGRATION_ID],
-        );
-      } catch { /* preserve authoritative error */ }
+      if (activeMigrationId) {
+        try {
+          await client.query(
+            "UPDATE core_schema_migrations SET application_state='FAILED' WHERE migration_id=$1 AND application_state<>'COMPLETED'",
+            [activeMigrationId],
+          );
+        } catch { /* preserve authoritative error */ }
+      }
       throw error;
     } finally {
       if (locked) {
@@ -398,15 +487,15 @@ export function createEntity360Migrator({ pool } = {}) {
   }
 
   async function verify() {
-    const sql = await readFile(MIGRATION_URL, "utf8");
-    const sqlDigest = entity360Digest({ migration_id: ENTITY360_MIGRATION_ID, sql });
+    const plan = await loadMigrationPlan();
     const verified = await readback();
-    verifyEntity360CompletedMigrationReadback(verified, sqlDigest);
+    verifyEntity360CompletedMigrationReadback(verified, plan);
     return verified;
   }
 
   return Object.freeze({
     migration_id: ENTITY360_MIGRATION_ID,
+    migration_ids: ENTITY360_MIGRATIONS.map((migration) => migration.migration_id),
     apply,
     readback,
     verify,

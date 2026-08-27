@@ -14,7 +14,9 @@ const DIGEST = /^[a-f0-9]{64}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$/u;
 const REGISTRY_KINDS = new Set(["SCHEMA", "ONTOLOGY", "ADAPTER", "POLICY", "SOURCE"]);
 const REGISTRY_STATUSES = new Set(["ACTIVE", "DEPRECATED", "REVOKED"]);
-const FEATURE_MODES = new Set(["OFF", "SHADOW", "ADVISORY", "ENFORCED"]);
+// Entity 360 v1 can record observations only. Promotion is a new governed
+// release, never a tenant-row value or a persistence-layer escape hatch.
+const FEATURE_MODES = new Set(["OFF", "SHADOW"]);
 const BACKFILL_STATES = new Set(["PENDING", "RUNNING", "PAUSED", "COMPLETED", "FAILED", "CANCELLED"]);
 const BACKFILL_TERMINAL_STATES = new Set(["COMPLETED", "FAILED", "CANCELLED"]);
 const BACKFILL_TRANSITIONS = Object.freeze({
@@ -325,12 +327,14 @@ export function createPostgresEntity360Store({ pool, policy, ontology, qualifica
     const enabled = raw?.enabled === true;
     const enforcementAuthorityDigest = raw?.enforcement_authority_digest
       ? digest(raw.enforcement_authority_digest, "entity360_enforcement_authority_digest_invalid") : null;
-    if (mode === "ENFORCED" && enabled && !enforcementAuthorityDigest) {
-      fail("entity360_enforcement_requires_separate_core_gate", 403);
-    }
     const config = plain(raw?.config || {}, "entity360_feature_config_invalid");
     const configDigest = entity360Digest(config);
     const policyDigest = raw?.policy_digest ? digest(raw.policy_digest, "entity360_policy_digest_invalid") : null;
+    if ((mode === "OFF" && enabled) || (mode === "SHADOW" && !enabled)
+      || (mode === "OFF" && policyDigest !== null) || (mode === "SHADOW" && policyDigest === null)
+      || enforcementAuthorityDigest !== null) {
+      fail("entity360_feature_flag_state_invalid", 403);
+    }
     const expectedRevision = integer(raw?.expected_revision, "entity360_feature_expected_revision_invalid");
     const actorId = text(raw?.actor_id, "entity360_actor_required", 240, null);
     const idempotencyKey = text(raw?.idempotency_key, "entity360_idempotency_key_required", 240, null);

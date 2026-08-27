@@ -12,6 +12,8 @@ import { loadEntity360Configuration } from "../src/entity360Runtime.js";
 import { createPostgresEntity360Store } from "../src/entity360Store.js";
 import {
   ENTITY360_APPEND_ONLY_TABLES,
+  ENTITY360_MIGRATIONS,
+  ENTITY360_SHADOW_MODE_MIGRATION_ID,
   ENTITY360_TABLES,
   verifyEntity360CompletedMigrationReadback,
 } from "../src/entity360Migration.js";
@@ -135,9 +137,49 @@ function fakePool() {
   };
 }
 
+function featureFlagFixture() {
+  const state = { flag: null, idempotency: new Map(), calls: [] };
+  const client = {
+    async query(sql, params = []) {
+      const query = String(sql).replace(/\s+/g, " ").trim();
+      state.calls.push({ query, params });
+      if (["BEGIN", "COMMIT", "ROLLBACK"].includes(query)
+        || query.startsWith("SELECT pg_advisory_xact_lock")) return { rows: [], rowCount: 0 };
+      if (query.includes("FROM core_entity360_idempotency")) {
+        const row = state.idempotency.get(`${params[0]}:${params[1]}:${params[2]}`);
+        return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
+      }
+      if (query.startsWith("INSERT INTO core_entity360_idempotency")) {
+        state.idempotency.set(`${params[0]}:${params[1]}:${params[2]}`, {
+          payload_digest: params[3], result_payload: JSON.parse(params[4]),
+        });
+        return { rows: [], rowCount: 1 };
+      }
+      if (query.startsWith("SELECT revision FROM core_entity360_feature_flags")) {
+        return { rows: state.flag ? [{ revision: state.flag.revision }] : [], rowCount: state.flag ? 1 : 0 };
+      }
+      if (query.startsWith("INSERT INTO core_entity360_feature_flags")) {
+        state.flag = { mode: params[2], enabled: params[3], policy_digest: params[4],
+          enforcement_authority_digest: params[5], revision: params[8] };
+        return { rows: [], rowCount: 1 };
+      }
+      if (query.startsWith("UPDATE core_entity360_feature_flags")) {
+        if (!state.flag || state.flag.revision !== params[10]) return { rows: [], rowCount: 0 };
+        state.flag = { mode: params[2], enabled: params[3], policy_digest: params[4],
+          enforcement_authority_digest: params[5], revision: params[8] };
+        return { rows: [], rowCount: 1 };
+      }
+      throw new Error(`unexpected_query:${query}`);
+    },
+    release() {},
+  };
+  return { state, pool: { query: (...args) => client.query(...args), async connect() { return client; } } };
+}
+
 test("Entity 360 migration is additive, registry-governed and append-only", async () => {
-  const [up, down, migration, store] = await Promise.all([
+  const [up, shadowModeUp, down, migration, store] = await Promise.all([
     readFile(new URL("../migrations/20260825_001_entity360_up.sql", import.meta.url), "utf8"),
+    readFile(new URL("../migrations/20260827_002_entity360_shadow_mode_guard_up.sql", import.meta.url), "utf8"),
     readFile(new URL("../migrations/20260825_001_entity360_down.sql", import.meta.url), "utf8"),
     readFile(new URL("../src/entity360Migration.js", import.meta.url), "utf8"),
     readFile(new URL("../src/entity360Store.js", import.meta.url), "utf8"),
@@ -150,10 +192,14 @@ test("Entity 360 migration is additive, registry-governed and append-only", asyn
   assert.match(up, /core_entity360_snapshot_chain_check/);
   assert.match(up, /snapshot->>'previous_snapshot_digest'/);
   assert.match(up, /FOREIGN KEY \(tenant_id, entity_id\)/);
+  assert.match(shadowModeUp, /core_entity360_feature_shadow_only_check/);
+  assert.match(shadowModeUp, /ENTITY360_SHADOW_MODE_MIGRATION_REFUSED_INVALID_EXISTING_FLAGS/);
   assert.match(down, /ENTITY360_DOWN_MIGRATION_REFUSED_AUTHORITATIVE_ROWS/);
   assert.match(down, /ENTITY360_DOWN_MIGRATION_DISABLED_USE_FEATURE_FLAG/);
   assert.match(migration, /ensureCoreSchemaMigrationRegistry\(client\)/);
   assert.match(migration, /core_schema_migrations/);
+  assert.equal(ENTITY360_MIGRATIONS.some((item) =>
+    item.migration_id === ENTITY360_SHADOW_MODE_MIGRATION_ID), true);
   assert.doesNotMatch(store, /readFile|CREATE TABLE/);
 });
 
@@ -163,7 +209,7 @@ test("public migration verification requires the terminal governed registry chec
   const readback = {
     tables: [...ENTITY360_TABLES],
     append_only_tables: [...ENTITY360_APPEND_ONLY_TABLES],
-    migration: { sql_digest: sqlDigest, application_state: "COMPLETED",
+    migration: { migration_id: ENTITY360_MIGRATIONS[0].migration_id, sql_digest: sqlDigest, application_state: "COMPLETED",
       checkpoint: "READBACK_VERIFIED" },
     snapshot_tenant_fk: true,
     snapshot_chain_guard: true,
@@ -200,6 +246,66 @@ test("public migration verification requires the terminal governed registry chec
   }, sqlDigest), (error) => error.code === "entity360_migration_schema_manifest_mismatch"
     && error.status === 503,
   "exact manifest drift remains the authoritative error when a trigger is disabled");
+});
+
+test("full migration chain fails closed without the durable SHADOW-only guard", () => {
+  const migrationDigests = ENTITY360_MIGRATIONS.map((item, index) => ({
+    migration_id: item.migration_id,
+    sql_digest: String(index + 1).repeat(64),
+  }));
+  const manifestDigest = "f".repeat(64);
+  const readback = {
+    tables: [...ENTITY360_TABLES],
+    append_only_tables: [...ENTITY360_APPEND_ONLY_TABLES],
+    migration: { ...migrationDigests[0], application_state: "COMPLETED",
+      checkpoint: "READBACK_VERIFIED" },
+    migrations: migrationDigests.map((item) => ({ ...item, application_state: "COMPLETED",
+      checkpoint: "READBACK_VERIFIED" })),
+    snapshot_tenant_fk: true,
+    snapshot_chain_guard: true,
+    backfill_tenant_fk: true,
+    feature_enforcement_guard: true,
+    feature_shadow_only_guard: true,
+    backfill_non_destructive_guard: true,
+    backfill_cursor_binding_guard: true,
+    backfill_state_guard: true,
+    backfill_create_guard: true,
+    backfill_checkpoint_truncate_guard: true,
+    schema_manifest_matches: true,
+    schema_manifest_digest: manifestDigest,
+    expected_schema_manifest_digest: manifestDigest,
+  };
+  assert.equal(verifyEntity360CompletedMigrationReadback(readback, migrationDigests), readback);
+  assert.throws(() => verifyEntity360CompletedMigrationReadback({ ...readback,
+    feature_shadow_only_guard: false,
+  }, migrationDigests), (error) => error.code === "entity360_migration_integrity_readback_failed"
+    && error.details?.missing_guard === "core_entity360_feature_shadow_only_check");
+});
+
+test("feature-flag persistence admits only OFF or policy-bound SHADOW", async () => {
+  const fixture = featureFlagFixture();
+  const store = createPostgresEntity360Store({ pool: fixture.pool, ...STORE_OPTIONS });
+  const base = { tenant_id: TENANT, flag_id: "entity360", actor_id: "core-operator", config: {} };
+  const off = await store.writeFeatureFlag({ ...base, mode: "OFF", enabled: false,
+    expected_revision: 0, idempotency_key: "feature-off" });
+  assert.deepEqual({ mode: off.mode, enabled: off.enabled, policy_digest: off.policy_digest,
+    enforcement_authority_digest: off.enforcement_authority_digest, revision: off.revision }, {
+    mode: "OFF", enabled: false, policy_digest: null, enforcement_authority_digest: null, revision: 1,
+  });
+  const shadow = await store.writeFeatureFlag({ ...base, mode: "SHADOW", enabled: true,
+    policy_digest: "a".repeat(64), expected_revision: 1, idempotency_key: "feature-shadow" });
+  assert.equal(shadow.mode, "SHADOW");
+  assert.equal(shadow.enabled, true);
+  assert.equal(shadow.enforcement_authority_digest, null);
+  await assert.rejects(() => store.writeFeatureFlag({ ...base, mode: "ENFORCED", enabled: true,
+    policy_digest: "a".repeat(64), enforcement_authority_digest: "b".repeat(64),
+    expected_revision: 2, idempotency_key: "feature-enforced" }),
+  (error) => error.code === "entity360_feature_mode_invalid" && error.status === 422);
+  await assert.rejects(() => store.writeFeatureFlag({ ...base, mode: "OFF", enabled: true,
+    expected_revision: 2, idempotency_key: "feature-invalid-off" }),
+  (error) => error.code === "entity360_feature_flag_state_invalid" && error.status === 403);
+  assert.equal(fixture.state.flag.mode, "SHADOW");
+  assert.equal(fixture.state.flag.enabled, true);
 });
 
 test("snapshot write is tenant-scoped, CAS-bound and exactly idempotent", async () => {
