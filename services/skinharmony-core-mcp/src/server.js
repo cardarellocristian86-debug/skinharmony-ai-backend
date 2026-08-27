@@ -444,9 +444,10 @@ const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === tru
   : {};
 const causalContinuityHandlers = createCausalContinuityHandlers({
   coreRequest: coreHandlers.causalCoreRequest,
-  issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
+  issueAgentContext: ({ tenant_id, work_id, agent_presence }) => issueDttAgentContext({
     secret: config.dttAgentIdentitySigningSecret,
     tenant_id,
+    work_id,
     agent_presence,
   }),
 });

@@ -431,16 +431,17 @@ export function createSoftwareCognitionHandlers({ coreRequest, issueAgentContext
   const handlers = Object.fromEntries(definitions.map(([capabilityId]) => [capabilityId, async (args = {}, identity = {}) => {
     const tenantId = String(identity?.tenantId || "").trim();
     if (!tenantId || !identity.agentPresence) throw new Error("agent_presence_session_required");
-    const agentContext = issueAgentContext({ tenant_id: tenantId, agent_presence: identity.agentPresence });
-    if (!agentContext) throw new Error("dtt_agent_identity_not_ready");
     const body = { ...args };
     delete body.tenant_id;
     delete body.tenantId;
-    if (["software_cognition_graph_upsert", "software_cognition_index_diff", "software_cognition_graph_select"].includes(capabilityId)) {
+    if (capabilityId === "software_cognition_graph_select") {
+      if (!atlasRuntime || typeof atlasRuntime.selectAtlas !== "function") throw new Error("software_atlas_runtime_required");
+      return textResult(await atlasRuntime.selectAtlas(identity, body));
+    }
+    const agentContext = issueAgentContext({ tenant_id: tenantId, work_id: body.work_id, agent_presence: identity.agentPresence });
+    if (!agentContext) throw new Error("dtt_agent_identity_not_ready");
+    if (["software_cognition_graph_upsert", "software_cognition_index_diff"].includes(capabilityId)) {
       if (!atlasRuntime || typeof atlasRuntime.upsertAtlas !== "function" || typeof atlasRuntime.readAtlasGraph !== "function") throw new Error("software_atlas_runtime_required");
-      if (capabilityId === "software_cognition_graph_select") {
-        return textResult(await atlasRuntime.selectAtlas(identity, body));
-      }
       const authorization = await coreRequest(paths[capabilityId], tenantId, { method: "POST", body: { ...body, authorize_only: true },
         additionalHeaders: { "x-sh-dtt-agent-context": agentContext } });
       const authority = authorization?.result || authorization;

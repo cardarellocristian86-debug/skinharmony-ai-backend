@@ -54,13 +54,53 @@ test("transport derives tenant and signed DTT context exclusively from authentic
   const result = await handlers.software_cognition_closure_evaluate({
     project_id: "project-a", work_id: "work-a", change_id: "change-a", plan_id: "plan-a", tenant_id: "spoofed",
   }, { tenantId: "tenant-a", agentPresence });
-  assert.deepEqual(issued, [{ tenant_id: "tenant-a", agent_presence: agentPresence }]);
+  assert.deepEqual(issued, [{ tenant_id: "tenant-a", work_id: "work-a", agent_presence: agentPresence }]);
   assert.equal(calls[0][0], "/v1/software-cognition/closure/evaluate");
   assert.equal(calls[0][1], "tenant-a");
   assert.equal(calls[0][2].body.tenant_id, undefined);
   assert.equal(calls[0][2].additionalHeaders["x-sh-dtt-agent-context"], "signed-context");
   assert.deepEqual(result.structuredContent, { ok: true, graph_revision: 1 });
   await assert.rejects(() => handlers.software_cognition_graph_select({ project_id: "project-a", work_id: "work-a", seed_node_ids: [] }, {}), /agent_presence_session_required/);
+});
+
+test("graph select alias is a local bounded read and never issues a DTT mutation context", async () => {
+  const workId = "91e82640-9edc-5424-a3e8-eb7853b0d8dd";
+  let contextIssues = 0;
+  let coreCalls = 0;
+  const selections = [];
+  const handlers = createSoftwareCognitionHandlers({
+    coreRequest: async () => { coreCalls += 1; throw new Error("core_must_not_be_called_for_atlas_select"); },
+    issueAgentContext: () => { contextIssues += 1; throw new Error("dtt_context_must_not_be_issued_for_atlas_select"); },
+    atlasRuntime: {
+      selectAtlas: async (identity, input) => {
+        selections.push({ identity, input });
+        return {
+          schema_version: "work_atlas_selection_v1",
+          work_id: input.work_id,
+          revision: 210,
+          full_scan_performed: false,
+          selected_nodes: [{ node_id: "file:services/skinharmony-core-mcp/src/software-cognition.js" }],
+          selected_edges: [],
+        };
+      },
+    },
+  });
+  const identity = { tenantId: "tenant-a", agentPresence };
+  const input = {
+    project_id: "nyra_conversational_runtime",
+    work_id: workId,
+    seed_node_ids: ["file:services/skinharmony-core-mcp/src/software-cognition.js"],
+    max_depth: 2,
+    max_nodes: 12,
+    max_context_bytes: 8_192,
+  };
+  const result = await handlers.software_cognition_graph_select(input, identity);
+  assert.equal(contextIssues, 0);
+  assert.equal(coreCalls, 0);
+  assert.deepEqual(selections, [{ identity, input }]);
+  assert.equal(result.structuredContent.work_id, workId);
+  assert.equal(result.structuredContent.revision, 210);
+  assert.equal(result.structuredContent.full_scan_performed, false);
 });
 
 test("Atlas writer rejects an authorization receipt for a different request", async () => {
