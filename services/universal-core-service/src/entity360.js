@@ -13,6 +13,11 @@ export const ENTITY_360_QUALIFICATION_ATTESTATION_VERSION =
   "entity_360_qualification_attestation_v2";
 export const ENTITY_360_QUALIFICATION_ATTESTATION_PURPOSE =
   "entity360-qualified-context-v1";
+export const ENTITY_360_IDENTITY_LINEAGE_SCHEMA_VERSION =
+  "entity_360_identity_lineage_v1";
+export const ENTITY_360_IDENTITY_LINEAGE_VERIFICATION_SCHEMA_VERSION =
+  "entity_360_identity_lineage_verification_v1";
+export const ENTITY_360_IDENTITY_LINEAGE_MODE = "SHADOW";
 
 export const ENTITY_360_CONTEXT_STATES = Object.freeze([
   "READY",
@@ -39,6 +44,29 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const CANONICAL_RFC3339 = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/u;
 const SIGNATURE = /^[A-Za-z0-9._~:+/=-]{16,4096}$/u;
 const MAX_SAFE_BUDGET = 10_000_000;
+const ENTITY_360_IDENTITY_LINEAGE_OPERATIONS = new Set(["MERGE", "SPLIT"]);
+const ENTITY_360_IDENTITY_LINEAGE_ROOT_FIELDS = Object.freeze([
+  "absorbed_entities",
+  "audit_digest",
+  "canonical_entity",
+  "entity_type",
+  "evidence_digest",
+  "execution_authorized",
+  "idempotency_key",
+  "lineage_id",
+  "mode",
+  "observed_at",
+  "operation",
+  "predecessor_lineage_digest",
+  "production_decision_mutation",
+  "restored_entities",
+  "reverses_lineage_digest",
+  "schema_version",
+  "tenant_scope",
+]);
+const ENTITY_360_IDENTITY_LINEAGE_MEMBER_FIELDS = Object.freeze([
+  "entity_id", "identity", "identity_digest",
+]);
 
 const ENTITY_360_SNAPSHOT_ROOT_FIELDS = Object.freeze([
   "adapter_registry_version",
@@ -868,6 +896,239 @@ export function resolveEntity360Identity(input = {}) {
     missing_disambiguation: [],
     execution_authorized: false,
   });
+}
+
+function identityLineageDigest(value) {
+  return entity360Digest(value);
+}
+
+function normalizedIdentityLineageDigest(value, code) {
+  return text(value, code, 64, SHA256).toLowerCase();
+}
+
+function normalizeIdentityLineageMember(value, { tenantId, entityType, code } = {}) {
+  const source = exactKeys(value, ENTITY_360_IDENTITY_LINEAGE_MEMBER_FIELDS, code);
+  const identity = normalizeIdentity(source.identity);
+  const entityId = deterministicEntity360Id({ tenant_id: tenantId, entity_type: entityType, identity });
+  if (source.entity_id !== entityId) fail("entity360_identity_lineage_contradiction", 409);
+  const identityDigest = entity360Digest(identity);
+  if (source.identity_digest !== identityDigest) fail("entity360_identity_lineage_contradiction", 409);
+  return { entity_id: entityId, identity, identity_digest: identityDigest };
+}
+
+function createIdentityLineageMember({ tenantId, entityType, identity } = {}) {
+  const canonicalIdentity = normalizeIdentity(identity);
+  return {
+    entity_id: deterministicEntity360Id({ tenant_id: tenantId, entity_type: entityType,
+      identity: canonicalIdentity }),
+    identity: canonicalIdentity,
+    identity_digest: entity360Digest(canonicalIdentity),
+  };
+}
+
+function canonicalIdentityLineageMembers(values, { tenantId, entityType, allowEmpty = false,
+  code = "entity360_identity_lineage_members_invalid" } = {}) {
+  if (!Array.isArray(values) || values.length > 32 || !allowEmpty && values.length === 0) fail(code);
+  const members = values.map((value) => createIdentityLineageMember({ tenantId, entityType,
+    identity: value }));
+  const unique = new Map();
+  for (const member of members) {
+    if (unique.has(member.entity_id)) fail("entity360_identity_lineage_ambiguous", 409);
+    unique.set(member.entity_id, member);
+  }
+  return [...unique.values()].sort((left, right) => lexical(left.entity_id, right.entity_id));
+}
+
+function normalizedPublishedIdentityLineageMembers(values, { tenantId, entityType, allowEmpty = false,
+  code = "entity360_identity_lineage_members_invalid" } = {}) {
+  if (!Array.isArray(values) || values.length > 32 || !allowEmpty && values.length === 0) fail(code);
+  const members = values.map((value) => normalizeIdentityLineageMember(value, { tenantId, entityType,
+    code }));
+  const unique = new Map();
+  for (const member of members) {
+    if (unique.has(member.entity_id)) fail("entity360_identity_lineage_ambiguous", 409);
+    unique.set(member.entity_id, member);
+  }
+  const canonical = [...unique.values()].sort((left, right) => lexical(left.entity_id, right.entity_id));
+  if (stableString(members) !== stableString(canonical)) {
+    fail("entity360_identity_lineage_members_not_canonical", 409);
+  }
+  return canonical;
+}
+
+function assertIdentityLineageMembersDistinct(canonical, members) {
+  if (members.some((member) => member.entity_id === canonical.entity_id)) {
+    fail("entity360_identity_lineage_ambiguous", 409);
+  }
+}
+
+function identityLineageBody({ operation, tenantId, entityType, canonicalEntity, absorbedEntities,
+  restoredEntities, observedAt, evidenceDigest, idempotencyKey, predecessorLineageDigest,
+  reversesLineageDigest } = {}) {
+  return {
+    schema_version: ENTITY_360_IDENTITY_LINEAGE_SCHEMA_VERSION,
+    mode: ENTITY_360_IDENTITY_LINEAGE_MODE,
+    operation,
+    tenant_scope: tenantId,
+    entity_type: entityType,
+    canonical_entity: canonicalEntity,
+    absorbed_entities: absorbedEntities,
+    restored_entities: restoredEntities,
+    observed_at: observedAt,
+    evidence_digest: evidenceDigest,
+    idempotency_key: idempotencyKey,
+    predecessor_lineage_digest: predecessorLineageDigest,
+    reverses_lineage_digest: reversesLineageDigest,
+    execution_authorized: false,
+    production_decision_mutation: false,
+  };
+}
+
+function issueIdentityLineage(body) {
+  const lineageId = `e360il_${identityLineageDigest(body).slice(0, 48)}`;
+  const auditDigest = identityLineageDigest({ ...body, lineage_id: lineageId });
+  return deepFreeze({ ...body, lineage_id: lineageId, audit_digest: auditDigest });
+}
+
+function normalizeIdentityLineageInput(input, fields, code) {
+  return exactKeys(plainObject(input, code), fields, code);
+}
+
+function normalizePublishedIdentityLineage(value) {
+  const source = exactKeys(value, ENTITY_360_IDENTITY_LINEAGE_ROOT_FIELDS,
+    "entity360_identity_lineage_schema_invalid");
+  if (source.schema_version !== ENTITY_360_IDENTITY_LINEAGE_SCHEMA_VERSION
+    || source.mode !== ENTITY_360_IDENTITY_LINEAGE_MODE
+    || !ENTITY_360_IDENTITY_LINEAGE_OPERATIONS.has(source.operation)
+    || source.execution_authorized !== false
+    || source.production_decision_mutation !== false) {
+    fail("entity360_identity_lineage_schema_invalid");
+  }
+  const tenantId = text(source.tenant_scope, "entity360_identity_lineage_tenant_required", 120, SOURCE_ID);
+  const entityType = text(source.entity_type, "entity360_identity_lineage_entity_type_required", 80,
+    ENTITY_TYPE);
+  const canonicalEntity = normalizeIdentityLineageMember(source.canonical_entity, { tenantId, entityType,
+    code: "entity360_identity_lineage_canonical_entity_invalid" });
+  const absorbedEntities = normalizedPublishedIdentityLineageMembers(source.absorbed_entities,
+    { tenantId, entityType, allowEmpty: source.operation === "SPLIT",
+      code: "entity360_identity_lineage_absorbed_entities_invalid" });
+  const restoredEntities = normalizedPublishedIdentityLineageMembers(source.restored_entities,
+    { tenantId, entityType, allowEmpty: source.operation === "MERGE",
+      code: "entity360_identity_lineage_restored_entities_invalid" });
+  const observedAt = timestamp(source.observed_at, "entity360_identity_lineage_observed_at_invalid");
+  const evidenceDigest = normalizedIdentityLineageDigest(source.evidence_digest,
+    "entity360_identity_lineage_evidence_digest_invalid");
+  const idempotencyKey = text(source.idempotency_key, "entity360_identity_lineage_idempotency_key_invalid",
+    160, SOURCE_ID);
+  const predecessorLineageDigest = source.predecessor_lineage_digest === null ? null
+    : normalizedIdentityLineageDigest(source.predecessor_lineage_digest,
+      "entity360_identity_lineage_predecessor_digest_invalid");
+  const reversesLineageDigest = source.reverses_lineage_digest === null ? null
+    : normalizedIdentityLineageDigest(source.reverses_lineage_digest,
+      "entity360_identity_lineage_reverses_digest_invalid");
+  if (source.operation === "MERGE") {
+    assertIdentityLineageMembersDistinct(canonicalEntity, absorbedEntities);
+    if (restoredEntities.length !== 0 || predecessorLineageDigest !== null || reversesLineageDigest !== null) {
+      fail("entity360_identity_lineage_contradiction", 409);
+    }
+  } else {
+    if (absorbedEntities.length !== 0 || predecessorLineageDigest === null
+      || reversesLineageDigest !== predecessorLineageDigest || restoredEntities.length < 2) {
+      fail("entity360_identity_lineage_contradiction", 409);
+    }
+    const restoredCanonical = restoredEntities.find((member) =>
+      member.entity_id === canonicalEntity.entity_id);
+    if (!restoredCanonical || stableString(restoredCanonical) !== stableString(canonicalEntity)) {
+      fail("entity360_identity_lineage_contradiction", 409);
+    }
+  }
+  const body = identityLineageBody({ operation: source.operation, tenantId, entityType, canonicalEntity,
+    absorbedEntities, restoredEntities, observedAt, evidenceDigest, idempotencyKey,
+    predecessorLineageDigest, reversesLineageDigest });
+  const issued = issueIdentityLineage(body);
+  if (source.lineage_id !== issued.lineage_id || source.audit_digest !== issued.audit_digest) {
+    fail("entity360_identity_lineage_audit_mismatch", 409);
+  }
+  return issued;
+}
+
+/**
+ * Creates an immutable, non-authoritative observation that records which
+ * tenant-scoped Entity 360 identities were tentatively merged. It does not
+ * alter resolution, entity heads, persistence, or any Core decision path.
+ */
+export function createEntity360IdentityMergeLineage(input = {}) {
+  const source = normalizeIdentityLineageInput(input, ["absorbed_identities", "canonical_identity",
+    "entity_type", "evidence_digest", "idempotency_key", "observed_at", "tenant_id"],
+  "entity360_identity_lineage_merge_input_invalid");
+  const tenantId = text(source.tenant_id, "entity360_identity_lineage_tenant_required", 120, SOURCE_ID);
+  const entityType = text(source.entity_type, "entity360_identity_lineage_entity_type_required", 80,
+    ENTITY_TYPE);
+  const canonicalEntity = createIdentityLineageMember({ tenantId, entityType,
+    identity: source.canonical_identity });
+  const absorbedEntities = canonicalIdentityLineageMembers(source.absorbed_identities,
+    { tenantId, entityType, code: "entity360_identity_lineage_absorbed_entities_invalid" });
+  assertIdentityLineageMembersDistinct(canonicalEntity, absorbedEntities);
+  const observedAt = timestamp(source.observed_at, "entity360_identity_lineage_observed_at_invalid");
+  const evidenceDigest = normalizedIdentityLineageDigest(source.evidence_digest,
+    "entity360_identity_lineage_evidence_digest_invalid");
+  const idempotencyKey = text(source.idempotency_key, "entity360_identity_lineage_idempotency_key_invalid",
+    160, SOURCE_ID);
+  return issueIdentityLineage(identityLineageBody({ operation: "MERGE", tenantId, entityType,
+    canonicalEntity, absorbedEntities, restoredEntities: [], observedAt, evidenceDigest,
+    idempotencyKey, predecessorLineageDigest: null, reversesLineageDigest: null }));
+}
+
+/**
+ * Creates the exact inverse of a verified merge observation. A split is a new
+ * SHADOW observation and never mutates the previously issued merge record.
+ */
+export function createEntity360IdentitySplitLineage(input = {}) {
+  const source = normalizeIdentityLineageInput(input, ["evidence_digest", "idempotency_key",
+    "merge_lineage", "observed_at", "tenant_id"], "entity360_identity_lineage_split_input_invalid");
+  const tenantId = text(source.tenant_id, "entity360_identity_lineage_tenant_required", 120, SOURCE_ID);
+  const claimedMergeTenant = text(source.merge_lineage?.tenant_scope,
+    "entity360_identity_lineage_merge_required", 120, SOURCE_ID);
+  if (claimedMergeTenant !== tenantId) fail("entity360_identity_lineage_cross_tenant", 403);
+  let merge;
+  try {
+    merge = normalizePublishedIdentityLineage(source.merge_lineage);
+  } catch (error) {
+    if (error instanceof Entity360Error) fail("entity360_identity_lineage_contradiction", 409);
+    throw error;
+  }
+  if (merge.operation !== "MERGE" || merge.tenant_scope !== tenantId) {
+    fail("entity360_identity_lineage_contradiction", 409);
+  }
+  const observedAt = timestamp(source.observed_at, "entity360_identity_lineage_observed_at_invalid");
+  const evidenceDigest = normalizedIdentityLineageDigest(source.evidence_digest,
+    "entity360_identity_lineage_evidence_digest_invalid");
+  const idempotencyKey = text(source.idempotency_key, "entity360_identity_lineage_idempotency_key_invalid",
+    160, SOURCE_ID);
+  const restoredEntities = [merge.canonical_entity, ...merge.absorbed_entities]
+    .sort((left, right) => lexical(left.entity_id, right.entity_id));
+  return issueIdentityLineage(identityLineageBody({ operation: "SPLIT", tenantId,
+    entityType: merge.entity_type, canonicalEntity: merge.canonical_entity, absorbedEntities: [],
+    restoredEntities, observedAt, evidenceDigest, idempotencyKey,
+    predecessorLineageDigest: merge.audit_digest, reversesLineageDigest: merge.audit_digest }));
+}
+
+/**
+ * Verifies the deterministic audit envelope without turning a lineage
+ * observation into an authority signal. The result is suitable for an
+ * append-only store or independent reviewer, not for execution gating.
+ */
+export function verifyEntity360IdentityLineage(value) {
+  try {
+    normalizePublishedIdentityLineage(value);
+    return deepFreeze({ schema_version: ENTITY_360_IDENTITY_LINEAGE_VERIFICATION_SCHEMA_VERSION,
+      valid: true, reasons: [], execution_authorized: false, authority: "universal_core" });
+  } catch (error) {
+    return deepFreeze({ schema_version: ENTITY_360_IDENTITY_LINEAGE_VERIFICATION_SCHEMA_VERSION,
+      valid: false, reasons: [error instanceof Entity360Error ? error.code
+        : "entity360_identity_lineage_verification_failed"], execution_authorized: false,
+      authority: "universal_core" });
+  }
 }
 
 function sourceAuthoritativeForFact(source, factId, asOfMs) {
