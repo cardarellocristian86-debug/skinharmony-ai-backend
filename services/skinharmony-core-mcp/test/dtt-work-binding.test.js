@@ -185,6 +185,9 @@ test("MCP resolves a DTT lease only for the exact authenticated participant tran
     presence.agent_id,
     presence.client_type,
     presence.host_transport_session_fingerprint,
+    null,
+    null,
+    null,
   ]);
   assert.equal(binding.schema_version, "dtt_work_lease_binding_v1");
   assert.equal(binding.presence_signature, presence.signature);

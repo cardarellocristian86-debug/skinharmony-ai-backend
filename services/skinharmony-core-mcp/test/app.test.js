@@ -422,6 +422,26 @@ test("orders generic Work subject authorization before every Work side effect", 
   }
 });
 
+test("exact Work resume establishes only the bounded Nyra read binding after ACL authorization", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const continuityStart = serverSource.indexOf("async function ensureContinuity");
+  const continuityEnd = serverSource.indexOf("async function refreshNyraDialogueAfterMaterialChange", continuityStart);
+  const continuity = serverSource.slice(continuityStart, continuityEnd);
+  const exactResume = continuity.indexOf("if (resumeExisting && continuity?.work_id)");
+  const binding = continuity.indexOf("read_binding: await ensureNyraReadBinding({", exactResume);
+  const acl = continuity.indexOf("authorizeRead: requireCanonicalWorkRead", binding);
+
+  assert.ok(continuityStart >= 0);
+  assert.ok(continuityEnd > continuityStart);
+  assert.ok(exactResume >= 0);
+  assert.ok(binding > exactResume);
+  assert.ok(acl > binding);
+  assert.doesNotMatch(
+    continuity.slice(exactResume, continuity.indexOf("const controlContext", exactResume)),
+    /owner_confirmed|authority_scope|execution_authorized:\s*true|external_action_authorized:\s*true/,
+  );
+});
+
 test("continuity checkpoint relies on exactly one server-owned Universal Core gate", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const checkpointStart = serverSource.indexOf("work_continuity_checkpoint: async");

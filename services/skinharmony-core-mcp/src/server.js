@@ -101,6 +101,7 @@ import {
   bindWorkBootstrapRequestToAuthenticatedHost,
   governedWorkBootstrapAuthorizationTarget,
 } from "./work-bootstrap-contract.js";
+import { ensureNyraReadBinding } from "./nyra-read-binding.js";
 import {
   createPostgresEnvironmentDelegationNonceStore,
 } from "./environment-delegation.js";
@@ -793,6 +794,17 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
     } else {
       throw error;
     }
+  }
+  if (resumeExisting && continuity?.work_id) {
+    continuity = {
+      ...continuity,
+      read_binding: await ensureNyraReadBinding({
+        runtime: workContinuityRuntime,
+        authorizeRead: requireCanonicalWorkRead,
+        identity,
+        continuity,
+      }),
+    };
   }
   const controlContext = await materializeNyraControlContext(identity, continuity, toolName);
   attachContinuity(preflightResult, continuity, controlContext);

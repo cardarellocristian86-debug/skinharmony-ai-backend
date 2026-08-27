@@ -143,6 +143,9 @@ test("Generic Core Join runtime binds the exact signed participant and active le
     agentPresence.agent_id,
     agentPresence.client_type,
     agentPresence.host_transport_session_fingerprint,
+    null,
+    null,
+    null,
   ]);
   assert.equal(binding.schema_version, "generic_work_core_join_lease_binding_v1");
   assert.equal(binding.tenant_id, TENANT_ID);
