@@ -1753,6 +1753,79 @@ export function createWorkContinuityRuntime(config, options = {}) {
     };
   }
 
+  // Catalog discovery for a spawned child must not borrow the coordinator's
+  // work.operate grant. This is intentionally a pure read: it proves the
+  // same immutable assignment coordinates that reportNativeAgent will prove
+  // again inside its write transaction, but never records presence, consumes
+  // the assignment or changes the lease.
+  async function admitNativeAgentReport(identity, input) {
+    assertNativePayload(input);
+    const context = workContext(identity, input);
+    const planId = uuid(input.plan_id, "plan_id");
+    const agentId = identifier(input.native_agent_id || input.agent_id, "native_agent_id", 120);
+    const hostTaskId = hostTaskIdentifier(input.host_task_id);
+    const reporterPresence = nativeReporterPresence(identity, agentId);
+    const suppliedAssignmentDigest = assignmentCapabilityDigest(
+      input.assignment_capability,
+    );
+    await initialize();
+    const current = await pool.query(`SELECT a.task_id,a.task_digest,a.host_type,a.host_task_id,
+        a.coordinator_session_fingerprint,a.assignment_capability_digest,a.lease_expires_at,
+        p.status AS plan_status
+      FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
+        ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
+      WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=$3 AND a.agent_id=$4`,
+    [context.tenantId, context.workId, planId, agentId]);
+    const row = current.rows[0];
+    if (!row) throw new Error("native_agent_binding_not_found");
+    if (row.plan_status !== "planned") throw new Error("native_agent_plan_not_open");
+    if (row.host_type !== reporterPresence.host_type) {
+      throw new Error("native_agent_reporter_host_scope_mismatch");
+    }
+    if (row.host_task_id !== hostTaskId) throw new Error("native_agent_host_task_mismatch");
+    const leaseExpiresAt = dateValue(row.lease_expires_at, "native_agent_lease");
+    if (leaseExpiresAt.getTime() <= nowDate().getTime()) {
+      throw new Error("native_agent_binding_expired_replan_required");
+    }
+    if (row.coordinator_session_fingerprint === reporterPresence.session_fingerprint) {
+      throw new Error("native_agent_coordinator_report_forbidden");
+    }
+    const expectedAssignment = assignmentCapability({
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      plan_id: planId,
+      task_id: row.task_id,
+      agent_id: agentId,
+      host_type: row.host_type,
+      host_task_id: row.host_task_id,
+      task_digest: row.task_digest,
+      coordinator_session_fingerprint: row.coordinator_session_fingerprint,
+      lease_expires_at: leaseExpiresAt.toISOString(),
+    });
+    if (
+      row.assignment_capability_digest !== suppliedAssignmentDigest ||
+      suppliedAssignmentDigest !== assignmentCapabilityDigest(expectedAssignment) ||
+      input.assignment_capability !== expectedAssignment
+    ) {
+      throw new Error("native_agent_assignment_capability_mismatch");
+    }
+    const reusedPresence = await pool.query(`SELECT task_id FROM core_continuity_native_agents
+      WHERE tenant_id=$1 AND plan_id=$2 AND native_session_fingerprint=$3
+        AND agent_id<>$4 LIMIT 1`,
+    [context.tenantId, planId, reporterPresence.session_fingerprint, agentId]);
+    if (reusedPresence.rows[0]) throw new Error("native_agent_reporter_reuse_denied");
+    return Object.freeze({
+      capability_id: "work_continuity_native_report",
+      work_id: context.workId,
+      plan_id: planId,
+      native_agent_id: agentId,
+      host_task_id: hostTaskId,
+      task_digest: row.task_digest,
+      lease_expires_at: leaseExpiresAt.toISOString(),
+      execution_authorized: false,
+    });
+  }
+
   function nativeCoordinatorFingerprint(identity) {
     const presence = identity?.agentPresence;
     const transportFingerprint = String(
@@ -5621,6 +5694,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     verifyMemory,
     planNativeAgents,
     bindNativeAgent,
+    admitNativeAgentReport,
     reportNativeAgent,
     evaluateClosure,
     bindCoreJoinVerdict,

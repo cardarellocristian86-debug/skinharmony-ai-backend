@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   hasTenantBoundChatGptReadCompatibility,
   hostAppCanAccessTool,
+  isNativeReportChildOperation,
+  nativeReportAssignmentBootstrap,
   requireHostAppToolCapability,
 } from "../src/host-app-authorization.js";
 
@@ -14,6 +16,7 @@ const TOOLS = [
   { name: "core_capability_read", annotations: { readOnlyHint: true } },
   { name: "core_capability_invoke", annotations: { readOnlyHint: false } },
   { name: "work_continuity_v2_read", annotations: { readOnlyHint: true } },
+  { name: "work_continuity_native_report", annotations: { readOnlyHint: false } },
   { name: "host_native_status", annotations: { readOnlyHint: true } },
   { name: "host_native_delegation_issue", annotations: { readOnlyHint: false } },
   { name: "host_native_action_authorize", annotations: { readOnlyHint: false } },
@@ -141,6 +144,63 @@ test("a work.read app cannot dynamically invoke host-native delegation or author
     }), /host_app_capability_required:host_native\.(?:delegate|authorize)/);
     assert.equal(hostAppCanAccessTool({ identity: reader, toolName: capability_id, tools: TOOLS }), false);
   }
+});
+
+test("a transport-bound assignment can bootstrap only its native report wrapper", () => {
+  const assignment = {
+    work_id: "11111111-1111-4111-8111-111111111111",
+    plan_id: "22222222-2222-4222-8222-222222222222",
+    native_agent_id: "native-child-builder",
+    host_task_id: "/root/native-child-builder",
+    assignment_capability: `hnac_${"A".repeat(43)}`,
+  };
+  const reader = identity(["work.read"], "codex_native");
+  const catalogBootstrap = nativeReportAssignmentBootstrap("core_capability_catalog", {
+    capability_id: "work_continuity_native_report",
+    native_report_assignment: assignment,
+  });
+  assert.deepEqual(catalogBootstrap, assignment);
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: reader,
+    toolName: "core_capability_invoke",
+    args: {
+      capability_id: "work_continuity_native_report",
+      arguments: { ...assignment, status: "completed", report: { summary: "bounded evidence" } },
+    },
+    tools: TOOLS,
+  }));
+  assert.throws(() => requireHostAppToolCapability({
+    identity: reader,
+    toolName: "core_capability_invoke",
+    args: {
+      capability_id: "work_continuity_closure_evaluate",
+      arguments: assignment,
+    },
+    tools: TOOLS,
+  }), /host_app_capability_required:work\.operate/);
+  assert.equal(nativeReportAssignmentBootstrap("core_capability_catalog", {
+    capability_id: "work_continuity_native_report",
+    native_report_assignment: { ...assignment, assignment_capability: "hnac_bad" },
+  }), null);
+  assert.equal(isNativeReportChildOperation("core_capability_catalog", {
+    capability_id: "work_continuity_native_report",
+    native_report_assignment: assignment,
+  }), true);
+  assert.equal(isNativeReportChildOperation("core_capability_invoke", {
+    capability_id: "work_continuity_native_report",
+    arguments: assignment,
+  }), true);
+  assert.equal(isNativeReportChildOperation("work_continuity_native_report"), true);
+  assert.equal(isNativeReportChildOperation("core_capability_invoke", {
+    capability_id: "work_continuity_closure_evaluate",
+    arguments: assignment,
+  }), false);
+  assert.throws(() => requireHostAppToolCapability({
+    identity: reader,
+    toolName: "work_continuity_native_report",
+    args: assignment,
+    tools: TOOLS,
+  }), /host_app_capability_required:work\.operate/);
 });
 
 test("native execution supports registered ChatGPT and Codex hosts but fails closed for future host kinds", () => {
