@@ -180,6 +180,7 @@ const decisionLedger = createDecisionLedger(config, {
 });
 const workContinuityRuntime = createWorkContinuityRuntime(config, {
   pool: primaryDatabasePool,
+  nativeVerifierEvidenceBridgeRequired: config.hostNativeAgentProtocolEnabled === true,
 });
 const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store({
   pool: primaryDatabasePool,
@@ -189,6 +190,11 @@ const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store(
 }) : null;
 if (workContinuityRuntime && workContinuityV2Store) {
   workContinuityRuntime.setWorkEventProjector(workContinuityV2Store.projectLegacyEvent);
+  // The report-to-evidence bridge is internal and shares the report
+  // transaction. It is intentionally not exposed as an MCP capability.
+  workContinuityRuntime.setNativeVerifierEvidenceBridge(
+    workContinuityV2Store.recordNativeVerifierEvidenceWithClient,
+  );
 }
 const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
   pool: primaryDatabasePool,

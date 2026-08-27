@@ -382,7 +382,7 @@ export const WORK_CONTINUITY_TOOLS = [
       status: { type: "string", enum: ["planned", "completed"] }, required: { type: "boolean" } },
     ["work_id", "title", "status"]), false, { ownerConfirmationRequired: false, boundedCollaboration: true }),
   tool("tenant_work_evidence_record", "Record Work evidence",
-    "Record digest-only evidence; independent status is derived from the authenticated verifier identity and session.",
+    "Record digest-only candidate evidence. Independent status is derived only by the server-owned native verifier terminal-report bridge.",
     object({ work_id: uuid, evidence_id: uuid, kind: { type: "string", minLength: 1, maxLength: 80 }, digest: hash,
       weight: { type: "integer", minimum: 1, maximum: 10_000 }, required: { type: "boolean" }, metadata: { type: "object", additionalProperties: true } },
     ["work_id", "kind", "digest"]), false, { ownerConfirmationRequired: false, boundedCollaboration: true }),

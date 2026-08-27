@@ -1687,6 +1687,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
     config.dttAgentIdentitySigningSecret || "",
   ).trim();
   let workEventProjector = null;
+  let nativeVerifierEvidenceBridge = typeof options.nativeVerifierEvidenceBridge === "function"
+    ? options.nativeVerifierEvidenceBridge
+    : null;
+  const nativeVerifierEvidenceBridgeRequired = options.nativeVerifierEvidenceBridgeRequired === true;
   let ready;
   const initialize = () => ready ||= pool.query(WORK_CONTINUITY_SCHEMA_SQL);
 
@@ -1828,6 +1832,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("work_event_projector_already_configured");
     }
     workEventProjector = projector;
+    return true;
+  }
+
+  function setNativeVerifierEvidenceBridge(bridge) {
+    if (typeof bridge !== "function") {
+      throw new Error("native_verifier_evidence_bridge_invalid");
+    }
+    if (nativeVerifierEvidenceBridge && nativeVerifierEvidenceBridge !== bridge) {
+      throw new Error("native_verifier_evidence_bridge_already_configured");
+    }
+    nativeVerifierEvidenceBridge = bridge;
     return true;
   }
 
@@ -3688,6 +3703,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
         context.tenantId,
         planId,
       ]);
+      // Keep the pre-existing legacy-to-V2 lock order: Core Work advisory
+      // lock first, then the V2 Work row inside the evidence bridge. Without
+      // this, a report bridge could invert the event-projector order.
+      await lockWork(client, context);
       const current = await client.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.status,a.report_digest,
           a.host_type,a.host_task_id,a.coordinator_session_fingerprint,
           a.assignment_capability_digest,a.native_session_fingerprint,
@@ -3819,6 +3838,33 @@ export function createWorkContinuityRuntime(config, options = {}) {
           native_presence_signature: reporterPresence.signature,
         },
       });
+      const v2Evidence = row.task_kind === "verifier" && status === "completed" &&
+        report.verdict === "approved"
+        ? await (async () => {
+          if (!nativeVerifierEvidenceBridge) {
+            if (nativeVerifierEvidenceBridgeRequired) {
+              throw new Error("native_verifier_evidence_bridge_unavailable");
+            }
+            return null;
+          }
+          // The bridge receives no caller-controlled fields: every value is
+          // taken from the already-validated assignment, report, transport
+          // presence and append-only receipt inside this same transaction.
+          return nativeVerifierEvidenceBridge(client, {
+            server_owned: true,
+            tenant_id: context.tenantId,
+            work_id: context.workId,
+            plan_id: planId,
+            task_id: row.task_id,
+            agent_id: agentId,
+            session_fingerprint: reporterPresence.session_fingerprint,
+            presence_signature: reporterPresence.signature,
+            report_digest: reportDigest,
+            receipt_id: receipt.receipt_id,
+            receipt_digest: receipt.payload_digest,
+          });
+        })()
+        : null;
       const event = await appendEvent(client, context, "native_agent_reported", {
         plan_id: planId,
         task_id: row.task_id,
@@ -3838,6 +3884,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         status,
         report_digest: reportDigest,
         receipt,
+        ...(v2Evidence ? { v2_evidence } : {}),
         event,
       };
     });
@@ -5489,6 +5536,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     readControlContext,
     readNyraOperationalState,
     setWorkEventProjector,
+    setNativeVerifierEvidenceBridge,
     readIntent,
     resolveStandingReleaseIntentBinding,
     listWorks,
