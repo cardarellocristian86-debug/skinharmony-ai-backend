@@ -9,11 +9,14 @@ import {
   assembleEntity360Snapshot as assembleEntity360SnapshotKernel,
   compileEntity360Ontology,
   compileEntity360Policy,
+  createEntity360IdentityMergeLineage,
+  createEntity360IdentitySplitLineage,
   deterministicEntity360Id,
   entity360Digest,
   entity360SnapshotSemanticBody,
   reconcileEntity360TemporalState,
   resolveEntity360Identity,
+  verifyEntity360IdentityLineage,
   verifyEntity360Snapshot as verifyEntity360SnapshotKernel,
 } from "../src/entity360.js";
 import { ENTITY_360_FEATURE_FLAG_AUTHORITY_SCOPE, ENTITY_360_SHADOW_OBSERVER_SCOPE,
@@ -398,6 +401,91 @@ test("entity resolver does not invent an existing entity when discovery has no m
   assert.equal(resolution.entity_id, null);
   assert.deepEqual(resolution.missing_disambiguation, ["authoritative_identity_match"]);
   assert.equal(resolution.execution_authorized, false);
+});
+
+test("identity lineage records a deterministic SHADOW merge and exact reversible split", () => {
+  const canonicalIdentity = { work_id: WORK_ID };
+  const absorbedIdentities = [{ work_id: LEGACY_WORK_ID }, { work_id: UNRELATED_WORK_ID }];
+  const input = {
+    tenant_id: TENANT,
+    entity_type: "work",
+    canonical_identity: canonicalIdentity,
+    absorbed_identities: absorbedIdentities,
+    observed_at: AT,
+    evidence_digest: DIGEST_A,
+    idempotency_key: "e360-identity-merge-observation-1",
+  };
+  const merge = createEntity360IdentityMergeLineage(input);
+  const replay = createEntity360IdentityMergeLineage({ ...input,
+    absorbed_identities: [...absorbedIdentities].reverse() });
+
+  assert.deepEqual(replay, merge);
+  assert.equal(merge.mode, "SHADOW");
+  assert.equal(merge.operation, "MERGE");
+  assert.equal(merge.execution_authorized, false);
+  assert.equal(merge.production_decision_mutation, false);
+  assert.deepEqual(verifyEntity360IdentityLineage(merge), {
+    schema_version: "entity_360_identity_lineage_verification_v1",
+    valid: true,
+    reasons: [],
+    execution_authorized: false,
+    authority: "universal_core",
+  });
+
+  const splitInput = { tenant_id: TENANT, merge_lineage: merge, observed_at: "2026-08-25T10:01:00Z",
+    evidence_digest: DIGEST_B, idempotency_key: "e360-identity-split-observation-1" };
+  const split = createEntity360IdentitySplitLineage(splitInput);
+  const splitReplay = createEntity360IdentitySplitLineage(splitInput);
+  const restored = split.restored_entities.map((item) => item.identity);
+
+  assert.deepEqual(splitReplay, split);
+  assert.equal(split.mode, "SHADOW");
+  assert.equal(split.operation, "SPLIT");
+  assert.equal(split.predecessor_lineage_digest, merge.audit_digest);
+  assert.equal(split.reverses_lineage_digest, merge.audit_digest);
+  assert.deepEqual(restored, [canonicalIdentity, ...absorbedIdentities]
+    .sort((left, right) => deterministicEntity360Id({ tenant_id: TENANT, entity_type: "work", identity: left })
+      .localeCompare(deterministicEntity360Id({ tenant_id: TENANT, entity_type: "work", identity: right }))));
+  assert.deepEqual(verifyEntity360IdentityLineage(split), {
+    schema_version: "entity_360_identity_lineage_verification_v1",
+    valid: true,
+    reasons: [],
+    execution_authorized: false,
+    authority: "universal_core",
+  });
+});
+
+test("identity lineage rejects cross-tenant, ambiguous, and contradictory observations without changing resolution", () => {
+  const canonicalIdentity = { work_id: WORK_ID };
+  const candidates = [{ tenant_id: TENANT, entity_type: "work", identity: canonicalIdentity }];
+  const before = resolveEntity360Identity({ tenant_id: TENANT, entity_type: "work",
+    identity: canonicalIdentity, candidates, require_existing: true });
+  const merge = createEntity360IdentityMergeLineage({ tenant_id: TENANT, entity_type: "work",
+    canonical_identity: canonicalIdentity, absorbed_identities: [{ work_id: LEGACY_WORK_ID }],
+    observed_at: AT, evidence_digest: DIGEST_A, idempotency_key: "e360-identity-merge-observation-2" });
+  const after = resolveEntity360Identity({ tenant_id: TENANT, entity_type: "work",
+    identity: canonicalIdentity, candidates, require_existing: true });
+
+  assert.deepEqual(after, before);
+  assert.throws(() => createEntity360IdentityMergeLineage({ tenant_id: TENANT, entity_type: "work",
+    canonical_identity: canonicalIdentity, absorbed_identities: [canonicalIdentity], observed_at: AT,
+    evidence_digest: DIGEST_A, idempotency_key: "e360-identity-merge-ambiguous" }),
+  (error) => error instanceof Entity360Error && error.code === "entity360_identity_lineage_ambiguous"
+    && error.status === 409);
+  assert.throws(() => createEntity360IdentitySplitLineage({ tenant_id: OTHER_TENANT,
+    merge_lineage: merge, observed_at: AT, evidence_digest: DIGEST_B,
+    idempotency_key: "e360-identity-split-cross-tenant" }),
+  (error) => error instanceof Entity360Error && error.code === "entity360_identity_lineage_cross_tenant"
+    && error.status === 403);
+
+  const contradictory = structuredClone(merge);
+  contradictory.absorbed_entities[0].identity.work_id = UNRELATED_WORK_ID;
+  assert.equal(verifyEntity360IdentityLineage(contradictory).valid, false);
+  assert.throws(() => createEntity360IdentitySplitLineage({ tenant_id: TENANT,
+    merge_lineage: contradictory, observed_at: AT, evidence_digest: DIGEST_B,
+    idempotency_key: "e360-identity-split-contradiction" }),
+  (error) => error instanceof Entity360Error && error.code === "entity360_identity_lineage_contradiction"
+    && error.status === 409);
 });
 
 test("snapshot is complete, non-authoritative and independently digest-verifiable", () => {
