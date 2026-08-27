@@ -556,7 +556,13 @@ function filterToolsForClient(tools = [], identity) {
     if (tool.name === "core_capability_invoke") {
       if (!principal) return true;
       return principal?.registered === true &&
-        mutationCapabilities.some((capability) => hostPrincipalAllows(identity, capability));
+        (
+          mutationCapabilities.some((capability) => hostPrincipalAllows(identity, capability)) ||
+          // A transport-bound native child needs the compact wrapper to
+          // submit its one terminal report. The exact target is reauthorized
+          // before dispatch, so this does not make any other mutation usable.
+          hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_READ)
+        );
     }
     return hostAppCanAccessTool({
       identity,
@@ -2436,11 +2442,25 @@ export function createApp(config, options = {}) {
         const serverIssuedBootstrap = Boolean(serverIssuedSessionId);
         const hostNativeReporterAgentId = tool.name === "work_continuity_native_report"
           ? rawArgs.native_agent_id
-          : null;
+          : tool.name === "core_capability_invoke" &&
+              rawArgs.capability_id === "work_continuity_native_report"
+            ? rawArgs.arguments?.native_agent_id
+            : tool.name === "core_capability_catalog" &&
+                rawArgs.capability_id === "work_continuity_native_report"
+              ? rawArgs.native_report_assignment?.native_agent_id
+            : null;
+        if (
+          hostNativeReporterAgentId && rawArgs.agent_id &&
+          rawArgs.agent_id !== hostNativeReporterAgentId
+        ) {
+          const presenceError = new Error("native_agent_reporter_identity_conflict");
+          presenceError.code = "native_agent_reporter_identity_conflict";
+          throw presenceError;
+        }
         const requestedAgentId = (!serverIssuedBootstrap && (
+          hostNativeReporterAgentId ||
           rawArgs.agent_id ||
-          rawArgs.from_agent_id ||
-          hostNativeReporterAgentId
+          rawArgs.from_agent_id
         )) || transportPresence?.agent_id ||
           `agent_${crypto.createHash("sha256").update(`${identity.subject || identity.kind || "client"}\u0000${sessionId}`).digest("hex").slice(0, 20)}`;
         const presenceInput = {
