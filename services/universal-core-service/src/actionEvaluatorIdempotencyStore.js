@@ -35,6 +35,13 @@ export function actionEvaluatorDigest(value) {
   return crypto.createHash("sha256").update(canonical(value)).digest("hex");
 }
 
+function postgresAdvisoryLockScope(scope) {
+  // PostgreSQL text parameters reject NUL bytes. Keep the logical scope used
+  // by receipts and the file store unchanged, but transport a deterministic
+  // ASCII digest to the advisory-lock function.
+  return actionEvaluatorDigest(scope);
+}
+
 export const ACTION_EVALUATOR_IDEMPOTENCY_SCHEMA_VERSION =
   "action_evaluator_idempotency_v1";
 const ACTION_EVALUATOR_IDEMPOTENCY_SCHEMA_MANIFEST = Object.freeze({
@@ -105,6 +112,13 @@ function parseJson(value) {
   return structuredClone(value);
 }
 
+function persistedTimestampMilliseconds(value) {
+  // node-postgres materializes timestamptz columns as Date instances. Calling
+  // String(Date) discards milliseconds, which breaks exact receipt replay when
+  // the JSON receipt retains them.
+  return value instanceof Date ? value.getTime() : Date.parse(String(value || ""));
+}
+
 function validatePrior(row, request, nowMilliseconds) {
   if (String(row.request_digest || "") !== request.requestDigest ||
       String(row.owner_subject_fingerprint || "").toLowerCase() !== request.ownerSubjectFingerprint) {
@@ -114,7 +128,7 @@ function validatePrior(row, request, nowMilliseconds) {
   const receipt = parseJson(row.receipt);
   const responseDigest = String(row.response_digest || "").trim().toLowerCase();
   const authorizationId = String(row.authorization_id || "");
-  const rowExpiryMilliseconds = Date.parse(String(row.authorization_expires_at || ""));
+  const rowExpiryMilliseconds = persistedTimestampMilliseconds(row.authorization_expires_at);
   const receiptIssuedMilliseconds = Date.parse(String(receipt?.issued_at || ""));
   if (!Number.isFinite(rowExpiryMilliseconds) || !Number.isFinite(receiptIssuedMilliseconds)) {
     fail("core_action_idempotency_record_invalid", 503);
@@ -444,6 +458,9 @@ export function createPostgresActionEvaluatorIdempotencyStore({ pool } = {}) {
         await client.query("SET LOCAL lock_timeout='1s'");
         await client.query("SET LOCAL statement_timeout='5s'");
         if (!schemaInstalled) await client.query(POSTGRES_SCHEMA);
+        await client.query("SELECT hashtextextended($1,0) AS scope_probe", [
+          postgresAdvisoryLockScope("core_action_evaluator_idempotency\u0000probe"),
+        ]);
         const verification = await client.query(POSTGRES_SCHEMA_VERIFICATION);
         const status = verifiedSchemaStatus(verification.rows?.[0]);
         await client.query("COMMIT");
@@ -492,7 +509,9 @@ export function createPostgresActionEvaluatorIdempotencyStore({ pool } = {}) {
         await client.query("BEGIN");
         await client.query("SET LOCAL lock_timeout='5s'");
         await client.query("SET LOCAL statement_timeout='30s'");
-        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [request.scope]);
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [
+          postgresAdvisoryLockScope(request.scope),
+        ]);
         const priorResult = await client.query(
           `SELECT request_digest,owner_subject_fingerprint,authorization_id,authority_response,
                   response_digest,receipt,authorization_expires_at
