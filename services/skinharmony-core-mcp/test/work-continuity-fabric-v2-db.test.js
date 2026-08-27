@@ -33,6 +33,7 @@ function galleryIdentity(subject, sessionId, agentId, clientType = "codex", tena
       client_type: clientType,
       signature: `ags_${"a".repeat(32)}`,
       transport_bound: true,
+      session_fingerprint: "c".repeat(24),
       host_transport_session_fingerprint: "b".repeat(24),
     },
   };
@@ -309,14 +310,81 @@ class ContinuityPool {
       }] : [],
         rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT session_id,agent_id,client_type,status,expires_at,transport_session_fingerprint,")) {
+      const row = this.participants.get(key(parameters[0], parameters[1], parameters[2]));
+      const matches = row?.actor_subject === parameters[3];
+      return { rows: matches ? [{
+        session_id: row.session_id,
+        agent_id: row.agent_id,
+        client_type: row.client_type,
+        status: row.status,
+        expires_at: row.expires_at,
+        transport_session_fingerprint: row.transport_session_fingerprint,
+        logical_session_fingerprint: row.metadata?.profile?.logical_session_fingerprint || null,
+      }] : [], rowCount: matches ? 1 : 0 };
+    }
+    if (q.startsWith("UPDATE core_continuity_leases SET status='expired',released_at=coalesce(released_at,now())")) {
+      const [tenantId, workId, sessionId] = parameters;
+      const rows = [];
+      for (const lease of this.leases.values()) {
+        if (lease.tenant_id === tenantId && lease.work_id === workId &&
+          lease.session_id === sessionId && lease.status === "active") {
+          lease.status = "expired";
+          lease.released_at ||= this.clock().toISOString();
+          rows.push({ lease_id: lease.lease_id, session_id: lease.session_id });
+        }
+      }
+      return { rows, rowCount: rows.length };
+    }
+    if (q.startsWith("UPDATE core_continuity_participants SET transport_session_fingerprint")) {
+      const [tenantId, workId, sessionId, actorSubject, transportFingerprint,
+        ttlSeconds, agentId, clientType] = parameters;
+      const row = this.participants.get(key(tenantId, workId, sessionId));
+      if (!row || row.actor_subject !== actorSubject || row.agent_id !== agentId ||
+        row.client_type !== clientType) {
+        return { rows: [], rowCount: 0 };
+      }
+      row.transport_session_fingerprint = transportFingerprint;
+      row.last_seen_at = this.clock().toISOString();
+      row.expires_at = new Date(this.clock().getTime() + Number(ttlSeconds) * 1_000).toISOString();
+      return { rows: [{
+        session_id: row.session_id,
+        agent_id: row.agent_id,
+        client_type: row.client_type,
+        status: row.status,
+        last_seen_at: row.last_seen_at,
+        expires_at: row.expires_at,
+      }], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_participants SET status='active',last_seen_at=now()")) {
+      const [tenantId, workId, sessionId, actorSubject, ttlSeconds, agentId, clientType] = parameters;
+      const row = this.participants.get(key(tenantId, workId, sessionId));
+      if (!row || row.actor_subject !== actorSubject || row.agent_id !== agentId ||
+        row.client_type !== clientType) {
+        return { rows: [], rowCount: 0 };
+      }
+      row.status = "active";
+      row.last_seen_at = this.clock().toISOString();
+      row.expires_at = new Date(this.clock().getTime() + Number(ttlSeconds) * 1_000).toISOString();
+      return { rows: [{
+        session_id: row.session_id,
+        agent_id: row.agent_id,
+        branch_id: row.branch_id,
+        status: row.status,
+        last_seen_at: row.last_seen_at,
+        expires_at: row.expires_at,
+      }], rowCount: 1 };
+    }
     if (q.startsWith("UPDATE core_continuity_leases l")) {
-      const [tenantId, workId, sessionId, actorSubject, agentId, clientType, branchId] = parameters;
+      const [tenantId, workId, sessionId, actorSubject, agentId, clientType, branchId,
+        transportFingerprint] = parameters;
       const participant = this.participants.get(key(tenantId, workId, sessionId));
       const bindingChanged = participant && (
         participant.actor_subject !== actorSubject ||
         participant.agent_id !== agentId ||
         participant.client_type !== clientType ||
-        participant.branch_id !== branchId
+        participant.branch_id !== branchId ||
+        participant.transport_session_fingerprint !== transportFingerprint
       );
       const activeBranchPromotion = participant &&
         participant.actor_subject === actorSubject &&
@@ -341,7 +409,7 @@ class ContinuityPool {
     }
     if (q.startsWith("INSERT INTO core_continuity_participants")) {
       const [tenantId, workId, sessionId, actorSubject, agentId, clientType,
-        branchId, ttlSeconds, metadata] = parameters;
+        branchId, ttlSeconds, metadata, transportFingerprint] = parameters;
       const participantKey = key(tenantId, workId, sessionId);
       const current = this.participants.get(participantKey);
       const currentExpired = current &&
@@ -350,6 +418,7 @@ class ContinuityPool {
         current.actor_subject === actorSubject &&
         current.agent_id === agentId &&
         current.client_type === clientType &&
+        current.transport_session_fingerprint === transportFingerprint &&
         (current.branch_id === null || branchId === null || current.branch_id === branchId);
       if (current && !currentExpired && !compatibleActiveBinding) {
         return { rows: [], rowCount: 0 };
@@ -368,6 +437,7 @@ class ContinuityPool {
         last_seen_at: timestamp,
         expires_at: new Date(this.clock().getTime() + (Number(ttlSeconds) * 1_000)).toISOString(),
         metadata: JSON.parse(metadata),
+        transport_session_fingerprint: transportFingerprint,
       };
       this.participants.set(participantKey, row);
       return { rows: [{ ...row }], rowCount: 1 };
@@ -378,8 +448,9 @@ class ContinuityPool {
       const active = row?.status === "active" && Date.parse(row.expires_at) > this.clock().getTime();
       const matchesAgent = !parameters[5] || row?.agent_id === parameters[5];
       const matchesClient = !parameters[6] || row?.client_type === parameters[6];
+      const matchesTransport = row?.transport_session_fingerprint === parameters[7];
       const matches = row?.actor_subject === parameters[3] && matchesAgent && matchesClient &&
-        (!requireActive || active);
+        matchesTransport && (!requireActive || active);
       return { rows: matches ? [{ ...row }] : [], rowCount: matches ? 1 : 0 };
     }
     if (q.startsWith("UPDATE core_continuity_leases SET status='expired'")) {
@@ -1252,6 +1323,74 @@ test("Gallery admits multiple tenant-scoped participants and rejects session imp
     "participant_joined",
     "participant_joined",
   ]);
+});
+
+test("Nyra read transport rotation expires old leases without transferring authority", async () => {
+  const clock = () => new Date("2026-08-27T09:00:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const subject = "nyra-read-owner";
+  const created = await runtime.ensure({ tenantId: "tenant-a", subject }, initialInput, {
+    creationAuthorized: true,
+  });
+  const original = galleryIdentity(subject, "nyra-read-session", "nyra-read-agent", "chatgpt");
+  const common = {
+    work_id: created.work_id,
+    session_id: original.agentPresence.session_id,
+    agent_id: original.agentPresence.agent_id,
+    client_type: original.agentPresence.client_type,
+    ttl_seconds: 300,
+  };
+  await runtime.join(original, {
+    ...common,
+    metadata: {
+      mode: "read_only",
+      logical_session_fingerprint: original.agentPresence.session_fingerprint,
+      execution_authorized: false,
+    },
+    idempotency_key: "nyra-read-original-join",
+  });
+  for (const leaseId of [
+    "33333333-3333-4333-8333-333333333333",
+    "44444444-4444-4444-8444-444444444444",
+  ]) {
+    pool.leases.set(key("tenant-a", created.work_id, leaseId), {
+      tenant_id: "tenant-a",
+      work_id: created.work_id,
+      lease_id: leaseId,
+      session_id: common.session_id,
+      status: "active",
+    });
+  }
+
+  const rotated = {
+    ...original,
+    agentPresence: {
+      ...original.agentPresence,
+      host_transport_session_fingerprint: "d".repeat(24),
+    },
+  };
+  const rotation = await runtime.rotateNyraReadParticipant(rotated, {
+    ...common,
+    idempotency_key: "nyra-read-verified-transport-rotation",
+  });
+  assert.equal(rotation.state, "rotated");
+  assert.equal(rotation.expired_lease_count, 2);
+  assert.equal([...pool.leases.values()].every((candidate) => candidate.status === "expired"), true);
+  assert.equal(pool.participants.get(key("tenant-a", created.work_id, common.session_id))
+    .transport_session_fingerprint, "d".repeat(24));
+  assert.deepEqual(pool.events.get(key("tenant-a", created.work_id)).slice(-2)
+    .map((event) => event.event_type), ["lease_expired", "participant_transport_rotated"]);
+
+  await assert.rejects(runtime.heartbeat(original, {
+    ...common,
+    idempotency_key: "nyra-read-old-transport-heartbeat",
+  }), /continuity_participant_not_active/);
+  const active = await runtime.heartbeat(rotated, {
+    ...common,
+    idempotency_key: "nyra-read-new-transport-heartbeat",
+  });
+  assert.equal(active.participant.session_id, common.session_id);
 });
 
 test("Gallery rejects every participant operation from a different signed client type", async () => {
