@@ -322,7 +322,6 @@ jobs:
           safe_governed_continue_rollout_states = [
             ["v1", "false"],
             ["v2", "false"],
-            ["v2", "true"],
           ]
           abort("Agent-presence and governed-continuation rollout state is unsafe") unless
             safe_governed_continue_rollout_states.include?([
