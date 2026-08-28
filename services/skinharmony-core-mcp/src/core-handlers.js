@@ -3329,9 +3329,40 @@ export function createCoreHandlers(config, options = {}) {
       }));
     },
     nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
-    // This is the only MCP exposure for the server-owned persistent profile.
-    // It is a pure read; a connected AI cannot materialize or refresh it.
+    // Reading remains a pure operation. Materialization is a separate,
+    // request-bound owner mutation verified again by Universal Core.
     nyra_self_model: async (_args, identity) => textResult(await coreRequest("/v1/nira/self-model", identity.tenantId)),
+    nyra_self_model_refresh: async (_args, identity) => {
+      if (!hasExplicitVerifiedOwnerConfirmation(identity)) {
+        throw new Error("owner_confirmation_required");
+      }
+      const requestBody = {
+        confirmation_reference: verifiedConfirmationReference(identity),
+      };
+      const payload = await coreRequest("/v1/nira/self-model/refresh", identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            requestBinding: ownerRequestBinding("nyra_self_model_refresh", requestBody),
+          }),
+        },
+      });
+      const authorized = payload?.ok === true &&
+        payload?.self_model?.schema_version === "nyra_persistent_self_model_v1" &&
+        payload?.execution_allowed === false;
+      return textResult({
+        ...payload,
+        dedicated_core_gate: {
+          authorized,
+          authority: "universal_core",
+          route: "nyra_self_model_refresh",
+          server_owned: true,
+          provider_execution: false,
+          external_side_effect: false,
+        },
+      });
+    },
     core_capability_catalog: async (args, identity) => textResult({
       ...readCoreCapabilityCatalog(args),
       tenant_id: identity.tenantId,

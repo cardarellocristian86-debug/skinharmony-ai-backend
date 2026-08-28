@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 
 import {
   createNyraGovernedContinueAttestor,
   createNyraGovernedContinueHandler,
+  createNyraGovernedContinuationIssuer,
 } from "../src/nyra-governed-continue.js";
 import { HOST_APP_CAPABILITIES } from "../src/host-app-registry.js";
 import {
@@ -23,6 +25,35 @@ const bootstrapDependencies = Object.freeze({
   reviewWorkBootstrap: async () => { throw new Error("unexpected_bootstrap_review"); },
   createWorkBootstrap: async () => { throw new Error("unexpected_bootstrap_create"); },
 });
+
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+}
+
+function legacyV1Token(candidateAttestation) {
+  const [, encoded] = String(candidateAttestation || "").split(".");
+  const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  payload.schema_version = "nyra_governed_continue_attestation_v1";
+  delete payload.continuation_operation;
+  const legacyEncoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", SECRET)
+    .update(`nyra-governed-continue-v1\u0000${JSON.stringify(stable(payload))}`)
+    .digest("base64url");
+  return `ngc1.${legacyEncoded}.${signature}`;
+}
+
+function legacyV1VerifierAccepts(candidateAttestation) {
+  const [prefix, encoded, signature, extra] = String(candidateAttestation || "").split(".");
+  if (prefix !== "ngc1" || !encoded || !signature || extra) return false;
+  const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+  if (payload.schema_version !== "nyra_governed_continue_attestation_v1") return false;
+  const expected = crypto.createHmac("sha256", SECRET)
+    .update(`nyra-governed-continue-v1\u0000${JSON.stringify(stable(payload))}`)
+    .digest("base64url");
+  return expected === signature;
+}
 
 function identity(overrides = {}) {
   return {
@@ -73,6 +104,20 @@ function directive(actionClass = "GIT_MERGE", state = "MANUAL_ONLY") {
   };
 }
 
+function issueAction(
+  attestor,
+  continuationOperation = "authorize_action",
+  caller = identity(),
+  actionClass = "GIT_MERGE",
+  state = "MANUAL_ONLY",
+) {
+  return attestor.issue({
+    identity: caller,
+    directive: directive(actionClass, state),
+    continuationOperation,
+  });
+}
+
 function normalizedContext(overrides = {}) {
   return {
     available: true,
@@ -106,6 +151,24 @@ function boundedUniqueText(prefix, index, length) {
   const marker = `${prefix}-${String(index).padStart(3, "0")}-`;
   return `${marker}${"x".repeat(length - marker.length)}`;
 }
+
+test("production issuer forwards the signed operation binding without projection", () => {
+  let received = null;
+  const issuer = createNyraGovernedContinuationIssuer({
+    issue: (candidate) => {
+      received = candidate;
+      return { available: false };
+    },
+  });
+  const candidate = Object.freeze({
+    identity: identity(),
+    directive: directive(),
+    continuationOperation: "authorize_action",
+  });
+  issuer(candidate);
+  assert.equal(received, candidate);
+  assert.equal(received.continuationOperation, "authorize_action");
+});
 
 function bootstrapDirective(spec = bootstrapSpec(), caller = identity()) {
   const request = materializeGovernedWorkBootstrapRequest({
@@ -141,10 +204,17 @@ function bootstrapDirective(spec = bootstrapSpec(), caller = identity()) {
 test("issues a short-lived candidate only to a registered capable host", () => {
   const clock = Date.parse("2026-08-25T12:00:00.000Z");
   const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
-  const issued = attestor.issue({ identity: identity(), directive: directive() });
+  const issued = issueAction(attestor);
   assert.equal(issued.available, true);
   assert.equal(issued.submit_tool, "nyra_governed_continue");
-  assert.match(issued.candidate_attestation, /^ngc1\./);
+  assert.match(issued.candidate_attestation, /^ngc2\./);
+  assert.equal(legacyV1VerifierAccepts(issued.candidate_attestation), false);
+  assert.throws(() => attestor.verify({
+    token: legacyV1Token(issued.candidate_attestation),
+    identity: identity(),
+    idempotencyKey: "legacy-action-token",
+    replayOperation: "authorize_action",
+  }), /nyra_governed_continue_attestation_binding_mismatch/);
 
   const unknown = identity({
     authenticatedHostPrincipal: {
@@ -155,8 +225,11 @@ test("issues a short-lived candidate only to a registered capable host", () => {
       capabilities: ["work.read"],
     },
   });
-  assert.equal(attestor.issue({ identity: unknown, directive: directive() }).available, false);
-  assert.equal(attestor.issue({ identity: identity(), directive: directive("GIT_MERGE", "NEEDS_CONTEXT") }).available, false);
+  assert.equal(issueAction(attestor, "authorize_action", unknown).available, false);
+  assert.equal(issueAction(attestor, "authorize_action", identity(), "GIT_MERGE", "NEEDS_CONTEXT").available, false);
+  assert.equal(attestor.issue({ identity: identity(), directive: directive() }).available, false);
+  assert.equal(attestor.issue({ identity: identity(), directive: directive() }).reason,
+    "continuation_operation_required");
   const futureHost = identity({
     authenticatedHostPrincipal: {
       ...identity().authenticatedHostPrincipal,
@@ -164,7 +237,7 @@ test("issues a short-lived candidate only to a registered capable host", () => {
       host_kind: "future_ai_native",
     },
   });
-  const unsupported = attestor.issue({ identity: futureHost, directive: directive() });
+  const unsupported = issueAction(attestor, "authorize_action", futureHost);
   assert.equal(unsupported.available, false);
   assert.equal(unsupported.reason, "host_native_host_kind_not_supported");
 });
@@ -172,7 +245,7 @@ test("issues a short-lived candidate only to a registered capable host", () => {
 test("submits a merge candidate for a Core ticket without reserving or executing it", async () => {
   const clock = Date.parse("2026-08-25T12:00:00.000Z");
   const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
-  const candidate = attestor.issue({ identity: identity(), directive: directive() });
+  const candidate = issueAction(attestor);
   const calls = [];
   const handler = createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
@@ -219,7 +292,7 @@ test("submits a merge candidate for a Core ticket without reserving or executing
 test("derives the same downstream idempotency key across process replicas", async () => {
   const clock = Date.parse("2026-08-25T12:00:00.000Z");
   const firstAttestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
-  const candidate = firstAttestor.issue({ identity: identity(), directive: directive() });
+  const candidate = issueAction(firstAttestor);
   const downstreamKeys = [];
   const makeHandler = (attestor) => createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
@@ -260,7 +333,7 @@ test("derives the same downstream idempotency key across process replicas", asyn
 test("fails closed on host/session drift, Work drift, replay and action-class substitution", async () => {
   const clock = Date.parse("2026-08-25T12:00:00.000Z");
   const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
-  const candidate = attestor.issue({ identity: identity(), directive: directive() });
+  const candidate = issueAction(attestor);
   assert.throws(() => attestor.verify({
     token: candidate.candidate_attestation,
     identity: identity({ agentPresence: { session_fingerprint: "e".repeat(24), client_type: "chatgpt" } }),
@@ -295,7 +368,7 @@ test("fails closed on host/session drift, Work drift, replay and action-class su
     idempotencyKey: "different-replay-key",
   }), /attestation_replayed/);
 
-  const fresh = attestor.issue({ identity: identity(), directive: directive() });
+  const fresh = issueAction(attestor);
   const actionHandler = createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
     attestor,
@@ -318,7 +391,7 @@ test("fails closed on host/session drift, Work drift, replay and action-class su
 test("requires a fresh owner confirmation to issue the exact bounded delegation", async () => {
   const clock = Date.parse("2026-08-25T12:00:00.000Z");
   const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
-  const candidate = attestor.issue({ identity: identity(), directive: directive() });
+  const candidate = issueAction(attestor, "issue_delegation");
   let calls = 0;
   const handler = createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
@@ -355,6 +428,123 @@ test("requires a fresh owner confirmation to issue the exact bounded delegation"
   assert.equal(response.structuredContent.execution_authorized, false);
 });
 
+test("one signed action attestation cannot change operation across replicas", async () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const issueAttestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = issueAction(issueAttestor, "issue_delegation");
+  let delegationCalls = 0;
+  let actionCalls = 0;
+  const dependencies = {
+    ...bootstrapDependencies,
+    readDirectiveContext: async () => ({}),
+    normalizeDirectiveContext: () => normalizedContext(),
+    issueDelegation: async () => {
+      delegationCalls += 1;
+      return { structuredContent: { delegation: { delegation_id: "hnd_test-12345678" } } };
+    },
+    authorizeAction: async () => {
+      actionCalls += 1;
+      return { structuredContent: { action_ticket: { ticket: {
+        ticket_id: `hnt_${"1".repeat(64)}`,
+      } } } };
+    },
+  };
+  const issueHandler = createNyraGovernedContinueHandler({
+    ...dependencies,
+    attestor: issueAttestor,
+  });
+  const shared = {
+    candidate_attestation: candidate.candidate_attestation,
+    idempotency_key: "one-continuation-key",
+  };
+  await issueHandler({
+    ...shared,
+    operation: "issue_delegation",
+    owner_confirmed: true,
+    delegation_request: {
+      work_id: WORK_ID,
+      intent_anchor_digest: DIGEST_B,
+      repository: "owner/repo",
+      audience: ["chatgpt_native"],
+      allowed_branches: ["feat/entity-360-v1"],
+      protected_branches: ["main"],
+      allowed_path_prefixes: ["services"],
+      allowed_actions: ["github.merge"],
+      ttl_seconds: 300,
+    },
+  }, identity());
+  const replicaAttestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const replicaHandler = createNyraGovernedContinueHandler({
+    ...dependencies,
+    attestor: replicaAttestor,
+  });
+  await assert.rejects(replicaHandler({
+    ...shared,
+    operation: "authorize_action",
+    action_request: {
+      delegation_id: "hnd_test-12345678",
+      work_id: WORK_ID,
+      intent_anchor_digest: DIGEST_B,
+      repository: "owner/repo",
+      action: { kind: "github.merge", repository: "owner/repo" },
+      evidence_digest: DIGEST_A,
+    },
+  }, identity()), /nyra_governed_continue_operation_mismatch/);
+  assert.equal(delegationCalls, 1);
+  assert.equal(actionCalls, 0);
+
+  const authorizeCandidate = issueAction(replicaAttestor);
+  const restartAttestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const restartHandler = createNyraGovernedContinueHandler({
+    ...dependencies,
+    attestor: restartAttestor,
+  });
+  await assert.rejects(restartHandler({
+    operation: "issue_delegation",
+    candidate_attestation: authorizeCandidate.candidate_attestation,
+    idempotency_key: "reverse-operation-key",
+    owner_confirmed: true,
+    delegation_request: {
+      work_id: WORK_ID,
+      intent_anchor_digest: DIGEST_B,
+      repository: "owner/repo",
+      audience: ["chatgpt_native"],
+      allowed_branches: ["feat/entity-360-v1"],
+      allowed_path_prefixes: ["services"],
+      allowed_actions: ["github.merge"],
+      ttl_seconds: 300,
+    },
+  }, identity()), /nyra_governed_continue_operation_mismatch/);
+  assert.equal(delegationCalls, 1);
+});
+
+test("signed operation binding survives local replay-cache eviction", () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = issueAction(attestor, "issue_delegation");
+  attestor.verify({
+    token: candidate.candidate_attestation,
+    identity: identity(),
+    idempotencyKey: "eviction-original-key",
+    replayOperation: "issue_delegation",
+  });
+  for (let index = 0; index < 2_049; index += 1) {
+    const filler = issueAction(attestor, "authorize_action");
+    attestor.verify({
+      token: filler.candidate_attestation,
+      identity: identity(),
+      idempotencyKey: `eviction-filler-${index}`,
+      replayOperation: "authorize_action",
+    });
+  }
+  assert.throws(() => attestor.verify({
+    token: candidate.candidate_attestation,
+    identity: identity(),
+    idempotencyKey: "eviction-opposite-key",
+    replayOperation: "authorize_action",
+  }), /nyra_governed_continue_operation_mismatch/);
+});
+
 test("reviews then creates one exact canonical V2 Work through separate governed phases", async () => {
   const clock = Date.parse("2026-08-25T12:00:00.000Z");
   const caller = identity();
@@ -362,6 +552,21 @@ test("reviews then creates one exact canonical V2 Work through separate governed
   const { directive: candidateDirective } = bootstrapDirective(bootstrapSpec(), caller);
   const candidate = attestor.issue({ identity: caller, directive: candidateDirective });
   assert.equal(candidate.available, true);
+  assert.match(candidate.candidate_attestation, /^ngc1\./);
+  assert.equal(legacyV1VerifierAccepts(candidate.candidate_attestation), true);
+  const legacyBootstrapAttestor = createNyraGovernedContinueAttestor({
+    secret: SECRET,
+    now: () => clock,
+  });
+  const legacyBootstrapPayload = legacyBootstrapAttestor.verify({
+    token: candidate.candidate_attestation,
+    identity: caller,
+    idempotencyKey: "legacy-bootstrap-review",
+    replayScope: "review_work_bootstrap",
+    replayOperation: "review_work_bootstrap",
+  });
+  assert.equal(legacyBootstrapPayload.candidate_kind, "work_bootstrap");
+  assert.equal(legacyBootstrapPayload.continuation_operation, null);
   const calls = [];
   const handler = createNyraGovernedContinueHandler({
     attestor,

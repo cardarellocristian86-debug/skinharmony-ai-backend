@@ -102,6 +102,7 @@ import {
 import {
   createNyraGovernedContinueAttestor,
   createNyraGovernedContinueHandler,
+  createNyraGovernedContinuationIssuer,
 } from "./nyra-governed-continue.js";
 import {
   bindWorkBootstrapRequestToAuthenticatedHost,
@@ -121,6 +122,9 @@ const nyraGovernedContinueAttestor =
         secret: config.nyraGovernedContinueSigningSecret,
       })
     : null;
+const nyraGovernedContinuationIssuer = nyraGovernedContinueAttestor
+  ? createNyraGovernedContinuationIssuer(nyraGovernedContinueAttestor)
+  : null;
 const policyRegistrySigner = createPolicyRegistrySigner();
 const nyraPolicyRegistrySigner = createPolicyRegistrySigner({
   prefix: "POLICY_REGISTRY_NYRA_SIGNER",
@@ -1305,9 +1309,7 @@ const nyraConverseHandler = createNyraConverseHandler({
     return workContinuityRuntime.readControlContext(identity, args);
   },
   readDirectiveContext: readNyraDirectiveContext,
-  issueContinuation: nyraGovernedContinueAttestor
-    ? ({ identity, directive }) => nyraGovernedContinueAttestor.issue({ identity, directive })
-    : null,
+  issueContinuation: nyraGovernedContinuationIssuer,
 });
 
 const nyraGovernedContinueHandler = nyraGovernedContinueAttestor
