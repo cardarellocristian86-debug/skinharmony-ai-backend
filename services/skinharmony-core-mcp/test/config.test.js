@@ -120,7 +120,7 @@ test("does not enable PostgreSQL collaboration from the generic database URL", (
   assert.equal(config.collaborationDatabaseSsl, false);
 });
 
-test("loads a strict host-app registry and keeps governed continuation code-dark until fully configured", () => {
+test("keeps governed continuation code-dark until the v2 live readback", () => {
   const registry = JSON.stringify({
     schema_version: "mcp_host_app_registry_v1",
     apps: [{
@@ -151,14 +151,16 @@ test("loads a strict host-app registry and keeps governed continuation code-dark
   assert.equal(missingSecret.nyraGovernedContinueConfigurationError,
     "nyra_governed_continue_signing_secret_unavailable");
 
-  const ready = loadConfig({
+  const pendingReadback = loadConfig({
     MCP_HOST_APP_REGISTRY_JSON: registry,
     NYRA_GOVERNED_CONTINUE_ENABLED: "true",
     NYRA_GOVERNED_CONTINUE_SIGNING_SECRET: "n".repeat(32),
     AGENT_PRESENCE_SIGNATURE_VERSION: "v2",
   });
-  assert.equal(ready.nyraGovernedContinueConfigurationValid, true);
-  assert.equal(ready.nyraGovernedContinueSigningSecret, "n".repeat(32));
+  assert.equal(pendingReadback.nyraGovernedContinueConfigurationValid, false);
+  assert.equal(pendingReadback.nyraGovernedContinueConfigurationError,
+    "nyra_governed_continue_v2_readback_required");
+  assert.equal(pendingReadback.nyraGovernedContinueSigningSecret, "n".repeat(32));
 
   const reused = loadConfig({
     MCP_HOST_APP_REGISTRY_JSON: registry,

@@ -93,10 +93,10 @@ services:
       # another host-native secret.
       - key: AGENT_SIGNATURE_SECRET
         generateValue: true
-      # First rollout preserves v1 fingerprints/tickets. After the bounded
-      # authority TTL drains, promote to v2 before enabling continuation.
+      # Staged rollout promotes v2 only after bounded v1 authority drains;
+      # governed continuation remains disabled until v2 readback is verified.
       - key: AGENT_PRESENCE_SIGNATURE_VERSION
-        value: "v1"
+        value: "v2"
       - key: NYRA_GOVERNED_CONTINUE_ENABLED
         value: "false"
       - key: NYRA_GOVERNED_CONTINUE_SIGNING_SECRET
