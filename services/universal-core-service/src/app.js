@@ -9908,13 +9908,9 @@ export function createUniversalCoreService(options = {}) {
   app.get("/v1/nira/self-model", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const current = resolveDomainPackForKey(req.coreKey);
     const catalog = nyraBranchCatalog(current.id);
-    const branchResolution = verifiedOwnerBranchProfile(
-      req, [], "nyra_self_model_read", ownerContextSigningSecret,
-    );
     const selfModel = nyraPersistentSelfModel.read({
       tenantId: req.tenantId,
       catalog,
-      authorizedBranchIds: branchResolution.allowed_branches,
     });
     audit.append("core_nyra_self_model_read", {
       tenant_id: req.tenantId,

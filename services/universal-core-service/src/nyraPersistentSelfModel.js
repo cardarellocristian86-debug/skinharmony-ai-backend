@@ -19,7 +19,12 @@ const sha256 = (value) => crypto.createHash("sha256").update(value).digest("hex"
 const tenantStorageKey = (tenantId) => sha256(`nyra-self-model-tenant-v1\0${String(tenantId || "")}`);
 
 function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
+  try {
+    return { exists: true, record: JSON.parse(fs.readFileSync(file, "utf8")) };
+  } catch (error) {
+    if (error?.code === "ENOENT") return { exists: false, record: null };
+    return { exists: true, record: null };
+  }
 }
 
 function writeJsonAtomic(file, value) {
@@ -78,32 +83,73 @@ export function createNyraPersistentSelfModelStore({ storageRoot, signingSecret 
   const key = Buffer.byteLength(signingSecret, "utf8") >= 32 ? signingSecret : "local-self-model-unsigned";
   const fileFor = (tenantId) => path.join(root, `${tenantStorageKey(tenantId)}.json`);
   const sign = (payload) => crypto.createHmac("sha256", key).update(canonical(payload)).digest("hex");
-  const validRecord = (record, profile) => Boolean(
-    record &&
-    Number.isSafeInteger(Number(record.revision)) && Number(record.revision) > 0 &&
-    record.payload_digest === sha256(canonical(profile)) &&
-    record.signature === sign(profile) &&
-    canonical(Object.fromEntries(Object.keys(profile).map((keyName) => [keyName, record[keyName]]))) === canonical(profile),
+  const storedProfile = (record) => {
+    if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+    const {
+      revision: _revision,
+      generated_at: _generatedAt,
+      payload_digest: _payloadDigest,
+      signature: _signature,
+      ...profile
+    } = record;
+    return profile;
+  };
+  const unsignedRecord = (record) => {
+    if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+    const {
+      payload_digest: _payloadDigest,
+      signature: _signature,
+      ...unsigned
+    } = record;
+    return unsigned;
+  };
+  const validStoredEnvelope = (record, { tenantId, catalog }) => {
+    const profile = storedProfile(record);
+    const unsigned = unsignedRecord(record);
+    const expectedShape = buildNyraSelfModel({ tenantId, catalog, authorizedBranchIds: [] });
+    return Boolean(
+      profile &&
+      unsigned &&
+      Object.keys(profile).sort().join("\0") === Object.keys(expectedShape).sort().join("\0") &&
+      profile.schema_version === SCHEMA_VERSION &&
+      profile.tenant_id === tenantId &&
+      Number.isSafeInteger(record.revision) && record.revision > 0 &&
+      typeof record.generated_at === "string" &&
+      Number.isFinite(Date.parse(record.generated_at)) &&
+      new Date(record.generated_at).toISOString() === record.generated_at &&
+      record.payload_digest === sha256(canonical(unsigned)) &&
+      record.signature === sign(unsigned)
+    );
+  };
+  const validStoredRecord = (record, { tenantId, catalog }) => Boolean(
+    validStoredEnvelope(record, { tenantId, catalog }) &&
+    record.catalog_revision === (catalog?.schema_version || "unknown")
   );
   return {
-    read({ tenantId, catalog, authorizedBranchIds = [] }) {
-      const profile = buildNyraSelfModel({ tenantId, catalog, authorizedBranchIds });
-      const current = readJson(fileFor(tenantId));
-      return validRecord(current, profile) ? current : null;
+    read({ tenantId, catalog }) {
+      const { record: current } = readJson(fileFor(tenantId));
+      return validStoredRecord(current, { tenantId, catalog }) ? current : null;
     },
     refresh({ tenantId, catalog, authorizedBranchIds = [] }) {
       const profile = buildNyraSelfModel({ tenantId, catalog, authorizedBranchIds });
-      const current = readJson(fileFor(tenantId));
-      if (validRecord(current, profile)) return current;
-      const previousRevision = Number.isSafeInteger(Number(current?.revision)) && Number(current.revision) > 0
-        ? Number(current.revision)
-        : 0;
-      const record = {
+      const stored = readJson(fileFor(tenantId));
+      const current = stored.record;
+      const currentEnvelopeValid = !stored.exists
+        ? false
+        : validStoredEnvelope(current, { tenantId, catalog });
+      if (stored.exists && !currentEnvelopeValid) {
+        throw new Error("nyra_self_model_integrity_invalid");
+      }
+      if (currentEnvelopeValid && canonical(storedProfile(current)) === canonical(profile)) return current;
+      const unsigned = {
         ...profile,
-        revision: previousRevision + 1,
+        revision: currentEnvelopeValid ? current.revision + 1 : 1,
         generated_at: new Date().toISOString(),
-        payload_digest: sha256(canonical(profile)),
-        signature: sign(profile),
+      };
+      const record = {
+        ...unsigned,
+        payload_digest: sha256(canonical(unsigned)),
+        signature: sign(unsigned),
       };
       writeJsonAtomic(fileFor(tenantId), record);
       return record;
