@@ -59,13 +59,17 @@ import { createDynamicCapabilityHandlers } from "./dynamic-capability-router.js"
 import { createPostgresMajorVersionProbe } from "../../shared/postgres-major-version.js";
 import { createWebTransport, webCompatibilityManifest } from "./web-agent-compatibility.js";
 import { researchAirlockToolMetadata } from "./research-airlock-reference-monitor.js";
-import { issueDttAgentContext } from "../../shared/dtt-agent-identity-receipts.js";
+import {
+  issueCausalAgentIdentityContext,
+  issueDttAgentContext,
+} from "../../shared/dtt-agent-identity-receipts.js";
 import {
   CAUSAL_CONTINUITY_TOOLS,
   createCausalContinuityHandlers,
 } from "./causal-continuity.js";
 import {
   SOFTWARE_COGNITION_TOOLS,
+  createSoftwareCognitionAgentContextIssuer,
   createSoftwareCognitionHandlers,
 } from "./software-cognition.js";
 import {
@@ -465,7 +469,7 @@ const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === tru
   : {};
 const causalContinuityHandlers = createCausalContinuityHandlers({
   coreRequest: coreHandlers.causalCoreRequest,
-  issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
+  issueAgentContext: ({ tenant_id, agent_presence }) => issueCausalAgentIdentityContext({
     secret: config.dttAgentIdentitySigningSecret,
     tenant_id,
     agent_presence,
@@ -475,13 +479,13 @@ validatePresenceRecoveryContext = (args, identity) =>
   causalContinuityHandlers.causal_context_validate(args, identity);
 const softwareCognitionHandlers = createSoftwareCognitionHandlers({
   coreRequest: coreHandlers.causalCoreRequest,
+  authorizeAtlasRead: requireCanonicalWorkRead,
   atlasRuntime: workContinuityRuntime,
   repositoryBindings: config.nyraAtlasRepositoryBindings,
   githubTokens: config.nyraAtlasGithubTokens,
-  issueAgentContext: ({ tenant_id, agent_presence }) => issueDttAgentContext({
-    secret: config.dttAgentIdentitySigningSecret,
-    tenant_id,
-    agent_presence,
+  issueAgentContext: createSoftwareCognitionAgentContextIssuer({
+    issueContext: issueDttAgentContext,
+    signingSecret: config.dttAgentIdentitySigningSecret,
   }),
 });
 const entity360Handlers = createEntity360Handlers({
@@ -530,7 +534,7 @@ function stableCanonical(value) {
 }
 
 function dynamicInvocationTarget(toolName, args = {}, identity = {}) {
-  if (toolName !== "core_capability_invoke") {
+  if (toolName !== "core_capability_read" && toolName !== "core_capability_invoke") {
     return { toolName, args, capabilityId: "", argumentDigest: "" };
   }
   const capabilityId = String(args?.capability_id || "").trim();
@@ -996,7 +1000,7 @@ async function requireCanonicalWorkRead(identity, workId) {
     throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
   }
   try {
-    await workContinuityV2Store.readWork(withTenantWorkAcl(identity), { work_id: workId });
+    return await workContinuityV2Store.readWork(withTenantWorkAcl(identity), { work_id: workId });
   } catch (error) {
     const reason = String(error?.code || error?.message || "");
     if (reason === "work_acl_denied" || reason === "tenant_work_not_found" ||
@@ -1033,6 +1037,25 @@ async function readLegacyWorkAuthorized(identity, args) {
 async function readLegacyIntentAuthorized(identity, args) {
   await requireCanonicalWorkRead(identity, args.work_id);
   return workContinuityRuntime.readIntent(identity, args);
+}
+
+async function selectLegacyAtlasAuthorized(identity, args) {
+  if (args.work_id) {
+    const canonicalResult = await requireCanonicalWorkRead(identity, args.work_id);
+    const canonical = canonicalResult?.work || canonicalResult;
+    if (!canonical || canonical.work_id !== args.work_id ||
+        (args.project_id && canonical.project_id !== args.project_id)) {
+      throw legacyWorkAclError("continuity_work_acl_denied");
+    }
+    return workContinuityRuntime.selectAtlas(identity, args);
+  }
+  const authorizedWorkIds = await canonicalVisibleWorkIds(identity, { project_id: args.project_id });
+  return workContinuityRuntime.selectAtlas(identity, {
+    ...args,
+    // This scope is server-derived and intentionally absent from the public
+    // schema. Project aggregates must never re-expand beyond canonical V2 ACL.
+    authorized_work_ids: authorizedWorkIds,
+  });
 }
 
 async function ensureNativePlanLegacyBridge(identity, workId) {
@@ -1827,7 +1850,10 @@ const baseHandlers = {
       });
     },
     work_continuity_atlas_upsert: continuityMethodWithNyraContext("upsertAtlas"),
-    work_continuity_atlas_select: continuityMethod("selectAtlas"),
+    work_continuity_atlas_select: async (args, identity) => continuityTextResult({
+      ok: true,
+      result: await selectLegacyAtlasAuthorized(identity, args),
+    }),
     work_continuity_incident_record: continuityMethodWithNyraContext("recordIncident"),
     work_continuity_incident_verify: continuityMethodWithNyraContext("verifyIncident"),
     work_continuity_incident_resolve: continuityMethod("resolveIncident"),

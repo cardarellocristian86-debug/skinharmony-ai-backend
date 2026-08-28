@@ -3,6 +3,8 @@ import { indexSoftwareDiff, softwareDigest, validateGraphMutation } from "../../
 const identifier = { type: "string", minLength: 1, maxLength: 160 };
 const digest = { type: "string", pattern: "^[a-f0-9]{64}$" };
 const stringList = { type: "array", maxItems: 500, uniqueItems: true, items: identifier };
+const atlasSeedNodeIds = { type: "array", minItems: 1, maxItems: 50, uniqueItems: true, items: identifier };
+const atlasEdgeTypes = { type: "array", maxItems: 40, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 60 } };
 const object = (properties = {}, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 const payload = { type: "object", maxProperties: 300, additionalProperties: true };
 const GITHUB_ORIGIN = "https://api.github.com";
@@ -29,7 +31,7 @@ const base = { project_id: identifier, work_id: identifier, change_id: identifie
 const definitions = [
   ["software_cognition_graph_upsert", "Update Software Reality Graph", "CAS-update the exact Work Atlas graph only after Core verifies source evidence.", object({ ...base, source_evidence_digest: digest, expected_revision: { type: "integer", minimum: 0 }, nodes: { type: "array", minItems: 1, maxItems: 500, items: payload }, edges: { type: "array", maxItems: 2000, items: payload }, idempotency_key: identifier }, ["project_id", "work_id", "change_id", "plan_id", "source_evidence_digest", "expected_revision", "nodes", "edges", "idempotency_key"]), false],
   ["software_cognition_index_diff", "Index software diff", "Index an independently evidenced bounded JS/TS diff into the exact Work Atlas revision.", object({ ...base, diff_evidence_digest: digest, repository: identifier, base_commit: identifier, head_commit: identifier, known_graph_revision: { type: "integer", minimum: 0 }, changed_files: { type: "array", minItems: 1, maxItems: 500, items: payload }, idempotency_key: identifier }, ["project_id", "work_id", "change_id", "plan_id", "diff_evidence_digest", "repository", "base_commit", "head_commit", "known_graph_revision", "changed_files", "idempotency_key"]), false],
-  ["software_cognition_graph_select", "Select bounded software context", "Select seed nodes and a bounded dependency cone from Work Atlas.", object({ project_id: identifier, work_id: identifier, seed_node_ids: stringList, edge_types: stringList, max_depth: { type: "integer", minimum: 0, maximum: 4 }, max_nodes: { type: "integer", minimum: 1, maximum: 500 }, max_bytes: { type: "integer", minimum: 256, maximum: 128000 } }, ["project_id", "work_id", "seed_node_ids"]), true],
+  ["software_cognition_graph_select", "Select bounded software context", "Select seed nodes and a bounded dependency cone from Work Atlas.", object({ project_id: identifier, work_id: identifier, seed_node_ids: atlasSeedNodeIds, edge_types: atlasEdgeTypes, max_depth: { type: "integer", minimum: 0, maximum: 4 }, max_nodes: { type: "integer", minimum: 1, maximum: 500 }, max_bytes: { type: "integer", minimum: 256, maximum: 128000 } }, ["project_id", "work_id", "seed_node_ids"]), true],
   ["software_cognition_traceability_build", "Build requirement traceability", "Build evidence-qualified requirement, capability, code, test and runtime links from Work Atlas.", object({ ...base, links: { type: "array", maxItems: 2000, items: payload } }, ["project_id", "work_id", "change_id", "plan_id", "links"]), false],
   ["software_cognition_architecture_recover", "Recover software architecture", "Recover observed and inferred boundaries, layers and coupling with evidence-gated verification.", object({ ...base, verification_evidence: { type: "array", maxItems: 1000, items: payload } }, ["project_id", "work_id", "change_id", "plan_id"]), false],
   ["software_cognition_event_route", "Route software cognition event", "Select a bounded relevant Atlas context and recommend the next advisory capability.", object({ ...base, event: payload, max_depth: { type: "integer", minimum: 0, maximum: 4 }, max_nodes: { type: "integer", minimum: 1, maximum: 500 } }, ["project_id", "work_id", "change_id", "plan_id", "event"]), false],
@@ -74,6 +76,16 @@ const atlasBootstrapDefinition = ["software_cognition_repository_bootstrap", "Bo
 }, ["project_id", "work_id", "repository", "idempotency_key"]), false];
 
 export const SOFTWARE_COGNITION_TOOLS = Object.freeze([...definitions.map((entry) => tool(...entry)), tool(...atlasBootstrapDefinition)]);
+
+export function createSoftwareCognitionAgentContextIssuer({ issueContext, signingSecret } = {}) {
+  if (typeof issueContext !== "function") throw new TypeError("DTT context issuer required");
+  return ({ tenant_id, work_id, agent_presence }) => issueContext({
+    secret: signingSecret,
+    tenant_id,
+    work_id,
+    agent_presence,
+  });
+}
 
 const paths = Object.freeze({
   software_cognition_graph_upsert: "/v1/software-cognition/graphs/upsert",
@@ -426,21 +438,28 @@ async function bootstrapRepositoryAtlas({ args, identity, atlasRuntime, fetchImp
   });
 }
 
-export function createSoftwareCognitionHandlers({ coreRequest, issueAgentContext, atlasRuntime, fetchImpl = globalThis.fetch, repositoryBindings = {}, githubTokens = {} } = {}) {
+export function createSoftwareCognitionHandlers({ coreRequest, issueAgentContext, authorizeAtlasRead, atlasRuntime, fetchImpl = globalThis.fetch, repositoryBindings = {}, githubTokens = {} } = {}) {
   if (typeof coreRequest !== "function" || typeof issueAgentContext !== "function") throw new TypeError("software cognition transport required");
   const handlers = Object.fromEntries(definitions.map(([capabilityId]) => [capabilityId, async (args = {}, identity = {}) => {
     const tenantId = String(identity?.tenantId || "").trim();
     if (!tenantId || !identity.agentPresence) throw new Error("agent_presence_session_required");
-    const agentContext = issueAgentContext({ tenant_id: tenantId, agent_presence: identity.agentPresence });
-    if (!agentContext) throw new Error("dtt_agent_identity_not_ready");
     const body = { ...args };
     delete body.tenant_id;
     delete body.tenantId;
-    if (["software_cognition_graph_upsert", "software_cognition_index_diff", "software_cognition_graph_select"].includes(capabilityId)) {
-      if (!atlasRuntime || typeof atlasRuntime.upsertAtlas !== "function" || typeof atlasRuntime.readAtlasGraph !== "function") throw new Error("software_atlas_runtime_required");
-      if (capabilityId === "software_cognition_graph_select") {
-        return textResult(await atlasRuntime.selectAtlas(identity, body));
+    if (capabilityId === "software_cognition_graph_select") {
+      if (typeof authorizeAtlasRead !== "function") throw new Error("software_atlas_read_authorizer_required");
+      if (!atlasRuntime || typeof atlasRuntime.selectAtlas !== "function") throw new Error("software_atlas_runtime_required");
+      const canonicalWork = await authorizeAtlasRead(identity, body.work_id);
+      const canonical = canonicalWork?.work || canonicalWork;
+      if (!canonical || canonical.work_id !== body.work_id || canonical.project_id !== body.project_id) {
+        throw new Error("software_atlas_project_scope_mismatch");
       }
+      return textResult(await atlasRuntime.selectAtlas(identity, body));
+    }
+    const agentContext = issueAgentContext({ tenant_id: tenantId, work_id: body.work_id, agent_presence: identity.agentPresence });
+    if (!agentContext) throw new Error("dtt_agent_identity_not_ready");
+    if (["software_cognition_graph_upsert", "software_cognition_index_diff"].includes(capabilityId)) {
+      if (!atlasRuntime || typeof atlasRuntime.upsertAtlas !== "function" || typeof atlasRuntime.readAtlasGraph !== "function") throw new Error("software_atlas_runtime_required");
       const authorization = await coreRequest(paths[capabilityId], tenantId, { method: "POST", body: { ...body, authorize_only: true },
         additionalHeaders: { "x-sh-dtt-agent-context": agentContext } });
       const authority = authorization?.result || authorization;

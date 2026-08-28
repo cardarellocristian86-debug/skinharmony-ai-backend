@@ -12,7 +12,9 @@ import {
   createPostgresDttAgentIdentityReceiptStore,
   DTT_AGENT_CONTEXT_VERSION,
   DTT_AGENT_IDENTITY_RECEIPT_VERSION,
+  issueCausalAgentIdentityContext,
   issueDttAgentContext,
+  verifyCausalAgentIdentityContext,
 } from "../../shared/dtt-agent-identity-receipts.js";
 import {
   buildVerificationEvidenceContract,
@@ -93,6 +95,47 @@ function legacyToken(prefix, domain, payload) {
     .digest("hex");
   return `${prefix}_${encoded}.${signature}`;
 }
+
+test("causal identity context authenticates a tenant agent without inventing a Work", () => {
+  const now = 1_800_000_000_000;
+  const token = issueCausalAgentIdentityContext({
+    secret,
+    tenant_id: "tenant-a",
+    agent_presence: presenceA,
+    now_ms: now,
+    random_bytes: (size) => Buffer.alloc(size, 7),
+  });
+  const verified = verifyCausalAgentIdentityContext({
+    context_token: token,
+    secret,
+    expected_tenant_id: "tenant-a",
+    now: () => now + 1_000,
+  });
+  assert.equal(verified.schema_version, "causal_agent_identity_context_v1");
+  assert.equal(verified.tenant_id, "tenant-a");
+  assert.equal(verified.agent_id, presenceA.agent_id);
+  assert.equal(verified.execution_authorized, false);
+  assert.equal("work_id" in verified, false);
+  assert(Object.isFrozen(verified));
+  assert.throws(() => verifyCausalAgentIdentityContext({
+    context_token: token,
+    secret,
+    expected_tenant_id: "tenant-b",
+    now: () => now + 1_000,
+  }), /causal_agent_identity_tenant_mismatch/);
+  assert.throws(() => verifyCausalAgentIdentityContext({
+    context_token: `${token.slice(0, -1)}${token.endsWith("0") ? "1" : "0"}`,
+    secret,
+    expected_tenant_id: "tenant-a",
+    now: () => now + 1_000,
+  }), /cai_signature_invalid/);
+  assert.throws(() => verifyCausalAgentIdentityContext({
+    context_token: token,
+    secret,
+    expected_tenant_id: "tenant-a",
+    now: () => now + 300_001,
+  }), /causal_agent_identity_expired/);
+});
 
 test("agent context V2 requires a Work UUID v1-v8 and the exact transport principal", () => {
   const service = receiptService({ secret, store: createInMemoryDttAgentIdentityReceiptStore() });

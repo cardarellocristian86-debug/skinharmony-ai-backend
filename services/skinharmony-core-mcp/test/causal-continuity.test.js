@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CAUSAL_CONTINUITY_ROUTES, CAUSAL_CONTINUITY_TOOLS, buildGalleryProjection, createCausalContinuityHandlers, verifyGalleryBinding } from "../src/causal-continuity.js";
 import { validateToolArguments } from "../src/schema-validation.js";
+import {
+  issueCausalAgentIdentityContext,
+  verifyCausalAgentIdentityContext,
+} from "../../shared/dtt-agent-identity-receipts.js";
 
 const MINIMUM_CAPABILITIES = ["project_identity_resolve", "project_identity_create", "project_scope_read", "project_scope_bind", "project_state_snapshot", "project_state_verify", "genesis_intent_read", "genesis_intent_create", "intent_revision_propose", "intent_revision_approve", "intent_revision_impact", "project_decision_path_read", "work_bind_intent", "change_create", "change_read", "change_transition", "causal_context_issue", "causal_context_validate", "causal_obligation_create", "causal_obligation_read", "causal_obligation_transition", "causal_observation_record", "causal_reconcile", "causal_close", "causal_reopen", "continuity_capsule_build", "continuity_capsule_resume", "project_timeline_read", "gallery_binding_project", "gallery_projection_claim", "gallery_projection_complete", "gallery_projection_fail", "gallery_causal_view_read", "causal_metrics_snapshot", "gallery_binding_verify", "causal_rollout_read", "causal_rollout_set"];
-const agentPresence = { agent_id: "agent-a", session_id: "session-a", session_fingerprint: "fingerprint-a", signature: "signature-a", opaque_agent_id: "opaque-a", actor_provenance: "actor-a", client_type: "codex" };
+const agentPresence = { agent_id: "agent-a", session_id: "session-a", session_fingerprint: "fingerprint-a", host_transport_session_fingerprint: "transport-a", signature: "signature-a", opaque_agent_id: "opaque-a", actor_provenance: "actor-a", client_type: "codex" };
 function binding(overrides = {}) { return { tenant_id: "tenant-a", project_id: "project-a", project_state_digest: "a".repeat(64), genesis_intent_id: "genesis-a", intent_revision_id: "revision-a", work_id: "work-a", change_id: "change-a", obligation_ids: ["obligation-a"], core_event_sequence: 42, context_digest: "b".repeat(64), ...overrides }; }
 
 test("exports every minimum causal capability as a strict MCP tool", () => {
@@ -23,6 +27,62 @@ test("handlers derive tenant exclusively from authenticated identity and return 
   assert.deepEqual(result.structuredContent, { ok: true, project_id: "project-a" }); assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
   await assert.rejects(() => handlers.project_identity_resolve({}, {}), /causal_tenant_identity_required/);
   await assert.rejects(() => handlers.project_identity_resolve({}, { tenantId: "tenant-a" }), /agent_presence_session_required/);
+});
+
+test("causal handlers keep Work identity in the Core request, not the identity-only signer", async () => {
+  const issued = [];
+  const calls = [];
+  const workId = "22222222-2222-4222-8222-222222222222";
+  const handlers = createCausalContinuityHandlers({
+    coreRequest: async (...args) => { calls.push(args); return { ok: true }; },
+    issueAgentContext: (input) => { issued.push(input); return "signed-work-context"; },
+  });
+  await handlers.work_bind_intent({
+    project_id: "11111111-1111-4111-8111-111111111111",
+    work_id: workId,
+    intent_revision_id: "33333333-3333-4333-8333-333333333333",
+    idempotency_key: "bind-work-a",
+  }, { tenantId: "tenant-a", agentPresence });
+  assert.deepEqual(issued, [{ tenant_id: "tenant-a", agent_presence: agentPresence }]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][2].body.work_id, workId);
+  assert.equal(calls[0][2].additionalHeaders["x-sh-dtt-agent-context"], "signed-work-context");
+});
+
+test("real causal signer supports both project-scoped and Work-scoped capabilities", async () => {
+  const secret = "test-only-causal-agent-identity-secret-000000000000";
+  const calls = [];
+  const handlers = createCausalContinuityHandlers({
+    coreRequest: async (...args) => {
+      const token = args[2].additionalHeaders["x-sh-dtt-agent-context"];
+      const verified = verifyCausalAgentIdentityContext({
+        context_token: token,
+        secret,
+        expected_tenant_id: args[1],
+      });
+      calls.push({ args, verified });
+      return { ok: true };
+    },
+    issueAgentContext: ({ tenant_id, agent_presence }) => issueCausalAgentIdentityContext({
+      secret,
+      tenant_id,
+      agent_presence,
+    }),
+  });
+  await handlers.project_scope_read({ project_id: "project-a" }, {
+    tenantId: "tenant-a",
+    agentPresence,
+  });
+  const workId = "22222222-2222-4222-8222-222222222222";
+  await handlers.continuity_capsule_resume({ project_id: "project-a", work_id: workId }, {
+    tenantId: "tenant-a",
+    agentPresence,
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].verified.execution_authorized, false);
+  assert.equal("work_id" in calls[0].verified, false);
+  assert.equal(calls[1].args[2].method, "GET");
+  assert.match(calls[1].args[0], new RegExp(`work_id=${workId}`));
 });
 
 test("handler route map exactly covers Core routes and sends writes in the body", async () => {

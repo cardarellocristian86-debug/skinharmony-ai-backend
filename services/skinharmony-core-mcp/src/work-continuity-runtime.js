@@ -4951,6 +4951,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
     await initialize();
     const tenantId = tenant(identity.tenantId);
     const workId = input.work_id ? uuid(input.work_id, "work_id") : null;
+    const authorizedWorkIds = input.authorized_work_ids === undefined
+      ? null
+      : [...new Set(input.authorized_work_ids.map((value) => uuid(value, "authorized_work_id")))];
+    if (workId && authorizedWorkIds && !authorizedWorkIds.includes(workId)) {
+      throw new Error("work_atlas_authorization_scope_mismatch");
+    }
     const requestedProjectId = input.project_id
       ? identifier(input.project_id, "project_id", 64)
       : null;
@@ -4961,10 +4967,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
       maxLength: 160,
     });
     if (!seedNodeIds.length) throw new Error("work_atlas_seed_required");
-    const maxDepth = Math.min(Math.max(Number(input.max_depth) || 1, 0), 4);
+    const requestedMaxDepth = input.max_depth === undefined ? 1 : Number(input.max_depth);
+    const maxDepth = Math.min(Math.max(Number.isFinite(requestedMaxDepth) ? Math.trunc(requestedMaxDepth) : 1, 0), 4);
     const maxNodes = Math.min(Math.max(Number(input.max_nodes) || 200, 1), 500);
     const edgeTypes = input.edge_types === undefined ? null : stringList(input.edge_types, "edge_types", { maxItems: 40, maxLength: 60 });
-    if (edgeTypes && !edgeTypes.length) throw new Error("work_atlas_edge_types_invalid");
 
     // An explicit work remains an exact snapshot lookup. Project selection is
     // a separate aggregate projection below and never silently substitutes
@@ -5018,8 +5024,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         source_hash,updated_at
       FROM core_continuity_atlas_state
       WHERE tenant_id=$1 AND project_id=$2
+        AND ($3::uuid[] IS NULL OR work_id=ANY($3::uuid[]))
       ORDER BY updated_at DESC,work_id DESC`,
-    [tenantId, projectId]);
+    [tenantId, projectId, authorizedWorkIds]);
     if (!states.rows.length) {
       const empty = selectAggregatedAtlasWithinBudget([], [], {
         max_bytes: input.max_bytes,
@@ -5058,11 +5065,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
         JOIN core_continuity_atlas_state s
           ON s.tenant_id=n.tenant_id AND s.work_id=n.work_id
         WHERE n.tenant_id=$1 AND s.project_id=$2 AND n.active=true
+          AND ($3::uuid[] IS NULL OR n.work_id=ANY($3::uuid[]))
       )
       SELECT count(*)::bigint AS total_nodes,
         COALESCE(sum(context_bytes),0)::bigint AS total_context_bytes
       FROM ranked_nodes WHERE priority=1`,
-    [tenantId, projectId]);
+    [tenantId, projectId, authorizedWorkIds]);
     const candidates = await pool.query(`WITH RECURSIVE
       scoped_nodes AS (
         SELECT n.*,s.updated_at AS state_updated_at
@@ -5070,6 +5078,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         JOIN core_continuity_atlas_state s
           ON s.tenant_id=n.tenant_id AND s.work_id=n.work_id
         WHERE n.tenant_id=$1 AND s.project_id=$2 AND n.active=true
+          AND ($3::uuid[] IS NULL OR n.work_id=ANY($3::uuid[]))
       ),
       node_sources AS (
         SELECT node_id,array_agg(DISTINCT work_id ORDER BY work_id) AS source_work_ids
@@ -5097,17 +5106,18 @@ export function createWorkContinuityRuntime(config, options = {}) {
         JOIN latest_nodes source ON source.node_id=e.from_node_id
         JOIN latest_nodes target ON target.node_id=e.to_node_id
         WHERE e.tenant_id=$1 AND s.project_id=$2
+          AND ($3::uuid[] IS NULL OR e.work_id=ANY($3::uuid[]))
           AND e.active=true
-          AND ($5::varchar[] IS NULL OR e.edge_type=ANY($5::varchar[]))
+          AND ($6::varchar[] IS NULL OR e.edge_type=ANY($6::varchar[]))
         GROUP BY e.from_node_id,e.to_node_id,e.edge_type
       ),
       selected(node_id,depth) AS (
-        SELECT unnest($3::varchar[])::varchar,0
+        SELECT unnest($4::varchar[])::varchar,0
         UNION
         SELECT CASE WHEN e.from_node_id=s.node_id THEN e.to_node_id ELSE e.from_node_id END,s.depth+1
         FROM selected s JOIN aggregate_edges e
           ON e.from_node_id=s.node_id OR e.to_node_id=s.node_id
-        WHERE s.depth<$4
+        WHERE s.depth<$5
       )
       SELECT n.node_id,n.node_kind,n.path,n.symbol,n.summary,n.node_digest,n.context_bytes,
         n.metadata,n.source_work_ids,min(s.depth)::integer AS depth
@@ -5115,7 +5125,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       GROUP BY n.node_id,n.node_kind,n.path,n.symbol,n.summary,n.node_digest,n.context_bytes,
         n.metadata,n.source_work_ids
       ORDER BY min(s.depth),n.node_id`,
-    [tenantId, projectId, seedNodeIds, maxDepth, edgeTypes]);
+    [tenantId, projectId, authorizedWorkIds, seedNodeIds, maxDepth, edgeTypes]);
     const boundedCandidates = candidates.rows.slice(0, maxNodes);
     const candidateNodeIds = boundedCandidates.map((node) => node.node_id);
     const aggregateEdges = candidateNodeIds.length
@@ -5125,11 +5135,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
         JOIN core_continuity_atlas_state s
           ON s.tenant_id=e.tenant_id AND s.work_id=e.work_id
         WHERE e.tenant_id=$1 AND s.project_id=$2 AND e.active=true
-          AND ($4::varchar[] IS NULL OR e.edge_type=ANY($4::varchar[]))
-          AND e.from_node_id=ANY($3::varchar[]) AND e.to_node_id=ANY($3::varchar[])
+          AND ($3::uuid[] IS NULL OR e.work_id=ANY($3::uuid[]))
+          AND ($5::varchar[] IS NULL OR e.edge_type=ANY($5::varchar[]))
+          AND e.from_node_id=ANY($4::varchar[]) AND e.to_node_id=ANY($4::varchar[])
         GROUP BY e.from_node_id,e.to_node_id,e.edge_type
         ORDER BY e.from_node_id,e.to_node_id,e.edge_type`,
-      [tenantId, projectId, candidateNodeIds, edgeTypes])
+      [tenantId, projectId, authorizedWorkIds, candidateNodeIds, edgeTypes])
       : { rows: [] };
     const selected = selectAggregatedAtlasWithinBudget(boundedCandidates, aggregateEdges.rows, {
       max_bytes: input.max_bytes,
