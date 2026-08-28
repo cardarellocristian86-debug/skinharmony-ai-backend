@@ -291,9 +291,12 @@ export function requireHostAppToolCapability({
   if (!required) return null;
   const requiredCapabilities = [required];
   const governedOperationCapability = target === "nyra_governed_continue"
-    ? {
+      ? {
         review_work_bootstrap: HOST_APP_CAPABILITIES.WORK_CREATE,
         create_work: HOST_APP_CAPABILITIES.WORK_CREATE,
+        resume_existing_work: HOST_APP_CAPABILITIES.WORK_OPERATE,
+        create_native_plan: HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
+        bind_native_child: HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
         issue_delegation: HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE,
         authorize_action: HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
       }[String(args?.operation || "")]
@@ -338,4 +341,20 @@ export function hostAppCanAccessTool({ identity, toolName, tools = [] } = {}) {
   } catch {
     return false;
   }
+}
+
+// Discovery must describe the request's real dispatch surface. A
+// nyra_conversational host reaches mutations only through the direct signed
+// continuation tool, so dynamic catalog entries for ordinary writes would be
+// unusable. The sole exception is a native child admitted for this request:
+// its transport-bound assignment narrows discovery to native_report only.
+export function hostAppCanDiscoverDynamicCapability({ identity, tool, tools = [] } = {}) {
+  if (identity?.nativeReportAdmission?.capability_id === NATIVE_REPORT_CAPABILITY) {
+    return tool?.name === NATIVE_REPORT_CAPABILITY;
+  }
+  if (identity?.authenticatedHostPrincipal?.interaction_mode === "nyra_conversational" &&
+      tool?.annotations?.readOnlyHint !== true) {
+    return false;
+  }
+  return hostAppCanAccessTool({ identity, toolName: tool?.name, tools });
 }
