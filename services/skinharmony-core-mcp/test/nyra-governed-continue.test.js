@@ -25,6 +25,14 @@ const bootstrapDependencies = Object.freeze({
   reviewWorkBootstrap: async () => { throw new Error("unexpected_bootstrap_review"); },
   createWorkBootstrap: async () => { throw new Error("unexpected_bootstrap_create"); },
 });
+const nativeDependencies = Object.freeze({
+  resumeExistingWork: async () => { throw new Error("unexpected_work_resume"); },
+  createNativePlan: async () => { throw new Error("unexpected_native_plan"); },
+  bindNativeChild: async () => { throw new Error("unexpected_native_bind"); },
+  authorizeNativeCoordination: async () => {
+    throw new Error("unexpected_native_coordination");
+  },
+});
 
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable);
@@ -116,6 +124,27 @@ function issueAction(
     directive: directive(actionClass, state),
     continuationOperation,
   });
+}
+
+function continuationDirective(overrides = {}) {
+  const base = directive("PULL_REQUEST_OPEN", "NEEDS_CONTEXT");
+  return {
+    ...base,
+    can_continue: true,
+    decision: {
+      disposition: "PREPARE_BOUNDED_WORK",
+      execution_authorized: false,
+      external_action_authorized: false,
+    },
+    permitted_progress: ["READ_ONLY", "ANALYSIS", "EVIDENCE", "BOUNDED_WORKSPACE"],
+    work_context: { status: "ACTIVE" },
+    ticket_request: {
+      ...base.ticket_request,
+      request_digest: null,
+      ...overrides.ticket_request,
+    },
+    ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== "ticket_request")),
+  };
 }
 
 function normalizedContext(overrides = {}) {
@@ -242,6 +271,439 @@ test("issues a short-lived candidate only to a registered capable host", () => {
   assert.equal(unsupported.reason, "host_native_host_kind_not_supported");
 });
 
+test("issues a distinct internal Work candidate without turning it into an external ticket", () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = attestor.issue({
+    identity: identity(),
+    directive: continuationDirective(),
+  });
+  assert.equal(candidate.available, true);
+  assert.deepEqual(candidate.operations, ["resume_existing_work", "create_native_plan"]);
+  assert.equal(candidate.operations.includes("bind_native_child"), false);
+  assert.equal(candidate.operations.includes("authorize_action"), false);
+  assert.equal(candidate.operations.includes("work_continuity_native_report"), false);
+
+  const terminal = attestor.issue({
+    identity: identity(),
+    directive: continuationDirective({ work_context: { status: "COMPLETED" } }),
+  });
+  assert.equal(terminal.available, false);
+
+  const external = attestor.issue({
+    identity: identity(),
+    continuationOperation: "authorize_action",
+    directive: {
+      ...continuationDirective(),
+      ticket_request: directive().ticket_request,
+    },
+  });
+  assert.deepEqual(external.operations, ["issue_delegation", "authorize_action"]);
+  assert.equal(external.operations.includes("create_native_plan"), false);
+});
+
+test("resumes only the attested Work, revision and transport session through the existing gate", async () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = attestor.issue({ identity: identity(), directive: continuationDirective() });
+  const calls = [];
+  const makeHandler = (context = normalizedContext()) => createNyraGovernedContinueHandler({
+    ...bootstrapDependencies,
+    ...nativeDependencies,
+    attestor,
+    readDirectiveContext: async () => ({ raw: true }),
+    normalizeDirectiveContext: () => context,
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    authorizeAction: async () => { throw new Error("unexpected_action"); },
+    resumeExistingWork: async (args, caller) => {
+      calls.push({ args, caller });
+      return { structuredContent: { ok: true, result: {
+        tenant_id: caller.tenantId,
+        work_id: args.work_id,
+        resumed: true,
+      }, dedicated_core_gate: { authorized: true } } };
+    },
+  });
+  const request = {
+    operation: "resume_existing_work",
+    candidate_attestation: candidate.candidate_attestation,
+    idempotency_key: "resume-existing-work-001",
+    owner_confirmed: true,
+    confirmation_reference: "owner-resume-e360",
+    resume_request: {
+      work_id: WORK_ID,
+      session_id: "chatgpt-session",
+      current_state_hashes: {
+        repository_hash: DIGEST_A,
+        policy_hash: DIGEST_B,
+        live_state_hash: DIGEST_C,
+      },
+    },
+  };
+  const resumed = await makeHandler()(request, identity());
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args.work_id, WORK_ID);
+  assert.match(calls[0].args.idempotency_key, /^nyra_cont_[a-f0-9]{48}$/);
+  assert.equal(resumed.structuredContent.work_resumed, true);
+  assert.equal(resumed.structuredContent.external_action_authorized, false);
+
+  const wrongSessionCandidate = attestor.issue({
+    identity: identity(),
+    directive: continuationDirective(),
+  });
+  await assert.rejects(makeHandler()({
+    ...request,
+    candidate_attestation: wrongSessionCandidate.candidate_attestation,
+    idempotency_key: "resume-wrong-session-001",
+    resume_request: { ...request.resume_request, session_id: "other-session" },
+  }, identity()), /native_request_binding_mismatch/);
+
+  const wrongRevisionCandidate = attestor.issue({
+    identity: identity(),
+    directive: continuationDirective(),
+  });
+  await assert.rejects(makeHandler(normalizedContext({ work_revision: 8 }))({
+    ...request,
+    candidate_attestation: wrongRevisionCandidate.candidate_attestation,
+    idempotency_key: "resume-wrong-revision-001",
+  }, identity()), /work_drift/);
+
+  const crossTenantCandidate = attestor.issue({
+    identity: identity(),
+    directive: continuationDirective(),
+  });
+  await assert.rejects(makeHandler()({
+    ...request,
+    candidate_attestation: crossTenantCandidate.candidate_attestation,
+    idempotency_key: "resume-cross-tenant-001",
+  }, identity({ tenantId: "tenant-b" })), /attestation_binding_mismatch/);
+});
+
+test("two replicas converge on one downstream resume replay without sharing process memory", async () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const issuer = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = issuer.issue({ identity: identity(), directive: continuationDirective() });
+  const downstream = new Map();
+  const observedKeys = [];
+  const buildReplica = () => {
+    const verifier = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+    return createNyraGovernedContinueHandler({
+      ...bootstrapDependencies,
+      ...nativeDependencies,
+      attestor: verifier,
+      readDirectiveContext: async () => ({ raw: true }),
+      normalizeDirectiveContext: () => normalizedContext(),
+      issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+      authorizeAction: async () => { throw new Error("unexpected_action"); },
+      resumeExistingWork: async (request, caller) => {
+        observedKeys.push(request.idempotency_key);
+        const existing = downstream.get(request.idempotency_key);
+        if (existing) return existing;
+        const result = { structuredContent: { ok: true, result: {
+          tenant_id: caller.tenantId,
+          work_id: request.work_id,
+          resumed: true,
+          idempotent_replay: false,
+        } } };
+        downstream.set(request.idempotency_key, result);
+        return result;
+      },
+    });
+  };
+  const request = {
+    operation: "resume_existing_work",
+    candidate_attestation: candidate.candidate_attestation,
+    idempotency_key: "resume-two-replicas-001",
+    owner_confirmed: true,
+    confirmation_reference: "owner-resume-two-replicas",
+    resume_request: {
+      work_id: WORK_ID,
+      session_id: "chatgpt-session",
+      current_state_hashes: {
+        repository_hash: DIGEST_A,
+        policy_hash: DIGEST_B,
+        live_state_hash: DIGEST_C,
+      },
+    },
+  };
+  const first = await buildReplica()(request, identity());
+  const second = await buildReplica()(request, identity());
+  assert.equal(first.structuredContent.work_resumed, true);
+  assert.equal(second.structuredContent.work_resumed, true);
+  assert.equal(observedKeys.length, 2);
+  assert.equal(observedKeys[0], observedKeys[1]);
+  assert.equal(downstream.size, 1);
+});
+
+test("handler rejects expired and registry-drifted continuations before Core dispatch", async () => {
+  let clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const attestor = createNyraGovernedContinueAttestor({
+    secret: SECRET,
+    now: () => clock,
+    ttlMs: 60_000,
+  });
+  let calls = 0;
+  const handler = createNyraGovernedContinueHandler({
+    ...bootstrapDependencies,
+    ...nativeDependencies,
+    attestor,
+    readDirectiveContext: async () => ({ raw: true }),
+    normalizeDirectiveContext: () => normalizedContext(),
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    authorizeAction: async () => { throw new Error("unexpected_action"); },
+    resumeExistingWork: async () => { calls += 1; return {}; },
+  });
+  const requestFor = (candidate, idempotencyKey) => ({
+    operation: "resume_existing_work",
+    candidate_attestation: candidate.candidate_attestation,
+    idempotency_key: idempotencyKey,
+    resume_request: {
+      work_id: WORK_ID,
+      session_id: "chatgpt-session",
+      current_state_hashes: {
+        repository_hash: DIGEST_A,
+        policy_hash: DIGEST_B,
+        live_state_hash: DIGEST_C,
+      },
+    },
+  });
+  const expired = attestor.issue({ identity: identity(), directive: continuationDirective() });
+  clock += 60_001;
+  await assert.rejects(
+    handler(requestFor(expired, "expired-handler-001"), identity()),
+    /attestation_expired/,
+  );
+  clock = Date.parse("2026-08-25T12:02:00.000Z");
+  const registryBound = attestor.issue({ identity: identity(), directive: continuationDirective() });
+  const driftedIdentity = identity({
+    authenticatedHostPrincipal: {
+      ...identity().authenticatedHostPrincipal,
+      registry_revision: DIGEST_A,
+    },
+  });
+  await assert.rejects(
+    handler(requestFor(registryBound, "registry-drift-handler-001"), driftedIdentity),
+    /attestation_binding_mismatch/,
+  );
+  assert.equal(calls, 0);
+});
+
+test("derives a plan-bound child candidate and rejects host, plan, task and replay substitution", async () => {
+  let clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const rootCandidate = attestor.issue({ identity: identity(), directive: continuationDirective() });
+  const PLAN_ID = "22222222-2222-4222-8222-222222222222";
+  const nativeTasks = [
+    { task_id: "build", kind: "builder", instruction: "Implement the bounded bridge." },
+    { task_id: "verify", kind: "verifier", instruction: "Verify the bounded bridge.", dependencies: ["build"] },
+  ];
+  const taskDigests = { build: DIGEST_A, verify: DIGEST_B };
+  const nativePlanResult = (caller) => ({ structuredContent: { ok: true, result: {
+    schema_version: "work_continuity_fabric_v2",
+    tenant_id: caller.tenantId,
+    work_id: WORK_ID,
+    plan_digest: DIGEST_C,
+    plan: {
+      plan_id: PLAN_ID,
+      host_type: "chatgpt_native",
+      coordinator_session_fingerprint: "d".repeat(24),
+      tasks: nativeTasks.map((task) => ({
+        ...task,
+        task_digest: taskDigests[task.task_id],
+      })),
+    },
+  } } });
+  const calls = [];
+  const handler = createNyraGovernedContinueHandler({
+    ...bootstrapDependencies,
+    attestor,
+    readDirectiveContext: async () => ({ raw: true }),
+    normalizeDirectiveContext: () => normalizedContext(),
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    authorizeAction: async () => { throw new Error("unexpected_action"); },
+    resumeExistingWork: async () => { throw new Error("unexpected_resume"); },
+    authorizeNativeCoordination: async (request) => { calls.push({ phase: "gate", request }); },
+    createNativePlan: async (request, caller) => {
+      calls.push({ phase: "plan", request });
+      return nativePlanResult(caller);
+    },
+    bindNativeChild: async (request, caller) => {
+      calls.push({ phase: "bind", request });
+      return { structuredContent: { ok: true, result: {
+        tenant_id: caller.tenantId,
+        work_id: WORK_ID,
+        plan_id: PLAN_ID,
+        binding: {
+          task_id: request.task_id,
+          task_digest: taskDigests[request.task_id],
+          agent_id: request.native_agent_id,
+          host_type: request.host_type,
+          host_task_id: request.host_task_id,
+        },
+        assignment_capability: `hnac_${"x".repeat(43)}`,
+      } } };
+    },
+  });
+  const planRequest = {
+    operation: "create_native_plan",
+    candidate_attestation: rootCandidate.candidate_attestation,
+    idempotency_key: "native-plan-create-001",
+    native_plan_request: {
+      work_id: WORK_ID,
+      repository: "owner/repo",
+      base_branch: "main",
+      host_type: "chatgpt_native",
+      required_checks: ["core-mcp"],
+      tasks: nativeTasks,
+      max_parallel: 2,
+    },
+  };
+  clock += 60_000;
+  const planned = await handler(planRequest, identity());
+  assert.equal(planned.structuredContent.native_plan_created, true);
+  const nextContinuation = planned.structuredContent.next_governed_continuation;
+  assert.deepEqual(nextContinuation.operations, ["bind_native_child"]);
+  assert(Date.parse(nextContinuation.expires_at) <= Date.parse(rootCandidate.expires_at));
+  assert.deepEqual(calls.map((call) => call.phase), ["gate", "plan"]);
+  const bindCandidate = nextContinuation.candidate_attestation;
+  const bindRequest = {
+    operation: "bind_native_child",
+    candidate_attestation: bindCandidate,
+    idempotency_key: "native-bind-build-001",
+    native_bind_request: {
+      work_id: WORK_ID,
+      plan_id: PLAN_ID,
+      task_id: "build",
+      native_agent_id: "chatgpt-builder",
+      host_type: "chatgpt_native",
+      host_task_id: "/root/build",
+    },
+  };
+  const bound = await handler(bindRequest, identity());
+  assert.equal(bound.structuredContent.native_child_bound, true);
+  assert.equal(bound.structuredContent.bound_task_id, "build");
+  assert.match(bound.structuredContent.core_result.result.assignment_capability, /^hnac_/);
+
+  const replicaBindCalls = [];
+  const replicaHandler = createNyraGovernedContinueHandler({
+    ...bootstrapDependencies,
+    ...nativeDependencies,
+    attestor: createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock }),
+    readDirectiveContext: async () => ({ raw: true }),
+    normalizeDirectiveContext: () => normalizedContext(),
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    authorizeAction: async () => { throw new Error("unexpected_action"); },
+    authorizeNativeCoordination: async () => {},
+    bindNativeChild: async (request, caller) => {
+      replicaBindCalls.push(request);
+      return { structuredContent: { ok: true, result: {
+        tenant_id: caller.tenantId,
+        work_id: WORK_ID,
+        plan_id: PLAN_ID,
+        idempotent_replay: true,
+        binding: {
+          task_id: request.task_id,
+          task_digest: taskDigests[request.task_id],
+          agent_id: request.native_agent_id,
+          host_type: request.host_type,
+          host_task_id: request.host_task_id,
+        },
+        assignment_capability: `hnac_${"x".repeat(43)}`,
+      } } };
+    },
+  });
+  const replicaBound = await replicaHandler(bindRequest, identity());
+  const firstBindCall = calls.find((call) => call.phase === "bind");
+  assert.equal(replicaBound.structuredContent.native_child_bound, true);
+  assert.equal(replicaBindCalls.length, 1);
+  assert.equal(replicaBindCalls[0].idempotency_key, firstBindCall.request.idempotency_key);
+  assert.equal(replicaBindCalls[0].task_id, firstBindCall.request.task_id);
+
+  const wrongHostRoot = attestor.issue({ identity: identity(), directive: continuationDirective() });
+  await assert.rejects(handler({
+    ...planRequest,
+    candidate_attestation: wrongHostRoot.candidate_attestation,
+    idempotency_key: "native-plan-wrong-host-001",
+    native_plan_request: { ...planRequest.native_plan_request, host_type: "codex_native" },
+  }, identity()), /native_request_binding_mismatch/);
+
+  await assert.rejects(handler({
+    ...bindRequest,
+    idempotency_key: "native-bind-wrong-plan-001",
+    native_bind_request: {
+      ...bindRequest.native_bind_request,
+      plan_id: "33333333-3333-4333-8333-333333333333",
+    },
+  }, identity()), /native_bind_binding_mismatch/);
+  await assert.rejects(handler({
+    ...bindRequest,
+    idempotency_key: "native-bind-wrong-task-001",
+    native_bind_request: { ...bindRequest.native_bind_request, task_id: "invented" },
+  }, identity()), /native_bind_binding_mismatch/);
+  await assert.rejects(handler({
+    ...bindRequest,
+    idempotency_key: "native-bind-substitution-001",
+    native_bind_request: { ...bindRequest.native_bind_request, native_agent_id: "other-builder" },
+  }, identity()), /attestation_replayed/);
+  await assert.rejects(handler({
+    operation: "work_continuity_native_report",
+    candidate_attestation: bindCandidate,
+    idempotency_key: "native-report-forbidden-001",
+  }, identity()), /operation_invalid/);
+
+  for (const [field, value] of [
+    ["agent_id", "wrong-builder"],
+    ["host_type", "codex_native"],
+    ["host_task_id", "/root/wrong-build"],
+  ]) {
+    const replicaAttestor = createNyraGovernedContinueAttestor({
+      secret: SECRET,
+      now: () => clock,
+    });
+    const mismatchedReadbackHandler = createNyraGovernedContinueHandler({
+      ...bootstrapDependencies,
+      ...nativeDependencies,
+      attestor: replicaAttestor,
+      readDirectiveContext: async () => ({ raw: true }),
+      normalizeDirectiveContext: () => normalizedContext(),
+      issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+      authorizeAction: async () => { throw new Error("unexpected_action"); },
+      authorizeNativeCoordination: async () => {},
+      bindNativeChild: async (request, caller) => ({ structuredContent: { ok: true, result: {
+        tenant_id: caller.tenantId,
+        work_id: WORK_ID,
+        plan_id: PLAN_ID,
+        binding: {
+          task_id: request.task_id,
+          task_digest: taskDigests[request.task_id],
+          agent_id: request.native_agent_id,
+          host_type: request.host_type,
+          host_task_id: request.host_task_id,
+          [field]: value,
+        },
+        assignment_capability: `hnac_${"x".repeat(43)}`,
+      } } }),
+    });
+    await assert.rejects(mismatchedReadbackHandler({
+      ...bindRequest,
+      idempotency_key: `native-bind-readback-${field}`,
+    }, identity()), /native_bind_readback_mismatch/);
+  }
+
+  const expiringParent = attestor.issue({
+    identity: identity(),
+    directive: continuationDirective(),
+  });
+  const [, encodedParent] = expiringParent.candidate_attestation.split(".");
+  const parentPayload = JSON.parse(Buffer.from(encodedParent, "base64url").toString("utf8"));
+  clock += 5 * 60_000 + 1;
+  assert.throws(() => attestor.issueNativePlanBinding({
+    identity: identity(),
+    parentPayload,
+    planResult: nativePlanResult(identity()),
+  }), /native_plan_parent_expired/);
+});
+
 test("submits a merge candidate for a Core ticket without reserving or executing it", async () => {
   const clock = Date.parse("2026-08-25T12:00:00.000Z");
   const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
@@ -249,6 +711,7 @@ test("submits a merge candidate for a Core ticket without reserving or executing
   const calls = [];
   const handler = createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
+    ...nativeDependencies,
     attestor,
     readDirectiveContext: async () => ({ raw: true }),
     normalizeDirectiveContext: () => normalizedContext(),
@@ -296,6 +759,7 @@ test("derives the same downstream idempotency key across process replicas", asyn
   const downstreamKeys = [];
   const makeHandler = (attestor) => createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
+    ...nativeDependencies,
     attestor,
     readDirectiveContext: async () => ({}),
     normalizeDirectiveContext: () => normalizedContext(),
@@ -330,6 +794,99 @@ test("derives the same downstream idempotency key across process replicas", asyn
   assert.notEqual(downstreamKeys[0], "caller-key-one");
 });
 
+test("keeps one durable plan key across replicas so changed plan bodies fail closed", async () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const firstAttestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const secondAttestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = firstAttestor.issue({
+    identity: identity(),
+    directive: continuationDirective(),
+  });
+  const planId = "22222222-2222-4222-8222-222222222222";
+  const durableRequests = new Map();
+  const downstreamKeys = [];
+  const makeHandler = (attestor) => createNyraGovernedContinueHandler({
+    ...bootstrapDependencies,
+    ...nativeDependencies,
+    attestor,
+    readDirectiveContext: async () => ({ raw: true }),
+    normalizeDirectiveContext: () => normalizedContext(),
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    authorizeAction: async () => { throw new Error("unexpected_action"); },
+    authorizeNativeCoordination: async () => {},
+    createNativePlan: async (request, caller) => {
+      const key = request.idempotency_key;
+      const durableBody = JSON.stringify({
+        work_id: request.work_id,
+        repository: request.repository,
+        base_branch: request.base_branch,
+        host_type: request.host_type,
+        required_checks: request.required_checks,
+        tasks: request.tasks,
+        max_parallel: request.max_parallel,
+      });
+      downstreamKeys.push(key);
+      const existing = durableRequests.get(key);
+      if (existing && existing !== durableBody) {
+        const error = new Error("native_plan_idempotency_conflict");
+        error.status = 409;
+        throw error;
+      }
+      durableRequests.set(key, durableBody);
+      return { structuredContent: { ok: true, result: {
+        schema_version: "work_continuity_fabric_v2",
+        tenant_id: caller.tenantId,
+        work_id: WORK_ID,
+        plan_digest: DIGEST_C,
+        plan: {
+          plan_id: planId,
+          host_type: request.host_type,
+          coordinator_session_fingerprint: "d".repeat(24),
+          tasks: request.tasks.map((task) => ({ ...task, task_digest: DIGEST_A })),
+        },
+      } } };
+    },
+  });
+  const input = {
+    operation: "create_native_plan",
+    candidate_attestation: candidate.candidate_attestation,
+    native_plan_request: {
+      work_id: WORK_ID,
+      repository: "owner/repo",
+      base_branch: "main",
+      host_type: "chatgpt_native",
+      required_checks: ["core-mcp"],
+      tasks: [{
+        task_id: "build",
+        kind: "builder",
+        instruction: "Implement version one.",
+      }],
+      max_parallel: 1,
+    },
+  };
+
+  await makeHandler(firstAttestor)({
+    ...input,
+    idempotency_key: "plan-replica-body-one",
+  }, identity());
+  await assert.rejects(makeHandler(secondAttestor)({
+    ...input,
+    idempotency_key: "plan-replica-body-two",
+    native_plan_request: {
+      ...input.native_plan_request,
+      tasks: [{
+        ...input.native_plan_request.tasks[0],
+        instruction: "Implement a substituted version two.",
+      }],
+    },
+  }, identity()), /native_plan_idempotency_conflict/);
+
+  assert.equal(downstreamKeys.length, 2);
+  assert.equal(downstreamKeys[0], downstreamKeys[1]);
+  assert.match(downstreamKeys[0], /^nyra_cont_[a-f0-9]{48}$/);
+  assert.equal(durableRequests.size, 1);
+});
+
 test("fails closed on host/session drift, Work drift, replay and action-class substitution", async () => {
   const clock = Date.parse("2026-08-25T12:00:00.000Z");
   const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
@@ -342,6 +899,7 @@ test("fails closed on host/session drift, Work drift, replay and action-class su
 
   const handler = createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
+    ...nativeDependencies,
     attestor,
     readDirectiveContext: async () => ({}),
     normalizeDirectiveContext: () => normalizedContext({ work_revision: 8 }),
@@ -371,6 +929,7 @@ test("fails closed on host/session drift, Work drift, replay and action-class su
   const fresh = issueAction(attestor);
   const actionHandler = createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
+    ...nativeDependencies,
     attestor,
     readDirectiveContext: async () => ({}),
     normalizeDirectiveContext: () => normalizedContext(),
@@ -395,6 +954,7 @@ test("requires a fresh owner confirmation to issue the exact bounded delegation"
   let calls = 0;
   const handler = createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
+    ...nativeDependencies,
     attestor,
     readDirectiveContext: async () => ({}),
     normalizeDirectiveContext: () => normalizedContext(),
@@ -569,6 +1129,7 @@ test("reviews then creates one exact canonical V2 Work through separate governed
   assert.equal(legacyBootstrapPayload.continuation_operation, null);
   const calls = [];
   const handler = createNyraGovernedContinueHandler({
+    ...nativeDependencies,
     attestor,
     readDirectiveContext: async () => { throw new Error("bootstrap_must_not_read_unbound_work"); },
     normalizeDirectiveContext: () => { throw new Error("bootstrap_must_not_normalize_unbound_work"); },
@@ -679,6 +1240,7 @@ test("Nyra reports an exact bootstrap replay without claiming a new Work", async
   const { directive: candidateDirective } = bootstrapDirective(bootstrapSpec(), caller);
   const candidate = attestor.issue({ identity: caller, directive: candidateDirective });
   const handler = createNyraGovernedContinueHandler({
+    ...nativeDependencies,
     attestor,
     readDirectiveContext: async () => { throw new Error("unexpected_read"); },
     normalizeDirectiveContext: () => { throw new Error("unexpected_normalize"); },
@@ -716,6 +1278,7 @@ test("Nyra resumes a Work when the bootstrap review was already consumed", async
   const { directive: candidateDirective } = bootstrapDirective(bootstrapSpec(), caller);
   const candidate = attestor.issue({ identity: caller, directive: candidateDirective });
   const handler = createNyraGovernedContinueHandler({
+    ...nativeDependencies,
     attestor,
     readDirectiveContext: async () => { throw new Error("unexpected_read"); },
     normalizeDirectiveContext: () => { throw new Error("unexpected_normalize"); },
@@ -750,6 +1313,7 @@ test("fails closed on bootstrap substitution, missing app capability, and missin
   const { directive: candidateDirective } = bootstrapDirective(bootstrapSpec(), caller);
   const candidate = attestor.issue({ identity: caller, directive: candidateDirective });
   const handler = createNyraGovernedContinueHandler({
+    ...nativeDependencies,
     attestor,
     readDirectiveContext: async () => ({}),
     normalizeDirectiveContext: () => ({}),
