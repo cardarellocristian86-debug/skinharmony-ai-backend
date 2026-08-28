@@ -183,7 +183,13 @@ export function createNyraGovernedContinueAttestor({
     });
   }
 
-  function verify({ token, identity, idempotencyKey, replayScope = "single" }) {
+  function verify({
+    token,
+    identity,
+    idempotencyKey,
+    replayScope = "single",
+    replayOperation = "single",
+  }) {
     const { payload, signature } = parseToken(token);
     if (!safeEqual(signature, hmac(key, payload)) ||
         payload?.schema_version !== "nyra_governed_continue_attestation_v1" ||
@@ -231,13 +237,20 @@ export function createNyraGovernedContinueAttestor({
     }
     const scope = String(replayScope || "single").trim();
     if (!/^[a-z_]{3,40}$/.test(scope)) fail("nyra_governed_continue_replay_scope_invalid");
+    const operation = String(replayOperation || "single").trim();
+    if (!/^[a-z_]{3,40}$/.test(operation)) {
+      fail("nyra_governed_continue_replay_operation_invalid");
+    }
     const replayBindingKey = `${payload.nonce}:${scope}`;
+    const replayBinding = `${operation}\u0000${replayKey}`;
     const existing = replayBindings.get(replayBindingKey);
-    if (existing && existing !== replayKey) fail("nyra_governed_continue_attestation_replayed", 409);
-    replayBindings.set(replayBindingKey, replayKey);
+    if (existing && existing !== replayBinding) {
+      fail("nyra_governed_continue_attestation_replayed", 409);
+    }
+    replayBindings.set(replayBindingKey, replayBinding);
     for (const [nonce, binding] of replayBindings) {
       if (replayBindings.size <= 2_048) break;
-      if (nonce !== replayBindingKey || binding !== replayKey) replayBindings.delete(nonce);
+      if (nonce !== replayBindingKey || binding !== replayBinding) replayBindings.delete(nonce);
     }
     return Object.freeze(payload);
   }
@@ -351,6 +364,7 @@ export function createNyraGovernedContinueHandler({
       identity,
       idempotencyKey: args.idempotency_key,
       replayScope: bootstrapOperation ? args.operation : "single",
+      replayOperation: args.operation,
     });
     // The caller key is only a request correlation input. Downstream Core and
     // Work stores receive a token-derived key so a replay after restart or on

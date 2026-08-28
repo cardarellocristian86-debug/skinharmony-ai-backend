@@ -355,6 +355,64 @@ test("requires a fresh owner confirmation to issue the exact bounded delegation"
   assert.equal(response.structuredContent.execution_authorized, false);
 });
 
+test("one action attestation cannot issue both a delegation and a ticket", async () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = attestor.issue({ identity: identity(), directive: directive() });
+  let delegationCalls = 0;
+  let actionCalls = 0;
+  const handler = createNyraGovernedContinueHandler({
+    ...bootstrapDependencies,
+    attestor,
+    readDirectiveContext: async () => ({}),
+    normalizeDirectiveContext: () => normalizedContext(),
+    issueDelegation: async () => {
+      delegationCalls += 1;
+      return { structuredContent: { delegation: { delegation_id: "hnd_test-12345678" } } };
+    },
+    authorizeAction: async () => {
+      actionCalls += 1;
+      return { structuredContent: { action_ticket: { ticket: {
+        ticket_id: `hnt_${"1".repeat(64)}`,
+      } } } };
+    },
+  });
+  const shared = {
+    candidate_attestation: candidate.candidate_attestation,
+    idempotency_key: "one-continuation-key",
+  };
+  await handler({
+    ...shared,
+    operation: "issue_delegation",
+    owner_confirmed: true,
+    delegation_request: {
+      work_id: WORK_ID,
+      intent_anchor_digest: DIGEST_B,
+      repository: "owner/repo",
+      audience: ["chatgpt_native"],
+      allowed_branches: ["feat/entity-360-v1"],
+      protected_branches: ["main"],
+      allowed_path_prefixes: ["services"],
+      allowed_actions: ["github.merge"],
+      ttl_seconds: 300,
+    },
+  }, identity());
+  await assert.rejects(handler({
+    ...shared,
+    operation: "authorize_action",
+    action_request: {
+      delegation_id: "hnd_test-12345678",
+      work_id: WORK_ID,
+      intent_anchor_digest: DIGEST_B,
+      repository: "owner/repo",
+      action: { kind: "github.merge", repository: "owner/repo" },
+      evidence_digest: DIGEST_A,
+    },
+  }, identity()), /nyra_governed_continue_attestation_replayed/);
+  assert.equal(delegationCalls, 1);
+  assert.equal(actionCalls, 0);
+});
+
 test("reviews then creates one exact canonical V2 Work through separate governed phases", async () => {
   const clock = Date.parse("2026-08-25T12:00:00.000Z");
   const caller = identity();
