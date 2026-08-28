@@ -64,6 +64,30 @@ CREATE TABLE IF NOT EXISTS tenant_work_evidence (
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, evidence_id), FOREIGN KEY (tenant_id, work_id) REFERENCES tenant_work(tenant_id, work_id)
 );
+-- A positive native-verifier terminal report may be reflected into V2 only by
+-- the server-side bridge. The immutable link preserves exact native-plan,
+-- report and receipt provenance; generic evidence writes never gain it.
+CREATE TABLE IF NOT EXISTS tenant_work_native_verifier_evidence (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, plan_id uuid NOT NULL,
+  task_id varchar(120) NOT NULL, task_digest char(64) NOT NULL,
+  verifier_agent_id varchar(120) NOT NULL, verifier_session_fingerprint varchar(128) NOT NULL,
+  native_receipt_id uuid NOT NULL, native_receipt_digest char(64) NOT NULL,
+  report_digest char(64) NOT NULL, evidence_id uuid NOT NULL, evidence_digest char(64) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, work_id, plan_id, task_id),
+  UNIQUE (tenant_id, native_receipt_id),
+  UNIQUE (tenant_id, evidence_id),
+  FOREIGN KEY (tenant_id, work_id) REFERENCES tenant_work(tenant_id, work_id),
+  FOREIGN KEY (tenant_id, evidence_id) REFERENCES tenant_work_evidence(tenant_id, evidence_id)
+);
+CREATE OR REPLACE FUNCTION tenant_work_native_verifier_evidence_append_only() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'tenant_work_native_verifier_evidence_append_only'; END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS tenant_work_native_verifier_evidence_no_mutation
+  ON tenant_work_native_verifier_evidence;
+CREATE TRIGGER tenant_work_native_verifier_evidence_no_mutation
+BEFORE UPDATE OR DELETE ON tenant_work_native_verifier_evidence
+FOR EACH ROW EXECUTE FUNCTION tenant_work_native_verifier_evidence_append_only();
 CREATE TABLE IF NOT EXISTS tenant_work_closure_receipt (
   tenant_id varchar(64) NOT NULL, receipt_id uuid NOT NULL, work_id uuid NOT NULL, adapter varchar(64) NOT NULL,
   core_join_digest char(64) NOT NULL, final_evidence_digest char(64) NOT NULL, receipt_digest char(64) NOT NULL,

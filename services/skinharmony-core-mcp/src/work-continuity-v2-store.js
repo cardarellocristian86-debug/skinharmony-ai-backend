@@ -26,6 +26,7 @@ ALTER TABLE tenant_work_task ADD COLUMN IF NOT EXISTS required boolean NOT NULL 
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS weight integer NOT NULL DEFAULT 1 CHECK (weight > 0);
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS verified_by_agent_id varchar(128);
 ALTER TABLE tenant_work_evidence ADD COLUMN IF NOT EXISTS verified_by_session_fingerprint varchar(128);
+ALTER TABLE IF EXISTS tenant_work_native_verifier_evidence ADD COLUMN IF NOT EXISTS v2_task_id uuid;
 CREATE UNIQUE INDEX IF NOT EXISTS tenant_work_legacy_identity_idx
   ON tenant_work (tenant_id, legacy_work_id) WHERE legacy_work_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS tenant_work_core_join (
@@ -140,6 +141,10 @@ INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260808_work_continuity_v2_runtime') ON CONFLICT DO NOTHING;
 INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260825_work_bootstrap_request_v1') ON CONFLICT DO NOTHING;
+INSERT INTO core_schema_migrations (migration_id)
+VALUES ('20260826_native_verifier_evidence_bridge_v1') ON CONFLICT DO NOTHING;
+INSERT INTO core_schema_migrations (migration_id)
+VALUES ('20260828_native_verifier_task_acceptance_v1') ON CONFLICT DO NOTHING;
 `;
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -2264,28 +2269,288 @@ export function createWorkContinuityV2Store({
     await transaction(async (client) => {
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canContributeEvidence, work, actor);
-      const nativeVerifier = actor.agent_id && actor.session_fingerprint
-        ? await client.query(`SELECT task_id FROM core_continuity_native_agents
-          WHERE tenant_id=$1 AND work_id=$2 AND agent_id=$3 AND task_kind='verifier'
-            AND status='completed' AND native_session_fingerprint=$4 LIMIT 1`,
-        [actor.tenant_id, work.legacy_work_id || workId, actor.agent_id, actor.session_fingerprint])
-        : { rows: [] };
-      const independentlyVerified = Boolean(nativeVerifier.rows[0] &&
-        actor.agent_id && actor.session_fingerprint && actor.agent_id !== work.created_by_agent_id &&
-        actor.session_fingerprint !== work.created_by_session_fingerprint);
+      // This generic client-facing path records candidate evidence only.
+      // Independent evidence is derived exclusively by the atomic native
+      // verifier bridge from a server-read terminal report and receipt.
+      const independentlyVerified = false;
       await client.query(`INSERT INTO tenant_work_evidence (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,verified_by_agent_id,verified_by_session_fingerprint,weight,metadata)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
         ON CONFLICT (tenant_id,evidence_id) DO NOTHING`,
       [actor.tenant_id, evidenceId, workId, text(input.kind, "evidence_kind_invalid", 80), digest(input.digest, "evidence_digest_invalid"),
-        input.required !== false, independentlyVerified, independentlyVerified ? actor.agent_id : null,
+        // A client-submitted record is a candidate only.  It cannot become a
+        // closure prerequisite before a server-owned verifier bridge derives
+        // independent evidence from a terminal native receipt.
+        false, independentlyVerified, independentlyVerified ? actor.agent_id : null,
         independentlyVerified ? actor.session_fingerprint : null, Math.max(1, Number(input.weight) || 1), JSON.stringify(input.metadata || {})]);
-      if (independentlyVerified && input.metadata?.task_id) {
-        await client.query(`UPDATE tenant_work_task SET acceptance_verified=true
-          WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 AND status='completed'`,
-        [actor.tenant_id, workId, uuid(input.metadata.task_id, "task_id_invalid")]);
-      }
     });
     return refreshDerived(identity, { work_id: workId });
+  }
+  async function recordNativeVerifierEvidenceWithClient(client, source = {}) {
+    if (!client || typeof client.query !== "function") {
+      fail("native_verifier_evidence_transaction_required");
+    }
+    // This function has no tool handler. Its only caller is the legacy
+    // continuity transaction after it persists the transport-bound report and
+    // append-only receipt.
+    if (source.server_owned !== true) fail("native_verifier_evidence_server_owned_required");
+    const tenantId = text(source.tenant_id, "native_verifier_evidence_tenant_invalid", 64);
+    const legacyWorkId = uuid(source.work_id, "native_verifier_evidence_work_invalid");
+    const planId = uuid(source.plan_id, "native_verifier_evidence_plan_invalid");
+    const taskId = text(source.task_id, "native_verifier_evidence_task_invalid", 120);
+    const agentId = text(source.agent_id, "native_verifier_evidence_agent_invalid", 120);
+    const sessionFingerprint = text(
+      source.session_fingerprint,
+      "native_verifier_evidence_session_invalid",
+      128,
+    ).toLowerCase();
+    const presenceSignature = text(
+      source.presence_signature,
+      "native_verifier_evidence_presence_invalid",
+      80,
+    ).toLowerCase();
+    const reportDigest = digest(source.report_digest, "native_verifier_evidence_report_digest_invalid");
+    const receiptId = uuid(source.receipt_id, "native_verifier_evidence_receipt_invalid");
+    const receiptDigest = digest(source.receipt_digest, "native_verifier_evidence_receipt_digest_invalid");
+    if (!/^[a-f0-9]{16,64}$/.test(sessionFingerprint) ||
+        !/^ags_[a-f0-9]{32}$/.test(presenceSignature)) {
+      fail("native_verifier_evidence_presence_invalid");
+    }
+    const native = await client.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,a.status,a.report,a.report_digest,
+        a.agent_id,
+        a.native_session_fingerprint,a.native_presence_signature,p.plan,p.status AS plan_status
+      FROM core_continuity_native_agents a
+      JOIN core_continuity_native_plans p
+        ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
+      WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=$3 AND a.agent_id=$4
+      FOR UPDATE`, [tenantId, legacyWorkId, planId, agentId]);
+    const nativeRow = native.rows[0];
+    if (!nativeRow ||
+        nativeRow.plan_status !== "planned" ||
+        nativeRow.task_id !== taskId ||
+        nativeRow.task_kind !== "verifier" ||
+        nativeRow.status !== "completed" ||
+        nativeRow.report_digest !== reportDigest ||
+        nativeRow.native_session_fingerprint !== sessionFingerprint ||
+        nativeRow.native_presence_signature !== presenceSignature ||
+        nativeRow.report?.schema_version !== "native_agent_report_v1" ||
+        nativeRow.report?.verdict !== "approved") {
+      fail("native_verifier_evidence_source_binding_invalid");
+    }
+    // The V2 task id is not supplied by the verifier report.  It is bound
+    // before execution into every native assignment capability and re-read
+    // here from the durable server-owned binding.
+    const v2TaskId = nativeRow.v2_task_id
+      ? uuid(nativeRow.v2_task_id, "native_verifier_evidence_task_binding_invalid")
+      : null;
+    if (!v2TaskId) fail("native_verifier_evidence_task_binding_missing");
+    const verifiedTaskIds = Array.isArray(nativeRow.report?.verifies_task_ids)
+      ? [...new Set(nativeRow.report.verifies_task_ids.map((value) => String(value || "").trim()).filter(Boolean))]
+      : [];
+    if (!verifiedTaskIds.length) fail("native_verifier_evidence_source_binding_invalid");
+    const canonicalBuilderTaskDigests = new Map(
+      (Array.isArray(nativeRow.plan?.tasks) ? nativeRow.plan.tasks : [])
+        .filter((task) => task?.kind === "builder")
+        .map((task) => [
+          String(task.task_id || "").trim(),
+          String(task.task_digest || "").trim().toLowerCase(),
+        ]),
+    );
+    // A verifier may cover non-builder tasks as part of a larger plan.  Only
+    // builder bindings participate in the independent-evidence proof.
+    const verifiedBuilderTaskIds = verifiedTaskIds.filter((taskId) =>
+      canonicalBuilderTaskDigests.has(taskId));
+    if (!verifiedBuilderTaskIds.length) fail("native_verifier_evidence_source_binding_invalid");
+    const verifiedBuilders = await client.query(`SELECT task_id,agent_id,status,task_digest,v2_task_id,report_digest,
+        native_session_fingerprint,native_presence_signature
+      FROM core_continuity_native_agents
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+        AND task_id = ANY($4::varchar[]) AND task_kind='builder'
+      FOR UPDATE`, [tenantId, legacyWorkId, planId, verifiedBuilderTaskIds]);
+    const persistedBuilderTaskIds = new Set(verifiedBuilders.rows.map((row) => row.task_id));
+    if (
+      verifiedBuilders.rowCount !== verifiedBuilderTaskIds.length ||
+      verifiedBuilderTaskIds.some((task) => !persistedBuilderTaskIds.has(task)) ||
+      verifiedBuilders.rows.some((row) =>
+        row.status !== "completed" ||
+        !HASH.test(String(row.report_digest || "")) ||
+        !/^[a-f0-9]{16,64}$/i.test(String(row.native_session_fingerprint || "")) ||
+        !/^ags_[a-f0-9]{32}$/.test(String(row.native_presence_signature || "")) ||
+        !HASH.test(String(row.task_digest || "")) ||
+        row.v2_task_id !== v2TaskId ||
+        canonicalBuilderTaskDigests.get(row.task_id) !== String(row.task_digest).toLowerCase() ||
+        row.agent_id === agentId ||
+        row.native_session_fingerprint === sessionFingerprint)
+    ) {
+      fail("native_verifier_evidence_independence_invalid");
+    }
+    const receipt = await client.query(`SELECT receipt_type,agent_id,payload,payload_digest
+      FROM core_continuity_native_receipts
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND receipt_id=$4
+      FOR UPDATE`, [tenantId, legacyWorkId, planId, receiptId]);
+    const receiptRow = receipt.rows[0];
+    const payload = receiptRow?.payload;
+    if (!receiptRow ||
+        receiptRow.receipt_type !== "agent_reported" ||
+        receiptRow.agent_id !== agentId ||
+        receiptRow.payload_digest !== receiptDigest ||
+        payload?.task_id !== taskId ||
+        payload?.task_kind !== "verifier" ||
+        payload?.status !== "completed" ||
+        payload?.report_digest !== reportDigest ||
+        payload?.native_session_fingerprint !== sessionFingerprint ||
+        payload?.native_presence_signature !== presenceSignature) {
+      fail("native_verifier_evidence_receipt_binding_invalid");
+    }
+    const linkedWork = await client.query(`SELECT work_id,legacy_work_id,created_by_agent_id,
+        created_by_session_fingerprint
+      FROM tenant_work
+      WHERE tenant_id=$1 AND work_id=$2 AND legacy_work_id=$2
+      FOR UPDATE`, [tenantId, legacyWorkId]);
+    const work = linkedWork.rows[0];
+    if (!work ||
+        (work.created_by_agent_id && work.created_by_agent_id === agentId) ||
+        (work.created_by_session_fingerprint &&
+          work.created_by_session_fingerprint === sessionFingerprint)) {
+      fail("native_verifier_evidence_independence_invalid");
+    }
+    const v2Task = await client.query(`SELECT task_id,status,acceptance_verified
+      FROM tenant_work_task
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
+      FOR UPDATE`, [tenantId, work.work_id, v2TaskId]);
+    if (v2Task.rows[0]?.status !== "completed") {
+      fail("native_verifier_evidence_task_binding_invalid");
+    }
+    const material = {
+      schema_version: "native_verifier_terminal_evidence_v1",
+      tenant_id: tenantId,
+      work_id: work.work_id,
+      legacy_work_id: legacyWorkId,
+      plan_id: planId,
+      task_id: taskId,
+      task_digest: nativeRow.task_digest,
+      v2_task_id: v2TaskId,
+      verifier_agent_id: agentId,
+      verifier_session_fingerprint: sessionFingerprint,
+      verified_builder_bindings: verifiedBuilders.rows.map((row) => ({
+        task_id: row.task_id,
+        task_digest: row.task_digest,
+        v2_task_id: row.v2_task_id,
+        agent_id: row.agent_id,
+        session_fingerprint: row.native_session_fingerprint,
+        presence_signature: row.native_presence_signature,
+        report_digest: row.report_digest,
+      })).sort((left, right) => left.task_id.localeCompare(right.task_id)),
+      native_receipt_id: receiptId,
+      native_receipt_digest: receiptDigest,
+      report_digest: reportDigest,
+    };
+    const evidenceDigest = objectDigest(material);
+    const existing = await client.query(`SELECT evidence_id,task_digest,v2_task_id,verifier_agent_id,
+        verifier_session_fingerprint,native_receipt_id,native_receipt_digest,report_digest,evidence_digest
+      FROM tenant_work_native_verifier_evidence
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND task_id=$4
+      FOR UPDATE`, [tenantId, work.work_id, planId, taskId]);
+    if (existing.rows[0]) {
+      const row = existing.rows[0];
+      if (row.task_digest !== nativeRow.task_digest ||
+          row.v2_task_id !== v2TaskId ||
+          row.verifier_agent_id !== agentId ||
+          row.verifier_session_fingerprint !== sessionFingerprint ||
+          row.native_receipt_id !== receiptId ||
+          row.native_receipt_digest !== receiptDigest ||
+          row.report_digest !== reportDigest ||
+          row.evidence_digest !== evidenceDigest) {
+        fail("native_verifier_evidence_replay_conflict");
+      }
+      const evidence = await client.query(`SELECT digest,independently_verified,verified_by_agent_id,
+          verified_by_session_fingerprint FROM tenant_work_evidence
+        WHERE tenant_id=$1 AND evidence_id=$2 AND work_id=$3`,
+      [tenantId, row.evidence_id, work.work_id]);
+      const evidenceRow = evidence.rows[0];
+      if (!evidenceRow || evidenceRow.digest !== evidenceDigest ||
+          evidenceRow.independently_verified !== true ||
+          evidenceRow.verified_by_agent_id !== agentId ||
+          evidenceRow.verified_by_session_fingerprint !== sessionFingerprint) {
+        fail("native_verifier_evidence_replay_integrity_failed");
+      }
+      await client.query(`UPDATE tenant_work_task SET acceptance_verified=true
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
+          AND status='completed'`, [tenantId, work.work_id, v2TaskId]);
+      const derived = await refreshDerivedWithClient(client, {
+        tenant_id: tenantId,
+        user_id: "core_native_verifier_evidence_bridge",
+        agent_id: agentId,
+        session_fingerprint: sessionFingerprint,
+        team_ids: [], managed_team_ids: [], is_tenant_owner: true, is_super_admin: false,
+      }, work.work_id);
+      return Object.freeze({
+        schema_version: "native_verifier_terminal_evidence_v1",
+        evidence_id: row.evidence_id,
+        evidence_digest: evidenceDigest,
+        report_digest: reportDigest,
+        receipt_id: receiptId,
+        derived,
+        idempotent_replay: true,
+      });
+    }
+    const evidenceId = crypto.randomUUID();
+    const metadata = stable({
+      ...material,
+      source: "server_native_verifier_terminal_report",
+      authority: "evidence_only",
+      execution_authorized: false,
+    });
+    await client.query(`INSERT INTO tenant_work_evidence
+      (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,
+       verified_by_agent_id,verified_by_session_fingerprint,weight,metadata)
+      VALUES ($1,$2,$3,$4,$5,true,true,$6,$7,1,$8::jsonb)`, [
+      tenantId, evidenceId, work.work_id, "native_verifier_terminal_report", evidenceDigest,
+      agentId, sessionFingerprint, JSON.stringify(metadata),
+    ]);
+    await client.query(`INSERT INTO tenant_work_native_verifier_evidence
+      (tenant_id,work_id,plan_id,task_id,task_digest,v2_task_id,verifier_agent_id,
+       verifier_session_fingerprint,native_receipt_id,native_receipt_digest,
+       report_digest,evidence_id,evidence_digest)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, [
+      tenantId, work.work_id, planId, taskId, nativeRow.task_digest, v2TaskId,
+      agentId, sessionFingerprint, receiptId, receiptDigest, reportDigest, evidenceId, evidenceDigest,
+    ]);
+    await client.query(`UPDATE tenant_work_task SET acceptance_verified=true
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3
+        AND status='completed'`, [tenantId, work.work_id, v2TaskId]);
+    const event = await appendV2Event(client, {
+      tenant_id: tenantId,
+      user_id: "core_native_verifier_evidence_bridge",
+    }, work.work_id, "native_verifier_evidence_recorded", {
+      plan_id: planId,
+      task_id: taskId,
+      v2_task_id: v2TaskId,
+      verifier_agent_id: agentId,
+      verifier_session_fingerprint: sessionFingerprint,
+      native_receipt_id: receiptId,
+      native_receipt_digest: receiptDigest,
+      report_digest: reportDigest,
+      evidence_id: evidenceId,
+      evidence_digest: evidenceDigest,
+      execution_authorized: false,
+    });
+    const derived = await refreshDerivedWithClient(client, {
+      tenant_id: tenantId,
+      user_id: "core_native_verifier_evidence_bridge",
+      agent_id: agentId,
+      session_fingerprint: sessionFingerprint,
+      team_ids: [], managed_team_ids: [], is_tenant_owner: true, is_super_admin: false,
+    }, work.work_id);
+    return Object.freeze({
+      schema_version: "native_verifier_terminal_evidence_v1",
+      evidence_id: evidenceId,
+      evidence_digest: evidenceDigest,
+      report_digest: reportDigest,
+      receipt_id: receiptId,
+      event,
+      derived,
+      idempotent_replay: false,
+    });
   }
   async function persistCoreJoin(identity, { work_id, core_join_digest, core_join_context }) {
     await initialize();
@@ -2314,13 +2579,8 @@ export function createWorkContinuityV2Store({
     });
     return refreshDerived(identity, { work_id: workId });
   }
-  async function refreshDerived(identity, { work_id }) {
-    await initialize();
-    const actor = actorFromIdentity(identity);
-    const workId = uuid(work_id);
-    return transaction(async (client) => {
+  async function refreshDerivedWithClient(client, actor, workId) {
       const work = await loadWork(client, actor, workId, true);
-      assertPermission(canRead, work, actor);
       const [tasks, evidence, join] = await Promise.all([
         client.query("SELECT title,weight,status,required,acceptance_verified FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
         client.query("SELECT weight,required,independently_verified FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
@@ -2333,6 +2593,15 @@ export function createWorkContinuityV2Store({
         WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId, progress.overall_progress_bp, progress.progress_version, progress.progress_source,
         priority.priority, priority.priority_score, priority.priority_version, JSON.stringify(priorityFacts)]);
       return { ...progress, ...priority, work: await loadWork(client, actor, workId) };
+  }
+  async function refreshDerived(identity, { work_id }) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(work_id);
+    return transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canRead, work, actor);
+      return refreshDerivedWithClient(client, actor, workId);
     });
   }
   async function reconcileStaleDryRun(identity, { project_id } = {}) {
@@ -2906,7 +3175,8 @@ export function createWorkContinuityV2Store({
     projectLegacyWork, projectLegacyCatalog, projectLegacyEvent, backfillLegacyProjection,
     readWork, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork, reopenWork,
     preflightGallery, openWorkReview,
-    recordTask, recordEvidence, persistCoreJoin, refreshDerived, reconcileStaleDryRun,
+    recordTask, recordEvidence, recordNativeVerifierEvidenceWithClient,
+    persistCoreJoin, refreshDerived, reconcileStaleDryRun,
     reconcileLegacyClosed,
     evaluateGenericClosure, buildGenericCoreJoinRequest, finalizeGenericClosure,
     coreJoinVerifierMetadata: resolvedCoreJoinVerifier?.metadata || null,
