@@ -875,6 +875,108 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
   };
 }
 
+// A terminal verifier report may promote one already-completed V2 task into
+// independently verified evidence before the Work as a whole is eligible for
+// closure.  This deliberately does not reuse evaluateNativeClosure(): that
+// evaluator is the Work-wide gate and must continue to require every accepted
+// criterion, required task and release condition.
+export function evaluateTaskScopedNativeVerifierEvidence({ plan, agents = [], verifier_task_id: verifierTaskId } = {}) {
+  requireObject(plan, "native_agent_plan");
+  const missing = [];
+  const taskById = new Map((plan.tasks || []).map((task) => [task.task_id, task]));
+  const verifier = agents.find((agent) => agent?.task_id === verifierTaskId) || null;
+  const verifierTask = verifier ? taskById.get(verifier.task_id) : null;
+  if (!verifier || !verifierTask || verifierTask.kind !== "verifier") {
+    return Object.freeze({
+      schema_version: "native_task_scoped_verifier_evaluation_v1",
+      promotable: false,
+      missing: ["task_scoped_verifier_missing"],
+      verifier_task_id: String(verifierTaskId || ""),
+      v2_task_id: null,
+      builder_task_ids: [],
+    });
+  }
+  const v2TaskId = String(verifier.v2_task_id || "").trim().toLowerCase();
+  if (!v2TaskId) missing.push("task_scoped_v2_task_binding_missing");
+  const builders = agents.filter((agent) =>
+    taskById.get(agent?.task_id)?.kind === "builder" &&
+    String(agent?.v2_task_id || "").trim().toLowerCase() === v2TaskId);
+  if (!builders.length) missing.push("task_scoped_builder_missing");
+  const scopedAgents = [verifier, ...builders];
+  const reportedSessions = new Set();
+  for (const agent of scopedAgents) {
+    const task = taskById.get(agent?.task_id);
+    if (!task || agent.status !== "completed") {
+      missing.push(`task_scoped_task_not_completed:${String(agent?.task_id || "unknown")}`);
+    }
+    if (!/^[a-f0-9]{64}$/i.test(String(agent?.report_digest || ""))) {
+      missing.push(`task_scoped_report_digest_missing:${String(agent?.task_id || "unknown")}`);
+    }
+    const session = String(agent?.native_session_fingerprint || "");
+    if (
+      !/^[a-f0-9]{16,64}$/i.test(session) ||
+      !/^ags_[a-f0-9]{32}$/.test(String(agent?.native_presence_signature || "")) ||
+      session === agent?.coordinator_session_fingerprint
+    ) {
+      missing.push(`task_scoped_result_unattested:${String(agent?.task_id || "unknown")}`);
+    }
+    if (session && reportedSessions.has(session)) missing.push("task_scoped_session_reused");
+    if (session) reportedSessions.add(session);
+    if (agent?.report?.correction_required === true) {
+      missing.push(`task_scoped_correction_required:${String(agent?.task_id || "unknown")}`);
+    }
+    const tests = Array.isArray(agent?.report?.tests) ? agent.report.tests : [];
+    if (!tests.length) missing.push(`task_scoped_test_evidence_missing:${String(agent?.task_id || "unknown")}`);
+    if (tests.some((item) => item?.passed !== true)) {
+      missing.push(`task_scoped_test_failure_present:${String(agent?.task_id || "unknown")}`);
+    }
+  }
+  if (verifier.status !== "completed" || verifier.report?.verdict !== "approved") {
+    missing.push("task_scoped_verifier_not_approved");
+  }
+  const verifiedTaskIds = new Set(
+    Array.isArray(verifier.report?.verifies_task_ids)
+      ? verifier.report.verifies_task_ids.map((value) => String(value || "").trim()).filter(Boolean)
+      : [],
+  );
+  if (!verifiedTaskIds.size || verifiedTaskIds.has(verifier.task_id)) {
+    missing.push("task_scoped_verifier_scope_invalid");
+  }
+  for (const builder of builders) {
+    if (!verifiedTaskIds.has(builder.task_id)) {
+      missing.push(`task_scoped_verification_coverage_missing:${builder.task_id}`);
+    }
+    if (
+      builder.agent_id === verifier.agent_id ||
+      builder.native_session_fingerprint === verifier.native_session_fingerprint
+    ) {
+      missing.push("task_scoped_verifier_independence_invalid");
+    }
+  }
+  const verifierEvidence = Array.isArray(verifier.report?.acceptance_evidence)
+    ? verifier.report.acceptance_evidence
+    : [];
+  if (!Array.isArray(verifier.report?.evidence_refs) || !verifier.report.evidence_refs.length ||
+      !verifierEvidence.length) {
+    missing.push("task_scoped_verifier_evidence_missing");
+  }
+  if (verifierEvidence.some((item) => item?.passed !== true)) {
+    missing.push("task_scoped_verifier_evidence_rejected");
+  }
+  if (verifierEvidence.some((item) =>
+    !Array.isArray(item?.evidence_refs) || item.evidence_refs.length === 0)) {
+    missing.push("task_scoped_verifier_evidence_unproven");
+  }
+  return Object.freeze({
+    schema_version: "native_task_scoped_verifier_evaluation_v1",
+    promotable: missing.length === 0,
+    missing: [...new Set(missing)],
+    verifier_task_id: verifier.task_id,
+    v2_task_id: v2TaskId || null,
+    builder_task_ids: builders.map((builder) => builder.task_id).sort(),
+  });
+}
+
 function releaseField(value, name, pattern, max = 240) {
   const normalized = safeText(value, max).trim().toLowerCase();
   if (!pattern.test(normalized)) throw new Error(`${name}_invalid`);
@@ -3999,17 +4101,20 @@ export function createWorkContinuityRuntime(config, options = {}) {
             report.verdict !== "approved" || !row.v2_task_id) {
           return null;
         }
-        // Evidence promotion is stricter than an individual verifier verdict:
-        // all server-persisted native closure requirements must already hold.
-        // A later idempotent replay re-evaluates this state, so a verifier may
-        // report before another required native result without being promoted.
+        // This is a task-evidence promotion, not a Work closure.  Keep it
+        // bound to the verifier's exact V2 task and its independently reported
+        // builders; evaluateNativeClosure remains the separate Work-wide gate.
         const agents = await client.query(`SELECT task_id,agent_id,task_kind,status,report,report_digest,
-            coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature
+            coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature,v2_task_id
           FROM core_continuity_native_agents
           WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
           ORDER BY task_id FOR UPDATE`, [context.tenantId, context.workId, planId]);
-        const evaluation = evaluateNativeClosure({ plan: row.plan, agents: agents.rows });
-        if (evaluation.closed !== true) return null;
+        const evaluation = evaluateTaskScopedNativeVerifierEvidence({
+          plan: row.plan,
+          agents: agents.rows,
+          verifier_task_id: row.task_id,
+        });
+        if (evaluation.promotable !== true) return null;
         let boundReceipt = receipt;
         if (!boundReceipt) {
           const result = await client.query(`SELECT receipt_id,payload_digest
