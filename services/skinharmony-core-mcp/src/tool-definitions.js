@@ -1412,6 +1412,10 @@ export const TOOLS = [
     capability_id: identifier,
     catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
     arguments: { type: "object", maxProperties: 200, additionalProperties: true },
+    // The outer wrapper may carry an opaque logical transport session when a
+    // stateless OAuth host cannot retain the optional MCP session header. It
+    // is consumed by the gateway only and is never forwarded to `arguments`.
+    session_id: identifier,
   }, ["capability_id", "catalog_revision"]), ["core:read"]),
   tool("core_capability_invoke", "Invoke a governed dynamic capability", "Invoke one server-registered mutating capability by exact capability id and catalog revision. Bounded post-delegation actions use their signed Core gate without another owner prompt; only a target explicitly marked owner-confirmed may consume one fresh owner confirmation.", object({
     capability_id: identifier,
