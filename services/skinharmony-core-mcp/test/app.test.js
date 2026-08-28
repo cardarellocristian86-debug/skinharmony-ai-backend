@@ -25,6 +25,7 @@ import {
 } from "../../shared/postgres-major-version.js";
 import { createGenericWorkCoreJoinVerifier } from "../src/work-continuity-v2-store.js";
 import { NYRA_SERVER_CONNECTOR_HINT } from "../src/nyra-converse.js";
+import { validateToolArguments } from "../src/schema-validation.js";
 
 const config = {
   publicUrl: "https://mcp.example.test",
@@ -128,7 +129,7 @@ test("prefers the actual MCP transport binding over an OAuth logical session", (
   assert.equal(resolved.binding_source, "transport");
 });
 
-test("binds an OAuth owner logical session only for bounded Entity 360 inspection", () => {
+test("binds an OAuth owner logical session only for DTT-backed dynamic reads", () => {
   const identity = {
     kind: "oauth",
     tenantId: "tenant-a",
@@ -140,10 +141,18 @@ test("binds an OAuth owner logical session only for bounded Entity 360 inspectio
     },
   };
   const agentPresence = { session_fingerprint: "a".repeat(24) };
-  for (const capabilityId of ["entity_360_policy_read", "entity_360_metrics_read"]) {
+  for (const capabilityId of [
+    "entity_360_resolve",
+    "entity_360_snapshot_verify",
+    "entity_360_policy_read",
+    "entity_360_metrics_read",
+    "software_cognition_obligation_expand",
+    "software_cognition_technology_profile",
+    "nyra_precore_decision_verify",
+  ]) {
     const resolved = resolveHostTransportPresence({
       identity,
-      toolName: "core_capability_invoke",
+      toolName: "core_capability_read",
       capabilityId,
       declaredSessionId: "logical-owner-session",
       agentPresence,
@@ -169,10 +178,14 @@ test("does not promote an OAuth owner logical session outside the bounded logica
     "work_continuity_native_report",
     "entity_360_snapshot_assemble",
     "entity_360_shadow_compare",
+    "software_cognition_graph_select",
+    "software_cognition_graph_upsert",
+    "software_cognition_precore_decide",
+    "nyra_precore_decision_generate",
   ]) {
     const resolved = resolveHostTransportPresence({
       identity,
-      toolName: "core_capability_invoke",
+      toolName: "core_capability_read",
       capabilityId,
       declaredSessionId: "logical-owner-session",
       agentPresence: { session_fingerprint: "a".repeat(24) },
@@ -181,6 +194,17 @@ test("does not promote an OAuth owner logical session outside the bounded logica
     assert.equal(resolved.presence, null, capabilityId);
     assert.equal(resolved.binding_source, null, capabilityId);
   }
+
+  const impossibleInvoke = resolveHostTransportPresence({
+    identity,
+    toolName: "core_capability_invoke",
+    capabilityId: "entity_360_policy_read",
+    declaredSessionId: "logical-owner-session",
+    agentPresence: { session_fingerprint: "a".repeat(24) },
+    transportAgentPresence: null,
+  });
+  assert.equal(impossibleInvoke.presence, null);
+  assert.equal(impossibleInvoke.binding_source, null);
 });
 
 function canonicalHealthDigest(value) {
@@ -2307,6 +2331,73 @@ test("preserves the Gallery preflight envelope for Core action mediation", () =>
     requiresGenericWorkPreflight("core_capability_read", { capability_id: "core_health" }),
     false,
   );
+});
+
+test("requires exact Work preflight for DTT-backed dynamic reads only", () => {
+  for (const capability_id of [
+    "entity_360_resolve",
+    "entity_360_snapshot_latest",
+    "entity_360_snapshot_read",
+    "entity_360_snapshot_verify",
+    "entity_360_policy_read",
+    "entity_360_metrics_read",
+    "software_cognition_obligation_expand",
+    "software_cognition_plan_record",
+    "software_cognition_challenge_read",
+    "software_cognition_technology_profile",
+    "software_cognition_precore_read",
+    "nyra_precore_decision_read",
+    "nyra_precore_decision_list",
+    "nyra_precore_decision_verify",
+  ]) {
+    assert.equal(
+      requiresGenericWorkPreflight("core_capability_read", { capability_id }),
+      true,
+      capability_id,
+    );
+  }
+  for (const capability_id of [
+    "entity_360_snapshot_assemble",
+    "entity_360_shadow_compare",
+    "software_cognition_graph_select",
+    "software_cognition_graph_upsert",
+    "core_health",
+  ]) {
+    assert.equal(
+      requiresGenericWorkPreflight("core_capability_read", { capability_id }),
+      false,
+      capability_id,
+    );
+  }
+});
+
+test("keeps the logical session on the dynamic-read wrapper, not target arguments", () => {
+  const dynamicRead = TOOLS.find((tool) => tool.name === "core_capability_read");
+  assert.ok(dynamicRead);
+  assert.deepEqual(dynamicRead.inputSchema.properties.session_id, {
+    type: "string",
+    pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$",
+    description: "Opaque random id unique to the current conversation or agent run; reuse it for every tool call in that run.",
+  });
+  assert.equal(dynamicRead.inputSchema.properties.arguments.additionalProperties, true);
+  assert.deepEqual(validateToolArguments(dynamicRead.inputSchema, {
+    capability_id: "entity_360_policy_read",
+    catalog_revision: "a".repeat(64),
+    arguments: { work_id: "91e82640-9edc-5424-a3e8-eb7853b0d8dd" },
+    session_id: "oauth-logical-session",
+  }), []);
+});
+
+test("server resolves inner arguments for dynamic reads before exact Work preflight", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const targetStart = serverSource.indexOf("function dynamicInvocationTarget");
+  const targetEnd = serverSource.indexOf("function requireTenantWorkIdentity", targetStart);
+  const target = serverSource.slice(targetStart, targetEnd);
+  assert.ok(targetStart >= 0);
+  assert.ok(targetEnd > targetStart);
+  assert.match(target, /toolName !== "core_capability_read" && toolName !== "core_capability_invoke"/);
+  assert.match(target, /const targetArgs = args\?\.arguments/);
+  assert.match(target, /toolName: capabilityId \|\| toolName/);
 });
 
 test("requires generic preflight for dynamic invoke except signed presence and Work bootstrap", () => {
