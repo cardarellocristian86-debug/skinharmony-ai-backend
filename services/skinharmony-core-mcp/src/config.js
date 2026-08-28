@@ -422,6 +422,8 @@ export function loadConfig(env = process.env) {
           ? "nyra_governed_continue_agent_presence_v2_required"
         : nyraGovernedContinueEnabled && nyraGovernedContinueSecretReused
           ? "nyra_governed_continue_signing_secret_reused"
+        : nyraGovernedContinueEnabled
+          ? "nyra_governed_continue_v2_readback_required"
           : null;
   // Enabled by the production Blueprint. Keep the code default fail-closed so
   // an existing installation does not silently change tenant routing on update.
