@@ -835,6 +835,10 @@ const nyraGovernedContinuationSchema = object({
   "schema_version", "available", "submit_tool", "candidate_attestation",
   "expires_at", "reason",
 ]);
+const nyraActionContinuationOperation = {
+  type: "string",
+  enum: ["issue_delegation", "authorize_action"],
+};
 const nyraContinueSha256 = { type: "string", pattern: "^[a-f0-9]{64}$" };
 const nyraContinueHostKind = { type: "string", pattern: "^[a-z][a-z0-9_]{1,62}_native$" };
 const nyraContinueRepository = {
@@ -1324,11 +1328,12 @@ export const TOOLS = [
     destructive: false,
   }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
-  tool("nyra_converse", "Nyra: resume or guide the current Work", "Use this as the first and only read tool when the user addresses Nyra or asks to resume, continue, understand, diagnose, or coordinate a Work. It is the conversational front door: the server performs authenticated preflight, binds one canonical Work, reads bounded Work tasks/evidence, and returns Nyra's problem, needs, ordered actors, progress disposition and revision-bound Universal Core ticket candidate. Do not call a preflight, Gallery, branch registry, self-model read or capability catalog first. PREPARE_BOUNDED_WORK permits local analysis, tests and evidence but never an external mutation. Merge is always MANUAL_ONLY for the owner after the Core gate. Nyra never calls a provider model, accepts caller authority, issues a ticket, or authorizes or performs an external action.", object({
+  tool("nyra_converse", "Nyra: resume or guide the current Work", "Use this as the first and only read tool when the user addresses Nyra or asks to resume, continue, understand, diagnose, or coordinate a Work. It is the conversational front door: the server performs authenticated preflight, binds one canonical Work, reads bounded Work tasks/evidence, and returns Nyra's problem, needs, ordered actors, progress disposition and revision-bound Universal Core ticket candidate. For a ready external action, select exactly one continuation operation: issue_delegation or authorize_action; that choice is signed and cannot be changed on another replica. Do not call a preflight, Gallery, branch registry, self-model read or capability catalog first. PREPARE_BOUNDED_WORK permits local analysis, tests and evidence but never an external mutation. Merge is always MANUAL_ONLY for the owner after the Core gate. Nyra never calls a provider model, accepts caller authority, issues a ticket, or authorizes or performs an external action.", object({
     message: text(12_000),
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,
     work_bootstrap: nyraWorkBootstrapSpec,
+    continuation_operation: nyraActionContinuationOperation,
     locale: { type: "string", enum: ["auto", "it", "en"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
   }, ["message"]), ["core:read"], true, true, {

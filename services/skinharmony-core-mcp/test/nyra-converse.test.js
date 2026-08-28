@@ -787,22 +787,27 @@ test("emits a deterministic revision-bound manual ticket candidate only after pr
     acceptanceVerified: true,
     evidenceVerified: true,
   });
-  const first = await harness({ directiveContext: ready }).handler({
+  const authorizeArgs = {
     message: "Nyra, prepara il merge",
     work_id: WORK_ID,
     project_id: "nyra_core",
+    continuation_operation: "authorize_action",
     locale: "it",
-  }, identity());
-  const second = await harness({ directiveContext: ready }).handler({
-    message: "Nyra, prepara il merge",
-    work_id: WORK_ID,
-    project_id: "nyra_core",
-    locale: "it",
-  }, identity());
+  };
+  const issuedOperations = [];
+  const issueContinuation = ({ continuationOperation }) => {
+    issuedOperations.push(continuationOperation);
+    return null;
+  };
+  const first = await harness({ directiveContext: ready, issueContinuation })
+    .handler(authorizeArgs, identity());
+  const second = await harness({ directiveContext: ready, issueContinuation })
+    .handler(authorizeArgs, identity());
   const directive = first.structuredContent.orchestration_directive;
 
   assert.equal(directive.decision.disposition, "MANUAL_HANDOFF");
   assert.equal(directive.ticket_request.state, "MANUAL_ONLY");
+  assert.equal(Object.hasOwn(directive.ticket_request, "continuation_operation"), false);
   assert.deepEqual(directive.ticket_request.prerequisite_codes, []);
   assert.deepEqual(directive.ticket_request.binding, {
     tenant_id: "tenant-a",
@@ -819,6 +824,29 @@ test("emits a deterministic revision-bound manual ticket candidate only after pr
     directive.directive_id,
     second.structuredContent.orchestration_directive.directive_id,
   );
+  const delegation = await harness({ directiveContext: ready, issueContinuation }).handler({
+    ...authorizeArgs,
+    continuation_operation: "issue_delegation",
+  }, identity());
+  assert.deepEqual(issuedOperations, [
+    "authorize_action",
+    "authorize_action",
+    "issue_delegation",
+  ]);
+  assert.notEqual(
+    directive.request_digest,
+    delegation.structuredContent.orchestration_directive.request_digest,
+  );
+  assert.notEqual(
+    directive.ticket_request.request_digest,
+    delegation.structuredContent.orchestration_directive.ticket_request.request_digest,
+  );
+  assert.notEqual(
+    directive.directive_id,
+    delegation.structuredContent.orchestration_directive.directive_id,
+  );
+  const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
+  assert.deepEqual(validateToolArguments(definition.outputSchema, first.structuredContent), []);
   const changed = await harness({
     directiveContext: directiveContextFixture({
       taskStatus: "completed",
@@ -1513,6 +1541,13 @@ test("enforces bounded input before preflight or interpretation", async () => {
   const tooLong = "x".repeat(MAX_MESSAGE_LENGTH + 1);
   const violations = validateToolArguments(definition.inputSchema, { message: tooLong });
   assert.equal(violations.some((item) => item.path === "$.message" && item.code === "max_length"), true);
+  const operationViolations = validateToolArguments(definition.inputSchema, {
+    message: "Nyra, prepara il merge",
+    continuation_operation: "merge_and_deploy",
+  });
+  assert.equal(operationViolations.some((item) => (
+    item.path === "$.continuation_operation" && item.code === "enum"
+  )), true);
 
   const { handler, calls } = harness();
   await assert.rejects(
@@ -1687,7 +1722,8 @@ test("offers a signed two-phase V2 bootstrap only for an explicit structured new
   const candidates = [];
   const { handler } = harness({
     preflightResult: preflight,
-    issueContinuation: ({ directive }) => {
+    issueContinuation: ({ directive, continuationOperation }) => {
+      assert.equal(continuationOperation, null);
       candidates.push(directive);
       return {
         schema_version: "nyra_governed_continuation_v1",
