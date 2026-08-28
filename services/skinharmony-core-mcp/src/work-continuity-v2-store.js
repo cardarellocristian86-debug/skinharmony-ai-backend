@@ -1288,13 +1288,14 @@ export function createWorkContinuityV2Store({
         [actor.tenant_id, [...OPERATIONAL_STATUSES]],
       );
       const currentWorks = currentRows.rows.map(normalizeWork);
+      const currentProjectWorks = currentWorks.filter((work) => work.project_id === input.project_id);
       const currentResolution = resolveWorkRequest(
         `${String(input.work_name || "")} ${String(input.objective || "")}`.trim(),
-        currentWorks,
+        currentProjectWorks,
         actor,
         { project_id: input.project_id, intent_digest: input.intent_digest || null, now: now() },
       );
-      const related = currentWorks.filter((work) => work.project_id === input.project_id);
+      const related = currentProjectWorks;
       const currentFlags = {
         significant_overlap:
           currentResolution.classification !== "NO_CONFLICT" || currentResolution.hidden_conflict === true,
@@ -1311,7 +1312,15 @@ export function createWorkContinuityV2Store({
       const originalCandidateIds = new Set(
         (Array.isArray(original.candidates) ? original.candidates : []).map((item) => String(item.work_id || "")),
       );
+      // openWorkReview persists only response-eligible candidates: readable
+      // by this actor and bound to the requested project. Apply that exact
+      // projection during revalidation as well, otherwise an already-reviewed
+      // filtered overlap is misclassified as a newly appeared candidate.
+      const currentVisibleIds = new Set(currentProjectWorks
+        .filter((work) => canRead(work, actor))
+        .map((work) => String(work.work_id || "")));
       const newCandidate = currentResolution.candidates.some((item) =>
+        currentVisibleIds.has(String(item.work_id || "")) &&
         !originalCandidateIds.has(String(item.work_id || "")));
       const newConflictFlag = Object.entries(currentFlags).some(([name, value]) =>
         value === true && original.conflict_flags?.[name] !== true);
@@ -2063,13 +2072,14 @@ export function createWorkContinuityV2Store({
         [actor.tenant_id, [...OPERATIONAL_STATUSES]],
       );
       const normalizedWorks = all.rows.map(normalizeWork);
-      const review = resolveWorkRequest(text(input.request || `${proposed.work_name} ${proposed.objective}`, "work_review_request_invalid", 8_000), normalizedWorks, actor, {
+      const projectWorks = normalizedWorks.filter((work) => work.project_id === projectId);
+      const review = resolveWorkRequest(text(input.request || `${proposed.work_name} ${proposed.objective}`, "work_review_request_invalid", 8_000), projectWorks, actor, {
         project_id: projectId, intent_digest: intentDigest, now: now(),
       });
-      const visibleIds = new Set(normalizedWorks
-        .filter((work) => work.project_id === projectId && canRead(work, actor))
+      const visibleIds = new Set(projectWorks
+        .filter((work) => canRead(work, actor))
         .map((work) => work.work_id));
-      const related = normalizedWorks.filter((work) => work.project_id === projectId);
+      const related = projectWorks;
       const staleConflict = related.some((work) => ["STALE", "ABANDONED", "COMPLETED_BUT_UNCLOSED"]
         .includes(classifyStaleWork(work, now()).classification));
       const priorityConflict = related.some((work) => ["P0", "P1"].includes(work.priority));

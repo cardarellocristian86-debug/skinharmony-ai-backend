@@ -384,6 +384,48 @@ class AtomicWorkPool {
   }
 }
 
+class SerializedAtomicWorkPool extends AtomicWorkPool {
+  constructor() {
+    super();
+    this.transactionTail = Promise.resolve();
+  }
+
+  async connect() {
+    const pool = this;
+    const client = await super.connect();
+    let releaseTransaction = null;
+    return {
+      ...client,
+      async query(sql, parameters = []) {
+        const normalized = sql.replace(/\s+/g, " ").trim();
+        if (normalized === "BEGIN") {
+          const previous = pool.transactionTail;
+          let unlock;
+          const held = new Promise((resolve) => { unlock = resolve; });
+          pool.transactionTail = previous.then(() => held);
+          await previous;
+          releaseTransaction = unlock;
+          return client.query(sql, parameters);
+        }
+        if (["COMMIT", "ROLLBACK"].includes(normalized)) {
+          try {
+            return await client.query(sql, parameters);
+          } finally {
+            releaseTransaction?.();
+            releaseTransaction = null;
+          }
+        }
+        return client.query(sql, parameters);
+      },
+      release() {
+        releaseTransaction?.();
+        releaseTransaction = null;
+        client.release();
+      },
+    };
+  }
+}
+
 function identity(subject = "owner", role = "tenant_owner") {
   const base = { tenantId: "tenant-a", subject, userId: subject,
     agentPresence: { agent_id: `agent-${subject}`, session_fingerprint: "f".repeat(64) },
@@ -399,6 +441,20 @@ function createInput() {
     idea: "Atomic work", objective: "Create legacy and V2 atomically", architecture: {},
     next_action: "run tests", visibility_scope: "private", acceptance_criteria: ["atomic"],
     tasks: [{ title: "transaction", weight: 1, required: true }], intent_digest: "a".repeat(64) };
+}
+
+function overlappingWork(workId, projectId = "nyra-core", overrides = {}) {
+  return {
+    tenant_id: "tenant-a", work_id: workId, legacy_work_id: null,
+    work_code: `NYRA-20260808-${workId.slice(0, 4)}`, work_name: "Continuity transaction",
+    work_type: "generic", project_id: projectId,
+    owner_user_id: "other-owner", created_by_user_id: "other-owner",
+    assigned_user_ids: [], supervising_user_ids: [], agent_ids: [], visibility_scope: "private",
+    status: "PLANNED", priority: "P4", priority_score: 0, progress_bp: 0,
+    objective: "Create atomically", next_action: "continue separate private work",
+    updated_at: "2026-08-08T09:00:00.000Z",
+    ...overrides,
+  };
 }
 
 function boundedUniqueText(prefix, index, length) {
@@ -1196,6 +1252,118 @@ test("two no-conflict reviews cannot race into duplicate same-project Works", as
   assert.match(lockCall.parameters[0], /^tenant_work_bootstrap:[a-f0-9]{64}$/);
   assert.equal(lockCall.parameters[0].includes("\0"), false,
     "PostgreSQL text advisory-lock keys must never contain a NUL byte");
+});
+
+test("a pre-existing cross-project candidate does not block immediate reviewed consumption", async () => {
+  const pool = new AtomicWorkPool();
+  const hiddenWorkId = "88888888-8888-4888-8888-888888888888";
+  pool.works.set(key("tenant-a", hiddenWorkId), overlappingWork(hiddenWorkId, "other-project"));
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = createInput();
+  const review = await store.openWorkReview(identity(), { intent_type: "CREATE_WORK",
+    request: `${input.work_name} ${input.objective}`, create_request: input });
+  assert.deepEqual(review.candidates, []);
+  assert.equal(review.conflict_flags.invisible_conflict, false);
+  assert.equal(review.conflict_flags.significant_overlap, false);
+  assert.equal(review.requires_owner_decision, false);
+
+  const created = await store.createNewWork(identity(), {
+    ...input,
+    review_id: review.review_id,
+    review_digest: review.review_digest,
+  });
+  assert.equal(created.work.work_name, input.work_name);
+  assert.equal(pool.works.size, 2);
+});
+
+test("a cross-project candidate inserted after review does not invalidate consumption", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  const hiddenWorkId = "99999999-9999-4999-8999-999999999999";
+  pool.works.set(key("tenant-a", hiddenWorkId), overlappingWork(hiddenWorkId, "other-project"));
+
+  const created = await store.createNewWork(identity(), input);
+  assert.equal(created.work.project_id, "nyra-core");
+  assert.equal(pool.works.size, 2);
+});
+
+test("a new same-project overlapping Work makes the review stale", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  const overlappingId = "77777777-7777-4777-8777-777777777777";
+  pool.works.set(key("tenant-a", overlappingId), overlappingWork(overlappingId));
+
+  await assert.rejects(
+    store.createNewWork(identity(), input),
+    /open_work_review_stale_conflict/,
+  );
+  assert.equal(pool.works.size, 1);
+  assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
+});
+
+test("same-project hidden conflicts are flagged without leaking tenant-private identity", async () => {
+  const pool = new AtomicWorkPool();
+  const hiddenWorkId = "66666666-6666-4666-8666-666666666666";
+  pool.works.set(key("tenant-a", hiddenWorkId), overlappingWork(hiddenWorkId));
+  const store = createWorkContinuityV2Store({ pool,
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = { ...createInput(), request_id: "request-member-hidden", session_id: "session-member-hidden" };
+  const review = await store.openWorkReview(identity("member", "member"), {
+    intent_type: "CREATE_WORK", request: `${input.work_name} ${input.objective}`, create_request: input,
+  });
+  assert.deepEqual(review.candidates, []);
+  assert.equal(review.selected_work_id, null);
+  assert.equal(review.hidden_conflict, true);
+  assert.equal(review.conflict_flags.invisible_conflict, true);
+  assert.equal(JSON.stringify(review).includes(hiddenWorkId), false);
+  assert.equal(JSON.stringify(review).includes("other-owner"), false);
+});
+
+test("concurrent same-project reviewed creates converge on one created Work", async () => {
+  const pool = new SerializedAtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const firstInput = await reviewed(store, createInput());
+  const secondInput = await reviewed(store, {
+    ...createInput(), request_id: "request-concurrent-002", session_id: "session-concurrent-002",
+  });
+  const results = await Promise.allSettled([
+    store.createNewWork(identity(), firstInput),
+    store.createNewWork(identity(), secondInput),
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected" &&
+    /open_work_review_stale_conflict/.test(String(result.reason?.message || result.reason))).length, 1);
+  assert.equal(pool.works.size, 1);
+  assert.equal(pool.legacy.size, 1);
+});
+
+test("review expiry remains fail-closed while consumed exact replay survives expiry", async () => {
+  const pool = new AtomicWorkPool();
+  let current = new Date("2026-08-08T10:00:00.000Z");
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool), now: () => current });
+  const expiring = await reviewed(store, {
+    ...createInput(), request_id: "request-expiring", session_id: "session-expiring",
+  });
+  current = new Date("2026-08-08T10:11:00.000Z");
+  await assert.rejects(store.createNewWork(identity(), expiring), /open_work_review_expired/);
+
+  current = new Date("2026-08-08T10:00:00.000Z");
+  const replayable = await reviewed(store, {
+    ...createInput(), request_id: "request-replayable", session_id: "session-replayable",
+  });
+  const first = await store.createNewWork(identity(), replayable);
+  current = new Date("2026-08-08T10:20:00.000Z");
+  const replay = await store.createNewWork(identity(), replayable);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.work.work_id, first.work.work_id);
+  assert.equal(pool.bootstrapRequests.get(key("tenant-a", "owner", replayable.request_id)).consumed_work_id,
+    first.work.work_id);
 });
 
 test("preflight projects legacy rows without inventing ownership and preserves Gallery v1 shape", async () => {
