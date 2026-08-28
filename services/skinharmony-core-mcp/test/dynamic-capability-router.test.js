@@ -603,6 +603,56 @@ test("reads only exact server-registered capabilities with scopes and a fresh re
   );
 });
 
+test("keeps a logical wrapper session out of strict Entity 360 target arguments", async () => {
+  const tool = ENTITY_360_TOOLS.find((item) => item.name === "entity_360_policy_read");
+  assert.ok(tool);
+  let received;
+  const handlers = {
+    [tool.name]: async (args, caller) => {
+      received = { args, caller };
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+  const catalog_revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const caller = {
+    ...identity,
+    agentPresence: {
+      agent_id: "server-agent",
+      session_id: "server-session",
+      client_type: "chatgpt",
+    },
+  };
+
+  await router.core_capability_read({
+    capability_id: tool.name,
+    catalog_revision,
+    session_id: "oauth-logical-session",
+    arguments: { work_id: "91e82640-9edc-5424-a3e8-eb7853b0d8dd" },
+  }, caller);
+
+  assert.deepEqual(received.args, {
+    work_id: "91e82640-9edc-5424-a3e8-eb7853b0d8dd",
+  });
+  assert.equal(received.caller, caller);
+
+  await assert.rejects(router.core_capability_read({
+    capability_id: tool.name,
+    catalog_revision,
+    session_id: "oauth-logical-session",
+    arguments: {
+      work_id: "91e82640-9edc-5424-a3e8-eb7853b0d8dd",
+      agent_id: "caller-spoofed-agent",
+      session_id: "caller-spoofed-session",
+      client_type: "other",
+    },
+  }, caller), /dynamic_capability_arguments_invalid/);
+});
+
 test("injects only the server-issued Gallery preflight into action mediation", async () => {
   const tool = readTool("core_action_mediation_evaluate");
   tool.inputSchema.properties = {

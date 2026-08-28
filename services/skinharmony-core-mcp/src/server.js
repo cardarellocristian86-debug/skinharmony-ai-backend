@@ -515,7 +515,7 @@ function stableCanonical(value) {
 }
 
 function dynamicInvocationTarget(toolName, args = {}, identity = {}) {
-  if (toolName !== "core_capability_invoke") {
+  if (toolName !== "core_capability_read" && toolName !== "core_capability_invoke") {
     return { toolName, args, capabilityId: "", argumentDigest: "" };
   }
   const capabilityId = String(args?.capability_id || "").trim();

@@ -703,6 +703,28 @@ const GENERIC_PREFLIGHT_CAPABILITIES = new Set([
   "core_branch_analyze",
 ]);
 
+// These exact read-only capabilities issue a tenant-and-Work-bound DTT
+// context downstream. Stateless OAuth hosts must first establish the same
+// bounded Work continuity/read binding as an MCP-transport caller. Keep this
+// explicit: graph_select is intentionally excluded because it is a local
+// Atlas read with its own canonical-Work ACL and no DTT context.
+const DTT_BACKED_DYNAMIC_READ_CAPABILITIES = new Set([
+  "entity_360_resolve",
+  "entity_360_snapshot_latest",
+  "entity_360_snapshot_read",
+  "entity_360_snapshot_verify",
+  "entity_360_policy_read",
+  "entity_360_metrics_read",
+  "software_cognition_obligation_expand",
+  "software_cognition_plan_record",
+  "software_cognition_challenge_read",
+  "software_cognition_technology_profile",
+  "software_cognition_precore_read",
+  "nyra_precore_decision_read",
+  "nyra_precore_decision_list",
+  "nyra_precore_decision_verify",
+]);
+
 export function requiresGenericWorkPreflight(toolName, args = {}) {
   const requestedTool = String(toolName || "");
   const heartbeatArgs = requestedTool === "core_capability_invoke"
@@ -728,7 +750,10 @@ export function requiresGenericWorkPreflight(toolName, args = {}) {
   }
   if (
     requestedTool === "core_capability_read" &&
-    GENERIC_PREFLIGHT_CAPABILITIES.has(String(args?.capability_id || ""))
+    (
+      GENERIC_PREFLIGHT_CAPABILITIES.has(String(args?.capability_id || "")) ||
+      DTT_BACKED_DYNAMIC_READ_CAPABILITIES.has(String(args?.capability_id || ""))
+    )
   ) return true;
   return !GENERIC_PREFLIGHT_EXEMPT_TOOLS.has(requestedTool);
 }
@@ -940,17 +965,6 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "entity_360_shadow_enable",
 ]);
 
-// A stateless OAuth host does not have a durable MCP transport session to
-// present on every call. Keep the logical-session bridge narrowly limited to
-// the two Entity 360 inspection capabilities used by the governed front door:
-// they are context-only reads and never issue authority, mutations, or
-// execution. Every other Entity 360 capability still requires an actual MCP
-// transport binding.
-const OAUTH_LOGICAL_SESSION_ENTITY360_READ_CAPABILITIES = new Set([
-  "entity_360_policy_read",
-  "entity_360_metrics_read",
-]);
-
 function inferClientType(identity) {
   const authenticated = authenticatedClientType(identity);
   if (authenticated) return authenticated;
@@ -981,13 +995,15 @@ export function resolveHostTransportPresence({
   const oauthNativePlanCall =
     toolName === "work_continuity_native_plan" ||
     (toolName === "core_capability_invoke" && capabilityId === "work_continuity_native_plan");
-  const effectiveCapabilityId = toolName === "core_capability_invoke"
+  const dynamicWrapper = toolName === "core_capability_read" ||
+    toolName === "core_capability_invoke";
+  const effectiveCapabilityId = dynamicWrapper
     ? capabilityId
     : toolName;
-  const oauthEntity360ReadCall = OAUTH_LOGICAL_SESSION_ENTITY360_READ_CAPABILITIES
-    .has(effectiveCapabilityId);
+  const oauthDttBackedReadCall = toolName === "core_capability_read" &&
+    DTT_BACKED_DYNAMIC_READ_CAPABILITIES.has(effectiveCapabilityId);
   const oauthLogicalSessionBound = Boolean(
-    (oauthNativePlanCall || oauthEntity360ReadCall) &&
+    (oauthNativePlanCall || oauthDttBackedReadCall) &&
     declaredSessionId &&
     agentPresence &&
     identity?.kind === "oauth" &&
