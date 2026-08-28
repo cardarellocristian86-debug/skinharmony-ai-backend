@@ -23,9 +23,11 @@ class ProjectAtlasPool {
     this.queries = [];
   }
 
-  scoped(tenantId, projectId) {
+  scoped(tenantId, projectId, authorizedWorkIds = null) {
+    const authorized = authorizedWorkIds === null ? null : new Set(authorizedWorkIds);
     const states = this.states.filter((state) =>
-      state.tenant_id === tenantId && state.project_id === projectId);
+      state.tenant_id === tenantId && state.project_id === projectId &&
+      (authorized === null || authorized.has(state.work_id)));
     const workIds = new Set(states.map((state) => state.work_id));
     return {
       states,
@@ -36,8 +38,8 @@ class ProjectAtlasPool {
     };
   }
 
-  latestNodes(tenantId, projectId) {
-    const scoped = this.scoped(tenantId, projectId);
+  latestNodes(tenantId, projectId, authorizedWorkIds = null) {
+    const scoped = this.scoped(tenantId, projectId, authorizedWorkIds);
     const stateByWork = new Map(scoped.states.map((state) => [state.work_id, state]));
     const grouped = new Map();
     for (const node of scoped.nodes) {
@@ -54,9 +56,9 @@ class ProjectAtlasPool {
     }));
   }
 
-  aggregateEdges(tenantId, projectId) {
-    const scoped = this.scoped(tenantId, projectId);
-    const latest = this.latestNodes(tenantId, projectId);
+  aggregateEdges(tenantId, projectId, authorizedWorkIds = null) {
+    const scoped = this.scoped(tenantId, projectId, authorizedWorkIds);
+    const latest = this.latestNodes(tenantId, projectId, authorizedWorkIds);
     const grouped = new Map();
     for (const edge of scoped.edges) {
       if (!latest.has(edge.from_node_id) || !latest.has(edge.to_node_id)) continue;
@@ -74,9 +76,9 @@ class ProjectAtlasPool {
     return [...grouped.values()];
   }
 
-  changeCone(tenantId, projectId, seeds, maxDepth) {
-    const latest = this.latestNodes(tenantId, projectId);
-    const edges = this.aggregateEdges(tenantId, projectId);
+  changeCone(tenantId, projectId, authorizedWorkIds, seeds, maxDepth) {
+    const latest = this.latestNodes(tenantId, projectId, authorizedWorkIds);
+    const edges = this.aggregateEdges(tenantId, projectId, authorizedWorkIds);
     const depths = new Map(seeds.map((nodeId) => [nodeId, 0]));
     let frontier = [...seeds];
     for (let depth = 0; depth < maxDepth && frontier.length; depth += 1) {
@@ -107,14 +109,14 @@ class ProjectAtlasPool {
       return { rows: [], rowCount: 0 };
     }
     if (q.startsWith("SELECT work_id,project_id,revision,total_nodes,total_context_bytes")) {
-      const rows = this.scoped(parameters[0], parameters[1]).states
+      const rows = this.scoped(parameters[0], parameters[1], parameters[2]).states
         .sort((left, right) =>
           String(right.updated_at).localeCompare(String(left.updated_at)) ||
           String(right.work_id).localeCompare(String(left.work_id)));
       return { rows, rowCount: rows.length };
     }
     if (q.startsWith("WITH ranked_nodes AS")) {
-      const rows = [...this.latestNodes(parameters[0], parameters[1]).values()];
+      const rows = [...this.latestNodes(parameters[0], parameters[1], parameters[2]).values()];
       return {
         rows: [{
           total_nodes: String(rows.length),
@@ -127,12 +129,12 @@ class ProjectAtlasPool {
       };
     }
     if (q.startsWith("WITH RECURSIVE scoped_nodes AS")) {
-      const rows = this.changeCone(parameters[0], parameters[1], parameters[2], parameters[3]);
+      const rows = this.changeCone(parameters[0], parameters[1], parameters[2], parameters[3], parameters[4]);
       return { rows, rowCount: rows.length };
     }
     if (q.startsWith("SELECT e.from_node_id,e.to_node_id,e.edge_type")) {
-      const allowed = new Set(parameters[2]);
-      const rows = this.aggregateEdges(parameters[0], parameters[1])
+      const allowed = new Set(parameters[3]);
+      const rows = this.aggregateEdges(parameters[0], parameters[1], parameters[2])
         .filter((edge) => allowed.has(edge.from_node_id) && allowed.has(edge.to_node_id))
         .sort((left, right) =>
           left.from_node_id.localeCompare(right.from_node_id) ||
@@ -156,7 +158,8 @@ class ProjectAtlasPool {
           node.active !== false)
         .map((node) => [node.node_id, node]));
       const exactEdges = this.edges.filter((edge) =>
-        edge.tenant_id === parameters[0] && edge.work_id === parameters[1]);
+        edge.tenant_id === parameters[0] && edge.work_id === parameters[1] &&
+        (parameters[4] === null || parameters[4].includes(edge.edge_type)));
       const depths = new Map(parameters[2].map((nodeId) => [nodeId, 0]));
       let frontier = [...parameters[2]];
       for (let depth = 0; depth < parameters[3] && frontier.length; depth += 1) {
@@ -298,6 +301,44 @@ test("project Atlas aggregates every tenant work and keeps the newest node plus 
   assert.ok(pool.queries.every((query) => !/SELECT \*/i.test(query)));
 });
 
+test("project Atlas aggregate is restricted to server-derived authorized Work ids", async () => {
+  const pool = new ProjectAtlasPool(fixture());
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const result = await runtime.selectAtlas({ tenantId: "tenant-a" }, {
+    project_id: "owner/repo",
+    seed_node_ids: ["shared"],
+    max_depth: 1,
+    max_bytes: 10_000,
+    authorized_work_ids: [WORK_A1],
+  });
+
+  assert.equal(result.aggregate, true);
+  assert.equal(result.last_work_id, WORK_A1);
+  assert.deepEqual(result.source_work_ids, [WORK_A1]);
+  assert.equal(result.metrics.indexed_works, 1);
+  assert.equal(result.nodes.find((node) => node.node_id === "shared").summary,
+    "old shared implementation");
+  assert.deepEqual(result.nodes.map((node) => node.node_id), ["shared", "old-only", "service"]);
+  assert.doesNotMatch(JSON.stringify(result), /new shared implementation|new-only/);
+  assert(pool.queries.filter((query) => /^(?:SELECT|WITH)/.test(query) &&
+    /core_continuity_atlas_(?:state|nodes|edges)/.test(query))
+    .every((query) => /uuid\[\]/.test(query)));
+});
+
+test("empty authorized Work scope returns discovery without exposing project Atlas", async () => {
+  const pool = new ProjectAtlasPool(fixture());
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const result = await runtime.selectAtlas({ tenantId: "tenant-a" }, {
+    project_id: "owner/repo",
+    seed_node_ids: ["shared"],
+    authorized_work_ids: [],
+  });
+  assert.equal(result.discovery_required, true);
+  assert.deepEqual(result.source_work_ids, []);
+  assert.deepEqual(result.nodes, []);
+  assert.doesNotMatch(JSON.stringify(result), /implementation|secret/);
+});
+
 test("explicit work_id keeps the exact Atlas snapshot instead of applying project override", async () => {
   const pool = new ProjectAtlasPool(fixture());
   const runtime = createWorkContinuityRuntime({}, { pool });
@@ -314,6 +355,24 @@ test("explicit work_id keeps the exact Atlas snapshot instead of applying projec
   assert.equal(result.aggregate, undefined);
   assert.equal(result.nodes[0].summary, "old shared implementation");
   assert.equal(result.nodes[0].source_work_ids, undefined);
+  assert.deepEqual(result.nodes.map((node) => node.node_id), ["shared"]);
+  assert.equal(result.metrics.traversal_depth, 0);
+});
+
+test("explicit empty edge filter is a valid seed-only Atlas selection", async () => {
+  const pool = new ProjectAtlasPool(fixture());
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const result = await runtime.selectAtlas({ tenantId: "tenant-a" }, {
+    work_id: WORK_A1,
+    project_id: "owner/repo",
+    seed_node_ids: ["shared"],
+    edge_types: [],
+    max_depth: 4,
+    max_bytes: 10_000,
+  });
+
+  assert.deepEqual(result.nodes.map((node) => node.node_id), ["shared"]);
+  assert.equal(result.metrics.traversal_depth, 4);
 });
 
 test("project Atlas remains tenant-isolated and returns explicit discovery state without indexes", async () => {

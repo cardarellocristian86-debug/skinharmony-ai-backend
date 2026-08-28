@@ -518,6 +518,26 @@ test("legacy Work reads and auto-resume intersect canonical V2 visibility", () =
   }
 });
 
+test("local Software Atlas reads are wired to the canonical Work ACL", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const binding = serverSource.indexOf("const softwareCognitionHandlers = createSoftwareCognitionHandlers");
+  assert.ok(binding >= 0);
+  const end = serverSource.indexOf("});", binding);
+  assert.match(serverSource.slice(binding, end), /authorizeAtlasRead:\s*requireCanonicalWorkRead/);
+  assert.match(serverSource, /work_continuity_atlas_select: async[\s\S]*?selectLegacyAtlasAuthorized\(identity, args\)/);
+  assert.match(serverSource, /selectLegacyAtlasAuthorized[\s\S]*?authorized_work_ids: authorizedWorkIds/);
+});
+
+test("causal transport uses a tenant-bound identity token instead of inventing a Work", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const start = serverSource.indexOf("const causalContinuityHandlers = createCausalContinuityHandlers");
+  const end = serverSource.indexOf("const softwareCognitionHandlers", start);
+  const wiring = serverSource.slice(start, end);
+  assert.match(wiring, /issueCausalAgentIdentityContext/);
+  assert.doesNotMatch(wiring, /issueDttAgentContext/);
+  assert.doesNotMatch(wiring, /work_id/);
+});
+
 test("native planning repairs only the server-derived canonical legacy bridge before reading its Intent", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const helperStart = serverSource.indexOf("async function ensureNativePlanLegacyBridge");

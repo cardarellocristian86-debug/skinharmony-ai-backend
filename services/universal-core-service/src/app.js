@@ -169,6 +169,7 @@ import {
   createAsyncDttAgentIdentityReceiptService,
   createFileDttAgentIdentityReceiptStore,
   createPostgresDttAgentIdentityReceiptStore,
+  verifyCausalAgentIdentityContext,
 } from "../../shared/dtt-agent-identity-receipts.js";
 import {
   DTT_WORK_CONTEXT_HEADER,
@@ -7774,8 +7775,12 @@ export function createUniversalCoreService(options = {}) {
       },
       runtime: causalRouteRuntime,
       resolveAgentContext: (token, tenantId) => {
-        if (!dttAgentIdentityReceiptService?.configured) throw new Error("dtt_agent_identity_not_ready");
-        return dttAgentIdentityReceiptService.verifyContext(token, tenantId);
+        if (!dttAgentIdentitySecret) throw new Error("dtt_agent_identity_not_ready");
+        return verifyCausalAgentIdentityContext({
+          context_token: token,
+          secret: dttAgentIdentitySecret,
+          expected_tenant_id: tenantId,
+        });
       },
       audit: (event) => audit.append("core_causal_continuity_invoked", event),
     });
