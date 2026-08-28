@@ -210,7 +210,10 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       initial_message: "Continue until verified; token=do-not-store.",
       idea: "PostgreSQL 16 durable continuity",
       objective: "Persist only native-agent evidence with no full repository rescan.",
-      acceptance_criteria: ["The closure evidence is independently verified."],
+      acceptance_criteria: [
+        "The bound V2 task has independently verified evidence.",
+        "The unrelated Work-wide acceptance criterion remains separately proven.",
+      ],
       constraints: ["No raw credentials in durable work memory."],
       architecture: { components: [{ id: "core-mcp" }] },
       next_action: "Index the bounded change cone.",
@@ -226,6 +229,14 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       work_id: firstWork.work_id,
       task_id: bridgeTaskId,
       title: "Native verifier acceptance bridge target",
+      status: "completed",
+      required: true,
+    });
+    const unrelatedTaskId = crypto.randomUUID();
+    await v2Store.recordTask(bridgeOwner, {
+      work_id: firstWork.work_id,
+      task_id: unrelatedTaskId,
+      title: "Unrelated V2 task binding",
       status: "completed",
       required: true,
     });
@@ -916,7 +927,9 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
           verifies_task_ids: ["build"],
           tests: [{ name: "PostgreSQL 16 immutable event contract", passed: true }],
           evidence_refs: ["review:postgres16"],
-          acceptance_evidence: planned.plan.acceptance_contract.criteria.map((criterion) => ({
+          // The bridge may promote the bound V2 task from task-scoped proof;
+          // the other Work acceptance criteria remain for full closure.
+          acceptance_evidence: planned.plan.acceptance_contract.criteria.slice(0, 1).map((criterion) => ({
             criterion_digest: criterion.criterion_digest,
             passed: true,
             evidence_refs: [`evidence:${criterion.criterion_id}`],
@@ -1017,6 +1030,20 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
         /native_verifier_evidence_server_owned_required/,
       );
       await bridgeClient.query(`UPDATE core_continuity_native_agents
+        SET v2_task_id=$1
+        WHERE tenant_id=$2 AND work_id=$3 AND plan_id=$4 AND task_id='build'`, [
+        unrelatedTaskId, tenantId, firstWork.work_id, planned.plan.plan_id,
+      ]);
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, bridgeSource),
+        /native_verifier_evidence_independence_invalid/,
+      );
+      await bridgeClient.query(`UPDATE core_continuity_native_agents
+        SET v2_task_id=$1
+        WHERE tenant_id=$2 AND work_id=$3 AND plan_id=$4 AND task_id='build'`, [
+        bridgeTaskId, tenantId, firstWork.work_id, planned.plan.plan_id,
+      ]);
+      await bridgeClient.query(`UPDATE core_continuity_native_agents
         SET task_digest=$1
         WHERE tenant_id=$2 AND work_id=$3 AND plan_id=$4 AND task_id='build'`, [
         "f".repeat(64), tenantId, firstWork.work_id, planned.plan.plan_id,
@@ -1067,11 +1094,12 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       release: release(),
       idempotency_key: `closure-${runId}`,
     });
-    assert.equal(evaluation.closed, true);
-    assert.equal(evaluation.core_join_required, true);
+    assert.equal(evaluation.closed, false);
+    assert.equal(evaluation.core_join_required, false);
     assert.equal(evaluation.independent_verifier_count, 1);
-    assert.equal(evaluation.acceptance_criteria_proven, planned.plan.acceptance_contract.criteria.length);
-    assert.match(evaluation.core_join_material.material_digest, /^[a-f0-9]{64}$/);
+    assert.ok(evaluation.acceptance_criteria_proven < planned.plan.acceptance_contract.criteria.length);
+    assert.ok(evaluation.missing.some((item) => item.startsWith("acceptance_evidence_missing:")));
+    assert.equal(evaluation.core_join_material, undefined);
 
     const events = await pool.query(`SELECT sequence_number,event_hash,previous_event_hash,event_type
       FROM core_continuity_events

@@ -212,6 +212,18 @@ function objectDigest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
 
+function reportHasPassingTests(report) {
+  return Array.isArray(report?.tests) && report.tests.length > 0 &&
+    report.tests.every((item) => item?.passed === true);
+}
+
+function reportHasProvenVerifierEvidence(report) {
+  return Array.isArray(report?.evidence_refs) && report.evidence_refs.length > 0 &&
+    Array.isArray(report?.acceptance_evidence) && report.acceptance_evidence.length > 0 &&
+    report.acceptance_evidence.every((item) => item?.passed === true &&
+      Array.isArray(item?.evidence_refs) && item.evidence_refs.length > 0);
+}
+
 function plainRecord(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
     Object.getPrototypeOf(value) === Object.prototype;
@@ -2336,6 +2348,9 @@ export function createWorkContinuityV2Store({
         nativeRow.report?.verdict !== "approved") {
       fail("native_verifier_evidence_source_binding_invalid");
     }
+    if (!reportHasPassingTests(nativeRow.report) || !reportHasProvenVerifierEvidence(nativeRow.report)) {
+      fail("native_verifier_evidence_task_scope_invalid");
+    }
     // The V2 task id is not supplied by the verifier report.  It is bound
     // before execution into every native assignment capability and re-read
     // here from the durable server-owned binding.
@@ -2360,19 +2375,28 @@ export function createWorkContinuityV2Store({
     const verifiedBuilderTaskIds = verifiedTaskIds.filter((taskId) =>
       canonicalBuilderTaskDigests.has(taskId));
     if (!verifiedBuilderTaskIds.length) fail("native_verifier_evidence_source_binding_invalid");
-    const verifiedBuilders = await client.query(`SELECT task_id,agent_id,status,task_digest,v2_task_id,report_digest,
+    const verifiedBuilders = await client.query(`SELECT task_id,agent_id,status,task_digest,v2_task_id,report,report_digest,
         native_session_fingerprint,native_presence_signature
       FROM core_continuity_native_agents
       WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
         AND task_id = ANY($4::varchar[]) AND task_kind='builder'
       FOR UPDATE`, [tenantId, legacyWorkId, planId, verifiedBuilderTaskIds]);
+    const scopedBuilders = await client.query(`SELECT task_id
+      FROM core_continuity_native_agents
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+        AND task_kind='builder' AND v2_task_id=$4
+      FOR UPDATE`, [tenantId, legacyWorkId, planId, v2TaskId]);
     const persistedBuilderTaskIds = new Set(verifiedBuilders.rows.map((row) => row.task_id));
+    const scopedBuilderTaskIds = new Set(scopedBuilders.rows.map((row) => row.task_id));
     if (
+      !scopedBuilders.rowCount ||
       verifiedBuilders.rowCount !== verifiedBuilderTaskIds.length ||
       verifiedBuilderTaskIds.some((task) => !persistedBuilderTaskIds.has(task)) ||
+      [...scopedBuilderTaskIds].some((task) => !verifiedBuilderTaskIds.includes(task)) ||
       verifiedBuilders.rows.some((row) =>
         row.status !== "completed" ||
         !HASH.test(String(row.report_digest || "")) ||
+        !reportHasPassingTests(row.report) ||
         !/^[a-f0-9]{16,64}$/i.test(String(row.native_session_fingerprint || "")) ||
         !/^ags_[a-f0-9]{32}$/.test(String(row.native_presence_signature || "")) ||
         !HASH.test(String(row.task_digest || "")) ||
