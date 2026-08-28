@@ -218,6 +218,17 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     };
     const firstWork = await runtime.ensure(coordinator, initial, { creationAuthorized: true });
     await v2Store.projectLegacyWork(bridgeOwner, { legacy_work_id: firstWork.work_id });
+    // Native assignments bind to this exact V2 task before either builder or
+    // verifier can report. The bridge must never infer a task from a title or
+    // from the native task id.
+    const bridgeTaskId = crypto.randomUUID();
+    await v2Store.recordTask(bridgeOwner, {
+      work_id: firstWork.work_id,
+      task_id: bridgeTaskId,
+      title: "Native verifier acceptance bridge target",
+      status: "completed",
+      required: true,
+    });
     const tables = await pool.query(`SELECT
       to_regclass('public.core_continuity_works') AS works,
       to_regclass('public.core_continuity_intent_anchors') AS anchors,
@@ -854,6 +865,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       native_agent_id: "codex-builder",
       host_type: "codex_native",
       host_task_id: "/root/postgres16-build",
+      v2_task_id: bridgeTaskId,
     });
     const projectedBeforeBridge = await pool.query(`SELECT created_by_agent_id,
         created_by_session_fingerprint
@@ -886,6 +898,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       native_agent_id: "codex-verifier",
       host_type: "codex_native",
       host_task_id: "/root/postgres16-verify",
+      v2_task_id: bridgeTaskId,
     });
     const verifierReport = await runtime.reportNativeAgent(
       reporterIdentity(tenantId, "codex-verifier", "d".repeat(64), "d"),
@@ -915,7 +928,7 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     assert.match(verifierReport.v2_evidence.evidence_digest, /^[a-f0-9]{64}$/);
     const bridgedEvidence = await pool.query(`SELECT e.kind,e.digest,e.independently_verified,
         e.verified_by_agent_id,e.verified_by_session_fingerprint,
-        b.plan_id,b.task_id,b.report_digest,b.native_receipt_id,b.native_receipt_digest
+        b.plan_id,b.task_id,b.v2_task_id,b.report_digest,b.native_receipt_id,b.native_receipt_digest
       FROM tenant_work_evidence e
       JOIN tenant_work_native_verifier_evidence b
         ON b.tenant_id=e.tenant_id AND b.evidence_id=e.evidence_id
@@ -929,10 +942,14 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       verified_by_session_fingerprint: "d".repeat(64),
       plan_id: planned.plan.plan_id,
       task_id: "verify",
+      v2_task_id: bridgeTaskId,
       report_digest: verifierReport.report_digest,
       native_receipt_id: verifierReport.receipt.receipt_id,
       native_receipt_digest: verifierReport.receipt.payload_digest,
     });
+    const bridgedTask = await pool.query(`SELECT status,acceptance_verified FROM tenant_work_task
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [tenantId, firstWork.work_id, bridgeTaskId]);
+    assert.deepEqual(bridgedTask.rows[0], { status: "completed", acceptance_verified: true });
     const bridgeSource = {
       server_owned: true,
       tenant_id: tenantId,
@@ -1023,11 +1040,12 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       },
     });
     assert.equal(clientEvidence.work.progress_bp >= 0, true);
-    const injected = await pool.query(`SELECT independently_verified,verified_by_agent_id,
+    const injected = await pool.query(`SELECT required,independently_verified,verified_by_agent_id,
         verified_by_session_fingerprint FROM tenant_work_evidence
       WHERE tenant_id=$1 AND work_id=$2 AND kind='client_injected_candidate'`,
     [tenantId, firstWork.work_id]);
     assert.deepEqual(injected.rows[0], {
+      required: false,
       independently_verified: false,
       verified_by_agent_id: null,
       verified_by_session_fingerprint: null,

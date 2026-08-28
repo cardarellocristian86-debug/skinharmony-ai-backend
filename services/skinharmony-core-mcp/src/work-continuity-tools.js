@@ -470,6 +470,10 @@ export const WORK_CONTINUITY_TOOLS = [
     object({
       work_id: uuid, plan_id: uuid, task_id: { type: "string", minLength: 1, maxLength: 120 },
       native_agent_id: nativeAgentId, host_type: nativeHost, host_task_id: hostTaskId,
+      // Optional for compatibility with existing plans.  When supplied, it
+      // is signed into the child assignment and is the sole task-acceptance
+      // target the verifier-evidence bridge may promote.
+      v2_task_id: uuid,
     }, ["work_id", "plan_id", "task_id", "native_agent_id", "host_type", "host_task_id"]),
     false, { ownerConfirmationRequired: false }),
   tool("work_continuity_native_report", "Record native agent evidence",
