@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+  buildAcceptanceContract,
   buildIntentAnchor,
   buildNativeAgentPlan,
   digest,
@@ -60,6 +61,9 @@ function closurePlan() {
     { criterion_id: "constraint_1", text: intent.anchor.constraints[0] },
   ].map((criterion) => ({
     ...criterion,
+    criterion_kind: criterion.criterion_id === "objective"
+      ? "objective"
+      : criterion.criterion_id.startsWith("acceptance") ? "acceptance" : "constraint",
     criterion_digest: digest({
       schema_version: "intent_acceptance_criterion_v1",
       intent_digest: intent.intent_digest,
@@ -165,6 +169,107 @@ test("Intent Anchor is deterministic, immutable-shaped and redacts sensitive req
   assert.match(first.anchor.initial_message, /\[REDACTED\]/);
   assert.doesNotMatch(first.anchor.initial_message, /do-not-store/);
   assert.match(first.intent_digest, /^[a-f0-9]{64}$/);
+});
+
+test("owner-recorded architecture amendments replace only exact stale acceptance criteria", () => {
+  const intent = buildIntentAnchor({
+    project_id: "skinharmony",
+    session_id: "acceptance-amendment",
+    initial_message: "Apply the bounded owner-confirmed correction.",
+    idea: "Governed acceptance evolution",
+    objective: "Preserve the original objective.",
+    acceptance_criteria: ["Limit the diff to the original three files."],
+    constraints: ["Do not push or deploy without an exact Core ticket."],
+    host_type: "codex_native",
+  });
+  const base = buildAcceptanceContract(intent.anchor, intent.intent_digest);
+  const stale = base.criteria.find((criterion) => criterion.criterion_id === "acceptance_1");
+  const amendment = {
+    schema_version: "intent_acceptance_contract_amendment_v1",
+    base_criteria_digest: base.criteria_digest,
+    reason: "The owner explicitly authorized the bounded continuity correction.",
+    superseded_criteria: [{
+      criterion_id: stale.criterion_id,
+      criterion_digest: stale.criterion_digest,
+      reason: "The original file list no longer covers the authorized continuity defect.",
+    }],
+    replacement_criteria: [{
+      criterion_id: "acceptance_authorized_scope",
+      criterion_kind: "acceptance",
+      text: "The exact owner-recorded change cone passes its bounded regression suite.",
+    }],
+  };
+  const architecture = {
+    components: [],
+    acceptance_contract_amendment: amendment,
+  };
+  const contract = buildAcceptanceContract(intent.anchor, intent.intent_digest, {
+    architecture_version: 5,
+    architecture,
+    architecture_digest: digest(architecture),
+  });
+
+  assert.equal(contract.schema_version, "intent_acceptance_contract_v2");
+  assert.equal(contract.architecture_version, 5);
+  assert.equal(contract.base_criteria_digest, base.criteria_digest);
+  assert.deepEqual(contract.criteria.map((criterion) => criterion.criterion_id), [
+    "objective", "constraint_1", "acceptance_authorized_scope",
+  ]);
+  assert.equal(contract.criteria.some((criterion) => criterion.criterion_id === "acceptance_1"), false);
+
+  const plan = { ...closurePlan(), acceptance_contract: contract };
+  const accepted = evaluateNativeClosure({ plan, agents: completedAgents(plan) });
+  assert.equal(accepted.closed, true);
+  const tamperedPlan = structuredClone(plan);
+  tamperedPlan.acceptance_contract.amendment.reason = "Caller-shaped authority";
+  const tampered = evaluateNativeClosure({
+    plan: tamperedPlan,
+    agents: completedAgents(tamperedPlan),
+  });
+  assert.equal(tampered.closed, false);
+  assert.ok(tampered.missing.includes("intent_acceptance_contract_invalid"));
+  assert.equal(tampered.acceptance_criteria_count, 0);
+  assert.equal(tampered.acceptance_criteria_proven, 0);
+  assert.deepEqual(tampered.acceptance_proofs, []);
+
+  assert.throws(() => buildAcceptanceContract(intent.anchor, intent.intent_digest, {
+    architecture_version: 5,
+    architecture: {
+      ...architecture,
+      acceptance_contract_amendment: { ...amendment, base_criteria_digest: "0".repeat(64) },
+    },
+    architecture_digest: digest({
+      ...architecture,
+      acceptance_contract_amendment: { ...amendment, base_criteria_digest: "0".repeat(64) },
+    }),
+  }), /intent_acceptance_amendment_base_mismatch/);
+  const objective = base.criteria.find((criterion) => criterion.criterion_id === "objective");
+  const objectiveAmendment = {
+    ...amendment,
+    superseded_criteria: [{
+      criterion_id: objective.criterion_id,
+      criterion_digest: objective.criterion_digest,
+      reason: "Must remain forbidden.",
+    }],
+  };
+  const objectiveArchitecture = {
+    ...architecture,
+    acceptance_contract_amendment: objectiveAmendment,
+  };
+  assert.throws(() => buildAcceptanceContract(intent.anchor, intent.intent_digest, {
+    architecture_version: 5,
+    architecture: objectiveArchitecture,
+    architecture_digest: digest(objectiveArchitecture),
+  }), /intent_acceptance_amendment_superseded_invalid/);
+  const authorityShapedArchitecture = {
+    ...architecture,
+    acceptance_contract_amendment: { ...amendment, owner_authorized: true },
+  };
+  assert.throws(() => buildAcceptanceContract(intent.anchor, intent.intent_digest, {
+    architecture_version: 5,
+    architecture: authorityShapedArchitecture,
+    architecture_digest: digest(authorityShapedArchitecture),
+  }), /intent_acceptance_amendment_invalid/);
 });
 
 test("bootstrap text limits are equivalent across direct V2, legacy Intent Anchor and Nyra contracts", () => {

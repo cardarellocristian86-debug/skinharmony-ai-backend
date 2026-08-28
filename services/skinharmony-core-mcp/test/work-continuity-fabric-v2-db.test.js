@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildAcceptanceContract,
   coreJoinIdempotencyKey,
   createWorkContinuityRuntime,
   digest,
@@ -43,6 +44,7 @@ class ContinuityPool {
   constructor(clock) {
     this.clock = clock;
     this.works = new Map();
+    this.architectures = new Map();
     this.bindings = new Map();
     this.anchors = new Map();
     this.events = new Map();
@@ -170,6 +172,16 @@ class ContinuityPool {
       return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("INSERT INTO core_continuity_architecture_versions")) {
+      const [tenantId, workId] = parameters;
+      const hasExplicitVersion = parameters.length === 8;
+      const version = hasExplicitVersion ? Number(parameters[2]) : 1;
+      const architecture = JSON.parse(parameters[hasExplicitVersion ? 3 : 2]);
+      const architectureDigest = parameters[hasExplicitVersion ? 5 : 3];
+      this.architectures.set(key(tenantId, workId, version), {
+        version,
+        architecture,
+        architecture_digest: architectureDigest,
+      });
       return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("INSERT INTO core_continuity_intent_anchors")) {
@@ -506,13 +518,19 @@ class ContinuityPool {
         rowCount: work ? 1 : 0,
       };
     }
-    if (q.startsWith("SELECT w.work_id,a.anchor,a.intent_digest")) {
+    if (q.startsWith("SELECT w.work_id,w.current_version,a.anchor,a.intent_digest")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
       const anchor = this.anchors.get(key(parameters[0], parameters[1]));
-      const row = work && anchor ? {
+      const architecture = work
+        ? this.architectures.get(key(parameters[0], parameters[1], work.current_version))
+        : null;
+      const row = work && anchor && architecture ? {
         work_id: work.work_id,
+        current_version: work.current_version,
         anchor: anchor.anchor,
         intent_digest: anchor.intent_digest,
+        architecture: architecture.architecture,
+        architecture_digest: architecture.architecture_digest,
       } : null;
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
     }
@@ -1951,6 +1969,84 @@ test("native plan replay is deterministic and receipts preserve host policy boun
     ...request,
     idempotency_key: "native-plan-no-core",
   }), /core_host_native_work_plan/);
+});
+
+test("native plans bind an exact acceptance amendment from the current architecture version", async () => {
+  const instant = new Date("2026-07-29T13:05:00.000Z");
+  const clock = () => new Date(instant);
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({}, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "e".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    acceptance_criteria: ["Use only the bootstrap file list."],
+    constraints: ["Require an exact Core action ticket."],
+  }, { creationAuthorized: true });
+  const anchor = pool.anchors.get(key("tenant-a", work.work_id));
+  const base = buildAcceptanceContract(anchor.anchor, anchor.intent_digest);
+  const stale = base.criteria.find((criterion) => criterion.criterion_id === "acceptance_1");
+  const architecture = {
+    functions: [],
+    acceptance_contract_amendment: {
+      schema_version: "intent_acceptance_contract_amendment_v1",
+      base_criteria_digest: base.criteria_digest,
+      reason: "Owner-confirmed architecture revision expands the bounded change cone.",
+      superseded_criteria: [{
+        criterion_id: stale.criterion_id,
+        criterion_digest: stale.criterion_digest,
+        reason: "The bootstrap list is stale after the authorized continuity correction.",
+      }],
+      replacement_criteria: [{
+        criterion_id: "acceptance_current_change_cone",
+        criterion_kind: "acceptance",
+        text: "Verify the exact file list recorded by the current architecture revision.",
+      }],
+    },
+  };
+  const architectureDigest = digest(architecture);
+  const currentWork = pool.works.get(key("tenant-a", work.work_id));
+  currentWork.current_version = 2;
+  pool.architectures.set(key("tenant-a", work.work_id, 2), {
+    version: 2,
+    architecture,
+    architecture_digest: architectureDigest,
+  });
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Implement." },
+      {
+        task_id: "verify",
+        kind: "verifier",
+        instruction: "Verify independently.",
+        dependencies: ["build"],
+      },
+    ],
+    max_parallel: 2,
+    idempotency_key: "native-plan-amended-acceptance",
+  };
+  const planned = await runtime.planNativeAgents(identity, request, {
+    corePlan: corePlanFor(work, request),
+  });
+
+  assert.equal(planned.plan.acceptance_contract.schema_version,
+    "intent_acceptance_contract_v2");
+  assert.equal(planned.plan.acceptance_contract.architecture_version, 2);
+  assert.equal(planned.plan.acceptance_contract.architecture_digest, architectureDigest);
+  assert.deepEqual(planned.plan.acceptance_contract.criteria.map((criterion) => criterion.criterion_id), [
+    "objective", "constraint_1", "acceptance_current_change_cone",
+  ]);
 });
 
 test("native agent leases enforce Core max_parallel and expire stale host bindings", async () => {

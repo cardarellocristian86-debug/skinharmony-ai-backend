@@ -523,7 +523,101 @@ export function buildNativeAgentPlan(input = {}) {
   };
 }
 
-function buildAcceptanceContract(anchor, intentDigest) {
+const ACCEPTANCE_CRITERION_KINDS = new Set(["objective", "acceptance", "constraint"]);
+
+function acceptanceCriterionDigest(criterion, intentDigest) {
+  return digest({
+    schema_version: "intent_acceptance_criterion_v1",
+    intent_digest: intentDigest,
+    criterion_id: criterion.criterion_id,
+    criterion_kind: criterion.criterion_kind,
+    text: criterion.text,
+  });
+}
+
+function exactObjectKeys(value, allowedKeys, errorCode) {
+  requireObject(value, errorCode);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new Error(`${errorCode}_invalid`);
+  }
+  return value;
+}
+
+function amendmentText(value, name, max) {
+  if (typeof value !== "string" || value.length > max) throw new Error(`${name}_invalid`);
+  const normalized = safeText(value, max).trim();
+  if (!normalized) throw new Error(`${name}_invalid`);
+  return normalized;
+}
+
+function normalizeAcceptanceAmendment(value, baseContract) {
+  const amendment = exactObjectKeys(value, new Set([
+    "schema_version", "base_criteria_digest", "reason",
+    "superseded_criteria", "replacement_criteria",
+  ]), "intent_acceptance_amendment");
+  if (
+    amendment.schema_version !== "intent_acceptance_contract_amendment_v1" ||
+    String(amendment.base_criteria_digest || "").toLowerCase() !== baseContract.criteria_digest
+  ) {
+    throw new Error("intent_acceptance_amendment_base_mismatch");
+  }
+  const baseById = new Map(baseContract.criteria.map((criterion) => [criterion.criterion_id, criterion]));
+  if (!Array.isArray(amendment.superseded_criteria) ||
+      !amendment.superseded_criteria.length || amendment.superseded_criteria.length > 100) {
+    throw new Error("intent_acceptance_amendment_superseded_invalid");
+  }
+  const seenSuperseded = new Set();
+  const supersededCriteria = amendment.superseded_criteria.map((item) => {
+    exactObjectKeys(item, new Set(["criterion_id", "criterion_digest", "reason"]),
+      "intent_acceptance_amendment_superseded");
+    const criterionId = identifier(item.criterion_id,
+      "intent_acceptance_amendment_criterion_id", 160);
+    const expected = baseById.get(criterionId);
+    const criterionDigest = String(item.criterion_digest || "").toLowerCase();
+    if (!expected || expected.criterion_kind === "objective" ||
+        criterionDigest !== expected.criterion_digest || seenSuperseded.has(criterionId)) {
+      throw new Error("intent_acceptance_amendment_superseded_invalid");
+    }
+    seenSuperseded.add(criterionId);
+    return {
+      criterion_id: criterionId,
+      criterion_digest: criterionDigest,
+      reason: amendmentText(item.reason, "intent_acceptance_amendment_superseded_reason", 1_000),
+    };
+  }).sort((left, right) => left.criterion_id.localeCompare(right.criterion_id));
+  if (!Array.isArray(amendment.replacement_criteria) ||
+      !amendment.replacement_criteria.length || amendment.replacement_criteria.length > 100) {
+    throw new Error("intent_acceptance_amendment_replacements_invalid");
+  }
+  const reservedIds = new Set(baseContract.criteria.map((criterion) => criterion.criterion_id));
+  const seenReplacements = new Set();
+  const replacementCriteria = amendment.replacement_criteria.map((item) => {
+    exactObjectKeys(item, new Set(["criterion_id", "criterion_kind", "text"]),
+      "intent_acceptance_amendment_replacement");
+    const criterionId = identifier(item.criterion_id,
+      "intent_acceptance_amendment_replacement_id", 160);
+    const criterionKind = String(item.criterion_kind || "");
+    if (!ACCEPTANCE_CRITERION_KINDS.has(criterionKind) || criterionKind === "objective" ||
+        reservedIds.has(criterionId) || seenReplacements.has(criterionId)) {
+      throw new Error("intent_acceptance_amendment_replacements_invalid");
+    }
+    seenReplacements.add(criterionId);
+    return {
+      criterion_id: criterionId,
+      criterion_kind: criterionKind,
+      text: amendmentText(item.text, "intent_acceptance_amendment_replacement_text", 2_000),
+    };
+  }).sort((left, right) => left.criterion_id.localeCompare(right.criterion_id));
+  return {
+    schema_version: "intent_acceptance_contract_amendment_v1",
+    base_criteria_digest: baseContract.criteria_digest,
+    reason: amendmentText(amendment.reason, "intent_acceptance_amendment_reason", 2_000),
+    superseded_criteria: supersededCriteria,
+    replacement_criteria: replacementCriteria,
+  };
+}
+
+export function buildAcceptanceContract(anchor, intentDigest, architectureRecord = null) {
   requireObject(anchor, "intent_anchor");
   if (!/^[a-f0-9]{64}$/.test(String(intentDigest || ""))) {
     throw new Error("intent_digest_invalid");
@@ -549,16 +643,10 @@ function buildAcceptanceContract(anchor, intentDigest) {
   ].filter((criterion) => criterion.text);
   const criteria = candidates.map((criterion) => ({
     ...criterion,
-    criterion_digest: digest({
-      schema_version: "intent_acceptance_criterion_v1",
-      intent_digest: intentDigest,
-      criterion_id: criterion.criterion_id,
-      criterion_kind: criterion.criterion_kind,
-      text: criterion.text,
-    }),
+    criterion_digest: acceptanceCriterionDigest(criterion, intentDigest),
   }));
   if (!criteria.length) throw new Error("intent_acceptance_contract_empty");
-  return {
+  const baseContract = {
     schema_version: "intent_acceptance_contract_v1",
     intent_digest: intentDigest,
     criteria,
@@ -566,6 +654,102 @@ function buildAcceptanceContract(anchor, intentDigest) {
     evidence_required: true,
     independent_verifier_required: true,
   };
+  const amendmentInput = architectureRecord?.architecture?.acceptance_contract_amendment;
+  if (amendmentInput === undefined || amendmentInput === null) return baseContract;
+  const architectureVersion = Number(architectureRecord?.architecture_version);
+  const architectureDigest = String(architectureRecord?.architecture_digest || "").toLowerCase();
+  if (!Number.isInteger(architectureVersion) || architectureVersion < 1 ||
+      !/^[a-f0-9]{64}$/.test(architectureDigest) ||
+      architectureDigest !== digest(architectureRecord.architecture)) {
+    throw new Error("intent_acceptance_amendment_architecture_invalid");
+  }
+  const amendment = normalizeAcceptanceAmendment(amendmentInput, baseContract);
+  const supersededIds = new Set(amendment.superseded_criteria.map((item) => item.criterion_id));
+  const replacements = amendment.replacement_criteria.map((criterion) => ({
+    ...criterion,
+    criterion_digest: acceptanceCriterionDigest(criterion, intentDigest),
+  }));
+  const effectiveCriteria = [
+    ...criteria.filter((criterion) => !supersededIds.has(criterion.criterion_id)),
+    ...replacements,
+  ];
+  return {
+    schema_version: "intent_acceptance_contract_v2",
+    intent_digest: intentDigest,
+    base_criteria: criteria,
+    base_criteria_digest: baseContract.criteria_digest,
+    amendment,
+    amendment_digest: digest(amendment),
+    architecture_version: architectureVersion,
+    architecture_digest: architectureDigest,
+    criteria: effectiveCriteria,
+    criteria_digest: digest(effectiveCriteria),
+    evidence_required: true,
+    independent_verifier_required: true,
+  };
+}
+
+function acceptanceContractIntegrityValid(contract) {
+  try {
+    requireObject(contract, "intent_acceptance_contract");
+    if (!/^[a-f0-9]{64}$/.test(String(contract.intent_digest || "")) ||
+        !Array.isArray(contract.criteria) || !contract.criteria.length) return false;
+    const criterionKeys = new Set([
+      "criterion_id", "criterion_kind", "text", "criterion_digest",
+    ]);
+    const validateCriteria = (criteria) => criteria.every((criterion) => {
+      if (!criterion || Object.keys(criterion).some((key) => !criterionKeys.has(key)) ||
+          Object.keys(criterion).length !== criterionKeys.size ||
+          !ACCEPTANCE_CRITERION_KINDS.has(criterion.criterion_kind)) return false;
+      try {
+        identifier(criterion.criterion_id, "intent_acceptance_criterion_id", 160);
+        amendmentText(criterion.text, "intent_acceptance_criterion_text", 8_000);
+      } catch {
+        return false;
+      }
+      return acceptanceCriterionDigest(criterion, contract.intent_digest) === criterion.criterion_digest;
+    });
+    if (!validateCriteria(contract.criteria) || digest(contract.criteria) !== contract.criteria_digest) return false;
+    if (contract.criteria.filter((criterion) => criterion.criterion_kind === "objective").length !== 1 ||
+        contract.evidence_required !== true || contract.independent_verifier_required !== true) return false;
+    if (contract.schema_version === "intent_acceptance_contract_v1") {
+      const v1Keys = new Set([
+        "schema_version", "intent_digest", "criteria", "criteria_digest",
+        "evidence_required", "independent_verifier_required",
+      ]);
+      return Object.keys(contract).every((key) => v1Keys.has(key)) &&
+        Object.keys(contract).length === v1Keys.size;
+    }
+    if (contract.schema_version !== "intent_acceptance_contract_v2" ||
+        !Array.isArray(contract.base_criteria) || !validateCriteria(contract.base_criteria) ||
+        digest(contract.base_criteria) !== contract.base_criteria_digest ||
+        !Number.isInteger(contract.architecture_version) || contract.architecture_version < 1 ||
+        !/^[a-f0-9]{64}$/.test(String(contract.architecture_digest || ""))) return false;
+    const v2Keys = new Set([
+      "schema_version", "intent_digest", "base_criteria", "base_criteria_digest",
+      "amendment", "amendment_digest", "architecture_version", "architecture_digest",
+      "criteria", "criteria_digest", "evidence_required", "independent_verifier_required",
+    ]);
+    if (Object.keys(contract).some((key) => !v2Keys.has(key)) ||
+        Object.keys(contract).length !== v2Keys.size) return false;
+    const baseContract = {
+      criteria: contract.base_criteria,
+      criteria_digest: contract.base_criteria_digest,
+    };
+    const amendment = normalizeAcceptanceAmendment(contract.amendment, baseContract);
+    if (digest(amendment) !== contract.amendment_digest) return false;
+    const supersededIds = new Set(amendment.superseded_criteria.map((item) => item.criterion_id));
+    const expected = [
+      ...contract.base_criteria.filter((criterion) => !supersededIds.has(criterion.criterion_id)),
+      ...amendment.replacement_criteria.map((criterion) => ({
+        ...criterion,
+        criterion_digest: acceptanceCriterionDigest(criterion, contract.intent_digest),
+      })),
+    ];
+    return JSON.stringify(expected) === JSON.stringify(contract.criteria);
+  } catch {
+    return false;
+  }
 }
 
 function bindCoreWorkPlan(corePlan, localPlan, {
@@ -760,13 +944,24 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
     missing.push("live_verification_missing");
   }
   const acceptanceContract = plan.acceptance_contract;
+  const acceptanceContractValid = Boolean(
+    acceptanceContract &&
+    ["intent_acceptance_contract_v1", "intent_acceptance_contract_v2"]
+      .includes(acceptanceContract.schema_version) &&
+    Array.isArray(acceptanceContract.criteria) &&
+    acceptanceContract.criteria.length &&
+    acceptanceContractIntegrityValid(acceptanceContract)
+  );
   if (
     !acceptanceContract ||
-    acceptanceContract.schema_version !== "intent_acceptance_contract_v1" ||
+    !["intent_acceptance_contract_v1", "intent_acceptance_contract_v2"]
+      .includes(acceptanceContract.schema_version) ||
     !Array.isArray(acceptanceContract.criteria) ||
     !acceptanceContract.criteria.length
   ) {
     missing.push("intent_acceptance_contract_missing");
+  } else if (!acceptanceContractValid) {
+    missing.push("intent_acceptance_contract_invalid");
   } else {
     for (const criterion of acceptanceContract.criteria) {
       const evidence = independentVerifiers.flatMap((verifier) =>
@@ -836,7 +1031,7 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
         agent_id: agent.agent_id,
         test,
       })));
-  const acceptanceProofs = (acceptanceContract?.criteria || []).map((criterion) => {
+  const acceptanceProofs = (acceptanceContractValid ? acceptanceContract.criteria : []).map((criterion) => {
     const verifierEvidence = independentVerifiers
       .flatMap((verifier) => (verifier.report?.acceptance_evidence || [])
         .filter((item) => item.criterion_digest === criterion.criterion_digest)
@@ -883,8 +1078,8 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
     missing: [...new Set(missing)],
     completed_tasks: agents.filter((agent) => agent.status === "completed").map((agent) => agent.task_id),
     independent_verifier_count: independentVerifiers.length,
-    acceptance_criteria_count: acceptanceContract?.criteria?.length || 0,
-    acceptance_criteria_proven: acceptanceContract?.criteria?.length
+    acceptance_criteria_count: acceptanceContractValid ? acceptanceContract.criteria.length : 0,
+    acceptance_criteria_proven: acceptanceContractValid && acceptanceContract.criteria.length
       ? acceptanceContract.criteria.length -
         missing.filter((item) =>
           item.startsWith("acceptance_evidence_missing:") ||
@@ -3651,9 +3846,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
         core_plan_digest: options.corePlan ? digest(options.corePlan) : null,
       },
       async () => {
-        const work = await client.query(`SELECT w.work_id,a.anchor,a.intent_digest
+        const work = await client.query(`SELECT w.work_id,w.current_version,a.anchor,a.intent_digest,
+            v.architecture,v.architecture_digest
           FROM core_continuity_works w JOIN core_continuity_intent_anchors a
             ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
+          JOIN core_continuity_architecture_versions v
+            ON v.tenant_id=w.tenant_id AND v.work_id=w.work_id AND v.version=w.current_version
           WHERE w.tenant_id=$1 AND w.work_id=$2 FOR UPDATE`,
         [context.tenantId, context.workId]);
         if (!work.rows[0]) throw new Error("continuity_work_not_found");
@@ -3667,6 +3865,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
           acceptance_contract: buildAcceptanceContract(
             work.rows[0].anchor,
             work.rows[0].intent_digest,
+            {
+              architecture_version: Number(work.rows[0].current_version),
+              architecture: work.rows[0].architecture,
+              architecture_digest: work.rows[0].architecture_digest,
+            },
           ),
           core_authority: bindCoreWorkPlan(options.corePlan, basePlan, {
             workId: context.workId,
