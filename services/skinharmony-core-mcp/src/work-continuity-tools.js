@@ -485,6 +485,19 @@ export const WORK_CONTINUITY_TOOLS = [
         automation_stage: { type: "string", enum: ["build", "system_verification", "final_acceptance"] },
         summary: text(8_000), verdict: { type: "string", enum: ["approved", "rejected"] },
         commit_sha: gitSha,
+        precommit_evidence: object({
+          schema_version: { type: "string", const: "native_precommit_evidence_v1" },
+          diff_mode: { type: "string", const: "git_diff_binary_sha256_v1" },
+          base_commit: gitSha,
+          diff_digest: hash,
+          changed_files: {
+            type: "array",
+            minItems: 1,
+            maxItems: 1_000,
+            uniqueItems: true,
+            items: { type: "string", minLength: 1, maxLength: 2_000 },
+          },
+        }, ["schema_version", "diff_mode", "base_commit", "diff_digest", "changed_files"]),
         tests: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } },
         evidence_refs: { type: "array", maxItems: 100, items: { type: "string", maxLength: 500 } },
         acceptance_evidence: {
@@ -584,7 +597,7 @@ export const WORK_CONTINUITY_TOOLS = [
         "rollback",
       ]),
       idempotency_key: text(160),
-    }, ["work_id", "plan_id", "release", "idempotency_key"]),
+    }, ["work_id", "plan_id", "idempotency_key"]),
     false, { ownerConfirmationRequired: false }),
   tool("work_continuity_closure_finalize", "Finalize verified live work",
     "Complete work only from a fresh authenticated Universal Core receipt for the exact completed action ticket. Commit, CI, live health, rollback and host-policy facts are read server-side and cannot be supplied by the caller.",

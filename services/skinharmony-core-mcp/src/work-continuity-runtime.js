@@ -802,6 +802,8 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
     missing.push("agent_report_digest_missing");
   }
   const targetCommit = String(builders[0]?.report?.commit_sha || "").toLowerCase();
+  const targetPrecommit = builders[0]?.report?.precommit_evidence || null;
+  const targetWorkspaceDigest = String(targetPrecommit?.workspace_digest || "").toLowerCase();
   if (plan.release_mode === "external_ticket_required") {
     if (builders.length !== 1) missing.push("single_builder_required");
     if (!/^[a-f0-9]{40}$/.test(targetCommit)) missing.push("builder_target_commit_missing");
@@ -810,6 +812,17 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
         missing.push(`verifier_reviewed_commit_missing:${verifier.agent_id}`);
       } else if (String(verifier.report.commit_sha).toLowerCase() !== targetCommit) {
         missing.push(`verifier_reviewed_commit_mismatch:${verifier.agent_id}`);
+      }
+    }
+    if (targetWorkspaceDigest) {
+      if (!/^[a-f0-9]{64}$/.test(targetWorkspaceDigest)) {
+        missing.push("builder_precommit_evidence_invalid");
+      }
+      for (const verifier of independentVerifiers) {
+        if (String(verifier.report?.precommit_evidence?.workspace_digest || "").toLowerCase() !==
+            targetWorkspaceDigest) {
+          missing.push(`verifier_precommit_evidence_mismatch:${verifier.agent_id}`);
+        }
       }
     }
     if (!Array.isArray(plan.required_checks) || !plan.required_checks.length) {
@@ -853,6 +866,17 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
     test_evidence: testEvidence,
     report_bindings: reportBindings,
   });
+  const commitOnlyGaps = new Set([
+    "builder_target_commit_missing",
+    ...independentVerifiers.map((verifier) =>
+      `verifier_reviewed_commit_missing:${verifier.agent_id}`),
+  ]);
+  const commitTicketReady = Boolean(
+    !targetCommit &&
+    /^[a-f0-9]{64}$/.test(targetWorkspaceDigest) &&
+    missing.length > 0 &&
+    missing.every((item) => commitOnlyGaps.has(item))
+  );
   return {
     schema_version: "native_closure_evaluation_v1",
     closed: missing.length === 0,
@@ -868,11 +892,65 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
           item.startsWith("acceptance_dissent:")).length
       : 0,
     target_commit: targetCommit || null,
+    precommit_verification: {
+      ready: commitTicketReady,
+      workspace_digest: targetWorkspaceDigest || null,
+      base_commit: /^[a-f0-9]{40}$/.test(String(targetPrecommit?.base_commit || ""))
+        ? String(targetPrecommit.base_commit).toLowerCase()
+        : null,
+      diff_digest: /^[a-f0-9]{64}$/.test(String(targetPrecommit?.diff_digest || ""))
+        ? String(targetPrecommit.diff_digest).toLowerCase()
+        : null,
+      changed_files_digest: Array.isArray(targetPrecommit?.changed_files)
+        ? digest([...targetPrecommit.changed_files].sort())
+        : null,
+    },
+    commit_ticket_ready: commitTicketReady,
+    execution_authorized: false,
     required_checks: requiredChecks,
     checks_digest: checksDigest,
     report_bindings: reportBindings,
     acceptance_proofs: acceptanceProofs,
   };
+}
+
+export function normalizeNativePrecommitEvidence(value) {
+  const evidence = requireObject(value, "native_precommit_evidence");
+  const allowedKeys = new Set([
+    "schema_version", "diff_mode", "base_commit", "diff_digest", "changed_files",
+  ]);
+  if (Object.keys(evidence).some((key) => !allowedKeys.has(key)) ||
+      evidence.schema_version !== "native_precommit_evidence_v1" ||
+      evidence.diff_mode !== "git_diff_binary_sha256_v1") {
+    throw new Error("native_precommit_evidence_invalid");
+  }
+  const changedFiles = stringList(
+    evidence.changed_files,
+    "native_precommit_changed_files",
+    { maxItems: 1_000, maxLength: 2_000 },
+  ).sort();
+  if (!changedFiles.length) throw new Error("native_precommit_changed_files_invalid");
+  const normalized = {
+    schema_version: "native_precommit_evidence_v1",
+    diff_mode: "git_diff_binary_sha256_v1",
+    base_commit: releaseField(
+      evidence.base_commit,
+      "native_precommit_base_commit",
+      /^[a-f0-9]{40}$/,
+      40,
+    ),
+    diff_digest: releaseField(
+      evidence.diff_digest,
+      "native_precommit_diff_digest",
+      /^[a-f0-9]{64}$/,
+      64,
+    ),
+    changed_files: changedFiles,
+  };
+  return Object.freeze({
+    ...normalized,
+    workspace_digest: digest(normalized),
+  });
 }
 
 function releaseField(value, name, pattern, max = 240) {
@@ -1965,6 +2043,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
       [tenantId, projectId, sessionId]);
       let authorizedResumeWorkIds = null;
+      let authorizedSessionRebind = false;
       if (options.authorizedResumeWorkIds !== undefined) {
         if (!Array.isArray(options.authorizedResumeWorkIds) ||
             options.authorizedResumeWorkIds.length > 10_000) {
@@ -1972,10 +2051,20 @@ export function createWorkContinuityRuntime(config, options = {}) {
         }
         authorizedResumeWorkIds = new Set(options.authorizedResumeWorkIds.map((candidate) =>
           uuid(candidate, "work_id")));
-        if (input.resume_existing === true &&
-            ((binding.rows[0] && !authorizedResumeWorkIds.has(String(binding.rows[0].work_id))) ||
-             (input.work_id && !authorizedResumeWorkIds.has(workId)))) {
-          throw new Error("continuity_work_acl_denied");
+        if (input.resume_existing === true) {
+          const boundWorkAuthorized = !binding.rows[0] ||
+            authorizedResumeWorkIds.has(String(binding.rows[0].work_id));
+          const requestedWorkAuthorized = !input.work_id || authorizedResumeWorkIds.has(workId);
+          authorizedSessionRebind = Boolean(
+            !boundWorkAuthorized &&
+            requestedWorkAuthorized &&
+            input.work_id &&
+            options.trustedSessionFollowup === true &&
+            options.allowAuthorizedSessionRebind === true
+          );
+          if ((!boundWorkAuthorized && !authorizedSessionRebind) || !requestedWorkAuthorized) {
+            throw new Error("continuity_work_acl_denied");
+          }
         }
       }
       let autoResumeCandidate = null;
@@ -1999,10 +2088,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
         if (autoResumeCandidates.length === 1) autoResumeCandidate = autoResumeCandidates[0];
       }
       if (input.resume_existing === true && (binding.rows[0] || input.work_id || autoResumeCandidate)) {
-        if (binding.rows[0] && input.work_id && binding.rows[0].work_id !== workId) {
+        if (binding.rows[0] && input.work_id && binding.rows[0].work_id !== workId &&
+            !authorizedSessionRebind) {
           throw new Error("continuity_session_binding_conflict");
         }
-        const resumeWorkId = binding.rows[0]?.work_id || input.work_id || autoResumeCandidate.work_id;
+        const resumeWorkId = authorizedSessionRebind
+          ? workId
+          : binding.rows[0]?.work_id || input.work_id || autoResumeCandidate.work_id;
         const existing = await client.query(`SELECT a.intent_digest,a.create_request_digest,
             w.project_id,w.status,w.current_version,w.next_action
           FROM core_continuity_intent_anchors a JOIN core_continuity_works w
@@ -2014,7 +2106,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         if (existing.rows[0].project_id !== projectId) {
           throw new Error("continuity_project_mismatch");
         }
-        if (binding.rows[0] &&
+        if (binding.rows[0] && !authorizedSessionRebind &&
             binding.rows[0].create_request_digest !== existing.rows[0].create_request_digest) {
           throw new Error("continuity_session_binding_conflict");
         }
@@ -2030,7 +2122,21 @@ export function createWorkContinuityRuntime(config, options = {}) {
           }
         }
         let sessionBindingCreated = false;
-        if (!binding.rows[0]) {
+        let sessionBindingRebound = false;
+        if (authorizedSessionRebind) {
+          const rebound = await client.query(`UPDATE core_continuity_session_bindings
+            SET work_id=$4,create_request_digest=$5
+            WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3 AND work_id=$6
+            RETURNING work_id,create_request_digest`,
+          [tenantId, projectId, sessionId, resumeWorkId,
+            existing.rows[0].create_request_digest, binding.rows[0].work_id]);
+          if (!rebound.rows[0] || rebound.rows[0].work_id !== resumeWorkId ||
+              rebound.rows[0].create_request_digest !== existing.rows[0].create_request_digest) {
+            throw new Error("continuity_session_binding_conflict");
+          }
+          binding.rows[0] = rebound.rows[0];
+          sessionBindingRebound = true;
+        } else if (!binding.rows[0]) {
           const inserted = await client.query(`INSERT INTO core_continuity_session_bindings
             (tenant_id,project_id,session_id,work_id,create_request_digest)
             VALUES ($1,$2,$3,$4,$5)
@@ -2061,12 +2167,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
           architecture_version: Number(existing.rows[0]?.current_version || 0),
           next_action: existing.rows[0]?.next_action || "",
           resumed_existing: true,
-          resume_source: binding.rows[0]
-            ? "session_binding"
+          resume_source: sessionBindingRebound
+            ? "explicit_authorized_rebind"
+            : binding.rows[0] ? "session_binding"
             : input.work_id ? "explicit_work_id" : "unambiguous_project_work",
           automatic_resume: Boolean(autoResumeCandidate),
           session_binding_created: sessionBindingCreated,
-          idempotent_replay: !sessionBindingCreated,
+          session_binding_rebound: sessionBindingRebound,
+          idempotent_replay: !sessionBindingCreated && !sessionBindingRebound,
         };
       }
       if (input.resume_existing === true && !binding.rows[0] && !input.work_id && autoResumeCandidates.length > 1) {
@@ -3830,6 +3938,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
       summary: safeText(reportInput.summary, 8_000),
       verdict: reportInput.verdict ? String(reportInput.verdict) : null,
       commit_sha: commitSha,
+      precommit_evidence: reportInput.precommit_evidence === undefined ||
+        reportInput.precommit_evidence === null
+        ? null
+        : normalizeNativePrecommitEvidence(reportInput.precommit_evidence),
       tests: Array.isArray(reportInput.tests) ? reportInput.tests.slice(0, 100) : [],
       evidence_refs: stringList(reportInput.evidence_refs, "native_agent_evidence_refs", {
         maxItems: 100,
@@ -3919,13 +4031,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
       ) {
         throw new Error("native_agent_assignment_capability_mismatch");
       }
+      if (report.commit_sha && report.precommit_evidence) {
+        throw new Error("native_agent_report_source_ambiguous");
+      }
       if (
         status === "completed" &&
         row.plan?.release_mode === "external_ticket_required" &&
         ["builder", "verifier"].includes(row.task_kind) &&
-        !report.commit_sha
+        !report.commit_sha &&
+        !report.precommit_evidence
       ) {
-        throw new Error("native_agent_report_commit_required");
+        throw new Error("native_agent_report_commit_or_precommit_required");
       }
       if (row.task_kind === "verifier") {
         if (!["approved", "rejected"].includes(report.verdict)) throw new Error("native_agent_verifier_verdict_required");
@@ -3945,6 +4061,24 @@ export function createWorkContinuityRuntime(config, options = {}) {
           report.acceptance_evidence.some((item) => !allowedCriteria.has(item.criterion_digest))
         ) {
           throw new Error("native_agent_acceptance_evidence_invalid");
+        }
+        if (report.precommit_evidence) {
+          const verifierTask = (row.plan?.tasks || []).find((task) => task.task_id === row.task_id);
+          const builderDependencies = (row.plan?.tasks || []).filter((task) =>
+            task.kind === "builder" && verifierTask?.dependencies?.includes(task.task_id));
+          if (builderDependencies.length !== 1) {
+            throw new Error("native_agent_precommit_builder_dependency_invalid");
+          }
+          const builder = await client.query(`SELECT status,report
+            FROM core_continuity_native_agents
+            WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND task_id=$4
+            FOR UPDATE`,
+          [context.tenantId, context.workId, planId, builderDependencies[0].task_id]);
+          if (builder.rows[0]?.status !== "completed" ||
+              String(builder.rows[0]?.report?.precommit_evidence?.workspace_digest || "") !==
+                report.precommit_evidence.workspace_digest) {
+            throw new Error("native_agent_precommit_evidence_mismatch");
+          }
         }
       } else if (
         row.task_kind === "builder" &&
@@ -4059,6 +4193,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         const evaluation = evaluateNativeClosure({ plan: planResult.rows[0].plan, agents: agents.rows });
         const evaluationId = crypto.randomUUID();
         const evaluationDigest = digest(evaluation);
+        if (evaluation.closed && !input.release) {
+          throw new Error("continuity_release_required");
+        }
         const coreJoinMaterial = evaluation.closed
           ? buildCoreJoinMaterial({
             tenantId: context.tenantId,
@@ -4082,6 +4219,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
             SET next_action='Issue and persist the exact Universal Core Join verdict before release readiness.',
               updated_at=now()
             WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId]);
+        } else if (evaluation.commit_ticket_ready) {
+          await client.query(`UPDATE core_continuity_works SET next_action=$3,updated_at=now()
+            WHERE tenant_id=$1 AND work_id=$2`,
+          [context.tenantId, context.workId,
+            `Request the exact Core git.commit ticket bound to precommit workspace digest ${evaluation.precommit_verification.workspace_digest}; no other action is authorized.`]);
         } else {
           await client.query(`UPDATE core_continuity_works SET next_action=$3,updated_at=now()
             WHERE tenant_id=$1 AND work_id=$2`,

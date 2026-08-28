@@ -21,6 +21,7 @@ const READY_STATES = new Set(["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"]);
 const WORK_BOOTSTRAP_STATE = "WORK_BOOTSTRAP_READY";
 const ACTION_KIND_BY_CLASS = Object.freeze({
   GIT_MERGE: new Set(["github.merge"]),
+  GIT_COMMIT: new Set(["git.commit"]),
   GIT_PUSH: new Set(["git.push.branch", "git.push.protected"]),
   PULL_REQUEST_OPEN: new Set(["github.draft_pr", "github.ready"]),
   DEPLOY: new Set(["render.deploy", "render.promote"]),

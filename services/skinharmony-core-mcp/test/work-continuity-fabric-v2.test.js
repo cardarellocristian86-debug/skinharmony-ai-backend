@@ -126,6 +126,23 @@ function completedAgents(plan) {
   ];
 }
 
+function precommitAgents(plan) {
+  const agents = completedAgents(plan);
+  const evidence = {
+    schema_version: "native_precommit_evidence_v1",
+    diff_mode: "git_diff_binary_sha256_v1",
+    base_commit: "a".repeat(40),
+    diff_digest: "b".repeat(64),
+    changed_files: ["services/core.js", "test/core.test.js"],
+  };
+  evidence.workspace_digest = digest(evidence);
+  for (const agent of agents) {
+    agent.report.commit_sha = null;
+    agent.report.precommit_evidence = structuredClone(evidence);
+  }
+  return agents;
+}
+
 test("Intent Anchor is deterministic, immutable-shaped and redacts sensitive request fragments", () => {
   const input = {
     project_id: "skinharmony",
@@ -266,6 +283,33 @@ test("closure requires independent, transport-attested builder and verifier evid
   assert.ok(blocked.missing.includes("independent_verifier_missing"));
   assert.ok(blocked.missing.includes("native_agent_session_reused"));
   assert.ok(blocked.missing.includes("verification_coverage_missing:build"));
+});
+
+test("matching precommit evidence becomes commit-ticket ready without closing release", () => {
+  const plan = closurePlan();
+  const agents = precommitAgents(plan);
+  const evaluation = evaluateNativeClosure({ plan, agents });
+
+  assert.equal(evaluation.closed, false);
+  assert.equal(evaluation.commit_ticket_ready, true);
+  assert.equal(evaluation.execution_authorized, false);
+  assert.equal(evaluation.target_commit, null);
+  assert.equal(evaluation.precommit_verification.ready, true);
+  assert.match(evaluation.precommit_verification.workspace_digest, /^[a-f0-9]{64}$/);
+  assert.deepEqual(evaluation.missing.sort(), [
+    "builder_target_commit_missing",
+    "verifier_reviewed_commit_missing:codex-verifier",
+  ]);
+
+  agents[1].report.precommit_evidence.diff_digest = "c".repeat(64);
+  agents[1].report.precommit_evidence.workspace_digest = digest({
+    ...agents[1].report.precommit_evidence,
+    workspace_digest: undefined,
+  });
+  const mismatched = evaluateNativeClosure({ plan, agents });
+  assert.equal(mismatched.commit_ticket_ready, false);
+  assert.ok(mismatched.missing.includes(
+    "verifier_precommit_evidence_mismatch:codex-verifier"));
 });
 
 test("aggregate Atlas preserves cross-work provenance and stays inside the bounded change cone", () => {

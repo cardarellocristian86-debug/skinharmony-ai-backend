@@ -523,6 +523,7 @@ test("legacy Work reads and auto-resume intersect canonical V2 visibility", () =
   assert.match(serverSource, /tenant_work_gallery_list: async[\s\S]*?galleryLegacyWorksAuthorized\(identity, args\)/);
   assert.match(serverSource, /workContinuityV2Store\.listWorks\(aclIdentity, \{ view: "operational", project_id \}\)/);
   assert.match(serverSource, /authorizedResumeWorkIds,/);
+  assert.match(serverSource, /allowAuthorizedSessionRebind: Boolean\(args\.work_id\)/);
   assert.match(serverSource, /const governedLegacyReadRuntime = workContinuityRuntime \? Object\.freeze\(\{[\s\S]*?listWorks: listLegacyWorksAuthorized,[\s\S]*?readIntent: readLegacyIntentAuthorized/);
   assert.match(serverSource, /resolveContinuityProjectBinding\([\s\S]*?governedLegacyReadRuntime,[\s\S]*?preferPersistedWorkProject: true/);
   const hookStart = serverSource.indexOf("beforeToolCall: async");

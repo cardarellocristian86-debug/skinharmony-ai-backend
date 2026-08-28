@@ -145,6 +145,10 @@ test("issues a short-lived candidate only to a registered capable host", () => {
   assert.equal(issued.available, true);
   assert.equal(issued.submit_tool, "nyra_governed_continue");
   assert.match(issued.candidate_attestation, /^ngc1\./);
+  assert.equal(attestor.issue({
+    identity: identity(),
+    directive: directive("GIT_COMMIT", "READY_FOR_CORE_REVIEW"),
+  }).available, true);
 
   const unknown = identity({
     authenticatedHostPrincipal: {
@@ -214,6 +218,52 @@ test("submits a merge candidate for a Core ticket without reserving or executing
   assert.equal(response.structuredContent.external_action_authorized, false);
   assert.equal(response.structuredContent.provider_execution, false);
   assert.equal(response.structuredContent.host_response_contract.speaker, "Nyra");
+});
+
+test("submits an exact local commit candidate without widening it to push", async () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = attestor.issue({
+    identity: identity(),
+    directive: directive("GIT_COMMIT", "READY_FOR_CORE_REVIEW"),
+  });
+  const calls = [];
+  const handler = createNyraGovernedContinueHandler({
+    ...bootstrapDependencies,
+    attestor,
+    readDirectiveContext: async () => ({ raw: true }),
+    normalizeDirectiveContext: () => normalizedContext(),
+    issueDelegation: async () => {
+      throw new Error("unexpected_delegation");
+    },
+    authorizeAction: async (args) => {
+      calls.push(args);
+      return {
+        structuredContent: {
+          action_ticket: { ticket: { ticket_id: `hnt_${"2".repeat(64)}` } },
+        },
+        content: [],
+      };
+    },
+  });
+  const response = await handler({
+    operation: "authorize_action",
+    candidate_attestation: candidate.candidate_attestation,
+    idempotency_key: "authorize-commit-1",
+    action_request: {
+      delegation_id: "hnd_delegation-12345678",
+      work_id: WORK_ID,
+      intent_anchor_digest: DIGEST_B,
+      repository: "owner/repo",
+      action: { kind: "git.commit", repository: "owner/repo", branch: "feature" },
+      evidence_digest: DIGEST_A,
+    },
+  }, identity());
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].action.kind, "git.commit");
+  assert.equal(response.structuredContent.ticket_issued, true);
+  assert.equal(response.structuredContent.execution_authorized, false);
+  assert.equal(response.structuredContent.external_action_authorized, false);
 });
 
 test("derives the same downstream idempotency key across process replicas", async () => {

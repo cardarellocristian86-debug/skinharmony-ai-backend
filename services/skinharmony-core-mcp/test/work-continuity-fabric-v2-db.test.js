@@ -727,6 +727,12 @@ class ContinuityPool {
         candidate.agent_id !== agentId);
       return { rows: row ? [{ task_id: row.task_id }] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT status,report FROM core_continuity_native_agents")) {
+      const [tenantId, workId, planId, taskId] = parameters;
+      const row = this.nativeAgents.get(key(tenantId, planId, taskId));
+      const matches = row?.work_id === workId;
+      return { rows: matches ? [{ status: row.status, report: row.report }] : [], rowCount: matches ? 1 : 0 };
+    }
     if (q.startsWith("SELECT task_id,agent_id,task_kind,status,report,report_digest")) {
       const rows = [...this.nativeAgents.values()]
         .filter((row) =>
@@ -2068,6 +2074,165 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
   );
 });
 
+test("precommit-native reports agree on one server-digested workspace before a commit ticket", async () => {
+  const clock = () => new Date("2026-08-28T21:30:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: "p".repeat(32),
+  }, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      host_kind: "codex_native",
+      client_type: "codex",
+      capabilities: ["work.operate", "host_native.authorize"],
+    },
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "a".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "precommit-report-session",
+  }, { creationAuthorized: true });
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Prepare the exact tracked diff." },
+      { task_id: "verify", kind: "verifier", instruction: "Verify the exact tracked diff.", dependencies: ["build"] },
+    ],
+    idempotency_key: "precommit-native-plan",
+  };
+  const planned = await runtime.planNativeAgents(identity, request, {
+    corePlan: corePlanFor(work, request),
+  });
+  const planId = planned.plan.plan_id;
+  const precommitEvidence = {
+    schema_version: "native_precommit_evidence_v1",
+    diff_mode: "git_diff_binary_sha256_v1",
+    base_commit: "a".repeat(40),
+    diff_digest: "b".repeat(64),
+    changed_files: ["src/core.js", "test/core.test.js"],
+  };
+  const builderBinding = await runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    task_id: "build",
+    native_agent_id: "precommit-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/precommit-builder",
+  });
+  const builderIdentity = {
+    ...identity,
+    agentPresence: {
+      agent_id: "precommit-builder",
+      client_type: "codex",
+      session_fingerprint: "b".repeat(64),
+      host_transport_session_fingerprint: "b".repeat(64),
+      host_kind: "codex_native",
+      signature: `ags_${"b".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  await assert.rejects(runtime.reportNativeAgent(builderIdentity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    native_agent_id: "precommit-builder",
+    host_task_id: "/root/precommit-builder",
+    assignment_capability: builderBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "Ambiguous evidence must fail.",
+      commit_sha: "c".repeat(40),
+      precommit_evidence: precommitEvidence,
+    },
+  }), /native_agent_report_source_ambiguous/);
+  await runtime.reportNativeAgent(builderIdentity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    native_agent_id: "precommit-builder",
+    host_task_id: "/root/precommit-builder",
+    assignment_capability: builderBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "Prepared and tested the exact precommit diff.",
+      precommit_evidence: precommitEvidence,
+      tests: [{ name: "node --test", passed: true }],
+      evidence_refs: ["workspace:tracked-diff"],
+    },
+  });
+  const verifierBinding = await runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    task_id: "verify",
+    native_agent_id: "precommit-verifier",
+    host_type: "codex_native",
+    host_task_id: "/root/precommit-verifier",
+  });
+  const verifierIdentity = {
+    ...identity,
+    agentPresence: {
+      agent_id: "precommit-verifier",
+      client_type: "codex",
+      session_fingerprint: "c".repeat(64),
+      host_transport_session_fingerprint: "c".repeat(64),
+      host_kind: "codex_native",
+      signature: `ags_${"c".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  const acceptanceEvidence = planned.plan.acceptance_contract.criteria.map((criterion) => ({
+    criterion_digest: criterion.criterion_digest,
+    passed: true,
+    evidence_refs: [`verified:${criterion.criterion_id}`],
+  }));
+  const verifierInput = {
+    work_id: work.work_id,
+    plan_id: planId,
+    native_agent_id: "precommit-verifier",
+    host_task_id: "/root/precommit-verifier",
+    assignment_capability: verifierBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "Independently verified the exact precommit diff.",
+      verdict: "approved",
+      precommit_evidence: precommitEvidence,
+      verifies_task_ids: ["build"],
+      tests: [{ name: "independent node --test", passed: true }],
+      evidence_refs: ["review:tracked-diff"],
+      acceptance_evidence: acceptanceEvidence,
+    },
+  };
+  await assert.rejects(runtime.reportNativeAgent(verifierIdentity, {
+    ...verifierInput,
+    report: {
+      ...verifierInput.report,
+      precommit_evidence: { ...precommitEvidence, diff_digest: "d".repeat(64) },
+    },
+  }), /native_agent_precommit_evidence_mismatch/);
+  await runtime.reportNativeAgent(verifierIdentity, verifierInput);
+
+  const evaluation = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    idempotency_key: "precommit-evaluation",
+  });
+  assert.equal(evaluation.closed, false);
+  assert.equal(evaluation.commit_ticket_ready, true);
+  assert.equal(evaluation.execution_authorized, false);
+  assert.match(evaluation.precommit_verification.workspace_digest, /^[a-f0-9]{64}$/);
+  assert.match(pool.works.get(key("tenant-a", work.work_id)).next_action,
+    /exact Core git\.commit ticket/);
+});
+
 test("operational failures create one exact indexed blocker without raw error text", async () => {
   const instant = new Date("2026-07-29T14:20:00.000Z");
   const clock = () => new Date(instant);
@@ -2542,6 +2707,11 @@ test("local closure becomes release-ready and external completion needs exact Co
     },
   };
   await runtime.reportNativeAgent(verifierIdentity, verifierReportInput);
+  await assert.rejects(runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    idempotency_key: "closure-release-required",
+  }), /continuity_release_required/);
   await assert.rejects(runtime.evaluateClosure(identity, {
     work_id: work.work_id,
     plan_id: planId,
