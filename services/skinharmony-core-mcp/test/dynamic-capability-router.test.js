@@ -258,17 +258,30 @@ test("keeps governed continuation direct-only and outside dynamic discovery", ()
   assert.deepEqual(snapshot.capabilities, []);
 });
 
-test("discovers and reads Nyra's persistent self-model through a narrow dynamic path", async () => {
-  const tool = TOOLS.find((item) => item.name === "nyra_self_model");
-  let calls = 0;
+test("discovers, reads and owner-refreshes Nyra's persistent self-model through a narrow dynamic path", async () => {
+  const readTool = TOOLS.find((item) => item.name === "nyra_self_model");
+  const refreshTool = TOOLS.find((item) => item.name === "nyra_self_model_refresh");
+  let readCalls = 0;
+  let refreshCalls = 0;
   const handlers = {
     nyra_self_model: async () => {
-      calls += 1;
+      readCalls += 1;
       return { structuredContent: { ok: true, self_model: { persistent: true } } };
+    },
+    nyra_self_model_refresh: async () => {
+      refreshCalls += 1;
+      return {
+        structuredContent: {
+          ok: true,
+          self_model: { schema_version: "nyra_persistent_self_model_v1", persistent: true },
+          execution_allowed: false,
+          dedicated_core_gate: { authorized: true, authority: "universal_core" },
+        },
+      };
     },
   };
   const router = createDynamicCapabilityHandlers({
-    tools: [tool],
+    tools: [readTool, refreshTool],
     handlers,
     semanticSelect: async () => ({}),
   });
@@ -276,20 +289,49 @@ test("discovers and reads Nyra's persistent self-model through a narrow dynamic 
     group: "self_model",
     include_schema: true,
   }, identity);
-  const capability = catalog.structuredContent.capabilities[0];
-  assert.equal(catalog.structuredContent.total, 1);
-  assert.equal(capability.capability_id, "nyra_self_model");
-  assert.equal(capability.group, "self_model");
-  assert.equal(capability.access_mode, "read");
+  assert.equal(catalog.structuredContent.total, 2);
+  const readCapability = catalog.structuredContent.capabilities.find((item) =>
+    item.capability_id === "nyra_self_model");
+  const refreshCapability = catalog.structuredContent.capabilities.find((item) =>
+    item.capability_id === "nyra_self_model_refresh");
+  assert.equal(readCapability.group, "self_model");
+  assert.equal(readCapability.access_mode, "read");
+  assert.equal(refreshCapability.group, "self_model");
+  assert.equal(refreshCapability.access_mode, "invoke");
+  assert.equal(refreshCapability.owner_confirmation_required, true);
+  assert.equal(refreshCapability.dedicated_core_gate, true);
 
   const result = await router.core_capability_read({
     capability_id: "nyra_self_model",
     catalog_revision: catalog.structuredContent.catalog_revision,
     arguments: {},
   }, identity);
-  assert.equal(calls, 1);
+  assert.equal(readCalls, 1);
   assert.equal(result.structuredContent.self_model.persistent, true);
   assert.equal(result.structuredContent.dynamic_capability.capability_id, "nyra_self_model");
+
+  await assert.rejects(router.core_capability_invoke({
+    capability_id: "nyra_self_model_refresh",
+    catalog_revision: catalog.structuredContent.catalog_revision,
+    idempotency_key: "self-model-refresh-denied",
+    owner_confirmed: true,
+    confirmation_reference: "owner approved self model refresh",
+    arguments: {},
+  }, { ...identity, ownerConfirmed: false }), /owner_confirmation_required/);
+  assert.equal(refreshCalls, 0);
+
+  const refreshed = await router.core_capability_invoke({
+    capability_id: "nyra_self_model_refresh",
+    catalog_revision: catalog.structuredContent.catalog_revision,
+    idempotency_key: "self-model-refresh-allowed",
+    owner_confirmed: true,
+    confirmation_reference: "owner approved self model refresh",
+    arguments: {},
+  }, identity);
+  assert.equal(refreshCalls, 1);
+  assert.equal(refreshed.structuredContent.execution_allowed, false);
+  assert.equal(refreshed.structuredContent.dynamic_capability.capability_id, "nyra_self_model_refresh");
+  assert.equal(refreshed.structuredContent.dynamic_capability.gate_source, "universal_core_dedicated_route");
 });
 
 test("catalogs every tenant Work capability on the continuity surface", () => {

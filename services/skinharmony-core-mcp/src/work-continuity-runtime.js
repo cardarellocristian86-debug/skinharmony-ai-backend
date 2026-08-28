@@ -1148,6 +1148,108 @@ export function normalizeNativePrecommitEvidence(value) {
   });
 }
 
+// A terminal verifier report may promote one already-completed V2 task into
+// independently verified evidence before the Work as a whole is eligible for
+// closure.  This deliberately does not reuse evaluateNativeClosure(): that
+// evaluator is the Work-wide gate and must continue to require every accepted
+// criterion, required task and release condition.
+export function evaluateTaskScopedNativeVerifierEvidence({ plan, agents = [], verifier_task_id: verifierTaskId } = {}) {
+  requireObject(plan, "native_agent_plan");
+  const missing = [];
+  const taskById = new Map((plan.tasks || []).map((task) => [task.task_id, task]));
+  const verifier = agents.find((agent) => agent?.task_id === verifierTaskId) || null;
+  const verifierTask = verifier ? taskById.get(verifier.task_id) : null;
+  if (!verifier || !verifierTask || verifierTask.kind !== "verifier") {
+    return Object.freeze({
+      schema_version: "native_task_scoped_verifier_evaluation_v1",
+      promotable: false,
+      missing: ["task_scoped_verifier_missing"],
+      verifier_task_id: String(verifierTaskId || ""),
+      v2_task_id: null,
+      builder_task_ids: [],
+    });
+  }
+  const v2TaskId = String(verifier.v2_task_id || "").trim().toLowerCase();
+  if (!v2TaskId) missing.push("task_scoped_v2_task_binding_missing");
+  const builders = agents.filter((agent) =>
+    taskById.get(agent?.task_id)?.kind === "builder" &&
+    String(agent?.v2_task_id || "").trim().toLowerCase() === v2TaskId);
+  if (!builders.length) missing.push("task_scoped_builder_missing");
+  const scopedAgents = [verifier, ...builders];
+  const reportedSessions = new Set();
+  for (const agent of scopedAgents) {
+    const task = taskById.get(agent?.task_id);
+    if (!task || agent.status !== "completed") {
+      missing.push(`task_scoped_task_not_completed:${String(agent?.task_id || "unknown")}`);
+    }
+    if (!/^[a-f0-9]{64}$/i.test(String(agent?.report_digest || ""))) {
+      missing.push(`task_scoped_report_digest_missing:${String(agent?.task_id || "unknown")}`);
+    }
+    const session = String(agent?.native_session_fingerprint || "");
+    if (
+      !/^[a-f0-9]{16,64}$/i.test(session) ||
+      !/^ags_[a-f0-9]{32}$/.test(String(agent?.native_presence_signature || "")) ||
+      session === agent?.coordinator_session_fingerprint
+    ) {
+      missing.push(`task_scoped_result_unattested:${String(agent?.task_id || "unknown")}`);
+    }
+    if (session && reportedSessions.has(session)) missing.push("task_scoped_session_reused");
+    if (session) reportedSessions.add(session);
+    if (agent?.report?.correction_required === true) {
+      missing.push(`task_scoped_correction_required:${String(agent?.task_id || "unknown")}`);
+    }
+    const tests = Array.isArray(agent?.report?.tests) ? agent.report.tests : [];
+    if (!tests.length) missing.push(`task_scoped_test_evidence_missing:${String(agent?.task_id || "unknown")}`);
+    if (tests.some((item) => item?.passed !== true)) {
+      missing.push(`task_scoped_test_failure_present:${String(agent?.task_id || "unknown")}`);
+    }
+  }
+  if (verifier.status !== "completed" || verifier.report?.verdict !== "approved") {
+    missing.push("task_scoped_verifier_not_approved");
+  }
+  const verifiedTaskIds = new Set(
+    Array.isArray(verifier.report?.verifies_task_ids)
+      ? verifier.report.verifies_task_ids.map((value) => String(value || "").trim()).filter(Boolean)
+      : [],
+  );
+  if (!verifiedTaskIds.size || verifiedTaskIds.has(verifier.task_id)) {
+    missing.push("task_scoped_verifier_scope_invalid");
+  }
+  for (const builder of builders) {
+    if (!verifiedTaskIds.has(builder.task_id)) {
+      missing.push(`task_scoped_verification_coverage_missing:${builder.task_id}`);
+    }
+    if (
+      builder.agent_id === verifier.agent_id ||
+      builder.native_session_fingerprint === verifier.native_session_fingerprint
+    ) {
+      missing.push("task_scoped_verifier_independence_invalid");
+    }
+  }
+  const verifierEvidence = Array.isArray(verifier.report?.acceptance_evidence)
+    ? verifier.report.acceptance_evidence
+    : [];
+  if (!Array.isArray(verifier.report?.evidence_refs) || !verifier.report.evidence_refs.length ||
+      !verifierEvidence.length) {
+    missing.push("task_scoped_verifier_evidence_missing");
+  }
+  if (verifierEvidence.some((item) => item?.passed !== true)) {
+    missing.push("task_scoped_verifier_evidence_rejected");
+  }
+  if (verifierEvidence.some((item) =>
+    !Array.isArray(item?.evidence_refs) || item.evidence_refs.length === 0)) {
+    missing.push("task_scoped_verifier_evidence_unproven");
+  }
+  return Object.freeze({
+    schema_version: "native_task_scoped_verifier_evaluation_v1",
+    promotable: missing.length === 0,
+    missing: [...new Set(missing)],
+    verifier_task_id: verifier.task_id,
+    v2_task_id: v2TaskId || null,
+    builder_task_ids: builders.map((builder) => builder.task_id).sort(),
+  });
+}
+
 function releaseField(value, name, pattern, max = 240) {
   const normalized = safeText(value, max).trim().toLowerCase();
   if (!pattern.test(normalized)) throw new Error(`${name}_invalid`);
@@ -1781,6 +1883,8 @@ ALTER TABLE core_continuity_native_agents
   ADD COLUMN IF NOT EXISTS native_session_fingerprint varchar(64);
 ALTER TABLE core_continuity_native_agents
   ADD COLUMN IF NOT EXISTS native_presence_signature varchar(80);
+ALTER TABLE core_continuity_native_agents
+  ADD COLUMN IF NOT EXISTS v2_task_id uuid;
 CREATE UNIQUE INDEX IF NOT EXISTS core_continuity_native_agents_session_once_idx
   ON core_continuity_native_agents (tenant_id,plan_id,native_session_fingerprint)
   WHERE native_session_fingerprint IS NOT NULL;
@@ -1960,6 +2064,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
     config.dttAgentIdentitySigningSecret || "",
   ).trim();
   let workEventProjector = null;
+  let nativeVerifierEvidenceBridge = typeof options.nativeVerifierEvidenceBridge === "function"
+    ? options.nativeVerifierEvidenceBridge
+    : null;
+  const nativeVerifierEvidenceBridgeRequired = options.nativeVerifierEvidenceBridgeRequired === true;
   let ready;
   const initialize = () => ready ||= pool.query(WORK_CONTINUITY_SCHEMA_SQL);
 
@@ -1995,6 +2103,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("native_agent_assignment_capability_invalid");
     }
     return crypto.createHash("sha256").update(capability).digest("hex");
+  }
+
+  function nativeAssignmentBinding({ v2_task_id: v2TaskId, ...binding } = {}) {
+    // Keep historical capabilities valid: a pre-v2-task binding was signed
+    // without this property and must not be silently reinterpreted.  New
+    // bindings include it in the signature and can therefore promote exactly
+    // one V2 task through the verifier bridge.
+    return v2TaskId ? { ...binding, v2_task_id: uuid(v2TaskId, "native_agent_v2_task_invalid") } : binding;
   }
 
   function nativeReporterPresence(identity, agentId) {
@@ -2042,7 +2158,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       input.assignment_capability,
     );
     await initialize();
-    const current = await pool.query(`SELECT a.task_id,a.task_digest,a.host_type,a.host_task_id,
+    const current = await pool.query(`SELECT a.task_id,a.task_digest,a.v2_task_id,a.host_type,a.host_task_id,
         a.coordinator_session_fingerprint,a.assignment_capability_digest,a.lease_expires_at,
         p.status AS plan_status
       FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
@@ -2063,7 +2179,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     if (row.coordinator_session_fingerprint === reporterPresence.session_fingerprint) {
       throw new Error("native_agent_coordinator_report_forbidden");
     }
-    const expectedAssignment = assignmentCapability({
+    const expectedAssignment = assignmentCapability(nativeAssignmentBinding({
       tenant_id: context.tenantId,
       work_id: context.workId,
       plan_id: planId,
@@ -2074,7 +2190,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
       task_digest: row.task_digest,
       coordinator_session_fingerprint: row.coordinator_session_fingerprint,
       lease_expires_at: leaseExpiresAt.toISOString(),
-    });
+      v2_task_id: row.v2_task_id,
+    }));
     if (
       row.assignment_capability_digest !== suppliedAssignmentDigest ||
       suppliedAssignmentDigest !== assignmentCapabilityDigest(expectedAssignment) ||
@@ -2174,6 +2291,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
       throw new Error("work_event_projector_already_configured");
     }
     workEventProjector = projector;
+    return true;
+  }
+
+  function setNativeVerifierEvidenceBridge(bridge) {
+    if (typeof bridge !== "function") {
+      throw new Error("native_verifier_evidence_bridge_invalid");
+    }
+    if (nativeVerifierEvidenceBridge && nativeVerifierEvidenceBridge !== bridge) {
+      throw new Error("native_verifier_evidence_bridge_already_configured");
+    }
+    nativeVerifierEvidenceBridge = bridge;
     return true;
   }
 
@@ -3955,7 +4083,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   // Example bind input:
   // {work_id, plan_id, task_id:"build", native_agent_id:"codex-builder",
-  // host_type:"codex_native", host_task_id:"/root/build"}.
+  // host_type:"codex_native", host_task_id:"/root/build", v2_task_id}.
   async function bindNativeAgent(identity, input) {
     assertNativePayload(input);
     const context = workContext(identity, input);
@@ -3963,6 +4091,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const taskId = identifier(input.task_id, "task_id", 120);
     const agentId = identifier(input.native_agent_id || input.agent_id, "native_agent_id", 120);
     const hostTaskId = hostTaskIdentifier(input.host_task_id);
+    const v2TaskId = input.v2_task_id === undefined ? null : uuid(input.v2_task_id, "native_agent_v2_task_invalid");
     const hostType = String(input.host_type || "");
     if (!NATIVE_HOST_TYPES.has(hostType)) throw new Error("native_agent_host_type_invalid");
     const coordinatorSessionFingerprint = nativeCoordinatorFingerprint(identity);
@@ -3990,7 +4119,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
         ORDER BY task_id FOR UPDATE`,
       [context.tenantId, context.workId, planId]);
-      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,
+      const existing = await client.query(`SELECT task_id,agent_id,host_type,host_task_id,task_digest,v2_task_id,
           coordinator_session_fingerprint,assignment_capability_digest,status,lease_expires_at
         FROM core_continuity_native_agents
         WHERE tenant_id=$1 AND plan_id=$2 AND
@@ -4001,7 +4130,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         if (row.status === "expired") {
           throw new Error("native_agent_binding_expired_replan_required");
         }
-        const replayCapability = assignmentCapability({
+        const replayCapability = assignmentCapability(nativeAssignmentBinding({
           tenant_id: context.tenantId,
           work_id: context.workId,
           plan_id: planId,
@@ -4015,10 +4144,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
             row.lease_expires_at,
             "native_agent_lease",
           ).toISOString(),
-        });
+          v2_task_id: row.v2_task_id,
+        }));
         if (row.task_id !== taskId || row.agent_id !== agentId ||
             row.host_type !== hostType || row.host_task_id !== hostTaskId ||
             row.task_digest !== task.task_digest ||
+            row.v2_task_id !== v2TaskId ||
             row.coordinator_session_fingerprint !== coordinatorSessionFingerprint ||
             row.assignment_capability_digest !==
               assignmentCapabilityDigest(replayCapability)) {
@@ -4047,7 +4178,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         throw new Error("native_agent_parallel_limit_reached");
       }
       const leaseExpiresAt = new Date(nowDate().getTime() + 60 * 60 * 1_000).toISOString();
-      const assignmentBinding = {
+      const assignmentBinding = nativeAssignmentBinding({
         tenant_id: context.tenantId,
         work_id: context.workId,
         plan_id: planId,
@@ -4058,15 +4189,16 @@ export function createWorkContinuityRuntime(config, options = {}) {
         task_digest: task.task_digest,
         coordinator_session_fingerprint: coordinatorSessionFingerprint,
         lease_expires_at: leaseExpiresAt,
-      };
+        v2_task_id: v2TaskId,
+      });
       const assignment = assignmentCapability(assignmentBinding);
       const assignmentDigest = assignmentCapabilityDigest(assignment);
       await client.query(`INSERT INTO core_continuity_native_agents
-        (tenant_id,work_id,plan_id,task_id,agent_id,host_type,host_task_id,task_kind,task_digest,
+        (tenant_id,work_id,plan_id,task_id,agent_id,host_type,host_task_id,task_kind,task_digest,v2_task_id,
          coordinator_session_fingerprint,assignment_capability_digest,bound_by,lease_expires_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [context.tenantId, context.workId, planId, taskId, agentId, hostType, hostTaskId,
-        task.kind, task.task_digest, coordinatorSessionFingerprint, assignmentDigest,
+        task.kind, task.task_digest, v2TaskId, coordinatorSessionFingerprint, assignmentDigest,
         context.actor, leaseExpiresAt]);
       const binding = {
         task_id: taskId,
@@ -4075,6 +4207,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         host_task_id: hostTaskId,
         task_kind: task.kind,
         task_digest: task.task_digest,
+        ...(v2TaskId ? { v2_task_id: v2TaskId } : {}),
         coordinator_session_fingerprint: coordinatorSessionFingerprint,
         assignment_capability_digest: assignmentDigest,
         status: "bound",
@@ -4093,8 +4226,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         task_id: taskId,
         agent_id: agentId,
         host_type: hostType,
-          task_digest: task.task_digest,
-          assignment_capability_digest: assignmentDigest,
+        task_digest: task.task_digest,
+        ...(v2TaskId ? { v2_task_id: v2TaskId } : {}),
+        assignment_capability_digest: assignmentDigest,
       });
       return {
         schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
@@ -4186,11 +4320,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
         context.tenantId,
         planId,
       ]);
+      // Keep the pre-existing legacy-to-V2 lock order: Core Work advisory
+      // lock first, then the V2 Work row inside the evidence bridge. Without
+      // this, a report bridge could invert the event-projector order.
+      await lockWork(client, context);
       const current = await client.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.status,a.report_digest,
           a.host_type,a.host_task_id,a.coordinator_session_fingerprint,
           a.assignment_capability_digest,a.native_session_fingerprint,
           a.native_presence_signature,a.lease_expires_at,
-          p.plan,p.status AS plan_status
+          p.plan,p.status AS plan_status,a.v2_task_id
         FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
           ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
         WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=$3 AND a.agent_id=$4 FOR UPDATE`,
@@ -4212,7 +4350,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       if (row.coordinator_session_fingerprint === reporterPresence.session_fingerprint) {
         throw new Error("native_agent_coordinator_report_forbidden");
       }
-      const expectedAssignment = assignmentCapability({
+      const expectedAssignment = assignmentCapability(nativeAssignmentBinding({
         tenant_id: context.tenantId,
         work_id: context.workId,
         plan_id: planId,
@@ -4226,7 +4364,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           row.lease_expires_at,
           "native_agent_lease",
         ).toISOString(),
-      });
+        v2_task_id: row.v2_task_id,
+      }));
       if (
         row.assignment_capability_digest !== suppliedAssignmentDigest ||
         suppliedAssignmentDigest !== assignmentCapabilityDigest(expectedAssignment) ||
@@ -4294,6 +4433,52 @@ export function createWorkContinuityRuntime(config, options = {}) {
         throw new Error("native_agent_acceptance_evidence_verifier_only");
       }
       const reportDigest = digest({ status, report });
+      const bridgeVerifierEvidence = async (receipt = null) => {
+        if (row.task_kind !== "verifier" || status !== "completed" ||
+            report.verdict !== "approved" || !row.v2_task_id) {
+          return null;
+        }
+        // This is a task-evidence promotion, not a Work closure.  Keep it
+        // bound to the verifier's exact V2 task and its independently reported
+        // builders; evaluateNativeClosure remains the separate Work-wide gate.
+        const agents = await client.query(`SELECT task_id,agent_id,task_kind,status,report,report_digest,
+            coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature,v2_task_id
+          FROM core_continuity_native_agents
+          WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+          ORDER BY task_id FOR UPDATE`, [context.tenantId, context.workId, planId]);
+        const evaluation = evaluateTaskScopedNativeVerifierEvidence({
+          plan: row.plan,
+          agents: agents.rows,
+          verifier_task_id: row.task_id,
+        });
+        if (evaluation.promotable !== true) return null;
+        let boundReceipt = receipt;
+        if (!boundReceipt) {
+          const result = await client.query(`SELECT receipt_id,payload_digest
+            FROM core_continuity_native_receipts
+            WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+              AND receipt_type='agent_reported' AND agent_id=$4
+              AND payload->>'task_id'=$5 AND payload->>'report_digest'=$6
+            FOR UPDATE`, [context.tenantId, context.workId, planId, agentId, row.task_id, reportDigest]);
+          if (result.rowCount !== 1) {
+            throw new Error("native_verifier_evidence_receipt_binding_invalid");
+          }
+          boundReceipt = result.rows[0];
+        }
+        return nativeVerifierEvidenceBridge(client, {
+          server_owned: true,
+          tenant_id: context.tenantId,
+          work_id: context.workId,
+          plan_id: planId,
+          task_id: row.task_id,
+          agent_id: agentId,
+          session_fingerprint: reporterPresence.session_fingerprint,
+          presence_signature: reporterPresence.signature,
+          report_digest: reportDigest,
+          receipt_id: boundReceipt.receipt_id,
+          receipt_digest: boundReceipt.payload_digest,
+        });
+      };
       if (row.report_digest) {
         if (
           row.report_digest !== reportDigest ||
@@ -4301,6 +4486,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
           row.native_presence_signature !== reporterPresence.signature
         ) {
           throw new Error("native_agent_report_conflict");
+        }
+        const v2Evidence = nativeVerifierEvidenceBridge
+          ? await bridgeVerifierEvidence()
+          : null;
+        if (row.task_kind === "verifier" && status === "completed" &&
+            report.verdict === "approved" && row.v2_task_id &&
+            !nativeVerifierEvidenceBridge && nativeVerifierEvidenceBridgeRequired) {
+          throw new Error("native_verifier_evidence_bridge_unavailable");
         }
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
@@ -4310,6 +4503,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           agent_id: agentId,
           native_agent_id: agentId,
           report_digest: reportDigest,
+          ...(v2Evidence ? { v2_evidence: v2Evidence } : {}),
           idempotent_replay: true,
         };
       }
@@ -4339,6 +4533,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
           native_presence_signature: reporterPresence.signature,
         },
       });
+      const v2Evidence = nativeVerifierEvidenceBridge
+        ? await bridgeVerifierEvidence(receipt)
+        : null;
+      if (row.task_kind === "verifier" && status === "completed" &&
+          report.verdict === "approved" && row.v2_task_id &&
+          !nativeVerifierEvidenceBridge && nativeVerifierEvidenceBridgeRequired) {
+        throw new Error("native_verifier_evidence_bridge_unavailable");
+      }
       const event = await appendEvent(client, context, "native_agent_reported", {
         plan_id: planId,
         task_id: row.task_id,
@@ -4358,6 +4560,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         status,
         report_digest: reportDigest,
         receipt,
+        ...(v2Evidence ? { v2_evidence: v2Evidence } : {}),
         event,
       };
     });
@@ -6039,6 +6242,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     readControlContext,
     readNyraOperationalState,
     setWorkEventProjector,
+    setNativeVerifierEvidenceBridge,
     readIntent,
     resolveStandingReleaseIntentBinding,
     listWorks,

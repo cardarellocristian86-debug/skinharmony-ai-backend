@@ -102,6 +102,7 @@ import {
 import {
   createNyraGovernedContinueAttestor,
   createNyraGovernedContinueHandler,
+  createNyraGovernedContinuationIssuer,
 } from "./nyra-governed-continue.js";
 import {
   bindWorkBootstrapRequestToAuthenticatedHost,
@@ -121,6 +122,9 @@ const nyraGovernedContinueAttestor =
         secret: config.nyraGovernedContinueSigningSecret,
       })
     : null;
+const nyraGovernedContinuationIssuer = nyraGovernedContinueAttestor
+  ? createNyraGovernedContinuationIssuer(nyraGovernedContinueAttestor)
+  : null;
 const policyRegistrySigner = createPolicyRegistrySigner();
 const nyraPolicyRegistrySigner = createPolicyRegistrySigner({
   prefix: "POLICY_REGISTRY_NYRA_SIGNER",
@@ -187,6 +191,7 @@ const decisionLedger = createDecisionLedger(config, {
 });
 const workContinuityRuntime = createWorkContinuityRuntime(config, {
   pool: primaryDatabasePool,
+  nativeVerifierEvidenceBridgeRequired: config.hostNativeAgentProtocolEnabled === true,
 });
 const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store({
   pool: primaryDatabasePool,
@@ -194,8 +199,26 @@ const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store(
   verifierReceiptSigningSecret: config.dttAgentIdentitySigningSecret,
   coreJoinVerifier: genericWorkCoreJoinVerifier,
 }) : null;
+// V2 depends on the legacy Core continuity schema. Start that initializer
+// first, then V2 readiness, before any report transaction can reach the
+// bridge. The bridge only awaits this already-started promise; it never
+// starts a separate migration transaction while holding the legacy Work lock.
+const workContinuityV2StoreReady = workContinuityV2Store
+  ? Promise.resolve()
+    .then(() => workContinuityRuntime?.initialize())
+    .then(() => workContinuityV2Store.initialize())
+  : null;
+void workContinuityV2StoreReady?.catch(() => {});
 if (workContinuityRuntime && workContinuityV2Store) {
   workContinuityRuntime.setWorkEventProjector(workContinuityV2Store.projectLegacyEvent);
+  // The report-to-evidence bridge is internal and shares the report
+  // transaction. It is intentionally not exposed as an MCP capability.
+  workContinuityRuntime.setNativeVerifierEvidenceBridge(
+    async (client, source) => {
+      await workContinuityV2StoreReady;
+      return workContinuityV2Store.recordNativeVerifierEvidenceWithClient(client, source);
+    },
+  );
 }
 const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
   pool: primaryDatabasePool,
@@ -222,7 +245,7 @@ if (continuityRequired && workContinuityRuntime) {
   void Promise.resolve()
     .then(async () => {
       await workContinuityRuntime.initialize();
-      await workContinuityV2Store?.initialize();
+      await workContinuityV2StoreReady;
       await workContinuityV2Store?.backfillLegacyProjection();
     })
     .then(() => {
@@ -235,7 +258,7 @@ if (continuityRequired && workContinuityRuntime) {
 }
 if (genericWorkCoreJoinActivationEnabled && workContinuityV2Store) {
   void Promise.resolve()
-    .then(() => workContinuityV2Store.initialize())
+    .then(() => workContinuityV2StoreReady)
     .then(() => {
       startupReadiness.genericWorkCoreJoinStoreInitialized = true;
     })
@@ -1293,9 +1316,7 @@ const nyraConverseHandler = createNyraConverseHandler({
     return workContinuityRuntime.readControlContext(identity, args);
   },
   readDirectiveContext: readNyraDirectiveContext,
-  issueContinuation: nyraGovernedContinueAttestor
-    ? ({ identity, directive }) => nyraGovernedContinueAttestor.issue({ identity, directive })
-    : null,
+  issueContinuation: nyraGovernedContinuationIssuer,
 });
 
 const nyraGovernedContinueHandler = nyraGovernedContinueAttestor

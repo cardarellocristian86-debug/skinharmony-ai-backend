@@ -11,7 +11,10 @@ import {
   materializeGovernedWorkBootstrapRequest,
 } from "./work-bootstrap-contract.js";
 
-const TOKEN_PREFIX = "ngc1";
+const TOKEN_PREFIX = "ngc2";
+const LEGACY_TOKEN_PREFIX = "ngc1";
+const ATTESTATION_SCHEMA = "nyra_governed_continue_attestation_v2";
+const LEGACY_ATTESTATION_SCHEMA = "nyra_governed_continue_attestation_v1";
 const SHA256 = /^[a-f0-9]{64}$/;
 const WORK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PROJECT_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{1,127}$/;
@@ -19,6 +22,10 @@ const DIRECTIVE_ID = /^nyra_dir_[a-f0-9]{24}$/;
 const NONCE = /^[A-Za-z0-9_-]{24}$/;
 const READY_STATES = new Set(["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"]);
 const WORK_BOOTSTRAP_STATE = "WORK_BOOTSTRAP_READY";
+const ACTION_CONTINUATION_OPERATIONS = new Set([
+  "issue_delegation",
+  "authorize_action",
+]);
 const ACTION_KIND_BY_CLASS = Object.freeze({
   GIT_MERGE: new Set(["github.merge"]),
   GIT_COMMIT: new Set(["git.commit"]),
@@ -35,9 +42,9 @@ function stable(value) {
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
 }
 
-function hmac(secret, payload) {
+function hmac(secret, payload, version = "v2") {
   return crypto.createHmac("sha256", secret)
-    .update(`nyra-governed-continue-v1\u0000${JSON.stringify(stable(payload))}`)
+    .update(`nyra-governed-continue-${version}\u0000${JSON.stringify(stable(payload))}`)
     .digest("base64url");
 }
 
@@ -70,7 +77,8 @@ function fail(code, status = 422) {
 
 function parseToken(token) {
   const [prefix, encoded, signature, extra] = String(token || "").split(".");
-  if (prefix !== TOKEN_PREFIX || !encoded || !signature || extra) {
+  if (![TOKEN_PREFIX, LEGACY_TOKEN_PREFIX].includes(prefix) ||
+      !encoded || !signature || extra) {
     fail("nyra_governed_continue_attestation_invalid", 403);
   }
   let payload;
@@ -79,7 +87,7 @@ function parseToken(token) {
   } catch {
     fail("nyra_governed_continue_attestation_invalid", 403);
   }
-  return { payload, signature };
+  return { prefix, payload, signature };
 }
 
 function unavailable(reason) {
@@ -103,7 +111,7 @@ export function createNyraGovernedContinueAttestor({
   const boundedTtl = Math.min(Math.max(Number(ttlMs) || 300_000, 60_000), 600_000);
   const replayBindings = new Map();
 
-  function issue({ identity, directive }) {
+  function issue({ identity, directive, continuationOperation: requestedOperation = null }) {
     if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)) {
       return unavailable("registered_host_capability_required");
     }
@@ -142,10 +150,20 @@ export function createNyraGovernedContinueAttestor({
     if (!workBootstrap && !SUPPORTED_HOST_NATIVE_KINDS.has(hostKind)) {
       return unavailable("host_native_host_kind_not_supported");
     }
+    const continuationOperation = requestedOperation === null
+      ? null
+      : String(requestedOperation || "").trim();
+    if (workBootstrap) {
+      if (continuationOperation !== null) {
+        return unavailable("work_bootstrap_continuation_operation_invalid");
+      }
+    } else if (!ACTION_CONTINUATION_OPERATIONS.has(continuationOperation)) {
+      return unavailable("continuation_operation_required");
+    }
     const issuedAt = now();
     const expiresAt = issuedAt + boundedTtl;
     const payload = {
-      schema_version: "nyra_governed_continue_attestation_v1",
+      schema_version: workBootstrap ? LEGACY_ATTESTATION_SCHEMA : ATTESTATION_SCHEMA,
       tenant_id: identity.tenantId,
       app_id: principal.app_id,
       host_kind: hostKind,
@@ -166,6 +184,7 @@ export function createNyraGovernedContinueAttestor({
       work_bootstrap_request_digest: workBootstrap
         ? ticket.work_bootstrap_request_digest
         : null,
+      ...(!workBootstrap ? { continuation_operation: continuationOperation } : {}),
       issued_at: new Date(issuedAt).toISOString(),
       expires_at: new Date(expiresAt).toISOString(),
       nonce: crypto.randomBytes(18).toString("base64url"),
@@ -174,11 +193,13 @@ export function createNyraGovernedContinueAttestor({
       return unavailable("transport_bound_agent_presence_required");
     }
     const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    const tokenPrefix = workBootstrap ? LEGACY_TOKEN_PREFIX : TOKEN_PREFIX;
+    const tokenVersion = workBootstrap ? "v1" : "v2";
     return Object.freeze({
       schema_version: "nyra_governed_continuation_v1",
       available: true,
       submit_tool: "nyra_governed_continue",
-      candidate_attestation: `${TOKEN_PREFIX}.${encoded}.${hmac(key, payload)}`,
+      candidate_attestation: `${tokenPrefix}.${encoded}.${hmac(key, payload, tokenVersion)}`,
       expires_at: payload.expires_at,
       reason: null,
     });
@@ -189,11 +210,16 @@ export function createNyraGovernedContinueAttestor({
     identity,
     idempotencyKey,
     replayScope = "single",
-    replayOperation = "single",
+    replayOperation = null,
   }) {
-    const { payload, signature } = parseToken(token);
-    if (!safeEqual(signature, hmac(key, payload)) ||
-        payload?.schema_version !== "nyra_governed_continue_attestation_v1" ||
+    const { prefix, payload, signature } = parseToken(token);
+    const legacyBootstrap = prefix === LEGACY_TOKEN_PREFIX &&
+      payload?.schema_version === LEGACY_ATTESTATION_SCHEMA &&
+      payload?.candidate_kind === "work_bootstrap";
+    const currentAttestation = prefix === TOKEN_PREFIX &&
+      payload?.schema_version === ATTESTATION_SCHEMA;
+    if ((!currentAttestation && !legacyBootstrap) ||
+        !safeEqual(signature, hmac(key, payload, legacyBootstrap ? "v1" : "v2")) ||
         payload.tenant_id !== identity?.tenantId ||
         payload.app_id !== identity?.authenticatedHostPrincipal?.app_id ||
         payload.host_kind !== authenticatedHostKind(identity) ||
@@ -206,11 +232,15 @@ export function createNyraGovernedContinueAttestor({
       fail("nyra_governed_continue_attestation_binding_mismatch", 403);
     }
     const workBootstrap = payload.candidate_kind === "work_bootstrap";
+    const signedContinuationOperation = legacyBootstrap
+      ? null
+      : payload.continuation_operation;
     if (workBootstrap) {
       if (payload.ticket_state !== WORK_BOOTSTRAP_STATE ||
           payload.action_class !== "WORK_BOOTSTRAP" ||
           payload.work_id !== null || payload.work_revision !== null ||
           payload.intent_digest !== null || payload.context_digest !== null ||
+          signedContinuationOperation !== null ||
           !PROJECT_ID.test(String(payload.project_id || "")) ||
           !SHA256.test(String(payload.work_bootstrap_request_digest || ""))) {
         fail("nyra_governed_continue_attestation_binding_mismatch", 403);
@@ -221,6 +251,7 @@ export function createNyraGovernedContinueAttestor({
         !Number.isSafeInteger(Number(payload.work_revision)) ||
         !SHA256.test(String(payload.intent_digest || "")) ||
         !SHA256.test(String(payload.context_digest || "")) ||
+        !ACTION_CONTINUATION_OPERATIONS.has(signedContinuationOperation) ||
         (ACTION_KIND_BY_CLASS[payload.action_class]?.size || 0) < 1) {
       fail("nyra_governed_continue_attestation_binding_mismatch", 403);
     }
@@ -238,9 +269,13 @@ export function createNyraGovernedContinueAttestor({
     }
     const scope = String(replayScope || "single").trim();
     if (!/^[a-z_]{3,40}$/.test(scope)) fail("nyra_governed_continue_replay_scope_invalid");
-    const operation = String(replayOperation || "single").trim();
+    const operation = String(replayOperation ||
+      (workBootstrap ? "single" : signedContinuationOperation) || "single").trim();
     if (!/^[a-z_]{3,40}$/.test(operation)) {
       fail("nyra_governed_continue_replay_operation_invalid");
+    }
+    if (!workBootstrap && operation !== signedContinuationOperation) {
+      fail("nyra_governed_continue_operation_mismatch", 409);
     }
     const replayBindingKey = `${payload.nonce}:${scope}`;
     const replayBinding = `${operation}\u0000${replayKey}`;
@@ -253,10 +288,22 @@ export function createNyraGovernedContinueAttestor({
       if (replayBindings.size <= 2_048) break;
       if (nonce !== replayBindingKey || binding !== replayBinding) replayBindings.delete(nonce);
     }
-    return Object.freeze(payload);
+    return Object.freeze({
+      ...payload,
+      continuation_operation: signedContinuationOperation,
+    });
   }
 
   return Object.freeze({ issue, verify });
+}
+
+export function createNyraGovernedContinuationIssuer(attestor) {
+  if (!attestor || typeof attestor.issue !== "function") {
+    throw new Error("nyra_governed_continue_attestor_invalid");
+  }
+  return function issueNyraGovernedContinuation(candidate) {
+    return attestor.issue(candidate);
+  };
 }
 
 function ensureFreshWorkContext(context, payload, identity) {
@@ -371,7 +418,10 @@ export function createNyraGovernedContinueHandler({
     // Work stores receive a token-derived key so a replay after restart or on
     // another replica converges on the same durable idempotency record instead
     // of minting a second delegation, ticket or review.
-    const governedIdempotencyKey = continuationIdempotencyKey(payload, args.operation);
+    const governedOperation = payload.candidate_kind === "work_action"
+      ? payload.continuation_operation
+      : args.operation;
+    const governedIdempotencyKey = continuationIdempotencyKey(payload, governedOperation);
     if (payload.candidate_kind === "work_bootstrap") {
       if (!bootstrapOperation) fail("nyra_governed_continue_candidate_kind_mismatch", 409);
       if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE)) {

@@ -7,6 +7,7 @@ import {
   buildNativeAgentPlan,
   digest,
   evaluateNativeClosure,
+  evaluateTaskScopedNativeVerifierEvidence,
   incidentFingerprint,
   normalizeSurfaces,
   selectAggregatedAtlasWithinBudget,
@@ -415,6 +416,75 @@ test("matching precommit evidence becomes commit-ticket ready without closing re
   assert.equal(mismatched.commit_ticket_ready, false);
   assert.ok(mismatched.missing.includes(
     "verifier_precommit_evidence_mismatch:codex-verifier"));
+});
+
+test("task-scoped verifier evidence promotes one V2 task without closing incomplete Work criteria", () => {
+  const plan = closurePlan();
+  const v2TaskId = "11111111-1111-4111-8111-111111111111";
+  const agents = completedAgents(plan).map((agent) => ({ ...agent, v2_task_id: v2TaskId }));
+  agents[1].report = {
+    ...agents[1].report,
+    // This is enough for the bound V2 task, but leaves unrelated Work-wide
+    // criteria for the separate closure evaluator.
+    acceptance_evidence: [agents[1].report.acceptance_evidence[0]],
+  };
+
+  const taskScoped = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents,
+    verifier_task_id: "verify",
+  });
+  assert.equal(taskScoped.promotable, true);
+  assert.equal(taskScoped.v2_task_id, v2TaskId);
+  assert.deepEqual(taskScoped.builder_task_ids, ["build"]);
+
+  const fullClosure = evaluateNativeClosure({ plan, agents });
+  assert.equal(fullClosure.closed, false);
+  assert.ok(fullClosure.missing.some((item) => item.startsWith("acceptance_evidence_missing:")));
+});
+
+test("task-scoped verifier evidence rejects missing coverage, tests, evidence and bound identity", () => {
+  const plan = closurePlan();
+  const v2TaskId = "11111111-1111-4111-8111-111111111111";
+  const agents = completedAgents(plan).map((agent) => ({ ...agent, v2_task_id: v2TaskId }));
+  const cases = [
+    ["missing builder", () => agents.slice(1), "task_scoped_builder_missing"],
+    ["missing coverage", () => {
+      const value = structuredClone(agents);
+      value[1].report.verifies_task_ids = [];
+      return value;
+    }, "task_scoped_verifier_scope_invalid"],
+    ["failing test", () => {
+      const value = structuredClone(agents);
+      value[0].report.tests = [{ name: "target", passed: false }];
+      return value;
+    }, "task_scoped_test_failure_present:build"],
+    ["missing verifier evidence", () => {
+      const value = structuredClone(agents);
+      value[1].report.evidence_refs = [];
+      value[1].report.acceptance_evidence = [];
+      return value;
+    }, "task_scoped_verifier_evidence_missing"],
+    ["cross task binding", () => {
+      const value = structuredClone(agents);
+      value[0].v2_task_id = "22222222-2222-4222-8222-222222222222";
+      return value;
+    }, "task_scoped_builder_missing"],
+    ["reused session", () => {
+      const value = structuredClone(agents);
+      value[1].native_session_fingerprint = value[0].native_session_fingerprint;
+      return value;
+    }, "task_scoped_session_reused"],
+  ];
+  for (const [label, createAgents, expectedMissing] of cases) {
+    const evaluation = evaluateTaskScopedNativeVerifierEvidence({
+      plan,
+      agents: createAgents(),
+      verifier_task_id: "verify",
+    });
+    assert.equal(evaluation.promotable, false, label);
+    assert.ok(evaluation.missing.includes(expectedMissing), label);
+  }
 });
 
 test("aggregate Atlas preserves cross-work provenance and stays inside the bounded change cone", () => {
