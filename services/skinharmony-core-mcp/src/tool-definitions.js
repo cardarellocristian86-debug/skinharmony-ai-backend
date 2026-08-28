@@ -1364,6 +1364,13 @@ export const TOOLS = [
   }),
   tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
   tool("nyra_self_model", "Read Nyra persistent self model", "Read Nyra's tenant-scoped, signed self model through Universal Core. This read never creates, refreshes, authorizes or executes anything.", object(), ["core:read"]),
+  tool("nyra_self_model_refresh", "Materialize Nyra persistent self model", "Materialize or refresh Nyra's tenant-scoped, signed self model through Universal Core. This is an owner-confirmed internal state mutation: it never authorizes execution, calls a provider model, modifies a Work, or performs an external action.", object(), ["core:govern"], false, true, {
+    meta: {
+      "skinharmony/dedicatedCoreGate": true,
+      "skinharmony/providerExecution": false,
+      "skinharmony/externalSideEffect": false,
+    },
+  }),
   tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded connector capabilities by functional group. The catalog never accepts arbitrary paths, never exposes admin/bootstrap/secret surfaces and leaves Universal Core as final authority.", object({
     group: identifier,
     capability_id: identifier,

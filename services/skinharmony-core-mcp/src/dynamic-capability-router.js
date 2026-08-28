@@ -80,7 +80,7 @@ function capabilityGroup(name) {
   // conversational operation. A dedicated group lets a narrow ChatGPT
   // capability lookup discover precisely this read-only surface without
   // reopening the rest of Nyra's implementation catalog.
-  if (name === "nyra_self_model") return "self_model";
+  if (name === "nyra_self_model" || name === "nyra_self_model_refresh") return "self_model";
   const prefixes = [
     ["work_continuity_", "continuity"],
     ["tenant_work_", "continuity"],

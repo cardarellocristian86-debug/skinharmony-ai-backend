@@ -117,6 +117,70 @@ test("maps MCP tools to Universal Core without forwarding the ChatGPT token", as
   assert.equal(contextCalls[2].input.agent_id, "nyra");
 });
 
+test("Nyra self-model refresh is owner-confirmed, request-bound and non-executing", async () => {
+  const calls = [];
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { codexai: "codexai-key" },
+    ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({
+        ok: true,
+        tenant_id: "codexai",
+        self_model: {
+          schema_version: "nyra_persistent_self_model_v1",
+          revision: 1,
+        },
+        execution_allowed: false,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+
+  await assert.rejects(
+    handlers.nyra_self_model_refresh({}, {
+      tenantId: "codexai",
+      kind: "codex",
+      role: "owner_root",
+      godMode: true,
+      subject: "owner",
+      ownerConfirmed: false,
+    }),
+    /owner_confirmation_required/,
+  );
+  assert.equal(calls.length, 0);
+
+  const identity = {
+    tenantId: "codexai",
+    kind: "codex",
+    role: "owner_root",
+    godMode: true,
+    subject: "owner",
+    ownerConfirmed: true,
+    confirmationReference: "owner approved persistent self model",
+  };
+  const result = await handlers.nyra_self_model_refresh({}, identity);
+  assert.equal(calls.length, 1);
+  assert.equal(new URL(calls[0].url).pathname, "/v1/nira/self-model/refresh");
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.headers.authorization, "Bearer codexai-key");
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.confirmation_reference, identity.confirmationReference);
+  assert.equal(body.owner_context.binding_version, "owner_request_binding_v1");
+  const expectedBinding = `nyra_self_model_refresh\u0000${JSON.stringify({
+    confirmation_reference: identity.confirmationReference,
+  })}`;
+  assert.equal(
+    body.owner_context.binding_hash,
+    crypto.createHash("sha256").update(expectedBinding).digest("hex"),
+  );
+  assert.equal(body.owner_context.assertion, expectedOwnerAssertion(OWNER_CONTEXT_SECRET, body.owner_context));
+  assert.equal(result.structuredContent.execution_allowed, false);
+  assert.equal(result.structuredContent.dedicated_core_gate.authorized, true);
+  assert.equal(result.structuredContent.dedicated_core_gate.external_side_effect, false);
+});
+
 test("Core gate overwrites caller confirmation and tenant fields with verified identity", async () => {
   const calls = [];
   const handlers = createCoreHandlers({
