@@ -660,7 +660,7 @@ class ContinuityPool {
     }
     if (q.startsWith("INSERT INTO core_continuity_native_agents")) {
       const [tenantId, workId, planId, taskId, agentId, hostType, hostTaskId,
-        taskKind, taskDigest, coordinatorFingerprint, assignmentCapabilityDigest,
+        taskKind, taskDigest, v2TaskId, coordinatorFingerprint, assignmentCapabilityDigest,
         boundBy, leaseExpiresAt] = parameters;
       this.nativeAgents.set(key(tenantId, planId, taskId), {
         tenant_id: tenantId,
@@ -672,6 +672,7 @@ class ContinuityPool {
         host_task_id: hostTaskId,
         task_kind: taskKind,
         task_digest: taskDigest,
+        v2_task_id: v2TaskId,
         coordinator_session_fingerprint: coordinatorFingerprint,
         assignment_capability_digest: assignmentCapabilityDigest,
         native_session_fingerprint: null,

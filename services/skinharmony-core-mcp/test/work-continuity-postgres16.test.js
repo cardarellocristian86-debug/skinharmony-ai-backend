@@ -195,7 +195,10 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
     databaseUrl,
     dttAgentIdentitySigningSecret: "postgres16-continuity-assignment-secret-0123456789",
   }, { pool });
+  const v2Store = createWorkContinuityV2Store({ pool, legacyRuntime: runtime });
+  runtime.setNativeVerifierEvidenceBridge(v2Store.recordNativeVerifierEvidenceWithClient);
   const coordinator = coordinatorIdentity(tenantId);
+  const bridgeOwner = reconciliationOwnerIdentity(tenantId);
 
   try {
     const version = await pool.query("SHOW server_version_num");
@@ -214,6 +217,18 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       host_type: "codex_native",
     };
     const firstWork = await runtime.ensure(coordinator, initial, { creationAuthorized: true });
+    await v2Store.projectLegacyWork(bridgeOwner, { legacy_work_id: firstWork.work_id });
+    // Native assignments bind to this exact V2 task before either builder or
+    // verifier can report. The bridge must never infer a task from a title or
+    // from the native task id.
+    const bridgeTaskId = crypto.randomUUID();
+    await v2Store.recordTask(bridgeOwner, {
+      work_id: firstWork.work_id,
+      task_id: bridgeTaskId,
+      title: "Native verifier acceptance bridge target",
+      status: "completed",
+      required: true,
+    });
     const tables = await pool.query(`SELECT
       to_regclass('public.core_continuity_works') AS works,
       to_regclass('public.core_continuity_intent_anchors') AS anchors,
@@ -850,8 +865,16 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       native_agent_id: "codex-builder",
       host_type: "codex_native",
       host_task_id: "/root/postgres16-build",
+      v2_task_id: bridgeTaskId,
     });
-    await runtime.reportNativeAgent(
+    const projectedBeforeBridge = await pool.query(`SELECT created_by_agent_id,
+        created_by_session_fingerprint
+      FROM tenant_work WHERE tenant_id=$1 AND work_id=$2`, [tenantId, firstWork.work_id]);
+    assert.deepEqual(projectedBeforeBridge.rows[0], {
+      created_by_agent_id: null,
+      created_by_session_fingerprint: null,
+    });
+    const builderReport = await runtime.reportNativeAgent(
       reporterIdentity(tenantId, "codex-builder", "b".repeat(64), "b"),
       {
         work_id: firstWork.work_id,
@@ -875,8 +898,9 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
       native_agent_id: "codex-verifier",
       host_type: "codex_native",
       host_task_id: "/root/postgres16-verify",
+      v2_task_id: bridgeTaskId,
     });
-    await runtime.reportNativeAgent(
+    const verifierReport = await runtime.reportNativeAgent(
       reporterIdentity(tenantId, "codex-verifier", "d".repeat(64), "d"),
       {
         work_id: firstWork.work_id,
@@ -900,6 +924,132 @@ test("PostgreSQL 16 persists the governed continuity fabric and rejects mutable 
         },
       },
     );
+    assert.equal(verifierReport.v2_evidence.idempotent_replay, false);
+    assert.match(verifierReport.v2_evidence.evidence_digest, /^[a-f0-9]{64}$/);
+    const bridgedEvidence = await pool.query(`SELECT e.kind,e.digest,e.independently_verified,
+        e.verified_by_agent_id,e.verified_by_session_fingerprint,
+        b.plan_id,b.task_id,b.v2_task_id,b.report_digest,b.native_receipt_id,b.native_receipt_digest
+      FROM tenant_work_evidence e
+      JOIN tenant_work_native_verifier_evidence b
+        ON b.tenant_id=e.tenant_id AND b.evidence_id=e.evidence_id
+      WHERE e.tenant_id=$1 AND e.work_id=$2`, [tenantId, firstWork.work_id]);
+    assert.equal(bridgedEvidence.rowCount, 1);
+    assert.deepEqual(bridgedEvidence.rows[0], {
+      kind: "native_verifier_terminal_report",
+      digest: verifierReport.v2_evidence.evidence_digest,
+      independently_verified: true,
+      verified_by_agent_id: "codex-verifier",
+      verified_by_session_fingerprint: "d".repeat(64),
+      plan_id: planned.plan.plan_id,
+      task_id: "verify",
+      v2_task_id: bridgeTaskId,
+      report_digest: verifierReport.report_digest,
+      native_receipt_id: verifierReport.receipt.receipt_id,
+      native_receipt_digest: verifierReport.receipt.payload_digest,
+    });
+    const bridgedTask = await pool.query(`SELECT status,acceptance_verified FROM tenant_work_task
+      WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3`, [tenantId, firstWork.work_id, bridgeTaskId]);
+    assert.deepEqual(bridgedTask.rows[0], { status: "completed", acceptance_verified: true });
+    const bridgeSource = {
+      server_owned: true,
+      tenant_id: tenantId,
+      work_id: firstWork.work_id,
+      plan_id: planned.plan.plan_id,
+      task_id: "verify",
+      agent_id: "codex-verifier",
+      session_fingerprint: "d".repeat(64),
+      presence_signature: `ags_${"d".repeat(32)}`,
+      report_digest: verifierReport.report_digest,
+      receipt_id: verifierReport.receipt.receipt_id,
+      receipt_digest: verifierReport.receipt.payload_digest,
+    };
+    const bridgeClient = await pool.connect();
+    try {
+      await bridgeClient.query("BEGIN");
+      const replay = await v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, bridgeSource);
+      assert.equal(replay.idempotent_replay, true);
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, {
+          ...bridgeSource,
+          tenant_id: `${tenantId}-other`,
+        }),
+        /native_verifier_evidence_source_binding_invalid/,
+      );
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, {
+          ...bridgeSource,
+          task_id: "build",
+        }),
+        /native_verifier_evidence_source_binding_invalid/,
+      );
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, {
+          ...bridgeSource,
+          agent_id: "codex-builder",
+          task_id: "build",
+          session_fingerprint: "b".repeat(64),
+          presence_signature: `ags_${"b".repeat(32)}`,
+          report_digest: builderReport.report_digest,
+          receipt_id: builderReport.receipt.receipt_id,
+          receipt_digest: builderReport.receipt.payload_digest,
+        }),
+        /native_verifier_evidence_source_binding_invalid/,
+      );
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, {
+          ...bridgeSource,
+          report_digest: "f".repeat(64),
+        }),
+        /native_verifier_evidence_source_binding_invalid/,
+      );
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, {
+          ...bridgeSource,
+          session_fingerprint: "e".repeat(64),
+        }),
+        /native_verifier_evidence_source_binding_invalid/,
+      );
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, {
+          ...bridgeSource,
+          server_owned: false,
+        }),
+        /native_verifier_evidence_server_owned_required/,
+      );
+      await bridgeClient.query(`UPDATE core_continuity_native_agents
+        SET task_digest=$1
+        WHERE tenant_id=$2 AND work_id=$3 AND plan_id=$4 AND task_id='build'`, [
+        "f".repeat(64), tenantId, firstWork.work_id, planned.plan.plan_id,
+      ]);
+      await assert.rejects(
+        v2Store.recordNativeVerifierEvidenceWithClient(bridgeClient, bridgeSource),
+        /native_verifier_evidence_independence_invalid/,
+      );
+    } finally {
+      await bridgeClient.query("ROLLBACK");
+      bridgeClient.release();
+    }
+    const clientEvidence = await v2Store.recordEvidence(bridgeOwner, {
+      work_id: firstWork.work_id,
+      kind: "client_injected_candidate",
+      digest: "f".repeat(64),
+      metadata: {
+        task_id: "11111111-1111-4111-8111-111111111111",
+        independently_verified: true,
+        authority: "universal_core",
+      },
+    });
+    assert.equal(clientEvidence.work.progress_bp >= 0, true);
+    const injected = await pool.query(`SELECT required,independently_verified,verified_by_agent_id,
+        verified_by_session_fingerprint FROM tenant_work_evidence
+      WHERE tenant_id=$1 AND work_id=$2 AND kind='client_injected_candidate'`,
+    [tenantId, firstWork.work_id]);
+    assert.deepEqual(injected.rows[0], {
+      required: false,
+      independently_verified: false,
+      verified_by_agent_id: null,
+      verified_by_session_fingerprint: null,
+    });
     const persistedAgents = await pool.query(`SELECT task_id,native_session_fingerprint,native_presence_signature
       FROM core_continuity_native_agents
       WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 ORDER BY task_id`,
