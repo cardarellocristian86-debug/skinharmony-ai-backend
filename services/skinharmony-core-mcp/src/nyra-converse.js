@@ -55,6 +55,10 @@ const DIAGNOSTIC_REQUEST_PATTERN = /\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|
 // intentionally preserved and will still be governed.
 const READ_ONLY_ACTION_DENIAL_PATTERN = /\b(?:non|senza)\s+(?:crea\w*|modifica\w*|esegui\w*|f(?:ai|ar)\w*|effettua\w*|avvia\w*|richied\w*|apri\w*|pubblica\w*|rilascia\w*).{0,600}?(?:[.!?]|$)/giu;
 const GENERIC_GUARD_REASON = "safety_mode";
+const ACTION_CONTINUATION_OPERATIONS = new Set([
+  "issue_delegation",
+  "authorize_action",
+]);
 
 export const NYRA_SERVER_CONNECTOR_HINT = Symbol("nyra_server_connector_hint");
 
@@ -835,6 +839,7 @@ function orchestrationDirective({
   action,
   connectorHint,
   workBootstrapRequestDigest = null,
+  continuationOperation = null,
 }) {
   const workBound = Boolean(work.work_id);
   const coreBlocked = interpretation.governance_diagnostics.state === "BLOCKED" ||
@@ -1103,6 +1108,7 @@ function orchestrationDirective({
     capability_hint: action.capability_hint,
     prerequisite_codes: prerequisiteCodes,
     work_bootstrap_request_digest: workBootstrapRequestDigest,
+    continuation_operation: continuationOperation,
   });
   const ticketRequestDigest = ticketRequired &&
     ["READY_FOR_CORE_REVIEW", "MANUAL_ONLY", "WORK_BOOTSTRAP_READY"].includes(ticketState)
@@ -1114,6 +1120,7 @@ function orchestrationDirective({
         prerequisite_codes: prerequisiteCodes,
         merge_policy: mergeManual ? "MANUAL_ONLY" : "NOT_APPLICABLE",
         work_bootstrap_request_digest: workBootstrapRequestDigest,
+        continuation_operation: continuationOperation,
       })
     : null;
 
@@ -1514,6 +1521,13 @@ export function createNyraConverseHandler({
     const message = typeof args.message === "string" ? args.message.trim() : "";
     if (!message) throw fail("nyra_converse_message_required");
     if (message.length > MAX_MESSAGE_LENGTH) throw fail("nyra_converse_message_too_long", 413);
+    const continuationOperation = args.continuation_operation === undefined
+      ? null
+      : String(args.continuation_operation || "").trim();
+    if (continuationOperation !== null &&
+        !ACTION_CONTINUATION_OPERATIONS.has(continuationOperation)) {
+      throw fail("nyra_converse_continuation_operation_invalid");
+    }
     const locale = ["auto", "it", "en"].includes(args.locale) ? (args.locale || "auto") : "auto";
     const style = ["concise", "balanced", "detailed"].includes(args.response_style)
       ? args.response_style
@@ -1641,6 +1655,10 @@ export function createNyraConverseHandler({
       interpretation.owner_confirmation_required,
       args.work_bootstrap !== undefined,
     );
+    if (continuationOperation !== null &&
+        (action.work_bootstrap_requested || !action.consequential_request_detected)) {
+      throw fail("nyra_converse_continuation_operation_not_applicable");
+    }
     const baseDirective = orchestrationDirective({
       tenantId,
       message,
@@ -1651,6 +1669,7 @@ export function createNyraConverseHandler({
       action,
       connectorHint,
       workBootstrapRequestDigest,
+      continuationOperation,
     });
     let continuation = Object.freeze({
       schema_version: "nyra_governed_continuation_v1",
@@ -1662,7 +1681,11 @@ export function createNyraConverseHandler({
     });
     if (typeof issueContinuation === "function") {
       try {
-        const candidate = issueContinuation({ identity, directive: baseDirective });
+        const candidate = issueContinuation({
+          identity,
+          directive: baseDirective,
+          continuationOperation,
+        });
         if (candidate?.schema_version === "nyra_governed_continuation_v1") {
           continuation = candidate;
         }
