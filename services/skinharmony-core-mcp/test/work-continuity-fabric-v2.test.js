@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+  buildAcceptanceContract,
   buildIntentAnchor,
   buildNativeAgentPlan,
   digest,
   evaluateNativeClosure,
+  evaluateTaskScopedNativeVerifierEvidence,
   incidentFingerprint,
   normalizeSurfaces,
   selectAggregatedAtlasWithinBudget,
@@ -60,6 +62,9 @@ function closurePlan() {
     { criterion_id: "constraint_1", text: intent.anchor.constraints[0] },
   ].map((criterion) => ({
     ...criterion,
+    criterion_kind: criterion.criterion_id === "objective"
+      ? "objective"
+      : criterion.criterion_id.startsWith("acceptance") ? "acceptance" : "constraint",
     criterion_digest: digest({
       schema_version: "intent_acceptance_criterion_v1",
       intent_digest: intent.intent_digest,
@@ -126,6 +131,23 @@ function completedAgents(plan) {
   ];
 }
 
+function precommitAgents(plan) {
+  const agents = completedAgents(plan);
+  const evidence = {
+    schema_version: "native_precommit_evidence_v1",
+    diff_mode: "git_diff_binary_sha256_v1",
+    base_commit: "a".repeat(40),
+    diff_digest: "b".repeat(64),
+    changed_files: ["services/core.js", "test/core.test.js"],
+  };
+  evidence.workspace_digest = digest(evidence);
+  for (const agent of agents) {
+    agent.report.commit_sha = null;
+    agent.report.precommit_evidence = structuredClone(evidence);
+  }
+  return agents;
+}
+
 test("Intent Anchor is deterministic, immutable-shaped and redacts sensitive request fragments", () => {
   const input = {
     project_id: "skinharmony",
@@ -148,6 +170,107 @@ test("Intent Anchor is deterministic, immutable-shaped and redacts sensitive req
   assert.match(first.anchor.initial_message, /\[REDACTED\]/);
   assert.doesNotMatch(first.anchor.initial_message, /do-not-store/);
   assert.match(first.intent_digest, /^[a-f0-9]{64}$/);
+});
+
+test("owner-recorded architecture amendments replace only exact stale acceptance criteria", () => {
+  const intent = buildIntentAnchor({
+    project_id: "skinharmony",
+    session_id: "acceptance-amendment",
+    initial_message: "Apply the bounded owner-confirmed correction.",
+    idea: "Governed acceptance evolution",
+    objective: "Preserve the original objective.",
+    acceptance_criteria: ["Limit the diff to the original three files."],
+    constraints: ["Do not push or deploy without an exact Core ticket."],
+    host_type: "codex_native",
+  });
+  const base = buildAcceptanceContract(intent.anchor, intent.intent_digest);
+  const stale = base.criteria.find((criterion) => criterion.criterion_id === "acceptance_1");
+  const amendment = {
+    schema_version: "intent_acceptance_contract_amendment_v1",
+    base_criteria_digest: base.criteria_digest,
+    reason: "The owner explicitly authorized the bounded continuity correction.",
+    superseded_criteria: [{
+      criterion_id: stale.criterion_id,
+      criterion_digest: stale.criterion_digest,
+      reason: "The original file list no longer covers the authorized continuity defect.",
+    }],
+    replacement_criteria: [{
+      criterion_id: "acceptance_authorized_scope",
+      criterion_kind: "acceptance",
+      text: "The exact owner-recorded change cone passes its bounded regression suite.",
+    }],
+  };
+  const architecture = {
+    components: [],
+    acceptance_contract_amendment: amendment,
+  };
+  const contract = buildAcceptanceContract(intent.anchor, intent.intent_digest, {
+    architecture_version: 5,
+    architecture,
+    architecture_digest: digest(architecture),
+  });
+
+  assert.equal(contract.schema_version, "intent_acceptance_contract_v2");
+  assert.equal(contract.architecture_version, 5);
+  assert.equal(contract.base_criteria_digest, base.criteria_digest);
+  assert.deepEqual(contract.criteria.map((criterion) => criterion.criterion_id), [
+    "objective", "constraint_1", "acceptance_authorized_scope",
+  ]);
+  assert.equal(contract.criteria.some((criterion) => criterion.criterion_id === "acceptance_1"), false);
+
+  const plan = { ...closurePlan(), acceptance_contract: contract };
+  const accepted = evaluateNativeClosure({ plan, agents: completedAgents(plan) });
+  assert.equal(accepted.closed, true);
+  const tamperedPlan = structuredClone(plan);
+  tamperedPlan.acceptance_contract.amendment.reason = "Caller-shaped authority";
+  const tampered = evaluateNativeClosure({
+    plan: tamperedPlan,
+    agents: completedAgents(tamperedPlan),
+  });
+  assert.equal(tampered.closed, false);
+  assert.ok(tampered.missing.includes("intent_acceptance_contract_invalid"));
+  assert.equal(tampered.acceptance_criteria_count, 0);
+  assert.equal(tampered.acceptance_criteria_proven, 0);
+  assert.deepEqual(tampered.acceptance_proofs, []);
+
+  assert.throws(() => buildAcceptanceContract(intent.anchor, intent.intent_digest, {
+    architecture_version: 5,
+    architecture: {
+      ...architecture,
+      acceptance_contract_amendment: { ...amendment, base_criteria_digest: "0".repeat(64) },
+    },
+    architecture_digest: digest({
+      ...architecture,
+      acceptance_contract_amendment: { ...amendment, base_criteria_digest: "0".repeat(64) },
+    }),
+  }), /intent_acceptance_amendment_base_mismatch/);
+  const objective = base.criteria.find((criterion) => criterion.criterion_id === "objective");
+  const objectiveAmendment = {
+    ...amendment,
+    superseded_criteria: [{
+      criterion_id: objective.criterion_id,
+      criterion_digest: objective.criterion_digest,
+      reason: "Must remain forbidden.",
+    }],
+  };
+  const objectiveArchitecture = {
+    ...architecture,
+    acceptance_contract_amendment: objectiveAmendment,
+  };
+  assert.throws(() => buildAcceptanceContract(intent.anchor, intent.intent_digest, {
+    architecture_version: 5,
+    architecture: objectiveArchitecture,
+    architecture_digest: digest(objectiveArchitecture),
+  }), /intent_acceptance_amendment_superseded_invalid/);
+  const authorityShapedArchitecture = {
+    ...architecture,
+    acceptance_contract_amendment: { ...amendment, owner_authorized: true },
+  };
+  assert.throws(() => buildAcceptanceContract(intent.anchor, intent.intent_digest, {
+    architecture_version: 5,
+    architecture: authorityShapedArchitecture,
+    architecture_digest: digest(authorityShapedArchitecture),
+  }), /intent_acceptance_amendment_invalid/);
 });
 
 test("bootstrap text limits are equivalent across direct V2, legacy Intent Anchor and Nyra contracts", () => {
@@ -266,6 +389,102 @@ test("closure requires independent, transport-attested builder and verifier evid
   assert.ok(blocked.missing.includes("independent_verifier_missing"));
   assert.ok(blocked.missing.includes("native_agent_session_reused"));
   assert.ok(blocked.missing.includes("verification_coverage_missing:build"));
+});
+
+test("matching precommit evidence becomes commit-ticket ready without closing release", () => {
+  const plan = closurePlan();
+  const agents = precommitAgents(plan);
+  const evaluation = evaluateNativeClosure({ plan, agents });
+
+  assert.equal(evaluation.closed, false);
+  assert.equal(evaluation.commit_ticket_ready, true);
+  assert.equal(evaluation.execution_authorized, false);
+  assert.equal(evaluation.target_commit, null);
+  assert.equal(evaluation.precommit_verification.ready, true);
+  assert.match(evaluation.precommit_verification.workspace_digest, /^[a-f0-9]{64}$/);
+  assert.deepEqual(evaluation.missing.sort(), [
+    "builder_target_commit_missing",
+    "verifier_reviewed_commit_missing:codex-verifier",
+  ]);
+
+  agents[1].report.precommit_evidence.diff_digest = "c".repeat(64);
+  agents[1].report.precommit_evidence.workspace_digest = digest({
+    ...agents[1].report.precommit_evidence,
+    workspace_digest: undefined,
+  });
+  const mismatched = evaluateNativeClosure({ plan, agents });
+  assert.equal(mismatched.commit_ticket_ready, false);
+  assert.ok(mismatched.missing.includes(
+    "verifier_precommit_evidence_mismatch:codex-verifier"));
+});
+
+test("task-scoped verifier evidence promotes one V2 task without closing incomplete Work criteria", () => {
+  const plan = closurePlan();
+  const v2TaskId = "11111111-1111-4111-8111-111111111111";
+  const agents = completedAgents(plan).map((agent) => ({ ...agent, v2_task_id: v2TaskId }));
+  agents[1].report = {
+    ...agents[1].report,
+    // This is enough for the bound V2 task, but leaves unrelated Work-wide
+    // criteria for the separate closure evaluator.
+    acceptance_evidence: [agents[1].report.acceptance_evidence[0]],
+  };
+
+  const taskScoped = evaluateTaskScopedNativeVerifierEvidence({
+    plan,
+    agents,
+    verifier_task_id: "verify",
+  });
+  assert.equal(taskScoped.promotable, true);
+  assert.equal(taskScoped.v2_task_id, v2TaskId);
+  assert.deepEqual(taskScoped.builder_task_ids, ["build"]);
+
+  const fullClosure = evaluateNativeClosure({ plan, agents });
+  assert.equal(fullClosure.closed, false);
+  assert.ok(fullClosure.missing.some((item) => item.startsWith("acceptance_evidence_missing:")));
+});
+
+test("task-scoped verifier evidence rejects missing coverage, tests, evidence and bound identity", () => {
+  const plan = closurePlan();
+  const v2TaskId = "11111111-1111-4111-8111-111111111111";
+  const agents = completedAgents(plan).map((agent) => ({ ...agent, v2_task_id: v2TaskId }));
+  const cases = [
+    ["missing builder", () => agents.slice(1), "task_scoped_builder_missing"],
+    ["missing coverage", () => {
+      const value = structuredClone(agents);
+      value[1].report.verifies_task_ids = [];
+      return value;
+    }, "task_scoped_verifier_scope_invalid"],
+    ["failing test", () => {
+      const value = structuredClone(agents);
+      value[0].report.tests = [{ name: "target", passed: false }];
+      return value;
+    }, "task_scoped_test_failure_present:build"],
+    ["missing verifier evidence", () => {
+      const value = structuredClone(agents);
+      value[1].report.evidence_refs = [];
+      value[1].report.acceptance_evidence = [];
+      return value;
+    }, "task_scoped_verifier_evidence_missing"],
+    ["cross task binding", () => {
+      const value = structuredClone(agents);
+      value[0].v2_task_id = "22222222-2222-4222-8222-222222222222";
+      return value;
+    }, "task_scoped_builder_missing"],
+    ["reused session", () => {
+      const value = structuredClone(agents);
+      value[1].native_session_fingerprint = value[0].native_session_fingerprint;
+      return value;
+    }, "task_scoped_session_reused"],
+  ];
+  for (const [label, createAgents, expectedMissing] of cases) {
+    const evaluation = evaluateTaskScopedNativeVerifierEvidence({
+      plan,
+      agents: createAgents(),
+      verifier_task_id: "verify",
+    });
+    assert.equal(evaluation.promotable, false, label);
+    assert.ok(evaluation.missing.includes(expectedMissing), label);
+  }
 });
 
 test("aggregate Atlas preserves cross-work provenance and stays inside the bounded change cone", () => {

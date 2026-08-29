@@ -94,7 +94,7 @@ import {
   hostPrincipalAllows,
 } from "./host-app-registry.js";
 import {
-  hostAppCanAccessTool,
+  hostAppCanDiscoverDynamicCapability,
   isNativeReportChildOperation,
   nativeReportAssignmentBootstrap,
   requireHostAppToolCapability,
@@ -197,6 +197,7 @@ const decisionLedger = createDecisionLedger(config, {
 });
 const workContinuityRuntime = createWorkContinuityRuntime(config, {
   pool: primaryDatabasePool,
+  nativeVerifierEvidenceBridgeRequired: config.hostNativeAgentProtocolEnabled === true,
 });
 const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store({
   pool: primaryDatabasePool,
@@ -204,8 +205,26 @@ const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store(
   verifierReceiptSigningSecret: config.dttAgentIdentitySigningSecret,
   coreJoinVerifier: genericWorkCoreJoinVerifier,
 }) : null;
+// V2 depends on the legacy Core continuity schema. Start that initializer
+// first, then V2 readiness, before any report transaction can reach the
+// bridge. The bridge only awaits this already-started promise; it never
+// starts a separate migration transaction while holding the legacy Work lock.
+const workContinuityV2StoreReady = workContinuityV2Store
+  ? Promise.resolve()
+    .then(() => workContinuityRuntime?.initialize())
+    .then(() => workContinuityV2Store.initialize())
+  : null;
+void workContinuityV2StoreReady?.catch(() => {});
 if (workContinuityRuntime && workContinuityV2Store) {
   workContinuityRuntime.setWorkEventProjector(workContinuityV2Store.projectLegacyEvent);
+  // The report-to-evidence bridge is internal and shares the report
+  // transaction. It is intentionally not exposed as an MCP capability.
+  workContinuityRuntime.setNativeVerifierEvidenceBridge(
+    async (client, source) => {
+      await workContinuityV2StoreReady;
+      return workContinuityV2Store.recordNativeVerifierEvidenceWithClient(client, source);
+    },
+  );
 }
 const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
   pool: primaryDatabasePool,
@@ -235,7 +254,7 @@ if (continuityRequired && workContinuityRuntime) {
   void Promise.resolve()
     .then(async () => {
       await workContinuityRuntime.initialize();
-      await workContinuityV2Store?.initialize();
+      await workContinuityV2StoreReady;
       await workContinuityV2Store?.backfillLegacyProjection();
     })
     .then(() => {
@@ -248,7 +267,7 @@ if (continuityRequired && workContinuityRuntime) {
 }
 if (genericWorkCoreJoinActivationEnabled && workContinuityV2Store) {
   void Promise.resolve()
-    .then(() => workContinuityV2Store.initialize())
+    .then(() => workContinuityV2StoreReady)
     .then(() => {
       startupReadiness.genericWorkCoreJoinStoreInitialized = true;
     })
@@ -822,7 +841,14 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       // one. Bootstrap is an explicit, fresh owner-governed action.
       trustedSessionFollowup: resumeExisting,
       creationAuthorized: false,
-      ...(resumeExisting ? { authorizedResumeWorkIds } : {}),
+      ...(resumeExisting ? {
+        authorizedResumeWorkIds,
+        // One transport conversation may already be bound to another Work.
+        // An explicit target can replace that session binding only after the
+        // server has proved exact canonical V2 visibility above. This restores
+        // cross-chat continuity without accepting caller-supplied authority.
+        allowAuthorizedSessionRebind: Boolean(args.work_id),
+      } : {}),
     });
   } catch (error) {
     if (error?.code === "continuity_resume_selection_required") {
@@ -1366,6 +1392,93 @@ async function nyraVerifierAssignmentScope(identity, assignment) {
   });
 }
 
+async function resumeExistingContinuityWork(args, identity) {
+  await requireCanonicalWorkRead(identity, args.work_id);
+  const gate = await coreHandlers.core_gate_action({
+    action_label: "Resume persistent Work Continuity work",
+    action_type: "work.continuity.resume",
+    target: `work_continuity_resume:${args.work_id}`,
+    operation_class: "owner_confirmed_governed_action",
+    external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
+    idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
+    target_authority_verified: true, actor_authorized_for_target: true,
+    owner_confirmed: identity.ownerConfirmed === true,
+    confirmation_reference: identity.confirmationReference,
+  }, identity);
+  const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
+    gate.structuredContent?.result?.authorization || {};
+  if (authorization.allowed !== true) throw new Error("work_continuity_resume_not_authorized");
+  const payload = { ok: true, result: await workContinuityRuntime.resume(identity, args, authorization) };
+  payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
+  payload.result.nyra_control_context = await materializeNyraControlContext(
+    identity,
+    payload.result,
+    "work_resumed",
+    { autopilot: payload.result.nyra_autopilot, force: true },
+  );
+  payload.dedicated_core_gate = {
+    authorized: true,
+    authority: "universal_core",
+    route: "/v1/action-evaluator",
+    server_owned: true,
+  };
+  return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+}
+
+async function createNativeContinuityPlan(args, identity) {
+  requireHostAppToolCapability({
+    identity,
+    toolName: "work_continuity_native_plan",
+    tools: TOOLS,
+  });
+  const nativeArgs = identity?.authenticatedHostPrincipal
+    ? { ...args, host_type: authenticatedHostKind(identity) }
+    : args;
+  await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id);
+  const intent = await readLegacyIntentAuthorized(identity, {
+    work_id: nativeArgs.work_id,
+  });
+  const corePlanResult = await coreHandlers.host_native_work_plan_create({
+    work_id: nativeArgs.work_id,
+    intent_anchor_digest: intent.intent_digest,
+    repository: nativeArgs.repository,
+    base_branch: nativeArgs.base_branch,
+    objective: intent.anchor?.objective,
+    required_checks: nativeArgs.required_checks,
+    agents: nativeArgs.tasks.map((task) => ({
+      agent_id: task.task_id,
+      role: task.kind,
+      task: task.instruction,
+      depends_on: task.dependencies || [],
+      capabilities: [],
+    })),
+    max_parallel: nativeArgs.max_parallel,
+  }, identity);
+  const corePlan = corePlanResult?.structuredContent?.plan;
+  if (!corePlan) throw new Error("core_host_native_work_plan_required");
+  return continuityTextResult({
+    ok: true,
+    result: await workContinuityRuntime.planNativeAgents(identity, nativeArgs, {
+      corePlan,
+    }),
+  });
+}
+
+async function bindNativeContinuityChild(args, identity) {
+  requireHostAppToolCapability({
+    identity,
+    toolName: "work_continuity_native_bind",
+    tools: TOOLS,
+  });
+  const nativeArgs = identity?.authenticatedHostPrincipal
+    ? { ...args, host_type: authenticatedHostKind(identity) }
+    : args;
+  return continuityTextResult({
+    ok: true,
+    result: await workContinuityRuntime.bindNativeAgent(identity, nativeArgs),
+  });
+}
+
 const nyraConverseHandler = createNyraConverseHandler({
   preflight: createNyraConversePreflight({
     workPreflight: (args, identity) => coreHandlers.work_preflight(args, identity),
@@ -1392,6 +1505,32 @@ const nyraGovernedContinueHandler = nyraGovernedContinuationStore
       authorizeAction: (args, identity) => coreHandlers.host_native_action_authorize(args, identity),
       reviewWorkBootstrap: reviewCanonicalWorkCreation,
       createWorkBootstrap: createCanonicalWorkGoverned,
+      resumeExistingWork: resumeExistingContinuityWork,
+      createNativePlan: createNativeContinuityPlan,
+      bindNativeChild: bindNativeContinuityChild,
+      authorizeNativeCoordination: (request, identity) => {
+        const actionType = request.operation === "create_native_plan"
+          ? "native_agent.plan"
+          : request.operation === "bind_native_child"
+            ? "native_agent.bind"
+            : null;
+        if (!actionType || !/^[a-f0-9]{64}$/.test(String(request.request_digest || ""))) {
+          throw new Error("nyra_governed_continue_native_coordination_invalid");
+        }
+        const targetParts = [
+          request.tool_name,
+          request.work_id,
+          request.plan_id,
+          request.task_id,
+          request.request_digest.slice(0, 24),
+        ].filter(Boolean);
+        return requireBoundedTenantCoordination(
+          identity,
+          actionType,
+          targetParts.join(":"),
+          request.idempotency_key,
+        );
+      },
     })
   : null;
 
@@ -1513,38 +1652,7 @@ const baseHandlers = {
       const payload = { ok: true, result: await readLegacyWorkAuthorized(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
-    work_continuity_resume: async (args, identity) => {
-      await requireCanonicalWorkRead(identity, args.work_id);
-      const gate = await coreHandlers.core_gate_action({
-        action_label: "Resume persistent Work Continuity work",
-        action_type: "work.continuity.resume",
-        target: `work_continuity_resume:${args.work_id}`,
-        operation_class: "owner_confirmed_governed_action",
-        external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
-        idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
-        target_authority_verified: true, actor_authorized_for_target: true,
-        owner_confirmed: identity.ownerConfirmed === true,
-        confirmation_reference: identity.confirmationReference,
-      }, identity);
-      const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
-        gate.structuredContent?.result?.authorization || {};
-      if (authorization.allowed !== true) throw new Error("work_continuity_resume_not_authorized");
-      const payload = { ok: true, result: await workContinuityRuntime.resume(identity, args, authorization) };
-      payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
-      payload.result.nyra_control_context = await materializeNyraControlContext(
-        identity,
-        payload.result,
-        "work_resumed",
-        { autopilot: payload.result.nyra_autopilot, force: true },
-      );
-      payload.dedicated_core_gate = {
-        authorized: true,
-        authority: "universal_core",
-        route: "/v1/action-evaluator",
-        server_owned: true,
-      };
-      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
-    },
+    work_continuity_resume: resumeExistingContinuityWork,
     work_continuity_verify_memory: async (args, identity) => {
       await requireCanonicalWorkRead(identity, args.work_id);
       await requireOwnerGovernance(identity, "work.continuity.verify_memory", args.work_id);
@@ -1664,6 +1772,9 @@ const baseHandlers = {
           creationAuthorized: false,
           trustedSessionFollowup: true,
           authorizedResumeWorkIds,
+          // Exact canonical visibility was proved above; an explicit Work may
+          // therefore replace a stale binding left by this transport session.
+          allowAuthorizedSessionRebind: Boolean(args.work_id),
         }),
         dedicated_core_gate: {
           authorized: true,
@@ -1788,58 +1899,8 @@ const baseHandlers = {
     work_continuity_generic_closure_finalize: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.finalizeGenericClosure(withTenantWorkAcl(identity), args),
       dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work/core-join-verdicts", server_owned: true } }),
-    work_continuity_native_plan: async (args, identity) => {
-      requireHostAppToolCapability({
-        identity,
-        toolName: "work_continuity_native_plan",
-        tools: TOOLS,
-      });
-      const nativeArgs = identity?.authenticatedHostPrincipal
-        ? { ...args, host_type: authenticatedHostKind(identity) }
-        : args;
-      await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id);
-      const intent = await readLegacyIntentAuthorized(identity, {
-        work_id: nativeArgs.work_id,
-      });
-      const corePlanResult = await coreHandlers.host_native_work_plan_create({
-        work_id: nativeArgs.work_id,
-        intent_anchor_digest: intent.intent_digest,
-        repository: nativeArgs.repository,
-        base_branch: nativeArgs.base_branch,
-        objective: intent.anchor?.objective,
-        required_checks: nativeArgs.required_checks,
-        agents: nativeArgs.tasks.map((task) => ({
-          agent_id: task.task_id,
-          role: task.kind,
-          task: task.instruction,
-          depends_on: task.dependencies || [],
-          capabilities: [],
-        })),
-        max_parallel: nativeArgs.max_parallel,
-      }, identity);
-      const corePlan = corePlanResult?.structuredContent?.plan;
-      if (!corePlan) throw new Error("core_host_native_work_plan_required");
-      return continuityTextResult({
-        ok: true,
-        result: await workContinuityRuntime.planNativeAgents(identity, nativeArgs, {
-          corePlan,
-        }),
-      });
-    },
-    work_continuity_native_bind: async (args, identity) => {
-      requireHostAppToolCapability({
-        identity,
-        toolName: "work_continuity_native_bind",
-        tools: TOOLS,
-      });
-      const nativeArgs = identity?.authenticatedHostPrincipal
-        ? { ...args, host_type: authenticatedHostKind(identity) }
-        : args;
-      return continuityTextResult({
-        ok: true,
-        result: await workContinuityRuntime.bindNativeAgent(identity, nativeArgs),
-      });
-    },
+    work_continuity_native_plan: createNativeContinuityPlan,
+    work_continuity_native_bind: bindNativeContinuityChild,
     work_continuity_native_report: continuityMethod("reportNativeAgent"),
     work_continuity_closure_evaluate: async (args, identity) => {
       const evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
@@ -2074,16 +2135,11 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   internallyGovernedCapabilities: ["agent_heartbeat"],
-  capabilityVisible: ({ tool, identity }) => {
-    // Once the server has admitted a native child for this request, give the
-    // dynamic router a single-capability view. Do not union it with ordinary
-    // work.read visibility: the assignment is a one-task grant, not a wider
-    // discovery token.
-    if (identity?.nativeReportAdmission?.capability_id === "work_continuity_native_report") {
-      return tool.name === "work_continuity_native_report";
-    }
-    return hostAppCanAccessTool({ identity, toolName: tool.name, tools: TOOLS });
-  },
+  capabilityVisible: ({ tool, identity }) => hostAppCanDiscoverDynamicCapability({
+    identity,
+    tool,
+    tools: TOOLS,
+  }),
   gateAction: ({ tool, args, identity, catalogRevision, idempotencyKey, workPreflight }) => {
     const researchDistillationShadow =
       researchDistillationShadowTools.has(tool.name);

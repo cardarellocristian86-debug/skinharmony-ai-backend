@@ -7,6 +7,18 @@ const entityType = { type: "string", pattern: "^[a-z][a-z0-9._-]{0,79}$" };
 const entityId = { type: "string", pattern: "^e360_[a-f0-9]{48}$" };
 const digest = { type: "string", pattern: "^[a-f0-9]{64}$" };
 const dateTime = { type: "string", minLength: 20, maxLength: 40, format: "date-time" };
+const bitemporalQueryMode = {
+  type: "string",
+  enum: ["CURRENT_STATE", "VALID_AT", "KNOWN_AT", "VALID_AND_KNOWN_AT", "DECISION_CONTEXT_AT"],
+};
+const bitemporalQuery = Object.freeze({
+  query_mode: bitemporalQueryMode,
+  valid_at: dateTime,
+  known_at: dateTime,
+  as_of_valid_time: dateTime,
+  as_of_knowledge_time: dateTime,
+  decision_time: dateTime,
+});
 const idempotencyKey = { type: "string", minLength: 1, maxLength: 240 };
 const scalar = { type: ["string", "number", "boolean"] };
 const ownerConfirmationProperties = Object.freeze({
@@ -100,16 +112,16 @@ const definitions = [
   [
     "entity_360_snapshot_latest",
     "Read latest Entity 360 snapshot",
-    "Read the latest immutable snapshot for one entity within the authenticated tenant.",
-    object({ work_id: workId, entity_id: entityId }, ["work_id", "entity_id"]),
+    "Read the latest immutable snapshot, or a non-authoritative bitemporal projection, within the authenticated tenant.",
+    object({ work_id: workId, entity_id: entityId, ...bitemporalQuery }, ["work_id", "entity_id"]),
     true,
   ],
   [
     "entity_360_snapshot_read",
     "Read Entity 360 snapshot version",
-    "Read one exact immutable snapshot version within the authenticated tenant.",
+    "Read one exact immutable snapshot version, or a non-authoritative bitemporal projection, within the authenticated tenant.",
     object({ work_id: workId, entity_id: entityId,
-      snapshot_version: { type: "integer", minimum: 1 } }, ["work_id", "entity_id", "snapshot_version"]),
+      snapshot_version: { type: "integer", minimum: 1 }, ...bitemporalQuery }, ["work_id", "entity_id", "snapshot_version"]),
     true,
   ],
   [

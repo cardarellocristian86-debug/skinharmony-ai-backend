@@ -1,4 +1,5 @@
 import { NYRA_DIALOGUE_WIDGET_URI } from "./nyra-operating-dialogue-widget.js";
+import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
 
 function annotations(readOnly, idempotent = false, openWorld = false, destructive = false) {
   return { readOnlyHint: readOnly, destructiveHint: destructive, openWorldHint: openWorld, idempotentHint: idempotent };
@@ -812,7 +813,7 @@ const nyraDirectiveDigest = { type: ["string", "null"], pattern: "^[a-f0-9]{64}$
 const nyraDirectiveActionClass = {
   type: "string",
   enum: [
-    "NONE", "WORKSPACE_CHANGE", "GIT_PUSH", "PULL_REQUEST_OPEN", "GIT_MERGE",
+    "NONE", "WORKSPACE_CHANGE", "GIT_COMMIT", "GIT_PUSH", "PULL_REQUEST_OPEN", "GIT_MERGE",
     "DEPLOY", "PUBLISH", "WORK_BOOTSTRAP", "EXTERNAL_MUTATION", "TICKET_RESERVE",
   ],
 };
@@ -834,7 +835,43 @@ const nyraGovernedContinuationSchema = object({
 }, [
   "schema_version", "available", "continuation_ref", "expires_at", "state", "reason",
 ]);
+const nyraActionContinuationOperation = {
+  type: "string",
+  enum: ["issue_delegation", "authorize_action"],
+};
 const nyraContinueSha256 = { type: "string", pattern: "^[a-f0-9]{64}$" };
+function nyraContinuationRequestSchema(toolName, { omit = [] } = {}) {
+  const source = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === toolName)?.inputSchema;
+  if (!source || source.type !== "object") {
+    throw new Error(`nyra_continuation_request_schema_missing:${toolName}`);
+  }
+  const omitted = new Set([
+    "agent_id",
+    "client_type",
+    "idempotency_key",
+    "owner_confirmed",
+    "confirmation_reference",
+    ...omit,
+  ]);
+  return {
+    ...source,
+    properties: Object.fromEntries(Object.entries(source.properties || {})
+      .filter(([key]) => !omitted.has(key))),
+    required: (source.required || []).filter((key) => !omitted.has(key)),
+    additionalProperties: false,
+  };
+}
+const nyraContinueResumeRequest = nyraContinuationRequestSchema(
+  "work_continuity_resume",
+);
+const nyraContinueNativePlanRequest = nyraContinuationRequestSchema(
+  "work_continuity_native_plan",
+  { omit: ["session_id"] },
+);
+const nyraContinueNativeBindRequest = nyraContinuationRequestSchema(
+  "work_continuity_native_bind",
+  { omit: ["session_id"] },
+);
 const nyraContinueHostKind = { type: "string", pattern: "^[a-z][a-z0-9_]{1,62}_native$" };
 const nyraContinueRepository = {
   type: "string",
@@ -1239,9 +1276,27 @@ const nyraConverseOutputSchema = object({
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
     reply_seed: { type: "string", minLength: 1, maxLength: 1_200 },
     next_action: nyraConverseNullableText(500),
+    connected_ai_brief: object({
+      schema_version: { const: "nyra_connected_ai_brief_v1" },
+      state: { type: "string", enum: ["READY", "WAITING"] },
+      goal: { type: "string", minLength: 1, maxLength: 500 },
+      steps: {
+        type: "array", maxItems: 3,
+        items: object({
+          order: { type: "integer", minimum: 1, maximum: 3 },
+          instruction: { type: "string", minLength: 1, maxLength: 500 },
+          mode: { type: "string", enum: ["READ_ONLY", "BOUNDED_WORKSPACE"] },
+          expected_evidence: { type: "array", maxItems: 3, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 500 } },
+          external_side_effect: { const: false },
+        }, ["order", "instruction", "mode", "expected_evidence", "external_side_effect"]),
+      },
+      expected_evidence: { type: "array", maxItems: 3, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 500 } },
+      research_required: { const: false },
+      external_action_authorized: { const: false },
+    }, ["schema_version", "state", "goal", "steps", "expected_evidence", "research_required", "external_action_authorized"]),
     rendering_policy: { const: "server_orchestration_directive_first_v2" },
     instructions: { type: "array", minItems: 3, maxItems: 3, items: { type: "string", maxLength: 500 } },
-  }, ["speaker", "renderer", "response_language", "response_style", "reply_seed", "next_action", "rendering_policy", "instructions"]),
+  }, ["speaker", "renderer", "response_language", "response_style", "reply_seed", "next_action", "connected_ai_brief", "rendering_policy", "instructions"]),
   execution_authorized: { const: false },
   external_action_authorized: { const: false },
   provider_execution: { const: false },
@@ -1329,11 +1384,12 @@ export const TOOLS = [
     destructive: false,
   }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
-  tool("nyra_converse", "Nyra: resume or guide the current Work", "Use this as the first and only read tool when the user addresses Nyra or asks to resume, continue, understand, diagnose, or coordinate a Work. It is the conversational front door: the server performs authenticated preflight, binds one canonical Work, reads bounded Work tasks/evidence, and returns Nyra's problem, needs, ordered actors, progress disposition and revision-bound Universal Core ticket candidate. Do not call a preflight, Gallery, branch registry, self-model read or capability catalog first. PREPARE_BOUNDED_WORK permits local analysis, tests and evidence but never an external mutation. Merge is always MANUAL_ONLY for the owner after the Core gate. Nyra never calls a provider model, accepts caller authority, issues a ticket, or authorizes or performs an external action.", object({
+  tool("nyra_converse", "Nyra: resume or guide the current Work", "Use this as the first and only read tool when the user addresses Nyra or asks to resume, continue, understand, diagnose, or coordinate a Work. It is the conversational front door: the server performs authenticated preflight, binds one canonical Work, reads bounded Work tasks/evidence, and returns Nyra's problem, needs, ordered actors, progress disposition and revision-bound Universal Core ticket candidate. For a ready external action, select exactly one continuation operation: issue_delegation or authorize_action; that choice is signed and cannot be changed on another replica. Do not call a preflight, Gallery, branch registry, self-model read or capability catalog first. PREPARE_BOUNDED_WORK permits local analysis, tests and evidence but never an external mutation. Merge is always MANUAL_ONLY for the owner after the Core gate. Nyra never calls a provider model, accepts caller authority, issues a ticket, or authorizes or performs an external action.", object({
     message: text(12_000),
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,
     work_bootstrap: nyraWorkBootstrapSpec,
+    continuation_operation: nyraActionContinuationOperation,
     locale: { type: "string", enum: ["auto", "it", "en"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
   }, ["message"]), ["core:read"], true, true, {
@@ -1354,6 +1410,9 @@ export const TOOLS = [
     review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
     delegation_request: nyraContinueDelegationRequest,
     action_request: nyraContinueActionRequest,
+    resume_request: nyraContinueResumeRequest,
+    native_plan_request: nyraContinueNativePlanRequest,
+    native_bind_request: nyraContinueNativeBindRequest,
     idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
     ...ownerConfirmationProperties,
   }, ["operation", "continuation_ref", "idempotency_key"]), ["core:govern"], false, true, {

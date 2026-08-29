@@ -382,7 +382,7 @@ export const WORK_CONTINUITY_TOOLS = [
       status: { type: "string", enum: ["planned", "completed"] }, required: { type: "boolean" } },
     ["work_id", "title", "status"]), false, { ownerConfirmationRequired: false, boundedCollaboration: true }),
   tool("tenant_work_evidence_record", "Record Work evidence",
-    "Record digest-only evidence; independent status is derived from the authenticated verifier identity and session.",
+    "Record digest-only candidate evidence. Independent status is derived only by the server-owned native verifier terminal-report bridge.",
     object({ work_id: uuid, evidence_id: uuid, kind: { type: "string", minLength: 1, maxLength: 80 }, digest: hash,
       weight: { type: "integer", minimum: 1, maximum: 10_000 }, required: { type: "boolean" }, metadata: { type: "object", additionalProperties: true } },
     ["work_id", "kind", "digest"]), false, { ownerConfirmationRequired: false, boundedCollaboration: true }),
@@ -470,6 +470,10 @@ export const WORK_CONTINUITY_TOOLS = [
     object({
       work_id: uuid, plan_id: uuid, task_id: { type: "string", minLength: 1, maxLength: 120 },
       native_agent_id: nativeAgentId, host_type: nativeHost, host_task_id: hostTaskId,
+      // Optional for compatibility with existing plans.  When supplied, it
+      // is signed into the child assignment and is the sole task-acceptance
+      // target the verifier-evidence bridge may promote.
+      v2_task_id: uuid,
     }, ["work_id", "plan_id", "task_id", "native_agent_id", "host_type", "host_task_id"]),
     false, { ownerConfirmationRequired: false }),
   tool("work_continuity_native_report", "Record native agent evidence",
@@ -485,6 +489,19 @@ export const WORK_CONTINUITY_TOOLS = [
         automation_stage: { type: "string", enum: ["build", "system_verification", "final_acceptance"] },
         summary: text(8_000), verdict: { type: "string", enum: ["approved", "rejected"] },
         commit_sha: gitSha,
+        precommit_evidence: object({
+          schema_version: { type: "string", const: "native_precommit_evidence_v1" },
+          diff_mode: { type: "string", const: "git_diff_binary_sha256_v1" },
+          base_commit: gitSha,
+          diff_digest: hash,
+          changed_files: {
+            type: "array",
+            minItems: 1,
+            maxItems: 1_000,
+            uniqueItems: true,
+            items: { type: "string", minLength: 1, maxLength: 2_000 },
+          },
+        }, ["schema_version", "diff_mode", "base_commit", "diff_digest", "changed_files"]),
         tests: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } },
         evidence_refs: { type: "array", maxItems: 100, items: { type: "string", maxLength: 500 } },
         acceptance_evidence: {
@@ -584,7 +601,7 @@ export const WORK_CONTINUITY_TOOLS = [
         "rollback",
       ]),
       idempotency_key: text(160),
-    }, ["work_id", "plan_id", "release", "idempotency_key"]),
+    }, ["work_id", "plan_id", "idempotency_key"]),
     false, { ownerConfirmationRequired: false }),
   tool("work_continuity_closure_finalize", "Finalize verified live work",
     "Complete work only from a fresh authenticated Universal Core receipt for the exact completed action ticket. Commit, CI, live health, rollback and host-policy facts are read server-side and cannot be supplied by the caller.",

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   hasTenantBoundChatGptReadCompatibility,
   hostAppCanAccessTool,
+  hostAppCanDiscoverDynamicCapability,
   isNativeReportChildOperation,
   nativeReportAssignmentBootstrap,
   requireHostAppToolCapability,
@@ -291,11 +292,47 @@ test("governed continuation intersects wrapper, operation and supported-host cap
     tools: TOOLS,
   }), /host_native_host_kind_not_supported/);
   assert.doesNotThrow(() => requireHostAppToolCapability({
-    identity: identity(["governed_continue", "host_native.authorize"], "codex_native"),
+    identity: identity(["core.operate", "governed_continue", "host_native.authorize"], "codex_native"),
     toolName: "nyra_continue",
     args: { operation: "authorize_action" },
     tools: TOOLS,
   }));
+});
+
+test("keeps the conversational dynamic catalog truthful while preserving child-only report discovery", () => {
+  const read = { name: "work_continuity_v2_read", annotations: { readOnlyHint: true } };
+  const plan = { name: "work_continuity_native_plan", annotations: { readOnlyHint: false } };
+  const report = { name: "work_continuity_native_report", annotations: { readOnlyHint: false } };
+  const conversational = identity([
+    "work.read", "work.operate", "host_native.delegate",
+  ]);
+  conversational.authenticatedHostPrincipal.interaction_mode = "nyra_conversational";
+  assert.equal(hostAppCanDiscoverDynamicCapability({
+    identity: conversational, tool: read, tools: [read, plan, report],
+  }), true);
+  assert.equal(hostAppCanDiscoverDynamicCapability({
+    identity: conversational, tool: plan, tools: [read, plan, report],
+  }), false);
+  assert.equal(hostAppCanDiscoverDynamicCapability({
+    identity: conversational, tool: report, tools: [read, plan, report],
+  }), false);
+
+  const admittedChild = {
+    ...conversational,
+    nativeReportAdmission: { capability_id: "work_continuity_native_report" },
+  };
+  assert.equal(hostAppCanDiscoverDynamicCapability({
+    identity: admittedChild, tool: report, tools: [read, plan, report],
+  }), true);
+  assert.equal(hostAppCanDiscoverDynamicCapability({
+    identity: admittedChild, tool: read, tools: [read, plan, report],
+  }), false);
+
+  const nativeTooling = identity(["host_native.delegate"]);
+  nativeTooling.authenticatedHostPrincipal.interaction_mode = "native_tooling";
+  assert.equal(hostAppCanDiscoverDynamicCapability({
+    identity: nativeTooling, tool: plan, tools: [read, plan, report],
+  }), true);
 });
 
 test("Nyra Native Team and Autopilot mutations require work.operate directly and dynamically", () => {

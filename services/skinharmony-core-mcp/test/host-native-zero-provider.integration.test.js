@@ -32,6 +32,7 @@ class EphemeralContinuityPool {
   constructor(now = () => new Date()) {
     this.now = now;
     this.works = new Map();
+    this.architectures = new Map();
     this.bindings = new Map();
     this.anchors = new Map();
     this.events = new Map();
@@ -109,6 +110,16 @@ class EphemeralContinuityPool {
       return { rows: [], rowCount: 1 };
     }
     if (query.startsWith("INSERT INTO core_continuity_architecture_versions")) {
+      const [tenantId, workId] = parameters;
+      const hasExplicitVersion = parameters.length === 8;
+      const version = hasExplicitVersion ? Number(parameters[2]) : 1;
+      const architecture = JSON.parse(parameters[hasExplicitVersion ? 3 : 2]);
+      const architectureDigest = parameters[hasExplicitVersion ? 5 : 3];
+      this.architectures.set(mapKey(tenantId, workId, version), {
+        version,
+        architecture,
+        architecture_digest: architectureDigest,
+      });
       return { rows: [], rowCount: 1 };
     }
     if (query.startsWith("INSERT INTO core_continuity_intent_anchors")) {
@@ -190,14 +201,20 @@ class EphemeralContinuityPool {
       return { rows: [], rowCount: 1 };
     }
 
-    if (query.startsWith("SELECT w.work_id,a.anchor,a.intent_digest")) {
+    if (query.startsWith("SELECT w.work_id,w.current_version,a.anchor,a.intent_digest")) {
       const work = this.works.get(mapKey(parameters[0], parameters[1]));
       const anchor = this.anchors.get(mapKey(parameters[0], parameters[1]));
-      const row = work && anchor
+      const architecture = work
+        ? this.architectures.get(mapKey(parameters[0], parameters[1], work.current_version))
+        : null;
+      const row = work && anchor && architecture
         ? {
             work_id: work.work_id,
+            current_version: work.current_version,
             anchor: anchor.anchor,
             intent_digest: anchor.intent_digest,
+            architecture: architecture.architecture,
+            architecture_digest: architecture.architecture_digest,
           }
         : null;
       return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
@@ -276,6 +293,7 @@ class EphemeralContinuityPool {
         hostTaskId,
         taskKind,
         taskDigest,
+        v2TaskId,
         coordinatorFingerprint,
         assignmentCapabilityDigest,
         boundBy,
@@ -291,6 +309,7 @@ class EphemeralContinuityPool {
         host_task_id: hostTaskId,
         task_kind: taskKind,
         task_digest: taskDigest,
+        v2_task_id: v2TaskId,
         coordinator_session_fingerprint: coordinatorFingerprint,
         assignment_capability_digest: assignmentCapabilityDigest,
         native_session_fingerprint: null,
