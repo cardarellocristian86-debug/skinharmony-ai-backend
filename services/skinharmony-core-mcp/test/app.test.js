@@ -153,6 +153,90 @@ test("governed continuation rebinds only to its declared logical session", () =>
   });
 });
 
+test("governed continuation restores the logical presence only after its handler succeeds", async () => {
+  const observed = [];
+  const app = createApp(config, {
+    handlers: {
+      core_health: async () => ({ structuredContent: { ok: true }, content: [] }),
+      nyra_governed_continue: async (args, identity) => {
+        if (args.candidate_attestation.startsWith("invalid")) {
+          const error = new Error("nyra_governed_continue_attestation_invalid");
+          error.code = "nyra_governed_continue_attestation_invalid";
+          throw error;
+        }
+        observed.push(identity.agentPresence);
+        return { structuredContent: { ok: true }, content: [] };
+      },
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const call = async (transport, name, args = {}) => {
+      const response = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer codex-key",
+          "content-type": "application/json",
+          "mcp-session-id": transport,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: `${transport}-${name}`,
+          method: "tools/call",
+          params: { name, arguments: args },
+        }),
+      });
+      return { response, body: await response.json() };
+    };
+    const stale = await call("stale-mcp-transport", "core_health", {
+      agent_id: "stale-transport-agent", client_type: "codex",
+    });
+    const logical = await call("attested-logical-session", "core_health", {
+      agent_id: "attested-logical-agent", client_type: "codex",
+    });
+    assert.equal(stale.response.status, 200);
+    assert.equal(logical.response.status, 200);
+
+    const rejected = await call("stale-mcp-transport", "nyra_governed_continue", {
+      operation: "resume_existing_work",
+      candidate_attestation: `invalid.${"x".repeat(100)}`,
+      idempotency_key: "continuation-invalid-rebind",
+      session_id: "attested-logical-session",
+    });
+    assert.equal(rejected.response.status, 200);
+    assert.equal(
+      rejected.body.result.structuredContent.error.code,
+      "nyra_governed_continue_attestation_invalid",
+    );
+    const unchanged = await call("stale-mcp-transport", "core_health");
+    assert.equal(unchanged.response.status, 200);
+    assert.equal(
+      unchanged.body.result.structuredContent.agent_presence.agent_id,
+      "stale-transport-agent",
+    );
+
+    const accepted = await call("stale-mcp-transport", "nyra_governed_continue", {
+      operation: "resume_existing_work",
+      candidate_attestation: `valid.${"x".repeat(100)}`,
+      idempotency_key: "continuation-valid-rebind",
+      session_id: "attested-logical-session",
+    });
+    assert.equal(accepted.response.status, 200);
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].agent_id, "attested-logical-agent");
+    const rebound = await call("stale-mcp-transport", "core_health");
+    assert.equal(rebound.response.status, 200);
+    assert.equal(
+      rebound.body.result.structuredContent.agent_presence.agent_id,
+      "attested-logical-agent",
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("binds an OAuth owner logical session only for DTT-backed dynamic reads", () => {
   const identity = {
     kind: "oauth",

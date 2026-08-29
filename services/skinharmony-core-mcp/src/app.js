@@ -2471,15 +2471,6 @@ export function createApp(config, options = {}) {
         const serverIssuedSessionId = needsBootstrapSession
           ? serverIssuedBootstrapSession()
           : "";
-        if (
-          transportPresence?.binding_source === "declared" &&
-          declaredSessionId &&
-          transportPresence.session_id !== declaredSessionId
-        ) {
-          const presenceError = new Error("agent_presence_conflict");
-          presenceError.code = "agent_presence_conflict";
-          throw presenceError;
-        }
         const sessionResolution = resolveMcpLogicalSession({
           toolName: tool.name,
           transportPresence,
@@ -2487,6 +2478,16 @@ export function createApp(config, options = {}) {
           transportSessionId,
           serverIssuedSessionId,
         });
+        if (
+          transportPresence?.binding_source === "declared" &&
+          declaredSessionId &&
+          transportPresence.session_id !== declaredSessionId &&
+          !sessionResolution.continuation_rebind
+        ) {
+          const presenceError = new Error("agent_presence_conflict");
+          presenceError.code = "agent_presence_conflict";
+          throw presenceError;
+        }
         const sessionId = sessionResolution.session_id;
         const serverIssuedBootstrap = Boolean(serverIssuedSessionId);
         const hostNativeReporterAgentId = tool.name === "work_continuity_native_report"
@@ -2506,18 +2507,37 @@ export function createApp(config, options = {}) {
           presenceError.code = "native_agent_reporter_identity_conflict";
           throw presenceError;
         }
-        const requestedAgentId = (!serverIssuedBootstrap && (
+        const generatedAgentId = `agent_${crypto.createHash("sha256").update(`${identity.subject || identity.kind || "client"}\u0000${sessionId}`).digest("hex").slice(0, 20)}`;
+        // A continuation candidate is bound to a logical session, not to a
+        // caller-selected agent id. Resolve the existing server-signed logical
+        // presence first; a stale MCP transport must never supply that agent
+        // identity during a rebind.
+        const logicalPresenceProbe = sessionResolution.continuation_rebind
+          ? createAgentPresence(config, identity, {
+              agent_id: generatedAgentId,
+              client_type: inferClientType(identity),
+              session_id: sessionId,
+            })
+          : null;
+        const reboundLogicalPresence = logicalPresenceProbe
+          ? logicalSessionPresences.get(logicalPresenceProbe.session_fingerprint)
+          : null;
+        const requestedAgentId = sessionResolution.continuation_rebind
+          ? reboundLogicalPresence?.agent_id || generatedAgentId
+          : (!serverIssuedBootstrap && (
           hostNativeReporterAgentId ||
           rawArgs.agent_id ||
           rawArgs.from_agent_id
         )) || transportPresence?.agent_id ||
-          `agent_${crypto.createHash("sha256").update(`${identity.subject || identity.kind || "client"}\u0000${sessionId}`).digest("hex").slice(0, 20)}`;
+          generatedAgentId;
         const presenceInput = {
           agent_id: requestedAgentId,
           // `client_type` is transport metadata, but downstream host-native
           // code historically treated it as an audience selector. Derive it
           // only from the authenticated host principal and ignore caller input.
-          client_type: transportPresence?.client_type || inferClientType(identity),
+          client_type: sessionResolution.continuation_rebind
+            ? reboundLogicalPresence?.client_type || inferClientType(identity)
+            : transportPresence?.client_type || inferClientType(identity),
           session_id: sessionId,
         };
         const agentPresence = createAgentPresence(config, identity, presenceInput);
@@ -2545,7 +2565,8 @@ export function createApp(config, options = {}) {
           host_transport_session_fingerprint:
             hostTransportPresence.presence?.session_fingerprint || null,
         };
-        const logicalPresence = logicalSessionPresences.get(agentPresence.session_fingerprint);
+        const logicalPresence = reboundLogicalPresence ||
+          logicalSessionPresences.get(agentPresence.session_fingerprint);
         if (
           (transportPresence && transportPresence.signature !== agentPresence.signature &&
             !sessionResolution.continuation_rebind) ||
@@ -2558,13 +2579,21 @@ export function createApp(config, options = {}) {
         const presenceBinding = {
           ...attestedAgentPresence,
           session_id: sessionId,
-          binding_source: transportPresence?.binding_source ||
+          binding_source: sessionResolution.continuation_rebind
+            ? "continuation_attested"
+            : transportPresence?.binding_source ||
             hostTransportPresence.binding_source ||
             (declaredSessionId ? "declared" : transportSessionId ? "transport" : "server_bootstrap"),
         };
-        setBounded(logicalSessionPresences, agentPresence.session_fingerprint, presenceBinding);
-        if (transportSessionId || serverIssuedSessionId) {
-          setBounded(transportPresenceBindings, sessionId, presenceBinding);
+        // The candidate is verified by its handler using this ephemeral
+        // presence. Do not mutate either cache until it has succeeded: an
+        // invalid, expired, or replayed candidate cannot seize a logical
+        // session merely by naming it in a stale transport request.
+        if (!sessionResolution.continuation_rebind) {
+          setBounded(logicalSessionPresences, agentPresence.session_fingerprint, presenceBinding);
+          if (transportSessionId || serverIssuedSessionId) {
+            setBounded(transportPresenceBindings, sessionId, presenceBinding);
+          }
         }
         if (serverIssuedSessionId) res.set("Mcp-Session-Id", serverIssuedSessionId);
         const args = { ...rawArgs, ...presenceInput };
@@ -2627,6 +2656,15 @@ export function createApp(config, options = {}) {
           ? { ...args, work_preflight: serverIssuedPreflight }
           : args;
         const rawResult = await handlers[tool.name](handlerArgs, callIdentity);
+        const continuationAccepted = rawResult?.isError !== true &&
+          rawResult?.structuredContent?.ok !== false;
+        if (sessionResolution.continuation_rebind && continuationAccepted) {
+          setBounded(logicalSessionPresences, agentPresence.session_fingerprint, presenceBinding);
+          // Bind the current opaque transport only after attestation succeeds,
+          // including handlers that return a machine-readable failure envelope,
+          // so future calls cannot be poisoned by a failed continuation.
+          setBounded(transportPresenceBindings, transportSessionId || sessionId, presenceBinding);
+        }
         const preflightResult = attachWorkPreflight(rawResult, preflight);
         const result = attachAgentPresence(preflightResult, agentPresence);
         if (typeof afterToolCall === "function") {
