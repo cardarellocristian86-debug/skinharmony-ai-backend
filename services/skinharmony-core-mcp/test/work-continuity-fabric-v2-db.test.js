@@ -2075,6 +2075,8 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
       agent_id: "codex-coordinator",
       client_type: "codex",
       session_fingerprint: "b".repeat(64),
+      host_transport_session_fingerprint: "c".repeat(64),
+      transport_bound: true,
     },
   };
   const work = await runtime.ensure(identity, {
