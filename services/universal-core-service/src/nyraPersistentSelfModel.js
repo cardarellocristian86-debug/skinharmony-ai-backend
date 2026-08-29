@@ -121,14 +121,42 @@ export function createNyraPersistentSelfModelStore({ storageRoot, signingSecret 
       record.signature === sign(unsigned)
     );
   };
+  // The immediately preceding on-disk format signed only the self-model
+  // profile. Accept it as a bounded compatibility envelope so an upgrade
+  // does not strand an otherwise authentic tenant record. A write-capable,
+  // owner-confirmed refresh below always migrates it to the current envelope,
+  // whose signature also covers revision and generated_at.
+  const validLegacyStoredEnvelope = (record, { tenantId }) => {
+    const profile = storedProfile(record);
+    const expectedShape = buildNyraSelfModel({ tenantId, catalog: null, authorizedBranchIds: [] });
+    return Boolean(
+      profile &&
+      Object.keys(profile).sort().join("\0") === Object.keys(expectedShape).sort().join("\0") &&
+      profile.schema_version === SCHEMA_VERSION &&
+      profile.tenant_id === tenantId &&
+      Number.isSafeInteger(record.revision) && record.revision > 0 &&
+      typeof record.generated_at === "string" &&
+      Number.isFinite(Date.parse(record.generated_at)) &&
+      new Date(record.generated_at).toISOString() === record.generated_at &&
+      record.payload_digest === sha256(canonical(profile)) &&
+      record.signature === sign(profile)
+    );
+  };
   const validStoredRecord = (record, { tenantId, catalog }) => Boolean(
     validStoredEnvelope(record, { tenantId, catalog }) &&
+    record.catalog_revision === (catalog?.schema_version || "unknown")
+  );
+  const validLegacyStoredRecord = (record, { tenantId, catalog }) => Boolean(
+    validLegacyStoredEnvelope(record, { tenantId }) &&
     record.catalog_revision === (catalog?.schema_version || "unknown")
   );
   return {
     read({ tenantId, catalog }) {
       const { record: current } = readJson(fileFor(tenantId));
-      return validStoredRecord(current, { tenantId, catalog }) ? current : null;
+      return validStoredRecord(current, { tenantId, catalog }) ||
+        validLegacyStoredRecord(current, { tenantId, catalog })
+        ? current
+        : null;
     },
     refresh({ tenantId, catalog, authorizedBranchIds = [] }) {
       const profile = buildNyraSelfModel({ tenantId, catalog, authorizedBranchIds });
@@ -137,13 +165,16 @@ export function createNyraPersistentSelfModelStore({ storageRoot, signingSecret 
       const currentEnvelopeValid = !stored.exists
         ? false
         : validStoredEnvelope(current, { tenantId, catalog });
-      if (stored.exists && !currentEnvelopeValid) {
+      const legacyEnvelopeValid = !stored.exists || currentEnvelopeValid
+        ? false
+        : validLegacyStoredEnvelope(current, { tenantId });
+      if (stored.exists && !currentEnvelopeValid && !legacyEnvelopeValid) {
         throw new Error("nyra_self_model_integrity_invalid");
       }
       if (currentEnvelopeValid && canonical(storedProfile(current)) === canonical(profile)) return current;
       const unsigned = {
         ...profile,
-        revision: currentEnvelopeValid ? current.revision + 1 : 1,
+        revision: currentEnvelopeValid || legacyEnvelopeValid ? current.revision + 1 : 1,
         generated_at: new Date().toISOString(),
       };
       const record = {
