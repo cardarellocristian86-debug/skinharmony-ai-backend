@@ -1,5 +1,6 @@
 import {
   ENTITY_360_SCHEMA_VERSION,
+  ENTITY_360_BITEMPORAL_SCHEMA_VERSION,
   Entity360Error,
   entity360Digest,
   entity360SnapshotSemanticBody,
@@ -109,7 +110,12 @@ function decode(value) {
 
 function normalizeSnapshot(snapshot, verificationContext) {
   const value = plain(snapshot, "entity360_snapshot_required");
-  if (value.schema_version !== ENTITY_360_SCHEMA_VERSION) fail("entity360_snapshot_schema_invalid");
+  // v2 is an additive, verified bitemporal envelope.  The append-only store
+  // accepts both schema generations so SHADOW can collect evidence without
+  // disrupting existing v1 tenants.
+  if (![ENTITY_360_SCHEMA_VERSION, ENTITY_360_BITEMPORAL_SCHEMA_VERSION].includes(value.schema_version)) {
+    fail("entity360_snapshot_schema_invalid");
+  }
   const tenantId = text(value.tenant_scope, "entity360_tenant_required", 120);
   const entityId = text(value.entity_id, "entity360_entity_id_required", 160);
   const entityType = text(value.entity_type, "entity360_entity_type_required", 80);
