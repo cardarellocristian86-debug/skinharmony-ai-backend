@@ -570,8 +570,8 @@ test("native planning repairs only the server-derived canonical legacy bridge be
   const helper = serverSource.slice(helperStart, helperEnd);
   assert.match(helper, /requireTenantWorkCapability\(identity, "operate"\)/);
   assert.match(helper, /ensureLegacyBridge\(withTenantWorkAcl\(identity\), \{ work_id: workId \}\)/);
-  const planStart = serverSource.indexOf("work_continuity_native_plan: async");
-  const planEnd = serverSource.indexOf("work_continuity_native_bind: async", planStart);
+  const planStart = serverSource.indexOf("async function createNativeContinuityPlan");
+  const planEnd = serverSource.indexOf("async function bindNativeContinuityChild", planStart);
   const planHandler = serverSource.slice(planStart, planEnd);
   assert.ok(planHandler.indexOf("await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id)") >= 0);
   assert.ok(planHandler.indexOf("await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id)") <

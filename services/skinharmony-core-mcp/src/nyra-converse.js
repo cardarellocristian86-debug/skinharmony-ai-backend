@@ -1775,6 +1775,7 @@ export function createNyraConverseHandler({
       submit_tool: null,
       candidate_attestation: null,
       expires_at: null,
+      operations: Object.freeze([]),
       reason: "continuation_signer_unavailable",
     });
     if (typeof issueContinuation === "function") {

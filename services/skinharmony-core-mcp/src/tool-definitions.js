@@ -1,4 +1,5 @@
 import { NYRA_DIALOGUE_WIDGET_URI } from "./nyra-operating-dialogue-widget.js";
+import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
 
 function annotations(readOnly, idempotent = false, openWorld = false, destructive = false) {
   return { readOnlyHint: readOnly, destructiveHint: destructive, openWorldHint: openWorld, idempotentHint: idempotent };
@@ -830,16 +831,57 @@ const nyraGovernedContinuationSchema = object({
   submit_tool: { type: ["string", "null"], enum: ["nyra_governed_continue", null] },
   candidate_attestation: { type: ["string", "null"], maxLength: 8_192 },
   expires_at: { type: ["string", "null"], format: "date-time" },
+  operations: {
+    type: "array",
+    maxItems: 7,
+    uniqueItems: true,
+    items: { type: "string", enum: [
+      "review_work_bootstrap", "create_work", "resume_existing_work",
+      "create_native_plan", "bind_native_child", "issue_delegation", "authorize_action",
+    ] },
+  },
   reason: { type: ["string", "null"], maxLength: 160 },
 }, [
   "schema_version", "available", "submit_tool", "candidate_attestation",
-  "expires_at", "reason",
+  "expires_at", "operations", "reason",
 ]);
 const nyraActionContinuationOperation = {
   type: "string",
   enum: ["issue_delegation", "authorize_action"],
 };
 const nyraContinueSha256 = { type: "string", pattern: "^[a-f0-9]{64}$" };
+function nyraContinuationRequestSchema(toolName, { omit = [] } = {}) {
+  const source = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === toolName)?.inputSchema;
+  if (!source || source.type !== "object") {
+    throw new Error(`nyra_continuation_request_schema_missing:${toolName}`);
+  }
+  const omitted = new Set([
+    "agent_id",
+    "client_type",
+    "idempotency_key",
+    "owner_confirmed",
+    "confirmation_reference",
+    ...omit,
+  ]);
+  return {
+    ...source,
+    properties: Object.fromEntries(Object.entries(source.properties || {})
+      .filter(([key]) => !omitted.has(key))),
+    required: (source.required || []).filter((key) => !omitted.has(key)),
+    additionalProperties: false,
+  };
+}
+const nyraContinueResumeRequest = nyraContinuationRequestSchema(
+  "work_continuity_resume",
+);
+const nyraContinueNativePlanRequest = nyraContinuationRequestSchema(
+  "work_continuity_native_plan",
+  { omit: ["session_id"] },
+);
+const nyraContinueNativeBindRequest = nyraContinuationRequestSchema(
+  "work_continuity_native_bind",
+  { omit: ["session_id"] },
+);
 const nyraContinueHostKind = { type: "string", pattern: "^[a-z][a-z0-9_]{1,62}_native$" };
 const nyraContinueRepository = {
   type: "string",
@@ -1365,8 +1407,11 @@ export const TOOLS = [
       "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
     },
   }),
-  tool("nyra_governed_continue", "Nyra: submit one governed continuation", "Submit only the short-lived candidate attestation returned by nyra_converse. A registered ChatGPT, Codex or future AI may request a duplicate review and owner-governed canonical V2 Work bootstrap, one bounded host delegation, or one exact action ticket. Work creation is two-phase and private by default; registration never grants owner authority. The tool never reserves or executes a ticket, never calls GitHub/Render, and never performs merge, deploy or publish. Unknown apps, forged client/host types, drift and replay fail closed.", object({
-    operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action"] },
+  tool("nyra_governed_continue", "Nyra: submit one governed continuation", "Submit only a short-lived candidate attestation returned by Nyra. A registered conversational host may review/create one canonical Work, resume the exact existing Work through its dedicated Core gate, create one bounded host-native plan, bind only a task attested by that plan, request one host delegation, or request one exact action ticket. Native reporting is never available here: it remains exclusive to the assigned child and its transport-bound capability. The tool never reserves or executes a ticket, calls GitHub/Render, or performs merge, deploy or publish. Unknown apps, forged client/host types, Work/session/revision drift, task substitution and replay fail closed.", object({
+    operation: { type: "string", enum: [
+      "review_work_bootstrap", "create_work", "resume_existing_work",
+      "create_native_plan", "bind_native_child", "issue_delegation", "authorize_action",
+    ] },
     candidate_attestation: { type: "string", minLength: 100, maxLength: 8_192 },
     work_bootstrap: nyraWorkBootstrapSpec,
     review_id: { type: "string", format: "uuid" },
@@ -1374,6 +1419,9 @@ export const TOOLS = [
     review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
     delegation_request: nyraContinueDelegationRequest,
     action_request: nyraContinueActionRequest,
+    resume_request: nyraContinueResumeRequest,
+    native_plan_request: nyraContinueNativePlanRequest,
+    native_bind_request: nyraContinueNativeBindRequest,
     idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
     ...ownerConfirmationProperties,
   }, ["operation", "candidate_attestation", "idempotency_key"]), ["core:govern"], false, true, {

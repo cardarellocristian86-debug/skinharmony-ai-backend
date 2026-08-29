@@ -80,6 +80,25 @@ Resume is an idempotent internal continuity operation. It still requires both
 the subject's Work permission and the registered application's corresponding
 capability. It does not authorize execution or any external mutation.
 
+For a registered conversational host, `nyra_converse` may issue a short-lived
+internal Work-continuation attestation. This candidate is distinct from an
+external-action ticket: it is bound to the tenant, app, host, registry revision,
+transport session, exact Work revision, Intent and context, and it lists only
+the operations available for that turn. Resume requires the same session in
+the nested request and reuses the existing dedicated Core resume gate. Every
+request contributes its canonical digest to the idempotency and replay scope;
+session, revision, Work, host or request substitution fails closed.
+
+The same initial attestation may permit one bounded native plan when the app
+also has `host_native.delegate`. Plan creation reuses the existing native-plan
+handler and a server-owned bounded Core coordination gate. Its durable
+readback produces a second, plan-bound attestation containing the exact plan
+digest and task identities/digests. Only that derived attestation can bind one
+of those tasks through the existing native-bind handler and its own bounded
+Core coordination gate. Plan and bind requests do not accept a caller-supplied
+session; their session is already fixed by the signed candidate and
+authenticated host identity.
+
 ## Create path
 
 Canonical V2 Work creation is a two-phase, fail-closed operation:
@@ -143,6 +162,13 @@ The second tool is deliberately absent from dynamic capability discovery. Nyra
 must name the problem, required evidence, responsible actor and exact next
 operation. It never reports that a Work, delegation, ticket, merge, deploy or
 publish occurred unless the corresponding durable readback exists.
+
+The conversational dynamic catalog remains truthful: it retains governed read
+capabilities but hides mutation capabilities that the conversational host
+cannot invoke directly. `work_continuity_native_report` is not an operation of
+`nyra_governed_continue` and is never delegated to the coordinator. It remains
+discoverable only to the already assigned child whose exact agent identity,
+task, assignment and transport have passed native-report admission.
 
 ## Authority boundary
 
@@ -216,9 +242,11 @@ and is not implied by Good Mode, `owner:root`, OAuth scopes or
 ## Current bounded gap
 
 The multi-host Work kernel supports registered future applications for
-conversation, resume, review and owner-governed creation. Native specialist
-assignment and standing release execution still use the currently implemented
-ChatGPT/Codex host receipt schemas. A new host must not receive those execution
-capabilities until its native assignment, verifier independence, ticket
-readback and host-policy attestation contracts are implemented and verified by
-Universal Core.
+conversation, resume, review and owner-governed creation. The signed bridge for
+an existing conversational Work is limited to resume, native-plan creation and
+plan-bound child binding on the currently implemented ChatGPT/Codex host
+receipt schemas. Native child reporting remains transport-bound, and standing
+release execution remains outside this bridge. A new host must not receive
+those execution capabilities until its native assignment, verifier
+independence, ticket readback and host-policy attestation contracts are
+implemented and verified by Universal Core.

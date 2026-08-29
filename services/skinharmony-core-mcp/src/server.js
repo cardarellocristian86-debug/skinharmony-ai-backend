@@ -94,7 +94,7 @@ import {
   hostPrincipalAllows,
 } from "./host-app-registry.js";
 import {
-  hostAppCanAccessTool,
+  hostAppCanDiscoverDynamicCapability,
   isNativeReportChildOperation,
   nativeReportAssignmentBootstrap,
   requireHostAppToolCapability,
@@ -1302,6 +1302,93 @@ async function readNyraDirectiveContext(identity, args) {
   }
 }
 
+async function resumeExistingContinuityWork(args, identity) {
+  await requireCanonicalWorkRead(identity, args.work_id);
+  const gate = await coreHandlers.core_gate_action({
+    action_label: "Resume persistent Work Continuity work",
+    action_type: "work.continuity.resume",
+    target: `work_continuity_resume:${args.work_id}`,
+    operation_class: "owner_confirmed_governed_action",
+    external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
+    idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
+    target_authority_verified: true, actor_authorized_for_target: true,
+    owner_confirmed: identity.ownerConfirmed === true,
+    confirmation_reference: identity.confirmationReference,
+  }, identity);
+  const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
+    gate.structuredContent?.result?.authorization || {};
+  if (authorization.allowed !== true) throw new Error("work_continuity_resume_not_authorized");
+  const payload = { ok: true, result: await workContinuityRuntime.resume(identity, args, authorization) };
+  payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
+  payload.result.nyra_control_context = await materializeNyraControlContext(
+    identity,
+    payload.result,
+    "work_resumed",
+    { autopilot: payload.result.nyra_autopilot, force: true },
+  );
+  payload.dedicated_core_gate = {
+    authorized: true,
+    authority: "universal_core",
+    route: "/v1/action-evaluator",
+    server_owned: true,
+  };
+  return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
+}
+
+async function createNativeContinuityPlan(args, identity) {
+  requireHostAppToolCapability({
+    identity,
+    toolName: "work_continuity_native_plan",
+    tools: TOOLS,
+  });
+  const nativeArgs = identity?.authenticatedHostPrincipal
+    ? { ...args, host_type: authenticatedHostKind(identity) }
+    : args;
+  await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id);
+  const intent = await readLegacyIntentAuthorized(identity, {
+    work_id: nativeArgs.work_id,
+  });
+  const corePlanResult = await coreHandlers.host_native_work_plan_create({
+    work_id: nativeArgs.work_id,
+    intent_anchor_digest: intent.intent_digest,
+    repository: nativeArgs.repository,
+    base_branch: nativeArgs.base_branch,
+    objective: intent.anchor?.objective,
+    required_checks: nativeArgs.required_checks,
+    agents: nativeArgs.tasks.map((task) => ({
+      agent_id: task.task_id,
+      role: task.kind,
+      task: task.instruction,
+      depends_on: task.dependencies || [],
+      capabilities: [],
+    })),
+    max_parallel: nativeArgs.max_parallel,
+  }, identity);
+  const corePlan = corePlanResult?.structuredContent?.plan;
+  if (!corePlan) throw new Error("core_host_native_work_plan_required");
+  return continuityTextResult({
+    ok: true,
+    result: await workContinuityRuntime.planNativeAgents(identity, nativeArgs, {
+      corePlan,
+    }),
+  });
+}
+
+async function bindNativeContinuityChild(args, identity) {
+  requireHostAppToolCapability({
+    identity,
+    toolName: "work_continuity_native_bind",
+    tools: TOOLS,
+  });
+  const nativeArgs = identity?.authenticatedHostPrincipal
+    ? { ...args, host_type: authenticatedHostKind(identity) }
+    : args;
+  return continuityTextResult({
+    ok: true,
+    result: await workContinuityRuntime.bindNativeAgent(identity, nativeArgs),
+  });
+}
+
 const nyraConverseHandler = createNyraConverseHandler({
   preflight: createNyraConversePreflight({
     workPreflight: (args, identity) => coreHandlers.work_preflight(args, identity),
@@ -1328,6 +1415,32 @@ const nyraGovernedContinueHandler = nyraGovernedContinueAttestor
       authorizeAction: (args, identity) => coreHandlers.host_native_action_authorize(args, identity),
       reviewWorkBootstrap: reviewCanonicalWorkCreation,
       createWorkBootstrap: createCanonicalWorkGoverned,
+      resumeExistingWork: resumeExistingContinuityWork,
+      createNativePlan: createNativeContinuityPlan,
+      bindNativeChild: bindNativeContinuityChild,
+      authorizeNativeCoordination: (request, identity) => {
+        const actionType = request.operation === "create_native_plan"
+          ? "native_agent.plan"
+          : request.operation === "bind_native_child"
+            ? "native_agent.bind"
+            : null;
+        if (!actionType || !/^[a-f0-9]{64}$/.test(String(request.request_digest || ""))) {
+          throw new Error("nyra_governed_continue_native_coordination_invalid");
+        }
+        const targetParts = [
+          request.tool_name,
+          request.work_id,
+          request.plan_id,
+          request.task_id,
+          request.request_digest.slice(0, 24),
+        ].filter(Boolean);
+        return requireBoundedTenantCoordination(
+          identity,
+          actionType,
+          targetParts.join(":"),
+          request.idempotency_key,
+        );
+      },
     })
   : null;
 
@@ -1449,38 +1562,7 @@ const baseHandlers = {
       const payload = { ok: true, result: await readLegacyWorkAuthorized(identity, args) };
       return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
     },
-    work_continuity_resume: async (args, identity) => {
-      await requireCanonicalWorkRead(identity, args.work_id);
-      const gate = await coreHandlers.core_gate_action({
-        action_label: "Resume persistent Work Continuity work",
-        action_type: "work.continuity.resume",
-        target: `work_continuity_resume:${args.work_id}`,
-        operation_class: "owner_confirmed_governed_action",
-        external_side_effect: false, destructive: false, bounded_scope: true, low_impact: false,
-        idempotent_or_compensable: true, rollback_ready: true, audit_ready: Boolean(decisionLedger),
-        target_authority_verified: true, actor_authorized_for_target: true,
-        owner_confirmed: identity.ownerConfirmed === true,
-        confirmation_reference: identity.confirmationReference,
-      }, identity);
-      const authorization = gate.structuredContent?.authorization || gate.structuredContent?.gate ||
-        gate.structuredContent?.result?.authorization || {};
-      if (authorization.allowed !== true) throw new Error("work_continuity_resume_not_authorized");
-      const payload = { ok: true, result: await workContinuityRuntime.resume(identity, args, authorization) };
-      payload.result.nyra_autopilot = await reconcileNyraAutopilot(identity, payload.result, "work_resumed");
-      payload.result.nyra_control_context = await materializeNyraControlContext(
-        identity,
-        payload.result,
-        "work_resumed",
-        { autopilot: payload.result.nyra_autopilot, force: true },
-      );
-      payload.dedicated_core_gate = {
-        authorized: true,
-        authority: "universal_core",
-        route: "/v1/action-evaluator",
-        server_owned: true,
-      };
-      return { structuredContent: payload, content: [{ type: "text", text: JSON.stringify(payload) }] };
-    },
+    work_continuity_resume: resumeExistingContinuityWork,
     work_continuity_verify_memory: async (args, identity) => {
       await requireCanonicalWorkRead(identity, args.work_id);
       await requireOwnerGovernance(identity, "work.continuity.verify_memory", args.work_id);
@@ -1727,58 +1809,8 @@ const baseHandlers = {
     work_continuity_generic_closure_finalize: async (args, identity) => continuityTextResult({ ok: true,
       result: await workContinuityV2Store.finalizeGenericClosure(withTenantWorkAcl(identity), args),
       dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work/core-join-verdicts", server_owned: true } }),
-    work_continuity_native_plan: async (args, identity) => {
-      requireHostAppToolCapability({
-        identity,
-        toolName: "work_continuity_native_plan",
-        tools: TOOLS,
-      });
-      const nativeArgs = identity?.authenticatedHostPrincipal
-        ? { ...args, host_type: authenticatedHostKind(identity) }
-        : args;
-      await ensureNativePlanLegacyBridge(identity, nativeArgs.work_id);
-      const intent = await readLegacyIntentAuthorized(identity, {
-        work_id: nativeArgs.work_id,
-      });
-      const corePlanResult = await coreHandlers.host_native_work_plan_create({
-        work_id: nativeArgs.work_id,
-        intent_anchor_digest: intent.intent_digest,
-        repository: nativeArgs.repository,
-        base_branch: nativeArgs.base_branch,
-        objective: intent.anchor?.objective,
-        required_checks: nativeArgs.required_checks,
-        agents: nativeArgs.tasks.map((task) => ({
-          agent_id: task.task_id,
-          role: task.kind,
-          task: task.instruction,
-          depends_on: task.dependencies || [],
-          capabilities: [],
-        })),
-        max_parallel: nativeArgs.max_parallel,
-      }, identity);
-      const corePlan = corePlanResult?.structuredContent?.plan;
-      if (!corePlan) throw new Error("core_host_native_work_plan_required");
-      return continuityTextResult({
-        ok: true,
-        result: await workContinuityRuntime.planNativeAgents(identity, nativeArgs, {
-          corePlan,
-        }),
-      });
-    },
-    work_continuity_native_bind: async (args, identity) => {
-      requireHostAppToolCapability({
-        identity,
-        toolName: "work_continuity_native_bind",
-        tools: TOOLS,
-      });
-      const nativeArgs = identity?.authenticatedHostPrincipal
-        ? { ...args, host_type: authenticatedHostKind(identity) }
-        : args;
-      return continuityTextResult({
-        ok: true,
-        result: await workContinuityRuntime.bindNativeAgent(identity, nativeArgs),
-      });
-    },
+    work_continuity_native_plan: createNativeContinuityPlan,
+    work_continuity_native_bind: bindNativeContinuityChild,
     work_continuity_native_report: continuityMethod("reportNativeAgent"),
     work_continuity_closure_evaluate: async (args, identity) => {
       const evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
@@ -1979,16 +2011,11 @@ const dynamicHandlers = createDynamicCapabilityHandlers({
   handlers: baseHandlers,
   semanticSelect: coreHandlers.core_semantic_select,
   internallyGovernedCapabilities: ["agent_heartbeat"],
-  capabilityVisible: ({ tool, identity }) => {
-    // Once the server has admitted a native child for this request, give the
-    // dynamic router a single-capability view. Do not union it with ordinary
-    // work.read visibility: the assignment is a one-task grant, not a wider
-    // discovery token.
-    if (identity?.nativeReportAdmission?.capability_id === "work_continuity_native_report") {
-      return tool.name === "work_continuity_native_report";
-    }
-    return hostAppCanAccessTool({ identity, toolName: tool.name, tools: TOOLS });
-  },
+  capabilityVisible: ({ tool, identity }) => hostAppCanDiscoverDynamicCapability({
+    identity,
+    tool,
+    tools: TOOLS,
+  }),
   gateAction: ({ tool, args, identity, catalogRevision, idempotencyKey, workPreflight }) => {
     const researchDistillationShadow =
       researchDistillationShadowTools.has(tool.name);

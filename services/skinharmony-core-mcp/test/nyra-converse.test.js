@@ -1792,6 +1792,7 @@ test("offers a signed two-phase V2 bootstrap only for an explicit structured new
         submit_tool: "nyra_governed_continue",
         candidate_attestation: "signed-bootstrap-candidate",
         expires_at: "2026-08-25T12:05:00.000Z",
+        operations: ["review_work_bootstrap", "create_work"],
         reason: null,
       };
     },
