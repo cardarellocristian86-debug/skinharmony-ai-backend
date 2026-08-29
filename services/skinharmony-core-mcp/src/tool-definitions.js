@@ -935,7 +935,7 @@ const nyraContinueBranch = { type: "string", minLength: 1, maxLength: 240 };
 const nyraContinueActionKind = {
   type: "string",
   enum: [
-    "git.push.branch", "git.push.protected", "github.draft_pr", "github.ready",
+    "git.commit", "git.push.branch", "git.push.protected", "github.draft_pr", "github.ready",
     "github.merge", "github.release", "render.deploy", "render.promote",
   ],
 };

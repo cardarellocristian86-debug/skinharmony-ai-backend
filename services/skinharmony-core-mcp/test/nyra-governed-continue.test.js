@@ -8,6 +8,7 @@ import {
   createNyraGovernedContinuationIssuer,
 } from "../src/nyra-governed-continue.js";
 import { HOST_APP_CAPABILITIES } from "../src/host-app-registry.js";
+import { TOOLS } from "../src/tool-definitions.js";
 import {
   bindWorkBootstrapRequestToAuthenticatedHost,
   governedWorkBootstrapAuthorizationTarget,
@@ -170,6 +171,52 @@ function normalizedContext(overrides = {}) {
     ...overrides,
   };
 }
+
+function trustedCommitTicketReadback(clock, overrides = {}) {
+  const ticket = {
+    schema_version: "host_native_action_ticket_v1",
+    ticket_id: `hnt_${"2".repeat(64)}`,
+    delegation_id: "hnd_delegation-12345678",
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    intent_anchor_digest: DIGEST_B,
+    repository: "owner/repo",
+    host_kind: "chatgpt_native",
+    host_session_fingerprint: "d".repeat(24),
+    action: { kind: "git.commit", repository: "owner/repo", branch: "feature" },
+    evidence_digest: PRECOMMIT_GATE.projection_digest,
+    issued_at: new Date(clock).toISOString(),
+    expires_at: new Date(clock + 60_000).toISOString(),
+    max_uses: 1,
+    provider_execution: false,
+    host_policy_override: false,
+    host_policy_must_allow: true,
+    signature: `hnt_${"3".repeat(64)}`,
+    ...overrides,
+  };
+  return {
+    structuredContent: {
+      ok: true,
+      tenant_id: "tenant-a",
+      action_ticket: {
+        schema_version: "host_native_action_ticket_record_v1",
+        tenant_id: "tenant-a",
+        state: "issued",
+        uses: 0,
+        ticket,
+      },
+    },
+    content: [],
+  };
+}
+
+test("admits git.commit in the bounded continuation delegation schema", () => {
+  const tool = TOOLS.find((item) => item.name === "nyra_governed_continue");
+  const allowedKinds = tool.inputSchema.properties.delegation_request
+    .properties.allowed_actions.items.enum;
+  assert(allowedKinds.includes("git.commit"));
+  assert.equal(allowedKinds.includes("github.commit"), false);
+});
 
 function bootstrapSpec(overrides = {}) {
   return {
@@ -786,6 +833,7 @@ test("submits an exact local commit candidate without widening it to push", asyn
     continuationOperation: "authorize_action",
   });
   const calls = [];
+  const reads = [];
   const fulfillments = [];
   const handler = createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
@@ -802,24 +850,17 @@ test("submits an exact local commit candidate without widening it to push", asyn
       calls.push(args);
       return {
         structuredContent: {
-          action_ticket: { state: "issued", uses: 0, ticket: {
-            schema_version: "host_native_action_ticket_v1",
-            ticket_id: `hnt_${"2".repeat(64)}`,
-            tenant_id: "tenant-a",
-            work_id: WORK_ID,
-            action: { kind: "git.commit" },
-            evidence_digest: PRECOMMIT_GATE.projection_digest,
-            max_uses: 1,
-            provider_execution: false,
-            host_policy_override: false,
-            host_policy_must_allow: true,
-            signature: `hnt_${"3".repeat(64)}`,
-          } },
+          action_ticket: { ticket: { ticket_id: `hnt_${"2".repeat(64)}` } },
         },
         content: [],
       };
     },
+    readActionTicket: async (args) => {
+      reads.push(args);
+      return trustedCommitTicketReadback(clock);
+    },
     fulfillPrecommitTicketTask: async (args) => { fulfillments.push(args); },
+    now: () => clock,
   });
   const response = await handler({
     operation: "authorize_action",
@@ -836,11 +877,99 @@ test("submits an exact local commit candidate without widening it to push", asyn
   }, identity());
   assert.equal(calls.length, 1);
   assert.equal(calls[0].action.kind, "git.commit");
+  assert.deepEqual(reads, [{ ticket_id: `hnt_${"2".repeat(64)}` }]);
   assert.equal(fulfillments.length, 1);
   assert.equal(fulfillments[0].gate_projection_digest, PRECOMMIT_GATE.projection_digest);
   assert.equal(response.structuredContent.ticket_issued, true);
   assert.equal(response.structuredContent.execution_authorized, false);
   assert.equal(response.structuredContent.external_action_authorized, false);
+});
+
+test("validates the complete trusted commit ticket and its validity window before fulfillment", async () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const cases = [
+    ["expired", { expires_at: new Date(clock).toISOString() }],
+    ["future", { issued_at: new Date(clock + 31_000).toISOString(),
+      expires_at: new Date(clock + 61_000).toISOString() }],
+    ["wrong delegation", { delegation_id: "hnd_other-12345678" }],
+    ["wrong host", { host_session_fingerprint: "e".repeat(24) }],
+    ["changed action", { action: { kind: "git.commit", repository: "owner/repo", branch: "other" } }],
+  ];
+  for (const [label, overrides] of cases) {
+    const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+    const candidate = issueAction(
+      attestor, "authorize_action", identity(), "GIT_COMMIT", "READY_FOR_CORE_REVIEW",
+    );
+    let fulfillments = 0;
+    const handler = createNyraGovernedContinueHandler({
+      ...bootstrapDependencies,
+      ...nativeDependencies,
+      attestor,
+      readDirectiveContext: async () => ({ raw: true }),
+      normalizeDirectiveContext: () => normalizedContext({
+        precommit_ticket_gate_applicable: true,
+        precommit_ticket_gate: PRECOMMIT_GATE,
+      }),
+      issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+      authorizeAction: async () => ({ structuredContent: {
+        action_ticket: { ticket: { ticket_id: `hnt_${"2".repeat(64)}` } },
+      } }),
+      readActionTicket: async () => trustedCommitTicketReadback(clock, overrides),
+      fulfillPrecommitTicketTask: async () => { fulfillments += 1; },
+      now: () => clock,
+    });
+    await assert.rejects(handler({
+      operation: "authorize_action",
+      candidate_attestation: candidate.candidate_attestation,
+      idempotency_key: `authorize-commit-invalid-${label.replaceAll(" ", "-")}`,
+      action_request: {
+        delegation_id: "hnd_delegation-12345678",
+        work_id: WORK_ID,
+        intent_anchor_digest: DIGEST_B,
+        repository: "owner/repo",
+        action: { kind: "git.commit", repository: "owner/repo", branch: "feature" },
+        evidence_digest: PRECOMMIT_GATE.projection_digest,
+      },
+    }, identity()), /nyra_governed_continue_commit_ticket_readback_invalid/, label);
+    assert.equal(fulfillments, 0, label);
+  }
+});
+
+test("fails closed when the trusted commit ticket readback is unavailable", async () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = issueAction(
+    attestor, "authorize_action", identity(), "GIT_COMMIT", "READY_FOR_CORE_REVIEW",
+  );
+  const handler = createNyraGovernedContinueHandler({
+    ...bootstrapDependencies,
+    ...nativeDependencies,
+    attestor,
+    readDirectiveContext: async () => ({ raw: true }),
+    normalizeDirectiveContext: () => normalizedContext({
+      precommit_ticket_gate_applicable: true,
+      precommit_ticket_gate: PRECOMMIT_GATE,
+    }),
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    authorizeAction: async () => ({ structuredContent: {
+      action_ticket: { ticket: { ticket_id: `hnt_${"2".repeat(64)}` } },
+    } }),
+    fulfillPrecommitTicketTask: async () => { throw new Error("unexpected_fulfillment"); },
+    now: () => clock,
+  });
+  await assert.rejects(handler({
+    operation: "authorize_action",
+    candidate_attestation: candidate.candidate_attestation,
+    idempotency_key: "authorize-commit-readback-missing",
+    action_request: {
+      delegation_id: "hnd_delegation-12345678",
+      work_id: WORK_ID,
+      intent_anchor_digest: DIGEST_B,
+      repository: "owner/repo",
+      action: { kind: "git.commit", repository: "owner/repo", branch: "feature" },
+      evidence_digest: PRECOMMIT_GATE.projection_digest,
+    },
+  }, identity()), /nyra_governed_continue_commit_ticket_readback_unavailable/);
 });
 
 test("rejects a forged precommit evidence digest before calling Core", async () => {

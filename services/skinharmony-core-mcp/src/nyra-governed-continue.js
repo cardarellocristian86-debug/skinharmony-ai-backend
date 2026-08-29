@@ -680,6 +680,43 @@ function contextPrecommitGateBinding(context) {
   };
 }
 
+function trustedIssuedCommitTicket(readback, payload, request, identity, currentTime) {
+  const body = readback?.structuredContent;
+  const record = body?.action_ticket;
+  const ticket = record?.ticket;
+  const issuedAt = Date.parse(String(ticket?.issued_at || ""));
+  const expiresAt = Date.parse(String(ticket?.expires_at || ""));
+  const candidateIssuedAt = Date.parse(String(payload?.issued_at || ""));
+  const sessionFingerprint = String(identity?.agentPresence?.session_fingerprint || "").toLowerCase();
+  if (body?.ok !== true || body.tenant_id !== payload.tenant_id ||
+      !record || typeof record !== "object" || Array.isArray(record) ||
+      (record.schema_version !== undefined &&
+        record.schema_version !== "host_native_action_ticket_record_v1") ||
+      (record.tenant_id !== undefined && record.tenant_id !== payload.tenant_id) ||
+      record.state !== "issued" || record.uses !== 0 ||
+      !ticket || typeof ticket !== "object" || Array.isArray(ticket) ||
+      ticket.schema_version !== "host_native_action_ticket_v1" ||
+      !/^hnt_[a-f0-9]{64}$/.test(String(ticket.ticket_id || "")) ||
+      !/^hnt_[a-f0-9]{64}$/.test(String(ticket.signature || "")) ||
+      ticket.delegation_id !== request.delegation_id ||
+      ticket.tenant_id !== payload.tenant_id || ticket.work_id !== payload.work_id ||
+      ticket.intent_anchor_digest !== payload.intent_digest ||
+      ticket.repository !== request.repository || ticket.host_kind !== payload.host_kind ||
+      ticket.host_session_fingerprint !== sessionFingerprint ||
+      ticket.action?.kind !== "git.commit" || sha256(ticket.action) !== sha256(request.action) ||
+      ticket.evidence_digest !== payload.precommit_ticket_gate.projection_digest ||
+      !Number.isFinite(currentTime) ||
+      !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) ||
+      !Number.isFinite(candidateIssuedAt) || issuedAt < candidateIssuedAt - 30_000 ||
+      issuedAt > currentTime + 30_000 || expiresAt <= currentTime || expiresAt <= issuedAt ||
+      expiresAt - issuedAt > 60 * 60_000 || ticket.max_uses !== 1 ||
+      ticket.provider_execution !== false || ticket.host_policy_override !== false ||
+      ticket.host_policy_must_allow !== true) {
+    fail("nyra_governed_continue_commit_ticket_readback_invalid", 502);
+  }
+  return record;
+}
+
 const OPERATION_REQUEST_FIELDS = Object.freeze([
   "work_bootstrap",
   "review_id",
@@ -804,8 +841,10 @@ export function createNyraGovernedContinueHandler({
   resumeExistingWork,
   createNativePlan,
   bindNativeChild,
+  readActionTicket,
   fulfillPrecommitTicketTask,
   authorizeNativeCoordination,
+  now = () => Date.now(),
 } = {}) {
   if (!attestor || typeof attestor.verify !== "function" ||
       typeof attestor.issueNativePlanBinding !== "function" ||
@@ -1060,17 +1099,21 @@ export function createNyraGovernedContinueHandler({
         idempotency_key: governedIdempotencyKey,
       }, identity);
       if (payload.action_class === "GIT_COMMIT") {
-        const actionTicket = result?.structuredContent?.action_ticket;
-        const ticket = actionTicket?.ticket;
-        if (!actionTicket || actionTicket.state !== "issued" || actionTicket.uses !== 0 ||
-            ticket?.schema_version !== "host_native_action_ticket_v1" ||
-            ticket.tenant_id !== payload.tenant_id || ticket.work_id !== payload.work_id ||
-            ticket.action?.kind !== "git.commit" ||
-            ticket.evidence_digest !== payload.precommit_ticket_gate.projection_digest ||
-            !/^hnt_[A-Za-z0-9_-]{8,}$/.test(String(ticket.ticket_id || "")) ||
-            !/^hnt_[A-Za-z0-9_-]{64}$/.test(String(ticket.signature || "")) ||
-            ticket.max_uses !== 1 || ticket.provider_execution !== false ||
-            ticket.host_policy_override !== false || ticket.host_policy_must_allow !== true) {
+        const issuedTicketId = result?.structuredContent?.action_ticket?.ticket?.ticket_id;
+        if (!/^hnt_[a-f0-9]{64}$/.test(String(issuedTicketId || "")) ||
+            typeof readActionTicket !== "function") {
+          fail("nyra_governed_continue_commit_ticket_readback_unavailable", 503);
+        }
+        const trustedReadback = await readActionTicket({ ticket_id: issuedTicketId }, identity);
+        const current = now();
+        const actionTicket = trustedIssuedCommitTicket(
+          trustedReadback,
+          payload,
+          request,
+          identity,
+          current instanceof Date ? current.getTime() : Number(current),
+        );
+        if (actionTicket.ticket.ticket_id !== issuedTicketId) {
           fail("nyra_governed_continue_commit_ticket_readback_invalid", 502);
         }
         if (typeof fulfillPrecommitTicketTask !== "function") {

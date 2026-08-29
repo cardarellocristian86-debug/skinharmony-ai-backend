@@ -1428,6 +1428,7 @@ const nyraGovernedContinueHandler = nyraGovernedContinueAttestor
       resumeExistingWork: resumeExistingContinuityWork,
       createNativePlan: createNativeContinuityPlan,
       bindNativeChild: bindNativeContinuityChild,
+      readActionTicket: (args, identity) => coreHandlers.host_native_action_read(args, identity),
       fulfillPrecommitTicketTask: (request, identity) =>
         workContinuityV2Store.fulfillPrecommitTicketTask(
           withTenantWorkAcl(identity), request,

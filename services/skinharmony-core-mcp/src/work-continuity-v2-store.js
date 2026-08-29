@@ -147,6 +147,8 @@ INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260828_native_verifier_task_acceptance_v1') ON CONFLICT DO NOTHING;
 INSERT INTO core_schema_migrations (migration_id)
 VALUES ('20260829_precommit_ticket_reconciliation_v1') ON CONFLICT DO NOTHING;
+INSERT INTO core_schema_migrations (migration_id)
+VALUES ('20260830_precommit_ticket_gate_supersession_v1') ON CONFLICT DO NOTHING;
 `;
 
 const HASH = /^[a-f0-9]{64}$/;
@@ -2609,13 +2611,31 @@ export function createWorkContinuityV2Store({
     });
   }
   async function readPrecommitTicketGateWithClient(client, actor, workId, { lock = false } = {}) {
-    const gateResult = await client.query(`SELECT * FROM tenant_work_precommit_ticket_gate
+    const supersedingGateResult = await client.query(`SELECT *
+      FROM tenant_work_precommit_ticket_gate_supersession
       WHERE tenant_id=$1 AND work_id=$2 AND action_kind='git.commit'
-        AND gate_kind='ticket_acquisition'${lock ? " FOR UPDATE" : ""}`,
+        AND gate_kind='ticket_acquisition'
+      ORDER BY gate_version DESC LIMIT 1${lock ? " FOR UPDATE" : ""}`,
     [actor.tenant_id, workId]);
+    const superseding = Boolean(supersedingGateResult.rows[0]);
+    const gateResult = superseding ? supersedingGateResult : await client.query(
+      `SELECT * FROM tenant_work_precommit_ticket_gate
+        WHERE tenant_id=$1 AND work_id=$2 AND action_kind='git.commit'
+          AND gate_kind='ticket_acquisition'${lock ? " FOR UPDATE" : ""}`,
+      [actor.tenant_id, workId],
+    );
     if (!gateResult.rows[0]) return null;
     if (gateResult.rows.length !== 1) fail("precommit_ticket_gate_ambiguous");
     const gate = gateResult.rows[0];
+    const gateVersion = superseding ? Number(gate.gate_version) : 1;
+    const reconciliationTable = superseding
+      ? "tenant_work_precommit_evidence_reconciliation_supersession"
+      : "tenant_work_precommit_evidence_reconciliation";
+    const fulfillmentTable = superseding
+      ? "tenant_work_precommit_ticket_fulfillment_supersession"
+      : "tenant_work_precommit_ticket_fulfillment";
+    const reconciliationVersionPredicate = superseding ? " AND r.gate_version=$4" : "";
+    const fulfillmentVersionPredicate = superseding ? " AND gate_version=$4" : "";
     const [mappingsResult, taskResult, planRowsResult, evaluationResult, fulfillmentResult] = await Promise.all([
       client.query(`SELECT r.*,legacy.required AS legacy_required,
           legacy.independently_verified AS legacy_independently_verified,
@@ -2627,7 +2647,7 @@ export function createWorkContinuityV2Store({
           native.native_receipt_id AS current_native_receipt_id,
           native.native_receipt_digest AS current_native_receipt_digest,
           native.evidence_digest AS native_evidence_digest
-        FROM tenant_work_precommit_evidence_reconciliation r
+        FROM ${reconciliationTable} r
         JOIN tenant_work_evidence legacy
           ON legacy.tenant_id=r.tenant_id AND legacy.evidence_id=r.legacy_evidence_id
             AND legacy.work_id=r.work_id
@@ -2637,9 +2657,11 @@ export function createWorkContinuityV2Store({
         JOIN tenant_work_native_verifier_evidence native
           ON native.tenant_id=r.tenant_id AND native.work_id=r.work_id
             AND native.evidence_id=r.replacement_evidence_id
-        WHERE r.tenant_id=$1 AND r.work_id=$2 AND r.task_id=$3
+        WHERE r.tenant_id=$1 AND r.work_id=$2 AND r.task_id=$3${reconciliationVersionPredicate}
         ORDER BY r.legacy_evidence_id${lock ? " FOR UPDATE OF r" : ""}`,
-      [actor.tenant_id, workId, gate.task_id]),
+      superseding
+        ? [actor.tenant_id, workId, gate.task_id, gateVersion]
+        : [actor.tenant_id, workId, gate.task_id]),
       client.query(`SELECT task_id,status,required,acceptance_verified FROM tenant_work_task
         WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3${lock ? " FOR UPDATE" : ""}`,
       [actor.tenant_id, workId, gate.task_id]),
@@ -2652,9 +2674,12 @@ export function createWorkContinuityV2Store({
         ORDER BY created_at DESC,evaluation_id DESC LIMIT 1${lock ? " FOR UPDATE" : ""}`,
       [actor.tenant_id, workId, gate.plan_id]),
       client.query(`SELECT ticket_id,ticket_digest,gate_projection_digest,fulfillment_digest
-        FROM tenant_work_precommit_ticket_fulfillment
-        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3${lock ? " FOR UPDATE" : ""}`,
-      [actor.tenant_id, workId, gate.task_id]),
+        FROM ${fulfillmentTable}
+        WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3${fulfillmentVersionPredicate}${
+          lock ? " FOR UPDATE" : ""}`,
+      superseding
+        ? [actor.tenant_id, workId, gate.task_id, gateVersion]
+        : [actor.tenant_id, workId, gate.task_id]),
     ]);
     const mappings = mappingsResult.rows;
     const task = taskResult.rows[0];
@@ -2765,27 +2790,70 @@ export function createWorkContinuityV2Store({
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canAdminister, work, actor);
       if (work.legacy_work_id !== workId) fail("precommit_reconcile_native_work_binding_missing");
-      const existing = await client.query(`SELECT * FROM tenant_work_precommit_ticket_gate
+      const latestSuperseding = await client.query(`SELECT *
+        FROM tenant_work_precommit_ticket_gate_supersession
         WHERE tenant_id=$1 AND work_id=$2 AND action_kind='git.commit'
-          AND gate_kind='ticket_acquisition' FOR UPDATE`, [actor.tenant_id, workId]);
-      if (existing.rows[0]) {
+          AND gate_kind='ticket_acquisition'
+        ORDER BY gate_version DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId]);
+      const legacyGate = latestSuperseding.rows[0] ? { rows: [] } : await client.query(
+        `SELECT * FROM tenant_work_precommit_ticket_gate
+          WHERE tenant_id=$1 AND work_id=$2 AND action_kind='git.commit'
+            AND gate_kind='ticket_acquisition' FOR UPDATE`,
+        [actor.tenant_id, workId],
+      );
+      const currentGate = latestSuperseding.rows[0] || legacyGate.rows[0] || null;
+      const currentGateVersion = latestSuperseding.rows[0]
+        ? Number(latestSuperseding.rows[0].gate_version)
+        : currentGate ? 1 : 0;
+      let nextGateVersion = 1;
+      let supersedesReconciliationDigest = null;
+      if (currentGate) {
+        const superseding = currentGateVersion > 1;
         const existingMappings = await client.query(`SELECT legacy_evidence_id,replacement_evidence_id,
-            native_receipt_id,native_receipt_digest FROM tenant_work_precommit_evidence_reconciliation
-          WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 ORDER BY legacy_evidence_id FOR UPDATE`,
-        [actor.tenant_id, workId, existing.rows[0].task_id]);
-        const exact = existing.rows[0].task_id === taskId && existing.rows[0].plan_id === planId &&
-          existing.rows[0].evaluation_id === evaluationId &&
-          existing.rows[0].evaluation_digest === evaluationDigest &&
-          existing.rows[0].workspace_digest === workspaceDigest &&
+            native_receipt_id,native_receipt_digest FROM ${superseding
+            ? "tenant_work_precommit_evidence_reconciliation_supersession"
+            : "tenant_work_precommit_evidence_reconciliation"}
+          WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3${
+            superseding ? " AND gate_version=$4" : ""}
+          ORDER BY legacy_evidence_id FOR UPDATE`, superseding
+          ? [actor.tenant_id, workId, currentGate.task_id, currentGateVersion]
+          : [actor.tenant_id, workId, currentGate.task_id]);
+        const exact = currentGate.task_id === taskId && currentGate.plan_id === planId &&
+          currentGate.evaluation_id === evaluationId &&
+          currentGate.evaluation_digest === evaluationDigest &&
+          currentGate.workspace_digest === workspaceDigest &&
           objectDigest(existingMappings.rows.map((row) => ({
             legacy_evidence_id: row.legacy_evidence_id,
             replacement_evidence_id: row.replacement_evidence_id,
             native_receipt_id: row.native_receipt_id,
             native_receipt_digest: row.native_receipt_digest,
           }))) === objectDigest(mappings);
-        if (!exact) fail("precommit_reconcile_replay_conflict");
-        const projection = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
-        return Object.freeze({ ...projection, idempotent_replay: true });
+        if (exact) {
+          const projection = await readPrecommitTicketGateWithClient(
+            client, actor, workId, { lock: true },
+          );
+          return Object.freeze({ ...projection, idempotent_replay: true });
+        }
+        const currentProjection = await readPrecommitTicketGateWithClient(
+          client, actor, workId, { lock: true },
+        );
+        const supersedingDrift = currentProjection?.drift_codes?.some((code) => [
+          "precommit_gate_plan_drift",
+          "precommit_gate_evaluation_drift",
+          "precommit_gate_supersession_drift",
+        ].includes(code));
+        const legacyEvidenceDigest = objectDigest(existingMappings.rows
+          .map((row) => row.legacy_evidence_id).sort());
+        const requestedLegacyEvidenceDigest = objectDigest(mappings
+          .map((row) => row.legacy_evidence_id).sort());
+        if (!currentProjection || currentProjection.fulfilled === true ||
+            currentProjection.fresh === true || !supersedingDrift ||
+            currentGate.task_id !== taskId ||
+            legacyEvidenceDigest !== requestedLegacyEvidenceDigest) {
+          fail("precommit_reconcile_replay_conflict");
+        }
+        nextGateVersion = currentGateVersion + 1;
+        supersedesReconciliationDigest = currentGate.reconciliation_digest;
       }
       const taskResult = await client.query(`SELECT task_id,status,required,acceptance_verified
         FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 FOR UPDATE`,
@@ -2884,24 +2952,53 @@ export function createWorkContinuityV2Store({
         workspace_digest: workspaceDigest,
         supersession_digest: supersessionDigest,
         mappings: replacementRows,
+        ...(nextGateVersion > 1 ? {
+          gate_version: nextGateVersion,
+          supersedes_reconciliation_digest: supersedesReconciliationDigest,
+        } : {}),
       };
       const reconciliationDigest = objectDigest(reconciliationMaterial);
-      await client.query(`INSERT INTO tenant_work_precommit_ticket_gate
-        (tenant_id,work_id,task_id,plan_id,evaluation_id,evaluation_digest,workspace_digest,
-         supersession_digest,reconciliation_digest,action_kind,gate_kind,created_by_user_id)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'git.commit','ticket_acquisition',$10)`,
-      [actor.tenant_id, workId, taskId, planId, evaluationId, evaluationDigest, workspaceDigest,
-        supersessionDigest, reconciliationDigest, actor.user_id]);
-      for (const mapping of replacementRows) {
-        await client.query(`INSERT INTO tenant_work_precommit_evidence_reconciliation
-          (tenant_id,work_id,legacy_evidence_id,replacement_evidence_id,task_id,plan_id,evaluation_id,
-           native_receipt_id,native_receipt_digest,replacement_evidence_digest,evaluation_digest,
-           workspace_digest,supersession_digest,reconciliation_digest,created_by_user_id)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-        [actor.tenant_id, workId, mapping.legacy_evidence_id, mapping.replacement_evidence_id,
-          taskId, planId, evaluationId, mapping.native_receipt_id, mapping.native_receipt_digest,
-          mapping.replacement_evidence_digest, evaluationDigest, workspaceDigest,
+      if (nextGateVersion === 1) {
+        await client.query(`INSERT INTO tenant_work_precommit_ticket_gate
+          (tenant_id,work_id,task_id,plan_id,evaluation_id,evaluation_digest,workspace_digest,
+           supersession_digest,reconciliation_digest,action_kind,gate_kind,created_by_user_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'git.commit','ticket_acquisition',$10)`,
+        [actor.tenant_id, workId, taskId, planId, evaluationId, evaluationDigest, workspaceDigest,
           supersessionDigest, reconciliationDigest, actor.user_id]);
+      } else {
+        await client.query(`INSERT INTO tenant_work_precommit_ticket_gate_supersession
+          (tenant_id,work_id,gate_version,task_id,plan_id,evaluation_id,evaluation_digest,
+           workspace_digest,supersession_digest,reconciliation_digest,
+           supersedes_reconciliation_digest,action_kind,gate_kind,created_by_user_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'git.commit','ticket_acquisition',$12)`,
+        [actor.tenant_id, workId, nextGateVersion, taskId, planId, evaluationId,
+          evaluationDigest, workspaceDigest, supersessionDigest, reconciliationDigest,
+          supersedesReconciliationDigest, actor.user_id]);
+      }
+      for (const mapping of replacementRows) {
+        if (nextGateVersion === 1) {
+          await client.query(`INSERT INTO tenant_work_precommit_evidence_reconciliation
+            (tenant_id,work_id,legacy_evidence_id,replacement_evidence_id,task_id,plan_id,evaluation_id,
+             native_receipt_id,native_receipt_digest,replacement_evidence_digest,evaluation_digest,
+             workspace_digest,supersession_digest,reconciliation_digest,created_by_user_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+          [actor.tenant_id, workId, mapping.legacy_evidence_id, mapping.replacement_evidence_id,
+            taskId, planId, evaluationId, mapping.native_receipt_id, mapping.native_receipt_digest,
+            mapping.replacement_evidence_digest, evaluationDigest, workspaceDigest,
+            supersessionDigest, reconciliationDigest, actor.user_id]);
+        } else {
+          await client.query(`INSERT INTO tenant_work_precommit_evidence_reconciliation_supersession
+            (tenant_id,work_id,gate_version,legacy_evidence_id,replacement_evidence_id,task_id,
+             plan_id,evaluation_id,native_receipt_id,native_receipt_digest,
+             replacement_evidence_digest,evaluation_digest,workspace_digest,supersession_digest,
+             reconciliation_digest,created_by_user_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+          [actor.tenant_id, workId, nextGateVersion, mapping.legacy_evidence_id,
+            mapping.replacement_evidence_id, taskId, planId, evaluationId,
+            mapping.native_receipt_id, mapping.native_receipt_digest,
+            mapping.replacement_evidence_digest, evaluationDigest, workspaceDigest,
+            supersessionDigest, reconciliationDigest, actor.user_id]);
+        }
       }
       await appendV2Event(client, actor, workId, "precommit_ticket_gate_reconciled", {
         task_id: taskId, plan_id: planId, evaluation_id: evaluationId,
@@ -2910,6 +3007,8 @@ export function createWorkContinuityV2Store({
         legacy_evidence_ids: mappings.map((item) => item.legacy_evidence_id),
         replacement_evidence_ids: mappings.map((item) => item.replacement_evidence_id),
         action_kind: "git.commit", gate_kind: "ticket_acquisition",
+        gate_version: nextGateVersion,
+        supersedes_reconciliation_digest: supersedesReconciliationDigest,
         execution_authorized: false,
       });
       const projection = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
@@ -2939,11 +3038,23 @@ export function createWorkContinuityV2Store({
       const work = await loadWork(client, actor, workId, true);
       assertPermission(canAdminister, work, actor);
       const gate = await readPrecommitTicketGateWithClient(client, actor, workId, { lock: true });
+      const latestSuperseding = await client.query(`SELECT gate_version,reconciliation_digest
+        FROM tenant_work_precommit_ticket_gate_supersession
+        WHERE tenant_id=$1 AND work_id=$2 AND action_kind='git.commit'
+          AND gate_kind='ticket_acquisition'
+        ORDER BY gate_version DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId]);
+      const superseding = Boolean(latestSuperseding.rows[0]) &&
+        latestSuperseding.rows[0].reconciliation_digest === gate?.reconciliation_digest;
+      const gateVersion = superseding ? Number(latestSuperseding.rows[0].gate_version) : 1;
+      const fulfillmentTable = superseding
+        ? "tenant_work_precommit_ticket_fulfillment_supersession"
+        : "tenant_work_precommit_ticket_fulfillment";
       if (!gate || gate.fresh !== true || gate.fulfilled === true ||
           gate.projection_digest !== gateProjectionDigest) {
         const existing = await client.query(`SELECT ticket_id,ticket_digest,gate_projection_digest,
-            fulfillment_digest FROM tenant_work_precommit_ticket_fulfillment
-          WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId]);
+            fulfillment_digest FROM ${fulfillmentTable}
+          WHERE tenant_id=$1 AND work_id=$2${superseding ? " AND gate_version=$3" : ""}`,
+        superseding ? [actor.tenant_id, workId, gateVersion] : [actor.tenant_id, workId]);
         if (!existing.rows[0]) fail("precommit_ticket_fulfillment_gate_drift");
         const ticketDigest = objectDigest(ticket);
         if (existing.rows[0].ticket_id !== ticket.ticket_id ||
@@ -2961,10 +3072,18 @@ export function createWorkContinuityV2Store({
         ticket_id: ticket.ticket_id, ticket_digest: ticketDigest,
         gate_projection_digest: gateProjectionDigest };
       const fulfillmentDigest = objectDigest(material);
-      await client.query(`INSERT INTO tenant_work_precommit_ticket_fulfillment
-        (tenant_id,work_id,task_id,ticket_id,ticket_digest,gate_projection_digest,fulfillment_digest)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)`, [actor.tenant_id, workId, gate.task_id,
-        ticket.ticket_id, ticketDigest, gateProjectionDigest, fulfillmentDigest]);
+      if (superseding) {
+        await client.query(`INSERT INTO tenant_work_precommit_ticket_fulfillment_supersession
+          (tenant_id,work_id,gate_version,task_id,ticket_id,ticket_digest,
+           gate_projection_digest,fulfillment_digest)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, [actor.tenant_id, workId, gateVersion,
+          gate.task_id, ticket.ticket_id, ticketDigest, gateProjectionDigest, fulfillmentDigest]);
+      } else {
+        await client.query(`INSERT INTO tenant_work_precommit_ticket_fulfillment
+          (tenant_id,work_id,task_id,ticket_id,ticket_digest,gate_projection_digest,fulfillment_digest)
+          VALUES ($1,$2,$3,$4,$5,$6,$7)`, [actor.tenant_id, workId, gate.task_id,
+          ticket.ticket_id, ticketDigest, gateProjectionDigest, fulfillmentDigest]);
+      }
       const completed = await client.query(`UPDATE tenant_work_task SET status='completed',
           acceptance_verified=true,completed_at=now()
         WHERE tenant_id=$1 AND work_id=$2 AND task_id=$3 AND required=true

@@ -18,6 +18,11 @@ const LEGACY_EVIDENCE_ID = "55555555-5555-4555-8555-555555555555";
 const REPLACEMENT_EVIDENCE_ID = "66666666-6666-4666-8666-666666666666";
 const RECEIPT_ID = "77777777-7777-4777-8777-777777777777";
 const WORKSPACE_DIGEST = "8".repeat(64);
+const SUPERSEDING_PLAN_ID = "88888888-8888-4888-8888-888888888888";
+const SUPERSEDING_EVALUATION_ID = "99999999-9999-4999-8999-999999999999";
+const SUPERSEDING_EVIDENCE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const SUPERSEDING_RECEIPT_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const SUPERSEDING_WORKSPACE_DIGEST = "c".repeat(64);
 
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable);
@@ -87,6 +92,9 @@ class PrecommitPool {
     this.gates = new Map();
     this.mappings = new Map();
     this.fulfillments = new Map();
+    this.supersedingGates = [];
+    this.supersedingMappings = new Map();
+    this.supersedingFulfillments = new Map();
     this.events = [];
   }
   snapshot() {
@@ -96,6 +104,9 @@ class PrecommitPool {
       plans: structuredClone(this.plans), evaluations: structuredClone(this.evaluations),
       gates: cloneMap(this.gates), mappings: cloneMap(this.mappings),
       fulfillments: cloneMap(this.fulfillments), events: structuredClone(this.events),
+      supersedingGates: structuredClone(this.supersedingGates),
+      supersedingMappings: cloneMap(this.supersedingMappings),
+      supersedingFulfillments: cloneMap(this.supersedingFulfillments),
     };
   }
   restore(snapshot) { Object.assign(this, snapshot); }
@@ -119,19 +130,36 @@ class PrecommitPool {
       const row = this.works.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
-    if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate")) {
+    if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate") &&
+        !q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_supersession")) {
       const row = this.gates.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate_supersession")) {
+      const rows = this.supersedingGates.filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1]).sort((a, b) => b.gate_version - a.gate_version);
+      return { rows: rows.length ? [structuredClone(rows[0])] : [], rowCount: rows.length ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT gate_version,reconciliation_digest FROM tenant_work_precommit_ticket_gate_supersession")) {
+      const rows = this.supersedingGates.filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1]).sort((a, b) => b.gate_version - a.gate_version);
+      return { rows: rows.length ? [structuredClone(rows[0])] : [], rowCount: rows.length ? 1 : 0 };
+    }
     if (q.startsWith("SELECT legacy_evidence_id,replacement_evidence_id,")) {
-      const rows = [...this.mappings.values()].filter((row) => row.tenant_id === parameters[0] &&
-        row.work_id === parameters[1] && row.task_id === parameters[2])
+      const source = q.includes("reconciliation_supersession")
+        ? this.supersedingMappings : this.mappings;
+      const rows = [...source.values()].filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && row.task_id === parameters[2] &&
+        (!q.includes("gate_version=$4") || row.gate_version === parameters[3]))
         .sort((a, b) => a.legacy_evidence_id.localeCompare(b.legacy_evidence_id));
       return { rows: structuredClone(rows), rowCount: rows.length };
     }
     if (q.startsWith("SELECT r.*,legacy.required AS legacy_required")) {
-      const rows = [...this.mappings.values()].filter((row) => row.tenant_id === parameters[0] &&
-        row.work_id === parameters[1] && row.task_id === parameters[2]).map((row) => {
+      const source = q.includes("reconciliation_supersession")
+        ? this.supersedingMappings : this.mappings;
+      const rows = [...source.values()].filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && row.task_id === parameters[2] &&
+        (!q.includes("r.gate_version=$4") || row.gate_version === parameters[3])).map((row) => {
         const legacy = this.evidence.get(key(row.tenant_id, row.legacy_evidence_id));
         const replacement = this.evidence.get(key(row.tenant_id, row.replacement_evidence_id));
         const native = this.nativeEvidence.get(key(row.tenant_id, row.replacement_evidence_id));
@@ -168,7 +196,13 @@ class PrecommitPool {
       return { rows: rows.length ? [structuredClone(rows[0])] : [], rowCount: rows.length ? 1 : 0 };
     }
     if (q.startsWith("SELECT ticket_id,ticket_digest,gate_projection_digest")) {
-      const row = this.fulfillments.get(key(parameters[0], parameters[1]));
+      const source = q.includes("fulfillment_supersession")
+        ? this.supersedingFulfillments : this.fulfillments;
+      const row = q.includes("gate_version=$4")
+        ? source.get(key(parameters[0], parameters[1], parameters[3]))
+        : q.includes("gate_version=$3")
+          ? source.get(key(parameters[0], parameters[1], parameters[2]))
+          : source.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("SELECT evidence_id,required,independently_verified FROM tenant_work_evidence")) {
@@ -191,7 +225,8 @@ class PrecommitPool {
         payload: structuredClone(receipt.payload),
         payload_digest: receipt.payload_digest }], rowCount: 1 };
     }
-    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate")) {
+    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate") &&
+        !q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_supersession")) {
       const row = { tenant_id: parameters[0], work_id: parameters[1], task_id: parameters[2],
         plan_id: parameters[3], evaluation_id: parameters[4], evaluation_digest: parameters[5],
         workspace_digest: parameters[6], supersession_digest: parameters[7],
@@ -200,7 +235,18 @@ class PrecommitPool {
       this.gates.set(key(row.tenant_id, row.work_id), row);
       return { rows: [], rowCount: 1 };
     }
-    if (q.startsWith("INSERT INTO tenant_work_precommit_evidence_reconciliation")) {
+    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate_supersession")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1], gate_version: parameters[2],
+        task_id: parameters[3], plan_id: parameters[4], evaluation_id: parameters[5],
+        evaluation_digest: parameters[6], workspace_digest: parameters[7],
+        supersession_digest: parameters[8], reconciliation_digest: parameters[9],
+        supersedes_reconciliation_digest: parameters[10], action_kind: "git.commit",
+        gate_kind: "ticket_acquisition", created_by_user_id: parameters[11] };
+      this.supersedingGates.push(row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_precommit_evidence_reconciliation") &&
+        !q.startsWith("INSERT INTO tenant_work_precommit_evidence_reconciliation_supersession")) {
       const row = { tenant_id: parameters[0], work_id: parameters[1], legacy_evidence_id: parameters[2],
         replacement_evidence_id: parameters[3], task_id: parameters[4], plan_id: parameters[5],
         evaluation_id: parameters[6], native_receipt_id: parameters[7], native_receipt_digest: parameters[8],
@@ -208,6 +254,19 @@ class PrecommitPool {
         workspace_digest: parameters[11], supersession_digest: parameters[12],
         reconciliation_digest: parameters[13], created_by_user_id: parameters[14] };
       this.mappings.set(key(row.tenant_id, row.work_id, row.legacy_evidence_id), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_precommit_evidence_reconciliation_supersession")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1], gate_version: parameters[2],
+        legacy_evidence_id: parameters[3], replacement_evidence_id: parameters[4],
+        task_id: parameters[5], plan_id: parameters[6], evaluation_id: parameters[7],
+        native_receipt_id: parameters[8], native_receipt_digest: parameters[9],
+        replacement_evidence_digest: parameters[10], evaluation_digest: parameters[11],
+        workspace_digest: parameters[12], supersession_digest: parameters[13],
+        reconciliation_digest: parameters[14], created_by_user_id: parameters[15] };
+      this.supersedingMappings.set(
+        key(row.tenant_id, row.work_id, row.gate_version, row.legacy_evidence_id), row,
+      );
       return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("SELECT sequence_number,event_hash FROM tenant_work_event")) {
@@ -220,11 +279,19 @@ class PrecommitPool {
         previous_event_hash: parameters[6], event_hash: parameters[7] });
       return { rows: [], rowCount: 1 };
     }
-    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_fulfillment")) {
+    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_fulfillment") &&
+        !q.startsWith("INSERT INTO tenant_work_precommit_ticket_fulfillment_supersession")) {
       const row = { tenant_id: parameters[0], work_id: parameters[1], task_id: parameters[2],
         ticket_id: parameters[3], ticket_digest: parameters[4], gate_projection_digest: parameters[5],
         fulfillment_digest: parameters[6] };
       this.fulfillments.set(key(row.tenant_id, row.work_id), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_fulfillment_supersession")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1], gate_version: parameters[2],
+        task_id: parameters[3], ticket_id: parameters[4], ticket_digest: parameters[5],
+        gate_projection_digest: parameters[6], fulfillment_digest: parameters[7] };
+      this.supersedingFulfillments.set(key(row.tenant_id, row.work_id, row.gate_version), row);
       return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("UPDATE tenant_work_task SET status='completed'")) {
@@ -412,6 +479,89 @@ test("projection detects plan/evaluation drift and ticket fulfillment accepts on
   assert(gate.drift_codes.includes("precommit_gate_supersession_drift"));
 });
 
+test("appends a fresh superseding gate after plan drift and preserves replay and fulfillment isolation", async () => {
+  const { pool, store, input } = fixture();
+  const first = await store.reconcilePrecommitTicketGate(identity(), input);
+  pool.plans[0].status = "superseded";
+  const plan = { schema_version: "native_agent_plan_v1", tasks: [{ task_id: "replacement" }] };
+  pool.plans.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: SUPERSEDING_PLAN_ID,
+    plan, plan_digest: digest(plan), status: "planned", plan_version: 2,
+    supersedes_plan_id: PLAN_ID });
+  const evaluation = {
+    schema_version: "native_closure_evaluation_v1", closed: false,
+    commit_ticket_ready: true, execution_authorized: false,
+    precommit_verification: { ready: true, workspace_digest: SUPERSEDING_WORKSPACE_DIGEST },
+  };
+  pool.evaluations.push({ tenant_id: "tenant-a", work_id: WORK_ID,
+    plan_id: SUPERSEDING_PLAN_ID, evaluation_id: SUPERSEDING_EVALUATION_ID,
+    evaluation, evaluation_digest: digest(evaluation), created_at: "2026-08-29T09:30:00.000Z" });
+  const receiptPayload = {
+    ...RECEIPT_PAYLOAD,
+    receipt_id: SUPERSEDING_RECEIPT_ID,
+    plan_id: SUPERSEDING_PLAN_ID,
+    report_digest: "d".repeat(64),
+  };
+  const receiptDigest = digest(receiptPayload);
+  pool.evidence.set(key("tenant-a", SUPERSEDING_EVIDENCE_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, evidence_id: SUPERSEDING_EVIDENCE_ID,
+    kind: "native_verifier_terminal_report", digest: "e".repeat(64), required: true,
+    independently_verified: true,
+  });
+  pool.nativeEvidence.set(key("tenant-a", SUPERSEDING_EVIDENCE_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, evidence_id: SUPERSEDING_EVIDENCE_ID,
+    evidence_digest: "e".repeat(64), plan_id: SUPERSEDING_PLAN_ID,
+    task_id: "verifier-task", verifier_agent_id: "verifier-agent",
+    verifier_session_fingerprint: "b".repeat(64), report_digest: "d".repeat(64),
+    native_receipt_id: SUPERSEDING_RECEIPT_ID, native_receipt_digest: receiptDigest,
+  });
+  pool.receipts.set(key("tenant-a", SUPERSEDING_RECEIPT_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, plan_id: SUPERSEDING_PLAN_ID,
+    receipt_id: SUPERSEDING_RECEIPT_ID, receipt_type: "agent_reported",
+    agent_id: "verifier-agent", payload: receiptPayload, payload_digest: receiptDigest,
+  });
+  const supersedingInput = {
+    ...input,
+    plan_id: SUPERSEDING_PLAN_ID,
+    evaluation_id: SUPERSEDING_EVALUATION_ID,
+    evaluation_digest: digest(evaluation),
+    workspace_digest: SUPERSEDING_WORKSPACE_DIGEST,
+    mappings: [{ legacy_evidence_id: LEGACY_EVIDENCE_ID,
+      replacement_evidence_id: SUPERSEDING_EVIDENCE_ID,
+      native_receipt_id: SUPERSEDING_RECEIPT_ID, native_receipt_digest: receiptDigest }],
+    idempotency_key: "precommit-reconcile-superseding-002",
+  };
+
+  const second = await store.reconcilePrecommitTicketGate(identity(), supersedingInput);
+  assert.equal(second.fresh, true);
+  assert.equal(second.plan_id, SUPERSEDING_PLAN_ID);
+  assert.notEqual(second.reconciliation_digest, first.reconciliation_digest);
+  assert.equal(pool.gates.size, 1, "the v1 gate remains immutable");
+  assert.equal(pool.mappings.size, 1, "the v1 evidence mapping remains immutable");
+  assert.equal(pool.supersedingGates.length, 1);
+  assert.equal(pool.supersedingGates[0].gate_version, 2);
+  assert.equal(pool.supersedingGates[0].supersedes_reconciliation_digest,
+    first.reconciliation_digest);
+  assert.equal(pool.supersedingMappings.size, 1);
+
+  const replay = await store.reconcilePrecommitTicketGate(identity(), supersedingInput);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.projection_digest, second.projection_digest);
+  await assert.rejects(store.reconcilePrecommitTicketGate(identity(), input),
+    /precommit_reconcile_replay_conflict/);
+  await assert.rejects(store.reconcilePrecommitTicketGate(identity(), {
+    ...supersedingInput, workspace_digest: "f".repeat(64),
+  }), /precommit_reconcile_replay_conflict/);
+
+  const fulfilled = await store.fulfillPrecommitTicketTask(identity(), {
+    work_id: WORK_ID,
+    gate_projection_digest: second.projection_digest,
+    action_ticket: actionTicket(second.projection_digest),
+  });
+  assert.equal(fulfilled.idempotent_replay, false);
+  assert.equal(pool.fulfillments.size, 0);
+  assert.equal(pool.supersedingFulfillments.size, 1);
+});
+
 test("migration is additive, replay-safe and append-only", () => {
   const directory = path.dirname(fileURLToPath(import.meta.url));
   const migration = fs.readFileSync(path.join(directory,
@@ -429,4 +579,17 @@ test("migration is additive, replay-safe and append-only", () => {
     /FOREIGN KEY \(tenant_id, work_id, task_id\)[\s\S]*tenant_work_task\(tenant_id, work_id, task_id\)/);
   assert.match(migration,
     /FOREIGN KEY \(tenant_id, work_id, native_receipt_id\)[\s\S]*tenant_work_native_verifier_evidence\(tenant_id, work_id, native_receipt_id\)/);
+
+  const supersedingMigration = fs.readFileSync(path.join(directory,
+    "../migrations/20260830_precommit_ticket_gate_supersession_v1.sql"), "utf8");
+  for (const table of [
+    "tenant_work_precommit_ticket_gate_supersession",
+    "tenant_work_precommit_evidence_reconciliation_supersession",
+    "tenant_work_precommit_ticket_fulfillment_supersession",
+  ]) assert.match(supersedingMigration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
+  assert.match(supersedingMigration, /CHECK \(gate_version>1\)/);
+  assert.match(supersedingMigration, /supersedes_reconciliation_digest char\(64\) NOT NULL/);
+  assert.match(supersedingMigration, /BEFORE UPDATE OR DELETE[\s\S]*append_only/);
+  assert.match(supersedingMigration,
+    /20260830_precommit_ticket_gate_supersession_v1'[\s\S]*ON CONFLICT DO NOTHING/);
 });
