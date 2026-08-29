@@ -108,6 +108,7 @@ function assertBoundedSafeArguments(
   state = { nodes: 0 },
   depth = 0,
   capabilityId = "",
+  authenticatedTenantId = "",
 ) {
   state.nodes += 1;
   if (state.nodes > 2_000) throw new Error("dynamic_capability_arguments_too_large");
@@ -121,6 +122,7 @@ function assertBoundedSafeArguments(
       state,
       depth + 1,
       capabilityId,
+      authenticatedTenantId,
     ));
     return;
   }
@@ -138,13 +140,30 @@ function assertBoundedSafeArguments(
       capabilityId === "agent_heartbeat" &&
       path === "$.recovery_context.envelope" &&
       key === "tenant_id";
+    const dttEvidenceTenant =
+      capabilityId === "orchestration_dtt_outcome_record" &&
+      key === "tenant_id" &&
+      [
+        "$.evidence",
+        "$.evidence.provenance",
+        "$.evidence_draft",
+        "$.evidence_draft.provenance",
+      ].includes(path) &&
+      String(item || "") === String(authenticatedTenantId || "");
     if (FORBIDDEN_ARGUMENT_KEYS.has(key.toLowerCase()) && !releaseManifestTenant &&
-        !nyraVerifiedEvidenceTenant && !signedPresenceRecoveryTenant) {
+        !nyraVerifiedEvidenceTenant && !signedPresenceRecoveryTenant && !dttEvidenceTenant) {
       const error = new Error("dynamic_capability_reserved_argument");
       error.argumentPath = `${path}.${key}`;
       throw error;
     }
-    assertBoundedSafeArguments(item, `${path}.${key}`, state, depth + 1, capabilityId);
+    assertBoundedSafeArguments(
+      item,
+      `${path}.${key}`,
+      state,
+      depth + 1,
+      capabilityId,
+      authenticatedTenantId,
+    );
   }
 }
 
@@ -264,7 +283,7 @@ function targetArguments(tool, wrapperArgs, identity = {}) {
   // Validate caller-controlled arguments before attaching the server-issued
   // preflight envelope. The outer compact tool schema does not expose this
   // field, so clients cannot supply or alter it.
-  assertBoundedSafeArguments(args, "$", { nodes: 0 }, 0, tool.name);
+  assertBoundedSafeArguments(args, "$", { nodes: 0 }, 0, tool.name, identity.tenantId);
   if (
     tool.inputSchema?.properties?.work_preflight &&
     wrapperArgs.work_preflight &&

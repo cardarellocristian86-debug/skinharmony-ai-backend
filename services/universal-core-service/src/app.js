@@ -276,6 +276,7 @@ import {
   loadEntity360Configuration,
   normalizeEntity360Mode,
 } from "./entity360Runtime.js";
+import { createSemanticScopeGuard } from "./semanticScopeGuard.js";
 import { registerEntity360Routes } from "./entity360Routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -6651,6 +6652,11 @@ export function createUniversalCoreService(options = {}) {
           standingReleaseEmergencyStop:
             standingReleaseEmergencyStopFlag.value,
           standingReleaseBaseProtectionResolver,
+          semanticScopeGuard: options.semanticScopeGuard || createSemanticScopeGuard({
+            mode: options.semanticScopeMode || process.env.CORE_SEMANTIC_SCOPE_MODE || "SHADOW",
+          }),
+          semanticScopeMode: options.semanticScopeMode || process.env.CORE_SEMANTIC_SCOPE_MODE || "SHADOW",
+          semanticScopeContextResolver: options.semanticScopeContextResolver || null,
         });
         hostNativeGovernanceState = "ready";
       } catch (error) {
@@ -7136,6 +7142,8 @@ export function createUniversalCoreService(options = {}) {
         mode: entity360Mode,
         qualificationSigner: entity360QualificationSigner,
         qualificationVerifier: entity360QualificationVerifier,
+        bitemporalMode: options.entity360BitemporalMode ||
+          process.env.CORE_ENTITY360_BITEMPORAL_MODE || "OFF",
       })
       : null));
   let entity360State = entity360Mode === "INVALID"

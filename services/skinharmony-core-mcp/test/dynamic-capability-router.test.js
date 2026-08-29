@@ -53,6 +53,120 @@ test("Nyra admits tenant binding only at signed evidence roots verified again by
   await assert.rejects(router.core_capability_invoke({ capability_id: tool.name, catalog_revision, idempotency_key: "nested-forged", arguments: { ...base, action_receipt: { signed: { tenant_id: "tenant-a" } } } }, caller), /dynamic_capability_reserved_argument/);
 });
 
+test("DTT outcome admits only authenticated tenant bindings required by evidence v2", async () => {
+  const tool = TOOLS.find((item) => item.name === "orchestration_dtt_outcome_record");
+  let received;
+  const handlers = {
+    [tool.name]: async (args) => {
+      received = args;
+      return { structuredContent: { ok: true } };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({ structuredContent: { authorization: { allowed: true } } }),
+  });
+  const catalog_revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const workId = "00000000-0000-4000-8000-000000000001";
+  const evidenceDraft = {
+    schema_version: "verification_evidence_draft_v2",
+    tenant_id: "tenant-a",
+    work_id: workId,
+    tree_id: "dtt_test",
+    node_id: "verify",
+    claim: "Focused verification passed",
+    artifacts: [{
+      artifact_id: "artifact-a",
+      content_digest: `sha256:${"a".repeat(64)}`,
+      source_reference: "focused-test",
+    }],
+    provenance: {
+      tenant_id: "tenant-a",
+      work_id: workId,
+      tree_id: "dtt_test",
+      node_id: "verify",
+      producer_id: "builder-a",
+      source_type: "test",
+      source_reference: "focused-test",
+    },
+    evidence_digest: `evd_${"b".repeat(64)}`,
+    quorum: { required_approvals: 1, dissent_policy: "block" },
+    execution_authorized: false,
+  };
+  const invoke = (idempotency_key, draft = evidenceDraft) => router.core_capability_invoke({
+    capability_id: tool.name,
+    catalog_revision,
+    idempotency_key,
+    owner_confirmed: true,
+    arguments: {
+      work_id: workId,
+      tree_id: "dtt_test",
+      node_id: "verify",
+      outcome: "verified",
+      evidence_draft: draft,
+    },
+  }, identity);
+
+  await invoke("dtt-evidence-valid");
+  assert.deepEqual(received.evidence_draft, evidenceDraft);
+
+  const evidence = {
+    ...evidenceDraft,
+    schema_version: "verification_evidence_contract_v2",
+    attestations: [{
+      verifier_id: "verifier-a",
+      decision: "approve",
+      rationale: "Evidence verified",
+      identity_receipt: "signed-receipt",
+      assignment_id: `dtta_${"c".repeat(32)}`,
+      attestation_id: `att_${"d".repeat(64)}`,
+      scheme: "sha256_work_bound_vote_integrity_v2",
+    }],
+    quorum: {
+      required_approvals: 1,
+      dissent_policy: "block",
+      approvals: 1,
+      dissents: 0,
+      satisfied: true,
+    },
+  };
+  await router.core_capability_invoke({
+    capability_id: tool.name,
+    catalog_revision,
+    idempotency_key: "dtt-evidence-contract-valid",
+    owner_confirmed: true,
+    arguments: {
+      work_id: workId,
+      tree_id: "dtt_test",
+      node_id: "verify",
+      outcome: "verified",
+      evidence,
+    },
+  }, identity);
+  assert.deepEqual(received.evidence, evidence);
+
+  await assert.rejects(
+    invoke("dtt-evidence-wrong-root", { ...evidenceDraft, tenant_id: "tenant-b" }),
+    /dynamic_capability_reserved_argument/,
+  );
+  await assert.rejects(
+    invoke("dtt-evidence-wrong-provenance", {
+      ...evidenceDraft,
+      provenance: { ...evidenceDraft.provenance, tenant_id: "tenant-b" },
+    }),
+    /dynamic_capability_reserved_argument/,
+  );
+  await assert.rejects(
+    invoke("dtt-evidence-forged-nested", {
+      ...evidenceDraft,
+      artifacts: [{ ...evidenceDraft.artifacts[0], metadata: { tenant_id: "tenant-a" } }],
+    }),
+    /dynamic_capability_reserved_argument/,
+  );
+});
+
 function readTool(name = "nyra_dynamic_read") {
   return {
     name,

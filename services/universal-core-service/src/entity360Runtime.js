@@ -15,6 +15,11 @@ import {
   buildVerifiedEntity360CurrentPathObservation,
   compareVerifiedEntity360CurrentPath,
 } from "./entity360ShadowObservation.js";
+import { createEntity360ProjectionCache } from "./entity360ProjectionCache.js";
+import {
+  buildEntity360BitemporalSnapshot,
+  queryEntity360BitemporalSnapshot,
+} from "./entity360Bitemporal.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_ENTITY_360_POLICY_PATH = path.resolve(__dirname, "../config/entity360-policy.v1.json");
@@ -193,6 +198,11 @@ function safeCounter() {
     shadow_comparison_count: 0,
     shadow_divergence_count: 0,
     unverified_shadow_comparison_count: 0,
+    bitemporal_query_count: 0,
+    bitemporal_query_latency_ms_total: 0,
+    bitemporal_snapshot_reconstruction_count: 0,
+    bitemporal_snapshot_reconstruction_latency_ms_total: 0,
+    hindsight_leakage_prevented_count: 0,
   };
 }
 
@@ -253,13 +263,21 @@ function publicMetrics(counter, storeMetrics, mode, policy, ontology) {
     shadow_comparison_count: counter.shadow_comparison_count,
     shadow_divergence_count: counter.shadow_divergence_count,
     unverified_shadow_comparison_count: counter.unverified_shadow_comparison_count,
+    bitemporal_query_latency: counter.bitemporal_query_count
+      ? counter.bitemporal_query_latency_ms_total / counter.bitemporal_query_count : 0,
+    snapshot_reconstruction_latency: counter.bitemporal_snapshot_reconstruction_count
+      ? counter.bitemporal_snapshot_reconstruction_latency_ms_total /
+        counter.bitemporal_snapshot_reconstruction_count : 0,
+    historical_replay_latency: counter.bitemporal_query_count
+      ? counter.bitemporal_query_latency_ms_total / counter.bitemporal_query_count : 0,
+    hindsight_leakage_prevented: counter.hindsight_leakage_prevented_count,
     persisted: storeMetrics || null,
     execution_authorized: false,
   });
 }
 
 export function createEntity360Runtime({ store, adapterRegistry, policy, ontology, mode = "OFF",
-  qualificationSigner, qualificationVerifier, now = () => Date.now() } = {}) {
+  qualificationSigner, qualificationVerifier, bitemporalMode = "OFF", now = () => Date.now() } = {}) {
   if (!store || typeof store.writeSnapshot !== "function"
     || typeof store.readSnapshotWriteReplay !== "function"
     || typeof store.registerDefinition !== "function" || typeof store.readRegistry !== "function"
@@ -279,6 +297,10 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     fail("entity360_qualification_verifier_required", 503);
   }
   const configuredMode = normalizeEntity360Mode(mode);
+  const configuredBitemporalMode = String(bitemporalMode || "OFF").toUpperCase();
+  if (!["OFF", "SHADOW"].includes(configuredBitemporalMode)) {
+    fail("entity360_bitemporal_mode_invalid", 503);
+  }
   const compiledPolicy = policy?.policy_digest ? policy : compileEntity360Policy(policy);
   const compiledOntology = compileEntity360Ontology(ontology);
   if (compiledPolicy.mode !== "SHADOW") fail("entity360_shadow_policy_required", 503);
@@ -291,6 +313,8 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     }
   }
   const metrics = safeCounter();
+  const projectionCache = createEntity360ProjectionCache({ policy: compiledPolicy,
+    ontology: compiledOntology, qualificationVerifier, now });
   let state = "created";
   let initializationError = null;
   let operationalError = null;
@@ -359,7 +383,9 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       policy_digest: compiledPolicy.policy_digest,
       ontology_version: compiledOntology.ontology_version,
       canonicalization_version: "entity_360_canonical_json_v1",
-      snapshot_schema_version: "entity_360_snapshot_v1",
+      snapshot_schema_version: configuredBitemporalMode === "SHADOW"
+        ? "entity_360_snapshot_v2" : "entity_360_snapshot_v1",
+      bitemporal_mode: configuredBitemporalMode,
       adapter_registry_version: adapterRegistry.schema_version || "entity_360_adapter_registry_v1",
       adapter_versions: adapterRegistry.adapter_versions || [],
       backend: storeHealth?.backend || store.kind || "postgresql",
@@ -534,6 +560,18 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     return { policy: historicalPolicy, ontology: historicalOntology };
   }
 
+  async function projectPersistedSnapshot(snapshot) {
+    const tenantId = text(snapshot?.tenant_scope, "entity360_projection_tenant_required", 120);
+    const entityId = text(snapshot?.entity_id, "entity360_projection_entity_required", 160);
+    const head = await store.readHead({ tenant_id: tenantId, entity_id: entityId });
+    return projectionCache.project({ snapshot, durable_head: head ? {
+      tenant_id: tenantId,
+      entity_id: entityId,
+      snapshot_version: Number(head.current_snapshot_version),
+      snapshot_digest: head.current_snapshot_digest,
+    } : null });
+  }
+
   async function assemble(identity, input) {
     const assemblyStartedAt = performance.now();
     const workId = requireWorkBinding(identity, input);
@@ -568,6 +606,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
         fail("entity360_cross_tenant_snapshot", 403);
       }
       return Object.freeze({ snapshot: persistedSnapshot,
+        projection: await projectPersistedSnapshot(persistedSnapshot),
         persistence: { revision: prior.head_revision ?? prior.head_version ?? prior.snapshot_version,
           replayed: true, backend: prior.backend || store.kind || "postgresql" },
         feature_flag: { mode: feature.mode, enabled: feature.enabled, revision: Number(feature.revision || 0),
@@ -628,6 +667,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       ],
     }, { policy: compiledPolicy, ontology: compiledOntology, created_at: createdAt,
       require_existing: true,
+      bitemporal_mode: configuredBitemporalMode,
       adapter_registry_version: adapterRegistry.schema_version || "entity_360_adapter_registry_v1",
       qualification_signer: qualificationSigner });
     const selfVerification = verifyEntity360Snapshot(snapshot, {
@@ -658,12 +698,21 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     metrics.contradiction_count += snapshot.contradictions.length;
     metrics.missing_required_context_count += snapshot.missing_context.filter((item) => item.mandatory).length;
     if (persisted?.replayed === true) metrics.snapshot_rebuild_count += 1;
-    const persistedSnapshot = persisted?.replayed === true
-      ? await store.readSnapshot({ tenant_id: identity.tenant_id, entity_id: resolved.entity_id,
-        snapshot_version: persisted.snapshot_version || expectedRevision + 1 })
-      : persisted?.snapshot || snapshot;
+    const persistedSnapshot = await store.readSnapshot({ tenant_id: identity.tenant_id,
+      entity_id: resolved.entity_id,
+      snapshot_version: persisted?.snapshot_version || expectedRevision + 1 });
     if (!persistedSnapshot) fail("entity360_replayed_snapshot_not_found", 503);
+    const bitemporalStartedAt = performance.now();
+    const bitemporalSnapshot = configuredBitemporalMode === "SHADOW"
+      ? buildEntity360BitemporalSnapshot(persistedSnapshot) : null;
+    if (bitemporalSnapshot) {
+      metrics.bitemporal_snapshot_reconstruction_count += 1;
+      metrics.bitemporal_snapshot_reconstruction_latency_ms_total +=
+        Math.max(0, performance.now() - bitemporalStartedAt);
+    }
     return Object.freeze({ snapshot: persistedSnapshot,
+      projection: await projectPersistedSnapshot(persistedSnapshot),
+      ...(bitemporalSnapshot ? { bitemporal_snapshot: bitemporalSnapshot } : {}),
       persistence: { revision: persisted?.head_revision ?? persisted?.revision ?? expectedRevision + 1,
         replayed: persisted?.replayed === true, backend: persisted?.backend || store.kind || "postgresql" },
       feature_flag: { mode: feature.mode, enabled: feature.enabled, revision: Number(feature.revision || 0),
@@ -683,7 +732,15 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     if (input.snapshot_digest && input.snapshot_digest !== snapshot.deterministic_immutable_digest) {
       fail("entity360_snapshot_digest_mismatch", 409);
     }
-    return snapshot;
+    if (!input.query_mode) return snapshot;
+    const startedAt = performance.now();
+    const bitemporal = queryEntity360BitemporalSnapshot(snapshot, input);
+    metrics.bitemporal_query_count += 1;
+    metrics.bitemporal_query_latency_ms_total += Math.max(0, performance.now() - startedAt);
+    if (bitemporal.no_hindsight_leakage === true && input.query_mode === "DECISION_CONTEXT_AT") {
+      metrics.hindsight_leakage_prevented_count += 1;
+    }
+    return bitemporal;
   }
 
   async function observeCurrentPath(rawIdentity, input = {}) {
@@ -772,7 +829,12 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       const payload = snapshot.snapshot || snapshot;
       if (payload.tenant_scope !== identity.tenant_id) fail("entity360_cross_tenant_snapshot", 403);
       requireSnapshotWorkBinding(payload, workId);
-      return payload;
+      if (!input.query_mode) return payload;
+      const startedAt = performance.now();
+      const bitemporal = queryEntity360BitemporalSnapshot(payload, input);
+      metrics.bitemporal_query_count += 1;
+      metrics.bitemporal_query_latency_ms_total += Math.max(0, performance.now() - startedAt);
+      return bitemporal;
     }
     if (capability === "entity_360_snapshot_read") return readStored(identity, input);
     if (capability === "entity_360_snapshot_verify") {

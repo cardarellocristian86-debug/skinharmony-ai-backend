@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 export const ENTITY_360_SCHEMA_VERSION = "entity_360_snapshot_v1";
+export const ENTITY_360_BITEMPORAL_SCHEMA_VERSION = "entity_360_snapshot_v2";
 export const ENTITY_360_ONTOLOGY_VERSION = "entity_360_ontology_v1";
 export const ENTITY_360_KERNEL_COMPATIBILITY = "entity_360_kernel_v1";
 export const ENTITY_360_POLICY_SCHEMA_VERSION = "entity_360_context_policy_v1";
@@ -126,6 +127,10 @@ const ENTITY_360_SNAPSHOT_ROOT_FIELDS = Object.freeze([
   "stale_state_references",
   "superseded_state_references",
   "tenant_scope",
+]);
+const ENTITY_360_BITEMPORAL_SNAPSHOT_ROOT_FIELDS = Object.freeze([
+  ...ENTITY_360_SNAPSHOT_ROOT_FIELDS,
+  "bitemporal",
 ]);
 
 const ENTITY_360_SOURCE_DISCOVERY_REASON_CODES = new Set([
@@ -2433,6 +2438,10 @@ function rebuildQualificationManifest(snapshot, policy) {
 export function assembleEntity360Snapshot(input = {}, options = {}) {
   const policy = options.policy?.policy_digest ? options.policy : compileEntity360Policy(options.policy);
   const ontology = compileEntity360Ontology(options.ontology);
+  const bitemporalEnabled = options.bitemporal_mode === "SHADOW";
+  if (options.bitemporal_mode !== undefined && !["OFF", "SHADOW"].includes(options.bitemporal_mode)) {
+    fail("entity360_bitemporal_mode_invalid");
+  }
   const adapterRegistryVersion = text(options.adapter_registry_version,
     "entity360_adapter_registry_version_required", 160, SOURCE_ID);
   const tenantId = text(input.tenant_id, "entity360_tenant_required", 120, SOURCE_ID);
@@ -2512,7 +2521,7 @@ export function assembleEntity360Snapshot(input = {}, options = {}) {
     };
   }));
   const snapshot = {
-    schema_version: ENTITY_360_SCHEMA_VERSION,
+    schema_version: bitemporalEnabled ? ENTITY_360_BITEMPORAL_SCHEMA_VERSION : ENTITY_360_SCHEMA_VERSION,
     adapter_registry_version: adapterRegistryVersion,
     ontology_version: ontology.ontology_version,
     ontology_digest: entity360Digest(ontology),
@@ -2600,6 +2609,21 @@ export function assembleEntity360Snapshot(input = {}, options = {}) {
     execution_authorized: false,
     authority: "universal_core",
     production_decision_mutation: false,
+    ...(bitemporalEnabled ? {
+      // The server created this immutable snapshot at `created_at`; that is
+      // the earliest verified point at which this exact qualified cut was
+      // available to Core.  This is intentionally distinct from valid time.
+      bitemporal: {
+        as_of_valid_time: asOf,
+        as_of_knowledge_time: createdAt,
+        knowledge_until: null,
+        knowledge_time_quality: "VERIFIED",
+        source_set_digest: entity360Digest(sourceIds),
+        evidence_set_digest: entity360Digest(evidenceDigests),
+        policy_revision: policy.policy_version,
+        ontology_revision: ontology.ontology_version,
+      },
+    } : {}),
     as_of: asOf,
     created_at: createdAt,
     deterministic_immutable_digest: null,
@@ -2638,10 +2662,14 @@ export function verifyEntity360Snapshot(snapshot, { policy, ontology, verificati
     } catch (error) {
       reasons.push(String(error?.code || "TRUSTED_VERIFICATION_TIME_INVALID"));
     }
-    if (differs(Object.keys(snapshot).sort(), [...ENTITY_360_SNAPSHOT_ROOT_FIELDS].sort())) {
+    const expectedSnapshotRootFields = snapshot.schema_version === ENTITY_360_BITEMPORAL_SCHEMA_VERSION
+      ? ENTITY_360_BITEMPORAL_SNAPSHOT_ROOT_FIELDS : ENTITY_360_SNAPSHOT_ROOT_FIELDS;
+    if (differs(Object.keys(snapshot).sort(), [...expectedSnapshotRootFields].sort())) {
       reasons.push("SNAPSHOT_ROOT_SCHEMA_INVALID");
     }
-    if (snapshot.schema_version !== ENTITY_360_SCHEMA_VERSION) reasons.push("SCHEMA_VERSION_INVALID");
+    if (![ENTITY_360_SCHEMA_VERSION, ENTITY_360_BITEMPORAL_SCHEMA_VERSION].includes(snapshot.schema_version)) {
+      reasons.push("SCHEMA_VERSION_INVALID");
+    }
     try {
       text(snapshot.adapter_registry_version, "entity360_adapter_registry_version_invalid",
         160, SOURCE_ID);
@@ -2678,6 +2706,29 @@ export function verifyEntity360Snapshot(snapshot, { policy, ontology, verificati
     }
     if (Date.parse(snapshot.created_at) + compiledPolicy.freshness.max_clock_skew_seconds * 1000
       < Date.parse(snapshot.as_of)) reasons.push("SNAPSHOT_TEMPORAL_ANCHOR_INVALID");
+    if (snapshot.schema_version === ENTITY_360_BITEMPORAL_SCHEMA_VERSION) {
+      try {
+        const bitemporal = plainObject(snapshot.bitemporal, "entity360_bitemporal_snapshot_invalid");
+        exactKeys(bitemporal, new Set([
+          "as_of_valid_time", "as_of_knowledge_time", "knowledge_until", "knowledge_time_quality",
+          "source_set_digest", "evidence_set_digest", "policy_revision", "ontology_revision",
+        ]), "entity360_bitemporal_snapshot_schema_invalid");
+        if (canonicalRfc3339Timestamp(bitemporal.as_of_valid_time,
+          "entity360_bitemporal_valid_time_invalid") !== snapshot.as_of
+          || canonicalRfc3339Timestamp(bitemporal.as_of_knowledge_time,
+            "entity360_bitemporal_knowledge_time_invalid") !== snapshot.created_at
+          || bitemporal.knowledge_until !== null
+          || bitemporal.knowledge_time_quality !== "VERIFIED"
+          || bitemporal.policy_revision !== snapshot.policy_version
+          || bitemporal.ontology_revision !== snapshot.ontology_version
+          || !SHA256.test(String(bitemporal.source_set_digest || ""))
+          || !SHA256.test(String(bitemporal.evidence_set_digest || ""))) {
+          reasons.push("BITEMPORAL_BINDING_INVALID");
+        }
+      } catch (error) {
+        reasons.push(String(error?.code || "BITEMPORAL_BINDING_INVALID"));
+      }
+    }
     const maximumSkewMs = compiledPolicy.freshness.max_clock_skew_seconds * 1000;
     if (verificationTime && Date.parse(snapshot.created_at) > Date.parse(verificationTime) + maximumSkewMs) {
       reasons.push("SNAPSHOT_CREATED_AT_FUTURE_INVALID");

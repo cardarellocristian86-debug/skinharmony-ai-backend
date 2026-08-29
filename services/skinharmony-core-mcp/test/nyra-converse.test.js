@@ -358,7 +358,8 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.equal(payload.work.preflight_bound, true);
   assert.equal(payload.work.next_action, "Continue the existing Work.");
   assert.equal(payload.host_response_contract.next_action, "Continue the existing Work.");
-  assert.match(payload.host_response_contract.reply_seed, /^Possiamo continuare\. Host, Continue the existing Work\./);
+  assert.match(payload.host_response_contract.reply_seed,
+    /^Riprendo dal punto verificabile di questo Work\.\n\nAdesso: AI collegata — Continue the existing Work\./);
   assert.equal(payload.host_response_contract.rendering_policy, "server_orchestration_directive_first_v2");
   assert.equal(payload.orchestration_directive.source, "PERSISTED_WORK");
   assert.equal(payload.orchestration_directive.decision.disposition, "RESUME");
@@ -419,8 +420,8 @@ test("does not let a cached Work step dominate a new technical orchestration req
     ["HOST", "UNIVERSAL_CORE", "OWNER"],
   );
   assert.equal(payload.orchestration_directive.ticket_request.required, true);
-  assert.match(payload.host_response_contract.reply_seed, /Mi serve:/);
-  assert.match(payload.host_response_contract.reply_seed, /Il candidate per il ticket Core richiede ancora i prerequisiti indicati/);
+  assert.match(payload.host_response_contract.reply_seed, /Per sbloccare il prossimo gate:/);
+  assert.match(payload.host_response_contract.reply_seed, /Il ticket resta in attesa/);
 });
 
 test("never treats a server-routed stale capability request as a pure resume", async () => {
@@ -511,7 +512,7 @@ test("keeps a requested merge manual for the owner and gives the registered host
   assert.equal(payload.orchestration_directive.next_actions[0].status, "READY");
   assert.equal(payload.orchestration_directive.next_actions[2].mode, "MANUAL");
   assert.equal(payload.orchestration_directive.ticket_request.merge_policy, "MANUAL_ONLY");
-  assert.match(payload.host_response_contract.reply_seed, /Il merge deve essere eseguito manualmente dall'owner dopo il gate Core/);
+  assert.match(payload.host_response_contract.reply_seed, /il merge resta un'azione manuale tua/i);
   assert.equal(payload.execution_authorized, false);
 });
 
@@ -593,8 +594,33 @@ test("treats legacy safety_mode as an explainable guard, not a fictitious Core b
   assert.notEqual(directive.decision.disposition, "BLOCK");
   assert.equal(directive.decision.core_verdict, "HOLD");
   assert.equal(directive.ticket_request.required, false);
-  assert.match(payload.host_response_contract.reply_seed, /Diagnosi Core: Non è un blocco/);
+  assert.match(payload.host_response_contract.reply_seed, /Non ho rilevato uno stop tecnico/);
   assert.deepEqual(validateToolArguments(TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("adapts Nyra's wording to the requested detail without repeating governance boilerplate", async () => {
+  const concise = (await harness().handler({
+    message: "Nyra, prosegui con il deploy preparatorio",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+    response_style: "concise",
+  }, identity())).structuredContent;
+  const detailed = (await harness().handler({
+    message: "Nyra, diagnostica cosa manca per il deploy",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+    response_style: "detailed",
+  }, identity())).structuredContent;
+
+  assert.equal(concise.orchestration_directive.decision.disposition, detailed.orchestration_directive.decision.disposition);
+  assert.match(concise.host_response_contract.reply_seed, /Posso far avanzare la preparazione locale/);
+  assert.doesNotMatch(concise.host_response_contract.reply_seed, /Per sbloccare il prossimo gate/);
+  assert.doesNotMatch(concise.host_response_contract.reply_seed, /Questo turno conversazionale/);
+  assert.match(detailed.host_response_contract.reply_seed, /Per sbloccare il prossimo gate/);
+  assert.match(detailed.host_response_contract.reply_seed, /Il ticket resta in attesa/);
+  assert.doesNotMatch(detailed.host_response_contract.reply_seed, /Questo turno conversazionale/);
 });
 
 test("keeps owner confirmation on a consequential ticket while Core is on HOLD", async () => {
@@ -654,6 +680,7 @@ test("classifies live, production and distribution wording as governed release w
     ["Nyra, mettilo in produzione", "DEPLOY"],
     ["Nyra, serve la distribuzione software", "DEPLOY"],
     ["Nyra, rilascialo", "PUBLISH"],
+    ["Nyra, esegui un solo git commit locale senza push, PR o deploy", "GIT_COMMIT"],
     ["Nyra, fai push", "GIT_PUSH"],
     ["Nyra, publish", "PUBLISH"],
   ]) {
@@ -676,6 +703,7 @@ test("keeps read-only architecture questions advisory when they mention producti
   for (const message of [
     "Nyra, in sola lettura indica cosa è già operativo in produzione e cosa serve per orchestrare una AI. Non creare o modificare Work, ticket, branch, PR, merge, deploy o permessi.",
     "Nyra, diagnostica il ticket Core senza fare deploy o merge. Dimmi soltanto la causa e il prossimo passo.",
+    "Nyra, verifica il diff senza commit, push, PR o deploy.",
   ]) {
     const payload = (await harness().handler({
       message,
@@ -699,6 +727,15 @@ test("still governs an affirmative action after a read-only boundary", async () 
   }, identity())).structuredContent;
   assert.equal(payload.action_policy.action_class, "GIT_MERGE");
   assert.equal(payload.orchestration_directive.ticket_request.required, true);
+
+  const commitPayload = (await harness().handler({
+    message: "Nyra, non fare push. Poi esegui un git commit locale.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+  assert.equal(commitPayload.action_policy.action_class, "GIT_COMMIT");
+  assert.equal(commitPayload.orchestration_directive.ticket_request.required, true);
 });
 
 test("makes every merge manual even when the user does not say manually", async () => {
@@ -771,6 +808,28 @@ test("expands an E360 checkpoint into the real pending Work task and bounded evi
   assert.equal(directive.work_context.next_required_task.task_id, TASK_ID);
   assert.equal(directive.next_actions[0].summary,
     "Completare il task canonico: Verify the Nyra orchestration contract and CI evidence");
+  assert.deepEqual(payload.host_response_contract.connected_ai_brief, {
+    schema_version: "nyra_connected_ai_brief_v1",
+    state: "READY",
+    goal: "Completare il task canonico: Verify the Nyra orchestration contract and CI evidence",
+    steps: [{
+      order: 1,
+      instruction: "Completare il task canonico: Verify the Nyra orchestration contract and CI evidence",
+      mode: "BOUNDED_WORKSPACE",
+      expected_evidence: ["Esito circoscritto per: Verify the Nyra orchestration contract and CI evidence"],
+      external_side_effect: false,
+    }, {
+      order: 2,
+      instruction: "Raccogliere e collegare al Work le evidenze mancanti con verifica indipendente",
+      mode: "BOUNDED_WORKSPACE",
+      expected_evidence: ["Evidenze richieste con verifica indipendente"],
+      external_side_effect: false,
+    }],
+    expected_evidence: ["Evidenze richieste con verifica indipendente"],
+    research_required: false,
+    external_action_authorized: false,
+  });
+  assert.match(payload.host_response_contract.instructions[1], /complete server-issued task brief/);
   assert.equal(directive.ticket_request.state, "NEEDS_CONTEXT");
   assert.deepEqual(directive.ticket_request.prerequisite_codes, [
     "required_work_tasks_incomplete",
@@ -779,6 +838,7 @@ test("expands an E360 checkpoint into the real pending Work task and bounded evi
   assert.equal(JSON.stringify(payload).includes("E360-02"), false);
   assert.equal(JSON.stringify(payload).includes("raw_customer_data"), false);
   assert.match(directive.work_context.context_digest, /^[a-f0-9]{64}$/);
+  assert.deepEqual(validateToolArguments(TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
 });
 
 test("emits a deterministic revision-bound manual ticket candidate only after prerequisites are verified", async () => {
@@ -1052,7 +1112,7 @@ test("requires a verified closure before reporting a completed Work", async () =
     project_id: "nyra_core",
   }, identity());
   assert.equal(verified.structuredContent.orchestration_directive.decision.disposition, "COMPLETE");
-  assert.match(verified.structuredContent.host_response_contract.reply_seed, /closure verificata/);
+  assert.match(verified.structuredContent.host_response_contract.reply_seed, /chiusura verificata/);
 });
 
 function routerFor(handler) {
@@ -1399,10 +1459,11 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
   assert.equal(payload.host_response_contract.speaker, "Nyra");
   assert.equal(payload.host_response_contract.renderer, "nyra_widget_with_host_fallback");
   assert.equal(payload.host_response_contract.response_language, "it");
-  assert.match(payload.host_response_contract.reply_seed, /^Possiamo continuare\. Host, Respond conversationally\./);
+  assert.match(payload.host_response_contract.reply_seed,
+    /^Il Work può continuare dal suo stato verificato attuale\.\n\nAdesso: AI collegata — Respond conversationally\./);
   assert.equal(payload.work.next_action, "Answer the owner");
   assert.equal(payload.host_response_contract.next_action, "Respond conversationally");
-  assert.match(payload.host_response_contract.reply_seed, /Host, Respond conversationally/);
+  assert.match(payload.host_response_contract.reply_seed, /AI collegata — Respond conversationally/);
   assert.equal(payload.interpretation.core.authority, "V2");
   assert.equal(payload.interpretation.selected_action_id, "action:respond_conversationally");
   assert.equal(payload.interpretation.selected_action, "Respond conversationally");
@@ -1529,8 +1590,8 @@ test("keeps smuggled deploy and send requests proposal-only and never repeats a 
   assert.equal(payload.orchestration_directive.ticket_request.state, "NEEDS_CONTEXT");
   assert.equal(payload.orchestration_directive.ticket_request.action_class, "DEPLOY");
   assert.deepEqual(payload.action_policy.categories, ["release", "communication"]);
-  assert.match(payload.host_response_contract.reply_seed, /Possiamo continuare subito nel workspace bounded/);
-  assert.match(payload.host_response_contract.reply_seed, /non autorizza né esegue azioni esterne/);
+  assert.match(payload.host_response_contract.reply_seed, /Posso far avanzare la preparazione locale/);
+  assert.match(payload.host_response_contract.reply_seed, /Il ticket resta in attesa/);
   assert.equal(JSON.stringify(response).includes("Deploy completato"), false);
   assert.equal(payload.execution_authorized, false);
   assert.equal(payload.external_action_authorized, false);
@@ -1662,7 +1723,7 @@ test("serializes the bounded server-issued next action but excludes unrelated up
   assert.equal(payload.work.next_action_available, true);
   assert.equal(payload.work.next_action, "Answer the owner");
   assert.equal(payload.host_response_contract.next_action, "Proceed in read-only analysis");
-  assert.match(payload.host_response_contract.reply_seed, /Host, Proceed in read-only analysis/);
+  assert.match(payload.host_response_contract.reply_seed, /AI collegata — Proceed in read-only analysis/);
   assert.equal(payload.interpretation.selected_action_available, false);
   assert.equal(payload.interpretation.selected_action_id, null);
   assert.equal(payload.interpretation.selected_action, null);
@@ -1694,7 +1755,7 @@ test("vague wording cannot surface an upstream completion claim or imply an unbo
   assert.equal(payload.work.work_id, null);
   assert.equal(payload.work.work_bound, false);
   assert.equal(payload.work.state, "unbound");
-  assert.match(payload.host_response_contract.reply_seed, /Nessun Work canonico tenant-scoped è associato a questo turno/);
+  assert.match(payload.host_response_contract.reply_seed, /Mi serve un solo Work canonico/);
   assert.doesNotMatch(payload.host_response_contract.reply_seed, /autenticato/);
   assert.match(payload.host_response_contract.instructions[2], /Do not claim/);
   assert.equal(payload.execution_authorized, false);
@@ -1731,6 +1792,7 @@ test("offers a signed two-phase V2 bootstrap only for an explicit structured new
         submit_tool: "nyra_governed_continue",
         candidate_attestation: "signed-bootstrap-candidate",
         expires_at: "2026-08-25T12:05:00.000Z",
+        operations: ["review_work_bootstrap", "create_work"],
         reason: null,
       };
     },

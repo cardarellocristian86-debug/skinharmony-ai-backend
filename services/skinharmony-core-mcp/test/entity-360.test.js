@@ -145,6 +145,20 @@ test("Entity 360 schemas bind exact snapshot scope and reject caller tenant fiel
   assert(validateToolArguments(verifySchema, { snapshot_digest: DIGEST })
     .some((item) => item.code === "required"));
 
+  const bitemporalReadSchema = toolNamed("entity_360_snapshot_read").inputSchema;
+  assert.deepEqual(validateToolArguments(bitemporalReadSchema, {
+    work_id: WORK_ID,
+    entity_id: ENTITY_ID,
+    snapshot_version: 1,
+    query_mode: "VALID_AND_KNOWN_AT",
+    valid_at: "2026-08-11T00:00:00.000Z",
+    known_at: "2026-08-12T00:00:00.000Z",
+  }), []);
+  assert(validateToolArguments(bitemporalReadSchema, {
+    work_id: WORK_ID, entity_id: ENTITY_ID, snapshot_version: 1,
+    query_mode: "UNBOUNDED_HISTORY",
+  }).some((item) => item.code === "enum"));
+
   const shadowSchema = toolNamed("entity_360_shadow_compare").inputSchema;
   assert.deepEqual(validateToolArguments(shadowSchema, {
     work_id: WORK_ID,

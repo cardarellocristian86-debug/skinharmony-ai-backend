@@ -6,6 +6,7 @@ import {
   buildImpactMap,
   createWorkContinuityRuntime,
   digest,
+  normalizeNativePrecommitEvidence,
   normalizeSurfaces,
   stable,
   surfacesOverlap,
@@ -21,6 +22,38 @@ import { validateToolArguments } from "../src/schema-validation.js";
 test("work continuity advertises explicit automation report stages", () => {
   const report = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_native_report");
   assert.equal(report.inputSchema.properties.report.properties.automation_stage.enum[0], "build");
+});
+
+test("native report schema admits exact server-digested precommit evidence", () => {
+  const report = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_native_report");
+  const precommit = report.inputSchema.properties.report.properties.precommit_evidence;
+  assert.equal(precommit.properties.schema_version.const, "native_precommit_evidence_v1");
+  assert.equal(precommit.properties.diff_mode.const, "git_diff_binary_sha256_v1");
+  assert.deepEqual(precommit.required,
+    ["schema_version", "diff_mode", "base_commit", "diff_digest", "changed_files"]);
+  const closure = WORK_CONTINUITY_TOOLS.find((tool) => tool.name === "work_continuity_closure_evaluate");
+  assert.deepEqual(closure.inputSchema.required, ["work_id", "plan_id", "idempotency_key"]);
+});
+
+test("precommit evidence is deterministic, ordered and rejects extra authority-shaped fields", () => {
+  const input = {
+    schema_version: "native_precommit_evidence_v1",
+    diff_mode: "git_diff_binary_sha256_v1",
+    base_commit: "a".repeat(40),
+    diff_digest: "b".repeat(64),
+    changed_files: ["z.js", "a.js"],
+  };
+  const first = normalizeNativePrecommitEvidence(input);
+  const second = normalizeNativePrecommitEvidence({
+    ...input,
+    changed_files: ["a.js", "z.js"],
+  });
+  assert.deepEqual(first.changed_files, ["a.js", "z.js"]);
+  assert.equal(first.workspace_digest, second.workspace_digest);
+  assert.throws(() => normalizeNativePrecommitEvidence({
+    ...input,
+    execution_authorized: true,
+  }), /native_precommit_evidence_invalid/);
 });
 
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
@@ -176,6 +209,88 @@ test("legacy resume rejects an unauthorized session binding before persisting a 
     authorizedResumeWorkIds: [WORK_ID],
   }), /continuity_work_acl_denied/);
   assert.equal(calls.some((call) => /INSERT INTO core_continuity_session_bindings/.test(call.sql)), false);
+});
+
+test("explicit V2-authorized resume replaces only the stale binding for the current session", async () => {
+  const staleWorkId = "22222222-2222-4222-8222-222222222222";
+  const targetDigest = "b".repeat(64);
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
+      if (/SELECT pg_advisory_xact_lock/.test(sql)) return { rows: [{}] };
+      if (/SELECT work_id,create_request_digest\s+FROM core_continuity_session_bindings/.test(sql)) {
+        return { rows: [{ work_id: staleWorkId, create_request_digest: "a".repeat(64) }] };
+      }
+      if (/SELECT a\.intent_digest,a\.create_request_digest/.test(sql)) {
+        return { rows: [{
+          intent_digest: "c".repeat(64),
+          create_request_digest: targetDigest,
+          project_id: "project-a",
+          status: "active",
+          current_version: 2,
+          next_action: "Continue the authorized Work.",
+        }] };
+      }
+      if (/UPDATE core_continuity_session_bindings/.test(sql)) {
+        assert.deepEqual(params, [
+          "tenant-a", "project-a", "session-a", WORK_ID, targetDigest, staleWorkId,
+        ]);
+        return { rows: [{ work_id: WORK_ID, create_request_digest: targetDigest }] };
+      }
+      throw new Error("unexpected_authorized_rebind_query");
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  const resumed = await runtime.ensure({ tenantId: "tenant-a", subject: "member-a" }, {
+    work_id: WORK_ID,
+    project_id: "project-a",
+    session_id: "session-a",
+    resume_existing: true,
+  }, {
+    creationAuthorized: false,
+    trustedSessionFollowup: true,
+    authorizedResumeWorkIds: [WORK_ID],
+    allowAuthorizedSessionRebind: true,
+  });
+
+  assert.equal(resumed.work_id, WORK_ID);
+  assert.equal(resumed.resumed_existing, true);
+  assert.equal(resumed.resume_source, "explicit_authorized_rebind");
+  assert.equal(resumed.session_binding_created, false);
+  assert.equal(resumed.session_binding_rebound, true);
+  assert.equal(resumed.idempotent_replay, false);
+});
+
+test("session rebind option cannot authorize an implicit or unlisted Work", async () => {
+  const staleWorkId = "22222222-2222-4222-8222-222222222222";
+  const calls = [];
+  const pool = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (/CREATE TABLE IF NOT EXISTS core_continuity_works/.test(sql)) return { rows: [] };
+      if (/SELECT pg_advisory_xact_lock/.test(sql)) return { rows: [{}] };
+      if (/SELECT work_id,create_request_digest\s+FROM core_continuity_session_bindings/.test(sql)) {
+        return { rows: [{ work_id: staleWorkId, create_request_digest: "a".repeat(64) }] };
+      }
+      throw new Error("unauthorized_rebind_queried_past_binding");
+    },
+    async end() {},
+  };
+  const runtime = createWorkContinuityRuntime({}, { pool });
+  await assert.rejects(runtime.ensure({ tenantId: "tenant-a", subject: "member-a" }, {
+    project_id: "project-a",
+    session_id: "session-a",
+    resume_existing: true,
+  }, {
+    creationAuthorized: false,
+    trustedSessionFollowup: true,
+    authorizedResumeWorkIds: [WORK_ID],
+    allowAuthorizedSessionRebind: true,
+  }), /continuity_work_acl_denied/);
+  assert.equal(calls.some((call) => /UPDATE core_continuity_session_bindings/.test(call.sql)), false);
 });
 
 test("legacy Gallery prompt fields and blockers are restricted to canonical visible Work ids", async () => {

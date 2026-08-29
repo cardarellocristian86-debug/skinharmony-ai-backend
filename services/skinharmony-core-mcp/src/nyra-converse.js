@@ -44,6 +44,7 @@ const CONSEQUENTIAL_PATTERNS = Object.freeze([
 
 const MANUAL_OWNER_ACTION_PATTERN = /\b(?:manual\w*|lo\s+faccio\s+io|faccio\s+io|owner\s+esegue|i(?:'|’)ll\s+do\s+it)\b/iu;
 const MERGE_PATTERN = /\bmerge\w*\b/iu;
+const GIT_COMMIT_PATTERN = /\b(?:git\s+commit|committ\w*|(?:fai|fare|crea\w*|esegui\w*|effettua\w*)\s+(?:un\s+)?commit)\b/iu;
 const GIT_PUSH_PATTERN = /\bpush\w*\b/iu;
 const PULL_REQUEST_PATTERN = /\b(?:pull\s+request|pr)\b/iu;
 const DEPLOY_PATTERN = /\b(?:deploy\w*|deployment|distribuisc\w*|distribuzion\w*)\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu;
@@ -54,6 +55,7 @@ const DIAGNOSTIC_REQUEST_PATTERN = /\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|
 // take.  Strip only that negative sentence.  A later affirmative sentence is
 // intentionally preserved and will still be governed.
 const READ_ONLY_ACTION_DENIAL_PATTERN = /\b(?:non|senza)\s+(?:crea\w*|modifica\w*|esegui\w*|f(?:ai|ar)\w*|effettua\w*|avvia\w*|richied\w*|apri\w*|pubblica\w*|rilascia\w*).{0,600}?(?:[.!?]|$)/giu;
+const DIRECT_ACTION_DENIAL_PATTERN = /\b(?:senza|n[eé]|non)\s+(?:(?:fare|esegui\w*|effettua\w*|crea\w*|apri\w*|richied\w*|autorizza\w*)\s+)?(?:git\s+commit|commit\w*|push\w*|pull\s+request|pr|merge\w*|deploy\w*|deployment|publish\w*|release)(?:\s*(?:,|\/|\be\b|\bo\b|\bn[eé]\b|\bnor\b)\s*(?:git\s+commit|commit\w*|push\w*|pull\s+request|pr|merge\w*|deploy\w*|deployment|publish\w*|release))*\b/giu;
 const GENERIC_GUARD_REASON = "safety_mode";
 const ACTION_CONTINUATION_OPERATIONS = new Set([
   "issue_delegation",
@@ -546,6 +548,7 @@ function requestedActionClass(message, connectorHint, workBootstrapProvided = fa
   // mutation before Core has evaluated the candidate.
   if (workBootstrapProvided) return "WORK_BOOTSTRAP";
   if (MERGE_PATTERN.test(actionText)) return "GIT_MERGE";
+  if (GIT_COMMIT_PATTERN.test(actionText)) return "GIT_COMMIT";
   if (GIT_PUSH_PATTERN.test(actionText)) return "GIT_PUSH";
   if (PULL_REQUEST_PATTERN.test(actionText)) return "PULL_REQUEST_OPEN";
   if (DEPLOY_PATTERN.test(actionText)) return "DEPLOY";
@@ -560,7 +563,9 @@ function requestedActionClass(message, connectorHint, workBootstrapProvided = fa
 }
 
 function actionRelevantText(message) {
-  return String(message || "").replace(READ_ONLY_ACTION_DENIAL_PATTERN, " ");
+  return String(message || "")
+    .replace(READ_ONLY_ACTION_DENIAL_PATTERN, " ")
+    .replace(DIRECT_ACTION_DENIAL_PATTERN, " ");
 }
 
 function actionPolicy(
@@ -574,14 +579,17 @@ function actionPolicy(
     .filter(([, pattern]) => pattern.test(actionText))
     .map(([category]) => category);
   const classifiedAction = requestedActionClass(message, connectorHint, workBootstrapProvided);
+  if (classifiedAction === "GIT_COMMIT" && !categories.includes("release")) {
+    categories.push("release");
+  }
   const actionClass = classifiedAction === "NONE" && (categories.length > 0 || coreOwnerConfirmationRequired)
     ? "EXTERNAL_MUTATION"
     : classifiedAction;
   const mergeRequested = actionClass === "GIT_MERGE";
   const ticketReserveRequested = actionClass === "TICKET_RESERVE";
   const workBootstrapRequested = actionClass === "WORK_BOOTSTRAP";
-  const consequential = categories.length > 0 || ticketReserveRequested ||
-    workBootstrapRequested || coreOwnerConfirmationRequired;
+  const consequential = categories.length > 0 || classifiedAction !== "NONE" ||
+    coreOwnerConfirmationRequired;
   return Object.freeze({
     consequential_request_detected: consequential,
     categories: Object.freeze(categories),
@@ -1275,85 +1283,175 @@ function orchestrationDirective({
   });
 }
 
-function directiveReplySeed(locale, directive, workBound) {
-  const english = locale === "en";
-  const parts = [];
+function directiveActor(actor, english) {
+  if (actor === "CODEX") return "Codex";
+  if (actor === "OWNER") return english ? "Owner" : "Tu";
+  if (actor === "UNIVERSAL_CORE") return "Universal Core";
+  if (actor === "HOST") return english ? "Connected AI" : "AI collegata";
+  return "Nyra";
+}
+
+function directiveConversationFocus(message) {
+  const text = String(message || "").trim();
+  if (DIAGNOSTIC_REQUEST_PATTERN.test(text)) return "diagnosis";
+  if (/\b(?:riprova|retry|continua|prosegui|riprendi|avanti)\b/iu.test(text)) return "progress";
+  return "standard";
+}
+
+function directiveProgressSummary(workContext, english) {
+  const pendingTasks = boundedCount(workContext?.pending_required_task_count);
+  const pendingEvidence = boundedCount(workContext?.unverified_required_evidence_count);
+  if (!pendingTasks && !pendingEvidence) return null;
+  const details = [];
+  if (pendingTasks) details.push(english
+    ? `${pendingTasks} required task${pendingTasks === 1 ? "" : "s"}`
+    : `${pendingTasks} attività obbligatori${pendingTasks === 1 ? "a" : "e"}`);
+  if (pendingEvidence) details.push(english
+    ? `${pendingEvidence} evidence item${pendingEvidence === 1 ? "" : "s"} to verify`
+    : `${pendingEvidence} evidenz${pendingEvidence === 1 ? "a da verificare" : "e da verificare"}`);
+  return english ? `Remaining: ${details.join(" and ")}.` : `Restano ${details.join(" e ")}.`;
+}
+
+function directiveStateSummary({ directive, workBound, focus, english }) {
   const disposition = directive.decision.disposition;
-  if (["RESUME", "PROCEED_READ_ONLY"].includes(disposition)) {
-    parts.push(english ? "We can continue." : "Possiamo continuare.");
-  } else if (disposition === "PREPARE_BOUNDED_WORK") {
+  const ticket = directive.ticket_request || {};
+  const hardBlock = directive.core_diagnostics?.state === "BLOCKED";
+  if (hardBlock) {
+    return english
+      ? "There is a concrete Core blocker; I will keep the Work intact and focus only on the stated remedy."
+      : "C'è un blocco concreto di Core: mantengo il Work invariato e procedo solo sulla correzione indicata.";
+  }
+  if (disposition === "COMPLETE") return english
+    ? "The Work has a verified closure."
+    : "Il Work ha una chiusura verificata.";
+  if (disposition === "REQUEST_WORK_BOOTSTRAP") return english
+    ? "The new Work is specified and ready for its duplicate review."
+    : "Il nuovo Work è definito e pronto per la review anti-duplicato.";
+  if (["REQUEST_CORE_TICKET", "MANUAL_HANDOFF"].includes(disposition) ||
+      ["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"].includes(ticket.state)) return english
+    ? "The preparation is complete: Universal Core can review the exact ticket candidate."
+    : "La preparazione è completa: Universal Core può esaminare il candidate di ticket esatto.";
+  if (!workBound) return english
+    ? "I need one canonical Work before I can coordinate the next step."
+    : "Mi serve un solo Work canonico prima di coordinare il prossimo passo.";
+  if (focus === "diagnosis" && directive.core_diagnostics?.guard_mode === "confirmation_required") {
+    return english
+      ? "I found no technical stop: the guard applies only to the external action, while local work can continue."
+      : "Non ho rilevato uno stop tecnico: il guard riguarda solo l'azione esterna, mentre il lavoro locale può continuare.";
+  }
+  if (ticket.required || disposition === "PREPARE_BOUNDED_WORK") return focus === "diagnosis"
+    ? (english ? "This is not a technical stop: local analysis and evidence can advance now."
+      : "Non è uno stop tecnico: analisi ed evidenze locali possono avanzare ora.")
+    : (english ? "I can move the local preparation forward without reopening the analysis."
+      : "Posso far avanzare la preparazione locale senza ricominciare l'analisi.");
+  if (["RESUME", "PROCEED_READ_ONLY"].includes(disposition)) return focus === "progress"
+    ? (english ? "I am resuming from the last verifiable point in this Work."
+      : "Riprendo dal punto verificabile di questo Work.")
+    : (english ? "The Work can continue from its current verified state."
+      : "Il Work può continuare dal suo stato verificato attuale.");
+  return directive.problem?.summary
+    ? (english ? `Focus: ${sentence(directive.problem.summary)}` : `Focus: ${sentence(directive.problem.summary)}`)
+    : (english ? "The Work is ready for its next bounded step." : "Il Work è pronto per il prossimo passo circoscritto.");
+}
+
+function directiveTicketSummary(ticket, english) {
+  if (!ticket?.required) return null;
+  if (ticket.state === "WORK_BOOTSTRAP_READY") return english
+    ? "Next gate: submit the exact bootstrap candidate for duplicate review, then request a fresh owner confirmation."
+    : "Prossimo gate: sottoporre il candidate di bootstrap esatto alla review anti-duplicato, poi chiedere una conferma owner fresca.";
+  if (["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"].includes(ticket.state)) return english
+    ? "Next gate: request Core review for this revision-bound candidate."
+    : "Prossimo gate: richiedere a Core la review di questo candidate vincolato alla revisione.";
+  return english
+    ? "The ticket remains pending until the listed evidence and acceptance prerequisites are verified."
+    : "Il ticket resta in attesa finché evidenze e criteri di accettazione indicati non sono verificati.";
+}
+
+function directiveReplySeed(locale, directive, workBound, { message = "", style = "balanced" } = {}) {
+  const english = locale === "en";
+  const focus = directiveConversationFocus(message);
+  const responseStyle = ["concise", "balanced", "detailed"].includes(style) ? style : "balanced";
+  const parts = [directiveStateSummary({ directive, workBound, focus, english })];
+  const first = directive.next_actions?.[0];
+  if (first?.summary) {
+    const actor = directiveActor(first.actor, english);
     parts.push(english
-      ? "We can keep working now inside the bounded workspace."
-      : "Possiamo continuare subito nel workspace bounded.");
-  } else if (disposition === "REQUEST_CORE_TICKET") {
+      ? `Now: ${actor} — ${sentence(first.summary)}`
+      : `Adesso: ${actor} — ${sentence(first.summary)}`);
+  }
+  const hardCauses = (directive.core_diagnostics?.causes || [])
+    .filter((cause) => cause?.state === "BLOCKED")
+    .map((cause) => cause.remediation)
+    .filter(Boolean);
+  if (responseStyle === "detailed" && hardCauses.length) {
+    parts.push(english ? `Why: ${hardCauses.slice(0, 2).join("; ")}` : `Perché: ${hardCauses.slice(0, 2).join("; ")}`);
+  }
+  const needs = (directive.needs || []).map((item) => item?.detail).filter(Boolean);
+  if (responseStyle !== "concise" && needs.length) {
     parts.push(english
-      ? "The preparation is ready for Universal Core review."
-      : "La preparazione è pronta per la verifica di Universal Core.");
-  } else if (disposition === "REQUEST_WORK_BOOTSTRAP") {
+      ? `To unblock the next gate: ${needs.slice(0, responseStyle === "detailed" ? 2 : 1).join("; ")}`
+      : `Per sbloccare il prossimo gate: ${needs.slice(0, responseStyle === "detailed" ? 2 : 1).join("; ")}`);
+  }
+  if (responseStyle === "detailed") {
+    const progress = directiveProgressSummary(directive.work_context, english);
+    if (progress) parts.push(progress);
+  }
+  if (responseStyle !== "concise") {
+    const ticket = directiveTicketSummary(directive.ticket_request, english);
+    if (ticket) parts.push(ticket);
+  }
+  if (directive.ticket_request?.continuation?.available === true && responseStyle === "detailed") {
     parts.push(english
-      ? "The new Work specification is ready for duplicate review."
-      : "La specifica del nuovo Work è pronta per la review anti-duplicato.");
-  } else if (disposition === "MANUAL_HANDOFF") {
-    parts.push(english ? "The merge remains a manual owner handoff." : "Il merge resta un handoff manuale all'owner.");
-  } else if (disposition === "COMPLETE") {
-    parts.push(english ? "The Work has a verified closure." : "Il Work ha una closure verificata.");
-  } else if (directive.problem) {
+      ? "The connected host can submit this exact candidate through Nyra's governed continuation."
+      : "L'AI collegata può sottoporre questo candidate esatto tramite la continuazione governata di Nyra.");
+  }
+  if (directive.ticket_request?.merge_policy === "MANUAL_ONLY") {
     parts.push(english
-      ? `Problem: ${sentence(directive.problem.summary)}`
-      : `Problema: ${sentence(directive.problem.summary)}`);
-  } else if (!workBound) {
-    parts.push(english ? "No canonical Work is bound." : "Nessun Work canonico è associato.");
+      ? "After the Core gate, the merge remains your manual action."
+      : "Dopo il gate Core, il merge resta un'azione manuale tua.");
   }
-  const diagnosis = directive.core_diagnostics;
-  if (diagnosis?.causes?.length) {
-    const details = diagnosis.causes.slice(0, 2).map((cause) => cause.remediation).filter(Boolean);
-    if (details.length) {
-      parts.push(english
-        ? `Core diagnosis: ${details.join("; ")}.`
-        : `Diagnosi Core: ${details.join("; ")}.`);
-    }
-  }
-  if (directive.needs.length > 0) {
-    const details = directive.needs.slice(0, 3).map((item) => item.detail).filter(Boolean);
-    if (details.length) parts.push(english ? `Required: ${details.join("; ")}.` : `Mi serve: ${details.join("; ")}.`);
-  }
-  const first = directive.next_actions[0];
-  if (first) {
-    const actor = first.actor === "CODEX" ? "Codex" :
-      first.actor === "OWNER" ? "Owner" :
-        first.actor === "UNIVERSAL_CORE" ? "Universal Core" :
-          first.actor === "HOST" ? "Host" : "Nyra";
-    parts.push(`${actor}, ${sentence(first.summary)}`);
-  }
-  if (directive.ticket_request.required) {
-    if (directive.ticket_request.state === "WORK_BOOTSTRAP_READY") {
-      parts.push(english
-        ? "The registered host may submit the exact bootstrap candidate; creation still requires duplicate review and a fresh owner confirmation."
-        : "L'host registrato può sottoporre il candidate di bootstrap esatto; la creazione richiede ancora review anti-duplicato e conferma owner fresca.");
-    } else if (["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"].includes(directive.ticket_request.state)) {
-      parts.push(english
-        ? "Universal Core can now review the revision-bound ticket candidate; no ticket has been issued yet."
-        : "Universal Core può ora verificare il candidate vincolato alla revisione; nessun ticket è stato ancora emesso.");
-    } else {
-      parts.push(english
-        ? "The Core ticket candidate still needs the listed prerequisites; read-only analysis, evidence and proposals can continue."
-        : "Il candidate per il ticket Core richiede ancora i prerequisiti indicati; lettura, analisi, evidenze e proposta possono continuare.");
-    }
-  }
-  if (directive.ticket_request.continuation?.available === true) {
-    parts.push(english
-      ? "The authenticated host can now submit this exact candidate to Universal Core through Nyra's governed continuation tool."
-      : "L'host autenticato può ora sottoporre questo candidate esatto a Universal Core tramite la continuazione governata di Nyra.");
-  }
-  if (directive.ticket_request.merge_policy === "MANUAL_ONLY") {
-    parts.push(english
-      ? "The merge must be performed manually by the owner after the Core gate."
-      : "Il merge deve essere eseguito manualmente dall'owner dopo il gate Core.");
-  }
-  parts.push(english
-    ? "This conversational turn neither authorizes nor performs external actions."
-    : "Questo turno conversazionale non autorizza né esegue azioni esterne.");
-  return parts.join(" ").slice(0, 1_200);
+  return parts.filter(Boolean).join("\n\n").slice(0, 1_200);
+}
+
+function connectedAiBrief(locale, directive) {
+  const english = locale === "en";
+  const context = directive.work_context || {};
+  const evidenceNeeds = (directive.needs || [])
+    .filter((item) => item?.kind === "EVIDENCE")
+    .map((item) => boundedPublicText(item.detail, MAX_SIGNAL_LENGTH))
+    .filter(Boolean)
+    .slice(0, 3);
+  const readyActions = (directive.next_actions || [])
+    .filter((action) => ["HOST", "CODEX"].includes(action?.actor) &&
+      action.external_side_effect !== true && action.status === "READY")
+    .slice(0, 3);
+  const steps = readyActions.map((action, index) => {
+    const expectedEvidence = action.code === "complete_next_work_task" && context.next_required_task?.title
+      ? [english
+        ? `Bounded result for: ${context.next_required_task.title}`
+        : `Esito circoscritto per: ${context.next_required_task.title}`]
+      : action.code === "collect_missing_evidence" ? evidenceNeeds : [];
+    return Object.freeze({
+      order: index + 1,
+      instruction: action.summary,
+      mode: action.mode === "READ_ONLY" ? "READ_ONLY" : "BOUNDED_WORKSPACE",
+      expected_evidence: Object.freeze(expectedEvidence),
+      external_side_effect: false,
+    });
+  });
+  const firstNeed = (directive.needs || []).find((item) => item?.detail)?.detail || null;
+  const goal = steps[0]?.instruction || firstNeed || (english
+    ? "Wait for the next server-issued Work instruction."
+    : "Attendere la prossima istruzione Work emessa dal server.");
+  return Object.freeze({
+    schema_version: "nyra_connected_ai_brief_v1",
+    state: steps.length ? "READY" : "WAITING",
+    goal: boundedPublicText(goal, MAX_SIGNAL_LENGTH),
+    steps: Object.freeze(steps),
+    expected_evidence: Object.freeze(evidenceNeeds),
+    research_required: false,
+    external_action_authorized: false,
+  });
 }
 
 function turnId({ tenantId, sessionId, message, workId, projectId, locale, style }) {
@@ -1677,6 +1775,7 @@ export function createNyraConverseHandler({
       submit_tool: null,
       candidate_attestation: null,
       expires_at: null,
+      operations: Object.freeze([]),
       reason: "continuation_signer_unavailable",
     });
     if (typeof issueContinuation === "function") {
@@ -1708,7 +1807,9 @@ export function createNyraConverseHandler({
       locale,
       directive,
       Boolean(boundedPreflight.work.work_id),
+      { message, style },
     );
+    const agentBrief = connectedAiBrief(locale, directive);
     const id = turnId({
       tenantId,
       sessionId,
@@ -1720,7 +1821,7 @@ export function createNyraConverseHandler({
     });
     const instructions = [
       "Render host_response_contract.reply_seed as Nyra's complete operational answer before adding any optional explanation.",
-      "Follow orchestration_directive actors, ordering and gates exactly; RESUME, PROCEED_READ_ONLY and PREPARE_BOUNDED_WORK permit only their stated bounded progress and are never execution authority.",
+      "Follow host_response_contract.connected_ai_brief as the complete server-issued task brief: execute only its ordered steps, return only its expected evidence, and never research or invent missing steps.",
       "Do not claim that Nyra, Codex, Core or the owner performed an action unless separately verified evidence is present; this turn never authorizes an external action.",
     ];
     return textResult(Object.freeze({
@@ -1776,6 +1877,7 @@ export function createNyraConverseHandler({
         response_style: style,
         reply_seed: replySeed,
         next_action: nextAction,
+        connected_ai_brief: agentBrief,
         rendering_policy: "server_orchestration_directive_first_v2",
         instructions: Object.freeze(instructions),
       }),

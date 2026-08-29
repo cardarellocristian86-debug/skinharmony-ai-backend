@@ -99,6 +99,31 @@ test("keeps governed reads and one governed continuation tool for a registered c
   }).some((tool) => tool.name === "nyra_governed_continue"), false);
 });
 
+test("publishes an exact continuation schema without widening native report authority", () => {
+  const governedContinue = TOOLS.find((tool) => tool.name === "nyra_governed_continue");
+  const operationEnum = governedContinue.inputSchema.properties.operation.enum;
+  const resume = governedContinue.inputSchema.properties.resume_request;
+  const plan = governedContinue.inputSchema.properties.native_plan_request;
+  const bind = governedContinue.inputSchema.properties.native_bind_request;
+
+  assert.equal(operationEnum.includes("resume_existing_work"), true);
+  assert.equal(operationEnum.includes("create_native_plan"), true);
+  assert.equal(operationEnum.includes("bind_native_child"), true);
+  assert.equal(operationEnum.includes("native_report"), false);
+  assert.equal(resume.required.includes("session_id"), true);
+  assert(resume.properties.session_id);
+  for (const schema of [plan, bind]) {
+    assert.equal(schema.required.includes("session_id"), false);
+    assert.equal(schema.properties.session_id, undefined);
+  }
+
+  const nyraConverse = TOOLS.find((tool) => tool.name === "nyra_converse");
+  const continuation = nyraConverse.outputSchema.properties
+    .orchestration_directive.properties.ticket_request.properties.continuation;
+  assert.equal(continuation.required.includes("operations"), true);
+  assert.equal(continuation.properties.operations.items.enum.includes("native_report"), false);
+});
+
 test("routes only verified tenant-bound stale governed reads to Core", () => {
   const nyra = TOOLS.find((tool) => tool.name === "nyra_converse");
   const health = TOOLS.find((tool) => tool.name === "core_health");
