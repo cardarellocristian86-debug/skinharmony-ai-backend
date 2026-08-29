@@ -1301,6 +1301,40 @@ test("a genuinely new top-five candidate still invalidates an open review", asyn
   assert.equal(pool.legacy.size, 0);
 });
 
+test("an owner-approved review remains consumable when a legacy candidate is redacted from its rendered list", async () => {
+  const pool = new AtomicWorkPool();
+  const legacyId = "66666666-6666-4666-8666-666666666666";
+  pool.works.set(key("tenant-a", legacyId), {
+    tenant_id: "tenant-a", work_id: legacyId, legacy_work_id: legacyId,
+    work_code: "NYRA-CONVERSE-V1-0001", work_name: "Nyra conversational host runtime",
+    work_type: "legacy", project_id: "nyra-converse-v1", owner_user_id: "owner", created_by_user_id: "owner",
+    assigned_user_ids: [], supervising_user_ids: [], agent_ids: [], visibility_scope: "private",
+    status: "HANDOFF", priority: "P4", priority_score: 0, progress_bp: 0,
+    objective: "Nyra host runtime and governed conversation", next_action: "obtain Core ticket",
+    acceptance_criteria: [], updated_at: "2026-08-08T09:59:00.000Z",
+  });
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = {
+    ...createInput(), request_id: "request-redacted-legacy-candidate", session_id: "session-redacted",
+    project_id: "nyra-core-layering", work_name: "Nyra conversational layering",
+    objective: "Govern Nyra host runtime with a distinct Work and Core ticket",
+  };
+  const review = await store.openWorkReview(identity(), { intent_type: "CREATE_WORK",
+    request: `${input.work_name} ${input.objective}`, create_request: input });
+  assert.equal(review.selected_work_id, legacyId);
+  assert.equal(review.requires_owner_decision, true);
+  const stored = pool.reviews.get(key("tenant-a", review.review_id));
+  stored.review_result = { ...stored.review_result, candidates: [] };
+
+  const created = await store.createNewWork(identity(), {
+    ...input, review_id: review.review_id, review_digest: review.review_digest,
+    review_decision: "CONTINUE_NEW_WORK",
+  });
+  assert.equal(created.work.project_id, "nyra-core-layering");
+  assert.equal(pool.works.size, 2);
+});
+
 test("preflight projects legacy rows without inventing ownership and preserves Gallery v1 shape", async () => {
   const pool = new AtomicWorkPool();
   const legacyId = "22222222-2222-4222-8222-222222222222";

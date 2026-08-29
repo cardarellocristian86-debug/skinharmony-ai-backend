@@ -123,6 +123,7 @@ function shortKey(prefix, value) { return `${prefix}_${digest(value).slice(0, 48
 function publicAssignment(row) {
   return {
     assignment_id: row.assignment_id,
+    run_id: row.run_id,
     assignment_key: row.assignment_key,
     blueprint_id: row.blueprint_id,
     role: row.role,
@@ -148,7 +149,7 @@ function assignmentSpecs(plan) {
   if (ids.has("release_operations")) add("release_prepare", "release_operations", "release_operations", "Prepara checklist di rilascio e rollback; non eseguire merge, deploy o pubblicazioni.", ["plan"]);
   if (ids.has("independent_verifier")) {
     const dependencies = specs.filter((item) => ["research", "execute", "release_prepare"].includes(item.key)).map((item) => item.key);
-    add("verify", "independent_verifier", "independent_verifier", "Verifica in modo indipendente evidenze, regressioni e limiti; non correggere né autorizzare azioni.", dependencies.length ? dependencies : ["plan"]);
+    add("verify", "independent_verifier", "independent_verifier", "Verifica in modo indipendente evidenze, regressioni e limiti; non correggere né autorizzare azioni. Per un verdetto approvato usa lo scope Work e il contratto di evidenza restituiti da Nyra al claim.", dependencies.length ? dependencies : ["plan"]);
   }
   return specs;
 }
@@ -345,7 +346,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
             WHERE tenant_id=$1 AND work_id=$2 AND architecture_version<$3
           )`, [tenantId, workId, Number(row.current_version)]);
         await client.query(`UPDATE core_nyra_autopilot_runs SET status='cancelled',updated_at=now()
-          WHERE tenant_id=$1 AND work_id=$2 AND architecture_version<$3 AND status IN ('pending','materialized')`,
+          WHERE tenant_id=$1 AND work_id=$2 AND architecture_version<$3 AND status<>'cancelled'`,
         [tenantId, workId, Number(row.current_version)]);
         const runId = crypto.randomUUID();
         await client.query(`INSERT INTO core_nyra_autopilot_runs
@@ -379,7 +380,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       await initialize();
       const runs = await pool.query(`SELECT tenant_id,work_id,run_id,project_id,trigger_type,architecture_version,intent_digest,plan,plan_digest,status,created_at,updated_at
         FROM core_nyra_autopilot_runs WHERE tenant_id=$1 AND work_id=$2 ORDER BY architecture_version DESC,created_at DESC`, [tenantId, workId]);
-      const assignments = await pool.query(`SELECT assignment_id,assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies,eligible_client_types,status,claim_expires_at,submitted_result,quarantine
+      const assignments = await pool.query(`SELECT assignment_id,run_id,assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies,eligible_client_types,status,claim_expires_at,submitted_result,quarantine
         FROM core_nyra_autopilot_assignments WHERE tenant_id=$1 AND work_id=$2 ORDER BY created_at,assignment_key`, [tenantId, workId]);
       return { schema_version: NYRA_AUTOPILOT_SCHEMA_VERSION, tenant_id: tenantId, work_id: workId,
         runs: runs.rows.map((row) => ({ ...row, execution_authorized: false })), assignments: assignments.rows.map(publicAssignment), execution_authorized: false };
@@ -392,7 +393,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
       const parameters = [tenantId, claimant.client_type];
       const predicate = ["tenant_id=$1", "status='offered'", "eligible_client_types ? $2"];
       if (workId) { parameters.push(workId); predicate.push(`work_id=$${parameters.length}`); }
-      const result = await pool.query(`SELECT assignment_id,assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies,eligible_client_types,status,claim_expires_at,submitted_result,quarantine
+      const result = await pool.query(`SELECT assignment_id,run_id,assignment_key,agent_instance_id,blueprint_id,role,task_contract,dependencies,eligible_client_types,status,claim_expires_at,submitted_result,quarantine
         FROM core_nyra_autopilot_assignments WHERE ${predicate.join(" AND ")} ORDER BY created_at,assignment_key LIMIT 50`, parameters);
       return { tenant_id: tenantId, agent_id: claimant.agent_id, assignments: result.rows.map(publicAssignment), execution_authorized: false };
     },
@@ -431,7 +432,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         return { tenant_id: tenantId, work_id: workId, assignment: publicAssignment(updated.rows[0]), receipt, execution_authorized: false };
       });
     },
-    async submit(identity, input = {}) {
+    async submit(identity, input = {}, { validateSubmission = null } = {}) {
       const tenantId = tenant(identity?.tenantId);
       const workId = uuid(input.work_id, "work_id");
       const assignmentId = uuid(input.assignment_id, "assignment_id");
@@ -457,6 +458,22 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         }
         const serialized = JSON.stringify(guarded.value);
         if (Buffer.byteLength(serialized) > 100_000) throw new Error("nyra_assignment_result_too_large");
+        // The Runtime owns persistence, but Nyra's Work projection owns the
+        // semantic acceptance contract.  Invoke that server-supplied check
+        // before committing a verifier result so an invalid verdict cannot
+        // leave an irreversible `submitted` assignment behind.
+        if (typeof validateSubmission === "function") {
+          await validateSubmission({
+            tenant_id: tenantId,
+            work_id: workId,
+            assignment: {
+              ...publicAssignment(row),
+              claimed_agent_id: row.claimed_agent_id,
+              claimed_session_fingerprint: row.claimed_session_fingerprint,
+            },
+            result: guarded.value,
+          });
+        }
         const updated = await client.query(`UPDATE core_nyra_autopilot_assignments SET status='submitted',submitted_result=$4::jsonb,updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 RETURNING *`, [tenantId, workId, assignmentId, serialized]);
         const receipt = await appendReceipt(client, tenantId, workId, "nyra_assignment_submitted", { assignment_id: assignmentId,

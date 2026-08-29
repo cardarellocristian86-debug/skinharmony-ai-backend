@@ -508,7 +508,22 @@ function resolveConnectorToolName(value, tools = []) {
   return visibleNames.has(candidate) ? candidate : null;
 }
 
-const CHATGPT_NYRA_FRONT_DOOR_TOOL_NAMES = new Set(["nyra_converse"]);
+// Conversational hosts receive Nyra as their sole public control plane.  Core
+// remains the decision authority behind Nyra, but generic Core tools must not
+// be part of the connected AI's tool catalog.
+const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
+  "nyra_converse",
+  // This remains subject to its own owner confirmation and Core gate in the
+  // handler. Exposing it here lets Nyra ask for the one bounded activation
+  // without sending the connected AI into the generic Core catalogue.
+  "nyra_autopilot_enable",
+  // These two are Nyra's bounded worker handoff, not direct Core tooling.
+  // Nyra exposes an exact assignment in the durable dialogue, then the
+  // connected AI can only claim and submit that assignment.  It cannot use
+  // them to discover Work state, mint a ticket, or execute an external action.
+  "nyra_work_assignment_claim",
+  "nyra_work_assignment_submit",
+]);
 function connectorToolCandidate(value) {
   const requested = String(value || "");
   const prefix = `${CONNECTOR_TOOL_NAMESPACE}.`;
@@ -571,17 +586,11 @@ function filterToolsForClient(tools = [], identity) {
     });
   });
   if (!usesNyraConversationalSurface(identity)) return capabilityFiltered;
-  const governedReadCompatibility = capabilityFiltered.filter((tool) => (
-    hasTenantBoundChatGptReadCompatibility(identity, tool.name) &&
-    // Preflight remains a cached/internal compatibility entrypoint. It must
-    // never become a second public planning tool in tools/list.
-    tool.name !== "work_preflight"
-  ));
   return capabilityFiltered.filter((tool) => (
-    CHATGPT_NYRA_FRONT_DOOR_TOOL_NAMES.has(tool.name) ||
-    (tool.name === "nyra_governed_continue" &&
+    NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name) ||
+    (tool.name === "nyra_continue" &&
       hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE))
-  )).concat(governedReadCompatibility);
+  ));
 }
 
 // ChatGPT can retain connector descriptors for an already-open app session.
@@ -596,7 +605,9 @@ function resolveStaleChatGptReadTool(value, identity, visibleTools = [], args = 
   if (!usesNyraConversationalSurface(identity)) return null;
   const candidate = connectorToolCandidate(value);
   if (visibleTools.some((tool) => tool.name === candidate)) return null;
-  if (hasTenantBoundChatGptReadCompatibility(identity, candidate)) return candidate;
+  // A stale generic Core descriptor must not reopen a direct Core path for a
+  // conversational host.  Translate the legacy read to Nyra, which can ask
+  // Core internally and return the connected-AI brief.
   return isStaleNyraReadToolName(value) ? "nyra_converse" : null;
 }
 
@@ -677,9 +688,9 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   // nyra_converse owns a strict cache-or-one-preflight protocol. Letting the
   // generic hook preflight it as well duplicates Core calls on stale context.
   "nyra_converse",
-  // This consumes the signed, revision-bound candidate issued by
-  // nyra_converse and re-reads the Work before using dedicated Core routes.
-  "nyra_governed_continue",
+  // This consumes the opaque, revision-bound continuation reference issued
+  // by Nyra and re-reads the Work before using dedicated Core routes.
+  "nyra_continue",
   "core_health",
   "nyra_branch_catalog",
   "core_capability_catalog",
@@ -953,7 +964,7 @@ function isAgentPresenceBootstrapCall(toolName, args = {}) {
 }
 const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "core_capability_invoke",
-  "nyra_governed_continue",
+  "nyra_continue",
   "host_native_delegation_issue",
   "host_native_delegation_revoke",
   ...POLICY_REGISTRY_LIFECYCLE_TOOLS,
@@ -963,6 +974,10 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "tenant_work_legacy_reconcile_close",
   "core_block_remediation_resubmit",
   "entity_360_shadow_enable",
+  // The only conversational Nyra configuration action. It still requires an
+  // exact OAuth owner assertion and the handler's Universal Core gate before
+  // it can adopt active Work records.
+  "nyra_autopilot_enable",
 ]);
 
 function inferClientType(identity) {
@@ -1034,13 +1049,14 @@ export function resolveHostTransportPresence({
   });
 }
 
-// A governed-continuation candidate is HMAC-bound to the server-derived
-// logical session.  MCP transports can rotate (or retain an older bootstrap
-// binding) between the conversational read and its next continuation call.
-// For this one tool, allow the declared logical session to select the existing
-// server-signed candidate; the attestor still verifies tenant, host, registry,
-// logical fingerprint, expiry and single-use nonce before any operation.
-// Other stateful tools keep the transport binding as the higher-priority input.
+// A governed continuation reference is server-side bound to the logical
+// session. MCP transports can rotate (or retain an older bootstrap binding)
+// between the conversational read and its next continuation call. For this
+// one tool, allow the declared logical session to select the existing opaque
+// reference; the continuation store still verifies tenant, host, registry,
+// logical fingerprint, expiry and durable single-use state before any
+// operation. Other stateful tools keep the transport binding as the
+// higher-priority input.
 export function resolveMcpLogicalSession({
   toolName,
   transportPresence = null,
@@ -1048,7 +1064,7 @@ export function resolveMcpLogicalSession({
   transportSessionId = "",
   serverIssuedSessionId = "",
 } = {}) {
-  const continuationRebind = toolName === "nyra_governed_continue" &&
+  const continuationRebind = toolName === "nyra_continue" &&
     Boolean(declaredSessionId) &&
     transportPresence?.session_id !== declaredSessionId;
   return Object.freeze({
@@ -1190,6 +1206,13 @@ export function buildReadiness(config = {}, options = {}) {
     config.nyraGovernedContinueConfigurationValid === true &&
     governedMultiHostRegistryConfigured &&
     governedMultiHostSigningConfigured;
+  // A governed conversational continuation is meaningful only when its
+  // server-side reference store is durable and initialized.  Do not report a
+  // production service ready when `nyra_continue` would immediately fail.
+  const nyraContinuationStoreRequired = governedMultiHostRequired;
+  const nyraContinuationStoreConfigured = Boolean(config.databaseUrl);
+  const nyraContinuationStoreInitialized =
+    options.readiness?.nyraContinuationStoreInitialized === true;
   const components = {
     build_identity: {
       required: true,
@@ -1258,6 +1281,15 @@ export function buildReadiness(config = {}, options = {}) {
       ready: !governedMultiHostRequired || (
         governedMultiHostConfigured && governedMultiHostProtocolEnabled
       ),
+    },
+    nyra_continuation_store: {
+      required: nyraContinuationStoreRequired,
+      configured: nyraContinuationStoreConfigured,
+      initialized: nyraContinuationStoreInitialized,
+      initialization_failed:
+        options.readiness?.nyraContinuationStoreInitializationFailed === true,
+      ready: !nyraContinuationStoreRequired ||
+        (nyraContinuationStoreConfigured && nyraContinuationStoreInitialized),
     },
     postgresql_version: {
       required: postgresMajorVersionRequired,
@@ -1330,6 +1362,11 @@ export function buildReadiness(config = {}, options = {}) {
   }
   if (governedMultiHostRequired && !governedMultiHostProtocolEnabled) {
     reasons.push("governed_multi_host_protocol_disabled");
+  }
+  if (nyraContinuationStoreRequired && !nyraContinuationStoreConfigured) {
+    reasons.push("nyra_continuation_store_not_configured");
+  } else if (nyraContinuationStoreRequired && !nyraContinuationStoreInitialized) {
+    reasons.push("nyra_continuation_store_not_initialized");
   }
   if (
     postgresMajorVersionRequired &&
@@ -1697,7 +1734,7 @@ function configureToolForRuntime(tool, config) {
   if (config.environmentRoutingRequired !== true ||
     POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name) ||
     tool.name === "nyra_converse" ||
-    tool.name === "nyra_governed_continue") return tool;
+    tool.name === "nyra_continue") return tool;
   return {
     ...tool,
     inputSchema: {

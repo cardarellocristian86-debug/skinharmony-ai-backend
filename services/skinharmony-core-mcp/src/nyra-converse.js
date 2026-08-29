@@ -9,6 +9,7 @@ import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_SIGNAL_LENGTH = 500;
 const MAX_DIRECTIVE_ITEMS = 8;
+const CONTINUATION_OPEN_TIMEOUT_MS = 1_500;
 const CORE_ACTION_ID_PATTERN = /^action:[a-zA-Z0-9][a-zA-Z0-9:._-]{0,158}$/;
 const PUBLIC_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
 const FALSE_COMPLETION_CLAIM_PATTERN = /\b(?:deploy(?:ed|\s+complet\w*)|merge\s+(?:eseguit\w*|complet\w*|done)|publish(?:ed|\s+complet\w*)|pubblicat\w*|inviat\w*|sent|completed|completat\w*|eseguit\w*)\b/iu;
@@ -69,6 +70,14 @@ function fail(code, status = 422) {
   error.code = code;
   error.status = status;
   return error;
+}
+
+function boundedContinuationOpen(operation) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(fail("continuation_open_timeout", 503)), CONTINUATION_OPEN_TIMEOUT_MS);
+  });
+  return Promise.race([Promise.resolve(operation), timeout]).finally(() => clearTimeout(timer));
 }
 
 function assertNoCallerAuthority(value, path = "$", depth = 0) {
@@ -266,6 +275,10 @@ function publicNyraDialogue(value) {
   const gallery = work.gallery && typeof work.gallery === "object" ? work.gallery : {};
   const software = work.software && typeof work.software === "object" ? work.software : {};
   const diagnosis = dialogue.self_diagnosis && typeof dialogue.self_diagnosis === "object" ? dialogue.self_diagnosis : {};
+  const assignment = dialogue.assignment && typeof dialogue.assignment === "object" ? dialogue.assignment : {};
+  const assignmentId = boundedWorkId(assignment.assignment_id);
+  const assignmentRole = boundedPublicText(assignment.role, 80);
+  const assignmentState = boundedPublicText(assignment.state, 40);
   return Object.freeze({
     dialogue_id: boundedString(dialogue.dialogue_id, 80) || null,
     manual_digest: /^[a-f0-9]{64}$/.test(String(dialogue.manual?.digest || "")) ? dialogue.manual.digest : null,
@@ -277,6 +290,12 @@ function publicNyraDialogue(value) {
     atlas_revision: Number.isSafeInteger(Number(software.atlas_revision)) ? Number(software.atlas_revision) : null,
     diagnosis_state: boundedString(diagnosis.state, 80) || "unknown",
     next_action_available: true,
+    assignment: Object.freeze({
+      available: Boolean(assignmentId),
+      assignment_id: assignmentId,
+      role: assignmentRole,
+      state: assignmentState,
+    }),
   });
 }
 
@@ -1713,7 +1732,7 @@ export function createNyraConverseHandler({
   interpret,
   readControlContext = null,
   readDirectiveContext = null,
-  issueContinuation = null,
+  openContinuation = null,
 } = {}) {
   if (typeof preflight !== "function" || typeof interpret !== "function") {
     throw new Error("nyra_converse_dependencies_invalid");
@@ -1879,28 +1898,23 @@ export function createNyraConverseHandler({
       continuationOperation,
     });
     let continuation = Object.freeze({
-      schema_version: "nyra_governed_continuation_v1",
+      schema_version: "nyra_continuation_ref_v1",
       available: false,
-      submit_tool: null,
-      candidate_attestation: null,
+      continuation_ref: null,
       expires_at: null,
-      operations: Object.freeze([]),
-      reason: "continuation_signer_unavailable",
+      state: "UNAVAILABLE",
+      reason: "continuation_store_unavailable",
     });
-    if (typeof issueContinuation === "function") {
+    if (typeof openContinuation === "function") {
       try {
-        const candidate = issueContinuation({
-          identity,
-          directive: baseDirective,
-          continuationOperation,
-        });
-        if (candidate?.schema_version === "nyra_governed_continuation_v1") {
-          continuation = candidate;
+        const reference = await boundedContinuationOpen(openContinuation({ identity, directive: baseDirective }));
+        if (reference?.schema_version === "nyra_continuation_ref_v1") {
+          continuation = reference;
         }
       } catch {
         continuation = Object.freeze({
           ...continuation,
-          reason: "continuation_attestation_failed",
+          reason: "continuation_open_failed",
         });
       }
     }

@@ -4,6 +4,7 @@ import test from "node:test";
 import { TOOLS } from "../src/tool-definitions.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import { NYRA_WORK_AUTOMATION_TOOLS } from "../src/nyra-work-automation-tools.js";
+import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
 import { ENTITY_360_TOOLS } from "../src/entity-360.js";
 import {
   COMPACT_MCP_TOOL_NAMES,
@@ -230,12 +231,16 @@ function dedicatedCoreWriteTool(name = "host_native_action_reserve") {
 }
 
 test("publishes a fixed compact MCP surface below the connector import budget", () => {
-  const handlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({})]));
-  const compact = compactMcpTools(TOOLS, handlers);
+  const availableTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS];
+  const handlers = Object.fromEntries(availableTools.map((tool) => [tool.name, async () => ({})]));
+  const compact = compactMcpTools(availableTools, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 11);
-  assert(compact.some((tool) => tool.name === "nyra_governed_continue"));
+  assert.equal(compact.length, 14);
+  assert(compact.some((tool) => tool.name === "nyra_autopilot_enable"));
+  assert(compact.some((tool) => tool.name === "nyra_continue"));
+  assert(compact.some((tool) => tool.name === "nyra_work_assignment_claim"));
+  assert(compact.some((tool) => tool.name === "nyra_work_assignment_submit"));
   assert.deepEqual([...INTERNAL_ONLY_TOOL_NAMES], ["work_preflight"]);
   assert.equal(compact.some((tool) => INTERNAL_ONLY_TOOL_NAMES.has(tool.name)), false);
   assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
@@ -251,9 +256,9 @@ test("keeps the generic preflight internal instead of exposing it through dynami
 });
 
 test("keeps governed continuation direct-only and outside dynamic discovery", () => {
-  const continuation = TOOLS.find((tool) => tool.name === "nyra_governed_continue");
+  const continuation = TOOLS.find((tool) => tool.name === "nyra_continue");
   const snapshot = dynamicCapabilityCatalogSnapshot([continuation], {
-    nyra_governed_continue: async () => ({}),
+    nyra_continue: async () => ({}),
   });
   assert.deepEqual(snapshot.capabilities, []);
 });

@@ -960,7 +960,8 @@ const initialInput = {
   host_type: "codex_native",
 };
 
-function corePlanFor(work, request) {
+function corePlanFor(work, request, { readOnlyNoFileChangeTaskIds = [] } = {}) {
+  const readOnlyTaskIds = new Set(readOnlyNoFileChangeTaskIds);
   const payload = {
     tenant_id: "tenant-a",
     work_id: work.work_id,
@@ -978,7 +979,9 @@ function corePlanFor(work, request) {
       role: task.kind,
       task: task.instruction,
       depends_on: task.dependencies || [],
-      capabilities: [],
+      capabilities: readOnlyTaskIds.has(task.task_id)
+        ? ["READ_ONLY_NO_FILE_CHANGE"]
+        : [],
     })),
     maximum_parallel_agents: request.max_parallel || 1,
   };
@@ -2378,6 +2381,184 @@ test("precommit-native reports agree on one server-digested workspace before a c
   assert.match(evaluation.precommit_verification.workspace_digest, /^[a-f0-9]{64}$/);
   assert.match(pool.works.get(key("tenant-a", work.work_id)).next_action,
     /exact Core git\.commit ticket/);
+});
+
+test("only a Core-signed read-only/no-file-change task may complete without source provenance", async () => {
+  const clock = () => new Date("2026-08-29T20:30:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: "r".repeat(32),
+  }, { pool, now: clock });
+  const identity = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      host_kind: "codex_native",
+      client_type: "codex",
+      capabilities: ["work.operate", "host_native.authorize"],
+    },
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "a".repeat(64),
+    },
+  };
+  const work = await runtime.ensure(identity, {
+    ...initialInput,
+    session_id: "read-only-source-contract-session",
+  }, { creationAuthorized: true });
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "audit", kind: "builder", instruction: "Read the existing ADR only." },
+      {
+        task_id: "verify",
+        kind: "verifier",
+        instruction: "Independently verify the existing ADR only.",
+        dependencies: ["audit"],
+      },
+    ],
+    idempotency_key: "ordinary-source-contract-plan",
+  };
+  const ordinary = await runtime.planNativeAgents(identity, request, {
+    corePlan: corePlanFor(work, request),
+  });
+  const ordinaryBinding = await runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: ordinary.plan.plan_id,
+    task_id: "audit",
+    native_agent_id: "ordinary-audit-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/ordinary-audit-builder",
+  });
+  const ordinaryBuilderIdentity = {
+    ...identity,
+    agentPresence: {
+      agent_id: "ordinary-audit-builder",
+      client_type: "codex",
+      session_fingerprint: "b".repeat(64),
+      host_transport_session_fingerprint: "b".repeat(64),
+      host_kind: "codex_native",
+      signature: `ags_${"b".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  await assert.rejects(runtime.reportNativeAgent(ordinaryBuilderIdentity, {
+    work_id: work.work_id,
+    plan_id: ordinary.plan.plan_id,
+    native_agent_id: "ordinary-audit-builder",
+    host_task_id: "/root/ordinary-audit-builder",
+    assignment_capability: ordinaryBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "A caller field must not bypass source provenance.",
+      read_only_no_file_change: true,
+      tests: [{ name: "read-only audit", passed: true }],
+      evidence_refs: ["adr:existing"],
+    },
+  }), /native_agent_report_commit_or_precommit_required/);
+
+  const readOnlyRequest = {
+    ...request,
+    idempotency_key: "core-signed-read-only-source-contract-plan",
+  };
+  const corePlan = corePlanFor(work, readOnlyRequest, {
+    readOnlyNoFileChangeTaskIds: ["audit", "verify"],
+  });
+  const planned = await runtime.planNativeAgents(identity, readOnlyRequest, { corePlan });
+  assert.deepEqual(
+    planned.plan.core_authority.report_source_requirements,
+    {
+      schema_version: "core_native_report_source_requirements_v1",
+      read_only_no_file_change_task_ids: ["audit", "verify"],
+    },
+  );
+  const builderBinding = await runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    task_id: "audit",
+    native_agent_id: "read-only-audit-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/read-only-audit-builder",
+  });
+  const builderIdentity = {
+    ...identity,
+    agentPresence: {
+      agent_id: "read-only-audit-builder",
+      client_type: "codex",
+      session_fingerprint: "c".repeat(64),
+      host_transport_session_fingerprint: "c".repeat(64),
+      host_kind: "codex_native",
+      signature: `ags_${"c".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  await runtime.reportNativeAgent(builderIdentity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    native_agent_id: "read-only-audit-builder",
+    host_task_id: "/root/read-only-audit-builder",
+    assignment_capability: builderBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "Read-only ADR audit completed without changing files.",
+      tests: [{ name: "read-only audit", passed: true }],
+      evidence_refs: ["adr:existing"],
+    },
+  });
+  const verifierBinding = await runtime.bindNativeAgent(identity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    task_id: "verify",
+    native_agent_id: "read-only-audit-verifier",
+    host_type: "codex_native",
+    host_task_id: "/root/read-only-audit-verifier",
+  });
+  const verifierIdentity = {
+    ...identity,
+    agentPresence: {
+      agent_id: "read-only-audit-verifier",
+      client_type: "codex",
+      session_fingerprint: "d".repeat(64),
+      host_transport_session_fingerprint: "d".repeat(64),
+      host_kind: "codex_native",
+      signature: `ags_${"d".repeat(32)}`,
+      transport_bound: true,
+    },
+  };
+  await runtime.reportNativeAgent(verifierIdentity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    native_agent_id: "read-only-audit-verifier",
+    host_task_id: "/root/read-only-audit-verifier",
+    assignment_capability: verifierBinding.assignment_capability,
+    status: "completed",
+    report: {
+      summary: "Independent read-only ADR verification completed.",
+      verdict: "approved",
+      verifies_task_ids: ["audit"],
+      tests: [{ name: "independent read-only audit", passed: true }],
+      evidence_refs: ["adr:existing-independent"],
+      acceptance_evidence: planned.plan.acceptance_contract.criteria.map((criterion) => ({
+        criterion_digest: criterion.criterion_digest,
+        passed: true,
+        evidence_refs: [`verified:${criterion.criterion_id}`],
+      })),
+    },
+  });
+  const closure = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    idempotency_key: "core-signed-read-only-source-contract-closure",
+  });
+  assert.equal(closure.closed, false);
+  assert.equal(closure.execution_authorized, false);
+  assert(closure.missing.includes("builder_target_commit_missing"));
 });
 
 test("operational failures create one exact indexed blocker without raw error text", async () => {

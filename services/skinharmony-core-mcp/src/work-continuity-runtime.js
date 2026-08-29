@@ -31,6 +31,10 @@ const NATIVE_HOST_TYPES = new Set(["chatgpt_native", "codex_native"]);
 const NATIVE_TASK_KINDS = new Set(["builder", "verifier", "researcher", "reviewer", "supervisor"]);
 const NATIVE_REPORT_STATES = new Set(["completed", "failed", "blocked"]);
 const NATIVE_ASSIGNMENT_CAPABILITY_PATTERN = /^hnac_[A-Za-z0-9_-]{43}$/;
+// This capability is emitted only in the Core-signed host-native plan.  A
+// report cannot self-classify: admission below reads the persisted
+// core_authority binding for its exact task.
+const CORE_READ_ONLY_NO_FILE_CHANGE_CAPABILITY = "READ_ONLY_NO_FILE_CHANGE";
 const GALLERY_PARTICIPANT_MAX_TTL_SECONDS = 3_600;
 const GALLERY_PARTICIPANT_ACL = Object.freeze(["gallery.read", "gallery.coordinate"]);
 
@@ -850,6 +854,21 @@ function bindCoreWorkPlan(corePlan, localPlan, {
     !localTasks.get(verifierId)?.dependencies.includes(localBuilderIds[0]))) {
     throw new Error("core_host_native_work_plan_dependency_mismatch");
   }
+  const readOnlyNoFileChangeTaskIds = corePlan.agents
+    .filter((agent) => {
+      const capabilities = stringList(
+        agent.capabilities,
+        "core_host_native_agent_capabilities",
+        { maxItems: 32, maxLength: 160 },
+      );
+      return capabilities.includes(CORE_READ_ONLY_NO_FILE_CHANGE_CAPABILITY);
+    })
+    .map((agent) => agent.agent_id)
+    .sort();
+  if (readOnlyNoFileChangeTaskIds.some((taskId) =>
+    !["builder", "verifier"].includes(localTasks.get(taskId)?.kind))) {
+    throw new Error("core_host_native_work_plan_scope_mismatch");
+  }
   return {
     schema_version: corePlan.schema_version,
     plan_id: corePlan.plan_id,
@@ -864,11 +883,22 @@ function bindCoreWorkPlan(corePlan, localPlan, {
     required_checks: [...corePlan.required_checks],
     builder_agent_id: corePlan.builder_agent_id,
     verifier_agent_ids: [...corePlan.verifier_agent_ids],
+    report_source_requirements: {
+      schema_version: "core_native_report_source_requirements_v1",
+      read_only_no_file_change_task_ids: readOnlyNoFileChangeTaskIds,
+    },
     provider_execution: false,
     provider_api_key_required: false,
     host_policy_override: false,
     host_policy_must_allow: true,
   };
+}
+
+function isCoreReadOnlyNoFileChangeTask(plan, taskId) {
+  const requirements = plan?.core_authority?.report_source_requirements;
+  return requirements?.schema_version === "core_native_report_source_requirements_v1" &&
+    Array.isArray(requirements.read_only_no_file_change_task_ids) &&
+    requirements.read_only_no_file_change_task_ids.includes(taskId);
 }
 
 export function evaluateNativeClosure({ plan, agents = [] } = {}) {
@@ -4387,7 +4417,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         row.plan?.release_mode === "external_ticket_required" &&
         ["builder", "verifier"].includes(row.task_kind) &&
         !report.commit_sha &&
-        !report.precommit_evidence
+        !report.precommit_evidence &&
+        !isCoreReadOnlyNoFileChangeTask(row.plan, row.task_id)
       ) {
         throw new Error("native_agent_report_commit_or_precommit_required");
       }
