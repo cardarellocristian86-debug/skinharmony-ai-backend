@@ -82,9 +82,13 @@ test("Nyra persistent self-model reads and owner-migrates the previous signed en
   const compatibleRead = store.read({ tenantId: "tenant-a", catalog });
   assert.equal(compatibleRead.payload_digest, legacy.payload_digest);
   assert.equal(compatibleRead.signature, legacy.signature);
+  assert.equal(compatibleRead.revision, 0);
+  assert.equal(compatibleRead.generated_at, null);
+  assert.equal(compatibleRead.integrity_version, "legacy_profile_v0");
+  assert.equal(compatibleRead.migration_required, true);
 
   const migrated = store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
-  assert.equal(migrated.revision, legacy.revision + 1);
+  assert.equal(migrated.revision, 1);
   assert.notEqual(migrated.payload_digest, legacy.payload_digest);
   assert.notEqual(migrated.signature, legacy.signature);
   const { payload_digest: _migratedDigest, signature: _migratedSignature, ...unsigned } = migrated;
@@ -93,6 +97,34 @@ test("Nyra persistent self-model reads and owner-migrates the previous signed en
     migrated.signature,
     crypto.createHmac("sha256", signingSecret).update(canonical(unsigned)).digest("hex"),
   );
+});
+
+test("Nyra legacy compatibility never trusts unsigned revision metadata", () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-self-model-test-"));
+  const signingSecret = "x".repeat(32);
+  const store = createNyraPersistentSelfModelStore({ storageRoot, signingSecret });
+  const authorizedBranchIds = catalog.branches.map(({ id }) => id);
+  const current = store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+  const { revision: _revision, generated_at: _generatedAt, payload_digest: _payloadDigest, signature: _signature, ...profile } = current;
+  const legacy = {
+    ...profile,
+    revision: 999,
+    generated_at: "attacker-controlled",
+    payload_digest: sha256(canonical(profile)),
+    signature: crypto.createHmac("sha256", signingSecret).update(canonical(profile)).digest("hex"),
+  };
+  fs.writeFileSync(store.fileFor("tenant-a"), JSON.stringify(legacy));
+
+  const compatibleRead = store.read({ tenantId: "tenant-a", catalog });
+  assert.equal(compatibleRead.revision, 0);
+  assert.equal(compatibleRead.generated_at, null);
+  assert.equal(compatibleRead.migration_required, true);
+
+  const migrated = store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+  assert.equal(migrated.revision, 1);
+  assert.notEqual(migrated.generated_at, legacy.generated_at);
+  assert.equal(migrated.migration_required, undefined);
+  assert.equal(migrated.integrity_version, undefined);
 });
 
 test("Nyra persistent self-model revision stays signed and monotonic across catalog changes", () => {
