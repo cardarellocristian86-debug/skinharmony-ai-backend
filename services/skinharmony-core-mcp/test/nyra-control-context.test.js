@@ -59,6 +59,26 @@ test("a reconnect context exposes one recovery action and preserves the Work", (
   assert.equal(context.nyra_dialogue.self_diagnosis.automatic_correction, "context_preserved");
 });
 
+test("a claimed Autopilot assignment is not offered to a later dialogue", () => {
+  const context = buildNyraControlContext({
+    continuity: {
+      tenant_id: "codexai",
+      project_id: "SkinHarmony/smart-desk",
+      work_id: "11111111-1111-4111-8111-111111111111",
+      state: "active",
+    },
+    autopilot: {
+      assignments: [{
+        assignment_id: "22222222-2222-4222-8222-222222222222",
+        role: "executor_specialist",
+        status: "claimed",
+      }],
+    },
+  });
+  assert.equal(context.assignment, null);
+  assert.equal(context.nyra_dialogue.assignment, null);
+});
+
 test("the connector returns the compact context instead of a full Work Gallery", () => {
   const context = buildNyraControlContext({
     continuity: {

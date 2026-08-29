@@ -250,21 +250,30 @@ export function normalizeNyraAutopilotVerificationResult(value, {
 } = {}) {
   if (!exactObjectKeys(value, NYRA_AUTOPILOT_VERIFICATION_FIELDS) ||
       value.schema_version !== "nyra_independent_verification_v1" ||
-      value.verdict !== "approved") {
+      !["approved", "rejected"].includes(value.verdict)) {
     fail("nyra_autopilot_verification_contract_invalid");
   }
   const expectedTasks = [...new Set(requiredTaskIds.map((taskId) => uuid(taskId, "nyra_autopilot_verification_task_invalid")))].sort();
   if (!expectedTasks.length) fail("nyra_autopilot_verification_tasks_required");
   const verifiedTasks = stringArray(value.verified_work_task_ids, "nyra_autopilot_verification_task_invalid", 250, 36)
     .map((taskId) => uuid(taskId, "nyra_autopilot_verification_task_invalid")).sort();
-  if (verifiedTasks.length !== expectedTasks.length ||
-      verifiedTasks.some((taskId, index) => taskId !== expectedTasks[index])) {
+  if (!verifiedTasks.length || verifiedTasks.some((taskId) => !expectedTasks.includes(taskId)) ||
+      (value.verdict === "approved" && (verifiedTasks.length !== expectedTasks.length ||
+        verifiedTasks.some((taskId, index) => taskId !== expectedTasks[index])))) {
     fail("nyra_autopilot_verification_scope_invalid");
   }
   const sourceIds = stringArray(value.verified_assignment_ids, "nyra_autopilot_verification_assignment_invalid", 16, 36)
     .map((assignmentId) => uuid(assignmentId, "nyra_autopilot_verification_assignment_invalid")).sort();
   if (!sourceIds.length) fail("nyra_autopilot_verification_sources_required");
   const sources = new Map(sourceAssignments.map((assignment) => [assignment.assignment_id, assignment]));
+  const materialSourceIds = sourceAssignments
+    .filter((assignment) => assignment?.status === "submitted" && assignment.role !== "independent_verifier")
+    .map((assignment) => assignment.assignment_id)
+    .sort();
+  if (value.verdict === "approved" && (
+    sourceIds.length !== materialSourceIds.length ||
+    sourceIds.some((assignmentId, index) => assignmentId !== materialSourceIds[index])
+  )) fail("nyra_autopilot_verification_source_coverage_required");
   // The Autopilot table intentionally stores the durable claim as
   // `claimed_*`; the runtime-facing shape uses `agent_id` /
   // `session_fingerprint`.  Accept both server-owned representations here,
@@ -294,6 +303,7 @@ export function normalizeNyraAutopilotVerificationResult(value, {
   if (!evidenceRefs.length) fail("nyra_autopilot_verification_evidence_required");
   return Object.freeze({
     schema_version: value.schema_version,
+    verdict: value.verdict,
     work_id: uuid(workId, "work_id_invalid"),
     verifier_agent_id: verifierAgentId,
     verifier_session_fingerprint: verifierSession,
@@ -2351,7 +2361,7 @@ export function createWorkContinuityV2Store({
     // validator.  It passes that server-selected row here; querying it again
     // from a second transaction would self-deadlock.  The projector never
     // supplies this value and always locks/reads the durable submitted row.
-    const selected = suppliedAssignment ? null : await client.query(`SELECT assignment_id,role,status,claimed_agent_id,claimed_session_fingerprint,submitted_result
+    const selected = suppliedAssignment ? null : await client.query(`SELECT assignment_id,run_id,role,status,claimed_agent_id,claimed_session_fingerprint,submitted_result
       FROM core_nyra_autopilot_assignments
       WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 FOR UPDATE`, [actor.tenant_id, workId, assignmentId]);
     const assignment = suppliedAssignment || selected.rows[0];
@@ -2365,11 +2375,22 @@ export function createWorkContinuityV2Store({
         assignment.claimed_session_fingerprint !== actor.session_fingerprint) {
       fail("nyra_autopilot_verifier_identity_required");
     }
+    const runId = uuid(assignment.run_id, "nyra_autopilot_verification_run_invalid");
+    const run = await client.query(`SELECT status,architecture_version,intent_digest FROM core_nyra_autopilot_runs
+      WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 FOR UPDATE`, [actor.tenant_id, workId, runId]);
+    if (run.rows[0]?.status !== "materialized") {
+      fail("nyra_autopilot_verification_run_not_current");
+    }
+    const newerRun = await client.query(`SELECT run_id FROM core_nyra_autopilot_runs
+      WHERE tenant_id=$1 AND work_id=$2 AND architecture_version>$3 AND status<>'cancelled'
+      ORDER BY architecture_version DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId, run.rows[0].architecture_version]);
+    if (newerRun.rows[0]) fail("nyra_autopilot_verification_run_not_current");
     const tasks = await client.query(`SELECT task_id FROM tenant_work_task
       WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY task_id FOR UPDATE`, [actor.tenant_id, workId]);
-    const sources = await client.query(`SELECT assignment_id,role,status,claimed_agent_id,claimed_session_fingerprint,submitted_result
+    const sources = await client.query(`SELECT assignment_id,run_id,role,status,claimed_agent_id,claimed_session_fingerprint,submitted_result
       FROM core_nyra_autopilot_assignments
-      WHERE tenant_id=$1 AND work_id=$2 AND status='submitted' ORDER BY assignment_id FOR UPDATE`, [actor.tenant_id, workId]);
+      WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 AND status='submitted' ORDER BY assignment_id FOR UPDATE`,
+    [actor.tenant_id, workId, runId]);
     const verification = normalizeNyraAutopilotVerificationResult(
       result === undefined ? assignment.submitted_result : result,
       {
@@ -2387,6 +2408,7 @@ export function createWorkContinuityV2Store({
       required: true,
       work_id: workId,
       assignment_id: assignmentId,
+      run_id: runId,
       verification,
       source_digests: Object.freeze(sourceDigests),
     });
@@ -2411,10 +2433,13 @@ export function createWorkContinuityV2Store({
         assignmentStates: ["submitted"],
       });
       if (!candidate.required) return candidate;
+      const eventType = candidate.verification.verdict === "approved"
+        ? "nyra_autopilot_verification_projected_v1"
+        : "nyra_autopilot_verification_rejected_v1";
       const existing = await client.query(`SELECT payload FROM tenant_work_event
-        WHERE tenant_id=$1 AND work_id=$2 AND event_type='nyra_autopilot_verification_projected_v1'
-          AND payload->>'assignment_id'=$3
-        ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId, assignmentId]);
+        WHERE tenant_id=$1 AND work_id=$2 AND event_type=$3
+          AND payload->>'assignment_id'=$4
+        ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId, eventType, assignmentId]);
       if (existing.rows[0]) {
         if (existing.rows[0].payload?.evidence_digest !== objectDigest({
           verification: candidate.verification,
@@ -2426,6 +2451,18 @@ export function createWorkContinuityV2Store({
         verification: candidate.verification,
         source_digests: candidate.source_digests,
       });
+      if (candidate.verification.verdict === "rejected") {
+        const event = await appendV2Event(client, actor, workId, eventType, {
+          assignment_id: assignmentId,
+          evidence_digest: evidenceDigest,
+          verified_assignment_ids: candidate.verification.verified_assignment_ids,
+          verified_work_task_ids: candidate.verification.verified_work_task_ids,
+          verifier_agent_id: candidate.verification.verifier_agent_id,
+          verifier_session_fingerprint: candidate.verification.verifier_session_fingerprint,
+        });
+        return Object.freeze({ ...candidate, evidence_digest: evidenceDigest, event, idempotent_replay: false,
+          task_projection: "not_applied" });
+      }
       const taskUpdate = await client.query(`UPDATE tenant_work_task
         SET status='completed',acceptance_verified=true,completed_at=coalesce(completed_at,now())
         WHERE tenant_id=$1 AND work_id=$2 AND required=true AND task_id=ANY($3::uuid[])`,
@@ -2447,7 +2484,7 @@ export function createWorkContinuityV2Store({
           source_digests: candidate.source_digests,
           evidence_refs: candidate.verification.evidence_refs,
         })]);
-      const event = await appendV2Event(client, actor, workId, "nyra_autopilot_verification_projected_v1", {
+      const event = await appendV2Event(client, actor, workId, eventType, {
         assignment_id: assignmentId,
         evidence_id: evidenceId,
         evidence_digest: evidenceDigest,

@@ -136,9 +136,10 @@ function fakeStore(record) {
         reason: null,
       };
     },
-    async claim({ identity: caller, continuation_ref, operation, request_digest }) {
+    async claim({ identity: caller, continuation_ref, operation, request_digest, validate }) {
       assert.equal(caller.tenantId, record.tenant_id);
       assert.equal(continuation_ref, record.continuation_ref);
+      if (typeof validate === "function") await validate(record);
       calls.push(["claim", operation, request_digest]);
       const prior = completed.get(operation);
       return {
@@ -334,6 +335,18 @@ test("Nyra rejects a continuation request whose bootstrap differs from the serve
     work_bootstrap: { ...bootstrapSpec(), objective: "A different Work" },
     idempotency_key: "caller-review-key",
   }, identity()), /nyra_continue_work_bootstrap_binding_mismatch/);
+});
+
+test("Nyra validates a continuation before it can consume the durable reference", async () => {
+  const store = fakeStore(bootstrapRecord());
+  const handler = bootstrapHandler(store, []);
+  await assert.rejects(handler({
+    operation: "review_work_bootstrap",
+    continuation_ref: CONTINUATION_REF,
+    work_bootstrap: { ...bootstrapSpec(), objective: "A different Work" },
+    idempotency_key: "caller-preclaim-validation-key",
+  }, identity()), /nyra_continue_work_bootstrap_binding_mismatch/);
+  assert.equal(store.calls.some(([kind]) => kind === "claim"), false);
 });
 
 test("a bounded action continuation requires the matching host delegation and fresh Work context", async () => {

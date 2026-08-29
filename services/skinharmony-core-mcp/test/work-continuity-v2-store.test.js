@@ -101,6 +101,60 @@ test("Nyra verification projects only an independently claimed verifier over eve
   }), /nyra_autopilot_verification_independence_required/);
 });
 
+test("an approved Nyra verification covers every material submitted assignment", () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const taskId = "22222222-2222-4222-8222-222222222222";
+  const sourceA = "33333333-3333-4333-8333-333333333333";
+  const sourceB = "44444444-4444-4444-8444-444444444444";
+  const input = {
+    schema_version: "nyra_independent_verification_v1",
+    verdict: "approved",
+    summary: "One source was omitted.",
+    verified_work_task_ids: [taskId],
+    verified_assignment_ids: [sourceA],
+    evidence_refs: ["test:targeted-pass"],
+  };
+  const context = {
+    workId,
+    requiredTaskIds: [taskId],
+    verifier: { claimed_agent_id: "verifier-agent", claimed_session_fingerprint: "verifier-session" },
+    sourceAssignments: [
+      { assignment_id: sourceA, role: "executor_specialist", status: "submitted", claimed_agent_id: "builder-a", claimed_session_fingerprint: "builder-session-a" },
+      { assignment_id: sourceB, role: "researcher", status: "submitted", claimed_agent_id: "researcher-b", claimed_session_fingerprint: "researcher-session-b" },
+    ],
+  };
+  assert.throws(() => normalizeNyraAutopilotVerificationResult(input, context),
+    /nyra_autopilot_verification_source_coverage_required/);
+});
+
+test("a rejected Nyra verification records bounded failure scope without completing Work tasks", () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const taskA = "22222222-2222-4222-8222-222222222222";
+  const taskB = "33333333-3333-4333-8333-333333333333";
+  const source = "44444444-4444-4444-8444-444444444444";
+  const result = normalizeNyraAutopilotVerificationResult({
+    schema_version: "nyra_independent_verification_v1",
+    verdict: "rejected",
+    summary: "Regression found in the bounded target.",
+    verified_work_task_ids: [taskB],
+    verified_assignment_ids: [source],
+    evidence_refs: ["test:regression"],
+  }, {
+    workId,
+    requiredTaskIds: [taskA, taskB],
+    verifier: { claimed_agent_id: "verifier-agent", claimed_session_fingerprint: "verifier-session" },
+    sourceAssignments: [{
+      assignment_id: source,
+      role: "executor_specialist",
+      status: "submitted",
+      claimed_agent_id: "builder-agent",
+      claimed_session_fingerprint: "builder-session",
+    }],
+  });
+  assert.equal(result.verdict, "rejected");
+  assert.deepEqual(result.verified_work_task_ids, [taskB]);
+});
+
 function canonicalDigest(value) {
   const stable = (item) => {
     if (Array.isArray(item)) return item.map(stable);

@@ -721,16 +721,22 @@ async function materializeNyraControlContext(identity, continuity, operation, {
       // the already-persisted Autopilot ledger has an assignment. This read
       // path never enables Nyra, creates a run, mints a ticket, or plans a
       // native host action.
-      const storedAssignmentId = existing.nyra_dialogue?.assignment?.assignment_id;
-      if (typeof storedAssignmentId === "string" && storedAssignmentId) return existing;
+      const storedAssignment = existing.nyra_dialogue?.assignment;
+      if (typeof storedAssignment?.assignment_id === "string" && storedAssignment.assignment_id &&
+          storedAssignment.state !== "claimed") return existing;
       if (typeof nyraAutopilotRuntime?.readWork !== "function") return existing;
       try {
         const observed = await nyraAutopilotRuntime.readWork(identity, {
           work_id: continuity.work_id,
         });
         if (!Array.isArray(observed.assignments) || !observed.assignments.some((assignment) =>
-          assignment?.status === "offered" || assignment?.status === "claimed")) return existing;
-        autopilot = observed;
+          assignment?.status === "offered")) {
+          // A prior claimed entry is never reused as an actionable offer by a
+          // later conversation. Re-materialize an empty assignment instead.
+          autopilot = { ...observed, assignments: [] };
+        } else {
+          autopilot = observed;
+        }
       } catch {
         return existing;
       }
@@ -1043,17 +1049,33 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
 async function attachNyraWorkOrchestration(identity, result, operation) {
   const work = result?.work?.work_id ? result.work : result;
   if (!work?.work_id) return result;
-  const nyraAutopilot = await reconcileNyraAutopilot(identity, work, "work_created");
-  const nyraControlContext = await materializeNyraControlContext(
-    identity,
-    work,
-    operation,
-    { autopilot: nyraAutopilot, force: true },
-  );
+  // Work creation has committed before this best-effort local projection.
+  // Never hide that canonical success behind an Autopilot or dialogue cache
+  // outage: the exact retry can repair orchestration from the persisted Work.
+  let nyraAutopilot = null;
+  let nyraControlContext = null;
+  let orchestrationStatus = null;
+  try {
+    nyraAutopilot = await reconcileNyraAutopilot(identity, work, "work_created");
+    nyraControlContext = await materializeNyraControlContext(
+      identity,
+      work,
+      operation,
+      { autopilot: nyraAutopilot, force: true },
+    );
+  } catch (error) {
+    orchestrationStatus = Object.freeze({
+      status: "deferred",
+      retryable: true,
+      code: String(error?.code || error?.message || "nyra_orchestration_unavailable").slice(0, 160),
+      execution_authorized: false,
+    });
+  }
   return {
     ...result,
     ...(nyraAutopilot ? { nyra_autopilot: nyraAutopilot } : {}),
     ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}),
+    ...(orchestrationStatus ? { nyra_orchestration: orchestrationStatus } : {}),
   };
 }
 

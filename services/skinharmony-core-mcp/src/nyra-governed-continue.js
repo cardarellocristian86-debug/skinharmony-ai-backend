@@ -114,6 +114,30 @@ function coreOutcome(coreResult) {
   const delegation = core.delegation || null;
   const review = core.result?.review_id ? core.result : null;
   const work = core.result?.work?.work_id ? core.result.work : null;
+  const boundedConflictSummary = review?.requires_owner_decision === true
+    ? Object.freeze({
+        conflict_flags: review.conflict_flags && typeof review.conflict_flags === "object"
+          ? Object.freeze({
+              significant_overlap: review.conflict_flags.significant_overlap === true,
+              stale: review.conflict_flags.stale === true,
+              priority: review.conflict_flags.priority === true,
+              dependency: review.conflict_flags.dependency === true,
+              invisible_conflict: review.conflict_flags.invisible_conflict === true,
+            })
+          : null,
+        candidates: Object.freeze((Array.isArray(review.candidates) ? review.candidates : [])
+          .slice(0, 8)
+          .map((candidate) => Object.freeze({
+            work_id: typeof candidate?.work_id === "string" ? candidate.work_id : null,
+            project_id: typeof candidate?.project_id === "string" ? candidate.project_id : null,
+            work_name: typeof candidate?.work_name === "string"
+              ? candidate.work_name.slice(0, 240)
+              : typeof candidate?.idea === "string" ? candidate.idea.slice(0, 240) : null,
+            classification: typeof candidate?.classification === "string"
+              ? candidate.classification.slice(0, 80) : null,
+          }))),
+      })
+    : null;
   return Object.freeze({
     ticket_id: ticket?.ticket_id || null,
     ticket_digest: ticket ? digest(ticket) : null,
@@ -121,6 +145,7 @@ function coreOutcome(coreResult) {
     review_id: review?.review_id || null,
     review_digest: review?.review_digest || null,
     review_requires_owner_decision: review?.requires_owner_decision === true,
+    review_conflict_summary: boundedConflictSummary,
     review_consumed: review?.consumed === true,
     review_consumed_work_id: review?.consumed_work_id || null,
     work_id: work?.work_id || null,
@@ -157,6 +182,7 @@ function nyraResult(payload, outcome, operation, replay = false) {
     work_replayed: workReplayed,
     review_id: outcome.review_id,
     duplicate_review_requires_owner_decision: outcome.review_requires_owner_decision,
+    review_conflict_summary: outcome.review_conflict_summary,
     merge_policy: payload.merge_policy,
     execution_authorized: false,
     external_action_authorized: false,
@@ -194,8 +220,69 @@ export function createNyraGovernedContinueHandler({
     assertCallerInput(args);
     if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE)) fail("nyra_continue_host_capability_required", 403);
     const boundRequestDigest = requestDigest(args);
+    const validateBeforeClaim = async (payload) => {
+      const bootstrapOperation = ["review_work_bootstrap", "create_work"].includes(args.operation);
+      if (payload.candidate_kind === "work_bootstrap") {
+        if (!bootstrapOperation || !hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.WORK_CREATE) || !args.work_bootstrap ||
+            args.delegation_request !== undefined || args.action_request !== undefined) {
+          fail("nyra_continue_work_bootstrap_binding_mismatch", 409);
+        }
+        const request = materializeGovernedWorkBootstrapRequest({
+          spec: args.work_bootstrap,
+          identity,
+          projectId: payload.project_id,
+        });
+        if (governedWorkBootstrapDigest(request) !== payload.work_bootstrap_request_digest) {
+          fail("nyra_continue_work_bootstrap_binding_mismatch", 409);
+        }
+        if (args.operation === "review_work_bootstrap") {
+          if (args.review_id !== undefined || args.review_digest !== undefined || args.review_decision !== undefined) {
+            fail("nyra_continue_work_bootstrap_review_mismatch", 409);
+          }
+        } else if (args.owner_confirmed !== true || identity.ownerConfirmed !== true ||
+            (args.review_decision !== undefined && !["CONTINUE_NEW_WORK", "PARALLEL_VALID"].includes(args.review_decision))) {
+          fail("owner_confirmation_required", 403);
+        }
+        return;
+      }
+      if (bootstrapOperation || args.work_bootstrap !== undefined || args.review_id !== undefined ||
+          args.review_digest !== undefined || args.review_decision !== undefined) {
+        fail("nyra_continue_candidate_kind_mismatch", 409);
+      }
+      const input = {
+        work_id: payload.work_id,
+        project_id: payload.project_id,
+        work_revision: payload.work_revision,
+        intent_digest: payload.intent_digest,
+      };
+      const context = normalizeDirectiveContext(await readDirectiveContext(identity, input), identity, input);
+      ensureFreshWorkContext(context, payload);
+      if (!SUPPORTED_HOST_NATIVE_KINDS.has(authenticatedHostKind(identity))) {
+        fail("nyra_continue_host_kind_not_supported", 403);
+      }
+      if (args.operation === "issue_delegation") {
+        const request = args.delegation_request;
+        if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE) || !request ||
+            args.action_request !== undefined || request.work_id !== payload.work_id ||
+            request.intent_anchor_digest !== payload.intent_digest || !Array.isArray(request.audience) ||
+            request.audience.length !== 1 || request.audience[0] !== payload.host_kind ||
+            !Array.isArray(request.allowed_actions) || request.allowed_actions.length < 1 ||
+            request.allowed_actions.some((kind) => !actionKindAllowed(payload.action_class, kind)) ||
+            args.owner_confirmed !== true || identity.ownerConfirmed !== true) {
+          fail("nyra_continue_delegation_binding_mismatch", 409);
+        }
+      } else if (args.operation === "authorize_action") {
+        const request = args.action_request;
+        if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE) || !request ||
+            args.delegation_request !== undefined || request.work_id !== payload.work_id ||
+            request.intent_anchor_digest !== payload.intent_digest ||
+            !actionKindAllowed(payload.action_class, request.action?.kind)) {
+          fail("nyra_continue_action_binding_mismatch", 409);
+        }
+      }
+    };
     const claim = await store.claim({ identity, continuation_ref: args.continuation_ref,
-      operation: args.operation, request_digest: boundRequestDigest });
+      operation: args.operation, request_digest: boundRequestDigest, validate: validateBeforeClaim });
     const payload = claim.record;
     if (claim.completed_result) return nyraResult(payload, claim.completed_result, args.operation, true);
     let outcome;

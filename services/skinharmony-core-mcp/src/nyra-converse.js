@@ -9,6 +9,7 @@ import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_SIGNAL_LENGTH = 500;
 const MAX_DIRECTIVE_ITEMS = 8;
+const CONTINUATION_OPEN_TIMEOUT_MS = 1_500;
 const CORE_ACTION_ID_PATTERN = /^action:[a-zA-Z0-9][a-zA-Z0-9:._-]{0,158}$/;
 const PUBLIC_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
 const FALSE_COMPLETION_CLAIM_PATTERN = /\b(?:deploy(?:ed|\s+complet\w*)|merge\s+(?:eseguit\w*|complet\w*|done)|publish(?:ed|\s+complet\w*)|pubblicat\w*|inviat\w*|sent|completed|completat\w*|eseguit\w*)\b/iu;
@@ -69,6 +70,14 @@ function fail(code, status = 422) {
   error.code = code;
   error.status = status;
   return error;
+}
+
+function boundedContinuationOpen(operation) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(fail("continuation_open_timeout", 503)), CONTINUATION_OPEN_TIMEOUT_MS);
+  });
+  return Promise.race([Promise.resolve(operation), timeout]).finally(() => clearTimeout(timer));
 }
 
 function assertNoCallerAuthority(value, path = "$", depth = 0) {
@@ -1789,7 +1798,7 @@ export function createNyraConverseHandler({
     });
     if (typeof openContinuation === "function") {
       try {
-        const reference = await openContinuation({ identity, directive: baseDirective });
+        const reference = await boundedContinuationOpen(openContinuation({ identity, directive: baseDirective }));
         if (reference?.schema_version === "nyra_continuation_ref_v1") {
           continuation = reference;
         }

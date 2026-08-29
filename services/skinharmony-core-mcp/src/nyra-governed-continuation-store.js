@@ -296,12 +296,12 @@ function recordMatchesIdentity(record, identity) {
     record.session_fingerprint === binding.session_fingerprint;
 }
 
-function assertStoredRecord(record, identity, now, secret) {
+function assertStoredRecord(record, identity, now, secret, { allowExpired = false } = {}) {
   if (!record || !recordMatchesIdentity(record, identity)) {
     fail("nyra_continuation_binding_mismatch", 403);
   }
   const expiresAt = Date.parse(String(record.expires_at || ""));
-  if (!Number.isFinite(expiresAt) || expiresAt <= Number(now())) {
+  if (!Number.isFinite(expiresAt) || (!allowExpired && expiresAt <= Number(now()))) {
     fail("nyra_continuation_expired", 409);
   }
   const canonical = canonicalRecord(record);
@@ -459,7 +459,7 @@ export function createNyraGovernedContinuationStore({
     }
   }
 
-  async function claim({ identity, continuation_ref, operation, request_digest }) {
+  async function claim({ identity, continuation_ref, operation, request_digest, validate = null }) {
     requireReady();
     const ref = exactString(continuation_ref, CONTINUATION_REF, "nyra_continuation_ref_invalid", 96);
     const op = exactString(operation, /^[a-z_]{3,40}$/, "nyra_continuation_operation_invalid", 40);
@@ -474,7 +474,25 @@ export function createNyraGovernedContinuationStore({
       const record = rowToRecord(selected.rows[0]);
       assertStoredRecord(record, identity, now, secret);
       validOperationFor(record, op);
+      const previous = await client.query(`
+        SELECT request_digest,idempotency_key,state,internal_result FROM nyra_governed_continuation_operation
+        WHERE tenant_id=$1 AND continuation_ref=$2 AND operation=$3 FOR UPDATE`, [binding.tenant_id, ref, op]);
+      const existing = previous.rows[0] || null;
+      if (existing && existing.request_digest !== requestDigest) {
+        fail("nyra_continuation_request_replay_conflict", 409);
+      }
+      // A caller can lose the successful response after a terminal operation.
+      // Replay the exact stored result before testing the consumed continuation
+      // state, otherwise the durable recovery path would be unreachable.
+      if (existing?.state === "COMPLETED") {
+        await client.query("COMMIT");
+        return Object.freeze({ record: canonicalRecord(record), operation: op, request_digest: requestDigest,
+          idempotency_key: existing.idempotency_key, replay: true, completed_result: existing.internal_result });
+      }
       if (record.state !== "OPEN") fail("nyra_continuation_consumed", 409);
+      if (typeof validate === "function") {
+        await validate(canonicalRecord(record));
+      }
       if (record.candidate_kind === "work_bootstrap" && op === "create_work") {
         const review = await client.query(`
           SELECT internal_result FROM nyra_governed_continuation_operation
@@ -490,13 +508,6 @@ export function createNyraGovernedContinuationStore({
           WHERE tenant_id=$1 AND continuation_ref=$2 AND operation<>$3 LIMIT 1 FOR UPDATE`,
         [binding.tenant_id, ref, op]);
         if (other.rows[0]) fail("nyra_continuation_replayed", 409);
-      }
-      const previous = await client.query(`
-        SELECT request_digest,idempotency_key,state,internal_result FROM nyra_governed_continuation_operation
-        WHERE tenant_id=$1 AND continuation_ref=$2 AND operation=$3 FOR UPDATE`, [binding.tenant_id, ref, op]);
-      const existing = previous.rows[0] || null;
-      if (existing && existing.request_digest !== requestDigest) {
-        fail("nyra_continuation_request_replay_conflict", 409);
       }
       if (!existing) {
         const idempotencyKey = operationIdempotencyKey(ref, op);
@@ -554,11 +565,15 @@ export function createNyraGovernedContinuationStore({
       const continuation = await client.query(`SELECT * FROM nyra_governed_continuation
         WHERE tenant_id=$1 AND continuation_ref=$2 FOR UPDATE`, [binding.tenant_id, ref]);
       const record = rowToRecord(continuation.rows[0]);
-      assertStoredRecord(record, identity, now, secret);
+      // Once an exact operation was claimed while the reference was valid,
+      // Core may finish just after the reference TTL. Its result must still be
+      // persisted for a safe retry; this does not permit a new claim.
+      assertStoredRecord(record, identity, now, secret, { allowExpired: true });
+      if (record.state !== "OPEN") fail("nyra_continuation_consumed", 409);
       const updated = await client.query(`
         UPDATE nyra_governed_continuation_operation
         SET state='COMPLETED',internal_result=$5::jsonb,result_digest=$6,completed_at=clock_timestamp()
-        WHERE tenant_id=$1 AND continuation_ref=$2 AND operation=$3 AND request_digest=$4
+        WHERE tenant_id=$1 AND continuation_ref=$2 AND operation=$3 AND request_digest=$4 AND state='IN_PROGRESS'
         RETURNING internal_result`, [binding.tenant_id, ref, op, requestDigest, JSON.stringify(result), digest(result)]);
       if (!updated.rowCount) fail("nyra_continuation_operation_claim_missing", 409);
       if (terminal) {

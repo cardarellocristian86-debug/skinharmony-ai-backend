@@ -1926,3 +1926,19 @@ test("an existing canonical Work wins over an explicit create request and no boo
   assert.equal(candidates, 1, "the signer may be consulted but must receive a NOT_REQUIRED directive");
   assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.available, false);
 });
+
+test("a stalled continuation store leaves the Nyra turn available and bounded", async () => {
+  const startedAt = Date.now();
+  const response = await harness({
+    openContinuation: () => new Promise(() => {}),
+  }).handler({
+    message: "Nyra, riprendi il Work locale.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  assert.equal(response.structuredContent.ok, true);
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.available, false);
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.reason, "continuation_open_failed");
+  assert(Date.now() - startedAt < 3_000, "the conversation must not wait indefinitely for continuation storage");
+});
