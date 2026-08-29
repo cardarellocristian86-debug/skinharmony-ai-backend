@@ -1621,6 +1621,42 @@ test("runtime assembles and persists only server-discovered context in SHADOW mo
   assert.equal(verification.valid, true);
 });
 
+test("runtime exposes bitemporal shadow projections without changing Entity 360 authority", async () => {
+  const { store, adapterRegistry, entityId } = memoryRuntimeDependencies();
+  const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY, ontology: ONTOLOGY,
+    mode: "SHADOW", bitemporalMode: "SHADOW", now: () => Date.parse(AT) });
+  await runtime.initialize();
+  const assembled = await runtime.invoke("entity_360_snapshot_assemble", DTT_IDENTITY, {
+    work_id: WORK_ID, entity_type: "work", identity: WORK_IDENTITY, expected_revision: 0,
+    idempotency_key: "assemble-bitemporal-shadow", as_of: AT,
+  });
+  assert.equal(assembled.snapshot.schema_version, "entity_360_snapshot_v2");
+  assert.equal(assembled.snapshot.bitemporal.knowledge_time_quality, "VERIFIED");
+  assert.match(assembled.bitemporal_snapshot.snapshot_digest, /^[a-f0-9]{64}$/u);
+
+  const historical = await runtime.invoke("entity_360_snapshot_read", DTT_IDENTITY, {
+    work_id: WORK_ID, entity_id: entityId, snapshot_version: 1,
+    query_mode: "DECISION_CONTEXT_AT", decision_time: "2026-08-25T09:59:59.000Z",
+  });
+  assert.equal(historical.facts.length, 0);
+  assert.equal(historical.no_hindsight_leakage, true);
+  assert.equal(historical.execution_authorized, false);
+
+  const current = await runtime.invoke("entity_360_snapshot_latest", DTT_IDENTITY, {
+    work_id: WORK_ID, entity_id: entityId, query_mode: "CURRENT_STATE",
+  });
+  assert.ok(current.facts.length > 0);
+  assert.equal(current.authority, "universal_core");
+  const health = await runtime.health();
+  assert.equal(health.bitemporal_mode, "SHADOW");
+  const metrics = await runtime.invoke("entity_360_metrics_read", DTT_IDENTITY, {
+    work_id: WORK_ID,
+  });
+  assert.ok(metrics.bitemporal_query_latency >= 0);
+  assert.ok(metrics.snapshot_reconstruction_latency >= 0);
+  assert.equal(metrics.hindsight_leakage_prevented, 1);
+});
+
 test("runtime exact retry replays the persisted snapshot before any stale-head rejection", async () => {
   const { store, adapterRegistry } = memoryRuntimeDependencies();
   let assemblyCalls = 0;

@@ -21,6 +21,7 @@ import {
   hostNativeGithubDiffDigest,
   validateHostReleaseManifestV2,
 } from "../src/hostNativeGovernance.js";
+import { createSemanticScopeGuard } from "../src/semanticScopeGuard.js";
 
 test("host-native governance advertises Work Automation v3 without provider execution", () => {
   const governance = createHostNativeGovernance({
@@ -271,6 +272,9 @@ function harness({
   bootstrapReleaseExceptionStore,
   bootstrapDeadlockVerdictResolver,
   requiredChecksPolicyResolver,
+  semanticScopeGuard,
+  semanticScopeMode,
+  semanticScopeContextResolver,
 } = {}) {
   let clock = Date.parse(clockStart);
   let sequence = 0;
@@ -299,6 +303,9 @@ function harness({
     renderServiceOriginResolver: renderServiceOriginResolver || null,
     ...(ticketTtlMs === undefined ? {} : { ticketTtlMs }),
     ...(reservationLeaseMs === undefined ? {} : { reservationLeaseMs }),
+    ...(semanticScopeGuard === undefined ? {} : { semanticScopeGuard }),
+    ...(semanticScopeMode === undefined ? {} : { semanticScopeMode }),
+    ...(semanticScopeContextResolver === undefined ? {} : { semanticScopeContextResolver }),
   }));
   const delegationInput = {
     tenant_id: "codexai",
@@ -618,6 +625,68 @@ async function issueCommitTicket(governance, delegationId, overrides = {}) {
     ...overrides,
   });
 }
+
+test("semantic scope guard is correlated at ticket issue and AEC reservation in shadow mode", async () => {
+  const guard = createSemanticScopeGuard({ mode: "SHADOW" });
+  const subject = harness({
+    allowedActions: ["git.commit"],
+    semanticScopeGuard: guard,
+    semanticScopeMode: "SHADOW",
+    semanticScopeContextResolver: () => ({
+      entity360_snapshot_ref: `e360_${"a".repeat(48)}`,
+      as_of_valid_time: "2026-07-29T10:00:00.000Z",
+      as_of_knowledge_time: "2026-07-29T10:00:00.000Z",
+      policy_revision: "entity360-policy-v1",
+      evidence_refs: ["entity360:evidence:commit"],
+    }),
+  });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const issued = await issueCommitTicket(subject.governance, delegation.delegation_id);
+  assert.equal(issued.ticket.semantic_scope_at_issue.action, "ALLOW");
+  assert.equal(issued.ticket.semantic_scope_at_issue.execution_authorized, false);
+  assert.equal(issued.ticket.semantic_scope_at_issue.binding.entity360_snapshot_ref,
+    `e360_${"a".repeat(48)}`);
+  assert.equal(issued.ticket.semantic_scope_at_issue.binding.as_of_knowledge_time,
+    "2026-07-29T10:00:00.000Z");
+
+  const reserved = await subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: issued.ticket.ticket_id,
+    host_session_fingerprint: issued.ticket.host_session_fingerprint,
+  });
+  assert.equal(reserved.semantic_scope_at_reservation.action, "ALLOW");
+  assert.equal(reserved.semantic_scope_at_reservation.authority, "universal_core");
+  assert.ok(reserved.lifecycle_digest);
+  assert.equal(guard.metrics().check_total, 2);
+  assert.equal(subject.governance.semantic_scope_guard_mode, "SHADOW");
+  assert.equal(subject.governance.semanticScopeMetrics().semantic_scope_check_latency >= 0, true);
+});
+
+test("unavailable semantic scope context remains observable in shadow and fails closed in enforce", async () => {
+  const unavailableGuard = { check() { throw new Error("semantic_scope_dependency_unavailable"); } };
+  const shadow = harness({ allowedActions: ["git.commit"], semanticScopeGuard: unavailableGuard,
+    semanticScopeMode: "SHADOW" });
+  const shadowDelegation = await shadow.governance.issueDelegation(shadow.delegationInput);
+  const shadowTicket = await issueCommitTicket(shadow.governance, shadowDelegation.delegation_id);
+  assert.equal(shadowTicket.ticket.semantic_scope_at_issue.action, "HOLD");
+  assert.match(shadowTicket.ticket.semantic_scope_at_issue.reason_codes.join(","),
+    /SEMANTIC_SCOPE_CONTEXT_UNAVAILABLE/);
+
+  const enforce = harness({ allowedActions: ["git.commit"], semanticScopeGuard: unavailableGuard,
+    semanticScopeMode: "ENFORCE" });
+  const enforceDelegation = await enforce.governance.issueDelegation(enforce.delegationInput);
+  await assert.rejects(() => issueCommitTicket(enforce.governance, enforceDelegation.delegation_id),
+    /semantic_scope_hold/);
+});
+
+test("missing semantic context fails closed for a medium-risk effect in enforce mode", async () => {
+  const guard = createSemanticScopeGuard({ mode: "ENFORCE" });
+  const subject = harness({ allowedActions: ["git.commit"], semanticScopeGuard: guard,
+    semanticScopeMode: "ENFORCE", semanticScopeContextResolver: null });
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  await assert.rejects(() => issueCommitTicket(subject.governance, delegation.delegation_id),
+    /semantic_scope_hold/);
+});
 
 async function issueMergeTicket(governance, delegationId, overrides = {}) {
   const manifest = await bindCoreJoinVerdict(
