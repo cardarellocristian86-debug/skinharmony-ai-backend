@@ -24,6 +24,9 @@ import { buildWorkPreflight } from "../../universal-core-service/src/workPreflig
 const WORK_ID = "c1139091-40d9-4f4e-b788-842fbc23a778";
 const TASK_ID = "91f9ea3c-c6fd-4d7b-8b03-f9937405106d";
 const EVIDENCE_ID = "a4c8e893-1a86-4ed3-bd85-5150d451af72";
+const REPLACEMENT_EVIDENCE_ID = "b4c8e893-1a86-4ed3-bd85-5150d451af73";
+const PRECOMMIT_PLAN_ID = "c4c8e893-1a86-4ed3-bd85-5150d451af74";
+const PRECOMMIT_EVALUATION_ID = "d4c8e893-1a86-4ed3-bd85-5150d451af75";
 const INTENT_DIGEST = "1".repeat(64);
 
 function stable(value) {
@@ -301,6 +304,64 @@ function directiveContextFixture({
     closure_receipt: null,
     closure_verification: closureVerification,
     final_report: null,
+  };
+}
+
+function precommitTicketGateFixture({ fresh = true, fulfilled = false } = {}) {
+  const material = {
+    schema_version: "precommit_ticket_gate_v1",
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    action_kind: "git.commit",
+    gate_kind: "ticket_acquisition",
+    task_id: TASK_ID,
+    plan_id: PRECOMMIT_PLAN_ID,
+    evaluation_id: PRECOMMIT_EVALUATION_ID,
+    evaluation_digest: "3".repeat(64),
+    workspace_digest: "4".repeat(64),
+    supersession_digest: "5".repeat(64),
+    reconciliation_digest: "6".repeat(64),
+    legacy_evidence_ids: [EVIDENCE_ID],
+    replacement_evidence_ids: [REPLACEMENT_EVIDENCE_ID],
+    fulfilled,
+    ticket_id: fulfilled ? `hnt_${"7".repeat(64)}` : null,
+    fresh,
+    drift_codes: fresh ? [] : ["precommit_gate_evaluation_drift"],
+  };
+  return { ...material, projection_digest: canonicalDigest(material) };
+}
+
+function reconciledPrecommitContext(options = {}) {
+  const context = directiveContextFixture();
+  return {
+    ...context,
+    tasks: options.extraPendingTask ? [...context.tasks, {
+      tenant_id: "tenant-a",
+      task_id: "e4c8e893-1a86-4ed3-bd85-5150d451af76",
+      work_id: WORK_ID,
+      title: "Complete an unrelated required task",
+      status: "planned",
+      required: true,
+      acceptance_verified: false,
+    }] : context.tasks,
+    evidence: [...context.evidence, {
+      tenant_id: "tenant-a",
+      evidence_id: REPLACEMENT_EVIDENCE_ID,
+      work_id: WORK_ID,
+      kind: "native_verifier_terminal_report",
+      digest: "8".repeat(64),
+      required: true,
+      independently_verified: true,
+    }, ...(options.extraUnverifiedEvidence ? [{
+      tenant_id: "tenant-a",
+      evidence_id: "f4c8e893-1a86-4ed3-bd85-5150d451af77",
+      work_id: WORK_ID,
+      kind: "test_report",
+      digest: "9".repeat(64),
+      required: true,
+      independently_verified: false,
+    }] : [])],
+    precommit_ticket_gate: precommitTicketGateFixture(options),
   };
 }
 
@@ -883,6 +944,7 @@ test("emits a deterministic revision-bound manual ticket candidate only after pr
     work_revision: 4,
     intent_digest: INTENT_DIGEST,
     context_digest: directive.work_context.context_digest,
+    precommit_ticket_gate: null,
   });
   assert.match(directive.ticket_request.request_digest, /^[a-f0-9]{64}$/);
   assert.equal(directive.ticket_request.ticket_id, null);
@@ -923,6 +985,113 @@ test("emits a deterministic revision-bound manual ticket candidate only after pr
     locale: "it",
   }, identity());
   assert.notEqual(directive.directive_id, changed.structuredContent.orchestration_directive.directive_id);
+});
+
+test("applies the reconciled precommit gate only to the exact local git commit", async () => {
+  const context = reconciledPrecommitContext();
+  const request = {
+    message: "Nyra, esegui un solo git commit locale senza push, PR o deploy",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    continuation_operation: "authorize_action",
+    locale: "it",
+  };
+  const first = await harness({ directiveContext: context }).handler(request, identity());
+  const second = await harness({ directiveContext: context }).handler(request, identity());
+  const payload = first.structuredContent;
+  const directive = payload.orchestration_directive;
+
+  assert.equal(directive.ticket_request.action_class, "GIT_COMMIT");
+  assert.equal(directive.ticket_request.state, "READY_FOR_CORE_REVIEW");
+  assert.deepEqual(directive.ticket_request.prerequisite_codes, []);
+  assert.equal(directive.work_context.pending_required_task_count, 1);
+  assert.equal(directive.work_context.unverified_required_evidence_count, 1);
+  assert.equal(directive.work_context.precommit_ticket_gate_applicable, true);
+  assert.equal(directive.work_context.precommit_pending_required_task_count, 0);
+  assert.equal(directive.work_context.precommit_unverified_required_evidence_count, 0);
+  assert.deepEqual(directive.ticket_request.binding.precommit_ticket_gate, {
+    task_id: TASK_ID,
+    plan_id: PRECOMMIT_PLAN_ID,
+    evaluation_id: PRECOMMIT_EVALUATION_ID,
+    evaluation_digest: "3".repeat(64),
+    workspace_digest: "4".repeat(64),
+    supersession_digest: "5".repeat(64),
+    reconciliation_digest: "6".repeat(64),
+    projection_digest: context.precommit_ticket_gate.projection_digest,
+  });
+  assert.equal(
+    directive.ticket_request.request_digest,
+    second.structuredContent.orchestration_directive.ticket_request.request_digest,
+  );
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema,
+    payload,
+  ), []);
+});
+
+test("keeps precommit fail-closed without reconciliation, after drift, and with other pending requirements", async () => {
+  const request = {
+    message: "Nyra, esegui un solo git commit locale",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    continuation_operation: "authorize_action",
+    locale: "it",
+  };
+  const cases = [
+    ["missing", directiveContextFixture()],
+    ["drift", reconciledPrecommitContext({ fresh: false })],
+    ["other task", reconciledPrecommitContext({ extraPendingTask: true })],
+    ["other evidence", reconciledPrecommitContext({ extraUnverifiedEvidence: true })],
+  ];
+  for (const [label, context] of cases) {
+    const payload = (await harness({ directiveContext: context }).handler(request, identity()))
+      .structuredContent;
+    const directive = payload.orchestration_directive;
+    assert.equal(directive.ticket_request.state, "NEEDS_CONTEXT", label);
+    assert.equal(
+      directive.ticket_request.binding.precommit_ticket_gate === null,
+      label === "missing" || label === "drift",
+      label,
+    );
+    assert.equal(
+      directive.ticket_request.prerequisite_codes.includes("required_work_tasks_incomplete"),
+      label !== "other evidence",
+      label,
+    );
+    assert.equal(
+      directive.ticket_request.prerequisite_codes.includes("required_evidence_unverified"),
+      label !== "other task",
+      label,
+    );
+  }
+});
+
+test("does not apply a valid precommit reconciliation to push, PR, merge, deploy or publish", async () => {
+  const context = reconciledPrecommitContext();
+  const cases = [
+    ["Nyra, esegui git push", "GIT_PUSH"],
+    ["Nyra, apri una pull request", "PULL_REQUEST_OPEN"],
+    ["Nyra, esegui il merge", "GIT_MERGE"],
+    ["Nyra, porta in deploy", "DEPLOY"],
+    ["Nyra, pubblica la release", "PUBLISH"],
+  ];
+  for (const [message, actionClass] of cases) {
+    const payload = (await harness({ directiveContext: context }).handler({
+      message,
+      work_id: WORK_ID,
+      project_id: "nyra_core",
+      continuation_operation: "authorize_action",
+      locale: "it",
+    }, identity())).structuredContent;
+    const directive = payload.orchestration_directive;
+    assert.equal(directive.ticket_request.action_class, actionClass, message);
+    assert.equal(directive.ticket_request.state, "NEEDS_CONTEXT", message);
+    assert.deepEqual(directive.ticket_request.prerequisite_codes, [
+      "required_work_tasks_incomplete",
+      "required_evidence_unverified",
+    ], message);
+    assert.equal(directive.ticket_request.binding.precommit_ticket_gate, null, message);
+  }
 });
 
 test("rejects cross-bound or revision-drifted Work directive context", async () => {
