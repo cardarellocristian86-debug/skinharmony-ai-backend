@@ -1018,6 +1018,32 @@ export function resolveHostTransportPresence({
   });
 }
 
+// A governed-continuation candidate is HMAC-bound to the server-derived
+// logical session.  MCP transports can rotate (or retain an older bootstrap
+// binding) between the conversational read and its next continuation call.
+// For this one tool, allow the declared logical session to select the existing
+// server-signed candidate; the attestor still verifies tenant, host, registry,
+// logical fingerprint, expiry and single-use nonce before any operation.
+// Other stateful tools keep the transport binding as the higher-priority input.
+export function resolveMcpLogicalSession({
+  toolName,
+  transportPresence = null,
+  declaredSessionId = "",
+  transportSessionId = "",
+  serverIssuedSessionId = "",
+} = {}) {
+  const continuationRebind = toolName === "nyra_governed_continue" &&
+    Boolean(declaredSessionId) &&
+    transportPresence?.session_id !== declaredSessionId;
+  return Object.freeze({
+    session_id: continuationRebind
+      ? declaredSessionId
+      : transportPresence?.session_id || declaredSessionId ||
+        transportSessionId || serverIssuedSessionId,
+    continuation_rebind: continuationRebind,
+  });
+}
+
 function normalizeTransportSession(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -2454,7 +2480,14 @@ export function createApp(config, options = {}) {
           presenceError.code = "agent_presence_conflict";
           throw presenceError;
         }
-        const sessionId = transportPresence?.session_id || declaredSessionId || transportSessionId || serverIssuedSessionId;
+        const sessionResolution = resolveMcpLogicalSession({
+          toolName: tool.name,
+          transportPresence,
+          declaredSessionId,
+          transportSessionId,
+          serverIssuedSessionId,
+        });
+        const sessionId = sessionResolution.session_id;
         const serverIssuedBootstrap = Boolean(serverIssuedSessionId);
         const hostNativeReporterAgentId = tool.name === "work_continuity_native_report"
           ? rawArgs.native_agent_id
@@ -2514,7 +2547,8 @@ export function createApp(config, options = {}) {
         };
         const logicalPresence = logicalSessionPresences.get(agentPresence.session_fingerprint);
         if (
-          (transportPresence && transportPresence.signature !== agentPresence.signature) ||
+          (transportPresence && transportPresence.signature !== agentPresence.signature &&
+            !sessionResolution.continuation_rebind) ||
           (logicalPresence && logicalPresence.signature !== agentPresence.signature)
         ) {
           const presenceError = new Error("agent_presence_conflict");

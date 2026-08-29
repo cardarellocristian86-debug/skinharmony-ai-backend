@@ -4,7 +4,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, filterToolsForClient, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, resolveHostTransportPresence, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, filterToolsForClient, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, resolveHostTransportPresence, resolveMcpLogicalSession, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
 import { NYRA_DIALOGUE_WIDGET_MIME_TYPE, NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES, createDynamicCapabilityHandlers, dynamicCapabilityCatalogSnapshot } from "../src/dynamic-capability-router.js";
@@ -127,6 +127,30 @@ test("prefers the actual MCP transport binding over an OAuth logical session", (
   });
   assert.equal(resolved.presence, transportPresence);
   assert.equal(resolved.binding_source, "transport");
+});
+
+test("governed continuation rebinds only to its declared logical session", () => {
+  const staleTransport = { session_id: "stale-mcp-session" };
+  const continuation = resolveMcpLogicalSession({
+    toolName: "nyra_governed_continue",
+    transportPresence: staleTransport,
+    declaredSessionId: "attested-logical-session",
+    transportSessionId: "current-mcp-session",
+  });
+  assert.deepEqual(continuation, {
+    session_id: "attested-logical-session",
+    continuation_rebind: true,
+  });
+  const nativePlan = resolveMcpLogicalSession({
+    toolName: "work_continuity_native_plan",
+    transportPresence: staleTransport,
+    declaredSessionId: "attested-logical-session",
+    transportSessionId: "current-mcp-session",
+  });
+  assert.deepEqual(nativePlan, {
+    session_id: "stale-mcp-session",
+    continuation_rebind: false,
+  });
 });
 
 test("binds an OAuth owner logical session only for DTT-backed dynamic reads", () => {
