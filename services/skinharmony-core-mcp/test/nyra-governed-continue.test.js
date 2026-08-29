@@ -10,6 +10,7 @@ import {
   NYRA_GOVERNED_CONTINUATION_SCHEMA,
 } from "../src/nyra-governed-continuation-store.js";
 import { HOST_APP_CAPABILITIES } from "../src/host-app-registry.js";
+import { TOOLS } from "../src/tool-definitions.js";
 import {
   governedWorkBootstrapDigest,
   materializeGovernedWorkBootstrapRequest,
@@ -103,8 +104,120 @@ function actionRecord(overrides = {}) {
     work_revision: 7,
     intent_digest: SECRET_DIGEST,
     context_digest: CONTEXT_DIGEST,
+    issued_at: "2026-08-28T21:00:00.000Z",
+    expires_at: "2026-08-28T21:05:00.000Z",
     ...overrides,
   };
+}
+
+function precommitGate(overrides = {}) {
+  return {
+    schema_version: "precommit_ticket_gate_v1",
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    action_kind: "git.commit",
+    gate_kind: "ticket_acquisition",
+    task_id: "22222222-2222-4222-8222-222222222222",
+    plan_id: "33333333-3333-4333-8333-333333333333",
+    evaluation_id: "44444444-4444-4444-8444-444444444444",
+    evaluation_digest: "e".repeat(64),
+    workspace_digest: "f".repeat(64),
+    supersession_digest: "1".repeat(64),
+    reconciliation_digest: "2".repeat(64),
+    legacy_evidence_ids: ["55555555-5555-4555-8555-555555555555"],
+    replacement_evidence_ids: ["66666666-6666-4666-8666-666666666666"],
+    fulfilled: false,
+    ticket_id: null,
+    fresh: true,
+    drift_codes: [],
+    projection_digest: "3".repeat(64),
+    ...overrides,
+  };
+}
+
+function commitContext(gate = precommitGate()) {
+  return {
+    available: true,
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    work_revision: 7,
+    intent_digest: SECRET_DIGEST,
+    context_digest: CONTEXT_DIGEST,
+    status: "ACTIVE",
+    precommit_ticket_gate: gate,
+    precommit_ticket_gate_applicable: true,
+  };
+}
+
+function commitRequest(gate = precommitGate()) {
+  return {
+    work_id: WORK_ID,
+    intent_anchor_digest: SECRET_DIGEST,
+    delegation_id: "hnd_commit-delegation-001",
+    repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+    action: { kind: "git.commit", branch: "fix/nyra-conversation-quality-v1" },
+    evidence_digest: gate.projection_digest,
+  };
+}
+
+function commitTicket(request, gate = precommitGate(), overrides = {}) {
+  const ticket = {
+    schema_version: "host_native_action_ticket_v1",
+    ticket_id: `hnt_${"4".repeat(64)}`,
+    delegation_id: request.delegation_id,
+    tenant_id: "tenant-a",
+    work_id: WORK_ID,
+    intent_anchor_digest: SECRET_DIGEST,
+    repository: request.repository,
+    host_kind: "chatgpt_native",
+    host_session_fingerprint: "d".repeat(32),
+    action: request.action,
+    evidence_digest: gate.projection_digest,
+    issued_at: "2026-08-28T21:00:10.000Z",
+    expires_at: "2026-08-28T21:05:10.000Z",
+    max_uses: 1,
+    provider_execution: false,
+    host_policy_override: false,
+    host_policy_must_allow: true,
+    signature: `hnt_${"5".repeat(64)}`,
+    ...overrides,
+  };
+  return {
+    schema_version: "host_native_action_ticket_record_v1",
+    tenant_id: "tenant-a",
+    state: "issued",
+    uses: 0,
+    ticket,
+  };
+}
+
+function commitHandler({ ticketOverrides = {}, includeReadback = true } = {}) {
+  const gate = precommitGate();
+  const request = commitRequest(gate);
+  const record = commitTicket(request, gate, ticketOverrides);
+  const store = fakeStore(actionRecord({ action_class: "GIT_COMMIT" }));
+  const fulfillments = [];
+  const handler = createNyraGovernedContinueHandler({
+    store,
+    readDirectiveContext: async () => commitContext(gate),
+    normalizeDirectiveContext: (value) => value,
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    reviewWorkBootstrap: async () => { throw new Error("unexpected_review"); },
+    createWorkBootstrap: async () => { throw new Error("unexpected_create"); },
+    authorizeAction: async () => ({ structuredContent: { action_ticket: record } }),
+    ...(includeReadback ? {
+      readActionTicket: async ({ ticket_id }) => {
+        assert.equal(ticket_id, record.ticket.ticket_id);
+        return { structuredContent: { ok: true, tenant_id: "tenant-a", action_ticket: record } };
+      },
+    } : {}),
+    fulfillPrecommitTicketTask: async (input) => {
+      fulfillments.push(input);
+      return { idempotent_replay: false };
+    },
+    now: () => Date.parse("2026-08-28T21:00:20.000Z"),
+  });
+  return { handler, request, gate, record, fulfillments };
 }
 
 function bootstrapRecord() {
@@ -382,4 +495,60 @@ test("a bounded action continuation requires the matching host delegation and fr
   assert.equal(response.structuredContent.delegation_issued, true);
   assert.equal(response.structuredContent.external_action_authorized, false);
   assert.equal(calls[0].idempotency_key, "core_issue_delegation");
+});
+
+test("git.commit is admitted by the bounded continuation delegation schema", () => {
+  const tool = TOOLS.find((item) => item.name === "nyra_continue");
+  const kinds = tool.inputSchema.properties.delegation_request
+    .properties.allowed_actions.items.enum;
+  assert(kinds.includes("git.commit"));
+  assert.equal(kinds.includes("github.commit"), false);
+});
+
+test("a git.commit task is fulfilled only after trusted and fresh Core ticket readback", async () => {
+  const { handler, request, gate, record, fulfillments } = commitHandler();
+  const response = await handler({
+    operation: "authorize_action",
+    continuation_ref: CONTINUATION_REF,
+    idempotency_key: "caller-commit-authorization-key",
+    action_request: request,
+  }, identity());
+  assert.equal(response.structuredContent.ticket_issued, true);
+  assert.equal(response.structuredContent.ticket_id, record.ticket.ticket_id);
+  assert.equal(fulfillments.length, 1);
+  assert.equal(fulfillments[0].gate_projection_digest, gate.projection_digest);
+  assert.equal(fulfillments[0].action_ticket, record);
+});
+
+test("git.commit fulfillment rejects temporally stale or cross-bound Core readback", async (t) => {
+  const cases = [
+    ["expired", { expires_at: "2026-08-28T21:00:19.000Z" }],
+    ["future issuance", { issued_at: "2026-08-28T21:01:00.001Z" }],
+    ["wrong delegation", { delegation_id: "hnd_wrong-delegation-001" }],
+    ["wrong host session", { host_session_fingerprint: "9".repeat(32) }],
+    ["changed action", { action: { kind: "git.commit", branch: "main" } }],
+  ];
+  for (const [name, ticketOverrides] of cases) {
+    await t.test(name, async () => {
+      const { handler, request, fulfillments } = commitHandler({ ticketOverrides });
+      await assert.rejects(handler({
+        operation: "authorize_action",
+        continuation_ref: CONTINUATION_REF,
+        idempotency_key: `caller-commit-negative-${name.replaceAll(" ", "-")}`,
+        action_request: request,
+      }, identity()), /nyra_continue_commit_ticket_readback_invalid/);
+      assert.equal(fulfillments.length, 0);
+    });
+  }
+});
+
+test("git.commit fails closed when trusted Core ticket readback is unavailable", async () => {
+  const { handler, request, fulfillments } = commitHandler({ includeReadback: false });
+  await assert.rejects(handler({
+    operation: "authorize_action",
+    continuation_ref: CONTINUATION_REF,
+    idempotency_key: "caller-commit-no-readback",
+    action_request: request,
+  }, identity()), /nyra_continue_commit_ticket_readback_unavailable/);
+  assert.equal(fulfillments.length, 0);
 });
