@@ -2048,6 +2048,37 @@ test("native plans bind an exact acceptance amendment from the current architect
   assert.deepEqual(planned.plan.acceptance_contract.criteria.map((criterion) => criterion.criterion_id), [
     "objective", "constraint_1", "acceptance_current_change_cone",
   ]);
+
+  const reorderJsonObjectKeys = (value) => {
+    if (Array.isArray(value)) return value.map(reorderJsonObjectKeys);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.keys(value).sort().reverse()
+      .map((itemKey) => [itemKey, reorderJsonObjectKeys(value[itemKey])]));
+  };
+  const storedPlan = pool.plans.get(key("tenant-a", planned.plan.plan_id));
+  storedPlan.plan = reorderJsonObjectKeys(storedPlan.plan);
+  storedPlan.plan_digest = digest(storedPlan.plan);
+  const reordered = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    idempotency_key: "native-plan-amended-jsonb-order",
+  });
+  assert.equal(reordered.missing.includes("intent_acceptance_contract_invalid"), false);
+
+  const replacement = storedPlan.plan.acceptance_contract.criteria.find(
+    (criterion) => criterion.criterion_id === "acceptance_current_change_cone",
+  );
+  replacement.text = `${replacement.text} tampered`;
+  storedPlan.plan.acceptance_contract.criteria_digest = digest(
+    storedPlan.plan.acceptance_contract.criteria,
+  );
+  storedPlan.plan_digest = digest(storedPlan.plan);
+  const tampered = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    idempotency_key: "native-plan-amended-jsonb-order-tampered",
+  });
+  assert.equal(tampered.missing.includes("intent_acceptance_contract_invalid"), true);
 });
 
 test("native agent leases enforce Core max_parallel and expire stale host bindings", async () => {
