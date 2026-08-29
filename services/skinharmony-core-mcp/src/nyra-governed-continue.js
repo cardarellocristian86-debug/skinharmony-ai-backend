@@ -95,6 +95,22 @@ function safeEqual(left, right) {
   return a.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// The conversational attestation is intentionally bound to the logical
+// session fingerprint, whereas a native Work plan is persisted against the
+// MCP transport fingerprint.  They are different values in production: using
+// the former to verify the latter makes every genuine native-plan hand-off
+// fail closed.  Keep the logical-session binding above, and use this
+// server-derived transport identity only for the persisted-plan readback.
+function nativeCoordinatorFingerprint(identity) {
+  const presence = identity?.agentPresence || {};
+  const transport = String(presence.host_transport_session_fingerprint || "");
+  if (presence.transport_bound === true && /^[a-f0-9]{16,64}$/i.test(transport)) {
+    return transport;
+  }
+  const session = String(presence.session_fingerprint || "");
+  return /^[a-f0-9]{16,64}$/i.test(session) ? session : null;
+}
+
 function continuationIdempotencyKey(payload, operation, replayScope) {
   const digest = crypto.createHash("sha256").update(JSON.stringify(stable({
     schema_version: "nyra_governed_continue_idempotency_v1",
@@ -408,11 +424,13 @@ export function createNyraGovernedContinueAttestor({
     const core = planResult?.structuredContent?.result || {};
     const plan = core.plan;
     const tasks = Array.isArray(plan?.tasks) ? plan.tasks : [];
+    const coordinatorFingerprint = nativeCoordinatorFingerprint(identity);
     if (core.tenant_id !== identity.tenantId || core.work_id !== parentPayload.work_id ||
         !WORK_ID.test(String(plan?.plan_id || "")) ||
         !SHA256.test(String(core.plan_digest || "")) ||
         plan?.host_type !== parentPayload.host_kind ||
-        plan?.coordinator_session_fingerprint !== parentPayload.session_fingerprint ||
+        !coordinatorFingerprint ||
+        plan?.coordinator_session_fingerprint !== coordinatorFingerprint ||
         tasks.length < 1 || tasks.length > 3 || tasks.some((task) => (
           !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,119}$/.test(String(task?.task_id || "")) ||
           !SHA256.test(String(task?.task_digest || ""))

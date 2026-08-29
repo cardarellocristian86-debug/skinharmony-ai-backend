@@ -496,7 +496,16 @@ test("handler rejects expired and registry-drifted continuations before Core dis
 test("derives a plan-bound child candidate and rejects host, plan, task and replay substitution", async () => {
   let clock = Date.parse("2026-08-25T12:00:00.000Z");
   const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
-  const rootCandidate = attestor.issue({ identity: identity(), directive: continuationDirective() });
+  // Production binds a native plan to an MCP transport fingerprint while the
+  // conversation attestation remains bound to its logical session fingerprint.
+  const caller = identity({
+    agentPresence: {
+      ...identity().agentPresence,
+      transport_bound: true,
+      host_transport_session_fingerprint: "e".repeat(64),
+    },
+  });
+  const rootCandidate = attestor.issue({ identity: caller, directive: continuationDirective() });
   const PLAN_ID = "22222222-2222-4222-8222-222222222222";
   const nativeTasks = [
     { task_id: "build", kind: "builder", instruction: "Implement the bounded bridge." },
@@ -511,7 +520,7 @@ test("derives a plan-bound child candidate and rejects host, plan, task and repl
     plan: {
       plan_id: PLAN_ID,
       host_type: "chatgpt_native",
-      coordinator_session_fingerprint: "d".repeat(24),
+      coordinator_session_fingerprint: "e".repeat(64),
       tasks: nativeTasks.map((task) => ({
         ...task,
         task_digest: taskDigests[task.task_id],
@@ -564,7 +573,7 @@ test("derives a plan-bound child candidate and rejects host, plan, task and repl
     },
   };
   clock += 60_000;
-  const planned = await handler(planRequest, identity());
+  const planned = await handler(planRequest, caller);
   assert.equal(planned.structuredContent.native_plan_created, true);
   const nextContinuation = planned.structuredContent.next_governed_continuation;
   assert.deepEqual(nextContinuation.operations, ["bind_native_child"]);
@@ -584,7 +593,7 @@ test("derives a plan-bound child candidate and rejects host, plan, task and repl
       host_task_id: "/root/build",
     },
   };
-  const bound = await handler(bindRequest, identity());
+  const bound = await handler(bindRequest, caller);
   assert.equal(bound.structuredContent.native_child_bound, true);
   assert.equal(bound.structuredContent.bound_task_id, "build");
   assert.match(bound.structuredContent.core_result.result.assignment_capability, /^hnac_/);
@@ -617,7 +626,7 @@ test("derives a plan-bound child candidate and rejects host, plan, task and repl
       } } };
     },
   });
-  const replicaBound = await replicaHandler(bindRequest, identity());
+  const replicaBound = await replicaHandler(bindRequest, caller);
   const firstBindCall = calls.find((call) => call.phase === "bind");
   assert.equal(replicaBound.structuredContent.native_child_bound, true);
   assert.equal(replicaBindCalls.length, 1);
