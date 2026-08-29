@@ -676,8 +676,62 @@ function unavailableWorkDirectiveContext(work, dialogue) {
     pending_required_task_count: 0,
     required_evidence_count: 0,
     unverified_required_evidence_count: 0,
+    precommit_ticket_gate: null,
+    precommit_ticket_gate_applicable: false,
+    precommit_pending_required_task_count: 0,
+    precommit_unverified_required_evidence_count: 0,
     next_required_task: null,
     closure_verified: false,
+  });
+}
+
+function normalizePrecommitTicketGate(value, tenantId, workId) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw fail("nyra_converse_precommit_ticket_gate_invalid", 409);
+  }
+  const fields = [
+    "schema_version", "tenant_id", "work_id", "action_kind", "gate_kind",
+    "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
+    "supersession_digest", "reconciliation_digest", "legacy_evidence_ids",
+    "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
+    "projection_digest",
+  ];
+  if (Object.keys(value).sort().join("\0") !== fields.sort().join("\0") ||
+      value.schema_version !== "precommit_ticket_gate_v1" ||
+      value.tenant_id !== tenantId || boundedWorkId(value.work_id) !== workId ||
+      value.action_kind !== "git.commit" || value.gate_kind !== "ticket_acquisition" ||
+      !boundedWorkId(value.task_id) || !boundedWorkId(value.plan_id) ||
+      !boundedWorkId(value.evaluation_id) ||
+      ![value.evaluation_digest, value.workspace_digest, value.supersession_digest,
+        value.reconciliation_digest, value.projection_digest]
+        .every((item) => /^[a-f0-9]{64}$/.test(String(item || ""))) ||
+      !Array.isArray(value.legacy_evidence_ids) || !value.legacy_evidence_ids.length ||
+      value.legacy_evidence_ids.length > 128 ||
+      value.legacy_evidence_ids.some((item) => !boundedWorkId(item)) ||
+      new Set(value.legacy_evidence_ids).size !== value.legacy_evidence_ids.length ||
+      !Array.isArray(value.replacement_evidence_ids) ||
+      value.replacement_evidence_ids.length !== value.legacy_evidence_ids.length ||
+      value.replacement_evidence_ids.some((item) => !boundedWorkId(item)) ||
+      new Set(value.replacement_evidence_ids).size !== value.replacement_evidence_ids.length ||
+      typeof value.fulfilled !== "boolean" || typeof value.fresh !== "boolean" ||
+      !(value.ticket_id === null || (typeof value.ticket_id === "string" && value.ticket_id.length <= 160)) ||
+      !Array.isArray(value.drift_codes) || value.drift_codes.length > 16 ||
+      value.drift_codes.some((item) => typeof item !== "string" || !item || item.length > 160)) {
+    throw fail("nyra_converse_precommit_ticket_gate_invalid", 409);
+  }
+  const { projection_digest: projectionDigest, ...material } = value;
+  if (deterministicDigest(material) !== projectionDigest ||
+      (value.fresh && value.drift_codes.length > 0) ||
+      (!value.fresh && value.drift_codes.length === 0) ||
+      (value.fulfilled !== Boolean(value.ticket_id))) {
+    throw fail("nyra_converse_precommit_ticket_gate_invalid", 409);
+  }
+  return Object.freeze({
+    ...value,
+    legacy_evidence_ids: Object.freeze([...value.legacy_evidence_ids].sort()),
+    replacement_evidence_ids: Object.freeze([...value.replacement_evidence_ids].sort()),
+    drift_codes: Object.freeze([...value.drift_codes]),
   });
 }
 
@@ -771,6 +825,30 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
   ));
   const requiredEvidence = evidence.filter((item) => item.required);
   const unverifiedEvidence = requiredEvidence.filter((item) => !item.independently_verified);
+  const precommitTicketGate = normalizePrecommitTicketGate(
+    value.precommit_ticket_gate,
+    tenantId,
+    workBinding.work_id,
+  );
+  const pendingTaskIds = new Set(pendingRequiredTasks.map((item) => item.task_id));
+  const unverifiedEvidenceIds = new Set(unverifiedEvidence.map((item) => item.evidence_id));
+  const requiredVerifiedEvidenceIds = new Set(requiredEvidence
+    .filter((item) => item.independently_verified)
+    .map((item) => item.evidence_id));
+  const precommitTicketGateApplicable = Boolean(
+    precommitTicketGate?.fresh === true && precommitTicketGate.fulfilled === false &&
+    pendingTaskIds.has(precommitTicketGate.task_id) &&
+    precommitTicketGate.legacy_evidence_ids.every((id) => unverifiedEvidenceIds.has(id)) &&
+    precommitTicketGate.replacement_evidence_ids.every((id) => requiredVerifiedEvidenceIds.has(id))
+  );
+  const precommitPendingRequiredTasks = precommitTicketGateApplicable
+    ? pendingRequiredTasks.filter((item) => item.task_id !== precommitTicketGate.task_id)
+    : pendingRequiredTasks;
+  const mappedLegacyEvidenceIds = precommitTicketGateApplicable
+    ? new Set(precommitTicketGate.legacy_evidence_ids)
+    : new Set();
+  const precommitUnverifiedEvidence = unverifiedEvidence
+    .filter((item) => !mappedLegacyEvidenceIds.has(item.evidence_id));
   const closureProjection = value.closure_verification &&
     typeof value.closure_verification === "object" &&
     !Array.isArray(value.closure_verification)
@@ -818,6 +896,8 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
     acceptance_criteria_digests: acceptanceCriteria.map((item) => deterministicDigest(item)),
     tasks,
     evidence,
+    precommit_ticket_gate_projection_digest: precommitTicketGate?.projection_digest || null,
+    precommit_ticket_gate_applicable: precommitTicketGateApplicable,
     closure_verified: closureVerified,
     closure_verification_digest: closureVerified ? closureProjection.verification_digest : null,
   };
@@ -834,6 +914,10 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
     pending_required_task_count: pendingRequiredTasks.length,
     required_evidence_count: requiredEvidence.length,
     unverified_required_evidence_count: unverifiedEvidence.length,
+    precommit_ticket_gate: precommitTicketGate,
+    precommit_ticket_gate_applicable: precommitTicketGateApplicable,
+    precommit_pending_required_task_count: precommitPendingRequiredTasks.length,
+    precommit_unverified_required_evidence_count: precommitUnverifiedEvidence.length,
     next_required_task: pendingRequiredTasks[0]
       ? Object.freeze({
           task_id: pendingRequiredTasks[0].task_id,
@@ -889,6 +973,10 @@ function orchestrationDirective({
     ? workBootstrapCandidate
     : action.consequential_request_detected || interpretation.owner_confirmation_required;
   const mergeManual = action.action_class === "GIT_MERGE";
+  const commitPreflightGate = action.action_class === "GIT_COMMIT" &&
+    workContext.precommit_ticket_gate_applicable === true
+    ? workContext.precommit_ticket_gate
+    : null;
   const binding = Object.freeze({
     tenant_id: tenantId,
     work_id: work.work_id,
@@ -896,6 +984,18 @@ function orchestrationDirective({
     work_revision: workContext.work_revision,
     intent_digest: workContext.intent_digest,
     context_digest: workContext.context_digest,
+    precommit_ticket_gate: commitPreflightGate
+      ? Object.freeze({
+          task_id: commitPreflightGate.task_id,
+          plan_id: commitPreflightGate.plan_id,
+          evaluation_id: commitPreflightGate.evaluation_id,
+          evaluation_digest: commitPreflightGate.evaluation_digest,
+          workspace_digest: commitPreflightGate.workspace_digest,
+          supersession_digest: commitPreflightGate.supersession_digest,
+          reconciliation_digest: commitPreflightGate.reconciliation_digest,
+          projection_digest: commitPreflightGate.projection_digest,
+        })
+      : null,
   });
 
   const prerequisiteCodes = [];
@@ -921,11 +1021,17 @@ function orchestrationDirective({
       if (workContext.available && workContext.required_task_count === 0) {
         prerequisite("required_work_tasks_missing");
       }
-      if (workContext.pending_required_task_count > 0) prerequisite("required_work_tasks_incomplete");
+      const pendingTaskCount = commitPreflightGate
+        ? workContext.precommit_pending_required_task_count
+        : workContext.pending_required_task_count;
+      if (pendingTaskCount > 0) prerequisite("required_work_tasks_incomplete");
       if (workContext.available && workContext.required_evidence_count === 0) {
         prerequisite("required_evidence_missing");
       }
-      if (workContext.unverified_required_evidence_count > 0) {
+      const unverifiedEvidenceCount = commitPreflightGate
+        ? workContext.precommit_unverified_required_evidence_count
+        : workContext.unverified_required_evidence_count;
+      if (unverifiedEvidenceCount > 0) {
         prerequisite("required_evidence_unverified");
       }
     }
@@ -1208,7 +1314,10 @@ function orchestrationDirective({
       recommendedAction, ticketRequired ? "BOUNDED_WORKSPACE" : "READ_ONLY", "READY",
       workContext.next_required_task ? [`task_${workContext.next_required_task.task_id}`] : []);
   }
-  if (coreMissingContext || workContext.unverified_required_evidence_count > 0 ||
+  const effectiveUnverifiedEvidenceCount = commitPreflightGate
+    ? workContext.precommit_unverified_required_evidence_count
+    : workContext.unverified_required_evidence_count;
+  if (coreMissingContext || effectiveUnverifiedEvidenceCount > 0 ||
       prerequisiteCodes.includes("required_evidence_missing")) {
     appendAction("HOST", "EVIDENCE", "collect_missing_evidence",
       "Raccogliere e collegare al Work le evidenze mancanti con verifica indipendente",
