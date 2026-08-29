@@ -2075,6 +2075,8 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
       agent_id: "codex-coordinator",
       client_type: "codex",
       session_fingerprint: "b".repeat(64),
+      host_transport_session_fingerprint: "c".repeat(64),
+      transport_bound: true,
     },
   };
   const work = await runtime.ensure(identity, {
@@ -2113,6 +2115,23 @@ test("native agent leases enforce Core max_parallel and expire stale host bindin
     }),
     /native_agent_assignment_signing_unavailable/,
   );
+  const reconnectedCoordinator = {
+    ...identity,
+    agentPresence: {
+      ...identity.agentPresence,
+      // Same logical conversation, but a different authenticated transport.
+      host_transport_session_fingerprint: "d".repeat(24),
+    },
+  };
+  await assert.rejects(runtime.bindNativeAgent(reconnectedCoordinator, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    task_id: "build",
+    native_agent_id: "reconnected-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/reconnected-build",
+  }), /native_agent_coordinator_transport_mismatch/);
+  assert.equal(pool.nativeAgents.size, 0);
   const bind = (taskId, agentId) => runtime.bindNativeAgent(identity, {
     work_id: work.work_id,
     plan_id: planned.plan.plan_id,
