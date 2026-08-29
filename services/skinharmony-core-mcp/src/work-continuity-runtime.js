@@ -523,7 +523,101 @@ export function buildNativeAgentPlan(input = {}) {
   };
 }
 
-function buildAcceptanceContract(anchor, intentDigest) {
+const ACCEPTANCE_CRITERION_KINDS = new Set(["objective", "acceptance", "constraint"]);
+
+function acceptanceCriterionDigest(criterion, intentDigest) {
+  return digest({
+    schema_version: "intent_acceptance_criterion_v1",
+    intent_digest: intentDigest,
+    criterion_id: criterion.criterion_id,
+    criterion_kind: criterion.criterion_kind,
+    text: criterion.text,
+  });
+}
+
+function exactObjectKeys(value, allowedKeys, errorCode) {
+  requireObject(value, errorCode);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
+    throw new Error(`${errorCode}_invalid`);
+  }
+  return value;
+}
+
+function amendmentText(value, name, max) {
+  if (typeof value !== "string" || value.length > max) throw new Error(`${name}_invalid`);
+  const normalized = safeText(value, max).trim();
+  if (!normalized) throw new Error(`${name}_invalid`);
+  return normalized;
+}
+
+function normalizeAcceptanceAmendment(value, baseContract) {
+  const amendment = exactObjectKeys(value, new Set([
+    "schema_version", "base_criteria_digest", "reason",
+    "superseded_criteria", "replacement_criteria",
+  ]), "intent_acceptance_amendment");
+  if (
+    amendment.schema_version !== "intent_acceptance_contract_amendment_v1" ||
+    String(amendment.base_criteria_digest || "").toLowerCase() !== baseContract.criteria_digest
+  ) {
+    throw new Error("intent_acceptance_amendment_base_mismatch");
+  }
+  const baseById = new Map(baseContract.criteria.map((criterion) => [criterion.criterion_id, criterion]));
+  if (!Array.isArray(amendment.superseded_criteria) ||
+      !amendment.superseded_criteria.length || amendment.superseded_criteria.length > 100) {
+    throw new Error("intent_acceptance_amendment_superseded_invalid");
+  }
+  const seenSuperseded = new Set();
+  const supersededCriteria = amendment.superseded_criteria.map((item) => {
+    exactObjectKeys(item, new Set(["criterion_id", "criterion_digest", "reason"]),
+      "intent_acceptance_amendment_superseded");
+    const criterionId = identifier(item.criterion_id,
+      "intent_acceptance_amendment_criterion_id", 160);
+    const expected = baseById.get(criterionId);
+    const criterionDigest = String(item.criterion_digest || "").toLowerCase();
+    if (!expected || expected.criterion_kind === "objective" ||
+        criterionDigest !== expected.criterion_digest || seenSuperseded.has(criterionId)) {
+      throw new Error("intent_acceptance_amendment_superseded_invalid");
+    }
+    seenSuperseded.add(criterionId);
+    return {
+      criterion_id: criterionId,
+      criterion_digest: criterionDigest,
+      reason: amendmentText(item.reason, "intent_acceptance_amendment_superseded_reason", 1_000),
+    };
+  }).sort((left, right) => left.criterion_id.localeCompare(right.criterion_id));
+  if (!Array.isArray(amendment.replacement_criteria) ||
+      !amendment.replacement_criteria.length || amendment.replacement_criteria.length > 100) {
+    throw new Error("intent_acceptance_amendment_replacements_invalid");
+  }
+  const reservedIds = new Set(baseContract.criteria.map((criterion) => criterion.criterion_id));
+  const seenReplacements = new Set();
+  const replacementCriteria = amendment.replacement_criteria.map((item) => {
+    exactObjectKeys(item, new Set(["criterion_id", "criterion_kind", "text"]),
+      "intent_acceptance_amendment_replacement");
+    const criterionId = identifier(item.criterion_id,
+      "intent_acceptance_amendment_replacement_id", 160);
+    const criterionKind = String(item.criterion_kind || "");
+    if (!ACCEPTANCE_CRITERION_KINDS.has(criterionKind) || criterionKind === "objective" ||
+        reservedIds.has(criterionId) || seenReplacements.has(criterionId)) {
+      throw new Error("intent_acceptance_amendment_replacements_invalid");
+    }
+    seenReplacements.add(criterionId);
+    return {
+      criterion_id: criterionId,
+      criterion_kind: criterionKind,
+      text: amendmentText(item.text, "intent_acceptance_amendment_replacement_text", 2_000),
+    };
+  }).sort((left, right) => left.criterion_id.localeCompare(right.criterion_id));
+  return {
+    schema_version: "intent_acceptance_contract_amendment_v1",
+    base_criteria_digest: baseContract.criteria_digest,
+    reason: amendmentText(amendment.reason, "intent_acceptance_amendment_reason", 2_000),
+    superseded_criteria: supersededCriteria,
+    replacement_criteria: replacementCriteria,
+  };
+}
+
+export function buildAcceptanceContract(anchor, intentDigest, architectureRecord = null) {
   requireObject(anchor, "intent_anchor");
   if (!/^[a-f0-9]{64}$/.test(String(intentDigest || ""))) {
     throw new Error("intent_digest_invalid");
@@ -549,16 +643,10 @@ function buildAcceptanceContract(anchor, intentDigest) {
   ].filter((criterion) => criterion.text);
   const criteria = candidates.map((criterion) => ({
     ...criterion,
-    criterion_digest: digest({
-      schema_version: "intent_acceptance_criterion_v1",
-      intent_digest: intentDigest,
-      criterion_id: criterion.criterion_id,
-      criterion_kind: criterion.criterion_kind,
-      text: criterion.text,
-    }),
+    criterion_digest: acceptanceCriterionDigest(criterion, intentDigest),
   }));
   if (!criteria.length) throw new Error("intent_acceptance_contract_empty");
-  return {
+  const baseContract = {
     schema_version: "intent_acceptance_contract_v1",
     intent_digest: intentDigest,
     criteria,
@@ -566,6 +654,102 @@ function buildAcceptanceContract(anchor, intentDigest) {
     evidence_required: true,
     independent_verifier_required: true,
   };
+  const amendmentInput = architectureRecord?.architecture?.acceptance_contract_amendment;
+  if (amendmentInput === undefined || amendmentInput === null) return baseContract;
+  const architectureVersion = Number(architectureRecord?.architecture_version);
+  const architectureDigest = String(architectureRecord?.architecture_digest || "").toLowerCase();
+  if (!Number.isInteger(architectureVersion) || architectureVersion < 1 ||
+      !/^[a-f0-9]{64}$/.test(architectureDigest) ||
+      architectureDigest !== digest(architectureRecord.architecture)) {
+    throw new Error("intent_acceptance_amendment_architecture_invalid");
+  }
+  const amendment = normalizeAcceptanceAmendment(amendmentInput, baseContract);
+  const supersededIds = new Set(amendment.superseded_criteria.map((item) => item.criterion_id));
+  const replacements = amendment.replacement_criteria.map((criterion) => ({
+    ...criterion,
+    criterion_digest: acceptanceCriterionDigest(criterion, intentDigest),
+  }));
+  const effectiveCriteria = [
+    ...criteria.filter((criterion) => !supersededIds.has(criterion.criterion_id)),
+    ...replacements,
+  ];
+  return {
+    schema_version: "intent_acceptance_contract_v2",
+    intent_digest: intentDigest,
+    base_criteria: criteria,
+    base_criteria_digest: baseContract.criteria_digest,
+    amendment,
+    amendment_digest: digest(amendment),
+    architecture_version: architectureVersion,
+    architecture_digest: architectureDigest,
+    criteria: effectiveCriteria,
+    criteria_digest: digest(effectiveCriteria),
+    evidence_required: true,
+    independent_verifier_required: true,
+  };
+}
+
+function acceptanceContractIntegrityValid(contract) {
+  try {
+    requireObject(contract, "intent_acceptance_contract");
+    if (!/^[a-f0-9]{64}$/.test(String(contract.intent_digest || "")) ||
+        !Array.isArray(contract.criteria) || !contract.criteria.length) return false;
+    const criterionKeys = new Set([
+      "criterion_id", "criterion_kind", "text", "criterion_digest",
+    ]);
+    const validateCriteria = (criteria) => criteria.every((criterion) => {
+      if (!criterion || Object.keys(criterion).some((key) => !criterionKeys.has(key)) ||
+          Object.keys(criterion).length !== criterionKeys.size ||
+          !ACCEPTANCE_CRITERION_KINDS.has(criterion.criterion_kind)) return false;
+      try {
+        identifier(criterion.criterion_id, "intent_acceptance_criterion_id", 160);
+        amendmentText(criterion.text, "intent_acceptance_criterion_text", 8_000);
+      } catch {
+        return false;
+      }
+      return acceptanceCriterionDigest(criterion, contract.intent_digest) === criterion.criterion_digest;
+    });
+    if (!validateCriteria(contract.criteria) || digest(contract.criteria) !== contract.criteria_digest) return false;
+    if (contract.criteria.filter((criterion) => criterion.criterion_kind === "objective").length !== 1 ||
+        contract.evidence_required !== true || contract.independent_verifier_required !== true) return false;
+    if (contract.schema_version === "intent_acceptance_contract_v1") {
+      const v1Keys = new Set([
+        "schema_version", "intent_digest", "criteria", "criteria_digest",
+        "evidence_required", "independent_verifier_required",
+      ]);
+      return Object.keys(contract).every((key) => v1Keys.has(key)) &&
+        Object.keys(contract).length === v1Keys.size;
+    }
+    if (contract.schema_version !== "intent_acceptance_contract_v2" ||
+        !Array.isArray(contract.base_criteria) || !validateCriteria(contract.base_criteria) ||
+        digest(contract.base_criteria) !== contract.base_criteria_digest ||
+        !Number.isInteger(contract.architecture_version) || contract.architecture_version < 1 ||
+        !/^[a-f0-9]{64}$/.test(String(contract.architecture_digest || ""))) return false;
+    const v2Keys = new Set([
+      "schema_version", "intent_digest", "base_criteria", "base_criteria_digest",
+      "amendment", "amendment_digest", "architecture_version", "architecture_digest",
+      "criteria", "criteria_digest", "evidence_required", "independent_verifier_required",
+    ]);
+    if (Object.keys(contract).some((key) => !v2Keys.has(key)) ||
+        Object.keys(contract).length !== v2Keys.size) return false;
+    const baseContract = {
+      criteria: contract.base_criteria,
+      criteria_digest: contract.base_criteria_digest,
+    };
+    const amendment = normalizeAcceptanceAmendment(contract.amendment, baseContract);
+    if (digest(amendment) !== contract.amendment_digest) return false;
+    const supersededIds = new Set(amendment.superseded_criteria.map((item) => item.criterion_id));
+    const expected = [
+      ...contract.base_criteria.filter((criterion) => !supersededIds.has(criterion.criterion_id)),
+      ...amendment.replacement_criteria.map((criterion) => ({
+        ...criterion,
+        criterion_digest: acceptanceCriterionDigest(criterion, contract.intent_digest),
+      })),
+    ];
+    return JSON.stringify(expected) === JSON.stringify(contract.criteria);
+  } catch {
+    return false;
+  }
 }
 
 function bindCoreWorkPlan(corePlan, localPlan, {
@@ -760,13 +944,24 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
     missing.push("live_verification_missing");
   }
   const acceptanceContract = plan.acceptance_contract;
+  const acceptanceContractValid = Boolean(
+    acceptanceContract &&
+    ["intent_acceptance_contract_v1", "intent_acceptance_contract_v2"]
+      .includes(acceptanceContract.schema_version) &&
+    Array.isArray(acceptanceContract.criteria) &&
+    acceptanceContract.criteria.length &&
+    acceptanceContractIntegrityValid(acceptanceContract)
+  );
   if (
     !acceptanceContract ||
-    acceptanceContract.schema_version !== "intent_acceptance_contract_v1" ||
+    !["intent_acceptance_contract_v1", "intent_acceptance_contract_v2"]
+      .includes(acceptanceContract.schema_version) ||
     !Array.isArray(acceptanceContract.criteria) ||
     !acceptanceContract.criteria.length
   ) {
     missing.push("intent_acceptance_contract_missing");
+  } else if (!acceptanceContractValid) {
+    missing.push("intent_acceptance_contract_invalid");
   } else {
     for (const criterion of acceptanceContract.criteria) {
       const evidence = independentVerifiers.flatMap((verifier) =>
@@ -802,6 +997,8 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
     missing.push("agent_report_digest_missing");
   }
   const targetCommit = String(builders[0]?.report?.commit_sha || "").toLowerCase();
+  const targetPrecommit = builders[0]?.report?.precommit_evidence || null;
+  const targetWorkspaceDigest = String(targetPrecommit?.workspace_digest || "").toLowerCase();
   if (plan.release_mode === "external_ticket_required") {
     if (builders.length !== 1) missing.push("single_builder_required");
     if (!/^[a-f0-9]{40}$/.test(targetCommit)) missing.push("builder_target_commit_missing");
@@ -810,6 +1007,17 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
         missing.push(`verifier_reviewed_commit_missing:${verifier.agent_id}`);
       } else if (String(verifier.report.commit_sha).toLowerCase() !== targetCommit) {
         missing.push(`verifier_reviewed_commit_mismatch:${verifier.agent_id}`);
+      }
+    }
+    if (targetWorkspaceDigest) {
+      if (!/^[a-f0-9]{64}$/.test(targetWorkspaceDigest)) {
+        missing.push("builder_precommit_evidence_invalid");
+      }
+      for (const verifier of independentVerifiers) {
+        if (String(verifier.report?.precommit_evidence?.workspace_digest || "").toLowerCase() !==
+            targetWorkspaceDigest) {
+          missing.push(`verifier_precommit_evidence_mismatch:${verifier.agent_id}`);
+        }
       }
     }
     if (!Array.isArray(plan.required_checks) || !plan.required_checks.length) {
@@ -823,7 +1031,7 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
         agent_id: agent.agent_id,
         test,
       })));
-  const acceptanceProofs = (acceptanceContract?.criteria || []).map((criterion) => {
+  const acceptanceProofs = (acceptanceContractValid ? acceptanceContract.criteria : []).map((criterion) => {
     const verifierEvidence = independentVerifiers
       .flatMap((verifier) => (verifier.report?.acceptance_evidence || [])
         .filter((item) => item.criterion_digest === criterion.criterion_digest)
@@ -853,14 +1061,25 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
     test_evidence: testEvidence,
     report_bindings: reportBindings,
   });
+  const commitOnlyGaps = new Set([
+    "builder_target_commit_missing",
+    ...independentVerifiers.map((verifier) =>
+      `verifier_reviewed_commit_missing:${verifier.agent_id}`),
+  ]);
+  const commitTicketReady = Boolean(
+    !targetCommit &&
+    /^[a-f0-9]{64}$/.test(targetWorkspaceDigest) &&
+    missing.length > 0 &&
+    missing.every((item) => commitOnlyGaps.has(item))
+  );
   return {
     schema_version: "native_closure_evaluation_v1",
     closed: missing.length === 0,
     missing: [...new Set(missing)],
     completed_tasks: agents.filter((agent) => agent.status === "completed").map((agent) => agent.task_id),
     independent_verifier_count: independentVerifiers.length,
-    acceptance_criteria_count: acceptanceContract?.criteria?.length || 0,
-    acceptance_criteria_proven: acceptanceContract?.criteria?.length
+    acceptance_criteria_count: acceptanceContractValid ? acceptanceContract.criteria.length : 0,
+    acceptance_criteria_proven: acceptanceContractValid && acceptanceContract.criteria.length
       ? acceptanceContract.criteria.length -
         missing.filter((item) =>
           item.startsWith("acceptance_evidence_missing:") ||
@@ -868,11 +1087,65 @@ export function evaluateNativeClosure({ plan, agents = [] } = {}) {
           item.startsWith("acceptance_dissent:")).length
       : 0,
     target_commit: targetCommit || null,
+    precommit_verification: {
+      ready: commitTicketReady,
+      workspace_digest: targetWorkspaceDigest || null,
+      base_commit: /^[a-f0-9]{40}$/.test(String(targetPrecommit?.base_commit || ""))
+        ? String(targetPrecommit.base_commit).toLowerCase()
+        : null,
+      diff_digest: /^[a-f0-9]{64}$/.test(String(targetPrecommit?.diff_digest || ""))
+        ? String(targetPrecommit.diff_digest).toLowerCase()
+        : null,
+      changed_files_digest: Array.isArray(targetPrecommit?.changed_files)
+        ? digest([...targetPrecommit.changed_files].sort())
+        : null,
+    },
+    commit_ticket_ready: commitTicketReady,
+    execution_authorized: false,
     required_checks: requiredChecks,
     checks_digest: checksDigest,
     report_bindings: reportBindings,
     acceptance_proofs: acceptanceProofs,
   };
+}
+
+export function normalizeNativePrecommitEvidence(value) {
+  const evidence = requireObject(value, "native_precommit_evidence");
+  const allowedKeys = new Set([
+    "schema_version", "diff_mode", "base_commit", "diff_digest", "changed_files",
+  ]);
+  if (Object.keys(evidence).some((key) => !allowedKeys.has(key)) ||
+      evidence.schema_version !== "native_precommit_evidence_v1" ||
+      evidence.diff_mode !== "git_diff_binary_sha256_v1") {
+    throw new Error("native_precommit_evidence_invalid");
+  }
+  const changedFiles = stringList(
+    evidence.changed_files,
+    "native_precommit_changed_files",
+    { maxItems: 1_000, maxLength: 2_000 },
+  ).sort();
+  if (!changedFiles.length) throw new Error("native_precommit_changed_files_invalid");
+  const normalized = {
+    schema_version: "native_precommit_evidence_v1",
+    diff_mode: "git_diff_binary_sha256_v1",
+    base_commit: releaseField(
+      evidence.base_commit,
+      "native_precommit_base_commit",
+      /^[a-f0-9]{40}$/,
+      40,
+    ),
+    diff_digest: releaseField(
+      evidence.diff_digest,
+      "native_precommit_diff_digest",
+      /^[a-f0-9]{64}$/,
+      64,
+    ),
+    changed_files: changedFiles,
+  };
+  return Object.freeze({
+    ...normalized,
+    workspace_digest: digest(normalized),
+  });
 }
 
 // A terminal verifier report may promote one already-completed V2 task into
@@ -2093,6 +2366,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3`,
       [tenantId, projectId, sessionId]);
       let authorizedResumeWorkIds = null;
+      let authorizedSessionRebind = false;
       if (options.authorizedResumeWorkIds !== undefined) {
         if (!Array.isArray(options.authorizedResumeWorkIds) ||
             options.authorizedResumeWorkIds.length > 10_000) {
@@ -2100,10 +2374,20 @@ export function createWorkContinuityRuntime(config, options = {}) {
         }
         authorizedResumeWorkIds = new Set(options.authorizedResumeWorkIds.map((candidate) =>
           uuid(candidate, "work_id")));
-        if (input.resume_existing === true &&
-            ((binding.rows[0] && !authorizedResumeWorkIds.has(String(binding.rows[0].work_id))) ||
-             (input.work_id && !authorizedResumeWorkIds.has(workId)))) {
-          throw new Error("continuity_work_acl_denied");
+        if (input.resume_existing === true) {
+          const boundWorkAuthorized = !binding.rows[0] ||
+            authorizedResumeWorkIds.has(String(binding.rows[0].work_id));
+          const requestedWorkAuthorized = !input.work_id || authorizedResumeWorkIds.has(workId);
+          authorizedSessionRebind = Boolean(
+            !boundWorkAuthorized &&
+            requestedWorkAuthorized &&
+            input.work_id &&
+            options.trustedSessionFollowup === true &&
+            options.allowAuthorizedSessionRebind === true
+          );
+          if ((!boundWorkAuthorized && !authorizedSessionRebind) || !requestedWorkAuthorized) {
+            throw new Error("continuity_work_acl_denied");
+          }
         }
       }
       let autoResumeCandidate = null;
@@ -2127,10 +2411,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
         if (autoResumeCandidates.length === 1) autoResumeCandidate = autoResumeCandidates[0];
       }
       if (input.resume_existing === true && (binding.rows[0] || input.work_id || autoResumeCandidate)) {
-        if (binding.rows[0] && input.work_id && binding.rows[0].work_id !== workId) {
+        if (binding.rows[0] && input.work_id && binding.rows[0].work_id !== workId &&
+            !authorizedSessionRebind) {
           throw new Error("continuity_session_binding_conflict");
         }
-        const resumeWorkId = binding.rows[0]?.work_id || input.work_id || autoResumeCandidate.work_id;
+        const resumeWorkId = authorizedSessionRebind
+          ? workId
+          : binding.rows[0]?.work_id || input.work_id || autoResumeCandidate.work_id;
         const existing = await client.query(`SELECT a.intent_digest,a.create_request_digest,
             w.project_id,w.status,w.current_version,w.next_action
           FROM core_continuity_intent_anchors a JOIN core_continuity_works w
@@ -2142,7 +2429,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         if (existing.rows[0].project_id !== projectId) {
           throw new Error("continuity_project_mismatch");
         }
-        if (binding.rows[0] &&
+        if (binding.rows[0] && !authorizedSessionRebind &&
             binding.rows[0].create_request_digest !== existing.rows[0].create_request_digest) {
           throw new Error("continuity_session_binding_conflict");
         }
@@ -2158,7 +2445,21 @@ export function createWorkContinuityRuntime(config, options = {}) {
           }
         }
         let sessionBindingCreated = false;
-        if (!binding.rows[0]) {
+        let sessionBindingRebound = false;
+        if (authorizedSessionRebind) {
+          const rebound = await client.query(`UPDATE core_continuity_session_bindings
+            SET work_id=$4,create_request_digest=$5
+            WHERE tenant_id=$1 AND project_id=$2 AND session_id=$3 AND work_id=$6
+            RETURNING work_id,create_request_digest`,
+          [tenantId, projectId, sessionId, resumeWorkId,
+            existing.rows[0].create_request_digest, binding.rows[0].work_id]);
+          if (!rebound.rows[0] || rebound.rows[0].work_id !== resumeWorkId ||
+              rebound.rows[0].create_request_digest !== existing.rows[0].create_request_digest) {
+            throw new Error("continuity_session_binding_conflict");
+          }
+          binding.rows[0] = rebound.rows[0];
+          sessionBindingRebound = true;
+        } else if (!binding.rows[0]) {
           const inserted = await client.query(`INSERT INTO core_continuity_session_bindings
             (tenant_id,project_id,session_id,work_id,create_request_digest)
             VALUES ($1,$2,$3,$4,$5)
@@ -2189,12 +2490,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
           architecture_version: Number(existing.rows[0]?.current_version || 0),
           next_action: existing.rows[0]?.next_action || "",
           resumed_existing: true,
-          resume_source: binding.rows[0]
-            ? "session_binding"
+          resume_source: sessionBindingRebound
+            ? "explicit_authorized_rebind"
+            : binding.rows[0] ? "session_binding"
             : input.work_id ? "explicit_work_id" : "unambiguous_project_work",
           automatic_resume: Boolean(autoResumeCandidate),
           session_binding_created: sessionBindingCreated,
-          idempotent_replay: !sessionBindingCreated,
+          session_binding_rebound: sessionBindingRebound,
+          idempotent_replay: !sessionBindingCreated && !sessionBindingRebound,
         };
       }
       if (input.resume_existing === true && !binding.rows[0] && !input.work_id && autoResumeCandidates.length > 1) {
@@ -3671,9 +3974,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
         core_plan_digest: options.corePlan ? digest(options.corePlan) : null,
       },
       async () => {
-        const work = await client.query(`SELECT w.work_id,a.anchor,a.intent_digest
+        const work = await client.query(`SELECT w.work_id,w.current_version,a.anchor,a.intent_digest,
+            v.architecture,v.architecture_digest
           FROM core_continuity_works w JOIN core_continuity_intent_anchors a
             ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
+          JOIN core_continuity_architecture_versions v
+            ON v.tenant_id=w.tenant_id AND v.work_id=w.work_id AND v.version=w.current_version
           WHERE w.tenant_id=$1 AND w.work_id=$2 FOR UPDATE`,
         [context.tenantId, context.workId]);
         if (!work.rows[0]) throw new Error("continuity_work_not_found");
@@ -3687,6 +3993,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
           acceptance_contract: buildAcceptanceContract(
             work.rows[0].anchor,
             work.rows[0].intent_digest,
+            {
+              architecture_version: Number(work.rows[0].current_version),
+              architecture: work.rows[0].architecture,
+              architecture_digest: work.rows[0].architecture_digest,
+            },
           ),
           core_authority: bindCoreWorkPlan(options.corePlan, basePlan, {
             workId: context.workId,
@@ -3964,6 +4275,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
       summary: safeText(reportInput.summary, 8_000),
       verdict: reportInput.verdict ? String(reportInput.verdict) : null,
       commit_sha: commitSha,
+      precommit_evidence: reportInput.precommit_evidence === undefined ||
+        reportInput.precommit_evidence === null
+        ? null
+        : normalizeNativePrecommitEvidence(reportInput.precommit_evidence),
       tests: Array.isArray(reportInput.tests) ? reportInput.tests.slice(0, 100) : [],
       evidence_refs: stringList(reportInput.evidence_refs, "native_agent_evidence_refs", {
         maxItems: 100,
@@ -4058,13 +4373,17 @@ export function createWorkContinuityRuntime(config, options = {}) {
       ) {
         throw new Error("native_agent_assignment_capability_mismatch");
       }
+      if (report.commit_sha && report.precommit_evidence) {
+        throw new Error("native_agent_report_source_ambiguous");
+      }
       if (
         status === "completed" &&
         row.plan?.release_mode === "external_ticket_required" &&
         ["builder", "verifier"].includes(row.task_kind) &&
-        !report.commit_sha
+        !report.commit_sha &&
+        !report.precommit_evidence
       ) {
-        throw new Error("native_agent_report_commit_required");
+        throw new Error("native_agent_report_commit_or_precommit_required");
       }
       if (row.task_kind === "verifier") {
         if (!["approved", "rejected"].includes(report.verdict)) throw new Error("native_agent_verifier_verdict_required");
@@ -4084,6 +4403,24 @@ export function createWorkContinuityRuntime(config, options = {}) {
           report.acceptance_evidence.some((item) => !allowedCriteria.has(item.criterion_digest))
         ) {
           throw new Error("native_agent_acceptance_evidence_invalid");
+        }
+        if (report.precommit_evidence) {
+          const verifierTask = (row.plan?.tasks || []).find((task) => task.task_id === row.task_id);
+          const builderDependencies = (row.plan?.tasks || []).filter((task) =>
+            task.kind === "builder" && verifierTask?.dependencies?.includes(task.task_id));
+          if (builderDependencies.length !== 1) {
+            throw new Error("native_agent_precommit_builder_dependency_invalid");
+          }
+          const builder = await client.query(`SELECT status,report
+            FROM core_continuity_native_agents
+            WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND task_id=$4
+            FOR UPDATE`,
+          [context.tenantId, context.workId, planId, builderDependencies[0].task_id]);
+          if (builder.rows[0]?.status !== "completed" ||
+              String(builder.rows[0]?.report?.precommit_evidence?.workspace_digest || "") !==
+                report.precommit_evidence.workspace_digest) {
+            throw new Error("native_agent_precommit_evidence_mismatch");
+          }
         }
       } else if (
         row.task_kind === "builder" &&
@@ -4262,6 +4599,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         const evaluation = evaluateNativeClosure({ plan: planResult.rows[0].plan, agents: agents.rows });
         const evaluationId = crypto.randomUUID();
         const evaluationDigest = digest(evaluation);
+        if (evaluation.closed && !input.release) {
+          throw new Error("continuity_release_required");
+        }
         const coreJoinMaterial = evaluation.closed
           ? buildCoreJoinMaterial({
             tenantId: context.tenantId,
@@ -4285,6 +4625,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
             SET next_action='Issue and persist the exact Universal Core Join verdict before release readiness.',
               updated_at=now()
             WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId]);
+        } else if (evaluation.commit_ticket_ready) {
+          await client.query(`UPDATE core_continuity_works SET next_action=$3,updated_at=now()
+            WHERE tenant_id=$1 AND work_id=$2`,
+          [context.tenantId, context.workId,
+            `Request the exact Core git.commit ticket bound to precommit workspace digest ${evaluation.precommit_verification.workspace_digest}; no other action is authorized.`]);
         } else {
           await client.query(`UPDATE core_continuity_works SET next_action=$3,updated_at=now()
             WHERE tenant_id=$1 AND work_id=$2`,

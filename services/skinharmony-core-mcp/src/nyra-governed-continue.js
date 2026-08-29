@@ -63,6 +63,7 @@ const CONTINUATION_FORBIDDEN_REQUEST_FIELDS = new Set([
 const WORK_TOOL_BY_NAME = new Map(WORK_CONTINUITY_TOOLS.map((tool) => [tool.name, tool]));
 const ACTION_KIND_BY_CLASS = Object.freeze({
   GIT_MERGE: new Set(["github.merge"]),
+  GIT_COMMIT: new Set(["git.commit"]),
   GIT_PUSH: new Set(["git.push.branch", "git.push.protected"]),
   PULL_REQUEST_OPEN: new Set(["github.draft_pr", "github.ready"]),
   DEPLOY: new Set(["render.deploy", "render.promote"]),

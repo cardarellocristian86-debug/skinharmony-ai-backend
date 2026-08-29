@@ -813,7 +813,7 @@ const nyraDirectiveDigest = { type: ["string", "null"], pattern: "^[a-f0-9]{64}$
 const nyraDirectiveActionClass = {
   type: "string",
   enum: [
-    "NONE", "WORKSPACE_CHANGE", "GIT_PUSH", "PULL_REQUEST_OPEN", "GIT_MERGE",
+    "NONE", "WORKSPACE_CHANGE", "GIT_COMMIT", "GIT_PUSH", "PULL_REQUEST_OPEN", "GIT_MERGE",
     "DEPLOY", "PUBLISH", "WORK_BOOTSTRAP", "EXTERNAL_MUTATION", "TICKET_RESERVE",
   ],
 };
@@ -1280,9 +1280,27 @@ const nyraConverseOutputSchema = object({
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
     reply_seed: { type: "string", minLength: 1, maxLength: 1_200 },
     next_action: nyraConverseNullableText(500),
+    connected_ai_brief: object({
+      schema_version: { const: "nyra_connected_ai_brief_v1" },
+      state: { type: "string", enum: ["READY", "WAITING"] },
+      goal: { type: "string", minLength: 1, maxLength: 500 },
+      steps: {
+        type: "array", maxItems: 3,
+        items: object({
+          order: { type: "integer", minimum: 1, maximum: 3 },
+          instruction: { type: "string", minLength: 1, maxLength: 500 },
+          mode: { type: "string", enum: ["READ_ONLY", "BOUNDED_WORKSPACE"] },
+          expected_evidence: { type: "array", maxItems: 3, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 500 } },
+          external_side_effect: { const: false },
+        }, ["order", "instruction", "mode", "expected_evidence", "external_side_effect"]),
+      },
+      expected_evidence: { type: "array", maxItems: 3, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 500 } },
+      research_required: { const: false },
+      external_action_authorized: { const: false },
+    }, ["schema_version", "state", "goal", "steps", "expected_evidence", "research_required", "external_action_authorized"]),
     rendering_policy: { const: "server_orchestration_directive_first_v2" },
     instructions: { type: "array", minItems: 3, maxItems: 3, items: { type: "string", maxLength: 500 } },
-  }, ["speaker", "renderer", "response_language", "response_style", "reply_seed", "next_action", "rendering_policy", "instructions"]),
+  }, ["speaker", "renderer", "response_language", "response_style", "reply_seed", "next_action", "connected_ai_brief", "rendering_policy", "instructions"]),
   execution_authorized: { const: false },
   external_action_authorized: { const: false },
   provider_execution: { const: false },

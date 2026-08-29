@@ -798,7 +798,14 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
       // one. Bootstrap is an explicit, fresh owner-governed action.
       trustedSessionFollowup: resumeExisting,
       creationAuthorized: false,
-      ...(resumeExisting ? { authorizedResumeWorkIds } : {}),
+      ...(resumeExisting ? {
+        authorizedResumeWorkIds,
+        // One transport conversation may already be bound to another Work.
+        // An explicit target can replace that session binding only after the
+        // server has proved exact canonical V2 visibility above. This restores
+        // cross-chat continuity without accepting caller-supplied authority.
+        allowAuthorizedSessionRebind: Boolean(args.work_id),
+      } : {}),
     });
   } catch (error) {
     if (error?.code === "continuity_resume_selection_required") {
@@ -1675,6 +1682,9 @@ const baseHandlers = {
           creationAuthorized: false,
           trustedSessionFollowup: true,
           authorizedResumeWorkIds,
+          // Exact canonical visibility was proved above; an explicit Work may
+          // therefore replace a stale binding left by this transport session.
+          allowAuthorizedSessionRebind: Boolean(args.work_id),
         }),
         dedicated_core_gate: {
           authorized: true,
