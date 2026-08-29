@@ -992,7 +992,7 @@ const nyraOrchestrationDirectiveSchema = object({
   schema_version: { const: "nyra_orchestration_directive_v1" },
   directive_id: { type: "string", pattern: "^nyra_dir_[a-f0-9]{24}$" },
   request_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
-  source: { type: "string", enum: ["PERSISTED_WORK", "FRESH_CORE", "LEGACY_CONNECTOR_HINT"] },
+  source: { type: "string", enum: ["PERSISTED_WORK", "FRESH_CORE", "WORK_GALLERY", "LEGACY_CONNECTOR_HINT"] },
   problem: {
     anyOf: [
       { type: "null" },
@@ -1268,6 +1268,29 @@ const nyraConverseOutputSchema = object({
     "work_bootstrap_spec_provided", "manual_owner_execution_requested", "mode", "classification_only",
     "external_action_authorized", "consequential_action_performed",
   ]),
+  work_selection: object({
+    schema_version: { const: "nyra_work_selection_v1" },
+    requested: { const: true },
+    available: { type: "boolean" },
+    project_id: nyraConverseNullableText(80),
+    choices: {
+      type: "array",
+      maxItems: 8,
+      items: object({
+        ordinal: { type: "integer", minimum: 1, maximum: 8 },
+        work_id: { type: "string", format: "uuid" },
+        project_id: { type: "string", minLength: 2, maxLength: 80 },
+        work_name: { type: "string", minLength: 1, maxLength: 240 },
+        status: { type: "string", minLength: 1, maxLength: 40 },
+      }, ["ordinal", "work_id", "project_id", "work_name", "status"]),
+    },
+    selection_required: { type: "boolean" },
+    execution_authorized: { const: false },
+    external_action_authorized: { const: false },
+  }, [
+    "schema_version", "requested", "available", "project_id", "choices", "selection_required",
+    "execution_authorized", "external_action_authorized",
+  ]),
   orchestration_directive: nyraOrchestrationDirectiveSchema,
   host_response_contract: object({
     speaker: { const: "Nyra" },
@@ -1390,6 +1413,7 @@ export const TOOLS = [
     project_id: identifier,
     work_bootstrap: nyraWorkBootstrapSpec,
     continuation_operation: nyraActionContinuationOperation,
+    work_selection_mode: { type: "string", enum: ["list"], description: "Read only: list Work choices without resuming, binding, creating, or changing a Work." },
     locale: { type: "string", enum: ["auto", "it", "en"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
   }, ["message"]), ["core:read"], true, true, {

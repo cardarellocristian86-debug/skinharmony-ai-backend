@@ -51,6 +51,11 @@ const PULL_REQUEST_PATTERN = /\b(?:pull\s+request|pr)\b/iu;
 const DEPLOY_PATTERN = /\b(?:deploy\w*|deployment|distribuisc\w*|distribuzion\w*)\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu;
 const PUBLISH_PATTERN = /\b(?:publish\w*|pubblic\w*|rilasci\w*|release)\b/iu;
 const WORK_BOOTSTRAP_PATTERN = /(?:\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:nuov\w*|new)\b)/iu;
+// Work discovery is a read-only conversational operation.  It must be
+// recognized before preflight/continuity so that asking to choose a Work can
+// never resume, bind or mutate the Work that happens to be attached to the
+// current transport session.
+const WORK_SELECTION_LIST_PATTERN = /(?:\b(?:mostra(?:mi)?|elenca|lista|visualizza|vedi|show|list|view)\b[\s\S]{0,100}\b(?:work|lavor[oi])\b|\b(?:fammi\s+scegliere|let\s+me\s+choose|choose\s+(?:a|the)\s+work|seleziona(?:re)?\s+(?:un|il)?\s*work)\b)/iu;
 const DIAGNOSTIC_REQUEST_PATTERN = /\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|explain\w*|causa(?:\s+radice)?|root\s+cause|cosa\s+(?:manca|serve))\b/iu;
 // A no-action boundary often lists the exact action words that Nyra must not
 // take.  Strip only that negative sentence.  A later affirmative sentence is
@@ -1250,7 +1255,9 @@ function orchestrationDirective({
     .slice(0, 16);
   const source = connectorHint.request_kind
     ? "LEGACY_CONNECTOR_HINT"
-    : interpretation.source === "persisted_work_context" ? "PERSISTED_WORK" : "FRESH_CORE";
+    : interpretation.source === "persisted_work_context" ? "PERSISTED_WORK"
+      : interpretation.source === "work_gallery" ? "WORK_GALLERY"
+        : "FRESH_CORE";
   const decision = Object.freeze({
     disposition,
     recommendation_authority: "NYRA",
@@ -1505,6 +1512,291 @@ function textResult(payload) {
   };
 }
 
+function workSelectionRequested(args, message) {
+  if (boundedWorkId(args?.work_id) || args?.work_bootstrap !== undefined ||
+      args?.continuation_operation !== undefined) return false;
+  if (args?.work_selection_mode === "list") return true;
+  return WORK_SELECTION_LIST_PATTERN.test(String(message || ""));
+}
+
+function selectionIdentityBinding(identity) {
+  return Object.freeze({
+    authenticated: true,
+    tenant_bound: true,
+    principal_kind: normalizedIdentityKind(identity),
+    client_type: normalizedClientType(identity),
+    host_registered: identity.authenticatedHostPrincipal?.registered === true,
+    app_id: boundedString(identity.authenticatedHostPrincipal?.app_id, 64),
+    host_kind: boundedString(identity.authenticatedHostPrincipal?.host_kind, 80),
+    host_registry_revision: /^[a-f0-9]{64}$/.test(String(
+      identity.authenticatedHostPrincipal?.registry_revision || "",
+    )) ? identity.authenticatedHostPrincipal.registry_revision : null,
+    caller_authority_accepted: false,
+  });
+}
+
+function normalizeWorkSelectionChoices(value, requestedProjectId) {
+  if (!Array.isArray(value)) return Object.freeze([]);
+  const seen = new Set();
+  const choices = [];
+  for (const candidate of value) {
+    if (choices.length >= MAX_DIRECTIVE_ITEMS) break;
+    const workId = boundedWorkId(candidate?.work_id);
+    const projectId = boundedProjectId(candidate?.project_id);
+    if (!workId || !projectId || seen.has(workId) ||
+        (requestedProjectId && projectId !== requestedProjectId)) continue;
+    seen.add(workId);
+    const name = boundedPublicText(
+      candidate?.work_name || candidate?.name || candidate?.idea || candidate?.objective,
+      240,
+    ) || `Work ${choices.length + 1}`;
+    choices.push(Object.freeze({
+      ordinal: choices.length + 1,
+      work_id: workId,
+      project_id: projectId,
+      work_name: name,
+      status: boundedPublicText(candidate?.status, 40) || "unknown",
+    }));
+  }
+  return Object.freeze(choices);
+}
+
+function workSelectionDialogue(choiceCount) {
+  return Object.freeze({
+    dialogue_id: null,
+    manual_digest: null,
+    work_revision: null,
+    intent_digest: null,
+    checkpoint_available: false,
+    gallery_work_count: choiceCount,
+    software_state: "not_indexed",
+    atlas_revision: null,
+    diagnosis_state: choiceCount ? "work_selection_required" : "work_gallery_empty",
+    next_action_available: false,
+    assignment: Object.freeze({
+      available: false,
+      assignment_id: null,
+      role: null,
+      state: null,
+    }),
+  });
+}
+
+function workSelectionInterpretation() {
+  return Object.freeze({
+    source: "work_gallery",
+    core: Object.freeze({
+      mode: "off",
+      route: "V0",
+      authority: "V0",
+      parity_matched: null,
+      execution_allowed: false,
+    }),
+    selected_action_id: null,
+    selected_action: null,
+    selected_action_available: false,
+    core_state: "observe",
+    core_control: "observe",
+    risk_band: "low",
+    blocked_reasons: Object.freeze([]),
+    governance_diagnostics: Object.freeze({
+      state: "READY",
+      guard_mode: "normal",
+      causes: Object.freeze([]),
+    }),
+    unmet_conditions: Object.freeze([]),
+    evidence_requirements: Object.freeze([]),
+    allowed_alternatives: Object.freeze([]),
+    next_step: null,
+    runbook_candidate: null,
+    owner_confirmation_required: false,
+    dialogue_accepted: true,
+    opened_branch_count: 0,
+    memory: Object.freeze({
+      revision: 0,
+      relevant_count: 0,
+      handoff_count: 0,
+      recent_activity_count: 0,
+    }),
+  });
+}
+
+function workSelectionReplySeed(locale, choices, available) {
+  const english = locale === "en";
+  if (!available) return english
+    ? "I cannot read the Work list right now. No Work was resumed or changed; retry this read-only request."
+    : "Non riesco a leggere ora la lista dei Work. Non ho ripreso né modificato alcun Work: riprova questa richiesta in sola lettura.";
+  if (!choices.length) return english
+    ? "There are no active Works available to select. No Work was resumed or changed."
+    : "Non ci sono Work attivi disponibili da selezionare. Non ho ripreso né modificato alcun Work.";
+  const list = choices.map((choice) => `${choice.ordinal}. ${choice.work_name} — ${choice.project_id} (${choice.status})`).join("\n");
+  return english
+    ? `Choose the Work to resume; I will not continue one automatically.\n\n${list}`
+    : `Scegli il Work da riprendere; non ne continuo nessuno automaticamente.\n\n${list}`;
+}
+
+async function readWorkSelection(listWorkChoices, identity, projectId) {
+  if (typeof listWorkChoices !== "function") return Object.freeze({ available: false, choices: Object.freeze([]) });
+  try {
+    const value = await listWorkChoices(identity, projectId ? { project_id: projectId } : {});
+    return Object.freeze({
+      available: true,
+      choices: normalizeWorkSelectionChoices(value, projectId),
+    });
+  } catch {
+    // A Gallery outage must not fall through to the resumptive preflight. The
+    // caller asked for a read-only choice, so retain that safety boundary.
+    return Object.freeze({ available: false, choices: Object.freeze([]) });
+  }
+}
+
+async function workSelectionResult({
+  identity,
+  tenantId,
+  sessionId,
+  message,
+  locale,
+  style,
+  projectId,
+  connectorHint,
+  listWorkChoices,
+}) {
+  const selection = await readWorkSelection(listWorkChoices, identity, projectId);
+  const selectionRequired = selection.available && selection.choices.length > 0;
+  const work = Object.freeze({
+    preflight_bound: true,
+    work_bound: false,
+    work_id: null,
+    project_id: projectId,
+    state: selectionRequired ? "selection_required" : "unbound",
+    next_action: null,
+    next_action_available: false,
+    selection_required: selectionRequired,
+  });
+  const dialogue = workSelectionDialogue(selection.choices.length);
+  const interpretation = workSelectionInterpretation();
+  const workContext = unavailableWorkDirectiveContext(work, dialogue);
+  // A Work gallery request is never reclassified from incidental words in the
+  // user's sentence: it is a read operation, not a ticket candidate.
+  const action = actionPolicy("", connectorHint, false, false);
+  const baseDirective = orchestrationDirective({
+    tenantId,
+    message,
+    work,
+    dialogue,
+    workContext,
+    interpretation,
+    action,
+    connectorHint,
+  });
+  const directive = Object.freeze({
+    ...baseDirective,
+    ticket_request: Object.freeze({
+      ...baseDirective.ticket_request,
+      continuation: Object.freeze({
+        schema_version: "nyra_continuation_ref_v1",
+        available: false,
+        continuation_ref: null,
+        expires_at: null,
+        state: "UNAVAILABLE",
+        reason: "work_selection_read_only",
+      }),
+    }),
+  });
+  const replySeed = workSelectionReplySeed(locale, selection.choices, selection.available);
+  const nextAction = selectionRequired
+    ? (locale === "en" ? "Choose one listed Work." : "Scegli uno dei Work elencati.")
+    : null;
+  const agentBrief = Object.freeze({
+    schema_version: "nyra_connected_ai_brief_v1",
+    state: "WAITING",
+    goal: nextAction || (locale === "en"
+      ? "Wait for a successful read-only Work list."
+      : "Attendere una lettura della lista Work riuscita."),
+    steps: Object.freeze([]),
+    expected_evidence: Object.freeze([]),
+    research_required: false,
+    external_action_authorized: false,
+  });
+  const id = turnId({
+    tenantId,
+    sessionId,
+    message,
+    workId: null,
+    projectId,
+    locale,
+    style,
+  });
+  return textResult(Object.freeze({
+    schema_version: "nyra_conversation_turn_v2",
+    ok: true,
+    tenant_id: tenantId,
+    turn_id: id,
+    identity_binding: selectionIdentityBinding(identity),
+    work,
+    memory: Object.freeze({
+      loaded: false,
+      active_task_count: 0,
+      active_lock_count: 0,
+      artifact_count: 0,
+      ...interpretation.memory,
+      raw_memory_returned: false,
+    }),
+    interpretation: Object.freeze({
+      core: interpretation.core,
+      selected_action_id: interpretation.selected_action_id,
+      selected_action: interpretation.selected_action,
+      selected_action_available: interpretation.selected_action_available,
+      core_state: interpretation.core_state,
+      core_control: interpretation.core_control,
+      risk_band: interpretation.risk_band,
+      blocked_reasons: interpretation.blocked_reasons,
+      governance_diagnostics: interpretation.governance_diagnostics,
+      unmet_conditions: interpretation.unmet_conditions,
+      evidence_requirements: interpretation.evidence_requirements,
+      allowed_alternatives: interpretation.allowed_alternatives,
+      next_step: interpretation.next_step,
+      runbook_candidate: interpretation.runbook_candidate,
+      owner_confirmation_required: interpretation.owner_confirmation_required,
+      dialogue_accepted: interpretation.dialogue_accepted,
+      opened_branch_count: interpretation.opened_branch_count,
+    }),
+    nyra_dialogue: dialogue,
+    action_policy: action,
+    orchestration_directive: directive,
+    work_selection: Object.freeze({
+      schema_version: "nyra_work_selection_v1",
+      requested: true,
+      available: selection.available,
+      project_id: projectId,
+      choices: selection.choices,
+      selection_required: selectionRequired,
+      execution_authorized: false,
+      external_action_authorized: false,
+    }),
+    host_response_contract: Object.freeze({
+      speaker: "Nyra",
+      renderer: "nyra_widget_with_host_fallback",
+      response_language: responseLanguage(locale),
+      response_style: style,
+      reply_seed: replySeed,
+      next_action: nextAction,
+      connected_ai_brief: agentBrief,
+      rendering_policy: "server_orchestration_directive_first_v2",
+      instructions: Object.freeze([
+        "Render host_response_contract.reply_seed as Nyra's complete Work-selection answer before adding any optional explanation.",
+        "Wait for the owner to select one work_selection.choice; then call Nyra again with that exact work_id and project_id. Do not list, resume, create, or mutate another Work.",
+        "Do not claim that Nyra, Codex, Core or the owner performed an action unless separately verified evidence is present; this turn never authorizes an external action.",
+      ]),
+    }),
+    execution_authorized: false,
+    external_action_authorized: false,
+    provider_execution: false,
+    provider_api_key_required: false,
+    server_model_calls: 0,
+  }));
+}
+
 // A fresh host session has no caller-owned work_id.  Nyra must not make the
 // connected AI enumerate the Gallery and guess: when the authenticated tenant
 // has exactly one operational Work, the server can safely and deterministically
@@ -1624,6 +1916,7 @@ export function createNyraConverseHandler({
   readControlContext = null,
   readDirectiveContext = null,
   openContinuation = null,
+  listWorkChoices = null,
 } = {}) {
   if (typeof preflight !== "function" || typeof interpret !== "function") {
     throw new Error("nyra_converse_dependencies_invalid");
@@ -1651,6 +1944,23 @@ export function createNyraConverseHandler({
       : "balanced";
     const sessionId = String(identity.agentPresence?.session_id || args.session_id || "").trim();
     if (!sessionId) throw fail("nyra_converse_session_required", 400);
+
+    // This branch is deliberately before persisted context, preflight and
+    // Core interpretation.  Choosing a Work is a Gallery read, never a
+    // request to attach the conversation session to a Work.
+    if (workSelectionRequested(args, message)) {
+      return workSelectionResult({
+        identity,
+        tenantId,
+        sessionId,
+        message,
+        locale,
+        style,
+        projectId: boundedProjectId(args.project_id),
+        connectorHint,
+        listWorkChoices,
+      });
+    }
 
     let persisted = null;
     if (
