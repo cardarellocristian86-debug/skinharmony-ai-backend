@@ -789,6 +789,8 @@ function actionTicketLifecycleUnsigned(record) {
     pre_merge_readback_digest: record?.pre_merge_readback_digest ?? null,
     quarantined_at: record?.quarantined_at ?? null,
     quarantine_reason_digest: record?.quarantine_reason_digest ?? null,
+    semantic_scope_reservation_digest:
+      record?.semantic_scope_at_reservation?.decision_digest ?? null,
   };
 }
 
@@ -1877,6 +1879,9 @@ export function createHostNativeGovernance({
   standingReleaseAutomationEnabled = false,
   standingReleaseEmergencyStop = false,
   standingReleaseBaseProtectionResolver = null,
+  semanticScopeGuard = null,
+  semanticScopeMode = "OFF",
+  semanticScopeContextResolver = null,
 } = {}) {
   const store = requireStore(suppliedStore);
   const signing = String(signingSecret || "");
@@ -1886,6 +1891,112 @@ export function createHostNativeGovernance({
   const ticketTtl = Math.max(1_000, Math.min(60 * 60_000, Number(ticketTtlMs) || DEFAULT_TICKET_TTL_MS));
   const leaseMs = Math.max(1_000, Math.min(60 * 60_000, Number(reservationLeaseMs) || DEFAULT_RESERVATION_LEASE_MS));
   const coreJoinTtl = Math.max(1_000, Math.min(60 * 60_000, Number(coreJoinTtlMs) || DEFAULT_CORE_JOIN_TTL_MS));
+  const configuredSemanticScopeMode = String(semanticScopeMode || "OFF").toUpperCase();
+  if (!["OFF", "SHADOW", "ENFORCE"].includes(configuredSemanticScopeMode)) {
+    fail("semantic_scope_mode_invalid");
+  }
+  if (configuredSemanticScopeMode !== "OFF" && (!semanticScopeGuard
+    || typeof semanticScopeGuard.check !== "function")) fail("semantic_scope_guard_required");
+  if (semanticScopeContextResolver !== null && typeof semanticScopeContextResolver !== "function") {
+    fail("semantic_scope_context_resolver_invalid");
+  }
+  const actionEffect = (kind) => {
+    if (["render.observe"].includes(kind)) return "read";
+    if (["github.merge", "render.deploy", "render.rollback"].includes(kind)) return "deploy";
+    if (["git.commit", "git.push.branch", "git.push.protected", "github.draft_pr", "github.ready"].includes(kind)) return "write";
+    return "read";
+  };
+  const actionRisk = (kind) => {
+    if (["github.merge", "render.deploy", "render.rollback"].includes(kind)) return "CRITICAL";
+    if (["git.push.protected", "git.push.branch"].includes(kind)) return "HIGH";
+    if (["git.commit", "github.draft_pr", "github.ready"].includes(kind)) return "MEDIUM";
+    return "LOW";
+  };
+  const semanticScopeUnavailableDecision = ({ delegation, tenantId, hostKind,
+    hostSessionFingerprint, riskTier, authorityReservationRef = null } = {}) => {
+    const unsigned = {
+      schema_version: "semantic_scope_decision_v1",
+      action: "HOLD",
+      reason_codes: ["SEMANTIC_SCOPE_CONTEXT_UNAVAILABLE"],
+      detected_scope: ["EFFECT_DRIFT"],
+      expected_scope: null,
+      scope_delta: null,
+      policy_refs: ["host_native_delegation_v1", "host_native_action_ticket_v1"],
+      redaction_plan: null,
+      evidence_refs: [],
+      binding: {
+        tenant_id: tenantId,
+        work_id: delegation.grant.work_id,
+        agent_id: `${hostKind}:${hostSessionFingerprint}`,
+        agent_revision: null,
+        intent_digest: delegation.grant.intent_anchor_digest,
+        entity360_snapshot_ref: null,
+        as_of_valid_time: null,
+        as_of_knowledge_time: null,
+        authority_reservation_ref: authorityReservationRef,
+        policy_revision: "host_native_semantic_scope_policy_v1",
+        risk_tier: riskTier,
+      },
+      enforcement: configuredSemanticScopeMode,
+      execution_authorized: false,
+      authority: "universal_core",
+    };
+    return Object.freeze({ ...unsigned, decision_digest: hostNativeDigest(unsigned) });
+  };
+  const semanticScopeDecision = ({ delegation, action, tenantId, hostKind, hostSessionFingerprint,
+    phase, previousScopeState = null, authorityReservationRef = null } = {}) => {
+    if (configuredSemanticScopeMode === "OFF") return null;
+    const branch = actionBranch(action) || action.service_id || action.target_commit || "root";
+    const effect = actionEffect(action.kind);
+    let entity360 = null;
+    try {
+      entity360 = semanticScopeContextResolver?.({ tenant_id: tenantId,
+        work_id: delegation.grant.work_id, action: clone(action), phase }) || null;
+    } catch {
+      entity360 = null;
+    }
+    const riskTier = actionRisk(action.kind);
+    try {
+      return semanticScopeGuard.check({
+        tenant_id: tenantId,
+        work_id: delegation.grant.work_id,
+        agent_id: `${hostKind}:${hostSessionFingerprint}`,
+        agent_revision: delegation.grant.revision ? String(delegation.grant.revision) : null,
+        intent_digest: delegation.grant.intent_anchor_digest,
+        entity360_snapshot_ref: entity360?.entity360_snapshot_ref || null,
+        as_of_valid_time: entity360?.as_of_valid_time || null,
+        as_of_knowledge_time: entity360?.as_of_knowledge_time || null,
+        requested_capability: action.kind,
+        requested_effect: effect,
+        tool_id: "host_native_governance",
+        tool_operation: phase,
+        target: `${delegation.grant.repository}:${branch}`,
+        arguments_digest: hostNativeDigest(action),
+        data_scope: [tenantId],
+        write_scope: effect === "read" ? [] : [action.kind],
+        capability_passport: delegation.grant.allowed_actions,
+        effect_ceiling: [...new Set(delegation.grant.allowed_actions.map(actionEffect))].sort(),
+        expected_scope: {
+          targets: delegation.grant.allowed_branches.map((allowedBranch) =>
+            `${delegation.grant.repository}:${allowedBranch}`), tools: ["host_native_governance"],
+          data_scope: [tenantId], write_scope: effect === "read" ? [] : delegation.grant.allowed_actions,
+          egress_classes: [],
+        },
+        authority_reservation_ref: authorityReservationRef,
+        policy_revision: entity360?.policy_revision || "host_native_semantic_scope_policy_v1",
+        policy_refs: ["host_native_delegation_v1", "host_native_action_ticket_v1"],
+        risk_tier: riskTier, previous_scope_state: previousScopeState,
+        evidence_refs: entity360?.evidence_refs || [], data_egress: false,
+        entity360_snapshot_stale: entity360?.stale === true,
+        semantic_ambiguous: !entity360?.entity360_snapshot_ref,
+      });
+    } catch {
+      return semanticScopeUnavailableDecision({ delegation, tenantId, hostKind,
+        hostSessionFingerprint, riskTier, authorityReservationRef });
+    }
+  };
+  const semanticScopeEnforcedDenial = (decision) => configuredSemanticScopeMode === "ENFORCE"
+    && ["BLOCK", "HOLD"].includes(decision?.action);
   const assertSoftwareConsumerFresh = (trusted = {}) => {
     if (trusted.software_closure_fresh_until === undefined) return;
     const freshUntil = Date.parse(trusted.software_closure_fresh_until || "");
@@ -2413,6 +2524,16 @@ export function createHostNativeGovernance({
     standing_release_runner_supported: true,
     nyra_work_automation_v3_supported: true,
     nyra_work_automation_provider_execution: false,
+    semantic_scope_guard_mode: configuredSemanticScopeMode,
+    semantic_scope_guard_configured: configuredSemanticScopeMode !== "OFF",
+    semanticScopeMetrics() {
+      return semanticScopeGuard && typeof semanticScopeGuard.metrics === "function"
+        ? semanticScopeGuard.metrics()
+        : Object.freeze({ semantic_scope_check_latency: 0, semantic_scope_block_total: 0,
+          semantic_scope_hold_total: 0, semantic_scope_redact_total: 0,
+          scope_drift_detected_total: 0, false_hold_rate: null, false_block_rate: null,
+          check_total: 0 });
+    },
     standing_release_coordination_model: "horizontal_peer_adapters_v1",
     standing_release_base_protection_resolver_configured:
       typeof standingReleaseBaseProtectionResolver === "function" &&
@@ -4110,6 +4231,17 @@ export function createHostNativeGovernance({
             supersededTicket = priorTicket;
           }
         }
+        const semanticScopeAtIssue = semanticScopeDecision({
+          delegation: currentDelegation,
+          action,
+          tenantId,
+          hostKind: host_kind,
+          hostSessionFingerprint: host_session_fingerprint,
+          phase: "ISSUE",
+        });
+        if (semanticScopeEnforcedDenial(semanticScopeAtIssue)) {
+          fail(`semantic_scope_${semanticScopeAtIssue.action.toLowerCase()}`);
+        }
         const usage = actionUsage(action.kind, action, currentDelegation);
         ensureBudget(currentDelegation, usage);
         const ticketId = makeId("hnt", { input, issued_at: iso(nowValue) });
@@ -4141,6 +4273,7 @@ export function createHostNativeGovernance({
           host_policy_override: false,
           host_policy_must_allow: true,
           provider_execution: false,
+          ...(semanticScopeAtIssue ? { semantic_scope_at_issue: semanticScopeAtIssue } : {}),
           ...(predecessor ? { predecessor, predecessor_chain_digest: hostNativeDigest(predecessor) } : {}),
           ...(release_manifest ? {
             release_manifest_digest: release_manifest.manifest_digest,
@@ -4368,6 +4501,20 @@ export function createHostNativeGovernance({
             successorUsage: 0,
           });
         }
+        const reservationId = makeId("hnr", { ticket_id: record.ticket.ticket_id, nowValue });
+        const semanticScopeAtReservation = semanticScopeDecision({
+          delegation,
+          action: record.ticket.action,
+          tenantId,
+          hostKind: record.ticket.host_kind,
+          hostSessionFingerprint: record.ticket.host_session_fingerprint,
+          phase: "RESERVATION",
+          previousScopeState: record.ticket.semantic_scope_at_issue?.binding || null,
+          authorityReservationRef: reservationId,
+        });
+        if (semanticScopeEnforcedDenial(semanticScopeAtReservation)) {
+          fail(`semantic_scope_${semanticScopeAtReservation.action.toLowerCase()}`);
+        }
         const usage = actionUsage(
           record.ticket.action.kind,
           record.ticket.action,
@@ -4407,9 +4554,12 @@ export function createHostNativeGovernance({
           record.pre_merge_readback_digest =
             freshStandingMerge.pre_merge_readback_digest;
         }
-        record.reservation_id = makeId("hnr", { ticket_id: record.ticket.ticket_id, nowValue });
+        record.reservation_id = reservationId;
         record.reserved_at = iso(nowValue);
         record.reservation_expires_at = iso(nowValue + leaseMs);
+        if (semanticScopeAtReservation) {
+          record.semantic_scope_at_reservation = semanticScopeAtReservation;
+        }
         signActionTicketLifecycleRecord(record);
         return saveIdempotent(state, descriptor, record);
       });
