@@ -826,24 +826,14 @@ const nyraDirectiveBinding = object({
   context_digest: nyraDirectiveDigest,
 }, ["tenant_id", "work_id", "project_id", "work_revision", "intent_digest", "context_digest"]);
 const nyraGovernedContinuationSchema = object({
-  schema_version: { const: "nyra_governed_continuation_v1" },
+  schema_version: { const: "nyra_continuation_ref_v1" },
   available: { type: "boolean" },
-  submit_tool: { type: ["string", "null"], enum: ["nyra_governed_continue", null] },
-  candidate_attestation: { type: ["string", "null"], maxLength: 8_192 },
+  continuation_ref: { type: ["string", "null"], pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
   expires_at: { type: ["string", "null"], format: "date-time" },
-  operations: {
-    type: "array",
-    maxItems: 7,
-    uniqueItems: true,
-    items: { type: "string", enum: [
-      "review_work_bootstrap", "create_work", "resume_existing_work",
-      "create_native_plan", "bind_native_child", "issue_delegation", "authorize_action",
-    ] },
-  },
+  state: { type: "string", enum: ["READY", "CONSUMED", "UNAVAILABLE"] },
   reason: { type: ["string", "null"], maxLength: 160 },
 }, [
-  "schema_version", "available", "submit_tool", "candidate_attestation",
-  "expires_at", "operations", "reason",
+  "schema_version", "available", "continuation_ref", "expires_at", "state", "reason",
 ]);
 const nyraActionContinuationOperation = {
   type: "string",
@@ -1246,7 +1236,13 @@ const nyraConverseOutputSchema = object({
     atlas_revision: { type: ["integer", "null"], minimum: 0, maximum: 100_000 },
     diagnosis_state: { type: "string", minLength: 1, maxLength: 80 },
     next_action_available: { type: "boolean" },
-  }, ["dialogue_id", "manual_digest", "work_revision", "intent_digest", "checkpoint_available", "gallery_work_count", "software_state", "atlas_revision", "diagnosis_state", "next_action_available"]),
+    assignment: object({
+      available: { type: "boolean" },
+      assignment_id: nyraConverseNullableText(80),
+      role: nyraConverseNullableText(80),
+      state: nyraConverseNullableText(40),
+    }, ["available", "assignment_id", "role", "state"]),
+  }, ["dialogue_id", "manual_digest", "work_revision", "intent_digest", "checkpoint_available", "gallery_work_count", "software_state", "atlas_revision", "diagnosis_state", "next_action_available", "assignment"]),
   action_policy: object({
     consequential_request_detected: { type: "boolean" },
     categories: {
@@ -1407,15 +1403,10 @@ export const TOOLS = [
       "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
     },
   }),
-  tool("nyra_governed_continue", "Nyra: submit one governed continuation", "Submit only a short-lived candidate attestation returned by Nyra. A registered conversational host may review/create one canonical Work, resume the exact existing Work through its dedicated Core gate, create one bounded host-native plan, bind only a task attested by that plan, request one host delegation, or request one exact action ticket. Native reporting is never available here: it remains exclusive to the assigned child and its transport-bound capability. The tool never reserves or executes a ticket, calls GitHub/Render, or performs merge, deploy or publish. Unknown apps, forged client/host types, Work/session/revision drift, task substitution and replay fail closed.", object({
-    operation: { type: "string", enum: [
-      "review_work_bootstrap", "create_work", "resume_existing_work",
-      "create_native_plan", "bind_native_child", "issue_delegation", "authorize_action",
-    ] },
-    candidate_attestation: { type: "string", minLength: 100, maxLength: 8_192 },
+  tool("nyra_continue", "Nyra: continue one governed request", "Continue only the opaque, short-lived continuation_ref returned by nyra_converse. Nyra resolves it server-side and submits its bounded request to Universal Core; the AI never receives a Core candidate attestation. A registered host may request a duplicate review and owner-governed canonical V2 Work bootstrap, one bounded native-host delegation, or one exact action ticket. Work creation is two-phase and private by default; registration never grants owner authority. The tool never reserves or executes a ticket, never calls GitHub/Render, and never performs merge, deploy or publish. Unknown apps, host drift, expired references and durable replays fail closed.", object({
+    operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action"] },
+    continuation_ref: { type: "string", pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
     work_bootstrap: nyraWorkBootstrapSpec,
-    review_id: { type: "string", format: "uuid" },
-    review_digest: nyraContinueSha256,
     review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
     delegation_request: nyraContinueDelegationRequest,
     action_request: nyraContinueActionRequest,
@@ -1424,7 +1415,7 @@ export const TOOLS = [
     native_bind_request: nyraContinueNativeBindRequest,
     idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
     ...ownerConfirmationProperties,
-  }, ["operation", "candidate_attestation", "idempotency_key"]), ["core:govern"], false, true, {
+  }, ["operation", "continuation_ref", "idempotency_key"]), ["core:govern"], false, true, {
     ownerConfirmationRequired: false,
     meta: {
       "skinharmony/dedicatedCoreGate": true,

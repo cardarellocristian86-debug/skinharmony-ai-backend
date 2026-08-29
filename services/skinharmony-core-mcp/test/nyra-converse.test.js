@@ -18,6 +18,7 @@ import { resolveContinuityProjectBinding } from "../src/continuity-project-bindi
 import { NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 import { TOOLS } from "../src/tool-definitions.js";
+import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
 import { buildWorkPreflight } from "../../universal-core-service/src/workPreflight.js";
 
 const WORK_ID = "c1139091-40d9-4f4e-b788-842fbc23a778";
@@ -308,7 +309,7 @@ function harness({
   interpretationResult,
   persistedContext,
   directiveContext,
-  issueContinuation,
+  openContinuation,
 } = {}) {
   const calls = { preflight: [], interpret: [], readControlContext: [], readDirectiveContext: [] };
   const handler = createNyraConverseHandler({
@@ -328,7 +329,7 @@ function harness({
       calls.readDirectiveContext.push({ args, identity: authenticatedIdentity });
       return directiveContext;
     },
-    issueContinuation,
+    openContinuation,
   });
   return { handler, calls };
 }
@@ -375,6 +376,12 @@ test("reuses the persistent Nyra dialogue without preflight or Core interpretati
   assert.equal(payload.nyra_dialogue.work_revision, 3);
   assert.equal(payload.nyra_dialogue.gallery_work_count, 1);
   assert.equal(payload.nyra_dialogue.diagnosis_state, "intent_anchor_incomplete");
+  assert.deepEqual(payload.nyra_dialogue.assignment, {
+    available: false,
+    assignment_id: null,
+    role: null,
+    state: null,
+  });
   assert.equal(payload.server_model_calls, 0);
   const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
   assert.deepEqual(validateToolArguments(definition.outputSchema, payload), []);
@@ -854,14 +861,14 @@ test("emits a deterministic revision-bound manual ticket candidate only after pr
     continuation_operation: "authorize_action",
     locale: "it",
   };
-  const issuedOperations = [];
-  const issueContinuation = ({ continuationOperation }) => {
-    issuedOperations.push(continuationOperation);
+  const openedContinuations = [];
+  const openContinuation = ({ directive: openedDirective }) => {
+    openedContinuations.push(openedDirective.directive_id);
     return null;
   };
-  const first = await harness({ directiveContext: ready, issueContinuation })
+  const first = await harness({ directiveContext: ready, openContinuation })
     .handler(authorizeArgs, identity());
-  const second = await harness({ directiveContext: ready, issueContinuation })
+  const second = await harness({ directiveContext: ready, openContinuation })
     .handler(authorizeArgs, identity());
   const directive = first.structuredContent.orchestration_directive;
 
@@ -884,15 +891,11 @@ test("emits a deterministic revision-bound manual ticket candidate only after pr
     directive.directive_id,
     second.structuredContent.orchestration_directive.directive_id,
   );
-  const delegation = await harness({ directiveContext: ready, issueContinuation }).handler({
+  const delegation = await harness({ directiveContext: ready, openContinuation }).handler({
     ...authorizeArgs,
     continuation_operation: "issue_delegation",
   }, identity());
-  assert.deepEqual(issuedOperations, [
-    "authorize_action",
-    "authorize_action",
-    "issue_delegation",
-  ]);
+  assert.equal(openedContinuations.length, 3);
   assert.notEqual(
     directive.request_digest,
     delegation.structuredContent.orchestration_directive.request_digest,
@@ -1413,11 +1416,15 @@ test("publishes nyra_converse as a direct compact resume tool without discovery"
     assert.equal(capability.input_schema.properties[key], undefined, `${key} must not be caller-selectable`);
   }
 
-  const allHandlers = Object.fromEntries(TOOLS.map((tool) => [tool.name, async () => ({})]));
-  const compact = compactMcpTools(TOOLS, allHandlers);
+  const availableTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS];
+  const allHandlers = Object.fromEntries(availableTools.map((tool) => [tool.name, async () => ({})]));
+  const compact = compactMcpTools(availableTools, allHandlers);
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 11);
+  assert.equal(compact.length, 14);
   assert.equal(compact.some((tool) => tool.name === "nyra_converse"), true);
+  assert.equal(compact.some((tool) => tool.name === "nyra_autopilot_enable"), true);
+  assert.equal(compact.some((tool) => tool.name === "nyra_work_assignment_claim"), true);
+  assert.equal(compact.some((tool) => tool.name === "nyra_work_assignment_submit"), true);
   assert.equal(compact.some((tool) => tool.name === "work_preflight"), false);
 });
 
@@ -1762,7 +1769,7 @@ test("vague wording cannot surface an upstream completion claim or imply an unbo
   assert.equal(payload.external_action_authorized, false);
 });
 
-test("offers a signed two-phase V2 bootstrap only for an explicit structured new Work", async () => {
+test("offers an opaque two-phase V2 bootstrap reference only for an explicit structured new Work", async () => {
   const preflight = preflightFixture();
   delete preflight.structuredContent.work_preflight.continuity.work_id;
   delete preflight.structuredContent.work_preflight.nyra_control_context.work_id;
@@ -1783,16 +1790,14 @@ test("offers a signed two-phase V2 bootstrap only for an explicit structured new
   const candidates = [];
   const { handler } = harness({
     preflightResult: preflight,
-    issueContinuation: ({ directive, continuationOperation }) => {
-      assert.equal(continuationOperation, null);
+    openContinuation: async ({ directive }) => {
       candidates.push(directive);
       return {
-        schema_version: "nyra_governed_continuation_v1",
+        schema_version: "nyra_continuation_ref_v1",
         available: true,
-        submit_tool: "nyra_governed_continue",
-        candidate_attestation: "signed-bootstrap-candidate",
+        continuation_ref: `nyc1_${"a".repeat(40)}`,
         expires_at: "2026-08-25T12:05:00.000Z",
-        operations: ["review_work_bootstrap", "create_work"],
+        state: "READY",
         reason: null,
       };
     },
@@ -1824,6 +1829,8 @@ test("offers a signed two-phase V2 bootstrap only for an explicit structured new
   assert.equal(payload.action_policy.work_bootstrap_requested, true);
   assert.equal(payload.action_policy.work_bootstrap_spec_provided, true);
   assert.equal(payload.orchestration_directive.ticket_request.continuation.available, true);
+  assert.match(payload.orchestration_directive.ticket_request.continuation.continuation_ref, /^nyc1_/);
+  assert.equal(Object.hasOwn(payload.orchestration_directive.ticket_request.continuation, "candidate_attestation"), false);
   assert.equal(payload.orchestration_directive.execution_authorized, false);
   assert.equal(payload.external_action_authorized, false);
   const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
@@ -1892,7 +1899,7 @@ test("an existing canonical Work wins over an explicit create request and no boo
   let candidates = 0;
   const { handler } = harness({
     directiveContext: directiveContextFixture(),
-    issueContinuation: () => {
+    openContinuation: async () => {
       candidates += 1;
       return null;
     },
@@ -1918,4 +1925,20 @@ test("an existing canonical Work wins over an explicit create request and no boo
   assert.equal(response.structuredContent.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
   assert.equal(candidates, 1, "the signer may be consulted but must receive a NOT_REQUIRED directive");
   assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.available, false);
+});
+
+test("a stalled continuation store leaves the Nyra turn available and bounded", async () => {
+  const startedAt = Date.now();
+  const response = await harness({
+    openContinuation: () => new Promise(() => {}),
+  }).handler({
+    message: "Nyra, riprendi il Work locale.",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity());
+  assert.equal(response.structuredContent.ok, true);
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.available, false);
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.reason, "continuation_open_failed");
+  assert(Date.now() - startedAt < 3_000, "the conversation must not wait indefinitely for continuation storage");
 });
