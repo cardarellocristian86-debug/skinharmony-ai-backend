@@ -269,58 +269,32 @@ test("governed continuation intersects wrapper, operation and supported-host cap
   const wrapperOnly = identity(["governed_continue"]);
   assert.throws(() => requireHostAppToolCapability({
     identity: wrapperOnly,
-    toolName: "nyra_governed_continue",
+    toolName: "nyra_continue",
     args: { operation: "review_work_bootstrap" },
     tools: TOOLS,
   }), /host_app_capability_required:work\.create/);
   assert.throws(() => requireHostAppToolCapability({
     identity: wrapperOnly,
-    toolName: "nyra_governed_continue",
-    args: { operation: "resume_existing_work" },
-    tools: TOOLS,
-  }), /host_app_capability_required:work\.operate/);
-  for (const operation of ["create_native_plan", "bind_native_child"]) {
-    assert.throws(() => requireHostAppToolCapability({
-      identity: wrapperOnly,
-      toolName: "nyra_governed_continue",
-      args: { operation },
-      tools: TOOLS,
-    }), /host_app_capability_required:host_native\.delegate/);
-  }
-  assert.throws(() => requireHostAppToolCapability({
-    identity: wrapperOnly,
-    toolName: "nyra_governed_continue",
+    toolName: "nyra_continue",
     args: { operation: "issue_delegation" },
     tools: TOOLS,
   }), /host_app_capability_required:host_native\.delegate/);
   assert.throws(() => requireHostAppToolCapability({
     identity: wrapperOnly,
-    toolName: "nyra_governed_continue",
+    toolName: "nyra_continue",
     args: { operation: "authorize_action" },
     tools: TOOLS,
   }), /host_app_capability_required:host_native\.authorize/);
   assert.throws(() => requireHostAppToolCapability({
     identity: identity(["governed_continue", "host_native.delegate"], "future_ai_native"),
-    toolName: "nyra_governed_continue",
+    toolName: "nyra_continue",
     args: { operation: "issue_delegation" },
     tools: TOOLS,
   }), /host_native_host_kind_not_supported/);
   assert.doesNotThrow(() => requireHostAppToolCapability({
-    identity: identity(["governed_continue", "host_native.authorize"], "codex_native"),
-    toolName: "nyra_governed_continue",
+    identity: identity(["core.operate", "governed_continue", "host_native.authorize"], "codex_native"),
+    toolName: "nyra_continue",
     args: { operation: "authorize_action" },
-    tools: TOOLS,
-  }));
-  assert.doesNotThrow(() => requireHostAppToolCapability({
-    identity: identity(["governed_continue", "work.operate"], "chatgpt_native"),
-    toolName: "nyra_governed_continue",
-    args: { operation: "resume_existing_work" },
-    tools: TOOLS,
-  }));
-  assert.doesNotThrow(() => requireHostAppToolCapability({
-    identity: identity(["governed_continue", "host_native.delegate"], "chatgpt_native"),
-    toolName: "nyra_governed_continue",
-    args: { operation: "bind_native_child" },
     tools: TOOLS,
   }));
 });

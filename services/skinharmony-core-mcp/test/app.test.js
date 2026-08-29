@@ -132,7 +132,7 @@ test("prefers the actual MCP transport binding over an OAuth logical session", (
 test("governed continuation rebinds only to its declared logical session", () => {
   const staleTransport = { session_id: "stale-mcp-session" };
   const continuation = resolveMcpLogicalSession({
-    toolName: "nyra_governed_continue",
+    toolName: "nyra_continue",
     transportPresence: staleTransport,
     declaredSessionId: "attested-logical-session",
     transportSessionId: "current-mcp-session",
@@ -158,10 +158,10 @@ test("governed continuation restores the logical presence only after its handler
   const app = createApp(config, {
     handlers: {
       core_health: async () => ({ structuredContent: { ok: true }, content: [] }),
-      nyra_governed_continue: async (args, identity) => {
-        if (args.candidate_attestation.startsWith("invalid")) {
-          const error = new Error("nyra_governed_continue_attestation_invalid");
-          error.code = "nyra_governed_continue_attestation_invalid";
+      nyra_continue: async (args, identity) => {
+        if (args.continuation_ref.includes("invalid")) {
+          const error = new Error("nyra_continue_ref_invalid");
+          error.code = "nyra_continue_ref_invalid";
           throw error;
         }
         observed.push(identity.agentPresence);
@@ -199,16 +199,16 @@ test("governed continuation restores the logical presence only after its handler
     assert.equal(stale.response.status, 200);
     assert.equal(logical.response.status, 200);
 
-    const rejected = await call("stale-mcp-transport", "nyra_governed_continue", {
-      operation: "resume_existing_work",
-      candidate_attestation: `invalid.${"x".repeat(100)}`,
+    const rejected = await call("stale-mcp-transport", "nyra_continue", {
+      operation: "authorize_action",
+      continuation_ref: `nyc1_invalid${"x".repeat(32)}`,
       idempotency_key: "continuation-invalid-rebind",
       session_id: "attested-logical-session",
     });
     assert.equal(rejected.response.status, 200);
     assert.equal(
       rejected.body.result.structuredContent.error.code,
-      "nyra_governed_continue_attestation_invalid",
+      "nyra_continue_ref_invalid",
     );
     const unchanged = await call("stale-mcp-transport", "core_health");
     assert.equal(unchanged.response.status, 200);
@@ -217,9 +217,9 @@ test("governed continuation restores the logical presence only after its handler
       "stale-transport-agent",
     );
 
-    const accepted = await call("stale-mcp-transport", "nyra_governed_continue", {
-      operation: "resume_existing_work",
-      candidate_attestation: `valid.${"x".repeat(100)}`,
+    const accepted = await call("stale-mcp-transport", "nyra_continue", {
+      operation: "authorize_action",
+      continuation_ref: `nyc1_${"x".repeat(40)}`,
       idempotency_key: "continuation-valid-rebind",
       session_id: "attested-logical-session",
     });
@@ -619,6 +619,8 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
   assert.ok(createHandler.indexOf("readCreatedWorkByBootstrapRequest") >= 0);
   assert.ok(createHandler.indexOf("readCreatedWorkByBootstrapRequest") <
     createHandler.indexOf("const coreDecision = await requireOwnerGovernance"));
+  assert.match(createHandler, /attachNyraWorkOrchestration\(identity, persisted, "work_created_replay"\)/);
+  assert.match(createHandler, /attachNyraWorkOrchestration\(identity, result, "work_created"\)/);
   assert.match(createHandler, /route: "durable_work_bootstrap_readback"/);
   assert.match(createHandler, /authorized: false/);
 });
@@ -1691,7 +1693,10 @@ test("host-native security prerequisites are production-and-feature scoped", () 
     ...productionBase,
     hostNativeAgentProtocolEnabled: true,
   }, {
-    readiness: { continuityInitialized: true },
+    readiness: {
+      continuityInitialized: true,
+      nyraContinuationStoreInitialized: true,
+    },
   });
   assert.deepEqual(
     missing.reasons.filter((reason) => reason.startsWith("host_native_")),
@@ -1814,12 +1819,37 @@ test("governed multi-host readiness requires registry, independent signing, and 
     nyraGovernedContinueSigningSecret: "n".repeat(32),
     nyraGovernedContinueConfigurationValid: true,
   }, {
-    readiness: { continuityInitialized: true },
+    readiness: {
+      continuityInitialized: true,
+      nyraContinuationStoreInitialized: true,
+    },
   });
   assert.equal(ready.components.governed_multi_host.ready, true);
   assert.equal(ready.components.governed_multi_host.registered_app_count, 2);
   assert.equal(ready.components.governed_multi_host.registry_revision, "a".repeat(64));
+  assert.equal(ready.components.nyra_continuation_store.ready, true);
   assert.equal(ready.ready, true);
+
+  const storeUnavailable = buildReadiness({
+    ...base,
+    hostNativeAgentProtocolEnabled: true,
+    databaseUrl: "postgres://configured",
+    hostAppRegistry: {
+      configured: true,
+      revision: "a".repeat(64),
+      apps: [{ app_id: "chatgpt_prod" }],
+    },
+    nyraGovernedContinueSigningSecret: "n".repeat(32),
+    nyraGovernedContinueConfigurationValid: true,
+  }, {
+    readiness: {
+      continuityInitialized: true,
+      nyraContinuationStoreInitializationFailed: true,
+    },
+  });
+  assert.equal(storeUnavailable.components.nyra_continuation_store.ready, false);
+  assert.equal(storeUnavailable.components.nyra_continuation_store.initialization_failed, true);
+  assert(storeUnavailable.reasons.includes("nyra_continuation_store_not_initialized"));
 });
 
 test("production host-native readiness fails closed for missing, short, and reused AGENT_SIGNATURE_SECRET", () => {
@@ -2055,7 +2085,8 @@ test("production compact mode exposes only the stable connector surface", async 
       const body = await response.json();
       assert.equal(response.status, 200);
       assert.deepEqual(body.result.tools.map((tool) => tool.name),
-        COMPACT_MCP_TOOL_NAMES.filter((name) => !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(name)));
+        COMPACT_MCP_TOOL_NAMES.filter((name) =>
+          TOOLS.some((tool) => tool.name === name) && !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(name)));
       assert.equal(body.result.tools.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
       assert.equal(body.result.tools.some((tool) => tool._meta?.["openai/outputTemplate"] === "ui://skinharmony/openai-provider-setup.html"), false);
       assert(Buffer.byteLength(JSON.stringify(body)) < 64 * 1024);
@@ -2172,7 +2203,7 @@ test("accepts only exact connector namespace aliases for visible registered tool
   }
 });
 
-test("allows a verified tenant-bound OAuth ChatGPT preflight without publishing it in tools/list", async () => {
+test("translates a stale tenant-bound OAuth ChatGPT preflight to Nyra without publishing it", async () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = publicKey.export({ format: "jwk" });
   jwk.kid = "chatgpt-stale-read-key";
@@ -2187,7 +2218,7 @@ test("allows a verified tenant-bound OAuth ChatGPT preflight without publishing 
     scope: "core:read core:govern",
     "https://skinharmony.it/tenant_id": "tenant-a",
   });
-  let received;
+  const received = [];
   const app = createApp({
     ...config,
     tenantClaim: "https://skinharmony.it/tenant_id",
@@ -2196,8 +2227,12 @@ test("allows a verified tenant-bound OAuth ChatGPT preflight without publishing 
     jwksCache: { get: async () => jwk },
     toolSurface: "compact",
     handlers: {
+      nyra_converse: async (args) => {
+        received.push(["nyra_converse", args]);
+        return { structuredContent: { ok: true, tool: "nyra_converse" }, content: [] };
+      },
       work_preflight: async (args) => {
-        received = args;
+        received.push(["work_preflight", args]);
         return { structuredContent: { ok: true, tool: "work_preflight" }, content: [] };
       },
     },
@@ -2238,23 +2273,24 @@ test("allows a verified tenant-bound OAuth ChatGPT preflight without publishing 
     const body = await response.json();
     assert.equal(response.status, 200, JSON.stringify(body));
     assert.equal(body.error, undefined, JSON.stringify(body));
-    assert.equal(body.result.structuredContent.tool, "work_preflight");
+    assert.equal(body.result.structuredContent.tool, "nyra_converse");
+    assert.deepEqual(received.map(([name]) => name), ["nyra_converse"]);
     assert.deepEqual({
-      request: received.request,
-      work_id: received.work_id,
-      project_id: received.project_id,
+      message: received[0][1].message,
+      work_id: received[0][1].work_id,
+      project_id: received[0][1].project_id,
     }, {
-      request: "Nyra, riprendi il Work",
+      message: "Nyra, riprendi il Work",
       work_id: "11111111-1111-4111-8111-111111111111",
       project_id: "skinharmony-ai-backend",
     });
-    assert.equal(Object.hasOwn(received, "tenant_id"), false);
+    assert.equal(Object.hasOwn(received[0][1], "tenant_id"), false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
 });
 
-test("routes verified tenant-bound ChatGPT catalog and governed reads to their exact Core handlers", async () => {
+test("translates stale tenant-bound ChatGPT Core reads to Nyra without reopening Core handlers", async () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = publicKey.export({ format: "jwk" });
   jwk.kid = "chatgpt-stale-self-model-key";
@@ -2317,7 +2353,7 @@ test("routes verified tenant-bound ChatGPT catalog and governed reads to their e
         } },
       }),
     }).then((response) => response.json());
-    assert.equal(catalog.result?.structuredContent?.tool, "core_capability_catalog", JSON.stringify(catalog));
+    assert.equal(catalog.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(catalog));
 
     const read = await fetch(`${base}/mcp`, {
       method: "POST",
@@ -2334,7 +2370,7 @@ test("routes verified tenant-bound ChatGPT catalog and governed reads to their e
         } },
       }),
     }).then((response) => response.json());
-    assert.equal(read.result?.structuredContent?.tool, "core_capability_read", JSON.stringify(read));
+    assert.equal(read.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(read));
 
     const coreReadDenied = await fetch(`${base}/mcp`, {
       method: "POST",
@@ -2350,7 +2386,7 @@ test("routes verified tenant-bound ChatGPT catalog and governed reads to their e
         } },
       }),
     }).then((response) => response.json());
-    assert.equal(coreReadDenied.result?.structuredContent?.error?.code, "host_app_capability_required", JSON.stringify(coreReadDenied));
+    assert.equal(coreReadDenied.result?.structuredContent?.tool, "nyra_converse", JSON.stringify(coreReadDenied));
 
     const mutation = await fetch(`${base}/mcp`, {
       method: "POST",
@@ -2368,10 +2404,12 @@ test("routes verified tenant-bound ChatGPT catalog and governed reads to their e
     }).then((response) => response.json());
     assert.equal(mutation.error?.code, -32602, JSON.stringify(mutation));
 
-    assert.deepEqual(received.map(([name]) => name), ["catalog", "read"]);
-    assert.equal(received[0][1].group, "self_model");
-    assert.equal(received[1][1].capability_id, "work_preflight");
-    assert.equal(Object.hasOwn(received[1][1].arguments, "tenant_id"), false);
+    assert.deepEqual(received.map(([name]) => name), [
+      "nyra_converse", "nyra_converse", "nyra_converse",
+    ]);
+    assert.match(received[0][1].message, /self_model/);
+    assert.match(received[1][1].message, /work_preflight/);
+    assert.match(received[2][1].message, /memory_context/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
