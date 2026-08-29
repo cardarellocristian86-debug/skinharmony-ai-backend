@@ -22,6 +22,7 @@ import {
 import { ENTITY_360_FEATURE_FLAG_AUTHORITY_SCOPE, ENTITY_360_SHADOW_OBSERVER_SCOPE,
   createEntity360Runtime as createEntity360RuntimeKernel,
   loadEntity360Configuration } from "../src/entity360Runtime.js";
+import { createEntity360ProjectionCache } from "../src/entity360ProjectionCache.js";
 import { createHostNativeDomainSigner, createHostNativeDomainVerifier }
   from "../src/hostNativeGovernance.js";
 
@@ -163,6 +164,22 @@ function snapshot({ contributions = completeContributions(), createdAt = AT, asO
     source_discovery: fixtureSourceDiscovery(contributions, suppliedDiscovery), ...restExtra },
   { policy: POLICY, ontology: ONTOLOGY, created_at: createdAt,
     qualification_signer: qualificationSigner });
+}
+
+function persistedProjectionCandidate(value, { head = null, persistedAt = value.created_at } = {}) {
+  const snapshotValue = structuredClone(value);
+  Object.defineProperty(snapshotValue, "__entity360_persisted_at", {
+    value: persistedAt, enumerable: false, configurable: false, writable: false,
+  });
+  return {
+    snapshot: snapshotValue,
+    durable_head: head || {
+      tenant_id: snapshotValue.tenant_scope,
+      entity_id: snapshotValue.entity_id,
+      snapshot_version: snapshotValue.snapshot_version,
+      snapshot_digest: snapshotValue.deterministic_immutable_digest,
+    },
+  };
 }
 
 function redigest(value) {
@@ -639,7 +656,7 @@ test("qualified fact values recursively reject authority-shaped semantic poison"
 });
 
 test("a verified authoritative Atlas record can corroborate component identity and revision", () => {
-  const componentIdentity = { work_id: WORK_ID, node_id: "src/app.js#service" };
+  const componentIdentity = { work_id: WORK_ID, node_id: "src/app.js#service", project_id: PROJECT_ID };
   const componentSource = source({ sourceId: "architecture_map",
     adapterVersion: "architecture_map_entity360_adapter_v1", evidenceClass: "verified_observation",
     digest: DIGEST_A, identity: componentIdentity, entityType: "software_component", facts: [
@@ -654,6 +671,56 @@ test("a verified authoritative Atlas record can corroborate component identity a
   assert.equal(value.corroboration_gaps.length, 0);
   assert.equal(value.execution_authorized, false);
   assert.deepEqual(value.core_review_requirement.admissible_outcomes, ["ALLOW", "HOLD", "BLOCK"]);
+  const cache = createEntity360ProjectionCache({ policy: POLICY, ontology: ONTOLOGY,
+    qualificationVerifier: QUALIFICATION_VERIFIER, now: () => Date.parse(AT) });
+  const projection = cache.project(persistedProjectionCandidate(value));
+  assert.equal(projection.projection.projection, "software_component_360");
+  assert.equal(projection.projection.tenant_scope, TENANT);
+  assert.equal(projection.projection.project_id, PROJECT_ID);
+  assert.equal(projection.projection.work_id, WORK_ID);
+});
+
+test("projection cache accepts only independently verified, persisted current heads", () => {
+  let nowMs = Date.parse(AT);
+  const cache = createEntity360ProjectionCache({ policy: POLICY, ontology: ONTOLOGY,
+    qualificationVerifier: QUALIFICATION_VERIFIER, now: () => nowMs });
+  const first = snapshot();
+  const firstResult = cache.project(persistedProjectionCandidate(first));
+  assert.equal(firstResult.projection.projection, "work_360");
+  assert.equal(firstResult.projection.tenant_scope, TENANT);
+  assert.equal(firstResult.projection.project_id, PROJECT_ID);
+  assert.equal(firstResult.projection.work_id, WORK_ID);
+  assert.equal(firstResult.projection.execution_authorized, false);
+  assert.equal(firstResult.cache.state, "REBUILT");
+  assert.equal(cache.project(persistedProjectionCandidate(first)).cache.state, "HIT");
+
+  const forged = { snapshot: { tenant_scope: TENANT, entity_id: first.entity_id,
+    entity_type: "work", snapshot_version: 1, deterministic_immutable_digest: "a".repeat(64),
+    project_work_linkage: { project_id: PROJECT_ID, work_id: WORK_ID },
+    __entity360_persisted_at: AT }, durable_head: { tenant_id: TENANT,
+    entity_id: first.entity_id, snapshot_version: 1, snapshot_digest: "a".repeat(64) } };
+  assert.equal(cache.project(forged).projection, null);
+  assert.equal(cache.project(forged).cache.reason,
+    "entity360_projection_independent_verification_failed");
+
+  const staleHead = persistedProjectionCandidate(first, { head: {
+    tenant_id: TENANT, entity_id: first.entity_id, snapshot_version: 2,
+    snapshot_digest: "b".repeat(64),
+  } });
+  assert.equal(cache.project(staleHead).cache.reason, "entity360_projection_durable_head_required");
+  const restartedCache = createEntity360ProjectionCache({ policy: POLICY, ontology: ONTOLOGY,
+    qualificationVerifier: QUALIFICATION_VERIFIER, now: () => nowMs });
+  assert.equal(restartedCache.project(staleHead).cache.reason,
+    "entity360_projection_durable_head_required", "a restart cannot revive a historical snapshot");
+
+  const next = snapshot({ extra: { snapshot_version: 2,
+    previous_snapshot_digest: first.deterministic_immutable_digest } });
+  assert.equal(cache.project(persistedProjectionCandidate(next)).cache.state, "REBUILT");
+  assert.equal(cache.project(persistedProjectionCandidate(first)).cache.reason,
+    "entity360_projection_snapshot_superseded");
+  nowMs += 3_600_001;
+  assert.equal(cache.project(persistedProjectionCandidate(next)).cache.reason,
+    "entity360_projection_freshness_expired");
 });
 
 test("high-confidence provenance from one non-authoritative lineage is never truth or authority", () => {
@@ -1352,13 +1419,20 @@ function memoryRuntimeDependencies() {
       const result = { snapshot: value, entity_id: value.entity_id,
         snapshot_version: value.snapshot_version, revision: current + 1, replayed: false };
       snapshots.set(`${key}:${value.snapshot_version}`, value);
-      heads.set(key, { revision: current + 1, current_snapshot_version: value.snapshot_version, snapshot: value });
+      heads.set(key, { revision: current + 1, current_snapshot_version: value.snapshot_version,
+        current_snapshot_digest: value.deterministic_immutable_digest, snapshot: value });
       idempotency.set(idem, { request_digest, result });
       return result;
     },
     async readLatestSnapshot({ tenant_id, entity_id }) { return heads.get(`${tenant_id}:${entity_id}`)?.snapshot || null; },
     async readSnapshot({ tenant_id, entity_id, snapshot_version }) {
-      return snapshots.get(`${tenant_id}:${entity_id}:${snapshot_version}`) || null;
+      const stored = snapshots.get(`${tenant_id}:${entity_id}:${snapshot_version}`);
+      if (!stored) return null;
+      const persisted = structuredClone(stored);
+      Object.defineProperty(persisted, "__entity360_persisted_at", {
+        value: AT, enumerable: false, configurable: false, writable: false,
+      });
+      return persisted;
     },
     async writeShadowReceipt({ tenant_id, entity_id, snapshot_version, receipt, idempotency_key }) {
       const key = `${tenant_id}:${entity_id}:${snapshot_version}:${idempotency_key}`;
@@ -1533,6 +1607,12 @@ test("runtime assembles and persists only server-discovered context in SHADOW mo
   });
   assert.equal(result.snapshot.entity_id, entityId);
   assert.equal(result.snapshot.context_status, "READY");
+  assert.equal(result.projection.projection.projection, "work_360");
+  assert.equal(result.projection.projection.tenant_scope, TENANT);
+  assert.equal(result.projection.projection.project_id, PROJECT_ID);
+  assert.equal(result.projection.projection.work_id, WORK_ID);
+  assert.equal(result.projection.projection.execution_authorized, false);
+  assert.equal(result.projection.cache.state, "REBUILT");
   assert.equal(result.shadow_mode, true);
   assert.equal(result.production_decision_changed, false);
   const verification = await runtime.invoke("entity_360_snapshot_verify", DTT_IDENTITY, {
@@ -1562,6 +1642,7 @@ test("runtime exact retry replays the persisted snapshot before any stale-head r
   assert.equal(replay.persistence.replayed, true);
   assert.equal(replay.snapshot.envelope_digest, first.snapshot.envelope_digest);
   assert.equal(replay.snapshot.created_at, first.snapshot.created_at);
+  assert.equal(replay.projection.cache.state, "HIT");
   assert.equal(assemblyCalls, 1);
 });
 

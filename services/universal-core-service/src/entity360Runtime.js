@@ -15,6 +15,7 @@ import {
   buildVerifiedEntity360CurrentPathObservation,
   compareVerifiedEntity360CurrentPath,
 } from "./entity360ShadowObservation.js";
+import { createEntity360ProjectionCache } from "./entity360ProjectionCache.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_ENTITY_360_POLICY_PATH = path.resolve(__dirname, "../config/entity360-policy.v1.json");
@@ -291,6 +292,8 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     }
   }
   const metrics = safeCounter();
+  const projectionCache = createEntity360ProjectionCache({ policy: compiledPolicy,
+    ontology: compiledOntology, qualificationVerifier, now });
   let state = "created";
   let initializationError = null;
   let operationalError = null;
@@ -534,6 +537,18 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     return { policy: historicalPolicy, ontology: historicalOntology };
   }
 
+  async function projectPersistedSnapshot(snapshot) {
+    const tenantId = text(snapshot?.tenant_scope, "entity360_projection_tenant_required", 120);
+    const entityId = text(snapshot?.entity_id, "entity360_projection_entity_required", 160);
+    const head = await store.readHead({ tenant_id: tenantId, entity_id: entityId });
+    return projectionCache.project({ snapshot, durable_head: head ? {
+      tenant_id: tenantId,
+      entity_id: entityId,
+      snapshot_version: Number(head.current_snapshot_version),
+      snapshot_digest: head.current_snapshot_digest,
+    } : null });
+  }
+
   async function assemble(identity, input) {
     const assemblyStartedAt = performance.now();
     const workId = requireWorkBinding(identity, input);
@@ -568,6 +583,7 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
         fail("entity360_cross_tenant_snapshot", 403);
       }
       return Object.freeze({ snapshot: persistedSnapshot,
+        projection: await projectPersistedSnapshot(persistedSnapshot),
         persistence: { revision: prior.head_revision ?? prior.head_version ?? prior.snapshot_version,
           replayed: true, backend: prior.backend || store.kind || "postgresql" },
         feature_flag: { mode: feature.mode, enabled: feature.enabled, revision: Number(feature.revision || 0),
@@ -658,12 +674,12 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     metrics.contradiction_count += snapshot.contradictions.length;
     metrics.missing_required_context_count += snapshot.missing_context.filter((item) => item.mandatory).length;
     if (persisted?.replayed === true) metrics.snapshot_rebuild_count += 1;
-    const persistedSnapshot = persisted?.replayed === true
-      ? await store.readSnapshot({ tenant_id: identity.tenant_id, entity_id: resolved.entity_id,
-        snapshot_version: persisted.snapshot_version || expectedRevision + 1 })
-      : persisted?.snapshot || snapshot;
+    const persistedSnapshot = await store.readSnapshot({ tenant_id: identity.tenant_id,
+      entity_id: resolved.entity_id,
+      snapshot_version: persisted?.snapshot_version || expectedRevision + 1 });
     if (!persistedSnapshot) fail("entity360_replayed_snapshot_not_found", 503);
     return Object.freeze({ snapshot: persistedSnapshot,
+      projection: await projectPersistedSnapshot(persistedSnapshot),
       persistence: { revision: persisted?.head_revision ?? persisted?.revision ?? expectedRevision + 1,
         replayed: persisted?.replayed === true, backend: persisted?.backend || store.kind || "postgresql" },
       feature_flag: { mode: feature.mode, enabled: feature.enabled, revision: Number(feature.revision || 0),
