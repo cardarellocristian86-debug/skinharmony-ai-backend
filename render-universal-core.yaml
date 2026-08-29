@@ -36,6 +36,15 @@ services:
       # beyond SHADOW requires a separate Core-governed release.
       - key: CORE_ENTITY360_MODE
         value: SHADOW
+      # Bitemporal projection is observe-only. It never changes an
+      # authorization decision; promotion to ENFORCE requires a separate
+      # governed release after shadow evidence is reviewed.
+      - key: CORE_ENTITY360_BITEMPORAL_MODE
+        value: SHADOW
+      # Keep the semantic guard explicit and observational during rollout.
+      # Universal Core remains the final authority in every mode.
+      - key: CORE_SEMANTIC_SCOPE_MODE
+        value: SHADOW
       - key: NYRA_PRECORE_DECISION_MODE
         value: "OFF"
       - key: CORE_MCP_TENANT_GATEWAY_KEY
