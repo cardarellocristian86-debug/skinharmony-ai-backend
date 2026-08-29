@@ -191,6 +191,13 @@ export function buildNyraOperationalDialogue({ continuity = {}, operational = {}
       gallery: normalized.gallery,
       software: normalized.software,
     },
+    assignment: assignment
+      ? Object.freeze({
+          assignment_id: clean(assignment.assignment_id, 64) || null,
+          role: clean(assignment.role, 80) || null,
+          state: clean(assignment.state, 40) || "ready",
+        })
+      : null,
     self_diagnosis: diagnosis,
     connected_ai_instruction: Object.freeze([
       "Continue the bound Work; do not recreate its intent or rescan the project.",

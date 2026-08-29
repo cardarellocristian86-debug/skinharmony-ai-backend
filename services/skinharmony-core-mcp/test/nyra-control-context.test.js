@@ -29,6 +29,7 @@ test("Nyra control context is compact and carries only the next bounded action",
   assert.equal(context.schema_version, NYRA_CONTROL_CONTEXT_SCHEMA_VERSION);
   assert.equal(context.work_id, "11111111-1111-4111-8111-111111111111");
   assert.equal(context.assignment.role, "executor_specialist");
+  assert.equal(context.nyra_dialogue.assignment.assignment_id, "22222222-2222-4222-8222-222222222222");
   assert.equal(context.execution_authorized, false);
   assert.equal(context.nyra_dialogue.mode, "automatic_work_briefing");
   assert.equal(context.nyra_dialogue.persistent, true);
@@ -56,6 +57,26 @@ test("a reconnect context exposes one recovery action and preserves the Work", (
   assert.match(context.next_action, /Reconnect the existing OAuth session/);
   assert.equal(context.nyra_dialogue.self_diagnosis.state, "recovery_required");
   assert.equal(context.nyra_dialogue.self_diagnosis.automatic_correction, "context_preserved");
+});
+
+test("a claimed Autopilot assignment is not offered to a later dialogue", () => {
+  const context = buildNyraControlContext({
+    continuity: {
+      tenant_id: "codexai",
+      project_id: "SkinHarmony/smart-desk",
+      work_id: "11111111-1111-4111-8111-111111111111",
+      state: "active",
+    },
+    autopilot: {
+      assignments: [{
+        assignment_id: "22222222-2222-4222-8222-222222222222",
+        role: "executor_specialist",
+        status: "claimed",
+      }],
+    },
+  });
+  assert.equal(context.assignment, null);
+  assert.equal(context.nyra_dialogue.assignment, null);
 });
 
 test("the connector returns the compact context instead of a full Work Gallery", () => {

@@ -21,10 +21,11 @@ function firstReadyAssignment(autopilot = {}) {
     : Array.isArray(autopilot?.materialization?.assignments)
       ? autopilot.materialization.assignments
       : [];
-  // A claimed assignment is still the current bounded step. Returning only
-  // offered work made Nyra appear idle immediately after a worker accepted it.
-  const assignment = assignments.find((item) => item?.status === "claimed") ||
-    assignments.find((item) => item?.status === "offered") || null;
+  // A persisted dialogue is later read by another connected AI. A claimed
+  // assignment might already be expired or belong to that other worker, so
+  // only a fresh offered assignment may be surfaced as actionable here. The
+  // claimant receives its exact assignment directly from the claim result.
+  const assignment = assignments.find((item) => item?.status === "offered") || null;
   if (!assignment) return null;
   return {
     assignment_id: clean(assignment.assignment_id, 64) || null,

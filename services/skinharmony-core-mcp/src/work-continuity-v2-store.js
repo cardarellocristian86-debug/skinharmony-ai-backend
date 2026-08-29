@@ -161,6 +161,10 @@ const GENERIC_WORK_CORE_JOIN_VERDICT_FIELDS = Object.freeze([
   "signature", "signature_algorithm", "task_state_digest", "tenant_id", "verdict_digest",
   "verdict_id", "work_id",
 ]);
+const NYRA_AUTOPILOT_VERIFICATION_FIELDS = Object.freeze([
+  "schema_version", "verdict", "summary", "verified_work_task_ids",
+  "verified_assignment_ids", "evidence_refs",
+]);
 
 function fail(code) { throw new Error(code); }
 function text(value, code, max = 8_000) {
@@ -232,6 +236,82 @@ function plainRecord(value) {
 function exactObjectKeys(value, fields) {
   return plainRecord(value) &&
     Object.keys(value).sort().join("\0") === [...fields].sort().join("\0");
+}
+
+// A Nyra worker submission is useful evidence, but it is not acceptance on
+// its own.  Only a separately claimed `independent_verifier` assignment may
+// project it into the canonical V2 Work ledger, and it must name every
+// required Work task as well as the submitted assignments it checked.
+export function normalizeNyraAutopilotVerificationResult(value, {
+  workId,
+  requiredTaskIds = [],
+  verifier = {},
+  sourceAssignments = [],
+} = {}) {
+  if (!exactObjectKeys(value, NYRA_AUTOPILOT_VERIFICATION_FIELDS) ||
+      value.schema_version !== "nyra_independent_verification_v1" ||
+      !["approved", "rejected"].includes(value.verdict)) {
+    fail("nyra_autopilot_verification_contract_invalid");
+  }
+  const expectedTasks = [...new Set(requiredTaskIds.map((taskId) => uuid(taskId, "nyra_autopilot_verification_task_invalid")))].sort();
+  if (!expectedTasks.length) fail("nyra_autopilot_verification_tasks_required");
+  const verifiedTasks = stringArray(value.verified_work_task_ids, "nyra_autopilot_verification_task_invalid", 250, 36)
+    .map((taskId) => uuid(taskId, "nyra_autopilot_verification_task_invalid")).sort();
+  if (!verifiedTasks.length || verifiedTasks.some((taskId) => !expectedTasks.includes(taskId)) ||
+      (value.verdict === "approved" && (verifiedTasks.length !== expectedTasks.length ||
+        verifiedTasks.some((taskId, index) => taskId !== expectedTasks[index])))) {
+    fail("nyra_autopilot_verification_scope_invalid");
+  }
+  const sourceIds = stringArray(value.verified_assignment_ids, "nyra_autopilot_verification_assignment_invalid", 16, 36)
+    .map((assignmentId) => uuid(assignmentId, "nyra_autopilot_verification_assignment_invalid")).sort();
+  if (!sourceIds.length) fail("nyra_autopilot_verification_sources_required");
+  const sources = new Map(sourceAssignments.map((assignment) => [assignment.assignment_id, assignment]));
+  const materialSourceIds = sourceAssignments
+    .filter((assignment) => assignment?.status === "submitted" && assignment.role !== "independent_verifier")
+    .map((assignment) => assignment.assignment_id)
+    .sort();
+  if (value.verdict === "approved" && (
+    sourceIds.length !== materialSourceIds.length ||
+    sourceIds.some((assignmentId, index) => assignmentId !== materialSourceIds[index])
+  )) fail("nyra_autopilot_verification_source_coverage_required");
+  // The Autopilot table intentionally stores the durable claim as
+  // `claimed_*`; the runtime-facing shape uses `agent_id` /
+  // `session_fingerprint`.  Accept both server-owned representations here,
+  // but never a caller-provided identity: the candidate loader above binds
+  // the selected assignment to the authenticated actor before this function
+  // runs.
+  const verifierAgentId = text(
+    verifier.agent_id ?? verifier.claimed_agent_id,
+    "nyra_autopilot_verifier_identity_required",
+    120,
+  );
+  const verifierSession = text(
+    verifier.session_fingerprint ?? verifier.claimed_session_fingerprint,
+    "nyra_autopilot_verifier_identity_required",
+    80,
+  );
+  for (const assignmentId of sourceIds) {
+    const source = sources.get(assignmentId);
+    if (!source || source.status !== "submitted" || source.role === "independent_verifier" ||
+        !source.claimed_agent_id || !source.claimed_session_fingerprint ||
+        source.claimed_agent_id === verifierAgentId ||
+        source.claimed_session_fingerprint === verifierSession) {
+      fail("nyra_autopilot_verification_independence_required");
+    }
+  }
+  const evidenceRefs = stringArray(value.evidence_refs, "nyra_autopilot_verification_evidence_invalid", 100, 500);
+  if (!evidenceRefs.length) fail("nyra_autopilot_verification_evidence_required");
+  return Object.freeze({
+    schema_version: value.schema_version,
+    verdict: value.verdict,
+    work_id: uuid(workId, "work_id_invalid"),
+    verifier_agent_id: verifierAgentId,
+    verifier_session_fingerprint: verifierSession,
+    summary: text(value.summary, "nyra_autopilot_verification_summary_required", 8_000),
+    verified_work_task_ids: Object.freeze(verifiedTasks),
+    verified_assignment_ids: Object.freeze(sourceIds),
+    evidence_refs: Object.freeze(evidenceRefs),
+  });
 }
 
 const CLOSURE_VERIFICATION_SCHEMA_VERSION = "tenant_work_closure_verification_v1";
@@ -1325,11 +1405,20 @@ export function createWorkContinuityV2Store({
       const original = review.review_result && typeof review.review_result === "object"
         ? review.review_result
         : {};
-      const originalCandidateIds = new Set(
-        (Array.isArray(original.candidates) ? original.candidates : []).map((item) => String(item.work_id || "")),
-      );
-      const newCandidate = currentResolution.candidates.some((item) =>
-        !originalCandidateIds.has(String(item.work_id || "")));
+      // The selected Work is part of the reviewed conflict decision even when
+      // a legacy/ACL projection omits it from the rendered candidates list.
+      // Compare both representations during the race recheck: otherwise the
+      // same already-reviewed Work is rediscovered as a "new" candidate and
+      // makes an owner-approved CREATE_WORK path permanently stale.
+      const originalCandidateIds = new Set([
+        ...(Array.isArray(original.candidates) ? original.candidates : []).map((item) => String(item.work_id || "")),
+        String(original.selected_work_id || ""),
+      ].filter(Boolean));
+      const currentCandidateIds = new Set([
+        ...currentResolution.candidates.map((item) => String(item.work_id || "")),
+        String(currentResolution.selected_work_id || ""),
+      ].filter(Boolean));
+      const newCandidate = [...currentCandidateIds].some((workId) => !originalCandidateIds.has(workId));
       const newConflictFlag = Object.entries(currentFlags).some(([name, value]) =>
         value === true && original.conflict_flags?.[name] !== true);
       if (newCandidate || newConflictFlag ||
@@ -2256,6 +2345,160 @@ export function createWorkContinuityV2Store({
     }
     return { schema_version: "tenant_work_gallery_v1", source_schema_version: "work_continuity_v2",
       tenant_id: actor.tenant_id, filters: { project_id: input.project_id || null, status: "active", query: null }, works: rows };
+  }
+  async function nyraAutopilotVerificationCandidateWithClient(client, actor, {
+    work_id,
+    assignment_id,
+    assignment: suppliedAssignment = null,
+    result,
+    assignmentStates = ["claimed", "submitted"],
+  } = {}) {
+    const workId = uuid(work_id);
+    const assignmentId = uuid(assignment_id, "assignment_id_invalid");
+    const work = await loadWork(client, actor, workId, true);
+    assertPermission(canContributeEvidence, work, actor);
+    // `submit` holds its assignment row while it calls the pre-persistence
+    // validator.  It passes that server-selected row here; querying it again
+    // from a second transaction would self-deadlock.  The projector never
+    // supplies this value and always locks/reads the durable submitted row.
+    const selected = suppliedAssignment ? null : await client.query(`SELECT assignment_id,run_id,role,status,claimed_agent_id,claimed_session_fingerprint,submitted_result
+      FROM core_nyra_autopilot_assignments
+      WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 FOR UPDATE`, [actor.tenant_id, workId, assignmentId]);
+    const assignment = suppliedAssignment || selected.rows[0];
+    if (!assignment) fail("nyra_autopilot_assignment_not_found");
+    if (assignment.role !== "independent_verifier") {
+      return Object.freeze({ required: false, work_id: workId, assignment_id: assignmentId });
+    }
+    if (!assignmentStates.includes(assignment.status)) fail("nyra_autopilot_verification_assignment_state_invalid");
+    if (!actor.agent_id || !actor.session_fingerprint ||
+        assignment.claimed_agent_id !== actor.agent_id ||
+        assignment.claimed_session_fingerprint !== actor.session_fingerprint) {
+      fail("nyra_autopilot_verifier_identity_required");
+    }
+    const runId = uuid(assignment.run_id, "nyra_autopilot_verification_run_invalid");
+    const run = await client.query(`SELECT status,architecture_version,intent_digest FROM core_nyra_autopilot_runs
+      WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 FOR UPDATE`, [actor.tenant_id, workId, runId]);
+    if (run.rows[0]?.status !== "materialized") {
+      fail("nyra_autopilot_verification_run_not_current");
+    }
+    const newerRun = await client.query(`SELECT run_id FROM core_nyra_autopilot_runs
+      WHERE tenant_id=$1 AND work_id=$2 AND architecture_version>$3 AND status<>'cancelled'
+      ORDER BY architecture_version DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId, run.rows[0].architecture_version]);
+    if (newerRun.rows[0]) fail("nyra_autopilot_verification_run_not_current");
+    const tasks = await client.query(`SELECT task_id FROM tenant_work_task
+      WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY task_id FOR UPDATE`, [actor.tenant_id, workId]);
+    const sources = await client.query(`SELECT assignment_id,run_id,role,status,claimed_agent_id,claimed_session_fingerprint,submitted_result
+      FROM core_nyra_autopilot_assignments
+      WHERE tenant_id=$1 AND work_id=$2 AND run_id=$3 AND status='submitted' ORDER BY assignment_id FOR UPDATE`,
+    [actor.tenant_id, workId, runId]);
+    const verification = normalizeNyraAutopilotVerificationResult(
+      result === undefined ? assignment.submitted_result : result,
+      {
+        workId,
+        requiredTaskIds: tasks.rows.map((task) => task.task_id),
+        verifier: assignment,
+        sourceAssignments: sources.rows,
+      },
+    );
+    const sourceDigests = verification.verified_assignment_ids.map((sourceId) => {
+      const source = sources.rows.find((item) => item.assignment_id === sourceId);
+      return Object.freeze({ assignment_id: sourceId, result_digest: objectDigest(source.submitted_result) });
+    });
+    return Object.freeze({
+      required: true,
+      work_id: workId,
+      assignment_id: assignmentId,
+      run_id: runId,
+      verification,
+      source_digests: Object.freeze(sourceDigests),
+    });
+  }
+  async function validateNyraAutopilotVerificationCandidate(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    return transaction((client) => nyraAutopilotVerificationCandidateWithClient(client, actor, {
+      ...input,
+      assignmentStates: ["claimed"],
+    }));
+  }
+  async function projectNyraAutopilotVerification(identity, input = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const workId = uuid(input.work_id);
+    const assignmentId = uuid(input.assignment_id, "assignment_id_invalid");
+    const outcome = await transaction(async (client) => {
+      const candidate = await nyraAutopilotVerificationCandidateWithClient(client, actor, {
+        work_id: workId,
+        assignment_id: assignmentId,
+        assignmentStates: ["submitted"],
+      });
+      if (!candidate.required) return candidate;
+      const eventType = candidate.verification.verdict === "approved"
+        ? "nyra_autopilot_verification_projected_v1"
+        : "nyra_autopilot_verification_rejected_v1";
+      const existing = await client.query(`SELECT payload FROM tenant_work_event
+        WHERE tenant_id=$1 AND work_id=$2 AND event_type=$3
+          AND payload->>'assignment_id'=$4
+        ORDER BY sequence_number DESC LIMIT 1 FOR UPDATE`, [actor.tenant_id, workId, eventType, assignmentId]);
+      if (existing.rows[0]) {
+        if (existing.rows[0].payload?.evidence_digest !== objectDigest({
+          verification: candidate.verification,
+          source_digests: candidate.source_digests,
+        })) fail("nyra_autopilot_verification_projection_conflict");
+        return Object.freeze({ ...candidate, idempotent_replay: true });
+      }
+      const evidenceDigest = objectDigest({
+        verification: candidate.verification,
+        source_digests: candidate.source_digests,
+      });
+      if (candidate.verification.verdict === "rejected") {
+        const event = await appendV2Event(client, actor, workId, eventType, {
+          assignment_id: assignmentId,
+          evidence_digest: evidenceDigest,
+          verified_assignment_ids: candidate.verification.verified_assignment_ids,
+          verified_work_task_ids: candidate.verification.verified_work_task_ids,
+          verifier_agent_id: candidate.verification.verifier_agent_id,
+          verifier_session_fingerprint: candidate.verification.verifier_session_fingerprint,
+        });
+        return Object.freeze({ ...candidate, evidence_digest: evidenceDigest, event, idempotent_replay: false,
+          task_projection: "not_applied" });
+      }
+      const taskUpdate = await client.query(`UPDATE tenant_work_task
+        SET status='completed',acceptance_verified=true,completed_at=coalesce(completed_at,now())
+        WHERE tenant_id=$1 AND work_id=$2 AND required=true AND task_id=ANY($3::uuid[])`,
+      [actor.tenant_id, workId, candidate.verification.verified_work_task_ids]);
+      if (Number(taskUpdate.rowCount || 0) !== candidate.verification.verified_work_task_ids.length) {
+        fail("nyra_autopilot_verification_task_projection_conflict");
+      }
+      const evidenceId = crypto.randomUUID();
+      await client.query(`INSERT INTO tenant_work_evidence
+        (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,verified_by_agent_id,verified_by_session_fingerprint,weight,metadata)
+        VALUES ($1,$2,$3,'nyra_autopilot_verification',$4,true,true,$5,$6,1,$7::jsonb)`,
+      [actor.tenant_id, evidenceId, workId, evidenceDigest,
+        candidate.verification.verifier_agent_id, candidate.verification.verifier_session_fingerprint,
+        JSON.stringify({
+          schema_version: "nyra_autopilot_verification_projection_v1",
+          assignment_id: assignmentId,
+          verified_assignment_ids: candidate.verification.verified_assignment_ids,
+          verified_work_task_ids: candidate.verification.verified_work_task_ids,
+          source_digests: candidate.source_digests,
+          evidence_refs: candidate.verification.evidence_refs,
+        })]);
+      const event = await appendV2Event(client, actor, workId, eventType, {
+        assignment_id: assignmentId,
+        evidence_id: evidenceId,
+        evidence_digest: evidenceDigest,
+        verified_assignment_ids: candidate.verification.verified_assignment_ids,
+        verified_work_task_ids: candidate.verification.verified_work_task_ids,
+        verifier_agent_id: candidate.verification.verifier_agent_id,
+        verifier_session_fingerprint: candidate.verification.verifier_session_fingerprint,
+      });
+      return Object.freeze({ ...candidate, evidence_id: evidenceId, evidence_digest: evidenceDigest, event, idempotent_replay: false });
+    });
+    const derived = outcome.required
+      ? await refreshDerived(identity, { work_id: workId })
+      : null;
+    return Object.freeze({ ...outcome, ...(derived ? { progress: derived } : {}) });
   }
   async function recordTask(identity, input = {}) {
     await initialize();
@@ -3199,6 +3442,7 @@ export function createWorkContinuityV2Store({
     projectLegacyWork, projectLegacyCatalog, projectLegacyEvent, backfillLegacyProjection,
     readWork, verifyWorkClosure, listWorks, assignQueuedWork, acceptQueuedWorkAssignment, archiveWork, reopenWork,
     preflightGallery, openWorkReview,
+    validateNyraAutopilotVerificationCandidate, projectNyraAutopilotVerification,
     recordTask, recordEvidence, recordNativeVerifierEvidenceWithClient,
     persistCoreJoin, refreshDerived, reconcileStaleDryRun,
     reconcileLegacyClosed,

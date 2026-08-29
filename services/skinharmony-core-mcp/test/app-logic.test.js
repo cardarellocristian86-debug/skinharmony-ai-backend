@@ -9,6 +9,7 @@ import {
   resolveStaleChatGptReadTool,
   TOOLS,
 } from "../src/app.js";
+import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
 
 function tenantBoundChatGptCompatibilityIdentity(overrides = {}) {
   return {
@@ -33,62 +34,88 @@ function tenantBoundChatGptCompatibilityIdentity(overrides = {}) {
   };
 }
 
-test("keeps claim-only OAuth on Nyra while granting a tenant-bound governed read allowlist", () => {
+test("keeps claim-only and unregistered conversational hosts on the Nyra front door", () => {
   const claimOnlyTools = filterToolsForClient(TOOLS, { kind: "oauth" });
   assert.deepEqual(claimOnlyTools.map((tool) => tool.name), ["nyra_converse"]);
 
   const compatibility = tenantBoundChatGptCompatibilityIdentity();
   const names = filterToolsForClient(TOOLS, compatibility).map((tool) => tool.name);
-  for (const name of [
-    "core_health",
-    "core_capability_catalog",
-    "core_branch_registry",
-    "core_semantic_select",
-    "core_capability_read",
-    "nyra_converse",
-  ]) assert.equal(names.includes(name), true, name);
-  assert.equal(names.includes("work_preflight"), false, "preflight remains cached/internal");
-  for (const name of ["core_capability_invoke", "tenant_work_evidence_record", "host_native_delegation_issue"]) {
-    assert.equal(names.includes(name), false, name);
-  }
+  assert.deepEqual(names, ["nyra_converse"]);
   assert.equal(hasTenantBoundChatGptReadCompatibility(compatibility, "core_capability_read"), true);
   assert.equal(hasTenantBoundChatGptReadCompatibility({
     ...compatibility,
     authenticatedTenantMembership: { ...compatibility.authenticatedTenantMembership, tenant_id: "tenant-b" },
   }, "core_capability_read"), false, "tenant membership cannot be injected across tenants");
+
+  const unregisteredCodex = {
+    kind: "codex",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: false,
+      auth_kind: "bearer",
+      client_type: "codex",
+      interaction_mode: "nyra_conversational",
+      capabilities: ["work.read"],
+    },
+  };
+  assert.deepEqual(filterToolsForClient(TOOLS, unregisteredCodex).map((tool) => tool.name), ["nyra_converse"]);
   assert.equal(filterToolsForClient(TOOLS, { kind: "codex" }).length, TOOLS.length);
 });
 
-test("keeps governed reads and one governed continuation tool for a registered conversational host", () => {
+test("exposes only Nyra to every registered conversational host", () => {
+  const serverTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS];
   const identity = {
     kind: "oauth",
-    subject: "chatgpt-user",
+    subject: "codex-user",
     tenantId: "tenant-a",
     authenticatedTenantMembership: {
       schema_version: "tenant_membership_binding_v1",
       authenticated: true,
       tenant_id: "tenant-a",
-      subject: "chatgpt-user",
+      subject: "codex-user",
     },
     authenticatedHostPrincipal: {
       schema_version: "authenticated_host_principal_v1",
       registered: true,
       registry_revision: "a".repeat(64),
-      app_id: "chatgpt_prod",
+      app_id: "codex_conversational",
       auth_kind: "oauth",
-      host_kind: "chatgpt_native",
-      client_type: "chatgpt",
+      host_kind: "codex_native",
+      client_type: "codex",
       interaction_mode: "nyra_conversational",
-      capabilities: ["work.read", "governed_continue"],
+      capabilities: ["work.read", "work.coordinate", "governed_continue"],
     },
   };
-  const names = filterToolsForClient(TOOLS, identity).map((tool) => tool.name);
-  for (const name of [
-    "nyra_converse", "nyra_governed_continue", "core_health",
-    "core_capability_catalog", "core_branch_registry", "core_semantic_select",
-    "core_capability_read",
-  ]) assert.equal(names.includes(name), true, name);
-  assert.equal(names.includes("work_preflight"), false, "preflight remains cached/internal");
+  for (const clientType of ["codex", "other"]) {
+    const names = filterToolsForClient(serverTools, {
+      ...identity,
+      authenticatedHostPrincipal: {
+        ...identity.authenticatedHostPrincipal,
+        client_type: clientType,
+        app_id: `${clientType}_conversational`,
+      },
+    }).map((tool) => tool.name);
+    assert.deepEqual(names, [
+      "nyra_converse",
+      "nyra_continue",
+      "nyra_work_assignment_claim",
+      "nyra_work_assignment_submit",
+    ], clientType);
+  }
+  const activationNames = filterToolsForClient(serverTools, {
+    ...identity,
+    authenticatedHostPrincipal: {
+      ...identity.authenticatedHostPrincipal,
+      capabilities: [...identity.authenticatedHostPrincipal.capabilities, "core.operate"],
+    },
+  }).map((tool) => tool.name);
+  assert.deepEqual(activationNames, [
+    "nyra_converse",
+    "nyra_continue",
+    "nyra_autopilot_enable",
+    "nyra_work_assignment_claim",
+    "nyra_work_assignment_submit",
+  ]);
   assert.equal(filterToolsForClient(TOOLS, {
     ...identity,
     authenticatedHostPrincipal: {
@@ -96,35 +123,10 @@ test("keeps governed reads and one governed continuation tool for a registered c
       registered: false,
       capabilities: ["work.read"],
     },
-  }).some((tool) => tool.name === "nyra_governed_continue"), false);
+  }).map((tool) => tool.name).join(","), "nyra_converse");
 });
 
-test("publishes an exact continuation schema without widening native report authority", () => {
-  const governedContinue = TOOLS.find((tool) => tool.name === "nyra_governed_continue");
-  const operationEnum = governedContinue.inputSchema.properties.operation.enum;
-  const resume = governedContinue.inputSchema.properties.resume_request;
-  const plan = governedContinue.inputSchema.properties.native_plan_request;
-  const bind = governedContinue.inputSchema.properties.native_bind_request;
-
-  assert.equal(operationEnum.includes("resume_existing_work"), true);
-  assert.equal(operationEnum.includes("create_native_plan"), true);
-  assert.equal(operationEnum.includes("bind_native_child"), true);
-  assert.equal(operationEnum.includes("native_report"), false);
-  assert.equal(resume.required.includes("session_id"), true);
-  assert(resume.properties.session_id);
-  for (const schema of [plan, bind]) {
-    assert.equal(schema.required.includes("session_id"), false);
-    assert.equal(schema.properties.session_id, undefined);
-  }
-
-  const nyraConverse = TOOLS.find((tool) => tool.name === "nyra_converse");
-  const continuation = nyraConverse.outputSchema.properties
-    .orchestration_directive.properties.ticket_request.properties.continuation;
-  assert.equal(continuation.required.includes("operations"), true);
-  assert.equal(continuation.properties.operations.items.enum.includes("native_report"), false);
-});
-
-test("routes only verified tenant-bound stale governed reads to Core", () => {
+test("routes stale conversational Core read descriptors to Nyra", () => {
   const nyra = TOOLS.find((tool) => tool.name === "nyra_converse");
   const health = TOOLS.find((tool) => tool.name === "core_health");
   const routedNyra = configureToolForRuntime(nyra, { environmentRoutingRequired: true });
@@ -133,7 +135,7 @@ test("routes only verified tenant-bound stale governed reads to Core", () => {
   assert.equal(routedHealth.inputSchema.required.includes("environment"), true);
   assert.equal(
     resolveStaleChatGptReadTool("skinharmony_nyra_core.core_health", tenantBoundChatGptCompatibilityIdentity(), [nyra]),
-    "core_health",
+    "nyra_converse",
   );
   const registered = tenantBoundChatGptCompatibilityIdentity({
     authenticatedHostPrincipal: {
@@ -144,13 +146,13 @@ test("routes only verified tenant-bound stale governed reads to Core", () => {
   for (const toolName of ["core_health", "core_capability_catalog", "core_branch_registry", "core_semantic_select"]) {
     assert.equal(
       resolveStaleChatGptReadTool(`skinharmony_nyra_core.${toolName}`, registered, [nyra]),
-      toolName,
-      `${toolName} stays a direct governed read for a registered host`,
+      "nyra_converse",
+      `${toolName} is translated to the Nyra front door`,
     );
   }
   assert.equal(
     resolveStaleChatGptReadTool("skinharmony_nyra_core.work_preflight", tenantBoundChatGptCompatibilityIdentity(), [nyra]),
-    "work_preflight",
+    "nyra_converse",
   );
   assert.equal(
     resolveStaleChatGptReadTool("skinharmony_nyra_core.work_preflight", { kind: "oauth" }, [nyra]),
@@ -162,7 +164,7 @@ test("routes only verified tenant-bound stale governed reads to Core", () => {
   );
 });
 
-test("preserves a registered ChatGPT native-tooling capability-filtered Core surface", () => {
+test("preserves a registered Codex native-tooling capability-filtered Core surface", () => {
   const tools = [
     { name: "nyra_converse", annotations: { readOnlyHint: true } },
     { name: "core_health", annotations: { readOnlyHint: true } },
@@ -176,7 +178,7 @@ test("preserves a registered ChatGPT native-tooling capability-filtered Core sur
     authenticatedHostPrincipal: {
       registered: true,
       auth_kind: "oauth",
-      client_type: "chatgpt",
+      client_type: "codex",
       interaction_mode: "native_tooling",
       capabilities: ["core.read"],
     },
@@ -195,13 +197,13 @@ test("advertises explicit confirmation fields only on write tools", () => {
   assert(confirmedWrites.every((tool) => tool.inputSchema.properties.owner_confirmed?.type === "boolean"));
   assert(confirmedWrites.every((tool) => tool.inputSchema.properties.confirmation_reference?.type === "string"));
   assert(advisoryWrites
-    .filter((tool) => !["core_capability_invoke", "nyra_governed_continue"].includes(tool.name))
+    .filter((tool) => !["core_capability_invoke", "nyra_continue"].includes(tool.name))
     .every((tool) => tool.inputSchema.properties.owner_confirmed === undefined));
-  const governedContinue = advisoryWrites.find((tool) => tool.name === "nyra_governed_continue");
+  const governedContinue = advisoryWrites.find((tool) => tool.name === "nyra_continue");
   assert.equal(governedContinue.inputSchema.properties.owner_confirmed.type, "boolean");
   assert.equal(governedContinue._meta["skinharmony/nyraGovernedContinuation"], true);
   assert(advisoryWrites
-    .filter((tool) => !["core_capability_invoke", "nyra_governed_continue"].includes(tool.name))
+    .filter((tool) => !["core_capability_invoke", "nyra_continue"].includes(tool.name))
     .every((tool) => tool.inputSchema.properties.confirmation_reference === undefined));
   const dynamicInvoke = advisoryWrites.find((tool) => tool.name === "core_capability_invoke");
   assert.equal(dynamicInvoke.inputSchema.properties.owner_confirmed.type, "boolean");
@@ -209,7 +211,7 @@ test("advertises explicit confirmation fields only on write tools", () => {
   assert.deepEqual(
     advisoryWrites.map((tool) => tool.name),
     [
-      "nyra_governed_continue",
+      "nyra_continue",
       "core_capability_invoke",
       "orchestration_dtt_core_join",
       "ai_work_quality_observe",
