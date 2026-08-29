@@ -4112,6 +4112,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
       if (!plan) throw new Error("native_agent_plan_not_found");
       if (planResult.rows[0].status !== "planned") throw new Error("native_agent_plan_not_open");
       if (plan.host_type !== hostType) throw new Error("native_agent_host_scope_mismatch");
+      // A native plan is created for one verified coordinator transport.  The
+      // logical conversation can reconnect, but it must not silently bind a
+      // child task from a different transport to the still-open plan.
+      if (plan.coordinator_session_fingerprint !== coordinatorSessionFingerprint) {
+        throw new Error("native_agent_coordinator_transport_mismatch");
+      }
       const task = plan.tasks.find((candidate) => candidate.task_id === taskId);
       if (!task) throw new Error("native_agent_task_not_found");
       const active = await client.query(`SELECT task_id,status
