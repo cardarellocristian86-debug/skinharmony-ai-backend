@@ -817,6 +817,48 @@ const nyraDirectiveActionClass = {
     "DEPLOY", "PUBLISH", "WORK_BOOTSTRAP", "EXTERNAL_MUTATION", "TICKET_RESERVE",
   ],
 };
+const nyraPrecommitGateBinding = object({
+  task_id: { type: "string", format: "uuid" },
+  plan_id: { type: "string", format: "uuid" },
+  evaluation_id: { type: "string", format: "uuid" },
+  evaluation_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  workspace_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  supersession_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  reconciliation_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  projection_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+}, [
+  "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
+  "supersession_digest", "reconciliation_digest", "projection_digest",
+]);
+const nyraPrecommitTicketGate = object({
+  schema_version: { const: "precommit_ticket_gate_v1" },
+  tenant_id: { type: "string", minLength: 1, maxLength: 160 },
+  work_id: { type: "string", format: "uuid" },
+  action_kind: { const: "git.commit" },
+  gate_kind: { const: "ticket_acquisition" },
+  task_id: { type: "string", format: "uuid" },
+  plan_id: { type: "string", format: "uuid" },
+  evaluation_id: { type: "string", format: "uuid" },
+  evaluation_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  workspace_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  supersession_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  reconciliation_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  legacy_evidence_ids: { type: "array", minItems: 1, maxItems: 128, uniqueItems: true,
+    items: { type: "string", format: "uuid" } },
+  replacement_evidence_ids: { type: "array", minItems: 1, maxItems: 128, uniqueItems: true,
+    items: { type: "string", format: "uuid" } },
+  fulfilled: { type: "boolean" },
+  ticket_id: { type: ["string", "null"], maxLength: 160 },
+  fresh: { type: "boolean" },
+  drift_codes: { type: "array", maxItems: 16, uniqueItems: true, items: nyraDirectiveCode },
+  projection_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+}, [
+  "schema_version", "tenant_id", "work_id", "action_kind", "gate_kind", "task_id",
+  "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
+  "supersession_digest", "reconciliation_digest", "legacy_evidence_ids",
+  "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
+  "projection_digest",
+]);
 const nyraDirectiveBinding = object({
   tenant_id: { type: "string", minLength: 1, maxLength: 160 },
   work_id: nyraConverseNullableText(80),
@@ -824,7 +866,9 @@ const nyraDirectiveBinding = object({
   work_revision: { type: ["integer", "null"], minimum: 1, maximum: 100_000 },
   intent_digest: nyraDirectiveDigest,
   context_digest: nyraDirectiveDigest,
-}, ["tenant_id", "work_id", "project_id", "work_revision", "intent_digest", "context_digest"]);
+  precommit_ticket_gate: { anyOf: [{ type: "null" }, nyraPrecommitGateBinding] },
+}, ["tenant_id", "work_id", "project_id", "work_revision", "intent_digest", "context_digest",
+  "precommit_ticket_gate"]);
 const nyraGovernedContinuationSchema = object({
   schema_version: { const: "nyra_governed_continuation_v1" },
   available: { type: "boolean" },
@@ -1089,6 +1133,10 @@ const nyraOrchestrationDirectiveSchema = object({
     pending_required_task_count: { type: "integer", minimum: 0, maximum: 64 },
     required_evidence_count: { type: "integer", minimum: 0, maximum: 128 },
     unverified_required_evidence_count: { type: "integer", minimum: 0, maximum: 128 },
+    precommit_ticket_gate: { anyOf: [{ type: "null" }, nyraPrecommitTicketGate] },
+    precommit_ticket_gate_applicable: { type: "boolean" },
+    precommit_pending_required_task_count: { type: "integer", minimum: 0, maximum: 64 },
+    precommit_unverified_required_evidence_count: { type: "integer", minimum: 0, maximum: 128 },
     next_required_task: {
       anyOf: [
         { type: "null" },
@@ -1104,7 +1152,9 @@ const nyraOrchestrationDirectiveSchema = object({
   }, [
     "available", "work_id", "project_id", "work_revision", "intent_digest", "context_digest",
     "status", "acceptance_criteria_count", "required_task_count", "pending_required_task_count",
-    "required_evidence_count", "unverified_required_evidence_count", "next_required_task", "closure_verified",
+    "required_evidence_count", "unverified_required_evidence_count", "precommit_ticket_gate",
+    "precommit_ticket_gate_applicable", "precommit_pending_required_task_count",
+    "precommit_unverified_required_evidence_count", "next_required_task", "closure_verified",
   ]),
   permitted_progress: {
     type: "array",

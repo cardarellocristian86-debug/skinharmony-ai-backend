@@ -21,6 +21,16 @@ const WORK_ID = "11111111-1111-4111-8111-111111111111";
 const DIGEST_A = "a".repeat(64);
 const DIGEST_B = "b".repeat(64);
 const DIGEST_C = "c".repeat(64);
+const PRECOMMIT_GATE = Object.freeze({
+  task_id: "22222222-2222-4222-8222-222222222222",
+  plan_id: "33333333-3333-4333-8333-333333333333",
+  evaluation_id: "44444444-4444-4444-8444-444444444444",
+  evaluation_digest: "4".repeat(64),
+  workspace_digest: "5".repeat(64),
+  supersession_digest: "6".repeat(64),
+  reconciliation_digest: "7".repeat(64),
+  projection_digest: "8".repeat(64),
+});
 const bootstrapDependencies = Object.freeze({
   reviewWorkBootstrap: async () => { throw new Error("unexpected_bootstrap_review"); },
   createWorkBootstrap: async () => { throw new Error("unexpected_bootstrap_create"); },
@@ -107,6 +117,7 @@ function directive(actionClass = "GIT_MERGE", state = "MANUAL_ONLY") {
         work_revision: 7,
         intent_digest: DIGEST_B,
         context_digest: DIGEST_C,
+        precommit_ticket_gate: actionClass === "GIT_COMMIT" ? PRECOMMIT_GATE : null,
       },
     },
   };
@@ -775,11 +786,15 @@ test("submits an exact local commit candidate without widening it to push", asyn
     continuationOperation: "authorize_action",
   });
   const calls = [];
+  const fulfillments = [];
   const handler = createNyraGovernedContinueHandler({
     ...bootstrapDependencies,
     attestor,
     readDirectiveContext: async () => ({ raw: true }),
-    normalizeDirectiveContext: () => normalizedContext(),
+    normalizeDirectiveContext: () => normalizedContext({
+      precommit_ticket_gate_applicable: true,
+      precommit_ticket_gate: PRECOMMIT_GATE,
+    }),
     issueDelegation: async () => {
       throw new Error("unexpected_delegation");
     },
@@ -787,11 +802,24 @@ test("submits an exact local commit candidate without widening it to push", asyn
       calls.push(args);
       return {
         structuredContent: {
-          action_ticket: { ticket: { ticket_id: `hnt_${"2".repeat(64)}` } },
+          action_ticket: { state: "issued", uses: 0, ticket: {
+            schema_version: "host_native_action_ticket_v1",
+            ticket_id: `hnt_${"2".repeat(64)}`,
+            tenant_id: "tenant-a",
+            work_id: WORK_ID,
+            action: { kind: "git.commit" },
+            evidence_digest: PRECOMMIT_GATE.projection_digest,
+            max_uses: 1,
+            provider_execution: false,
+            host_policy_override: false,
+            host_policy_must_allow: true,
+            signature: `hnt_${"3".repeat(64)}`,
+          } },
         },
         content: [],
       };
     },
+    fulfillPrecommitTicketTask: async (args) => { fulfillments.push(args); },
   });
   const response = await handler({
     operation: "authorize_action",
@@ -803,14 +831,96 @@ test("submits an exact local commit candidate without widening it to push", asyn
       intent_anchor_digest: DIGEST_B,
       repository: "owner/repo",
       action: { kind: "git.commit", repository: "owner/repo", branch: "feature" },
-      evidence_digest: DIGEST_A,
+      evidence_digest: PRECOMMIT_GATE.projection_digest,
     },
   }, identity());
   assert.equal(calls.length, 1);
   assert.equal(calls[0].action.kind, "git.commit");
+  assert.equal(fulfillments.length, 1);
+  assert.equal(fulfillments[0].gate_projection_digest, PRECOMMIT_GATE.projection_digest);
   assert.equal(response.structuredContent.ticket_issued, true);
   assert.equal(response.structuredContent.execution_authorized, false);
   assert.equal(response.structuredContent.external_action_authorized, false);
+});
+
+test("rejects a forged precommit evidence digest before calling Core", async () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = issueAction(
+    attestor,
+    "authorize_action",
+    identity(),
+    "GIT_COMMIT",
+    "READY_FOR_CORE_REVIEW",
+  );
+  let authorizeCalls = 0;
+  const handler = createNyraGovernedContinueHandler({
+    ...bootstrapDependencies,
+    ...nativeDependencies,
+    attestor,
+    readDirectiveContext: async () => ({ raw: true }),
+    normalizeDirectiveContext: () => normalizedContext({
+      precommit_ticket_gate_applicable: true,
+      precommit_ticket_gate: PRECOMMIT_GATE,
+    }),
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    authorizeAction: async () => { authorizeCalls += 1; return {}; },
+  });
+
+  await assert.rejects(handler({
+    operation: "authorize_action",
+    candidate_attestation: candidate.candidate_attestation,
+    idempotency_key: "authorize-commit-forged-evidence",
+    action_request: {
+      delegation_id: "hnd_delegation-12345678",
+      work_id: WORK_ID,
+      intent_anchor_digest: DIGEST_B,
+      repository: "owner/repo",
+      action: { kind: "git.commit", repository: "owner/repo", branch: "feature" },
+      evidence_digest: DIGEST_A,
+    },
+  }, identity()), /nyra_governed_continue_precommit_evidence_mismatch/);
+  assert.equal(authorizeCalls, 0);
+});
+
+test("rejects a drifted precommit projection before calling Core", async () => {
+  const clock = Date.parse("2026-08-25T12:00:00.000Z");
+  const attestor = createNyraGovernedContinueAttestor({ secret: SECRET, now: () => clock });
+  const candidate = issueAction(
+    attestor,
+    "authorize_action",
+    identity(),
+    "GIT_COMMIT",
+    "READY_FOR_CORE_REVIEW",
+  );
+  let authorizeCalls = 0;
+  const handler = createNyraGovernedContinueHandler({
+    ...bootstrapDependencies,
+    ...nativeDependencies,
+    attestor,
+    readDirectiveContext: async () => ({ raw: true }),
+    normalizeDirectiveContext: () => normalizedContext({
+      precommit_ticket_gate_applicable: true,
+      precommit_ticket_gate: { ...PRECOMMIT_GATE, projection_digest: DIGEST_A },
+    }),
+    issueDelegation: async () => { throw new Error("unexpected_delegation"); },
+    authorizeAction: async () => { authorizeCalls += 1; return {}; },
+  });
+
+  await assert.rejects(handler({
+    operation: "authorize_action",
+    candidate_attestation: candidate.candidate_attestation,
+    idempotency_key: "authorize-commit-drifted-gate",
+    action_request: {
+      delegation_id: "hnd_delegation-12345678",
+      work_id: WORK_ID,
+      intent_anchor_digest: DIGEST_B,
+      repository: "owner/repo",
+      action: { kind: "git.commit", repository: "owner/repo", branch: "feature" },
+      evidence_digest: PRECOMMIT_GATE.projection_digest,
+    },
+  }, identity()), /nyra_governed_continue_work_drift/);
+  assert.equal(authorizeCalls, 0);
 });
 
 test("derives the same downstream idempotency key across process replicas", async () => {

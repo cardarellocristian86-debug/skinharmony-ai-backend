@@ -303,7 +303,9 @@ export function createNyraGovernedContinueAttestor({
     const workActionReady = ticket?.required === true &&
       READY_STATES.has(ticket.state) &&
       SHA256.test(String(ticket.request_digest || "")) &&
-      (ACTION_KIND_BY_CLASS[ticket.action_class]?.size || 0) > 0;
+      (ACTION_KIND_BY_CLASS[ticket.action_class]?.size || 0) > 0 &&
+      (ticket.action_class !== "GIT_COMMIT" ||
+        validPrecommitGateBinding(binding.precommit_ticket_gate));
     const externalOperations = workActionReady
       ? [
           ...(hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE)
@@ -384,6 +386,7 @@ export function createNyraGovernedContinueAttestor({
       work_revision: binding.work_revision,
       intent_digest: binding.intent_digest,
       context_digest: binding.context_digest,
+      precommit_ticket_gate: binding.precommit_ticket_gate || null,
       work_bootstrap_request_digest: workBootstrap
         ? ticket.work_bootstrap_request_digest
         : null,
@@ -458,6 +461,7 @@ export function createNyraGovernedContinueAttestor({
       work_revision: parentPayload.work_revision,
       intent_digest: parentPayload.intent_digest,
       context_digest: parentPayload.context_digest,
+      precommit_ticket_gate: null,
       work_bootstrap_request_digest: null,
       continuation_operation: null,
       native_plan_id: plan.plan_id,
@@ -516,6 +520,7 @@ export function createNyraGovernedContinueAttestor({
           payload.action_class !== "WORK_BOOTSTRAP" ||
           payload.work_id !== null || payload.work_revision !== null ||
           payload.intent_digest !== null || payload.context_digest !== null ||
+          payload.precommit_ticket_gate !== null ||
           signedContinuationOperation !== null ||
           !PROJECT_ID.test(String(payload.project_id || "")) ||
           !SHA256.test(String(payload.work_bootstrap_request_digest || "")) ||
@@ -528,7 +533,9 @@ export function createNyraGovernedContinueAttestor({
         !PROJECT_ID.test(String(payload.project_id || "")) ||
         !Number.isSafeInteger(Number(payload.work_revision)) ||
         !SHA256.test(String(payload.intent_digest || "")) ||
-        !SHA256.test(String(payload.context_digest || ""))) {
+        !SHA256.test(String(payload.context_digest || "")) ||
+        !(payload.precommit_ticket_gate === null ||
+          validPrecommitGateBinding(payload.precommit_ticket_gate))) {
       fail("nyra_governed_continue_attestation_binding_mismatch", 403);
     }
     if (payload.candidate_kind === "work_action" && (
@@ -538,12 +545,16 @@ export function createNyraGovernedContinueAttestor({
       !ACTION_CONTINUATION_OPERATIONS.has(signedContinuationOperation) ||
       !payload.allowed_operations.includes(signedContinuationOperation) ||
       payload.allowed_operations.some((item) =>
-        !["issue_delegation", "authorize_action"].includes(item))
+        !["issue_delegation", "authorize_action"].includes(item)) ||
+      (payload.action_class === "GIT_COMMIT"
+        ? !validPrecommitGateBinding(payload.precommit_ticket_gate)
+        : payload.precommit_ticket_gate !== null)
     )) fail("nyra_governed_continue_attestation_binding_mismatch", 403);
     if (payload.candidate_kind === "work_continuation" && (
       signedContinuationOperation !== null ||
       payload.allowed_operations.some((item) =>
         !WORK_CONTINUATION_OPERATIONS.includes(item)) ||
+      payload.precommit_ticket_gate !== null ||
       payload.native_plan_id !== null || payload.native_plan_digest !== null ||
       payload.native_plan_tasks !== null || payload.parent_nonce_digest !== null
     )) fail("nyra_governed_continue_attestation_binding_mismatch", 403);
@@ -554,6 +565,7 @@ export function createNyraGovernedContinueAttestor({
           payload.allowed_operations[0] !== NATIVE_PLAN_BIND_OPERATION ||
           payload.ticket_request_digest !== null ||
           payload.ticket_state !== "NOT_REQUIRED" || payload.action_class !== "NONE" ||
+          payload.precommit_ticket_gate !== null ||
           !WORK_ID.test(String(payload.native_plan_id || "")) ||
           !SHA256.test(String(payload.native_plan_digest || "")) ||
           !SHA256.test(String(payload.parent_nonce_digest || "")) ||
@@ -626,7 +638,8 @@ function ensureFreshWorkContext(context, payload, identity) {
       context?.project_id !== payload.project_id ||
       revision !== payload.work_revision ||
       context?.intent_digest !== payload.intent_digest ||
-      context?.context_digest !== payload.context_digest) {
+      context?.context_digest !== payload.context_digest ||
+      sha256(contextPrecommitGateBinding(context)) !== sha256(payload.precommit_ticket_gate)) {
     fail("nyra_governed_continue_work_drift", 409);
   }
   const status = String(context.status || "").toUpperCase();
@@ -637,6 +650,34 @@ function ensureFreshWorkContext(context, payload, identity) {
 
 function actionKindAllowed(actionClass, kind) {
   return ACTION_KIND_BY_CLASS[actionClass]?.has(String(kind || "")) === true;
+}
+
+function validPrecommitGateBinding(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value).sort().join("\0") === [
+      "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
+      "supersession_digest", "reconciliation_digest", "projection_digest",
+    ].sort().join("\0") &&
+    WORK_ID.test(String(value.task_id || "")) && WORK_ID.test(String(value.plan_id || "")) &&
+    WORK_ID.test(String(value.evaluation_id || "")) &&
+    [value.evaluation_digest, value.workspace_digest, value.supersession_digest,
+      value.reconciliation_digest, value.projection_digest]
+      .every((item) => SHA256.test(String(item || ""))));
+}
+
+function contextPrecommitGateBinding(context) {
+  const gate = context?.precommit_ticket_gate;
+  if (context?.precommit_ticket_gate_applicable !== true || !gate) return null;
+  return {
+    task_id: gate.task_id,
+    plan_id: gate.plan_id,
+    evaluation_id: gate.evaluation_id,
+    evaluation_digest: gate.evaluation_digest,
+    workspace_digest: gate.workspace_digest,
+    supersession_digest: gate.supersession_digest,
+    reconciliation_digest: gate.reconciliation_digest,
+    projection_digest: gate.projection_digest,
+  };
 }
 
 const OPERATION_REQUEST_FIELDS = Object.freeze([
@@ -763,6 +804,7 @@ export function createNyraGovernedContinueHandler({
   resumeExistingWork,
   createNativePlan,
   bindNativeChild,
+  fulfillPrecommitTicketTask,
   authorizeNativeCoordination,
 } = {}) {
   if (!attestor || typeof attestor.verify !== "function" ||
@@ -1009,10 +1051,37 @@ export function createNyraGovernedContinueHandler({
           !actionKindAllowed(payload.action_class, request.action?.kind)) {
         fail("nyra_governed_continue_action_binding_mismatch", 409);
       }
+      if (payload.action_class === "GIT_COMMIT" && (
+        !validPrecommitGateBinding(payload.precommit_ticket_gate) ||
+        request.evidence_digest !== payload.precommit_ticket_gate.projection_digest
+      )) fail("nyra_governed_continue_precommit_evidence_mismatch", 409);
       const result = await authorizeAction({
         ...request,
         idempotency_key: governedIdempotencyKey,
       }, identity);
+      if (payload.action_class === "GIT_COMMIT") {
+        const actionTicket = result?.structuredContent?.action_ticket;
+        const ticket = actionTicket?.ticket;
+        if (!actionTicket || actionTicket.state !== "issued" || actionTicket.uses !== 0 ||
+            ticket?.schema_version !== "host_native_action_ticket_v1" ||
+            ticket.tenant_id !== payload.tenant_id || ticket.work_id !== payload.work_id ||
+            ticket.action?.kind !== "git.commit" ||
+            ticket.evidence_digest !== payload.precommit_ticket_gate.projection_digest ||
+            !/^hnt_[A-Za-z0-9_-]{8,}$/.test(String(ticket.ticket_id || "")) ||
+            !/^hnt_[A-Za-z0-9_-]{64}$/.test(String(ticket.signature || "")) ||
+            ticket.max_uses !== 1 || ticket.provider_execution !== false ||
+            ticket.host_policy_override !== false || ticket.host_policy_must_allow !== true) {
+          fail("nyra_governed_continue_commit_ticket_readback_invalid", 502);
+        }
+        if (typeof fulfillPrecommitTicketTask !== "function") {
+          fail("nyra_governed_continue_precommit_fulfillment_unavailable", 503);
+        }
+        await fulfillPrecommitTicketTask({
+          work_id: payload.work_id,
+          gate_projection_digest: payload.precommit_ticket_gate.projection_digest,
+          action_ticket: actionTicket,
+        }, identity);
+      }
       return nyraResult(payload, result);
     }
     fail("nyra_governed_continue_operation_invalid");

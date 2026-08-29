@@ -401,6 +401,20 @@ function createInput() {
     tasks: [{ title: "transaction", weight: 1, required: true }], intent_digest: "a".repeat(64) };
 }
 
+function candidateWork(index, overrides = {}) {
+  const suffix = String(index).padStart(12, "0");
+  return {
+    tenant_id: "tenant-a", work_id: `00000000-0000-4000-8000-${suffix}`, legacy_work_id: null,
+    work_code: `NYRA-20260808-${String(index).padStart(4, "0")}`,
+    work_name: `Unrelated candidate ${index}`, work_type: "generic", project_id: "nyra-core",
+    owner_user_id: "owner", created_by_user_id: "owner", assigned_user_ids: [],
+    supervising_user_ids: [], agent_ids: [], visibility_scope: "private", status: "ACTIVE",
+    priority: "P4", priority_score: 0, progress_bp: 0, next_action: "continue",
+    updated_at: "2026-08-08T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
 function boundedUniqueText(prefix, index, length) {
   const marker = `${prefix}-${String(index).padStart(3, "0")}-`;
   return `${marker}${"x".repeat(length - marker.length)}`;
@@ -1196,6 +1210,95 @@ test("two no-conflict reviews cannot race into duplicate same-project Works", as
   assert.match(lockCall.parameters[0], /^tenant_work_bootstrap:[a-f0-9]{64}$/);
   assert.equal(lockCall.parameters[0].includes("\0"), false,
     "PostgreSQL text advisory-lock keys must never contain a NUL byte");
+});
+
+test("an unchanged bounded review survives a different database row order", async () => {
+  const pool = new AtomicWorkPool();
+  for (let index = 1; index <= 6; index += 1) {
+    const work = candidateWork(index);
+    pool.works.set(key(work.tenant_id, work.work_id), work);
+  }
+  let resolutionReads = 0;
+  const originalQuery = pool.query.bind(pool);
+  pool.query = async (sql, parameters) => {
+    const result = await originalQuery(sql, parameters);
+    const normalized = sql.replace(/\s+/g, " ").trim();
+    if (normalized.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND status = ANY")) {
+      resolutionReads += 1;
+      if (resolutionReads > 1) result.rows.reverse();
+    }
+    return result;
+  };
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const request = createInput();
+  const review = await store.openWorkReview(identity(), {
+    intent_type: "CREATE_WORK", request: `${request.work_name} ${request.objective}`,
+    create_request: request,
+  });
+
+  assert.deepEqual(review.candidates.map((candidate) => candidate.work_id),
+    [1, 2, 3, 4, 5].map((index) => candidateWork(index).work_id));
+  assert.equal(review.requires_owner_decision, true);
+  const created = await store.createNewWork(identity(), {
+    ...request,
+    review_id: review.review_id,
+    review_digest: review.review_digest,
+    review_decision: "PARALLEL_VALID",
+  });
+  assert.equal(created.review.decision, "PARALLEL_VALID");
+  assert.equal(pool.reviews.get(key("tenant-a", review.review_id)).consumed_at !== null, true);
+});
+
+test("an unchanged visible cross-project candidate does not invalidate a project-scoped review", async () => {
+  const pool = new AtomicWorkPool();
+  const crossProject = candidateWork(1, {
+    project_id: "other-project",
+    work_name: "Continuity transaction",
+    next_action: "Create legacy and V2 atomically",
+  });
+  pool.works.set(key(crossProject.tenant_id, crossProject.work_id), crossProject);
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const request = createInput();
+  const review = await store.openWorkReview(identity(), {
+    intent_type: "CREATE_WORK", request: `${request.work_name} ${request.objective}`,
+    create_request: request,
+  });
+
+  assert.equal(review.classification, "CONTINUE_EXISTING",
+    "the resolver must see the visible lexical match before project projection");
+  assert.deepEqual(review.candidates, [],
+    "the persisted candidate projection remains bounded to the requested project");
+  assert.equal(review.requires_owner_decision, true);
+  const created = await store.createNewWork(identity(), {
+    ...request,
+    review_id: review.review_id,
+    review_digest: review.review_digest,
+    review_decision: "CONTINUE_NEW_WORK",
+  });
+  assert.equal(created.review.decision, "CONTINUE_NEW_WORK");
+  assert.equal(pool.reviews.get(key("tenant-a", review.review_id)).consumed_at !== null, true);
+});
+
+test("a genuinely new top-five candidate still invalidates an open review", async () => {
+  const pool = new AtomicWorkPool();
+  for (let index = 1; index <= 5; index += 1) {
+    const work = candidateWork(index);
+    pool.works.set(key(work.tenant_id, work.work_id), work);
+  }
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  const newCandidate = candidateWork(0);
+  pool.works.set(key(newCandidate.tenant_id, newCandidate.work_id), newCandidate);
+
+  await assert.rejects(store.createNewWork(identity(), {
+    ...input,
+    review_decision: "PARALLEL_VALID",
+  }), /open_work_review_stale_conflict/);
+  assert.equal(pool.reviews.get(key("tenant-a", input.review_id)).consumed_at, null);
+  assert.equal(pool.legacy.size, 0);
 });
 
 test("preflight projects legacy rows without inventing ownership and preserves Gallery v1 shape", async () => {

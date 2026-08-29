@@ -1,0 +1,432 @@
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import {
+  createWorkContinuityV2Store,
+  deriveAuthenticatedTenantWorkAcl,
+} from "../src/work-continuity-v2-store.js";
+
+const WORK_ID = "11111111-1111-4111-8111-111111111111";
+const TASK_ID = "22222222-2222-4222-8222-222222222222";
+const PLAN_ID = "33333333-3333-4333-8333-333333333333";
+const EVALUATION_ID = "44444444-4444-4444-8444-444444444444";
+const LEGACY_EVIDENCE_ID = "55555555-5555-4555-8555-555555555555";
+const REPLACEMENT_EVIDENCE_ID = "66666666-6666-4666-8666-666666666666";
+const RECEIPT_ID = "77777777-7777-4777-8777-777777777777";
+const WORKSPACE_DIGEST = "8".repeat(64);
+
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+}
+function digest(value) {
+  return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
+const RECEIPT_PAYLOAD = Object.freeze({
+  schema_version: "native_agent_receipt_v1",
+  receipt_id: RECEIPT_ID,
+  work_id: WORK_ID,
+  plan_id: PLAN_ID,
+  receipt_type: "agent_reported",
+  agent_id: "verifier-agent",
+  task_id: "verifier-task",
+  task_kind: "verifier",
+  status: "completed",
+  report_digest: "a".repeat(64),
+  native_session_fingerprint: "b".repeat(64),
+  host_native: true,
+  provider_execution: false,
+  host_permission_override: false,
+  host_policy_override: false,
+  host_policy_must_allow: true,
+  coordinator_session_fingerprint: "c".repeat(64),
+  host_type: "codex_native",
+});
+const RECEIPT_DIGEST = digest(RECEIPT_PAYLOAD);
+function key(...parts) { return parts.join("\0"); }
+function cloneMap(value) { return new Map([...value].map(([k, v]) => [k, structuredClone(v)])); }
+
+function identity(tenantId = "tenant-a") {
+  const base = {
+    tenantId,
+    subject: "owner",
+    userId: "owner",
+    agentPresence: { agent_id: "owner-agent", session_fingerprint: "a".repeat(64) },
+    authenticatedTenantMembership: {
+      schema_version: "tenant_membership_binding_v1",
+      authenticated: true,
+      tenant_id: tenantId,
+      subject: "owner",
+      role: "tenant_owner",
+      expires_at: "2030-01-01T00:00:00.000Z",
+      team_ids: [],
+      managed_team_ids: [],
+      assigned_work_ids: [],
+    },
+  };
+  return { ...base, tenant_work_acl: deriveAuthenticatedTenantWorkAcl(
+    base,
+    Date.parse("2026-08-29T10:00:00.000Z"),
+  ) };
+}
+
+class PrecommitPool {
+  constructor() {
+    this.works = new Map();
+    this.tasks = new Map();
+    this.evidence = new Map();
+    this.nativeEvidence = new Map();
+    this.receipts = new Map();
+    this.plans = [];
+    this.evaluations = [];
+    this.gates = new Map();
+    this.mappings = new Map();
+    this.fulfillments = new Map();
+    this.events = [];
+  }
+  snapshot() {
+    return {
+      works: cloneMap(this.works), tasks: cloneMap(this.tasks), evidence: cloneMap(this.evidence),
+      nativeEvidence: cloneMap(this.nativeEvidence), receipts: cloneMap(this.receipts),
+      plans: structuredClone(this.plans), evaluations: structuredClone(this.evaluations),
+      gates: cloneMap(this.gates), mappings: cloneMap(this.mappings),
+      fulfillments: cloneMap(this.fulfillments), events: structuredClone(this.events),
+    };
+  }
+  restore(snapshot) { Object.assign(this, snapshot); }
+  async connect() {
+    let snapshot;
+    return {
+      query: async (sql, parameters = []) => {
+        const q = sql.replace(/\s+/g, " ").trim();
+        if (q === "BEGIN") { snapshot = this.snapshot(); return { rows: [], rowCount: 0 }; }
+        if (q === "COMMIT") { snapshot = null; return { rows: [], rowCount: 0 }; }
+        if (q === "ROLLBACK") { if (snapshot) this.restore(snapshot); return { rows: [], rowCount: 0 }; }
+        return this.query(sql, parameters);
+      },
+      release() {},
+    };
+  }
+  async query(sql, parameters = []) {
+    const q = sql.replace(/\s+/g, " ").trim();
+    if (q.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [], rowCount: 0 };
+    if (q.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT * FROM tenant_work_precommit_ticket_gate")) {
+      const row = this.gates.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT legacy_evidence_id,replacement_evidence_id,")) {
+      const rows = [...this.mappings.values()].filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && row.task_id === parameters[2])
+        .sort((a, b) => a.legacy_evidence_id.localeCompare(b.legacy_evidence_id));
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT r.*,legacy.required AS legacy_required")) {
+      const rows = [...this.mappings.values()].filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && row.task_id === parameters[2]).map((row) => {
+        const legacy = this.evidence.get(key(row.tenant_id, row.legacy_evidence_id));
+        const replacement = this.evidence.get(key(row.tenant_id, row.replacement_evidence_id));
+        const native = this.nativeEvidence.get(key(row.tenant_id, row.replacement_evidence_id));
+        return { ...row,
+          legacy_required: legacy?.required,
+          legacy_independently_verified: legacy?.independently_verified,
+          replacement_required: replacement?.required,
+          replacement_independently_verified: replacement?.independently_verified,
+          current_replacement_evidence_digest: replacement?.digest,
+          replacement_kind: replacement?.kind,
+          native_plan_id: native?.plan_id,
+          native_evidence_id: native?.evidence_id,
+          current_native_receipt_id: native?.native_receipt_id,
+          current_native_receipt_digest: native?.native_receipt_digest,
+          native_evidence_digest: native?.evidence_digest,
+        };
+      }).sort((a, b) => a.legacy_evidence_id.localeCompare(b.legacy_evidence_id));
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT task_id,status,required,acceptance_verified FROM tenant_work_task")) {
+      const row = this.tasks.get(key(parameters[0], parameters[2]));
+      return { rows: row && row.work_id === parameters[1] ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT plan_id,plan,plan_digest,status,plan_version,supersedes_plan_id")) {
+      const rows = this.plans.filter((row) => row.tenant_id === parameters[0] && row.work_id === parameters[1])
+        .sort((a, b) => a.plan_version - b.plan_version || a.plan_id.localeCompare(b.plan_id));
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT evaluation_id,evaluation,evaluation_digest FROM core_continuity_closure_evaluations")) {
+      const rows = this.evaluations.filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && row.plan_id === parameters[2])
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) ||
+          b.evaluation_id.localeCompare(a.evaluation_id));
+      return { rows: rows.length ? [structuredClone(rows[0])] : [], rowCount: rows.length ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT ticket_id,ticket_digest,gate_projection_digest")) {
+      const row = this.fulfillments.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT evidence_id,required,independently_verified FROM tenant_work_evidence")) {
+      const ids = new Set(parameters[2]);
+      const rows = [...this.evidence.values()].filter((row) => row.tenant_id === parameters[0] &&
+        row.work_id === parameters[1] && ids.has(row.evidence_id));
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT e.evidence_id,e.kind,e.digest,e.required,")) {
+      const evidence = this.evidence.get(key(parameters[0], parameters[2]));
+      const native = this.nativeEvidence.get(key(parameters[0], parameters[2]));
+      const receipt = native && this.receipts.get(key(parameters[0], native.native_receipt_id));
+      if (!evidence || evidence.work_id !== parameters[1] || !native || !receipt) return { rows: [], rowCount: 0 };
+      return { rows: [{ ...structuredClone(evidence), ...structuredClone(native),
+        native_task_id: native.task_id,
+        native_verifier_agent_id: native.verifier_agent_id,
+        native_verifier_session_fingerprint: native.verifier_session_fingerprint,
+        native_report_digest: native.report_digest,
+        receipt_type: receipt.receipt_type, receipt_agent_id: receipt.agent_id,
+        payload: structuredClone(receipt.payload),
+        payload_digest: receipt.payload_digest }], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_gate")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1], task_id: parameters[2],
+        plan_id: parameters[3], evaluation_id: parameters[4], evaluation_digest: parameters[5],
+        workspace_digest: parameters[6], supersession_digest: parameters[7],
+        reconciliation_digest: parameters[8], action_kind: "git.commit",
+        gate_kind: "ticket_acquisition", created_by_user_id: parameters[9] };
+      this.gates.set(key(row.tenant_id, row.work_id), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_precommit_evidence_reconciliation")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1], legacy_evidence_id: parameters[2],
+        replacement_evidence_id: parameters[3], task_id: parameters[4], plan_id: parameters[5],
+        evaluation_id: parameters[6], native_receipt_id: parameters[7], native_receipt_digest: parameters[8],
+        replacement_evidence_digest: parameters[9], evaluation_digest: parameters[10],
+        workspace_digest: parameters[11], supersession_digest: parameters[12],
+        reconciliation_digest: parameters[13], created_by_user_id: parameters[14] };
+      this.mappings.set(key(row.tenant_id, row.work_id, row.legacy_evidence_id), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT sequence_number,event_hash FROM tenant_work_event")) {
+      const rows = this.events.filter((row) => row.tenant_id === parameters[0] && row.work_id === parameters[1]);
+      return { rows: rows.length ? [structuredClone(rows.at(-1))] : [], rowCount: rows.length ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_event")) {
+      this.events.push({ tenant_id: parameters[0], work_id: parameters[1], event_id: parameters[2],
+        sequence_number: parameters[3], event_type: parameters[4], payload: JSON.parse(parameters[5]),
+        previous_event_hash: parameters[6], event_hash: parameters[7] });
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_precommit_ticket_fulfillment")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1], task_id: parameters[2],
+        ticket_id: parameters[3], ticket_digest: parameters[4], gate_projection_digest: parameters[5],
+        fulfillment_digest: parameters[6] };
+      this.fulfillments.set(key(row.tenant_id, row.work_id), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work_task SET status='completed'")) {
+      const row = this.tasks.get(key(parameters[0], parameters[2]));
+      if (!row || row.work_id !== parameters[1] || row.status !== "planned" ||
+          row.acceptance_verified !== false || row.required !== true) return { rows: [], rowCount: 0 };
+      Object.assign(row, { status: "completed", acceptance_verified: true,
+        completed_at: "2026-08-29T10:00:00.000Z" });
+      return { rows: [{ task_id: row.task_id }], rowCount: 1 };
+    }
+    throw new Error(`precommit_fake_query_unhandled:${q}`);
+  }
+}
+
+function fixture() {
+  const pool = new PrecommitPool();
+  pool.works.set(key("tenant-a", WORK_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, legacy_work_id: WORK_ID,
+    work_code: "NYRA-1", work_name: "Precommit", work_type: "software_git",
+    project_id: "nyra-core", owner_user_id: "owner", created_by_user_id: "owner",
+    assigned_user_ids: [], supervising_user_ids: [], agent_ids: [], visibility_scope: "private",
+    status: "ACTIVE", priority: "P2", priority_score: 300, progress_bp: 0,
+    acceptance_criteria: ["verified"], intent_digest: "1".repeat(64),
+  });
+  pool.tasks.set(key("tenant-a", TASK_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, task_id: TASK_ID,
+    title: "legacy title deliberately ignored", status: "planned", required: true,
+    acceptance_verified: false,
+  });
+  pool.evidence.set(key("tenant-a", LEGACY_EVIDENCE_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, evidence_id: LEGACY_EVIDENCE_ID,
+    kind: "legacy_required", digest: "5".repeat(64), required: true,
+    independently_verified: false,
+  });
+  pool.evidence.set(key("tenant-a", REPLACEMENT_EVIDENCE_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, evidence_id: REPLACEMENT_EVIDENCE_ID,
+    kind: "native_verifier_terminal_report", digest: "6".repeat(64), required: true,
+    independently_verified: true,
+  });
+  pool.nativeEvidence.set(key("tenant-a", REPLACEMENT_EVIDENCE_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, evidence_id: REPLACEMENT_EVIDENCE_ID,
+    evidence_digest: "6".repeat(64), plan_id: PLAN_ID,
+    task_id: "verifier-task", verifier_agent_id: "verifier-agent",
+    verifier_session_fingerprint: "b".repeat(64), report_digest: "a".repeat(64),
+    native_receipt_id: RECEIPT_ID, native_receipt_digest: RECEIPT_DIGEST,
+  });
+  pool.receipts.set(key("tenant-a", RECEIPT_ID), {
+    tenant_id: "tenant-a", work_id: WORK_ID, plan_id: PLAN_ID,
+    receipt_id: RECEIPT_ID, receipt_type: "agent_reported",
+    agent_id: "verifier-agent", payload: RECEIPT_PAYLOAD, payload_digest: RECEIPT_DIGEST,
+  });
+  const plan = { schema_version: "native_agent_plan_v1", tasks: [] };
+  pool.plans.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: PLAN_ID,
+    plan, plan_digest: digest(plan), status: "planned", plan_version: 1, supersedes_plan_id: null });
+  const evaluation = {
+    schema_version: "native_closure_evaluation_v1", closed: false,
+    commit_ticket_ready: true, execution_authorized: false,
+    precommit_verification: { ready: true, workspace_digest: WORKSPACE_DIGEST },
+  };
+  pool.evaluations.push({ tenant_id: "tenant-a", work_id: WORK_ID, plan_id: PLAN_ID,
+    evaluation_id: EVALUATION_ID, evaluation, evaluation_digest: digest(evaluation),
+    created_at: "2026-08-29T09:00:00.000Z" });
+  const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-29T10:00:00.000Z") });
+  const input = {
+    work_id: WORK_ID, task_id: TASK_ID, plan_id: PLAN_ID, evaluation_id: EVALUATION_ID,
+    evaluation_digest: digest(evaluation), workspace_digest: WORKSPACE_DIGEST,
+    mappings: [{ legacy_evidence_id: LEGACY_EVIDENCE_ID,
+      replacement_evidence_id: REPLACEMENT_EVIDENCE_ID,
+      native_receipt_id: RECEIPT_ID, native_receipt_digest: RECEIPT_DIGEST }],
+    idempotency_key: "precommit-reconcile-001",
+  };
+  return { pool, store, input };
+}
+
+function actionTicket(projectionDigest, overrides = {}) {
+  return { state: "issued", uses: 0, ticket: {
+    schema_version: "host_native_action_ticket_v1", ticket_id: `hnt_${"a".repeat(64)}`,
+    tenant_id: "tenant-a", work_id: WORK_ID, action: { kind: "git.commit" },
+    evidence_digest: projectionDigest, max_uses: 1, provider_execution: false,
+    host_policy_override: false, host_policy_must_allow: true,
+    signature: `hnt_${"b".repeat(64)}`, ...overrides,
+  } };
+}
+
+test("reconciles exact receipt-bound evidence idempotently without mutating closure evidence", async () => {
+  const { pool, store, input } = fixture();
+  const first = await store.reconcilePrecommitTicketGate(identity(), input);
+  assert.equal(first.schema_version, "precommit_ticket_gate_v1");
+  assert.equal(first.fresh, true);
+  assert.equal(first.idempotent_replay, false);
+  assert.deepEqual(first.legacy_evidence_ids, [LEGACY_EVIDENCE_ID]);
+  assert.deepEqual(first.replacement_evidence_ids, [REPLACEMENT_EVIDENCE_ID]);
+  assert.equal(pool.evidence.get(key("tenant-a", LEGACY_EVIDENCE_ID)).independently_verified, false,
+    "reconciliation must not weaken full closure evidence");
+  assert.equal(pool.tasks.get(key("tenant-a", TASK_ID)).status, "planned");
+  const replay = await store.reconcilePrecommitTicketGate(identity(), input);
+  assert.equal(replay.idempotent_replay, true);
+  assert.equal(replay.projection_digest, first.projection_digest);
+  assert.equal(pool.gates.size, 1);
+  assert.equal(pool.mappings.size, 1);
+});
+
+test("reconciliation fails closed across tenants and on receipt, evaluation or replacement substitution", async () => {
+  {
+    const { store, input } = fixture();
+    await assert.rejects(store.reconcilePrecommitTicketGate(identity("tenant-b"), input),
+      /tenant_work_not_found/);
+  }
+  for (const [name, mutate, expected] of [
+    ["receipt", (input) => { input.mappings[0].native_receipt_digest = "9".repeat(64); },
+      /precommit_reconcile_replacement_evidence_invalid/],
+    ["evaluation", (input) => { input.evaluation_digest = "9".repeat(64); },
+      /precommit_reconcile_evaluation_not_current/],
+    ["replacement", (input) => { input.mappings[0].replacement_evidence_id =
+      "99999999-9999-4999-8999-999999999999"; }, /precommit_reconcile_replacement_evidence_invalid/],
+  ]) {
+    const { store, input } = fixture();
+    mutate(input);
+    await assert.rejects(store.reconcilePrecommitTicketGate(identity(), input), expected, name);
+  }
+  {
+    const { pool, store, input } = fixture();
+    const receipt = pool.receipts.get(key("tenant-a", RECEIPT_ID));
+    receipt.payload = { ...receipt.payload, host_native: false };
+    receipt.payload_digest = digest(receipt.payload);
+    pool.nativeEvidence.get(key("tenant-a", REPLACEMENT_EVIDENCE_ID)).native_receipt_digest =
+      receipt.payload_digest;
+    input.mappings[0].native_receipt_digest = receipt.payload_digest;
+    await assert.rejects(store.reconcilePrecommitTicketGate(identity(), input),
+      /precommit_reconcile_replacement_evidence_invalid/);
+  }
+  {
+    const { pool, store, input } = fixture();
+    pool.evidence.get(key("tenant-a", REPLACEMENT_EVIDENCE_ID)).work_id =
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    await assert.rejects(store.reconcilePrecommitTicketGate(identity(), input),
+      /precommit_reconcile_replacement_evidence_invalid/);
+  }
+  const { store, input } = fixture();
+  await store.reconcilePrecommitTicketGate(identity(), input);
+  await assert.rejects(store.reconcilePrecommitTicketGate(identity(), {
+    ...input,
+    workspace_digest: "9".repeat(64),
+  }), /precommit_reconcile_replay_conflict/);
+});
+
+test("projection detects plan/evaluation drift and ticket fulfillment accepts only exact Core readback", async () => {
+  const { pool, store, input } = fixture();
+  const projection = await store.reconcilePrecommitTicketGate(identity(), input);
+  await assert.rejects(store.fulfillPrecommitTicketTask(identity(), {
+    work_id: WORK_ID,
+    gate_projection_digest: projection.projection_digest,
+    action_ticket: actionTicket("9".repeat(64)),
+  }), /precommit_ticket_fulfillment_readback_invalid/);
+  const fulfilled = await store.fulfillPrecommitTicketTask(identity(), {
+    work_id: WORK_ID,
+    gate_projection_digest: projection.projection_digest,
+    action_ticket: actionTicket(projection.projection_digest),
+  });
+  assert.equal(fulfilled.idempotent_replay, false);
+  assert.equal(pool.tasks.get(key("tenant-a", TASK_ID)).status, "completed");
+  assert.equal(pool.tasks.get(key("tenant-a", TASK_ID)).acceptance_verified, true);
+  const replay = await store.fulfillPrecommitTicketTask(identity(), {
+    work_id: WORK_ID,
+    gate_projection_digest: projection.projection_digest,
+    action_ticket: actionTicket(projection.projection_digest),
+  });
+  assert.equal(replay.idempotent_replay, true);
+  await assert.rejects(store.fulfillPrecommitTicketTask(identity(), {
+    work_id: WORK_ID,
+    gate_projection_digest: projection.projection_digest,
+    action_ticket: actionTicket(projection.projection_digest, { ticket_id: `hnt_${"c".repeat(64)}` }),
+  }), /precommit_ticket_fulfillment_replay_conflict/);
+
+  const drifted = fixture();
+  await drifted.store.reconcilePrecommitTicketGate(identity(), drifted.input);
+  const replacementPlan = { schema_version: "native_agent_plan_v1", tasks: [{ task_id: "new" }] };
+  drifted.pool.plans.push({ tenant_id: "tenant-a", work_id: WORK_ID,
+    plan_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", plan: replacementPlan,
+    plan_digest: digest(replacementPlan), status: "planned", plan_version: 2,
+    supersedes_plan_id: PLAN_ID });
+  const gate = await drifted.store.readPrecommitTicketGate(identity(), { work_id: WORK_ID });
+  assert.equal(gate.fresh, false);
+  assert(gate.drift_codes.includes("precommit_gate_plan_drift"));
+  assert(gate.drift_codes.includes("precommit_gate_supersession_drift"));
+});
+
+test("migration is additive, replay-safe and append-only", () => {
+  const directory = path.dirname(fileURLToPath(import.meta.url));
+  const migration = fs.readFileSync(path.join(directory,
+    "../migrations/20260829_precommit_ticket_reconciliation_v1.sql"), "utf8");
+  for (const table of [
+    "tenant_work_precommit_ticket_gate",
+    "tenant_work_precommit_evidence_reconciliation",
+    "tenant_work_precommit_ticket_fulfillment",
+  ]) assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
+  assert.match(migration, /BEFORE UPDATE OR DELETE[\s\S]*append_only/);
+  assert.match(migration, /20260829_precommit_ticket_reconciliation_v1'[\s\S]*ON CONFLICT DO NOTHING/);
+  assert.match(migration, /CHECK \(action_kind='git\.commit'\)/);
+  assert.match(migration, /CHECK \(gate_kind='ticket_acquisition'\)/);
+  assert.match(migration,
+    /FOREIGN KEY \(tenant_id, work_id, task_id\)[\s\S]*tenant_work_task\(tenant_id, work_id, task_id\)/);
+  assert.match(migration,
+    /FOREIGN KEY \(tenant_id, work_id, native_receipt_id\)[\s\S]*tenant_work_native_verifier_evidence\(tenant_id, work_id, native_receipt_id\)/);
+});

@@ -155,6 +155,7 @@ const hostNativeContinuityTools = new Set([
   "work_continuity_native_plan",
   "work_continuity_native_bind",
   "work_continuity_native_report",
+  "work_continuity_precommit_reconcile",
   "work_continuity_closure_evaluate",
   "work_continuity_closure_finalize",
 ]);
@@ -1280,18 +1281,27 @@ async function readNyraDirectiveContext(identity, args) {
       tenantWorkIdentity,
       { work_id: args.work_id },
     );
+    const precommitTicketGate = typeof workContinuityV2Store.readPrecommitTicketGate === "function"
+      ? await workContinuityV2Store.readPrecommitTicketGate(tenantWorkIdentity, {
+          work_id: args.work_id,
+        })
+      : null;
+    const withPrecommitGate = {
+      ...context,
+      precommit_ticket_gate: precommitTicketGate,
+    };
     const status = String(context?.work?.status || "").toUpperCase();
     if (["COMPLETED", "ARCHIVED"].includes(status) &&
         typeof workContinuityV2Store.verifyWorkClosure === "function") {
       return {
-        ...context,
+        ...withPrecommitGate,
         closure_verification: await workContinuityV2Store.verifyWorkClosure(
           tenantWorkIdentity,
           { work_id: args.work_id },
         ),
       };
     }
-    return context;
+    return withPrecommitGate;
   } catch (error) {
     // A legacy Work may not have a V2 projection for a non-admin reader yet.
     // Keep advisory work available, but leave every consequential ticket in
@@ -1418,6 +1428,10 @@ const nyraGovernedContinueHandler = nyraGovernedContinueAttestor
       resumeExistingWork: resumeExistingContinuityWork,
       createNativePlan: createNativeContinuityPlan,
       bindNativeChild: bindNativeContinuityChild,
+      fulfillPrecommitTicketTask: (request, identity) =>
+        workContinuityV2Store.fulfillPrecommitTicketTask(
+          withTenantWorkAcl(identity), request,
+        ),
       authorizeNativeCoordination: (request, identity) => {
         const actionType = request.operation === "create_native_plan"
           ? "native_agent.plan"
@@ -1812,6 +1826,42 @@ const baseHandlers = {
     work_continuity_native_plan: createNativeContinuityPlan,
     work_continuity_native_bind: bindNativeContinuityChild,
     work_continuity_native_report: continuityMethod("reportNativeAgent"),
+    work_continuity_precommit_ticket_gate_read: async (args, identity) =>
+      continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.readPrecommitTicketGate(
+          withTenantWorkAcl(identity), args,
+        ) }),
+    work_continuity_precommit_reconcile: async (args, identity) => {
+      const reconciliationRequestDigest = crypto.createHash("sha256")
+        .update(JSON.stringify(stableCanonical({
+          schema_version: "precommit_reconciliation_request_v1",
+          work_id: args.work_id,
+          task_id: args.task_id,
+          plan_id: args.plan_id,
+          evaluation_id: args.evaluation_id,
+          evaluation_digest: args.evaluation_digest,
+          workspace_digest: args.workspace_digest,
+          mappings: [...args.mappings].sort((left, right) =>
+            left.legacy_evidence_id.localeCompare(right.legacy_evidence_id)),
+        })))
+        .digest("hex");
+      await requireBoundedTenantCoordination(
+        identity,
+        "work.continuity.precommit.reconcile",
+        `precommit_reconcile:${args.work_id}:${reconciliationRequestDigest}`,
+        args.idempotency_key,
+      );
+      return continuityTextResult({ ok: true,
+        result: await workContinuityV2Store.reconcilePrecommitTicketGate(
+          withTenantWorkAcl(identity), args,
+        ),
+        dedicated_core_gate: {
+          authorized: true,
+          authority: "universal_core",
+          route: "/v1/action-evaluator",
+          server_owned: true,
+        } });
+    },
     work_continuity_closure_evaluate: async (args, identity) => {
       const evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
       if (evaluation.closed !== true) {
@@ -2100,6 +2150,7 @@ const NYRA_DIALOGUE_MATERIAL_CHANGE_TOOLS = new Set([
   "work_continuity_native_plan",
   "work_continuity_native_bind",
   "work_continuity_native_report",
+  "work_continuity_precommit_reconcile",
   "nyra_autopilot_reconcile",
   "nyra_work_assignment_claim",
   "nyra_work_assignment_submit",

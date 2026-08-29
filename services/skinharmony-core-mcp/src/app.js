@@ -981,17 +981,15 @@ export function resolveHostTransportPresence({
   identity,
   toolName,
   capabilityId,
+  operation,
   declaredSessionId,
   agentPresence,
   transportAgentPresence,
 } = {}) {
-  if (transportAgentPresence) {
-    return Object.freeze({
-      presence: transportAgentPresence,
-      binding_source: "transport",
-    });
-  }
   const membership = identity?.authenticatedTenantMembership;
+  const oauthNyraNativeCoordinatorCall =
+    toolName === "nyra_governed_continue" &&
+    ["create_native_plan", "bind_native_child"].includes(String(operation || ""));
   const oauthNativePlanCall =
     toolName === "work_continuity_native_plan" ||
     (toolName === "core_capability_invoke" && capabilityId === "work_continuity_native_plan");
@@ -1003,7 +1001,7 @@ export function resolveHostTransportPresence({
   const oauthDttBackedReadCall = toolName === "core_capability_read" &&
     DTT_BACKED_DYNAMIC_READ_CAPABILITIES.has(effectiveCapabilityId);
   const oauthLogicalSessionBound = Boolean(
-    (oauthNativePlanCall || oauthDttBackedReadCall) &&
+    (oauthNyraNativeCoordinatorCall || oauthNativePlanCall || oauthDttBackedReadCall) &&
     declaredSessionId &&
     agentPresence &&
     identity?.kind === "oauth" &&
@@ -1012,6 +1010,24 @@ export function resolveHostTransportPresence({
     membership?.tenant_id === identity?.tenantId &&
     membership?.role === "tenant_owner",
   );
+  // ChatGPT may invoke consecutive connector tools over different MCP
+  // transport sessions even though the owner supplied one stable logical
+  // coordinator session. Native plan creation and child binding must use that
+  // same authenticated logical presence or the plan becomes impossible to
+  // consume. Keep this exception exact: child reports and every non-native
+  // continuation still bind to the actual transport below.
+  if (oauthNyraNativeCoordinatorCall && oauthLogicalSessionBound) {
+    return Object.freeze({
+      presence: agentPresence,
+      binding_source: "oauth_declared_coordinator",
+    });
+  }
+  if (transportAgentPresence) {
+    return Object.freeze({
+      presence: transportAgentPresence,
+      binding_source: "transport",
+    });
+  }
   return Object.freeze({
     presence: oauthLogicalSessionBound ? agentPresence : null,
     binding_source: oauthLogicalSessionBound ? "oauth_declared" : null,
@@ -2551,6 +2567,7 @@ export function createApp(config, options = {}) {
           identity,
           toolName: tool.name,
           capabilityId: rawArgs.capability_id,
+          operation: rawArgs.operation,
           declaredSessionId,
           agentPresence,
           transportAgentPresence,

@@ -526,6 +526,42 @@ export const WORK_CONTINUITY_TOOLS = [
       "assignment_capability", "status", "report",
     ]),
     false, { ownerConfirmationRequired: false }),
+  tool("work_continuity_precommit_ticket_gate_read", "Read governed precommit ticket gate",
+    "Read the deterministic tenant/work-bound precommit ticket projection, including freshness and drift. It grants no execution authority.",
+    object({ work_id: uuid }, ["work_id"]), true),
+  tool("work_continuity_precommit_reconcile", "Reconcile legacy precommit evidence",
+    "Core-gated append-only reconciliation of exact legacy required evidence with receipt-bound native verifier evidence and one exact V2 ticket-acquisition task. Caller booleans, titles and backfill are never accepted.",
+    object({
+      work_id: uuid,
+      task_id: uuid,
+      plan_id: uuid,
+      evaluation_id: uuid,
+      evaluation_digest: hash,
+      workspace_digest: hash,
+      mappings: {
+        type: "array",
+        minItems: 1,
+        maxItems: 128,
+        items: object({
+          legacy_evidence_id: uuid,
+          replacement_evidence_id: uuid,
+          native_receipt_id: uuid,
+          native_receipt_digest: hash,
+        }, [
+          "legacy_evidence_id", "replacement_evidence_id",
+          "native_receipt_id", "native_receipt_digest",
+        ]),
+      },
+      idempotency_key: coordinationIdempotencyKey,
+    }, [
+      "work_id", "task_id", "plan_id", "evaluation_id",
+      "evaluation_digest", "workspace_digest", "mappings", "idempotency_key",
+    ]), false, {
+      ownerConfirmationRequired: false,
+      boundedCollaboration: true,
+      dedicatedCoreGate: true,
+      serverOwnedGovernance: true,
+    }),
   tool("work_continuity_closure_evaluate", "Evaluate independent closure",
     "Evaluate persisted native tasks and independently verified evidence, then request and persist an exact Universal Core Join before marking the work release-ready. Builder, verifier, checks and evidence are always derived server-side.",
     object({
