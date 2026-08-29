@@ -260,6 +260,10 @@ function publicNyraDialogue(value) {
   const gallery = work.gallery && typeof work.gallery === "object" ? work.gallery : {};
   const software = work.software && typeof work.software === "object" ? work.software : {};
   const diagnosis = dialogue.self_diagnosis && typeof dialogue.self_diagnosis === "object" ? dialogue.self_diagnosis : {};
+  const assignment = dialogue.assignment && typeof dialogue.assignment === "object" ? dialogue.assignment : {};
+  const assignmentId = boundedWorkId(assignment.assignment_id);
+  const assignmentRole = boundedPublicText(assignment.role, 80);
+  const assignmentState = boundedPublicText(assignment.state, 40);
   return Object.freeze({
     dialogue_id: boundedString(dialogue.dialogue_id, 80) || null,
     manual_digest: /^[a-f0-9]{64}$/.test(String(dialogue.manual?.digest || "")) ? dialogue.manual.digest : null,
@@ -271,6 +275,12 @@ function publicNyraDialogue(value) {
     atlas_revision: Number.isSafeInteger(Number(software.atlas_revision)) ? Number(software.atlas_revision) : null,
     diagnosis_state: boundedString(diagnosis.state, 80) || "unknown",
     next_action_available: true,
+    assignment: Object.freeze({
+      available: Boolean(assignmentId),
+      assignment_id: assignmentId,
+      role: assignmentRole,
+      state: assignmentState,
+    }),
   });
 }
 
@@ -1335,8 +1345,8 @@ function directiveReplySeed(locale, directive, workBound) {
   }
   if (directive.ticket_request.continuation?.available === true) {
     parts.push(english
-      ? "The authenticated host can now submit this exact candidate to Universal Core through Nyra's governed continuation tool."
-      : "L'host autenticato può ora sottoporre questo candidate esatto a Universal Core tramite la continuazione governata di Nyra.");
+      ? "Nyra can now continue this exact bounded request through Universal Core; the AI receives only its opaque continuation reference."
+      : "Nyra può ora proseguire questa richiesta bounded attraverso Universal Core; l’AI riceve solo il riferimento opaco di continuazione.");
   }
   if (directive.ticket_request.merge_policy === "MANUAL_ONLY") {
     parts.push(english
@@ -1499,7 +1509,7 @@ export function createNyraConverseHandler({
   interpret,
   readControlContext = null,
   readDirectiveContext = null,
-  issueContinuation = null,
+  openContinuation = null,
 } = {}) {
   if (typeof preflight !== "function" || typeof interpret !== "function") {
     throw new Error("nyra_converse_dependencies_invalid");
@@ -1653,23 +1663,23 @@ export function createNyraConverseHandler({
       workBootstrapRequestDigest,
     });
     let continuation = Object.freeze({
-      schema_version: "nyra_governed_continuation_v1",
+      schema_version: "nyra_continuation_ref_v1",
       available: false,
-      submit_tool: null,
-      candidate_attestation: null,
+      continuation_ref: null,
       expires_at: null,
-      reason: "continuation_signer_unavailable",
+      state: "UNAVAILABLE",
+      reason: "continuation_store_unavailable",
     });
-    if (typeof issueContinuation === "function") {
+    if (typeof openContinuation === "function") {
       try {
-        const candidate = issueContinuation({ identity, directive: baseDirective });
-        if (candidate?.schema_version === "nyra_governed_continuation_v1") {
-          continuation = candidate;
+        const reference = await openContinuation({ identity, directive: baseDirective });
+        if (reference?.schema_version === "nyra_continuation_ref_v1") {
+          continuation = reference;
         }
       } catch {
         continuation = Object.freeze({
           ...continuation,
-          reason: "continuation_attestation_failed",
+          reason: "continuation_open_failed",
         });
       }
     }

@@ -148,7 +148,7 @@ function assignmentSpecs(plan) {
   if (ids.has("release_operations")) add("release_prepare", "release_operations", "release_operations", "Prepara checklist di rilascio e rollback; non eseguire merge, deploy o pubblicazioni.", ["plan"]);
   if (ids.has("independent_verifier")) {
     const dependencies = specs.filter((item) => ["research", "execute", "release_prepare"].includes(item.key)).map((item) => item.key);
-    add("verify", "independent_verifier", "independent_verifier", "Verifica in modo indipendente evidenze, regressioni e limiti; non correggere né autorizzare azioni.", dependencies.length ? dependencies : ["plan"]);
+    add("verify", "independent_verifier", "independent_verifier", "Verifica in modo indipendente evidenze, regressioni e limiti; non correggere né autorizzare azioni. Per un verdetto approvato usa lo scope Work e il contratto di evidenza restituiti da Nyra al claim.", dependencies.length ? dependencies : ["plan"]);
   }
   return specs;
 }
@@ -431,7 +431,7 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         return { tenant_id: tenantId, work_id: workId, assignment: publicAssignment(updated.rows[0]), receipt, execution_authorized: false };
       });
     },
-    async submit(identity, input = {}) {
+    async submit(identity, input = {}, { validateSubmission = null } = {}) {
       const tenantId = tenant(identity?.tenantId);
       const workId = uuid(input.work_id, "work_id");
       const assignmentId = uuid(input.assignment_id, "assignment_id");
@@ -457,6 +457,22 @@ export function createNyraAutopilotRuntime(config = {}, { pool: suppliedPool, te
         }
         const serialized = JSON.stringify(guarded.value);
         if (Buffer.byteLength(serialized) > 100_000) throw new Error("nyra_assignment_result_too_large");
+        // The Runtime owns persistence, but Nyra's Work projection owns the
+        // semantic acceptance contract.  Invoke that server-supplied check
+        // before committing a verifier result so an invalid verdict cannot
+        // leave an irreversible `submitted` assignment behind.
+        if (typeof validateSubmission === "function") {
+          await validateSubmission({
+            tenant_id: tenantId,
+            work_id: workId,
+            assignment: {
+              ...publicAssignment(row),
+              claimed_agent_id: row.claimed_agent_id,
+              claimed_session_fingerprint: row.claimed_session_fingerprint,
+            },
+            result: guarded.value,
+          });
+        }
         const updated = await client.query(`UPDATE core_nyra_autopilot_assignments SET status='submitted',submitted_result=$4::jsonb,updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2 AND assignment_id=$3 RETURNING *`, [tenantId, workId, assignmentId, serialized]);
         const receipt = await appendReceipt(client, tenantId, workId, "nyra_assignment_submitted", { assignment_id: assignmentId,

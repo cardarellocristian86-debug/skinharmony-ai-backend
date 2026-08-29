@@ -29,6 +29,7 @@ test("Nyra control context is compact and carries only the next bounded action",
   assert.equal(context.schema_version, NYRA_CONTROL_CONTEXT_SCHEMA_VERSION);
   assert.equal(context.work_id, "11111111-1111-4111-8111-111111111111");
   assert.equal(context.assignment.role, "executor_specialist");
+  assert.equal(context.nyra_dialogue.assignment.assignment_id, "22222222-2222-4222-8222-222222222222");
   assert.equal(context.execution_authorized, false);
   assert.equal(context.nyra_dialogue.mode, "automatic_work_briefing");
   assert.equal(context.nyra_dialogue.persistent, true);

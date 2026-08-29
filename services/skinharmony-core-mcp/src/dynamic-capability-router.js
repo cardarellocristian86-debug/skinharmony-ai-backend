@@ -9,9 +9,18 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   // capability discovery made a new chat spend an avoidable read/tool turn
   // before it could receive its persisted Work briefing.
   "nyra_converse",
-  // The only conversational mutation surface. It consumes a signed Nyra
-  // candidate and is deliberately direct-only, never catalog-addressable.
-  "nyra_governed_continue",
+  // One explicit owner/Core-gated Nyra activation adopts existing active Work
+  // records. It is a Nyra control-plane operation, not a generic Core tool.
+  "nyra_autopilot_enable",
+  // The only conversational mutation surface. It consumes an opaque Nyra
+  // continuation reference and is deliberately direct-only, never
+  // catalog-addressable.
+  "nyra_continue",
+  // Nyra exposes these only after the durable dialogue has named one exact
+  // assignment. They are kept direct-only so the generic Core catalogue can
+  // never turn them into unbounded Work discovery or release tooling.
+  "nyra_work_assignment_claim",
+  "nyra_work_assignment_submit",
   "core_capability_catalog",
   "core_branch_registry",
   "core_semantic_select",

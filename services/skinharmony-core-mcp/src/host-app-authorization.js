@@ -220,8 +220,10 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
   // This is a tenant-wide configuration action, not a Work mutation.  Keep it
   // above the entity_360_ Work prefix so both direct and compact dynamic
   // invocation require the Core-wide grant.
-  if (name === "entity_360_shadow_enable") return HOST_APP_CAPABILITIES.CORE_OPERATE;
-  if (name === "nyra_governed_continue") {
+  if (name === "entity_360_shadow_enable" || name === "nyra_autopilot_enable") {
+    return HOST_APP_CAPABILITIES.CORE_OPERATE;
+  }
+  if (name === "nyra_continue") {
     return HOST_APP_CAPABILITIES.GOVERNED_CONTINUE;
   }
   if (name.startsWith("host_native_")) {
@@ -290,7 +292,7 @@ export function requireHostAppToolCapability({
   const required = requiredHostAppCapabilityForTool(toolName, args, tools);
   if (!required) return null;
   const requiredCapabilities = [required];
-  const governedOperationCapability = target === "nyra_governed_continue"
+  const governedOperationCapability = target === "nyra_continue"
     ? {
         review_work_bootstrap: HOST_APP_CAPABILITIES.WORK_CREATE,
         create_work: HOST_APP_CAPABILITIES.WORK_CREATE,

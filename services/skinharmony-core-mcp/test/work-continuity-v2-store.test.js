@@ -15,6 +15,7 @@ import {
   deriveLegacyFinalReportDigest,
   deriveAuthenticatedTenantWorkAcl,
   deriveTenantWorkClosureVerification,
+  normalizeNyraAutopilotVerificationResult,
   verifyGenericCoreJoinVerdict,
 } from "../src/work-continuity-v2-store.js";
 import { buildGenericClosureArtifacts } from "../src/work-continuity-v2.js";
@@ -51,6 +52,53 @@ test("V2 evidence identity uses only a server-bound native transport fingerprint
     },
   });
   assert.equal(unbound.session_fingerprint, "regular-session");
+});
+
+test("Nyra verification projects only an independently claimed verifier over every required Work task", () => {
+  const workId = "11111111-1111-4111-8111-111111111111";
+  const taskId = "22222222-2222-4222-8222-222222222222";
+  const sourceId = "33333333-3333-4333-8333-333333333333";
+  const verification = normalizeNyraAutopilotVerificationResult({
+    schema_version: "nyra_independent_verification_v1",
+    verdict: "approved",
+    summary: "Independent regression and scope checks passed.",
+    verified_work_task_ids: [taskId],
+    verified_assignment_ids: [sourceId],
+    evidence_refs: ["test:targeted-pass"],
+  }, {
+    workId,
+    requiredTaskIds: [taskId],
+    // The projector receives the durable Autopilot row, whose authoritative
+    // identity columns are named `claimed_*`, not the runtime-facing aliases.
+    verifier: { claimed_agent_id: "verifier-agent", claimed_session_fingerprint: "verifier-session" },
+    sourceAssignments: [{
+      assignment_id: sourceId,
+      role: "executor_specialist",
+      status: "submitted",
+      claimed_agent_id: "builder-agent",
+      claimed_session_fingerprint: "builder-session",
+    }],
+  });
+  assert.deepEqual(verification.verified_work_task_ids, [taskId]);
+  assert.throws(() => normalizeNyraAutopilotVerificationResult({
+    schema_version: "nyra_independent_verification_v1",
+    verdict: "approved",
+    summary: "Invalid self review.",
+    verified_work_task_ids: [taskId],
+    verified_assignment_ids: [sourceId],
+    evidence_refs: ["test:targeted-pass"],
+  }, {
+    workId,
+    requiredTaskIds: [taskId],
+    verifier: { agent_id: "builder-agent", session_fingerprint: "verifier-session" },
+    sourceAssignments: [{
+      assignment_id: sourceId,
+      role: "executor_specialist",
+      status: "submitted",
+      claimed_agent_id: "builder-agent",
+      claimed_session_fingerprint: "builder-session",
+    }],
+  }), /nyra_autopilot_verification_independence_required/);
 });
 
 function canonicalDigest(value) {

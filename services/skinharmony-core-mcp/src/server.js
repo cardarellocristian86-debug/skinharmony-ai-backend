@@ -100,9 +100,10 @@ import {
   requireHostAppToolCapability,
 } from "./host-app-authorization.js";
 import {
-  createNyraGovernedContinueAttestor,
+  createNyraContinuationOpener,
   createNyraGovernedContinueHandler,
 } from "./nyra-governed-continue.js";
+import { createNyraGovernedContinuationStore } from "./nyra-governed-continuation-store.js";
 import {
   bindWorkBootstrapRequestToAuthenticatedHost,
   governedWorkBootstrapAuthorizationTarget,
@@ -113,14 +114,6 @@ import {
 } from "./environment-delegation.js";
 
 const config = loadConfig();
-const nyraGovernedContinueAttestor =
-  config.nyraGovernedContinueEnabled === true &&
-  config.nyraGovernedContinueConfigurationValid === true &&
-  config.hostNativeAgentProtocolEnabled === true
-    ? createNyraGovernedContinueAttestor({
-        secret: config.nyraGovernedContinueSigningSecret,
-      })
-    : null;
 const policyRegistrySigner = createPolicyRegistrySigner();
 const nyraPolicyRegistrySigner = createPolicyRegistrySigner({
   prefix: "POLICY_REGISTRY_NYRA_SIGNER",
@@ -172,6 +165,23 @@ const primaryDatabasePool = config.databaseUrl
       max: config.databasePoolMax || 5,
     })
   : null;
+const nyraGovernedContinuationEnabled =
+  config.nyraGovernedContinueEnabled === true &&
+  config.nyraGovernedContinueConfigurationValid === true &&
+  config.hostNativeAgentProtocolEnabled === true;
+// A conversational continuation is intentionally unavailable without the
+// durable Core store. Falling back to an in-memory or self-contained token
+// would let an AI cross the Nyra/Core boundary without restart-safe replay
+// and tenant binding checks.
+const nyraGovernedContinuationStore = nyraGovernedContinuationEnabled && primaryDatabasePool
+  ? createNyraGovernedContinuationStore({
+      pool: primaryDatabasePool,
+      signingSecret: config.nyraGovernedContinueSigningSecret,
+    })
+  : null;
+const nyraContinuationOpener = nyraGovernedContinuationStore
+  ? createNyraContinuationOpener({ store: nyraGovernedContinuationStore })
+  : null;
 const postgresMajorVersionProbe = primaryDatabasePool
   ? createPostgresMajorVersionProbe({ pool: primaryDatabasePool })
   : null;
@@ -211,6 +221,9 @@ const startupReadiness = {
   decisionLedgerInitializationFailed: false,
   genericWorkCoreJoinStoreInitialized: false,
   genericWorkCoreJoinStoreInitializationFailed: false,
+  nyraContinuationStoreInitialized: !nyraGovernedContinuationEnabled,
+  nyraContinuationStoreInitializationFailed:
+    nyraGovernedContinuationEnabled && !nyraGovernedContinuationStore,
 };
 const workContinuityAutomation = workContinuityRuntime
   ? createWorkContinuityAutomation({ runtime: workContinuityRuntime })
@@ -253,6 +266,17 @@ if (config.decisionLedgerRequired === true && decisionLedger) {
     .catch(() => {
       startupReadiness.decisionLedgerInitializationFailed = true;
       console.error("[skinharmony-core-mcp] decision_ledger_initialization_failed");
+    });
+}
+if (nyraGovernedContinuationStore) {
+  void Promise.resolve()
+    .then(() => nyraGovernedContinuationStore.initialize())
+    .then(() => {
+      startupReadiness.nyraContinuationStoreInitialized = true;
+    })
+    .catch(() => {
+      startupReadiness.nyraContinuationStoreInitializationFailed = true;
+      console.error("[skinharmony-core-mcp] nyra_continuation_store_initialization_failed");
     });
 }
 const sharedMemoryBootstrap = createSharedMemoryBootstrap(cloudMemoryStore, { cacheTtlMs: 300_000 });
@@ -665,13 +689,33 @@ async function materializeNyraControlContext(identity, continuity, operation, {
       work_id: continuity.work_id,
       project_id: projectId,
     });
-    if (
+    const existingCurrent = Boolean(
       existing &&
       existing.nyra_dialogue?.schema_version === "nyra_dialogue_context_v1" &&
       existing.nyra_dialogue?.persistent === true &&
       (!expectedRevision || Number(existing.work_revision) === expectedRevision) &&
-      String(existing.next_action || "") === String(continuity.next_action || existing.next_action || "")
-    ) return existing;
+      String(existing.next_action || "") === String(continuity.next_action || existing.next_action || ""),
+    );
+    if (existingCurrent) {
+      // A Core-gated Autopilot activation adopts active Work asynchronously.
+      // On the next normal read, repair only a stale *empty* dialogue cache if
+      // the already-persisted Autopilot ledger has an assignment. This read
+      // path never enables Nyra, creates a run, mints a ticket, or plans a
+      // native host action.
+      const storedAssignmentId = existing.nyra_dialogue?.assignment?.assignment_id;
+      if (typeof storedAssignmentId === "string" && storedAssignmentId) return existing;
+      if (typeof nyraAutopilotRuntime?.readWork !== "function") return existing;
+      try {
+        const observed = await nyraAutopilotRuntime.readWork(identity, {
+          work_id: continuity.work_id,
+        });
+        if (!Array.isArray(observed.assignments) || !observed.assignments.some((assignment) =>
+          assignment?.status === "offered" || assignment?.status === "claimed")) return existing;
+        autopilot = observed;
+      } catch {
+        return existing;
+      }
+    }
   }
   const operational = typeof workContinuityRuntime.readNyraOperationalState === "function"
     ? await workContinuityRuntime.readNyraOperationalState(identity, {
@@ -682,9 +726,12 @@ async function materializeNyraControlContext(identity, continuity, operation, {
   projectId = projectId || operational?.project_id || null;
   if (!projectId) return null;
   // A material change (claim, submit, incident or Atlas update) must expose
-  // the actual current assignment. Read the local Autopilot ledger once;
-  // this is neither a Core call nor a model invocation.
-  if (!autopilot && typeof nyraAutopilotRuntime?.readWork === "function") {
+  // the actual current assignment. `reconcile` returns a planning summary,
+  // not Autopilot assignment rows, so a summary is not sufficient here.
+  // Read the local ledger once; this is neither a Core call nor a model
+  // invocation.
+  if ((!autopilot || !Array.isArray(autopilot.assignments)) &&
+      typeof nyraAutopilotRuntime?.readWork === "function") {
     try {
       autopilot = await nyraAutopilotRuntime.readWork(identity, {
         work_id: continuity.work_id,
@@ -763,7 +810,7 @@ async function ensureContinuity(identity, args, toolName, preflightResult, { res
         provider_execution: false,
         provider_api_key_required: false,
         host_policy_override: false,
-        compact_mcp_surface_size: 11,
+        compact_mcp_surface_size: 14,
       },
       next_action: `Continue ${toolName} through Nyra supervision and the Universal Core gate.`,
       host_type: host,
@@ -960,6 +1007,28 @@ async function reconcileNyraAutopilot(identity, work, triggerType) {
       execution_authorized: false,
     };
   }
+}
+
+// A canonical Work is not operational until Nyra has materialized (or
+// deterministically recovered) its bounded orchestration context.  Keep this
+// bridge next to Work creation so exact retries repair a crash between the
+// durable Work commit and the local Autopilot materialization without asking
+// the owner to recreate a Work or the connected AI to rediscover its steps.
+async function attachNyraWorkOrchestration(identity, result, operation) {
+  const work = result?.work?.work_id ? result.work : result;
+  if (!work?.work_id) return result;
+  const nyraAutopilot = await reconcileNyraAutopilot(identity, work, "work_created");
+  const nyraControlContext = await materializeNyraControlContext(
+    identity,
+    work,
+    operation,
+    { autopilot: nyraAutopilot, force: true },
+  );
+  return {
+    ...result,
+    ...(nyraAutopilot ? { nyra_autopilot: nyraAutopilot } : {}),
+    ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}),
+  };
 }
 
 function withTenantWorkAcl(identity) {
@@ -1162,7 +1231,7 @@ async function createCanonicalWorkGoverned(args, identity) {
       }
       return continuityTextResult({
         ok: true,
-        result: persisted,
+        result: await attachNyraWorkOrchestration(identity, persisted, "work_created_replay"),
         legacy_work_id: persisted.legacy_work_id,
         core_authorization_receipt: null,
         core_authorization_attempt_receipt: null,
@@ -1226,7 +1295,7 @@ async function createCanonicalWorkGoverned(args, identity) {
   });
   return continuityTextResult({
     ok: true,
-    result,
+    result: await attachNyraWorkOrchestration(identity, result, "work_created"),
     legacy_work_id: result.legacy_work_id,
     // Only a newly persisted creation owns the durable receipt. An exact
     // replay still has a fresh Core attempt decision, exposed separately,
@@ -1272,6 +1341,31 @@ async function readNyraDirectiveContext(identity, args) {
   }
 }
 
+async function nyraVerifierAssignmentScope(identity, assignment) {
+  if (assignment?.role !== "independent_verifier" || !assignment?.work_id) return null;
+  const context = await readNyraDirectiveContext(identity, { work_id: assignment.work_id });
+  const tasks = Array.isArray(context?.tasks) ? context.tasks
+    .filter((task) => task?.required !== false)
+    .map((task) => ({ task_id: task.task_id, title: task.title }))
+    .filter((task) => typeof task.task_id === "string" && typeof task.title === "string")
+    : [];
+  if (!tasks.length) return null;
+  return Object.freeze({
+    schema_version: "nyra_independent_verification_scope_v1",
+    work_id: assignment.work_id,
+    required_work_tasks: Object.freeze(tasks),
+    required_result: Object.freeze({
+      schema_version: "nyra_independent_verification_v1",
+      verdict: "approved",
+      required_fields: Object.freeze([
+        "schema_version", "verdict", "summary", "verified_work_task_ids",
+        "verified_assignment_ids", "evidence_refs",
+      ]),
+    }),
+    execution_authorized: false,
+  });
+}
+
 const nyraConverseHandler = createNyraConverseHandler({
   preflight: createNyraConversePreflight({
     workPreflight: (args, identity) => coreHandlers.work_preflight(args, identity),
@@ -1286,14 +1380,12 @@ const nyraConverseHandler = createNyraConverseHandler({
     return workContinuityRuntime.readControlContext(identity, args);
   },
   readDirectiveContext: readNyraDirectiveContext,
-  issueContinuation: nyraGovernedContinueAttestor
-    ? ({ identity, directive }) => nyraGovernedContinueAttestor.issue({ identity, directive })
-    : null,
+  openContinuation: nyraContinuationOpener,
 });
 
-const nyraGovernedContinueHandler = nyraGovernedContinueAttestor
+const nyraGovernedContinueHandler = nyraGovernedContinuationStore
   ? createNyraGovernedContinueHandler({
-      attestor: nyraGovernedContinueAttestor,
+      store: nyraGovernedContinuationStore,
       readDirectiveContext: readNyraDirectiveContext,
       normalizeDirectiveContext: normalizeNyraDirectiveContext,
       issueDelegation: (args, identity) => coreHandlers.host_native_delegation_issue(args, identity),
@@ -1307,7 +1399,7 @@ const baseHandlers = {
   ...nyraWorkAutomationHandlers,
   nyra_converse: nyraConverseHandler,
   ...(nyraGovernedContinueHandler
-    ? { nyra_governed_continue: nyraGovernedContinueHandler }
+    ? { nyra_continue: nyraGovernedContinueHandler }
     : {}),
   web_compatibility_manifest: async (_args, identity) => ({
     structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
@@ -1907,14 +1999,48 @@ const baseHandlers = {
     nyra_work_assignment_claim: async (args, identity) => {
       await requireBoundedTenantCoordination(identity, "nyra.assignment.claim", args.work_id);
       const result = await nyraAutopilotRuntime.claim(identity, args);
+      const nyraVerifierScope = await nyraVerifierAssignmentScope(identity, {
+        ...result.assignment,
+        work_id: result.work_id,
+      });
       const nyraControlContext = await materializeNyraControlContext(identity, result, "nyra_work_assignment_claim", { force: true });
-      return continuityTextResult({ ok: true, result: { ...result, ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}) } });
+      return continuityTextResult({ ok: true, result: {
+        ...result,
+        ...(nyraVerifierScope ? { nyra_verifier_scope: nyraVerifierScope } : {}),
+        ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}),
+      } });
     },
     nyra_work_assignment_submit: async (args, identity) => {
       await requireBoundedTenantCoordination(identity, "nyra.assignment.submit", args.work_id);
-      const result = await nyraAutopilotRuntime.submit(identity, args);
+      const result = await nyraAutopilotRuntime.submit(identity, args, {
+        validateSubmission: async ({ assignment, result: submittedResult }) => {
+          if (assignment?.role !== "independent_verifier" ||
+              typeof workContinuityV2Store?.validateNyraAutopilotVerificationCandidate !== "function") return;
+          await workContinuityV2Store.validateNyraAutopilotVerificationCandidate(
+            withTenantWorkAcl(identity),
+            {
+              work_id: args.work_id,
+              assignment_id: args.assignment_id,
+              assignment,
+              result: submittedResult,
+            },
+          );
+        },
+      });
+      const nyraWorkProjection = result.assignment?.role === "independent_verifier" &&
+          result.assignment?.status === "submitted" &&
+          typeof workContinuityV2Store?.projectNyraAutopilotVerification === "function"
+        ? await workContinuityV2Store.projectNyraAutopilotVerification(
+          withTenantWorkAcl(identity),
+          { work_id: args.work_id, assignment_id: args.assignment_id },
+        )
+        : null;
       const nyraControlContext = await materializeNyraControlContext(identity, result, "nyra_work_assignment_submit", { force: true });
-      return continuityTextResult({ ok: true, result: { ...result, ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}) } });
+      return continuityTextResult({ ok: true, result: {
+        ...result,
+        ...(nyraWorkProjection ? { nyra_work_projection: nyraWorkProjection } : {}),
+        ...(nyraControlContext ? { nyra_control_context: nyraControlContext } : {}),
+      } });
     },
   } : {}),
 };

@@ -268,31 +268,31 @@ test("governed continuation intersects wrapper, operation and supported-host cap
   const wrapperOnly = identity(["governed_continue"]);
   assert.throws(() => requireHostAppToolCapability({
     identity: wrapperOnly,
-    toolName: "nyra_governed_continue",
+    toolName: "nyra_continue",
     args: { operation: "review_work_bootstrap" },
     tools: TOOLS,
   }), /host_app_capability_required:work\.create/);
   assert.throws(() => requireHostAppToolCapability({
     identity: wrapperOnly,
-    toolName: "nyra_governed_continue",
+    toolName: "nyra_continue",
     args: { operation: "issue_delegation" },
     tools: TOOLS,
   }), /host_app_capability_required:host_native\.delegate/);
   assert.throws(() => requireHostAppToolCapability({
     identity: wrapperOnly,
-    toolName: "nyra_governed_continue",
+    toolName: "nyra_continue",
     args: { operation: "authorize_action" },
     tools: TOOLS,
   }), /host_app_capability_required:host_native\.authorize/);
   assert.throws(() => requireHostAppToolCapability({
     identity: identity(["governed_continue", "host_native.delegate"], "future_ai_native"),
-    toolName: "nyra_governed_continue",
+    toolName: "nyra_continue",
     args: { operation: "issue_delegation" },
     tools: TOOLS,
   }), /host_native_host_kind_not_supported/);
   assert.doesNotThrow(() => requireHostAppToolCapability({
     identity: identity(["governed_continue", "host_native.authorize"], "codex_native"),
-    toolName: "nyra_governed_continue",
+    toolName: "nyra_continue",
     args: { operation: "authorize_action" },
     tools: TOOLS,
   }));
