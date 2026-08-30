@@ -9,6 +9,9 @@ import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_SIGNAL_LENGTH = 500;
 const MAX_DIRECTIVE_ITEMS = 8;
+const MAX_WORK_SELECTION_PAGE_SIZE = MAX_DIRECTIVE_ITEMS;
+const MAX_WORK_SELECTION_CATALOG_SIZE = 100_000;
+const WORK_SELECTION_CURSOR_PATTERN = /^nws_([1-9][0-9]{0,4})$/u;
 const CONTINUATION_OPEN_TIMEOUT_MS = 1_500;
 const CORE_ACTION_ID_PATTERN = /^action:[a-zA-Z0-9][a-zA-Z0-9:._-]{0,158}$/;
 const PUBLIC_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
@@ -51,6 +54,15 @@ const PULL_REQUEST_PATTERN = /\b(?:pull\s+request|pr)\b/iu;
 const DEPLOY_PATTERN = /\b(?:deploy\w*|deployment|distribuisc\w*|distribuzion\w*)\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu;
 const PUBLISH_PATTERN = /\b(?:publish\w*|pubblic\w*|rilasci\w*|release)\b/iu;
 const WORK_BOOTSTRAP_PATTERN = /(?:\b(?:crea\w*|avvia\w*|apri\w*|create|start|open)\b.{0,80}\b(?:work|lavoro)\b|\b(?:work|lavoro)\b.{0,80}\b(?:nuov\w*|new)\b)/iu;
+// Work discovery is a read-only conversational operation.  It must be
+// recognized before preflight/continuity so that asking to choose a Work can
+// never resume, bind or mutate the Work that happens to be attached to the
+// current transport session.
+// Do not interpret a request about the current Work (for example its status
+// or tasks) as a request to enumerate the Gallery.  The prose route is only
+// for an explicit plural/option list or an explicit choice *among* Works;
+// callers can always use work_selection_mode: "list" for an unambiguous read.
+const WORK_SELECTION_LIST_PATTERN = /(?:\b(?:mostra(?:mi)?|elenca|lista|visualizza|vedi|show|list|view)\b[\s\S]{0,100}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b|\b(?:fammi\s+scegliere|let\s+me\s+choose|choose)\b[\s\S]{0,100}\b(?:tra|fra|among|between)\b[\s\S]{0,40}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b)/iu;
 const DIAGNOSTIC_REQUEST_PATTERN = /\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|explain\w*|causa(?:\s+radice)?|root\s+cause|cosa\s+(?:manca|serve))\b/iu;
 // A no-action boundary often lists the exact action words that Nyra must not
 // take.  Strip only that negative sentence.  A later affirmative sentence is
@@ -215,6 +227,17 @@ function boundedCount(value) {
   return Number.isSafeInteger(number) && number >= 0
     ? Math.min(number, 100_000)
     : 0;
+}
+
+function parseWorkSelectionCursor(value) {
+  if (value === undefined || value === null || value === "") return 0;
+  const match = typeof value === "string" ? WORK_SELECTION_CURSOR_PATTERN.exec(value) : null;
+  if (!match) throw fail("nyra_converse_work_selection_cursor_invalid");
+  const offset = Number(match[1]);
+  if (!Number.isSafeInteger(offset) || offset < 1 || offset >= MAX_WORK_SELECTION_CATALOG_SIZE) {
+    throw fail("nyra_converse_work_selection_cursor_invalid");
+  }
+  return offset;
 }
 
 function structured(result) {
@@ -671,8 +694,62 @@ function unavailableWorkDirectiveContext(work, dialogue) {
     pending_required_task_count: 0,
     required_evidence_count: 0,
     unverified_required_evidence_count: 0,
+    precommit_ticket_gate: null,
+    precommit_ticket_gate_applicable: false,
+    precommit_pending_required_task_count: 0,
+    precommit_unverified_required_evidence_count: 0,
     next_required_task: null,
     closure_verified: false,
+  });
+}
+
+function normalizePrecommitTicketGate(value, tenantId, workId) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw fail("nyra_converse_precommit_ticket_gate_invalid", 409);
+  }
+  const fields = [
+    "schema_version", "tenant_id", "work_id", "action_kind", "gate_kind",
+    "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
+    "supersession_digest", "reconciliation_digest", "legacy_evidence_ids",
+    "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
+    "projection_digest",
+  ];
+  if (Object.keys(value).sort().join("\0") !== fields.sort().join("\0") ||
+      value.schema_version !== "precommit_ticket_gate_v1" ||
+      value.tenant_id !== tenantId || boundedWorkId(value.work_id) !== workId ||
+      value.action_kind !== "git.commit" || value.gate_kind !== "ticket_acquisition" ||
+      !boundedWorkId(value.task_id) || !boundedWorkId(value.plan_id) ||
+      !boundedWorkId(value.evaluation_id) ||
+      ![value.evaluation_digest, value.workspace_digest, value.supersession_digest,
+        value.reconciliation_digest, value.projection_digest]
+        .every((item) => /^[a-f0-9]{64}$/.test(String(item || ""))) ||
+      !Array.isArray(value.legacy_evidence_ids) || !value.legacy_evidence_ids.length ||
+      value.legacy_evidence_ids.length > 128 ||
+      value.legacy_evidence_ids.some((item) => !boundedWorkId(item)) ||
+      new Set(value.legacy_evidence_ids).size !== value.legacy_evidence_ids.length ||
+      !Array.isArray(value.replacement_evidence_ids) ||
+      value.replacement_evidence_ids.length !== value.legacy_evidence_ids.length ||
+      value.replacement_evidence_ids.some((item) => !boundedWorkId(item)) ||
+      new Set(value.replacement_evidence_ids).size !== value.replacement_evidence_ids.length ||
+      typeof value.fulfilled !== "boolean" || typeof value.fresh !== "boolean" ||
+      !(value.ticket_id === null || (typeof value.ticket_id === "string" && value.ticket_id.length <= 160)) ||
+      !Array.isArray(value.drift_codes) || value.drift_codes.length > 16 ||
+      value.drift_codes.some((item) => typeof item !== "string" || !item || item.length > 160)) {
+    throw fail("nyra_converse_precommit_ticket_gate_invalid", 409);
+  }
+  const { projection_digest: projectionDigest, ...material } = value;
+  if (deterministicDigest(material) !== projectionDigest ||
+      (value.fresh && value.drift_codes.length > 0) ||
+      (!value.fresh && value.drift_codes.length === 0) ||
+      (value.fulfilled !== Boolean(value.ticket_id))) {
+    throw fail("nyra_converse_precommit_ticket_gate_invalid", 409);
+  }
+  return Object.freeze({
+    ...value,
+    legacy_evidence_ids: Object.freeze([...value.legacy_evidence_ids].sort()),
+    replacement_evidence_ids: Object.freeze([...value.replacement_evidence_ids].sort()),
+    drift_codes: Object.freeze([...value.drift_codes]),
   });
 }
 
@@ -766,6 +843,30 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
   ));
   const requiredEvidence = evidence.filter((item) => item.required);
   const unverifiedEvidence = requiredEvidence.filter((item) => !item.independently_verified);
+  const precommitTicketGate = normalizePrecommitTicketGate(
+    value.precommit_ticket_gate,
+    tenantId,
+    workBinding.work_id,
+  );
+  const pendingTaskIds = new Set(pendingRequiredTasks.map((item) => item.task_id));
+  const unverifiedEvidenceIds = new Set(unverifiedEvidence.map((item) => item.evidence_id));
+  const requiredVerifiedEvidenceIds = new Set(requiredEvidence
+    .filter((item) => item.independently_verified)
+    .map((item) => item.evidence_id));
+  const precommitTicketGateApplicable = Boolean(
+    precommitTicketGate?.fresh === true && precommitTicketGate.fulfilled === false &&
+    pendingTaskIds.has(precommitTicketGate.task_id) &&
+    precommitTicketGate.legacy_evidence_ids.every((id) => unverifiedEvidenceIds.has(id)) &&
+    precommitTicketGate.replacement_evidence_ids.every((id) => requiredVerifiedEvidenceIds.has(id))
+  );
+  const precommitPendingRequiredTasks = precommitTicketGateApplicable
+    ? pendingRequiredTasks.filter((item) => item.task_id !== precommitTicketGate.task_id)
+    : pendingRequiredTasks;
+  const mappedLegacyEvidenceIds = precommitTicketGateApplicable
+    ? new Set(precommitTicketGate.legacy_evidence_ids)
+    : new Set();
+  const precommitUnverifiedEvidence = unverifiedEvidence
+    .filter((item) => !mappedLegacyEvidenceIds.has(item.evidence_id));
   const closureProjection = value.closure_verification &&
     typeof value.closure_verification === "object" &&
     !Array.isArray(value.closure_verification)
@@ -813,6 +914,8 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
     acceptance_criteria_digests: acceptanceCriteria.map((item) => deterministicDigest(item)),
     tasks,
     evidence,
+    precommit_ticket_gate_projection_digest: precommitTicketGate?.projection_digest || null,
+    precommit_ticket_gate_applicable: precommitTicketGateApplicable,
     closure_verified: closureVerified,
     closure_verification_digest: closureVerified ? closureProjection.verification_digest : null,
   };
@@ -829,6 +932,10 @@ function requireWorkDirectiveContext(value, identity, workBinding, dialogue) {
     pending_required_task_count: pendingRequiredTasks.length,
     required_evidence_count: requiredEvidence.length,
     unverified_required_evidence_count: unverifiedEvidence.length,
+    precommit_ticket_gate: precommitTicketGate,
+    precommit_ticket_gate_applicable: precommitTicketGateApplicable,
+    precommit_pending_required_task_count: precommitPendingRequiredTasks.length,
+    precommit_unverified_required_evidence_count: precommitUnverifiedEvidence.length,
     next_required_task: pendingRequiredTasks[0]
       ? Object.freeze({
           task_id: pendingRequiredTasks[0].task_id,
@@ -884,6 +991,10 @@ function orchestrationDirective({
     ? workBootstrapCandidate
     : action.consequential_request_detected || interpretation.owner_confirmation_required;
   const mergeManual = action.action_class === "GIT_MERGE";
+  const commitPreflightGate = action.action_class === "GIT_COMMIT" &&
+    workContext.precommit_ticket_gate_applicable === true
+    ? workContext.precommit_ticket_gate
+    : null;
   const binding = Object.freeze({
     tenant_id: tenantId,
     work_id: work.work_id,
@@ -891,6 +1002,18 @@ function orchestrationDirective({
     work_revision: workContext.work_revision,
     intent_digest: workContext.intent_digest,
     context_digest: workContext.context_digest,
+    precommit_ticket_gate: commitPreflightGate
+      ? Object.freeze({
+          task_id: commitPreflightGate.task_id,
+          plan_id: commitPreflightGate.plan_id,
+          evaluation_id: commitPreflightGate.evaluation_id,
+          evaluation_digest: commitPreflightGate.evaluation_digest,
+          workspace_digest: commitPreflightGate.workspace_digest,
+          supersession_digest: commitPreflightGate.supersession_digest,
+          reconciliation_digest: commitPreflightGate.reconciliation_digest,
+          projection_digest: commitPreflightGate.projection_digest,
+        })
+      : null,
   });
 
   const prerequisiteCodes = [];
@@ -916,11 +1039,17 @@ function orchestrationDirective({
       if (workContext.available && workContext.required_task_count === 0) {
         prerequisite("required_work_tasks_missing");
       }
-      if (workContext.pending_required_task_count > 0) prerequisite("required_work_tasks_incomplete");
+      const pendingTaskCount = commitPreflightGate
+        ? workContext.precommit_pending_required_task_count
+        : workContext.pending_required_task_count;
+      if (pendingTaskCount > 0) prerequisite("required_work_tasks_incomplete");
       if (workContext.available && workContext.required_evidence_count === 0) {
         prerequisite("required_evidence_missing");
       }
-      if (workContext.unverified_required_evidence_count > 0) {
+      const unverifiedEvidenceCount = commitPreflightGate
+        ? workContext.precommit_unverified_required_evidence_count
+        : workContext.unverified_required_evidence_count;
+      if (unverifiedEvidenceCount > 0) {
         prerequisite("required_evidence_unverified");
       }
     }
@@ -1203,7 +1332,10 @@ function orchestrationDirective({
       recommendedAction, ticketRequired ? "BOUNDED_WORKSPACE" : "READ_ONLY", "READY",
       workContext.next_required_task ? [`task_${workContext.next_required_task.task_id}`] : []);
   }
-  if (coreMissingContext || workContext.unverified_required_evidence_count > 0 ||
+  const effectiveUnverifiedEvidenceCount = commitPreflightGate
+    ? workContext.precommit_unverified_required_evidence_count
+    : workContext.unverified_required_evidence_count;
+  if (coreMissingContext || effectiveUnverifiedEvidenceCount > 0 ||
       prerequisiteCodes.includes("required_evidence_missing")) {
     appendAction("HOST", "EVIDENCE", "collect_missing_evidence",
       "Raccogliere e collegare al Work le evidenze mancanti con verifica indipendente",
@@ -1250,7 +1382,9 @@ function orchestrationDirective({
     .slice(0, 16);
   const source = connectorHint.request_kind
     ? "LEGACY_CONNECTOR_HINT"
-    : interpretation.source === "persisted_work_context" ? "PERSISTED_WORK" : "FRESH_CORE";
+    : interpretation.source === "persisted_work_context" ? "PERSISTED_WORK"
+      : interpretation.source === "work_gallery" ? "WORK_GALLERY"
+        : "FRESH_CORE";
   const decision = Object.freeze({
     disposition,
     recommendation_authority: "NYRA",
@@ -1473,7 +1607,7 @@ function connectedAiBrief(locale, directive) {
   });
 }
 
-function turnId({ tenantId, sessionId, message, workId, projectId, locale, style }) {
+function turnId({ tenantId, sessionId, message, workId, projectId, locale, style, workSelectionCursor }) {
   const digest = crypto.createHash("sha256").update(JSON.stringify({
     tenantId,
     sessionId,
@@ -1482,6 +1616,7 @@ function turnId({ tenantId, sessionId, message, workId, projectId, locale, style
     projectId,
     locale,
     style,
+    workSelectionCursor,
   })).digest("hex");
   return `nyra_turn_${digest.slice(0, 24)}`;
 }
@@ -1503,6 +1638,337 @@ function textResult(payload) {
     // perform their own multi-tool investigation after a simple Nyra resume.
     content: [{ type: "text", text: contract.reply_seed }],
   };
+}
+
+function workSelectionRequested(args, message) {
+  if (boundedWorkId(args?.work_id) || args?.work_bootstrap !== undefined ||
+      args?.continuation_operation !== undefined) return false;
+  if (args?.work_selection_mode === "list") return true;
+  return WORK_SELECTION_LIST_PATTERN.test(String(message || ""));
+}
+
+function selectionIdentityBinding(identity) {
+  return Object.freeze({
+    authenticated: true,
+    tenant_bound: true,
+    principal_kind: normalizedIdentityKind(identity),
+    client_type: normalizedClientType(identity),
+    host_registered: identity.authenticatedHostPrincipal?.registered === true,
+    app_id: boundedString(identity.authenticatedHostPrincipal?.app_id, 64),
+    host_kind: boundedString(identity.authenticatedHostPrincipal?.host_kind, 80),
+    host_registry_revision: /^[a-f0-9]{64}$/.test(String(
+      identity.authenticatedHostPrincipal?.registry_revision || "",
+    )) ? identity.authenticatedHostPrincipal.registry_revision : null,
+    caller_authority_accepted: false,
+  });
+}
+
+function normalizeWorkSelectionChoices(value, requestedProjectId) {
+  if (!Array.isArray(value)) return Object.freeze([]);
+  const seen = new Set();
+  const choices = [];
+  for (const candidate of value) {
+    if (choices.length >= MAX_WORK_SELECTION_CATALOG_SIZE) break;
+    const workId = boundedWorkId(candidate?.work_id);
+    const projectId = boundedProjectId(candidate?.project_id);
+    if (!workId || !projectId || seen.has(workId) ||
+        (requestedProjectId && projectId !== requestedProjectId)) continue;
+    seen.add(workId);
+    const name = boundedPublicText(
+      candidate?.work_name || candidate?.name || candidate?.idea || candidate?.objective,
+      240,
+    ) || `Work ${choices.length + 1}`;
+    choices.push(Object.freeze({
+      work_id: workId,
+      project_id: projectId,
+      work_name: name,
+      status: boundedPublicText(candidate?.status, 40) || "unknown",
+    }));
+  }
+  return Object.freeze(choices);
+}
+
+function workSelectionDialogue(selection) {
+  const choiceCount = selection.total_count;
+  return Object.freeze({
+    dialogue_id: null,
+    manual_digest: null,
+    work_revision: null,
+    intent_digest: null,
+    checkpoint_available: false,
+    gallery_work_count: choiceCount,
+    software_state: "not_indexed",
+    atlas_revision: null,
+    diagnosis_state: selection.available
+      ? (choiceCount ? "work_selection_required" : "work_gallery_empty")
+      : "work_gallery_unavailable",
+    next_action_available: false,
+    assignment: Object.freeze({
+      available: false,
+      assignment_id: null,
+      role: null,
+      state: null,
+    }),
+  });
+}
+
+function workSelectionInterpretation() {
+  return Object.freeze({
+    source: "work_gallery",
+    core: Object.freeze({
+      mode: "off",
+      route: "V0",
+      authority: "V0",
+      parity_matched: null,
+      execution_allowed: false,
+    }),
+    selected_action_id: null,
+    selected_action: null,
+    selected_action_available: false,
+    core_state: "observe",
+    core_control: "observe",
+    risk_band: "low",
+    blocked_reasons: Object.freeze([]),
+    governance_diagnostics: Object.freeze({
+      state: "READY",
+      guard_mode: "normal",
+      causes: Object.freeze([]),
+    }),
+    unmet_conditions: Object.freeze([]),
+    evidence_requirements: Object.freeze([]),
+    allowed_alternatives: Object.freeze([]),
+    next_step: null,
+    runbook_candidate: null,
+    owner_confirmation_required: false,
+    dialogue_accepted: true,
+    opened_branch_count: 0,
+    memory: Object.freeze({
+      revision: 0,
+      relevant_count: 0,
+      handoff_count: 0,
+      recent_activity_count: 0,
+    }),
+  });
+}
+
+function workSelectionReplySeed(locale, selection) {
+  const english = locale === "en";
+  if (!selection.available) return english
+    ? "I cannot read the Work list right now. No Work was resumed or changed; retry this read-only request."
+    : "Non riesco a leggere ora la lista dei Work. Non ho ripreso né modificato alcun Work: riprova questa richiesta in sola lettura.";
+  if (selection.total_count === 0) return english
+    ? "There are no active Works available to select. No Work was resumed or changed."
+    : "Non ci sono Work attivi disponibili da selezionare. Non ho ripreso né modificato alcun Work.";
+  if (!selection.choices.length) return english
+    ? "There are no more Works on this page. No Work was resumed or changed."
+    : "Non ci sono altri Work in questa pagina. Non ho ripreso né modificato alcun Work.";
+  // Work metadata is rendered by the structured selector.  Never concatenate
+  // tenant-provided names here: eight valid 240-character names would exceed
+  // the response contract and would turn untrusted text into model narration.
+  const continuation = selection.has_more
+    ? (english ? " More choices are available on the next page." : " Ci sono altre scelte nella pagina successiva.")
+    : "";
+  return english
+    ? `Choose one of the ${selection.choices.length} displayed Works; I will not continue one automatically.${continuation}`
+    : `Scegli uno dei ${selection.choices.length} Work mostrati; non ne continuo nessuno automaticamente.${continuation}`;
+}
+
+async function readWorkSelection(listWorkChoices, identity, projectId, cursor) {
+  if (typeof listWorkChoices !== "function") {
+    return Object.freeze({
+      available: false,
+      choices: Object.freeze([]),
+      total_count: 0,
+      has_more: false,
+      next_cursor: null,
+    });
+  }
+  try {
+    const value = await listWorkChoices(identity, projectId ? { project_id: projectId } : {});
+    const allChoices = normalizeWorkSelectionChoices(value, projectId);
+    const offset = Math.min(cursor, allChoices.length);
+    const page = allChoices.slice(offset, offset + MAX_WORK_SELECTION_PAGE_SIZE)
+      .map((choice, index) => Object.freeze({
+        ...choice,
+        ordinal: offset + index + 1,
+      }));
+    const nextOffset = offset + page.length;
+    return Object.freeze({
+      available: true,
+      choices: Object.freeze(page),
+      total_count: allChoices.length,
+      has_more: nextOffset < allChoices.length,
+      next_cursor: nextOffset < allChoices.length ? `nws_${nextOffset}` : null,
+    });
+  } catch {
+    // A Gallery outage must not fall through to the resumptive preflight. The
+    // caller asked for a read-only choice, so retain that safety boundary.
+    return Object.freeze({
+      available: false,
+      choices: Object.freeze([]),
+      total_count: 0,
+      has_more: false,
+      next_cursor: null,
+    });
+  }
+}
+
+async function workSelectionResult({
+  identity,
+  tenantId,
+  sessionId,
+  message,
+  locale,
+  style,
+  projectId,
+  workSelectionCursor,
+  listWorkChoices,
+}) {
+  const selection = await readWorkSelection(
+    listWorkChoices,
+    identity,
+    projectId,
+    parseWorkSelectionCursor(workSelectionCursor),
+  );
+  const selectionRequired = selection.available && selection.choices.length > 0;
+  const work = Object.freeze({
+    preflight_bound: false,
+    work_bound: false,
+    work_id: null,
+    project_id: projectId,
+    state: selectionRequired ? "selection_required" : "unbound",
+    next_action: null,
+    next_action_available: false,
+    selection_required: selectionRequired,
+  });
+  const dialogue = workSelectionDialogue(selection);
+  const interpretation = workSelectionInterpretation();
+  const workContext = unavailableWorkDirectiveContext(work, dialogue);
+  // A Work gallery request is never reclassified from incidental words in the
+  // user's sentence or a stale connector capability: it is a read operation,
+  // not a ticket candidate.
+  const galleryConnectorHint = Object.freeze({ request_kind: null, capability_hint: null });
+  const action = actionPolicy("", galleryConnectorHint, false, false);
+  const baseDirective = orchestrationDirective({
+    tenantId,
+    message,
+    work,
+    dialogue,
+    workContext,
+    interpretation,
+    action,
+    connectorHint: galleryConnectorHint,
+  });
+  const directive = Object.freeze({
+    ...baseDirective,
+    ticket_request: Object.freeze({
+      ...baseDirective.ticket_request,
+      continuation: Object.freeze({
+        schema_version: "nyra_continuation_ref_v1",
+        available: false,
+        continuation_ref: null,
+        expires_at: null,
+        state: "UNAVAILABLE",
+        reason: "work_selection_read_only",
+      }),
+    }),
+  });
+  const replySeed = workSelectionReplySeed(locale, selection);
+  const nextAction = selectionRequired
+    ? (locale === "en" ? "Choose one Work in the selector." : "Scegli un Work nel selettore.")
+    : null;
+  const agentBrief = Object.freeze({
+    schema_version: "nyra_connected_ai_brief_v1",
+    state: "WAITING",
+    goal: nextAction || (locale === "en"
+      ? "Wait for a successful read-only Work list."
+      : "Attendere una lettura della lista Work riuscita."),
+    steps: Object.freeze([]),
+    expected_evidence: Object.freeze([]),
+    research_required: false,
+    external_action_authorized: false,
+  });
+  const id = turnId({
+    tenantId,
+    sessionId,
+    message,
+    workId: null,
+    projectId,
+    locale,
+    style,
+    workSelectionCursor: workSelectionCursor || null,
+  });
+  return textResult(Object.freeze({
+    schema_version: "nyra_conversation_turn_v2",
+    ok: true,
+    tenant_id: tenantId,
+    turn_id: id,
+    identity_binding: selectionIdentityBinding(identity),
+    work,
+    memory: Object.freeze({
+      loaded: false,
+      active_task_count: 0,
+      active_lock_count: 0,
+      artifact_count: 0,
+      ...interpretation.memory,
+      raw_memory_returned: false,
+    }),
+    interpretation: Object.freeze({
+      core: interpretation.core,
+      selected_action_id: interpretation.selected_action_id,
+      selected_action: interpretation.selected_action,
+      selected_action_available: interpretation.selected_action_available,
+      core_state: interpretation.core_state,
+      core_control: interpretation.core_control,
+      risk_band: interpretation.risk_band,
+      blocked_reasons: interpretation.blocked_reasons,
+      governance_diagnostics: interpretation.governance_diagnostics,
+      unmet_conditions: interpretation.unmet_conditions,
+      evidence_requirements: interpretation.evidence_requirements,
+      allowed_alternatives: interpretation.allowed_alternatives,
+      next_step: interpretation.next_step,
+      runbook_candidate: interpretation.runbook_candidate,
+      owner_confirmation_required: interpretation.owner_confirmation_required,
+      dialogue_accepted: interpretation.dialogue_accepted,
+      opened_branch_count: interpretation.opened_branch_count,
+    }),
+    nyra_dialogue: dialogue,
+    action_policy: action,
+    orchestration_directive: directive,
+    work_selection: Object.freeze({
+      schema_version: "nyra_work_selection_v1",
+      requested: true,
+      available: selection.available,
+      project_id: projectId,
+      choices: selection.choices,
+      total_count: selection.total_count,
+      has_more: selection.has_more,
+      next_cursor: selection.next_cursor,
+      selection_required: selectionRequired,
+      execution_authorized: false,
+      external_action_authorized: false,
+    }),
+    host_response_contract: Object.freeze({
+      speaker: "Nyra",
+      renderer: "nyra_widget_with_host_fallback",
+      response_language: responseLanguage(locale),
+      response_style: style,
+      reply_seed: replySeed,
+      next_action: nextAction,
+      connected_ai_brief: agentBrief,
+      rendering_policy: "server_orchestration_directive_first_v2",
+      instructions: Object.freeze([
+        "Render host_response_contract.reply_seed as Nyra's complete Work-selection answer before adding any optional explanation.",
+        "Wait for the owner to select one work_selection.choice; then call Nyra again with that exact work_id and project_id. Use work_selection.next_cursor only to read the next Gallery page. Do not list, resume, create, or mutate another Work.",
+        "Do not claim that Nyra, Codex, Core or the owner performed an action unless separately verified evidence is present; this turn never authorizes an external action.",
+      ]),
+    }),
+    execution_authorized: false,
+    external_action_authorized: false,
+    provider_execution: false,
+    provider_api_key_required: false,
+    server_model_calls: 0,
+  }));
 }
 
 // A fresh host session has no caller-owned work_id.  Nyra must not make the
@@ -1624,6 +2090,7 @@ export function createNyraConverseHandler({
   readControlContext = null,
   readDirectiveContext = null,
   openContinuation = null,
+  listWorkChoices = null,
 } = {}) {
   if (typeof preflight !== "function" || typeof interpret !== "function") {
     throw new Error("nyra_converse_dependencies_invalid");
@@ -1651,6 +2118,23 @@ export function createNyraConverseHandler({
       : "balanced";
     const sessionId = String(identity.agentPresence?.session_id || args.session_id || "").trim();
     if (!sessionId) throw fail("nyra_converse_session_required", 400);
+
+    // This branch is deliberately before persisted context, preflight and
+    // Core interpretation.  Choosing a Work is a Gallery read, never a
+    // request to attach the conversation session to a Work.
+    if (workSelectionRequested(args, message)) {
+      return workSelectionResult({
+        identity,
+        tenantId,
+        sessionId,
+        message,
+        locale,
+        style,
+        projectId: boundedProjectId(args.project_id),
+        workSelectionCursor: args.work_selection_cursor,
+        listWorkChoices,
+      });
+    }
 
     let persisted = null;
     if (

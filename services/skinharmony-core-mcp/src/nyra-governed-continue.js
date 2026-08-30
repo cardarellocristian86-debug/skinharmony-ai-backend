@@ -9,6 +9,7 @@ const READY_STATES = new Set(["READY_FOR_CORE_REVIEW", "MANUAL_ONLY"]);
 const WORK_BOOTSTRAP_STATE = "WORK_BOOTSTRAP_READY";
 const ACTION_KIND_BY_CLASS = Object.freeze({
   GIT_MERGE: new Set(["github.merge"]),
+  GIT_COMMIT: new Set(["git.commit"]),
   GIT_PUSH: new Set(["git.push.branch", "git.push.protected"]),
   PULL_REQUEST_OPEN: new Set(["github.draft_pr", "github.ready"]),
   DEPLOY: new Set(["render.deploy", "render.promote"]),
@@ -91,6 +92,67 @@ function ensureFreshWorkContext(context, payload) {
 
 function actionKindAllowed(actionClass, kind) {
   return ACTION_KIND_BY_CLASS[actionClass]?.has(String(kind || "")) === true;
+}
+
+function commitPrecommitGate(context, payload, request) {
+  const gate = context?.precommit_ticket_gate;
+  const hashes = [
+    gate?.evaluation_digest,
+    gate?.workspace_digest,
+    gate?.supersession_digest,
+    gate?.reconciliation_digest,
+    gate?.projection_digest,
+  ];
+  if (context?.precommit_ticket_gate_applicable !== true ||
+      gate?.schema_version !== "precommit_ticket_gate_v1" ||
+      gate.action_kind !== "git.commit" || gate.gate_kind !== "ticket_acquisition" ||
+      gate.fresh !== true || gate.fulfilled !== false ||
+      typeof gate.task_id !== "string" || typeof gate.plan_id !== "string" ||
+      typeof gate.evaluation_id !== "string" || hashes.some((value) => !SHA256.test(String(value || ""))) ||
+      !Array.isArray(gate.legacy_evidence_ids) || gate.legacy_evidence_ids.length < 1 ||
+      !Array.isArray(gate.replacement_evidence_ids) || gate.replacement_evidence_ids.length < 1 ||
+      request?.evidence_digest !== gate.projection_digest ||
+      payload?.action_class !== "GIT_COMMIT") {
+    fail("nyra_continue_precommit_evidence_mismatch", 409);
+  }
+  return gate;
+}
+
+function trustedIssuedCommitTicket(readback, payload, request, identity, gate, currentTime) {
+  const body = readback?.structuredContent;
+  const record = body?.action_ticket;
+  const ticket = record?.ticket;
+  const issuedAt = Date.parse(String(ticket?.issued_at || ""));
+  const expiresAt = Date.parse(String(ticket?.expires_at || ""));
+  const candidateIssuedAt = Date.parse(String(payload?.issued_at || ""));
+  const sessionFingerprint = String(identity?.agentPresence?.session_fingerprint || "").toLowerCase();
+  if (body?.ok !== true || body.tenant_id !== payload.tenant_id ||
+      !record || typeof record !== "object" || Array.isArray(record) ||
+      (record.schema_version !== undefined &&
+        record.schema_version !== "host_native_action_ticket_record_v1") ||
+      (record.tenant_id !== undefined && record.tenant_id !== payload.tenant_id) ||
+      record.state !== "issued" || record.uses !== 0 ||
+      !ticket || typeof ticket !== "object" || Array.isArray(ticket) ||
+      ticket.schema_version !== "host_native_action_ticket_v1" ||
+      !/^hnt_[a-f0-9]{64}$/.test(String(ticket.ticket_id || "")) ||
+      !/^hnt_[a-f0-9]{64}$/.test(String(ticket.signature || "")) ||
+      ticket.delegation_id !== request.delegation_id ||
+      ticket.tenant_id !== payload.tenant_id || ticket.work_id !== payload.work_id ||
+      ticket.intent_anchor_digest !== payload.intent_digest ||
+      ticket.repository !== request.repository || ticket.host_kind !== payload.host_kind ||
+      ticket.host_session_fingerprint !== sessionFingerprint ||
+      ticket.action?.kind !== "git.commit" || digest(ticket.action) !== digest(request.action) ||
+      ticket.evidence_digest !== gate.projection_digest ||
+      !Number.isFinite(currentTime) ||
+      !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) ||
+      !Number.isFinite(candidateIssuedAt) || issuedAt < candidateIssuedAt - 30_000 ||
+      issuedAt > currentTime + 30_000 || expiresAt <= currentTime || expiresAt <= issuedAt ||
+      expiresAt - issuedAt > 60 * 60_000 || ticket.max_uses !== 1 ||
+      ticket.provider_execution !== false || ticket.host_policy_override !== false ||
+      ticket.host_policy_must_allow !== true) {
+    fail("nyra_continue_commit_ticket_readback_invalid", 502);
+  }
+  return record;
 }
 
 function requestDigest(args) {
@@ -209,7 +271,8 @@ function nyraResult(payload, outcome, operation, replay = false) {
 
 export function createNyraGovernedContinueHandler({
   store, readDirectiveContext, normalizeDirectiveContext, issueDelegation,
-  authorizeAction, reviewWorkBootstrap, createWorkBootstrap,
+  authorizeAction, reviewWorkBootstrap, createWorkBootstrap, readActionTicket,
+  fulfillPrecommitTicketTask, now = () => Date.now(),
 } = {}) {
   if (!store || typeof store.claim !== "function" || typeof store.complete !== "function" ||
       typeof store.readCompletedOperation !== "function" || typeof readDirectiveContext !== "function" ||
@@ -279,6 +342,9 @@ export function createNyraGovernedContinueHandler({
             !actionKindAllowed(payload.action_class, request.action?.kind)) {
           fail("nyra_continue_action_binding_mismatch", 409);
         }
+        if (payload.action_class === "GIT_COMMIT") {
+          commitPrecommitGate(context, payload, request);
+        }
       }
     };
     const claim = await store.claim({ identity, continuation_ref: args.continuation_ref,
@@ -320,6 +386,9 @@ export function createNyraGovernedContinueHandler({
         intent_digest: payload.intent_digest };
       const context = normalizeDirectiveContext(await readDirectiveContext(identity, input), identity, input);
       ensureFreshWorkContext(context, payload);
+      const precommitGate = payload.action_class === "GIT_COMMIT" && args.operation === "authorize_action"
+        ? commitPrecommitGate(context, payload, args.action_request)
+        : null;
       if (!SUPPORTED_HOST_NATIVE_KINDS.has(authenticatedHostKind(identity))) fail("nyra_continue_host_kind_not_supported", 403);
       if (args.operation === "issue_delegation") {
         const request = args.delegation_request;
@@ -334,7 +403,41 @@ export function createNyraGovernedContinueHandler({
         if (!hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE) || !request || args.delegation_request !== undefined ||
             request.work_id !== payload.work_id || request.intent_anchor_digest !== payload.intent_digest ||
             !actionKindAllowed(payload.action_class, request.action?.kind)) fail("nyra_continue_action_binding_mismatch", 409);
-        outcome = coreOutcome(await authorizeAction({ ...request, idempotency_key: claim.idempotency_key }, identity));
+        const coreResult = await authorizeAction({
+          ...request,
+          idempotency_key: claim.idempotency_key,
+        }, identity);
+        if (precommitGate) {
+          const issuedRecord = coreResult?.structuredContent?.action_ticket;
+          const issuedTicket = issuedRecord?.ticket || issuedRecord?.action_ticket?.ticket;
+          const issuedTicketId = issuedTicket?.ticket_id;
+          if (!/^hnt_[a-f0-9]{64}$/.test(String(issuedTicketId || "")) ||
+              typeof readActionTicket !== "function") {
+            fail("nyra_continue_commit_ticket_readback_unavailable", 503);
+          }
+          const trustedReadback = await readActionTicket({ ticket_id: issuedTicketId }, identity);
+          const current = now();
+          const actionTicket = trustedIssuedCommitTicket(
+            trustedReadback,
+            payload,
+            request,
+            identity,
+            precommitGate,
+            current instanceof Date ? current.getTime() : Number(current),
+          );
+          if (actionTicket.ticket.ticket_id !== issuedTicketId) {
+            fail("nyra_continue_commit_ticket_readback_invalid", 502);
+          }
+          if (typeof fulfillPrecommitTicketTask !== "function") {
+            fail("nyra_continue_precommit_fulfillment_unavailable", 503);
+          }
+          await fulfillPrecommitTicketTask({
+            work_id: payload.work_id,
+            gate_projection_digest: precommitGate.projection_digest,
+            action_ticket: actionTicket,
+          }, identity);
+        }
+        outcome = coreOutcome(coreResult);
       } else fail("nyra_continue_operation_invalid", 409);
     }
     await store.complete({ identity, continuation_ref: args.continuation_ref, operation: args.operation,

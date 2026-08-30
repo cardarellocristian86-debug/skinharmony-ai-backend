@@ -752,7 +752,7 @@ function acceptanceContractIntegrityValid(contract) {
         criterion_digest: acceptanceCriterionDigest(criterion, contract.intent_digest),
       })),
     ];
-    return JSON.stringify(expected) === JSON.stringify(contract.criteria);
+    return digest(expected) === digest(contract.criteria);
   } catch {
     return false;
   }

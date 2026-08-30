@@ -817,6 +817,48 @@ const nyraDirectiveActionClass = {
     "DEPLOY", "PUBLISH", "WORK_BOOTSTRAP", "EXTERNAL_MUTATION", "TICKET_RESERVE",
   ],
 };
+const nyraPrecommitGateBinding = object({
+  task_id: { type: "string", format: "uuid" },
+  plan_id: { type: "string", format: "uuid" },
+  evaluation_id: { type: "string", format: "uuid" },
+  evaluation_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  workspace_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  supersession_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  reconciliation_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  projection_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+}, [
+  "task_id", "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
+  "supersession_digest", "reconciliation_digest", "projection_digest",
+]);
+const nyraPrecommitTicketGate = object({
+  schema_version: { const: "precommit_ticket_gate_v1" },
+  tenant_id: { type: "string", minLength: 1, maxLength: 160 },
+  work_id: { type: "string", format: "uuid" },
+  action_kind: { const: "git.commit" },
+  gate_kind: { const: "ticket_acquisition" },
+  task_id: { type: "string", format: "uuid" },
+  plan_id: { type: "string", format: "uuid" },
+  evaluation_id: { type: "string", format: "uuid" },
+  evaluation_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  workspace_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  supersession_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  reconciliation_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+  legacy_evidence_ids: { type: "array", minItems: 1, maxItems: 128, uniqueItems: true,
+    items: { type: "string", format: "uuid" } },
+  replacement_evidence_ids: { type: "array", minItems: 1, maxItems: 128, uniqueItems: true,
+    items: { type: "string", format: "uuid" } },
+  fulfilled: { type: "boolean" },
+  ticket_id: { type: ["string", "null"], maxLength: 160 },
+  fresh: { type: "boolean" },
+  drift_codes: { type: "array", maxItems: 16, uniqueItems: true, items: nyraDirectiveCode },
+  projection_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+}, [
+  "schema_version", "tenant_id", "work_id", "action_kind", "gate_kind", "task_id",
+  "plan_id", "evaluation_id", "evaluation_digest", "workspace_digest",
+  "supersession_digest", "reconciliation_digest", "legacy_evidence_ids",
+  "replacement_evidence_ids", "fulfilled", "ticket_id", "fresh", "drift_codes",
+  "projection_digest",
+]);
 const nyraDirectiveBinding = object({
   tenant_id: { type: "string", minLength: 1, maxLength: 160 },
   work_id: nyraConverseNullableText(80),
@@ -824,7 +866,9 @@ const nyraDirectiveBinding = object({
   work_revision: { type: ["integer", "null"], minimum: 1, maximum: 100_000 },
   intent_digest: nyraDirectiveDigest,
   context_digest: nyraDirectiveDigest,
-}, ["tenant_id", "work_id", "project_id", "work_revision", "intent_digest", "context_digest"]);
+  precommit_ticket_gate: { anyOf: [{ type: "null" }, nyraPrecommitGateBinding] },
+}, ["tenant_id", "work_id", "project_id", "work_revision", "intent_digest", "context_digest",
+  "precommit_ticket_gate"]);
 const nyraGovernedContinuationSchema = object({
   schema_version: { const: "nyra_continuation_ref_v1" },
   available: { type: "boolean" },
@@ -881,7 +925,7 @@ const nyraContinueBranch = { type: "string", minLength: 1, maxLength: 240 };
 const nyraContinueActionKind = {
   type: "string",
   enum: [
-    "git.push.branch", "git.push.protected", "github.draft_pr", "github.ready",
+    "git.commit", "git.push.branch", "git.push.protected", "github.draft_pr", "github.ready",
     "github.merge", "github.release", "render.deploy", "render.promote",
   ],
 };
@@ -992,7 +1036,7 @@ const nyraOrchestrationDirectiveSchema = object({
   schema_version: { const: "nyra_orchestration_directive_v1" },
   directive_id: { type: "string", pattern: "^nyra_dir_[a-f0-9]{24}$" },
   request_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
-  source: { type: "string", enum: ["PERSISTED_WORK", "FRESH_CORE", "LEGACY_CONNECTOR_HINT"] },
+  source: { type: "string", enum: ["PERSISTED_WORK", "FRESH_CORE", "WORK_GALLERY", "LEGACY_CONNECTOR_HINT"] },
   problem: {
     anyOf: [
       { type: "null" },
@@ -1079,6 +1123,10 @@ const nyraOrchestrationDirectiveSchema = object({
     pending_required_task_count: { type: "integer", minimum: 0, maximum: 64 },
     required_evidence_count: { type: "integer", minimum: 0, maximum: 128 },
     unverified_required_evidence_count: { type: "integer", minimum: 0, maximum: 128 },
+    precommit_ticket_gate: { anyOf: [{ type: "null" }, nyraPrecommitTicketGate] },
+    precommit_ticket_gate_applicable: { type: "boolean" },
+    precommit_pending_required_task_count: { type: "integer", minimum: 0, maximum: 64 },
+    precommit_unverified_required_evidence_count: { type: "integer", minimum: 0, maximum: 128 },
     next_required_task: {
       anyOf: [
         { type: "null" },
@@ -1094,7 +1142,9 @@ const nyraOrchestrationDirectiveSchema = object({
   }, [
     "available", "work_id", "project_id", "work_revision", "intent_digest", "context_digest",
     "status", "acceptance_criteria_count", "required_task_count", "pending_required_task_count",
-    "required_evidence_count", "unverified_required_evidence_count", "next_required_task", "closure_verified",
+    "required_evidence_count", "unverified_required_evidence_count", "precommit_ticket_gate",
+    "precommit_ticket_gate_applicable", "precommit_pending_required_task_count",
+    "precommit_unverified_required_evidence_count", "next_required_task", "closure_verified",
   ]),
   permitted_progress: {
     type: "array",
@@ -1156,7 +1206,9 @@ const nyraConverseOutputSchema = object({
     "app_id", "host_kind", "host_registry_revision", "caller_authority_accepted",
   ]),
   work: object({
-    preflight_bound: { const: true },
+    // A Gallery read happens before preflight by design: it deliberately does
+    // not attach, resume, or validate any canonical Work.
+    preflight_bound: { type: "boolean" },
     work_bound: { type: "boolean" },
     work_id: nyraConverseNullableText(80),
     project_id: nyraConverseNullableText(80),
@@ -1267,6 +1319,32 @@ const nyraConverseOutputSchema = object({
     "merge_requested", "ticket_reserve_requested", "work_bootstrap_requested",
     "work_bootstrap_spec_provided", "manual_owner_execution_requested", "mode", "classification_only",
     "external_action_authorized", "consequential_action_performed",
+  ]),
+  work_selection: object({
+    schema_version: { const: "nyra_work_selection_v1" },
+    requested: { const: true },
+    available: { type: "boolean" },
+    project_id: nyraConverseNullableText(80),
+    choices: {
+      type: "array",
+      maxItems: 8,
+      items: object({
+        ordinal: { type: "integer", minimum: 1, maximum: 100_000 },
+        work_id: { type: "string", format: "uuid" },
+        project_id: { type: "string", minLength: 2, maxLength: 80 },
+        work_name: { type: "string", minLength: 1, maxLength: 240 },
+        status: { type: "string", minLength: 1, maxLength: 40 },
+      }, ["ordinal", "work_id", "project_id", "work_name", "status"]),
+    },
+    total_count: { type: "integer", minimum: 0, maximum: 100_000 },
+    has_more: { type: "boolean" },
+    next_cursor: { type: ["string", "null"], pattern: "^nws_[1-9][0-9]{0,4}$", maxLength: 9 },
+    selection_required: { type: "boolean" },
+    execution_authorized: { const: false },
+    external_action_authorized: { const: false },
+  }, [
+    "schema_version", "requested", "available", "project_id", "choices", "total_count", "has_more", "next_cursor", "selection_required",
+    "execution_authorized", "external_action_authorized",
   ]),
   orchestration_directive: nyraOrchestrationDirectiveSchema,
   host_response_contract: object({
@@ -1390,6 +1468,8 @@ export const TOOLS = [
     project_id: identifier,
     work_bootstrap: nyraWorkBootstrapSpec,
     continuation_operation: nyraActionContinuationOperation,
+    work_selection_mode: { type: "string", enum: ["list"], description: "Read only: list Work choices without resuming, binding, creating, or changing a Work." },
+    work_selection_cursor: { type: "string", pattern: "^nws_[1-9][0-9]{0,4}$", maxLength: 9, description: "Read only: server-issued cursor for the next Work-selection page." },
     locale: { type: "string", enum: ["auto", "it", "en"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
   }, ["message"]), ["core:read"], true, true, {

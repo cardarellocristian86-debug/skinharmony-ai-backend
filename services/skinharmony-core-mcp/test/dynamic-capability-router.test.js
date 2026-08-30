@@ -1393,6 +1393,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "tenant_work_queue_create_v3",
     "tenant_work_open_review",
     "tenant_work_legacy_reconcile_close",
+    "work_continuity_precommit_reconcile",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
   ].includes(tool.name));
@@ -1416,6 +1417,7 @@ test("OAuth-owner continuity bootstrap capabilities use only their server-owned 
     "tenant_work_legacy_reconcile_close",
     "work_continuity_generic_core_join",
     "work_continuity_generic_closure_finalize",
+    "work_continuity_precommit_reconcile",
   ]);
   assert.equal(dedicatedContinuityTools.every((tool) =>
     tool._meta?.["skinharmony/serverOwnedGovernance"] === true &&

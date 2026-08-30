@@ -533,7 +533,8 @@ function connectorToolCandidate(value) {
 // Registered hosts select their declared interaction mode. In particular a
 // registered ChatGPT native-tooling principal must retain its capability-bound
 // Core surface instead of being relabelled as conversational by client type.
-function usesNyraConversationalSurface(identity) {
+function usesNyraConversationalSurface(identity, dialogueEnabled = true) {
+  if (dialogueEnabled !== true) return false;
   const mode = String(identity?.authenticatedHostPrincipal?.interaction_mode || "");
   if (mode) return mode === "nyra_conversational";
   // Public requests receive a principal from authentication. Keep direct
@@ -542,7 +543,7 @@ function usesNyraConversationalSurface(identity) {
   return identity?.kind === "oauth" && inferClientType(identity) === "chatgpt";
 }
 
-function filterToolsForClient(tools = [], identity) {
+function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
   const principal = identity?.authenticatedHostPrincipal;
   const mutationCapabilities = [
     HOST_APP_CAPABILITIES.CORE_OPERATE,
@@ -585,10 +586,10 @@ function filterToolsForClient(tools = [], identity) {
       tools,
     });
   });
-  if (!usesNyraConversationalSurface(identity)) return capabilityFiltered;
+  if (!usesNyraConversationalSurface(identity, dialogueEnabled)) return capabilityFiltered;
   return capabilityFiltered.filter((tool) => (
     NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES.has(tool.name) ||
-    (tool.name === "nyra_continue" &&
+    (["nyra_continue", "nyra_governed_continue"].includes(tool.name) &&
       hostPrincipalAllows(identity, HOST_APP_CAPABILITIES.GOVERNED_CONTINUE))
   ));
 }
@@ -601,8 +602,8 @@ function isStaleNyraReadToolName(value) {
   return CHATGPT_GOVERNED_READ_TOOL_NAMES.has(connectorToolCandidate(value));
 }
 
-function resolveStaleChatGptReadTool(value, identity, visibleTools = [], args = {}) {
-  if (!usesNyraConversationalSurface(identity)) return null;
+function resolveStaleChatGptReadTool(value, identity, visibleTools = [], args = {}, dialogueEnabled = true) {
+  if (!usesNyraConversationalSurface(identity, dialogueEnabled)) return null;
   const candidate = connectorToolCandidate(value);
   if (visibleTools.some((tool) => tool.name === candidate)) return null;
   // A stale generic Core descriptor must not reopen a direct Core path for a
@@ -691,6 +692,7 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   // This consumes the opaque, revision-bound continuation reference issued
   // by Nyra and re-reads the Work before using dedicated Core routes.
   "nyra_continue",
+  "nyra_governed_continue",
   "core_health",
   "nyra_branch_catalog",
   "core_capability_catalog",
@@ -965,6 +967,7 @@ function isAgentPresenceBootstrapCall(toolName, args = {}) {
 const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "core_capability_invoke",
   "nyra_continue",
+  "nyra_governed_continue",
   "host_native_delegation_issue",
   "host_native_delegation_revoke",
   ...POLICY_REGISTRY_LIFECYCLE_TOOLS,
@@ -996,17 +999,15 @@ export function resolveHostTransportPresence({
   identity,
   toolName,
   capabilityId,
+  operation,
   declaredSessionId,
   agentPresence,
   transportAgentPresence,
 } = {}) {
-  if (transportAgentPresence) {
-    return Object.freeze({
-      presence: transportAgentPresence,
-      binding_source: "transport",
-    });
-  }
   const membership = identity?.authenticatedTenantMembership;
+  const oauthNyraNativeCoordinatorCall =
+    toolName === "nyra_governed_continue" &&
+    ["create_native_plan", "bind_native_child"].includes(String(operation || ""));
   const oauthNativePlanCall =
     toolName === "work_continuity_native_plan" ||
     (toolName === "core_capability_invoke" && capabilityId === "work_continuity_native_plan");
@@ -1018,7 +1019,7 @@ export function resolveHostTransportPresence({
   const oauthDttBackedReadCall = toolName === "core_capability_read" &&
     DTT_BACKED_DYNAMIC_READ_CAPABILITIES.has(effectiveCapabilityId);
   const oauthLogicalSessionBound = Boolean(
-    (oauthNativePlanCall || oauthDttBackedReadCall) &&
+    (oauthNyraNativeCoordinatorCall || oauthNativePlanCall || oauthDttBackedReadCall) &&
     declaredSessionId &&
     agentPresence &&
     identity?.kind === "oauth" &&
@@ -1027,6 +1028,24 @@ export function resolveHostTransportPresence({
     membership?.tenant_id === identity?.tenantId &&
     membership?.role === "tenant_owner",
   );
+  // ChatGPT may invoke consecutive connector tools over different MCP
+  // transport sessions even though the owner supplied one stable logical
+  // coordinator session. Native plan creation and child binding must use that
+  // same authenticated logical presence or the plan becomes impossible to
+  // consume. Keep this exception exact: child reports and every non-native
+  // continuation still bind to the actual transport below.
+  if (oauthNyraNativeCoordinatorCall && oauthLogicalSessionBound) {
+    return Object.freeze({
+      presence: agentPresence,
+      binding_source: "oauth_declared_coordinator",
+    });
+  }
+  if (transportAgentPresence) {
+    return Object.freeze({
+      presence: transportAgentPresence,
+      binding_source: "transport",
+    });
+  }
   return Object.freeze({
     presence: oauthLogicalSessionBound ? agentPresence : null,
     binding_source: oauthLogicalSessionBound ? "oauth_declared" : null,
@@ -1048,7 +1067,7 @@ export function resolveMcpLogicalSession({
   transportSessionId = "",
   serverIssuedSessionId = "",
 } = {}) {
-  const continuationRebind = toolName === "nyra_continue" &&
+  const continuationRebind = ["nyra_continue", "nyra_governed_continue"].includes(toolName) &&
     Boolean(declaredSessionId) &&
     transportPresence?.session_id !== declaredSessionId;
   return Object.freeze({
@@ -1718,7 +1737,7 @@ function configureToolForRuntime(tool, config) {
   if (config.environmentRoutingRequired !== true ||
     POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name) ||
     tool.name === "nyra_converse" ||
-    tool.name === "nyra_continue") return tool;
+    ["nyra_continue", "nyra_governed_continue"].includes(tool.name)) return tool;
   return {
     ...tool,
     inputSchema: {
@@ -1936,7 +1955,7 @@ export function createApp(config, options = {}) {
         ? baseVisibleTools
         : baseVisibleTools.filter((tool) => !POLICY_REGISTRY_LIFECYCLE_TOOLS.has(tool.name));
     }
-    return filterToolsForClient(tools, identity);
+    return filterToolsForClient(tools, identity, config.nyraDialogueEnabled);
   }
   // A host can rotate the MCP transport between tool calls from one logical chat.
   // Keep the transport binding for anti-switch protection, while correlating the
@@ -2281,7 +2300,7 @@ export function createApp(config, options = {}) {
           forcePolicyProbe: POLICY_REGISTRY_LIFECYCLE_TOOLS.has(requestedBaseTool),
           identity,
         })
-      : filterToolsForClient(baseVisibleTools, identity);
+      : filterToolsForClient(baseVisibleTools, identity, config.nyraDialogueEnabled);
     let activeToolCall = null;
     let afterToolCallAttempted = false;
     try {
@@ -2334,6 +2353,7 @@ export function createApp(config, options = {}) {
           identity,
           requestVisibleTools,
           params.arguments || {},
+          config.nyraDialogueEnabled,
         );
         const staleNyraRead = !staleChatGptReadTool && isStaleNyraReadToolName(params.name) &&
           !requestVisibleTools.some((item) => item.name === "work_preflight") &&
@@ -2597,6 +2617,7 @@ export function createApp(config, options = {}) {
           identity,
           toolName: tool.name,
           capabilityId: rawArgs.capability_id,
+          operation: rawArgs.operation,
           declaredSessionId,
           agentPresence,
           transportAgentPresence,
