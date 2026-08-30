@@ -1346,6 +1346,55 @@ const nyraConverseOutputSchema = object({
     "schema_version", "requested", "available", "project_id", "choices", "total_count", "has_more", "next_cursor", "selection_required",
     "execution_authorized", "external_action_authorized",
   ]),
+  intent_routing: object({
+    route: object({
+      schema_version: { const: "nyra_intent_route_v1" },
+      intent: { type: "string", enum: ["chat", "analysis", "command_catalog", "work_create", "work_resume", "ticket_or_action", "ambiguous_consequential"] },
+      route: { type: "string", enum: ["CORE_CATALOG_READ", "CORE_CONTEXT_THEN_NYRA", "CORE_HOLD_THEN_NYRA"] },
+      clauses: { type: "array", maxItems: 8, items: object({
+        polarity: { type: "string", enum: ["positive", "negative"] },
+        modality: { type: "string", enum: ["asserted", "conditional", "hypothetical"] },
+        condition: { type: "boolean" }, quote_scope: { type: "boolean" },
+        action_candidates: { type: "array", maxItems: 10, uniqueItems: true, items: { type: "string", maxLength: 80 } },
+      }, ["polarity", "modality", "condition", "quote_scope", "action_candidates"]) },
+      input_digest: nyraDirectiveDigest,
+      execution_authorized: { const: false },
+    }, ["schema_version", "intent", "route", "clauses", "input_digest", "execution_authorized"]),
+    structured_context: object({
+      intent_available: { type: "boolean" }, icf_available: { const: false },
+      entity_360_available: { const: false },
+      ramy_state: { const: "unavailable_no_verified_adapter" },
+    }, ["intent_available", "icf_available", "entity_360_available", "ramy_state"]),
+    command_catalog: object({
+      state: { type: "string", enum: ["AVAILABLE", "UNAVAILABLE", "NOT_REQUESTED"] },
+      catalog_revision: nyraDirectiveDigest,
+      commands: { type: "array", maxItems: 24, items: object({
+        command_id: { type: "string", minLength: 2, maxLength: 160 },
+        access_mode: { type: "string", enum: ["read", "invoke"] },
+        owner_confirmation_required: { type: "boolean" },
+      }, ["command_id", "access_mode", "owner_confirmation_required"]) },
+      identity_filtered: { type: "boolean" }, truncated: { type: "boolean" },
+    }, ["state", "catalog_revision", "commands", "identity_filtered", "truncated"]),
+    command_proposal: {
+      ...object({
+        schema_version: { const: "nyra_command_proposal_v1" },
+        state: { type: "string", enum: ["EXACT_ELIGIBLE_ID", "PROPOSED", "CLARIFY_HOLD"] },
+        capability_id: nyraConverseNullableText(160), score: { type: "number", minimum: 0 },
+        margin: { type: "number", minimum: 0 }, execution_authorized: { const: false },
+        catalog_revision: nyraDirectiveDigest, route_input_digest: nyraDirectiveDigest,
+        proposal_digest: nyraDirectiveDigest,
+      }, ["schema_version", "state", "capability_id", "score", "margin", "execution_authorized", "catalog_revision", "route_input_digest", "proposal_digest"]),
+      type: ["object", "null"],
+    },
+    telemetry: object({
+      schema_version: { const: "nyra_intent_routing_telemetry_v1" },
+      preflight_invoked: { type: "boolean" },
+      visible_command_count: { type: "integer", minimum: 0, maximum: 24 },
+      elapsed_ms: { type: "integer", minimum: 0, maximum: 60000 },
+      raw_prompt_recorded: { const: false }, secret_material_recorded: { const: false },
+    }, ["schema_version", "preflight_invoked", "visible_command_count", "elapsed_ms", "raw_prompt_recorded", "secret_material_recorded"]),
+    invocation_separate: { const: true }, execution_authorized: { const: false },
+  }, ["route", "structured_context", "command_catalog", "command_proposal", "telemetry", "invocation_separate", "execution_authorized"]),
   orchestration_directive: nyraOrchestrationDirectiveSchema,
   host_response_contract: object({
     speaker: { const: "Nyra" },
@@ -1462,7 +1511,7 @@ export const TOOLS = [
     destructive: false,
   }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
-  tool("nyra_converse", "Nyra: resume or guide the current Work", "Use this as the first and only read tool when the user addresses Nyra or asks to resume, continue, understand, diagnose, or coordinate a Work. It is the conversational front door: the server performs authenticated preflight, binds one canonical Work, reads bounded Work tasks/evidence, and returns Nyra's problem, needs, ordered actors, progress disposition and revision-bound Universal Core ticket candidate. For a ready external action, select exactly one continuation operation: issue_delegation or authorize_action; that choice is signed and cannot be changed on another replica. Do not call a preflight, Gallery, branch registry, self-model read or capability catalog first. PREPARE_BOUNDED_WORK permits local analysis, tests and evidence but never an external mutation. Merge is always MANUAL_ONLY for the owner after the Core gate. Nyra never calls a provider model, accepts caller authority, issues a ticket, or authorizes or performs an external action.", object({
+  tool("nyra_converse", "Nyra: resume or guide the current Work", "Authenticated Nyra routing: read-only guidance and proposals; Core/owner-gated actions.", object({
     message: text(12_000),
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,

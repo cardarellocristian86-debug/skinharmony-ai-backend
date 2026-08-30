@@ -5,6 +5,14 @@ import {
   materializeGovernedWorkBootstrapRequest,
 } from "./work-bootstrap-contract.js";
 import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
+import {
+  buildNyraRoutingTelemetry,
+  classifyNyraIntent,
+  detectNyraConsequentialCategories,
+  publicNyraIntentRoute,
+  readAuthorizedNyraCommandCatalog,
+  resolveNyraCommandProposal,
+} from "./nyra-intent-router.js";
 
 const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_SIGNAL_LENGTH = 500;
@@ -30,20 +38,14 @@ const RESERVED_AUTHORITY_KEYS = new Set([
   "owner_id",
   "provider",
   "provider_id",
+  "work_preflight",
+  "nyra_intent_route",
+  "nyra_structured_context",
+  "icf_context",
+  "entity_360_context",
+  "ramy_context",
   "tenant",
   "tenant_id",
-]);
-
-// Mentioning production or live state is ordinary diagnostic context.  It is
-// not, by itself, a deploy request and must not force an architectural read
-// through the ticket path.
-const CONSEQUENTIAL_PATTERNS = Object.freeze([
-  ["release", /\b(?:deploy\w*|deployment|merge|push|publish\w*|release|distribuisc\w*|distribuzion\w*|pubblic\w*|rilasci\w*)\b|\b(?:porta\w*|metti\w*)\s+(?:\w+\s+){0,3}(?:live|in\s+produzione)\b/iu],
-  ["communication", /\b(?:send|email|message|notify|invia\w*|manda\w*|messaggi\w*|notific\w*)\b/iu],
-  ["destructive", /\b(?:delete|remove|destroy|elimina\w*|cancella\w*|distrugg\w*)\b/iu],
-  ["financial", /\b(?:pay|purchase|buy|refund|paga\w*|acquista\w*|rimborsa\w*)\b/iu],
-  ["scheduling", /\b(?:book|schedule|invite|prenota\w*|calendar\w*|invita\w*)\b/iu],
-  ["access", /\b(?:grant|revoke|permission|accesso|permess\w*|abilita\w*|revoca\w*)\b/iu],
 ]);
 
 const MANUAL_OWNER_ACTION_PATTERN = /\b(?:manual\w*|lo\s+faccio\s+io|faccio\s+io|owner\s+esegue|i(?:'|’)ll\s+do\s+it)\b/iu;
@@ -617,9 +619,7 @@ function actionPolicy(
   workBootstrapProvided = false,
 ) {
   const actionText = actionRelevantText(message);
-  const categories = CONSEQUENTIAL_PATTERNS
-    .filter(([, pattern]) => pattern.test(actionText))
-    .map(([category]) => category);
+  const categories = [...detectNyraConsequentialCategories(actionText)];
   const classifiedAction = requestedActionClass(message, connectorHint, workBootstrapProvided);
   if (classifiedAction === "GIT_COMMIT" && !categories.includes("release")) {
     categories.push("release");
@@ -1971,6 +1971,120 @@ async function workSelectionResult({
   }));
 }
 
+async function advisoryConversationResult({
+  args, identity, tenantId, sessionId, message, locale, style, route, readCommandCatalog,
+}) {
+  const projectId = boundedProjectId(args.project_id);
+  const work = Object.freeze({ preflight_bound: false, work_bound: false, work_id: null,
+    project_id: projectId, state: "unbound", next_action: null,
+    next_action_available: false, selection_required: false });
+  const dialogue = publicNyraDialogue({});
+  const interpretation = workSelectionInterpretation();
+  const action = actionPolicy("", { request_kind: null, capability_hint: null }, false, false);
+  const baseDirective = orchestrationDirective({ tenantId, message, work, dialogue,
+    workContext: unavailableWorkDirectiveContext(work, dialogue), interpretation, action,
+    connectorHint: { request_kind: null, capability_hint: null } });
+  const directive = Object.freeze({ ...baseDirective, ticket_request: Object.freeze({
+    ...baseDirective.ticket_request, continuation: Object.freeze({
+      schema_version: "nyra_continuation_ref_v1", available: false, continuation_ref: null,
+      expires_at: null, state: "UNAVAILABLE", reason: "catalog_read_only",
+    }),
+  }) });
+  let catalog = null;
+  let catalogError = null;
+  if (route.intent === "command_catalog") {
+    try {
+      catalog = await readAuthorizedNyraCommandCatalog({
+        reader: readCommandCatalog,
+        identity,
+        exactCapabilityId: route.reason === "exact_command_id_proposal" ? message.trim().slice(1) : null,
+      });
+    } catch {
+      catalogError = "authorized_catalog_unavailable";
+    }
+  }
+  const proposal = catalog ? resolveNyraCommandProposal({
+    message, catalog, route, tenantId,
+    workId: boundedWorkId(args.work_id),
+    sessionFingerprint: identity.agentPresence?.session_fingerprint,
+  }) : null;
+  const telemetry = buildNyraRoutingTelemetry({
+    route, preflightInvoked: false, context: null, catalog, elapsedMs: 0,
+  });
+  const replySeed = route.intent === "command_catalog"
+    ? catalog
+      ? `Ho letto ${catalog.commands.length} comandi visibili per questa identità. Ogni alias naturale resta una proposta: l'invocazione richiede una nuova revisione del catalogo e il relativo gate Core.`
+      : "Il catalogo autorizzato non è disponibile. Non ho eseguito fallback, preflight o azioni."
+    : "Questa è una richiesta advisory: posso analizzarla senza aprire preflight, ticket o azioni. Intent, ICF ed Entity360 saranno usati solo quando arrivano come riferimenti verificati; Ramy non è disponibile.";
+  return textResult(Object.freeze({
+    schema_version: "nyra_conversation_turn_v2", ok: true, tenant_id: tenantId,
+    turn_id: turnId({ tenantId, sessionId, message, workId: null, projectId, locale, style }),
+    identity_binding: selectionIdentityBinding(identity),
+    work,
+    memory: Object.freeze({ loaded: false, active_task_count: 0, active_lock_count: 0,
+      artifact_count: 0, ...interpretation.memory, raw_memory_returned: false }),
+    interpretation: Object.freeze({
+      core: interpretation.core, selected_action_id: null, selected_action: null,
+      selected_action_available: false, core_state: interpretation.core_state,
+      core_control: interpretation.core_control, risk_band: interpretation.risk_band,
+      blocked_reasons: interpretation.blocked_reasons,
+      governance_diagnostics: interpretation.governance_diagnostics,
+      unmet_conditions: interpretation.unmet_conditions,
+      evidence_requirements: interpretation.evidence_requirements,
+      allowed_alternatives: interpretation.allowed_alternatives,
+      next_step: null, runbook_candidate: null, owner_confirmation_required: false,
+      dialogue_accepted: true, opened_branch_count: 0,
+    }),
+    nyra_dialogue: dialogue,
+    action_policy: action,
+    orchestration_directive: directive,
+    intent_routing: Object.freeze({
+      route: publicNyraIntentRoute(route),
+      structured_context: Object.freeze({
+        intent_available: false,
+        icf_available: false,
+        entity_360_available: false,
+        ramy_state: "unavailable_no_verified_adapter",
+      }),
+      command_catalog: catalog ? Object.freeze({
+        state: "AVAILABLE",
+        catalog_revision: catalog.catalog_revision,
+        commands: catalog.commands,
+        identity_filtered: catalog.identity_filtered,
+        truncated: catalog.truncated,
+      }) : Object.freeze({
+        state: catalogError ? "UNAVAILABLE" : "NOT_REQUESTED",
+        catalog_revision: null,
+        commands: Object.freeze([]),
+        identity_filtered: false,
+        truncated: false,
+      }),
+      command_proposal: proposal,
+      telemetry,
+      invocation_separate: true,
+      execution_authorized: false,
+    }),
+    host_response_contract: Object.freeze({
+      speaker: "Nyra", renderer: "nyra_widget_with_host_fallback",
+      response_language: responseLanguage(locale), response_style: style,
+      reply_seed: replySeed,
+      next_action: null,
+      connected_ai_brief: Object.freeze({ schema_version: "nyra_connected_ai_brief_v1",
+        state: "WAITING", goal: "Presentare il catalogo bounded senza invocare comandi.",
+        steps: Object.freeze([]), expected_evidence: Object.freeze([]),
+        research_required: false, external_action_authorized: false }),
+      rendering_policy: "server_orchestration_directive_first_v2",
+      instructions: Object.freeze([
+        "Render reply_seed as advisory text. Never treat chat text as owner confirmation.",
+        "A command proposal is not an invocation. Re-read the authorized catalog and perform fresh Core preflight, owner confirmation and idempotency checks before any consequential invocation.",
+        "Do not claim that Nyra, Core, the owner, or any external system performed an action; this advisory turn authorizes none.",
+      ]),
+    }),
+    execution_authorized: false, external_action_authorized: false,
+    provider_execution: false, provider_api_key_required: false, server_model_calls: 0,
+  }));
+}
+
 // A fresh host session has no caller-owned work_id.  Nyra must not make the
 // connected AI enumerate the Gallery and guess: when the authenticated tenant
 // has exactly one operational Work, the server can safely and deterministically
@@ -2091,6 +2205,7 @@ export function createNyraConverseHandler({
   readDirectiveContext = null,
   openContinuation = null,
   listWorkChoices = null,
+  readCommandCatalog = null,
 } = {}) {
   if (typeof preflight !== "function" || typeof interpret !== "function") {
     throw new Error("nyra_converse_dependencies_invalid");
@@ -2133,6 +2248,23 @@ export function createNyraConverseHandler({
         projectId: boundedProjectId(args.project_id),
         workSelectionCursor: args.work_selection_cursor,
         listWorkChoices,
+      });
+    }
+
+    const intentRoute = classifyNyraIntent({
+      message,
+      workBootstrap: args.work_bootstrap !== undefined,
+      tenantId,
+      workId: boundedWorkId(args.work_id),
+      sessionFingerprint: identity.agentPresence?.session_fingerprint,
+    });
+    if (intentRoute.route === "CORE_CATALOG_READ") {
+      if (continuationOperation !== null) {
+        throw fail("nyra_converse_continuation_operation_not_applicable");
+      }
+      return advisoryConversationResult({
+        args, identity, tenantId, sessionId, message, locale, style,
+        route: intentRoute, readCommandCatalog,
       });
     }
 
@@ -2213,6 +2345,9 @@ export function createNyraConverseHandler({
         message,
         session_id: sessionId,
         ...(boundedPreflight.work.project_id ? { project_id: boundedPreflight.work.project_id } : {}),
+        // The server-issued preflight is forwarded byte-semantically. Routing
+        // metadata is local advisory evidence and never alters this signed
+        // Core authority envelope.
         work_preflight: boundedPreflight.serverIssuedWorkPreflight,
         response_mode: "fast",
         available_capabilities: ["nyra_converse", "skinharmony_core_mcp"],
@@ -2222,6 +2357,26 @@ export function createNyraConverseHandler({
         ...interpretation,
         source: "fresh_core_interpretation",
       });
+      if (intentRoute.intent === "ambiguous_consequential") {
+        interpretation = Object.freeze({
+          ...interpretation,
+          selected_action_id: null,
+          selected_action: null,
+          selected_action_available: false,
+          core_control: "confirm",
+          owner_confirmation_required: true,
+          governance_diagnostics: Object.freeze({
+            state: "CONFIRMATION_REQUIRED",
+            guard_mode: "confirmation_required",
+            causes: Object.freeze([Object.freeze({
+              code: "intent_clarification_required",
+              component: "OWNER",
+              state: "CONFIRMATION_REQUIRED",
+              remediation: "Separare una sola azione esplicita, non condizionale e non citata; quindi ottenere conferma owner sul target esatto.",
+            })]),
+          }),
+        });
+      }
     }
     let workContext = unavailableWorkDirectiveContext(
       boundedPreflight.work,
@@ -2250,24 +2405,32 @@ export function createNyraConverseHandler({
       });
       workBootstrapRequestDigest = governedWorkBootstrapDigest(workBootstrapRequest);
     }
+    const advisoryOnly = intentRoute.reason === "explicit_read_only_boundary";
     const action = actionPolicy(
-      message,
+      advisoryOnly ? "" : message,
       connectorHint,
-      interpretation.owner_confirmation_required,
+      advisoryOnly ? false : interpretation.owner_confirmation_required,
       args.work_bootstrap !== undefined,
     );
     if (continuationOperation !== null &&
-        (action.work_bootstrap_requested || !action.consequential_request_detected)) {
+        (intentRoute.route === "CORE_HOLD_THEN_NYRA" ||
+          action.work_bootstrap_requested || !action.consequential_request_detected)) {
       throw fail("nyra_converse_continuation_operation_not_applicable");
     }
+    const directiveAction = intentRoute.route === "CORE_HOLD_THEN_NYRA"
+      ? actionPolicy("", connectorHint, false, false)
+      : action;
+    const directiveInterpretation = intentRoute.route === "CORE_HOLD_THEN_NYRA"
+      ? Object.freeze({ ...interpretation, owner_confirmation_required: false })
+      : interpretation;
     const baseDirective = orchestrationDirective({
       tenantId,
       message,
       work: boundedPreflight.work,
       dialogue: boundedPreflight.dialogue,
       workContext,
-      interpretation,
-      action,
+      interpretation: directiveInterpretation,
+      action: directiveAction,
       connectorHint,
       workBootstrapRequestDigest,
       continuationOperation,
@@ -2280,7 +2443,9 @@ export function createNyraConverseHandler({
       state: "UNAVAILABLE",
       reason: "continuation_store_unavailable",
     });
-    if (typeof openContinuation === "function") {
+    const continuationEligible = intentRoute.intent === "work_create" ||
+      (intentRoute.intent === "ticket_or_action" && action.action_class !== "EXTERNAL_MUTATION");
+    if (continuationEligible && typeof openContinuation === "function") {
       try {
         const reference = await boundedContinuationOpen(openContinuation({ identity, directive: baseDirective }));
         if (reference?.schema_version === "nyra_continuation_ref_v1") {
@@ -2322,6 +2487,23 @@ export function createNyraConverseHandler({
       "Follow host_response_contract.connected_ai_brief as the complete server-issued task brief: execute only its ordered steps, return only its expected evidence, and never research or invent missing steps.",
       "Do not claim that Nyra, Codex, Core or the owner performed an action unless separately verified evidence is present; this turn never authorizes an external action.",
     ];
+    const localRouting = Object.freeze({
+      route: publicNyraIntentRoute(intentRoute),
+      structured_context: Object.freeze({
+        intent_available: Boolean(boundedPreflight.dialogue.intent_digest),
+        icf_available: false,
+        entity_360_available: false,
+        ramy_state: "unavailable_no_verified_adapter",
+      }),
+      command_catalog: Object.freeze({ state: "NOT_REQUESTED", catalog_revision: null,
+        commands: Object.freeze([]), identity_filtered: false, truncated: false }),
+      command_proposal: null,
+      telemetry: buildNyraRoutingTelemetry({ route: intentRoute, preflightInvoked: !persisted,
+        context: { intent: { available: Boolean(boundedPreflight.dialogue.intent_digest), variants: [] } },
+        catalog: null, elapsedMs: 0 }),
+      invocation_separate: true,
+      execution_authorized: false,
+    });
     return textResult(Object.freeze({
       schema_version: "nyra_conversation_turn_v2",
       ok: true,
@@ -2368,6 +2550,7 @@ export function createNyraConverseHandler({
       nyra_dialogue: boundedPreflight.dialogue,
       action_policy: action,
       orchestration_directive: directive,
+      intent_routing: localRouting,
       host_response_contract: Object.freeze({
         speaker: "Nyra",
         renderer: "nyra_widget_with_host_fallback",
