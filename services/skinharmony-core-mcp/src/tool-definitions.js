@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 35387)
-Total output lines: 2193
-
 import { NYRA_DIALOGUE_WIDGET_URI } from "./nyra-operating-dialogue-widget.js";
 import { WORK_CONTINUITY_TOOLS } from "./work-continuity-tools.js";
 
@@ -1358,7 +1355,278 @@ const nyraConverseOutputSchema = object({
   dynamic_capability: { type: "object", additionalProperties: true },
 }, [
   "schema_version", "ok", "tenant_id", "turn_id", "identity_binding", "work", "memory",
-  "interpretation", "nyra_dialogue", "action_policy", "orchestra…5387 tokens truncated…hrough the tenant Core policy engine. It returns mediation only and authorizes no execution.", object({
+  "interpretation", "nyra_dialogue", "action_policy", "orchestration_directive",
+  "host_response_contract", "execution_authorized",
+  "external_action_authorized", "provider_execution", "provider_api_key_required", "server_model_calls",
+]);
+
+const nyraControlRoomActionSchema = object({
+  id: { type: "string", minLength: 1, maxLength: 120 },
+  availability: { type: "string", enum: ["AVAILABLE", "REQUEST_ONLY", "EXISTING_GOVERNED_HANDLER"] },
+  execution: { type: "string", enum: ["READ_ONLY", "DEPLOYMENT_CONFIGURATION", "REQUEST_BOUND_GOVERNED"] },
+  requires_owner_confirmation: { type: "boolean" },
+  requires_core_authorization: { type: "boolean" },
+  restart_required: { type: "boolean" },
+  handler: { type: ["string", "null"], maxLength: 160 },
+}, [
+  "id", "availability", "execution", "requires_owner_confirmation",
+  "requires_core_authorization", "restart_required", "handler",
+]);
+
+const nyraControlRoomProgressSchema = object({
+  available: { type: "boolean" },
+  percent: { type: ["integer", "null"], minimum: 0, maximum: 100 },
+  formula: { type: "string", minLength: 1, maxLength: 240 },
+  blockers: {
+    type: "array", maxItems: 8,
+    items: object({ code: identifier, count: { type: "integer", minimum: 1, maximum: 100_000 } }, ["code", "count"]),
+  },
+  next_action: { type: ["object", "null"], additionalProperties: true },
+  closure_verified: { type: ["boolean", "null"] },
+}, ["available", "percent", "formula", "blockers", "next_action"]);
+
+const nyraControlRoomOutputSchema = object({
+  ok: { type: "boolean" },
+  tenant_id: { type: "string", minLength: 1, maxLength: 160 },
+  control_room: object({
+    schema_version: { const: "nyra_control_room_status_v1" },
+    state: { type: "string", enum: ["READY", "ATTENTION", "UNKNOWN"] },
+    generated_from: { const: "server_readbacks_only" },
+    domains: {
+      type: "array", minItems: 1, maxItems: 16,
+      items: object({
+        id: identifier,
+        state: { type: "string", minLength: 1, maxLength: 80 },
+        detail: { type: "object", additionalProperties: true },
+        allowed_actions: { type: "array", maxItems: 12, items: nyraControlRoomActionSchema },
+      }, ["id", "state", "detail", "allowed_actions"]),
+    },
+    work_progress: nyraControlRoomProgressSchema,
+  }, ["schema_version", "state", "generated_from", "domains", "work_progress"]),
+}, ["ok", "tenant_id", "control_room"]);
+
+export const TOOLS = [
+  tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
+  tool("nyra_control_room_status", "Read Nyra Control Room status", "Read server-derived status for Core domains and, when an exact Work is provided, its closure progress, blockers, next action and allowed control categories. This read never mutates state or grants authority.", object({
+    work_id: { type: "string", format: "uuid" },
+    project_id: identifier,
+  }), [], ["core:read"], true, true, { outputSchema: nyraControlRoomOutputSchema }),
+  tool("core_runtime_hierarchy_status", "Read Universal Core runtime hierarchy", "Use this when you need the live V7/V0/V1/V2 hierarchy mode and worker status. It is tenant-scoped, read-only and never authorizes execution.", object(), ["core:read"], true, true, { outputSchema: { type: "object", properties: { ok: { type: "boolean" }, tenant_id: { type: "string" }, runtime: { type: "object", additionalProperties: true } }, required: ["ok", "tenant_id"], additionalProperties: true } }),
+  tool("core_runtime_hierarchy_evaluate", "Evaluate through Universal Core runtime hierarchy", "Use this when a read-only decision needs the V7 router, V0 final judge, V1 canonical digest and V2 shadow parity result. Tenant identity is authenticated server-side; this tool never authorizes execution.", object({
+    request: text(12_000),
+    operation_type: { type: "string", maxLength: 120 },
+    core_input: { type: "object", properties: {
+      signals: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: true } },
+      data_quality: { type: "object", additionalProperties: true },
+      context: { type: "object", additionalProperties: true },
+      evidence_state: runtimeEvidenceState,
+    }, additionalProperties: false },
+  }, ["request"]), ["core:read"], true, true, { outputSchema: object({ ok: { type: "boolean" }, tenant_id: { type: "string" }, core_runtime: coreRuntimeOutputSchema }, ["ok", "tenant_id", "core_runtime"]) }),
+  tool("work_preflight", "Inspect automatic Tenant Work routing", "Before every generic Nyra/Core action, the gateway automatically opens the authenticated tenant's PostgreSQL Tenant Work Gallery, recalls canonical tenant memory, resumes an unambiguous existing Work Identity, and applies fail-closed governance. Do not call this manually before a normal action: use it only to inspect or diagnose the current route. It can report an owner-governed bootstrap when no existing work is unambiguous. Host-native children are created only by ChatGPT/Codex and require no provider API key. Never ask the user for a separate Gallery or shared-memory loading prompt.", object({
+    request: text(),
+    target_system: { type: "string", maxLength: 100 },
+    operation_type: { type: "string", maxLength: 100 },
+    tool_name: { type: "string", maxLength: 100 },
+    work_id: { type: "string", format: "uuid" },
+    parent_work_id: { type: "string", format: "uuid" },
+    session_id: identifier,
+    project_id: identifier,
+    agent_id: identifier,
+    host_type: { type: "string", pattern: "^[a-z][a-z0-9_]{1,62}_native$" },
+    acceptance_criteria: { type: "array", maxItems: 100, items: text(1_000) },
+    constraints: { type: "array", maxItems: 100, items: text(1_000) },
+    response_mode: { type: "string", enum: ["compact", "full"] },
+    nyra_branches: { type: "array", maxItems: 64, items: identifier },
+    available_capabilities: { type: "array", maxItems: 50, items: { type: "string", maxLength: 80 } },
+    evidence_state: {
+      type: "object",
+      properties: {
+        source_count: { type: "integer", minimum: 0, maximum: 10_000 },
+        confidence: probability,
+        freshness_state: { type: "string", enum: ["fresh", "aging", "stale", "unknown"] },
+        contradiction_count: { type: "integer", minimum: 0, maximum: 10_000 },
+        knowledge_gap: { type: "boolean" },
+        evidence_gap: { type: "boolean" },
+        high_impact: { type: "boolean" },
+      },
+      additionalProperties: false,
+    },
+    research_allowed_domains: {
+      type: "array",
+      maxItems: 20,
+      uniqueItems: true,
+      items: { type: "string", minLength: 3, maxLength: 253 },
+    },
+    core_input: { type: "object", properties: { signals: { type: "array", minItems: 1, maxItems: 100, items: { type: "object", additionalProperties: true } }, data_quality: { type: "object", additionalProperties: true }, context: { type: "object", additionalProperties: true }, evidence_state: runtimeEvidenceState }, additionalProperties: false },
+  }, ["request"]), ["core:read"], true, true, { outputSchema: workPreflightOutputSchema, meta: { "openai/toolInvocation/invoking": "Preparo Nyra…", "openai/toolInvocation/invoked": "Nyra è pronta." } }),
+  tool("nyra_policy_registry_activate", "Activate a governed Nyra policy snapshot", "Request activation of one immutable, tenant-bound Policy Registry snapshot plus the exact active signed pack set used for Universal Core's deterministic recompile. Universal Core remains the final authority; the connector cannot execute provider workflows or accept caller-supplied proof, compiler authority, identity, preflight, receipt, attestation or key material.", object({
+    work_id: policyRegistryUuid,
+    operation_id: policyRegistryOperationId,
+    domain_pack_id: policyRegistryDomainPackId,
+    snapshot: policyRegistrySnapshot,
+    compiler_input: policyRegistryCompilerInput,
+    ...policyRegistryOwnerProperties,
+  }, ["work_id", "operation_id", "domain_pack_id", "snapshot", "compiler_input", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, policyRegistryToolOptions),
+  tool("nyra_policy_registry_rollback", "Roll back a governed Nyra policy snapshot", "Request rollback to one exact previously activated snapshot digest. Universal Core remains the final authority; caller-supplied proof, identity, preflight, receipt, attestation and key material are rejected.", object({
+    work_id: policyRegistryUuid,
+    operation_id: policyRegistryOperationId,
+    domain_pack_id: policyRegistryDomainPackId,
+    target_snapshot_digest: policyRegistrySha256,
+    ...policyRegistryOwnerProperties,
+  }, ["work_id", "operation_id", "domain_pack_id", "target_snapshot_digest", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, policyRegistryToolOptions),
+  tool("nyra_policy_registry_reconcile", "Reconcile a governed Nyra policy operation", "Reconcile one exact in-progress Policy Registry operation after a fail-closed interruption. This never authorizes provider execution and accepts no caller-supplied proof or authority context.", object({
+    work_id: policyRegistryUuid,
+    operation_id: policyRegistryOperationId,
+    ...policyRegistryOwnerProperties,
+  }, ["work_id", "operation_id", "owner_confirmed", "confirmation_reference"]), ["core:govern"], false, true, {
+    ...policyRegistryToolOptions,
+    destructive: false,
+  }),
+  tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
+  tool("nyra_converse", "Nyra: resume or guide the current Work", "Use this as the first and only read tool when the user addresses Nyra or asks to resume, continue, understand, diagnose, or coordinate a Work. It is the conversational front door: the server performs authenticated preflight, binds one canonical Work, reads bounded Work tasks/evidence, and returns Nyra's problem, needs, ordered actors, progress disposition and revision-bound Universal Core ticket candidate. For a ready external action, select exactly one continuation operation: issue_delegation or authorize_action; that choice is signed and cannot be changed on another replica. Do not call a preflight, Gallery, branch registry, self-model read or capability catalog first. PREPARE_BOUNDED_WORK permits local analysis, tests and evidence but never an external mutation. Merge is always MANUAL_ONLY for the owner after the Core gate. Nyra never calls a provider model, accepts caller authority, issues a ticket, or authorizes or performs an external action.", object({
+    message: text(12_000),
+    work_id: { type: "string", format: "uuid" },
+    project_id: identifier,
+    work_bootstrap: nyraWorkBootstrapSpec,
+    continuation_operation: nyraActionContinuationOperation,
+    locale: { type: "string", enum: ["auto", "it", "en"] },
+    response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
+  }, ["message"]), ["core:read"], true, true, {
+    outputSchema: nyraConverseOutputSchema,
+    meta: {
+      "skinharmony/providerExecution": false,
+      "skinharmony/externalSideEffect": false,
+      ui: { resourceUri: NYRA_DIALOGUE_WIDGET_URI },
+      "openai/outputTemplate": NYRA_DIALOGUE_WIDGET_URI,
+      "openai/toolInvocation/invoking": "Nyra sta ascoltando…",
+      "openai/toolInvocation/invoked": "Nyra ha preparato la risposta.",
+    },
+  }),
+  tool("nyra_continue", "Nyra: continue one governed request", "Continue only the opaque, short-lived continuation_ref returned by nyra_converse. Nyra resolves it server-side and submits its bounded request to Universal Core; the AI never receives a Core candidate attestation. A registered host may request a duplicate review and owner-governed canonical V2 Work bootstrap, one bounded native-host delegation, or one exact action ticket. Work creation is two-phase and private by default; registration never grants owner authority. The tool never reserves or executes a ticket, never calls GitHub/Render, and never performs merge, deploy or publish. Unknown apps, host drift, expired references and durable replays fail closed.", object({
+    operation: { type: "string", enum: ["review_work_bootstrap", "create_work", "issue_delegation", "authorize_action"] },
+    continuation_ref: { type: "string", pattern: "^nyc1_[A-Za-z0-9_-]{32,80}$" },
+    work_bootstrap: nyraWorkBootstrapSpec,
+    review_decision: { type: "string", enum: ["CONTINUE_NEW_WORK", "PARALLEL_VALID"] },
+    delegation_request: nyraContinueDelegationRequest,
+    action_request: nyraContinueActionRequest,
+    resume_request: nyraContinueResumeRequest,
+    native_plan_request: nyraContinueNativePlanRequest,
+    native_bind_request: nyraContinueNativeBindRequest,
+    idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+    ...ownerConfirmationProperties,
+  }, ["operation", "continuation_ref", "idempotency_key"]), ["core:govern"], false, true, {
+    ownerConfirmationRequired: false,
+    meta: {
+      "skinharmony/dedicatedCoreGate": true,
+      "skinharmony/externalSideEffect": false,
+      "skinharmony/providerExecution": false,
+      "skinharmony/nyraGovernedContinuation": true,
+    },
+  }),
+  tool("nyra_branch_catalog", "Read Nyra neural branches", "Read the tenant-scoped Nyra branch and subbranch catalog governed by Universal Core.", object(), ["core:read"]),
+  tool("nyra_self_model", "Read Nyra persistent self model", "Read Nyra's tenant-scoped, signed self model through Universal Core. This read never creates, refreshes, authorizes or executes anything.", object(), ["core:read"]),
+  tool("nyra_self_model_refresh", "Materialize Nyra persistent self model", "Materialize or refresh Nyra's tenant-scoped, signed self model through Universal Core. This is an owner-confirmed internal state mutation: it never authorizes execution, calls a provider model, modifies a Work, or performs an external action.", object(), ["core:govern"], false, true, {
+    meta: {
+      "skinharmony/dedicatedCoreGate": true,
+      "skinharmony/providerExecution": false,
+      "skinharmony/externalSideEffect": false,
+    },
+  }),
+  tool("core_capability_catalog", "Read governed Core capability catalog", "Discover bounded connector capabilities by functional group. The catalog never accepts arbitrary paths, never exposes admin/bootstrap/secret surfaces and leaves Universal Core as final authority.", object({
+    group: identifier,
+    capability_id: identifier,
+    include_schema: { type: "boolean" },
+    cursor: { type: "string", pattern: "^\\d+$", maxLength: 12 },
+    limit: { type: "integer", minimum: 1, maximum: 100 },
+    // A child that was created by a host-native plan has no ambient operate
+    // grant. It may use this redacted proof only to discover its own terminal
+    // report capability; the server validates the signed transport binding,
+    // live lease and assignment before returning any catalog entry.
+    native_report_assignment: object({
+      work_id: { type: "string", format: "uuid" },
+      plan_id: { type: "string", format: "uuid" },
+      native_agent_id: { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{1,119}$" },
+      host_task_id: { type: "string", minLength: 2, maxLength: 240, pattern: "^(?:/[a-zA-Z0-9][a-zA-Z0-9_/-]*|[a-zA-Z0-9][a-zA-Z0-9._:/-]*)$" },
+      assignment_capability: { type: "string", pattern: "^hnac_[A-Za-z0-9_-]{43}$" },
+    }, ["work_id", "plan_id", "native_agent_id", "host_task_id", "assignment_capability"]),
+  }), ["core:read"]),
+  tool("core_branch_registry", "Read Core branch intelligence", "Read the registry, taxonomy, maturity or authenticated authorization view for Core branches. Tenant and entitlements are derived from the Core key.", object({
+    view: { type: "string", enum: ["registry", "taxonomy", "maturity", "authorized"] },
+    branches: { type: "array", maxItems: 50, uniqueItems: true, items: identifier },
+  }), ["core:read"]),
+  tool("core_branch_analyze", "Analyze through a Core branch", "Run one authorized Core branch in advisory mode. It cannot execute, publish or bypass the final Core verdict.", object({
+    branch: identifier,
+    request: text(20_000),
+    signals: { type: "array", maxItems: 100, items: { type: "object", maxProperties: 50, additionalProperties: boundedJsonValue } },
+    context: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
+    work_preflight: { type: "object" },
+  }, ["branch", "request"]), ["core:read"]),
+  tool("core_control_plane_read", "Read Core control plane", "Read one tenant-scoped governance view. Key secrets and administrative bootstrap data are never returned by this connector.", object({
+    view: { type: "string", enum: ["tenant_status", "entitlements", "domain_pack", "overview", "dashboard", "ecosystem_pulse", "connector_manifest", "customer_intelligence_contract"] },
+  }, ["view"]), ["core:read"]),
+  tool("core_evidence_recent", "Read recent Core evidence", "Read a bounded list of tenant-scoped Core evidence records.", object({
+    limit: { type: "integer", minimum: 1, maximum: 100 },
+  }), ["core:read"]),
+  tool("core_semantic_select", "Select semantic candidates", "Rank bounded semantic candidates through Core without publishing or execution.", object({
+    candidates: { type: "array", minItems: 1, maxItems: 500, items: semanticCandidate },
+    query: text(4_000),
+    capability_ids: { type: "array", maxItems: 500, uniqueItems: true, items: identifier },
+    target_language: { type: "string", minLength: 2, maxLength: 64 },
+    adapter: { type: "string", maxLength: 120 },
+    intent: { type: "string", maxLength: 240 },
+    limit: { type: "integer", minimum: 1, maximum: 200 },
+  }), ["core:read"]),
+  tool("core_capability_read", "Read a dynamic Core capability", "Invoke one server-registered read-only capability by exact capability id and catalog revision. Routes, methods, tenant identity and authorization are resolved only server-side.", object({
+    capability_id: identifier,
+    catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    arguments: { type: "object", maxProperties: 200, additionalProperties: true },
+    // The outer wrapper may carry an opaque logical transport session when a
+    // stateless OAuth host cannot retain the optional MCP session header. It
+    // is consumed by the gateway only and is never forwarded to `arguments`.
+    session_id: identifier,
+  }, ["capability_id", "catalog_revision"]), ["core:read"]),
+  tool("core_capability_invoke", "Invoke a governed dynamic capability", "Invoke one server-registered mutating capability by exact capability id and catalog revision. Bounded post-delegation actions use their signed Core gate without another owner prompt; only a target explicitly marked owner-confirmed may consume one fresh owner confirmation.", object({
+    capability_id: identifier,
+    catalog_revision: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    arguments: { type: "object", maxProperties: 200, additionalProperties: true },
+    idempotency_key: { type: "string", minLength: 8, maxLength: 160 },
+    ...ownerConfirmationProperties,
+  }, ["capability_id", "catalog_revision", "idempotency_key"]), ["core:govern"], false, false, {
+    ownerConfirmationRequired: false,
+  }),
+  tool("core_software_language_evaluate", "Evaluate software language", "Apply the horizontal V2/V1/V0 software-language gate to bounded UI copy. This returns findings only and never publishes changes.", object({
+    app: identifier,
+    target_lang: { type: "string", minLength: 2, maxLength: 64 },
+    entries: { type: "array", minItems: 1, maxItems: 1_000, items: object({
+      id: { type: "string", minLength: 1, maxLength: 240 },
+      text: text(8_000),
+      context: { type: "string", maxLength: 1_000 },
+    }, ["id", "text"]) },
+  }, ["app", "target_lang", "entries"]), ["core:read"]),
+  tool("core_content_guard_check", "Check governed content", "Check bounded text through the Core content branch. Suggestions remain review-only and publication stays disabled.", object({
+    text: text(100_000),
+    locale: { type: "string", minLength: 2, maxLength: 64 },
+    context: { type: "string", maxLength: 4_000 },
+  }, ["text"]), ["core:read"]),
+  tool("core_claim_guard_check", "Check claims", "Check bounded claims for unsupported or risky assertions. The result is advisory and cannot publish.", object({
+    text: text(100_000),
+    forbidden_terms: { type: "array", maxItems: 500, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 240 } },
+  }, ["text"]), ["core:read"]),
+  tool("core_pricing_guard_check", "Check pricing content", "Check bounded pricing offers for completeness and consistency without changing catalog or payment data.", object({
+    official_prices: { type: "array", minItems: 1, maxItems: 500, items: object({
+      id: { type: "string", minLength: 1, maxLength: 160 },
+      sku: { type: "string", maxLength: 160 },
+      name: { type: "string", maxLength: 500 },
+      price: { type: "number", minimum: 0 },
+    }, ["id", "price"]) },
+    observed_prices: { type: "array", minItems: 1, maxItems: 500, items: object({
+      id: { type: "string", minLength: 1, maxLength: 160 },
+      sku: { type: "string", maxLength: 160 },
+      name: { type: "string", maxLength: 500 },
+      price: { type: "number", minimum: 0 },
+    }, ["id", "price"]) },
+  }, ["official_prices", "observed_prices"]), ["core:read"]),
+  tool("core_policy_check", "Check Core policy", "Evaluate a bounded action and policy through the tenant Core policy engine. It returns mediation only and authorizes no execution.", object({
     action: { type: "object", minProperties: 1, maxProperties: 100, additionalProperties: boundedJsonValue },
     policy: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },
     context: { type: "object", maxProperties: 100, additionalProperties: boundedJsonValue },

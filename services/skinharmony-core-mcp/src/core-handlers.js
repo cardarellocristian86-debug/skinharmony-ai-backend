@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 52884)
-Total output lines: 4717
-
 import crypto from "node:crypto";
 import { attachSharedMemoryBootstrap } from "./shared-memory-bootstrap.js";
 import { createAgentPresence } from "./agent-presence.js";
@@ -1404,7 +1401,1992 @@ export function createCoreHandlers(config, options = {}) {
       now: () => new Date(),
       explainFn,
       maxAttempts: config.coreBlockRemediationMaxAttempts || 3,
-      transientRetryLimit: co…22884 tokens truncated…ity) => textResult({
+      transientRetryLimit: config.coreBlockRemediationTransientRetryLimit || 2,
+    });
+    if (!remediation) return null;
+    const statusPayload = {
+      state: "blocked_with_remediation",
+      allowed: false,
+      decision_contract: contract,
+      remediation: {
+        schema_version: remediation.schema_version,
+        remediation_id: remediation.remediation_id,
+        status: remediation.status,
+        block_class: remediation.original_decision.block_class,
+        can_continue_analysis: remediation.continuation_scope.mode !== "none",
+        can_submit_remediation: remediation.original_decision.block_class !== CORE_BLOCK_CLASS.ABSOLUTE,
+        can_retry_same_action: remediation.original_decision.same_action_retry_allowed === true,
+        owner_confirmation_required: remediation.original_decision.owner_confirmation_required === true,
+        continuation_scope: remediation.continuation_scope,
+        nyra_message: remediation.nyra_explanation,
+        next_action: remediation.nyra_explanation?.recommended_next_action || deriveRecommendedNextAction(remediation),
+        remediation_idempotency: remediation.contract_digest,
+      },
+    };
+    return { remediation, statusPayload };
+  }
+
+  async function loadRemediationForIdentity(identity, remediationId) {
+    const remediation = await remediationStore.findById({
+      tenant_id: identity.tenantId,
+      remediation_id: remediationId,
+    });
+    if (!remediation) throw new Error("remediation_not_found");
+    if (String(remediation.tenant_id || "") !== String(identity.tenantId || "")) {
+      throw new Error("tenant_scope_violation");
+    }
+    return remediation;
+  }
+
+  function remediationEnvelope(remediation, extra = {}) {
+    return {
+      schema_version: remediation.schema_version,
+      remediation_id: remediation.remediation_id,
+      tenant_id: remediation.tenant_id,
+      project_id: remediation.project_id,
+      work_id: remediation.work_id,
+      branch_id: remediation.branch_id,
+      session_id: remediation.session_id,
+      status: remediation.status,
+      block_class: remediation.original_decision.block_class,
+      block_code: remediation.original_decision.block_code,
+      can_continue_analysis: remediation.continuation_scope.mode !== "none",
+      can_submit_remediation: remediation.original_decision.block_class !== CORE_BLOCK_CLASS.ABSOLUTE,
+      can_retry_same_action: remediation.original_decision.same_action_retry_allowed === true,
+      owner_confirmation_required: remediation.original_decision.owner_confirmation_required === true,
+      continuation_scope: remediation.continuation_scope,
+      nyra_message: remediation.nyra_explanation,
+      next_action: remediation.nyra_explanation?.recommended_next_action || deriveRecommendedNextAction(remediation),
+      attempt_count: remediation.attempt_count,
+      max_attempts: remediation.max_attempts,
+      version: remediation.version,
+      ...extra,
+    };
+  }
+
+  function ownerContext(identity, options = {}) {
+    const optionObject = options && typeof options === "object" && !Array.isArray(options);
+    const requestBinding = optionObject ? options.requestBinding : options;
+    const hostNativeOwner = optionObject && options.hostNativeOwner === true;
+    const actionEvaluatorGateway = optionObject && options.actionEvaluatorGateway === true;
+    const allowOAuthTenantOwner = optionObject && options.allowOAuthTenantOwner === true;
+
+    if (hostNativeOwner && actionEvaluatorGateway) {
+      throw new Error("owner_context_signing_domain_conflict");
+    }
+
+    // Generic owner assertions are signed with the tenant Core key and bind
+    // the exact request body. Host-native delegation operations use the
+    // dedicated owner-context key. OAuth and Codex-Good-Mode fingerprints use
+    // distinct domains, so neither can be replayed as the other or as a
+    // generic Core owner assertion.
+    if (hostNativeOwner) {
+      const codexGoodMode = isCodexGoodModeDelegation(identity, config);
+      const oauthOwner =
+        identity.kind === "oauth" &&
+        identity.oauthOwnerElevated === true &&
+        identity.ownerConfirmed === true &&
+        Boolean(String(identity.subject || "").trim());
+      if (
+        !codexGoodMode &&
+        !oauthOwner
+      ) {
+        return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+      }
+      if (
+        Buffer.byteLength(
+          String(config.ownerContextSigningSecret || ""),
+          "utf8",
+        ) < 32
+      ) {
+        throw new Error("host_native_owner_context_signing_unavailable");
+      }
+    } else if (
+      identity.godMode !== true &&
+      !(allowOAuthTenantOwner && isVerifiedOAuthTenantOwner(identity))
+    ) {
+      return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+    }
+    // Owner assertions are verifier-domain bound. Host-native delegation and
+    // Work Preflight use the dedicated bridge secret. The action evaluator is
+    // the sole bearer-bound route and Core verifies it with the selected
+    // tenant-gateway key.
+    const signingKey = actionEvaluatorGateway
+      ? configuredTenantGatewayKey()
+      : (config.ownerContextSigningSecret || (hostNativeOwner
+        ? ""
+        : (configuredTenantGatewayKey() || coreKey(identity.tenantId))));
+    if (actionEvaluatorGateway && Buffer.byteLength(String(signingKey || ""), "utf8") < 32) {
+      throw new Error("core_tenant_gateway_key_missing");
+    }
+    if (hostNativeOwner && Buffer.byteLength(String(signingKey || ""), "utf8") < 32) {
+      throw new Error("owner_context_signing_unavailable");
+    }
+    const hostNativeCodexGoodMode = hostNativeOwner && isCodexGoodModeDelegation(identity, config);
+    const context = {
+      assertion_version: OWNER_CONTEXT_ASSERTION_VERSION,
+      audience: "nira_core_bridge",
+      tenant_id: identity.tenantId,
+      access_mode: (isVerifiedOwnerRoot(identity) && !hostNativeOwner) || hostNativeCodexGoodMode
+        ? "god_mode"
+        : "tenant_owner",
+      role: (isVerifiedOwnerRoot(identity) && !hostNativeOwner) || hostNativeCodexGoodMode
+        ? "owner_root"
+        : "tenant_owner",
+      delegated_actor: identity.kind || "unknown",
+      owner_verified: true,
+      issued_at: new Date().toISOString(),
+      ...(requestBinding === undefined ? {} : {
+        binding_version: "owner_request_binding_v1",
+        binding_hash: crypto.createHash("sha256").update(String(requestBinding)).digest("hex"),
+      }),
+      ...(hostNativeOwner || isVerifiedOwnerRoot(identity) ||
+          (allowOAuthTenantOwner && isVerifiedOAuthTenantOwner(identity))
+            ? {
+          owner_subject_fingerprint: `osf_${crypto.createHmac("sha256", signingKey)
+            .update(`${hostNativeOwner
+              ? (hostNativeCodexGoodMode ? "host-native-codex-owner" : "host-native-owner")
+              : "core-action-owner"}\u0000${String(identity.subject).trim()}`)
+            .digest("hex")}`,
+        }
+        : {}),
+    };
+    const digest = crypto.createHmac("sha256", signingKey)
+      .update(`owner-context\u0000${ownerContextCanonical(context)}`)
+      .digest("hex");
+    return { ...context, assertion: `ocs_${digest}` };
+  }
+
+  function ownerReadContext(identity, requestBinding) {
+    try {
+      return identity.kind === "codex"
+        ? ownerContext(identity, { hostNativeOwner: true, requestBinding })
+        : ownerContext(identity, requestBinding);
+    } catch (error) {
+      if (["host_native_owner_context_signing_unavailable", "owner_context_signing_unavailable"].includes(error?.message)) {
+        return { access_mode: "standard", role: identity.role || "standard", owner_verified: false };
+      }
+      throw error;
+    }
+  }
+
+  async function memoryContext(input, identity) {
+    if (typeof contextProvider !== "function") return undefined;
+    return contextProvider(input, identity);
+  }
+
+  async function galleryContext(input, identity) {
+    if (typeof tenantWorkGallery?.load !== "function") {
+      return compactGalleryBootstrap({
+        available: false,
+        state: "runtime_unavailable",
+      }, identity.tenantId);
+    }
+    try {
+      const gallery = await tenantWorkGallery.load(identity, input);
+      if (String(gallery?.tenant_id || "") !== String(identity.tenantId || "")) {
+        throw new Error("tenant_work_gallery_tenant_mismatch");
+      }
+      return compactGalleryBootstrap({
+        ...gallery,
+        available: true,
+        state: "ready",
+        generated_at: new Date().toISOString(),
+      }, identity.tenantId);
+    } catch (error) {
+      const state = error?.code === "tenant_work_membership_required"
+        || error?.message === "tenant_work_membership_required"
+        ? "membership_required"
+        : "runtime_unavailable";
+      return compactGalleryBootstrap({ available: false, state }, identity.tenantId);
+    }
+  }
+
+  function hierarchyInput(args = {}, identity, operation = "advisory_work") {
+    const supplied = args.core_input && typeof args.core_input === "object" && !Array.isArray(args.core_input) ? args.core_input : {};
+    // high_impact is escalation-only. The bridge derives the effective value
+    // from bounded evidence, signals and operation semantics; a caller cannot
+    // use false or a routing object to suppress V0 or grant execution.
+    const { evidence_state: suppliedEvidenceState, routing: _callerRouting, ...boundedSupplied } = supplied;
+    const request = String(args.request || args.message || args.question || args.decision || operation).slice(0, 12_000);
+    const signals = Array.isArray(supplied.signals) && supplied.signals.length
+      ? supplied.signals
+      : [{ id: "mcp_runtime_request", label: operation, severity: 20, reversibility_hint: 80, risk_hint: 20 }];
+    const evidenceEscalation = suppliedEvidenceState?.high_impact === true || args.evidence_state?.high_impact === true;
+    const signalEscalation = signals.some((signal) => [
+      signal?.severity, signal?.severity_hint, signal?.normalized_score, signal?.risk_hint,
+    ].some((value) => typeof value === "number" && Number.isFinite(value) && value >= 85 && value <= 100));
+    const operationEscalation = /(publish|pubblica|merge|deploy|rilasc|release|send|invia|delete|cancell|payment|pagament|write|scriv|update|modific)/i
+      .test(`${request} ${operation}`);
+    const highImpact = evidenceEscalation || signalEscalation || operationEscalation;
+    return {
+      ...boundedSupplied,
+      request,
+      signals,
+      evidence_state: { high_impact: highImpact },
+      context: { ...(supplied.context || {}), tenant_id: identity.tenantId },
+    };
+  }
+
+  async function runtimeHierarchyEvaluate(args, identity, operation) {
+    const started = Date.now();
+    const input = hierarchyInput(args, identity, operation);
+    const payload = await coreRequest("/v1/runtime/hierarchy/evaluate", identity.tenantId, {
+      method: "POST",
+      body: {
+        core_input: input,
+        ...(input.evidence_state.high_impact ? { routing: { high_impact: true } } : {}),
+      },
+    });
+    return compactCoreRuntime({ ...payload, latency_ms: Date.now() - started });
+  }
+
+  async function intelligenceRequest(path, args, identity, options = {}) {
+    const sharedContext = options.memory === false ? undefined : await memoryContext({
+      query: args.request || args.question || args.decision || args.outcome_id || "Nyra Core intelligence analysis",
+      project_id: args.project_id,
+      session_id: args.session_id,
+      agent_id: args.agent_id || "nyra",
+    }, identity);
+    const requestBody = {
+      ...args,
+      ...(sharedContext ? { memory_context: sharedContext } : {}),
+      ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
+      tenant_id: identity.tenantId,
+    };
+    const requestBinding = options.ownerBindingPurpose
+      ? ownerRequestBinding(options.ownerBindingPurpose, requestBody)
+      : undefined;
+    const coreAnalysis = await coreRequest(path, identity.tenantId, {
+      method: "POST",
+      body: { ...requestBody, owner_context: ownerContext(identity, requestBinding) },
+    });
+    if (options.nyraInterpretation !== true) return textResult(coreAnalysis);
+
+    const interpretationInput = JSON.stringify({
+      request: args.request || args.question || args.decision || "",
+      workflow_id: coreAnalysis.result?.workflow_id,
+      scenarios: coreAnalysis.result?.scenarios?.selected_scenario || null,
+      leading_hypothesis: coreAnalysis.result?.hypotheses?.leading_hypothesis || null,
+      highest_priority_event: coreAnalysis.result?.events?.highest_priority_event || null,
+      preferred_counterfactual: coreAnalysis.result?.counterfactuals?.preferred_counterfactual || null,
+      selected_option: coreAnalysis.result?.decision?.selected_option || null,
+      requires_more_evidence: coreAnalysis.result?.decision?.requires_more_evidence,
+    }).slice(0, 12_000);
+    try {
+      const nyraInterpretation = await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
+        method: "POST",
+        body: {
+          text: `Interpreta e spiega questo risultato Core senza autorizzare esecuzioni: ${interpretationInput}`,
+          request_id: args.workflow_id || args.session_id,
+          locale: args.locale || "it",
+          mode: "standard",
+          owner_context: ownerContext(identity),
+          ...(sharedContext ? { memory_context: sharedContext } : {}),
+          ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
+          tenant_id: identity.tenantId,
+        },
+      });
+      return textResult({
+        ...coreAnalysis,
+        nyra_interpretation: nyraInterpretation,
+        intelligence_path: { core_analyzed: true, nyra_interpreted: true, execution_allowed: false },
+      });
+    } catch {
+      return textResult({
+        ...coreAnalysis,
+        nyra_interpretation: { ok: false, error: "nyra_interpretation_unavailable" },
+        intelligence_path: { core_analyzed: true, nyra_interpreted: false, execution_allowed: false },
+      });
+    }
+  }
+
+  async function nyraDeepV2Request(args, identity, operation) {
+    const operationType = NYRA_DEEP_V2_PREFLIGHT_OPERATION[operation];
+    if (!operationType) throw new Error("nyra_deep_v2_mcp_operation_invalid");
+    const requestId = String(
+      args.request_id || `mcp-nyra-v2-${crypto.randomUUID()}`,
+    ).slice(0, 160);
+    const branchId = operation === "preview" ? null : String(args.branch_id || "");
+    const subbranchId = operation === "preview" ? null : String(args.subbranch_id || "");
+    const evidenceRefs = operation === "evaluate"
+      ? [...(Array.isArray(args.evidence_refs) ? args.evidence_refs : [])]
+      : [];
+    const evidencePackHash = operation === "prepare_evidence"
+      ? nyraDeepV2EvidencePackHash(args.evidence_pack, args.requirement_bindings)
+      : null;
+    const requestAttestation = signNyraDeepV2McpRequest({
+      secret: config.nyraDeepV2McpRequestSigningSecret,
+      tenantId: identity.tenantId,
+      requestId,
+      operation,
+      branchId,
+      subbranchId,
+      evidenceRefs,
+      evidencePackHash,
+    });
+    const sharedContext = await memoryContext({
+      query: args.message,
+      project_id: args.project_id,
+      session_id: args.session_id,
+      agent_id: args.agent_id || "nyra",
+    }, identity);
+    const deepBranchV2 = {
+      operation,
+      ...(branchId ? { branch_id: branchId, subbranch_id: subbranchId } : {}),
+      evidence_refs: evidenceRefs,
+      ...(operation === "prepare_evidence"
+        ? {
+          evidence_pack: args.evidence_pack,
+          requirement_bindings: args.requirement_bindings,
+          evidence_pack_hash: evidencePackHash,
+        }
+        : {}),
+      request_attestation: requestAttestation,
+    };
+    const payload = await coreRequest("/v1/nira/core-bridge", identity.tenantId, {
+      method: "POST",
+      body: {
+        text: args.message,
+        request_id: requestId,
+        source_tool: operationType,
+        operation_type: operationType,
+        nyra_branches: branchId
+          ? [branchId]
+          : [...(Array.isArray(args.nyra_branches) ? args.nyra_branches : [])],
+        ...(sharedContext ? { memory_context: sharedContext } : {}),
+        ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
+        deep_branch_v2: deepBranchV2,
+        tenant_id: identity.tenantId,
+      },
+    });
+    const runtime = payload?.result?.deep_branch_v2;
+    if (
+      !runtime
+      || typeof runtime !== "object"
+      || runtime.execution_authorized !== false
+      || runtime.core_final_authority !== true
+    ) {
+      throw new Error("nyra_deep_v2_core_authority_binding_mismatch");
+    }
+    return {
+      ok: payload?.ok === true,
+      tenant_id: identity.tenantId,
+      request_id: requestId,
+      operation,
+      core_runtime: coreRuntimeFromBridge(payload),
+      work_preflight: compactWorkPreflight(
+        payload?.result?.work_preflight || payload?.work_preflight,
+      ),
+      deep_branch_v2: runtime,
+    };
+  }
+
+  function hostNativeSessionFingerprint(identity) {
+    const fingerprint = String(identity?.agentPresence?.session_fingerprint || "").trim();
+    if (!/^[a-f0-9]{16,64}$/i.test(fingerprint)) {
+      throw new Error("host_native_session_presence_required");
+    }
+    return fingerprint.toLowerCase();
+  }
+
+  function hostNativeKind(identity) {
+    if (identity?.authenticatedHostPrincipal) {
+      return authenticatedHostKind(identity);
+    }
+    // Compatibility for direct internal/test invocation. Public MCP calls
+    // always carry a server-derived principal, so `agentPresence.client_type`
+    // and caller `host_type` can no longer select a delegation audience.
+    if (identity?.kind === "codex") return "codex_native";
+    if (identity?.kind === "oauth") return "chatgpt_native";
+    throw new Error("registered_host_principal_required");
+  }
+
+  async function trustedHostNativeTicketRecord(ticketId, identity, allowedStates) {
+    const payload = await coreRequest(
+      `/v1/host-native/actions/${encodeURIComponent(ticketId)}`,
+      identity.tenantId,
+      { useTenantGateway: true },
+    );
+    const record = payload?.action_ticket;
+    const ticket = record?.ticket;
+    const state = String(record?.state || "");
+    const uses = record?.uses;
+    const sessionFingerprint = hostNativeSessionFingerprint(identity);
+    if (
+      payload?.ok !== true ||
+      payload.tenant_id !== identity.tenantId ||
+      !record || typeof record !== "object" || Array.isArray(record) ||
+      (record.schema_version !== undefined &&
+        record.schema_version !== "host_native_action_ticket_record_v1") ||
+      (record.tenant_id !== undefined && record.tenant_id !== identity.tenantId) ||
+      !ticket || typeof ticket !== "object" || Array.isArray(ticket) ||
+      ticket.schema_version !== "host_native_action_ticket_v1" ||
+      ticket.tenant_id !== identity.tenantId ||
+      ticket.ticket_id !== ticketId ||
+      !/^hnd_[a-zA-Z0-9._-]{8,}$/.test(String(ticket.delegation_id || "")) ||
+      typeof ticket.work_id !== "string" || ticket.work_id.length < 1 ||
+      !/^[a-f0-9]{64}$/i.test(String(ticket.intent_anchor_digest || "")) ||
+      typeof ticket.repository !== "string" || ticket.repository.length < 1 ||
+      ticket.host_kind !== hostNativeKind(identity) ||
+      ticket.host_session_fingerprint !== sessionFingerprint ||
+      !ticket.action || typeof ticket.action !== "object" || Array.isArray(ticket.action) ||
+      typeof ticket.action.kind !== "string" || ticket.action.kind.length < 1 ||
+      !/^[a-f0-9]{64}$/i.test(String(ticket.evidence_digest || "")) ||
+      !Number.isFinite(Date.parse(ticket.issued_at || "")) ||
+      !Number.isFinite(Date.parse(ticket.expires_at || "")) ||
+      ticket.max_uses !== 1 ||
+      ticket.provider_execution !== false ||
+      ticket.host_policy_override !== false ||
+      ticket.host_policy_must_allow !== true ||
+      !/^hnt_[a-f0-9]{64}$/i.test(String(ticket.signature || "")) ||
+      !allowedStates.includes(state) ||
+      !Number.isInteger(uses) || uses !== 1
+    ) {
+      throw new Error("host_native_ticket_readback_invalid");
+    }
+    return record;
+  }
+
+  function attachTrustedHostNativeTicket(error, record) {
+    if (!error || !record) return error;
+    Object.defineProperties(error, {
+      hostNativeTicketTrusted: { value: true, enumerable: false },
+      hostNativeTicketRecord: { value: record, enumerable: false },
+    });
+    return error;
+  }
+
+  function airlockBinding(input, identity) {
+    const binding = input && typeof input === "object" ? input : {};
+    const sessionId = String(identity.agentPresence?.session_id || binding.session_id || "").trim();
+    if (!sessionId) throw new Error("research_airlock_session_id_required");
+    return {
+      project_id: binding.project_id,
+      work_id: binding.work_id,
+      session_id: sessionId,
+    };
+  }
+
+  function policyRegistryExactRecord(value, fields) {
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype) return false;
+    const keys = Reflect.ownKeys(value);
+    return keys.length === fields.length && keys.every((key) => typeof key === "string") &&
+      fields.every((field) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, field);
+        return descriptor?.enumerable === true && Object.hasOwn(descriptor, "value");
+      });
+  }
+
+  function assertPolicyRegistryPlainJson(value, code, {
+    maxDepth = 64,
+    maxNodes = 100_000,
+  } = {}, state = { seen: new Set(), nodes: 0 }, depth = 0) {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return;
+    if (typeof value === "number") {
+      if (!Number.isFinite(value) || Object.is(value, -0)) throw new Error(code);
+      return;
+    }
+    if (typeof value !== "object" || state.seen.has(value) || depth >= maxDepth ||
+      (Array.isArray(value)
+        ? Object.getPrototypeOf(value) !== Array.prototype
+        : Object.getPrototypeOf(value) !== Object.prototype)) {
+      throw new Error(code);
+    }
+    state.nodes += 1;
+    if (state.nodes > maxNodes) throw new Error(code);
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string" && key !== "length")) throw new Error(code);
+    if (Array.isArray(value)) {
+      const enumerableKeys = Object.keys(value);
+      if (enumerableKeys.length !== value.length ||
+        enumerableKeys.some((key, index) => key !== String(index)) ||
+        keys.some((key) => key !== "length" && !enumerableKeys.includes(key))) {
+        throw new Error(code);
+      }
+    }
+    state.seen.add(value);
+    for (const key of keys) {
+      if (Array.isArray(value) && key === "length") continue;
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, "value")) throw new Error(code);
+      assertPolicyRegistryPlainJson(descriptor.value, code, { maxDepth, maxNodes }, state, depth + 1);
+    }
+    state.seen.delete(value);
+  }
+
+  function policyRegistryCanonicalBytes(value) {
+    return Buffer.byteLength(JSON.stringify(stableCanonical(value)), "utf8");
+  }
+
+  function policyRegistryExactText(value, pattern, max) {
+    return typeof value === "string" && value === value.trim() && value.length > 0 &&
+      value.length <= max && (!pattern || pattern.test(value));
+  }
+
+  function policyRegistryUniqueTextList(value, { min = 0, max = 256, pattern = null } = {}) {
+    if (!Array.isArray(value) || value.length < min || value.length > max) return false;
+    const seen = new Set();
+    for (const item of value) {
+      if (!policyRegistryExactText(item, pattern, 200) || seen.has(item)) return false;
+      seen.add(item);
+    }
+    return true;
+  }
+
+  function validatePolicyRegistryCompilerPack(pack, identity, domainPackId) {
+    const packFields = [
+      "schema_version", "pack_id", "version", "status", "scope", "parent_refs", "bindings",
+      "privacy", "policy", "tests", "sources", "freshness_sla_days", "provenance",
+      "valid_from", "expires_at", "rollback_to", "compatibility", "trust_mode", "signatures",
+      "artifact_digest",
+    ];
+    const scopeFields = ["kind", "value", "tenant_id"];
+    const bindingFields = ["core_branch_ids", "nyra_branch_ids", "domain_pack_ids"];
+    const policyFields = [
+      "allow_mode", "allow_actions", "deny_actions", "required_gates", "constraints",
+    ];
+    const scopeKinds = new Set([
+      "core", "global", "sector", "tenant", "environment", "work_type", "action", "policy",
+    ]);
+    const tenantScopedKinds = new Set(["tenant", "environment", "work_type", "action", "policy"]);
+    if (!policyRegistryExactRecord(pack, packFields) ||
+      pack.schema_version !== "nyra_policy_pack_v1" ||
+      !POLICY_REGISTRY_PACK_ID.test(pack.pack_id) ||
+      !POLICY_REGISTRY_PACK_VERSION.test(pack.version) || pack.status !== "active" ||
+      !policyRegistryExactRecord(pack.scope, scopeFields) || !scopeKinds.has(pack.scope.kind) ||
+      !policyRegistryExactText(pack.scope.value, null, 160) ||
+      (tenantScopedKinds.has(pack.scope.kind)
+        ? !policyRegistryExactText(pack.scope.tenant_id, null, 120) ||
+          pack.scope.tenant_id !== identity.tenantId
+        : pack.scope.tenant_id !== null) ||
+      !Array.isArray(pack.parent_refs) || pack.parent_refs.length > 8 ||
+      !policyRegistryExactRecord(pack.bindings, bindingFields) ||
+      !policyRegistryUniqueTextList(pack.bindings.core_branch_ids, { min: 1 }) ||
+      !policyRegistryUniqueTextList(pack.bindings.nyra_branch_ids, { min: 1 }) ||
+      !policyRegistryUniqueTextList(pack.bindings.domain_pack_ids, { min: 1 }) ||
+      !pack.bindings.domain_pack_ids.includes(domainPackId) ||
+      !policyRegistryExactRecord(pack.privacy, ["raw_customer_data_allowed", "data_classification"]) ||
+      pack.privacy.raw_customer_data_allowed !== false ||
+      !policyRegistryExactText(pack.privacy.data_classification, null, 80) ||
+      !policyRegistryExactRecord(pack.policy, policyFields) ||
+      !new Set(["inherit", "restrict"]).has(pack.policy.allow_mode) ||
+      !policyRegistryUniqueTextList(pack.policy.allow_actions, { max: 4_096 }) ||
+      !policyRegistryUniqueTextList(pack.policy.deny_actions, { max: 4_096 }) ||
+      !policyRegistryUniqueTextList(pack.policy.required_gates, { max: 4_096 }) ||
+      !pack.policy.constraints || typeof pack.policy.constraints !== "object" ||
+      Array.isArray(pack.policy.constraints) ||
+      !Array.isArray(pack.tests) || pack.tests.length < 2 || pack.tests.length > 32 ||
+      !Array.isArray(pack.sources) || pack.sources.length < 1 || pack.sources.length > 16 ||
+      !Number.isInteger(pack.freshness_sla_days) || pack.freshness_sla_days < 1 ||
+      pack.freshness_sla_days > 3_650 ||
+      !policyRegistryExactText(pack.valid_from, null, 64) ||
+      !policyRegistryExactText(pack.expires_at, null, 64) ||
+      !Number.isFinite(Date.parse(pack.valid_from)) || !Number.isFinite(Date.parse(pack.expires_at)) ||
+      Date.parse(pack.valid_from) >= Date.parse(pack.expires_at) ||
+      !new Set(["compiled_core", "signed_bundle"]).has(pack.trust_mode) ||
+      !Array.isArray(pack.signatures) || pack.signatures.length > 4 ||
+      !POLICY_REGISTRY_SHA256.test(pack.artifact_digest)) {
+      throw new Error("policy_compiler_input_pack_invalid");
+    }
+    for (const parent of pack.parent_refs) {
+      if (!policyRegistryExactRecord(parent, ["pack_id", "version", "digest"]) ||
+        !POLICY_REGISTRY_PACK_ID.test(parent.pack_id) ||
+        !POLICY_REGISTRY_PACK_VERSION.test(parent.version) ||
+        !POLICY_REGISTRY_SHA256.test(parent.digest)) {
+        throw new Error("policy_compiler_input_pack_invalid");
+      }
+    }
+    const testOutcomes = new Set(pack.tests.map((entry) => entry?.expected));
+    if (!testOutcomes.has("ALLOW") || !testOutcomes.has("DENY")) {
+      throw new Error("policy_compiler_input_pack_invalid");
+    }
+    for (const source of pack.sources) {
+      if (!policyRegistryExactRecord(source, ["source_id", "url", "claim", "reviewed_at"]) ||
+        !POLICY_REGISTRY_PACK_ID.test(source.source_id) ||
+        !policyRegistryExactText(source.url, /^https:\/\//, 2_000) ||
+        !policyRegistryExactText(source.claim, null, 1_200) ||
+        !policyRegistryExactText(source.reviewed_at, /^\d{4}-\d{2}-\d{2}$/, 32)) {
+        throw new Error("policy_compiler_input_pack_invalid");
+      }
+    }
+    const issuers = new Set();
+    for (const signature of pack.signatures) {
+      if (!policyRegistryExactRecord(signature, ["issuer_id", "algorithm", "signature"]) ||
+        !POLICY_REGISTRY_PACK_ID.test(signature.issuer_id) || signature.algorithm !== "Ed25519" ||
+        !POLICY_REGISTRY_SIGNATURE.test(signature.signature) || issuers.has(signature.issuer_id)) {
+        throw new Error("policy_compiler_input_signature_invalid");
+      }
+      const decoded = Buffer.from(signature.signature, "base64url");
+      if (decoded.length !== 64 || decoded.toString("base64url") !== signature.signature) {
+        throw new Error("policy_compiler_input_signature_invalid");
+      }
+      issuers.add(signature.issuer_id);
+    }
+    if (pack.trust_mode === "compiled_core"
+      ? pack.scope.kind !== "core" || pack.signatures.length !== 0
+      : pack.signatures.length < 2) {
+      throw new Error("policy_compiler_input_signature_invalid");
+    }
+    assertPolicyRegistryPlainJson(pack.policy.constraints, "policy_compiler_constraints_invalid", {
+      maxDepth: 16,
+      maxNodes: 4_096,
+    });
+    if (policyRegistryCanonicalBytes(pack.policy.constraints) > 65_536) {
+      throw new Error("policy_compiler_constraints_invalid");
+    }
+  }
+
+  function validatePolicyRegistryCompilerInput(compilerInput, identity, domainPackId) {
+    assertPolicyRegistryPlainJson(compilerInput, "policy_compiler_input_invalid");
+    if (policyRegistryCanonicalBytes(compilerInput) > POLICY_REGISTRY_COMPILER_INPUT_LIMIT_BYTES) {
+      throw new Error("policy_compiler_input_oversize");
+    }
+    if (!policyRegistryExactRecord(compilerInput, ["schema_version", "leaf_pack_ids", "packs"]) ||
+      compilerInput.schema_version !== "nyra_policy_compiler_input_v1" ||
+      !Array.isArray(compilerInput.leaf_pack_ids) || compilerInput.leaf_pack_ids.length < 1 ||
+      compilerInput.leaf_pack_ids.length > 16 || !Array.isArray(compilerInput.packs) ||
+      compilerInput.packs.length < 1 || compilerInput.packs.length > 64) {
+      throw new Error("policy_compiler_input_invalid");
+    }
+    let previousLeaf = null;
+    for (const reference of compilerInput.leaf_pack_ids) {
+      if (!POLICY_REGISTRY_PACK_REFERENCE.test(reference) ||
+        (previousLeaf !== null && previousLeaf >= reference)) {
+        throw new Error("policy_compiler_input_leaf_invalid");
+      }
+      previousLeaf = reference;
+    }
+    let previousPack = null;
+    const packReferences = new Set();
+    for (const pack of compilerInput.packs) {
+      validatePolicyRegistryCompilerPack(pack, identity, domainPackId);
+      const reference = `${pack.pack_id}@${pack.version}`;
+      if (previousPack !== null && previousPack >= reference) {
+        throw new Error("policy_compiler_input_noncanonical");
+      }
+      previousPack = reference;
+      packReferences.add(reference);
+    }
+    if (compilerInput.leaf_pack_ids.some((reference) => !packReferences.has(reference))) {
+      throw new Error("policy_compiler_input_leaf_invalid");
+    }
+    const forbidden = policyRegistryForbiddenField(compilerInput, "$.compiler_input");
+    if (forbidden) throw new Error("policy_registry_caller_fields_invalid");
+    return compilerInput;
+  }
+
+  function policyRegistryForbiddenField(value, path = "$") {
+    if (!value || typeof value !== "object") return null;
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        const nested = policyRegistryForbiddenField(value[index], `${path}[${index}]`);
+        if (nested) return nested;
+      }
+      return null;
+    }
+    const insideConstraints = path === "$.policy.constraints" ||
+      path.startsWith("$.policy.constraints.") ||
+      /^\$\.compiler_input\.packs\[\d+\]\.policy\.constraints(?:\.|$)/.test(path);
+    for (const [key, child] of Object.entries(value)) {
+      if (
+        POLICY_REGISTRY_FORBIDDEN_CALLER_FIELDS.has(key) ||
+        /(?:^|_)(?:secret|private_key|signing_key|proof|receipt|attestation)(?:$|_)/i.test(key) ||
+        (insideConstraints && POLICY_REGISTRY_FORBIDDEN_CONSTRAINT_CONTROL_FIELDS.has(key))
+      ) return `${path}.${key}`;
+      const nested = policyRegistryForbiddenField(child, `${path}.${key}`);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  function validatePolicyRegistryPreflight(preflight, identity, contract, domainPackId) {
+    const gallery = preflight?.tenant_work_gallery;
+    const security = preflight?.security_governance;
+    if (
+      !preflight || typeof preflight !== "object" || Array.isArray(preflight) ||
+      preflight.schema_version !== "skinharmony_work_preflight_v1" ||
+      typeof preflight.preflight_id !== "string" || preflight.preflight_id.length < 3 ||
+      preflight.mandatory !== true ||
+      preflight.tenant_id !== identity.tenantId ||
+      preflight.operational_surface !== "tenant_work_gallery" ||
+      gallery?.schema_version !== "tenant_work_gallery_v1" ||
+      gallery?.tenant_id !== identity.tenantId ||
+      gallery?.available !== true || gallery?.state !== "ready" ||
+      preflight?.memory_first?.status !== "recalled" ||
+      preflight?.governance?.execution_allowed_by_preflight !== false ||
+      security?.schema_version !== "nyra_core_security_gate_v1" ||
+      security?.always_on !== true || security?.fail_closed !== true ||
+      security?.core_verdict_required !== true ||
+      security?.source_instructions_are_data !== true ||
+      security?.cross_tenant_blocked !== true ||
+      preflight?.request?.operation_type !== contract.action ||
+      (domainPackId && preflight?.domain_pack?.id !== domainPackId)
+    ) {
+      throw new Error("policy_registry_preflight_binding_invalid");
+    }
+    return preflight;
+  }
+
+  function validatePolicyRegistrySnapshot(snapshot, identity, domainPackId) {
+    const exactFields = [
+      "ancestry", "bindings", "domain_pack_id", "immutable", "leaf_packs", "policy",
+      "resolution", "schema_version", "snapshot_digest", "sources", "tenant_id", "validity",
+    ];
+    if (
+      !snapshot || typeof snapshot !== "object" || Array.isArray(snapshot) ||
+      Object.keys(snapshot).sort().join("\0") !== exactFields.sort().join("\0") ||
+      snapshot.schema_version !== "nyra_policy_registry_v1" ||
+      snapshot.tenant_id !== identity.tenantId ||
+      snapshot.domain_pack_id !== domainPackId ||
+      snapshot.immutable !== true ||
+      !POLICY_REGISTRY_SHA256.test(String(snapshot.snapshot_digest || "")) ||
+      policyRegistryCanonicalBytes(snapshot) > POLICY_REGISTRY_SNAPSHOT_LIMIT_BYTES
+    ) throw new Error("policy_registry_snapshot_invalid");
+    const forbidden = policyRegistryForbiddenField(snapshot);
+    if (forbidden) throw new Error("policy_registry_snapshot_not_pure");
+    const body = structuredClone(snapshot);
+    delete body.snapshot_digest;
+    const computed = crypto.createHash("sha256")
+      .update(JSON.stringify(stableCanonical(body)))
+      .digest("hex");
+    if (computed !== snapshot.snapshot_digest) throw new Error("policy_registry_snapshot_invalid");
+    return snapshot;
+  }
+
+  function projectPolicyRegistryResponse(kind, payload, identity, args, preflight) {
+    const contract = POLICY_REGISTRY_ROUTES[kind];
+    const authorization = payload?.authorization;
+    const result = payload?.[contract.responseField];
+    if (
+      payload?.ok !== true || payload?.tenant_id !== identity.tenantId ||
+      String(payload?.work_id || "").toLowerCase() !== String(args.work_id).toLowerCase() ||
+      !authorization || typeof authorization !== "object" || Array.isArray(authorization) ||
+      authorization.allowed !== true || authorization.scope !== "policy_registry_snapshot_mutation" ||
+      typeof authorization.state !== "string" || authorization.confirmation_satisfied !== true ||
+      authorization.core_final_authority !== true || authorization.caller_authority !== false ||
+      authorization.provider_execution_authorized !== false ||
+      !result || typeof result !== "object" || Array.isArray(result) ||
+      result.tenant_id !== identity.tenantId ||
+      String(result.work_id || "").toLowerCase() !== String(args.work_id).toLowerCase() ||
+      result.operation_id !== args.operation_id || result.preflight_id !== preflight.preflight_id ||
+      !POLICY_REGISTRY_SHA256.test(String(result.snapshot_digest || "")) ||
+      !POLICY_REGISTRY_SHA256.test(String(result.compiler_provenance_digest || "")) ||
+      result[contract.successField] !== true || typeof result.idempotent_replay !== "boolean" ||
+      result.proof_status !== "consumed" || result.execution_authorized !== false ||
+      result.provider_execution_authorized !== false || result.caller_authority !== false
+    ) throw new Error("policy_registry_core_response_invalid");
+    if (result.intent_digest !== undefined && !POLICY_REGISTRY_SHA256.test(String(result.intent_digest))) {
+      throw new Error("policy_registry_core_response_invalid");
+    }
+    if (result.activation_generation !== undefined &&
+      (!Number.isSafeInteger(result.activation_generation) || result.activation_generation < 0)) {
+      throw new Error("policy_registry_core_response_invalid");
+    }
+    const projectedResult = {
+      tenant_id: identity.tenantId,
+      work_id: String(args.work_id).toLowerCase(),
+      operation_id: args.operation_id,
+      preflight_id: preflight.preflight_id,
+      snapshot_digest: result.snapshot_digest,
+      compiler_provenance_digest: result.compiler_provenance_digest,
+      [contract.successField]: true,
+      idempotent_replay: result.idempotent_replay,
+      proof_status: "consumed",
+      execution_authorized: false,
+      provider_execution_authorized: false,
+      caller_authority: false,
+      ...(result.intent_digest ? { intent_digest: result.intent_digest } : {}),
+      ...(result.activation_generation !== undefined
+        ? { activation_generation: result.activation_generation }
+        : {}),
+    };
+    return {
+      ok: true,
+      tenant_id: identity.tenantId,
+      work_id: String(args.work_id).toLowerCase(),
+      [contract.responseField]: projectedResult,
+      authorization: {
+        allowed: true,
+        state: authorization.state,
+        scope: "policy_registry_snapshot_mutation",
+        confirmation_satisfied: true,
+        core_final_authority: true,
+        caller_authority: false,
+        provider_execution_authorized: false,
+      },
+      execution_authorized: false,
+      provider_execution_authorized: false,
+      caller_authority: false,
+    };
+  }
+
+  async function policyRegistryLifecycle(kind, args, identity) {
+    const contract = POLICY_REGISTRY_ROUTES[kind];
+    if (!contract) throw new Error("policy_registry_operation_invalid");
+    const workId = String(args?.work_id || "").trim().toLowerCase();
+    const operationId = String(args?.operation_id || "").trim();
+    const domainPackId = kind === "reconcile" ? null : String(args?.domain_pack_id || "").trim();
+    const allowedFields = new Set([
+      "work_id", "operation_id", "owner_confirmed", "confirmation_reference",
+      "agent_id", "client_type", "session_id", "work_preflight",
+      ...(kind === "activate" ? ["domain_pack_id", "snapshot", "compiler_input"] : []),
+      ...(kind === "rollback" ? ["domain_pack_id", "target_snapshot_digest"] : []),
+    ]);
+    if (!args || typeof args !== "object" || Array.isArray(args) ||
+      Object.keys(args).some((field) => !allowedFields.has(field))) {
+      throw new Error("policy_registry_caller_fields_invalid");
+    }
+    if (!POLICY_REGISTRY_WORK_ID.test(workId) || !POLICY_REGISTRY_OPERATION_ID.test(operationId) ||
+      (domainPackId && !POLICY_REGISTRY_DOMAIN_PACK_ID.test(domainPackId))) {
+      throw new Error("policy_registry_request_invalid");
+    }
+    if (args.owner_confirmed !== true || identity?.ownerConfirmed !== true) {
+      throw new Error("owner_confirmation_required");
+    }
+    const preflight = validatePolicyRegistryPreflight(args.work_preflight, identity, contract, domainPackId);
+    if (kind === "activate") {
+      validatePolicyRegistrySnapshot(args.snapshot, identity, domainPackId);
+      validatePolicyRegistryCompilerInput(args.compiler_input, identity, domainPackId);
+    }
+    if (kind === "rollback" && !POLICY_REGISTRY_SHA256.test(String(args.target_snapshot_digest || ""))) {
+      throw new Error("policy_registry_request_invalid");
+    }
+    const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+    const requestBody = {
+      tenant_id: identity.tenantId,
+      work_id: workId,
+      operation_id: operationId,
+      ...(domainPackId ? { domain_pack_id: domainPackId } : {}),
+      work_preflight: preflight,
+      owner_confirmed: true,
+      confirmation_reference: hostNativeConfirmationReference(
+        identity,
+        ownerMode,
+        contract.purpose,
+        operationId,
+      ),
+      ...(kind === "activate" ? { snapshot: args.snapshot } : {}),
+      ...(kind === "activate" ? { compiler_input: args.compiler_input } : {}),
+      ...(kind === "rollback" ? { target_snapshot_digest: args.target_snapshot_digest } : {}),
+    };
+    const body = {
+      ...requestBody,
+      owner_context: ownerContext(identity, {
+        hostNativeOwner: true,
+        requestBinding: ownerRequestBinding(contract.purpose, requestBody),
+      }),
+    };
+    if (Buffer.byteLength(canonicalDttWorkContextBody(body), "utf8") >
+      POLICY_REGISTRY_REQUEST_LIMIT_BYTES) {
+      throw new Error("policy_registry_request_too_large");
+    }
+    const payload = await dttCoreRequest(contract.path, { work_id: workId }, identity, {
+      method: "POST",
+      body,
+      preservePolicyRegistryDomainPackId: kind !== "reconcile",
+      strictTransport: true,
+      timeoutMs: policyRegistryCoreTimeoutMs,
+    });
+    return dedicatedCoreTextResult(
+      projectPolicyRegistryResponse(kind, payload, identity, { ...args, work_id: workId, operation_id: operationId }, preflight),
+      contract.path,
+    );
+  }
+
+  const handlers = {
+    core_health: async (_args, identity) => {
+      const coreHealth = await coreRequest("/healthz", identity.tenantId);
+      let icfGenericWorkCoreJoin;
+      try {
+        const attestation = await coreRequest(
+          "/v1/icf/runtime/attestation",
+          identity.tenantId,
+          {
+            strictTransport: true,
+            timeoutMs: POLICY_REGISTRY_CORE_TIMEOUT_MS,
+            maxResponseBytes: POLICY_REGISTRY_RESPONSE_LIMIT_BYTES,
+          },
+        );
+        icfGenericWorkCoreJoin = projectIcfGenericWorkCoreJoinAttestation(attestation);
+      } catch {
+        icfGenericWorkCoreJoin = projectIcfGenericWorkCoreJoinAttestation(
+          null,
+          { unavailable: true },
+        );
+      }
+      return textResult({
+        ...coreHealth,
+        generic_work_core_join_remote_ed25519:
+          coreHealth?.generic_work_core_join
+          && typeof coreHealth.generic_work_core_join === "object"
+          && !Array.isArray(coreHealth.generic_work_core_join)
+            ? coreHealth.generic_work_core_join
+            : null,
+        generic_work_core_join: icfGenericWorkCoreJoin,
+        tenant_id: identity.tenantId,
+        mcp_identity: ownerBindingStatus(config, identity),
+      });
+    },
+    nyra_control_room_status: async (args, identity) => {
+      const health = await coreRequest("/healthz", identity.tenantId);
+      const work = args.work_id && typeof readControlRoomWorkContext === "function"
+        ? await readControlRoomWorkContext(identity, {
+            work_id: args.work_id,
+            ...(args.project_id ? { project_id: args.project_id } : {}),
+          })
+        : null;
+      return textResult({
+        ok: health?.ok === true,
+        tenant_id: identity.tenantId,
+        control_room: projectNyraControlRoomStatus({
+          health,
+          work,
+          nyraDialogueEnabled: config.nyraDialogueEnabled === true,
+        }),
+      });
+    },
+    nyra_policy_registry_activate: async (args, identity) =>
+      policyRegistryLifecycle("activate", args, identity),
+    nyra_policy_registry_rollback: async (args, identity) =>
+      policyRegistryLifecycle("rollback", args, identity),
+    nyra_policy_registry_reconcile: async (args, identity) =>
+      policyRegistryLifecycle("reconcile", args, identity),
+    host_native_status: async (_args, identity) => textResult(
+      await coreRequest("/v1/host-native/status", identity.tenantId),
+    ),
+    host_native_work_plan_create: async (args, identity) => textResult(
+      await coreRequest("/v1/host-native/work-plans", identity.tenantId, {
+        method: "POST",
+        body: {
+          work_id: args.work_id,
+          intent_anchor_digest: args.intent_anchor_digest,
+          repository: args.repository,
+          base_branch: args.base_branch,
+          objective: args.objective,
+          required_checks: args.required_checks,
+          agents: args.agents,
+          ...(args.max_parallel === undefined ? {} : { max_parallel: args.max_parallel }),
+        },
+      }),
+    ),
+    host_native_release_intent_build: async (args, identity) => {
+      const route = "/v1/host-native/release-intents";
+      return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          work_id: args.work_id,
+          intent_anchor_digest: args.intent_anchor_digest,
+          repository: args.repository,
+          base_branch: args.base_branch,
+          delivery_branch: args.delivery_branch,
+          base_commit: args.base_commit,
+          head_commit: args.head_commit,
+          tree_sha: args.tree_sha,
+          diff_digest: args.diff_digest,
+          changed_files: args.changed_files,
+          verification: args.verification,
+          delivery: args.delivery,
+          rollback: args.rollback,
+        },
+      }), route);
+    },
+    host_native_core_join_issue: async (args, identity) => {
+      const route = "/v1/host-native/core-join-verdicts";
+      return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          work_id: args.work_id,
+          intent_anchor_digest: args.intent_anchor_digest,
+          repository: args.repository,
+          core_plan_id: args.core_plan_id,
+          core_plan_digest: args.core_plan_digest,
+          local_plan_id: args.local_plan_id,
+          local_plan_digest: args.local_plan_digest,
+          evaluation_digest: args.evaluation_digest,
+          acceptance_criteria: args.acceptance_criteria,
+          builder_report: args.builder_report,
+          verifier_reports: args.verifier_reports,
+          checks: args.checks,
+          closure_attestation: args.closure_attestation,
+          release_intent: args.release_intent,
+          ...(args.required_checks_policy_digest
+            ? { required_checks_policy_digest: args.required_checks_policy_digest }
+            : {}),
+          provider_execution: false,
+          idempotency_key: args.idempotency_key,
+        },
+      }), route);
+    },
+    generic_work_core_join_issue: async (args, identity) => {
+      const route = "/v1/work-continuity/generic-core-join";
+      const { tenant_id: _callerTenantId, authenticated_tenant_id: _callerAuthenticatedTenantId,
+        secret: _secret, signing_secret: _signingSecret, verifier_secret: _verifierSecret, ...body } = args || {};
+      const response = await genericWorkCoreJoinCoreRequest(route, body, identity, {
+        method: "POST", body,
+      });
+      const verdict = response?.verdict;
+      const expectedWorkId = String(body.work_id || "").trim().toLowerCase();
+      const hash = /^[a-f0-9]{64}$/i;
+      if (!response || response.ok !== true || !verdict || typeof verdict !== "object" || Array.isArray(verdict) ||
+          verdict.schema_version !== "generic_work_core_join_v1" ||
+          !/^gwcj_[a-f0-9]{40}$/i.test(String(verdict.verdict_id || "")) ||
+          String(verdict.tenant_id || "") !== String(identity.tenantId || "") ||
+          String(verdict.work_id || "").toLowerCase() !== expectedWorkId ||
+          !verdict.adapter || !hash.test(String(verdict.acceptance_criteria_digest || "")) ||
+          !hash.test(String(verdict.task_state_digest || "")) || !hash.test(String(verdict.evidence_digest || "")) ||
+          !hash.test(String(verdict.independent_verifier_receipt_digest || "")) ||
+          !hash.test(String(verdict.idempotency_digest || "")) || !hash.test(String(verdict.verdict_digest || "")) ||
+          verdict.authority !== "universal_core" || verdict.decision !== "GENERIC_WORK_CORE_JOIN_ELIGIBLE" ||
+          verdict.execution_authorized !== false || verdict.host_action_authorized !== false ||
+          typeof verdict.signature !== "string" || verdict.signature.length < 16) {
+        throw new Error("generic_work_core_join_response_invalid");
+      }
+      return dedicatedCoreTextResult({ ok: true, generic_core_join_verdict: verdict }, route);
+    },
+    host_native_standing_release_mandate_install: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const ttlSeconds = Number(args.ttl_seconds);
+      if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 2_592_000) {
+        throw new Error("standing_release_mandate_ttl_invalid");
+      }
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.authorization_work_id,
+        args.authorization_intent_anchor_digest,
+      );
+      const requestBody = {
+        authorization_work_id: persistedIntent.work_id,
+        authorization_intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        authorization_intent_binding: persistedIntent.binding,
+        repository: args.repository,
+        base_branch: args.base_branch,
+        delivery_branch_prefix: args.delivery_branch_prefix,
+        allowed_path_prefixes: args.allowed_path_prefixes,
+        denied_path_prefixes: args.denied_path_prefixes || [],
+        required_checks: args.required_checks,
+        required_checks_policy_digest: args.required_checks_policy_digest,
+        services: args.services,
+        repair_classes: args.repair_classes,
+        limits: args.limits,
+        base_protection_required: args.base_protection_required === true,
+        expires_at: new Date(Date.now() + ttlSeconds * 1_000).toISOString(),
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_standing_release_mandate_install",
+          args.idempotency_key,
+        ),
+      };
+      const route = "/v1/host-native/standing-release/mandates";
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding(
+              "host_native_standing_release_mandate_install",
+              requestBody,
+            ),
+          }),
+        },
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_mandate_read: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/mandates/${encodeURIComponent(args.mandate_id)}`;
+      return textResult(await dttCoreRequest(
+        route,
+        { work_id: args.work_id },
+        identity,
+        { method: "GET", strictTransport: true },
+      ));
+    },
+    host_native_standing_release_mandate_revoke: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const requestBody = {
+        mandate_id: args.mandate_id,
+        reason_digest: args.reason_digest,
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_standing_release_mandate_revoke",
+          args.idempotency_key,
+        ),
+      };
+      const route = `/v1/host-native/standing-release/mandates/${encodeURIComponent(args.mandate_id)}/revoke`;
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding(
+              "host_native_standing_release_mandate_revoke",
+              requestBody,
+            ),
+          }),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_delegation_derive: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/mandates/${encodeURIComponent(args.mandate_id)}/derive-delegation`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body: {
+          work_id: persistedIntent.work_id,
+          intent_anchor_digest: persistedIntent.intent_anchor_digest,
+          intent_binding: persistedIntent.binding,
+          delivery_branch: args.delivery_branch,
+          changed_files: args.changed_files,
+          builder_agent_id: args.builder_agent_id,
+          verifier_agent_ids: args.verifier_agent_ids,
+          required_checks_policy_digest: args.required_checks_policy_digest,
+          induced_services: args.induced_services,
+          host_kind: hostNativeKind(identity),
+          host_session_fingerprint: hostNativeSessionFingerprint(identity),
+          ttl_seconds: args.ttl_seconds,
+          idempotency_key: args.idempotency_key,
+        },
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_start: async (args, identity) => {
+      const route = "/v1/host-native/standing-release/runs";
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        delegation_id: args.delegation_id,
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        host_kind: hostNativeKind(identity),
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_read: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}`;
+      return textResult(await dttCoreRequest(
+        route,
+        { work_id: args.work_id },
+        identity,
+        { method: "GET", strictTransport: true },
+      ));
+    },
+    host_native_standing_release_run_bind_ticket: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/bind-ticket`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        expected_version: args.expected_version,
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_reserve: async (args, identity) => {
+      if (
+        config.standingReleaseAutoCoordinatorConfigurationValid === false ||
+        (config.standingReleaseAutoCoordinatorEnabled &&
+          !config.githubStandingReleaseWorkerUrl)
+      ) {
+        throw new Error("standing_release_auto_coordinator_unavailable");
+      }
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/reserve`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        expected_version: args.expected_version,
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      const claim = payload?.github_execution_claim;
+      if (!config.standingReleaseAutoCoordinatorEnabled || !claim) {
+        return dedicatedCoreTextResult(payload, route);
+      }
+      if (
+        claim.schema_version !== "github_worker_execution_claim_v1" ||
+        claim.tenant_id !== identity.tenantId ||
+        String(claim.work_id || "").toLowerCase() !== persistedIntent.work_id ||
+        claim.ticket_id !== args.ticket_id ||
+        claim.ticket_id !== payload?.action_ticket?.ticket?.ticket_id ||
+        claim.reservation_id !== payload?.action_ticket?.reservation_id
+      ) {
+        throw new Error("standing_release_auto_claim_binding_mismatch");
+      }
+      // A reserve replay returns the authoritative current ticket. Once the
+      // first attempt has marked it reconciliation_required or completed, do
+      // not mint another worker attempt from the freshly signed replay claim.
+      if (payload.action_ticket.state !== "reserved") {
+        return dedicatedCoreTextResult(payload, route);
+      }
+
+      const dispatchDigest = standingReleaseAutoDigest({
+        schema_version: "standing_release_auto_dispatch_evidence_v1",
+        ticket_id: claim.ticket_id,
+        reservation_id: claim.reservation_id,
+        action_digest: claim.action_digest,
+        nonce: claim.nonce,
+        state: "outcome_unknown_before_dispatch",
+      });
+      const markerIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const completeRoute = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/complete`;
+      const marker = await dttCoreRequest(
+        completeRoute,
+        { work_id: markerIntent.work_id },
+        identity,
+        {
+          method: "POST",
+          strictTransport: true,
+          body: {
+            work_id: markerIntent.work_id,
+            intent_anchor_digest: markerIntent.intent_anchor_digest,
+            intent_binding: markerIntent.binding,
+            ticket_id: claim.ticket_id,
+            expected_version: args.expected_version,
+            reservation_id: claim.reservation_id,
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            outcome: "unknown",
+            result_digest: dispatchDigest,
+            idempotency_key: `auto-dispatch-${crypto.createHash("sha256")
+              .update(args.idempotency_key).digest("hex").slice(0, 32)}`,
+          },
+        },
+      );
+
+      let workerResponse;
+      let workerPayload;
+      try {
+        workerResponse = await fetchImpl(`${config.githubStandingReleaseWorkerUrl}/v1/execute`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            claim,
+            ...(args.materialization ? { materialization: args.materialization } : {}),
+          }),
+        });
+        workerPayload = await workerResponse.json().catch(() => null);
+      } catch {
+        throw new Error("standing_release_auto_execution_outcome_unknown");
+      }
+      if (!workerResponse.ok) {
+        const code = String(workerPayload?.error || "");
+        const error = new Error(code === "github_worker_execution_outcome_unknown"
+          ? "standing_release_auto_execution_outcome_unknown"
+          : "standing_release_auto_execution_failed");
+        error.statusCode = workerResponse.status;
+        throw error;
+      }
+
+      const execution = workerPayload?.execution;
+      const result = execution?.result;
+      const actionKind = String(claim.action?.kind || "");
+      const commitAction = ["git.push.branch", "github.merge"].includes(actionKind);
+      const pullRequestAction = ["github.draft_pr", "github.ready"].includes(actionKind);
+      if (
+        workerPayload?.ok !== true ||
+        workerPayload?.provider_execution !== true ||
+        execution?.schema_version !== "github_worker_execution_record_v1" ||
+        execution?.state !== "succeeded" ||
+        execution?.tenant_id !== claim.tenant_id ||
+        execution?.repository !== claim.repository ||
+        execution?.ticket_id !== claim.ticket_id ||
+        execution?.reservation_id !== claim.reservation_id ||
+        execution?.action_digest !== claim.action_digest ||
+        execution?.nonce !== claim.nonce ||
+        execution?.claim_digest !== standingReleaseAutoDigest(claim) ||
+        !/^gwl_[a-f0-9]{64}$/.test(String(execution?.signature || "")) ||
+        result?.outcome !== "success" ||
+        (!commitAction && !pullRequestAction) ||
+        (commitAction && !/^[a-f0-9]{40}$/.test(String(result?.result_commit || ""))) ||
+        (pullRequestAction && !/^[a-f0-9]{40}$/.test(String(claim.action?.head_commit || ""))) ||
+        (pullRequestAction && (!Number.isSafeInteger(result?.result_pull_request) ||
+          result.result_pull_request < 1))
+      ) {
+        throw new Error("standing_release_auto_worker_result_invalid");
+      }
+
+      const resultDigest = standingReleaseAutoDigest({
+        schema_version: "standing_release_auto_execution_evidence_v1",
+        ticket_id: claim.ticket_id,
+        reservation_id: claim.reservation_id,
+        action_digest: claim.action_digest,
+        state: execution.state,
+        result: execution.result,
+      });
+      const reconcileIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const reconcileRoute = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/reconcile`;
+      const reconcileBody = {
+        work_id: reconcileIntent.work_id,
+        intent_anchor_digest: reconcileIntent.intent_anchor_digest,
+        intent_binding: reconcileIntent.binding,
+        ticket_id: claim.ticket_id,
+        expected_version: args.expected_version,
+        reservation_id: claim.reservation_id,
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        observed_outcome: "success",
+        readback_digest: resultDigest,
+        idempotency_key: `auto-reconcile-${crypto.createHash("sha256")
+          .update(args.idempotency_key).digest("hex").slice(0, 32)}`,
+        observed_commit: result.result_commit || claim.action.head_commit,
+        ...(result.result_pull_request === undefined
+          ? {}
+          : { observed_pull_request: result.result_pull_request }),
+      };
+      const reconciliation = await dttCoreRequest(
+        reconcileRoute,
+        { work_id: reconcileIntent.work_id },
+        identity,
+        { method: "POST", body: reconcileBody, strictTransport: true },
+      );
+      return dedicatedCoreTextResult({
+        ...payload,
+        standing_release_auto_coordinator: {
+          schema_version: "standing_release_auto_coordinator_result_v1",
+          forwarded: true,
+          core_unknown_marker: marker,
+          worker_execution: execution,
+          core_reconciliation: reconciliation,
+          provider_execution: true,
+        },
+      }, route);
+    },
+    host_native_standing_release_run_complete: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/complete`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        expected_version: args.expected_version,
+        reservation_id: args.reservation_id,
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        outcome: args.outcome,
+        result_digest: args.result_digest,
+        idempotency_key: args.idempotency_key,
+        ...(args.result_commit ? { result_commit: args.result_commit } : {}),
+        ...(args.result_pull_request === undefined
+          ? {}
+          : { result_pull_request: args.result_pull_request }),
+        ...(args.readback_digest ? { readback_digest: args.readback_digest } : {}),
+      };
+      const payload = await dttCoreRequest(
+        route,
+        { work_id: persistedIntent.work_id },
+        identity,
+        { method: "POST", body, strictTransport: true },
+      );
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_reconcile: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/reconcile`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        expected_version: args.expected_version,
+        reservation_id: args.reservation_id,
+        host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        observed_outcome: args.observed_outcome,
+        readback_digest: args.readback_digest,
+        idempotency_key: args.idempotency_key,
+        ...(args.observed_commit ? { observed_commit: args.observed_commit } : {}),
+        ...(args.observed_pull_request === undefined
+          ? {}
+          : { observed_pull_request: args.observed_pull_request }),
+      };
+      const payload = await dttCoreRequest(
+        route,
+        { work_id: persistedIntent.work_id },
+        identity,
+        { method: "POST", body, strictTransport: true },
+      );
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_advance: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/advance`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        expected_version: args.expected_version,
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_quarantine_expired: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/quarantine-expired`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        ticket_id: args.ticket_id,
+        reservation_id: args.reservation_id,
+        expected_version: args.expected_version,
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_run_cancel: async (args, identity) => {
+      const route = `/v1/host-native/standing-release/runs/${encodeURIComponent(args.run_id)}/cancel`;
+      const persistedIntent = await persistedStandingReleaseIntent(
+        identity,
+        args.work_id,
+        args.intent_anchor_digest,
+      );
+      const body = {
+        work_id: persistedIntent.work_id,
+        intent_anchor_digest: persistedIntent.intent_anchor_digest,
+        intent_binding: persistedIntent.binding,
+        reason_digest: args.reason_digest,
+        expected_version: args.expected_version,
+        idempotency_key: args.idempotency_key,
+      };
+      const payload = await dttCoreRequest(route, { work_id: persistedIntent.work_id }, identity, {
+        method: "POST",
+        body,
+        strictTransport: true,
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_standing_release_github_execute: async (args, identity) => {
+      const persistedIntent = await persistedStandingReleaseIntent(identity, args.work_id, args.intent_anchor_digest);
+      if (String(args.claim?.tenant_id || "") !== String(identity.tenantId || "") ||
+          String(args.claim?.work_id || "").toLowerCase() !== persistedIntent.work_id ||
+          String(args.claim?.schema_version || "") !== "github_worker_execution_claim_v1") {
+        throw new Error("github_worker_execution_claim_binding_mismatch");
+      }
+      if (!config.githubStandingReleaseWorkerUrl) throw new Error("github_worker_unavailable");
+      const response = await fetchImpl(`${config.githubStandingReleaseWorkerUrl}/v1/execute`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ claim: args.claim, ...(args.materialization ? { materialization: args.materialization } : {}) }),
+      });
+      const payload = await response.json().catch(() => ({ error: "github_worker_invalid_response" }));
+      if (!response.ok) {
+        const error = new Error(String(payload?.error || "github_worker_execution_failed"));
+        error.statusCode = response.status;
+        throw error;
+      }
+      return dedicatedCoreTextResult(payload, "/v1/execute");
+    },
+    host_native_standing_release_github_reconcile: async (args, identity) => {
+      const persistedIntent = await persistedStandingReleaseIntent(identity, args.work_id, args.intent_anchor_digest);
+      if (String(args.claim?.tenant_id || "") !== String(identity.tenantId || "") ||
+          String(args.claim?.work_id || "").toLowerCase() !== persistedIntent.work_id ||
+          String(args.claim?.schema_version || "") !== "github_worker_execution_claim_v1") {
+        throw new Error("github_worker_execution_claim_binding_mismatch");
+      }
+      if (!config.githubStandingReleaseWorkerUrl) throw new Error("github_worker_unavailable");
+      const response = await fetchImpl(`${config.githubStandingReleaseWorkerUrl}/v1/reconcile`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ claim: args.claim }),
+      });
+      const payload = await response.json().catch(() => ({ error: "github_worker_invalid_response" }));
+      if (!response.ok) {
+        const error = new Error(String(payload?.error || "github_worker_reconciliation_failed"));
+        error.statusCode = response.status;
+        throw error;
+      }
+      return dedicatedCoreTextResult(payload, "/v1/reconcile");
+    },
+    host_native_delegation_issue: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const ttlSeconds = Number(args.ttl_seconds);
+      if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 43_200) {
+        throw new Error("host_native_delegation_ttl_invalid");
+      }
+      const requestBody = {
+        work_id: args.work_id,
+        intent_anchor_digest: args.intent_anchor_digest,
+        repository: args.repository,
+        audience: args.audience,
+        allowed_branches: args.allowed_branches,
+        protected_branches: args.protected_branches || [],
+        allowed_path_prefixes: args.allowed_path_prefixes,
+        allowed_actions: args.allowed_actions,
+        ...(args.budget ? { budget: args.budget } : {}),
+        ...(args.release_policy ? { release_policy: args.release_policy } : {}),
+        idempotency_key: args.idempotency_key,
+        // Keep the semantic duration separate from the transport timestamp.
+        // Universal Core uses it for idempotency, so a retry that necessarily
+        // carries a fresh expires_at and owner assertion still replays the
+        // original bounded delegation instead of widening its lifetime.
+        requested_ttl_seconds: ttlSeconds,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_delegation_issue",
+          args.idempotency_key,
+        ),
+      };
+      const submit = (body) => coreRequest("/v1/host-native/delegations", identity.tenantId, {
+        method: "POST",
+        body: {
+          ...body,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding("host_native_delegation_issue", body),
+          }),
+        },
+      });
+      let payload;
+      try {
+        payload = await submit(requestBody);
+      } catch (error) {
+        // Compatibility is deliberately narrow: only a pre-TTL-contract Core
+        // rejecting this exact new field may receive the legacy absolute
+        // expiry. Every other error remains fail-closed.
+        if (error?.code !== "unknown_field:requested_ttl_seconds") throw error;
+        const {
+          requested_ttl_seconds: _requestedTtlSeconds,
+          ...legacyRequestBody
+        } = requestBody;
+        payload = await submit({
+          ...legacyRequestBody,
+          expires_at: new Date(Date.now() + ttlSeconds * 1_000).toISOString(),
+        });
+      }
+      return dedicatedCoreTextResult(payload, "/v1/host-native/delegations");
+    },
+    host_native_delegation_read: async (args, identity) => textResult(
+      await coreRequest(
+        `/v1/host-native/delegations/${encodeURIComponent(args.delegation_id)}`,
+        identity.tenantId,
+      ),
+    ),
+    host_native_delegation_revoke: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const requestBody = {
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_delegation_revoke",
+          args.idempotency_key,
+        ),
+      };
+      const route = `/v1/host-native/delegations/${encodeURIComponent(args.delegation_id)}/revoke`;
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding("host_native_delegation_revoke", requestBody),
+          }),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_action_authorize: async (args, identity) => {
+      const route = "/v1/host-native/actions/authorize";
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          delegation_id: args.delegation_id,
+          work_id: args.work_id,
+          intent_anchor_digest: args.intent_anchor_digest,
+          repository: args.repository,
+          host_kind: hostNativeKind(identity),
+          host_session_fingerprint: hostNativeSessionFingerprint(identity),
+          action: args.action,
+          evidence_digest: args.evidence_digest,
+          idempotency_key: args.idempotency_key,
+          ...(args.predecessor_ticket_id
+            ? { predecessor_ticket_id: args.predecessor_ticket_id }
+            : {}),
+          ...(args.release_manifest ? { release_manifest: args.release_manifest } : {}),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
+    host_native_action_read: async (args, identity) => textResult(
+      await coreRequest(
+        `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}`,
+        identity.tenantId,
+        { useTenantGateway: true },
+      ),
+    ),
+    host_native_action_reserve: async (args, identity) => {
+      const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reserve`;
+      return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          host_session_fingerprint: hostNativeSessionFingerprint(identity),
+          idempotency_key: args.idempotency_key,
+        },
+      }), route);
+    },
+    host_native_action_complete: async (args, identity) => {
+      const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/complete`;
+      const ticketRecord = await trustedHostNativeTicketRecord(
+        args.ticket_id,
+        identity,
+        ["reserved"],
+      );
+      try {
+        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+          method: "POST",
+          useTenantGateway: true,
+          body: {
+            reservation_id: args.reservation_id,
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            outcome: args.outcome,
+            result_digest: args.result_digest,
+            idempotency_key: args.idempotency_key,
+            ...(args.result_commit ? { result_commit: args.result_commit } : {}),
+            ...(args.result_pull_request === undefined
+              ? {}
+              : { result_pull_request: args.result_pull_request }),
+            ...(args.readback_digest ? { readback_digest: args.readback_digest } : {}),
+          },
+        }), route);
+      } catch (error) {
+        throw attachTrustedHostNativeTicket(error, ticketRecord);
+      }
+    },
+    host_native_action_reconcile: async (args, identity) => {
+      const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/reconcile`;
+      const ticketRecord = await trustedHostNativeTicketRecord(
+        args.ticket_id,
+        identity,
+        ["reserved", "reconciliation_required"],
+      );
+      try {
+        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+          method: "POST",
+          useTenantGateway: true,
+          body: {
+            reservation_id: args.reservation_id,
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            idempotency_key: args.idempotency_key,
+            observed_outcome: args.observed_outcome,
+            readback_digest: args.readback_digest,
+            ...(args.observed_commit ? { observed_commit: args.observed_commit } : {}),
+            ...(args.observed_pull_request === undefined
+              ? {}
+              : { observed_pull_request: args.observed_pull_request }),
+          },
+        }), route);
+      } catch (error) {
+        throw attachTrustedHostNativeTicket(error, ticketRecord);
+      }
+    },
+    host_native_action_quarantine_expired: async (args, identity) => {
+      const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/quarantine-expired`;
+      const ticketRecord = await trustedHostNativeTicketRecord(
+        args.ticket_id,
+        identity,
+        ["reserved", "reconciliation_required"],
+      );
+      try {
+        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+          method: "POST",
+          useTenantGateway: true,
+          body: {
+            reservation_id: args.reservation_id,
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            readback_digest: args.readback_digest,
+            idempotency_key: args.idempotency_key,
+          },
+        }), route);
+      } catch (error) {
+        throw attachTrustedHostNativeTicket(error, ticketRecord);
+      }
+    },
+    host_native_action_observe_unreserved: async (args, identity) => {
+      const route = `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/observe-unreserved`;
+      const ticketRecord = await trustedHostNativeTicketRecord(args.ticket_id, identity, ["issued"]);
+      try {
+        return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
+          method: "POST",
+          useTenantGateway: true,
+          body: {
+            host_session_fingerprint: hostNativeSessionFingerprint(identity),
+            observed_outcome: args.observed_outcome,
+            observed_commit: args.observed_commit,
+            readback_digest: args.readback_digest,
+            verifier_evidence_digest: args.verifier_evidence_digest,
+            deviation_reason: args.deviation_reason,
+            idempotency_key: args.idempotency_key,
+          },
+        }), route);
+      } catch (error) {
+        throw attachTrustedHostNativeTicket(error, ticketRecord);
+      }
+    },
+    host_native_action_closure_receipt: async (args, identity) => {
+      const route =
+        `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/authorize-finalize`;
+      return textResult(await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        },
+      }));
+    },
+    work_preflight: async (args, identity) => {
+      const coreRuntime = await runtimeHierarchyEvaluate(args, identity, args.operation_type || "work_preflight");
+      const agentPresence = identity.agentPresence || createAgentPresence(config, identity, args);
+      const registeredPrincipal = identity.authenticatedHostPrincipal?.registered === true;
+      const resolvedHostType = identity.authenticatedHostPrincipal
+        ? (registeredPrincipal
+            ? authenticatedHostKind(identity)
+            : identity.kind === "codex" ? "codex_native" : "chatgpt_native")
+        : (identity.kind === "codex" || agentPresence.client_type === "codex")
+          ? "codex_native"
+          : "chatgpt_native";
+      const bootstrap = sharedMemoryBootstrap
+        ? await sharedMemoryBootstrap.load(identity)
+        : { loaded: false, tenant_id: identity.tenantId, missing_files: [], reason: "shared_memory_bootstrap_unavailable" };
+      const gallery = await galleryContext(args, identity);
+      const sharedContext = await memoryContext({
+        query: args.request,
+        project_id: args.project_id,
+        session_id: args.session_id,
+        agent_id: args.agent_id || "connected_ai",
+      }, identity);
+      const preflightBody = {
+        request: args.request,
+        target_system: args.target_system || "universal_core",
+        operation_type: args.operation_type || "advisory_work",
+        source_tool: args.tool_name,
+        ...(args.work_id ? { work_id: args.work_id } : {}),
+        ...(args.parent_work_id ? { parent_work_id: args.parent_work_id } : {}),
+        ...(args.project_id ? { project_id: args.project_id } : {}),
+        ...(Array.isArray(args.acceptance_criteria) ? { acceptance_criteria: args.acceptance_criteria } : {}),
+        ...(Array.isArray(args.constraints) ? { constraints: args.constraints } : {}),
+        host_native: {
+          requested: identity.authenticatedHostPrincipal
+            ? registeredPrincipal
+            : args.host_type === "chatgpt_native" || args.host_type === "codex_native",
+          host_type: resolvedHostType,
+          provider_execution: false,
+          provider_api_key_required: false,
+          server_model_calls: 0,
+          host_spawn_required: true,
+          host_policy_override: false,
+          host_policy_must_allow: true,
+        },
+        ...(args.evidence_state && typeof args.evidence_state === "object" ? { evidence_state: args.evidence_state } : {}),
+        ...(Array.isArray(args.research_allowed_domains) ? { research_allowed_domains: args.research_allowed_domains } : {}),
+        ...(Array.isArray(args.nyra_branches) ? { nyra_branches: args.nyra_branches } : {}),
+        ...(Array.isArray(args.available_capabilities) ? { available_capabilities: args.available_capabilities } : {}),
+        ...(args.dynamic_capability && typeof args.dynamic_capability === "object"
+          ? { dynamic_capability: args.dynamic_capability }
+          : {}),
+        ...(args.work_binding && typeof args.work_binding === "object"
+          ? { work_binding: args.work_binding }
+          : {}),
+        owner_confirmed: hasExplicitVerifiedOwnerConfirmation(identity),
+        ...(verifiedConfirmationReference(identity) ? { confirmation_reference: verifiedConfirmationReference(identity) } : {}),
+        ...(sharedContext ? { memory_context: sharedContext } : {}),
+        gallery_context: gallery,
+        agent_presence: agentPresence,
+        tenant_id: identity.tenantId,
+      };
+      const payload = await coreRequest("/v1/work/preflight", identity.tenantId, {
+        method: "POST",
+        // Production uses the dedicated gateway and signed tenant context.
+        // Test-only configurations without that credential stay tenant-bound
+        // through their individual Core key and cannot cross tenant scope.
+        useTenantGateway: Boolean(config.tenantGatewayKey),
+        body: {
+          ...preflightBody,
+          owner_context: ownerContext(identity, ownerRequestBinding("work_preflight", preflightBody)),
+        },
+      });
+      const complete = {
+        ...attachSharedMemoryBootstrap(applyVerifiedOwnerConfirmation(payload, identity), bootstrap),
+        operational_surface: "tenant_work_gallery",
+        gallery_version: gallery.schema_version,
+        tenant_work_gallery: gallery,
+        agent_presence: agentPresence,
+        core_runtime: coreRuntime,
+      };
+      if (args.response_mode === "full") return textResult(complete);
+      const compact = {
+        ok: complete.ok !== false,
+        tenant_id: identity.tenantId,
+        received_memory: compactMemoryContext(complete.received_memory),
+        work_preflight: compactWorkPreflight(complete.work_preflight || complete),
+        governance: complete.governance,
+        core_runtime: coreRuntime,
+        shared_memory_bootstrap: compactBootstrap(complete.shared_memory_bootstrap || complete.work_preflight?.shared_memory_bootstrap),
+        operational_surface: "tenant_work_gallery",
+        gallery_version: gallery.schema_version,
+        tenant_work_gallery: gallery,
+        agent_presence: agentPresence,
+        details_available: true,
+        full_mode: "work_preflight.response_mode=full",
+      };
+      return compactTextResult(compact, {
+        preflight_id: compact.work_preflight?.preflight_id,
+        state: compact.work_preflight?.state,
+        tenant_id: compact.tenant_id,
+        operational_surface: compact.operational_surface,
+        gallery_state: compact.tenant_work_gallery.state,
+        gallery_work_count: compact.tenant_work_gallery.work_count,
+        shared_memory_bootstrap_loaded: compact.shared_memory_bootstrap?.loaded === true,
+      });
+    },
+    core_runtime_hierarchy_status: async (_args, identity) => textResult({
+      ...(await coreRequest("/v1/runtime/hierarchy/status", identity.tenantId)),
+      tenant_id: identity.tenantId,
+    }),
+    core_runtime_hierarchy_evaluate: async (args, identity) => textResult({
+      ok: true,
+      tenant_id: identity.tenantId,
+      core_runtime: await runtimeHierarchyEvaluate(args, identity, args.operation_type || "runtime_hierarchy_evaluate"),
+    }),
+    nyra_runtime_context: async (args, identity) => {
+      const sharedContext = await memoryContext({
+        query: args.query || "Nyra Core current work decisions and pending handoffs",
+        project_id: args.project_id,
+        session_id: args.session_id,
+        agent_id: args.agent_id || "nyra",
+      }, identity);
+      return textResult(await coreRequest("/v1/codex/context", identity.tenantId, {
+        method: "POST",
+        body: {
+        task: "ChatGPT requests Nyra runtime context",
+        user_input: args.include_control_snapshot ? "Include control snapshot" : "Read readiness context",
+        locale: "it",
+        ...(sharedContext ? { memory_context: sharedContext } : {}),
+        ...(args.work_preflight ? { work_preflight: args.work_preflight } : {}),
+        tenant_id: identity.tenantId
+        }
+      }));
+    },
+    nyra_branch_catalog: async (_args, identity) => textResult(await coreRequest("/v1/nira/branches", identity.tenantId)),
+    // Reading remains a pure operation. Materialization is a separate,
+    // request-bound owner mutation verified again by Universal Core.
+    nyra_self_model: async (_args, identity) => textResult(await coreRequest("/v1/nira/self-model", identity.tenantId)),
+    nyra_self_model_refresh: async (_args, identity) => {
+      if (!hasExplicitVerifiedOwnerConfirmation(identity)) {
+        throw new Error("owner_confirmation_required");
+      }
+      const requestBody = {
+        confirmation_reference: verifiedConfirmationReference(identity),
+      };
+      const payload = await coreRequest("/v1/nira/self-model/refresh", identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            requestBinding: ownerRequestBinding("nyra_self_model_refresh", requestBody),
+          }),
+        },
+      });
+      const authorized = payload?.ok === true &&
+        payload?.self_model?.schema_version === "nyra_persistent_self_model_v1" &&
+        payload?.execution_allowed === false;
+      return textResult({
+        ...payload,
+        dedicated_core_gate: {
+          authorized,
+          authority: "universal_core",
+          route: "nyra_self_model_refresh",
+          server_owned: true,
+          provider_execution: false,
+          external_side_effect: false,
+        },
+      });
+    },
+    core_capability_catalog: async (args, identity) => textResult({
       ...readCoreCapabilityCatalog(args),
       tenant_id: identity.tenantId,
     }),
