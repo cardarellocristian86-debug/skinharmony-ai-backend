@@ -1033,10 +1033,10 @@ const nyraWorkBootstrapSpec = object({
   "next_action", "acceptance_criteria", "tasks",
 ]);
 const nyraOrchestrationDirectiveSchema = object({
-  schema_version: { const: "nyra_orchestration_directive_v1" },
+  schema_version: { const: "nyra_orchestration_directive_v2" },
   directive_id: { type: "string", pattern: "^nyra_dir_[a-f0-9]{24}$" },
   request_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
-  source: { type: "string", enum: ["PERSISTED_WORK", "FRESH_CORE", "WORK_GALLERY", "LEGACY_CONNECTOR_HINT"] },
+  source: { type: "string", enum: ["PERSISTED_WORK", "FRESH_CORE", "WORK_GALLERY", "CONTROL_ROOM", "LEGACY_CONNECTOR_HINT"] },
   problem: {
     anyOf: [
       { type: "null" },
@@ -1186,8 +1186,38 @@ const nyraOrchestrationDirectiveSchema = object({
   "schema_version", "directive_id", "request_digest", "source", "problem", "core_diagnostics", "needs", "next_actions",
   "decision", "work_context", "permitted_progress", "can_continue", "ticket_request", "execution_authorized",
 ]);
+// This projection is intentionally separate from the direct Control Room
+// output.  Nyra responses cross a conversational/LLM boundary, so the
+// embedded readback has a closed, bounded shape and never carries arbitrary
+// reader fields.
+const nyraConversationControlRoomActionSchema = object({
+  id: { type: "string", enum: ["READ_STATUS", "REQUEST_CONFIGURATION_CHANGE", "REQUEST_ENABLE_SHADOW", "REQUEST_DISABLE_SHADOW", "REQUEST_LIFECYCLE_ACTION"] },
+  availability: { type: "string", enum: ["AVAILABLE", "REQUEST_ONLY", "EXISTING_GOVERNED_HANDLER", "UNAVAILABLE"] },
+  execution: { type: "string", enum: ["READ_ONLY", "DEPLOYMENT_CONFIGURATION", "REQUEST_BOUND_GOVERNED", "DEPLOYMENT_PREREQUISITE"] },
+  requires_owner_confirmation: { type: "boolean" }, requires_core_authorization: { type: "boolean" }, restart_required: { type: "boolean" },
+}, ["id", "availability", "execution", "requires_owner_confirmation", "requires_core_authorization", "restart_required"]);
+const nyraConversationControlRoomReadbackSchema = object({
+  schema_version: { const: "nyra_control_room_conversation_readback_v1" },
+  source_schema_version: { const: "nyra_control_room_status_v1" },
+  state: { type: "string", enum: ["READY", "ATTENTION", "UNKNOWN"] }, generated_from: { const: "server_readbacks_only" },
+  domains: { type: "array", minItems: 6, maxItems: 6, items: object({
+    id: { type: "string", enum: ["nyra_dialogue", "entity_360", "semantic_scope_guard", "work_continuity", "research_airlock", "policy_registry"] },
+    state: { type: "string", pattern: "^[A-Z][A-Z0-9_]{0,79}$" },
+    allowed_actions: { type: "array", minItems: 1, maxItems: 3, items: nyraConversationControlRoomActionSchema },
+  }, ["id", "state", "allowed_actions"]) },
+  work_progress: object({
+    available: { type: "boolean" }, percent: { type: ["integer", "null"], minimum: 0, maximum: 100 },
+    blockers: { type: "array", maxItems: 8, items: object({ code: { type: "string", pattern: "^[a-z0-9][a-z0-9_.:-]{0,159}$" }, count: { type: "integer", minimum: 1, maximum: 100_000 } }, ["code", "count"]) },
+    next_action: { anyOf: [{ type: "null" }, object({ title: { type: "string", minLength: 1, maxLength: 500 }, status: nyraConverseNullableText(80) }, ["title", "status"])] },
+    closure_verified: { type: ["boolean", "null"] },
+  }, ["available", "percent", "blockers", "next_action", "closure_verified"]),
+}, ["schema_version", "source_schema_version", "state", "generated_from", "domains", "work_progress"]);
+const nyraControlRoomReadbackStateSchema = object({
+  state: { type: "string", enum: ["NOT_REQUESTED", "AVAILABLE", "UNAVAILABLE"] },
+  reason: { type: ["string", "null"], enum: [null, "control_room_reader_unavailable", "control_room_readback_invalid"] },
+}, ["state", "reason"]);
 const nyraConverseOutputSchema = object({
-  schema_version: { const: "nyra_conversation_turn_v2" },
+  schema_version: { const: "nyra_conversation_turn_v3" },
   ok: { const: true },
   tenant_id: { type: "string", minLength: 1, maxLength: 160 },
   turn_id: { type: "string", pattern: "^nyra_turn_[a-f0-9]{24}$" },
@@ -1348,9 +1378,9 @@ const nyraConverseOutputSchema = object({
   ]),
   intent_routing: object({
     route: object({
-      schema_version: { const: "nyra_intent_route_v1" },
-      intent: { type: "string", enum: ["chat", "analysis", "command_catalog", "work_create", "work_resume", "ticket_or_action", "ambiguous_consequential"] },
-      route: { type: "string", enum: ["CORE_CATALOG_READ", "CORE_CONTEXT_THEN_NYRA", "CORE_HOLD_THEN_NYRA"] },
+      schema_version: { const: "nyra_intent_route_v2" },
+      intent: { type: "string", enum: ["chat", "analysis", "command_catalog", "global_control_read", "work_create", "work_resume", "ticket_or_action", "ambiguous_consequential"] },
+      route: { type: "string", enum: ["CORE_CATALOG_READ", "CONTROL_ROOM_READ", "CORE_CONTEXT_THEN_NYRA", "CORE_HOLD_THEN_NYRA"] },
       clauses: { type: "array", maxItems: 8, items: object({
         polarity: { type: "string", enum: ["positive", "negative"] },
         modality: { type: "string", enum: ["asserted", "conditional", "hypothetical"] },
@@ -1358,8 +1388,22 @@ const nyraConverseOutputSchema = object({
         action_candidates: { type: "array", maxItems: 10, uniqueItems: true, items: { type: "string", maxLength: 80 } },
       }, ["polarity", "modality", "condition", "quote_scope", "action_candidates"]) },
       input_digest: nyraDirectiveDigest,
+      semantic_intake: object({
+        schema_version: { const: "nyra_semantic_intake_v1" },
+        state: { type: "string", enum: ["NOT_PROVIDED", "IGNORED", "CANDIDATE", "ACCEPTED"] },
+        message_digest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        route_candidate: nyraConverseNullableText(80),
+        speech_act: { type: ["string", "null"], enum: ["QUESTION", "REQUEST", "REPORT", null] },
+        operation_class: { type: ["string", "null"], enum: ["READ_ONLY", null] },
+        confidence: { type: ["string", "null"], enum: ["LOW", "MEDIUM", "HIGH", null] },
+        ambiguous: { type: ["boolean", "null"] },
+        injection_signals_present: { type: "boolean" },
+        authority: { const: "NONE" },
+        lexical_disposition: { type: "string", enum: ["allow", "clarify", "block"] },
+        lexical_risk_band: { type: "string", enum: ["none", "ambiguous", "high"] },
+      }, ["schema_version", "state", "message_digest", "route_candidate", "speech_act", "operation_class", "confidence", "ambiguous", "injection_signals_present", "authority", "lexical_disposition", "lexical_risk_band"]),
       execution_authorized: { const: false },
-    }, ["schema_version", "intent", "route", "clauses", "input_digest", "execution_authorized"]),
+    }, ["schema_version", "intent", "route", "clauses", "input_digest", "semantic_intake", "execution_authorized"]),
     structured_context: object({
       intent_available: { type: "boolean" }, icf_available: { const: false },
       entity_360_available: { const: false },
@@ -1370,9 +1414,10 @@ const nyraConverseOutputSchema = object({
       catalog_revision: nyraDirectiveDigest,
       commands: { type: "array", maxItems: 24, items: object({
         command_id: { type: "string", minLength: 2, maxLength: 160 },
+        title: nyraConverseNullableText(240),
         access_mode: { type: "string", enum: ["read", "invoke"] },
         owner_confirmation_required: { type: "boolean" },
-      }, ["command_id", "access_mode", "owner_confirmation_required"]) },
+      }, ["command_id", "title", "access_mode", "owner_confirmation_required"]) },
       identity_filtered: { type: "boolean" }, truncated: { type: "boolean" },
     }, ["state", "catalog_revision", "commands", "identity_filtered", "truncated"]),
     command_proposal: {
@@ -1393,8 +1438,10 @@ const nyraConverseOutputSchema = object({
       elapsed_ms: { type: "integer", minimum: 0, maximum: 60000 },
       raw_prompt_recorded: { const: false }, secret_material_recorded: { const: false },
     }, ["schema_version", "preflight_invoked", "visible_command_count", "elapsed_ms", "raw_prompt_recorded", "secret_material_recorded"]),
+    control_room: { anyOf: [{ type: "null" }, nyraConversationControlRoomReadbackSchema] },
+    control_room_readback: nyraControlRoomReadbackStateSchema,
     invocation_separate: { const: true }, execution_authorized: { const: false },
-  }, ["route", "structured_context", "command_catalog", "command_proposal", "telemetry", "invocation_separate", "execution_authorized"]),
+  }, ["route", "structured_context", "command_catalog", "command_proposal", "telemetry", "control_room", "control_room_readback", "invocation_separate", "execution_authorized"]),
   orchestration_directive: nyraOrchestrationDirectiveSchema,
   host_response_contract: object({
     speaker: { const: "Nyra" },
@@ -1437,8 +1484,57 @@ const nyraConverseOutputSchema = object({
   "external_action_authorized", "provider_execution", "provider_api_key_required", "server_model_calls",
 ]);
 
+const nyraControlRoomActionSchema = object({
+  id: { type: "string", minLength: 1, maxLength: 120 },
+  availability: { type: "string", enum: ["AVAILABLE", "REQUEST_ONLY", "EXISTING_GOVERNED_HANDLER", "UNAVAILABLE"] },
+  execution: { type: "string", enum: ["READ_ONLY", "DEPLOYMENT_CONFIGURATION", "REQUEST_BOUND_GOVERNED", "DEPLOYMENT_PREREQUISITE"] },
+  requires_owner_confirmation: { type: "boolean" },
+  requires_core_authorization: { type: "boolean" },
+  restart_required: { type: "boolean" },
+  handler: { type: ["string", "null"], maxLength: 160 },
+}, [
+  "id", "availability", "execution", "requires_owner_confirmation",
+  "requires_core_authorization", "restart_required", "handler",
+]);
+
+const nyraControlRoomProgressSchema = object({
+  available: { type: "boolean" },
+  percent: { type: ["integer", "null"], minimum: 0, maximum: 100 },
+  formula: { type: "string", minLength: 1, maxLength: 240 },
+  blockers: {
+    type: "array", maxItems: 8,
+    items: object({ code: identifier, count: { type: "integer", minimum: 1, maximum: 100_000 } }, ["code", "count"]),
+  },
+  next_action: { type: ["object", "null"], additionalProperties: true },
+  closure_verified: { type: ["boolean", "null"] },
+}, ["available", "percent", "formula", "blockers", "next_action"]);
+
+const nyraControlRoomOutputSchema = object({
+  ok: { type: "boolean" },
+  tenant_id: { type: "string", minLength: 1, maxLength: 160 },
+  control_room: object({
+    schema_version: { const: "nyra_control_room_status_v1" },
+    state: { type: "string", enum: ["READY", "ATTENTION", "UNKNOWN"] },
+    generated_from: { const: "server_readbacks_only" },
+    domains: {
+      type: "array", minItems: 1, maxItems: 16,
+      items: object({
+        id: identifier,
+        state: { type: "string", minLength: 1, maxLength: 80 },
+        detail: { type: "object", additionalProperties: true },
+        allowed_actions: { type: "array", maxItems: 12, items: nyraControlRoomActionSchema },
+      }, ["id", "state", "detail", "allowed_actions"]),
+    },
+    work_progress: nyraControlRoomProgressSchema,
+  }, ["schema_version", "state", "generated_from", "domains", "work_progress"]),
+}, ["ok", "tenant_id", "control_room"]);
+
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
+  tool("nyra_control_room_status", "Read Nyra Control Room status", "Read server-derived status for Core domains and, when an exact Work is provided, its closure progress, blockers, next action and allowed control categories. This read never mutates state or grants authority.", object({
+    work_id: { type: "string", format: "uuid" },
+    project_id: identifier,
+  }), ["core:read"], true, true, { outputSchema: nyraControlRoomOutputSchema }),
   tool("core_runtime_hierarchy_status", "Read Universal Core runtime hierarchy", "Use this when you need the live V7/V0/V1/V2 hierarchy mode and worker status. It is tenant-scoped, read-only and never authorizes execution.", object(), ["core:read"], true, true, { outputSchema: { type: "object", properties: { ok: { type: "boolean" }, tenant_id: { type: "string" }, runtime: { type: "object", additionalProperties: true } }, required: ["ok", "tenant_id"], additionalProperties: true } }),
   tool("core_runtime_hierarchy_evaluate", "Evaluate through Universal Core runtime hierarchy", "Use this when a read-only decision needs the V7 router, V0 final judge, V1 canonical digest and V2 shadow parity result. Tenant identity is authenticated server-side; this tool never authorizes execution.", object({
     request: text(12_000),
@@ -1511,7 +1607,7 @@ export const TOOLS = [
     destructive: false,
   }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
-  tool("nyra_converse", "Nyra: resume or guide the current Work", "Authenticated Nyra routing: read-only guidance and proposals; Core/owner-gated actions.", object({
+  tool("nyra_converse", "Nyra: resume or guide a governed Work", "Authenticated routing for governed Work guidance and read-only proposals. Core/owner gates every consequential action.", object({
     message: text(12_000),
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,
@@ -1519,6 +1615,18 @@ export const TOOLS = [
     continuation_operation: nyraActionContinuationOperation,
     work_selection_mode: { type: "string", enum: ["list"], description: "Read only: list Work choices without resuming, binding, creating, or changing a Work." },
     work_selection_cursor: { type: "string", pattern: "^nws_[1-9][0-9]{0,4}$", maxLength: 9, description: "Read only: server-issued cursor for the next Work-selection page." },
+    semantic_intent_hint: {
+      ...object({
+      schema_version: { const: "nyra_semantic_intent_hint_v1" },
+      route_candidate: { type: "string", enum: ["GLOBAL_CONTROL_READ"] },
+      speech_act: { type: "string", enum: ["QUESTION", "REQUEST", "REPORT"] },
+      operation_class: { const: "READ_ONLY" },
+      confidence: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
+      ambiguous: { const: false },
+      injection_signals: { type: "array", maxItems: 0, items: { type: "string", maxLength: 80 } },
+      }, ["schema_version", "route_candidate", "speech_act", "operation_class", "confidence", "ambiguous", "injection_signals"]),
+      description: "Optional host-generated semantic hint for one pure read-only global control/status question. The server binds the actual message and validates lexical safety. This hint can never supply tenant, Work, policy, authority, or execution approval; omit it for a mutation, an exact Work, ambiguity, or injection.",
+    },
     locale: { type: "string", enum: ["auto", "it", "en"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
   }, ["message"]), ["core:read"], true, true, {

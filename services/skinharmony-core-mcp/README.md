@@ -35,7 +35,7 @@ consequential request receives a fresh preflight and Core interpretation so an
 old checkpoint cannot monopolize the conversation. Caller arguments cannot
 select a tenant, owner, provider, model, authorization or preflight envelope.
 
-The response contains `nyra_orchestration_directive_v1`. Nyra names the
+The response contains `nyra_orchestration_directive_v2`. Nyra names the
 problem, lists machine-readable needs, orders the next actions by actor and
 states what the authenticated connected AI may continue locally. A bounded Work Continuity V2 projection
 contributes only identity/revision bindings, aggregate criteria/task/evidence
