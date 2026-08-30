@@ -11,6 +11,7 @@ import {
 } from "../src/host-app-authorization.js";
 
 const TOOLS = [
+  { name: "nyra_control_room_status", annotations: { readOnlyHint: true } },
   { name: "work_preflight", annotations: { readOnlyHint: true } },
   { name: "core_branch_registry", annotations: { readOnlyHint: true } },
   { name: "core_semantic_select", annotations: { readOnlyHint: true } },
@@ -72,7 +73,7 @@ function tenantBoundUnregisteredChatGpt(overrides = {}) {
 
 test("limits unregistered tenant-bound ChatGPT OAuth to governed read and exact dynamic reauthorization", () => {
   const compatible = tenantBoundUnregisteredChatGpt();
-  for (const name of ["work_preflight", "core_branch_registry", "core_semantic_select"]) {
+  for (const name of ["nyra_control_room_status", "work_preflight", "core_branch_registry", "core_semantic_select"]) {
     assert.equal(hasTenantBoundChatGptReadCompatibility(compatible, name), true, name);
     assert.doesNotThrow(() => requireHostAppToolCapability({ identity: compatible, toolName: name, tools: TOOLS }));
   }

@@ -481,6 +481,18 @@ const coreHandlers = createCoreHandlers(config, {
       }
     },
   } : null,
+  // Read only the canonical, tenant-ACL'd V2 projection needed to render the
+  // Control Room's Work percentage.  It is intentionally separate from the
+  // generic Work preflight: a status read must not trigger a second planning
+  // pipeline or accept client-supplied progress.
+  readControlRoomWorkContext: async (identity, args) => normalizeNyraDirectiveContext(
+    await readNyraDirectiveContext(identity, args),
+    identity,
+    {
+      work_id: args.work_id,
+      project_id: args.project_id,
+    },
+  ),
 });
 const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === true
   ? createNyraWorkAutomationInternal({

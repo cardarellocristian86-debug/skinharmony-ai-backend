@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 32669)
+Total output lines: 2802
+
 import crypto from "node:crypto";
 import express from "express";
 import {
@@ -45,6 +48,7 @@ const SERVER_INSTRUCTIONS = [
   "Nyra/Core is a persistent work coordinator: reuse the Work Identity, compact checkpoint and next action returned by the gateway. Do not rescan the repository, recreate the intent, or ask the user to restate known work.",
   "A bound Work automatically carries Nyra's persistent operational dialogue. When the user addresses Nyra or asks to resume, diagnose or coordinate a Work, invoke only the read-only nyra_converse front door. It reuses persisted context only for a pure resume; every new technical request receives a fresh preflight/Core interpretation plus bounded Work tasks and evidence. Render the server-issued orchestration_directive: Nyra states the problem and needs, directs the authenticated connected AI's bounded preparation, and identifies the Universal Core authority gate. RESUME, PROCEED_READ_ONLY and PREPARE_BOUNDED_WORK never authorize execution. Do not replace the directive with PR history, an invented plan or a completion claim.",
   "Generic tools receive tenant memory, Work selection and preflight automatically. Do not call work_preflight before a normal action. If one operational Work matches the project, it is resumed automatically; ask the owner to choose only when the gateway reports multiple works.",
+  "When the owner asks for controls, runtime state, Work closure percentage, blockers or allowed toggles, invoke nyra_control_room_status. Render its server-derived state and allowed_actions exactly; never invent an ON/OFF state, percentage, available command or authority.",
   "Treat one verified owner confirmation as the authorization for its exact bounded intent. Continue its approved preparation, verification and ticketed release path without requesting duplicate confirmations. Ask again only when Core reports a new scope, expiry, drift, or an action outside that intent.",
   "For a recoverable connector/OAuth failure, checkpoint the exact blocker and state the one real recovery action. After the user reconnects, resume the same Work and ticket path; never say that a reconnect alone completed a push, merge or deploy.",
   "For current research, use nyra_research_plan then the authenticated host's web tool when available; never include secrets in evidence. Nyra and Universal Core operate without an OpenAI API key. Never ask for or accept an API key in chat. Never call provider tools, open setup panels or old provider links. Old provider links are retired.",
@@ -513,6 +517,10 @@ function resolveConnectorToolName(value, tools = []) {
 // be part of the connected AI's tool catalog.
 const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
   "nyra_converse",
+  // A capability-filtered, server-derived status read remains available even
+  // when Dialogue is on, otherwise the control surface could not report its
+  // own state. It cannot mutate state or grant authority.
+  "nyra_control_room_status",
   // This remains subject to its own owner confirmation and Core gate in the
   // handler. Exposing it here lets Nyra ask for the one bounded activation
   // without sending the connected AI into the generic Core catalogue.
@@ -694,6 +702,10 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "nyra_continue",
   "nyra_governed_continue",
   "core_health",
+  // A status read is self-contained and invokes a bounded V2 Work projection
+  // only when the caller supplies an exact Work id. Do not surround it with
+  // the generic preflight pipeline, which would duplicate work/memory reads.
+  "nyra_control_room_status",
   "nyra_branch_catalog",
   "core_capability_catalog",
   "core_branch_registry",
@@ -952,6 +964,7 @@ const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   // establish its opaque session through it.
   "nyra_converse",
   "core_health",
+  "nyra_control_room_status",
   "nyra_branch_catalog",
   "core_capability_catalog",
   "core_branch_registry",
@@ -1254,265 +1267,7 @@ export function buildReadiness(config = {}, options = {}) {
           hostNativeOwnerContextSigningConfigured &&
           hostNativeTenantContextSigningConfigured &&
           hostNativeDttIdentitySigningConfigured &&
-          hostNativeAgentSignatureIndependent
-        ),
-    },
-    governed_multi_host: {
-      required: governedMultiHostRequired,
-      configured: governedMultiHostConfigured,
-      registry_configured: governedMultiHostRegistryConfigured,
-      registry_revision: governedMultiHostRegistryConfigured
-        ? config.hostAppRegistry.revision
-        : null,
-      registered_app_count: governedMultiHostRegistryConfigured
-        ? config.hostAppRegistry.apps.length
-        : 0,
-      signing_configured: governedMultiHostSigningConfigured,
-      agent_presence_signature_version:
-        config.agentPresenceSignatureVersion || "v1",
-      agent_presence_v2_required: governedMultiHostRequired,
-      host_native_protocol_enabled: governedMultiHostProtocolEnabled,
-      legacy_codex_host_principal_enabled:
-        config.legacyCodexHostPrincipalEnabled === true,
-      legacy_codex_bearer_count: Array.isArray(config.codexKeys)
-        ? config.codexKeys.length
-        : 0,
-      codex_registry_app_configured: config.hostAppRegistry?.apps?.some((app) =>
-        app.enabled === true && app.app_id === "codex" &&
-        app.client_type === "codex" && app.host_kind === "codex_native"
-      ) === true,
-      ready: !governedMultiHostRequired || (
-        governedMultiHostConfigured && governedMultiHostProtocolEnabled
-      ),
-    },
-    nyra_continuation_store: {
-      required: nyraContinuationStoreRequired,
-      configured: nyraContinuationStoreConfigured,
-      initialized: nyraContinuationStoreInitialized,
-      initialization_failed:
-        options.readiness?.nyraContinuationStoreInitializationFailed === true,
-      ready: !nyraContinuationStoreRequired ||
-        (nyraContinuationStoreConfigured && nyraContinuationStoreInitialized),
-    },
-    postgresql_version: {
-      required: postgresMajorVersionRequired,
-      ready: !postgresMajorVersionRequired || postgresMajorVersion.verified,
-      major: postgresMajorVersion.major,
-      verified: postgresMajorVersion.verified,
-    },
-    work_continuity: {
-      required: continuityRequired,
-      configured: continuityConfigured,
-      initialized: continuityInitialized,
-      initialization_failed:
-        options.readiness?.continuityInitializationFailed === true,
-      ready: !continuityRequired ||
-        (continuityConfigured && continuityInitialized),
-    },
-    decision_ledger: {
-      required: ledgerRequired,
-      configured: ledgerConfigured,
-      initialized: ledgerInitialized,
-      initialization_failed:
-        options.readiness?.decisionLedgerInitializationFailed === true,
-      ready: !ledgerRequired || (ledgerConfigured && ledgerInitialized),
-    },
-  };
-  const reasons = [];
-  if (!components.build_identity.ready) reasons.push("build_identity_unverifiable");
-  if (!components.authentication.ready) reasons.push("authentication_not_configured");
-  if (!components.universal_core.ready) reasons.push("universal_core_not_configured");
-  if (
-    hostNativeSecurityRequired &&
-    !hostNativeTenantGatewayConfigured
-  ) {
-    reasons.push("host_native_tenant_gateway_not_configured");
-  }
-  if (
-    hostNativeSecurityRequired &&
-    !hostNativeOwnerContextSigningConfigured
-  ) {
-    reasons.push("host_native_owner_context_signing_not_configured");
-  }
-  if (
-    hostNativeSecurityRequired &&
-    !hostNativeTenantContextSigningConfigured
-  ) {
-    reasons.push("host_native_tenant_context_signing_not_configured");
-  }
-  if (
-    hostNativeSecurityRequired &&
-    !hostNativeDttIdentitySigningConfigured
-  ) {
-    reasons.push("host_native_dtt_identity_signing_not_configured");
-  }
-  if (
-    hostNativeSecurityRequired &&
-    !hostNativeAgentSignatureConfigured
-  ) {
-    reasons.push("host_native_agent_signature_not_configured");
-  } else if (
-    hostNativeSecurityRequired &&
-    hostNativeAgentSignatureReused
-  ) {
-    reasons.push("host_native_agent_signature_reused");
-  }
-  if (governedMultiHostRequired && !governedMultiHostConfigured) {
-    reasons.push(
-      config.nyraGovernedContinueConfigurationError ||
-      "governed_multi_host_not_configured",
-    );
-  }
-  if (governedMultiHostRequired && !governedMultiHostProtocolEnabled) {
-    reasons.push("governed_multi_host_protocol_disabled");
-  }
-  if (nyraContinuationStoreRequired && !nyraContinuationStoreConfigured) {
-    reasons.push("nyra_continuation_store_not_configured");
-  } else if (nyraContinuationStoreRequired && !nyraContinuationStoreInitialized) {
-    reasons.push("nyra_continuation_store_not_initialized");
-  }
-  if (
-    postgresMajorVersionRequired &&
-    !postgresMajorVersion.verified
-  ) {
-    reasons.push("postgres_major_16_not_verified");
-  }
-  if (continuityRequired && !continuityConfigured) {
-    reasons.push("continuity_postgres_not_configured");
-  } else if (continuityRequired && !continuityInitialized) {
-    reasons.push("continuity_not_initialized");
-  }
-  if (ledgerRequired && !ledgerConfigured) {
-    reasons.push("decision_ledger_not_configured");
-  } else if (ledgerRequired && !ledgerInitialized) {
-    reasons.push("decision_ledger_not_initialized");
-  }
-  return {
-    environment,
-    enforced,
-    ready: reasons.length === 0,
-    reasons,
-    components,
-    build,
-  };
-}
-
-async function resolvePostgresMajorVersion(config, options) {
-  const configured = normalizePostgresMajorVerification(
-    options.readiness?.postgresMajorVersion,
-  );
-  const environment = String(
-    config.environment ||
-    (config.production === true ? "production" : process.env.NODE_ENV) ||
-    "development",
-  ).toLowerCase();
-  if (environment !== "production" || !config.databaseUrl) return configured;
-  const probe = options.postgresMajorVersionProbe;
-  const check = typeof probe === "function"
-    ? probe
-    : typeof probe?.check === "function"
-      ? () => probe.check()
-      : null;
-  if (!check) return configured;
-  try {
-    return normalizePostgresMajorVerification(await check());
-  } catch {
-    return normalizePostgresMajorVerification(null);
-  }
-}
-
-function setBounded(map, key, value, maximum = 5_000) {
-  if (map.has(key)) map.delete(key);
-  while (map.size >= maximum) map.delete(map.keys().next().value);
-  map.set(key, value);
-}
-
-function attachAgentPresence(result, presence) {
-  if (!presence) return result;
-  const structured = result?.structuredContent && typeof result.structuredContent === "object" && !Array.isArray(result.structuredContent)
-    ? { ...result.structuredContent, agent_presence: presence }
-    : { result: result?.structuredContent, agent_presence: presence };
-  return {
-    ...(result || {}),
-    structuredContent: structured,
-    _meta: {
-      ...(result?._meta || {}),
-      "skinharmony/agent_signature": presence.signature,
-      "skinharmony/agent_signature_version": presence.signature_version,
-    },
-  };
-}
-
-function resolveWorkPreflight(result, payload) {
-  const gate = result?.structuredContent?.gate;
-  const authorizedByCoreGate = gate?.allowed === true;
-  const allowedByPreflight = payload?.governance?.execution_allowed_by_preflight === true;
-  if (!authorizedByCoreGate && !allowedByPreflight) return payload;
-  return {
-    ...payload,
-    state: authorizedByCoreGate ? "completed_after_core_gate" : "completed_read_only",
-    gate: gate ? {
-      allowed: gate.allowed === true,
-      decision: gate.decision || "unknown",
-      mediation: gate.mediation || "unknown",
-      owner_confirmation_required: gate.owner_confirmation_required === true,
-      confirmation_satisfied: gate.confirmation_satisfied === true,
-    } : payload?.gate,
-    governance: {
-      ...(payload?.governance || {}),
-      execution_authorized_by_core_gate: authorizedByCoreGate,
-      owner_confirmation_required: authorizedByCoreGate
-        ? gate?.owner_confirmation_required === true && gate?.confirmation_satisfied !== true
-        : payload?.governance?.owner_confirmation_required === true,
-    },
-  };
-}
-
-// Whitelist the durable Nyra briefing field-by-field. It is enough for a new
-// AI to continue the Work, while raw Intent, evidence, Gallery records and
-// Atlas nodes remain server-side.
-function projectNyraDialogue(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const work = value.work && typeof value.work === "object" ? value.work : {};
-  const checkpoint = work.checkpoint && typeof work.checkpoint === "object" ? work.checkpoint : {};
-  const gallery = work.gallery && typeof work.gallery === "object" ? work.gallery : {};
-  const software = work.software && typeof work.software === "object" ? work.software : {};
-  const diagnosis = value.self_diagnosis && typeof value.self_diagnosis === "object" ? value.self_diagnosis : {};
-  const manual = value.manual && typeof value.manual === "object" ? value.manual : {};
-  const learning = value.learning && typeof value.learning === "object" ? value.learning : {};
-  return {
-    schema_version: value.schema_version,
-    dialogue_id: value.dialogue_id || null,
-    mode: value.mode,
-    persistent: value.persistent === true,
-    session_strategy: value.session_strategy,
-    activation: value.activation,
-    manual: { version: manual.version || null, digest: manual.digest || null },
-    work: {
-      work_id: work.work_id || null,
-      project_id: work.project_id || null,
-      work_revision: Number.isSafeInteger(Number(work.work_revision)) ? Number(work.work_revision) : null,
-      intent_digest: work.intent_digest || null,
-      checkpoint: { capsule_id: checkpoint.capsule_id || null, capsule_digest: checkpoint.capsule_digest || null, available: checkpoint.available === true },
-      gallery: { state: gallery.state || "unknown", work_count: Number(gallery.work_count || 0) },
-      software: {
-        state: software.state || "not_indexed",
-        atlas_revision: Number.isSafeInteger(Number(software.atlas_revision)) ? Number(software.atlas_revision) : null,
-        source_hash: software.source_hash || null,
-        context_digest: software.context_digest || null,
-        discovery_required: software.discovery_required === true,
-      },
-    },
-    self_diagnosis: {
-      schema_version: diagnosis.schema_version,
-      state: diagnosis.state || "unknown",
-      source: diagnosis.source || "unknown",
-      local_action: diagnosis.local_action || "Refresh the bounded Nyra context.",
-      core_action: diagnosis.core_action || "Consult Core only when a policy or integrity decision is needed.",
-      automatic_correction: diagnosis.automatic_correction || "context_refreshed",
-      ...(diagnosis.remaining_action ? { remaining_action: diagnosis.remaining_action } : {}),
-    },
-    connected_ai_instruction: Array.isArray(value.connected_ai_instruction) ? value.connected_ai_instruction.slice(0, 3) : [],
+          hos…2669 tokens truncated…truction.slice(0, 3) : [],
     learning: {
       mode: learning.mode || "local_verified_evidence",
       update_on: learning.update_on || "verified_outcome_or_incident_verification",

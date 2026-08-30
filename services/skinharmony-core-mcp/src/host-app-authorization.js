@@ -36,6 +36,7 @@ const WORK_COORDINATION_TOOLS = new Set([
 
 const HOST_META_READ_TOOLS = new Set([
   "core_health",
+  "nyra_control_room_status",
   "core_capability_catalog",
 ]);
 
@@ -44,6 +45,7 @@ const HOST_META_READ_TOOLS = new Set([
 // reach only the read entrypoints needed to resume governed Work operations.
 export const CHATGPT_GOVERNED_READ_TOOL_NAMES = Object.freeze(new Set([
   "core_health",
+  "nyra_control_room_status",
   "work_preflight",
   "core_capability_catalog",
   "core_branch_registry",

@@ -34,13 +34,13 @@ function tenantBoundChatGptCompatibilityIdentity(overrides = {}) {
   };
 }
 
-test("keeps claim-only and unregistered conversational hosts on the Nyra front door", () => {
+test("keeps claim-only and unregistered conversational hosts on the Nyra front door plus read-only status", () => {
   const claimOnlyTools = filterToolsForClient(TOOLS, { kind: "oauth" });
-  assert.deepEqual(claimOnlyTools.map((tool) => tool.name), ["nyra_converse"]);
+  assert.deepEqual(claimOnlyTools.map((tool) => tool.name), ["nyra_control_room_status", "nyra_converse"]);
 
   const compatibility = tenantBoundChatGptCompatibilityIdentity();
   const names = filterToolsForClient(TOOLS, compatibility).map((tool) => tool.name);
-  assert.deepEqual(names, ["nyra_converse"]);
+  assert.deepEqual(names, ["nyra_control_room_status", "nyra_converse"]);
   assert.equal(hasTenantBoundChatGptReadCompatibility(compatibility, "core_capability_read"), true);
   assert.equal(hasTenantBoundChatGptReadCompatibility({
     ...compatibility,
@@ -58,11 +58,11 @@ test("keeps claim-only and unregistered conversational hosts on the Nyra front d
       capabilities: ["work.read"],
     },
   };
-  assert.deepEqual(filterToolsForClient(TOOLS, unregisteredCodex).map((tool) => tool.name), ["nyra_converse"]);
+  assert.deepEqual(filterToolsForClient(TOOLS, unregisteredCodex).map((tool) => tool.name), ["nyra_control_room_status", "nyra_converse"]);
   assert.equal(filterToolsForClient(TOOLS, { kind: "codex" }).length, TOOLS.length);
 });
 
-test("exposes only Nyra to every registered conversational host", () => {
+test("exposes Nyra plus read-only Control Room status to every registered conversational host", () => {
   const serverTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS];
   const identity = {
     kind: "oauth",
@@ -96,6 +96,7 @@ test("exposes only Nyra to every registered conversational host", () => {
       },
     }).map((tool) => tool.name);
     assert.deepEqual(names, [
+      "nyra_control_room_status",
       "nyra_converse",
       "nyra_continue",
       "nyra_work_assignment_claim",
@@ -110,6 +111,7 @@ test("exposes only Nyra to every registered conversational host", () => {
     },
   }).map((tool) => tool.name);
   assert.deepEqual(activationNames, [
+    "nyra_control_room_status",
     "nyra_converse",
     "nyra_continue",
     "nyra_autopilot_enable",
@@ -123,7 +125,7 @@ test("exposes only Nyra to every registered conversational host", () => {
       registered: false,
       capabilities: ["work.read"],
     },
-  }).map((tool) => tool.name).join(","), "nyra_converse");
+  }).map((tool) => tool.name).join(","), "nyra_control_room_status,nyra_converse");
 });
 
 test("routes stale conversational Core read descriptors to Nyra", () => {
