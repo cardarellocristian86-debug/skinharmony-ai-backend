@@ -31,7 +31,9 @@ test("Control Room distinguishes runtime controls from deployment configuration"
     health: {
       ok: true,
       causal_continuity: { state: "ready" },
-      entity_360: { mode: "SHADOW", bitemporal_mode: "SHADOW", deployment_mode_ceiling: "SHADOW", ready: true },
+      entity_360: { mode: "SHADOW", bitemporal_mode: "SHADOW",
+        deployment_mode_ceiling: "SHADOW", ready: true,
+        tenant_shadow_disable_available: true },
       host_native_governance: { semantic_scope_guard_mode: "ENFORCE", semantic_scope_guard_configured: true },
       research_airlock: { mode: "enforced", state: "ready", operational_safe: true },
       nyra_policy_registry: { ready: true, state: "ready", enforcement: "conditional_on_active_snapshot" },
@@ -51,9 +53,30 @@ test("Control Room distinguishes runtime controls from deployment configuration"
   assert.equal(entity360.allowed_actions[2].requires_core_authorization, true);
   assert.equal(entity360.detail.shadow_transition_available, true);
   assert.equal(entity360.detail.shadow_transition_blocker, null);
+  assert.equal(entity360.detail.shadow_disable_available, true);
+  assert.equal(entity360.detail.shadow_disable_blocker, null);
   const policyRegistry = status.domains.find((item) => item.id === "policy_registry");
   assert.equal(policyRegistry.allowed_actions[1].availability, "REQUEST_ONLY");
   assert.equal(policyRegistry.allowed_actions[1].handler, null);
+});
+
+test("Control Room preserves tenant OFF rollback while the SHADOW runtime is not ready", () => {
+  const entity360 = projectNyraControlRoomStatus({ health: { ok: true,
+    entity_360: { mode: "SHADOW", deployment_mode_ceiling: "SHADOW", ready: false,
+      tenant_shadow_disable_available: true } } })
+    .domains.find((item) => item.id === "entity_360");
+  assert.equal(entity360.detail.shadow_transition_available, false);
+  assert.equal(entity360.detail.shadow_transition_blocker,
+    "entity_360_shadow_runtime_not_ready");
+  assert.equal(entity360.detail.shadow_disable_available, true);
+  assert.equal(entity360.detail.shadow_disable_blocker, null);
+  const enable = entity360.allowed_actions.find((item) => item.id === "REQUEST_ENABLE_SHADOW");
+  const disable = entity360.allowed_actions.find((item) => item.id === "REQUEST_DISABLE_SHADOW");
+  assert.equal(enable.handler, null);
+  assert.equal(enable.availability, "UNAVAILABLE");
+  assert.equal(disable.handler, "entity_360_shadow_disable");
+  assert.equal(disable.availability, "EXISTING_GOVERNED_HANDLER");
+  assert.equal(disable.execution, "REQUEST_BOUND_GOVERNED");
 });
 
 test("Control Room never advertises Entity 360 shadow transitions before their Core deployment prerequisites", () => {

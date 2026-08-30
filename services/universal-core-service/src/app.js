@@ -7945,7 +7945,8 @@ export function createUniversalCoreService(options = {}) {
       },
       runtime: {
         invoke(capability, identity, input) {
-          if (entity360State !== "ready") {
+          if (entity360State !== "ready"
+            && capability !== "entity_360_feature_flag_write") {
             const error = new Error("entity360_runtime_not_ready");
             error.status = 503;
             throw error;
@@ -9429,6 +9430,7 @@ export function createUniversalCoreService(options = {}) {
         ...entity360Health,
         icf_event_digest_v2_dependency: entity360IcfStoreDependency,
         configured: entity360Mode !== "OFF" && entity360Mode !== "INVALID",
+        tenant_shadow_disable_available: Boolean(entity360Runtime),
         production_required: false,
         global_readiness_gate: false,
         feature_flag_default: "OFF",

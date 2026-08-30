@@ -269,6 +269,61 @@ function assertContextOnlyResponse(value) {
   return value;
 }
 
+function adaptEntity360NyraContext(capabilityId, value, tenantId, workId) {
+  if (capabilityId !== "entity_360_snapshot_assemble"
+    || value?.projection === undefined) return value;
+  const source = value.projection;
+  const projection = source?.projection;
+  const cache = source?.cache;
+  if (projection === null && cache?.authoritative === false
+    && cache?.execution_authorized === false) {
+    const { projection: _sourceProjection, ...rest } = value;
+    return {
+      ...rest,
+      entity_360_nyra_context: {
+        schema_version: "entity_360_nyra_context_v1",
+        state: "UNAVAILABLE",
+        projection: null,
+        projection_digest: null,
+        cache,
+        context_authoritative: false,
+        execution_authorized: false,
+        production_decision_mutation: false,
+      },
+    };
+  }
+  if (!projection || typeof projection !== "object" || Array.isArray(projection)
+    || projection.schema_version !== "entity_360_projection_v1"
+    || projection.tenant_scope !== tenantId || projection.work_id !== workId
+    || !/^e360_[a-f0-9]{48}$/u.test(String(projection.entity_id || ""))
+    || !/^[a-f0-9]{64}$/u.test(String(projection.snapshot_digest || ""))
+    || !/^[a-f0-9]{64}$/u.test(String(projection.projection_digest || ""))
+    || !Number.isSafeInteger(Number(projection.snapshot_version))
+    || Number(projection.snapshot_version) < 1
+    || projection.authority !== "universal_core"
+    || projection.execution_authorized !== false
+    || projection.production_decision_mutation !== false
+    || !cache || typeof cache !== "object" || Array.isArray(cache)
+    || !new Set(["HIT", "REBUILT"]).has(cache.state)
+    || cache.authoritative !== false || cache.execution_authorized !== false) {
+    throw new Error("entity360_nyra_projection_invalid");
+  }
+  const { projection: _sourceProjection, ...rest } = value;
+  return {
+    ...rest,
+    entity_360_nyra_context: {
+      schema_version: "entity_360_nyra_context_v1",
+      state: "READY_CONTEXT_ONLY",
+      projection,
+      projection_digest: projection.projection_digest,
+      cache,
+      context_authoritative: false,
+      execution_authorized: false,
+      production_decision_mutation: false,
+    },
+  };
+}
+
 export function createEntity360Handlers({
   coreRequest,
   shadowEnableCoreRequest,
@@ -328,7 +383,9 @@ export function createEntity360Handlers({
         body: withoutCallerTenant(args),
         additionalHeaders: { "x-sh-dtt-agent-context": agentContext },
       }));
-      return textResult(value);
+      return textResult(adaptEntity360NyraContext(
+        capabilityId, value, tenantId, boundWorkId,
+      ));
     },
   ]));
 }

@@ -242,6 +242,78 @@ test("Entity 360 transport derives tenant and DTT context only from authenticate
     value.agent_presence === agentPresence));
 });
 
+test("Entity 360 assembly adapts the verified Core projection into Nyra context", async () => {
+  const projectionDigest = "1".repeat(64);
+  const snapshotDigest = "2".repeat(64);
+  const handlers = createEntity360Handlers({
+    issueAgentContext: () => "signed-entity-360-context",
+    coreRequest: async () => ({
+      ok: true,
+      projection: {
+        projection: {
+          schema_version: "entity_360_projection_v1",
+          projection: "work_360",
+          tenant_scope: "tenant-authenticated",
+          project_id: "nyra_conversational_runtime",
+          work_id: WORK_ID,
+          entity_id: ENTITY_ID,
+          entity_type: "work",
+          snapshot_version: 1,
+          snapshot_digest: snapshotDigest,
+          projection_digest: projectionDigest,
+          authority: "universal_core",
+          execution_authorized: false,
+          production_decision_mutation: false,
+        },
+        cache: { state: "REBUILT", authoritative: false,
+          execution_authorized: false },
+      },
+      persistence: { revision: 1, replayed: false },
+      execution_authorized: false,
+      production_decision_changed: false,
+    }),
+  });
+  const result = await handlers.entity_360_snapshot_assemble({
+    work_id: WORK_ID,
+    entity_type: "work",
+    identity: { work_id: WORK_ID },
+    as_of: "2026-08-25T12:00:00.000Z",
+    expected_revision: 0,
+    idempotency_key: "entity-360-nyra-context-a",
+  }, { tenantId: "tenant-authenticated", agentPresence });
+  assert.equal(result.structuredContent.projection, undefined);
+  const context = result.structuredContent.entity_360_nyra_context;
+  assert.equal(context.schema_version, "entity_360_nyra_context_v1");
+  assert.equal(context.state, "READY_CONTEXT_ONLY");
+  assert.equal(context.projection_digest, projectionDigest);
+  assert.equal(context.projection.snapshot_digest, snapshotDigest);
+  assert.equal(context.projection.work_id, WORK_ID);
+  assert.equal(context.context_authoritative, false);
+  assert.equal(context.execution_authorized, false);
+  assert.equal(context.production_decision_mutation, false);
+
+  const malformed = createEntity360Handlers({
+    issueAgentContext: () => "signed-entity-360-context",
+    coreRequest: async () => ({
+      projection: {
+        projection: { schema_version: "entity_360_projection_v1",
+          tenant_scope: "another-tenant", work_id: WORK_ID,
+          entity_id: ENTITY_ID, snapshot_version: 1, snapshot_digest: snapshotDigest,
+          projection_digest: projectionDigest, authority: "universal_core",
+          execution_authorized: false, production_decision_mutation: false },
+        cache: { state: "HIT", authoritative: false, execution_authorized: false },
+      },
+      execution_authorized: false,
+    }),
+  });
+  await assert.rejects(() => malformed.entity_360_snapshot_assemble({
+    work_id: WORK_ID, entity_type: "work", identity: { work_id: WORK_ID },
+    as_of: "2026-08-25T12:00:00.000Z", expected_revision: 0,
+    idempotency_key: "entity-360-nyra-context-b",
+  }, { tenantId: "tenant-authenticated", agentPresence }),
+  /entity360_nyra_projection_invalid/u);
+});
+
 test("Entity 360 SHADOW enable is a separate owner-confirmed Core transport", async () => {
   const calls = [];
   const handlers = createEntity360Handlers({
