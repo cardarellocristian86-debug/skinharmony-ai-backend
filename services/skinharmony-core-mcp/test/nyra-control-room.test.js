@@ -51,6 +51,9 @@ test("Control Room distinguishes runtime controls from deployment configuration"
   assert.equal(entity360.allowed_actions[2].requires_core_authorization, true);
   assert.equal(entity360.detail.shadow_transition_available, true);
   assert.equal(entity360.detail.shadow_transition_blocker, null);
+  const policyRegistry = status.domains.find((item) => item.id === "policy_registry");
+  assert.equal(policyRegistry.allowed_actions[1].availability, "REQUEST_ONLY");
+  assert.equal(policyRegistry.allowed_actions[1].handler, null);
 });
 
 test("Control Room never advertises Entity 360 shadow transitions before their Core deployment prerequisites", () => {
@@ -92,7 +95,12 @@ test("Control Room output contract accepts unavailable governed transitions", ()
       entity_360: { mode: "OFF", deployment_mode_ceiling: "OFF", ready: false },
     },
   });
-  const schema = toolNamed("nyra_control_room_status").outputSchema;
+  const definition = toolNamed("nyra_control_room_status");
+  assert.deepEqual(definition.scopes, ["core:read"]);
+  assert.equal(definition.annotations.readOnlyHint, true);
+  assert.equal(definition.annotations.idempotentHint, true);
+  assert(definition.outputSchema, "Control Room must publish its output contract");
+  const schema = definition.outputSchema;
   assert.deepEqual(validateToolArguments(schema, {
     ok: true,
     tenant_id: "tenant-a",

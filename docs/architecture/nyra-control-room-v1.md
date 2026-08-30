@@ -60,3 +60,7 @@ gate separato: task ed evidence completati non autorizzano a dire che un Work
 - Le sole transizioni chat Entity 360 sono i due handler dedicati. `OFF`
   preserva history e non modifica il deployment ceiling; il chiamante non può
   impostare `mode`, `enabled`, tenant o authority.
+- La superficie MCP compatta espone direttamente Control Room e le due
+  transizioni Entity 360. L'attivazione Policy Registry, con compiler input
+  ampio e `core.admin`, resta una richiesta governata fuori dai wrapper
+  dinamici: il suo lifecycle health proof non può essere aggirato dal catalogo.

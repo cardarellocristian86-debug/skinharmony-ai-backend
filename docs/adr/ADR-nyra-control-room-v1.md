@@ -51,6 +51,19 @@ autorevole: nella superficie attuale proviene dalla lettura policy governata
 di un Work. Un futuro comando UX end-to-end dovrà usare un riferimento opaco
 server-owned a quella lettura, non una revision auto-certificata dal client.
 
+## Superficie MCP compatta
+
+La produzione usa una superficie MCP con budget di import limitato. Perciò
+`nyra_control_room_status` e le due transizioni Entity 360 sono strumenti
+diretti della superficie compatta; la pubblicazione non concede capability,
+authority, conferma owner o bypass del gate Core. L'attivazione di uno snapshot
+Policy Registry, che porta un compiler input ampio e ad alto rischio, rimane
+fuori sia dalla superficie compatta sia dai wrapper dinamici: il suo health
+proof di lifecycle è applicato dalla superficie diretta governata e non può
+essere bypassato tramite `core_capability_catalog/read/invoke`. Resta quindi
+una richiesta governata finché non esisterà un adapter compatto dedicato con
+gli stessi gate.
+
 ## Contratto e trust boundary
 
 `nyra_control_room_status_v1` restituisce esclusivamente:

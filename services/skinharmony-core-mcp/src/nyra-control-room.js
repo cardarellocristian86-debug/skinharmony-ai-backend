@@ -178,11 +178,13 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDia
     }, [
       action("READ_STATUS"),
       action("REQUEST_LIFECYCLE_ACTION", {
-        availability: "EXISTING_GOVERNED_HANDLER",
+        // There is no one exact compact handler for the three lifecycle
+        // operations.  Do not expose a pipe-delimited pseudo-handler or let
+        // chat bypass the lifecycle-health proof on the full governed path.
+        availability: "REQUEST_ONLY",
         execution: "REQUEST_BOUND_GOVERNED",
         requiresOwnerConfirmation: true,
         requiresCoreAuthorization: true,
-        handler: "nyra_policy_registry_activate|rollback|reconcile",
       }),
     ]),
   ];
