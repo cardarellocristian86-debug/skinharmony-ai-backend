@@ -119,7 +119,7 @@ async function manualClosureAuthority({ workId, intentDigest, repository = "owne
     intentAnchorDigest: intentDigest,
     signer,
   });
-  return { authorization, proof, verifier, receiptId, receiptDigest };
+  return { authorization, proof, verifier, signer, receiptId, receiptDigest };
 }
 
 class AtomicWorkPool {
@@ -902,6 +902,50 @@ test("request identity survives replica restart and consumed-review expiry witho
   assert.equal(pool.bootstrapRequests.size, 1);
 });
 
+for (const staleShape of ["legacy", "expired"]) {
+  test(`unconsumed ${staleShape} open review is refreshed under its durable request binding`, async () => {
+    const pool = new AtomicWorkPool();
+    let current = new Date("2026-08-08T10:00:00.000Z");
+    const store = createWorkContinuityV2Store({
+      pool,
+      legacyRuntime: legacyRuntime(pool),
+      now: () => current,
+    });
+    const request = {
+      ...createInput(),
+      request_id: `request-refresh-${staleShape}`,
+      session_id: `session-refresh-${staleShape}`,
+    };
+    const first = await store.openWorkReview(identity(), {
+      intent_type: "CREATE_WORK",
+      request: request.objective,
+      create_request: request,
+    });
+    const stored = pool.reviews.get(key("tenant-a", first.review_id));
+    if (staleShape === "legacy") {
+      const { resolution_contract: _legacyContract, ...legacyResult } =
+        stored.review_result;
+      stored.review_result = legacyResult;
+    } else {
+      current = new Date("2026-08-08T10:20:00.000Z");
+    }
+    const refreshed = await store.openWorkReview(identity(), {
+      intent_type: "CREATE_WORK",
+      request: request.objective,
+      create_request: request,
+    });
+    assert.notEqual(refreshed.review_id, first.review_id);
+    assert.equal(refreshed.idempotent_replay, false);
+    assert.equal(refreshed.consumed, false);
+    assert.match(refreshed.resolution_contract.contract_digest, /^[a-f0-9]{64}$/);
+    assert.equal(pool.reviews.size, 2, "stale review remains append-only audit evidence");
+    assert.equal(
+      pool.bootstrapRequests.get(key("tenant-a", "owner", request.request_id)).review_id,
+      refreshed.review_id,
+    );
+  });
+}
+
 test("one request id cannot be rebound to a changed Work specification", async () => {
   const pool = new AtomicWorkPool();
   const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
@@ -1525,6 +1569,9 @@ test("review consumption fails closed when the persisted resolver contract is al
       resolver_query: "Substituted resolver text",
     },
   };
+  await assert.rejects(store.openWorkReview(identity(), {
+    intent_type: "CREATE_WORK", request: "Immutable resolver text", create_request: input,
+  }), /open_work_review_resolution_contract_invalid/);
   await assert.rejects(store.createNewWork(identity(), {
     ...input, review_id: review.review_id, review_digest: review.review_digest,
   }), /open_work_review_resolution_contract_invalid/);
@@ -1833,18 +1880,65 @@ test("owner manual merge release evidence closes and projects the legacy Gallery
     }), { status: 200, headers: { "content-type": "application/json" } }),
     tenantWorkGallery: store,
   });
-  const handlerIdentity = { ...identity(), kind: "codex" };
-  const firstResult = await handlers.host_native_action_closure_receipt({
+  const handlerIdentity = {
+    ...identity(),
+    kind: "oauth",
+    subject: "owner",
+    role: "tenant_owner",
+    oauthOwnerElevated: true,
+    ownerConfirmed: true,
+    confirmationReference: "confirm exact manual merge Gallery closure",
+  };
+  const firstResult = await handlers.host_native_owner_manual_merge_finalize_gallery({
     ticket_id: authority.authorization.action_ticket_id,
   }, handlerIdentity);
+  const freshAuthorizationUnsigned = {
+    ...authority.authorization,
+    issued_at: "2026-08-08T10:00:03.000Z",
+    expires_at: "2026-08-08T10:05:03.000Z",
+  };
+  delete freshAuthorizationUnsigned.authorization_digest;
+  delete freshAuthorizationUnsigned.signature;
+  const freshAuthorization = {
+    ...freshAuthorizationUnsigned,
+    authorization_digest: stableDigest(freshAuthorizationUnsigned),
+    signature: `hnf_${"6".repeat(64)}`,
+  };
+  const freshProof = await createHostNativeFinalizeAuthorizationProof({
+    authorization: freshAuthorization,
+    intentAnchorDigest: intentDigest,
+    signer: authority.signer,
+  });
   const evidenceReplay = await store.recordOwnerManualMergeReleaseEvidence(identity(), {
-    finalize_authorization: authority.authorization,
-    finalize_authorization_proof: authority.proof,
+    finalize_authorization: freshAuthorization,
+    finalize_authorization_proof: freshProof,
   });
   const firstPayload = JSON.parse(firstResult.content[0].text);
   assert.equal(firstPayload.work_gallery_projection.note, "owner_manual_merge");
   assert.equal(firstPayload.work_gallery_projection.legacy_bridged, true);
   assert.equal(evidenceReplay.idempotent_replay, true);
+  assert.equal(evidenceReplay.evidence_digest,
+    firstPayload.work_gallery_projection.evidence_digest);
+  const substitutedUnsigned = {
+    ...freshAuthorization,
+    core_join_verdict_digest: "8".repeat(64),
+  };
+  delete substitutedUnsigned.authorization_digest;
+  delete substitutedUnsigned.signature;
+  const substitutedAuthorization = {
+    ...substitutedUnsigned,
+    authorization_digest: stableDigest(substitutedUnsigned),
+    signature: `hnf_${"7".repeat(64)}`,
+  };
+  const substitutedProof = await createHostNativeFinalizeAuthorizationProof({
+    authorization: substitutedAuthorization,
+    intentAnchorDigest: intentDigest,
+    signer: authority.signer,
+  });
+  await assert.rejects(store.recordOwnerManualMergeReleaseEvidence(identity(), {
+    finalize_authorization: substitutedAuthorization,
+    finalize_authorization_proof: substitutedProof,
+  }), /owner_manual_merge_release_evidence_conflict/);
   assert.equal([...pool.evidence.values()].filter((item) =>
     item.kind === "owner_manual_merge_release").length, 1);
   assert.equal(pool.works.get(key("tenant-a", workId)).status, "COMPLETED");

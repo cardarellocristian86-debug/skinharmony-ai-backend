@@ -1484,7 +1484,7 @@ test("owner manual merge bridge fails closed without an authenticated owner conf
   assert.equal(fetched, false);
 });
 
-test("manual merge observation closure projects Core evidence then uses normal Gallery closure", async () => {
+test("owner-confirmed manual merge finalizer projects Core evidence then uses normal Gallery closure", async () => {
   const calls = [];
   const galleryCalls = [];
   const workId = "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
@@ -1546,13 +1546,18 @@ test("manual merge observation closure projects Core evidence then uses normal G
   });
   const identity = {
     tenantId: "tenant-a",
-    kind: "codex",
+    kind: "oauth",
+    subject: "auth0|verified-owner",
+    role: "tenant_owner",
+    oauthOwnerElevated: true,
+    ownerConfirmed: true,
+    confirmationReference: "confirm exact manual merge Gallery closure",
     agentPresence: {
       client_type: "codex",
       session_fingerprint: "6".repeat(64),
     },
   };
-  const result = await handlers.host_native_action_closure_receipt({
+  const result = await handlers.host_native_owner_manual_merge_finalize_gallery({
     ticket_id: "hnt_observe-12345678",
   }, identity);
   assert.equal(calls.length, 1);
@@ -1572,6 +1577,55 @@ test("manual merge observation closure projects Core evidence then uses normal G
   assert.equal(response.work_gallery_projection.archive_status, "ARCHIVED");
   assert.equal(response.work_gallery_projection.closure_receipt_digest,
     "5".repeat(64));
+});
+
+test("closure receipt remains read-only even for owner manual-merge predecessor", async () => {
+  let galleryMutations = 0;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-core-key" },
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: true,
+      finalize_authorization: {
+        predecessor: { predecessor_type: "owner_manual_github_merge_readback" },
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+    tenantWorkGallery: {
+      async recordOwnerManualMergeReleaseEvidence() { galleryMutations += 1; },
+      async finalizeGenericClosure() { galleryMutations += 1; },
+    },
+  });
+  const result = await handlers.host_native_action_closure_receipt({
+    ticket_id: "hnt_observe-12345678",
+  }, {
+    tenantId: "tenant-a",
+    kind: "codex",
+    agentPresence: { client_type: "codex", session_fingerprint: "6".repeat(64) },
+  });
+  assert.equal(galleryMutations, 0);
+  assert.equal(JSON.parse(result.content[0].text).work_gallery_projection, undefined);
+});
+
+test("manual merge Gallery finalizer requires owner confirmation before Core readback", async () => {
+  let fetched = false;
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-core-key" },
+    tenantGatewayKey: TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    fetchImpl: async () => { fetched = true; throw new Error("unexpected_fetch"); },
+  });
+  await assert.rejects(
+    handlers.host_native_owner_manual_merge_finalize_gallery({
+      ticket_id: "hnt_observe-12345678",
+    }, { tenantId: "tenant-a", kind: "oauth", subject: "auth0|owner" }),
+    /owner_confirmation_required/,
+  );
+  assert.equal(fetched, false);
 });
 
 test("host-native action automation fails closed without the tenant gateway and never falls back", async () => {

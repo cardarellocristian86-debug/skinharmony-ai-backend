@@ -814,6 +814,15 @@ export const HOST_NATIVE_TOOLS = [
     }, ["ticket_id", "observed_outcome", "observed_commit", "readback_digest", "verifier_evidence_digest", "deviation_reason", "idempotency_key"]),
   ),
   tool(
+    "host_native_owner_manual_merge_finalize_gallery",
+    "Finalize owner manual-merge Gallery closure",
+    "After Core has verified the one-shot render observation, require fresh authenticated-owner confirmation, persist the server-signed manual-merge release evidence, and run the normal Work Gallery closure path. The caller supplies only the action-ticket selector.",
+    object({
+      ticket_id: actionTicketId,
+    }, ["ticket_id"]),
+    { ownerConfirmationRequired: true },
+  ),
+  tool(
     "host_native_action_closure_receipt",
     "Read trusted Core closure authorization",
     "Read a trusted closure receipt only after the one-shot action succeeded and its external effect was reconciled. It binds the actual observed commit, ticket, manifest and readback digests.",

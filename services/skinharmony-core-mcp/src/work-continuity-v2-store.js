@@ -1050,6 +1050,14 @@ function validatedOpenReviewResolutionContract(review, projectId, intentDigest) 
   }
   return expected;
 }
+function openReviewRequiresRefresh(review, projectId, intentDigest, nowValue) {
+  if (review?.consumed_at || review?.consumed_work_id) return false;
+  if (!review?.review_result?.resolution_contract) return true;
+  validatedOpenReviewResolutionContract(review, projectId, intentDigest);
+  const expiresAt = Date.parse(String(review.expires_at || ""));
+  if (!Number.isFinite(expiresAt)) fail("open_work_review_expiry_invalid");
+  return expiresAt <= nowValue.getTime();
+}
 function visibleProjectResolutionCandidates(resolution, works, projectId, actor) {
   const visibleIds = new Set(works
     .filter((work) => work.project_id === projectId && canRead(work, actor))
@@ -2225,6 +2233,7 @@ export function createWorkContinuityV2Store({
         VALUES ($1,$2,$3,$4,$5)
         ON CONFLICT (tenant_id,subject_user_id,request_id) DO NOTHING
         RETURNING *`, [actor.tenant_id, actor.user_id, requestId, requestDigest, candidateReviewId]);
+      const bindingWasReserved = Boolean(reserved.rows[0]);
       let binding = reserved.rows[0];
       if (!binding) {
         const selected = await client.query(`SELECT * FROM tenant_work_bootstrap_request
@@ -2238,7 +2247,12 @@ export function createWorkContinuityV2Store({
         if (!linked.rows[0] || (binding.consumed_work_id || null) !== (linked.rows[0].consumed_work_id || null)) {
           fail("open_work_review_request_binding_invalid");
         }
-        return responseFor(linked.rows[0], true);
+        if (!openReviewRequiresRefresh(
+          linked.rows[0],
+          projectId,
+          intentDigest,
+          now(),
+        )) return responseFor(linked.rows[0], true);
       }
 
       // On first access after migration, adopt a single unambiguous legacy
@@ -2256,15 +2270,18 @@ export function createWorkContinuityV2Store({
           .map((row) => row.consumed_work_id)
           .filter(Boolean));
         if (consumedWorkIds.size > 1) fail("open_work_review_historical_duplicate_conflict");
-        const row = historical.rows[0];
-        const adopted = await client.query(`UPDATE tenant_work_bootstrap_request
-          SET review_id=$4,consumed_work_id=$5,updated_at=now()
-          WHERE tenant_id=$1 AND subject_user_id=$2 AND request_id=$3
-            AND request_digest=$6
-          RETURNING *`, [actor.tenant_id, actor.user_id, requestId, row.review_id,
-          row.consumed_work_id || null, requestDigest]);
-        if (!adopted.rows[0]) fail("open_work_review_request_binding_invalid");
-        return responseFor(row, true);
+        const row = historical.rows.find((candidate) =>
+          !openReviewRequiresRefresh(candidate, projectId, intentDigest, now()));
+        if (row) {
+          const adopted = await client.query(`UPDATE tenant_work_bootstrap_request
+            SET review_id=$4,consumed_work_id=$5,updated_at=now()
+            WHERE tenant_id=$1 AND subject_user_id=$2 AND request_id=$3
+              AND request_digest=$6
+            RETURNING *`, [actor.tenant_id, actor.user_id, requestId, row.review_id,
+            row.consumed_work_id || null, requestDigest]);
+          if (!adopted.rows[0]) fail("open_work_review_request_binding_invalid");
+          return responseFor(row, true);
+        }
       }
 
       const normalizedWorks = await canonicalOpenReviewWorks(client, actor);
@@ -2306,6 +2323,15 @@ export function createWorkContinuityV2Store({
         RETURNING *`, [actor.tenant_id, candidateReviewId, actor.user_id,
         requestId, projectId, intentDigest, requestDigest, reviewDigest, JSON.stringify(result), result.requires_owner_decision, expiresAt]);
       if (!inserted.rows[0]) fail("open_work_review_persistence_failed");
+      if (!bindingWasReserved) {
+        const refreshed = await client.query(`UPDATE tenant_work_bootstrap_request
+          SET review_id=$4,consumed_work_id=$5,updated_at=now()
+          WHERE tenant_id=$1 AND subject_user_id=$2 AND request_id=$3
+            AND request_digest=$6
+          RETURNING *`, [actor.tenant_id, actor.user_id, requestId,
+          candidateReviewId, null, requestDigest]);
+        if (!refreshed.rows[0]) fail("open_work_review_request_binding_invalid");
+      }
       return responseFor(inserted.rows[0], false);
     });
   }
@@ -2840,6 +2866,30 @@ export function createWorkContinuityV2Store({
       note: "owner_manual_merge",
       provider_execution: false,
     };
+    const immutableReleaseIdentity = (metadata) => ({
+      schema_version: "tenant_work_owner_manual_merge_release_identity_v1",
+      tenant_id: metadata?.tenant_id,
+      work_id: metadata?.work_id,
+      intent_anchor_digest: metadata?.intent_anchor_digest,
+      repository: metadata?.repository,
+      action_ticket_id: metadata?.action_ticket_id,
+      action_ticket_digest: metadata?.action_ticket_digest,
+      core_join_verdict_id: metadata?.core_join_verdict_id,
+      core_join_verdict_digest: metadata?.core_join_verdict_digest,
+      manual_merge_readback_id: metadata?.manual_merge_readback_id,
+      manual_merge_readback_digest: metadata?.manual_merge_readback_digest,
+      pull_request: metadata?.pull_request,
+      base_commit: metadata?.base_commit,
+      head_commit: metadata?.head_commit,
+      target_commit: metadata?.target_commit,
+      external_readback_digest: metadata?.external_readback_digest,
+      verifier_id: metadata?.verifier_id,
+      note: metadata?.note,
+      provider_execution: metadata?.provider_execution,
+    });
+    const immutableReleaseIdentityDigest = objectDigest(
+      immutableReleaseIdentity(evidenceBinding),
+    );
     const evidenceDigest = objectDigest(evidenceBinding);
     const outcome = await transaction(async (client) => {
       const work = await loadWork(client, actor, workId, true);
@@ -2856,14 +2906,18 @@ export function createWorkContinuityV2Store({
         ORDER BY created_at,evidence_id LIMIT 1 FOR UPDATE`,
       [actor.tenant_id, workId, receiptId]);
       if (existing.rows[0]) {
-        if (existing.rows[0].digest !== evidenceDigest ||
-            objectDigest(existing.rows[0].metadata) !== objectDigest(evidenceBinding)) {
+        if (objectDigest(immutableReleaseIdentity(existing.rows[0].metadata)) !==
+            immutableReleaseIdentityDigest) {
           fail("owner_manual_merge_release_evidence_conflict");
         }
         return {
           work,
           evidence_id: existing.rows[0].evidence_id,
-          evidence_digest: evidenceDigest,
+          // A fresh, valid finalize authorization may supersede an expired
+          // authorization after a downstream closure retry. The evidence row
+          // remains append-only and retains its original digest when all
+          // immutable release facts are identical.
+          evidence_digest: existing.rows[0].digest,
           idempotent_replay: true,
         };
       }

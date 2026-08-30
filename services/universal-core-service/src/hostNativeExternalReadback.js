@@ -1749,6 +1749,22 @@ export function createHostNativeReleaseJoinVerdictResolver({
     const tenantId = string(request.tenant_id);
     const repository = repositoryPath(request.repository);
     const action = request.action || {};
+    const manualMergeReadback = request.manual_merge_readback || null;
+    const manualGithub = manualMergeReadback?.github_readback;
+    const manualSourceAction = manualMergeReadback?.predecessor?.source_action ||
+      manualMergeReadback?.github_readback && {
+        kind: "github.merge",
+        repository: manualMergeReadback.repository,
+        head_branch: manualGithub.head_branch,
+        base_branch: manualGithub.base_branch,
+        pull_request: manualMergeReadback.pull_request,
+        head_commit: manualGithub.head_commit,
+        expected_base_commit: manualGithub.base_commit,
+        checks_commit: manualGithub.checks_commit,
+        provider_execution: false,
+      };
+    const manualMergeObservation = action.kind === "render.observe" &&
+      manualMergeReadback !== null;
     const source = request.source_evidence || {};
     const headCommit = sha(source.head_commit);
     const baseCommit = sha(source.base_commit);
@@ -1758,6 +1774,53 @@ export function createHostNativeReleaseJoinVerdictResolver({
     const productionDeploy = action.kind === "render.deploy" && action.environment === "production";
     const standingMerge = action.kind === "github.merge" &&
       /^[a-f0-9]{64}$/.test(string(request.required_checks_policy_digest));
+    if (manualMergeObservation) {
+      const { signature: _signature, receipt_digest: receiptDigest, ...receiptUnsigned } =
+        manualMergeReadback || {};
+      const githubUnsigned = manualGithub && { ...manualGithub };
+      if (githubUnsigned) delete githubUnsigned.readback_digest;
+      if (
+        manualMergeReadback?.schema_version !== "host_native_owner_manual_merge_readback_v1" ||
+        manualMergeReadback.authority !== "evidence_only" ||
+        manualMergeReadback.evidence_only !== true ||
+        manualMergeReadback.ticket_issued !== false ||
+        manualMergeReadback.retrospective_ticket_issued !== false ||
+        manualMergeReadback.action_authorized !== false ||
+        manualMergeReadback.execution_authorized !== false ||
+        manualMergeReadback.provider_execution !== false ||
+        receiptDigest !== hostNativeDigest(receiptUnsigned) ||
+        manualGithub?.schema_version !== "host_native_owner_manual_merge_github_readback_v1" ||
+        manualGithub.trusted !== true || manualGithub.merged !== true ||
+        manualGithub.provider_execution !== false ||
+        manualGithub.readback_digest !== hostNativeDigest(githubUnsigned) ||
+        manualGithub.tenant_id !== tenantId ||
+        manualGithub.repository !== repository ||
+        manualGithub.pull_request !== manualMergeReadback.pull_request ||
+        manualGithub.head_commit !== headCommit ||
+        manualGithub.checks_commit !== checksCommit ||
+        manualGithub.base_commit !== baseCommit ||
+        manualGithub.base_branch !== baseBranch ||
+        manualGithub.required_checks_policy_digest !==
+          string(request.required_checks_policy_digest) ||
+        !sameStrings(manualGithub.required_checks, request.required_checks) ||
+        manualMergeReadback.tenant_id !== tenantId ||
+        manualMergeReadback.work_id !== string(request.work_id) ||
+        manualMergeReadback.intent_anchor_digest !== string(request.intent_anchor_digest) ||
+        manualMergeReadback.repository !== repository ||
+        manualMergeReadback.core_join_verdict_id !== string(request.verdict_id) ||
+        receiptDigest !== string(request.evidence_digest) ||
+        manualSourceAction?.kind !== "github.merge" ||
+        manualSourceAction.repository !== repository ||
+        manualSourceAction.pull_request !== manualMergeReadback.pull_request ||
+        manualSourceAction.head_commit !== headCommit ||
+        manualSourceAction.checks_commit !== checksCommit ||
+        manualSourceAction.expected_base_commit !== baseCommit ||
+        manualSourceAction.base_branch !== baseBranch ||
+        manualSourceAction.provider_execution !== false ||
+        action.repository !== repository || action.branch !== baseBranch ||
+        sha(action.target_commit) !== sha(manualGithub.merge_commit)
+      ) error("release_join_verdict_manual_merge_readback_invalid");
+    }
     if (!tenantId || !headCommit || !baseCommit || !treeSha || !checksCommit || !baseBranch || checksCommit !== headCommit) {
       error("release_join_verdict_source_attestation_mismatch");
     }
@@ -1784,12 +1847,12 @@ export function createHostNativeReleaseJoinVerdictResolver({
       baseCommit,
       checksCommit,
       requiredChecks: request.required_checks,
-      action,
+      action: manualMergeObservation ? manualSourceAction : action,
       requiredChecksPolicyResolver,
       workflowRunCache,
       workflowSourceCache,
     });
-    if (productionDeploy || standingMerge) {
+    if (productionDeploy || standingMerge || manualMergeObservation) {
       const requiredChecksPolicyDigest = string(request.required_checks_policy_digest);
       if (!/^[a-f0-9]{64}$/.test(requiredChecksPolicyDigest) ||
           !checks.required_checks_policy_digest) {
@@ -1841,6 +1904,41 @@ export function createHostNativeReleaseJoinVerdictResolver({
       }
       evidenceKind = "github_pull_request_files";
       pullRequest = Number(action.pull_request);
+    } else if (manualMergeObservation) {
+      const pull = await getGithub(`/pulls/${Number(manualSourceAction.pull_request)}`);
+      if (!validateMergePullRequest(
+        pull,
+        manualSourceAction,
+        repository,
+        sha(action.target_commit),
+        { merged: true },
+      )) error("release_join_verdict_pull_request_mismatch");
+      const files = [];
+      let fileEntries = 0;
+      for (let page = 1; page <= MAX_PULL_REQUEST_FILE_PAGES; page += 1) {
+        const response = await getGithub(
+          `/pulls/${Number(manualSourceAction.pull_request)}/files?per_page=${GITHUB_PULL_FILES_PAGE_SIZE}&page=${page}`,
+        );
+        if (!Array.isArray(response)) error("release_join_verdict_changed_files_mismatch");
+        fileEntries += response.length;
+        if (fileEntries > MAX_PULL_REQUEST_FILES) error("release_join_verdict_changed_files_mismatch");
+        files.push(...sourceFileNames(response, "release_join_verdict_changed_files_mismatch"));
+        if (response.length < GITHUB_PULL_FILES_PAGE_SIZE) break;
+        if (page === MAX_PULL_REQUEST_FILE_PAGES) error("release_join_verdict_changed_files_mismatch");
+      }
+      if (!sourceFilesEqual(files, source.changed_files)) {
+        error("release_join_verdict_changed_files_mismatch");
+      }
+      const ref = await getGithub(
+        `/git/ref/heads/${encodeURIComponent(baseBranch).replace(/%2F/g, "/")}`,
+      );
+      if (sha(ref?.object?.sha) !== sha(action.target_commit) ||
+          sha(manualGithub.main_head_commit) !== sha(action.target_commit) ||
+          sha(manualGithub.merge_commit) !== sha(action.target_commit)) {
+        error("release_join_verdict_source_attestation_mismatch");
+      }
+      evidenceKind = "github_manual_merge_readback";
+      pullRequest = Number(manualSourceAction.pull_request);
     } else if (productionDeploy) {
       if (
         !validBranch(action.branch) || action.branch !== baseBranch ||
@@ -1925,7 +2023,7 @@ export function createHostNativeReleaseJoinVerdictResolver({
       source_attestation,
       previous_live_attestations,
       pre_action_readback_digest,
-      ...(productionDeploy || standingMerge ? {
+      ...(productionDeploy || standingMerge || manualMergeObservation ? {
         required_checks_policy_digest: checks.required_checks_policy_digest,
       } : {}),
       ...(preMergeReadback ? {

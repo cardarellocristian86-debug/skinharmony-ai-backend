@@ -3230,35 +3230,49 @@ export function createCoreHandlers(config, options = {}) {
           host_session_fingerprint: hostNativeSessionFingerprint(identity),
         },
       });
+      return textResult(payload);
+    },
+    host_native_owner_manual_merge_finalize_gallery: async (args, identity) => {
+      requireHostNativeOwnerConfirmation(identity, config);
+      const route =
+        `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/authorize-finalize`;
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        },
+      });
       const authorization = payload?.finalize_authorization;
-      if (authorization?.predecessor?.predecessor_type ===
+      if (authorization?.predecessor?.predecessor_type !==
           "owner_manual_github_merge_readback") {
-        if (
-          typeof tenantWorkGallery?.recordOwnerManualMergeReleaseEvidence !==
-            "function" ||
-          typeof tenantWorkGallery?.finalizeGenericClosure !== "function"
-        ) throw new Error("owner_manual_merge_gallery_bridge_unavailable");
-        const projection = await tenantWorkGallery
-          .recordOwnerManualMergeReleaseEvidence(identity, {
-            finalize_authorization: authorization,
-            finalize_authorization_proof:
-              payload?.finalize_authorization_proof,
-          });
-        const closure = await tenantWorkGallery.finalizeGenericClosure(identity, {
-          work_id: authorization.work_id,
-          adapter: projection.adapter,
-        });
-        payload.work_gallery_projection = {
-          schema_version: "owner_manual_merge_gallery_closure_v1",
-          work_id: authorization.work_id,
-          note: "owner_manual_merge",
-          evidence_id: projection.evidence_id,
-          evidence_digest: projection.evidence_digest,
-          closure_receipt_digest: closure.receipt?.receipt_digest || null,
-          archive_status: closure.archive_status,
-          legacy_bridged: projection.legacy_bridged,
-        };
+        throw new Error("owner_manual_merge_finalize_predecessor_required");
       }
+      if (
+        typeof tenantWorkGallery?.recordOwnerManualMergeReleaseEvidence !==
+          "function" ||
+        typeof tenantWorkGallery?.finalizeGenericClosure !== "function"
+      ) throw new Error("owner_manual_merge_gallery_bridge_unavailable");
+      const projection = await tenantWorkGallery
+        .recordOwnerManualMergeReleaseEvidence(identity, {
+          finalize_authorization: authorization,
+          finalize_authorization_proof:
+            payload?.finalize_authorization_proof,
+        });
+      const closure = await tenantWorkGallery.finalizeGenericClosure(identity, {
+        work_id: authorization.work_id,
+        adapter: projection.adapter,
+      });
+      payload.work_gallery_projection = {
+        schema_version: "owner_manual_merge_gallery_closure_v1",
+        work_id: authorization.work_id,
+        note: "owner_manual_merge",
+        evidence_id: projection.evidence_id,
+        evidence_digest: projection.evidence_digest,
+        closure_receipt_digest: closure.receipt?.receipt_digest || null,
+        archive_status: closure.archive_status,
+        legacy_bridged: projection.legacy_bridged,
+      };
       return textResult(payload);
     },
     work_preflight: async (args, identity) => {

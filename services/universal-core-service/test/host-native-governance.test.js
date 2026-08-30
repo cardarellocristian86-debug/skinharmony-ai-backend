@@ -1461,6 +1461,35 @@ test("owner manual merge readback persists selector-bound evidence without a ret
     manual_merge_readback_id: receipt.receipt_id,
     idempotency_key: "manual-merge-observation-ticket",
   };
+  const invalidObservationDelegation = await subject.governance.issueDelegation({
+    ...subject.delegationInput,
+    allowed_actions: ["render.observe", "git.commit"],
+    budget: {
+      ...subject.delegationInput.budget,
+      max_total_actions: 2,
+    },
+    owner_confirmation: {
+      ...subject.delegationInput.owner_confirmation,
+      consent_nonce: "owner-manual-merge-invalid-observation-delegation",
+    },
+    idempotency_key: "manual-merge-invalid-observation-delegation",
+  });
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...observationRequest,
+    delegation_id: invalidObservationDelegation.delegation_id,
+    idempotency_key: "manual-merge-invalid-observation-ticket",
+  }), /owner_manual_merge_observation_delegation_invalid/);
+  const unchangedAfterInvalidGrant = store.readState();
+  assert.equal(
+    unchangedAfterInvalidGrant.core_join_verdicts[join.verdict.verdict_id]
+      .authorized_ticket_id,
+    undefined,
+  );
+  assert.equal(
+    unchangedAfterInvalidGrant.owner_manual_merge_successors[receipt.receipt_id],
+    undefined,
+  );
+  assert.equal(Object.keys(unchangedAfterInvalidGrant.tickets).length, 0);
   await assert.rejects(subject.governance.issueActionTicket({
     ...observationRequest,
     predecessor_ticket_id: "hnt_fake-predecessor",

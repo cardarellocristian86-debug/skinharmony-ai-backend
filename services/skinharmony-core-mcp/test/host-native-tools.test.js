@@ -33,6 +33,22 @@ test("host-native work automation remains zero-provider and single-builder", () 
     assert.equal(Object.hasOwn(manualMerge.inputSchema.properties, callerFact), false,
       `${callerFact} must be resolved by Core rather than accepted from the caller`);
   }
+  const closureReceipt = HOST_NATIVE_TOOLS.find(
+    (tool) => tool.name === "host_native_action_closure_receipt",
+  );
+  const galleryFinalize = HOST_NATIVE_TOOLS.find(
+    (tool) => tool.name === "host_native_owner_manual_merge_finalize_gallery",
+  );
+  assert.equal(closureReceipt.annotations.readOnlyHint, true);
+  assert.equal(galleryFinalize.annotations.readOnlyHint, false);
+  assert.equal(
+    galleryFinalize._meta["skinharmony/ownerConfirmationRequired"],
+    true,
+  );
+  assert.deepEqual(galleryFinalize.inputSchema.required, ["ticket_id"]);
+  for (const callerFact of ["head_commit", "merged", "health", "live_commit"]) {
+    assert.equal(Object.hasOwn(galleryFinalize.inputSchema.properties, callerFact), false);
+  }
   const authorize = HOST_NATIVE_TOOLS.find(
     (tool) => tool.name === "host_native_action_authorize",
   );

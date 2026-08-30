@@ -1703,6 +1703,24 @@ function manualMergeReadbackSignatureValid(receipt, signing) {
   }
 }
 
+function validateManualMergeObservationDelegationBeforeMutation(
+  delegation,
+  receipt,
+  signing,
+) {
+  if (
+    !delegation || !issuedDelegationIssuanceSignatureValid(delegation, signing) ||
+    !sameStrings(delegation.grant?.allowed_actions, ["render.observe"]) ||
+    delegation.grant?.budget?.max_total_actions !== 1 ||
+    !delegationUsageMatches(delegation, 0) ||
+    delegation.grant?.owner_confirmation?.owner_subject_fingerprint !==
+      receipt?.owner_subject_fingerprint ||
+    delegation.grant?.provider_execution !== false ||
+    delegation.grant?.host_policy_override !== false ||
+    delegation.grant?.host_policy_must_allow !== true
+  ) fail("owner_manual_merge_observation_delegation_invalid");
+}
+
 function validateStoredManualMergeObservation(record, state, {
   signing,
   successorUsage,
@@ -3998,6 +4016,14 @@ export function createHostNativeGovernance({
             initial.owner_manual_merge_successors?.[receiptId]) {
           fail("owner_manual_merge_readback_predecessor_invalid");
         }
+        // The in-memory store does not roll back nested mutations when a
+        // mutator throws. Validate the one-shot successor grant before any
+        // ticket, Core Join, or successor state can be changed.
+        validateManualMergeObservationDelegationBeforeMutation(
+          delegation,
+          manualMergeReadback,
+          signing,
+        );
       }
         if (input.predecessor_ticket_id) {
         const parent = initial.tickets[String(input.predecessor_ticket_id)];
@@ -4427,6 +4453,7 @@ export function createHostNativeGovernance({
               })),
               rollback: release_manifest.rollback,
               action,
+              manual_merge_readback: clone(manualMergeReadback),
             });
             if (
               !release_join_resolution ||

@@ -2502,6 +2502,111 @@ function releaseJoinFetch({
   };
 }
 
+function manualMergeJoinRequest(overrides = {}) {
+  const githubUnsigned = {
+    schema_version: "host_native_owner_manual_merge_github_readback_v1",
+    trusted: true,
+    source: "universal_core_github_readback",
+    tenant_id: "tenant-a",
+    repository: "owner/repo",
+    pull_request: 42,
+    merged: true,
+    merged_at: VERIFIED_AT,
+    head_branch: "agent/release",
+    base_branch: "main",
+    base_commit: BASE,
+    head_commit: HEAD,
+    merge_commit: TARGET,
+    main_head_commit: TARGET,
+    checks_commit: HEAD,
+    checks_passed: true,
+    required_checks: [...STRICT_POLICY.required_checks].sort(),
+    observed_checks: [],
+    required_checks_policy_digest: STRICT_POLICY_DIGEST,
+    checks_attestation_digest: "8".repeat(64),
+    workflow_sources: [],
+    verified_at: VERIFIED_AT,
+    external_side_effect: false,
+    provider_execution: false,
+  };
+  const githubReadback = {
+    ...githubUnsigned,
+    readback_digest: hostNativeDigest(githubUnsigned),
+  };
+  const receiptUnsigned = {
+    schema_version: "host_native_owner_manual_merge_readback_v1",
+    receipt_id: `hnmmr_${"1".repeat(40)}`,
+    tenant_id: "tenant-a",
+    work_id: "work-a",
+    intent_anchor_digest: "a".repeat(64),
+    repository: "owner/repo",
+    core_join_verdict_id: "hnj_test",
+    core_join_record_digest: "2".repeat(64),
+    pull_request: 42,
+    github_readback: githubReadback,
+    predecessor: { predecessor_type: "owner_manual_github_merge_readback" },
+    owner_subject_fingerprint: `osf_${"3".repeat(64)}`,
+    authority: "evidence_only",
+    evidence_only: true,
+    ticket_issued: false,
+    retrospective_ticket_issued: false,
+    action_authorized: false,
+    execution_authorized: false,
+    host_policy_override: false,
+    provider_execution: false,
+    recorded_at: VERIFIED_AT,
+  };
+  const receipt = {
+    ...receiptUnsigned,
+    receipt_digest: hostNativeDigest(receiptUnsigned),
+    signature: "hnmmr_test_signature",
+  };
+  return releaseJoinRequest({
+    required_checks: [...STRICT_POLICY.required_checks],
+    required_checks_policy_digest: STRICT_POLICY_DIGEST,
+    evidence_digest: receipt.receipt_digest,
+    action: {
+      kind: "render.observe",
+      repository: "owner/repo",
+      branch: "main",
+      service_id: "service-a",
+      environment: "production",
+      target_commit: TARGET,
+      release_manifest_digest: "4".repeat(64),
+      provider_execution: false,
+    },
+    manual_merge_readback: receipt,
+    ...overrides,
+  });
+}
+
+function manualMergeJoinFetch({ mainHead = TARGET } = {}) {
+  const fallback = strictFetch();
+  return async (url, init) => {
+    const root = "https://api.github.com/repos/owner/repo";
+    if (url === `${root}/git/commits/${HEAD}`) {
+      return jsonResponse({ sha: HEAD, tree: { sha: TREE } });
+    }
+    if (url === `${root}/pulls/42`) return jsonResponse(pullRequest());
+    if (url === `${root}/pulls/42/files?per_page=10&page=1`) {
+      return jsonResponse([{ filename: RELEASE_CHANGED_FILES[0], status: "modified" }]);
+    }
+    if (url === `${root}/git/ref/heads/main`) {
+      return jsonResponse({ object: { sha: mainHead } });
+    }
+    if (url === "https://service-a.onrender.com/healthz") {
+      return jsonResponse(serviceHealth("service-a", {
+        build: {
+          build_id: "previous-service-a",
+          commit_sha: BASE,
+          commit_verifiable: true,
+        },
+      }));
+    }
+    return fallback(url, init);
+  };
+}
+
 function standingMergeJoinRequest(overrides = {}) {
   return releaseJoinRequest({
     required_checks: [...STRICT_POLICY.required_checks],
@@ -3108,6 +3213,41 @@ test("production deploy release-join proves exact push source and mixed previous
       { service_id: "service-b", live_commit: ALTERNATE },
     ],
   );
+});
+
+test("manual merge observation release-join reattests persisted evidence and current main", async () => {
+  const resolver = createHostNativeReleaseJoinVerdictResolver({
+    fetchImpl: manualMergeJoinFetch(),
+    requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    now: () => Date.parse(VERIFIED_AT),
+  });
+  const resolution = await resolver(manualMergeJoinRequest());
+  assert.equal(resolution.source_attestation.evidence_kind,
+    "github_manual_merge_readback");
+  assert.equal(resolution.source_attestation.pull_request, 42);
+  assert.equal(resolution.required_checks_policy_digest, STRICT_POLICY_DIGEST);
+  assert.equal(resolution.trusted, true);
+});
+
+test("manual merge observation release-join rejects receipt tampering and current-main drift", async (t) => {
+  await t.test("receipt", async () => {
+    const request = manualMergeJoinRequest();
+    request.manual_merge_readback.github_readback.merge_commit = ALTERNATE;
+    const resolver = createHostNativeReleaseJoinVerdictResolver({
+      fetchImpl: manualMergeJoinFetch(),
+      requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    });
+    await assert.rejects(resolver(request),
+      /release_join_verdict_manual_merge_readback_invalid/);
+  });
+  await t.test("main", async () => {
+    const resolver = createHostNativeReleaseJoinVerdictResolver({
+      fetchImpl: manualMergeJoinFetch({ mainHead: ALTERNATE }),
+      requiredChecksPolicyResolver: async () => STRICT_POLICY,
+    });
+    await assert.rejects(resolver(manualMergeJoinRequest()),
+      /release_join_verdict_source_attestation_mismatch/);
+  });
 });
 
 test("production deploy release-join fails closed on source, compare, or workflow drift", async (t) => {
