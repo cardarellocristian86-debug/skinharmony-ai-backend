@@ -9292,6 +9292,52 @@ export function createUniversalCoreService(options = {}) {
     const causalInitializationDegraded = causalBootstrapLivenessReady;
     const healthStatusReady = renderReady
       || (!strictReadiness && causalInitializationDegraded);
+    const semanticScopeGuardMode = typeof hostNativeGovernance?.semantic_scope_guard_mode === "string" &&
+      ["OFF", "SHADOW", "ENFORCE"].includes(hostNativeGovernance.semantic_scope_guard_mode)
+      ? hostNativeGovernance.semantic_scope_guard_mode
+      : null;
+    const semanticScopeGuardConfigured = typeof hostNativeGovernance?.semantic_scope_guard_configured === "boolean"
+      ? hostNativeGovernance.semantic_scope_guard_configured
+      : null;
+    let semanticScopeGuardRawMetrics = null;
+    try {
+      semanticScopeGuardRawMetrics = typeof hostNativeGovernance?.semanticScopeMetrics === "function"
+        ? hostNativeGovernance.semanticScopeMetrics()
+        : null;
+    } catch {
+      // Health remains a readback endpoint even when optional telemetry is
+      // unavailable. Do not expose the thrown error or raw metric object.
+      semanticScopeGuardRawMetrics = null;
+    }
+    const nonNegativeMetric = (value, maximum = Number.POSITIVE_INFINITY) => (
+      typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= maximum
+        ? value
+        : null
+    );
+    const semanticScopeGuardMetrics = semanticScopeGuardRawMetrics &&
+      typeof semanticScopeGuardRawMetrics === "object" &&
+      !Array.isArray(semanticScopeGuardRawMetrics)
+      ? {
+        bitemporal_query_latency:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.bitemporal_query_latency),
+        semantic_scope_check_latency:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.semantic_scope_check_latency),
+        semantic_scope_block_total:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.semantic_scope_block_total),
+        semantic_scope_hold_total:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.semantic_scope_hold_total),
+        semantic_scope_redact_total:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.semantic_scope_redact_total),
+        scope_drift_detected_total:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.scope_drift_detected_total),
+        false_hold_rate:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.false_hold_rate, 1),
+        false_block_rate:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.false_block_rate, 1),
+        check_total: nonNegativeMetric(semanticScopeGuardRawMetrics.check_total),
+        execution_authorized: false,
+      }
+      : null;
     res.status(healthStatusReady ? 200 : 503).json({
       ok: !production || renderReady,
       service: SERVICE_NAME,
@@ -9570,6 +9616,11 @@ export function createUniversalCoreService(options = {}) {
           hostNativeGovernance?.required_checks_policy_resolver_configured === true,
         closure_attestation_verifier_configured:
           hostNativeGovernance?.closure_attestation_verifier_configured === true,
+        // The semantic guard is observable here, but this public readback
+        // remains non-authoritative and cannot change guard mode or policy.
+        semantic_scope_guard_mode: semanticScopeGuardMode,
+        semantic_scope_guard_configured: semanticScopeGuardConfigured,
+        semantic_scope_guard_metrics: semanticScopeGuardMetrics,
         nyra_work_automation_v3: {
           configured: Boolean(nyraWorkAutomation),
           state: nyraWorkAutomationState,

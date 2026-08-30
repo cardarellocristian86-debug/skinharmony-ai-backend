@@ -1390,8 +1390,8 @@ const nyraConverseOutputSchema = object({
 
 const nyraControlRoomActionSchema = object({
   id: { type: "string", minLength: 1, maxLength: 120 },
-  availability: { type: "string", enum: ["AVAILABLE", "REQUEST_ONLY", "EXISTING_GOVERNED_HANDLER"] },
-  execution: { type: "string", enum: ["READ_ONLY", "DEPLOYMENT_CONFIGURATION", "REQUEST_BOUND_GOVERNED"] },
+  availability: { type: "string", enum: ["AVAILABLE", "REQUEST_ONLY", "EXISTING_GOVERNED_HANDLER", "UNAVAILABLE"] },
+  execution: { type: "string", enum: ["READ_ONLY", "DEPLOYMENT_CONFIGURATION", "REQUEST_BOUND_GOVERNED", "DEPLOYMENT_PREREQUISITE"] },
   requires_owner_confirmation: { type: "boolean" },
   requires_core_authorization: { type: "boolean" },
   restart_required: { type: "boolean" },

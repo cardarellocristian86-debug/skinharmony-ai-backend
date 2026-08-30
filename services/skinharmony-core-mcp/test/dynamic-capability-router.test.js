@@ -1378,6 +1378,63 @@ test("Entity 360 shadow activation uses its exact Core route, never the generic 
     "universal_core_dedicated_route");
 });
 
+test("Entity 360 shadow disable uses its exact Core route, never the generic action gate", async () => {
+  const tool = ENTITY_360_TOOLS.find((item) => item.name === "entity_360_shadow_disable");
+  let genericGateCalls = 0;
+  let received;
+  const handlers = {
+    [tool.name]: async (args, caller) => {
+      received = { args, caller };
+      return {
+        structuredContent: {
+          ok: true,
+          mode: "OFF",
+          dedicated_core_gate: {
+            authorized: true,
+            authority: "universal_core",
+            route: "entity_360_shadow_disable",
+          },
+        },
+      };
+    },
+  };
+  const router = createDynamicCapabilityHandlers({
+    tools: [tool],
+    handlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => {
+      genericGateCalls += 1;
+      throw new Error("generic_gate_must_not_run_for_entity_360_shadow_disable");
+    },
+  });
+  const catalog_revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
+  const caller = {
+    ...identity,
+    kind: "oauth",
+    oauthOwnerBound: true,
+    oauthOwnerElevated: true,
+    ownerConfirmed: true,
+  };
+  const result = await router.core_capability_invoke({
+    capability_id: tool.name,
+    catalog_revision,
+    idempotency_key: "entity-360-shadow-disable-once",
+    owner_confirmed: true,
+    confirmation_reference: "owner-approved-entity-360-shadow-disable",
+    arguments: {
+      expected_revision: 2,
+    },
+  }, caller);
+
+  assert.equal(genericGateCalls, 0);
+  assert.equal(received.caller.oauthOwnerElevated, true);
+  assert.equal(received.args.owner_confirmed, true);
+  assert.equal(received.args.confirmation_reference,
+    "owner-approved-entity-360-shadow-disable");
+  assert.equal(result.structuredContent.dynamic_capability.gate_source,
+    "universal_core_dedicated_route");
+});
+
 test("OAuth-owner continuity bootstrap capabilities use only their server-owned Core gate", async () => {
   const bootstrapTools = WORK_CONTINUITY_TOOLS.filter((tool) => [
     "work_continuity_create",

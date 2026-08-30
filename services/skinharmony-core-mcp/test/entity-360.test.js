@@ -20,10 +20,11 @@ const EXPECTED = Object.freeze([
   "entity_360_policy_read",
   "entity_360_metrics_read",
   "entity_360_shadow_enable",
+  "entity_360_shadow_disable",
 ]);
 
 const DTT_EXPECTED = Object.freeze(EXPECTED.filter((name) =>
-  name !== "entity_360_shadow_enable"));
+  !["entity_360_shadow_enable", "entity_360_shadow_disable"].includes(name)));
 
 const PATHS = Object.freeze([
   "/v1/entity-360/resolve",
@@ -76,15 +77,18 @@ test("Entity 360 MCP tools are strict, tenant-free context contracts", () => {
 
   assert.equal(toolNamed("entity_360_snapshot_assemble").annotations.readOnlyHint, false);
   assert.equal(toolNamed("entity_360_shadow_compare").annotations.readOnlyHint, false);
-  assert.equal(toolNamed("entity_360_shadow_enable").annotations.readOnlyHint, false);
-  assert.equal(toolNamed("entity_360_shadow_enable")
-    ._meta["skinharmony/ownerConfirmationRequired"], true);
-  assert.equal(toolNamed("entity_360_shadow_enable")
-    ._meta["skinharmony/dedicatedCoreGate"], true);
+  for (const name of ["entity_360_shadow_enable", "entity_360_shadow_disable"]) {
+    assert.equal(toolNamed(name).annotations.readOnlyHint, false, name);
+    assert.equal(toolNamed(name)
+      ._meta["skinharmony/ownerConfirmationRequired"], true, name);
+    assert.equal(toolNamed(name)
+      ._meta["skinharmony/dedicatedCoreGate"], true, name);
+  }
   for (const name of EXPECTED.filter((item) => ![
     "entity_360_snapshot_assemble",
     "entity_360_shadow_compare",
     "entity_360_shadow_enable",
+    "entity_360_shadow_disable",
   ].includes(item))) {
     assert.equal(toolNamed(name).annotations.readOnlyHint, true, name);
   }
@@ -169,6 +173,23 @@ test("Entity 360 schemas bind exact snapshot scope and reject caller tenant fiel
     legacy_outcome: "HOLD",
     idempotency_key: "entity-360-shadow-a",
   }), []);
+
+  const disableSchema = toolNamed("entity_360_shadow_disable").inputSchema;
+  assert.deepEqual(validateToolArguments(disableSchema, {
+    expected_revision: 3,
+    idempotency_key: "entity-360-shadow-disable-a",
+  }), []);
+  for (const forged of [
+    { mode: "SHADOW" },
+    { enabled: true },
+    { tenant_id: "spoofed" },
+  ]) {
+    assert(validateToolArguments(disableSchema, {
+      expected_revision: 3,
+      idempotency_key: "entity-360-shadow-disable-a",
+      ...forged,
+    }).some((item) => item.code === "additional_property"));
+  }
 });
 
 test("Entity 360 transport derives tenant and DTT context only from authenticated identity", async () => {
@@ -258,6 +279,62 @@ test("Entity 360 SHADOW enable is a separate owner-confirmed Core transport", as
     idempotency_key: "entity-360-shadow-enable-b",
     owner_confirmed: false,
   }, identity), /owner_confirmation_required/u);
+});
+
+test("Entity 360 SHADOW disable is a separate owner-confirmed Core transport", async () => {
+  const calls = [];
+  const handlers = createEntity360Handlers({
+    coreRequest: async () => { throw new Error("dtt_transport_must_not_be_used"); },
+    issueAgentContext: () => { throw new Error("dtt_context_must_not_be_issued"); },
+    shadowDisableCoreRequest: async (args, identity) => {
+      calls.push({ args, identity });
+      return { ok: true, mode: "OFF", enabled: false,
+        production_decision_changed: false, execution_authorized: false,
+        dedicated_core_gate: { authorized: true, authority: "universal_core",
+          route: "entity_360_shadow_disable", provider_execution: false,
+          host_policy_override: false } };
+    },
+  });
+  const identity = { tenantId: "tenant-authenticated", ownerConfirmed: true };
+  const result = await handlers.entity_360_shadow_disable({
+    expected_revision: 4,
+    idempotency_key: "entity-360-shadow-disable-a",
+    owner_confirmed: true,
+    confirmation_reference: "owner-confirmation-a",
+    mode: "SHADOW",
+  }, identity);
+  assert.equal(result.structuredContent.mode, "OFF");
+  assert.equal(result.structuredContent.enabled, false);
+  assert.deepEqual(calls, [{
+    args: {
+      expected_revision: 4,
+      idempotency_key: "entity-360-shadow-disable-a",
+      owner_confirmed: true,
+      confirmation_reference: "owner-confirmation-a",
+    },
+    identity,
+  }]);
+  await assert.rejects(() => handlers.entity_360_shadow_disable({
+    expected_revision: 4,
+    idempotency_key: "entity-360-shadow-disable-b",
+    owner_confirmed: true,
+  }, { ...identity, ownerConfirmed: false }), /owner_confirmation_required/u);
+
+  const forgedGateHandlers = createEntity360Handlers({
+    coreRequest: async () => { throw new Error("dtt_transport_must_not_be_used"); },
+    issueAgentContext: () => { throw new Error("dtt_context_must_not_be_issued"); },
+    shadowDisableCoreRequest: async () => ({
+      ok: true, mode: "OFF", enabled: false, execution_authorized: false,
+      dedicated_core_gate: { authorized: true, authority: "universal_core",
+        route: "entity_360_shadow_enable", provider_execution: false,
+        host_policy_override: false },
+    }),
+  });
+  await assert.rejects(() => forgedGateHandlers.entity_360_shadow_disable({
+    expected_revision: 4,
+    idempotency_key: "entity-360-shadow-disable-c",
+    owner_confirmed: true,
+  }, identity), /entity360_dedicated_core_gate_unverified/u);
 });
 
 test("real DTT issuer and verifier preserve the exact tenant, Work and principal binding", async () => {

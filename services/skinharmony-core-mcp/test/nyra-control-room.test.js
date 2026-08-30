@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectNyraControlRoomStatus, projectWorkClosureProgress } from "../src/nyra-control-room.js";
+import { validateToolArguments } from "../src/schema-validation.js";
+import { TOOLS } from "../src/tool-definitions.js";
+
+function toolNamed(name) {
+  return TOOLS.find((tool) => tool.name === name);
+}
 
 test("Control Room calculates closure progress only from server work context", () => {
   const progress = projectWorkClosureProgress({
@@ -37,10 +43,61 @@ test("Control Room distinguishes runtime controls from deployment configuration"
   assert.equal(dialogue.detail.restart_required, true);
   const entity360 = status.domains.find((item) => item.id === "entity_360");
   assert.deepEqual(entity360.allowed_actions.map((item) => item.id), [
-    "READ_STATUS", "REQUEST_ENABLE_SHADOW",
+    "READ_STATUS", "REQUEST_ENABLE_SHADOW", "REQUEST_DISABLE_SHADOW",
   ]);
   assert.equal(entity360.allowed_actions[1].handler, "entity_360_shadow_enable");
   assert.equal(entity360.allowed_actions[1].requires_owner_confirmation, true);
+  assert.equal(entity360.allowed_actions[2].handler, "entity_360_shadow_disable");
+  assert.equal(entity360.allowed_actions[2].requires_core_authorization, true);
+  assert.equal(entity360.detail.shadow_transition_available, true);
+  assert.equal(entity360.detail.shadow_transition_blocker, null);
+});
+
+test("Control Room never advertises Entity 360 shadow transitions before their Core deployment prerequisites", () => {
+  const cases = [
+    {
+      entity_360: { mode: "OFF", deployment_mode_ceiling: "OFF", ready: false },
+      blocker: "entity_360_shadow_deployment_ceiling_required",
+    },
+    {
+      entity_360: { mode: "SHADOW", deployment_mode_ceiling: "SHADOW", ready: false },
+      blocker: "entity_360_shadow_runtime_not_ready",
+    },
+    {
+      entity_360: { mode: "INVALID", deployment_mode_ceiling: "INVALID", ready: false },
+      blocker: "entity_360_shadow_deployment_ceiling_required",
+    },
+    {
+      entity_360: { mode: "SHADOW", ready: true },
+      blocker: "entity_360_shadow_deployment_ceiling_unknown",
+    },
+  ];
+  for (const { entity_360, blocker } of cases) {
+    const entity360 = projectNyraControlRoomStatus({ health: { ok: true, entity_360 } })
+      .domains.find((item) => item.id === "entity_360");
+    assert.equal(entity360.detail.shadow_transition_available, false);
+    assert.equal(entity360.detail.shadow_transition_blocker, blocker);
+    for (const action of entity360.allowed_actions.slice(1)) {
+      assert.equal(action.availability, "UNAVAILABLE", blocker);
+      assert.equal(action.execution, "DEPLOYMENT_PREREQUISITE", blocker);
+      assert.equal(action.handler, null, blocker);
+    }
+  }
+});
+
+test("Control Room output contract accepts unavailable governed transitions", () => {
+  const controlRoom = projectNyraControlRoomStatus({
+    health: {
+      ok: true,
+      entity_360: { mode: "OFF", deployment_mode_ceiling: "OFF", ready: false },
+    },
+  });
+  const schema = toolNamed("nyra_control_room_status").outputSchema;
+  assert.deepEqual(validateToolArguments(schema, {
+    ok: true,
+    tenant_id: "tenant-a",
+    control_room: controlRoom,
+  }), []);
 });
 
 test("Control Room never renders unavailable health readback as OFF", () => {

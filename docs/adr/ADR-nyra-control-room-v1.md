@@ -30,11 +30,26 @@ Ogni dominio dichiara quindi azioni precise con una delle seguenti nature:
 | `REQUEST_BOUND_GOVERNED` | esiste un handler dedicato, con conferma owner e Core |
 | `DEPLOYMENT_CONFIGURATION` | richiede una change request/release governata e riavvio |
 
-Per esempio, Entity 360 espone solo la reale richiesta governata
-`entity_360_shadow_enable`. Non viene pubblicato un fittizio `SET_OFF` finché
-non esistono handler, rollback receipt e test corrispondenti. Nyra Dialogue e
-Semantic Scope Guard restano configurazioni di deploy: la Control Room le
-mostra e può guidare la change request, ma non scrive environment da chat.
+Entity 360 espone le due sole transizioni tenant-wide realmente implementate:
+`entity_360_shadow_enable` e `entity_360_shadow_disable`. Entrambe usano la
+stessa route Core già governata, owner confirmation fresca, CAS con
+`expected_revision`, idempotency key, request binding firmato e un receipt
+del gate Core. Il client non può selezionare `mode` o `enabled`; `OFF` non
+elimina history né modifica il deployment ceiling. Nyra Dialogue e Semantic
+Scope Guard restano configurazioni di deploy: la Control Room le mostra e può
+guidare la change request, ma non scrive environment da chat.
+
+La Control Room pubblica il relativo handler come invocabile solo se il
+readback Core dichiara `deployment_mode_ceiling=SHADOW` e `ready=true`.
+In ogni altro caso conserva l'azione come `UNAVAILABLE`, senza handler e con
+un blocker server-derived: non trasforma un prerequisito di deploy in un
+toggle chat fittizio.
+
+La transizione richiede comunque l'`expected_revision` tenant-bound del
+feature flag. La Control Room non lo inventa né lo accetta come stato
+autorevole: nella superficie attuale proviene dalla lettura policy governata
+di un Work. Un futuro comando UX end-to-end dovrà usare un riferimento opaco
+server-owned a quella lettura, non una revision auto-certificata dal client.
 
 ## Contratto e trust boundary
 
@@ -68,9 +83,12 @@ contenuto sensibile.
 
 ## Rollout e rollback
 
-L'aggiunta è additive e read-only. Non richiede migrazioni, non modifica Work,
-Entity 360 o policy. Il rollback rimuove il tool dal catalogo; gli store e i
-contratti preesistenti restano invariati.
+L'aggiunta è additive e non richiede migrazioni: riusa il feature-flag Core
+Entity 360 già esistente e aggiunge solo il bridge MCP dedicato per `OFF` e il
+readback health del Semantic Scope Guard. Non introduce un nuovo store, Work,
+Entity 360 o policy engine. Il rollback operativo di una tenant shadow usa
+`entity_360_shadow_disable`; il rollback del codice rimuove il bridge dal
+catalogo e lascia invariati gli store e i contratti preesistenti.
 
 Prima di promuovere una futura command plane bisogna aggiungere per ogni nuova
 azione: handler reale, Core gate, owner binding, idempotenza, audit readback,

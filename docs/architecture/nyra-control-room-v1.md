@@ -34,7 +34,7 @@ spiega il prerequisito e non dichiara che il cambiamento sia avvenuto.
 | Dominio | Stato letto da | Azione reale/limite |
 | --- | --- | --- |
 | Nyra Dialogue | configurazione MCP | change di deploy, riavvio richiesto |
-| Entity 360 | Core `/healthz` | solo richiesta governata `entity_360_shadow_enable` |
+| Entity 360 | Core `/healthz` | richieste governate `entity_360_shadow_enable` / `entity_360_shadow_disable` solo con ceiling `SHADOW` e runtime `ready`; owner, CAS e idempotency richiesti |
 | Semantic Scope Guard | Host Native governance | change di deploy, riavvio richiesto |
 | Work Continuity | Core health + V2 Work | lettura Work/closure, nessuna mutazione |
 | Research Airlock | Core health | stato globale, workflow per-Work separato |
@@ -57,3 +57,6 @@ gate separato: task ed evidence completati non autorizzano a dire che un Work
 - Una denial ACL resta una denial: non diventa `0%` né Work inesistente.
 - Con Dialogue ON il tool rimane visibile nel front-door perché deve poter
   dichiarare anche che Dialogue è ON/OFF senza ricorrere a un secondo modello.
+- Le sole transizioni chat Entity 360 sono i due handler dedicati. `OFF`
+  preserva history e non modifica il deployment ceiling; il chiamante non può
+  impostare `mode`, `enabled`, tenant o authority.

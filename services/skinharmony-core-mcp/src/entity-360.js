@@ -69,7 +69,7 @@ function tool(name, title, description, inputSchema, readOnly, options = {}) {
     ...(options.ownerConfirmationRequired === true ? {
       _meta: {
         "skinharmony/ownerConfirmationRequired": true,
-        // Tenant-wide shadow activation owns a distinct Universal Core route;
+        // Tenant-wide shadow transitions own distinct Universal Core routes;
         // never let the dynamic wrapper replace it with a Work-scoped gate.
         ...(options.dedicatedCoreGate === true
           ? { "skinharmony/dedicatedCoreGate": true }
@@ -176,6 +176,17 @@ const definitions = [
     false,
     { ownerConfirmationRequired: true, dedicatedCoreGate: true },
   ],
+  [
+    "entity_360_shadow_disable",
+    "Disable Entity 360 tenant shadow",
+    "Disable the tenant-wide Entity 360 context fabric. This preserves history and requires a fresh owner confirmation; it can never delete Entity 360 records, enable execution or mutate a production decision.",
+    object({
+      expected_revision: { type: "integer", minimum: 0 },
+      idempotency_key: idempotencyKey,
+    }, ["expected_revision", "idempotency_key"]),
+    false,
+    { ownerConfirmationRequired: true, dedicatedCoreGate: true },
+  ],
 ];
 
 export const ENTITY_360_TOOLS = Object.freeze(definitions.map((entry) => tool(...entry)));
@@ -258,15 +269,25 @@ function assertContextOnlyResponse(value) {
   return value;
 }
 
-export function createEntity360Handlers({ coreRequest, shadowEnableCoreRequest, issueAgentContext } = {}) {
+export function createEntity360Handlers({
+  coreRequest,
+  shadowEnableCoreRequest,
+  shadowDisableCoreRequest,
+  issueAgentContext,
+} = {}) {
   if (typeof coreRequest !== "function" || typeof issueAgentContext !== "function") {
     throw new TypeError("entity 360 transport required");
   }
   return Object.fromEntries(definitions.map(([capabilityId]) => [
     capabilityId,
     async (args = {}, identityContext = {}) => {
-      if (capabilityId === "entity_360_shadow_enable") {
-        if (typeof shadowEnableCoreRequest !== "function") {
+      const shadowTransition = capabilityId === "entity_360_shadow_enable"
+        ? { coreRequest: shadowEnableCoreRequest, route: "entity_360_shadow_enable" }
+        : capabilityId === "entity_360_shadow_disable"
+          ? { coreRequest: shadowDisableCoreRequest, route: "entity_360_shadow_disable" }
+          : null;
+      if (shadowTransition) {
+        if (typeof shadowTransition.coreRequest !== "function") {
           throw new Error("entity360_configuration_transport_required");
         }
         const tenantId = String(identityContext?.tenantId || "").trim();
@@ -274,7 +295,7 @@ export function createEntity360Handlers({ coreRequest, shadowEnableCoreRequest, 
         if (identityContext.ownerConfirmed !== true || args.owner_confirmed !== true) {
           throw new Error("owner_confirmation_required");
         }
-        const response = await shadowEnableCoreRequest({
+        const response = await shadowTransition.coreRequest({
           expected_revision: args.expected_revision,
           idempotency_key: args.idempotency_key,
           owner_confirmed: true,
@@ -283,7 +304,7 @@ export function createEntity360Handlers({ coreRequest, shadowEnableCoreRequest, 
         const dedicatedCoreGate = response?.dedicated_core_gate;
         if (dedicatedCoreGate?.authorized !== true ||
           dedicatedCoreGate?.authority !== "universal_core" ||
-          dedicatedCoreGate?.route !== "entity_360_shadow_enable" ||
+          dedicatedCoreGate?.route !== shadowTransition.route ||
           dedicatedCoreGate?.provider_execution !== false ||
           dedicatedCoreGate?.host_policy_override !== false) {
           throw new Error("entity360_dedicated_core_gate_unverified");

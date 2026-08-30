@@ -37,6 +37,8 @@ const TOOLS = [
   { name: "nyra_policy_registry_activate", annotations: { readOnlyHint: false } },
   { name: "nyra_policy_registry_rollback", annotations: { readOnlyHint: false } },
   { name: "nyra_policy_registry_reconcile", annotations: { readOnlyHint: false } },
+  { name: "entity_360_shadow_enable", annotations: { readOnlyHint: false } },
+  { name: "entity_360_shadow_disable", annotations: { readOnlyHint: false } },
 ];
 
 function identity(capabilities, hostKind = "chatgpt_native", registered = true) {
@@ -444,6 +446,8 @@ test("non-Work reads, mutations and policy administration use separate app upper
   for (const invocation of [
     ["entity_360_shadow_enable", {}],
     ["core_capability_invoke", { capability_id: "entity_360_shadow_enable" }],
+    ["entity_360_shadow_disable", {}],
+    ["core_capability_invoke", { capability_id: "entity_360_shadow_disable" }],
   ]) {
     assert.throws(() => requireHostAppToolCapability({
       identity: identity(["work.operate"]), toolName: invocation[0], args: invocation[1], tools: TOOLS,

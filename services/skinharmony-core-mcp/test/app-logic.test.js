@@ -10,6 +10,7 @@ import {
   TOOLS,
 } from "../src/app.js";
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
+import { ENTITY_360_TOOLS } from "../src/entity-360.js";
 
 function tenantBoundChatGptCompatibilityIdentity(overrides = {}) {
   return {
@@ -126,6 +127,44 @@ test("exposes Nyra plus read-only Control Room status to every registered conver
       capabilities: ["work.read"],
     },
   }).map((tool) => tool.name).join(","), "nyra_control_room_status,nyra_converse");
+});
+
+test("exposes only Core-operate holders to bounded Entity 360 shadow transitions in Nyra chat", () => {
+  const serverTools = [...TOOLS, ...ENTITY_360_TOOLS];
+  const identity = {
+    kind: "oauth",
+    tenantId: "tenant-a",
+    authenticatedTenantMembership: {
+      schema_version: "tenant_membership_binding_v1",
+      authenticated: true,
+      tenant_id: "tenant-a",
+      subject: "owner-a",
+    },
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      app_id: "nyra-conversational-owner",
+      auth_kind: "oauth",
+      host_kind: "chatgpt_native",
+      client_type: "chatgpt",
+      interaction_mode: "nyra_conversational",
+      capabilities: ["work.read"],
+    },
+  };
+  const namesWithoutCoreOperate = filterToolsForClient(serverTools, identity)
+    .map((tool) => tool.name);
+  assert.equal(namesWithoutCoreOperate.includes("entity_360_shadow_enable"), false);
+  assert.equal(namesWithoutCoreOperate.includes("entity_360_shadow_disable"), false);
+
+  const namesWithCoreOperate = filterToolsForClient(serverTools, {
+    ...identity,
+    authenticatedHostPrincipal: {
+      ...identity.authenticatedHostPrincipal,
+      capabilities: ["work.read", "core.operate"],
+    },
+  }).map((tool) => tool.name);
+  assert.equal(namesWithCoreOperate.includes("entity_360_shadow_enable"), true);
+  assert.equal(namesWithCoreOperate.includes("entity_360_shadow_disable"), true);
 });
 
 test("routes stale conversational Core read descriptors to Nyra", () => {
