@@ -22,6 +22,11 @@ import {
   validateHostReleaseManifestV2,
 } from "../src/hostNativeGovernance.js";
 import { createSemanticScopeGuard } from "../src/semanticScopeGuard.js";
+import {
+  createHostNativeFinalizeAuthorizationProof,
+  createLocalGenericWorkCoreJoinSigner,
+  verifyGenericWorkCoreJoinDigestSignature,
+} from "../src/genericWorkCoreJoin.js";
 
 test("host-native governance advertises Work Automation v3 without provider execution", () => {
   const governance = createHostNativeGovernance({
@@ -78,6 +83,7 @@ const CLOSURE_ATTESTATION_SECRET =
   "host-native-governance-closure-attestation-secret-0123456789";
 const IDEMPOTENT_METHODS = new Set([
   "issueCoreJoinVerdict",
+  "recordOwnerManualMergeReadback",
   "issueDelegation",
   "revokeDelegation",
   "issueActionTicket",
@@ -121,6 +127,8 @@ function trustedExternalReadback(
   const mergeAction = action.kind === "github.merge";
   const observeAction = action.kind === "render.observe";
   const sourceAction = observeAction ? ticket.predecessor.source_action : action;
+  const ownerManualMerge = observeAction && ticket.predecessor.predecessor_type ===
+    "owner_manual_github_merge_readback";
   const sourceMerge = sourceAction.kind === "github.merge";
   const githubUnsigned = {
     api_origin: "https://api.github.com",
@@ -149,9 +157,16 @@ function trustedExternalReadback(
     } : {}),
     ...(observeAction ? {
       source_action_kind: sourceAction.kind,
-      predecessor_ticket_id: ticket.predecessor.ticket_id,
-      predecessor_ticket_digest: ticket.predecessor.ticket_digest,
       source_action_digest: ticket.predecessor.source_action_digest,
+      ...(ownerManualMerge ? {
+        manual_merge_readback_id: ticket.predecessor.manual_merge_readback_id,
+        manual_merge_readback_digest:
+          ticket.predecessor.manual_merge_readback_digest,
+        source_readback_digest: ticket.predecessor.source_readback_digest,
+      } : {
+        predecessor_ticket_id: ticket.predecessor.ticket_id,
+        predecessor_ticket_digest: ticket.predecessor.ticket_digest,
+      }),
     } : {}),
   };
   const services = (verificationScope === "github_merge_and_checks_only"
@@ -266,6 +281,7 @@ function harness({
   store = createInMemoryHostNativeGovernanceStore(),
   signingSecret = "host-native-governance-test-signing-secret-at-least-32-bytes",
   externalReadbackVerifier,
+  ownerManualMergeReadbackVerifier,
   unreservedEffectVerifier,
   releaseJoinVerdictResolver,
   renderServiceOriginResolver,
@@ -293,6 +309,7 @@ function harness({
           verification_scope,
         ))
       : externalReadbackVerifier,
+    ownerManualMergeReadbackVerifier: ownerManualMergeReadbackVerifier || null,
     unreservedEffectVerifier: unreservedEffectVerifier || null,
     bootstrapReleaseExceptionStore: bootstrapReleaseExceptionStore || null,
     bootstrapDeadlockVerdictResolver: bootstrapDeadlockVerdictResolver || null,
@@ -1282,6 +1299,315 @@ test("Core join is consumed atomically by one reserved release ticket and missin
       noResolverJoin.verdict.verdict_id,
     ),
   }), /release_join_verdict_unavailable/);
+});
+
+test("owner manual merge readback persists selector-bound evidence without a retroactive ticket", async () => {
+  const store = createInMemoryHostNativeGovernanceStore();
+  let verifierCalls = 0;
+  const manualReadbackVerifier = async ({ tenant_id, repository, pull_request, core_join_record }) => {
+    verifierCalls += 1;
+    const unsigned = {
+      schema_version: "host_native_owner_manual_merge_github_readback_v1",
+      trusted: true,
+      source: "universal_core_github_readback",
+      tenant_id,
+      repository,
+      pull_request,
+      merged: true,
+      merged_at: "2026-07-29T10:00:00.000Z",
+      head_branch: "agent/native-work",
+      base_branch: core_join_record.claim.base_branch,
+      base_commit: G("1"),
+      head_commit: core_join_record.claim.checks.commit,
+      merge_commit: G("9"),
+      main_head_commit: G("9"),
+      checks_commit: core_join_record.claim.checks.commit,
+      checks_passed: true,
+      required_checks: core_join_record.claim.checks.required_checks,
+      observed_checks: [{
+        name: "unit-tests", head_commit: core_join_record.claim.checks.commit,
+        status: "completed", conclusion: "success",
+      }],
+      required_checks_policy_digest: core_join_record.claim.required_checks_policy_digest,
+      checks_attestation_digest: H("8"),
+      workflow_sources: [],
+      verified_at: "2026-07-29T10:00:00.000Z",
+      external_side_effect: false,
+      provider_execution: false,
+    };
+    return { ...unsigned, readback_digest: hostNativeDigest(unsigned) };
+  };
+  Object.defineProperty(manualReadbackVerifier, "trusted", { value: true });
+  const requiredChecksPolicyResolver = async () => ({
+    schema_version: "host_native_required_checks_policy_v1",
+    tenant_id: "codexai",
+    repository: "owner/repo",
+    base_branch: "main",
+    required_checks: ["unit-tests"],
+    check_app: { id: 1, slug: "github-actions", owner: "github" },
+    workflow: {
+      id: 1,
+      name: "CI",
+      path: ".github/workflows/ci.yml",
+      sha256: H("7"),
+      candidate_sha256: null,
+    },
+    allowed_events: ["pull_request"],
+  });
+  const subject = harness({
+    store,
+    ownerManualMergeReadbackVerifier: manualReadbackVerifier,
+    requiredChecksPolicyResolver,
+    externalReadbackVerifier: async ({ ticket, target_commit, verification_scope }) => {
+      const readback = trustedExternalReadback(
+        ticket,
+        target_commit,
+        "2026-07-29T10:00:00.000Z",
+        verification_scope,
+      );
+      readback.github.required_checks_policy_digest =
+        ticket.predecessor.source_required_checks_policy_digest;
+      return redigestTrustedReadback(readback);
+    },
+  });
+  const manifest = buildHostReleaseManifestV2(mergeReleaseManifestInput());
+  const join = await subject.governance.issueCoreJoinVerdict(coreJoinInput(manifest));
+  const request = {
+    tenant_id: "codexai",
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    core_join_verdict_id: join.verdict.verdict_id,
+    pull_request: 42,
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: OWNER,
+      consent_nonce: "owner-manual-merge-readback-nonce",
+      confirmation_reference: "owner confirmed exact manual merge readback",
+      purpose: "host_native_owner_manual_merge_readback",
+      request_binding_hash: H("9"),
+    },
+    idempotency_key: "manual-merge-readback-42",
+  };
+  const receipt = await subject.governance.recordOwnerManualMergeReadback(request);
+  assert.equal(receipt.schema_version, "host_native_owner_manual_merge_readback_v1");
+  assert.equal(receipt.authority, "evidence_only");
+  assert.equal(receipt.evidence_only, true);
+  assert.equal(receipt.ticket_issued, false);
+  assert.equal(receipt.retrospective_ticket_issued, false);
+  assert.equal(receipt.action_authorized, false);
+  assert.equal(receipt.execution_authorized, false);
+  assert.equal(receipt.predecessor.predecessor_type, "owner_manual_github_merge_readback");
+  assert.equal(receipt.predecessor.eligible_successor_action, "render.observe");
+  assert.equal(receipt.predecessor.successor_ticket_required, true);
+  assert.equal(receipt.predecessor.closure_ticket_required, true);
+  assert.equal(receipt.predecessor.retrospective_ticket_issued, false);
+  assert.equal(receipt.github_readback.merge_commit, G("9"));
+  assert.match(receipt.receipt_digest, /^[a-f0-9]{64}$/);
+  assert.match(receipt.signature, /^hnmmr_[a-f0-9]{64}$/);
+  assert.equal(Object.keys(store.readState().tickets).length, 0);
+  assert.equal(Object.keys(store.readState().owner_manual_merge_readbacks).length, 1);
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  await assert.rejects(subject.governance.issueActionTicket({
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: "manual-merge-must-not-mint-ticket",
+    action: githubMergeAction(),
+    evidence_digest: H("6"),
+    release_manifest: manifestWithCoreJoin(manifest, join.verdict.verdict_id),
+    idempotency_key: "manual-merge-retrospective-ticket-denied",
+  }), /core_join_manual_merge_already_observed/);
+  assert.equal(Object.keys(store.readState().tickets).length, 0);
+
+  const observationDelegation = await subject.governance.issueDelegation({
+    ...subject.delegationInput,
+    allowed_actions: ["render.observe"],
+    budget: {
+      ...subject.delegationInput.budget,
+      max_total_actions: 1,
+    },
+    owner_confirmation: {
+      ...subject.delegationInput.owner_confirmation,
+      consent_nonce: "owner-manual-merge-observation-delegation",
+    },
+    idempotency_key: "manual-merge-observation-delegation",
+  });
+  const boundManifest = manifestWithCoreJoin(manifest, join.verdict.verdict_id);
+  const observationRequest = {
+    tenant_id: "codexai",
+    delegation_id: observationDelegation.delegation_id,
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: "manual-merge-observation-session",
+    action: {
+      kind: "render.observe",
+      repository: "owner/repo",
+      branch: "main",
+      service_id: "srv-core",
+      environment: "production",
+      target_commit: G("9"),
+      release_manifest_digest: boundManifest.manifest_digest,
+      provider_execution: false,
+    },
+    evidence_digest: receipt.receipt_digest,
+    release_manifest: boundManifest,
+    manual_merge_readback_id: receipt.receipt_id,
+    idempotency_key: "manual-merge-observation-ticket",
+  };
+  const invalidObservationDelegation = await subject.governance.issueDelegation({
+    ...subject.delegationInput,
+    allowed_actions: ["render.observe", "git.commit"],
+    budget: {
+      ...subject.delegationInput.budget,
+      max_total_actions: 2,
+    },
+    owner_confirmation: {
+      ...subject.delegationInput.owner_confirmation,
+      consent_nonce: "owner-manual-merge-invalid-observation-delegation",
+    },
+    idempotency_key: "manual-merge-invalid-observation-delegation",
+  });
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...observationRequest,
+    delegation_id: invalidObservationDelegation.delegation_id,
+    idempotency_key: "manual-merge-invalid-observation-ticket",
+  }), /owner_manual_merge_observation_delegation_invalid/);
+  const unchangedAfterInvalidGrant = store.readState();
+  assert.equal(
+    unchangedAfterInvalidGrant.core_join_verdicts[join.verdict.verdict_id]
+      .authorized_ticket_id,
+    undefined,
+  );
+  assert.equal(
+    unchangedAfterInvalidGrant.owner_manual_merge_successors[receipt.receipt_id],
+    undefined,
+  );
+  assert.equal(Object.keys(unchangedAfterInvalidGrant.tickets).length, 0);
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...observationRequest,
+    predecessor_ticket_id: "hnt_fake-predecessor",
+    idempotency_key: "manual-merge-two-predecessors-denied",
+  }), /predecessor_exclusive/);
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...observationRequest,
+    action: { ...observationRequest.action, merged: true },
+    idempotency_key: "manual-merge-caller-observation-fact-denied",
+  }), /delegation_continuation_action_field_denied:merged/);
+  const observation = await subject.governance.issueActionTicket(observationRequest);
+  assert.equal(observation.ticket.action.kind, "render.observe");
+  assert.equal(observation.ticket.predecessor.manual_merge_readback_id,
+    receipt.receipt_id);
+  assert.equal(observation.ticket.predecessor.retrospective_ticket_issued, false);
+  assert.equal(Object.values(store.readState().tickets).some((record) =>
+    record.ticket.action.kind === "github.merge"), false);
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...observationRequest,
+    idempotency_key: "manual-merge-observation-ticket-substitution",
+  }), /owner_manual_merge_readback_predecessor_invalid/);
+  const reserved = await subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: observation.ticket.ticket_id,
+    host_session_fingerprint: observation.ticket.host_session_fingerprint,
+    idempotency_key: "manual-merge-observation-reserve",
+  });
+  await subject.governance.completeActionTicket({
+    tenant_id: "codexai",
+    ticket_id: observation.ticket.ticket_id,
+    reservation_id: reserved.reservation_id,
+    host_session_fingerprint: observation.ticket.host_session_fingerprint,
+    outcome: "success",
+    result_digest: H("a"),
+    result_commit: G("9"),
+    readback_digest: H("b"),
+    idempotency_key: "manual-merge-observation-complete",
+  });
+  const finalized = await subject.governance.authorizeFinalize({
+    tenant_id: "codexai",
+    ticket_id: observation.ticket.ticket_id,
+    host_session_fingerprint: observation.ticket.host_session_fingerprint,
+  });
+  assert.equal(finalized.decision, "ALLOW_FINALIZE");
+  assert.equal(finalized.target_commit, G("9"));
+  assert.equal(finalized.services_verified, true);
+  assert.equal(finalized.predecessor.manual_merge_readback_id, receipt.receipt_id);
+  assert.equal(finalized.github_readback.manual_merge_readback_id,
+    receipt.receipt_id);
+  const proofKeys = crypto.generateKeyPairSync("ed25519");
+  const proofSigner = createLocalGenericWorkCoreJoinSigner({
+    privateKey: proofKeys.privateKey.export({ type: "pkcs8", format: "pem" }),
+    keyId: "gwcj-host-native-finalize-test",
+  });
+  const finalizeProof = await createHostNativeFinalizeAuthorizationProof({
+    authorization: finalized,
+    intentAnchorDigest: H("1"),
+    signer: proofSigner,
+  });
+  assert.equal(finalizeProof.authorization_digest,
+    finalized.authorization_digest);
+  assert.equal(finalizeProof.intent_anchor_digest, H("1"));
+  assert.equal(verifyGenericWorkCoreJoinDigestSignature({
+    digest: finalizeProof.proof_digest,
+    signature: finalizeProof.signature,
+    publicKey: proofKeys.publicKey,
+  }), true);
+  await assert.rejects(createHostNativeFinalizeAuthorizationProof({
+    authorization: { ...finalized, target_commit: G("8") },
+    intentAnchorDigest: H("1"),
+    signer: proofSigner,
+  }), /host_native_finalize_authorization_digest_invalid/);
+
+  const replay = await subject.governance.recordOwnerManualMergeReadback(request);
+  assert.equal(replay.receipt_digest, receipt.receipt_digest);
+  assert.equal(verifierCalls, 1);
+  await assert.rejects(subject.governance.recordOwnerManualMergeReadback({
+    ...request,
+    pull_request: 43,
+  }), /idempotency_key_conflict/);
+  await assert.rejects(subject.governance.recordOwnerManualMergeReadback({
+    ...request,
+    merged: true,
+    idempotency_key: "manual-merge-caller-fact",
+  }), /unknown_field:merged/);
+});
+
+test("owner manual merge readback rejects a Core Join already bound to an action ticket", async () => {
+  const store = createInMemoryHostNativeGovernanceStore();
+  const manualReadbackVerifier = async () => {
+    throw new Error("verifier_must_not_run");
+  };
+  Object.defineProperty(manualReadbackVerifier, "trusted", { value: true });
+  const subject = harness({ store, ownerManualMergeReadbackVerifier: manualReadbackVerifier });
+  const manifest = buildHostReleaseManifestV2(mergeReleaseManifestInput());
+  const join = await subject.governance.issueCoreJoinVerdict(coreJoinInput(manifest));
+  store.mutate((state) => {
+    state.core_join_verdicts[join.verdict.verdict_id].authorized_ticket_id = "hnt_existing";
+  });
+  await assert.rejects(subject.governance.recordOwnerManualMergeReadback({
+    tenant_id: "codexai",
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    core_join_verdict_id: join.verdict.verdict_id,
+    pull_request: 42,
+    owner_confirmation: {
+      verified: true,
+      request_bound: true,
+      owner_subject_fingerprint: OWNER,
+      consent_nonce: "owner-manual-merge-bound-ticket",
+      confirmation_reference: "owner confirmed exact manual merge readback",
+      purpose: "host_native_owner_manual_merge_readback",
+      request_binding_hash: H("9"),
+    },
+    idempotency_key: "manual-merge-bound-ticket",
+  }), /owner_manual_merge_core_join_invalid/);
+  assert.equal(Object.keys(store.readState().owner_manual_merge_readbacks).length, 0);
 });
 
 test("exact action ticket is signed, host-bounded, single-use, and completes once", async () => {

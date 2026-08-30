@@ -3104,6 +3104,39 @@ export function createCoreHandlers(config, options = {}) {
       });
       return dedicatedCoreTextResult(payload, route);
     },
+    host_native_owner_manual_merge_readback: async (args, identity) => {
+      const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
+      const route = "/v1/host-native/actions/owner-manual-merge/readback";
+      const requestBody = {
+        work_id: args.work_id,
+        intent_anchor_digest: args.intent_anchor_digest,
+        repository: args.repository,
+        core_join_verdict_id: args.core_join_verdict_id,
+        pull_request: args.pull_request,
+        idempotency_key: args.idempotency_key,
+        owner_confirmed: true,
+        confirmation_reference: hostNativeConfirmationReference(
+          identity,
+          ownerMode,
+          "host_native_owner_manual_merge_readback",
+          args.idempotency_key,
+        ),
+      };
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        body: {
+          ...requestBody,
+          owner_context: ownerContext(identity, {
+            hostNativeOwner: true,
+            requestBinding: ownerRequestBinding(
+              "host_native_owner_manual_merge_readback",
+              requestBody,
+            ),
+          }),
+        },
+      });
+      return dedicatedCoreTextResult(payload, route);
+    },
     host_native_action_authorize: async (args, identity) => {
       const route = "/v1/host-native/actions/authorize";
       const payload = await coreRequest(route, identity.tenantId, {
@@ -3121,6 +3154,9 @@ export function createCoreHandlers(config, options = {}) {
           idempotency_key: args.idempotency_key,
           ...(args.predecessor_ticket_id
             ? { predecessor_ticket_id: args.predecessor_ticket_id }
+            : {}),
+          ...(args.manual_merge_readback_id
+            ? { manual_merge_readback_id: args.manual_merge_readback_id }
             : {}),
           ...(args.release_manifest ? { release_manifest: args.release_manifest } : {}),
         },
@@ -3246,13 +3282,57 @@ export function createCoreHandlers(config, options = {}) {
     host_native_action_closure_receipt: async (args, identity) => {
       const route =
         `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/authorize-finalize`;
-      return textResult(await coreRequest(route, identity.tenantId, {
+      const payload = await coreRequest(route, identity.tenantId, {
         method: "POST",
         useTenantGateway: true,
         body: {
           host_session_fingerprint: hostNativeSessionFingerprint(identity),
         },
-      }));
+      });
+      return textResult(payload);
+    },
+    host_native_owner_manual_merge_finalize_gallery: async (args, identity) => {
+      requireHostNativeOwnerConfirmation(identity, config);
+      const route =
+        `/v1/host-native/actions/${encodeURIComponent(args.ticket_id)}/authorize-finalize`;
+      const payload = await coreRequest(route, identity.tenantId, {
+        method: "POST",
+        useTenantGateway: true,
+        body: {
+          host_session_fingerprint: hostNativeSessionFingerprint(identity),
+        },
+      });
+      const authorization = payload?.finalize_authorization;
+      if (authorization?.predecessor?.predecessor_type !==
+          "owner_manual_github_merge_readback") {
+        throw new Error("owner_manual_merge_finalize_predecessor_required");
+      }
+      if (
+        typeof tenantWorkGallery?.recordOwnerManualMergeReleaseEvidence !==
+          "function" ||
+        typeof tenantWorkGallery?.finalizeGenericClosure !== "function"
+      ) throw new Error("owner_manual_merge_gallery_bridge_unavailable");
+      const projection = await tenantWorkGallery
+        .recordOwnerManualMergeReleaseEvidence(identity, {
+          finalize_authorization: authorization,
+          finalize_authorization_proof:
+            payload?.finalize_authorization_proof,
+        });
+      const closure = await tenantWorkGallery.finalizeGenericClosure(identity, {
+        work_id: authorization.work_id,
+        adapter: projection.adapter,
+      });
+      payload.work_gallery_projection = {
+        schema_version: "owner_manual_merge_gallery_closure_v1",
+        work_id: authorization.work_id,
+        note: "owner_manual_merge",
+        evidence_id: projection.evidence_id,
+        evidence_digest: projection.evidence_digest,
+        closure_receipt_digest: closure.receipt?.receipt_digest || null,
+        archive_status: closure.archive_status,
+        legacy_bridged: projection.legacy_bridged,
+      };
+      return textResult(payload);
     },
     work_preflight: async (args, identity) => {
       const coreRuntime = await runtimeHierarchyEvaluate(args, identity, args.operation_type || "work_preflight");

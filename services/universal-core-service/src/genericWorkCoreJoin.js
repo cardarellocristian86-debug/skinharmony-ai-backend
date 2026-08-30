@@ -90,6 +90,75 @@ function verifyReceipt(value, expected, now, verifier) { exact(value, ["acceptan
 export function verifyGenericWorkCoreJoinVerdict({ verdict, expected, publicKey: verifierPublicKey, expectedKeyId } = {}) { exact(verdict, VERDICT_FIELDS, "generic_work_core_join_verdict_invalid"); if (verdict.schema_version !== GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION || verdict.authority !== "universal_core" || verdict.decision !== "GENERIC_WORK_CORE_JOIN_ELIGIBLE" || verdict.execution_authorized !== false || verdict.host_action_authorized !== false || verdict.signature_algorithm !== "ed25519") fail("generic_work_core_join_verdict_invalid"); for (const field of ["tenant_id", "work_id", "verdict_id", "key_id"]) id(verdict[field], "generic_work_core_join_verdict_invalid"); if (!ADAPTERS.has(verdict.adapter)) fail("generic_work_core_join_verdict_invalid"); for (const field of ["acceptance_criteria_digest", "task_state_digest", "evidence_digest", "independent_verifier_receipt_digest", "idempotency_digest", "verdict_digest"]) digest(verdict[field], "generic_work_core_join_verdict_invalid"); timestamp(verdict.issued_at, "generic_work_core_join_verdict_invalid"); const { signature, verdict_digest, ...unsigned } = verdict; if (verdict_digest !== genericWorkCoreJoinDigest(unsigned)) fail("generic_work_core_join_verdict_digest_invalid"); if (verdict.key_id !== id(expectedKeyId, "generic_work_core_join_key_id_mismatch")) fail("generic_work_core_join_key_id_mismatch"); const signatureBytes = decodeGenericWorkCoreJoinEd25519Signature(signature); if (!crypto.verify(null, genericWorkCoreJoinSignaturePayload(verdict_digest), publicKey(verifierPublicKey), signatureBytes)) fail("generic_work_core_join_signature_invalid"); exact(expected, ["adapter", "idempotency_digest", "tenant_id", "work_id"], "generic_work_core_join_context_invalid"); for (const field of ["tenant_id", "work_id", "adapter", "idempotency_digest"]) if (verdict[field] !== expected[field]) fail(`generic_work_core_join_${field}_mismatch`); return true; }
 export function createGenericWorkCoreJoinVerdictVerifier({ publicKey: verifierPublicKey, keyId } = {}) { const pinned = publicKey(verifierPublicKey); id(keyId, "generic_work_core_join_verifier_unavailable"); return Object.freeze({ schema_version: GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION, key_id: keyId, verify: ({ verdict, expected } = {}) => verifyGenericWorkCoreJoinVerdict({ verdict, expected, publicKey: pinned, expectedKeyId: keyId }) }); }
 export function createLocalGenericWorkCoreJoinSigner({ privateKey: material, keyId } = {}) { const signer = privateKey(material); const verifier = crypto.createPublicKey(signer); const resolvedKeyId = id(keyId, "generic_work_core_join_signing_unavailable"); return Object.freeze({ algorithm: "Ed25519", key_id: resolvedKeyId, public_key: verifier, public_key_fingerprint: publicKeyFingerprint(verifier), custody: "local_process_key", signer_state: "ready", signer_reason: null, signDigest: (value) => crypto.sign(null, genericWorkCoreJoinSignaturePayload(value), signer).toString("base64url") }); }
+export async function createHostNativeFinalizeAuthorizationProof({
+  authorization,
+  intentAnchorDigest,
+  signer,
+} = {}) {
+  if (!plainRecord(authorization) || !signer || signer.algorithm !== "Ed25519" ||
+      typeof signer.signDigest !== "function" || !signer.public_key) {
+    fail("host_native_finalize_authorization_proof_unavailable");
+  }
+  const authorizationDigest = digest(
+    authorization.authorization_digest,
+    "host_native_finalize_authorization_digest_invalid",
+  );
+  const { signature: _authorizationSignature, authorization_digest: _digest, ...unsignedAuthorization } =
+    authorization;
+  if (genericWorkCoreJoinDigest(unsignedAuthorization) !== authorizationDigest) {
+    fail("host_native_finalize_authorization_digest_invalid");
+  }
+  const proofUnsigned = {
+    schema_version: "host_native_finalize_authorization_proof_v1",
+    authority: "universal_core",
+    signature_domain: GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION,
+    signature_algorithm: "ed25519",
+    key_id: id(signer.key_id, "host_native_finalize_authorization_proof_unavailable"),
+    tenant_id: id(authorization.tenant_id, "host_native_finalize_authorization_invalid"),
+    work_id: id(authorization.work_id, "host_native_finalize_authorization_invalid"),
+    intent_anchor_digest: digest(
+      intentAnchorDigest,
+      "host_native_finalize_authorization_invalid",
+    ),
+    repository: String(authorization.repository || ""),
+    action_ticket_id: id(
+      authorization.action_ticket_id,
+      "host_native_finalize_authorization_invalid",
+    ),
+    core_join_verdict_id: id(
+      authorization.core_join_verdict_id,
+      "host_native_finalize_authorization_invalid",
+    ),
+    authorization_digest: authorizationDigest,
+    authorization_signature_digest: genericWorkCoreJoinDigest({
+      signature: String(authorization.signature || ""),
+    }),
+    issued_at: authorization.issued_at,
+    expires_at: authorization.expires_at,
+  };
+  if (!proofUnsigned.repository ||
+      timestamp(proofUnsigned.issued_at, "host_native_finalize_authorization_invalid") >=
+        timestamp(proofUnsigned.expires_at, "host_native_finalize_authorization_invalid")) {
+    fail("host_native_finalize_authorization_invalid");
+  }
+  const proofDigest = genericWorkCoreJoinDigest(proofUnsigned);
+  let proofSignature;
+  try { proofSignature = await signer.signDigest(proofDigest); }
+  catch (error) {
+    fail(genericWorkCoreJoinSignerInfrastructureCode(error) ||
+      "host_native_finalize_authorization_proof_unavailable");
+  }
+  verifyGenericWorkCoreJoinDigestSignature({
+    digest: proofDigest,
+    signature: proofSignature,
+    publicKey: signer.public_key,
+  });
+  return Object.freeze({
+    ...proofUnsigned,
+    proof_digest: proofDigest,
+    signature: proofSignature,
+  });
+}
 function normalizeSigner(value) { if (!value || value.algorithm !== "Ed25519" || typeof value.signDigest !== "function") fail("generic_work_core_join_signing_unavailable"); const verifier = publicKey(value.public_key); const fingerprint = digest(value.public_key_fingerprint || publicKeyFingerprint(verifier), "generic_work_core_join_signing_unavailable"); if (fingerprint !== publicKeyFingerprint(verifier)) fail("generic_work_core_join_signing_unavailable"); return { ...value, key_id: id(value.key_id, "generic_work_core_join_signing_unavailable"), public_key: verifier, public_key_fingerprint: fingerprint }; }
 async function readStore(store, key) { try { return await store.read(key); } catch (error) { fail(genericWorkCoreJoinStoreInfrastructureCode(error) || "generic_work_core_join_store_unavailable"); } }
 async function recordStore(store, record) { try { return await store.record(record); } catch (error) { const code = errorCode(error); if (STORE_SEMANTIC_CODES.has(code)) fail(code); fail(genericWorkCoreJoinStoreInfrastructureCode(error) || "generic_work_core_join_store_unavailable"); } }

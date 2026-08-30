@@ -92,6 +92,13 @@ test("production Core Join compatibility verifies a real HNJ and rejects a stale
     closureAttestationSigningSecret: closureSecret,
     now: () => Date.parse("2026-08-22T12:00:00.000Z"),
   });
+  const releaseIntentUnsigned = {
+    tenant_id: expected.tenant_id,
+    work_id: expected.work_id,
+    intent_anchor_digest: expected.intent_anchor_digest,
+    repository: expected.repository,
+    base_branch: "main",
+  };
   const coreJoinInput = {
     tenant_id: expected.tenant_id,
     work_id: expected.work_id,
@@ -107,12 +114,8 @@ test("production Core Join compatibility verifies a real HNJ and rejects a stale
     verifier_reports: [{ agent_id: "verifier", report_digest: "4".repeat(64), reviewed_commit: expected.head_commit, approved: true }],
     checks: { commit: expected.head_commit, required_checks: ["core"], checks_digest: "5".repeat(64), evidence_digest: "6".repeat(64) },
     release_intent: {
-      tenant_id: expected.tenant_id,
-      work_id: expected.work_id,
-      intent_anchor_digest: expected.intent_anchor_digest,
-      repository: expected.repository,
-      base_branch: "main",
-      release_intent_digest: "7".repeat(64),
+      ...releaseIntentUnsigned,
+      release_intent_digest: hostNativeDigest(releaseIntentUnsigned),
     },
     provider_execution: false,
     idempotency_key: "real-components-core-join",
