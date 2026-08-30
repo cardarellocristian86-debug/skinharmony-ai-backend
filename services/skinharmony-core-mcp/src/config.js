@@ -239,6 +239,14 @@ export function loadConfig(env = process.env) {
   const legacyCodexHostPrincipalEnabled = legacyCodexHostPrincipalEnabledFlag.valid
     ? legacyCodexHostPrincipalEnabledFlag.value
     : false;
+  const nyraDialogueEnabledFlag = strictFlag(
+    env.NYRA_DIALOGUE_ENABLED,
+    false,
+    "NYRA_DIALOGUE_ENABLED",
+  );
+  const nyraDialogueEnabled = nyraDialogueEnabledFlag.valid
+    ? nyraDialogueEnabledFlag.value
+    : false;
   const universalCoreUrl = url(env.UNIVERSAL_CORE_URL || env.CORE_BASE_URL || "http://127.0.0.1:8787", "UNIVERSAL_CORE_URL");
   const githubStandingReleaseWorkerUrl = url(
     env.GITHUB_STANDING_RELEASE_WORKER_URL,
@@ -654,6 +662,7 @@ export function loadConfig(env = process.env) {
     coreBlockRemediationTtlSeconds,
     coreBlockRemediationTransientRetryLimit,
     workContinuityAutoCaptureEnabled,
+    nyraDialogueEnabled,
     hostNativeAgentProtocolEnabled,
     mandatoryAgentPresenceEnabled,
     databaseSsl: flag(env.DATABASE_SSL, env.NODE_ENV === "production"),
