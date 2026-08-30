@@ -940,19 +940,15 @@ export function normalizeNyraDirectiveContext(value, identity, binding = {}) {
   );
 }
 
-function releaseReadyDirectiveContext(work, workContext) {
-  if (work?.state !== "release_ready" || workContext?.available !== true) return workContext;
+function releaseReadyDirectiveContext(work, workContext, interpretation) {
+  const releaseStateRevalidated = interpretation?.source === "fresh_core_interpretation" ||
+    workContext?.closure_verified === true;
+  if (
+    work?.state !== "release_ready" || workContext?.available !== true ||
+    !releaseStateRevalidated
+  ) return workContext;
   return Object.freeze({
     ...workContext,
-    context_digest: deterministicDigest({
-      schema_version: "nyra_release_ready_directive_context_v1",
-      source_context_digest: workContext.context_digest,
-      work_id: workContext.work_id,
-      project_id: workContext.project_id,
-      work_revision: workContext.work_revision,
-      intent_digest: workContext.intent_digest,
-      authoritative_work_state: "release_ready",
-    }),
     status: "RELEASE_READY",
     pending_required_task_count: 0,
     unverified_required_evidence_count: 0,
@@ -974,9 +970,9 @@ function orchestrationDirective({
   workBootstrapRequestDigest = null,
   continuationOperation = null,
 }) {
-  workContext = releaseReadyDirectiveContext(work, workContext);
+  workContext = releaseReadyDirectiveContext(work, workContext, interpretation);
   const workBound = Boolean(work.work_id);
-  const releaseReady = work.state === "release_ready";
+  const releaseReady = workContext.status === "RELEASE_READY";
   const coreBlocked = interpretation.governance_diagnostics.state === "BLOCKED" ||
     interpretation.risk_band === "blocked" ||
     interpretation.core_state === "blocked" || interpretation.core_control === "blocked" ||
@@ -1281,15 +1277,20 @@ function orchestrationDirective({
       })
     : null;
 
-  let recommendedAction = releaseReady
-    ? "Preparare il prossimo gate dal Core Join persistito senza ripetere task o evidenze già verificate"
-    : workContext.next_required_task
-      ? `Completare il task canonico: ${workContext.next_required_task.title}`
-      : interpretation.allowed_alternatives[0] ||
-        (ticketRequired
-          ? interpretation.next_step || interpretation.selected_action
-          : interpretation.selected_action || interpretation.next_step) ||
-        work.next_action;
+  const interpretedAction = interpretation.allowed_alternatives[0] ||
+    (ticketRequired
+      ? interpretation.next_step || interpretation.selected_action
+      : interpretation.selected_action || interpretation.next_step);
+  const releaseReadyInterpretedAction = (
+    coreBlocked || coreMissingContext || ticketRequired ||
+    interpretation.allowed_alternatives.length > 0
+  ) ? interpretedAction : null;
+  let recommendedAction = workContext.next_required_task
+    ? `Completare il task canonico: ${workContext.next_required_task.title}`
+    : releaseReady
+      ? releaseReadyInterpretedAction ||
+        "Preparare il prossimo gate dal Core Join persistito senza ripetere task o evidenze già verificate"
+      : interpretedAction || work.next_action;
   if (!recommendedAction && disposition !== "COMPLETE") {
     recommendedAction = "Diagnosticare lo stato corrente e preparare una proposta verificabile";
   }
