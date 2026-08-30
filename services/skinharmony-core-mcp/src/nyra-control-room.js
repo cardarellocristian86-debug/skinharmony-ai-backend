@@ -97,6 +97,31 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDia
   const host = health.host_native_governance || {};
   const entity360 = health.entity_360 || {};
   const scopeMode = mode(host.semantic_scope_guard_mode, "UNKNOWN");
+  const entity360DeploymentCeiling = mode(entity360.deployment_mode_ceiling, "UNKNOWN");
+  const entity360Ready = knownBoolean(entity360.ready);
+  const entity360TransitionBlocker = entity360DeploymentCeiling === "UNKNOWN"
+    ? "entity_360_shadow_deployment_ceiling_unknown"
+    : entity360DeploymentCeiling !== "SHADOW"
+      ? "entity_360_shadow_deployment_ceiling_required"
+      : entity360Ready === true
+        ? null
+        : entity360Ready === false
+          ? "entity_360_shadow_runtime_not_ready"
+          : "entity_360_shadow_runtime_readback_unknown";
+  const entity360TransitionAvailable = entity360TransitionBlocker === null;
+  const entity360Transition = (id, handler) => action(id, {
+    availability: entity360TransitionAvailable
+      ? "EXISTING_GOVERNED_HANDLER"
+      : "UNAVAILABLE",
+    execution: entity360TransitionAvailable
+      ? "REQUEST_BOUND_GOVERNED"
+      : "DEPLOYMENT_PREREQUISITE",
+    requiresOwnerConfirmation: true,
+    requiresCoreAuthorization: true,
+    // Do not publish an invocation target when the current Core readback says
+    // the route cannot accept the transition.
+    handler: entity360TransitionAvailable ? handler : null,
+  });
   const progress = projectWorkClosureProgress(work);
   const dialogueState = nyraDialogueEnabled === true
     ? "ON"
@@ -116,20 +141,14 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDia
     ]),
     domain("entity_360", mode(entity360.mode, "UNKNOWN"), {
       bitemporal_mode: mode(entity360.bitemporal_mode, "UNKNOWN"),
-      deployment_ceiling: mode(entity360.deployment_mode_ceiling, "UNKNOWN"),
-      ready: knownBoolean(entity360.ready),
+      deployment_ceiling: entity360DeploymentCeiling,
+      ready: entity360Ready,
+      shadow_transition_available: entity360TransitionAvailable,
+      shadow_transition_blocker: entity360TransitionBlocker,
     }, [
       action("READ_STATUS"),
-      // This is the single already-implemented tenant-wide mode transition.
-      // There is deliberately no fictional SET_OFF entry until a separately
-      // governed disable handler and rollback receipt exist.
-      action("REQUEST_ENABLE_SHADOW", {
-        availability: "EXISTING_GOVERNED_HANDLER",
-        execution: "REQUEST_BOUND_GOVERNED",
-        requiresOwnerConfirmation: true,
-        requiresCoreAuthorization: true,
-        handler: "entity_360_shadow_enable",
-      }),
+      entity360Transition("REQUEST_ENABLE_SHADOW", "entity_360_shadow_enable"),
+      entity360Transition("REQUEST_DISABLE_SHADOW", "entity_360_shadow_disable"),
     ]),
     domain("semantic_scope_guard", scopeMode, {
       configured: knownBoolean(host.semantic_scope_guard_configured),
@@ -159,11 +178,13 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDia
     }, [
       action("READ_STATUS"),
       action("REQUEST_LIFECYCLE_ACTION", {
-        availability: "EXISTING_GOVERNED_HANDLER",
+        // There is no one exact compact handler for the three lifecycle
+        // operations.  Do not expose a pipe-delimited pseudo-handler or let
+        // chat bypass the lifecycle-health proof on the full governed path.
+        availability: "REQUEST_ONLY",
         execution: "REQUEST_BOUND_GOVERNED",
         requiresOwnerConfirmation: true,
         requiresCoreAuthorization: true,
-        handler: "nyra_policy_registry_activate|rollback|reconcile",
       }),
     ]),
   ];

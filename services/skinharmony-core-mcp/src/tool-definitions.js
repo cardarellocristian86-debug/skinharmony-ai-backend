@@ -1390,8 +1390,8 @@ const nyraConverseOutputSchema = object({
 
 const nyraControlRoomActionSchema = object({
   id: { type: "string", minLength: 1, maxLength: 120 },
-  availability: { type: "string", enum: ["AVAILABLE", "REQUEST_ONLY", "EXISTING_GOVERNED_HANDLER"] },
-  execution: { type: "string", enum: ["READ_ONLY", "DEPLOYMENT_CONFIGURATION", "REQUEST_BOUND_GOVERNED"] },
+  availability: { type: "string", enum: ["AVAILABLE", "REQUEST_ONLY", "EXISTING_GOVERNED_HANDLER", "UNAVAILABLE"] },
+  execution: { type: "string", enum: ["READ_ONLY", "DEPLOYMENT_CONFIGURATION", "REQUEST_BOUND_GOVERNED", "DEPLOYMENT_PREREQUISITE"] },
   requires_owner_confirmation: { type: "boolean" },
   requires_core_authorization: { type: "boolean" },
   restart_required: { type: "boolean" },
@@ -1438,7 +1438,7 @@ export const TOOLS = [
   tool("nyra_control_room_status", "Read Nyra Control Room status", "Read server-derived status for Core domains and, when an exact Work is provided, its closure progress, blockers, next action and allowed control categories. This read never mutates state or grants authority.", object({
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,
-  }), [], ["core:read"], true, true, { outputSchema: nyraControlRoomOutputSchema }),
+  }), ["core:read"], true, true, { outputSchema: nyraControlRoomOutputSchema }),
   tool("core_runtime_hierarchy_status", "Read Universal Core runtime hierarchy", "Use this when you need the live V7/V0/V1/V2 hierarchy mode and worker status. It is tenant-scoped, read-only and never authorizes execution.", object(), ["core:read"], true, true, { outputSchema: { type: "object", properties: { ok: { type: "boolean" }, tenant_id: { type: "string" }, runtime: { type: "object", additionalProperties: true } }, required: ["ok", "tenant_id"], additionalProperties: true } }),
   tool("core_runtime_hierarchy_evaluate", "Evaluate through Universal Core runtime hierarchy", "Use this when a read-only decision needs the V7 router, V0 final judge, V1 canonical digest and V2 shadow parity result. Tenant identity is authenticated server-side; this tool never authorizes execution.", object({
     request: text(12_000),

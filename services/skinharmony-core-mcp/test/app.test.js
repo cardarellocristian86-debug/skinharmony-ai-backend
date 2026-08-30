@@ -240,6 +240,7 @@ test("governed continuation restores the logical presence only after its handler
 test("Control Room status is sessionless and avoids an automatic Work preflight", async () => {
   let statusCalls = 0;
   const app = createApp({ ...config, nyraDialogueEnabled: false }, {
+    toolSurface: "compact",
     handlers: {
       nyra_control_room_status: async () => {
         statusCalls += 1;
