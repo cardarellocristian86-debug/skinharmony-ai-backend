@@ -12,6 +12,7 @@ import {
   createNyraConverseHandler,
   createNyraConversePreflight,
   MAX_MESSAGE_LENGTH,
+  normalizeNyraDirectiveContext,
   NYRA_SERVER_CONNECTOR_HINT,
 } from "../src/nyra-converse.js";
 import { resolveContinuityProjectBinding } from "../src/continuity-project-binding.js";
@@ -1085,6 +1086,135 @@ test("expands an E360 checkpoint into the real pending Work task and bounded evi
   assert.equal(JSON.stringify(payload).includes("raw_customer_data"), false);
   assert.match(directive.work_context.context_digest, /^[a-f0-9]{64}$/);
   assert.deepEqual(validateToolArguments(TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("lets authoritative release readiness supersede stale V2 task and evidence projections", async () => {
+  const preflight = preflightFixture();
+  const rawDirectiveContext = directiveContextFixture();
+  const normalizedDirectiveContext = normalizeNyraDirectiveContext(
+    rawDirectiveContext,
+    identity(),
+    { work_id: WORK_ID, project_id: "nyra_core" },
+  );
+  preflight.structuredContent.work_preflight.continuity.state = "release_ready";
+  preflight.structuredContent.work_preflight.continuity.next_action =
+    "Use the persisted Core Join for the next exact gate.";
+  preflight.structuredContent.work_preflight.nyra_control_context.work_state = "release_ready";
+  preflight.structuredContent.work_preflight.nyra_control_context.next_action =
+    "Use the persisted Core Join for the next exact gate.";
+  const payload = (await harness({
+    preflightResult: preflight,
+    directiveContext: rawDirectiveContext,
+  }).handler({
+    message: "Riprendi",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+    response_style: "detailed",
+  }, identity())).structuredContent;
+  const directive = payload.orchestration_directive;
+
+  assert.equal(payload.work.state, "release_ready");
+  assert.equal(directive.work_context.status, "RELEASE_READY");
+  assert.equal(directive.work_context.context_digest, normalizedDirectiveContext.context_digest);
+  assert.equal(directive.work_context.pending_required_task_count, 0);
+  assert.equal(directive.work_context.unverified_required_evidence_count, 0);
+  assert.equal(directive.work_context.next_required_task, null);
+  assert.equal(directive.decision.disposition, "PROCEED_READ_ONLY");
+  assert.equal(directive.next_actions.some((item) => item.code === "complete_next_work_task"), false);
+  assert.equal(directive.next_actions.some((item) => item.code === "collect_missing_evidence"), false);
+  assert.match(directive.next_actions[0].summary, /Core Join persistito/);
+  assert.match(payload.host_response_contract.reply_seed, /Il Work è release-ready/);
+  assert.doesNotMatch(payload.host_response_contract.reply_seed, /Restano .*attività/);
+  assert.equal(payload.host_response_contract.connected_ai_brief.steps.length, 1);
+  assert.match(payload.host_response_contract.connected_ai_brief.steps[0].instruction, /Core Join persistito/);
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema,
+    payload,
+  ), []);
+});
+
+test("keeps fresh Core remediation ahead of the release-ready fallback", async () => {
+  const preflight = preflightFixture();
+  preflight.structuredContent.work_preflight.continuity.state = "release_ready";
+  preflight.structuredContent.work_preflight.nyra_control_context.work_state = "release_ready";
+  const interpretation = interpretationFixture();
+  interpretation.structuredContent.result.selected_by_core.risk_band = "blocked";
+  interpretation.structuredContent.result.selected_by_core.blocked_reasons = ["tenant_binding_stale"];
+  interpretation.structuredContent.result.selected_by_core.allowed_alternatives = [
+    "Restore the tenant-scoped binding",
+  ];
+
+  const payload = (await harness({
+    preflightResult: preflight,
+    interpretationResult: interpretation,
+    directiveContext: directiveContextFixture(),
+  }).handler({
+    message: "Nyra, diagnostica il blocco prima del prossimo gate",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+
+  assert.equal(payload.orchestration_directive.decision.disposition, "BLOCK");
+  assert.equal(payload.orchestration_directive.next_actions[0].summary,
+    "Restore the tenant-scoped binding");
+  assert.doesNotMatch(payload.orchestration_directive.next_actions[0].summary, /Core Join persistito/);
+});
+
+test("does not clear current requirements from a cached release-ready resume", async () => {
+  const persisted = (await import("../src/nyra-control-context.js")).buildNyraControlContext({
+    continuity: {
+      tenant_id: "tenant-a",
+      project_id: "nyra_core",
+      work_id: WORK_ID,
+      state: "release_ready",
+      next_action: "Use the cached Core Join.",
+    },
+    operational: { work_revision: 4, gallery: { state: "available", work_count: 1 } },
+  });
+  const { handler, calls } = harness({
+    persistedContext: persisted,
+    directiveContext: directiveContextFixture(),
+  });
+  const payload = (await handler({
+    message: "Nyra, riprendi il lavoro",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+  const directive = payload.orchestration_directive;
+
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(directive.source, "PERSISTED_WORK");
+  assert.equal(directive.work_context.status, "ACTIVE");
+  assert.equal(directive.work_context.pending_required_task_count, 1);
+  assert.equal(directive.work_context.unverified_required_evidence_count, 1);
+  assert.equal(directive.next_actions[0].summary,
+    "Completare il task canonico: Verify the Nyra orchestration contract and CI evidence");
+  assert.doesNotMatch(directive.next_actions[0].summary, /Core Join persistito/);
+});
+
+test("does not reintroduce stale V2 prerequisites for a release-ready ticket candidate", async () => {
+  const preflight = preflightFixture();
+  preflight.structuredContent.work_preflight.continuity.state = "release_ready";
+  preflight.structuredContent.work_preflight.nyra_control_context.work_state = "release_ready";
+  const payload = (await harness({
+    preflightResult: preflight,
+    directiveContext: directiveContextFixture(),
+  }).handler({
+    message: "Nyra, prepara il merge",
+    work_id: WORK_ID,
+    project_id: "nyra_core",
+    locale: "it",
+  }, identity())).structuredContent;
+  const directive = payload.orchestration_directive;
+
+  assert.equal(directive.ticket_request.state, "MANUAL_ONLY");
+  assert.equal(directive.ticket_request.prerequisite_codes.includes("required_work_tasks_incomplete"), false);
+  assert.equal(directive.ticket_request.prerequisite_codes.includes("required_evidence_unverified"), false);
+  assert.equal(directive.next_actions.some((item) => item.code === "complete_next_work_task"), false);
+  assert.equal(directive.next_actions.some((item) => item.code === "collect_missing_evidence"), false);
 });
 
 test("emits a deterministic revision-bound manual ticket candidate only after prerequisites are verified", async () => {
