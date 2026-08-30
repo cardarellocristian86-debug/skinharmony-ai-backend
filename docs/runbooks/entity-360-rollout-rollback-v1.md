@@ -398,14 +398,22 @@ richiedere Core operator, conferma owner fresca, CAS e idempotenza. Se il
 feature-flag Store non è costruibile o non è raggiungibile, il rollback tenant
 fallisce chiuso e si usa il rollback globale governato del punto 3.
 
-## Gap reali prima del live
+## Release anchor
 
-- esecuzione e receipt del PostgreSQL 16 CI gate;
-- exact bounded Universal Core tickets e host approvals;
-- exact merged/deployed commit;
-- migration, signer, health, automatic shadow e rollback readback;
-- NSCT disponibile solo come adapter advisory owner-verified e fail-closed;
-- Shared Memory e runtime-state adapters non wired;
-- retention storica dei sistemi owner non garantita dal kernel.
+Il rilascio E360 è ancorato al merge su `main`
+`d181b5a515fb9481e9e0e85f79f42ad7c82bf2bf`, con tree
+`2fa228eccdb191bfed93ff2f598fca9d9f3b9fc5`. La CI post-merge è il run GitHub
+Actions `33333015717`: `core-mcp`, `deployment-parity`, `universal-core` e
+`smartdesk` risultano tutti completati con successo sul commit esatto.
 
-Nessun passo descritto è già avvenuto live per effetto del solo documento.
+Il readback di produzione dei servizi `skinharmony-universal-core` e
+`skinharmony-core-mcp` espone `ok=true`, `render_ready=true` e
+`build.commit_sha=d181b5a515fb9481e9e0e85f79f42ad7c82bf2bf`. La valutazione Core
+post-merge `6592c880-6e8d-49c6-850d-3dfa7d50ce03` prova l'obiettivo e tutti i
+16 criteri di accettazione e ha emesso il Core Join
+`hnj_1e6bb40524cd06eb8affef111525b8aec345cbaa`.
+
+Restano invarianti operativi, non gap di release: NSCT è solo advisory,
+owner-verified e fail-closed; la retention storica resta responsabilità dei
+sistemi owner. I receipt finali e il loro stato corrente sono mantenuti nel
+ledger Core e non vengono duplicati in questo documento.
