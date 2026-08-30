@@ -95,7 +95,9 @@ import {
 } from "./host-app-registry.js";
 import {
   hostAppCanDiscoverDynamicCapability,
+  isNativeAcceptanceContractReadChildOperation,
   isNativeReportChildOperation,
+  nativeAcceptanceContractReadAssignmentBootstrap,
   nativeReportAssignmentBootstrap,
   requireHostAppToolCapability,
 } from "./host-app-authorization.js";
@@ -143,6 +145,7 @@ const webTransport = createWebTransport({ allowedOrigins: config.webAgentAllowed
 const hostNativeContinuityTools = new Set([
   "work_continuity_native_plan",
   "work_continuity_native_bind",
+  "work_continuity_native_acceptance_contract_read",
   "work_continuity_native_report",
   "work_continuity_closure_evaluate",
   "work_continuity_closure_finalize",
@@ -1923,6 +1926,8 @@ const baseHandlers = {
       dedicated_core_gate: { authorized: true, authority: "universal_core", route: "/v1/work/core-join-verdicts", server_owned: true } }),
     work_continuity_native_plan: createNativeContinuityPlan,
     work_continuity_native_bind: bindNativeContinuityChild,
+    work_continuity_native_acceptance_contract_read:
+      continuityMethod("readNativeAgentAcceptanceContract"),
     work_continuity_native_report: continuityMethod("reportNativeAgent"),
     work_continuity_closure_evaluate: async (args, identity) => {
       const evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
@@ -2309,6 +2314,8 @@ const app = createApp(config, {
     // transport, live lease and signed one-task assignment. The marker is
     // server-owned on this per-call identity and is never accepted from args.
     const nativeReportBootstrap = nativeReportAssignmentBootstrap(toolName, args);
+    const nativeAcceptanceContractReadBootstrap =
+      nativeAcceptanceContractReadAssignmentBootstrap(toolName, args);
     if (nativeReportBootstrap) {
       if (!workContinuityRuntime?.admitNativeAgentReport) {
         const error = new Error("native_agent_report_admission_unavailable");
@@ -2321,6 +2328,30 @@ const app = createApp(config, {
       );
       Object.defineProperty(identity, "nativeReportAdmission", {
         value: admission,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      });
+    } else if (nativeAcceptanceContractReadBootstrap) {
+      if (!workContinuityRuntime?.readNativeAgentAcceptanceContract) {
+        const error = new Error("native_agent_acceptance_contract_read_unavailable");
+        error.code = "native_agent_acceptance_contract_read_unavailable";
+        throw error;
+      }
+      // Admission is re-proven by the handler immediately before it reads the
+      // DTO. This preflight marker only narrows the dynamic catalog to the
+      // exact read-only child capability for this request.
+      const acceptanceRead = await workContinuityRuntime.readNativeAgentAcceptanceContract(
+        identity,
+        nativeAcceptanceContractReadBootstrap,
+      );
+      Object.defineProperty(identity, "nativeAcceptanceContractReadAdmission", {
+        value: Object.freeze({
+          work_id: acceptanceRead.work_id,
+          plan_id: acceptanceRead.plan_id,
+          native_agent_id: acceptanceRead.native_agent_id,
+          capability_id: "work_continuity_native_acceptance_contract_read",
+        }),
         enumerable: false,
         configurable: false,
         writable: false,
@@ -2351,7 +2382,8 @@ const app = createApp(config, {
     // registry first rejects a legitimate independently spawned child because
     // its transport session is intentionally not the coordinator session.
     // Keep mandatory presence for every other operation.
-    const nativeChildReport = isNativeReportChildOperation(toolName, args);
+    const nativeChildReport = isNativeReportChildOperation(toolName, args) ||
+      isNativeAcceptanceContractReadChildOperation(toolName, args);
     if (config.mandatoryAgentPresenceEnabled === true &&
         !nativeChildReport &&
         !isAgentPresenceBootstrapCall(toolName, args)) {
