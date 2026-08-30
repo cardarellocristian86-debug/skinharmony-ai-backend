@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import {
+  createGenericWorkCoreJoinVerifier,
   createWorkContinuityV2Store,
   deriveAuthenticatedTenantWorkAcl,
 } from "../src/work-continuity-v2-store.js";
+import {
+  createHostNativeFinalizeAuthorizationProof,
+  createLocalGenericWorkCoreJoinSigner,
+} from "../../universal-core-service/src/genericWorkCoreJoin.js";
+import { createCoreHandlers } from "../src/core-handlers.js";
 
 function key(...parts) { return parts.join("\0"); }
 function cloneMap(map) { return new Map([...map].map(([k, v]) => [k, structuredClone(v)])); }
@@ -16,6 +22,105 @@ function stable(value) {
 function stableDigest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
 }
+async function manualClosureAuthority({ workId, intentDigest, repository = "owner/repo" } = {}) {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
+  const keyId = "gwcj-test-manual-closure";
+  const signer = createLocalGenericWorkCoreJoinSigner({
+    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }),
+    keyId,
+  });
+  const verifier = createGenericWorkCoreJoinVerifier({
+    publicKey: publicKey.export({ type: "spki", format: "pem" }),
+    keyId,
+  });
+  const receiptId = `hnmmr_${"6".repeat(40)}`;
+  const receiptDigest = "7".repeat(64);
+  const targetCommit = "9".repeat(40);
+  const baseCommit = "1".repeat(40);
+  const headCommit = "2".repeat(40);
+  const sourceAction = {
+    kind: "github.merge", repository, head_branch: "agent/manual-closure",
+    base_branch: "main", pull_request: 390, head_commit: headCommit,
+    expected_base_commit: baseCommit, checks_commit: headCommit,
+    provider_execution: false,
+  };
+  const predecessor = {
+    schema_version: "host_native_owner_manual_merge_predecessor_v2",
+    predecessor_type: "owner_manual_github_merge_readback",
+    manual_merge_readback_id: receiptId,
+    manual_merge_readback_digest: receiptDigest,
+    source_readback_digest: "3".repeat(64),
+    core_join_verdict_id: `hnj_${"4".repeat(40)}`,
+    core_join_record_digest: "5".repeat(64),
+    result_commit: targetCommit,
+    source_action: sourceAction,
+    source_action_digest: stableDigest(sourceAction),
+    source_evidence_digest: receiptDigest,
+    source_required_checks_policy_digest: "8".repeat(64),
+    retrospective_ticket_issued: false,
+    provider_execution: false,
+  };
+  const githubUnsigned = {
+    api_origin: "https://api.github.com", repository, action_kind: "render.observe",
+    head_branch: sourceAction.head_branch, base_branch: "main", pull_request: 390,
+    merged: true, head_commit: headCommit, expected_base_commit: baseCommit,
+    merge_commit: targetCommit, target_commit: targetCommit, branch: "main",
+    branch_commit: targetCommit, checks_commit: headCommit, checks_passed: true,
+    required_checks: ["unit-tests"], observed_checks: [{
+      name: "unit-tests", status: "completed", conclusion: "success",
+      head_commit: headCommit,
+    }], rollback_commit: "a".repeat(40), rollback_commit_available: true,
+    source_action_kind: "github.merge", source_action_digest: stableDigest(sourceAction),
+    manual_merge_readback_id: receiptId,
+    manual_merge_readback_digest: receiptDigest,
+    source_readback_digest: predecessor.source_readback_digest,
+    required_checks_policy_digest: predecessor.source_required_checks_policy_digest,
+  };
+  const github = { ...githubUnsigned, readback_digest: stableDigest(githubUnsigned) };
+  const serviceUnsigned = {
+    service_id: "core", environment: "production",
+    origin: "https://core.onrender.com", health_path: "/healthz",
+    deployment_id: null, live_commit: targetCommit, version: null,
+    health_status: "healthy", health_contract_digest: "b".repeat(64),
+    previous_live_commit: "c".repeat(40), rollback_commit: "a".repeat(40),
+    rollback_status: "previous_live_attested",
+  };
+  const service = { ...serviceUnsigned, readback_digest: stableDigest(serviceUnsigned) };
+  const authorizationUnsigned = {
+    schema_version: "host_native_finalize_authorization_v1",
+    trusted: true, allowed: true, decision: "ALLOW_FINALIZE",
+    decision_id: "hnt_manual-observe-12345678", tenant_id: "tenant-a", work_id: workId,
+    repository, target_commit: targetCommit,
+    action_ticket_id: "hnt_manual-observe-12345678",
+    action_ticket_digest: "d".repeat(64), release_manifest_digest: "e".repeat(64),
+    release_intent_digest: "f".repeat(64),
+    core_join_verdict_id: predecessor.core_join_verdict_id,
+    core_join_verdict_digest: "0".repeat(64), core_join_resolution_digest: "1".repeat(64),
+    changed_files: ["services/core.js"], predecessor,
+    predecessor_chain_digest: stableDigest(predecessor), evidence_digest: receiptDigest,
+    host_kind: "codex_native", host_session_fingerprint: "c".repeat(64),
+    host_result_digest: "2".repeat(64), host_readback_digest: "3".repeat(64),
+    external_readback_digest: "4".repeat(64), readback_digest: "4".repeat(64),
+    result_commit_verified: true, verification_scope: "full_release",
+    services_verified: true, github_readback: github, live_services: [service],
+    outcome_source: "verified_completion", readback_source: "core_server_external_readback_v1",
+    issued_at: "2026-08-08T10:00:02.000Z", expires_at: "2026-08-08T10:05:02.000Z",
+    host_policy_override: false, host_policy_must_allow: true,
+    external_execution_allowed: false, host_execution_required: true,
+    provider_execution: false,
+  };
+  const authorizationDigest = stableDigest(authorizationUnsigned);
+  const authorization = {
+    ...authorizationUnsigned, authorization_digest: authorizationDigest,
+    signature: `hnf_${"5".repeat(64)}`,
+  };
+  const proof = await createHostNativeFinalizeAuthorizationProof({
+    authorization,
+    intentAnchorDigest: intentDigest,
+    signer,
+  });
+  return { authorization, proof, verifier, receiptId, receiptDigest };
+}
 
 class AtomicWorkPool {
   constructor() {
@@ -24,6 +129,11 @@ class AtomicWorkPool {
     this.legacy = new Map();
     this.works = new Map();
     this.tasks = new Map();
+    this.evidence = new Map();
+    this.joins = new Map();
+    this.closures = new Map();
+    this.finalReports = new Map();
+    this.coreEvents = new Map();
     this.events = new Map();
     this.reports = new Map();
     this.sequences = new Map();
@@ -35,7 +145,7 @@ class AtomicWorkPool {
   }
 
   snapshot() {
-    return Object.fromEntries(["reviews", "bootstrapRequests", "legacy", "works", "tasks", "events", "reports", "sequences", "participants", "leases"]
+    return Object.fromEntries(["reviews", "bootstrapRequests", "legacy", "works", "tasks", "evidence", "joins", "closures", "finalReports", "coreEvents", "events", "reports", "sequences", "participants", "leases"]
       .map((name) => [name, cloneMap(this[name])]));
   }
 
@@ -318,6 +428,88 @@ class AtomicWorkPool {
       const row = { tenant_id: parameters[0], task_id: parameters[1], work_id: parameters[2],
         title: parameters[3], weight: parameters[4], status: "planned", required: parameters[5], acceptance_verified: false };
       this.tasks.set(key(row.tenant_id, row.task_id), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT evidence_id,digest,metadata FROM tenant_work_evidence")) {
+      const row = [...this.evidence.values()].find((item) =>
+        item.tenant_id === parameters[0] && item.work_id === parameters[1] &&
+        item.kind === "owner_manual_merge_release" &&
+        item.metadata?.manual_merge_readback_id === parameters[2]);
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_evidence")) {
+      const row = {
+        tenant_id: parameters[0], evidence_id: parameters[1], work_id: parameters[2],
+        kind: "owner_manual_merge_release", digest: parameters[3], required: true,
+        independently_verified: true, verified_by_agent_id: parameters[4],
+        verified_by_session_fingerprint: parameters[5], weight: 1,
+        metadata: JSON.parse(parameters[6]), created_at: "2026-08-08T10:00:02.000Z",
+      };
+      this.evidence.set(key(row.tenant_id, row.evidence_id), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT * FROM tenant_work_evidence")) {
+      const rows = [...this.evidence.values()].filter((item) =>
+        item.tenant_id === parameters[0] && item.work_id === parameters[1] &&
+        (!q.includes("required=true") || item.required === true));
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT status,acceptance_verified FROM tenant_work_task")) {
+      const rows = [...this.tasks.values()].filter((item) =>
+        item.tenant_id === parameters[0] && item.work_id === parameters[1] &&
+        item.required === true).map(({ status, acceptance_verified }) =>
+        ({ status, acceptance_verified }));
+      return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT * FROM tenant_work_core_join")) {
+      const row = this.joins.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT * FROM tenant_work_closure_receipt")) {
+      const row = this.closures.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_closure_receipt")) {
+      const row = { tenant_id: parameters[0], receipt_id: parameters[1],
+        work_id: parameters[2], adapter: parameters[3], core_join_digest: parameters[4],
+        final_evidence_digest: parameters[5], receipt_digest: parameters[6] };
+      this.closures.set(key(row.tenant_id, row.work_id), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("INSERT INTO tenant_work_final_report")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1],
+        report: JSON.parse(parameters[2]), report_digest: parameters[3] };
+      this.finalReports.set(key(row.tenant_id, row.work_id), row);
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET status='COMPLETED'")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row) return { rows: [], rowCount: 0 };
+      Object.assign(row, { status: "COMPLETED", closed_at: "2026-08-08T10:00:03.000Z",
+        archived_at: "2026-08-08T10:00:03.000Z", final_evidence_digest: parameters[2],
+        closure_type: parameters[3], closure_reason: "acceptance_criteria_verified",
+        progress_bp: 10000, updated_at: "2026-08-08T10:00:03.000Z" });
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE core_continuity_works SET status='completed'")) {
+      const row = this.legacy.get(key(parameters[0], parameters[1]));
+      if (row) Object.assign(row, { status: "completed", next_action: "",
+        updated_at: "2026-08-08T10:00:03.000Z" });
+      return { rows: [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT sequence_number,event_hash FROM core_continuity_events")) {
+      const rows = [...this.coreEvents.values()].filter((event) =>
+        event.tenant_id === parameters[0] && event.work_id === parameters[1])
+        .sort((a, b) => a.sequence_number - b.sequence_number);
+      return { rows: rows.length ? [structuredClone(rows.at(-1))] : [],
+        rowCount: rows.length ? 1 : 0 };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_events")) {
+      const row = { tenant_id: parameters[0], work_id: parameters[1],
+        event_id: parameters[2], sequence_number: parameters[3], event_type: parameters[4],
+        payload: JSON.parse(parameters[5]), previous_event_hash: parameters[6],
+        event_hash: parameters[7], created_by: parameters[8] };
+      this.coreEvents.set(key(row.tenant_id, row.event_id), row);
       return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("SELECT tenant_id,work_id,sequence_number,event_type,payload,") &&
@@ -1248,6 +1440,95 @@ test("an unchanged bounded review survives a different database row order", asyn
   });
   assert.equal(created.review.decision, "PARALLEL_VALID");
   assert.equal(pool.reviews.get(key("tenant-a", review.review_id)).consumed_at !== null, true);
+  const canonicalReads = pool.queries.filter((query) =>
+    query.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND status = ANY"));
+  assert.equal(canonicalReads.length, 2);
+  assert.equal(new Set(canonicalReads).size, 1,
+    "review persistence and consumption must use the same canonical Work query");
+  assert.match(canonicalReads[0], /ORDER BY work_id ASC$/);
+});
+
+test("review consumption reuses the persisted resolver query when create text diverges", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = {
+    ...createInput(), request_id: "request-divergent-resolver", session_id: "session-divergent-resolver",
+    work_name: "Create-only collision beta",
+    objective: "A deliberately different create payload",
+  };
+  const resolverQuery = "Resolver-only incident alpha Preserve the original lexical boundary";
+  const review = await store.openWorkReview(identity(), {
+    intent_type: "CREATE_WORK", request: resolverQuery, create_request: input,
+  });
+  assert.equal(review.requires_owner_decision, false);
+  assert.equal(review.resolution_contract.resolver_query, resolverQuery);
+  assert.match(review.resolution_contract.resolver_query_digest, /^[a-f0-9]{64}$/);
+  assert.match(review.resolution_contract.work_projection_digest, /^[a-f0-9]{64}$/);
+  assert.match(review.resolution_contract.contract_digest, /^[a-f0-9]{64}$/);
+
+  const createOnlyCollision = candidateWork(2, {
+    project_id: "different-project",
+    work_name: input.work_name,
+    objective: input.objective,
+  });
+  pool.works.set(key(createOnlyCollision.tenant_id, createOnlyCollision.work_id), createOnlyCollision);
+  const created = await store.createNewWork(identity(), {
+    ...input,
+    review_id: review.review_id,
+    review_digest: review.review_digest,
+  });
+  assert.equal(created.review.decision, "NO_CONFLICT_PROCEED");
+});
+
+test("a new conflict against the persisted resolver query invalidates the review", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = {
+    ...createInput(), request_id: "request-new-resolver-conflict", session_id: "session-new-resolver-conflict",
+    work_name: "Create payload remains unrelated",
+    objective: "The resolver query is the durable conflict boundary",
+  };
+  const resolverQuery = "Fresh resolver conflict gamma";
+  const review = await store.openWorkReview(identity(), {
+    intent_type: "CREATE_WORK", request: resolverQuery, create_request: input,
+  });
+  assert.equal(review.requires_owner_decision, false);
+  const conflict = candidateWork(3, {
+    work_name: resolverQuery,
+    objective: "A Work created after the open review",
+  });
+  pool.works.set(key(conflict.tenant_id, conflict.work_id), conflict);
+
+  await assert.rejects(store.createNewWork(identity(), {
+    ...input,
+    review_id: review.review_id,
+    review_digest: review.review_digest,
+  }), /open_work_review_stale_conflict/);
+  assert.equal(pool.reviews.get(key("tenant-a", review.review_id)).consumed_at, null);
+});
+
+test("review consumption fails closed when the persisted resolver contract is altered", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = createInput();
+  const review = await store.openWorkReview(identity(), {
+    intent_type: "CREATE_WORK", request: "Immutable resolver text", create_request: input,
+  });
+  const stored = pool.reviews.get(key("tenant-a", review.review_id));
+  stored.review_result = {
+    ...stored.review_result,
+    resolution_contract: {
+      ...stored.review_result.resolution_contract,
+      resolver_query: "Substituted resolver text",
+    },
+  };
+  await assert.rejects(store.createNewWork(identity(), {
+    ...input, review_id: review.review_id, review_digest: review.review_digest,
+  }), /open_work_review_resolution_contract_invalid/);
+  assert.equal(pool.legacy.size, 0);
 });
 
 test("an unchanged visible cross-project candidate does not invalidate a project-scoped review", async () => {
@@ -1435,4 +1716,143 @@ test("Open Work Review rejects resume/chat intents", async () => {
   const store = createWorkContinuityV2Store({ pool, now: () => new Date("2026-08-08T10:00:00.000Z") });
   await assert.rejects(store.openWorkReview(identity(), { intent_type: "RESUME_WORK",
     request: "resume", create_request: createInput() }), /open_work_review_create_intent_required/);
+});
+
+test("owner manual merge release evidence closes and projects the legacy Gallery through normal gates", async () => {
+  const pool = new AtomicWorkPool();
+  const workId = "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
+  const intentDigest = "2".repeat(64);
+  const authority = await manualClosureAuthority({ workId, intentDigest });
+  const store = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+    coreJoinVerifier: authority.verifier,
+  });
+  const work = candidateWork(99, {
+    work_id: workId,
+    legacy_work_id: workId,
+    work_name: "Manual merge closure",
+    work_type: "software_git",
+    owner_user_id: "owner",
+    created_by_user_id: "owner",
+    created_by_agent_id: "builder-agent",
+    created_by_session_fingerprint: "1".repeat(64),
+    status: "ACTIVE",
+    acceptance_criteria: ["release observed and healthy"],
+    intent_digest: intentDigest,
+    architecture: { repository: "owner/repo" },
+    objective: "Close only after authoritative live readback",
+    created_at: "2026-08-08T10:00:00.000Z",
+    started_at: "2026-08-08T10:00:00.000Z",
+    team_id: null,
+    priority: "P1",
+  });
+  pool.works.set(key("tenant-a", workId), work);
+  pool.legacy.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, status: "release_ready",
+    next_action: "observe release", updated_at: "2026-08-08T10:00:00.000Z",
+  });
+  pool.tasks.set(key("tenant-a", "task-release"), {
+    tenant_id: "tenant-a", task_id: "task-release", work_id: workId,
+    title: "Verify release", weight: 1, status: "completed", required: true,
+    acceptance_verified: true,
+  });
+  pool.evidence.set(key("tenant-a", "evidence-verifier"), {
+    tenant_id: "tenant-a", evidence_id: "evidence-verifier", work_id: workId,
+    kind: "native_verifier_terminal_report", digest: "3".repeat(64), required: true,
+    independently_verified: true, verified_by_agent_id: "independent-verifier",
+    verified_by_session_fingerprint: "4".repeat(64), weight: 1,
+    metadata: {}, created_at: "2026-08-08T10:00:01.000Z",
+  });
+  pool.joins.set(key("tenant-a", workId), {
+    tenant_id: "tenant-a", work_id: workId, core_join_digest: "5".repeat(64),
+    core_join_context: { authority: "universal_core" },
+  });
+  await assert.rejects(store.recordOwnerManualMergeReleaseEvidence(identity(), {
+    server_owned: true,
+    finalize_authorization: authority.authorization,
+  }), /owner_manual_merge_release_authorization_invalid/);
+  await assert.rejects(store.recordOwnerManualMergeReleaseEvidence(identity(), {
+    finalize_authorization: {
+      ...authority.authorization,
+      target_commit: "f".repeat(40),
+    },
+    finalize_authorization_proof: authority.proof,
+  }), /owner_manual_merge_release_authorization_invalid/);
+  await assert.rejects(store.recordOwnerManualMergeReleaseEvidence(identity(), {
+    finalize_authorization: {
+      ...authority.authorization,
+      signature: `hnf_${"f".repeat(64)}`,
+    },
+    finalize_authorization_proof: authority.proof,
+  }), /owner_manual_merge_release_authorization_invalid/);
+  await assert.rejects(store.recordOwnerManualMergeReleaseEvidence(identity(), {
+    finalize_authorization: authority.authorization,
+    finalize_authorization_proof: {
+      ...authority.proof,
+      signature: `${authority.proof.signature[0] === "A" ? "B" : "A"}${authority.proof.signature.slice(1)}`,
+    },
+  }), /owner_manual_merge_release_authorization_invalid/);
+  const expiredStore = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:06:00.000Z"),
+    coreJoinVerifier: authority.verifier,
+  });
+  await assert.rejects(expiredStore.recordOwnerManualMergeReleaseEvidence(identity(), {
+    finalize_authorization: authority.authorization,
+    finalize_authorization_proof: authority.proof,
+  }), /owner_manual_merge_release_authorization_invalid/);
+  const wrongRepositoryAuthority = await manualClosureAuthority({
+    workId,
+    intentDigest,
+    repository: "other/repo",
+  });
+  const wrongRepositoryStore = createWorkContinuityV2Store({
+    pool,
+    legacyRuntime: legacyRuntime(pool),
+    now: () => new Date("2026-08-08T10:00:03.000Z"),
+    coreJoinVerifier: wrongRepositoryAuthority.verifier,
+  });
+  await assert.rejects(wrongRepositoryStore.recordOwnerManualMergeReleaseEvidence(identity(), {
+    finalize_authorization: wrongRepositoryAuthority.authorization,
+    finalize_authorization_proof: wrongRepositoryAuthority.proof,
+  }), /owner_manual_merge_release_work_binding_invalid/);
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    tenantGatewayKey: "tenant-gateway-key-for-composed-test-123456",
+    tenantContextSigningSecret: "tenant-context-key-for-composed-test-123456",
+  }, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: true,
+      tenant_id: "tenant-a",
+      finalize_authorization: authority.authorization,
+      finalize_authorization_proof: authority.proof,
+    }), { status: 200, headers: { "content-type": "application/json" } }),
+    tenantWorkGallery: store,
+  });
+  const handlerIdentity = { ...identity(), kind: "codex" };
+  const firstResult = await handlers.host_native_action_closure_receipt({
+    ticket_id: authority.authorization.action_ticket_id,
+  }, handlerIdentity);
+  const evidenceReplay = await store.recordOwnerManualMergeReleaseEvidence(identity(), {
+    finalize_authorization: authority.authorization,
+    finalize_authorization_proof: authority.proof,
+  });
+  const firstPayload = JSON.parse(firstResult.content[0].text);
+  assert.equal(firstPayload.work_gallery_projection.note, "owner_manual_merge");
+  assert.equal(firstPayload.work_gallery_projection.legacy_bridged, true);
+  assert.equal(evidenceReplay.idempotent_replay, true);
+  assert.equal([...pool.evidence.values()].filter((item) =>
+    item.kind === "owner_manual_merge_release").length, 1);
+  assert.equal(pool.works.get(key("tenant-a", workId)).status, "COMPLETED");
+  assert.equal(pool.legacy.get(key("tenant-a", workId)).status, "completed");
+  const legacyClosure = [...pool.coreEvents.values()].find((event) =>
+    event.event_type === "generic_closure_finalized");
+  assert.equal(legacyClosure.payload.note, "owner_manual_merge");
+  assert.ok([...pool.events.values()].some((event) =>
+    event.event_type === "owner_manual_merge_release_verified" &&
+    event.payload.note === "owner_manual_merge"));
 });

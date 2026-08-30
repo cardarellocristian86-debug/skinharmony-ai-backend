@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   createHostNativeExternalReadbackVerifier,
+  createHostNativeOwnerManualMergeReadbackVerifier,
   createHostNativeReleaseJoinVerdictResolver,
 } from "../src/hostNativeExternalReadback.js";
 import {
@@ -627,6 +628,45 @@ function strictObserveFetch({
   };
 }
 
+function strictOwnerManualMergeObserveTicket() {
+  const ticket = strictObserveTicket();
+  const sourceAction = structuredClone(ticket.predecessor.source_action);
+  const policyDigest = ticket.predecessor.source_required_checks_policy_digest;
+  const manualReceiptId = `hnmmr_${"a".repeat(40)}`;
+  const manualReceiptDigest = "b".repeat(64);
+  ticket.evidence_digest = manualReceiptDigest;
+  ticket.release_join_resolution.evidence_digest = manualReceiptDigest;
+  ticket.release_join_resolution_digest = hostNativeDigest(ticket.release_join_resolution);
+  ticket.action = {
+    kind: "render.observe",
+    repository: ticket.repository,
+    branch: "main",
+    service_id: "service-a",
+    environment: "production",
+    target_commit: TARGET,
+    release_manifest_digest: ticket.release_manifest_digest,
+    provider_execution: false,
+  };
+  ticket.predecessor = {
+    schema_version: "host_native_owner_manual_merge_predecessor_v2",
+    predecessor_type: "owner_manual_github_merge_readback",
+    manual_merge_readback_id: manualReceiptId,
+    manual_merge_readback_digest: manualReceiptDigest,
+    source_readback_digest: "c".repeat(64),
+    core_join_verdict_id: ticket.core_join_verdict_id,
+    core_join_record_digest: "d".repeat(64),
+    result_commit: TARGET,
+    source_action: sourceAction,
+    source_action_digest: hostNativeDigest(sourceAction),
+    source_evidence_digest: manualReceiptDigest,
+    source_required_checks_policy_digest: policyDigest,
+    retrospective_ticket_issued: false,
+    provider_execution: false,
+  };
+  ticket.predecessor_chain_digest = hostNativeDigest(ticket.predecessor);
+  return ticket;
+}
+
 function refreshObservePredecessor(ticket) {
   const receipt = ticket.predecessor.finalize_authorization;
   const { signature: _signature, authorization_digest: _digest, ...receiptUnsigned } = receipt;
@@ -911,6 +951,59 @@ test("render.observe verifies signed merged-PR source, exact main target, all se
   });
 });
 
+test("owner manual-merge predecessor drives fresh GitHub, checks and Render observation", async (t) => {
+  const verify = async (ticket = strictOwnerManualMergeObserveTicket()) => {
+    const calls = [];
+    const verifier = createHostNativeExternalReadbackVerifier({
+      fetchImpl: strictObserveFetch({ ticket, calls }),
+      requiredChecksPolicyResolver: async () => STRICT_POLICY,
+      now: () => Date.parse(VERIFIED_AT),
+    });
+    return { result: await verifier({ ticket, target_commit: TARGET }), calls };
+  };
+  const ticket = strictOwnerManualMergeObserveTicket();
+  const { result, calls } = await verify(ticket);
+  assert.equal(result.github.manual_merge_readback_id,
+    ticket.predecessor.manual_merge_readback_id);
+  assert.equal(result.github.manual_merge_readback_digest,
+    ticket.predecessor.manual_merge_readback_digest);
+  assert.equal(result.github.source_readback_digest,
+    ticket.predecessor.source_readback_digest);
+  assert.equal(Object.hasOwn(result.github, "predecessor_ticket_id"), false);
+  assert.equal(result.github.merge_commit, TARGET);
+  assert.equal(result.github.branch_commit, TARGET);
+  assert.equal(result.services.every((service) =>
+    service.live_commit === TARGET && service.health_status === "healthy"), true);
+  assert.ok(calls.some(({ url }) => url.endsWith("/pulls/42")));
+  assert.ok(calls.some(({ url }) => url.endsWith("/git/ref/heads/main")));
+  assert.ok(calls.some(({ url }) => url.endsWith("/healthz")));
+
+  for (const [name, mutate] of [
+    ["receipt id", (candidate) => {
+      candidate.predecessor.manual_merge_readback_id = `hnmmr_${"f".repeat(40)}`;
+    }],
+    ["receipt digest", (candidate) => {
+      candidate.predecessor.manual_merge_readback_digest = "f".repeat(64);
+    }],
+    ["Core Join base", (candidate) => {
+      candidate.predecessor.source_action.expected_base_commit = ALTERNATE;
+    }],
+  ]) {
+    await t.test(`${name} substitution fails before provider readback`, async () => {
+      const candidate = strictOwnerManualMergeObserveTicket();
+      mutate(candidate);
+      let fetched = false;
+      const verifier = createHostNativeExternalReadbackVerifier({
+        fetchImpl: async () => { fetched = true; throw new Error("must_not_fetch"); },
+        requiredChecksPolicyResolver: async () => STRICT_POLICY,
+      });
+      await assert.rejects(verifier({ ticket: candidate, target_commit: TARGET }),
+        /trusted_readback_observation_binding_invalid/);
+      assert.equal(fetched, false);
+    });
+  }
+});
+
 test("render.observe also verifies an exact protected-push predecessor", async () => {
   const ticket = strictProtectedPushObserveTicket();
   const calls = [];
@@ -967,6 +1060,84 @@ test("strict required-check attestation pins app/workflow, accepts deterministic
   assert.equal(first.github.observed_checks[0].workflow_run_attempt, 2);
   assert.match(first.github.required_checks_policy_digest, /^[a-f0-9]{64}$/);
   assert.match(first.github.checks_attestation_digest, /^[a-f0-9]{64}$/);
+});
+
+test("owner manual-merge verifier derives PR, checks and main facts from GitHub", async (t) => {
+  const coreJoinRecord = {
+    release_intent: { base_commit: BASE },
+    claim: {
+      tenant_id: "tenant-a",
+      repository: "owner/repo",
+      base_branch: "main",
+      checks: {
+        commit: HEAD,
+        required_checks: [...STRICT_POLICY.required_checks],
+      },
+      required_checks_policy_digest: STRICT_POLICY_DIGEST,
+    },
+  };
+  const run = async ({ mainCommit = TARGET, pullOverrides = {} } = {}) => {
+    const calls = [];
+    const fallback = strictFetch({ calls });
+    const fetchImpl = async (url, init) => {
+      const root = "https://api.github.com/repos/owner/repo";
+      if (url === `${root}/pulls/42`) {
+        calls.push({ url, init });
+        return jsonResponse(pullRequest("owner/repo", {
+          state: "closed",
+          merged_at: "2026-07-29T11:59:00.000Z",
+          ...pullOverrides,
+        }));
+      }
+      if (url === `${root}/git/ref/heads/main`) {
+        calls.push({ url, init });
+        return jsonResponse({ object: { sha: mainCommit } });
+      }
+      return fallback(url, init);
+    };
+    const verifier = createHostNativeOwnerManualMergeReadbackVerifier({
+      fetchImpl,
+      requiredChecksPolicyResolver: async () => STRICT_POLICY,
+      now: () => Date.parse(VERIFIED_AT),
+    });
+    return { result: await verifier({
+      tenant_id: "tenant-a",
+      repository: "owner/repo",
+      pull_request: 42,
+      core_join_record: coreJoinRecord,
+    }), calls };
+  };
+  const { result, calls } = await run();
+  assert.equal(result.schema_version,
+    "host_native_owner_manual_merge_github_readback_v1");
+  assert.equal(result.source, "universal_core_github_readback");
+  assert.equal(result.merged, true);
+  assert.equal(result.head_commit, HEAD);
+  assert.equal(result.merge_commit, TARGET);
+  assert.equal(result.main_head_commit, TARGET);
+  assert.equal(result.checks_passed, true);
+  assert.equal(result.required_checks_policy_digest, STRICT_POLICY_DIGEST);
+  assert.equal(result.external_side_effect, false);
+  assert.equal(result.provider_execution, false);
+  assert.match(result.readback_digest, /^[a-f0-9]{64}$/);
+  assert.ok(calls.some(({ url }) => url.endsWith("/pulls/42")));
+  assert.ok(calls.some(({ url }) => url.endsWith("/git/ref/heads/main")));
+  assert.ok(calls.some(({ url }) => url.endsWith(`/commits/${HEAD}/check-runs?per_page=100`)));
+
+  await t.test("main drift fails closed", async () => {
+    await assert.rejects(run({ mainCommit: ALTERNATE }),
+      /owner_manual_merge_readback_main_drift/);
+  });
+  await t.test("a substituted PR head fails closed", async () => {
+    await assert.rejects(run({
+      pullOverrides: { head: { sha: ALTERNATE, ref: "agent/release", repo: { full_name: "owner/repo" } } },
+    }), /owner_manual_merge_readback_pull_request_mismatch/);
+  });
+  await t.test("a PR base SHA different from the Core Join base fails closed", async () => {
+    await assert.rejects(run({
+      pullOverrides: { base: { sha: ALTERNATE, ref: "main", repo: { full_name: "owner/repo" } } },
+    }), /owner_manual_merge_readback_pull_request_mismatch/);
+  });
 });
 
 test("post-merge empty workflow association uses only the signed Core source attestation", async (t) => {

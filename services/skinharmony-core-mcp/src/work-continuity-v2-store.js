@@ -709,12 +709,27 @@ export function createGenericWorkCoreJoinVerifier({ publicKey, keyId } = {}) {
       );
     } catch { return false; }
   };
+  const verifySignedDigest = ({ digest: signedDigest, signature, key_id, signature_domain } = {}) => {
+    if (!HASH.test(String(signedDigest || "")) || key_id !== keyId ||
+        signature_domain !== GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION) return false;
+    const signatureBytes = decodeGenericWorkCoreJoinSignature(signature);
+    if (!signatureBytes) return false;
+    try {
+      return crypto.verify(
+        null,
+        Buffer.from(`${GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION}\0${signedDigest}`, "utf8"),
+        key,
+        signatureBytes,
+      );
+    } catch { return false; }
+  };
   return Object.freeze({
     schema_version: GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION,
     algorithm: "Ed25519",
     ...metadata,
     metadata,
     verify,
+    verifySignedDigest,
   });
 }
 function deterministicWorkId(tenantId, reviewId, requestDigest) {
@@ -987,6 +1002,53 @@ function normalizeResolutionWorks(rows) {
   // immutable Work identity before taking its bounded top-five candidate set.
   return rows.map(normalizeWork).sort((left, right) =>
     String(left.work_id || "").localeCompare(String(right.work_id || "")));
+}
+const CANONICAL_OPEN_REVIEW_WORKS_QUERY = `SELECT * FROM tenant_work
+  WHERE tenant_id=$1 AND status = ANY($2)
+  ORDER BY work_id ASC`;
+const OPEN_REVIEW_RESOLUTION_CONTRACT_SCHEMA = "tenant_work_open_review_resolution_contract_v1";
+const OPEN_REVIEW_WORK_PROJECTION_DIGEST = objectDigest({
+  schema_version: "tenant_work_open_review_work_projection_v1",
+  query: CANONICAL_OPEN_REVIEW_WORKS_QUERY,
+  operational_statuses: [...OPERATIONAL_STATUSES].sort(),
+});
+async function canonicalOpenReviewWorks(client, actor) {
+  const result = await client.query(CANONICAL_OPEN_REVIEW_WORKS_QUERY, [
+    actor.tenant_id,
+    [...OPERATIONAL_STATUSES],
+  ]);
+  return normalizeResolutionWorks(result.rows);
+}
+function openReviewResolutionContract(query, projectId, intentDigest) {
+  const resolverQuery = text(query, "work_review_request_invalid", 8_000);
+  const unsigned = {
+    schema_version: OPEN_REVIEW_RESOLUTION_CONTRACT_SCHEMA,
+    resolver_query: resolverQuery,
+    resolver_query_digest: objectDigest({
+      schema_version: "tenant_work_open_review_resolver_query_v1",
+      resolver_query: resolverQuery,
+    }),
+    work_projection_digest: OPEN_REVIEW_WORK_PROJECTION_DIGEST,
+    project_id: projectId,
+    intent_digest: intentDigest || null,
+  };
+  return { ...unsigned, contract_digest: objectDigest(unsigned) };
+}
+function validatedOpenReviewResolutionContract(review, projectId, intentDigest) {
+  const contract = review?.review_result?.resolution_contract;
+  if (!contract || typeof contract !== "object" || Array.isArray(contract)) {
+    fail("open_work_review_resolution_contract_invalid");
+  }
+  const expected = openReviewResolutionContract(
+    contract.resolver_query,
+    projectId,
+    intentDigest,
+  );
+  if (Object.keys(contract).length !== Object.keys(expected).length ||
+      Object.entries(expected).some(([name, value]) => contract[name] !== value)) {
+    fail("open_work_review_resolution_contract_invalid");
+  }
+  return expected;
 }
 function visibleProjectResolutionCandidates(resolution, works, projectId, actor) {
   const visibleIds = new Set(works
@@ -1411,13 +1473,14 @@ export function createWorkContinuityV2Store({
     // bootstrap lock; otherwise two concurrent no-conflict reviews could both
     // create a semantically duplicate Work.
     {
-      const currentRows = await client.query(
-        "SELECT * FROM tenant_work WHERE tenant_id=$1 AND status = ANY($2)",
-        [actor.tenant_id, [...OPERATIONAL_STATUSES]],
+      const currentWorks = await canonicalOpenReviewWorks(client, actor);
+      const resolutionContract = validatedOpenReviewResolutionContract(
+        review,
+        input.project_id,
+        input.intent_digest || null,
       );
-      const currentWorks = normalizeResolutionWorks(currentRows.rows);
       const currentResolution = resolveWorkRequest(
-        `${String(input.work_name || "")} ${String(input.objective || "")}`.trim(),
+        resolutionContract.resolver_query,
         currentWorks,
         actor,
         { project_id: input.project_id, intent_digest: input.intent_digest || null, now: now() },
@@ -2204,12 +2267,13 @@ export function createWorkContinuityV2Store({
         return responseFor(row, true);
       }
 
-      const all = await client.query(
-        "SELECT * FROM tenant_work WHERE tenant_id=$1 AND status = ANY($2)",
-        [actor.tenant_id, [...OPERATIONAL_STATUSES]],
+      const normalizedWorks = await canonicalOpenReviewWorks(client, actor);
+      const resolutionContract = openReviewResolutionContract(
+        input.request || `${proposed.work_name} ${proposed.objective}`,
+        projectId,
+        intentDigest,
       );
-      const normalizedWorks = normalizeResolutionWorks(all.rows);
-      const review = resolveWorkRequest(text(input.request || `${proposed.work_name} ${proposed.objective}`, "work_review_request_invalid", 8_000), normalizedWorks, actor, {
+      const review = resolveWorkRequest(resolutionContract.resolver_query, normalizedWorks, actor, {
         project_id: projectId, intent_digest: intentDigest, now: now(),
       });
       const related = normalizedWorks.filter((work) => work.project_id === projectId);
@@ -2231,6 +2295,7 @@ export function createWorkContinuityV2Store({
         candidates: visibleProjectResolutionCandidates(review, normalizedWorks, projectId, actor),
         conflict_flags: conflictFlags,
         hidden_conflict: review.hidden_conflict === true,
+        resolution_contract: resolutionContract,
       };
       const expiresAt = new Date(now().getTime() + 10 * 60_000).toISOString();
       const reviewDigest = objectDigest({ tenant_id: actor.tenant_id, subject_user_id: actor.user_id,
@@ -2576,6 +2641,277 @@ export function createWorkContinuityV2Store({
         independentlyVerified ? actor.session_fingerprint : null, Math.max(1, Number(input.weight) || 1), JSON.stringify(input.metadata || {})]);
     });
     return refreshDerived(identity, { work_id: workId });
+  }
+  async function recordOwnerManualMergeReleaseEvidence(identity, source = {}) {
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const authorization = plainRecord(source.finalize_authorization)
+      ? source.finalize_authorization
+      : null;
+    const proof = plainRecord(source.finalize_authorization_proof)
+      ? source.finalize_authorization_proof
+      : null;
+    const predecessor = plainRecord(authorization?.predecessor)
+      ? authorization.predecessor
+      : null;
+    const workId = uuid(authorization?.work_id, "owner_manual_merge_release_work_invalid");
+    const ticketId = text(
+      authorization?.action_ticket_id,
+      "owner_manual_merge_release_ticket_invalid",
+      240,
+    );
+    const receiptId = text(
+      predecessor?.manual_merge_readback_id,
+      "owner_manual_merge_release_receipt_invalid",
+      240,
+    );
+    const receiptDigest = digest(
+      predecessor?.manual_merge_readback_digest,
+      "owner_manual_merge_release_receipt_invalid",
+    );
+    const proofFields = [
+      "action_ticket_id", "authority", "authorization_digest", "authorization_signature_digest",
+      "core_join_verdict_id", "expires_at", "intent_anchor_digest", "issued_at",
+      "key_id", "proof_digest", "repository", "schema_version", "signature",
+      "signature_algorithm", "signature_domain", "tenant_id", "work_id",
+    ];
+    const authorizationAllowedFields = new Set([
+      "action_ticket_digest", "action_ticket_id", "allowed", "authorization_digest",
+      "changed_files", "core_join_resolution_digest", "core_join_verdict_digest",
+      "core_join_verdict_id", "decision", "decision_id", "evidence_digest",
+      "expires_at", "external_execution_allowed", "external_readback_digest",
+      "github_readback", "host_execution_required", "host_kind", "host_policy_must_allow",
+      "host_policy_override", "host_readback_digest", "host_result_digest",
+      "host_session_fingerprint", "issued_at", "live_services",
+      "outcome_source", "predecessor", "predecessor_chain_digest",
+      "previous_authorization_digest", "provider_execution", "readback_digest",
+      "readback_source", "release_intent_digest", "release_manifest_digest",
+      "repository", "result_commit_verified", "schema_version", "services_verified",
+      "signature", "target_commit", "tenant_id", "trusted", "verification_scope",
+      "work_id",
+    ]);
+    const authorizationRequiredFields = [
+      "action_ticket_digest", "action_ticket_id", "allowed", "authorization_digest",
+      "core_join_resolution_digest", "core_join_verdict_digest", "core_join_verdict_id",
+      "decision", "decision_id", "evidence_digest", "expires_at",
+      "external_readback_digest", "github_readback", "host_session_fingerprint",
+      "issued_at", "live_services", "predecessor",
+      "predecessor_chain_digest", "readback_digest", "readback_source",
+      "release_intent_digest", "release_manifest_digest", "repository",
+      "result_commit_verified", "schema_version", "services_verified", "signature",
+      "target_commit", "tenant_id", "trusted", "verification_scope", "work_id",
+    ];
+    const issuedAt = Date.parse(String(authorization?.issued_at || ""));
+    const expiresAt = Date.parse(String(authorization?.expires_at || ""));
+    const proofUnsigned = proof && { ...proof };
+    if (proofUnsigned) {
+      delete proofUnsigned.proof_digest;
+      delete proofUnsigned.signature;
+    }
+    const authorizationUnsigned = authorization && { ...authorization };
+    if (authorizationUnsigned) {
+      delete authorizationUnsigned.authorization_digest;
+      delete authorizationUnsigned.signature;
+    }
+    const sourceAction = predecessor?.source_action;
+    const github = authorization?.github_readback;
+    const githubUnsigned = plainRecord(github) ? { ...github } : null;
+    if (githubUnsigned) delete githubUnsigned.readback_digest;
+    if (
+      !authorization || authorization.schema_version !==
+        "host_native_finalize_authorization_v1" ||
+      !proof || !exactObjectKeys(proof, proofFields) ||
+      proof.schema_version !== "host_native_finalize_authorization_proof_v1" ||
+      proof.authority !== "universal_core" ||
+      proof.signature_domain !== GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION ||
+      proof.signature_algorithm !== "ed25519" ||
+      proof.key_id !== resolvedCoreJoinVerifier?.metadata?.key_id ||
+      proof.proof_digest !== objectDigest(proofUnsigned) ||
+      typeof resolvedCoreJoinVerifier?.verifySignedDigest !== "function" ||
+      !resolvedCoreJoinVerifier.verifySignedDigest({
+        digest: proof.proof_digest,
+        signature: proof.signature,
+        key_id: proof.key_id,
+        signature_domain: proof.signature_domain,
+      }) ||
+      proof.tenant_id !== actor.tenant_id ||
+      proof.tenant_id !== authorization.tenant_id ||
+      proof.work_id !== authorization.work_id ||
+      proof.repository !== authorization.repository ||
+      proof.action_ticket_id !== authorization.action_ticket_id ||
+      proof.core_join_verdict_id !== authorization.core_join_verdict_id ||
+      proof.authorization_digest !== authorization.authorization_digest ||
+      proof.authorization_signature_digest !== objectDigest({
+        signature: String(authorization.signature || ""),
+      }) ||
+      proof.issued_at !== authorization.issued_at ||
+      proof.expires_at !== authorization.expires_at ||
+      !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) ||
+      issuedAt >= expiresAt || expiresAt <= now().getTime() ||
+      Object.keys(authorization).some((field) => !authorizationAllowedFields.has(field)) ||
+      authorizationRequiredFields.some((field) => !Object.hasOwn(authorization, field)) ||
+      authorization.authorization_digest !== objectDigest(authorizationUnsigned) ||
+      authorization.trusted !== true || authorization.allowed !== true ||
+      authorization.decision !== "ALLOW_FINALIZE" ||
+      authorization.decision_id !== ticketId ||
+      authorization.result_commit_verified !== true ||
+      authorization.services_verified !== true ||
+      authorization.verification_scope !== "full_release" ||
+      authorization.provider_execution !== false ||
+      authorization.host_policy_override !== false ||
+      authorization.host_policy_must_allow !== true ||
+      authorization.external_execution_allowed !== false ||
+      authorization.host_execution_required !== true ||
+      authorization.readback_source !== "core_server_external_readback_v1" ||
+      authorization.readback_digest !== authorization.external_readback_digest ||
+      predecessor?.schema_version !==
+        "host_native_owner_manual_merge_predecessor_v2" ||
+      predecessor?.predecessor_type !== "owner_manual_github_merge_readback" ||
+      predecessor?.retrospective_ticket_issued !== false ||
+      predecessor?.provider_execution !== false ||
+      authorization.predecessor_chain_digest !== objectDigest(predecessor) ||
+      predecessor.source_action_digest !== objectDigest(sourceAction) ||
+      predecessor.source_evidence_digest !== receiptDigest ||
+      authorization.evidence_digest !== receiptDigest ||
+      predecessor.core_join_verdict_id !== authorization.core_join_verdict_id ||
+      !HASH.test(String(predecessor.core_join_record_digest || "")) ||
+      !HASH.test(String(authorization.core_join_verdict_digest || "")) ||
+      !HASH.test(String(authorization.core_join_resolution_digest || "")) ||
+      sourceAction?.kind !== "github.merge" ||
+      sourceAction?.repository !== authorization.repository ||
+      sourceAction?.pull_request !== github?.pull_request ||
+      sourceAction?.head_branch !== github?.head_branch ||
+      sourceAction?.base_branch !== github?.base_branch ||
+      sourceAction?.head_commit !== github?.head_commit ||
+      sourceAction?.checks_commit !== github?.checks_commit ||
+      sourceAction?.expected_base_commit !== github?.expected_base_commit ||
+      sourceAction?.provider_execution !== false ||
+      predecessor.result_commit !== authorization.target_commit ||
+      authorization.github_readback?.manual_merge_readback_id !== receiptId ||
+      authorization.github_readback?.manual_merge_readback_digest !== receiptDigest ||
+      authorization.github_readback?.merged !== true ||
+      authorization.github_readback?.merge_commit !== authorization.target_commit ||
+      authorization.github_readback?.target_commit !== authorization.target_commit ||
+      authorization.github_readback?.branch_commit !== authorization.target_commit ||
+      authorization.github_readback?.repository !== authorization.repository ||
+      authorization.github_readback?.source_action_kind !== "github.merge" ||
+      authorization.github_readback?.source_action_digest !==
+        predecessor.source_action_digest ||
+      authorization.github_readback?.source_readback_digest !==
+        predecessor.source_readback_digest ||
+      authorization.github_readback?.required_checks_policy_digest !==
+        predecessor.source_required_checks_policy_digest ||
+      authorization.github_readback?.checks_passed !== true ||
+      authorization.github_readback?.readback_digest !== objectDigest(githubUnsigned) ||
+      !Array.isArray(authorization.live_services) ||
+      authorization.live_services.length < 1 ||
+      authorization.live_services.some((service) =>
+        service?.live_commit !== authorization.target_commit ||
+        service?.health_status !== "healthy" ||
+        service?.readback_digest !== objectDigest((({ readback_digest: _digest, ...rest }) =>
+          rest)(service || {})))
+    ) fail("owner_manual_merge_release_authorization_invalid");
+    const evidenceBinding = {
+      schema_version: "tenant_work_owner_manual_merge_release_evidence_v1",
+      tenant_id: actor.tenant_id,
+      work_id: workId,
+      intent_anchor_digest: proof.intent_anchor_digest,
+      repository: authorization.repository,
+      action_ticket_id: ticketId,
+      action_ticket_digest: digest(authorization.action_ticket_digest),
+      core_join_verdict_id: authorization.core_join_verdict_id,
+      core_join_verdict_digest: authorization.core_join_verdict_digest,
+      manual_merge_readback_id: receiptId,
+      manual_merge_readback_digest: receiptDigest,
+      pull_request: sourceAction.pull_request,
+      base_commit: sourceAction.expected_base_commit,
+      head_commit: sourceAction.head_commit,
+      target_commit: text(
+        authorization.target_commit,
+        "owner_manual_merge_release_target_invalid",
+        64,
+      ),
+      external_readback_digest: digest(authorization.external_readback_digest),
+      authorization_digest: digest(authorization.authorization_digest),
+      authorization_proof_digest: proof.proof_digest,
+      authorization_key_id: proof.key_id,
+      verifier_id: authorization.readback_source,
+      expires_at: authorization.expires_at,
+      note: "owner_manual_merge",
+      provider_execution: false,
+    };
+    const evidenceDigest = objectDigest(evidenceBinding);
+    const outcome = await transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canClose, work, actor);
+      if (work.intent_digest !== proof.intent_anchor_digest ||
+          !plainRecord(work.architecture) ||
+          work.architecture.repository !== authorization.repository) {
+        fail("owner_manual_merge_release_work_binding_invalid");
+      }
+      const existing = await client.query(`SELECT evidence_id,digest,metadata
+        FROM tenant_work_evidence
+        WHERE tenant_id=$1 AND work_id=$2 AND kind='owner_manual_merge_release'
+          AND metadata->>'manual_merge_readback_id'=$3
+        ORDER BY created_at,evidence_id LIMIT 1 FOR UPDATE`,
+      [actor.tenant_id, workId, receiptId]);
+      if (existing.rows[0]) {
+        if (existing.rows[0].digest !== evidenceDigest ||
+            objectDigest(existing.rows[0].metadata) !== objectDigest(evidenceBinding)) {
+          fail("owner_manual_merge_release_evidence_conflict");
+        }
+        return {
+          work,
+          evidence_id: existing.rows[0].evidence_id,
+          evidence_digest: evidenceDigest,
+          idempotent_replay: true,
+        };
+      }
+      const evidenceId = crypto.randomUUID();
+      await client.query(`INSERT INTO tenant_work_evidence
+        (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,
+         verified_by_agent_id,verified_by_session_fingerprint,weight,metadata)
+        VALUES ($1,$2,$3,'owner_manual_merge_release',$4,true,true,$5,$6,1,$7::jsonb)`,
+      [actor.tenant_id, evidenceId, workId, evidenceDigest,
+        "universal_core_owner_manual_merge_release",
+        text(authorization.host_session_fingerprint,
+          "owner_manual_merge_release_session_invalid", 128),
+        JSON.stringify(evidenceBinding)]);
+      const event = await appendV2Event(
+        client,
+        actor,
+        workId,
+        "owner_manual_merge_release_verified",
+        {
+          evidence_id: evidenceId,
+          evidence_digest: evidenceDigest,
+          action_ticket_id: ticketId,
+          manual_merge_readback_id: receiptId,
+          authorization_digest: evidenceBinding.authorization_digest,
+          target_commit: evidenceBinding.target_commit,
+          note: "owner_manual_merge",
+          authority: "universal_core_finalize_authorization",
+        },
+      );
+      return {
+        work,
+        evidence_id: evidenceId,
+        evidence_digest: evidenceDigest,
+        event,
+        idempotent_replay: false,
+      };
+    });
+    return Object.freeze({
+      schema_version: "tenant_work_owner_manual_merge_release_projection_v1",
+      work_id: workId,
+      adapter: outcome.work.work_type,
+      evidence_id: outcome.evidence_id,
+      evidence_digest: outcome.evidence_digest,
+      note: "owner_manual_merge",
+      legacy_bridged: Boolean(outcome.work.legacy_work_id),
+      idempotent_replay: outcome.idempotent_replay,
+      ...(outcome.event ? { event: outcome.event } : {}),
+    });
   }
   async function recordNativeVerifierEvidenceWithClient(client, source = {}) {
     if (!client || typeof client.query !== "function") {
@@ -3920,6 +4256,9 @@ export function createWorkContinuityV2Store({
       const independent = state.evidence.length > 0 && state.evidence.every((item) => item.independently_verified === true && item.verified_by_agent_id !== state.work.created_by_agent_id);
       const completeTasks = tasks.rows.length > 0 && tasks.rows.every((item) => item.status === "completed" && item.acceptance_verified === true);
       if (!independent || !completeTasks || !state.join) fail("work_closure_gate_unsatisfied");
+      const ownerManualMergeClosure = state.evidence.some((item) =>
+        item.kind === "owner_manual_merge_release" &&
+        item.metadata?.note === "owner_manual_merge");
       const finalEvidenceDigest = crypto.createHash("sha256").update(JSON.stringify(state.evidence.map((item) => item.digest).sort())).digest("hex");
       const finalized = buildGenericClosureArtifacts({ ...state.work, progress_bp: state.work.progress_bp }, {
         adapter, server_verified_closure_context: { schema_version: "work_closure_context_v1",
@@ -3950,7 +4289,9 @@ export function createWorkContinuityV2Store({
         [actor.tenant_id, state.work.legacy_work_id]);
         const sequence = Number(previous.rows[0]?.sequence_number || 0) + 1;
         const payload = { adapter, closure_receipt_digest: finalized.receipt.receipt_digest,
-          final_evidence_digest: finalEvidenceDigest, report_digest: objectDigest(finalized.final_report), archived: true };
+          final_evidence_digest: finalEvidenceDigest,
+          report_digest: objectDigest(finalized.final_report), archived: true,
+          ...(ownerManualMergeClosure ? { note: "owner_manual_merge" } : {}) };
         const event = { tenant_id: actor.tenant_id, work_id: state.work.legacy_work_id,
           sequence_number: sequence, event_type: "generic_closure_finalized", payload,
           previous_event_hash: previous.rows[0]?.event_hash || null };
@@ -3960,7 +4301,9 @@ export function createWorkContinuityV2Store({
           crypto.randomUUID(), sequence, event.event_type, JSON.stringify(payload), event.previous_event_hash,
           objectDigest(event), actor.agent_id || actor.user_id]);
       }
-      return { receipt: finalized.receipt, final_report: finalized.final_report, idempotent_replay: false, archive_status: "ARCHIVED" };
+      return { receipt: finalized.receipt, final_report: finalized.final_report,
+        idempotent_replay: false, archive_status: "ARCHIVED",
+        ...(ownerManualMergeClosure ? { closure_note: "owner_manual_merge" } : {}) };
     });
   }
   return Object.freeze({ initialize, createWork, createNewWork, readCreatedWorkByBootstrapRequest, queueNewWork,
@@ -3970,7 +4313,8 @@ export function createWorkContinuityV2Store({
     preflightGallery, openWorkReview, readPrecommitTicketGate, reconcilePrecommitTicketGate,
     fulfillPrecommitTicketTask,
     validateNyraAutopilotVerificationCandidate, projectNyraAutopilotVerification,
-    recordTask, recordEvidence, recordNativeVerifierEvidenceWithClient,
+    recordTask, recordEvidence, recordOwnerManualMergeReleaseEvidence,
+    recordNativeVerifierEvidenceWithClient,
     persistCoreJoin, refreshDerived, reconcileStaleDryRun,
     reconcileLegacyClosed,
     evaluateGenericClosure, buildGenericCoreJoinRequest, finalizeGenericClosure,

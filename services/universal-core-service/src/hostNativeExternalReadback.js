@@ -1052,6 +1052,45 @@ function observeSourceContext(ticket, action, binding, repository, targetCommit,
     string(entry?.service_id) === string(action?.service_id) &&
     string(entry?.environment) === string(action?.environment)
   ));
+  if (predecessor?.predecessor_type === "owner_manual_github_merge_readback") {
+    if (
+      predecessor.schema_version !== "host_native_owner_manual_merge_predecessor_v2" ||
+      !/^hnmmr_[a-f0-9]{40}$/.test(string(predecessor.manual_merge_readback_id)) ||
+      !/^[a-f0-9]{64}$/.test(string(predecessor.manual_merge_readback_digest)) ||
+      !/^[a-f0-9]{64}$/.test(string(predecessor.source_readback_digest)) ||
+      predecessor.retrospective_ticket_issued !== false ||
+      predecessor.provider_execution !== false ||
+      action?.kind !== "render.observe" || sourceAction?.kind !== "github.merge" ||
+      ticket?.predecessor_chain_digest !== hostNativeDigest(predecessor) ||
+      predecessor.result_commit !== targetCommit || action.target_commit !== targetCommit ||
+      predecessor.source_action_digest !== hostNativeDigest(sourceAction) ||
+      predecessor.source_evidence_digest !== ticket?.evidence_digest ||
+      predecessor.source_evidence_digest !== predecessor.manual_merge_readback_digest ||
+      !/^[a-f0-9]{64}$/.test(string(predecessor.source_required_checks_policy_digest)) ||
+      string(sourceAction.repository) !== repository || string(action.repository) !== repository ||
+      string(action.branch) !== sourceBranch || sourceBranch !== string(binding?.delivery_branch) ||
+      sha(sourceAction.head_commit) !== checksCommit ||
+      sha(sourceAction.checks_commit) !== checksCommit ||
+      sha(sourceAction.expected_base_commit) !== baseCommit ||
+      string(sourceAction.base_branch) !== sourceBranch ||
+      !Number.isSafeInteger(Number(sourceAction.pull_request)) ||
+      Number(sourceAction.pull_request) < 1 ||
+      action.release_manifest_digest !== ticket?.release_manifest_digest ||
+      action.release_manifest_digest !== binding?.manifest_digest ||
+      ticket?.release_join_resolution?.evidence_digest !== ticket?.evidence_digest ||
+      ticket?.release_join_resolution_digest !== hostNativeDigest(ticket?.release_join_resolution) ||
+      !service
+    ) error("trusted_readback_observation_binding_invalid");
+    return {
+      schema_version: "host_native_observe_source_context_v2",
+      source_type: "owner_manual_merge_readback",
+      sourceAction,
+      sourceBranch,
+      manual_merge_readback_id: predecessor.manual_merge_readback_id,
+      manual_merge_readback_digest: predecessor.manual_merge_readback_digest,
+      source_readback_digest: predecessor.source_readback_digest,
+    };
+  }
   if (
     action?.kind !== "render.observe" || !predecessor || !receipt || !sourceAction ||
     ticket?.predecessor_chain_digest !== hostNativeDigest(predecessor) ||
@@ -1107,7 +1146,12 @@ function observeSourceContext(ticket, action, binding, repository, targetCommit,
     sha(sourceAction.source_commit) !== checksCommit ||
     sha(sourceAction.expected_remote_commit) !== baseCommit
   )) error("trusted_readback_observation_binding_invalid");
-  return { sourceAction, sourceBranch };
+  return {
+    schema_version: "host_native_observe_source_context_v1",
+    source_type: "action_ticket",
+    sourceAction,
+    sourceBranch,
+  };
 }
 
 export function createHostNativeBranchProtectionResolver({
@@ -1436,9 +1480,15 @@ export function createHostNativeExternalReadbackVerifier({
       rollback_commit_available: true,
       ...(observation ? {
         source_action_kind: evidenceAction.kind,
-        predecessor_ticket_id: ticket.predecessor.ticket_id,
-        predecessor_ticket_digest: ticket.predecessor.ticket_digest,
         source_action_digest: ticket.predecessor.source_action_digest,
+        ...(observation.source_type === "owner_manual_merge_readback" ? {
+          manual_merge_readback_id: observation.manual_merge_readback_id,
+          manual_merge_readback_digest: observation.manual_merge_readback_digest,
+          source_readback_digest: observation.source_readback_digest,
+        } : {
+          predecessor_ticket_id: ticket.predecessor.ticket_id,
+          predecessor_ticket_digest: ticket.predecessor.ticket_digest,
+        }),
       } : {}),
       ...(checks.required_checks_policy_digest ? {
         required_checks_policy_digest: checks.required_checks_policy_digest,
@@ -1457,6 +1507,138 @@ export function createHostNativeExternalReadbackVerifier({
       external_side_effect: false,
       provider_execution: false,
     };
+  };
+  Object.defineProperties(verify, {
+    trusted: { value: true },
+    workflow_run_cache: { value: workflow_run_cache },
+    workflow_source_cache: { value: workflow_source_cache },
+  });
+  return verify;
+}
+
+/**
+ * Attest a GitHub merge performed manually by the owner after Core Join.
+ * The caller supplies selectors only. Every material GitHub, checks and main
+ * branch fact is resolved here and the result never authorizes execution.
+ */
+export function createHostNativeOwnerManualMergeReadbackVerifier({
+  fetchImpl = globalThis.fetch,
+  githubTokenResolver = null,
+  requiredChecksPolicyResolver = null,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  now = () => Date.now(),
+  workflowRunCacheMaximumEntries = 64,
+  workflowSourceCacheMaximumEntries = workflowRunCacheMaximumEntries,
+} = {}) {
+  if (typeof fetchImpl !== "function") throw new Error("trusted_readback_fetch_unavailable");
+  const boundedTimeout = Math.max(100, Math.min(60_000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
+  const workflow_run_cache = createBoundedCache(workflowRunCacheMaximumEntries);
+  const workflow_source_cache = createBoundedCache(workflowSourceCacheMaximumEntries);
+  const verify = async ({ tenant_id, repository, pull_request, core_join_record } = {}) => {
+    const tenantId = string(tenant_id);
+    const safeRepository = repositoryPath(repository);
+    const pullRequest = Number(pull_request);
+    const claim = core_join_record?.claim || {};
+    if (!tenantId || !Number.isSafeInteger(pullRequest) || pullRequest < 1 ||
+        claim.tenant_id !== tenantId || claim.repository !== safeRepository) {
+      error("owner_manual_merge_readback_selector_invalid");
+    }
+    const baseBranch = string(claim.base_branch);
+    const joinedBaseCommit = sha(core_join_record?.release_intent?.base_commit);
+    const checksCommit = sha(claim.checks?.commit);
+    const requiredChecks = stableStrings(claim.checks?.required_checks);
+    const joinedPolicyDigest = string(claim.required_checks_policy_digest);
+    if (!baseBranch || !joinedBaseCommit || !checksCommit || requiredChecks.length < 1 ||
+        !/^[a-f0-9]{64}$/.test(joinedPolicyDigest)) {
+      error("owner_manual_merge_readback_core_join_invalid");
+    }
+    const token = await resolveGithubToken(githubTokenResolver, {
+      tenant_id: tenantId,
+      repository: safeRepository,
+    });
+    const getGithub = githubClient({
+      fetchImpl,
+      token,
+      repository: safeRepository,
+      timeoutMs: boundedTimeout,
+    });
+    const pull = await getGithub(`/pulls/${pullRequest}`);
+    const headCommit = sha(pull?.head?.sha);
+    const baseCommit = sha(pull?.base?.sha);
+    const mergeCommit = sha(pull?.merge_commit_sha);
+    const headBranch = string(pull?.head?.ref);
+    const mergedAtMillis = Date.parse(string(pull?.merged_at));
+    if (pull?.merged !== true || string(pull?.state) !== "closed" ||
+        !headCommit || headCommit !== checksCommit || baseCommit !== joinedBaseCommit || !mergeCommit ||
+        !headBranch || string(pull?.head?.repo?.full_name) !== safeRepository ||
+        string(pull?.base?.repo?.full_name) !== safeRepository ||
+        string(pull?.base?.ref) !== baseBranch || !Number.isFinite(mergedAtMillis)) {
+      error("owner_manual_merge_readback_pull_request_mismatch");
+    }
+    const action = {
+      kind: "github.merge",
+      repository: safeRepository,
+      head_branch: headBranch,
+      base_branch: baseBranch,
+      pull_request: pullRequest,
+      head_commit: headCommit,
+      expected_base_commit: baseCommit,
+      checks_commit: checksCommit,
+      provider_execution: false,
+    };
+    const checks = await attestChecks({
+      getGithub,
+      tenantId,
+      repository: safeRepository,
+      baseBranch,
+      baseCommit,
+      checksCommit,
+      requiredChecks,
+      action,
+      requiredChecksPolicyResolver,
+      workflowRunCache: workflow_run_cache,
+      workflowSourceCache: workflow_source_cache,
+    });
+    if (!checks.required_checks_policy_digest ||
+        checks.required_checks_policy_digest !== joinedPolicyDigest) {
+      error("owner_manual_merge_readback_required_checks_policy_mismatch");
+    }
+    const encodedBaseBranch = encodeURIComponent(baseBranch).replace(/%2F/g, "/");
+    const [mainRef, mergeTarget] = await Promise.all([
+      getGithub(`/git/ref/heads/${encodedBaseBranch}`),
+      getGithub(`/git/commits/${mergeCommit}`),
+    ]);
+    const mainHeadCommit = sha(mainRef?.object?.sha);
+    if (mainHeadCommit !== mergeCommit || sha(mergeTarget?.sha) !== mergeCommit) {
+      error("owner_manual_merge_readback_main_drift");
+    }
+    const unsigned = {
+      schema_version: "host_native_owner_manual_merge_github_readback_v1",
+      trusted: true,
+      source: "universal_core_github_readback",
+      tenant_id: tenantId,
+      repository: safeRepository,
+      pull_request: pullRequest,
+      merged: true,
+      merged_at: new Date(mergedAtMillis).toISOString(),
+      head_branch: headBranch,
+      base_branch: baseBranch,
+      base_commit: baseCommit,
+      head_commit: headCommit,
+      merge_commit: mergeCommit,
+      main_head_commit: mainHeadCommit,
+      checks_commit: checksCommit,
+      checks_passed: true,
+      required_checks: checks.required_checks,
+      observed_checks: checks.observed_checks,
+      required_checks_policy_digest: checks.required_checks_policy_digest,
+      checks_attestation_digest: checks.checks_attestation_digest,
+      workflow_sources: checks.workflow_sources,
+      verified_at: isoNow(now),
+      external_side_effect: false,
+      provider_execution: false,
+    };
+    return { ...unsigned, readback_digest: hostNativeDigest(unsigned) };
   };
   Object.defineProperties(verify, {
     trusted: { value: true },
