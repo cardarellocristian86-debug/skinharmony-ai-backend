@@ -97,6 +97,7 @@ test("Universal Core exposes Entity 360 SHADOW health without making it a produc
     assert.equal(body.entity_360.configured, true);
     assert.equal(body.entity_360.ready, true);
     assert.equal(body.entity_360.mode, "SHADOW");
+    assert.equal(body.entity_360.tenant_shadow_disable_available, true);
     assert.equal(body.entity_360.production_required, false);
     assert.equal(body.entity_360.global_readiness_gate, false);
     assert.equal(body.entity_360.current_path_authoritative, true);
@@ -109,6 +110,60 @@ test("Universal Core exposes Entity 360 SHADOW health without making it a produc
     assert.equal(drift.entity_360.state, "store_verification_failed");
     assert.equal(drift.entity_360.bootstrap_state, "ready");
     assert.equal(drift.entity_360.operational_error, "entity360_store_verification_failed");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(storageRoot, { recursive: true, force: true });
+  }
+});
+
+test("tenant OFF rollback route remains reachable after Entity 360 initialization failure", async () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "entity360-owner-disable-failed-"));
+  const gatewayKey = "g".repeat(48);
+  const tenantContextSecret = "t".repeat(48);
+  const ownerSecret = "o".repeat(48);
+  const tenantId = "codexai";
+  const calls = [];
+  const entity360Runtime = {
+    async initialize() { throw new Error("entity360_store_verification_failed"); },
+    async health() { return { ok: false, ready: false, state: "initialization_failed",
+      mode: "SHADOW", execution_authorized: false }; },
+    async invoke(capability, identity, input) {
+      calls.push({ capability, identity, input });
+      return { mode: "OFF", enabled: false, production_decision_changed: false,
+        execution_authorized: false };
+    },
+  };
+  const { app } = createUniversalCoreService({ storageRoot, entity360Mode: "SHADOW",
+    entity360Runtime, mcpTenantGatewayKey: gatewayKey,
+    tenantContextSigningSecret: tenantContextSecret, ownerContextSigningSecret: ownerSecret });
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const health = await fetch(`${base}/healthz`).then((response) => response.json());
+      if (health.entity_360?.state === "initialization_failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const unsigned = { mode: "OFF", enabled: false, expected_revision: 1,
+      idempotency_key: "entity360-shadow-disable-failed-runtime",
+      owner_confirmed: true, confirmation_reference: "owner-confirmation-disable" };
+    const response = await fetch(`${base}/v1/entity-360/admin/feature-flag`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${gatewayKey}`, "content-type": "application/json",
+        "x-sh-tenant-id": tenantId,
+        "x-sh-tenant-context": tenantContext(tenantContextSecret, tenantId) },
+      body: JSON.stringify({ ...unsigned,
+        owner_context: signedOwnerContext(ownerSecret, tenantId, unsigned) }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 201);
+    assert.equal(body.result.mode, "OFF");
+    assert.equal(body.result.execution_authorized, false);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].capability, "entity_360_feature_flag_write");
+    assert.equal(calls[0].input.mode, "OFF");
+    assert.equal(calls[0].input.enabled, false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(storageRoot, { recursive: true, force: true });

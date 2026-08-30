@@ -99,7 +99,7 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDia
   const scopeMode = mode(host.semantic_scope_guard_mode, "UNKNOWN");
   const entity360DeploymentCeiling = mode(entity360.deployment_mode_ceiling, "UNKNOWN");
   const entity360Ready = knownBoolean(entity360.ready);
-  const entity360TransitionBlocker = entity360DeploymentCeiling === "UNKNOWN"
+  const entity360EnableBlocker = entity360DeploymentCeiling === "UNKNOWN"
     ? "entity_360_shadow_deployment_ceiling_unknown"
     : entity360DeploymentCeiling !== "SHADOW"
       ? "entity_360_shadow_deployment_ceiling_required"
@@ -108,19 +108,30 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDia
         : entity360Ready === false
           ? "entity_360_shadow_runtime_not_ready"
           : "entity_360_shadow_runtime_readback_unknown";
-  const entity360TransitionAvailable = entity360TransitionBlocker === null;
-  const entity360Transition = (id, handler) => action(id, {
-    availability: entity360TransitionAvailable
+  const entity360DisableRuntimeAvailable = knownBoolean(
+    entity360.tenant_shadow_disable_available,
+  );
+  const entity360DisableBlocker = entity360DeploymentCeiling === "UNKNOWN"
+    ? "entity_360_shadow_deployment_ceiling_unknown"
+    : entity360DeploymentCeiling !== "SHADOW"
+      ? "entity_360_shadow_deployment_ceiling_required"
+      : entity360DisableRuntimeAvailable === true
+        ? null
+        : entity360DisableRuntimeAvailable === false
+          ? "entity_360_shadow_disable_runtime_unavailable"
+          : "entity_360_shadow_disable_readback_unknown";
+  const entity360Transition = (id, handler, blocker) => action(id, {
+    availability: blocker === null
       ? "EXISTING_GOVERNED_HANDLER"
       : "UNAVAILABLE",
-    execution: entity360TransitionAvailable
+    execution: blocker === null
       ? "REQUEST_BOUND_GOVERNED"
       : "DEPLOYMENT_PREREQUISITE",
     requiresOwnerConfirmation: true,
     requiresCoreAuthorization: true,
     // Do not publish an invocation target when the current Core readback says
     // the route cannot accept the transition.
-    handler: entity360TransitionAvailable ? handler : null,
+    handler: blocker === null ? handler : null,
   });
   const progress = projectWorkClosureProgress(work);
   const dialogueState = nyraDialogueEnabled === true
@@ -143,12 +154,16 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDia
       bitemporal_mode: mode(entity360.bitemporal_mode, "UNKNOWN"),
       deployment_ceiling: entity360DeploymentCeiling,
       ready: entity360Ready,
-      shadow_transition_available: entity360TransitionAvailable,
-      shadow_transition_blocker: entity360TransitionBlocker,
+      shadow_transition_available: entity360EnableBlocker === null,
+      shadow_transition_blocker: entity360EnableBlocker,
+      shadow_disable_available: entity360DisableBlocker === null,
+      shadow_disable_blocker: entity360DisableBlocker,
     }, [
       action("READ_STATUS"),
-      entity360Transition("REQUEST_ENABLE_SHADOW", "entity_360_shadow_enable"),
-      entity360Transition("REQUEST_DISABLE_SHADOW", "entity_360_shadow_disable"),
+      entity360Transition("REQUEST_ENABLE_SHADOW", "entity_360_shadow_enable",
+        entity360EnableBlocker),
+      entity360Transition("REQUEST_DISABLE_SHADOW", "entity_360_shadow_disable",
+        entity360DisableBlocker),
     ]),
     domain("semantic_scope_guard", scopeMode, {
       configured: knownBoolean(host.semantic_scope_guard_configured),
