@@ -1388,8 +1388,57 @@ const nyraConverseOutputSchema = object({
   "external_action_authorized", "provider_execution", "provider_api_key_required", "server_model_calls",
 ]);
 
+const nyraControlRoomActionSchema = object({
+  id: { type: "string", minLength: 1, maxLength: 120 },
+  availability: { type: "string", enum: ["AVAILABLE", "REQUEST_ONLY", "EXISTING_GOVERNED_HANDLER", "UNAVAILABLE"] },
+  execution: { type: "string", enum: ["READ_ONLY", "DEPLOYMENT_CONFIGURATION", "REQUEST_BOUND_GOVERNED", "DEPLOYMENT_PREREQUISITE"] },
+  requires_owner_confirmation: { type: "boolean" },
+  requires_core_authorization: { type: "boolean" },
+  restart_required: { type: "boolean" },
+  handler: { type: ["string", "null"], maxLength: 160 },
+}, [
+  "id", "availability", "execution", "requires_owner_confirmation",
+  "requires_core_authorization", "restart_required", "handler",
+]);
+
+const nyraControlRoomProgressSchema = object({
+  available: { type: "boolean" },
+  percent: { type: ["integer", "null"], minimum: 0, maximum: 100 },
+  formula: { type: "string", minLength: 1, maxLength: 240 },
+  blockers: {
+    type: "array", maxItems: 8,
+    items: object({ code: identifier, count: { type: "integer", minimum: 1, maximum: 100_000 } }, ["code", "count"]),
+  },
+  next_action: { type: ["object", "null"], additionalProperties: true },
+  closure_verified: { type: ["boolean", "null"] },
+}, ["available", "percent", "formula", "blockers", "next_action"]);
+
+const nyraControlRoomOutputSchema = object({
+  ok: { type: "boolean" },
+  tenant_id: { type: "string", minLength: 1, maxLength: 160 },
+  control_room: object({
+    schema_version: { const: "nyra_control_room_status_v1" },
+    state: { type: "string", enum: ["READY", "ATTENTION", "UNKNOWN"] },
+    generated_from: { const: "server_readbacks_only" },
+    domains: {
+      type: "array", minItems: 1, maxItems: 16,
+      items: object({
+        id: identifier,
+        state: { type: "string", minLength: 1, maxLength: 80 },
+        detail: { type: "object", additionalProperties: true },
+        allowed_actions: { type: "array", maxItems: 12, items: nyraControlRoomActionSchema },
+      }, ["id", "state", "detail", "allowed_actions"]),
+    },
+    work_progress: nyraControlRoomProgressSchema,
+  }, ["schema_version", "state", "generated_from", "domains", "work_progress"]),
+}, ["ok", "tenant_id", "control_room"]);
+
 export const TOOLS = [
   tool("core_health", "Check Core health", "Read Universal Core service health.", object(), ["core:read"]),
+  tool("nyra_control_room_status", "Read Nyra Control Room status", "Read server-derived status for Core domains and, when an exact Work is provided, its closure progress, blockers, next action and allowed control categories. This read never mutates state or grants authority.", object({
+    work_id: { type: "string", format: "uuid" },
+    project_id: identifier,
+  }), ["core:read"], true, true, { outputSchema: nyraControlRoomOutputSchema }),
   tool("core_runtime_hierarchy_status", "Read Universal Core runtime hierarchy", "Use this when you need the live V7/V0/V1/V2 hierarchy mode and worker status. It is tenant-scoped, read-only and never authorizes execution.", object(), ["core:read"], true, true, { outputSchema: { type: "object", properties: { ok: { type: "boolean" }, tenant_id: { type: "string" }, runtime: { type: "object", additionalProperties: true } }, required: ["ok", "tenant_id"], additionalProperties: true } }),
   tool("core_runtime_hierarchy_evaluate", "Evaluate through Universal Core runtime hierarchy", "Use this when a read-only decision needs the V7 router, V0 final judge, V1 canonical digest and V2 shadow parity result. Tenant identity is authenticated server-side; this tool never authorizes execution.", object({
     request: text(12_000),
