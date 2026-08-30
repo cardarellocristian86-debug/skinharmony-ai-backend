@@ -9,6 +9,9 @@ import { requireTenantWorkCapability } from "./tenant-work-authorization.js";
 const MAX_MESSAGE_LENGTH = 12_000;
 const MAX_SIGNAL_LENGTH = 500;
 const MAX_DIRECTIVE_ITEMS = 8;
+const MAX_WORK_SELECTION_PAGE_SIZE = MAX_DIRECTIVE_ITEMS;
+const MAX_WORK_SELECTION_CATALOG_SIZE = 100_000;
+const WORK_SELECTION_CURSOR_PATTERN = /^nws_([1-9][0-9]{0,4})$/u;
 const CONTINUATION_OPEN_TIMEOUT_MS = 1_500;
 const CORE_ACTION_ID_PATTERN = /^action:[a-zA-Z0-9][a-zA-Z0-9:._-]{0,158}$/;
 const PUBLIC_TEXT_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/u;
@@ -55,7 +58,11 @@ const WORK_BOOTSTRAP_PATTERN = /(?:\b(?:crea\w*|avvia\w*|apri\w*|create|start|op
 // recognized before preflight/continuity so that asking to choose a Work can
 // never resume, bind or mutate the Work that happens to be attached to the
 // current transport session.
-const WORK_SELECTION_LIST_PATTERN = /(?:\b(?:mostra(?:mi)?|elenca|lista|visualizza|vedi|show|list|view)\b[\s\S]{0,100}\b(?:work|lavor[oi])\b|\b(?:fammi\s+scegliere|let\s+me\s+choose|choose\s+(?:a|the)\s+work|seleziona(?:re)?\s+(?:un|il)?\s*work)\b)/iu;
+// Do not interpret a request about the current Work (for example its status
+// or tasks) as a request to enumerate the Gallery.  The prose route is only
+// for an explicit plural/option list or an explicit choice *among* Works;
+// callers can always use work_selection_mode: "list" for an unambiguous read.
+const WORK_SELECTION_LIST_PATTERN = /(?:\b(?:mostra(?:mi)?|elenca|lista|visualizza|vedi|show|list|view)\b[\s\S]{0,100}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b|\b(?:fammi\s+scegliere|let\s+me\s+choose|choose)\b[\s\S]{0,100}\b(?:tra|fra|among|between)\b[\s\S]{0,40}\b(?:(?:i|gli|dei)\s+work|(?:all|active|available)\s+works?|works|lavori|work\s+(?:choices|options)|scelte\s+(?:dei\s+)?work)\b)/iu;
 const DIAGNOSTIC_REQUEST_PATTERN = /\b(?:perch[eé]|why|diagnostic\w*|spiega\w*|explain\w*|causa(?:\s+radice)?|root\s+cause|cosa\s+(?:manca|serve))\b/iu;
 // A no-action boundary often lists the exact action words that Nyra must not
 // take.  Strip only that negative sentence.  A later affirmative sentence is
@@ -220,6 +227,17 @@ function boundedCount(value) {
   return Number.isSafeInteger(number) && number >= 0
     ? Math.min(number, 100_000)
     : 0;
+}
+
+function parseWorkSelectionCursor(value) {
+  if (value === undefined || value === null || value === "") return 0;
+  const match = typeof value === "string" ? WORK_SELECTION_CURSOR_PATTERN.exec(value) : null;
+  if (!match) throw fail("nyra_converse_work_selection_cursor_invalid");
+  const offset = Number(match[1]);
+  if (!Number.isSafeInteger(offset) || offset < 1 || offset >= MAX_WORK_SELECTION_CATALOG_SIZE) {
+    throw fail("nyra_converse_work_selection_cursor_invalid");
+  }
+  return offset;
 }
 
 function structured(result) {
@@ -1589,7 +1607,7 @@ function connectedAiBrief(locale, directive) {
   });
 }
 
-function turnId({ tenantId, sessionId, message, workId, projectId, locale, style }) {
+function turnId({ tenantId, sessionId, message, workId, projectId, locale, style, workSelectionCursor }) {
   const digest = crypto.createHash("sha256").update(JSON.stringify({
     tenantId,
     sessionId,
@@ -1598,6 +1616,7 @@ function turnId({ tenantId, sessionId, message, workId, projectId, locale, style
     projectId,
     locale,
     style,
+    workSelectionCursor,
   })).digest("hex");
   return `nyra_turn_${digest.slice(0, 24)}`;
 }
@@ -1649,7 +1668,7 @@ function normalizeWorkSelectionChoices(value, requestedProjectId) {
   const seen = new Set();
   const choices = [];
   for (const candidate of value) {
-    if (choices.length >= MAX_DIRECTIVE_ITEMS) break;
+    if (choices.length >= MAX_WORK_SELECTION_CATALOG_SIZE) break;
     const workId = boundedWorkId(candidate?.work_id);
     const projectId = boundedProjectId(candidate?.project_id);
     if (!workId || !projectId || seen.has(workId) ||
@@ -1660,7 +1679,6 @@ function normalizeWorkSelectionChoices(value, requestedProjectId) {
       240,
     ) || `Work ${choices.length + 1}`;
     choices.push(Object.freeze({
-      ordinal: choices.length + 1,
       work_id: workId,
       project_id: projectId,
       work_name: name,
@@ -1670,7 +1688,8 @@ function normalizeWorkSelectionChoices(value, requestedProjectId) {
   return Object.freeze(choices);
 }
 
-function workSelectionDialogue(choiceCount) {
+function workSelectionDialogue(selection) {
+  const choiceCount = selection.total_count;
   return Object.freeze({
     dialogue_id: null,
     manual_digest: null,
@@ -1680,7 +1699,9 @@ function workSelectionDialogue(choiceCount) {
     gallery_work_count: choiceCount,
     software_state: "not_indexed",
     atlas_revision: null,
-    diagnosis_state: choiceCount ? "work_selection_required" : "work_gallery_empty",
+    diagnosis_state: selection.available
+      ? (choiceCount ? "work_selection_required" : "work_gallery_empty")
+      : "work_gallery_unavailable",
     next_action_available: false,
     assignment: Object.freeze({
       available: false,
@@ -1730,32 +1751,65 @@ function workSelectionInterpretation() {
   });
 }
 
-function workSelectionReplySeed(locale, choices, available) {
+function workSelectionReplySeed(locale, selection) {
   const english = locale === "en";
-  if (!available) return english
+  if (!selection.available) return english
     ? "I cannot read the Work list right now. No Work was resumed or changed; retry this read-only request."
     : "Non riesco a leggere ora la lista dei Work. Non ho ripreso né modificato alcun Work: riprova questa richiesta in sola lettura.";
-  if (!choices.length) return english
+  if (selection.total_count === 0) return english
     ? "There are no active Works available to select. No Work was resumed or changed."
     : "Non ci sono Work attivi disponibili da selezionare. Non ho ripreso né modificato alcun Work.";
-  const list = choices.map((choice) => `${choice.ordinal}. ${choice.work_name} — ${choice.project_id} (${choice.status})`).join("\n");
+  if (!selection.choices.length) return english
+    ? "There are no more Works on this page. No Work was resumed or changed."
+    : "Non ci sono altri Work in questa pagina. Non ho ripreso né modificato alcun Work.";
+  // Work metadata is rendered by the structured selector.  Never concatenate
+  // tenant-provided names here: eight valid 240-character names would exceed
+  // the response contract and would turn untrusted text into model narration.
+  const continuation = selection.has_more
+    ? (english ? " More choices are available on the next page." : " Ci sono altre scelte nella pagina successiva.")
+    : "";
   return english
-    ? `Choose the Work to resume; I will not continue one automatically.\n\n${list}`
-    : `Scegli il Work da riprendere; non ne continuo nessuno automaticamente.\n\n${list}`;
+    ? `Choose one of the ${selection.choices.length} displayed Works; I will not continue one automatically.${continuation}`
+    : `Scegli uno dei ${selection.choices.length} Work mostrati; non ne continuo nessuno automaticamente.${continuation}`;
 }
 
-async function readWorkSelection(listWorkChoices, identity, projectId) {
-  if (typeof listWorkChoices !== "function") return Object.freeze({ available: false, choices: Object.freeze([]) });
+async function readWorkSelection(listWorkChoices, identity, projectId, cursor) {
+  if (typeof listWorkChoices !== "function") {
+    return Object.freeze({
+      available: false,
+      choices: Object.freeze([]),
+      total_count: 0,
+      has_more: false,
+      next_cursor: null,
+    });
+  }
   try {
     const value = await listWorkChoices(identity, projectId ? { project_id: projectId } : {});
+    const allChoices = normalizeWorkSelectionChoices(value, projectId);
+    const offset = Math.min(cursor, allChoices.length);
+    const page = allChoices.slice(offset, offset + MAX_WORK_SELECTION_PAGE_SIZE)
+      .map((choice, index) => Object.freeze({
+        ...choice,
+        ordinal: offset + index + 1,
+      }));
+    const nextOffset = offset + page.length;
     return Object.freeze({
       available: true,
-      choices: normalizeWorkSelectionChoices(value, projectId),
+      choices: Object.freeze(page),
+      total_count: allChoices.length,
+      has_more: nextOffset < allChoices.length,
+      next_cursor: nextOffset < allChoices.length ? `nws_${nextOffset}` : null,
     });
   } catch {
     // A Gallery outage must not fall through to the resumptive preflight. The
     // caller asked for a read-only choice, so retain that safety boundary.
-    return Object.freeze({ available: false, choices: Object.freeze([]) });
+    return Object.freeze({
+      available: false,
+      choices: Object.freeze([]),
+      total_count: 0,
+      has_more: false,
+      next_cursor: null,
+    });
   }
 }
 
@@ -1767,13 +1821,18 @@ async function workSelectionResult({
   locale,
   style,
   projectId,
-  connectorHint,
+  workSelectionCursor,
   listWorkChoices,
 }) {
-  const selection = await readWorkSelection(listWorkChoices, identity, projectId);
+  const selection = await readWorkSelection(
+    listWorkChoices,
+    identity,
+    projectId,
+    parseWorkSelectionCursor(workSelectionCursor),
+  );
   const selectionRequired = selection.available && selection.choices.length > 0;
   const work = Object.freeze({
-    preflight_bound: true,
+    preflight_bound: false,
     work_bound: false,
     work_id: null,
     project_id: projectId,
@@ -1782,12 +1841,14 @@ async function workSelectionResult({
     next_action_available: false,
     selection_required: selectionRequired,
   });
-  const dialogue = workSelectionDialogue(selection.choices.length);
+  const dialogue = workSelectionDialogue(selection);
   const interpretation = workSelectionInterpretation();
   const workContext = unavailableWorkDirectiveContext(work, dialogue);
   // A Work gallery request is never reclassified from incidental words in the
-  // user's sentence: it is a read operation, not a ticket candidate.
-  const action = actionPolicy("", connectorHint, false, false);
+  // user's sentence or a stale connector capability: it is a read operation,
+  // not a ticket candidate.
+  const galleryConnectorHint = Object.freeze({ request_kind: null, capability_hint: null });
+  const action = actionPolicy("", galleryConnectorHint, false, false);
   const baseDirective = orchestrationDirective({
     tenantId,
     message,
@@ -1796,7 +1857,7 @@ async function workSelectionResult({
     workContext,
     interpretation,
     action,
-    connectorHint,
+    connectorHint: galleryConnectorHint,
   });
   const directive = Object.freeze({
     ...baseDirective,
@@ -1812,9 +1873,9 @@ async function workSelectionResult({
       }),
     }),
   });
-  const replySeed = workSelectionReplySeed(locale, selection.choices, selection.available);
+  const replySeed = workSelectionReplySeed(locale, selection);
   const nextAction = selectionRequired
-    ? (locale === "en" ? "Choose one listed Work." : "Scegli uno dei Work elencati.")
+    ? (locale === "en" ? "Choose one Work in the selector." : "Scegli un Work nel selettore.")
     : null;
   const agentBrief = Object.freeze({
     schema_version: "nyra_connected_ai_brief_v1",
@@ -1835,6 +1896,7 @@ async function workSelectionResult({
     projectId,
     locale,
     style,
+    workSelectionCursor: workSelectionCursor || null,
   });
   return textResult(Object.freeze({
     schema_version: "nyra_conversation_turn_v2",
@@ -1879,6 +1941,9 @@ async function workSelectionResult({
       available: selection.available,
       project_id: projectId,
       choices: selection.choices,
+      total_count: selection.total_count,
+      has_more: selection.has_more,
+      next_cursor: selection.next_cursor,
       selection_required: selectionRequired,
       execution_authorized: false,
       external_action_authorized: false,
@@ -1894,7 +1959,7 @@ async function workSelectionResult({
       rendering_policy: "server_orchestration_directive_first_v2",
       instructions: Object.freeze([
         "Render host_response_contract.reply_seed as Nyra's complete Work-selection answer before adding any optional explanation.",
-        "Wait for the owner to select one work_selection.choice; then call Nyra again with that exact work_id and project_id. Do not list, resume, create, or mutate another Work.",
+        "Wait for the owner to select one work_selection.choice; then call Nyra again with that exact work_id and project_id. Use work_selection.next_cursor only to read the next Gallery page. Do not list, resume, create, or mutate another Work.",
         "Do not claim that Nyra, Codex, Core or the owner performed an action unless separately verified evidence is present; this turn never authorizes an external action.",
       ]),
     }),
@@ -2066,7 +2131,7 @@ export function createNyraConverseHandler({
         locale,
         style,
         projectId: boundedProjectId(args.project_id),
-        connectorHint,
+        workSelectionCursor: args.work_selection_cursor,
         listWorkChoices,
       });
     }

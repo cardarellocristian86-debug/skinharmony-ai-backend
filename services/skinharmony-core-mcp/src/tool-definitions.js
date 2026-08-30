@@ -1206,7 +1206,9 @@ const nyraConverseOutputSchema = object({
     "app_id", "host_kind", "host_registry_revision", "caller_authority_accepted",
   ]),
   work: object({
-    preflight_bound: { const: true },
+    // A Gallery read happens before preflight by design: it deliberately does
+    // not attach, resume, or validate any canonical Work.
+    preflight_bound: { type: "boolean" },
     work_bound: { type: "boolean" },
     work_id: nyraConverseNullableText(80),
     project_id: nyraConverseNullableText(80),
@@ -1327,18 +1329,21 @@ const nyraConverseOutputSchema = object({
       type: "array",
       maxItems: 8,
       items: object({
-        ordinal: { type: "integer", minimum: 1, maximum: 8 },
+        ordinal: { type: "integer", minimum: 1, maximum: 100_000 },
         work_id: { type: "string", format: "uuid" },
         project_id: { type: "string", minLength: 2, maxLength: 80 },
         work_name: { type: "string", minLength: 1, maxLength: 240 },
         status: { type: "string", minLength: 1, maxLength: 40 },
       }, ["ordinal", "work_id", "project_id", "work_name", "status"]),
     },
+    total_count: { type: "integer", minimum: 0, maximum: 100_000 },
+    has_more: { type: "boolean" },
+    next_cursor: { type: ["string", "null"], pattern: "^nws_[1-9][0-9]{0,4}$", maxLength: 9 },
     selection_required: { type: "boolean" },
     execution_authorized: { const: false },
     external_action_authorized: { const: false },
   }, [
-    "schema_version", "requested", "available", "project_id", "choices", "selection_required",
+    "schema_version", "requested", "available", "project_id", "choices", "total_count", "has_more", "next_cursor", "selection_required",
     "execution_authorized", "external_action_authorized",
   ]),
   orchestration_directive: nyraOrchestrationDirectiveSchema,
@@ -1464,6 +1469,7 @@ export const TOOLS = [
     work_bootstrap: nyraWorkBootstrapSpec,
     continuation_operation: nyraActionContinuationOperation,
     work_selection_mode: { type: "string", enum: ["list"], description: "Read only: list Work choices without resuming, binding, creating, or changing a Work." },
+    work_selection_cursor: { type: "string", pattern: "^nws_[1-9][0-9]{0,4}$", maxLength: 9, description: "Read only: server-issued cursor for the next Work-selection page." },
     locale: { type: "string", enum: ["auto", "it", "en"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
   }, ["message"]), ["core:read"], true, true, {
