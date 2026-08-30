@@ -40,6 +40,12 @@ test("keeps the legacy all-capability Codex principal code-dark by default", () 
   assert.equal(invalid.legacyCodexHostPrincipalConfigurationValid, false);
 });
 
+test("keeps Nyra Dialogue disabled unless the deployment explicitly enables it", () => {
+  assert.equal(loadConfig({}).nyraDialogueEnabled, false);
+  assert.equal(loadConfig({ NYRA_DIALOGUE_ENABLED: "true" }).nyraDialogueEnabled, true);
+  assert.equal(loadConfig({ NYRA_DIALOGUE_ENABLED: "on" }).nyraDialogueEnabled, false);
+});
+
 test("rolls agent-presence v2 explicitly and requires it for governed multi-host continuation", () => {
   assert.equal(loadConfig({}).agentPresenceSignatureVersion, "v1");
   assert.equal(loadConfig({ AGENT_PRESENCE_SIGNATURE_VERSION: "v2" })

@@ -343,6 +343,14 @@ tenant aliases, issues the exact Work-bound DTT context, propagates a bounded
 machine-readable Core error code, and recursively rejects a response containing
 positive authority/mutation markers.
 
+For snapshot assembly, the MCP runtime adapts a verified, cache-eligible Core
+projection into `entity_360_nyra_context_v1`. The envelope binds the exact
+tenant/Work, snapshot and `projection_digest`, preserves the Core cache state,
+and always declares `context_authoritative=false`,
+`execution_authorized=false` and `production_decision_mutation=false`.
+Malformed or cross-tenant projections fail closed. This is the Nyra context
+adapter; it is not a Core verdict or an automatic conversation-side write.
+
 Exact bridge/boundary codes include:
 
 | Condition | Error code |
@@ -370,6 +378,12 @@ must pin the compiled `policy_digest`.
 The tenant gate runs before resolution/source discovery and again before
 automatic observation/assembly. An absent or OFF row therefore causes no
 adapter retrieval and no shadow write.
+
+Tenant `OFF` is a safety rollback and remains reachable through the separately
+authenticated Core operator route when snapshot runtime readiness is lost, as
+long as the constructed feature-flag Store is still available. `SHADOW`
+activation continues to require full runtime and Store readiness. The Control
+Room therefore advertises enable and disable independently.
 
 Automatic preflight gating is separately bounded before observation accounting:
 one in-flight feature/readiness probe is shared per tenant, OFF/absent decisions

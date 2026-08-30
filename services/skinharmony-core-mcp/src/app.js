@@ -45,6 +45,7 @@ const SERVER_INSTRUCTIONS = [
   "Nyra/Core is a persistent work coordinator: reuse the Work Identity, compact checkpoint and next action returned by the gateway. Do not rescan the repository, recreate the intent, or ask the user to restate known work.",
   "A bound Work automatically carries Nyra's persistent operational dialogue. When the user addresses Nyra or asks to resume, diagnose or coordinate a Work, invoke only the read-only nyra_converse front door. It reuses persisted context only for a pure resume; every new technical request receives a fresh preflight/Core interpretation plus bounded Work tasks and evidence. Render the server-issued orchestration_directive: Nyra states the problem and needs, directs the authenticated connected AI's bounded preparation, and identifies the Universal Core authority gate. RESUME, PROCEED_READ_ONLY and PREPARE_BOUNDED_WORK never authorize execution. Do not replace the directive with PR history, an invented plan or a completion claim.",
   "Generic tools receive tenant memory, Work selection and preflight automatically. Do not call work_preflight before a normal action. If one operational Work matches the project, it is resumed automatically; ask the owner to choose only when the gateway reports multiple works.",
+  "When the owner asks for controls, runtime state, Work closure percentage, blockers or allowed toggles, invoke nyra_control_room_status. Render its server-derived state and allowed_actions exactly; never invent an ON/OFF state, percentage, available command or authority. For an EXISTING_GOVERNED_HANDLER, invoke only that exact registered handler after its fresh owner confirmation; never write environment or deployment configuration from chat.",
   "Treat one verified owner confirmation as the authorization for its exact bounded intent. Continue its approved preparation, verification and ticketed release path without requesting duplicate confirmations. Ask again only when Core reports a new scope, expiry, drift, or an action outside that intent.",
   "For a recoverable connector/OAuth failure, checkpoint the exact blocker and state the one real recovery action. After the user reconnects, resume the same Work and ticket path; never say that a reconnect alone completed a push, merge or deploy.",
   "For current research, use nyra_research_plan then the authenticated host's web tool when available; never include secrets in evidence. Nyra and Universal Core operate without an OpenAI API key. Never ask for or accept an API key in chat. Never call provider tools, open setup panels or old provider links. Old provider links are retired.",
@@ -513,9 +514,16 @@ function resolveConnectorToolName(value, tools = []) {
 // be part of the connected AI's tool catalog.
 const NYRA_CONVERSATIONAL_FRONT_DOOR_TOOL_NAMES = new Set([
   "nyra_converse",
-  // This remains subject to its own owner confirmation and Core gate in the
-  // handler. Exposing it here lets Nyra ask for the one bounded activation
-  // without sending the connected AI into the generic Core catalogue.
+  // A capability-filtered, server-derived status read remains available even
+  // when Dialogue is on, otherwise the control surface could not report its
+  // own state. It cannot mutate state or grant authority.
+  "nyra_control_room_status",
+  // These remain subject to their own owner confirmation and Core gate in the
+  // handler. Exposing them here lets Nyra request the two bounded Entity 360
+  // mode transitions without sending the connected AI into the generic Core
+  // catalogue.
+  "entity_360_shadow_enable",
+  "entity_360_shadow_disable",
   "nyra_autopilot_enable",
   // These two are Nyra's bounded worker handoff, not direct Core tooling.
   // Nyra exposes an exact assignment in the durable dialogue, then the
@@ -694,6 +702,10 @@ export const GENERIC_PREFLIGHT_EXEMPT_TOOLS = new Set([
   "nyra_continue",
   "nyra_governed_continue",
   "core_health",
+  // A status read is self-contained and invokes a bounded V2 Work projection
+  // only when the caller supplies an exact Work id. Do not surround it with
+  // the generic preflight pipeline, which would duplicate work/memory reads.
+  "nyra_control_room_status",
   "nyra_branch_catalog",
   "core_capability_catalog",
   "core_branch_registry",
@@ -952,6 +964,7 @@ const SESSIONLESS_BOOTSTRAP_TOOLS = new Set([
   // establish its opaque session through it.
   "nyra_converse",
   "core_health",
+  "nyra_control_room_status",
   "nyra_branch_catalog",
   "core_capability_catalog",
   "core_branch_registry",
@@ -977,6 +990,7 @@ const OAUTH_OWNER_ELEVATION_TOOLS = new Set([
   "tenant_work_legacy_reconcile_close",
   "core_block_remediation_resubmit",
   "entity_360_shadow_enable",
+  "entity_360_shadow_disable",
   // The only conversational Nyra configuration action. It still requires an
   // exact OAuth owner assertion and the handler's Universal Core gate before
   // it can adopt active Work records.
