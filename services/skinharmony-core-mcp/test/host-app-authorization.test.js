@@ -13,6 +13,7 @@ import {
 } from "../src/host-app-authorization.js";
 
 const TOOLS = [
+  { name: "nyra_control_room_status", annotations: { readOnlyHint: true } },
   { name: "work_preflight", annotations: { readOnlyHint: true } },
   { name: "core_branch_registry", annotations: { readOnlyHint: true } },
   { name: "core_semantic_select", annotations: { readOnlyHint: true } },
@@ -36,6 +37,8 @@ const TOOLS = [
   { name: "nyra_policy_registry_activate", annotations: { readOnlyHint: false } },
   { name: "nyra_policy_registry_rollback", annotations: { readOnlyHint: false } },
   { name: "nyra_policy_registry_reconcile", annotations: { readOnlyHint: false } },
+  { name: "entity_360_shadow_enable", annotations: { readOnlyHint: false } },
+  { name: "entity_360_shadow_disable", annotations: { readOnlyHint: false } },
 ];
 
 function identity(capabilities, hostKind = "chatgpt_native", registered = true) {
@@ -75,7 +78,7 @@ function tenantBoundUnregisteredChatGpt(overrides = {}) {
 
 test("limits unregistered tenant-bound ChatGPT OAuth to governed read and exact dynamic reauthorization", () => {
   const compatible = tenantBoundUnregisteredChatGpt();
-  for (const name of ["work_preflight", "core_branch_registry", "core_semantic_select"]) {
+  for (const name of ["nyra_control_room_status", "work_preflight", "core_branch_registry", "core_semantic_select"]) {
     assert.equal(hasTenantBoundChatGptReadCompatibility(compatible, name), true, name);
     assert.doesNotThrow(() => requireHostAppToolCapability({ identity: compatible, toolName: name, tools: TOOLS }));
   }
@@ -135,6 +138,37 @@ test("enforces work.read on direct and dynamic Work reads", () => {
     args: { capability_id: "work_continuity_v2_read" },
     tools: TOOLS,
   }));
+});
+
+test("requires work.read only when Control Room includes Work-bound context", () => {
+  const metadataOnly = identity([]);
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: metadataOnly,
+    toolName: "nyra_control_room_status",
+    args: {},
+    tools: TOOLS,
+  }));
+  assert.throws(() => requireHostAppToolCapability({
+    identity: metadataOnly,
+    toolName: "nyra_control_room_status",
+    args: { work_id: "11111111-1111-4111-8111-111111111111" },
+    tools: TOOLS,
+  }), /host_app_capability_required:work\.read/);
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: identity(["work.read"]),
+    toolName: "nyra_control_room_status",
+    args: { work_id: "11111111-1111-4111-8111-111111111111" },
+    tools: TOOLS,
+  }));
+  assert.throws(() => requireHostAppToolCapability({
+    identity: metadataOnly,
+    toolName: "core_capability_read",
+    args: {
+      capability_id: "nyra_control_room_status",
+      arguments: { work_id: "11111111-1111-4111-8111-111111111111" },
+    },
+    tools: TOOLS,
+  }), /host_app_capability_required:work\.read/);
 });
 
 test("a work.read app cannot dynamically invoke host-native delegation or authorization", () => {
@@ -443,6 +477,8 @@ test("non-Work reads, mutations and policy administration use separate app upper
   for (const invocation of [
     ["entity_360_shadow_enable", {}],
     ["core_capability_invoke", { capability_id: "entity_360_shadow_enable" }],
+    ["entity_360_shadow_disable", {}],
+    ["core_capability_invoke", { capability_id: "entity_360_shadow_disable" }],
   ]) {
     assert.throws(() => requireHostAppToolCapability({
       identity: identity(["work.operate"]), toolName: invocation[0], args: invocation[1], tools: TOOLS,

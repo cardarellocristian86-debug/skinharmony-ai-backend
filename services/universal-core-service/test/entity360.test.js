@@ -1522,6 +1522,31 @@ test("runtime initialization rejects an unverified Store before any adapter read
   assert.equal(health.state, "initialization_failed");
 });
 
+test("tenant OFF rollback remains reachable when snapshot runtime readiness is lost", async () => {
+  const { store, adapterRegistry } = memoryRuntimeDependencies();
+  store.health = async () => ({ ok: false, schema_verified: false, migration: null,
+    error: "entity360_migration_schema_manifest_mismatch" });
+  const runtime = createEntity360Runtime({ store, adapterRegistry, policy: POLICY,
+    ontology: ONTOLOGY, mode: "SHADOW", now: () => Date.parse(AT) });
+  await assert.rejects(() => runtime.initialize(),
+    (error) => error.code === "entity360_store_verification_failed" && error.status === 503);
+  await assert.rejects(() => runtime.invoke("entity_360_feature_flag_write",
+    CORE_OPERATOR_IDENTITY, {
+      mode: "SHADOW", enabled: true, expected_revision: 1,
+      idempotency_key: "feature-shadow-runtime-not-ready",
+    }), (error) => error.code === "entity360_runtime_not_ready" && error.status === 503);
+  const off = await runtime.invoke("entity_360_feature_flag_write", CORE_OPERATOR_IDENTITY, {
+    mode: "OFF", enabled: false, expected_revision: 1,
+    idempotency_key: "feature-off-runtime-not-ready",
+  });
+  assert.equal(off.mode, "OFF");
+  assert.equal(off.enabled, false);
+  assert.equal(off.revision, 2);
+  assert.equal(off.policy_digest, null);
+  assert.equal(off.configured_by, "universal_core_governed_operator");
+  assert.equal(off.execution_authorized, false);
+});
+
 test("post-initialization Store drift blocks resolve, assembly and observer before reads or writes", async () => {
   const operations = [
     ["resolve", (runtime) => runtime.invoke("entity_360_resolve", DTT_IDENTITY, {

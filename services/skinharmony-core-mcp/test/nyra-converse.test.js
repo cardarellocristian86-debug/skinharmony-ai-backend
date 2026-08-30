@@ -20,6 +20,7 @@ import { NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.
 import { validateToolArguments } from "../src/schema-validation.js";
 import { TOOLS } from "../src/tool-definitions.js";
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
+import { ENTITY_360_TOOLS } from "../src/entity-360.js";
 import { buildWorkPreflight } from "../../universal-core-service/src/workPreflight.js";
 
 const WORK_ID = "c1139091-40d9-4f4e-b788-842fbc23a778";
@@ -1892,13 +1893,16 @@ test("publishes nyra_converse as a direct compact resume tool without discovery"
     assert.equal(capability.input_schema.properties[key], undefined, `${key} must not be caller-selectable`);
   }
 
-  const availableTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS];
+  const availableTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS, ...ENTITY_360_TOOLS];
   const allHandlers = Object.fromEntries(availableTools.map((tool) => [tool.name, async () => ({})]));
   const compact = compactMcpTools(availableTools, allHandlers);
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 14);
+  assert.equal(compact.length, 16);
   assert.equal(compact.some((tool) => tool.name === "nyra_converse"), true);
+  assert.equal(compact.some((tool) => tool.name === "nyra_control_room_status"), true);
   assert.equal(compact.some((tool) => tool.name === "nyra_autopilot_enable"), true);
+  assert.equal(compact.some((tool) => tool.name === "entity_360_shadow_enable"), true);
+  assert.equal(compact.some((tool) => tool.name === "entity_360_shadow_disable"), true);
   assert.equal(compact.some((tool) => tool.name === "nyra_work_assignment_claim"), true);
   assert.equal(compact.some((tool) => tool.name === "nyra_work_assignment_submit"), true);
   assert.equal(compact.some((tool) => tool.name === "work_preflight"), false);

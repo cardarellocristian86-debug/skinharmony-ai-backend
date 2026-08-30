@@ -48,6 +48,7 @@ import {
   canonicalGenericWorkCoreJoinContextBody,
   issueGenericWorkCoreJoinContext,
 } from "../../shared/generic-work-core-join-context.js";
+import { projectNyraControlRoomStatus } from "./nyra-control-room.js";
 
 const OWNER_CONTEXT_ASSERTION_VERSION = "owner_context_assertion_v1";
 const POLICY_REGISTRY_WORK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -660,6 +661,10 @@ export function createCoreHandlers(config, options = {}) {
   const resolveDttWorkBinding = options.resolveDttWorkBinding;
   const resolveStandingReleaseIntentBinding = options.resolveStandingReleaseIntentBinding;
   const resolveGenericWorkCoreJoinBinding = options.resolveGenericWorkCoreJoinBinding;
+  // The MCP handler owns no Work database projection.  The server injects
+  // this bounded reader so Control Room progress is calculated from the
+  // canonical V2 Work context, not from caller data or a second preflight.
+  const readControlRoomWorkContext = options.readControlRoomWorkContext;
   const genericWorkCoreJoinVerifierMetadata = options.genericWorkCoreJoinVerifierMetadata || null;
   const decisionLedger = options.decisionLedger || null;
   const remediationStore = options.remediationStore || createCoreBlockRemediationStore(config, {
@@ -1145,13 +1150,29 @@ export function createCoreHandlers(config, options = {}) {
     });
   }
 
-  async function entity360ShadowEnableCoreRequest(args = {}, identity = {}) {
+  async function entity360FeatureFlagCoreRequest({
+    args = {},
+    identity = {},
+    mode,
+    enabled,
+    route,
+  } = {}) {
+    // Keep the two supported transitions closed over by this adapter. MCP
+    // callers never select a tenant-wide Entity 360 mode themselves.
+    if (![
+      ["SHADOW", true, "entity_360_shadow_enable"],
+      ["OFF", false, "entity_360_shadow_disable"],
+    ].some(([allowedMode, allowedEnabled, allowedRoute]) => (
+      mode === allowedMode && enabled === allowedEnabled && route === allowedRoute
+    ))) {
+      throw new Error("entity360_feature_flag_transition_invalid");
+    }
     const tenantId = String(identity?.tenantId || "").trim();
     if (!tenantId) throw new Error("entity360_authenticated_tenant_required");
     const ownerMode = requireHostNativeOwnerConfirmation(identity, config);
-    const activation = {
-      mode: "SHADOW",
-      enabled: true,
+    const transition = {
+      mode,
+      enabled,
       expected_revision: args.expected_revision,
       idempotency_key: args.idempotency_key,
       owner_confirmed: true,
@@ -1163,25 +1184,45 @@ export function createCoreHandlers(config, options = {}) {
       ),
     };
     const owner = ownerContext(identity, {
-      requestBinding: ownerRequestBinding("entity360_feature_flag_write", activation),
+      requestBinding: ownerRequestBinding("entity360_feature_flag_write", transition),
       hostNativeOwner: true,
     });
     if (owner.owner_verified !== true) throw new Error("owner_confirmation_required");
     const payload = await coreRequest("/v1/entity-360/admin/feature-flag", tenantId, {
       method: "POST",
       useTenantGateway: true,
-      body: { ...activation, owner_context: owner },
+      body: { ...transition, owner_context: owner },
     });
     return {
       ...payload,
       dedicated_core_gate: {
         authorized: payload?.ok === true,
         authority: "universal_core",
-        route: "entity_360_shadow_enable",
+        route,
         provider_execution: false,
         host_policy_override: false,
       },
     };
+  }
+
+  async function entity360ShadowEnableCoreRequest(args = {}, identity = {}) {
+    return entity360FeatureFlagCoreRequest({
+      args,
+      identity,
+      mode: "SHADOW",
+      enabled: true,
+      route: "entity_360_shadow_enable",
+    });
+  }
+
+  async function entity360ShadowDisableCoreRequest(args = {}, identity = {}) {
+    return entity360FeatureFlagCoreRequest({
+      args,
+      identity,
+      mode: "OFF",
+      enabled: false,
+      route: "entity_360_shadow_disable",
+    });
   }
 
   async function persistedStandingReleaseIntent(identity, workIdValue, callerDigestValue) {
@@ -2322,6 +2363,24 @@ export function createCoreHandlers(config, options = {}) {
         generic_work_core_join: icfGenericWorkCoreJoin,
         tenant_id: identity.tenantId,
         mcp_identity: ownerBindingStatus(config, identity),
+      });
+    },
+    nyra_control_room_status: async (args, identity) => {
+      const health = await coreRequest("/healthz", identity.tenantId);
+      const work = args.work_id && typeof readControlRoomWorkContext === "function"
+        ? await readControlRoomWorkContext(identity, {
+            work_id: args.work_id,
+            ...(args.project_id ? { project_id: args.project_id } : {}),
+          })
+        : null;
+      return textResult({
+        ok: health?.ok === true,
+        tenant_id: identity.tenantId,
+        control_room: projectNyraControlRoomStatus({
+          health,
+          work,
+          nyraDialogueEnabled: config.nyraDialogueEnabled === true,
+        }),
       });
     },
     nyra_policy_registry_activate: async (args, identity) =>
@@ -4631,12 +4690,18 @@ export function createCoreHandlers(config, options = {}) {
     configurable: false,
     writable: false,
   });
-  // Tenant-wide Entity 360 SHADOW activation has a distinct Core-owned
-  // authority path: fresh host-native owner confirmation, signed request
-  // binding and the tenant gateway. It intentionally does not inherit a DTT
-  // lease and never exposes a generic configuration transport to MCP tools.
+  // Tenant-wide Entity 360 SHADOW/OFF transitions have distinct Core-owned
+  // authority paths: fresh host-native owner confirmation, signed request
+  // binding and the tenant gateway. They intentionally do not inherit a DTT
+  // lease and never expose a generic configuration transport to MCP tools.
   Object.defineProperty(handlers, "entity360ShadowEnableCoreRequest", {
     value: entity360ShadowEnableCoreRequest,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  Object.defineProperty(handlers, "entity360ShadowDisableCoreRequest", {
+    value: entity360ShadowDisableCoreRequest,
     enumerable: false,
     configurable: false,
     writable: false,

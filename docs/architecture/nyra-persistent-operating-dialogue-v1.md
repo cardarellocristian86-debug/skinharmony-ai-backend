@@ -73,8 +73,11 @@ authenticated fallback and rebuilds the context.
 
 ### Conversational orchestration contract v2
 
-For an unregistered or read-only ChatGPT client, `nyra_converse` is the single
-advertised conversational front door. A registered conversational application
+For an unregistered or read-only ChatGPT client, `nyra_converse` is the primary
+conversational front door. The additive read-only
+`nyra_control_room_status` is also available so the chat can report server
+state, Work closure progress and the real control categories without
+reconstructing them. A registered conversational application
 with `governed_continue` additionally receives the narrow direct
 `nyra_governed_continue` tool. Nyra must speak to the owner and connected AI
 instead of exposing raw catalog or preflight mechanics. Every turn returns a
