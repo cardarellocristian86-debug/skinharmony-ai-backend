@@ -703,6 +703,50 @@ class ContinuityPool {
       });
       return { rows: [], rowCount: 1 };
     }
+    if (q.startsWith("SELECT a.task_id,a.task_digest,a.v2_task_id,a.host_type,a.host_task_id,")) {
+      const [tenantId, workId, planId, agentId] = parameters;
+      const row = [...this.nativeAgents.values()].find((candidate) =>
+        candidate.tenant_id === tenantId &&
+        candidate.work_id === workId &&
+        candidate.plan_id === planId &&
+        candidate.agent_id === agentId);
+      const plan = this.plans.get(key(tenantId, planId));
+      return {
+        rows: row && plan ? [{
+          task_id: row.task_id,
+          task_digest: row.task_digest,
+          v2_task_id: row.v2_task_id,
+          host_type: row.host_type,
+          host_task_id: row.host_task_id,
+          coordinator_session_fingerprint: row.coordinator_session_fingerprint,
+          assignment_capability_digest: row.assignment_capability_digest,
+          lease_expires_at: row.lease_expires_at,
+          plan_status: plan.status,
+        }] : [],
+        rowCount: row && plan ? 1 : 0,
+      };
+    }
+    if (q.startsWith("SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,")) {
+      const [tenantId, workId, planId, agentId] = parameters;
+      const row = [...this.nativeAgents.values()].find((candidate) =>
+        candidate.tenant_id === tenantId &&
+        candidate.work_id === workId &&
+        candidate.plan_id === planId &&
+        candidate.agent_id === agentId);
+      const plan = this.plans.get(key(tenantId, planId));
+      return {
+        rows: row && plan ? [{
+          task_id: row.task_id,
+          task_kind: row.task_kind,
+          task_digest: row.task_digest,
+          v2_task_id: row.v2_task_id,
+          plan: plan.plan,
+          plan_digest: plan.plan_digest,
+          plan_status: plan.status,
+        }] : [],
+        rowCount: row && plan ? 1 : 0,
+      };
+    }
     if (q.startsWith("SELECT a.task_id,a.task_kind,a.task_digest,a.status,a.report_digest,")) {
       const [tenantId, workId, planId, agentId] = parameters;
       const row = [...this.nativeAgents.values()].find((candidate) =>
@@ -2082,6 +2126,139 @@ test("native plans bind an exact acceptance amendment from the current architect
     idempotency_key: "native-plan-amended-jsonb-order-tampered",
   });
   assert.equal(tampered.missing.includes("intent_acceptance_contract_invalid"), true);
+});
+
+test("only a bound independent verifier can read redacted persisted acceptance criteria", async () => {
+  const clock = () => new Date("2026-08-29T22:35:00.000Z");
+  const pool = new ContinuityPool(clock);
+  const runtime = createWorkContinuityRuntime({
+    dttAgentIdentitySigningSecret: "a".repeat(32),
+  }, { pool, now: clock });
+  const coordinator = {
+    tenantId: "tenant-a",
+    subject: "coordinator",
+    authenticatedHostPrincipal: {
+      schema_version: "authenticated_host_principal_v1",
+      registered: true,
+      host_kind: "codex_native",
+      client_type: "codex",
+      capabilities: ["work.operate", "host_native.authorize"],
+    },
+    agentPresence: {
+      agent_id: "codex-coordinator",
+      client_type: "codex",
+      session_fingerprint: "a".repeat(64),
+      host_transport_session_fingerprint: "b".repeat(64),
+      transport_bound: true,
+      signature: `ags_${"a".repeat(32)}`,
+    },
+  };
+  const work = await runtime.ensure(coordinator, initialInput, { creationAuthorized: true });
+  const request = {
+    work_id: work.work_id,
+    repository: "owner/repo",
+    host_type: "codex_native",
+    required_checks: ["core-mcp"],
+    tasks: [
+      { task_id: "build", kind: "builder", instruction: "Build only." },
+      {
+        task_id: "verify", kind: "verifier", instruction: "Verify independently.",
+        dependencies: ["build"],
+      },
+    ],
+    max_parallel: 2,
+    idempotency_key: "native-acceptance-contract-read",
+  };
+  const planned = await runtime.planNativeAgents(coordinator, request, {
+    corePlan: corePlanFor(work, request),
+  });
+  const builderBinding = await runtime.bindNativeAgent(coordinator, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    task_id: "build",
+    native_agent_id: "codex-builder",
+    host_type: "codex_native",
+    host_task_id: "/root/build",
+  });
+  const childIdentity = (agentId, fingerprint) => ({
+    ...coordinator,
+    agentPresence: {
+      agent_id: agentId,
+      client_type: "codex",
+      host_kind: "codex_native",
+      session_fingerprint: fingerprint,
+      host_transport_session_fingerprint: fingerprint,
+      transport_bound: true,
+      signature: `ags_${fingerprint.slice(0, 32)}`,
+    },
+  });
+  const builderIdentity = childIdentity("codex-builder", "1".repeat(64));
+  const verifierIdentity = childIdentity("codex-verifier", "2".repeat(64));
+  const builderInput = {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    native_agent_id: "codex-builder",
+    host_task_id: "/root/build",
+    assignment_capability: builderBinding.assignment_capability,
+  };
+  await assert.rejects(
+    runtime.readNativeAgentAcceptanceContract(builderIdentity, builderInput),
+    /native_agent_acceptance_contract_verifier_required/,
+  );
+  await runtime.reportNativeAgent(builderIdentity, {
+    ...builderInput,
+    status: "completed",
+    report: {
+      summary: "Builder provenance only.",
+      commit_sha: "a".repeat(40),
+      tests: [{ name: "focused", passed: true }],
+      evidence_refs: ["commit:a"],
+    },
+  });
+  const verifierBinding = await runtime.bindNativeAgent(coordinator, {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    task_id: "verify",
+    native_agent_id: "codex-verifier",
+    host_type: "codex_native",
+    host_task_id: "/root/verify",
+  });
+  const verifierInput = {
+    work_id: work.work_id,
+    plan_id: planned.plan.plan_id,
+    native_agent_id: "codex-verifier",
+    host_task_id: "/root/verify",
+    assignment_capability: verifierBinding.assignment_capability,
+  };
+  const eventCount = pool.events.get(key("tenant-a", work.work_id)).length;
+  const read = await runtime.readNativeAgentAcceptanceContract(verifierIdentity, verifierInput);
+  assert.equal(read.schema_version, "native_agent_acceptance_contract_read_v1");
+  assert.equal(read.execution_authorized, false);
+  assert.deepEqual(read.acceptance_contract.criteria.map((criterion) => criterion.criterion_digest),
+    planned.plan.acceptance_contract.criteria.map((criterion) => criterion.criterion_digest));
+  assert.equal("assignment_capability" in read, false);
+  assert.equal("lease_expires_at" in read, false);
+  assert.equal("core_authority" in read, false);
+  assert.equal("plan" in read, false);
+  assert.equal(pool.events.get(key("tenant-a", work.work_id)).length, eventCount);
+  await assert.rejects(
+    runtime.readNativeAgentAcceptanceContract(verifierIdentity, {
+      ...verifierInput,
+      host_task_id: "/root/other",
+    }),
+    /native_agent_host_task_mismatch/,
+  );
+  await assert.rejects(
+    runtime.readNativeAgentAcceptanceContract({ ...verifierIdentity, tenantId: "tenant-b" }, verifierInput),
+    /native_agent_binding_not_found/,
+  );
+  const persisted = pool.plans.get(key("tenant-a", planned.plan.plan_id));
+  persisted.plan.acceptance_contract.criteria_digest = "0".repeat(64);
+  persisted.plan_digest = digest(persisted.plan);
+  await assert.rejects(
+    runtime.readNativeAgentAcceptanceContract(verifierIdentity, verifierInput),
+    /native_agent_acceptance_contract_invalid/,
+  );
 });
 
 test("native agent leases enforce Core max_parallel and expire stale host bindings", async () => {

@@ -1520,9 +1520,10 @@ export const TOOLS = [
     cursor: { type: "string", pattern: "^\\d+$", maxLength: 12 },
     limit: { type: "integer", minimum: 1, maximum: 100 },
     // A child that was created by a host-native plan has no ambient operate
-    // grant. It may use this redacted proof only to discover its own terminal
-    // report capability; the server validates the signed transport binding,
-    // live lease and assignment before returning any catalog entry.
+    // grant. It may use this redacted proof only to discover its own exact
+    // terminal report or verifier acceptance-contract read capability; the
+    // server validates the signed transport binding, live lease and
+    // assignment before returning any catalog entry.
     native_report_assignment: object({
       work_id: { type: "string", format: "uuid" },
       plan_id: { type: "string", format: "uuid" },
