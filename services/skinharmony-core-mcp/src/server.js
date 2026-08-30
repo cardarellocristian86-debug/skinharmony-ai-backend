@@ -1526,6 +1526,20 @@ const nyraConverseHandler = createNyraConverseHandler({
   },
   readDirectiveContext: readNyraDirectiveContext,
   openContinuation: nyraContinuationOpener,
+  // Gallery selection is intentionally served from the canonical V2 store
+  // rather than via work_preflight/ensureContinuity. It is a tenant-ACL read
+  // only, so asking Nyra to choose a Work cannot bind the current session to
+  // an older Work or consume a mutation idempotency slot.
+  listWorkChoices: async (identity, args = {}) => {
+    requireTenantWorkCapability(identity, "read");
+    if (typeof workContinuityV2Store?.listWorks !== "function") {
+      throw legacyWorkAclError("continuity_work_acl_unavailable", 503);
+    }
+    return workContinuityV2Store.listWorks(withTenantWorkAcl(identity), {
+      view: "operational",
+      ...(args.project_id ? { project_id: args.project_id } : {}),
+    });
+  },
 });
 
 const nyraGovernedContinueHandler = nyraGovernedContinuationStore
