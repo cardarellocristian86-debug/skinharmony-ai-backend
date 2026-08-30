@@ -103,6 +103,13 @@ export function tenantWorkCoordinationTarget(toolName, args = {}) {
   if (name === "software_cognition_repository_bootstrap") return `work_atlas:${workId}`;
   if (name === "tenant_work_task_record") return `task:${workId}`;
   if (name === "tenant_work_evidence_record") return `work_continuity_evidence:${workId}`;
+  if ([
+    "work_continuity_incident_record",
+    "work_continuity_incident_reconcile",
+    "work_continuity_incident_verify",
+  ].includes(name)) {
+    return `incident:${workId}`;
+  }
   return name;
 }
 
@@ -431,6 +438,12 @@ export const WORK_CONTINUITY_TOOLS = [
         uniqueItems: true,
         items: { type: "string", minLength: 1, maxLength: 160 },
       },
+      incident_fingerprints: {
+        type: "array",
+        maxItems: 100,
+        uniqueItems: true,
+        items: hash,
+      },
       tasks: {
         type: "array", minItems: 1, maxItems: 3, items: object({
           task_id: { type: "string", minLength: 1, maxLength: 120 },
@@ -698,9 +711,10 @@ export const WORK_CONTINUITY_TOOLS = [
       max_bytes: { type: "integer", minimum: 256, maximum: 128_000 },
     }, ["seed_node_ids"]), true),
   tool("work_continuity_incident_record", "Record incident runbook candidate",
-    "Record an exact-scoped recovery candidate by repository, branch, connector, deployment path and configuration digest. Candidates are never reused until independently verified.",
+    "Record an exact tenant/Work-scoped recovery candidate by repository, branch, connector, deployment path and configuration digest. Candidates are never reused until independently verified.",
     object({
       work_id: uuid, project_id: identifier,
+      reason: text(500),
       scope: object({
         error_code: { type: "string", minLength: 1, maxLength: 120 },
         repository: text(240), branch: text(240), connector: text(120),
@@ -715,22 +729,40 @@ export const WORK_CONTINUITY_TOOLS = [
       }, ["title", "steps"]),
     }, ["work_id", "project_id", "scope", "runbook"]),
     false, { ownerConfirmationRequired: false }),
+  tool("work_continuity_incident_reconcile", "Reconcile legacy incidents for one Work",
+    "Idempotently adopt one exact legacy incident for one authorized blocked Work. Tenant, project and fingerprint are derived server-side from that Work and its current next action; no tenant-wide scan, batch or caller inference is accepted.",
+    object({
+      work_id: uuid,
+      idempotency_key: coordinationIdempotencyKey,
+    }, ["work_id", "idempotency_key"]),
+    false, { ownerConfirmationRequired: false }),
   tool("work_continuity_incident_verify", "Verify incident runbook",
-    "Promote a runbook only when a different native agent supplies passing tests and evidence; failed reuse is counted and repeated failure quarantines it.",
+    "Promote one Work incident only from its exact server-persisted native plan, independent verifier report, append-only report receipt and PR357 verifier-evidence bridge. The plan and report must both bind the incident fingerprint; caller-supplied tests and evidence are not accepted.",
     object({
       work_id: uuid, project_id: identifier, fingerprint: hash, resolved: { type: "boolean" },
-      tests: { type: "array", maxItems: 100, items: { type: "object", additionalProperties: true } },
-      evidence_refs: { type: "array", maxItems: 100, items: { type: "string", maxLength: 500 } },
-    }, ["work_id", "project_id", "fingerprint", "resolved"]),
+      plan_id: uuid,
+      verifier_task_id: { type: "string", minLength: 1, maxLength: 120 },
+      native_receipt_id: uuid,
+    }, ["work_id", "project_id", "fingerprint", "resolved", "plan_id", "verifier_task_id", "native_receipt_id"]),
     false, { ownerConfirmationRequired: false }),
-  tool("work_continuity_incident_resolve", "Find verified incident recovery",
-    "Return a verified runbook only for an exact fingerprint and matching preconditions; otherwise require fresh diagnosis and revalidation.",
+  tool("work_continuity_incident_list", "List Work incidents",
+    "List bounded machine-readable incident state for one exact authorized Work. Returns only error code, redacted reason, provenance and digests; raw scope, runbook and verifier report fields are excluded.",
     object({
-      project_id: identifier,
+      work_id: uuid,
+      status: { type: "string", enum: ["candidate", "verified", "quarantined"] },
+      limit: { type: "integer", minimum: 1, maximum: 100 },
+    }, ["work_id"]), true),
+  tool("work_continuity_incident_read", "Read Work incident",
+    "Read one machine-readable tenant/Work/fingerprint association without returning raw scope, runbook, tests, evidence references or report content.",
+    object({ work_id: uuid, fingerprint: hash }, ["work_id", "fingerprint"]), true),
+  tool("work_continuity_incident_resolve", "Find verified incident recovery",
+    "Return a redacted recovery runbook only from an exact authorized Work association promoted by persisted native verifier evidence; legacy project recipe status is never authority.",
+    object({
+      work_id: uuid, project_id: identifier,
       scope: object({
         error_code: { type: "string", minLength: 1, maxLength: 120 },
         repository: text(240), branch: text(240), connector: text(120),
         deployment_path: text(120), configuration_digest: hash,
       }, ["error_code", "repository", "branch", "connector", "deployment_path", "configuration_digest"]),
-    }, ["project_id", "scope"]), true),
+    }, ["work_id", "project_id", "scope"]), true),
 ];

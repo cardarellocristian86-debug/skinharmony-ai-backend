@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { Pool } from "pg";
 import {
@@ -14,6 +15,10 @@ const databaseUrl = String(process.env.WORK_CONTINUITY_DATABASE_URL || "").trim(
 const COMMIT = "c".repeat(40);
 const BASE_COMMIT = "a".repeat(40);
 const TREE_SHA = "b".repeat(40);
+const INCIDENT_RECONCILIATION_MIGRATION_SQL = readFileSync(new URL(
+  "../migrations/20260830_work_incident_reconciliation_v1.sql",
+  import.meta.url,
+), "utf8");
 
 test("PostgreSQL continuity bindings distinguish authoritative reconciliation", () => {
   assert.notEqual(digest({ outcome: "unknown" }), digest({ outcome: "authoritatively_reconciled" }));
@@ -1344,5 +1349,527 @@ test("PostgreSQL 16 converges MCP-first and legacy Core-first migration registri
       await pool.query(`DROP SCHEMA IF EXISTS ${pgIdentifier(schema)} CASCADE`);
     }
     await pool.end();
+  }
+});
+
+test("PostgreSQL 16 keeps explicit incident reconciliation, provenance and concurrent recovery Work-bound", {
+  skip: databaseUrl ? false : "WORK_CONTINUITY_DATABASE_URL is required for the PostgreSQL 16 integration contract",
+}, async () => {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  const schema = `incident_reconcile_${runId.slice(0, 20)}`;
+  const tenantId = `incident_${runId.slice(0, 20)}`;
+  const projectId = `incident-project-${runId.slice(0, 12)}`;
+  const admin = new Pool({ connectionString: databaseUrl, max: 1, statement_timeout: 10_000 });
+  await admin.query(`CREATE SCHEMA ${pgIdentifier(schema)}`);
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    max: 8,
+    statement_timeout: 5_000,
+    options: `-c search_path=${schema}`,
+  });
+  const runtime = createWorkContinuityRuntime({
+    databaseUrl,
+    dttAgentIdentitySigningSecret: "postgres16-incident-reconciliation-secret-0123456789",
+  }, { pool });
+  const v2Store = createWorkContinuityV2Store({ pool, legacyRuntime: runtime });
+  const coordinator = coordinatorIdentity(tenantId);
+  const owner = reconciliationOwnerIdentity(tenantId);
+
+  const createWork = (label) => runtime.ensure(coordinator, {
+    work_id: crypto.randomUUID(),
+    project_id: projectId,
+    session_id: `${label}-${runId.slice(0, 12)}`,
+    initial_message: `Create isolated incident Work ${label}.`,
+    idea: `PostgreSQL incident reconciliation ${label}`,
+    objective: "Prove exact Work-scoped incident recovery and migration behavior.",
+    acceptance_criteria: ["Every incident transition is Work-bound and independently verifiable."],
+    constraints: ["No caller evidence can promote the Work."],
+    architecture: { components: [{ id: "core-mcp" }] },
+    next_action: "Record an exact bounded incident.",
+    host_type: "codex_native",
+  }, { creationAuthorized: true });
+  const commonIncident = {
+    project_id: projectId,
+    scope: {
+      error_code: "BOUNDED_RECOVERY_CHECK_FAILED",
+      repository: "cardarellocristian86-debug/skinharmony-ai-backend",
+      branch: "fix/work-incident-reconciliation-v1",
+      connector: "host-native-coordination",
+      deployment_path: "work_continuity_incident_verify",
+      configuration_digest: digest({ schema, contract: "incident-reconciliation-v1" }),
+    },
+    runbook: {
+      title: "Repair the bounded incident and verify it independently",
+      preconditions: ["Use the exact Work, repository and incident fingerprint."],
+      steps: ["Correct the bounded failure and rerun the exact checks."],
+      verification: ["Use a distinct native verifier and exact receipt bridge."],
+      rollback: ["Keep the prior verified checkpoint available."],
+    },
+    next_action: "Correct the bounded failure, rerun exact checks, and obtain independent verification.",
+    block_work: true,
+    source_operation: "postgres16.incident.concurrent",
+    source_agent_id: "postgres16-builder",
+  };
+
+  try {
+    const version = await pool.query("SHOW server_version_num");
+    assert.equal(Math.floor(Number(version.rows[0].server_version_num) / 10_000), 16);
+    await v2Store.initialize();
+    runtime.setWorkEventProjector(v2Store.projectLegacyEvent);
+    await runtime.initialize();
+
+    const [firstWork, secondWork, historicalWork, foreignBlockedWork,
+      ambiguousLegacyWork, multiIncidentWork] = await Promise.all([
+      createWork("first"),
+      createWork("second"),
+      createWork("historical"),
+      createWork("foreign-blocked"),
+      createWork("ambiguous-legacy"),
+      createWork("multi-incident"),
+    ]);
+    await v2Store.projectLegacyWork(owner, { legacy_work_id: historicalWork.work_id });
+
+    // Two Work rows deliberately race on the same reusable project runbook.
+    // ON CONFLICT plus the post-insert digest lock must converge rather than
+    // leak a unique_violation from one request.
+    const [firstIncident, secondIncident] = await Promise.all([
+      runtime.recordIncident(coordinator, {
+        ...commonIncident,
+        work_id: firstWork.work_id,
+        idempotency_key: `incident-first-${runId}`,
+      }),
+      runtime.recordIncident(coordinator, {
+        ...commonIncident,
+        work_id: secondWork.work_id,
+        idempotency_key: `incident-second-${runId}`,
+      }),
+    ]);
+    assert.equal(firstIncident.fingerprint, secondIncident.fingerprint);
+    const fingerprint = firstIncident.fingerprint;
+    const converged = await pool.query(`SELECT
+        (SELECT count(*)::int FROM core_continuity_incident_runbooks
+          WHERE tenant_id=$1 AND project_id=$2 AND fingerprint=$3) AS runbooks,
+        (SELECT count(*)::int FROM core_continuity_work_incidents
+          WHERE tenant_id=$1 AND fingerprint=$3) AS work_bindings`,
+    [tenantId, projectId, fingerprint]);
+    assert.deepEqual(converged.rows[0], { runbooks: 1, work_bindings: 2 });
+
+    // A newly indexed incident must not steal a Work block that belongs to a
+    // native lease. The association remains durable, but only the owner of the
+    // current block provenance may later reactivate the Work.
+    const leasePlanId = crypto.randomUUID();
+    const leaseNextAction = "Rebind the expired native lease before resuming.";
+    await pool.query(`UPDATE core_continuity_works
+      SET status='blocked',next_action=$3,block_source='native_agent_lease',
+        block_reference=$4,block_epoch=block_epoch+1,updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, foreignBlockedWork.work_id, leaseNextAction, leasePlanId]);
+    const leaseBeforeIncident = await pool.query(`SELECT status,next_action,block_source,
+        block_reference,block_epoch
+      FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, foreignBlockedWork.work_id]);
+    const foreignIncident = await runtime.recordIncident(coordinator, {
+      ...commonIncident,
+      work_id: foreignBlockedWork.work_id,
+      idempotency_key: `incident-foreign-block-${runId}`,
+    });
+    const leaseAfterIncident = await pool.query(`SELECT status,next_action,block_source,
+        block_reference,block_epoch,
+        (SELECT count(*)::int FROM core_continuity_work_incidents i
+          WHERE i.tenant_id=w.tenant_id AND i.work_id=w.work_id
+            AND i.fingerprint=$3 AND i.status='candidate') AS incident_count
+      FROM core_continuity_works w WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, foreignBlockedWork.work_id, foreignIncident.fingerprint]);
+    assert.deepEqual(leaseAfterIncident.rows[0], {
+      ...leaseBeforeIncident.rows[0],
+      incident_count: 1,
+    });
+
+    // Provenance cannot be erased, replaced by a different subsystem or have
+    // its monotone epoch rewound even when status and next_action are unchanged.
+    await assert.rejects(pool.query(`UPDATE core_continuity_works
+      SET block_source=NULL,block_reference=NULL,updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, foreignBlockedWork.work_id]), /block_provenance_required/);
+    await assert.rejects(pool.query(`UPDATE core_continuity_works
+      SET block_source='work_incident',block_reference=$3,
+        block_epoch=block_epoch+1,updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, foreignBlockedWork.work_id, foreignIncident.fingerprint]),
+    /block_provenance_conflict/);
+    await assert.rejects(pool.query(`UPDATE core_continuity_works
+      SET block_epoch=block_epoch-1,updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, foreignBlockedWork.work_id]), /block_epoch_regression/);
+
+    // The one allowed ownership transfer is causal: an operational failure
+    // from native bind/report for the exact expired plan converts that lease
+    // blocker into its independently verifiable incident.
+    const causalNextAction = "Repair the exact expired-plan failure and verify it independently.";
+    const causalIncident = await runtime.recordIncident(coordinator, {
+      ...commonIncident,
+      work_id: foreignBlockedWork.work_id,
+      scope: {
+        ...commonIncident.scope,
+        error_code: "EXACT_NATIVE_LEASE_RECOVERY_FAILED",
+      },
+      next_action: causalNextAction,
+      source_operation: "work_continuity_native_report",
+      source_plan_id: leasePlanId,
+      idempotency_key: `incident-causal-lease-${runId}`,
+    });
+    const causalReadback = await pool.query(`SELECT status,next_action,block_source,
+        block_reference,block_epoch
+      FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, foreignBlockedWork.work_id]);
+    assert.deepEqual(causalReadback.rows[0], {
+      status: "blocked",
+      next_action: causalNextAction,
+      block_source: "work_incident",
+      block_reference: causalIncident.fingerprint,
+      block_epoch: String(Number(leaseBeforeIncident.rows[0].block_epoch) + 1),
+    });
+
+    // Two distinct legacy fingerprints that match the same historical Work
+    // state are not guessable. Explicit reconciliation must fail closed and
+    // leave the Work blocked until an owner supplies stronger evidence.
+    const ambiguousNextAction = "Resolve the exact legacy incident before resuming.";
+    const ambiguousFirst = await runtime.recordIncident(coordinator, {
+      ...commonIncident,
+      work_id: ambiguousLegacyWork.work_id,
+      next_action: ambiguousNextAction,
+      idempotency_key: `incident-ambiguous-first-${runId}`,
+    });
+    const ambiguousSecond = await runtime.recordIncident(coordinator, {
+      ...commonIncident,
+      work_id: ambiguousLegacyWork.work_id,
+      scope: {
+        ...commonIncident.scope,
+        error_code: "SECOND_LEGACY_RECOVERY_CHECK_FAILED",
+      },
+      next_action: ambiguousNextAction,
+      idempotency_key: `incident-ambiguous-second-${runId}`,
+    });
+    assert.notEqual(ambiguousFirst.fingerprint, ambiguousSecond.fingerprint);
+    await pool.query(`ALTER TABLE core_continuity_work_incidents
+      DISABLE TRIGGER core_continuity_work_incidents_no_delete`);
+    await pool.query(`ALTER TABLE core_continuity_works
+      DISABLE TRIGGER core_continuity_work_block_provenance_guard`);
+    try {
+      await pool.query(`DELETE FROM core_continuity_work_incidents
+        WHERE tenant_id=$1 AND work_id=$2`, [tenantId, ambiguousLegacyWork.work_id]);
+      await pool.query(`UPDATE core_continuity_works
+        SET block_source=NULL,block_reference=NULL,block_epoch=0,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2`, [tenantId, ambiguousLegacyWork.work_id]);
+    } finally {
+      await pool.query(`ALTER TABLE core_continuity_work_incidents
+        ENABLE TRIGGER core_continuity_work_incidents_no_delete`);
+      await pool.query(`ALTER TABLE core_continuity_works
+        ENABLE TRIGGER core_continuity_work_block_provenance_guard`);
+    }
+    await assert.rejects(runtime.reconcileLegacyIncidentForWork(owner, {
+      work_id: ambiguousLegacyWork.work_id,
+      idempotency_key: `incident-reconcile-ambiguous-${runId}`,
+    }), /incident_legacy_binding_ambiguous/);
+    const ambiguousReadback = await pool.query(`SELECT status,next_action,block_source,
+        block_reference,(SELECT count(*)::int FROM core_continuity_work_incidents i
+          WHERE i.tenant_id=w.tenant_id AND i.work_id=w.work_id) AS association_count
+      FROM core_continuity_works w WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, ambiguousLegacyWork.work_id]);
+    assert.deepEqual(ambiguousReadback.rows[0], {
+      status: "blocked",
+      next_action: ambiguousNextAction,
+      block_source: null,
+      block_reference: null,
+      association_count: 0,
+    });
+
+    // Nyra must pair the human next action with the incident that currently
+    // owns the Work block, even when an older unresolved incident also exists.
+    await runtime.upsertControlContext(coordinator, {
+      work_id: multiIncidentWork.work_id,
+      project_id: projectId,
+      context: {
+        schema_version: "nyra_control_context_v1",
+        tenant_id: tenantId,
+        work_id: multiIncidentWork.work_id,
+        project_id: projectId,
+        work_state: "active",
+        next_action: "Record an exact bounded incident.",
+        connector: { state: "healthy" },
+        execution_authorized: false,
+        external_action_authorized: false,
+        context_digest: "c".repeat(64),
+      },
+    });
+    assert.notEqual(await runtime.readControlContext(coordinator, {
+      work_id: multiIncidentWork.work_id,
+      project_id: projectId,
+    }), null);
+    const multiFirst = await runtime.recordIncident(coordinator, {
+      ...commonIncident,
+      work_id: multiIncidentWork.work_id,
+      next_action: "Fix incident A.",
+      idempotency_key: `incident-multi-first-${runId}`,
+    });
+    const multiSecond = await runtime.recordIncident(coordinator, {
+      ...commonIncident,
+      work_id: multiIncidentWork.work_id,
+      scope: {
+        ...commonIncident.scope,
+        error_code: "SECOND_MULTI_INCIDENT_CHECK_FAILED",
+      },
+      next_action: "Fix incident B.",
+      idempotency_key: `incident-multi-second-${runId}`,
+    });
+    assert.notEqual(multiFirst.fingerprint, multiSecond.fingerprint);
+    const nyraMulti = await runtime.readNyraOperationalState(coordinator, {
+      work_id: multiIncidentWork.work_id,
+      project_id: projectId,
+    });
+    assert.equal(nyraMulti.incident.fingerprint, multiSecond.fingerprint);
+    assert.equal(nyraMulti.incident.unresolved_count, 2);
+    assert.equal(nyraMulti.incident.blocking, true);
+    assert.equal(nyraMulti.next_action, "Fix incident B.");
+    assert.equal(await runtime.readControlContext(coordinator, {
+      work_id: multiIncidentWork.work_id,
+      project_id: projectId,
+    }), null, "incident status/action drift must invalidate Nyra's cached control context");
+
+    // Build an exact legacy fixture by retaining the immutable incident event
+    // and runbook while removing only fields that did not exist before the
+    // Work-scoped reconciliation schema. No startup/background backfill is
+    // permitted: an authorized exact-Work operation must adopt it under lock.
+    const historicalIncident = await runtime.recordIncident(coordinator, {
+      ...commonIncident,
+      work_id: historicalWork.work_id,
+      idempotency_key: `incident-historical-${runId}`,
+    });
+    assert.equal(historicalIncident.fingerprint, fingerprint);
+    // Disable only named production guards while constructing the historical
+    // fixture, then restore them before the explicit operation is exercised.
+    await pool.query(`ALTER TABLE core_continuity_work_incidents
+      DISABLE TRIGGER core_continuity_work_incidents_no_delete`);
+    await pool.query(`ALTER TABLE core_continuity_works
+      DISABLE TRIGGER core_continuity_work_block_provenance_guard`);
+    try {
+      await pool.query(`UPDATE core_continuity_works
+        SET block_source=NULL,block_reference=NULL,block_epoch=0,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2`, [tenantId, historicalWork.work_id]);
+      await pool.query(`DELETE FROM core_continuity_work_incidents
+        WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3`,
+      [tenantId, historicalWork.work_id, fingerprint]);
+    } finally {
+      await pool.query(`ALTER TABLE core_continuity_work_incidents
+        ENABLE TRIGGER core_continuity_work_incidents_no_delete`);
+      await pool.query(`ALTER TABLE core_continuity_works
+        ENABLE TRIGGER core_continuity_work_block_provenance_guard`);
+    }
+    await pool.query(INCIDENT_RECONCILIATION_MIGRATION_SQL);
+    await pool.query(INCIDENT_RECONCILIATION_MIGRATION_SQL);
+    const reconciliation = await runtime.reconcileLegacyIncidentForWork(owner, {
+      work_id: historicalWork.work_id,
+      idempotency_key: `incident-reconcile-${runId}`,
+    });
+    assert.equal(reconciliation.reconciled, true);
+    assert.equal(reconciliation.fingerprint, fingerprint);
+
+    const backfilled = await pool.query(`SELECT status,blocks_work,source_operation,
+        source_agent_id,verified_by,verification_evidence,verification_digest,
+        verification_count,failure_count,state_version
+      FROM core_continuity_work_incidents
+      WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3`,
+    [tenantId, historicalWork.work_id, fingerprint]);
+    assert.deepEqual(backfilled.rows[0], {
+      status: "candidate",
+      blocks_work: true,
+      source_operation: "legacy_revalidation_required",
+      source_agent_id: "legacy_revalidation_required",
+      verified_by: null,
+      verification_evidence: null,
+      verification_digest: null,
+      verification_count: 0,
+      failure_count: 0,
+      state_version: "0",
+    });
+    assert.equal(backfilled.rowCount, 1);
+
+    const repairedState = await pool.query(`SELECT w.status,w.next_action,w.block_source,
+        w.block_reference,w.block_epoch,g.status AS gallery_status,
+        g.next_action AS gallery_next_action,g.legacy_projection_sequence,
+        g.legacy_projection_event_hash,
+        e.sequence_number,e.event_hash,e.payload
+      FROM core_continuity_works w
+      JOIN tenant_work g ON g.tenant_id=w.tenant_id AND g.work_id=w.work_id
+      JOIN LATERAL (
+        SELECT sequence_number,event_hash,payload FROM core_continuity_events
+        WHERE tenant_id=w.tenant_id AND work_id=w.work_id
+          AND event_type='incident_recorded'
+          AND payload->>'reconciliation_schema_version'='work_incident_reconciliation_v1'
+        ORDER BY sequence_number DESC LIMIT 1
+      ) e ON true
+      WHERE w.tenant_id=$1 AND w.work_id=$2`, [tenantId, historicalWork.work_id]);
+    assert.equal(repairedState.rows[0].status, "blocked");
+    assert.equal(repairedState.rows[0].block_source, "work_incident");
+    assert.equal(repairedState.rows[0].block_reference, fingerprint);
+    assert.equal(repairedState.rows[0].gallery_status, "BLOCKED");
+    assert.equal(repairedState.rows[0].gallery_next_action, repairedState.rows[0].next_action);
+    assert.equal(
+      Number(repairedState.rows[0].legacy_projection_sequence),
+      Number(repairedState.rows[0].sequence_number),
+    );
+    assert.equal(
+      repairedState.rows[0].legacy_projection_event_hash,
+      repairedState.rows[0].event_hash,
+    );
+    assert.equal(
+      repairedState.rows[0].payload.reconciliation_schema_version,
+      "work_incident_reconciliation_v1",
+    );
+    const reconciliationReplay = await runtime.reconcileLegacyIncidentForWork(owner, {
+      work_id: historicalWork.work_id,
+      idempotency_key: `incident-reconcile-${runId}`,
+    });
+    assert.equal(reconciliationReplay.idempotent_replay, true);
+    assert.equal(reconciliationReplay.reconciliation_event_hash,
+      reconciliation.reconciliation_event_hash);
+
+    // A rolling pre-migration writer cannot append a lifecycle event without
+    // first writing the exact Work association in the same transaction.
+    const firstHead = await pool.query(`SELECT sequence_number,event_hash FROM core_continuity_events
+      WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number DESC LIMIT 1`,
+    [tenantId, firstWork.work_id]);
+    const firstState = await pool.query(`SELECT status,next_action FROM core_continuity_works
+      WHERE tenant_id=$1 AND work_id=$2`, [tenantId, firstWork.work_id]);
+    const unboundFingerprint = "9".repeat(64);
+    const unboundSequence = Number(firstHead.rows[0].sequence_number) + 1;
+    const unboundPayload = {
+      project_id: projectId,
+      fingerprint: unboundFingerprint,
+      status: "candidate",
+      state_version: 0,
+      work_status: firstState.rows[0].status,
+      next_action: firstState.rows[0].next_action,
+    };
+    const unboundMaterial = {
+      tenant_id: tenantId,
+      work_id: firstWork.work_id,
+      sequence_number: unboundSequence,
+      event_type: "incident_recorded",
+      payload: unboundPayload,
+      previous_event_hash: firstHead.rows[0].event_hash,
+    };
+    await assert.rejects(pool.query(`INSERT INTO core_continuity_events
+        (tenant_id,work_id,event_id,sequence_number,event_type,payload,
+         previous_event_hash,event_hash,created_by)
+      VALUES ($1,$2,$3,$4,'incident_recorded',$5::jsonb,$6,$7,'legacy-writer')`,
+    [tenantId, firstWork.work_id, crypto.randomUUID(), unboundSequence,
+      JSON.stringify(unboundPayload), firstHead.rows[0].event_hash, digest(unboundMaterial)]),
+    /event_association_required/);
+
+    // Terminal completion is immutable even for a direct database writer.
+    const terminalWork = await createWork("terminal");
+    await pool.query(`UPDATE core_continuity_works SET status='completed',updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2`, [tenantId, terminalWork.work_id]);
+    await assert.rejects(pool.query(`UPDATE core_continuity_works
+      SET status='active',updated_at=now() WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, terminalWork.work_id]), /completed_immutable/);
+
+    // An invalid historical hash chain is never extended by reconciliation.
+    const corruptWork = await createWork("corrupt-ledger");
+    await v2Store.projectLegacyWork(owner, { legacy_work_id: corruptWork.work_id });
+    const corruptIncident = await runtime.recordIncident(coordinator, {
+      ...commonIncident,
+      work_id: corruptWork.work_id,
+      idempotency_key: `incident-corrupt-${runId}`,
+    });
+    await pool.query(`ALTER TABLE core_continuity_events
+      DISABLE TRIGGER core_continuity_events_no_mutation`);
+    await pool.query(`ALTER TABLE core_continuity_work_incidents
+      DISABLE TRIGGER core_continuity_work_incidents_no_delete`);
+    await pool.query(`ALTER TABLE core_continuity_works
+      DISABLE TRIGGER core_continuity_work_block_provenance_guard`);
+    try {
+      await pool.query(`UPDATE core_continuity_events SET event_hash=$3
+        WHERE tenant_id=$1 AND work_id=$2 AND event_type='incident_recorded'`,
+      [tenantId, corruptWork.work_id, "8".repeat(64)]);
+      await pool.query(`DELETE FROM core_continuity_work_incidents
+        WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3`,
+      [tenantId, corruptWork.work_id, corruptIncident.fingerprint]);
+      await pool.query(`UPDATE core_continuity_works
+        SET block_source=NULL,block_reference=NULL,block_epoch=0,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2`, [tenantId, corruptWork.work_id]);
+    } finally {
+      await pool.query(`ALTER TABLE core_continuity_events
+        ENABLE TRIGGER core_continuity_events_no_mutation`);
+      await pool.query(`ALTER TABLE core_continuity_work_incidents
+        ENABLE TRIGGER core_continuity_work_incidents_no_delete`);
+      await pool.query(`ALTER TABLE core_continuity_works
+        ENABLE TRIGGER core_continuity_work_block_provenance_guard`);
+    }
+    await assert.rejects(runtime.reconcileLegacyIncidentForWork(owner, {
+      work_id: corruptWork.work_id,
+      idempotency_key: `incident-reconcile-corrupt-${runId}`,
+    }), /continuity_event_ledger_invalid/);
+    const corruptBinding = await pool.query(`SELECT count(*)::int AS count
+      FROM core_continuity_work_incidents WHERE tenant_id=$1 AND work_id=$2`,
+    [tenantId, corruptWork.work_id]);
+    assert.equal(corruptBinding.rows[0].count, 0);
+
+    await assert.rejects(pool.query(`DELETE FROM core_continuity_work_incidents
+      WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3`,
+    [tenantId, historicalWork.work_id, fingerprint]), /append_only/);
+    await assert.rejects(pool.query("TRUNCATE core_continuity_work_incidents CASCADE"), /append_only/);
+
+    await assert.rejects(pool.query(`UPDATE core_continuity_work_incidents
+      SET blocks_work=false WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3`,
+    [tenantId, historicalWork.work_id, fingerprint]), /binding_immutable/);
+    await assert.rejects(pool.query(`UPDATE core_continuity_work_incidents
+      SET failure_count=1,state_version=2,verification_evidence='{}'::jsonb,
+        verification_digest=$4,updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3`,
+    [tenantId, firstWork.work_id, fingerprint, "d".repeat(64)]),
+    /version_cas_required|violates check constraint/);
+    await assert.rejects(pool.query(`INSERT INTO core_continuity_work_incident_verifications
+        (tenant_id,work_id,project_id,fingerprint,evidence_digest,native_receipt_id,resolved,
+         evidence,result_status,created_by)
+      VALUES ($1,$2,'wrong-project',$3,$4,$5,false,'{}'::jsonb,'candidate','verifier')`,
+    [tenantId, firstWork.work_id, fingerprint, "e".repeat(64), crypto.randomUUID()]),
+    /foreign key constraint/);
+
+    const verifiedEvidence = { schema_version: "work_incident_native_verification_v1", exact: true };
+    await pool.query(`UPDATE core_continuity_work_incidents
+      SET status='verified',verified_by='independent-verifier',verification_evidence=$4::jsonb,
+        verification_digest=$5,verification_count=verification_count+1,
+        state_version=state_version+1,updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3`,
+    [tenantId, historicalWork.work_id, fingerprint, JSON.stringify(verifiedEvidence), "f".repeat(64)]);
+    await assert.rejects(pool.query(`UPDATE core_continuity_work_incidents
+      SET state_version=state_version+1,updated_at=now()
+      WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3`,
+    [tenantId, historicalWork.work_id, fingerprint]), /verified_immutable/);
+
+    // Exercise the shared core -> Gallery lock order under concurrency. A
+    // five-second statement timeout makes any inversion a deterministic test
+    // failure rather than a hung CI worker.
+    const bridgeRaceIncident = {
+      ...commonIncident,
+      work_id: firstWork.work_id,
+      scope: {
+        ...commonIncident.scope,
+        error_code: "LEGACY_BRIDGE_CONCURRENT_INCIDENT",
+      },
+      idempotency_key: `incident-bridge-race-${runId}`,
+    };
+    const [bridgeReplay, bridgeIncident] = await Promise.all([
+      v2Store.ensureLegacyBridge(owner, { work_id: firstWork.work_id }),
+      runtime.recordIncident(coordinator, bridgeRaceIncident),
+    ]);
+    assert.equal(bridgeReplay.idempotent_replay, true);
+    assert.equal(bridgeIncident.status, "candidate");
+  } finally {
+    await runtime.close().catch(() => {});
+    await admin.query(`DROP SCHEMA IF EXISTS ${pgIdentifier(schema)} CASCADE`);
+    await admin.end();
   }
 });

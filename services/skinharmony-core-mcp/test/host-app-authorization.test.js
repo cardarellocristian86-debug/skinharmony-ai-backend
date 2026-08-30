@@ -20,7 +20,10 @@ const TOOLS = [
   { name: "core_capability_invoke", annotations: { readOnlyHint: false } },
   { name: "work_continuity_v2_read", annotations: { readOnlyHint: true } },
   { name: "work_continuity_native_acceptance_contract_read", annotations: { readOnlyHint: true } },
+  { name: "work_continuity_incident_verify", annotations: { readOnlyHint: false } },
   { name: "work_continuity_native_report", annotations: { readOnlyHint: false } },
+  { name: "work_continuity_closure_evaluate", annotations: { readOnlyHint: false } },
+  { name: "work_continuity_closure_finalize", annotations: { readOnlyHint: false } },
   { name: "host_native_status", annotations: { readOnlyHint: true } },
   { name: "host_native_delegation_issue", annotations: { readOnlyHint: false } },
   { name: "host_native_action_authorize", annotations: { readOnlyHint: false } },
@@ -137,6 +140,63 @@ test("enforces work.read on direct and dynamic Work reads", () => {
   }));
 });
 
+test("incident verification requires work.review directly and dynamically", () => {
+  const reviewer = identity(["work.review"]);
+  const operator = identity(["work.operate"]);
+  for (const invocation of [
+    ["work_continuity_incident_verify", {}],
+    ["core_capability_invoke", { capability_id: "work_continuity_incident_verify" }],
+  ]) {
+    assert.doesNotThrow(() => requireHostAppToolCapability({
+      identity: reviewer,
+      toolName: invocation[0],
+      args: invocation[1],
+      tools: TOOLS,
+    }));
+    assert.throws(() => requireHostAppToolCapability({
+      identity: operator,
+      toolName: invocation[0],
+      args: invocation[1],
+      tools: TOOLS,
+    }), /host_app_capability_required:work\.review/);
+  }
+});
+
+test("native closure review and finalization remain reachable through distinct least-privilege grants", () => {
+  const reviewer = identity(["work.review"]);
+  const operator = identity(["work.operate"]);
+  for (const [toolName, args] of [
+    ["work_continuity_closure_evaluate", {}],
+    ["core_capability_invoke", { capability_id: "work_continuity_closure_evaluate" }],
+  ]) {
+    assert.doesNotThrow(() => requireHostAppToolCapability({
+      identity: reviewer, toolName, args, tools: TOOLS,
+    }));
+    assert.throws(() => requireHostAppToolCapability({
+      identity: operator, toolName, args, tools: TOOLS,
+    }), /host_app_capability_required:work\.review/);
+    assert.throws(() => requireHostAppToolCapability({
+      identity: identity(["work.review"], "future_native"),
+      toolName, args, tools: TOOLS,
+    }), /host_native_host_kind_not_supported/);
+  }
+  for (const [toolName, args] of [
+    ["work_continuity_closure_finalize", {}],
+    ["core_capability_invoke", { capability_id: "work_continuity_closure_finalize" }],
+  ]) {
+    assert.doesNotThrow(() => requireHostAppToolCapability({
+      identity: operator, toolName, args, tools: TOOLS,
+    }));
+    assert.throws(() => requireHostAppToolCapability({
+      identity: reviewer, toolName, args, tools: TOOLS,
+    }), /host_app_capability_required:work\.operate/);
+    assert.throws(() => requireHostAppToolCapability({
+      identity: identity(["work.operate"], "future_native"),
+      toolName, args, tools: TOOLS,
+    }), /host_native_host_kind_not_supported/);
+  }
+});
+
 test("a work.read app cannot dynamically invoke host-native delegation or authorization", () => {
   const reader = identity(["work.read"]);
   for (const capability_id of ["host_native_delegation_issue", "host_native_action_authorize"]) {
@@ -181,7 +241,7 @@ test("a transport-bound assignment can bootstrap only its native report wrapper"
       arguments: assignment,
     },
     tools: TOOLS,
-  }), /host_app_capability_required:work\.operate/);
+  }), /host_app_capability_required:work\.review/);
   assert.equal(nativeReportAssignmentBootstrap("core_capability_catalog", {
     capability_id: "work_continuity_native_report",
     native_report_assignment: { ...assignment, assignment_capability: "hnac_bad" },

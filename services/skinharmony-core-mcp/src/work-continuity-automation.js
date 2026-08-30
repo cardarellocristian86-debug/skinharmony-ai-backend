@@ -22,9 +22,24 @@ const ATLAS_ACTIONS = new Set([
   "git.push.protected",
   "github.merge",
 ]);
-const UUID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const UUID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const GIT_SHA_PATTERN = /^[a-f0-9]{40}$/i;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+const AUTHORIZED_OPERATIONAL_ERRORS = new WeakSet();
+const NON_INCIDENT_OPERATIONAL_ERRORS = new Set([
+  "continuity_work_incident_blocker_unresolved",
+  "continuity_work_blocked_revalidation_required",
+]);
+
+// Only server handlers can place an Error in this module-private WeakSet,
+// after their exact Work/assignment/Core admission has succeeded. A caller,
+// wrapper argument or serialized error cannot forge this proof.
+export function authorizeWorkContinuityOperationalError(error) {
+  if (error && (typeof error === "object" || typeof error === "function")) {
+    AUTHORIZED_OPERATIONAL_ERRORS.add(error);
+  }
+  return error;
+}
 
 function stable(value) {
   if (Array.isArray(value)) return value.map(stable);
@@ -146,8 +161,10 @@ function operationalFailure(event) {
   let code = "";
   let missing = [];
   if (event.error) {
+    const exactError = String(event.error.code || event.error.message || "");
+    if (NON_INCIDENT_OPERATIONAL_ERRORS.has(exactError.toLowerCase())) return null;
     code = safeIdentifier(
-      event.error.code || event.error.message,
+      exactError,
       `${event.toolName}_failed`,
       120,
     ).toUpperCase();
@@ -183,18 +200,20 @@ function operationalFailure(event) {
   }
   if (!code) return null;
   const operation = safeIdentifier(event.toolName, "work_continuity_operation", 120);
+  const sourcePlanId = UUID_PATTERN.test(String(event.args?.plan_id || ""))
+    ? String(event.args.plan_id)
+    : null;
+  const sourceAgentId = safeIdentifier(
+    event.args?.native_agent_id || event.args?.agent_id,
+    "unassigned",
+    120,
+  );
   const evidenceDigest = digest({
     schema_version: "work_continuity_operational_failure_v1",
     tenant_id: event.identity?.tenantId,
     work_id: workId,
-    plan_id: UUID_PATTERN.test(String(event.args?.plan_id || ""))
-      ? String(event.args.plan_id)
-      : null,
-    native_agent_id: safeIdentifier(
-      event.args?.native_agent_id || event.args?.agent_id,
-      "unassigned",
-      120,
-    ),
+    plan_id: sourcePlanId,
+    native_agent_id: sourceAgentId,
     operation,
     error_code: code,
     missing,
@@ -204,6 +223,8 @@ function operationalFailure(event) {
     operation,
     error_code: code,
     evidence_digest: evidenceDigest,
+    plan_id: sourcePlanId,
+    native_agent_id: sourceAgentId,
     next_action: code === "NATIVE_CLOSURE_GAPS"
       ? `Resolve the indexed closure gaps (${missing.join(", ") || "unknown"}), rerun exact checks, then request a fresh independent Core join.`
       : "Inspect the indexed bounded failure, correct it, rerun exact checks, and obtain independent verification before resuming.",
@@ -476,8 +497,22 @@ export function createWorkContinuityAutomation({ runtime } = {}) {
     if (!AUTOMATED_TOOLS.has(event.toolName)) {
       return { handled: false, projections: [] };
     }
+    // This marker is created only by the MCP dispatcher after host-app
+    // capability checks, exact Work ACL and server preflight have succeeded,
+    // immediately before the selected handler is entered. Raw caller args and
+    // rejected preflight/auth paths can never trigger a Work mutation here.
+    if (event.serverAuthorizationPassed !== true || event.handlerEntered !== true) {
+      return { handled: true, projections: [], skipped: "server_authorization_not_completed" };
+    }
     const projections = [];
     if (OPERATIONAL_FAILURE_TOOLS.has(event.toolName)) {
+      if (event.error && !AUTHORIZED_OPERATIONAL_ERRORS.has(event.error)) {
+        return {
+          handled: true,
+          projections,
+          skipped: "operational_failure_authorization_not_proven",
+        };
+      }
       const input = operationalFailure(event);
       if (!input) return { handled: true, projections };
       try {
@@ -500,6 +535,16 @@ export function createWorkContinuityAutomation({ runtime } = {}) {
     const failure = Boolean(event.error) || structuredFailure(event, record);
 
     if (failure) {
+      // A failed action may be projected only when Universal Core already
+      // returned (or attached to the thrown Error) the exact trusted ticket.
+      // Generic Work preflight proves visibility, not action authority.
+      if (!record) {
+        return {
+          handled: true,
+          projections,
+          skipped: "trusted_action_ticket_required",
+        };
+      }
       const input = incidentInput(event, record);
       if (!input) return { handled: true, projections, skipped: "incident_scope_unavailable" };
       try {

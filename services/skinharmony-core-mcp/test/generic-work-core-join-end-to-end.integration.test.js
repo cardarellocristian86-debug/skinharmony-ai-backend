@@ -174,6 +174,8 @@ class VerdictPersistencePool {
       created_at: "2026-08-08T00:00:00.000Z",
       updated_at: "2026-08-08T00:00:00.000Z",
     };
+    this.legacyWork = { work_id: WORK_ID, status: "active" };
+    this.incidents = [];
     this.join = null;
     this.insertCount = 0;
   }
@@ -186,12 +188,32 @@ class VerdictPersistencePool {
     const query = String(sql).replace(/\s+/g, " ").trim();
     if (["BEGIN", "COMMIT", "ROLLBACK"].includes(query)) return { rows: [], rowCount: 0 };
     if (query.includes("CREATE TABLE IF NOT EXISTS tenant_work")) return { rows: [], rowCount: 0 };
+    if (query.startsWith("SELECT legacy_work_id FROM tenant_work")) {
+      const found = parameters[0] === this.work.tenant_id && parameters[1] === this.work.work_id;
+      return { rows: found ? [{ legacy_work_id: this.work.legacy_work_id }] : [], rowCount: found ? 1 : 0 };
+    }
+    if (query.startsWith("SELECT work_id,status FROM core_continuity_works")) {
+      const found = parameters[0] === this.work.tenant_id && parameters[1] === this.legacyWork.work_id;
+      return { rows: found ? [structuredClone(this.legacyWork)] : [], rowCount: found ? 1 : 0 };
+    }
+    if (query.startsWith("SELECT fingerprint,status,blocks_work FROM core_continuity_work_incidents")) {
+      return { rows: structuredClone(this.incidents), rowCount: this.incidents.length };
+    }
     if (query.startsWith("SELECT * FROM tenant_work WHERE tenant_id=$1 AND work_id=$2")) {
       const found = parameters[0] === this.work.tenant_id && parameters[1] === this.work.work_id;
       return { rows: found ? [structuredClone(this.work)] : [], rowCount: found ? 1 : 0 };
     }
     if (query.startsWith("SELECT core_join_digest,core_join_context FROM tenant_work_core_join")) {
       return { rows: this.join ? [structuredClone(this.join)] : [], rowCount: this.join ? 1 : 0 };
+    }
+    if (query.startsWith("SELECT * FROM tenant_work_evidence")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (query.startsWith("SELECT * FROM tenant_work_core_join")) {
+      return { rows: this.join ? [structuredClone(this.join)] : [], rowCount: this.join ? 1 : 0 };
+    }
+    if (query.startsWith("SELECT * FROM tenant_work_closure_receipt")) {
+      return { rows: [], rowCount: 0 };
     }
     if (query.startsWith("INSERT INTO tenant_work_core_join")) {
       this.join = { core_join_digest: parameters[2], core_join_context: JSON.parse(parameters[3]),
@@ -338,6 +360,21 @@ test("Generic Work Core Join crosses Universal Core, MCP bridge and V2 persisten
     const pool = new VerdictPersistencePool();
     const v2Store = createWorkContinuityV2Store({ pool, coreJoinVerifier: { publicKey, keyId: KEY_ID } });
     assert.equal(v2Store.verifyCoreJoinVerdict(verdict), true);
+    pool.incidents = [{ fingerprint: "f".repeat(64), status: "candidate", blocks_work: true }];
+    await assert.rejects(() => v2Store.persistCoreJoin(v2Identity(TENANT), {
+      work_id: WORK_ID,
+      core_join_digest: verdict.verdict_digest,
+      core_join_context: verdict,
+    }), /continuity_work_incident_blocker_unresolved/);
+    assert.equal(pool.insertCount, 0);
+    pool.incidents[0].status = "verified";
+    await assert.rejects(() => v2Store.persistCoreJoin(v2Identity(TENANT), {
+      work_id: WORK_ID,
+      core_join_digest: verdict.verdict_digest,
+      core_join_context: verdict,
+    }), /continuity_work_incident_native_closure_required/);
+    assert.equal(pool.insertCount, 0);
+    pool.incidents = [];
     const persisted = await v2Store.persistCoreJoin(v2Identity(TENANT), {
       work_id: WORK_ID,
       core_join_digest: verdict.verdict_digest,
@@ -356,7 +393,7 @@ test("Generic Work Core Join crosses Universal Core, MCP bridge and V2 persisten
       work_id: WORK_ID,
       core_join_digest: verdict.verdict_digest,
       core_join_context: verdict,
-    }), /tenant_work_not_found|work_acl_denied/);
+    }), /work_not_found|tenant_work_not_found|work_acl_denied/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(root, { recursive: true, force: true });

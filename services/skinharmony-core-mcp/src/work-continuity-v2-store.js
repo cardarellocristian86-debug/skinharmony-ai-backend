@@ -1021,6 +1021,13 @@ const LEGACY_TERMINAL_PROJECTION_EVENTS = Object.freeze({
   SUPERSEDED: new Set(["legacy_work_reconciled_closed"]),
 });
 
+const PROMOTED_OPERATIONAL_PROJECTION_EVENTS = new Set([
+  "incident_recorded",
+  "incident_runbook_verification_failed",
+  "incident_runbook_verified",
+  "incident_runbook_quarantined",
+]);
+
 function legacyProjectionEvent(row, suppliedEvent = null) {
   const event = suppliedEvent || {
     sequence_number: row?.source_sequence_number,
@@ -1048,6 +1055,35 @@ function terminalLegacyProjectionVerified(projectedStatus, event, row = null) {
   if (!evidence || !allowed.has(evidence.event_type)) return false;
   if (evidence.event_type !== "legacy_work_reconciled_closed") return true;
   return String(evidence.payload?.status || "").toUpperCase() === projectedStatus;
+}
+
+async function verifiedLegacyProjectionEvent(client, tenantId, workId, candidate) {
+  if (!candidate) return null;
+  const persisted = await client.query(`SELECT sequence_number,event_type,event_hash,payload
+    FROM core_continuity_events
+    WHERE tenant_id=$1 AND work_id=$2 AND sequence_number=$3`,
+  [tenantId, workId, candidate.sequence_number]);
+  const row = persisted.rows[0];
+  if (!row || Number(row.sequence_number) !== candidate.sequence_number ||
+      row.event_type !== candidate.event_type || row.event_hash !== candidate.event_hash ||
+      objectDigest(stable(row.payload || {})) !== objectDigest(candidate.payload || {})) {
+    fail("legacy_projection_source_event_unverified");
+  }
+  return candidate;
+}
+
+function promotedOperationalProjection(row, event) {
+  if (!PROMOTED_OPERATIONAL_PROJECTION_EVENTS.has(event.event_type)) return null;
+  const payload = plainRecord(event.payload) ? event.payload : {};
+  const sourceStatus = String(payload.work_status || "").trim().toLowerCase();
+  const projectedStatus = mapLegacyStatus(sourceStatus);
+  const rowStatus = mapLegacyStatus(row.status);
+  const nextAction = typeof payload.next_action === "string" ? payload.next_action : null;
+  if (!projectedStatus || projectedStatus !== rowStatus || nextAction === null ||
+      nextAction !== String(row.next_action || "")) {
+    fail("legacy_projection_operational_binding_invalid");
+  }
+  return { status: projectedStatus, next_action: nextAction };
 }
 
 export function verifyGenericCoreJoinVerdict(verdict, { publicKey, keyId, expected } = {}) {
@@ -1592,15 +1628,27 @@ export function createWorkContinuityV2Store({
     if (!isAdmin(actor)) fail("legacy_bridge_owner_required");
     const workId = uuid(work_id);
     return transaction(async (client) => {
-      const work = await loadWork(client, actor, workId, true);
-      assertPermission(canAdminister, work, actor);
-      if (work.legacy_work_id !== workId) fail("legacy_bridge_identity_mismatch");
+      // Incident projection takes the canonical legacy Work lock before the
+      // linked Gallery row. Read the immutable binding first, take the legacy
+      // lock in that same order, then lock and revalidate the Gallery row.
+      // This avoids a tenant_work -> core_continuity_works inversion when a
+      // bridge replay races an incident/event projection.
+      const observed = await loadWork(client, actor, workId, false);
+      assertPermission(canAdminister, observed, actor);
+      if (observed.legacy_work_id !== workId) fail("legacy_bridge_identity_mismatch");
       const existing = await client.query(`SELECT w.project_id,w.status,a.anchor,a.intent_digest
         FROM core_continuity_works w
         LEFT JOIN core_continuity_intent_anchors a
           ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
         WHERE w.tenant_id=$1 AND w.work_id=$2
         FOR UPDATE OF w`, [actor.tenant_id, workId]);
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canAdminister, work, actor);
+      if (work.legacy_work_id !== workId ||
+          work.project_id !== observed.project_id ||
+          work.intent_digest !== observed.intent_digest) {
+        fail("legacy_bridge_identity_mismatch");
+      }
       const legacy = existing.rows[0];
       if (legacy) {
         if (legacy.project_id !== work.project_id || !plainRecord(legacy.anchor) ||
@@ -1828,23 +1876,101 @@ export function createWorkContinuityV2Store({
       if (!row) fail("legacy_work_not_found");
       const status = mapLegacyStatus(row.status);
       if (!status) fail("legacy_work_status_not_projectable");
-      const existing = await client.query(`SELECT * FROM tenant_work
-        WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2) FOR UPDATE`,
-      [actor.tenant_id, legacyId]);
-      const sourceEvent = legacyProjectionEvent(row, suppliedEvent);
-      if (!sourceEvent && existing.rows[0]) return normalizeWork(existing.rows[0]);
+      const linked = await client.query(`SELECT * FROM tenant_work
+        WHERE tenant_id=$1 AND legacy_work_id=$2 FOR UPDATE`, [actor.tenant_id, legacyId]);
+      const sameIdentity = await client.query(`SELECT * FROM tenant_work
+        WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [actor.tenant_id, legacyId]);
+      if (linked.rows[0] && sameIdentity.rows[0] &&
+          linked.rows[0].work_id !== sameIdentity.rows[0].work_id) {
+        fail("legacy_projection_identity_ambiguous");
+      }
+      const existingRow = linked.rows[0] || sameIdentity.rows[0] || null;
+      const candidateEvent = legacyProjectionEvent(row, suppliedEvent);
+      if (!candidateEvent && existingRow) {
+        return { work: normalizeWork(existingRow), applied: false, drift: null };
+      }
+      const sourceEvent = await verifiedLegacyProjectionEvent(
+        client, actor.tenant_id, legacyId, candidateEvent,
+      );
       if (!sourceEvent) fail("legacy_projection_source_event_required");
       if (!terminalLegacyProjectionVerified(status, sourceEvent, row)) {
         fail("legacy_projection_terminal_evidence_required");
       }
-      if (existing.rows[0]) {
-        const current = normalizeWork(existing.rows[0]);
-        // A linked V2 identity is authoritative for its V2 fields. The
-        // compatibility projector must not later turn it back into a legacy
-        // projection when a delayed legacy event is observed.
-        if (current.legacy_work_id === legacyId && current.work_type !== "legacy") return current;
+      if (existingRow) {
+        const current = normalizeWork(existingRow);
         const projectedSequence = Number(current.legacy_projection_sequence || 0);
-        if (projectedSequence >= sourceEvent.sequence_number) return current;
+        if (projectedSequence > sourceEvent.sequence_number) {
+          return { work: current, applied: false, drift: null };
+        }
+        const equalCursor = projectedSequence === sourceEvent.sequence_number;
+        if (equalCursor) {
+          if (String(current.legacy_projection_event_hash || "") !== sourceEvent.event_hash) {
+            fail("legacy_projection_cursor_conflict");
+          }
+        }
+        const promotedV2 = current.legacy_work_id === legacyId && current.work_type !== "legacy";
+        if (equalCursor && !promotedV2) {
+          return { work: current, applied: false, drift: null };
+        }
+        // A linked V2 identity is authoritative for its V2 fields. The
+        // compatibility projector may update only the exact incident-derived
+        // operational tuple and cursor.  It never rewrites V2 identity,
+        // tasks, acceptance, evidence, progress or closure.
+        if (promotedV2) {
+          if (ARCHIVE_STATUSES.has(current.status) && current.status === status) {
+            if (equalCursor) return { work: current, applied: false, drift: null };
+            const cursorOnly = await client.query(`UPDATE tenant_work SET
+                legacy_projection_sequence=$3,legacy_projection_event_hash=$4,
+                legacy_projection_updated_at=$5::timestamptz
+              WHERE tenant_id=$1 AND work_id=$2
+                AND legacy_projection_sequence=$6
+                AND legacy_projection_event_hash IS NOT DISTINCT FROM $7
+              RETURNING *`,
+            [actor.tenant_id, current.work_id, sourceEvent.sequence_number,
+              sourceEvent.event_hash, now(), projectedSequence,
+              current.legacy_projection_event_hash || null]);
+            if (!cursorOnly.rows[0]) fail("legacy_projection_cursor_cas_conflict");
+            return { work: normalizeWork(cursorOnly.rows[0]), applied: true, drift: null };
+          }
+          const operational = promotedOperationalProjection(row, sourceEvent);
+          if (!operational || ARCHIVE_STATUSES.has(operational.status) ||
+              (ARCHIVE_STATUSES.has(current.status) && current.status !== operational.status)) {
+            return { work: current, applied: false, drift: {
+              reason: "legacy_projection_promoted_state_conflict",
+              authoritative_status: operational?.status || status,
+              authoritative_next_action: operational?.next_action ?? row.next_action ?? null,
+              source_sequence_number: sourceEvent.sequence_number,
+              source_event_hash: sourceEvent.event_hash,
+            } };
+          }
+          if (equalCursor && current.status === operational.status &&
+              String(current.next_action || "") === operational.next_action) {
+            return { work: current, applied: false, drift: null };
+          }
+          const updated = await client.query(`UPDATE tenant_work SET
+              status=$3::varchar,next_action=$4,
+              updated_at=GREATEST(updated_at,$5::timestamptz),
+              legacy_projection_sequence=$6,legacy_projection_event_hash=$7,
+              legacy_projection_updated_at=$8::timestamptz
+            WHERE tenant_id=$1 AND work_id=$2
+              AND legacy_projection_sequence=$9
+              AND legacy_projection_event_hash IS NOT DISTINCT FROM $10
+            RETURNING *`,
+          [actor.tenant_id, current.work_id, operational.status, operational.next_action,
+            row.updated_at || now(), sourceEvent.sequence_number, sourceEvent.event_hash, now(),
+            projectedSequence, current.legacy_projection_event_hash || null]);
+          if (!updated.rows[0]) fail("legacy_projection_cursor_cas_conflict");
+          await appendV2Event(client, actor, current.work_id, "legacy_work_projection_synced", {
+            legacy_status: String(row.status || "").toLowerCase(),
+            projected_status: operational.status,
+            promoted_v2_operational_projection: true,
+            source_event_type: sourceEvent.event_type,
+            source_event_hash: sourceEvent.event_hash,
+            source_sequence_number: sourceEvent.sequence_number,
+            equal_cursor_state_repair: equalCursor,
+          });
+          return { work: normalizeWork(updated.rows[0]), applied: true, drift: null };
+        }
         if (ARCHIVE_STATUSES.has(current.status) && !ARCHIVE_STATUSES.has(status)) {
           fail("legacy_projection_terminal_regression_denied");
         }
@@ -1865,7 +1991,7 @@ export function createWorkContinuityV2Store({
           source_event_type: sourceEvent.event_type, source_event_hash: sourceEvent.event_hash,
           source_sequence_number: sourceEvent.sequence_number,
         });
-        return normalizeWork(updated.rows[0]);
+        return { work: normalizeWork(updated.rows[0]), applied: true, drift: null };
       }
       const workCode = await allocateCode(client, actor, row.project_id || "LEGACY");
       await client.query(`INSERT INTO tenant_work
@@ -1884,7 +2010,7 @@ export function createWorkContinuityV2Store({
         source_event_type: sourceEvent.event_type, source_event_hash: sourceEvent.event_hash,
         source_sequence_number: sourceEvent.sequence_number,
       });
-      return projected;
+      return { work: projected, applied: true, drift: null };
   }
   async function projectLegacyWork(identity, { legacy_work_id }) {
     await initialize();
@@ -1892,7 +2018,7 @@ export function createWorkContinuityV2Store({
     if (!isAdmin(actor)) fail("legacy_projection_owner_required");
     const legacyId = uuid(legacy_work_id, "legacy_work_id_invalid");
     return transaction(async (client) => {
-      return projectLegacyWorkWithClient(client, actor, legacyId);
+      return (await projectLegacyWorkWithClient(client, actor, legacyId)).work;
     });
   }
   async function readWork(identity, { work_id }) {
@@ -2273,15 +2399,14 @@ export function createWorkContinuityV2Store({
       for (const row of legacy.rows) {
         if (!mapLegacyStatus(row.status)) { skipped += 1; continue; }
         try {
-          const before = await client.query(`SELECT legacy_projection_sequence FROM tenant_work
-            WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2)`, [actor.tenant_id, row.work_id]);
-          const previousSequence = Number(before.rows[0]?.legacy_projection_sequence || 0);
           const event = legacyProjectionEvent(row);
-          await projectLegacyWorkWithClient(client, actor, row.work_id, row, event);
-          if (event && event.sequence_number > previousSequence) projected += 1;
+          const projection = await projectLegacyWorkWithClient(client, actor, row.work_id, row, event);
+          if (projection.applied) projected += 1;
+          if (projection.drift) skipped += 1;
         } catch (error) {
           if (["legacy_projection_source_event_required", "legacy_projection_terminal_evidence_required",
-            "legacy_projection_terminal_regression_denied"].includes(error?.message)) {
+            "legacy_projection_terminal_regression_denied",
+            "legacy_projection_operational_binding_invalid"].includes(error?.message)) {
             skipped += 1;
             continue;
           }
@@ -2333,14 +2458,13 @@ export function createWorkContinuityV2Store({
           managed_team_ids: [], is_tenant_owner: true, is_super_admin: false };
         const event = legacyProjectionEvent(row);
         try {
-          const before = await client.query(`SELECT legacy_projection_sequence FROM tenant_work
-            WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2)`, [row.tenant_id, row.work_id]);
-          const previousSequence = Number(before.rows[0]?.legacy_projection_sequence || 0);
-          await projectLegacyWorkWithClient(client, actor, row.work_id, row, event);
-          if (event && event.sequence_number > previousSequence) result.projected += 1;
+          const projection = await projectLegacyWorkWithClient(client, actor, row.work_id, row, event);
+          if (projection.applied) result.projected += 1;
+          if (projection.drift) result.skipped += 1;
         } catch (error) {
           if (["legacy_projection_source_event_required", "legacy_projection_terminal_evidence_required",
-            "legacy_projection_terminal_regression_denied"].includes(error?.message)) {
+            "legacy_projection_terminal_regression_denied",
+            "legacy_projection_operational_binding_invalid"].includes(error?.message)) {
             result.skipped += 1;
             continue;
           }
@@ -3352,8 +3476,10 @@ export function createWorkContinuityV2Store({
     if (!resolvedCoreJoinVerifier || !resolvedCoreJoinVerifier.verify(core_join_context)) fail("generic_core_join_signature_invalid");
     const workId = uuid(work_id);
     await transaction(async (client) => {
-      const work = await loadWork(client, actor, workId, true);
+      const closure = await closureState(client, actor, workId, true, true);
+      const work = closure.work;
       assertPermission(canClose, work, actor);
+      assertGenericIncidentClosureAllowed(closure);
       const joinDigest = digest(core_join_digest, "core_join_digest_invalid");
       const context = core_join_context || {};
       if (context.tenant_id !== actor.tenant_id || context.work_id !== workId || context.adapter !== work.work_type ||
@@ -3361,9 +3487,11 @@ export function createWorkContinuityV2Store({
           context.decision !== "GENERIC_WORK_CORE_JOIN_ELIGIBLE" || typeof context.signature !== "string" || context.signature.length < 16) {
         fail("generic_core_join_context_invalid");
       }
-      const existing = await client.query("SELECT core_join_digest,core_join_context FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE", [actor.tenant_id, workId]);
-      if (existing.rows[0]) {
-        if (existing.rows[0].core_join_digest !== joinDigest || objectDigest(existing.rows[0].core_join_context) !== objectDigest(context)) fail("generic_core_join_conflict");
+      if (closure.join) {
+        if (closure.join.core_join_digest !== joinDigest ||
+            objectDigest(closure.join.core_join_context) !== objectDigest(context)) {
+          fail("generic_core_join_conflict");
+        }
         return;
       }
       await client.query(`INSERT INTO tenant_work_core_join (tenant_id,work_id,core_join_digest,core_join_context,persisted_by_user_id)
@@ -3414,17 +3542,46 @@ export function createWorkContinuityV2Store({
       };
       const legacyReconciliationEligible = work.work_type === "legacy";
       if (!legacyReconciliationEligible) {
+        const [authoritative, sourceEvent] = work.legacy_work_id ? await Promise.all([
+          query("SELECT status,updated_at,next_action FROM core_continuity_works WHERE tenant_id=$1 AND work_id=$2",
+            [actor.tenant_id, sourceId]),
+          query(`SELECT sequence_number,event_hash FROM core_continuity_events
+            WHERE tenant_id=$1 AND work_id=$2 ORDER BY sequence_number DESC LIMIT 1`,
+          [actor.tenant_id, sourceId]),
+        ]) : [{ rows: [] }, { rows: [] }];
+        const authoritativeStatus = authoritative.rows[0]
+          ? String(authoritative.rows[0].status || "").toLowerCase()
+          : null;
+        const authoritativeV2Status = authoritativeStatus
+          ? mapLegacyStatus(authoritativeStatus)
+          : null;
+        const authoritativeNextAction = authoritative.rows[0]?.next_action ?? null;
+        const projectedSequence = Number(work.legacy_projection_sequence || 0);
+        const authoritativeSequence = Number(sourceEvent.rows[0]?.sequence_number || 0);
+        const cursorDrift = authoritativeSequence > projectedSequence ||
+          (authoritativeSequence === projectedSequence && authoritativeSequence > 0 &&
+            String(sourceEvent.rows[0]?.event_hash || "") !==
+              String(work.legacy_projection_event_hash || ""));
+        const nextActionDrift = authoritativeNextAction !== (work.next_action ?? null);
+        const projectionDrift = !authoritativeStatus || !authoritativeV2Status ||
+          authoritativeV2Status !== work.status || nextActionDrift || cursorDrift;
         result.push({
           work_id: work.work_id,
           work_code: work.work_code,
           parent_work_id: work.parent_work_id || null,
           successor_work_id: work.successor_work_id || null,
           superseded_by_work_id: work.superseded_by_work_id || null,
-          expected_status: null,
-          authoritative_status: null,
+          expected_status: authoritativeStatus,
+          authoritative_status: authoritativeStatus,
           projected_status: work.status,
-          projection_drift: false,
-          authoritative_updated_at: null,
+          projection_drift: projectionDrift,
+          authoritative_next_action: authoritativeNextAction,
+          projected_next_action: work.next_action ?? null,
+          next_action_projection_drift: nextActionDrift,
+          authoritative_projection_sequence: authoritativeSequence,
+          projected_projection_sequence: projectedSequence,
+          cursor_projection_drift: cursorDrift,
+          authoritative_updated_at: authoritative.rows[0]?.updated_at || null,
           projected_updated_at: work.updated_at || null,
           timestamp_projection_drift: false,
           work_type: work.work_type,
@@ -3777,14 +3934,57 @@ export function createWorkContinuityV2Store({
       };
     });
   }
-  async function closureState(client, actor, workId, lock = false) {
-    const work = await loadWork(client, actor, workId, lock);
+  async function closureState(client, actor, workId, lock = false, incidentGate = false) {
+    let expectedLegacyWorkId;
+    let legacyWork = null;
+    let incidentAssociations = [];
+    if (incidentGate) {
+      // Incident writers lock the canonical Core Work before projecting the
+      // linked Gallery row. Read the immutable binding without a row lock,
+      // then take the same Core -> Gallery order and revalidate the binding.
+      const binding = await client.query(`SELECT legacy_work_id FROM tenant_work
+        WHERE tenant_id=$1 AND work_id=$2`, [actor.tenant_id, workId]);
+      if (!binding.rows[0]) fail("work_not_found");
+      expectedLegacyWorkId = binding.rows[0].legacy_work_id || null;
+      if (expectedLegacyWorkId) {
+        const lockedLegacy = await client.query(`SELECT work_id,status FROM core_continuity_works
+          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
+        [actor.tenant_id, expectedLegacyWorkId]);
+        if (!lockedLegacy.rows[0]) fail("legacy_work_not_found");
+        legacyWork = lockedLegacy.rows[0];
+        const incidents = await client.query(`SELECT fingerprint,status,blocks_work
+          FROM core_continuity_work_incidents
+          WHERE tenant_id=$1 AND work_id=$2
+          ORDER BY updated_at,fingerprint`,
+        [actor.tenant_id, expectedLegacyWorkId]);
+        incidentAssociations = incidents.rows;
+      }
+    }
+    const work = await loadWork(client, actor, workId, lock || incidentGate);
+    if (incidentGate && (work.legacy_work_id || null) !== expectedLegacyWorkId) {
+      fail("work_legacy_binding_changed");
+    }
     const [evidence, join, receipt] = await Promise.all([
       client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 AND required=true", [actor.tenant_id, workId]),
       client.query("SELECT * FROM tenant_work_core_join WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
       client.query("SELECT * FROM tenant_work_closure_receipt WHERE tenant_id=$1 AND work_id=$2", [actor.tenant_id, workId]),
     ]);
-    return { work, evidence: evidence.rows, join: join.rows[0] || null, receipt: receipt.rows[0] || null };
+    return { work, evidence: evidence.rows, join: join.rows[0] || null,
+      receipt: receipt.rows[0] || null, legacy_work: legacyWork,
+      incident_associations: incidentAssociations };
+  }
+  function assertGenericIncidentClosureAllowed(state) {
+    const incidents = Array.isArray(state.incident_associations)
+      ? state.incident_associations
+      : [];
+    if (incidents.some((incident) => incident.blocks_work === true &&
+        ["candidate", "quarantined"].includes(String(incident.status || "")))) {
+      fail("continuity_work_incident_blocker_unresolved");
+    }
+    if (incidents.length) fail("continuity_work_incident_native_closure_required");
+    if (String(state.legacy_work?.status || "") === "blocked") {
+      fail("continuity_work_blocked_revalidation_required");
+    }
   }
   async function verifyAndBackfillExistingClosure(client, actor, state, adapter) {
     const workId = state.work.work_id;
@@ -3850,9 +4050,10 @@ export function createWorkContinuityV2Store({
     const actor = actorFromIdentity(identity);
     const workId = uuid(work_id);
     if (!CLOSURE_ADAPTERS.includes(adapter)) fail("work_closure_adapter_invalid");
-    const state = await transaction((client) => closureState(client, actor, workId, false));
+    const state = await transaction((client) => closureState(client, actor, workId, true, true));
     assertPermission(canRead, state.work, actor);
     if (state.work.work_type !== adapter) fail("work_closure_adapter_mismatch");
+    assertGenericIncidentClosureAllowed(state);
     const independent = state.evidence.length > 0 && state.evidence.every((item) => item.independently_verified === true && item.verified_by_agent_id !== state.work.created_by_agent_id);
     return { work_id: workId, adapter, ready: Boolean(independent && state.join), independent_verification_persisted: independent, core_join_persisted: Boolean(state.join), idempotent_receipt: Boolean(state.receipt) };
   }
@@ -3863,12 +4064,12 @@ export function createWorkContinuityV2Store({
     const actor = actorFromIdentity(identity);
     if (!actor.agent_id || !actor.session_fingerprint) fail("generic_core_join_requester_presence_required");
     const state = await transaction(async (client) => {
-      const work = await loadWork(client, actor, uuid(work_id), false);
-      assertPermission(canClose, work, actor);
-      if (work.work_type !== adapter) fail("work_closure_adapter_mismatch");
-      const tasks = await client.query("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY task_id", [actor.tenant_id, work.work_id]);
-      const evidence = await client.query("SELECT * FROM tenant_work_evidence WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY created_at,evidence_id", [actor.tenant_id, work.work_id]);
-      return { work, tasks: tasks.rows, evidence: evidence.rows };
+      const closure = await closureState(client, actor, uuid(work_id), true, true);
+      assertPermission(canClose, closure.work, actor);
+      if (closure.work.work_type !== adapter) fail("work_closure_adapter_mismatch");
+      assertGenericIncidentClosureAllowed(closure);
+      const tasks = await client.query("SELECT * FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true ORDER BY task_id", [actor.tenant_id, closure.work.work_id]);
+      return { work: closure.work, tasks: tasks.rows, evidence: closure.evidence };
     });
     if (!state.tasks.length || state.tasks.some((task) => task.status !== "completed" || task.acceptance_verified !== true)) fail("generic_core_join_tasks_incomplete");
     if (!state.evidence.length || state.evidence.some((item) => item.independently_verified !== true)) fail("generic_core_join_evidence_incomplete");
@@ -3907,7 +4108,7 @@ export function createWorkContinuityV2Store({
     const workId = uuid(work_id);
     if (!CLOSURE_ADAPTERS.includes(adapter)) fail("work_closure_adapter_invalid");
     return transaction(async (client) => {
-      const state = await closureState(client, actor, workId, true);
+      const state = await closureState(client, actor, workId, true, true);
       assertPermission(canClose, state.work, actor);
       if (state.work.work_type !== adapter) fail("work_closure_adapter_mismatch");
       if (state.receipt) {
@@ -3916,6 +4117,7 @@ export function createWorkContinuityV2Store({
           projection_backfilled: replay.projection_backfilled,
           closure_verification: replay.verification, archive_status: "ARCHIVED" };
       }
+      assertGenericIncidentClosureAllowed(state);
       const tasks = await client.query("SELECT status,acceptance_verified FROM tenant_work_task WHERE tenant_id=$1 AND work_id=$2 AND required=true", [actor.tenant_id, workId]);
       const independent = state.evidence.length > 0 && state.evidence.every((item) => item.independently_verified === true && item.verified_by_agent_id !== state.work.created_by_agent_id);
       const completeTasks = tasks.rows.length > 0 && tasks.rows.every((item) => item.status === "completed" && item.acceptance_verified === true);

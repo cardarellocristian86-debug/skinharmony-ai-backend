@@ -20,6 +20,10 @@ import {
   createGenericWorkCoreJoinMcpCoordinator,
   createGenericWorkCoreJoinVerifier,
   createWorkContinuityV2Store,
+  actorFromIdentity,
+  canClose,
+  canContributeEvidence,
+  canRecordTask,
   deriveAuthenticatedTenantWorkAcl,
 } from "./work-continuity-v2-store.js";
 import { createNyraNativeTeamRuntime } from "./nyra-native-team-runtime.js";
@@ -38,7 +42,10 @@ import {
   continuityProjectId,
   resolveContinuityProjectBinding,
 } from "./continuity-project-binding.js";
-import { createWorkContinuityAutomation } from "./work-continuity-automation.js";
+import {
+  authorizeWorkContinuityOperationalError,
+  createWorkContinuityAutomation,
+} from "./work-continuity-automation.js";
 import {
   WORK_CONTINUITY_TOOLS,
   tenantWorkCoordinationActionType,
@@ -210,9 +217,7 @@ const workContinuityV2Store = primaryDatabasePool ? createWorkContinuityV2Store(
   coreJoinVerifier: genericWorkCoreJoinVerifier,
 }) : null;
 // V2 depends on the legacy Core continuity schema. Start that initializer
-// first, then V2 readiness, before any report transaction can reach the
-// bridge. The bridge only awaits this already-started promise; it never
-// starts a separate migration transaction while holding the legacy Work lock.
+// first, then initialize V2 before the server reports continuity readiness.
 const workContinuityV2StoreReady = workContinuityV2Store
   ? Promise.resolve()
     .then(() => workContinuityRuntime?.initialize())
@@ -224,10 +229,7 @@ if (workContinuityRuntime && workContinuityV2Store) {
   // The report-to-evidence bridge is internal and shares the report
   // transaction. It is intentionally not exposed as an MCP capability.
   workContinuityRuntime.setNativeVerifierEvidenceBridge(
-    async (client, source) => {
-      await workContinuityV2StoreReady;
-      return workContinuityV2Store.recordNativeVerifierEvidenceWithClient(client, source);
-    },
+    (client, source) => workContinuityV2Store.recordNativeVerifierEvidenceWithClient(client, source),
   );
 }
 const nyraNativeTeamRuntime = createNyraNativeTeamRuntime(config, {
@@ -939,6 +941,37 @@ function continuityMethodWithNyraContext(method) {
   };
 }
 
+function continuityWorkMethod(method) {
+  const invoke = continuityMethod(method);
+  return async (args, identity) => {
+    await requireCanonicalWorkRead(identity, args.work_id);
+    return invoke(args, identity);
+  };
+}
+
+async function authorizedOperationalCall(operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    throw authorizeWorkContinuityOperationalError(error);
+  }
+}
+
+function requireNativeReportOperationalAdmission(identity, args) {
+  const admission = identity?.nativeReportAdmission;
+  const agentId = String(args?.native_agent_id || args?.agent_id || "");
+  if (
+    admission?.capability_id !== "work_continuity_native_report" ||
+    admission.work_id !== args?.work_id ||
+    admission.plan_id !== args?.plan_id ||
+    admission.native_agent_id !== agentId ||
+    admission.host_task_id !== args?.host_task_id
+  ) {
+    throw legacyWorkAclError("continuity_work_mutation_acl_denied");
+  }
+  return admission;
+}
+
 async function reconcileNyraAutopilot(identity, work, triggerType) {
   if (!nyraAutopilotRuntime || !work?.work_id) return null;
   try {
@@ -1111,6 +1144,17 @@ async function requireCanonicalWorkRead(identity, workId) {
     }
     throw error;
   }
+}
+
+async function requireCanonicalWorkMutation(identity, workId, capability, predicate) {
+  requireTenantWorkCapability(identity, capability);
+  const canonicalResult = await requireCanonicalWorkRead(identity, workId);
+  const work = canonicalResult?.work || canonicalResult;
+  const actor = actorFromIdentity(withTenantWorkAcl(identity));
+  if (!work || work.work_id !== workId || predicate(work, actor) !== true) {
+    throw legacyWorkAclError("continuity_work_mutation_acl_denied");
+  }
+  return work;
 }
 
 async function canonicalVisibleWorkIds(identity, { project_id } = {}) {
@@ -1505,13 +1549,14 @@ async function bindNativeContinuityChild(args, identity) {
     toolName: "work_continuity_native_bind",
     tools: TOOLS,
   });
+  await requireCanonicalWorkMutation(identity, args.work_id, "operate", canRecordTask);
   const nativeArgs = identity?.authenticatedHostPrincipal
     ? { ...args, host_type: authenticatedHostKind(identity) }
     : args;
-  return continuityTextResult({
+  return authorizedOperationalCall(async () => continuityTextResult({
     ok: true,
     result: await workContinuityRuntime.bindNativeAgent(identity, nativeArgs),
-  });
+  }));
 }
 
 const nyraConverseHandler = createNyraConverseHandler({
@@ -1963,7 +2008,12 @@ const baseHandlers = {
     work_continuity_native_bind: bindNativeContinuityChild,
     work_continuity_native_acceptance_contract_read:
       continuityMethod("readNativeAgentAcceptanceContract"),
-    work_continuity_native_report: continuityMethod("reportNativeAgent"),
+    work_continuity_native_report: async (args, identity) => {
+      requireNativeReportOperationalAdmission(identity, args);
+      return authorizedOperationalCall(
+        () => continuityMethod("reportNativeAgent")(args, identity),
+      );
+    },
     work_continuity_precommit_ticket_gate_read: async (args, identity) =>
       continuityTextResult({ ok: true,
         result: await workContinuityV2Store.readPrecommitTicketGate(
@@ -2001,84 +2051,95 @@ const baseHandlers = {
         } });
     },
     work_continuity_closure_evaluate: async (args, identity) => {
-      const evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
-      if (evaluation.closed !== true) {
-        return continuityTextResult({ ok: true, result: evaluation });
-      }
-      const material = evaluation.core_join_material;
-      if (
-        material?.schema_version !== "continuity_core_join_material_v1" ||
-        material.tenant_id !== identity.tenantId ||
-        !material.release_intent_request ||
-        !material.core_join_request
-      ) {
-        throw new Error("continuity_core_join_material_required");
-      }
-      const releaseIntentResult = await coreHandlers.host_native_release_intent_build(
-        material.release_intent_request,
+      await requireCanonicalWorkMutation(
         identity,
+        args.work_id,
+        "review_candidate",
+        canContributeEvidence,
       );
-      const releaseIntent = releaseIntentResult?.structuredContent?.release_intent;
-      if (
-        releaseIntentResult?.structuredContent?.dedicated_core_gate?.authorized !== true ||
-        releaseIntentResult?.structuredContent?.tenant_id !== identity.tenantId ||
-        releaseIntent?.tenant_id !== identity.tenantId ||
-        releaseIntent?.work_id !== args.work_id
-      ) {
-        throw new Error("continuity_core_release_intent_invalid");
-      }
-      const coreJoinResult = await coreHandlers.host_native_core_join_issue({
-        ...material.core_join_request,
-        release_intent: releaseIntent,
-        idempotency_key: coreJoinIdempotencyKey(material),
-      }, identity);
-      const coreJoinRecord = coreJoinResult?.structuredContent?.core_join_verdict;
-      if (
-        coreJoinResult?.structuredContent?.dedicated_core_gate?.authorized !== true ||
-        coreJoinResult?.structuredContent?.tenant_id !== identity.tenantId ||
-        coreJoinRecord?.tenant_id !== identity.tenantId
-      ) {
-        throw new Error("continuity_core_join_response_invalid");
-      }
-      const coreJoin = await workContinuityRuntime.bindCoreJoinVerdict(identity, {
-        work_id: args.work_id,
-        plan_id: args.plan_id,
-        evaluation_id: evaluation.evaluation_id,
-      }, {
-        releaseIntent,
-        coreJoinRecord,
-      });
-      const { core_join_material: _coreJoinMaterial, ...publicEvaluation } = evaluation;
-      return continuityTextResult({
-        ok: true,
-        result: {
-          ...publicEvaluation,
-          release_ready: coreJoin.release_ready === true,
-          release_intent_digest: coreJoin.release_intent_digest,
-          core_join: coreJoin,
-        },
+      return authorizedOperationalCall(async () => {
+        const evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
+        if (evaluation.closed !== true) {
+          return continuityTextResult({ ok: true, result: evaluation });
+        }
+        const material = evaluation.core_join_material;
+        if (
+          material?.schema_version !== "continuity_core_join_material_v1" ||
+          material.tenant_id !== identity.tenantId ||
+          !material.release_intent_request ||
+          !material.core_join_request
+        ) {
+          throw new Error("continuity_core_join_material_required");
+        }
+        const releaseIntentResult = await coreHandlers.host_native_release_intent_build(
+          material.release_intent_request,
+          identity,
+        );
+        const releaseIntent = releaseIntentResult?.structuredContent?.release_intent;
+        if (
+          releaseIntentResult?.structuredContent?.dedicated_core_gate?.authorized !== true ||
+          releaseIntentResult?.structuredContent?.tenant_id !== identity.tenantId ||
+          releaseIntent?.tenant_id !== identity.tenantId ||
+          releaseIntent?.work_id !== args.work_id
+        ) {
+          throw new Error("continuity_core_release_intent_invalid");
+        }
+        const coreJoinResult = await coreHandlers.host_native_core_join_issue({
+          ...material.core_join_request,
+          release_intent: releaseIntent,
+          idempotency_key: coreJoinIdempotencyKey(material),
+        }, identity);
+        const coreJoinRecord = coreJoinResult?.structuredContent?.core_join_verdict;
+        if (
+          coreJoinResult?.structuredContent?.dedicated_core_gate?.authorized !== true ||
+          coreJoinResult?.structuredContent?.tenant_id !== identity.tenantId ||
+          coreJoinRecord?.tenant_id !== identity.tenantId
+        ) {
+          throw new Error("continuity_core_join_response_invalid");
+        }
+        const coreJoin = await workContinuityRuntime.bindCoreJoinVerdict(identity, {
+          work_id: args.work_id,
+          plan_id: args.plan_id,
+          evaluation_id: evaluation.evaluation_id,
+        }, {
+          releaseIntent,
+          coreJoinRecord,
+        });
+        const { core_join_material: _coreJoinMaterial, ...publicEvaluation } = evaluation;
+        return continuityTextResult({
+          ok: true,
+          result: {
+            ...publicEvaluation,
+            release_ready: coreJoin.release_ready === true,
+            release_intent_digest: coreJoin.release_intent_digest,
+            core_join: coreJoin,
+          },
+        });
       });
     },
     work_continuity_closure_finalize: async (args, identity) => {
-      const coreReceipt = await coreHandlers.host_native_action_closure_receipt({
-        ticket_id: args.action_ticket_id,
-      }, identity);
-      const authorization = coreReceipt?.structuredContent?.finalize_authorization;
-      if (
-        coreReceipt?.structuredContent?.tenant_id !== identity.tenantId ||
-        authorization?.schema_version !== "host_native_finalize_authorization_v1" ||
-        authorization?.trusted !== true ||
-        authorization?.allowed !== true ||
-        !/^hnf_[a-f0-9]{64}$/.test(String(authorization?.signature || "")) ||
-        authorization.tenant_id !== identity.tenantId ||
-        authorization.work_id !== args.work_id ||
-        authorization.action_ticket_id !== args.action_ticket_id
-      ) {
-        throw new Error("continuity_trusted_core_closure_receipt_required");
-      }
-      return continuityTextResult({
-        ok: true,
-        result: await workContinuityRuntime.finalizeClosure(identity, args, authorization),
+      await requireCanonicalWorkMutation(identity, args.work_id, "operate", canClose);
+      return authorizedOperationalCall(async () => {
+        const coreReceipt = await coreHandlers.host_native_action_closure_receipt({
+          ticket_id: args.action_ticket_id,
+        }, identity);
+        const authorization = coreReceipt?.structuredContent?.finalize_authorization;
+        if (
+          coreReceipt?.structuredContent?.tenant_id !== identity.tenantId ||
+          authorization?.schema_version !== "host_native_finalize_authorization_v1" ||
+          authorization?.trusted !== true ||
+          authorization?.allowed !== true ||
+          !/^hnf_[a-f0-9]{64}$/.test(String(authorization?.signature || "")) ||
+          authorization.tenant_id !== identity.tenantId ||
+          authorization.work_id !== args.work_id ||
+          authorization.action_ticket_id !== args.action_ticket_id
+        ) {
+          throw new Error("continuity_trusted_core_closure_receipt_required");
+        }
+        return continuityTextResult({
+          ok: true,
+          result: await workContinuityRuntime.finalizeClosure(identity, args, authorization),
+        });
       });
     },
     work_continuity_atlas_upsert: continuityMethodWithNyraContext("upsertAtlas"),
@@ -2086,9 +2147,22 @@ const baseHandlers = {
       ok: true,
       result: await selectLegacyAtlasAuthorized(identity, args),
     }),
-    work_continuity_incident_record: continuityMethodWithNyraContext("recordIncident"),
-    work_continuity_incident_verify: continuityMethodWithNyraContext("verifyIncident"),
-    work_continuity_incident_resolve: continuityMethod("resolveIncident"),
+    work_continuity_incident_record: async (args, identity) => {
+      await requireCanonicalWorkMutation(identity, args.work_id, "operate", canRecordTask);
+      return continuityMethodWithNyraContext("recordIncident")(args, identity);
+    },
+    work_continuity_incident_reconcile: async (args, identity) => {
+      await workContinuityV2StoreReady;
+      await requireCanonicalWorkMutation(identity, args.work_id, "operate", canRecordTask);
+      return continuityMethodWithNyraContext("reconcileLegacyIncidentForWork")(args, identity);
+    },
+    work_continuity_incident_verify: async (args, identity) => {
+      await requireCanonicalWorkMutation(identity, args.work_id, "review_candidate", canContributeEvidence);
+      return continuityMethodWithNyraContext("verifyIncident")(args, identity);
+    },
+    work_continuity_incident_list: continuityWorkMethod("listWorkIncidents"),
+    work_continuity_incident_read: continuityWorkMethod("readWorkIncident"),
+    work_continuity_incident_resolve: continuityWorkMethod("resolveIncident"),
   } : {}),
   ...(nyraNativeTeamRuntime ? {
     nyra_native_team_blueprints: async (_args, identity) => continuityTextResult({
@@ -2328,6 +2402,7 @@ const NYRA_DIALOGUE_MATERIAL_CHANGE_TOOLS = new Set([
   "nyra_work_assignment_submit",
   "work_continuity_atlas_upsert",
   "work_continuity_incident_record",
+  "work_continuity_incident_reconcile",
   "work_continuity_incident_verify",
   "software_cognition_graph_upsert",
   "software_cognition_index_diff",

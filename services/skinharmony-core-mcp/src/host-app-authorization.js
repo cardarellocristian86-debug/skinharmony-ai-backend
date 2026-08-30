@@ -17,6 +17,7 @@ const WORK_CREATE_TOOLS = new Set([
 
 const WORK_REVIEW_TOOLS = new Set([
   "tenant_work_evidence_record",
+  "work_continuity_incident_verify",
 ]);
 
 const WORK_COORDINATION_TOOLS = new Set([
@@ -76,8 +77,11 @@ const HOST_NATIVE_DELEGATION_TOOLS = new Set([
 
 const HOST_NATIVE_OPERATE_TOOLS = new Set([
   "work_continuity_native_report",
-  "work_continuity_closure_evaluate",
   "work_continuity_closure_finalize",
+]);
+
+const HOST_NATIVE_REVIEW_TOOLS = new Set([
+  "work_continuity_closure_evaluate",
 ]);
 
 const NATIVE_REPORT_CAPABILITY = "work_continuity_native_report";
@@ -265,6 +269,9 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
   if (HOST_NATIVE_DELEGATION_TOOLS.has(name)) {
     return HOST_APP_CAPABILITIES.HOST_NATIVE_DELEGATE;
   }
+  if (HOST_NATIVE_REVIEW_TOOLS.has(name)) {
+    return HOST_APP_CAPABILITIES.WORK_REVIEW;
+  }
   if (HOST_NATIVE_OPERATE_TOOLS.has(name)) {
     return HOST_APP_CAPABILITIES.WORK_OPERATE;
   }
@@ -293,6 +300,7 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
 function isNativeSurface(name) {
   return name.startsWith("host_native_") ||
     HOST_NATIVE_DELEGATION_TOOLS.has(name) ||
+    HOST_NATIVE_REVIEW_TOOLS.has(name) ||
     HOST_NATIVE_OPERATE_TOOLS.has(name);
 }
 

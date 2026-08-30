@@ -81,8 +81,9 @@ function galleryMessagePool({ participantSubject, recipientSubject, messages = [
     async query(sql, params = []) {
       calls.push({ sql, params });
       if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
-      if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) {
-        return { rows: [{ work_id: WORK_ID }] };
+      if (/SELECT work_id,status,block_source,block_reference,block_epoch/.test(sql) && /FOR UPDATE/.test(sql)) {
+        return { rows: [{ work_id: WORK_ID, status: "active", block_source: null,
+          block_reference: null, block_epoch: 0 }] };
       }
       if (/SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject/.test(sql)) {
         if (params[3] !== participantSubject) return { rows: [] };
@@ -794,7 +795,10 @@ test("causal lease persists only server-authored authority proof while legacy le
     async query(sql, params = []) {
       calls.push({ sql, params });
       if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) return { rows: [] };
-      if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) return { rows: [{ work_id: WORK_ID }] };
+      if (/SELECT work_id,status,block_source,block_reference,block_epoch/.test(sql) && /FOR UPDATE/.test(sql)) {
+        return { rows: [{ work_id: WORK_ID, status: "active", block_source: null,
+          block_reference: null, block_epoch: 0 }] };
+      }
       if (/SELECT session_id,agent_id,client_type,branch_id,status,expires_at,actor_subject/.test(sql)) return { rows: [{
         session_id: "causal-session", agent_id: "causal-agent", client_type: "codex", branch_id: null,
         status: "active", expires_at: "2030-01-01T00:00:00.000Z", actor_subject: "oauth|causal",
@@ -958,8 +962,9 @@ test("Gallery mutations lock the work before participant rows", async () => {
     const pool = {
       async query(sql, params = []) {
         calls.push({ sql, params });
-        if (/SELECT work_id FROM core_continuity_works/.test(sql) && /FOR UPDATE/.test(sql)) {
-          return { rows: [{ work_id: WORK_ID }], rowCount: 1 };
+        if (/SELECT work_id,status,block_source,block_reference,block_epoch/.test(sql) && /FOR UPDATE/.test(sql)) {
+          return { rows: [{ work_id: WORK_ID, status: "active", block_source: null,
+            block_reference: null, block_epoch: 0 }], rowCount: 1 };
         }
         return { rows: [], rowCount: 0 };
       },
@@ -972,7 +977,8 @@ test("Gallery mutations lock the work before participant rows", async () => {
       client_type: "codex",
     }), /continuity_participant_not_active/);
     const rowLock = calls.findIndex((call) =>
-      /SELECT work_id FROM core_continuity_works/.test(call.sql) && /FOR UPDATE/.test(call.sql));
+      /SELECT work_id,status,block_source,block_reference,block_epoch/.test(call.sql) &&
+        /FOR UPDATE/.test(call.sql));
     const workLock = calls.findIndex((call) =>
       /pg_advisory_xact_lock/.test(call.sql) && call.params[1] === WORK_ID);
     const participantLock = calls.findIndex((call) =>
@@ -996,8 +1002,9 @@ test("Gallery join locks the Work row before the advisory work lock", async () =
       if (/SELECT operation,request_digest,result FROM core_continuity_idempotency/.test(sql)) {
         return { rows: [], rowCount: 0 };
       }
-      if (/SELECT work_id FROM core_continuity_works/.test(sql)) {
-        return { rows: [{ work_id: WORK_ID }], rowCount: 1 };
+      if (/SELECT work_id,status,block_source,block_reference,block_epoch/.test(sql)) {
+        return { rows: [{ work_id: WORK_ID, status: "active", block_source: null,
+          block_reference: null, block_epoch: 0 }], rowCount: 1 };
       }
       if (/SELECT actor_subject,agent_id,client_type,branch_id,expires_at/.test(sql)) {
         throw new Error("join-lock-order-observed");
@@ -1019,7 +1026,8 @@ test("Gallery join locks the Work row before the advisory work lock", async () =
     },
   ), /join-lock-order-observed/);
   const rowLock = calls.findIndex((call) =>
-    /SELECT work_id FROM core_continuity_works/.test(call.sql) && /FOR UPDATE/.test(call.sql));
+    /SELECT work_id,status,block_source,block_reference,block_epoch/.test(call.sql) &&
+      /FOR UPDATE/.test(call.sql));
   const workAdvisoryLock = calls.findIndex((call) =>
     /pg_advisory_xact_lock/.test(call.sql) && call.params[1] === WORK_ID);
   const participantLock = calls.findIndex((call) =>

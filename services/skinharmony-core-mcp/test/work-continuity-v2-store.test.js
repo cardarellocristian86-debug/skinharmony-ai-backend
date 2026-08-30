@@ -388,6 +388,42 @@ test("shared visibility is read-only and cross-user writes are denied", () => {
   assert.equal(canRead(work, foreignTenant), false);
 });
 
+test("closure review and finalization keep exact Work principals distinct", () => {
+  const assigned = actorFromIdentity({
+    tenantId: "tenant-a", subject: "assigned",
+    tenant_work_acl: acl({ user_id: "assigned" }),
+  });
+  const supervisor = actorFromIdentity({
+    tenantId: "tenant-a", subject: "supervisor",
+    tenant_work_acl: acl({ user_id: "supervisor" }),
+  });
+  const unrelated = actorFromIdentity({
+    tenantId: "tenant-a", subject: "unrelated",
+    tenant_work_acl: acl({ user_id: "unrelated" }),
+  });
+  const crossTenant = actorFromIdentity({
+    tenantId: "tenant-b", subject: "supervisor",
+    tenant_work_acl: acl({ tenant_id: "tenant-b", user_id: "supervisor" }),
+  });
+  const work = {
+    tenant_id: "tenant-a",
+    owner_user_id: "owner",
+    created_by_user_id: "owner",
+    assigned_user_ids: ["assigned"],
+    supervising_user_ids: ["supervisor"],
+    visibility_scope: "private",
+  };
+
+  assert.equal(canContributeEvidence(work, assigned), true);
+  assert.equal(canClose(work, assigned), false);
+  assert.equal(canContributeEvidence(work, supervisor), true);
+  assert.equal(canClose(work, supervisor), true);
+  assert.equal(canContributeEvidence(work, unrelated), false);
+  assert.equal(canClose(work, unrelated), false);
+  assert.equal(canContributeEvidence(work, crossTenant), false);
+  assert.equal(canClose(work, crossTenant), false);
+});
+
 test("team manager reads managed team but only explicit principals mutate or close", () => {
   const manager = actorFromIdentity({ tenantId: "tenant-a", subject: "manager", tenant_work_acl: acl({ user_id: "manager", managed_team_ids: ["team-a"] }) });
   const work = { tenant_id: "tenant-a", owner_user_id: "owner", created_by_user_id: "owner", assigned_user_ids: [], supervising_user_ids: [], team_id: "team-a", visibility_scope: "team" };

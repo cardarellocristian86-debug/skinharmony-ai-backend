@@ -176,6 +176,14 @@ class AtomicWorkPool {
       const row = this.works.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
+    if (q.startsWith("SELECT sequence_number,event_type,event_hash,payload FROM core_continuity_events") &&
+        q.includes("sequence_number=$3")) {
+      const row = this.legacy.get(key(parameters[0], parameters[1]));
+      const matches = row && Number(row.source_sequence_number) === Number(parameters[2]);
+      return { rows: matches ? [{ sequence_number: row.source_sequence_number,
+        event_type: row.source_event_type, event_hash: row.source_event_hash,
+        payload: structuredClone(row.source_event_payload || {}) }] : [], rowCount: matches ? 1 : 0 };
+    }
     if (q.startsWith("SELECT w.project_id,w.status,a.anchor,a.intent_digest")) {
       const row = this.legacy.get(key(parameters[0], parameters[1]));
       return { rows: row ? [structuredClone({ project_id: row.project_id, status: row.status,
@@ -226,6 +234,17 @@ class AtomicWorkPool {
         row.closed_at ||= parameters[8];
         row.archived_at ||= parameters[8];
       }
+      return { rows: [structuredClone(row)], rowCount: 1 };
+    }
+    if (q.startsWith("UPDATE tenant_work SET status=$3::varchar,next_action=$4")) {
+      const row = this.works.get(key(parameters[0], parameters[1]));
+      if (!row || Number(row.legacy_projection_sequence || 0) !== Number(parameters[8]) ||
+          (row.legacy_projection_event_hash || null) !== (parameters[9] || null)) {
+        return { rows: [], rowCount: 0 };
+      }
+      Object.assign(row, { status: parameters[2], next_action: parameters[3],
+        updated_at: parameters[4], legacy_projection_sequence: parameters[5],
+        legacy_projection_event_hash: parameters[6], legacy_projection_updated_at: parameters[7] });
       return { rows: [structuredClone(row)], rowCount: 1 };
     }
     if (q.startsWith("UPDATE tenant_work SET work_name=$3,work_type=$4")) {
@@ -357,6 +376,11 @@ class AtomicWorkPool {
       const rows = [...this.works.values()].filter((work) => work.tenant_id === parameters[0] &&
         (parameters.length === 1 || work.project_id === parameters[1]));
       return { rows: structuredClone(rows), rowCount: rows.length };
+    }
+    if (q.startsWith("SELECT w.work_id,w.project_id,w.parent_work_id") &&
+        q.includes("WHERE w.tenant_id=$1 AND w.work_id=$2")) {
+      const row = this.legacy.get(key(parameters[0], parameters[1]));
+      return { rows: row ? [structuredClone(row)] : [], rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("SELECT w.work_id,w.project_id,w.parent_work_id")) {
       const rows = [...this.legacy.values()].filter((work) => work.tenant_id === parameters[0] &&
@@ -951,6 +975,197 @@ test("coordinated create promotes a concurrent legacy projection to the requeste
   const replay = await store.createNewWork(identity(), input);
   assert.equal(replay.idempotent_replay, true);
   assert.equal(pool.tasks.size, 1, "an exact retry must not duplicate DTT tasks");
+});
+
+test("linked promoted V2 projects incident operational state without rewriting identity, tasks, or evidence", async () => {
+  const pool = new AtomicWorkPool();
+  const store = createWorkContinuityV2Store({ pool, legacyRuntime: legacyRuntimeWithConcurrentProjection(pool),
+    now: () => new Date("2026-08-08T10:00:00.000Z") });
+  const input = await reviewed(store, createInput());
+  const created = await store.createNewWork(identity(), input);
+  const workId = created.work.work_id;
+  const workKey = key("tenant-a", workId);
+  const task = [...pool.tasks.values()].find((candidate) => candidate.work_id === workId);
+  task.acceptance_verified = true;
+  pool.reports.set(workKey, {
+    work_id: workId,
+    report_digest: "9".repeat(64),
+    final_evidence_digest: "8".repeat(64),
+    server_verified: true,
+  });
+
+  const preservedIdentity = ((work) => ({
+    work_id: work.work_id,
+    legacy_work_id: work.legacy_work_id,
+    work_code: work.work_code,
+    work_name: work.work_name,
+    work_type: work.work_type,
+    project_id: work.project_id,
+    owner_user_id: work.owner_user_id,
+    created_by_user_id: work.created_by_user_id,
+    intent_digest: work.intent_digest,
+    objective: work.objective,
+    acceptance_criteria: work.acceptance_criteria,
+    idea: work.idea,
+    architecture: work.architecture,
+  }))(pool.works.get(workKey));
+  const preservedTasks = structuredClone([...pool.tasks.entries()]);
+  const preservedEvidence = structuredClone([...pool.reports.entries()]);
+  const legacy = pool.legacy.get(workKey);
+
+  const blockedPayload = {
+    work_status: "blocked",
+    next_action: "Follow the exact incident runbook.",
+  };
+  Object.assign(legacy, {
+    status: "blocked",
+    next_action: blockedPayload.next_action,
+    updated_at: "2026-08-08T10:00:03.000Z",
+    source_sequence_number: 3,
+    source_event_type: "incident_recorded",
+    source_event_hash: "d".repeat(64),
+    source_event_payload: blockedPayload,
+  });
+  const blockedEvent = {
+    sequence_number: 3,
+    event_type: "incident_recorded",
+    event_hash: "d".repeat(64),
+    payload: blockedPayload,
+  };
+  const initialEventCount = pool.events.size;
+  const blocked = await store.projectLegacyEvent({
+    client: pool,
+    tenant_id: "tenant-a",
+    work_id: workId,
+    actor: "incident-projector",
+    event: blockedEvent,
+  });
+  assert.equal(blocked.applied, true);
+  assert.equal(blocked.work.status, "BLOCKED");
+  assert.equal(blocked.work.next_action, blockedPayload.next_action);
+  assert.equal(blocked.work.legacy_projection_sequence, 3);
+  assert.equal(blocked.work.legacy_projection_event_hash, blockedEvent.event_hash);
+  assert.equal(pool.events.size, initialEventCount + 1);
+  assert.equal([...pool.events.values()].at(-1).event_type, "legacy_work_projection_synced");
+
+  // A prior buggy projector could leave the cursor/hash correct while the
+  // promoted V2 operational tuple remained stale. Replaying that exact
+  // authoritative event must repair status/next_action once under cursor CAS.
+  Object.assign(pool.works.get(workKey), {
+    status: "ACTIVE",
+    next_action: "Stale Gallery action despite an equal compatibility cursor.",
+  });
+  const repaired = await store.projectLegacyEvent({
+    client: pool,
+    tenant_id: "tenant-a",
+    work_id: workId,
+    actor: "incident-projector",
+    event: blockedEvent,
+  });
+  assert.equal(repaired.applied, true);
+  assert.equal(repaired.work.status, "BLOCKED");
+  assert.equal(repaired.work.next_action, blockedPayload.next_action);
+  assert.equal(pool.events.size, initialEventCount + 2);
+  assert.equal(
+    [...pool.events.values()].at(-1).payload.equal_cursor_state_repair,
+    true,
+  );
+
+  const blockedRow = structuredClone(pool.works.get(workKey));
+  const replay = await store.projectLegacyEvent({
+    client: pool,
+    tenant_id: "tenant-a",
+    work_id: workId,
+    actor: "incident-projector",
+    event: blockedEvent,
+  });
+  assert.equal(replay.applied, false);
+  assert.deepEqual(pool.works.get(workKey), blockedRow, "an exact replay must not rewrite the projection");
+  assert.equal(pool.events.size, initialEventCount + 2, "an exact replay must not append a V2 event");
+
+  await assert.rejects(store.projectLegacyEvent({
+    client: pool,
+    tenant_id: "tenant-a",
+    work_id: workId,
+    actor: "incident-projector",
+    event: { ...blockedEvent, sequence_number: 99, event_hash: "7".repeat(64) },
+  }), /legacy_projection_source_event_unverified/);
+  assert.deepEqual(pool.works.get(workKey), blockedRow, "a forged high cursor must not poison projection state");
+
+  legacy.source_event_hash = "e".repeat(64);
+  await assert.rejects(store.projectLegacyEvent({
+    client: pool,
+    tenant_id: "tenant-a",
+    work_id: workId,
+    actor: "incident-projector",
+    event: { ...blockedEvent, event_hash: legacy.source_event_hash },
+  }), /legacy_projection_cursor_conflict/);
+  assert.deepEqual(pool.works.get(workKey), blockedRow);
+  assert.equal(pool.events.size, initialEventCount + 2);
+
+  const verifiedPayload = {
+    work_status: "active",
+    next_action: "Resume the verified implementation path.",
+  };
+  Object.assign(legacy, {
+    status: "active",
+    next_action: verifiedPayload.next_action,
+    updated_at: "2026-08-08T10:00:04.000Z",
+    source_sequence_number: 4,
+    source_event_type: "incident_runbook_verified",
+    source_event_hash: "f".repeat(64),
+    source_event_payload: verifiedPayload,
+  });
+  const verifiedEvent = {
+    sequence_number: 4,
+    event_type: "incident_runbook_verified",
+    event_hash: "f".repeat(64),
+    payload: verifiedPayload,
+  };
+  const verified = await store.projectLegacyEvent({
+    client: pool,
+    tenant_id: "tenant-a",
+    work_id: workId,
+    actor: "incident-projector",
+    event: verifiedEvent,
+  });
+  assert.equal(verified.applied, true);
+  assert.equal(verified.work.status, "ACTIVE");
+  assert.equal(verified.work.next_action, verifiedPayload.next_action);
+  assert.equal(verified.work.legacy_projection_sequence, 4);
+  assert.equal(verified.work.legacy_projection_event_hash, verifiedEvent.event_hash);
+  assert.equal(pool.events.size, initialEventCount + 3);
+
+  const verifiedRow = structuredClone(pool.works.get(workKey));
+  const verifiedReplay = await store.projectLegacyEvent({
+    client: pool,
+    tenant_id: "tenant-a",
+    work_id: workId,
+    actor: "incident-projector",
+    event: verifiedEvent,
+  });
+  assert.equal(verifiedReplay.applied, false);
+  assert.deepEqual(pool.works.get(workKey), verifiedRow);
+  assert.equal(pool.events.size, initialEventCount + 3);
+
+  const finalWork = pool.works.get(workKey);
+  assert.deepEqual({
+    work_id: finalWork.work_id,
+    legacy_work_id: finalWork.legacy_work_id,
+    work_code: finalWork.work_code,
+    work_name: finalWork.work_name,
+    work_type: finalWork.work_type,
+    project_id: finalWork.project_id,
+    owner_user_id: finalWork.owner_user_id,
+    created_by_user_id: finalWork.created_by_user_id,
+    intent_digest: finalWork.intent_digest,
+    objective: finalWork.objective,
+    acceptance_criteria: finalWork.acceptance_criteria,
+    idea: finalWork.idea,
+    architecture: finalWork.architecture,
+  }, preservedIdentity);
+  assert.deepEqual([...pool.tasks.entries()], preservedTasks);
+  assert.deepEqual([...pool.reports.entries()], preservedEvidence);
 });
 
 test("significant overlap requires an owner decision and does not consume on denial", async () => {

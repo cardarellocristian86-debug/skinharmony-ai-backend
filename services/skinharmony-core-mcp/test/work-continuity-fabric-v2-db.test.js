@@ -57,6 +57,7 @@ class ContinuityPool {
     this.evaluations = new Map();
     this.releaseJoins = new Map();
     this.incidents = new Map();
+    this.workIncidents = new Map();
     this.capsules = new Map();
     this.controlContexts = new Map();
   }
@@ -124,13 +125,16 @@ class ContinuityPool {
       } : null;
       return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
     }
-    if (q.startsWith("SELECT project_id,current_version,status,next_action FROM core_continuity_works")) {
+    if (q.startsWith("SELECT project_id,current_version,status,next_action")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
       return { rows: work ? [{
         project_id: work.project_id,
         current_version: work.current_version,
         status: work.status,
         next_action: work.next_action,
+        block_source: work.block_source || null,
+        block_reference: work.block_reference || null,
+        block_epoch: Number(work.block_epoch || 0),
       }] : [], rowCount: work ? 1 : 0 };
     }
     if (q.startsWith("INSERT INTO core_continuity_control_contexts")) {
@@ -144,6 +148,19 @@ class ContinuityPool {
         payload: JSON.parse(payload),
       });
       return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT c.payload,c.context_digest,c.work_revision,")) {
+      const context = this.controlContexts.get(key(parameters[0], parameters[1]));
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: context && work ? [{
+        payload: context.payload,
+        context_digest: context.context_digest,
+        work_revision: context.work_revision,
+        project_id: work.project_id,
+        current_version: work.current_version,
+        status: work.status,
+        next_action: work.next_action,
+      }] : [], rowCount: context && work ? 1 : 0 };
     }
     if (q.startsWith("INSERT INTO core_continuity_works")) {
       const [
@@ -160,6 +177,9 @@ class ContinuityPool {
         idea,
         objective,
         status: "active",
+        block_source: null,
+        block_reference: null,
+        block_epoch: 0,
         current_version: 1,
         repository_hash: repositoryHash,
         policy_hash: policyHash,
@@ -284,6 +304,16 @@ class ContinuityPool {
     if (q.startsWith("SELECT work_id FROM core_continuity_works")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
       return { rows: work ? [{ work_id: work.work_id }] : [], rowCount: work ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT work_id,status,block_source,block_reference,block_epoch")) {
+      const work = this.works.get(key(parameters[0], parameters[1]));
+      return { rows: work ? [{
+        work_id: work.work_id,
+        status: work.status,
+        block_source: work.block_source || null,
+        block_reference: work.block_reference || null,
+        block_epoch: Number(work.block_epoch || 0),
+      }] : [], rowCount: work ? 1 : 0 };
     }
     if (q.startsWith("SELECT branch_id FROM core_continuity_branches")) {
       const branch = this.branches.get(key(parameters[0], parameters[1], parameters[2]));
@@ -648,11 +678,21 @@ class ContinuityPool {
     }
     if (q.startsWith("UPDATE core_continuity_works SET status='blocked'")) {
       const work = this.works.get(key(parameters[0], parameters[1]));
-      if (work && work.status !== "completed") {
+      if (work && ["active", "verified", "release_ready", "blocked"].includes(work.status)) {
         work.status = "blocked";
         work.next_action = parameters[2];
+        work.block_source = q.includes("block_source='work_incident'")
+          ? "work_incident"
+          : (q.includes("block_source='native_agent_lease'") ? "native_agent_lease" : work.block_source);
+        work.block_reference = parameters[3] || work.block_reference;
+        work.block_epoch = Number(work.block_epoch || 0) + 1;
         work.updated_at = this.clock().toISOString();
-        return { rows: [], rowCount: 1 };
+        return {
+          rows: q.includes("RETURNING status,next_action")
+            ? [{ status: work.status, next_action: work.next_action }]
+            : [],
+          rowCount: 1,
+        };
       }
       return { rows: [], rowCount: 0 };
     }
@@ -972,15 +1012,66 @@ class ContinuityPool {
     if (q.startsWith("INSERT INTO core_continuity_incident_runbooks")) {
       const [tenantId, projectId, fingerprint, scope, runbook, runbookDigest,
         createdBy] = parameters;
-      this.incidents.set(key(tenantId, projectId, fingerprint), {
+      const incidentKey = key(tenantId, projectId, fingerprint);
+      if (this.incidents.has(incidentKey)) return { rows: [], rowCount: 0 };
+      this.incidents.set(incidentKey, {
+          tenant_id: tenantId,
+          project_id: projectId,
+          fingerprint,
+          scope: JSON.parse(scope),
+          runbook: JSON.parse(runbook),
+          runbook_digest: runbookDigest,
+          status: "candidate",
+          created_by: createdBy,
+        });
+      return { rows: [], rowCount: 1 };
+    }
+    if (q.startsWith("SELECT runbook_digest FROM core_continuity_incident_runbooks")) {
+      const row = this.incidents.get(key(parameters[0], parameters[1], parameters[2]));
+      return {
+        rows: row ? [{ runbook_digest: row.runbook_digest }] : [],
+        rowCount: row ? 1 : 0,
+      };
+    }
+    if (q.startsWith("SELECT scope_digest,runbook_digest,error_code,reason,")) {
+      const row = this.workIncidents.get(key(parameters[0], parameters[1], parameters[2]));
+      return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
+    }
+    if (q.startsWith("SELECT fingerprint FROM core_continuity_work_incidents")) {
+      const row = [...this.workIncidents.values()].find((candidate) =>
+        candidate.tenant_id === parameters[0] &&
+        candidate.work_id === parameters[1] &&
+        candidate.blocks_work === true &&
+        ["candidate", "quarantined"].includes(candidate.status));
+      return {
+        rows: row ? [{ fingerprint: row.fingerprint }] : [],
+        rowCount: row ? 1 : 0,
+      };
+    }
+    if (q.startsWith("INSERT INTO core_continuity_work_incidents")) {
+      const [tenantId, workId, projectId, fingerprint, runbookDigest, errorCode, reason,
+        reasonDigest, sourceOperation, sourcePlanId, sourceAgentId, blocksWork, createdBy] = parameters;
+      this.workIncidents.set(key(tenantId, workId, fingerprint), {
         tenant_id: tenantId,
+        work_id: workId,
         project_id: projectId,
         fingerprint,
-        scope: JSON.parse(scope),
-        runbook: JSON.parse(runbook),
+        scope_digest: fingerprint,
         runbook_digest: runbookDigest,
+        error_code: errorCode,
+        reason,
+        reason_digest: reasonDigest,
+        source_operation: sourceOperation,
+        source_plan_id: sourcePlanId,
+        source_agent_id: sourceAgentId,
         status: "candidate",
+        blocks_work: blocksWork,
+        verification_count: 0,
+        failure_count: 0,
+        state_version: 0,
         created_by: createdBy,
+        created_at: this.clock().toISOString(),
+        updated_at: this.clock().toISOString(),
       });
       return { rows: [], rowCount: 1 };
     }
@@ -1139,6 +1230,18 @@ test("Nyra persists one compact control context per Work without prompt-shaped l
   assert.match(pool.controlContexts.get(key("tenant-a", created.work_id)).context_digest, /^[a-f0-9]{64}$/);
   assert.notEqual(pool.controlContexts.get(key("tenant-a", created.work_id)).context_digest, "c".repeat(64));
   assert.equal(JSON.stringify(context).includes("do-not-store"), false);
+  assert.deepEqual(await runtime.readControlContext(identity, {
+    work_id: created.work_id,
+    project_id: initialInput.project_id,
+  }), context);
+
+  const work = pool.works.get(key("tenant-a", created.work_id));
+  work.status = "blocked";
+  work.next_action = "Inspect the indexed incident before resuming.";
+  assert.equal(await runtime.readControlContext(identity, {
+    work_id: created.work_id,
+    project_id: initialInput.project_id,
+  }), null, "a context with stale Work state/action must never resume Nyra");
 });
 
 test("standing release resolves one atomic persisted Work/Intent binding fail-closed", async () => {
@@ -2775,6 +2878,24 @@ test("operational failures create one exact indexed blocker without raw error te
   const serialized = JSON.stringify([...pool.incidents.values()]);
   assert.doesNotMatch(serialized, /token|password|raw error/i);
   assert.match(serialized, /TRUSTED_READBACK_CHECKS_NOT_READY/);
+
+  const eventCount = (pool.events.get(key("tenant-a", work.work_id)) || []).length;
+  await assert.rejects(runtime.recordOperationalIncident(identity, {
+    ...input,
+    evidence_digest: "9".repeat(64),
+    next_action: "AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstu",
+  }), /incident_next_action_contains_sensitive_material/);
+  await assert.rejects(runtime.recordOperationalIncident(identity, {
+    ...input,
+    evidence_digest: "a".repeat(64),
+    next_action: "Inspect postgres:\/\/user:hunter2@db.example\/work before retry.",
+  }), /incident_next_action_contains_sensitive_material/);
+  assert.equal(pool.incidents.size, 1, "rejected secrets must not create a durable runbook");
+  assert.equal(
+    (pool.events.get(key("tenant-a", work.work_id)) || []).length,
+    eventCount,
+    "rejected secrets must not append an incident event",
+  );
 });
 
 test("missing native plan during pre-execution closure evaluation records evidence without blocking the Work", async () => {
@@ -3255,7 +3376,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     tree_sha: "b".repeat(40),
     changed_files: ["services/skinharmony-core-mcp/src/server.js"],
   });
-  const evaluation = await runtime.evaluateClosure(identity, {
+  let evaluation = await runtime.evaluateClosure(identity, {
     work_id: work.work_id,
     plan_id: planId,
     release: {
@@ -3312,6 +3433,24 @@ test("local closure becomes release-ready and external completion needs exact Co
     coreJoinIdempotencyKey(exactReplay.core_join_material),
     coreJoinIdempotencyKey(evaluation.core_join_material),
   );
+  // An incident cycle changes the server-owned Work epoch even after its
+  // blocker is independently verified. The pre-incident evaluation must not
+  // replay or bind a Core Join; a fresh idempotency domain is required.
+  const epochWork = pool.works.get(key("tenant-a", work.work_id));
+  epochWork.block_epoch = Number(epochWork.block_epoch || 0) + 2;
+  await assert.rejects(runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    release: releaseInput,
+    idempotency_key: "closure-evaluation",
+  }), /continuity_fresh_closure_evaluation_required/);
+  evaluation = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    release: releaseInput,
+    idempotency_key: "closure-evaluation-after-incident",
+  });
+  assert.equal(evaluation.work_block_epoch, epochWork.block_epoch);
   const correctedRelease = await runtime.evaluateClosure(identity, {
     work_id: work.work_id,
     plan_id: planId,

@@ -147,9 +147,10 @@ class ReconciliationPool {
     if (q.startsWith("SELECT status,expires_at FROM core_continuity_leases")) {
       return { rows: params[1] === SOURCE ? this.leases.map((row) => ({ ...row })) : [] };
     }
-    if (q.startsWith("SELECT status,updated_at FROM core_continuity_works")) {
+    if (q.startsWith("SELECT status,updated_at")) {
       const row = this.legacy.get(`${params[0]}:${params[1]}`);
-      return { rows: row ? [{ status: row.status, updated_at: row.updated_at }] : [] };
+      return { rows: row ? [{ status: row.status, updated_at: row.updated_at,
+        next_action: row.next_action }] : [] };
     }
     if (q.startsWith("SELECT work_id,project_id,status FROM core_continuity_works")) {
       const row = this.legacy.get(`${params[0]}:${params[1]}`);
@@ -310,12 +311,37 @@ test("legacy reconciliation cannot terminalize an adapter-backed V2 Work", async
   assert.equal(pool.legacyEvents.length, 0);
 });
 
-test("stale dry-run never suggests legacy reconciliation for adapter-backed V2 Work", async () => {
-  const pool = new ReconciliationPool();
-  pool.works.get(`tenant-a:${SOURCE}`).work_type = "research";
+test("adapter-backed stale dry-run exposes status, next-action, and cursor drift without actions", async () => {
+  const pool = new ReconciliationPool({ sourceStatus: "blocked", sourceV2Status: "ACTIVE" });
+  const legacy = pool.legacy.get(`tenant-a:${SOURCE}`);
+  const projected = pool.works.get(`tenant-a:${SOURCE}`);
+  legacy.next_action = "Follow the exact incident runbook.";
+  Object.assign(projected, {
+    work_type: "research",
+    next_action: "Continue the implementation.",
+    legacy_projection_sequence: 4,
+    legacy_projection_event_hash: "a".repeat(64),
+  });
+  pool.legacyEvents.push({
+    tenant_id: "tenant-a",
+    work_id: SOURCE,
+    sequence_number: 5,
+    event_type: "incident_recorded",
+    event_hash: "b".repeat(64),
+    payload: { work_status: "blocked", next_action: legacy.next_action },
+  });
   const dryRun = await store(pool).reconcileStaleDryRun(identity());
   const classification = dryRun.classifications.find((item) => item.work_id === SOURCE);
   assert.equal(classification.work_type, "research");
+  assert.equal(classification.projection_drift, true);
+  assert.equal(classification.authoritative_status, "blocked");
+  assert.equal(classification.projected_status, "ACTIVE");
+  assert.equal(classification.authoritative_next_action, legacy.next_action);
+  assert.equal(classification.projected_next_action, projected.next_action);
+  assert.equal(classification.next_action_projection_drift, true);
+  assert.equal(classification.authoritative_projection_sequence, 5);
+  assert.equal(classification.projected_projection_sequence, 4);
+  assert.equal(classification.cursor_projection_drift, true);
   assert.equal(classification.legacy_reconciliation_eligible, false);
   assert.deepEqual(classification.allowed_actions, []);
   assert.equal(classification.owner_confirmation_required, false);

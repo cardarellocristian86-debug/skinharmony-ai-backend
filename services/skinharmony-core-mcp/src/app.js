@@ -2695,7 +2695,8 @@ export function createApp(config, options = {}) {
                 : String(args.confirmation_reference || "").slice(0, 240))
             : "",
         };
-        activeToolCall = { identity: callIdentity, toolName: tool.name, args, hookContext: null, preflight: null };
+        activeToolCall = { identity: callIdentity, toolName: tool.name, args, hookContext: null,
+          preflight: null, serverAuthorizationPassed: false, handlerEntered: false };
         let hookContext = null;
         if (typeof beforeToolCall === "function") {
           try {
@@ -2708,7 +2709,8 @@ export function createApp(config, options = {}) {
         const preflight = requiresGenericWorkPreflight(tool.name, args)
           ? (hookContext?.preflight ?? hookContext)
           : null;
-        activeToolCall = { ...activeToolCall, hookContext, preflight };
+        activeToolCall = { ...activeToolCall, hookContext, preflight,
+          serverAuthorizationPassed: true };
         // Dynamic invocations receive only an envelope emitted by the local
         // preflight hook. If that hook is unavailable or malformed, reject
         // before any dynamic handler or Core gate can be reached.
@@ -2722,6 +2724,7 @@ export function createApp(config, options = {}) {
         const handlerArgs = serverIssuedPreflight
           ? { ...args, work_preflight: serverIssuedPreflight }
           : args;
+        activeToolCall = { ...activeToolCall, handlerEntered: true };
         const rawResult = await handlers[tool.name](handlerArgs, callIdentity);
         const continuationAccepted = rawResult?.isError !== true &&
           rawResult?.structuredContent?.ok !== false;
@@ -2737,7 +2740,8 @@ export function createApp(config, options = {}) {
         if (typeof afterToolCall === "function") {
           afterToolCallAttempted = true;
           try {
-            await afterToolCall({ identity: callIdentity, toolName: tool.name, args, result, preflight, hookContext });
+            await afterToolCall({ identity: callIdentity, toolName: tool.name, args, result, preflight,
+              hookContext, serverAuthorizationPassed: true, handlerEntered: true });
           } catch (hookError) {
             if (tool.annotations?.readOnlyHint !== true) throw hookError;
           }

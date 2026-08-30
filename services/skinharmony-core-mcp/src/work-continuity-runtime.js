@@ -19,7 +19,8 @@ export const WORK_EVENT_TYPES = new Set([
   "intent_anchored", "native_plan_created", "native_agent_bound",
   "native_agent_reported", "closure_evaluated", "atlas_updated",
   "software_challenge_opened", "software_challenge_resolved", "software_receipt_recorded",
-  "incident_recorded", "incident_runbook_verified", "incident_runbook_quarantined",
+  "incident_recorded", "incident_runbook_verified", "incident_runbook_verification_failed",
+  "incident_runbook_quarantined",
   "native_plan_superseded", "native_agent_lease_expired",
   "core_join_issued", "closure_finalized",
   "generic_core_join_issued", "generic_closure_finalized", "work_archived",
@@ -30,6 +31,10 @@ export const WORK_EVENT_TYPES = new Set([
 const NATIVE_HOST_TYPES = new Set(["chatgpt_native", "codex_native"]);
 const NATIVE_TASK_KINDS = new Set(["builder", "verifier", "researcher", "reviewer", "supervisor"]);
 const NATIVE_REPORT_STATES = new Set(["completed", "failed", "blocked"]);
+const NATIVE_LEASE_RECOVERY_OPERATIONS = new Set([
+  "work_continuity_native_bind",
+  "work_continuity_native_report",
+]);
 const NATIVE_ASSIGNMENT_CAPABILITY_PATTERN = /^hnac_[A-Za-z0-9_-]{43}$/;
 const NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY =
   "work_continuity_native_acceptance_contract_read";
@@ -184,6 +189,72 @@ function uuid(value, name = "id") {
 
 function safeText(value, max = 4_000) {
   return redactMemoryText(String(value || "").replaceAll("\u0000", "")).text.slice(0, max);
+}
+
+// Incident text is durable and later exposed as human-readable operational
+// context. Apply the shared memory redactor plus high-confidence credential
+// formats that must never enter the append-only incident ledger.
+const INCIDENT_SECRET_PATTERNS = Object.freeze([
+  /\bgithub_pat_[A-Za-z0-9_]{16,}\b/gi,
+  /\bglpat-[A-Za-z0-9_-]{16,}\b/gi,
+  /\b(?:sk_(?:live|test)_|npm_)[A-Za-z0-9_-]{16,}\b/gi,
+  /\bAIza[A-Za-z0-9_-]{20,}\b/g,
+  /\bocs_[a-f0-9]{64}\b/gi,
+  /\bBearer\s+[A-Za-z0-9._~+\/-]{16,}\b/gi,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+  /\b(?:AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|DATABASE_URL)\s*[:=]\s*[^\s,;]+/gi,
+  /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?):\/\/[^\s/@:]+:[^\s/@]+@[^\s]+/gi,
+]);
+
+function incidentRedactedText(value, max = 4_000) {
+  let text = redactMemoryText(String(value || "").replaceAll("\u0000", "")).text;
+  for (const pattern of INCIDENT_SECRET_PATTERNS) {
+    text = text.replace(pattern, "[REDACTED]");
+  }
+  return text.slice(0, max);
+}
+
+function incidentSafeText(value, max = 4_000, name = "incident_text") {
+  const raw = String(value || "");
+  if (raw.includes("\u0000") || incidentRedactedText(raw, Math.max(max, raw.length)) !== raw) {
+    throw new Error(`${name}_contains_sensitive_material`);
+  }
+  return raw.slice(0, max);
+}
+
+function incidentIdentifier(value, name, max = 160) {
+  const normalized = identifier(value, name, max);
+  incidentSafeText(normalized, max, name);
+  return normalized;
+}
+
+function incidentRepository(value) {
+  const raw = incidentSafeText(value, 240, "incident_repository").trim();
+  if (!raw) return "";
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      throw new Error("incident_repository_invalid");
+    }
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/$/, "").toLowerCase();
+  }
+  return raw.split(/[?#]/, 1)[0].toLowerCase();
+}
+
+function incidentReason(errorCode, sourceOperation) {
+  const displayCode = String(errorCode).replace(/[_:-]+/g, " ").trim().toLowerCase();
+  const humanCode = displayCode ? `${displayCode[0].toUpperCase()}${displayCode.slice(1)}` : "Incident";
+  const reason = `Incident: ${humanCode}. Source operation: ${sourceOperation}. Fresh Work-bound verification is required.`;
+  return {
+    reason,
+    reasonDigest: crypto.createHash("sha256").update(reason, "utf8").digest("hex"),
+  };
 }
 
 function positiveInteger(value, fallback, maximum) {
@@ -502,6 +573,14 @@ export function buildNativeAgentPlan(input = {}) {
     maxItems: 64,
     maxLength: 160,
   }).map((check) => identifier(check, "native_agent_required_check", 160)).sort();
+  const incidentFingerprints = stringList(
+    input.incident_fingerprints,
+    "native_agent_incident_fingerprints",
+    { maxItems: 100, maxLength: 64 },
+  ).map((fingerprint) => fingerprint.toLowerCase()).sort();
+  if (incidentFingerprints.some((fingerprint) => !/^[a-f0-9]{64}$/.test(fingerprint))) {
+    throw new Error("native_agent_incident_fingerprint_invalid");
+  }
   if (!requiredChecks.length) throw new Error("native_agent_required_checks_missing");
   if (requirements.independent_verifier_required &&
       !normalizedTasks.some((task) => task.kind === "verifier")) {
@@ -523,6 +602,7 @@ export function buildNativeAgentPlan(input = {}) {
     max_agents: normalizedTasks.length,
     max_parallel: maxParallel,
     required_checks: requiredChecks,
+    incident_fingerprints: incidentFingerprints,
     tasks: normalizedTasks,
     closure_requirements: requirements,
     ...(softwareContract ? { software_contract: { schema_version: "worker_plan_contract_v1", ...softwareContract } } : {}),
@@ -1644,12 +1724,16 @@ export function selectAggregatedAtlasWithinBudget(nodes = [], edges = [], option
 }
 
 export function incidentFingerprint(input = {}) {
+  const errorCode = incidentIdentifier(input.error_code, "incident_error_code", 120).toUpperCase();
+  if (!/^[A-Z][A-Z0-9_.:/-]{1,119}$/.test(errorCode)) {
+    throw new Error("incident_error_code_invalid");
+  }
   const scope = {
-    error_code: identifier(input.error_code, "incident_error_code", 120).toUpperCase(),
-    repository: safeText(input.repository, 240).toLowerCase(),
-    branch: safeText(input.branch, 240),
-    connector: safeText(input.connector, 120).toLowerCase(),
-    deployment_path: safeText(input.deployment_path, 120).toLowerCase(),
+    error_code: errorCode,
+    repository: incidentRepository(input.repository),
+    branch: incidentSafeText(input.branch, 240, "incident_branch"),
+    connector: incidentSafeText(input.connector, 120, "incident_connector").toLowerCase(),
+    deployment_path: incidentSafeText(input.deployment_path, 120, "incident_deployment_path").toLowerCase(),
     configuration_digest: String(input.configuration_digest || "").toLowerCase(),
   };
   if (!scope.repository || !scope.branch || !scope.connector || !scope.deployment_path ||
@@ -1693,10 +1777,16 @@ CREATE TABLE IF NOT EXISTS core_continuity_works (
   session_id varchar(64) NOT NULL, parent_work_id uuid, idea text NOT NULL, objective text NOT NULL,
   status varchar(40) NOT NULL DEFAULT 'active', current_version bigint NOT NULL DEFAULT 1,
   repository_hash char(64), policy_hash char(64), live_state_hash char(64),
+  block_source varchar(64), block_reference varchar(160),
+  block_epoch bigint NOT NULL DEFAULT 0,
   next_action text NOT NULL DEFAULT '', created_by varchar(120) NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, work_id)
 );
+ALTER TABLE core_continuity_works
+  ADD COLUMN IF NOT EXISTS block_source varchar(64),
+  ADD COLUMN IF NOT EXISTS block_reference varchar(160),
+  ADD COLUMN IF NOT EXISTS block_epoch bigint NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS core_continuity_works_project_idx
   ON core_continuity_works (tenant_id, project_id, updated_at DESC);
 
@@ -1742,6 +1832,10 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS core_continuity_events_no_mutation ON core_continuity_events;
 CREATE TRIGGER core_continuity_events_no_mutation BEFORE UPDATE OR DELETE ON core_continuity_events
 FOR EACH ROW EXECUTE FUNCTION core_continuity_events_append_only();
+DROP TRIGGER IF EXISTS core_continuity_events_no_truncate ON core_continuity_events;
+CREATE TRIGGER core_continuity_events_no_truncate
+BEFORE TRUNCATE ON core_continuity_events
+FOR EACH STATEMENT EXECUTE FUNCTION core_continuity_events_append_only();
 
 CREATE TABLE IF NOT EXISTS core_continuity_capsules (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, capsule_id uuid NOT NULL,
@@ -1936,6 +2030,11 @@ DROP TRIGGER IF EXISTS core_continuity_native_receipts_no_mutation ON core_conti
 CREATE TRIGGER core_continuity_native_receipts_no_mutation
 BEFORE UPDATE OR DELETE ON core_continuity_native_receipts
 FOR EACH ROW EXECUTE FUNCTION core_continuity_native_receipts_append_only();
+DROP TRIGGER IF EXISTS core_continuity_native_receipts_no_truncate
+  ON core_continuity_native_receipts;
+CREATE TRIGGER core_continuity_native_receipts_no_truncate
+BEFORE TRUNCATE ON core_continuity_native_receipts
+FOR EACH STATEMENT EXECUTE FUNCTION core_continuity_native_receipts_append_only();
 
 CREATE TABLE IF NOT EXISTS core_continuity_closure_evaluations (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, plan_id uuid NOT NULL,
@@ -2027,6 +2126,266 @@ CREATE TABLE IF NOT EXISTS core_continuity_incident_runbooks (
   created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, project_id, fingerprint)
 );
+
+-- Runbooks remain project-scoped reusable recipes. Incident lifecycle is
+-- Work-scoped: a sibling Work must never verify, quarantine or unblock an
+-- incident merely because it has the same project fingerprint.
+CREATE UNIQUE INDEX IF NOT EXISTS core_continuity_works_tenant_work_project_uidx
+  ON core_continuity_works (tenant_id,work_id,project_id);
+CREATE TABLE IF NOT EXISTS core_continuity_work_incidents (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, project_id varchar(64) NOT NULL,
+  fingerprint char(64) NOT NULL, scope_digest char(64) NOT NULL, runbook_digest char(64) NOT NULL,
+  error_code varchar(120) NOT NULL, reason varchar(500) NOT NULL, reason_digest char(64) NOT NULL,
+  source_operation varchar(120) NOT NULL, source_plan_id uuid, source_agent_id varchar(120) NOT NULL,
+  status varchar(32) NOT NULL DEFAULT 'candidate', blocks_work boolean NOT NULL DEFAULT true,
+  created_by varchar(120) NOT NULL, verified_by varchar(120),
+  verification_evidence jsonb, verification_digest char(64),
+  verification_count integer NOT NULL DEFAULT 0, failure_count integer NOT NULL DEFAULT 0,
+  state_version bigint NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, work_id, fingerprint),
+  CHECK (status IN ('candidate','verified','quarantined')),
+  CHECK (state_version = verification_count::bigint + failure_count::bigint),
+  CHECK (status <> 'candidate' OR (verification_count=0 AND failure_count < 2)),
+  CHECK (status <> 'quarantined' OR (verification_count=0 AND failure_count >= 2)),
+  CHECK (status <> 'verified' OR (verification_count=1 AND verified_by IS NOT NULL AND
+    verification_evidence IS NOT NULL AND verification_digest IS NOT NULL)),
+  FOREIGN KEY (tenant_id, work_id, project_id)
+    REFERENCES core_continuity_works(tenant_id, work_id, project_id),
+  FOREIGN KEY (tenant_id, project_id, fingerprint)
+    REFERENCES core_continuity_incident_runbooks(tenant_id, project_id, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS core_continuity_work_incidents_status_idx
+  ON core_continuity_work_incidents (tenant_id, work_id, status, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS core_continuity_work_incidents_project_binding_uidx
+  ON core_continuity_work_incidents (tenant_id, work_id, project_id, fingerprint);
+CREATE OR REPLACE FUNCTION core_continuity_work_incidents_monotone() RETURNS trigger AS $$
+BEGIN
+  IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR
+      NEW.work_id IS DISTINCT FROM OLD.work_id OR
+      NEW.project_id IS DISTINCT FROM OLD.project_id OR
+      NEW.fingerprint IS DISTINCT FROM OLD.fingerprint OR
+      NEW.scope_digest IS DISTINCT FROM OLD.scope_digest OR
+      NEW.runbook_digest IS DISTINCT FROM OLD.runbook_digest OR
+      NEW.error_code IS DISTINCT FROM OLD.error_code OR
+      NEW.reason IS DISTINCT FROM OLD.reason OR
+      NEW.reason_digest IS DISTINCT FROM OLD.reason_digest OR
+      NEW.source_operation IS DISTINCT FROM OLD.source_operation OR
+      NEW.source_plan_id IS DISTINCT FROM OLD.source_plan_id OR
+      NEW.source_agent_id IS DISTINCT FROM OLD.source_agent_id OR
+      NEW.blocks_work IS DISTINCT FROM OLD.blocks_work OR
+      NEW.created_by IS DISTINCT FROM OLD.created_by OR
+      NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'core_continuity_work_incident_binding_immutable';
+  END IF;
+  IF OLD.status='verified' THEN
+    RAISE EXCEPTION 'core_continuity_work_incident_verified_immutable';
+  END IF;
+  IF NEW.state_version <> OLD.state_version + 1 THEN
+    RAISE EXCEPTION 'core_continuity_work_incident_version_cas_required';
+  END IF;
+  IF NEW.updated_at < OLD.updated_at THEN
+    RAISE EXCEPTION 'core_continuity_work_incident_timestamp_regression';
+  END IF;
+  IF OLD.status='candidate' AND NEW.status='candidate' THEN
+    IF NEW.failure_count <> OLD.failure_count + 1 OR
+        NEW.verification_count <> OLD.verification_count OR
+        NEW.verified_by IS NOT NULL OR NEW.verification_evidence IS NULL OR
+        NEW.verification_digest IS NULL OR
+        NEW.verification_digest IS NOT DISTINCT FROM OLD.verification_digest THEN
+      RAISE EXCEPTION 'core_continuity_work_incident_failed_transition_invalid';
+    END IF;
+  ELSIF OLD.status='candidate' AND NEW.status='quarantined' THEN
+    IF NEW.failure_count <> OLD.failure_count + 1 OR NEW.failure_count < 2 OR
+        NEW.verification_count <> OLD.verification_count OR
+        NEW.verified_by IS NOT NULL OR NEW.verification_evidence IS NULL OR
+        NEW.verification_digest IS NULL OR
+        NEW.verification_digest IS NOT DISTINCT FROM OLD.verification_digest THEN
+      RAISE EXCEPTION 'core_continuity_work_incident_quarantine_transition_invalid';
+    END IF;
+  ELSIF OLD.status IN ('candidate','quarantined') AND NEW.status='verified' THEN
+    IF NEW.verification_count <> OLD.verification_count + 1 OR
+        NEW.failure_count <> OLD.failure_count OR NEW.verified_by IS NULL OR
+        NEW.verification_evidence IS NULL OR NEW.verification_digest IS NULL OR
+        NEW.verification_digest IS NOT DISTINCT FROM OLD.verification_digest THEN
+      RAISE EXCEPTION 'core_continuity_work_incident_verification_transition_invalid';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'core_continuity_work_incident_terminal_regression';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS core_continuity_work_incidents_monotone_guard
+  ON core_continuity_work_incidents;
+CREATE TRIGGER core_continuity_work_incidents_monotone_guard
+BEFORE UPDATE ON core_continuity_work_incidents
+FOR EACH ROW EXECUTE FUNCTION core_continuity_work_incidents_monotone();
+CREATE OR REPLACE FUNCTION core_continuity_work_incidents_no_removal()
+RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'core_continuity_work_incidents_append_only'; END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS core_continuity_work_incidents_no_delete
+  ON core_continuity_work_incidents;
+CREATE TRIGGER core_continuity_work_incidents_no_delete
+BEFORE DELETE ON core_continuity_work_incidents
+FOR EACH ROW EXECUTE FUNCTION core_continuity_work_incidents_no_removal();
+DROP TRIGGER IF EXISTS core_continuity_work_incidents_no_truncate
+  ON core_continuity_work_incidents;
+CREATE TRIGGER core_continuity_work_incidents_no_truncate
+BEFORE TRUNCATE ON core_continuity_work_incidents
+FOR EACH STATEMENT EXECUTE FUNCTION core_continuity_work_incidents_no_removal();
+
+CREATE OR REPLACE FUNCTION core_continuity_work_block_provenance_guard()
+RETURNS trigger AS $$
+BEGIN
+  IF OLD.status='completed' THEN
+    RAISE EXCEPTION 'core_continuity_work_completed_immutable';
+  END IF;
+  IF OLD.status='blocked' AND OLD.block_source IS NULL AND
+      NEW.status IS DISTINCT FROM OLD.status THEN
+    RAISE EXCEPTION 'core_continuity_work_legacy_block_reconciliation_required';
+  END IF;
+  IF NEW.block_epoch < OLD.block_epoch THEN
+    RAISE EXCEPTION 'core_continuity_work_block_epoch_regression';
+  END IF;
+  IF (NEW.block_source IS DISTINCT FROM OLD.block_source OR
+      NEW.block_reference IS DISTINCT FROM OLD.block_reference) AND
+      NEW.block_epoch <= OLD.block_epoch THEN
+    RAISE EXCEPTION 'core_continuity_work_block_provenance_required';
+  END IF;
+  IF OLD.status='blocked' AND NEW.status='blocked' AND
+      OLD.block_source IS NOT NULL AND
+      NEW.block_source IS DISTINCT FROM OLD.block_source AND NOT (
+        OLD.block_source='native_agent_lease' AND
+        NEW.block_source='work_incident' AND EXISTS (
+          SELECT 1 FROM core_continuity_work_incidents i
+          WHERE i.tenant_id=NEW.tenant_id AND i.work_id=NEW.work_id
+            AND i.fingerprint=NEW.block_reference
+            AND i.source_plan_id::text=OLD.block_reference
+            AND i.source_operation IN (
+              'work_continuity_native_bind','work_continuity_native_report'
+            )
+            AND i.blocks_work=true AND i.status IN ('candidate','quarantined')
+        )
+      ) THEN
+    RAISE EXCEPTION 'core_continuity_work_block_provenance_conflict';
+  END IF;
+  IF NEW.status='blocked' AND
+      (OLD.status IS DISTINCT FROM 'blocked' OR
+        NEW.next_action IS DISTINCT FROM OLD.next_action OR
+        NEW.block_source IS DISTINCT FROM OLD.block_source OR
+        NEW.block_reference IS DISTINCT FROM OLD.block_reference) AND
+      (NEW.block_source IS NULL OR NEW.block_reference IS NULL OR
+        NEW.block_epoch <= OLD.block_epoch) THEN
+    RAISE EXCEPTION 'core_continuity_work_block_provenance_required';
+  END IF;
+  IF OLD.status='blocked' AND NEW.status IS DISTINCT FROM 'blocked' AND
+      (NEW.block_source IS NOT NULL OR NEW.block_reference IS NOT NULL OR
+        NEW.block_epoch <= OLD.block_epoch) THEN
+    RAISE EXCEPTION 'core_continuity_work_block_release_provenance_invalid';
+  END IF;
+  IF NEW.status<>'blocked' AND
+      (NEW.block_source IS NOT NULL OR NEW.block_reference IS NOT NULL) THEN
+    RAISE EXCEPTION 'core_continuity_work_block_provenance_outside_blocked';
+  END IF;
+  IF NEW.status IN ('active','verified','release_ready','completed') AND EXISTS (
+    SELECT 1 FROM core_continuity_work_incidents i
+    WHERE i.tenant_id=NEW.tenant_id AND i.work_id=NEW.work_id
+      AND i.blocks_work=true AND i.status IN ('candidate','quarantined')
+  ) THEN
+    RAISE EXCEPTION 'core_continuity_work_incident_blocker_unresolved';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS core_continuity_work_block_provenance_guard
+  ON core_continuity_works;
+CREATE TRIGGER core_continuity_work_block_provenance_guard
+BEFORE UPDATE ON core_continuity_works
+FOR EACH ROW EXECUTE FUNCTION core_continuity_work_block_provenance_guard();
+
+CREATE OR REPLACE FUNCTION core_continuity_incident_event_binding_guard()
+RETURNS trigger AS $$
+DECLARE
+  association_status varchar(32);
+  association_version bigint;
+  persisted_work_status varchar(32);
+  persisted_next_action text;
+BEGIN
+  IF NEW.event_type NOT IN ('incident_recorded','incident_runbook_verified',
+      'incident_runbook_verification_failed','incident_runbook_quarantined') THEN
+    RETURN NEW;
+  END IF;
+  IF COALESCE(NEW.payload->>'fingerprint','') !~ '^[a-f0-9]{64}$' OR
+      COALESCE(NEW.payload->>'project_id','') = '' OR
+      COALESCE(NEW.payload->>'status','') NOT IN ('candidate','verified','quarantined') OR
+      COALESCE(NEW.payload->>'state_version','') !~ '^[0-9]+$' THEN
+    RAISE EXCEPTION 'core_continuity_incident_event_binding_invalid';
+  END IF;
+  SELECT i.status,i.state_version
+    INTO association_status,association_version
+  FROM core_continuity_work_incidents i
+  WHERE i.tenant_id=NEW.tenant_id AND i.work_id=NEW.work_id
+    AND i.project_id=NEW.payload->>'project_id'
+    AND i.fingerprint=NEW.payload->>'fingerprint';
+  IF association_status IS NULL OR
+      association_status IS DISTINCT FROM NEW.payload->>'status' OR
+      association_version IS DISTINCT FROM (NEW.payload->>'state_version')::bigint THEN
+    RAISE EXCEPTION 'core_continuity_incident_event_association_required';
+  END IF;
+  SELECT w.status,w.next_action INTO persisted_work_status,persisted_next_action
+  FROM core_continuity_works w
+  WHERE w.tenant_id=NEW.tenant_id AND w.work_id=NEW.work_id;
+  IF persisted_work_status IS NULL OR
+      persisted_work_status IS DISTINCT FROM NEW.payload->>'work_status' OR
+      persisted_next_action IS DISTINCT FROM NEW.payload->>'next_action' THEN
+    RAISE EXCEPTION 'core_continuity_incident_event_work_state_invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS core_continuity_incident_event_binding_guard
+  ON core_continuity_events;
+CREATE TRIGGER core_continuity_incident_event_binding_guard
+BEFORE INSERT ON core_continuity_events
+FOR EACH ROW EXECUTE FUNCTION core_continuity_incident_event_binding_guard();
+
+CREATE TABLE IF NOT EXISTS core_continuity_work_incident_verifications (
+  tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, project_id varchar(64) NOT NULL,
+  fingerprint char(64) NOT NULL, evidence_digest char(64) NOT NULL,
+  native_receipt_id uuid NOT NULL, resolved boolean NOT NULL, evidence jsonb NOT NULL,
+  result_status varchar(32) NOT NULL, created_by varchar(120) NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, work_id, fingerprint, evidence_digest),
+  UNIQUE (tenant_id, work_id, fingerprint, native_receipt_id),
+  CHECK ((resolved=true AND result_status='verified') OR
+    (resolved=false AND result_status IN ('candidate','quarantined'))),
+  FOREIGN KEY (tenant_id, work_id, project_id, fingerprint)
+    REFERENCES core_continuity_work_incidents(tenant_id, work_id, project_id, fingerprint)
+);
+CREATE OR REPLACE FUNCTION core_continuity_work_incident_verifications_append_only()
+RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'core_continuity_work_incident_verifications_append_only'; END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS core_continuity_work_incident_verifications_no_mutation
+  ON core_continuity_work_incident_verifications;
+CREATE TRIGGER core_continuity_work_incident_verifications_no_mutation
+BEFORE UPDATE OR DELETE ON core_continuity_work_incident_verifications
+FOR EACH ROW EXECUTE FUNCTION core_continuity_work_incident_verifications_append_only();
+DROP TRIGGER IF EXISTS core_continuity_work_incident_verifications_no_truncate
+  ON core_continuity_work_incident_verifications;
+CREATE TRIGGER core_continuity_work_incident_verifications_no_truncate
+BEFORE TRUNCATE ON core_continuity_work_incident_verifications
+FOR EACH STATEMENT EXECUTE FUNCTION core_continuity_work_incident_verifications_append_only();
+
+CREATE TABLE IF NOT EXISTS core_continuity_runtime_migrations (
+  migration_id varchar(120) PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO core_continuity_runtime_migrations (migration_id)
+VALUES ('20260830_work_incident_reconciliation_v1')
+ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS core_continuity_remediations (
   tenant_id varchar(64) NOT NULL,
@@ -2349,10 +2708,76 @@ export function createWorkContinuityRuntime(config, options = {}) {
   }
 
   async function lockWorkRow(client, context) {
-    const work = await client.query(`SELECT work_id FROM core_continuity_works
+    const work = await client.query(`SELECT work_id,status,block_source,block_reference,block_epoch
+      FROM core_continuity_works
       WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [context.tenantId, context.workId]);
     if (!work.rows[0]) throw new Error("continuity_work_not_found");
     return work.rows[0];
+  }
+
+  async function requireNoUnresolvedBlockingIncidents(client, context, lockedWork) {
+    const unresolved = await client.query(`SELECT fingerprint
+      FROM core_continuity_work_incidents
+      WHERE tenant_id=$1 AND work_id=$2 AND blocks_work=true
+        AND status IN ('candidate','quarantined')
+      ORDER BY updated_at,fingerprint LIMIT 1`,
+    [context.tenantId, context.workId]);
+    if (unresolved.rows[0]) {
+      throw new Error("continuity_work_incident_blocker_unresolved");
+    }
+    if (String(lockedWork?.status || "") === "blocked") {
+      throw new Error("continuity_work_blocked_revalidation_required");
+    }
+  }
+
+  async function currentBlockingIncident(client, context) {
+    const result = await client.query(`SELECT fingerprint,status,error_code,reason,reason_digest,
+        count(*) OVER ()::int AS unresolved_count
+      FROM core_continuity_work_incidents
+      WHERE tenant_id=$1 AND work_id=$2 AND blocks_work=true
+        AND status IN ('candidate','quarantined')
+      ORDER BY updated_at,fingerprint LIMIT 1`, [context.tenantId, context.workId]);
+    return result.rows[0] || null;
+  }
+
+  function incidentRecoveryAction(incident) {
+    const fingerprint = String(incident?.fingerprint || "");
+    return String(incident?.status || "candidate") === "quarantined"
+      ? `Incident ${fingerprint.slice(0, 12)} runbook quarantined; perform a fresh diagnosis and create a corrected candidate.`
+      : `Incident ${fingerprint.slice(0, 12)} remains blocked; correct the failed recovery and request independent verification again.`;
+  }
+
+  async function currentIncidentPlanBindings(client, context, fingerprints, lock = false) {
+    const requested = [...new Set((Array.isArray(fingerprints) ? fingerprints : [])
+      .map((fingerprint) => String(fingerprint || "").toLowerCase()))].sort();
+    if (!requested.length) return [];
+    if (requested.some((fingerprint) => !/^[a-f0-9]{64}$/.test(fingerprint))) {
+      throw new Error("native_agent_incident_fingerprint_invalid");
+    }
+    const result = await client.query(`SELECT fingerprint,scope_digest,runbook_digest,status,state_version
+      FROM core_continuity_work_incidents
+      WHERE tenant_id=$1 AND work_id=$2
+        AND fingerprint::text=ANY($3::text[])
+        AND status IN ('candidate','quarantined')
+      ORDER BY fingerprint${lock ? " FOR UPDATE" : ""}`,
+    [context.tenantId, context.workId, requested]);
+    if (result.rows.length !== requested.length ||
+        result.rows.some((row, index) => String(row.fingerprint) !== requested[index])) {
+      throw new Error("native_agent_incident_binding_not_current");
+    }
+    return result.rows.map((row) => Object.freeze({
+      schema_version: "native_agent_incident_binding_v1",
+      fingerprint: String(row.fingerprint),
+      scope_digest: String(row.scope_digest),
+      runbook_digest: String(row.runbook_digest),
+      incident_status: String(row.status),
+      state_version: Number(row.state_version || 0),
+    }));
+  }
+
+  function incidentPlanBindingsMatch(actual, expected) {
+    return JSON.stringify(stable(Array.isArray(actual) ? actual : [])) ===
+      JSON.stringify(stable(Array.isArray(expected) ? expected : []));
   }
 
   async function lockGalleryWork(client, context) {
@@ -2411,6 +2836,196 @@ export function createWorkContinuityRuntime(config, options = {}) {
     return true;
   }
 
+  async function verifiedWorkEventLedger(client, context) {
+    await lockWork(client, context);
+    const result = await client.query(`SELECT event_id,sequence_number,event_type,payload,
+        previous_event_hash,event_hash,created_by,created_at
+      FROM core_continuity_events
+      WHERE tenant_id=$1 AND work_id=$2
+      ORDER BY sequence_number LIMIT 10001`, [context.tenantId, context.workId]);
+    if (result.rows.length > 10_000) throw new Error("continuity_event_ledger_bound_exceeded");
+    let previousHash = null;
+    for (let index = 0; index < result.rows.length; index += 1) {
+      const row = result.rows[index];
+      const sequence = Number(row.sequence_number);
+      const material = {
+        tenant_id: context.tenantId,
+        work_id: context.workId,
+        sequence_number: sequence,
+        event_type: row.event_type,
+        payload: stable(row.payload),
+        previous_event_hash: row.previous_event_hash || null,
+      };
+      if (sequence !== index + 1 ||
+          (row.previous_event_hash || null) !== previousHash ||
+          digest(material) !== row.event_hash) {
+        throw new Error("continuity_event_ledger_invalid");
+      }
+      previousHash = row.event_hash;
+    }
+    return result.rows;
+  }
+
+  async function reconcileLegacyIncidentForWork(identity, input = {}) {
+    const allowedInputFields = new Set(["work_id", "idempotency_key"]);
+    if (Object.keys(input || {}).some((field) => !allowedInputFields.has(field))) {
+      throw new Error("incident_reconcile_fields_invalid");
+    }
+    if (typeof workEventProjector !== "function") {
+      throw new Error("work_incident_projection_required");
+    }
+    const context = workContext(identity, input);
+    return transaction(async (client) => withIdempotency(
+      client,
+      context,
+      input.idempotency_key,
+      "reconcile_legacy_work_incident",
+      { work_id: context.workId },
+      async () => {
+        const work = await client.query(`SELECT project_id,status,next_action,
+            block_source,block_reference,block_epoch
+          FROM core_continuity_works
+          WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
+        [context.tenantId, context.workId]);
+        const lockedWork = work.rows[0];
+        if (!lockedWork) throw new Error("continuity_work_not_found");
+        if (String(lockedWork.status || "") !== "blocked") {
+          throw new Error("incident_legacy_work_not_blocked");
+        }
+        if (lockedWork.block_source && lockedWork.block_source !== "work_incident") {
+          throw new Error("incident_legacy_block_provenance_conflict");
+        }
+
+        const ledger = await verifiedWorkEventLedger(client, context);
+        const candidates = ledger.filter((event) =>
+          event.event_type === "incident_recorded" &&
+          event.payload?.reconciliation_schema_version !== "work_incident_reconciliation_v1" &&
+          event.payload?.project_id === lockedWork.project_id &&
+          event.payload?.work_status === "blocked" &&
+          String(event.payload?.next_action || "") === String(lockedWork.next_action || "") &&
+          /^[a-f0-9]{64}$/.test(String(event.payload?.fingerprint || "")));
+        const candidateFingerprints = [...new Set(candidates.map((event) =>
+          String(event.payload.fingerprint)))];
+        if (!candidateFingerprints.length) {
+          throw new Error("incident_legacy_binding_not_found");
+        }
+        if (candidateFingerprints.length !== 1) {
+          throw new Error("incident_legacy_binding_ambiguous");
+        }
+        const sourceEvent = candidates.filter((event) =>
+          String(event.payload.fingerprint) === candidateFingerprints[0]).at(-1);
+        const fingerprint = String(sourceEvent.payload.fingerprint);
+
+        const existing = await client.query(`SELECT project_id,fingerprint,scope_digest,
+            runbook_digest,error_code,reason,reason_digest,source_operation,source_plan_id,
+            source_agent_id,status,blocks_work,state_version
+          FROM core_continuity_work_incidents
+          WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3 FOR UPDATE`,
+        [context.tenantId, context.workId, fingerprint]);
+        if (existing.rows[0]) {
+          if (lockedWork.block_source !== "work_incident" ||
+              lockedWork.block_reference !== fingerprint) {
+            throw new Error("incident_legacy_block_provenance_conflict");
+          }
+          return Object.freeze({
+            schema_version: "work_incident_reconciliation_v1",
+            tenant_id: context.tenantId,
+            work_id: context.workId,
+            project_id: lockedWork.project_id,
+            fingerprint,
+            status: existing.rows[0].status,
+            work_status: lockedWork.status,
+            next_action: lockedWork.next_action,
+            reconciled: false,
+          });
+        }
+
+        const runbookResult = await client.query(`SELECT scope,runbook,runbook_digest
+          FROM core_continuity_incident_runbooks
+          WHERE tenant_id=$1 AND project_id=$2 AND fingerprint=$3 FOR UPDATE`,
+        [context.tenantId, lockedWork.project_id, fingerprint]);
+        const persisted = runbookResult.rows[0];
+        if (!persisted) throw new Error("incident_legacy_runbook_not_found");
+        const canonical = incidentFingerprint(persisted.scope);
+        if (canonical.fingerprint !== fingerprint ||
+            digest(persisted.runbook) !== persisted.runbook_digest ||
+            sourceEvent.payload?.runbook_digest !== persisted.runbook_digest) {
+          throw new Error("incident_legacy_binding_invalid");
+        }
+        const sourceOperation = "legacy_revalidation_required";
+        const { reason, reasonDigest } = incidentReason(
+          canonical.scope.error_code,
+          sourceOperation,
+        );
+        await client.query(`INSERT INTO core_continuity_work_incidents
+          (tenant_id,work_id,project_id,fingerprint,scope_digest,runbook_digest,error_code,
+           reason,reason_digest,source_operation,source_plan_id,source_agent_id,status,
+           blocks_work,created_by)
+          VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$9,NULL,$9,'candidate',true,$10)`,
+        [context.tenantId, context.workId, lockedWork.project_id, fingerprint,
+          persisted.runbook_digest, canonical.scope.error_code, reason, reasonDigest,
+          sourceOperation, context.actor]);
+        const blocked = await client.query(`UPDATE core_continuity_works
+          SET block_source='work_incident',block_reference=$3,
+            block_epoch=block_epoch+1,updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2 AND status='blocked'
+            AND block_source IS NULL
+          RETURNING status,next_action,block_epoch`,
+        [context.tenantId, context.workId, fingerprint]);
+        if (!blocked.rows[0]) throw new Error("incident_legacy_block_provenance_conflict");
+        const event = await appendEvent(client, context, "incident_recorded", {
+          reconciliation_schema_version: "work_incident_reconciliation_v1",
+          project_id: lockedWork.project_id,
+          fingerprint,
+          runbook_digest: persisted.runbook_digest,
+          scope_digest: fingerprint,
+          error_code: canonical.scope.error_code,
+          reason,
+          reason_digest: reasonDigest,
+          source_operation: sourceOperation,
+          source_plan_id: null,
+          source_agent_id: sourceOperation,
+          source_event_sequence_number: Number(sourceEvent.sequence_number),
+          source_event_hash: sourceEvent.event_hash,
+          state_version: 0,
+          status: "candidate",
+          blocks_work: true,
+          work_status: blocked.rows[0].status,
+          next_action: blocked.rows[0].next_action,
+        });
+        const projected = await client.query(`SELECT work_id,status,next_action,
+            legacy_projection_sequence,legacy_projection_event_hash
+          FROM tenant_work
+          WHERE tenant_id=$1 AND (legacy_work_id=$2 OR work_id=$2)
+          ORDER BY (legacy_work_id=$2) DESC,work_id FOR UPDATE`,
+        [context.tenantId, context.workId]);
+        if (projected.rows.length !== 1 ||
+            String(projected.rows[0].status || "").toUpperCase() !== "BLOCKED" ||
+            String(projected.rows[0].next_action || "") !== String(blocked.rows[0].next_action || "") ||
+            Number(projected.rows[0].legacy_projection_sequence || 0) !==
+              Number(event.sequence_number) ||
+            String(projected.rows[0].legacy_projection_event_hash || "") !== event.event_hash) {
+          throw new Error("incident_legacy_projection_readback_mismatch");
+        }
+        return Object.freeze({
+          schema_version: "work_incident_reconciliation_v1",
+          tenant_id: context.tenantId,
+          work_id: context.workId,
+          project_id: lockedWork.project_id,
+          fingerprint,
+          status: "candidate",
+          work_status: blocked.rows[0].status,
+          next_action: blocked.rows[0].next_action,
+          source_event_sequence_number: Number(sourceEvent.sequence_number),
+          source_event_hash: sourceEvent.event_hash,
+          reconciliation_event_sequence_number: Number(event.sequence_number),
+          reconciliation_event_hash: event.event_hash,
+          reconciled: true,
+        });
+      },
+    ));
+  }
+
   async function transaction(fn) {
     await initialize();
     const client = typeof pool.connect === "function" ? await pool.connect() : pool;
@@ -2425,7 +3040,15 @@ export function createWorkContinuityRuntime(config, options = {}) {
     } finally { client.release?.(); }
   }
 
-  async function withIdempotency(client, context, key, operation, request, perform) {
+  async function withIdempotency(
+    client,
+    context,
+    key,
+    operation,
+    request,
+    perform,
+    replayGuard = null,
+  ) {
     const idempotencyKey = safeText(key, 160);
     if (!idempotencyKey) throw new Error("idempotency_key_required");
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
@@ -2447,6 +3070,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           existing.rows[0].request_digest !== requestDigest) {
         throw new Error("idempotency_key_conflict");
       }
+      if (typeof replayGuard === "function") await replayGuard(existing.rows[0].result);
       return { ...existing.rows[0].result, idempotent_replay: true };
     }
     const result = await perform();
@@ -2756,7 +3380,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
       digest(unsignedPayload) !== payload.context_digest
     ) throw new Error("nyra_control_context_corrupt");
     const currentRevision = Number(row.current_version || 0);
-    if (Number(payload.work_revision) !== currentRevision || Number(row.work_revision) !== currentRevision) {
+    const currentState = String(row.status || "unknown");
+    const currentNextAction = safeText(row.next_action, 360);
+    if (Number(payload.work_revision) !== currentRevision ||
+        Number(row.work_revision) !== currentRevision ||
+        String(payload.work_state || "") !== currentState ||
+        String(payload.next_action || "") !== currentNextAction) {
       return null;
     }
     return Object.freeze(payload);
@@ -2776,12 +3405,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         c.capsule_id,c.capsule_digest,
         a.revision AS atlas_revision,a.source_hash AS atlas_source_hash,
         a.bootstrap_state AS atlas_bootstrap_state,a.bootstrap_next_cursor AS atlas_bootstrap_next_cursor,
-        e.payload->>'fingerprint' AS incident_fingerprint,
-        CASE e.event_type
-          WHEN 'incident_runbook_verified' THEN 'verified'
-          WHEN 'incident_runbook_quarantined' THEN 'quarantined'
-          ELSE coalesce(e.payload->>'status','candidate')
-        END AS incident_status,
+        wi.fingerprint AS incident_fingerprint,
+        wi.status AS incident_status,
+        wi.unresolved_count AS incident_unresolved_count,
         (SELECT count(*)::int FROM core_continuity_works gw
           WHERE gw.tenant_id=w.tenant_id AND gw.project_id=w.project_id) AS gallery_work_count
       FROM core_continuity_works w
@@ -2794,15 +3420,24 @@ export function createWorkContinuityRuntime(config, options = {}) {
       ) c ON true
       LEFT JOIN core_continuity_atlas_state a
         ON a.tenant_id=w.tenant_id AND a.work_id=w.work_id
-      -- A runbook can be reusable at project level, but the active incident
-      -- shown to Nyra must belong to this exact Work. The Work event ledger is
-      -- the authoritative association and prevents sibling Work contamination.
+      -- A runbook can be reusable at project level, but Nyra must see the
+      -- exact Work association. Prefer the unresolved association that owns
+      -- the current Work block; fall back deterministically for legacy drift.
       LEFT JOIN LATERAL (
-        SELECT event_type,payload FROM core_continuity_events
-        WHERE tenant_id=w.tenant_id AND work_id=w.work_id
-          AND event_type IN ('incident_recorded','incident_runbook_verified','incident_runbook_quarantined')
-        ORDER BY sequence_number DESC LIMIT 1
-      ) e ON true
+        SELECT i.fingerprint,i.status,
+          (SELECT count(*)::int FROM core_continuity_work_incidents u
+            WHERE u.tenant_id=w.tenant_id AND u.work_id=w.work_id
+              AND u.blocks_work=true AND u.status IN ('candidate','quarantined'))
+            AS unresolved_count
+        FROM core_continuity_work_incidents i
+        WHERE i.tenant_id=w.tenant_id AND i.work_id=w.work_id
+        ORDER BY CASE
+          WHEN i.blocks_work=true AND i.status IN ('candidate','quarantined')
+            AND i.fingerprint=w.block_reference THEN 0
+          WHEN i.blocks_work=true AND i.status IN ('candidate','quarantined') THEN 1
+          ELSE 2
+        END,i.updated_at,i.fingerprint LIMIT 1
+      ) wi ON true
       WHERE w.tenant_id=$1 AND w.work_id=$2 AND ($3::varchar IS NULL OR w.project_id=$3)`, [tenantId, workId, projectId]);
     const row = result.rows[0];
     if (!row) throw new Error("continuity_work_not_found");
@@ -2836,6 +3471,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
       incident: Object.freeze({
         fingerprint: row.incident_fingerprint || null,
         status: row.incident_status || null,
+        unresolved_count: Number(row.incident_unresolved_count || 0),
+        blocking: Number(row.incident_unresolved_count || 0) > 0,
       }),
       next_action: safeText(row.next_action, 360),
     });
@@ -2984,8 +3621,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
       ) p ON true
       LEFT JOIN LATERAL (
         SELECT fingerprint,status,updated_at
-        FROM core_continuity_incident_runbooks
-        WHERE tenant_id=w.tenant_id AND project_id=w.project_id
+        FROM core_continuity_work_incidents
+        WHERE tenant_id=w.tenant_id AND work_id=w.work_id
         ORDER BY updated_at DESC,fingerprint DESC LIMIT 1
       ) i ON true
       LEFT JOIN core_continuity_atlas_state a
@@ -3178,6 +3815,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
           ) c ON true WHERE w.tenant_id=$1 AND w.work_id=$2 FOR UPDATE OF w`, [context.tenantId, context.workId]);
         const state = result.rows[0];
         if (!state) throw new Error("continuity_work_not_found");
+        await requireNoUnresolvedBlockingIncidents(client, context, state);
         if (!state.capsule_id) throw new Error("continuity_capsule_required");
         if (digest(state.capsule) !== state.capsule_digest) throw new Error("continuity_capsule_digest_mismatch");
         const expected = state.capsule.state_hashes || {};
@@ -3214,7 +3852,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
             WHERE tenant_id=$1 AND work_id=$2 AND plan_id=ANY($3::uuid[]) AND status='bound'`,
           [context.tenantId, context.workId, supersededPlanIds]);
         }
-        await client.query(`UPDATE core_continuity_works SET session_id=$3,status='active',updated_at=now()
+        await client.query(`UPDATE core_continuity_works
+          SET session_id=$3,status='active',block_source=NULL,block_reference=NULL,
+            block_epoch=block_epoch+1,updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2`, [context.tenantId, context.workId, safeText(input.session_id, 64)]);
         const replanEvent = supersededPlanIds.length
           ? await appendEvent(client, context, "native_plan_superseded", {
@@ -3236,6 +3876,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
           superseded_plan_ids: supersededPlanIds,
           replan_event: replanEvent,
           event };
+      },
+      async () => {
+        const lockedWork = await lockWorkRow(client, context);
+        await requireNoUnresolvedBlockingIncidents(client, context, lockedWork);
       }));
   }
 
@@ -4089,12 +4733,19 @@ export function createWorkContinuityRuntime(config, options = {}) {
           WHERE w.tenant_id=$1 AND w.work_id=$2 FOR UPDATE`,
         [context.tenantId, context.workId]);
         if (!work.rows[0]) throw new Error("continuity_work_not_found");
+        const incidentBindings = await currentIncidentPlanBindings(
+          client,
+          context,
+          basePlan.incident_fingerprints,
+          true,
+        );
         const priorPlan = (await client.query(`SELECT plan_id,plan_version FROM core_continuity_native_plans
           WHERE tenant_id=$1 AND work_id=$2 ORDER BY plan_version DESC,created_at DESC,plan_id DESC LIMIT 1 FOR UPDATE`,
         [context.tenantId, context.workId])).rows[0];
         const planVersion = Number(priorPlan?.plan_version || 0) + 1;
         const plan = {
           ...basePlan,
+          ...(incidentBindings.length ? { incident_bindings: incidentBindings } : {}),
           coordinator_session_fingerprint: coordinatorSessionFingerprint,
           acceptance_contract: buildAcceptanceContract(
             work.rows[0].anchor,
@@ -4150,6 +4801,18 @@ export function createWorkContinuityRuntime(config, options = {}) {
           event,
         };
       },
+      async (priorResult) => {
+        await lockWorkRow(client, context);
+        const currentBindings = await currentIncidentPlanBindings(
+          client,
+          context,
+          basePlan.incident_fingerprints,
+          true,
+        );
+        if (!incidentPlanBindingsMatch(priorResult?.plan?.incident_bindings, currentBindings)) {
+          throw new Error("native_agent_incident_binding_stale");
+        }
+      },
     ));
   }
 
@@ -4175,9 +4838,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
         WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND status='planned'`,
       [context.tenantId, context.workId, planId]);
       await client.query(`UPDATE core_continuity_works
-        SET status='blocked',next_action=$3,updated_at=now()
+        SET status='blocked',next_action=$3,block_source='native_agent_lease',
+          block_reference=$4,block_epoch=block_epoch+1,updated_at=now()
         WHERE tenant_id=$1 AND work_id=$2 AND status<>'completed'`,
-      [context.tenantId, context.workId, nextAction]);
+      [context.tenantId, context.workId, nextAction, planId]);
       await appendEvent(client, context, "native_agent_lease_expired", {
         plan_id: planId,
         task_ids: taskIds,
@@ -4689,7 +5353,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
       "native_closure_evaluation",
       input,
       async () => {
-        await lockWorkRow(client, context);
+        const lockedWork = await lockWorkRow(client, context);
+        await requireNoUnresolvedBlockingIncidents(client, context, lockedWork);
         const planResult = await client.query(`SELECT p.plan,p.plan_digest,p.status,a.intent_digest
           FROM core_continuity_native_plans p JOIN core_continuity_intent_anchors a
             ON a.tenant_id=p.tenant_id AND a.work_id=p.work_id
@@ -4709,7 +5374,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
             coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature
           FROM core_continuity_native_agents WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
           ORDER BY task_id`, [context.tenantId, context.workId, planId]);
-        const evaluation = evaluateNativeClosure({ plan: planResult.rows[0].plan, agents: agents.rows });
+        const evaluation = {
+          ...evaluateNativeClosure({ plan: planResult.rows[0].plan, agents: agents.rows }),
+          // A closure evaluation is valid only for the exact Work block epoch
+          // observed under lock. Any later incident, verification or resume
+          // advances this epoch and requires a fresh evaluation/Core Join.
+          work_block_epoch: Number(lockedWork.block_epoch || 0),
+        };
         const evaluationId = crypto.randomUUID();
         const evaluationDigest = digest(evaluation);
         if (evaluation.closed && !input.release) {
@@ -4768,6 +5439,14 @@ export function createWorkContinuityRuntime(config, options = {}) {
           event,
         };
       },
+      async (priorResult) => {
+        const lockedWork = await lockWorkRow(client, context);
+        await requireNoUnresolvedBlockingIncidents(client, context, lockedWork);
+        if (Number(priorResult?.work_block_epoch ?? -1) !==
+            Number(lockedWork.block_epoch || 0)) {
+          throw new Error("continuity_fresh_closure_evaluation_required");
+        }
+      },
     ));
   }
 
@@ -4778,7 +5457,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const releaseIntent = requireObject(options.releaseIntent, "core_release_intent");
     const coreJoinRecord = requireObject(options.coreJoinRecord, "core_join_record");
     return transaction(async (client) => {
-      await lockWorkRow(client, context);
+      const lockedWork = await lockWorkRow(client, context);
+      await requireNoUnresolvedBlockingIncidents(client, context, lockedWork);
       const stored = await client.query(`SELECT
           p.plan,p.plan_digest,p.status,a.intent_digest,e.evaluation,e.evaluation_digest
         FROM core_continuity_native_plans p
@@ -4915,6 +5595,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ) {
           throw new Error("continuity_core_join_replay_conflict");
         }
+        if (String(lockedWork.status || "") !== "release_ready") {
+          throw new Error("continuity_fresh_closure_evaluation_required");
+        }
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
           tenant_id: context.tenantId,
@@ -4928,6 +5611,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
           idempotent_replay: true,
         };
       }
+      if (!["active", "verified"].includes(String(lockedWork.status || "")) ||
+          Number(row.evaluation?.work_block_epoch ?? -1) !==
+            Number(lockedWork.block_epoch || 0)) {
+        throw new Error("continuity_fresh_closure_evaluation_required");
+      }
       await client.query(`INSERT INTO core_continuity_release_joins
         (tenant_id,work_id,plan_id,evaluation_id,verdict_id,release_intent,
          release_intent_digest,core_join_record,core_join_record_digest,created_by)
@@ -4940,6 +5628,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
       [context.tenantId, context.workId, planId]);
       await client.query(`UPDATE core_continuity_works
         SET status='release_ready',
+          block_source=NULL,block_reference=NULL,block_epoch=block_epoch+1,
           next_action='Use the persisted Core Join to obtain the exact action ticket, execute through host policy, then verify live readback.',
           updated_at=now()
         WHERE tenant_id=$1 AND work_id=$2`,
@@ -5071,7 +5760,11 @@ export function createWorkContinuityRuntime(config, options = {}) {
         authorization_digest: suppliedAuthorizationDigest,
       },
       async () => {
-        await lockWorkRow(client, context);
+        const lockedWork = await lockWorkRow(client, context);
+        await requireNoUnresolvedBlockingIncidents(client, context, lockedWork);
+        if (lockedWork.status !== "release_ready") {
+          throw new Error("native_agent_plan_not_release_ready");
+        }
         const joined = await client.query(`SELECT
             p.plan,p.plan_digest,p.status,
             e.evaluation_id,e.evaluation,e.evaluation_digest,
@@ -5232,7 +5925,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
           WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3`,
         [context.tenantId, context.workId, planId]);
         await client.query(`UPDATE core_continuity_works
-          SET status='completed',next_action='',live_state_hash=$3,updated_at=now()
+          SET status='completed',next_action='',live_state_hash=$3,
+            block_source=NULL,block_reference=NULL,block_epoch=block_epoch+1,updated_at=now()
           WHERE tenant_id=$1 AND work_id=$2`,
         [context.tenantId, context.workId, digest({
           repository: receipt.repository,
@@ -5281,6 +5975,10 @@ export function createWorkContinuityRuntime(config, options = {}) {
           final_receipt: finalReceipt,
           event,
         };
+      },
+      async () => {
+        const lockedWork = await lockWorkRow(client, context);
+        await requireNoUnresolvedBlockingIncidents(client, context, lockedWork);
       },
     ));
   }
@@ -5883,9 +6581,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
           "Keep the previous verified commit and health contract available until live closure.",
         ],
       },
-      next_action: safeText(input.next_action, 4_000),
+      next_action: input.next_action,
       idempotency_key: `incident-operational-${incidentIdempotencyDigest}`,
       block_work: !preExecutionPlanLookupFailure,
+      source_operation: operation,
+      source_plan_id: input.plan_id || latestPlan.rows[0]?.plan?.plan_id || undefined,
+      source_agent_id: input.native_agent_id || input.agent_id || context.actor,
     });
   }
 
@@ -5899,51 +6600,84 @@ export function createWorkContinuityRuntime(config, options = {}) {
     const steps = stringList(input.runbook?.steps, "incident_runbook_steps", {
       maxItems: 30,
       maxLength: 2_000,
-    });
+    }).map((value) => incidentSafeText(value, 2_000, "incident_runbook_step"));
     if (!steps.length) throw new Error("incident_runbook_steps_required");
     const runbook = cleanJson({
       schema_version: "incident_runbook_v1",
-      title: safeText(input.runbook?.title, 500),
+      title: incidentSafeText(input.runbook?.title, 500, "incident_runbook_title"),
       preconditions: stringList(input.runbook?.preconditions, "incident_runbook_preconditions", {
         maxItems: 30,
         maxLength: 1_000,
-      }),
+      }).map((value) => incidentSafeText(value, 1_000, "incident_runbook_precondition")),
       steps,
       verification: stringList(input.runbook?.verification, "incident_runbook_verification", {
         maxItems: 30,
         maxLength: 1_000,
-      }),
+      }).map((value) => incidentSafeText(value, 1_000, "incident_runbook_verification")),
       rollback: stringList(input.runbook?.rollback, "incident_runbook_rollback", {
         maxItems: 30,
         maxLength: 1_000,
-      }),
+      }).map((value) => incidentSafeText(value, 1_000, "incident_runbook_rollback")),
       promotes_only_after_independent_verification: true,
     }, 100_000);
     const runbookDigest = digest(runbook);
+    const sourceOperation = incidentIdentifier(
+      input.source_operation || scope.deployment_path || "incident.record",
+      "incident_source_operation",
+      120,
+    );
+    const { reason, reasonDigest } = incidentReason(scope.error_code, sourceOperation);
+    const sourcePlanId = input.source_plan_id
+      ? uuid(input.source_plan_id, "incident_source_plan_id")
+      : null;
+    const sourceAgentId = incidentIdentifier(
+      input.source_agent_id || context.actor,
+      "incident_source_agent_id",
+      120,
+    );
     // Candidate incident evidence is always append-only.  Only failures that
     // reached an execution-capable plan may move a Work to blocked.
     const blockWork = input.block_work !== false;
     return transaction(async (client) => {
-      const work = await client.query(`SELECT project_id FROM core_continuity_works
+      const work = await client.query(`SELECT project_id,current_version,status,next_action,
+          block_source,block_reference,block_epoch
+        FROM core_continuity_works
         WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`, [context.tenantId, context.workId]);
       if (!work.rows[0]) throw new Error("continuity_work_not_found");
       if (work.rows[0].project_id !== projectId) throw new Error("incident_project_scope_mismatch");
-      const existing = await client.query(`SELECT runbook_digest,status,created_by
-        FROM core_continuity_incident_runbooks
-        WHERE tenant_id=$1 AND project_id=$2 AND fingerprint=$3 FOR UPDATE`,
-      [context.tenantId, projectId, fingerprint]);
-      const nextAction = safeText(
+      const nextAction = incidentSafeText(
         input.next_action ||
           `Resume incident ${fingerprint.slice(0, 12)} from its indexed runbook; diagnose, correct, rerun exact checks, then obtain independent verification.`,
         4_000,
+        "incident_next_action",
       );
-      if (existing.rows[0]) {
-        if (existing.rows[0].runbook_digest !== runbookDigest) throw new Error("incident_runbook_conflict");
-        if (blockWork) {
-          await client.query(`UPDATE core_continuity_works
-            SET status='blocked',next_action=$3,updated_at=now()
-            WHERE tenant_id=$1 AND work_id=$2`,
-          [context.tenantId, context.workId, nextAction]);
+      await client.query(`INSERT INTO core_continuity_incident_runbooks
+        (tenant_id,project_id,fingerprint,scope,runbook,runbook_digest,status,created_by)
+        VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,'candidate',$7)
+        ON CONFLICT (tenant_id,project_id,fingerprint) DO NOTHING`,
+      [context.tenantId, projectId, fingerprint, JSON.stringify(scope), JSON.stringify(runbook),
+        runbookDigest, context.actor]);
+      const existing = await client.query(`SELECT runbook_digest
+        FROM core_continuity_incident_runbooks
+        WHERE tenant_id=$1 AND project_id=$2 AND fingerprint=$3 FOR UPDATE`,
+      [context.tenantId, projectId, fingerprint]);
+      if (!existing.rows[0] || existing.rows[0].runbook_digest !== runbookDigest) {
+        throw new Error("incident_runbook_conflict");
+      }
+      const association = await client.query(`SELECT scope_digest,runbook_digest,error_code,reason,
+          reason_digest,source_operation,source_plan_id,source_agent_id,status,blocks_work,
+          verification_count,failure_count,state_version
+        FROM core_continuity_work_incidents
+        WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3 FOR UPDATE`,
+      [context.tenantId, context.workId, fingerprint]);
+      if (association.rows[0]) {
+        const row = association.rows[0];
+        if (row.scope_digest !== fingerprint || row.runbook_digest !== runbookDigest ||
+            row.error_code !== scope.error_code || row.reason !== reason ||
+            row.reason_digest !== reasonDigest ||
+            row.source_operation !== sourceOperation || row.source_plan_id !== sourcePlanId ||
+            row.source_agent_id !== sourceAgentId || row.blocks_work !== blockWork) {
+          throw new Error("incident_work_association_conflict");
         }
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
@@ -5951,30 +6685,73 @@ export function createWorkContinuityRuntime(config, options = {}) {
           work_id: context.workId,
           project_id: projectId,
           fingerprint,
-          status: existing.rows[0].status,
-          work_status: blockWork ? "blocked" : "active",
-          next_action: nextAction,
+          scope_digest: fingerprint,
+          error_code: scope.error_code,
+          reason,
+          reason_digest: reasonDigest,
+          provenance: {
+            source_operation: sourceOperation,
+            source_plan_id: sourcePlanId,
+            source_agent_id: sourceAgentId,
+          },
+          status: row.status,
+          work_status: work.rows[0].status,
+          next_action: work.rows[0].next_action,
           idempotent_replay: true,
         };
       }
-      await client.query(`INSERT INTO core_continuity_incident_runbooks
-        (tenant_id,project_id,fingerprint,scope,runbook,runbook_digest,status,created_by)
-        VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,'candidate',$7)`,
-      [context.tenantId, projectId, fingerprint, JSON.stringify(scope), JSON.stringify(runbook),
-        runbookDigest, context.actor]);
+      await client.query(`INSERT INTO core_continuity_work_incidents
+        (tenant_id,work_id,project_id,fingerprint,scope_digest,runbook_digest,error_code,reason,reason_digest,
+         source_operation,source_plan_id,source_agent_id,status,blocks_work,created_by)
+        VALUES ($1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$11,'candidate',$12,$13)`,
+      [context.tenantId, context.workId, projectId, fingerprint, runbookDigest,
+        scope.error_code, reason, reasonDigest, sourceOperation, sourcePlanId, sourceAgentId, blockWork,
+        context.actor]);
+      let workStatus = work.rows[0].status;
+      let persistedNextAction = work.rows[0].next_action;
       if (blockWork) {
-        await client.query(`UPDATE core_continuity_works
-          SET status='blocked',next_action=$3,updated_at=now()
-          WHERE tenant_id=$1 AND work_id=$2`,
-        [context.tenantId, context.workId, nextAction]);
+        if (!["active", "verified", "release_ready", "blocked"].includes(
+          String(work.rows[0].status || ""),
+        )) {
+          throw new Error("incident_work_status_not_blockable");
+        }
+        const convertsOwnedNativeLease =
+          String(work.rows[0].status || "") === "blocked" &&
+          String(work.rows[0].block_source || "") === "native_agent_lease" &&
+          sourcePlanId !== null &&
+          String(work.rows[0].block_reference || "") === sourcePlanId &&
+          NATIVE_LEASE_RECOVERY_OPERATIONS.has(sourceOperation);
+        const preservesExistingBlock = String(work.rows[0].status || "") === "blocked" &&
+          String(work.rows[0].block_source || "") !== "work_incident" &&
+          !convertsOwnedNativeLease;
+        if (!preservesExistingBlock) {
+          const blocked = await client.query(`UPDATE core_continuity_works
+            SET status='blocked',next_action=$3,block_source='work_incident',
+              block_reference=$4,block_epoch=block_epoch+1,updated_at=now()
+            WHERE tenant_id=$1 AND work_id=$2
+              AND status IN ('active','verified','release_ready','blocked')
+            RETURNING status,next_action`,
+          [context.tenantId, context.workId, nextAction, fingerprint]);
+          if (!blocked.rows[0]) throw new Error("incident_work_status_not_blockable");
+          workStatus = blocked.rows[0].status;
+          persistedNextAction = blocked.rows[0].next_action;
+        }
       }
       const event = await appendEvent(client, context, "incident_recorded", {
         project_id: projectId,
         fingerprint,
         runbook_digest: runbookDigest,
+        scope_digest: fingerprint,
+        error_code: scope.error_code,
+        reason,
+        reason_digest: reasonDigest,
+        source_operation: sourceOperation,
+        source_plan_id: sourcePlanId,
+        source_agent_id: sourceAgentId,
+        state_version: 0,
         status: "candidate",
-        work_status: blockWork ? "blocked" : "active",
-        next_action: nextAction,
+        work_status: workStatus,
+        next_action: persistedNextAction,
       });
       return {
         schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
@@ -5982,64 +6759,434 @@ export function createWorkContinuityRuntime(config, options = {}) {
         work_id: context.workId,
         project_id: projectId,
         fingerprint,
-        scope,
+        scope_digest: fingerprint,
+        error_code: scope.error_code,
+        reason,
+        reason_digest: reasonDigest,
+        provenance: {
+          source_operation: sourceOperation,
+          source_plan_id: sourcePlanId,
+          source_agent_id: sourceAgentId,
+        },
         runbook_digest: runbookDigest,
         status: "candidate",
-        work_status: blockWork ? "blocked" : "active",
-        next_action: nextAction,
+        work_status: workStatus,
+        next_action: persistedNextAction,
         event,
       };
     });
   }
 
-  // resolved=true promotes only with independent test evidence. resolved=false
-  // records a failed reuse and quarantines the recipe after two failures.
+  function publicWorkIncident(row) {
+    const verification = row?.verification_evidence &&
+      typeof row.verification_evidence === "object"
+      ? row.verification_evidence
+      : null;
+    return Object.freeze({
+      fingerprint: String(row.fingerprint || ""),
+      scope_digest: String(row.scope_digest || ""),
+      error_code: incidentSafeText(row.error_code, 120).toUpperCase(),
+      reason: incidentRedactedText(row.reason, 500),
+      reason_digest: String(row.reason_digest || ""),
+      provenance: Object.freeze({
+        source_operation: incidentRedactedText(row.source_operation, 120),
+        source_plan_id: row.source_plan_id || null,
+        source_agent_id: incidentRedactedText(row.source_agent_id, 120),
+      }),
+      status: String(row.status || "candidate"),
+      blocking: row.blocks_work === true &&
+        ["candidate", "quarantined"].includes(String(row.status || "")),
+      blocks_work: row.blocks_work === true,
+      runbook_digest: String(row.runbook_digest || ""),
+      verification_count: Number(row.verification_count || 0),
+      failure_count: Number(row.failure_count || 0),
+      state_version: Number(row.state_version || 0),
+      verification: verification ? Object.freeze({
+        evidence_digest: String(row.verification_digest || ""),
+        plan_id: verification.plan_id || null,
+        verifier_task_id: verification.verifier_task_id || null,
+        native_receipt_id: verification.native_receipt_id || null,
+        report_digest: verification.report_digest || null,
+        bridge_evidence_digest: verification.bridge_evidence_digest || null,
+      }) : null,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    });
+  }
+
+  async function readWorkIncident(identity, input) {
+    await initialize();
+    const tenantId = tenant(identity.tenantId);
+    const workId = uuid(input.work_id, "work_id");
+    const fingerprint = String(input.fingerprint || "").toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error("incident_fingerprint_invalid");
+    const result = await pool.query(`SELECT i.fingerprint,i.scope_digest,i.error_code,i.reason,i.reason_digest,
+        i.source_operation,i.source_plan_id,i.source_agent_id,i.status,i.blocks_work,
+        i.runbook_digest,i.verification_evidence,i.verification_digest,
+        i.verification_count,i.failure_count,i.state_version,i.created_at,i.updated_at,
+        w.project_id,w.status AS work_status
+      FROM core_continuity_work_incidents i
+      JOIN core_continuity_works w ON w.tenant_id=i.tenant_id AND w.work_id=i.work_id
+      WHERE i.tenant_id=$1 AND i.work_id=$2 AND i.fingerprint=$3`,
+    [tenantId, workId, fingerprint]);
+    if (!result.rows[0]) throw new Error("incident_work_association_not_found");
+    return Object.freeze({
+      schema_version: "work_incident_index_v1",
+      tenant_id: tenantId,
+      work_id: workId,
+      project_id: result.rows[0].project_id,
+      work_status: result.rows[0].work_status,
+      incident: publicWorkIncident(result.rows[0]),
+      raw_prompt_fields_returned: false,
+    });
+  }
+
+  async function listWorkIncidents(identity, input) {
+    await initialize();
+    const tenantId = tenant(identity.tenantId);
+    const workId = uuid(input.work_id, "work_id");
+    const status = input.status ? String(input.status).toLowerCase() : null;
+    if (status && !["candidate", "verified", "quarantined"].includes(status)) {
+      throw new Error("incident_status_invalid");
+    }
+    const limit = Math.min(Math.max(Number(input.limit) || 50, 1), 100);
+    const work = await pool.query(`SELECT w.project_id,w.status,
+        (SELECT count(*)::int FROM core_continuity_work_incidents i
+          WHERE i.tenant_id=w.tenant_id AND i.work_id=w.work_id
+            AND i.blocks_work=true AND i.status IN ('candidate','quarantined')) AS unresolved_count
+      FROM core_continuity_works w WHERE w.tenant_id=$1 AND w.work_id=$2`, [tenantId, workId]);
+    if (!work.rows[0]) throw new Error("continuity_work_not_found");
+    const result = await pool.query(`SELECT fingerprint,scope_digest,error_code,reason,reason_digest,
+        source_operation,source_plan_id,source_agent_id,status,blocks_work,runbook_digest,
+        verification_evidence,verification_digest,verification_count,failure_count,state_version,
+        created_at,updated_at
+      FROM core_continuity_work_incidents
+      WHERE tenant_id=$1 AND work_id=$2 AND ($3::varchar IS NULL OR status=$3)
+      ORDER BY updated_at DESC,fingerprint DESC LIMIT $4`, [tenantId, workId, status, limit]);
+    const incidents = result.rows.map(publicWorkIncident);
+    return Object.freeze({
+      schema_version: "work_incident_index_v1",
+      tenant_id: tenantId,
+      work_id: workId,
+      project_id: work.rows[0].project_id,
+      work_status: work.rows[0].status,
+      incidents,
+      unresolved_count: Number(work.rows[0].unresolved_count || 0),
+      raw_prompt_fields_returned: false,
+    });
+  }
+
+  // resolved=true promotes only with persisted independent native evidence.
+  // resolved=false records a failed reuse and quarantines after two distinct
+  // receipt-bound failures.
+  async function incidentVerifierEvidence(client, context, input, association, resolved) {
+    const planId = uuid(input.plan_id, "incident_verifier_plan_id");
+    const verifierTaskId = identifier(input.verifier_task_id, "incident_verifier_task_id", 120);
+    const nativeReceiptId = uuid(input.native_receipt_id, "incident_native_receipt_id");
+    const native = await client.query(`SELECT p.plan,p.plan_digest,p.status AS plan_status,
+        a.task_id,a.task_kind,a.task_digest,a.v2_task_id,a.agent_id,a.status AS agent_status,
+        a.report,a.report_digest,a.coordinator_session_fingerprint,a.native_session_fingerprint,
+        a.native_presence_signature,r.receipt_type,r.agent_id AS receipt_agent_id,
+        r.payload AS receipt_payload,r.payload_digest AS receipt_digest
+      FROM core_continuity_native_plans p
+      JOIN core_continuity_native_agents a
+        ON a.tenant_id=p.tenant_id AND a.work_id=p.work_id AND a.plan_id=p.plan_id
+      JOIN core_continuity_native_receipts r
+        ON r.tenant_id=p.tenant_id AND r.work_id=p.work_id AND r.plan_id=p.plan_id
+      WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.plan_id=$3
+        AND a.task_id=$4 AND r.receipt_id=$5 FOR UPDATE OF p,a,r`,
+    [context.tenantId, context.workId, planId, verifierTaskId, nativeReceiptId]);
+    const row = native.rows[0];
+    if (!row) throw new Error("incident_verifier_receipt_not_found");
+    const report = row.report && typeof row.report === "object" ? row.report : null;
+    const receiptPayload = row.receipt_payload && typeof row.receipt_payload === "object"
+      ? row.receipt_payload
+      : null;
+    const planTask = Array.isArray(row.plan?.tasks)
+      ? row.plan.tasks.find((task) => task?.task_id === verifierTaskId)
+      : null;
+    const incidentBinding = Array.isArray(row.plan?.incident_bindings)
+      ? row.plan.incident_bindings.find((binding) =>
+        binding?.fingerprint === association.fingerprint)
+      : null;
+    const bindingMatchesCurrent = Boolean(incidentBinding &&
+      incidentBinding.incident_status === association.status &&
+      Number(incidentBinding.state_version) === Number(association.state_version || 0));
+    const persistedEvidence = association.verification_evidence &&
+      typeof association.verification_evidence === "object" &&
+      !Array.isArray(association.verification_evidence)
+      ? association.verification_evidence
+      : null;
+    const bindingMatchesPersistedAttempt = Boolean(incidentBinding && persistedEvidence &&
+      Number(incidentBinding.state_version) + 1 === Number(association.state_version || 0) &&
+      persistedEvidence.plan_id === planId &&
+      persistedEvidence.native_receipt_id === nativeReceiptId &&
+      persistedEvidence.resolved === resolved);
+    if (row.plan_status !== "planned" || digest(row.plan) !== row.plan_digest ||
+        !Array.isArray(row.plan?.incident_fingerprints) ||
+        !row.plan.incident_fingerprints.includes(association.fingerprint) ||
+        !incidentBinding ||
+        incidentBinding.schema_version !== "native_agent_incident_binding_v1" ||
+        incidentBinding.scope_digest !== association.scope_digest ||
+        incidentBinding.runbook_digest !== association.runbook_digest ||
+        (!bindingMatchesCurrent && !bindingMatchesPersistedAttempt) ||
+        !planTask || planTask.kind !== "verifier" || planTask.task_digest !== row.task_digest ||
+        row.task_kind !== "verifier" || row.agent_status !== "completed" ||
+        !report || report.schema_version !== "native_agent_report_v1" ||
+        digest({ status: row.agent_status, report }) !== row.report_digest ||
+        (row.agent_id === association.source_agent_id ||
+          row.agent_id === association.created_by) ||
+        !/^[a-f0-9]{16,64}$/i.test(String(row.native_session_fingerprint || "")) ||
+        !/^ags_[a-f0-9]{32}$/.test(String(row.native_presence_signature || "")) ||
+        row.native_session_fingerprint === row.coordinator_session_fingerprint) {
+      throw new Error("incident_verifier_evidence_invalid");
+    }
+    if (row.receipt_type !== "agent_reported" || row.receipt_agent_id !== row.agent_id ||
+        !receiptPayload || digest(receiptPayload) !== row.receipt_digest ||
+        receiptPayload.task_id !== verifierTaskId || receiptPayload.task_kind !== "verifier" ||
+        receiptPayload.status !== row.agent_status || receiptPayload.report_digest !== row.report_digest ||
+        receiptPayload.native_session_fingerprint !== row.native_session_fingerprint ||
+        receiptPayload.native_presence_signature !== row.native_presence_signature) {
+      throw new Error("incident_verifier_receipt_binding_invalid");
+    }
+    const incidentReference = `incident:${String(association.fingerprint).toLowerCase()}`;
+    const evidenceReferences = [
+      ...(Array.isArray(report.evidence_refs) ? report.evidence_refs : []),
+      ...(Array.isArray(report.acceptance_evidence)
+        ? report.acceptance_evidence.flatMap((item) => Array.isArray(item?.evidence_refs)
+          ? item.evidence_refs
+          : [])
+        : []),
+    ].map((value) => String(value || "").trim().toLowerCase());
+    if (!evidenceReferences.includes(incidentReference)) {
+      throw new Error("incident_verifier_scope_binding_required");
+    }
+    const agents = await client.query(`SELECT task_id,agent_id,task_kind,status,report,report_digest,
+        coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature
+      FROM core_continuity_native_agents
+      WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 ORDER BY task_id FOR UPDATE`,
+    [context.tenantId, context.workId, planId]);
+    const builderTasks = new Set((row.plan.tasks || [])
+      .filter((task) => task?.kind === "builder")
+      .map((task) => task.task_id));
+    const verifiedBuilderIds = Array.isArray(report.verifies_task_ids)
+      ? [...new Set(report.verifies_task_ids.filter((taskId) => builderTasks.has(taskId)))]
+      : [];
+    const verifiedBuilders = agents.rows.filter((agent) => verifiedBuilderIds.includes(agent.task_id));
+    if (!verifiedBuilderIds.length || verifiedBuilders.length !== verifiedBuilderIds.length ||
+        verifiedBuilders.some((builder) => builder.status !== "completed" ||
+          builder.agent_id === row.agent_id ||
+          builder.native_session_fingerprint === row.native_session_fingerprint ||
+          !/^[a-f0-9]{64}$/.test(String(builder.report_digest || "")))) {
+      throw new Error("incident_verifier_independence_invalid");
+    }
+    if (resolved) {
+      const tests = agents.rows.flatMap((agent) => Array.isArray(agent.report?.tests)
+        ? agent.report.tests
+        : []);
+      const acceptanceEvidence = Array.isArray(report.acceptance_evidence)
+        ? report.acceptance_evidence
+        : [];
+      if (report.verdict !== "approved" || !tests.length ||
+          tests.some((test) => test?.passed !== true) ||
+          !acceptanceEvidence.length ||
+          acceptanceEvidence.some((item) => item?.passed !== true ||
+            !Array.isArray(item.evidence_refs) || !item.evidence_refs.length) ||
+          evaluateNativeClosure({ plan: row.plan, agents: agents.rows }).closed !== true) {
+        throw new Error("incident_verifier_approval_required");
+      }
+    } else if (report.verdict !== "rejected") {
+      throw new Error("incident_verifier_rejection_required");
+    }
+    let bridgeEvidence = null;
+    if (resolved) {
+      if (!row.v2_task_id) throw new Error("incident_native_verifier_bridge_evidence_required");
+      const bridge = await client.query(`SELECT evidence_id,evidence_digest,v2_task_id,task_digest,
+          verifier_agent_id,verifier_session_fingerprint,native_receipt_digest,report_digest
+        FROM tenant_work_native_verifier_evidence
+        WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3 AND task_id=$4
+          AND native_receipt_id=$5`,
+      [context.tenantId, context.workId, planId, verifierTaskId, nativeReceiptId]);
+      bridgeEvidence = bridge.rows[0] || null;
+      if (!bridgeEvidence || bridgeEvidence.v2_task_id !== row.v2_task_id ||
+          bridgeEvidence.task_digest !== row.task_digest ||
+          bridgeEvidence.verifier_agent_id !== row.agent_id ||
+          bridgeEvidence.verifier_session_fingerprint !== row.native_session_fingerprint ||
+          bridgeEvidence.native_receipt_digest !== row.receipt_digest ||
+          bridgeEvidence.report_digest !== row.report_digest ||
+          !/^[a-f0-9]{64}$/.test(String(bridgeEvidence.evidence_digest || ""))) {
+        throw new Error("incident_native_verifier_bridge_evidence_required");
+      }
+    }
+    const evidence = cleanJson({
+      schema_version: "work_incident_native_verification_v1",
+      tenant_id: context.tenantId,
+      work_id: context.workId,
+      fingerprint: association.fingerprint,
+      scope_digest: association.scope_digest,
+      incident_runbook_digest: association.runbook_digest,
+      // The proof is bound to the state observed by the native plan. On an
+      // idempotent replay the association has already advanced by one, but the
+      // evidence bytes must remain identical to the originally persisted
+      // verification attempt.
+      incident_state_version: Number(incidentBinding.state_version || 0),
+      incident_plan_binding_digest: digest(incidentBinding),
+      resolved,
+      plan_id: planId,
+      plan_digest: row.plan_digest,
+      verifier_task_id: verifierTaskId,
+      verifier_task_digest: row.task_digest,
+      verifier_agent_id: row.agent_id,
+      verifier_session_digest: digest(row.native_session_fingerprint),
+      native_receipt_id: nativeReceiptId,
+      native_receipt_digest: row.receipt_digest,
+      report_digest: row.report_digest,
+      ...(row.v2_task_id ? { v2_task_id: row.v2_task_id } : {}),
+      ...(bridgeEvidence ? {
+        bridge_evidence_id: bridgeEvidence.evidence_id,
+        bridge_evidence_digest: bridgeEvidence.evidence_digest,
+      } : {}),
+    }, 20_000);
+    const evidenceDigest = digest(evidence);
+    if (bindingMatchesPersistedAttempt && association.verification_digest !== evidenceDigest) {
+      throw new Error("incident_verifier_evidence_invalid");
+    }
+    return { evidence, evidenceDigest, nativeReceiptId };
+  }
+
   async function verifyIncident(identity, input) {
     const context = workContext(identity, input);
     const projectId = identifier(input.project_id, "project_id", 64);
     const fingerprint = String(input.fingerprint || "").toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error("incident_fingerprint_invalid");
     const resolved = input.resolved === true;
-    const tests = Array.isArray(input.tests) ? cleanJson(input.tests.slice(0, 100), 80_000) : [];
-    const evidenceRefs = stringList(input.evidence_refs, "incident_evidence_refs", {
-      maxItems: 100,
-      maxLength: 500,
-    });
     return transaction(async (client) => {
-      const work = await client.query(`SELECT project_id FROM core_continuity_works
+      const work = await client.query(`SELECT project_id,current_version,status,next_action,
+          block_source,block_reference,block_epoch
+        FROM core_continuity_works
         WHERE tenant_id=$1 AND work_id=$2 FOR UPDATE`,
       [context.tenantId, context.workId]);
       if (!work.rows[0]) throw new Error("continuity_work_not_found");
       if (work.rows[0].project_id !== projectId) throw new Error("incident_project_scope_mismatch");
-      const current = await client.query(`SELECT created_by,status,verification_count,failure_count
-        FROM core_continuity_incident_runbooks
-        WHERE tenant_id=$1 AND project_id=$2 AND fingerprint=$3 FOR UPDATE`,
-      [context.tenantId, projectId, fingerprint]);
+      const current = await client.query(`SELECT i.fingerprint,i.scope_digest,i.runbook_digest,
+          i.error_code,i.reason,i.reason_digest,i.source_operation,i.source_plan_id,i.source_agent_id,
+          i.created_by,i.status,i.blocks_work,i.verification_evidence,i.verification_digest,
+          i.verification_count,
+          i.failure_count,i.state_version
+        FROM core_continuity_work_incidents i
+        WHERE i.tenant_id=$1 AND i.work_id=$2 AND i.project_id=$3 AND i.fingerprint=$4
+        FOR UPDATE OF i`,
+      [context.tenantId, context.workId, projectId, fingerprint]);
       const row = current.rows[0];
-      if (!row) throw new Error("incident_runbook_not_found");
-      if (resolved) {
-        if (row.status === "quarantined") throw new Error("incident_runbook_quarantined");
-        if (row.created_by === context.actor) throw new Error("incident_independent_verifier_required");
-        if (!tests.length || !tests.some((test) => test?.passed === true) || !evidenceRefs.length) {
-          throw new Error("incident_verification_evidence_required");
+      if (!row) throw new Error("incident_work_association_not_found");
+      const proof = await incidentVerifierEvidence(client, context, input, row, resolved);
+      const replay = await client.query(`SELECT resolved,result_status,evidence
+        FROM core_continuity_work_incident_verifications
+        WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3 AND evidence_digest=$4 FOR UPDATE`,
+      [context.tenantId, context.workId, fingerprint, proof.evidenceDigest]);
+      if (replay.rows[0]) {
+        if (replay.rows[0].resolved !== resolved ||
+            digest(replay.rows[0].evidence) !== proof.evidenceDigest) {
+          throw new Error("incident_verification_replay_conflict");
         }
-        const evidence = cleanJson({ tests, evidence_refs: evidenceRefs, resolved: true }, 100_000);
-        await client.query(`UPDATE core_continuity_incident_runbooks
-          SET status='verified',verified_by=$4,verification_evidence=$5::jsonb,
-            verification_count=verification_count+1,updated_at=now()
-          WHERE tenant_id=$1 AND project_id=$2 AND fingerprint=$3`,
-        [context.tenantId, projectId, fingerprint, context.actor, JSON.stringify(evidence)]);
+        return {
+          schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+          tenant_id: context.tenantId,
+          work_id: context.workId,
+          project_id: projectId,
+          fingerprint,
+          scope_digest: row.scope_digest,
+          error_code: row.error_code,
+          reason: row.reason,
+          reason_digest: row.reason_digest,
+          status: row.status,
+          promoted: row.status === "verified",
+          work_status: work.rows[0].status,
+          next_action: work.rows[0].next_action,
+          evidence_digest: proof.evidenceDigest,
+          idempotent_replay: true,
+        };
+      }
+      const receiptUse = await client.query(`SELECT evidence_digest
+        FROM core_continuity_work_incident_verifications
+        WHERE tenant_id=$1 AND work_id=$2 AND fingerprint=$3 AND native_receipt_id=$4 FOR UPDATE`,
+      [context.tenantId, context.workId, fingerprint, proof.nativeReceiptId]);
+      if (receiptUse.rows[0]) throw new Error("incident_verification_receipt_conflict");
+      if (resolved) {
+        if (row.status === "verified") throw new Error("incident_verification_conflict");
+        const updated = await client.query(`UPDATE core_continuity_work_incidents
+          SET status='verified',verified_by=$5,verification_evidence=$6::jsonb,
+            verification_digest=$7,verification_count=verification_count+1,
+            state_version=state_version+1,updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2 AND project_id=$3 AND fingerprint=$4
+            AND status IN ('candidate','quarantined') AND state_version=$8
+          RETURNING status,state_version`,
+        [context.tenantId, context.workId, projectId, fingerprint,
+          proof.evidence.verifier_agent_id, JSON.stringify(proof.evidence), proof.evidenceDigest,
+          Number(row.state_version || 0)]);
+        if (!updated.rows[0]) throw new Error("incident_verification_cas_conflict");
+        await client.query(`INSERT INTO core_continuity_work_incident_verifications
+          (tenant_id,work_id,project_id,fingerprint,evidence_digest,native_receipt_id,resolved,
+           evidence,result_status,created_by)
+          VALUES ($1,$2,$3,$4,$5,$6,true,$7::jsonb,'verified',$8)`,
+        [context.tenantId, context.workId, projectId, fingerprint, proof.evidenceDigest,
+          proof.nativeReceiptId, JSON.stringify(proof.evidence), proof.evidence.verifier_agent_id]);
         const nextAction =
           `Incident ${fingerprint.slice(0, 12)} independently verified; resume the indexed work from the last checkpoint and re-evaluate closure.`;
-        await client.query(`UPDATE core_continuity_works
-          SET status='active',next_action=$3,updated_at=now()
-          WHERE tenant_id=$1 AND work_id=$2`,
-        [context.tenantId, context.workId, nextAction]);
+        const remaining = await currentBlockingIncident(client, context);
+        const remainingUnresolved = Number(remaining?.unresolved_count || 0);
+        let workStatus = work.rows[0].status;
+        let persistedNextAction = work.rows[0].next_action;
+        let workReactivated = false;
+        if (row.blocks_work === true && remaining &&
+            work.rows[0].block_source === "work_incident") {
+          const remainingAction = incidentRecoveryAction(remaining);
+          const blocked = await client.query(`UPDATE core_continuity_works
+            SET status='blocked',next_action=$3,block_source='work_incident',
+              block_reference=$4,block_epoch=block_epoch+1,updated_at=now()
+            WHERE tenant_id=$1 AND work_id=$2
+              AND status IN ('active','verified','release_ready','blocked')
+            RETURNING status,next_action`,
+          [context.tenantId, context.workId, remainingAction, remaining.fingerprint]);
+          if (!blocked.rows[0]) throw new Error("incident_work_status_not_blockable");
+          workStatus = blocked.rows[0].status;
+          persistedNextAction = blocked.rows[0].next_action;
+        } else if (row.blocks_work === true && remainingUnresolved === 0 &&
+            work.rows[0].status === "blocked" &&
+            work.rows[0].block_source === "work_incident" &&
+            work.rows[0].block_reference === fingerprint) {
+          const activated = await client.query(`UPDATE core_continuity_works w
+            SET status='active',next_action=$3,block_source=NULL,block_reference=NULL,
+              block_epoch=block_epoch+1,updated_at=now()
+            WHERE w.tenant_id=$1 AND w.work_id=$2 AND w.status='blocked'
+              AND w.block_source='work_incident' AND w.block_reference=$4
+              AND NOT EXISTS (SELECT 1 FROM core_continuity_work_incidents i
+                WHERE i.tenant_id=w.tenant_id AND i.work_id=w.work_id
+                  AND i.blocks_work=true AND i.status IN ('candidate','quarantined'))
+            RETURNING status,next_action`,
+          [context.tenantId, context.workId, nextAction, fingerprint]);
+          workStatus = activated.rows[0]?.status || workStatus;
+          persistedNextAction = activated.rows[0]?.next_action || persistedNextAction;
+          workReactivated = Boolean(activated.rows[0]);
+        }
         const event = await appendEvent(client, context, "incident_runbook_verified", {
           project_id: projectId,
           fingerprint,
-          verifier: context.actor,
-          evidence_digest: digest(evidence),
+          scope_digest: row.scope_digest,
+          error_code: row.error_code,
+          reason: row.reason,
+          reason_digest: row.reason_digest,
+          state_version: Number(updated.rows[0].state_version),
+          status: "verified",
+          work_status: workStatus,
+          next_action: persistedNextAction,
+          remaining_unresolved: remainingUnresolved,
+          current_blocker_fingerprint: remaining?.fingerprint || null,
+          work_reactivated: workReactivated,
+          verifier: proof.evidence.verifier_agent_id,
+          evidence_digest: proof.evidenceDigest,
+          native_receipt_id: proof.nativeReceiptId,
+          native_receipt_digest: proof.evidence.native_receipt_digest,
         });
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
@@ -6047,42 +7194,97 @@ export function createWorkContinuityRuntime(config, options = {}) {
           work_id: context.workId,
           project_id: projectId,
           fingerprint,
+          scope_digest: row.scope_digest,
+          error_code: row.error_code,
+          reason: row.reason,
+          reason_digest: row.reason_digest,
           status: "verified",
           promoted: true,
-          next_action: nextAction,
+          work_status: workStatus,
+          remaining_unresolved: remainingUnresolved,
+          current_blocker_fingerprint: remaining?.fingerprint || null,
+          work_reactivated: workReactivated,
+          evidence_digest: proof.evidenceDigest,
+          next_action: persistedNextAction,
           event,
         };
       }
+      if (row.status === "verified") {
+        throw new Error("incident_verified_cannot_degrade");
+      }
+      if (row.status === "quarantined") {
+        throw new Error("incident_runbook_quarantined");
+      }
       const failures = Number(row.failure_count || 0) + 1;
       const status = failures >= 2 ? "quarantined" : "candidate";
-      await client.query(`UPDATE core_continuity_incident_runbooks
-        SET status=$4,failure_count=$5,updated_at=now()
-        WHERE tenant_id=$1 AND project_id=$2 AND fingerprint=$3`,
-      [context.tenantId, projectId, fingerprint, status, failures]);
+      const updated = await client.query(`UPDATE core_continuity_work_incidents
+        SET status=$5,failure_count=$6,verification_evidence=$7::jsonb,
+          verification_digest=$8,state_version=state_version+1,updated_at=now()
+        WHERE tenant_id=$1 AND work_id=$2 AND project_id=$3 AND fingerprint=$4
+          AND status='candidate' AND state_version=$9 RETURNING status,state_version`,
+      [context.tenantId, context.workId, projectId, fingerprint, status, failures,
+        JSON.stringify(proof.evidence), proof.evidenceDigest, Number(row.state_version || 0)]);
+      if (!updated.rows[0]) throw new Error("incident_verification_cas_conflict");
+      await client.query(`INSERT INTO core_continuity_work_incident_verifications
+        (tenant_id,work_id,project_id,fingerprint,evidence_digest,native_receipt_id,resolved,
+         evidence,result_status,created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,false,$7::jsonb,$8,$9)`,
+      [context.tenantId, context.workId, projectId, fingerprint, proof.evidenceDigest,
+        proof.nativeReceiptId, JSON.stringify(proof.evidence), status,
+        proof.evidence.verifier_agent_id]);
       const nextAction = status === "quarantined"
         ? `Incident ${fingerprint.slice(0, 12)} runbook quarantined; perform a fresh diagnosis and create a corrected candidate.`
         : `Incident ${fingerprint.slice(0, 12)} remains blocked; correct the failed recovery and request independent verification again.`;
-      await client.query(`UPDATE core_continuity_works
-        SET status='blocked',next_action=$3,updated_at=now()
-        WHERE tenant_id=$1 AND work_id=$2`,
-      [context.tenantId, context.workId, nextAction]);
-      const event = status === "quarantined"
-        ? await appendEvent(client, context, "incident_runbook_quarantined", {
-          project_id: projectId,
-          fingerprint,
-          failure_count: failures,
-        })
-        : null;
+      let workStatus = work.rows[0].status;
+      let persistedNextAction = work.rows[0].next_action;
+      if (row.blocks_work === true &&
+          work.rows[0].block_source === "work_incident") {
+        const blocked = await client.query(`UPDATE core_continuity_works
+          SET status='blocked',next_action=$3,block_source='work_incident',
+            block_reference=$4,block_epoch=block_epoch+1,updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2
+            AND status IN ('active','verified','release_ready','blocked')
+          RETURNING status,next_action`,
+        [context.tenantId, context.workId, nextAction, fingerprint]);
+        if (!blocked.rows[0]) throw new Error("incident_work_status_not_blockable");
+        workStatus = blocked.rows[0].status;
+        persistedNextAction = blocked.rows[0].next_action;
+      }
+      const event = await appendEvent(client, context, status === "quarantined"
+        ? "incident_runbook_quarantined"
+        : "incident_runbook_verification_failed", {
+        project_id: projectId,
+        fingerprint,
+        scope_digest: row.scope_digest,
+        error_code: row.error_code,
+        reason: row.reason,
+        reason_digest: row.reason_digest,
+        state_version: Number(updated.rows[0].state_version),
+        status,
+        work_status: workStatus,
+        next_action: persistedNextAction,
+        failure_count: failures,
+        verifier: proof.evidence.verifier_agent_id,
+        evidence_digest: proof.evidenceDigest,
+        native_receipt_id: proof.nativeReceiptId,
+        native_receipt_digest: proof.evidence.native_receipt_digest,
+      });
       return {
         schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
         tenant_id: context.tenantId,
         work_id: context.workId,
         project_id: projectId,
         fingerprint,
+        scope_digest: row.scope_digest,
+        error_code: row.error_code,
+        reason: row.reason,
+        reason_digest: row.reason_digest,
         status,
         promoted: false,
+        work_status: workStatus,
         failure_count: failures,
-        next_action: nextAction,
+        evidence_digest: proof.evidenceDigest,
+        next_action: persistedNextAction,
         event,
       };
     });
@@ -6090,17 +7292,103 @@ export function createWorkContinuityRuntime(config, options = {}) {
 
   async function resolveIncident(identity, input) {
     await initialize();
-    const tenantId = tenant(identity.tenantId);
+    const context = workContext(identity, input);
     const projectId = identifier(input.project_id, "project_id", 64);
     const { fingerprint, scope } = incidentFingerprint(input.scope || input);
-    const result = await pool.query(`SELECT runbook,runbook_digest,verified_by,verification_count,updated_at
-      FROM core_continuity_incident_runbooks
-      WHERE tenant_id=$1 AND project_id=$2 AND fingerprint=$3 AND status='verified'`,
-    [tenantId, projectId, fingerprint]);
-    if (!result.rows[0]) {
+    const result = await pool.query(`SELECT r.scope,r.runbook,r.runbook_digest,
+        i.scope_digest,i.verified_by,i.verification_count,i.verification_evidence,
+        i.verification_digest,i.state_version,i.updated_at,
+        np.plan AS persisted_native_plan,
+        np.plan_digest AS persisted_native_plan_digest,
+        nr.receipt_id AS persisted_native_receipt_id,
+        nr.plan_id AS persisted_native_plan_id,
+        nr.receipt_type AS persisted_native_receipt_type,
+        nr.agent_id AS persisted_native_receipt_agent_id,
+        nr.payload_digest AS persisted_native_receipt_digest,
+        be.evidence_id AS persisted_bridge_evidence_id,
+        be.evidence_digest AS persisted_bridge_evidence_digest,
+        be.plan_id AS persisted_bridge_plan_id,
+        be.task_id AS persisted_bridge_task_id,
+        be.v2_task_id AS persisted_bridge_v2_task_id,
+        be.verifier_agent_id AS persisted_bridge_verifier_agent_id,
+        be.native_receipt_id AS persisted_bridge_native_receipt_id,
+        be.native_receipt_digest AS persisted_bridge_native_receipt_digest,
+        be.report_digest AS persisted_bridge_report_digest
+      FROM core_continuity_work_incidents i
+      JOIN core_continuity_incident_runbooks r
+        ON r.tenant_id=i.tenant_id AND r.project_id=i.project_id
+          AND r.fingerprint=i.fingerprint AND r.runbook_digest=i.runbook_digest
+      JOIN core_continuity_native_receipts nr
+        ON nr.tenant_id=i.tenant_id AND nr.work_id=i.work_id
+          AND nr.receipt_id::text=i.verification_evidence->>'native_receipt_id'
+          AND nr.plan_id::text=i.verification_evidence->>'plan_id'
+      JOIN core_continuity_native_plans np
+        ON np.tenant_id=i.tenant_id AND np.work_id=i.work_id AND np.plan_id=nr.plan_id
+      JOIN tenant_work_native_verifier_evidence be
+        ON be.tenant_id=i.tenant_id AND be.work_id=i.work_id
+          AND be.native_receipt_id=nr.receipt_id
+          AND be.evidence_id::text=i.verification_evidence->>'bridge_evidence_id'
+      WHERE i.tenant_id=$1 AND i.work_id=$2 AND i.project_id=$3
+        AND i.fingerprint=$4 AND i.status='verified'`,
+    [context.tenantId, context.workId, projectId, fingerprint]);
+    const row = result.rows[0];
+    const evidence = row?.verification_evidence &&
+      typeof row.verification_evidence === "object" &&
+      !Array.isArray(row.verification_evidence)
+      ? row.verification_evidence
+      : null;
+    const persistedIncidentBinding = Array.isArray(row?.persisted_native_plan?.incident_bindings)
+      ? row.persisted_native_plan.incident_bindings.find((binding) =>
+        binding?.fingerprint === fingerprint)
+      : null;
+    const evidenceValid = Boolean(
+      row &&
+      row.scope_digest === fingerprint &&
+      digest(row.scope) === fingerprint &&
+      digest(row.runbook) === row.runbook_digest &&
+      Number(row.verification_count) === 1 &&
+      evidence?.schema_version === "work_incident_native_verification_v1" &&
+      evidence.tenant_id === context.tenantId &&
+      evidence.work_id === context.workId &&
+      evidence.fingerprint === fingerprint &&
+      evidence.scope_digest === fingerprint &&
+      evidence.incident_runbook_digest === row.runbook_digest &&
+      Number(evidence.incident_state_version) === Number(
+        persistedIncidentBinding?.state_version ?? -1,
+      ) &&
+      Number(row.state_version) === Number(evidence.incident_state_version) + 1 &&
+      persistedIncidentBinding?.schema_version === "native_agent_incident_binding_v1" &&
+      persistedIncidentBinding.scope_digest === fingerprint &&
+      persistedIncidentBinding.runbook_digest === row.runbook_digest &&
+      evidence.incident_plan_binding_digest === digest(persistedIncidentBinding) &&
+      evidence.resolved === true &&
+      evidence.verifier_agent_id === row.verified_by &&
+      String(row.persisted_native_receipt_id || "") === evidence.native_receipt_id &&
+      String(row.persisted_native_plan_id || "") === evidence.plan_id &&
+      row.persisted_native_plan_digest === evidence.plan_digest &&
+      digest(row.persisted_native_plan) === row.persisted_native_plan_digest &&
+      row.persisted_native_receipt_type === "agent_reported" &&
+      row.persisted_native_receipt_agent_id === evidence.verifier_agent_id &&
+      row.persisted_native_receipt_digest === evidence.native_receipt_digest &&
+      String(row.persisted_bridge_evidence_id || "") === evidence.bridge_evidence_id &&
+      row.persisted_bridge_evidence_digest === evidence.bridge_evidence_digest &&
+      String(row.persisted_bridge_plan_id || "") === evidence.plan_id &&
+      row.persisted_bridge_task_id === evidence.verifier_task_id &&
+      String(row.persisted_bridge_v2_task_id || "") === evidence.v2_task_id &&
+      row.persisted_bridge_verifier_agent_id === evidence.verifier_agent_id &&
+      String(row.persisted_bridge_native_receipt_id || "") === evidence.native_receipt_id &&
+      row.persisted_bridge_native_receipt_digest === evidence.native_receipt_digest &&
+      row.persisted_bridge_report_digest === evidence.report_digest &&
+      /^[a-f0-9]{64}$/.test(String(evidence.native_receipt_digest || "")) &&
+      /^[a-f0-9]{64}$/.test(String(evidence.report_digest || "")) &&
+      /^[a-f0-9]{64}$/.test(String(evidence.bridge_evidence_digest || "")) &&
+      digest(evidence) === row.verification_digest
+    );
+    if (!evidenceValid) {
       return {
         schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
-        tenant_id: tenantId,
+        tenant_id: context.tenantId,
+        work_id: context.workId,
         project_id: projectId,
         fingerprint,
         scope,
@@ -6110,13 +7398,33 @@ export function createWorkContinuityRuntime(config, options = {}) {
     }
     return {
       schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
-      tenant_id: tenantId,
+      tenant_id: context.tenantId,
+      work_id: context.workId,
       project_id: projectId,
       fingerprint,
       scope,
       matched: true,
       revalidation_required: false,
-      ...result.rows[0],
+      runbook: Object.freeze({
+        schema_version: "incident_runbook_v1",
+        title: incidentRedactedText(row.runbook?.title, 500),
+        preconditions: (Array.isArray(row.runbook?.preconditions)
+          ? row.runbook.preconditions : []).slice(0, 30)
+          .map((value) => incidentRedactedText(value, 1_000)),
+        steps: (Array.isArray(row.runbook?.steps) ? row.runbook.steps : []).slice(0, 30)
+          .map((value) => incidentRedactedText(value, 2_000)),
+        verification: (Array.isArray(row.runbook?.verification)
+          ? row.runbook.verification : []).slice(0, 30)
+          .map((value) => incidentRedactedText(value, 1_000)),
+        rollback: (Array.isArray(row.runbook?.rollback) ? row.runbook.rollback : []).slice(0, 30)
+          .map((value) => incidentRedactedText(value, 1_000)),
+        promotes_only_after_independent_verification: true,
+      }),
+      runbook_digest: row.runbook_digest,
+      verified_by: incidentRedactedText(row.verified_by, 120),
+      verification_count: Number(row.verification_count),
+      verification_digest: row.verification_digest,
+      updated_at: row.updated_at,
     };
   }
 
@@ -6354,6 +7662,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     upsertControlContext,
     readControlContext,
     readNyraOperationalState,
+    reconcileLegacyIncidentForWork,
     setWorkEventProjector,
     setNativeVerifierEvidenceBridge,
     readIntent,
@@ -6380,6 +7689,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
     recordOperationalIncident,
     recordIncident,
     verifyIncident,
+    listWorkIncidents,
+    readWorkIncident,
     resolveIncident,
     remediationStore,
     gallery,

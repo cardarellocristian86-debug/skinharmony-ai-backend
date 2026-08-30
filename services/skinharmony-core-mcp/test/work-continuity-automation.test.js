@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createWorkContinuityAutomation } from "../src/work-continuity-automation.js";
+import {
+  authorizeWorkContinuityOperationalError,
+  createWorkContinuityAutomation,
+} from "../src/work-continuity-automation.js";
 
 const TENANT = "tenant-automation";
 const WORK_ID = "11111111-1111-4111-8111-111111111111";
+const WORK_ID_V7 = "0198f8c0-1111-7111-8111-111111111111";
 const COMMIT = "c".repeat(40);
 const HASH = "a".repeat(64);
 
@@ -99,10 +103,50 @@ function fakeRuntime(options = {}) {
   };
 }
 
+test("skips automation unless both server authorization markers are true", async () => {
+  const fake = fakeRuntime();
+  const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
+  const error = Object.assign(new Error("connector_failed"), {
+    code: "connector_failed",
+  });
+  const event = {
+    identity: identity(),
+    toolName: "host_native_action_complete",
+    args: { ticket_id: "hnt_unauthorized-ticket-12345678" },
+    error,
+    preflight: {
+      continuity: {
+        work_id: WORK_ID,
+        project_id: "owner/repo",
+      },
+    },
+  };
+
+  for (const markers of [
+    {},
+    { serverAuthorizationPassed: false, handlerEntered: false },
+    { serverAuthorizationPassed: false, handlerEntered: true },
+    { serverAuthorizationPassed: true, handlerEntered: false },
+  ]) {
+    const result = await hook({ ...event, ...markers });
+    assert.deepEqual(result, {
+      handled: true,
+      projections: [],
+      skipped: "server_authorization_not_completed",
+    });
+  }
+
+  assert.equal(fake.calls.incidents.length, 0);
+  assert.equal(fake.calls.operationalIncidents.length, 0);
+  assert.equal(fake.calls.atlases.length, 0);
+});
+
 test("indexes verifier dissent without trusting raw error text", async () => {
   const fake = fakeRuntime();
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
   const result = await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "core_capability_invoke",
     args: {
@@ -137,6 +181,8 @@ test("indexes verifier dissent without trusting raw error text", async () => {
   assert.equal(fake.calls.operationalIncidents.length, 1);
   const input = fake.calls.operationalIncidents[0].input;
   assert.equal(input.error_code, "NATIVE_VERIFIER_REJECTED");
+  assert.equal(input.plan_id, "22222222-2222-4222-8222-222222222222");
+  assert.equal(input.native_agent_id, "verifier");
   assert.doesNotMatch(JSON.stringify(input), /ghp_12345678901234567890/);
   assert.match(input.idempotency_key, /^incident-operational-[a-f0-9]{64}$/);
 });
@@ -145,6 +191,8 @@ test("indexes deterministic closure gaps and replays the same checkpoint", async
   const fake = fakeRuntime();
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
   const event = {
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "work_continuity_closure_evaluate",
     args: {
@@ -184,7 +232,10 @@ test("indexes lease and finalize errors but never masks the original failure", a
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
   const original = new Error("native_agent_binding_expired_replan_required");
   original.code = "native_agent_binding_expired_replan_required";
+  authorizeWorkContinuityOperationalError(original);
   const result = await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "work_continuity_native_bind",
     args: {
@@ -203,12 +254,130 @@ test("indexes lease and finalize errors but never masks the original failure", a
   assert.equal(original.message, "native_agent_binding_expired_replan_required");
 });
 
+test("indexes an admitted operational failure for a canonical UUIDv7 Work and plan", async () => {
+  const fake = fakeRuntime();
+  const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
+  const operational = Object.assign(new Error("native_report_readback_failed"), {
+    code: "native_report_readback_failed",
+  });
+  authorizeWorkContinuityOperationalError(operational);
+
+  const result = await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
+    identity: identity(),
+    toolName: "work_continuity_native_report",
+    args: {
+      work_id: WORK_ID_V7,
+      plan_id: "0198f8c0-2222-7222-8222-222222222222",
+      native_agent_id: "verifier-v7",
+    },
+    error: operational,
+  });
+
+  assert.equal(result.projections[0].kind, "incident");
+  assert.equal(fake.calls.operationalIncidents.length, 1);
+  assert.equal(fake.calls.operationalIncidents[0].input.work_id, WORK_ID_V7);
+  assert.equal(
+    fake.calls.operationalIncidents[0].input.plan_id,
+    "0198f8c0-2222-7222-8222-222222222222",
+  );
+});
+
+test("does not index direct or wrapped closure authorization failures without explicit operational admission", async () => {
+  const fake = fakeRuntime();
+  const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
+  const targetArgs = {
+    work_id: WORK_ID,
+    plan_id: "22222222-2222-4222-8222-222222222222",
+    action_ticket_id: "hnt_closure-ticket-12345678",
+    idempotency_key: "closure-authorization-regression",
+  };
+  const base = {
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
+    identity: identity(),
+  };
+
+  for (const toolName of [
+    "work_continuity_closure_finalize",
+    "core_capability_invoke",
+  ]) {
+    for (const code of [
+      "insufficient_scope",
+      "dynamic_capability_not_authorized",
+      "continuity_work_mutation_acl_denied",
+    ]) {
+      const error = Object.assign(new Error(code), { code });
+      await hook({
+        ...base,
+        toolName,
+        args: toolName === "core_capability_invoke"
+          ? {
+              capability_id: "work_continuity_closure_finalize",
+              arguments: targetArgs,
+            }
+          : targetArgs,
+        error,
+      });
+    }
+  }
+
+  assert.equal(fake.calls.operationalIncidents.length, 0);
+  assert.equal(fake.calls.incidents.length, 0);
+  assert.equal(fake.calls.atlases.length, 0);
+});
+
+test("indexes a wrapped closure failure only after explicit operational admission", async () => {
+  const fake = fakeRuntime();
+  const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
+  const operational = Object.assign(
+    new Error("trusted_readback_checks_not_ready"),
+    { code: "trusted_readback_checks_not_ready" },
+  );
+  authorizeWorkContinuityOperationalError(operational);
+
+  const result = await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
+    identity: identity(),
+    toolName: "core_capability_invoke",
+    args: {
+      capability_id: "work_continuity_closure_finalize",
+      arguments: {
+        work_id: WORK_ID,
+        plan_id: "22222222-2222-4222-8222-222222222222",
+        action_ticket_id: "hnt_closure-ticket-12345678",
+        idempotency_key: "closure-operational-regression",
+      },
+    },
+    error: operational,
+  });
+
+  assert.equal(result.projections[0].kind, "incident");
+  assert.equal(fake.calls.operationalIncidents.length, 1);
+  assert.equal(
+    fake.calls.operationalIncidents[0].input.error_code,
+    "TRUSTED_READBACK_CHECKS_NOT_READY",
+  );
+  assert.equal(
+    fake.calls.operationalIncidents[0].input.operation,
+    "work_continuity_closure_finalize",
+  );
+});
+
 test("records a redacted exact-scope incident for a thrown completion error without masking it", async () => {
   const fake = fakeRuntime({ incidentError: new Error("continuity_work_not_found") });
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
   const original = new Error("token=ghp_12345678901234567890 password=hunter2 connector failed");
   original.code = "connector_failed";
+  Object.defineProperties(original, {
+    hostNativeTicketTrusted: { value: true },
+    hostNativeTicketRecord: { value: ticketRecord() },
+  });
   const result = await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "host_native_action_complete",
     args: { ticket_id: "hnt_error-ticket-12345678" },
@@ -231,10 +400,10 @@ test("records a redacted exact-scope incident for a thrown completion error with
   assert.doesNotMatch(serialized, /ghp_12345678901234567890|hunter2/);
   assert.equal(fake.calls.incidents[0].input.project_id, "owner/repo");
   assert.equal(fake.calls.incidents[0].input.scope.error_code, "CONNECTOR_FAILED");
-  assert.equal(fake.calls.incidents[0].input.scope.repository, "ticket:hnt_error-ticket-12345678");
+  assert.equal(fake.calls.incidents[0].input.scope.repository, "owner/repo");
 });
 
-test("preserves a custom continuity project and exact structured Core error on thrown failures", async () => {
+test("does not derive a thrown action incident from preflight scope without a trusted ticket", async () => {
   const fake = fakeRuntime();
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
   const coreError = new Error(
@@ -244,6 +413,8 @@ test("preserves a custom continuity project and exact structured Core error on t
   coreError.statusCode = 409;
 
   await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "host_native_action_reconcile",
     args: { ticket_id: "hnt_expired-ticket-12345678" },
@@ -256,16 +427,8 @@ test("preserves a custom continuity project and exact structured Core error on t
     },
   });
 
-  assert.equal(fake.calls.incidents.length, 1);
+  assert.equal(fake.calls.incidents.length, 0);
   assert.equal(fake.calls.atlases.length, 0);
-  const incident = fake.calls.incidents[0].input;
-  assert.equal(incident.work_id, WORK_ID);
-  assert.equal(incident.project_id, "customer-custom-project");
-  assert.equal(incident.scope.error_code, "ACTION_TICKET_RESERVATION_EXPIRED");
-  assert.equal(
-    incident.scope.repository,
-    "ticket:hnt_expired-ticket-12345678",
-  );
 });
 
 test("records a candidate for a Core-confirmed 200 failure and never updates Atlas", async () => {
@@ -275,6 +438,8 @@ test("records a candidate for a Core-confirmed 200 failure and never updates Atl
     record: { state: "failed", outcome: "failure", result_commit: null },
   });
   const result = await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "host_native_action_complete",
     args: { outcome: "success", result_commit: "9".repeat(40) },
@@ -286,6 +451,28 @@ test("records a candidate for a Core-confirmed 200 failure and never updates Atl
   assert.equal(fake.calls.atlases.length, 0);
   assert.equal(fake.calls.incidents[0].input.work_id, WORK_ID);
   assert.equal(fake.calls.incidents[0].input.project_id, "owner/repo");
+  assert.equal(fake.calls.incidents[0].input.scope.error_code, "ACTION_COMPLETED_FAILURE");
+});
+
+test("records a Core-confirmed action failure for a canonical UUIDv7 Work", async () => {
+  const fake = fakeRuntime();
+  const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
+  const record = ticketRecord({
+    ticket: { work_id: WORK_ID_V7 },
+    record: { state: "failed", outcome: "failure", result_commit: null },
+  });
+
+  const result = await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
+    identity: identity(),
+    toolName: "host_native_action_complete",
+    result: coreResult(record),
+  });
+
+  assert.equal(result.projections[0].kind, "incident");
+  assert.equal(fake.calls.incidents.length, 1);
+  assert.equal(fake.calls.incidents[0].input.work_id, WORK_ID_V7);
   assert.equal(fake.calls.incidents[0].input.scope.error_code, "ACTION_COMPLETED_FAILURE");
 });
 
@@ -302,6 +489,8 @@ test("expired reservation quarantine records an incident and never updates Atlas
     },
   });
   await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "host_native_action_quarantine_expired",
     result: coreResult(record),
@@ -319,6 +508,8 @@ test("replay produces the same incident fingerprint scope, runbook and idempoten
   const fake = fakeRuntime();
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
   const event = {
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "host_native_action_reconcile",
     result: coreResult(ticketRecord({
@@ -342,6 +533,8 @@ test("Core-confirmed commit success emits a deterministic repository-to-commit-t
   const fake = fakeRuntime();
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
   const event = {
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "host_native_action_complete",
     args: {
@@ -376,6 +569,8 @@ test("failure and untrusted caller arguments cannot create an Atlas delta", asyn
   const fake = fakeRuntime();
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
   await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "host_native_action_complete",
     args: {
@@ -421,6 +616,8 @@ test("Core-confirmed induced service is included without trusting caller service
     record: { result_commit: null },
   });
   await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "host_native_action_complete",
     args: { service_id: "srv-attacker" },
@@ -438,6 +635,8 @@ test("unwraps compact dynamic capability results before projecting a trusted Atl
   const fake = fakeRuntime();
   const hook = createWorkContinuityAutomation({ runtime: fake.runtime });
   await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "core_capability_invoke",
     args: {
@@ -468,6 +667,8 @@ test("uses a trusted Core ticket attached to a wrapped terminal error for exact 
   });
 
   await hook({
+    serverAuthorizationPassed: true,
+    handlerEntered: true,
     identity: identity(),
     toolName: "core_capability_invoke",
     args: {

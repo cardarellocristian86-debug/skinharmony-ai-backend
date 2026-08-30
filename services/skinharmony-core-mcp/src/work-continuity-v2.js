@@ -89,6 +89,12 @@ CREATE TRIGGER tenant_work_native_verifier_evidence_no_mutation
 BEFORE UPDATE OR DELETE ON tenant_work_native_verifier_evidence
 FOR EACH ROW EXECUTE FUNCTION tenant_work_native_verifier_evidence_append_only();
 
+DROP TRIGGER IF EXISTS tenant_work_native_verifier_evidence_no_truncate
+  ON tenant_work_native_verifier_evidence;
+CREATE TRIGGER tenant_work_native_verifier_evidence_no_truncate
+BEFORE TRUNCATE ON tenant_work_native_verifier_evidence
+FOR EACH STATEMENT EXECUTE FUNCTION tenant_work_native_verifier_evidence_append_only();
+
 -- Composite identities make every precommit relation tenant/work-bound at the
 -- database layer as well as in the transactional validation below.
 CREATE UNIQUE INDEX IF NOT EXISTS tenant_work_task_work_identity_uidx

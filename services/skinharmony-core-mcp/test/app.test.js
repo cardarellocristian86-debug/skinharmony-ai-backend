@@ -13,6 +13,10 @@ import { requireHostAppToolCapability } from "../src/host-app-authorization.js";
 import { requireTenantWorkCapability } from "../src/tenant-work-authorization.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import {
+  authorizeWorkContinuityOperationalError,
+  createWorkContinuityAutomation,
+} from "../src/work-continuity-automation.js";
+import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
   HOST_NATIVE_HEALTH_CONTRACT_VERSION,
 } from "../src/host-native-health-contract.js";
@@ -3582,6 +3586,258 @@ test("preserves ledger hook context when mandatory preflight fails", async () =>
     assert.match(events[0].error.message, /preflight_failed_after_ledger_start/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("does not project a beforeToolCall authorization failure as an incident", async () => {
+  const reportTool = WORK_CONTINUITY_TOOLS.find(
+    (tool) => tool.name === "work_continuity_native_report",
+  );
+  assert.ok(reportTool);
+  const existingIndex = TOOLS.findIndex((tool) => tool.name === reportTool.name);
+  if (existingIndex < 0) TOOLS.push(reportTool);
+  let handlerCalled = false;
+  const events = [];
+  const mutations = { incidents: 0, operationalIncidents: 0, atlases: 0 };
+  const automation = createWorkContinuityAutomation({
+    runtime: {
+      async recordIncident() {
+        mutations.incidents += 1;
+        return { status: "candidate" };
+      },
+      async recordOperationalIncident() {
+        mutations.operationalIncidents += 1;
+        return { status: "candidate" };
+      },
+      async upsertAtlas() {
+        mutations.atlases += 1;
+        return { revision: 1 };
+      },
+    },
+  });
+  const app = createApp(config, {
+    handlers: {
+      work_continuity_native_report: async () => {
+        handlerCalled = true;
+        return { structuredContent: { ok: true }, content: [] };
+      },
+    },
+    beforeToolCall: async () => {
+      const error = Object.assign(
+        new Error("continuity_work_mutation_acl_denied"),
+        { code: "continuity_work_mutation_acl_denied" },
+      );
+      error.hookContext = {
+        preflight: {
+          continuity: {
+            work_id: "11111111-1111-4111-8111-111111111111",
+            project_id: "owner/repo",
+          },
+        },
+      };
+      throw error;
+    },
+    afterToolCall: async (event) => {
+      events.push(event);
+      await automation(event);
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": "mcp-automation-auth-failure",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 13,
+        method: "tools/call",
+        params: {
+          name: "work_continuity_native_report",
+          arguments: {
+            work_id: "11111111-1111-4111-8111-111111111111",
+            plan_id: "22222222-2222-4222-8222-222222222222",
+            native_agent_id: "unauthorized-reporter",
+            host_task_id: "/root/unauthorized-reporter",
+            assignment_capability: `hnac_${"A".repeat(43)}`,
+            status: "failed",
+            report: { summary: "Authorization failed before handler entry." },
+          },
+        },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.result?.isError, true, JSON.stringify(body));
+    assert.equal(
+      body.result.structuredContent.error.code,
+      "continuity_work_mutation_acl_denied",
+    );
+    assert.equal(handlerCalled, false);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].serverAuthorizationPassed, false);
+    assert.equal(events[0].handlerEntered, false);
+    assert.deepEqual(mutations, { incidents: 0, operationalIncidents: 0, atlases: 0 });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (existingIndex < 0) {
+      const index = TOOLS.indexOf(reportTool);
+      if (index >= 0) TOOLS.splice(index, 1);
+    }
+  }
+});
+
+test("dynamic closure invocation indexes only explicitly admitted operational failures", async () => {
+  const closureTool = WORK_CONTINUITY_TOOLS.find(
+    (tool) => tool.name === "work_continuity_closure_finalize",
+  );
+  assert.ok(closureTool);
+  const existingIndex = TOOLS.findIndex((tool) => tool.name === closureTool.name);
+  if (existingIndex < 0) TOOLS.push(closureTool);
+
+  let phase = "auth";
+  let gateAllowed = true;
+  const targetCalls = [];
+  const events = [];
+  const operationalIncidents = [];
+  const dynamicClosureTool = {
+    ...closureTool,
+    scopes: [...closureTool.scopes],
+  };
+  const targetHandlers = {
+    work_continuity_closure_finalize: async () => {
+      targetCalls.push(phase);
+      const code = phase === "acl"
+        ? "continuity_work_mutation_acl_denied"
+        : "trusted_readback_checks_not_ready";
+      const error = Object.assign(new Error(code), { code });
+      if (phase === "operational") {
+        authorizeWorkContinuityOperationalError(error);
+      }
+      throw error;
+    },
+  };
+  const dynamicHandlers = createDynamicCapabilityHandlers({
+    tools: [dynamicClosureTool],
+    handlers: targetHandlers,
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({
+      structuredContent: { authorization: { allowed: gateAllowed } },
+    }),
+  });
+  const automation = createWorkContinuityAutomation({
+    runtime: {
+      async recordIncident() {
+        throw new Error("unexpected_action_incident");
+      },
+      async recordOperationalIncident(_identity, input) {
+        operationalIncidents.push(input);
+        return { status: "candidate" };
+      },
+      async upsertAtlas() {
+        throw new Error("unexpected_atlas_upsert");
+      },
+    },
+  });
+  const app = createApp(config, {
+    toolSurface: "compact",
+    handlers: { ...targetHandlers, ...dynamicHandlers },
+    beforeToolCall: async ({ identity }) => ({
+      work_preflight: {
+        schema_version: "skinharmony_work_preflight_v1",
+        preflight_id: `preflight-dynamic-closure-${phase}`,
+        tenant_id: identity.tenantId,
+        mandatory: true,
+        operational_surface: "tenant_work_gallery",
+      },
+    }),
+    afterToolCall: async (event) => {
+      events.push(event);
+      await automation(event);
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  const invoke = async (nextPhase) => {
+    phase = nextPhase;
+    gateAllowed = nextPhase !== "gate";
+    dynamicClosureTool.scopes = nextPhase === "auth"
+      ? ["core:govern", "continuity:finalize"]
+      : [...closureTool.scopes];
+    const catalogRevision = dynamicCapabilityCatalogSnapshot(
+      [dynamicClosureTool],
+      targetHandlers,
+    ).catalog_revision;
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": `mcp-dynamic-closure-${nextPhase}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: `dynamic-closure-${nextPhase}`,
+        method: "tools/call",
+        params: {
+          name: "core_capability_invoke",
+          arguments: {
+            capability_id: "work_continuity_closure_finalize",
+            catalog_revision: catalogRevision,
+            idempotency_key: `dynamic-closure-${nextPhase}`,
+            arguments: {
+              work_id: "11111111-1111-4111-8111-111111111111",
+              plan_id: "22222222-2222-4222-8222-222222222222",
+              action_ticket_id: "hnt_closure-ticket-12345678",
+              idempotency_key: `closure-target-${nextPhase}`,
+            },
+          },
+        },
+      }),
+    });
+    return { response, body: await response.json() };
+  };
+
+  try {
+    const auth = await invoke("auth");
+    const gate = await invoke("gate");
+    const acl = await invoke("acl");
+    assert.equal(auth.response.status, 403, JSON.stringify(auth.body));
+    assert.equal(gate.body.result?.structuredContent?.error?.code, "dynamic_capability_not_authorized");
+    assert.equal(acl.body.result?.structuredContent?.error?.code, "continuity_work_mutation_acl_denied");
+    assert.equal(targetCalls.includes("auth"), false);
+    assert.equal(targetCalls.includes("gate"), false);
+    assert.equal(targetCalls.filter((item) => item === "acl").length, 1);
+    assert.equal(events.length, 3);
+    assert.equal(events.every((event) => event.serverAuthorizationPassed === true), true);
+    assert.equal(events.every((event) => event.handlerEntered === true), true);
+    assert.equal(operationalIncidents.length, 0);
+
+    const operational = await invoke("operational");
+    assert.equal(
+      operational.body.result?.structuredContent?.error?.code,
+      "trusted_readback_checks_not_ready",
+    );
+    assert.equal(targetCalls.filter((item) => item === "operational").length, 1);
+    assert.equal(operationalIncidents.length, 1);
+    assert.equal(
+      operationalIncidents[0].error_code,
+      "TRUSTED_READBACK_CHECKS_NOT_READY",
+    );
+    assert.equal(
+      operationalIncidents[0].operation,
+      "work_continuity_closure_finalize",
+    );
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (existingIndex < 0) {
+      const index = TOOLS.indexOf(closureTool);
+      if (index >= 0) TOOLS.splice(index, 1);
+    }
   }
 });
 

@@ -50,12 +50,23 @@ class EphemeralContinuityPool {
     if (query.startsWith("SELECT pg_advisory_xact_lock")) {
       return { rows: [], rowCount: 0 };
     }
-    if (query.startsWith("SELECT work_id FROM core_continuity_works")) {
+    if (query.startsWith(
+      "SELECT work_id,status,block_source,block_reference,block_epoch FROM core_continuity_works",
+    )) {
       const work = this.works.get(mapKey(parameters[0], parameters[1]));
       return {
-        rows: work ? [{ work_id: work.work_id }] : [],
+        rows: work ? [{
+          work_id: work.work_id,
+          status: work.status,
+          block_source: work.block_source || null,
+          block_reference: work.block_reference || null,
+          block_epoch: Number(work.block_epoch || 0),
+        }] : [],
         rowCount: work ? 1 : 0,
       };
+    }
+    if (query.startsWith("SELECT fingerprint FROM core_continuity_work_incidents")) {
+      return { rows: [], rowCount: 0 };
     }
 
     if (query.startsWith("SELECT work_id,create_request_digest FROM core_continuity_session_bindings")) {
