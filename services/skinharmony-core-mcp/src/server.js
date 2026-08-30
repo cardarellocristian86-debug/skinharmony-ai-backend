@@ -1575,7 +1575,13 @@ const baseHandlers = {
   ...nyraWorkAutomationHandlers,
   nyra_converse: nyraConverseHandler,
   ...(nyraGovernedContinueHandler
-    ? { nyra_continue: nyraGovernedContinueHandler }
+    ? {
+      nyra_continue: nyraGovernedContinueHandler,
+      nyra_governed_continue: (args, identity) => nyraGovernedContinueHandler({
+        ...args,
+        continuation_ref: args.continuation_ref || args.candidate_attestation,
+      }, identity),
+    }
     : {}),
   web_compatibility_manifest: async (_args, identity) => ({
     structuredContent: { ok: true, tenant_id: identity.tenantId, manifest: webCompatibilityManifest() },
