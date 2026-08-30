@@ -2557,13 +2557,22 @@ export function createApp(config, options = {}) {
         }
         const sessionId = sessionResolution.session_id;
         const serverIssuedBootstrap = Boolean(serverIssuedSessionId);
-        const hostNativeReporterAgentId = tool.name === "work_continuity_native_report"
+        const hostNativeReporterAgentId = [
+          "work_continuity_native_report",
+          "work_continuity_native_acceptance_contract_read",
+        ].includes(tool.name)
           ? rawArgs.native_agent_id
           : tool.name === "core_capability_invoke" &&
               rawArgs.capability_id === "work_continuity_native_report"
             ? rawArgs.arguments?.native_agent_id
+            : tool.name === "core_capability_read" &&
+                rawArgs.capability_id === "work_continuity_native_acceptance_contract_read"
+              ? rawArgs.arguments?.native_agent_id
             : tool.name === "core_capability_catalog" &&
-                rawArgs.capability_id === "work_continuity_native_report"
+                [
+                  "work_continuity_native_report",
+                  "work_continuity_native_acceptance_contract_read",
+                ].includes(rawArgs.capability_id)
               ? rawArgs.native_report_assignment?.native_agent_id
             : null;
         if (

@@ -3455,6 +3455,71 @@ test("derives a catalog native-report bootstrap presence from its assignment", a
   }
 });
 
+test("derives a dynamic native acceptance-read presence from its assignment", async () => {
+  const captured = [];
+  const app = createApp(config, {
+    handlers: {
+      core_capability_read: async (args, identity) => {
+        captured.push({ args, identity });
+        return { content: [{ type: "text", text: "read" }] };
+      },
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  const assignment = {
+    work_id: "11111111-1111-4111-8111-111111111111",
+    plan_id: "22222222-2222-4222-8222-222222222222",
+    native_agent_id: "acceptance-native-verifier",
+    host_task_id: "/root/acceptance-native-verifier",
+    assignment_capability: `hnac_${"A".repeat(43)}`,
+  };
+  const call = async (argumentsValue, id) => fetch(
+    `http://127.0.0.1:${server.address().port}/mcp`,
+    {
+      method: "POST",
+      headers: {
+        authorization: "Bearer codex-key",
+        "content-type": "application/json",
+        "mcp-session-id": "acceptance-native-verifier-transport",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "core_capability_read", arguments: argumentsValue },
+      }),
+    },
+  ).then((value) => value.json());
+  try {
+    const accepted = await call({
+      capability_id: "work_continuity_native_acceptance_contract_read",
+      catalog_revision: "a".repeat(64),
+      arguments: assignment,
+    }, 1);
+    assert.equal(accepted.error, undefined, JSON.stringify(accepted));
+    assert.notEqual(accepted.result?.isError, true, JSON.stringify(accepted));
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].args.agent_id, assignment.native_agent_id);
+    assert.equal(captured[0].identity.agentPresence.agent_id,
+      assignment.native_agent_id);
+    assert.equal(captured[0].identity.agentPresence.transport_bound, true);
+
+    const conflict = await call({
+      agent_id: "acceptance-coordinator-alias",
+      capability_id: "work_continuity_native_acceptance_contract_read",
+      catalog_revision: "a".repeat(64),
+      arguments: assignment,
+    }, 2);
+    assert.equal(conflict.result?.isError, true, JSON.stringify(conflict));
+    assert.equal(conflict.result?.structuredContent?.error?.code,
+      "native_agent_reporter_identity_conflict");
+    assert.equal(captured.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("bootstraps authenticated stateless hosts without a transport session header", async () => {
   const app = createApp(config, {
     handlers: {

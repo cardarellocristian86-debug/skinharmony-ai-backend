@@ -83,6 +83,8 @@ const HOST_NATIVE_OPERATE_TOOLS = new Set([
 ]);
 
 const NATIVE_REPORT_CAPABILITY = "work_continuity_native_report";
+const NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY =
+  "work_continuity_native_acceptance_contract_read";
 const NATIVE_ASSIGNMENT_CAPABILITY = /^hnac_[A-Za-z0-9_-]{43}$/;
 const NATIVE_REPORT_WORK_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const NATIVE_REPORT_AGENT_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{1,119}$/;
@@ -150,17 +152,16 @@ export function dynamicHostCapabilityTarget(toolName, args = {}) {
   return requested;
 }
 
-// A native child has no ambient work.operate grant: its authority is the
-// one-task assignment capability verified again by the continuity runtime.
-// This helper deliberately recognizes only the compact wrapper and only the
-// five immutable assignment coordinates. It never grants a direct native
-// report route or a capability other than the report target.
-export function nativeReportAssignmentBootstrap(toolName, args = {}) {
+// A native child has no ambient Work grant: its authority is the one-task
+// assignment capability verified again by the continuity runtime. This helper
+// recognizes only an exact compact wrapper/capability pair and only the five
+// immutable assignment coordinates. It never grants a direct route.
+function nativeChildAssignmentBootstrap(toolName, args = {}, capabilityId, readOnly) {
   if (String(toolName || "") === "core_capability_catalog") {
-    if (String(args?.capability_id || "") !== NATIVE_REPORT_CAPABILITY) return null;
+    if (String(args?.capability_id || "") !== capabilityId) return null;
   } else if (
-    String(toolName || "") === "core_capability_invoke" &&
-    String(args?.capability_id || "") === NATIVE_REPORT_CAPABILITY
+    String(toolName || "") === (readOnly ? "core_capability_read" : "core_capability_invoke") &&
+    String(args?.capability_id || "") === capabilityId
   ) {
     args = args?.arguments;
   } else {
@@ -192,6 +193,24 @@ export function nativeReportAssignmentBootstrap(toolName, args = {}) {
   });
 }
 
+export function nativeReportAssignmentBootstrap(toolName, args = {}) {
+  return nativeChildAssignmentBootstrap(
+    toolName,
+    args,
+    NATIVE_REPORT_CAPABILITY,
+    false,
+  );
+}
+
+export function nativeAcceptanceContractReadAssignmentBootstrap(toolName, args = {}) {
+  return nativeChildAssignmentBootstrap(
+    toolName,
+    args,
+    NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY,
+    true,
+  );
+}
+
 // This identifies the two compact bootstrap routes as well as the legacy
 // direct report route for transport-presence handling. It is not an
 // authorization decision: the server still requires the assignment admission
@@ -199,6 +218,11 @@ export function nativeReportAssignmentBootstrap(toolName, args = {}) {
 export function isNativeReportChildOperation(toolName, args = {}) {
   return String(toolName || "") === NATIVE_REPORT_CAPABILITY ||
     nativeReportAssignmentBootstrap(toolName, args) !== null;
+}
+
+export function isNativeAcceptanceContractReadChildOperation(toolName, args = {}) {
+  return String(toolName || "") === NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY ||
+    nativeAcceptanceContractReadAssignmentBootstrap(toolName, args) !== null;
 }
 
 function toolDefinition(name, tools = []) {
@@ -216,7 +240,10 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
   // transport-bound child presence and the continuity runtime has verified
   // the exact assignment, lease and HMAC capability. work.read is therefore
   // an app-level upper bound, never a substitute for that verification.
-  if (nativeReportAssignmentBootstrap(toolName, args)) {
+  if (
+    nativeReportAssignmentBootstrap(toolName, args) ||
+    nativeAcceptanceContractReadAssignmentBootstrap(toolName, args)
+  ) {
     return HOST_APP_CAPABILITIES.WORK_READ;
   }
   // This is a tenant-wide configuration action, not a Work mutation.  Keep it
@@ -355,6 +382,12 @@ export function hostAppCanAccessTool({ identity, toolName, tools = [] } = {}) {
 export function hostAppCanDiscoverDynamicCapability({ identity, tool, tools = [] } = {}) {
   if (identity?.nativeReportAdmission?.capability_id === NATIVE_REPORT_CAPABILITY) {
     return tool?.name === NATIVE_REPORT_CAPABILITY;
+  }
+  if (
+    identity?.nativeAcceptanceContractReadAdmission?.capability_id ===
+      NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY
+  ) {
+    return tool?.name === NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY;
   }
   if (identity?.authenticatedHostPrincipal?.interaction_mode === "nyra_conversational" &&
       tool?.annotations?.readOnlyHint !== true) {

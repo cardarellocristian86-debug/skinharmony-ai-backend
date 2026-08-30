@@ -5,7 +5,9 @@ import {
   hasTenantBoundChatGptReadCompatibility,
   hostAppCanAccessTool,
   hostAppCanDiscoverDynamicCapability,
+  isNativeAcceptanceContractReadChildOperation,
   isNativeReportChildOperation,
+  nativeAcceptanceContractReadAssignmentBootstrap,
   nativeReportAssignmentBootstrap,
   requireHostAppToolCapability,
 } from "../src/host-app-authorization.js";
@@ -18,6 +20,7 @@ const TOOLS = [
   { name: "core_capability_read", annotations: { readOnlyHint: true } },
   { name: "core_capability_invoke", annotations: { readOnlyHint: false } },
   { name: "work_continuity_v2_read", annotations: { readOnlyHint: true } },
+  { name: "work_continuity_native_acceptance_contract_read", annotations: { readOnlyHint: true } },
   { name: "work_continuity_native_report", annotations: { readOnlyHint: false } },
   { name: "host_native_status", annotations: { readOnlyHint: true } },
   { name: "host_native_delegation_issue", annotations: { readOnlyHint: false } },
@@ -205,6 +208,48 @@ test("a transport-bound assignment can bootstrap only its native report wrapper"
   }), /host_app_capability_required:work\.operate/);
 });
 
+test("a transport-bound verifier assignment can bootstrap only its acceptance-contract read", () => {
+  const assignment = {
+    work_id: "11111111-1111-4111-8111-111111111111",
+    plan_id: "22222222-2222-4222-8222-222222222222",
+    native_agent_id: "native-child-verifier",
+    host_task_id: "/root/native-child-verifier",
+    assignment_capability: `hnac_${"A".repeat(43)}`,
+  };
+  const reader = identity(["work.read"], "codex_native");
+  const catalog = nativeAcceptanceContractReadAssignmentBootstrap("core_capability_catalog", {
+    capability_id: "work_continuity_native_acceptance_contract_read",
+    native_report_assignment: assignment,
+  });
+  assert.deepEqual(catalog, assignment);
+  const read = nativeAcceptanceContractReadAssignmentBootstrap("core_capability_read", {
+    capability_id: "work_continuity_native_acceptance_contract_read",
+    arguments: assignment,
+  });
+  assert.deepEqual(read, assignment);
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: reader,
+    toolName: "core_capability_read",
+    args: {
+      capability_id: "work_continuity_native_acceptance_contract_read",
+      arguments: assignment,
+    },
+    tools: TOOLS,
+  }));
+  assert.equal(isNativeAcceptanceContractReadChildOperation("core_capability_read", {
+    capability_id: "work_continuity_native_acceptance_contract_read",
+    arguments: assignment,
+  }), true);
+  assert.equal(nativeAcceptanceContractReadAssignmentBootstrap("core_capability_invoke", {
+    capability_id: "work_continuity_native_acceptance_contract_read",
+    arguments: assignment,
+  }), null);
+  assert.equal(nativeAcceptanceContractReadAssignmentBootstrap("core_capability_read", {
+    capability_id: "work_continuity_native_acceptance_contract_read",
+    arguments: { ...assignment, host_task_id: "../escape" },
+  }), null);
+});
+
 test("native execution supports registered ChatGPT and Codex hosts but fails closed for future host kinds", () => {
   const capabilities = ["host_native.delegate"];
   assert.doesNotThrow(() => requireHostAppToolCapability({
@@ -327,6 +372,23 @@ test("keeps the conversational dynamic catalog truthful while preserving child-o
   }), true);
   assert.equal(hostAppCanDiscoverDynamicCapability({
     identity: admittedChild, tool: read, tools: [read, plan, report],
+  }), false);
+
+  const acceptanceRead = {
+    name: "work_continuity_native_acceptance_contract_read",
+    annotations: { readOnlyHint: true },
+  };
+  const verifierChild = {
+    ...conversational,
+    nativeAcceptanceContractReadAdmission: {
+      capability_id: "work_continuity_native_acceptance_contract_read",
+    },
+  };
+  assert.equal(hostAppCanDiscoverDynamicCapability({
+    identity: verifierChild, tool: acceptanceRead, tools: [read, plan, report, acceptanceRead],
+  }), true);
+  assert.equal(hostAppCanDiscoverDynamicCapability({
+    identity: verifierChild, tool: report, tools: [read, plan, report, acceptanceRead],
   }), false);
 
   const nativeTooling = identity(["host_native.delegate"]);
