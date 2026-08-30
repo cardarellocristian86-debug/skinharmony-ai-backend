@@ -476,6 +476,18 @@ export const WORK_CONTINUITY_TOOLS = [
       v2_task_id: uuid,
     }, ["work_id", "plan_id", "task_id", "native_agent_id", "host_type", "host_task_id"]),
     false, { ownerConfirmationRequired: false }),
+  tool("work_continuity_native_acceptance_contract_read", "Read bound verifier acceptance contract",
+    "Read only the exact persisted acceptance criteria and digests for one transport-bound native verifier assignment. Builders, coordinators, ambient callers and mismatched or expired bindings fail closed; this read never authorizes execution.",
+    object({
+      work_id: uuid, plan_id: uuid, native_agent_id: nativeAgentId, host_task_id: hostTaskId,
+      assignment_capability: {
+        type: "string",
+        pattern: "^hnac_[A-Za-z0-9_-]{43}$",
+      },
+    }, [
+      "work_id", "plan_id", "native_agent_id", "host_task_id", "assignment_capability",
+    ]),
+    true),
   tool("work_continuity_native_report", "Record native agent evidence",
     "Record one bound native child's terminal report directly from that child's transport-bound MCP session. Coordinator reports, reused sessions and wrong or replayed assignment capabilities fail closed.",
     object({

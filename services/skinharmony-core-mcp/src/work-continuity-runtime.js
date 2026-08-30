@@ -31,6 +31,8 @@ const NATIVE_HOST_TYPES = new Set(["chatgpt_native", "codex_native"]);
 const NATIVE_TASK_KINDS = new Set(["builder", "verifier", "researcher", "reviewer", "supervisor"]);
 const NATIVE_REPORT_STATES = new Set(["completed", "failed", "blocked"]);
 const NATIVE_ASSIGNMENT_CAPABILITY_PATTERN = /^hnac_[A-Za-z0-9_-]{43}$/;
+const NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY =
+  "work_continuity_native_acceptance_contract_read";
 // This capability is emitted only in the Core-signed host-native plan.  A
 // report cannot self-classify: admission below reads the persisted
 // core_authority binding for its exact task.
@@ -2240,8 +2242,82 @@ export function createWorkContinuityRuntime(config, options = {}) {
       plan_id: planId,
       native_agent_id: agentId,
       host_task_id: hostTaskId,
+      task_id: row.task_id,
       task_digest: row.task_digest,
+      ...(row.v2_task_id ? { v2_task_id: row.v2_task_id } : {}),
       lease_expires_at: leaseExpiresAt.toISOString(),
+      execution_authorized: false,
+    });
+  }
+
+  // A verifier may need the exact persisted criterion digests before it can
+  // submit independently gathered evidence.  This reads no caller-provided
+  // plan and never exposes an assignment capability, transport presence,
+  // lease, report or Core authority record.  The child still proves the full
+  // signed binding on every read through admitNativeAgentReport above.
+  async function readNativeAgentAcceptanceContract(identity, input) {
+    const admission = await admitNativeAgentReport(identity, input);
+    const context = workContext(identity, input);
+    await initialize();
+    const current = await pool.query(`SELECT a.task_id,a.task_kind,a.task_digest,a.v2_task_id,
+        p.plan,p.plan_digest,p.status AS plan_status
+      FROM core_continuity_native_agents a JOIN core_continuity_native_plans p
+        ON p.tenant_id=a.tenant_id AND p.plan_id=a.plan_id
+      WHERE a.tenant_id=$1 AND a.work_id=$2 AND a.plan_id=$3 AND a.agent_id=$4`,
+    [context.tenantId, context.workId, admission.plan_id, admission.native_agent_id]);
+    const row = current.rows[0];
+    if (!row || row.plan_status !== "planned") {
+      throw new Error("native_agent_plan_not_open");
+    }
+    if (
+      row.task_id !== admission.task_id ||
+      row.task_digest !== admission.task_digest ||
+      String(row.v2_task_id || "") !== String(admission.v2_task_id || "")
+    ) {
+      throw new Error("native_agent_acceptance_contract_binding_changed");
+    }
+    if (row.task_kind !== "verifier") {
+      throw new Error("native_agent_acceptance_contract_verifier_required");
+    }
+    if (
+      !row.plan ||
+      !/^[a-f0-9]{64}$/.test(String(row.plan_digest || "")) ||
+      digest(row.plan) !== row.plan_digest
+    ) {
+      throw new Error("native_agent_plan_integrity_failed");
+    }
+    const planTask = (row.plan.tasks || []).find((task) => task?.task_id === row.task_id);
+    if (!planTask || planTask.kind !== "verifier") {
+      throw new Error("native_agent_acceptance_contract_verifier_required");
+    }
+    const contract = row.plan.acceptance_contract;
+    if (!acceptanceContractIntegrityValid(contract)) {
+      throw new Error("native_agent_acceptance_contract_invalid");
+    }
+    return Object.freeze({
+      schema_version: "native_agent_acceptance_contract_read_v1",
+      capability_id: NATIVE_ACCEPTANCE_CONTRACT_READ_CAPABILITY,
+      work_id: admission.work_id,
+      plan_id: admission.plan_id,
+      native_agent_id: admission.native_agent_id,
+      task: Object.freeze({
+        task_id: row.task_id,
+        task_digest: row.task_digest,
+        ...(row.v2_task_id ? { v2_task_id: row.v2_task_id } : {}),
+      }),
+      acceptance_contract: Object.freeze({
+        schema_version: contract.schema_version,
+        intent_digest: contract.intent_digest,
+        criteria: Object.freeze(contract.criteria.map((criterion) => Object.freeze({
+          criterion_id: criterion.criterion_id,
+          criterion_kind: criterion.criterion_kind,
+          text: criterion.text,
+          criterion_digest: criterion.criterion_digest,
+        }))),
+        criteria_digest: contract.criteria_digest,
+        evidence_required: true,
+        independent_verifier_required: true,
+      }),
       execution_authorized: false,
     });
   }
@@ -6292,6 +6368,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     planNativeAgents,
     bindNativeAgent,
     admitNativeAgentReport,
+    readNativeAgentAcceptanceContract,
     reportNativeAgent,
     evaluateClosure,
     bindCoreJoinVerdict,

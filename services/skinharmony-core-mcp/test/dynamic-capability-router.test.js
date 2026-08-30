@@ -387,6 +387,61 @@ test("a server-admitted native child sees only its terminal report capability", 
   }, caller), /dynamic_capability_unavailable/);
 });
 
+test("a server-admitted verifier can read only its acceptance-contract capability", async () => {
+  const acceptanceRead = WORK_CONTINUITY_TOOLS.find((tool) =>
+    tool.name === "work_continuity_native_acceptance_contract_read");
+  const report = WORK_CONTINUITY_TOOLS.find((tool) =>
+    tool.name === "work_continuity_native_report");
+  let received;
+  const router = createDynamicCapabilityHandlers({
+    tools: [acceptanceRead, report],
+    handlers: {
+      [acceptanceRead.name]: async (args) => {
+        received = args;
+        return { structuredContent: { execution_authorized: false } };
+      },
+      [report.name]: async () => ({ structuredContent: { ok: true } }),
+    },
+    semanticSelect: async () => ({}),
+    gateAction: async () => ({ structuredContent: { authorization: { allowed: true } } }),
+    capabilityVisible: ({ tool, identity: caller }) =>
+      caller.nativeAcceptanceContractReadAdmission?.capability_id === acceptanceRead.name &&
+      tool.name === acceptanceRead.name,
+  });
+  const caller = {
+    ...identity,
+    nativeAcceptanceContractReadAdmission: { capability_id: acceptanceRead.name },
+  };
+  const catalog = await router.core_capability_catalog({}, caller);
+  assert.deepEqual(catalog.structuredContent.capabilities.map((item) => item.capability_id), [
+    acceptanceRead.name,
+  ]);
+  const catalogRevision = catalog.structuredContent.catalog_revision;
+  await router.core_capability_read({
+    capability_id: acceptanceRead.name,
+    catalog_revision: catalogRevision,
+    arguments: {
+      work_id: "11111111-1111-4111-8111-111111111111",
+      plan_id: "22222222-2222-4222-8222-222222222222",
+      native_agent_id: "native-child-verifier",
+      host_task_id: "/root/native-child-verifier",
+      assignment_capability: `hnac_${"A".repeat(43)}`,
+    },
+  }, caller);
+  assert.equal(received.native_agent_id, "native-child-verifier");
+  await assert.rejects(router.core_capability_invoke({
+    capability_id: acceptanceRead.name,
+    catalog_revision: catalogRevision,
+    idempotency_key: "attempt-read-as-mutation",
+    arguments: received,
+  }, caller), /dynamic_capability_mutation_required/);
+  await assert.rejects(router.core_capability_read({
+    capability_id: report.name,
+    catalog_revision: catalogRevision,
+    arguments: received,
+  }, caller), /dynamic_capability_unavailable/);
+});
+
 test("accepts only the exact pre-admission catalog revision for an admitted native report", async () => {
   const report = delegatedWriteTool("work_continuity_native_report");
   const unrelated = delegatedWriteTool("tenant_work_task_record");
