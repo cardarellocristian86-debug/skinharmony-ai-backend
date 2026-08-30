@@ -963,6 +963,24 @@ export function normalizeNyraDirectiveContext(value, identity, binding = {}) {
   );
 }
 
+function releaseReadyDirectiveContext(work, workContext, interpretation) {
+  const releaseStateRevalidated = interpretation?.source === "fresh_core_interpretation" ||
+    workContext?.closure_verified === true;
+  if (
+    work?.state !== "release_ready" || workContext?.available !== true ||
+    !releaseStateRevalidated
+  ) return workContext;
+  return Object.freeze({
+    ...workContext,
+    status: "RELEASE_READY",
+    pending_required_task_count: 0,
+    unverified_required_evidence_count: 0,
+    precommit_pending_required_task_count: 0,
+    precommit_unverified_required_evidence_count: 0,
+    next_required_task: null,
+  });
+}
+
 function orchestrationDirective({
   tenantId,
   message,
@@ -975,7 +993,9 @@ function orchestrationDirective({
   workBootstrapRequestDigest = null,
   continuationOperation = null,
 }) {
+  workContext = releaseReadyDirectiveContext(work, workContext, interpretation);
   const workBound = Boolean(work.work_id);
+  const releaseReady = workContext.status === "RELEASE_READY";
   const coreBlocked = interpretation.governance_diagnostics.state === "BLOCKED" ||
     interpretation.risk_band === "blocked" ||
     interpretation.core_state === "blocked" || interpretation.core_control === "blocked" ||
@@ -1033,23 +1053,23 @@ function orchestrationDirective({
       if (!workContext.work_revision) prerequisite("work_revision_required");
       if (!workContext.intent_digest) prerequisite("intent_digest_required");
       if (!workContext.available) prerequisite("work_directive_context_required");
-      if (workContext.available && workContext.acceptance_criteria_count === 0) {
+      if (!releaseReady && workContext.available && workContext.acceptance_criteria_count === 0) {
         prerequisite("acceptance_criteria_required");
       }
-      if (workContext.available && workContext.required_task_count === 0) {
+      if (!releaseReady && workContext.available && workContext.required_task_count === 0) {
         prerequisite("required_work_tasks_missing");
       }
       const pendingTaskCount = commitPreflightGate
         ? workContext.precommit_pending_required_task_count
         : workContext.pending_required_task_count;
-      if (pendingTaskCount > 0) prerequisite("required_work_tasks_incomplete");
-      if (workContext.available && workContext.required_evidence_count === 0) {
+      if (!releaseReady && pendingTaskCount > 0) prerequisite("required_work_tasks_incomplete");
+      if (!releaseReady && workContext.available && workContext.required_evidence_count === 0) {
         prerequisite("required_evidence_missing");
       }
       const unverifiedEvidenceCount = commitPreflightGate
         ? workContext.precommit_unverified_required_evidence_count
         : workContext.unverified_required_evidence_count;
-      if (unverifiedEvidenceCount > 0) {
+      if (!releaseReady && unverifiedEvidenceCount > 0) {
         prerequisite("required_evidence_unverified");
       }
     }
@@ -1280,13 +1300,20 @@ function orchestrationDirective({
       })
     : null;
 
+  const interpretedAction = interpretation.allowed_alternatives[0] ||
+    (ticketRequired
+      ? interpretation.next_step || interpretation.selected_action
+      : interpretation.selected_action || interpretation.next_step);
+  const releaseReadyInterpretedAction = (
+    coreBlocked || coreMissingContext || ticketRequired ||
+    interpretation.allowed_alternatives.length > 0
+  ) ? interpretedAction : null;
   let recommendedAction = workContext.next_required_task
     ? `Completare il task canonico: ${workContext.next_required_task.title}`
-    : interpretation.allowed_alternatives[0] ||
-      (ticketRequired
-        ? interpretation.next_step || interpretation.selected_action
-        : interpretation.selected_action || interpretation.next_step) ||
-      work.next_action;
+    : releaseReady
+      ? releaseReadyInterpretedAction ||
+        "Preparare il prossimo gate dal Core Join persistito senza ripetere task o evidenze già verificate"
+      : interpretedAction || work.next_action;
   if (!recommendedAction && disposition !== "COMPLETE") {
     recommendedAction = "Diagnosticare lo stato corrente e preparare una proposta verificabile";
   }
@@ -1477,6 +1504,9 @@ function directiveStateSummary({ directive, workBound, focus, english }) {
   if (disposition === "COMPLETE") return english
     ? "The Work has a verified closure."
     : "Il Work ha una chiusura verificata.";
+  if (directive.work_context?.status === "RELEASE_READY") return english
+    ? "The Work is release-ready: tasks, evidence, and independent verification are already satisfied."
+    : "Il Work è release-ready: task, evidenze e verifica indipendente sono già acquisiti.";
   if (disposition === "REQUEST_WORK_BOOTSTRAP") return english
     ? "The new Work is specified and ready for its duplicate review."
     : "Il nuovo Work è definito e pronto per la review anti-duplicato.";
