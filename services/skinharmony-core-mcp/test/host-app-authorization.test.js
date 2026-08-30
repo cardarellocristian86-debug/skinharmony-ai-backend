@@ -140,6 +140,37 @@ test("enforces work.read on direct and dynamic Work reads", () => {
   }));
 });
 
+test("requires work.read only when Control Room includes Work-bound context", () => {
+  const metadataOnly = identity([]);
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: metadataOnly,
+    toolName: "nyra_control_room_status",
+    args: {},
+    tools: TOOLS,
+  }));
+  assert.throws(() => requireHostAppToolCapability({
+    identity: metadataOnly,
+    toolName: "nyra_control_room_status",
+    args: { work_id: "11111111-1111-4111-8111-111111111111" },
+    tools: TOOLS,
+  }), /host_app_capability_required:work\.read/);
+  assert.doesNotThrow(() => requireHostAppToolCapability({
+    identity: identity(["work.read"]),
+    toolName: "nyra_control_room_status",
+    args: { work_id: "11111111-1111-4111-8111-111111111111" },
+    tools: TOOLS,
+  }));
+  assert.throws(() => requireHostAppToolCapability({
+    identity: metadataOnly,
+    toolName: "core_capability_read",
+    args: {
+      capability_id: "nyra_control_room_status",
+      arguments: { work_id: "11111111-1111-4111-8111-111111111111" },
+    },
+    tools: TOOLS,
+  }), /host_app_capability_required:work\.read/);
+});
+
 test("a work.read app cannot dynamically invoke host-native delegation or authorization", () => {
   const reader = identity(["work.read"]);
   for (const capability_id of ["host_native_delegation_issue", "host_native_action_authorize"]) {

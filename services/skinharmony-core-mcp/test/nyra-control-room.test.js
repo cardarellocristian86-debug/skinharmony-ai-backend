@@ -60,6 +60,32 @@ test("Control Room distinguishes runtime controls from deployment configuration"
   assert.equal(policyRegistry.allowed_actions[1].handler, null);
 });
 
+test("Control Room projects the emitted continuity and Research Airlock health fields", () => {
+  const status = projectNyraControlRoomStatus({
+    health: {
+      ok: true,
+      causal_continuity: { ok: true, state: "ready" },
+      research_airlock: {
+        mode: "enforced",
+        ready: true,
+        state_backend: "postgresql",
+        operational_safe: true,
+      },
+    },
+  });
+  const continuity = status.domains.find((item) => item.id === "work_continuity");
+  assert.equal(continuity.state, "READY");
+  assert.equal(continuity.detail.backend, "READY");
+  const airlock = status.domains.find((item) => item.id === "research_airlock");
+  assert.equal(airlock.state, "ENFORCED");
+  assert.equal(airlock.detail.state, "READY");
+
+  const failedProbe = projectNyraControlRoomStatus({
+    health: { research_airlock: { state: "probe_timeout", ready: false } },
+  }).domains.find((item) => item.id === "research_airlock");
+  assert.equal(failedProbe.detail.state, "PROBE_TIMEOUT");
+});
+
 test("Control Room preserves tenant OFF rollback while the SHADOW runtime is not ready", () => {
   const entity360 = projectNyraControlRoomStatus({ health: { ok: true,
     entity_360: { mode: "SHADOW", deployment_mode_ceiling: "SHADOW", ready: false,

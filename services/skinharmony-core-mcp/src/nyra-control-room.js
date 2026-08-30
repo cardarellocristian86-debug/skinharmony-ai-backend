@@ -96,6 +96,8 @@ export function projectWorkClosureProgress(work = null) {
 export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDialogueEnabled } = {}) {
   const host = health.host_native_governance || {};
   const entity360 = health.entity_360 || {};
+  const causalContinuity = health.causal_continuity || {};
+  const researchAirlock = health.research_airlock || {};
   const scopeMode = mode(host.semantic_scope_guard_mode, "UNKNOWN");
   const entity360DeploymentCeiling = mode(entity360.deployment_mode_ceiling, "UNKNOWN");
   const entity360Ready = knownBoolean(entity360.ready);
@@ -179,13 +181,17 @@ export function projectNyraControlRoomStatus({ health = {}, work = null, nyraDia
         restartRequired: true,
       }),
     ]),
-    domain("work_continuity", readiness(health.causal_continuity?.ready), {
-      backend: mode(health.causal_continuity?.state, "UNKNOWN"),
+    domain("work_continuity", readiness(
+      typeof causalContinuity.ready === "boolean"
+        ? causalContinuity.ready
+        : causalContinuity.ok,
+    ), {
+      backend: mode(causalContinuity.state, "UNKNOWN"),
       progress,
     }, [action("READ_STATUS")]),
-    domain("research_airlock", mode(health.research_airlock?.mode, "UNKNOWN"), {
-      state: mode(health.research_airlock?.state, "UNKNOWN"),
-      operational_safe: knownBoolean(health.research_airlock?.operational_safe),
+    domain("research_airlock", mode(researchAirlock.mode, "UNKNOWN"), {
+      state: mode(researchAirlock.state, readiness(researchAirlock.ready)),
+      operational_safe: knownBoolean(researchAirlock.operational_safe),
     }, [action("READ_STATUS")]),
     domain("policy_registry", readiness(health.nyra_policy_registry?.ready), {
       state: mode(health.nyra_policy_registry?.state, "UNKNOWN"),
