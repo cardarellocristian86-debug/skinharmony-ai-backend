@@ -1379,7 +1379,7 @@ const nyraConverseOutputSchema = object({
   intent_routing: object({
     route: object({
       schema_version: { const: "nyra_intent_route_v2" },
-      intent: { type: "string", enum: ["chat", "analysis", "advisory_read", "command_catalog", "global_control_read", "work_create", "work_resume", "ticket_or_action", "ambiguous_consequential"] },
+      intent: { type: "string", enum: ["chat", "analysis", "advisory_read", "command_catalog", "global_control_read", "nyra_self_model_read", "nyra_gap_read", "work_create", "work_resume", "ticket_or_action", "ambiguous_consequential"] },
       route: { type: "string", enum: ["CORE_CATALOG_READ", "CONTROL_ROOM_READ", "ADVISORY_READ", "CORE_CONTEXT_THEN_NYRA", "CORE_HOLD_THEN_NYRA"] },
       clauses: { type: "array", maxItems: 8, items: object({
         polarity: { type: "string", enum: ["positive", "negative"] },
@@ -1440,8 +1440,12 @@ const nyraConverseOutputSchema = object({
     }, ["schema_version", "preflight_invoked", "visible_command_count", "elapsed_ms", "raw_prompt_recorded", "secret_material_recorded"]),
     control_room: { anyOf: [{ type: "null" }, nyraConversationControlRoomReadbackSchema] },
     control_room_readback: nyraControlRoomReadbackStateSchema,
+    self_model_readback: object({
+      state: { type: "string", enum: ["NOT_REQUESTED", "AVAILABLE", "MATERIALIZATION_REQUIRED", "UNAVAILABLE"] },
+      materialized: { type: "boolean" },
+    }, ["state", "materialized"]),
     invocation_separate: { const: true }, execution_authorized: { const: false },
-  }, ["route", "structured_context", "command_catalog", "command_proposal", "telemetry", "control_room", "control_room_readback", "invocation_separate", "execution_authorized"]),
+    }, ["route", "structured_context", "command_catalog", "command_proposal", "telemetry", "control_room", "control_room_readback", "invocation_separate", "execution_authorized"]),
   orchestration_directive: nyraOrchestrationDirectiveSchema,
   host_response_contract: object({
     speaker: { const: "Nyra" },
@@ -1618,14 +1622,13 @@ export const TOOLS = [
     semantic_intent_hint: {
       ...object({
       schema_version: { const: "nyra_semantic_intent_hint_v1" },
-      route_candidate: { type: "string", enum: ["GLOBAL_CONTROL_READ"] },
+      route_candidate: { type: "string", enum: ["GLOBAL_CONTROL_READ", "NYRA_INTROSPECTION_READ"] },
       speech_act: { type: "string", enum: ["QUESTION", "REQUEST", "REPORT"] },
       operation_class: { const: "READ_ONLY" },
       confidence: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
       ambiguous: { const: false },
       injection_signals: { type: "array", maxItems: 0, items: { type: "string", maxLength: 80 } },
       }, ["schema_version", "route_candidate", "speech_act", "operation_class", "confidence", "ambiguous", "injection_signals"]),
-      description: "Optional verified host hint for one pure global read. It never grants authority.",
     },
     locale: { type: "string", enum: ["auto", "it", "en"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
