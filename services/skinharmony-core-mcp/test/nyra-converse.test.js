@@ -608,6 +608,26 @@ test("reads global Nyra controls without a Work, Core interpretation or prefligh
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
 });
 
+test("answers bounded Nyra information questions without entering Work continuity", async () => {
+  const { handler, calls } = harness();
+  const response = await handler({ message: "Nyra, come funzioni?", locale: "it" }, identity());
+  const payload = response.structuredContent;
+
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(calls.readControlContext.length, 0);
+  assert.equal(calls.readDirectiveContext.length, 0);
+  assert.equal(calls.listWorkChoices.length, 0);
+  assert.equal(payload.work.work_bound, false);
+  assert.equal(payload.work.selection_required, false);
+  assert.equal(payload.action_policy.action_class, "NONE");
+  assert.equal(payload.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+  assert.equal(payload.intent_routing.route.route, "ADVISORY_READ");
+  assert.equal(payload.intent_routing.telemetry.preflight_invoked, false);
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
 test("accepts a host's soft semantic read hint without requiring model-side hashing", async () => {
   const hint = {
     schema_version: "nyra_semantic_intent_hint_v1",
