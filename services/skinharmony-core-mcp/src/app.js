@@ -503,11 +503,37 @@ export function buildPolicyRegistryLifecycleHealth(config = {}, options = {}, up
 function resolveConnectorToolName(value, tools = []) {
   const requested = String(value || "");
   const visibleNames = new Set(tools.map((tool) => tool.name));
-  if (visibleNames.has(requested)) return requested;
   const prefix = `${CONNECTOR_TOOL_NAMESPACE}.`;
-  if (!requested.startsWith(prefix)) return null;
-  const candidate = requested.slice(prefix.length);
-  return visibleNames.has(candidate) ? candidate : null;
+  const candidate = requested.startsWith(prefix) ? requested.slice(prefix.length) : requested;
+  // ChatGPT may retain a descriptor from the pre-opaque-continuation
+  // contract after the connector or server is upgraded. Keep the compact
+  // catalog canonical while routing that one retired name to the current
+  // fail-closed tool. The arguments are normalized separately and still
+  // validated against nyra_continue's strict schema.
+  const canonical = candidate === "nyra_governed_continue" ? "nyra_continue" : candidate;
+  return visibleNames.has(canonical) ? canonical : null;
+}
+
+function normalizeLegacyNyraContinueArguments(value) {
+  const args = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const {
+    candidate_attestation: candidateAttestation,
+    review_id: _legacyReviewId,
+    review_digest: _legacyReviewDigest,
+    ...canonical
+  } = args;
+  if (candidateAttestation !== undefined) {
+    if (canonical.continuation_ref === undefined) {
+      canonical.continuation_ref = candidateAttestation;
+    } else {
+      // Never select between two caller-supplied continuation references.
+      // Preserve the retired field so the canonical additionalProperties:false
+      // schema rejects the ambiguous payload before authorization or handler
+      // execution, even when one of the two values would otherwise be valid.
+      canonical.candidate_attestation = candidateAttestation;
+    }
+  }
+  return canonical;
 }
 
 // Conversational hosts receive Nyra as their sole public control plane.  Core
@@ -2461,9 +2487,13 @@ export function createApp(config, options = {}) {
         // contract.  The latter used to select `nyra_converse` correctly but
         // then validate its old `work_preflight` arguments unchanged, causing
         // a schema error before Nyra could resume the Work.
+        const legacyNyraContinue = connectorToolCandidate(params.name) === "nyra_governed_continue" &&
+          canonicalToolName === "nyra_continue";
         const rawArgs = (staleNyraRead || staleChatGptReadTool === "nyra_converse")
           ? staleNyraReadArguments(params.arguments, params.name)
-          : params.arguments || {};
+          : legacyNyraContinue
+            ? normalizeLegacyNyraContinueArguments(params.arguments)
+            : params.arguments || {};
         const validationErrors = validateToolArguments(tool.inputSchema, rawArgs);
         if (validationErrors.length) {
           return res.json({
@@ -2883,4 +2913,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachWorkPreflight, buildIdentity, configureToolForRuntime, filterToolsForClient, hasTenantBoundChatGptReadCompatibility, inferClientType, isLegacyNyraAdvisoryPreflight, resolveConnectorToolName, resolveStaleChatGptReadTool, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };
+export { attachWorkPreflight, buildIdentity, configureToolForRuntime, filterToolsForClient, hasTenantBoundChatGptReadCompatibility, inferClientType, isLegacyNyraAdvisoryPreflight, normalizeLegacyNyraContinueArguments, resolveConnectorToolName, resolveStaleChatGptReadTool, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };
