@@ -211,14 +211,8 @@ function successfulChecks(commit = HEAD) {
 
 function pullRequest(repository = "owner/repo", overrides = {}) {
   return {
-    number: 42,
-    url: `https://api.github.com/repos/${repository}/pulls/42`,
     merged: true,
-    state: "closed",
     merge_commit_sha: TARGET,
-    created_at: "2026-07-29T10:00:00.000Z",
-    closed_at: "2026-07-29T11:59:00.000Z",
-    merged_at: "2026-07-29T11:59:00.000Z",
     head: {
       sha: HEAD,
       ref: "agent/release",
@@ -393,7 +387,6 @@ function strictWorkflow(overrides = {}) {
     head_sha: HEAD,
     head_branch: "agent/release",
     repository: { full_name: "owner/repo" },
-    created_at: "2026-07-29T11:00:00.000Z",
     pull_requests: [{
       url: "https://api.github.com/repos/owner/repo/pulls/42",
       number: 42,
@@ -1107,13 +1100,6 @@ test("owner manual-merge verifier derives PR, checks and main facts from GitHub"
         calls.push({ url, init });
         return jsonResponse({ object: { sha: mainCommit } });
       }
-      if (url === `${root}/pulls?state=all&head=owner%3Aagent%2Frelease&per_page=100`) {
-        calls.push({ url, init });
-        return jsonResponse([pullRequest("owner/repo", {
-          state: "closed",
-          merged_at: "2026-07-29T11:59:00.000Z",
-        })]);
-      }
       return fallback(url, init);
     };
     const verifier = createHostNativeOwnerManualMergeReadbackVerifier({
@@ -1145,54 +1131,9 @@ test("owner manual-merge verifier derives PR, checks and main facts from GitHub"
   assert.ok(calls.some(({ url }) => url.endsWith("/git/ref/heads/main")));
   assert.ok(calls.some(({ url }) => url.endsWith(`/commits/${HEAD}/check-runs?per_page=100`)));
 
-  await t.test("a merged PR with an empty workflow association uses the verified PR readback", async () => {
-    const { result: emptyAssociation } = await run({
+  await t.test("a merged PR with no immutable workflow association fails closed", async () => {
+    await assert.rejects(run({
       workflow: strictWorkflow({ pull_requests: [] }),
-    });
-    assert.equal(emptyAssociation.pull_request, 42);
-    assert.equal(emptyAssociation.head_commit, HEAD);
-    assert.equal(emptyAssociation.merge_commit, TARGET);
-    assert.equal(emptyAssociation.checks_passed, true);
-  });
-
-  await t.test("an empty workflow association fails closed when another PR owned the head at run time", async () => {
-    const calls = [];
-    const fallback = strictFetch({
-      calls,
-      workflowById: new Map([[700, strictWorkflow({ pull_requests: [] })]]),
-    });
-    const verifier = createHostNativeOwnerManualMergeReadbackVerifier({
-      fetchImpl: async (url, init) => {
-        const root = "https://api.github.com/repos/owner/repo";
-        if (url === `${root}/pulls/42`) {
-          return jsonResponse(pullRequest("owner/repo"));
-        }
-        if (url === `${root}/pulls?state=all&head=owner%3Aagent%2Frelease&per_page=100`) {
-          return jsonResponse([
-            pullRequest("owner/repo"),
-            pullRequest("owner/repo", {
-              number: 43,
-              url: `${root}/pulls/43`,
-              state: "open",
-              closed_at: null,
-              merged_at: null,
-              base: { sha: ALTERNATE, ref: "release", repo: { full_name: "owner/repo" } },
-            }),
-          ]);
-        }
-        if (url === `${root}/git/ref/heads/main`) {
-          return jsonResponse({ object: { sha: TARGET } });
-        }
-        return fallback(url, init);
-      },
-      requiredChecksPolicyResolver: async () => STRICT_POLICY,
-      now: () => Date.parse(VERIFIED_AT),
-    });
-    await assert.rejects(verifier({
-      tenant_id: "tenant-a",
-      repository: "owner/repo",
-      pull_request: 42,
-      core_join_record: coreJoinRecord,
     }), /workflow_pull_request_mismatch/);
   });
 
