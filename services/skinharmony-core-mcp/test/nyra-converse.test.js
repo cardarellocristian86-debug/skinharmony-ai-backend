@@ -378,11 +378,12 @@ function harness({
   listWorkChoices,
   readCommandCatalog,
   readControlRoomStatus,
+  readNyraSelfModel,
   dialogueEnabled = true,
 } = {}) {
   const calls = {
     preflight: [], interpret: [], readControlContext: [], readDirectiveContext: [],
-    listWorkChoices: [], readCommandCatalog: [], readControlRoomStatus: [],
+    listWorkChoices: [], readCommandCatalog: [], readControlRoomStatus: [], readNyraSelfModel: [],
   };
   const handler = createNyraConverseHandler({
     preflight: async (args, authenticatedIdentity) => {
@@ -419,6 +420,12 @@ function harness({
       return typeof readControlRoomStatus === "function"
         ? readControlRoomStatus(args, authenticatedIdentity)
         : readControlRoomStatus;
+    },
+    readNyraSelfModel: readNyraSelfModel === undefined ? null : async (args, authenticatedIdentity) => {
+      calls.readNyraSelfModel.push({ args, identity: authenticatedIdentity });
+      return typeof readNyraSelfModel === "function"
+        ? readNyraSelfModel(args, authenticatedIdentity)
+        : readNyraSelfModel;
     },
     dialogueEnabled,
   });
@@ -626,6 +633,58 @@ test("answers bounded Nyra information questions without entering Work continuit
   assert.equal(payload.intent_routing.telemetry.preflight_invoked, false);
   assert.deepEqual(validateToolArguments(
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("reads Nyra's persistent self-model without opening or binding a Work", async () => {
+  const selfModel = {
+    schema_version: "nyra_persistent_self_model_v1",
+    capabilities: [{ id: "nyra_converse", state: "available" }],
+    required_infrastructure: [{ id: "software_atlas" }],
+    next_recommended_capability: "software_atlas_read",
+  };
+  const { handler, calls } = harness({
+    readNyraSelfModel: (_args, authenticatedIdentity) => ({ structuredContent: {
+      ok: true, tenant_id: authenticatedIdentity.tenantId, self_model: selfModel,
+    } }),
+  });
+  const response = await handler({
+    message: "Nyra, leggi il tuo self-model: chi sei, cosa sai fare e quali limiti hai. Non creare Work.",
+    locale: "it",
+  }, identity());
+  const payload = response.structuredContent;
+  assert.equal(calls.readNyraSelfModel.length, 1);
+  assert.deepEqual(calls.readNyraSelfModel[0].args, {});
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(payload.work.work_bound, false);
+  assert.equal(payload.intent_routing.route.intent, "nyra_self_model_read");
+  assert.deepEqual(payload.intent_routing.self_model_readback, {
+    state: "AVAILABLE", materialized: true,
+  });
+  assert.match(payload.host_response_contract.reply_seed, /nyra_converse/);
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("uses a host-translated multilingual gap question only as a read-only Nyra hint", async () => {
+  const hint = {
+    schema_version: "nyra_semantic_intent_hint_v1",
+    route_candidate: "NYRA_INTROSPECTION_READ",
+    speech_act: "QUESTION", operation_class: "READ_ONLY", confidence: "HIGH",
+    ambiguous: false, injection_signals: [],
+  };
+  const { handler, calls } = harness({ readNyraSelfModel: (_args, authenticatedIdentity) => ({ structuredContent: {
+    ok: true, tenant_id: authenticatedIdentity.tenantId, materialization_required: true,
+  } }) });
+  const response = await handler({
+    message: "¿Qué necesitas para trabajar mejor?", semantic_intent_hint: hint,
+  }, identity());
+  assert.equal(calls.readNyraSelfModel.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(response.structuredContent.intent_routing.route.intent, "nyra_gap_read");
+  assert.deepEqual(response.structuredContent.intent_routing.self_model_readback, {
+    state: "MATERIALIZATION_REQUIRED", materialized: false,
+  });
 });
 
 test("accepts a host's soft semantic read hint without requiring model-side hashing", async () => {
