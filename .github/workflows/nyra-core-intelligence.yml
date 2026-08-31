@@ -36,6 +36,7 @@ on:
       - "universal-core/**"
       - "verification/nyra-deep-branch-v2-verification-spec.json"
       - "docs/architecture/governed-continuity-fabric-v1.md"
+      - "docs/runbooks/entity-360-rollout-rollback-v1.md"
       - ".github/workflows/nyra-deep-branch-v2.yml"
       - ".github/workflows/nyra-core-intelligence.yml"
   pull_request:
@@ -71,6 +72,7 @@ on:
       - "universal-core/**"
       - "verification/nyra-deep-branch-v2-verification-spec.json"
       - "docs/architecture/governed-continuity-fabric-v1.md"
+      - "docs/runbooks/entity-360-rollout-rollback-v1.md"
       - ".github/workflows/nyra-deep-branch-v2.yml"
       - ".github/workflows/nyra-core-intelligence.yml"
   workflow_dispatch:
