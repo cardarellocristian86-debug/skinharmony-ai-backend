@@ -1536,6 +1536,39 @@ test("issues Core Join only through the signed MCP tenant gateway", async () => 
     "hnj_test-gateway",
   );
 
+  const renewal = {
+    schema_version: "continuity_core_join_renewal_v1",
+    predecessor_verdict_id: `hnj_${"6".repeat(40)}`,
+    predecessor_claim_digest: "6".repeat(64),
+    predecessor_release_intent_digest: "5".repeat(64),
+    predecessor_record_digest: "7".repeat(64),
+    generation: 1,
+  };
+  await handlers.host_native_core_join_issue({
+    ...request,
+    idempotency_key: "core-join-gateway-renew-1",
+    core_join_renewal: renewal,
+    closure_attestation: { core_join_renewal: renewal },
+  }, { tenantId: "tenant-a" });
+  assert.equal(calls.length, 2);
+  assert.equal(
+    calls[1].path,
+    `/v1/host-native/core-join-verdicts/${renewal.predecessor_verdict_id}/renew`,
+  );
+  assert.equal(calls[1].body.core_join_renewal, undefined);
+  assert.deepEqual(calls[1].body.closure_attestation.core_join_renewal, renewal);
+  await assert.rejects(
+    handlers.host_native_core_join_issue({
+      ...request,
+      core_join_renewal: {
+        ...renewal,
+        predecessor_verdict_id: "hnj_invalid",
+      },
+    }, { tenantId: "tenant-a" }),
+    /core_join_renewal_predecessor_invalid/,
+  );
+  assert.equal(calls.length, 2);
+
   for (const [configOverride, expectedError] of [
     [{
       tenantGatewayKey,

@@ -262,6 +262,7 @@ function harness({
   allowedActions,
   clockStart = "2026-07-29T10:00:00.000Z",
   ticketTtlMs,
+  coreJoinTtlMs,
   reservationLeaseMs,
   store = createInMemoryHostNativeGovernanceStore(),
   signingSecret = "host-native-governance-test-signing-secret-at-least-32-bytes",
@@ -302,6 +303,7 @@ function harness({
     requiredChecksPolicyResolver: requiredChecksPolicyResolver || null,
     renderServiceOriginResolver: renderServiceOriginResolver || null,
     ...(ticketTtlMs === undefined ? {} : { ticketTtlMs }),
+    ...(coreJoinTtlMs === undefined ? {} : { coreJoinTtlMs }),
     ...(reservationLeaseMs === undefined ? {} : { reservationLeaseMs }),
     ...(semanticScopeGuard === undefined ? {} : { semanticScopeGuard }),
     ...(semanticScopeMode === undefined ? {} : { semanticScopeMode }),
@@ -579,6 +581,9 @@ function coreJoinInput(manifest, overrides = {}) {
       acceptance_criteria: input.acceptance_criteria,
       report_bindings: reportBindings,
       provider_execution: false,
+      ...(input.core_join_renewal
+        ? { core_join_renewal: input.core_join_renewal }
+        : {}),
     };
     input.closure_attestation = {
       ...unsigned,
@@ -1149,6 +1154,106 @@ test("Core join is signed, exact-release-bound, deterministic, and rejects inval
     evidence_digest: H("6"),
     release_manifest: manifestWithWrongIntent,
   }), /core_join_verdict_binding_mismatch/);
+});
+
+test("expired unused Core join renews with one signed successor and an identical release intent", async () => {
+  const subject = harness({ coreJoinTtlMs: 1_000 });
+  const initialManifest = buildHostReleaseManifestV2(mergeReleaseManifestInput());
+  const initial = await subject.governance.issueCoreJoinVerdict(coreJoinInput(
+    initialManifest,
+    { idempotency_key: "core-join-renewal-initial" },
+  ));
+  assert.equal(subject.governance.verifyCoreJoinVerdict(initial), true);
+
+  subject.advance(1_001);
+  assert.equal(subject.governance.verifyCoreJoinVerdict(initial), false);
+
+  const renewal = {
+    schema_version: "continuity_core_join_renewal_v1",
+    predecessor_verdict_id: initial.verdict_id,
+    predecessor_claim_digest: initial.claim_digest,
+    predecessor_release_intent_digest: initial.claim.release_intent_digest,
+    predecessor_record_digest: hostNativeDigest(initial),
+    generation: 1,
+  };
+  const renewalInput = coreJoinInput(initialManifest, {
+    idempotency_key: "core-join-renewal-generation-1",
+    core_join_renewal: renewal,
+  });
+  const [renewed, concurrentRenewed] = await Promise.all([
+    subject.governance.issueCoreJoinVerdict(renewalInput),
+    subject.governance.issueCoreJoinVerdict({
+      ...renewalInput,
+      idempotency_key: "core-join-renewal-generation-1-concurrent",
+    }),
+  ]);
+  const replay = await subject.governance.issueCoreJoinVerdict(renewalInput);
+
+  assert.notEqual(renewed.verdict_id, initial.verdict_id);
+  assert.notEqual(renewed.claim_digest, initial.claim_digest);
+  assert.equal(
+    renewed.claim.release_intent_digest,
+    initial.claim.release_intent_digest,
+  );
+  assert.deepEqual(renewed.claim.core_join_renewal, renewal);
+  assert.equal(subject.governance.verifyCoreJoinVerdict(renewed), true);
+  assert.deepEqual(concurrentRenewed, renewed);
+  assert.deepEqual(replay, renewed);
+
+  const generationTwo = {
+    schema_version: "continuity_core_join_renewal_v1",
+    predecessor_verdict_id: renewed.verdict_id,
+    predecessor_claim_digest: renewed.claim_digest,
+    predecessor_release_intent_digest: renewed.claim.release_intent_digest,
+    predecessor_record_digest: hostNativeDigest(renewed),
+    generation: 2,
+  };
+  await assert.rejects(subject.governance.issueCoreJoinVerdict(coreJoinInput(
+    initialManifest,
+    {
+      idempotency_key: "core-join-renewal-too-early",
+      core_join_renewal: generationTwo,
+    },
+  )), /core_join_renewal_not_expired/);
+
+  subject.advance(1_001);
+  const renewedTwice = await subject.governance.issueCoreJoinVerdict(coreJoinInput(
+    initialManifest,
+    {
+      idempotency_key: "core-join-renewal-generation-2",
+      core_join_renewal: generationTwo,
+    },
+  ));
+  assert.notEqual(renewedTwice.verdict_id, renewed.verdict_id);
+  assert.equal(renewedTwice.claim.release_intent_digest,
+    initial.claim.release_intent_digest);
+  assert.equal(renewedTwice.claim.core_join_renewal.generation, 2);
+  assert.equal(subject.governance.verifyCoreJoinVerdict(renewedTwice), true);
+
+  const tamperedStoredClaim = structuredClone(renewedTwice);
+  tamperedStoredClaim.claim.core_join_renewal.predecessor_record_digest = H("0");
+  assert.equal(subject.governance.verifyCoreJoinVerdict(tamperedStoredClaim), false);
+
+  const divergentSuccessorInput = coreJoinInput(initialManifest, {
+    idempotency_key: "core-join-renewal-divergent-successor",
+    core_join_renewal: renewal,
+    evaluation_digest: H("f"),
+  });
+  await assert.rejects(
+    subject.governance.issueCoreJoinVerdict(divergentSuccessorInput),
+    /core_join_renewal_binding_mismatch/,
+  );
+
+  await assert.rejects(subject.governance.issueCoreJoinVerdict(coreJoinInput(
+    initialManifest,
+    {
+      idempotency_key: "core-join-renewal-tampered-predecessor",
+      core_join_renewal: {
+        ...renewal,
+        predecessor_record_digest: H("0"),
+      },
+    },
+  )), /core_join_renewal_binding_mismatch/);
 });
 
 test("expired trusted software closure cannot persist a release action ticket", async () => {

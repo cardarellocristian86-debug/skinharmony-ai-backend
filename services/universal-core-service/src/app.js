@@ -11798,6 +11798,9 @@ export function createUniversalCoreService(options = {}) {
       if (!requireHostNativeGovernance(res)) return;
       try {
         const { tenant_id: _tenantId, software_closure_digest: _callerSoftwareClosureDigest, ...input } = req.body || {};
+        if (input.core_join_renewal || input.closure_attestation?.core_join_renewal) {
+          throw new Error("core_join_renewal_route_required");
+        }
         const coreJoinVerdict = await withSoftwareCognitionClosure(req.tenantId, String(input.work_id || "").trim().toLowerCase(), async (softwareClosure) => {
           return hostNativeGovernance.issueCoreJoinVerdict({ ...input, tenant_id: req.tenantId,
             ...(softwareClosure ? { software_closure_digest: softwareClosure.payload.closure_digest,
@@ -11808,6 +11811,85 @@ export function createUniversalCoreService(options = {}) {
           tenant_id: req.tenantId,
           key_id: req.coreKey.key_id,
           verdict_id: coreJoinVerdict.verdict.verdict_id,
+          work_id: coreJoinVerdict.verdict.work_id,
+          target_commit: coreJoinVerdict.verdict.checks.commit,
+          precore_alignment: precoreAlignment.status,
+          precore_decision_digest: precoreAlignment.decision_digest,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          core_join_verdict: coreJoinVerdict,
+          ...(nyraPrecoreMode === "ADVISORY" ? { precore_alignment: precoreAlignment } : {}),
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
+    "/v1/host-native/core-join-verdicts/:verdictId/renew",
+    coreAuth(SCOPES.AUTOMATION_CODEX, {
+      tenantContextSigningSecret,
+    }),
+    async (req, res) => {
+      if (!isMcpTenantGatewayRecord(req.coreKey)) {
+        audit.append("core_host_native_core_join_gateway_denied", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          reason: "mcp_tenant_gateway_required",
+        });
+        return publicError(res, 403, "core_join_mcp_gateway_required");
+      }
+      const assertedTenantId = String(req.get("x-sh-tenant-id") || "").trim();
+      if (!assertedTenantId || assertedTenantId !== req.tenantId) {
+        audit.append("core_host_native_core_join_gateway_denied", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          reason: "tenant_context_mismatch",
+        });
+        return publicError(res, 403, "tenant_scope_denied");
+      }
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const {
+          tenant_id: _tenantId,
+          software_closure_digest: _callerSoftwareClosureDigest,
+          core_join_renewal: callerRenewal,
+          ...input
+        } = req.body || {};
+        if (callerRenewal) {
+          throw new Error("core_join_renewal_caller_field_denied");
+        }
+        const renewal = input.closure_attestation?.core_join_renewal;
+        const predecessorVerdictId = String(req.params.verdictId || "").trim();
+        if (!renewal || renewal.predecessor_verdict_id !== predecessorVerdictId) {
+          throw new Error("core_join_renewal_route_mismatch");
+        }
+        const coreJoinVerdict = await withSoftwareCognitionClosure(
+          req.tenantId,
+          String(input.work_id || "").trim().toLowerCase(),
+          async (softwareClosure) => hostNativeGovernance.issueCoreJoinVerdict({
+            ...input,
+            core_join_renewal: renewal,
+            tenant_id: req.tenantId,
+            ...(softwareClosure ? {
+              software_closure_digest: softwareClosure.payload.closure_digest,
+              software_closure_fresh_until: softwareClosure.payload.evidence_fresh_until,
+            } : {}),
+          }),
+        );
+        const precoreAlignment = await evaluateNyraPrecoreAlignment(
+          req.tenantId,
+          coreJoinVerdict.verdict.work_id,
+          true,
+        );
+        audit.append("core_host_native_core_join_renewed", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          verdict_id: coreJoinVerdict.verdict.verdict_id,
+          predecessor_verdict_id: predecessorVerdictId,
           work_id: coreJoinVerdict.verdict.work_id,
           target_commit: coreJoinVerdict.verdict.checks.commit,
           precore_alignment: precoreAlignment.status,

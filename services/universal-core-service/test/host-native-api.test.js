@@ -10,6 +10,8 @@ import { createUniversalCoreService } from "../src/app.js";
 import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
   buildHostReleaseManifestV2,
+  createHostNativeGovernance,
+  createInMemoryHostNativeGovernanceStore,
   hostNativeDigest,
   hostNativeGithubDiffDigest,
 } from "../src/hostNativeGovernance.js";
@@ -326,6 +328,9 @@ function signedClosureAttestation(body) {
       },
     ],
     provider_execution: false,
+    ...(body.core_join_renewal
+      ? { core_join_renewal: body.core_join_renewal }
+      : {}),
   };
   return {
     ...unsigned,
@@ -818,6 +823,60 @@ test("host-native routes use persistent state, one-shot owner proof and exact ac
         "tenant-host-native",
       ),
     };
+    const renewalMarker = {
+      schema_version: "continuity_core_join_renewal_v1",
+      predecessor_verdict_id: `hnj_${H("9").slice(0, 40)}`,
+      predecessor_claim_digest: H("8"),
+      predecessor_release_intent_digest:
+        releaseIntent.json.release_intent.release_intent_digest,
+      predecessor_record_digest: H("7"),
+      generation: 1,
+    };
+    const renewalBody = {
+      ...coreJoinBody,
+      idempotency_key: "api-core-join-renewal-route",
+      core_join_renewal: renewalMarker,
+    };
+    renewalBody.closure_attestation = signedClosureAttestation(renewalBody);
+    const renewalOnOrdinaryRoute = await request(
+      "POST",
+      "/v1/host-native/core-join-verdicts",
+      renewalBody,
+      MCP_TENANT_GATEWAY_KEY,
+      gatewayHeaders,
+    );
+    assert.equal(renewalOnOrdinaryRoute.status, 400);
+    assert.equal(
+      renewalOnOrdinaryRoute.json.error,
+      "core_join_renewal_route_required",
+    );
+    const callerInjectedRenewal = await request(
+      "POST",
+      `/v1/host-native/core-join-verdicts/${renewalMarker.predecessor_verdict_id}/renew`,
+      renewalBody,
+      MCP_TENANT_GATEWAY_KEY,
+      gatewayHeaders,
+    );
+    assert.equal(callerInjectedRenewal.status, 400);
+    assert.equal(
+      callerInjectedRenewal.json.error,
+      "core_join_renewal_caller_field_denied",
+    );
+    const mismatchedRenewalRoute = await request(
+      "POST",
+      `/v1/host-native/core-join-verdicts/hnj_${H("6").slice(0, 40)}/renew`,
+      {
+        ...renewalBody,
+        core_join_renewal: undefined,
+      },
+      MCP_TENANT_GATEWAY_KEY,
+      gatewayHeaders,
+    );
+    assert.equal(mismatchedRenewalRoute.status, 400);
+    assert.equal(
+      mismatchedRenewalRoute.json.error,
+      "core_join_renewal_route_mismatch",
+    );
     const mismatchedBodyTenantJoin = await request(
       "POST",
       "/v1/host-native/core-join-verdicts",
@@ -1040,5 +1099,146 @@ test("release check rejects legacy signed booleans and prefers canonical v2 inte
     assert.equal(current.json.result.status, "ready");
     assert.equal(current.json.result.execution_allowed, false);
     assert.equal(current.json.result.manifest.integrity_verified, true);
+  });
+});
+
+test("expired Core join renews through the dedicated tenant-gateway route", async () => {
+  let nowValue = Date.parse("2026-08-31T12:00:00.000Z");
+  const governance = createHostNativeGovernance({
+    store: createInMemoryHostNativeGovernanceStore(),
+    signingSecret: "host-native-api-signing-secret-at-least-32-bytes",
+    closureAttestationSigningSecret: CLOSURE_ATTESTATION_SECRET,
+    requiredChecksPolicyResolver: async () => API_REQUIRED_CHECKS_POLICY,
+    now: () => nowValue,
+    coreJoinTtlMs: 1_000,
+  });
+
+  await fixture({
+    hostNativeGovernanceEnabled: true,
+    hostNativeGovernance: governance,
+    mcpTenantGatewayKey: MCP_TENANT_GATEWAY_KEY,
+    tenantContextSigningSecret: MCP_TENANT_CONTEXT_SECRET,
+  }, async (request) => {
+    const automationKey = await request("POST", "/v1/keys/generate", {
+      tenant_id: "tenant-host-native",
+      key_type: "automation",
+      allowed_scopes: ["read:decision", "automation:codex"],
+    });
+    const pendingManifest = releaseManifest();
+    const {
+      manifest_digest: _manifestDigest,
+      schema_version: _manifestVersion,
+      manifest_id: _manifestId,
+      verification,
+      ...releaseFields
+    } = pendingManifest;
+    const {
+      core_join_verdict_id: _pendingVerdictId,
+      ...releaseVerification
+    } = verification;
+    const releaseIntent = await request("POST", "/v1/host-native/release-intents", {
+      ...releaseFields,
+      verification: releaseVerification,
+    }, automationKey.json.key);
+    assert.equal(releaseIntent.status, 201, JSON.stringify(releaseIntent.json));
+
+    const initialBody = {
+      idempotency_key: "api-core-join-renewal-positive-initial",
+      work_id: "work-api-1",
+      intent_anchor_digest: H("1"),
+      repository: "owner/repo",
+      core_plan_id: `hnp_${H("a").slice(0, 40)}`,
+      core_plan_digest: H("a"),
+      local_plan_id: "local-plan-api-renewal",
+      local_plan_digest: H("b"),
+      evaluation_digest: H("6"),
+      acceptance_criteria: [{
+        criterion_id: "api-renewal-tests-green",
+        evidence_digest: H("c"),
+        proven: true,
+      }],
+      builder_report: {
+        agent_id: "builder",
+        report_digest: H("d"),
+        target_commit: G("4"),
+      },
+      verifier_reports: [{
+        agent_id: "verifier",
+        report_digest: H("e"),
+        reviewed_commit: G("4"),
+        approved: true,
+      }],
+      checks: {
+        commit: G("4"),
+        required_checks: ["unit-tests"],
+        checks_digest: H("5"),
+        evidence_digest: H("f"),
+      },
+      release_intent: releaseIntent.json.release_intent,
+      provider_execution: false,
+    };
+    initialBody.closure_attestation = signedClosureAttestation(initialBody);
+    const gatewayHeaders = {
+      "x-sh-tenant-id": "tenant-host-native",
+      "x-sh-tenant-context": signedTenantContext(
+        MCP_TENANT_CONTEXT_SECRET,
+        "tenant-host-native",
+      ),
+    };
+    const initialResponse = await request(
+      "POST",
+      "/v1/host-native/core-join-verdicts",
+      initialBody,
+      MCP_TENANT_GATEWAY_KEY,
+      gatewayHeaders,
+    );
+    assert.equal(initialResponse.status, 201, JSON.stringify(initialResponse.json));
+    const initial = initialResponse.json.core_join_verdict;
+
+    nowValue += 1_001;
+    const marker = {
+      schema_version: "continuity_core_join_renewal_v1",
+      predecessor_verdict_id: initial.verdict_id,
+      predecessor_claim_digest: initial.claim_digest,
+      predecessor_release_intent_digest: initial.claim.release_intent_digest,
+      predecessor_record_digest: hostNativeDigest(initial),
+      generation: 1,
+    };
+    const signedRenewalBody = {
+      ...initialBody,
+      idempotency_key: "api-core-join-renewal-positive-generation-1",
+      core_join_renewal: marker,
+    };
+    signedRenewalBody.closure_attestation = signedClosureAttestation(signedRenewalBody);
+    const {
+      core_join_renewal: _serverDerivedRenewal,
+      ...renewalBody
+    } = signedRenewalBody;
+    const renewalPath =
+      `/v1/host-native/core-join-verdicts/${initial.verdict_id}/renew`;
+    const renewedResponse = await request(
+      "POST",
+      renewalPath,
+      renewalBody,
+      MCP_TENANT_GATEWAY_KEY,
+      gatewayHeaders,
+    );
+    assert.equal(renewedResponse.status, 201, JSON.stringify(renewedResponse.json));
+    const renewed = renewedResponse.json.core_join_verdict;
+    assert.notEqual(renewed.verdict_id, initial.verdict_id);
+    assert.equal(renewed.claim.release_intent_digest, initial.claim.release_intent_digest);
+    assert.deepEqual(renewed.claim.core_join_renewal, marker);
+    assert.equal(governance.verifyCoreJoinVerdict(renewed), true);
+
+    const replay = await request(
+      "POST",
+      renewalPath,
+      renewalBody,
+      MCP_TENANT_GATEWAY_KEY,
+      gatewayHeaders,
+    );
+    assert.equal(replay.status, 201, JSON.stringify(replay.json));
+    assert.equal(replay.json.core_join_verdict.verdict_id, renewed.verdict_id);
+    assert.equal(replay.json.core_join_verdict.claim_digest, renewed.claim_digest);
   });
 });
