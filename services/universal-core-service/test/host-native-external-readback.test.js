@@ -978,6 +978,48 @@ test("owner manual-merge predecessor drives fresh GitHub, checks and Render obse
   assert.ok(calls.some(({ url }) => url.endsWith("/git/ref/heads/main")));
   assert.ok(calls.some(({ url }) => url.endsWith("/healthz")));
 
+  await t.test("refreshed lineage distinguishes original and successor Join", async () => {
+    const candidate = strictOwnerManualMergeObserveTicket();
+    const lineageUnsigned = {
+      schema_version: "host_native_owner_manual_merge_refresh_lineage_v1",
+      predecessor_manual_merge_readback_id: `hnmmr_${"d".repeat(40)}`,
+      predecessor_manual_merge_readback_digest: "e".repeat(64),
+      predecessor_core_join_verdict_id: `hnj_${"f".repeat(40)}`,
+      successor_core_join_verdict_id: candidate.core_join_verdict_id,
+      legacy_diff_digest: "1".repeat(64),
+      canonical_diff_digest: "2".repeat(64),
+      predecessor_release_intent_digest: "3".repeat(64),
+      successor_release_intent_digest: "4".repeat(64),
+      correction: "legacy_diff_digest_to_host_native_github_diff_digest",
+      authorized_successor_action: "render.observe",
+      provider_execution: false,
+    };
+    candidate.predecessor.refresh_lineage = {
+      ...lineageUnsigned,
+      lineage_digest: hostNativeDigest(lineageUnsigned),
+    };
+    candidate.predecessor.refresh_lineage_digest = hostNativeDigest(
+      candidate.predecessor.refresh_lineage,
+    );
+    candidate.predecessor_chain_digest = hostNativeDigest(candidate.predecessor);
+    const { result } = await verify(candidate);
+    assert.equal(result.github.manual_merge_original_readback_id,
+      lineageUnsigned.predecessor_manual_merge_readback_id);
+    assert.equal(result.github.manual_merge_original_core_join_verdict_id,
+      lineageUnsigned.predecessor_core_join_verdict_id);
+    assert.equal(result.github.manual_merge_successor_core_join_verdict_id,
+      candidate.core_join_verdict_id);
+
+    candidate.predecessor.refresh_lineage.successor_core_join_verdict_id =
+      `hnj_${"0".repeat(40)}`;
+    candidate.predecessor.refresh_lineage_digest = hostNativeDigest(
+      candidate.predecessor.refresh_lineage,
+    );
+    candidate.predecessor_chain_digest = hostNativeDigest(candidate.predecessor);
+    await assert.rejects(verify(candidate),
+      /trusted_readback_observation_binding_invalid/);
+  });
+
   for (const [name, mutate] of [
     ["receipt id", (candidate) => {
       candidate.predecessor.manual_merge_readback_id = `hnmmr_${"f".repeat(40)}`;

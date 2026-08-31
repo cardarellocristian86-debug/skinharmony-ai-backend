@@ -1056,6 +1056,30 @@ function observeSourceContext(ticket, action, binding, repository, targetCommit,
     string(entry?.environment) === string(action?.environment)
   ));
   if (predecessor?.predecessor_type === "owner_manual_github_merge_readback") {
+    const refreshLineage = predecessor.refresh_lineage || null;
+    const refreshLineageUnsigned = refreshLineage && { ...refreshLineage };
+    if (refreshLineageUnsigned) delete refreshLineageUnsigned.lineage_digest;
+    const refreshLineageValid = !refreshLineage || (
+      refreshLineage.schema_version ===
+        "host_native_owner_manual_merge_refresh_lineage_v1" &&
+      /^hnmmr_[a-f0-9]{40}$/.test(string(
+        refreshLineage.predecessor_manual_merge_readback_id,
+      )) &&
+      /^[a-f0-9]{64}$/.test(string(
+        refreshLineage.predecessor_manual_merge_readback_digest,
+      )) &&
+      /^hnj_[a-f0-9]{40}$/.test(string(
+        refreshLineage.predecessor_core_join_verdict_id,
+      )) &&
+      refreshLineage.successor_core_join_verdict_id ===
+        ticket?.core_join_verdict_id &&
+      refreshLineage.correction ===
+        "legacy_diff_digest_to_host_native_github_diff_digest" &&
+      refreshLineage.authorized_successor_action === "render.observe" &&
+      refreshLineage.provider_execution === false &&
+      refreshLineage.lineage_digest === hostNativeDigest(refreshLineageUnsigned) &&
+      predecessor.refresh_lineage_digest === hostNativeDigest(refreshLineage)
+    );
     if (
       predecessor.schema_version !== "host_native_owner_manual_merge_predecessor_v2" ||
       !/^hnmmr_[a-f0-9]{40}$/.test(string(predecessor.manual_merge_readback_id)) ||
@@ -1082,6 +1106,7 @@ function observeSourceContext(ticket, action, binding, repository, targetCommit,
       action.release_manifest_digest !== binding?.manifest_digest ||
       ticket?.release_join_resolution?.evidence_digest !== ticket?.evidence_digest ||
       ticket?.release_join_resolution_digest !== hostNativeDigest(ticket?.release_join_resolution) ||
+      !refreshLineageValid ||
       !service
     ) error("trusted_readback_observation_binding_invalid");
     return {
@@ -1092,6 +1117,17 @@ function observeSourceContext(ticket, action, binding, repository, targetCommit,
       manual_merge_readback_id: predecessor.manual_merge_readback_id,
       manual_merge_readback_digest: predecessor.manual_merge_readback_digest,
       source_readback_digest: predecessor.source_readback_digest,
+      ...(refreshLineage ? {
+        manual_merge_original_readback_id:
+          refreshLineage.predecessor_manual_merge_readback_id,
+        manual_merge_original_readback_digest:
+          refreshLineage.predecessor_manual_merge_readback_digest,
+        manual_merge_original_core_join_verdict_id:
+          refreshLineage.predecessor_core_join_verdict_id,
+        manual_merge_successor_core_join_verdict_id:
+          refreshLineage.successor_core_join_verdict_id,
+        refresh_lineage_digest: predecessor.refresh_lineage_digest,
+      } : {}),
     };
   }
   if (
@@ -1488,6 +1524,17 @@ export function createHostNativeExternalReadbackVerifier({
           manual_merge_readback_id: observation.manual_merge_readback_id,
           manual_merge_readback_digest: observation.manual_merge_readback_digest,
           source_readback_digest: observation.source_readback_digest,
+          ...(observation.refresh_lineage_digest ? {
+            manual_merge_original_readback_id:
+              observation.manual_merge_original_readback_id,
+            manual_merge_original_readback_digest:
+              observation.manual_merge_original_readback_digest,
+            manual_merge_original_core_join_verdict_id:
+              observation.manual_merge_original_core_join_verdict_id,
+            manual_merge_successor_core_join_verdict_id:
+              observation.manual_merge_successor_core_join_verdict_id,
+            refresh_lineage_digest: observation.refresh_lineage_digest,
+          } : {}),
         } : {
           predecessor_ticket_id: ticket.predecessor.ticket_id,
           predecessor_ticket_digest: ticket.predecessor.ticket_digest,

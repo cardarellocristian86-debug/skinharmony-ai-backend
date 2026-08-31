@@ -11960,10 +11960,40 @@ export function createUniversalCoreService(options = {}) {
       if (softwareCognitionMode === "INVALID") throw new Error("software_cognition_mode_invalid");
       return hostNativeGovernance.issueActionTicket(input);
     }
+    if (input?.action?.kind === "render.observe" &&
+        Object.hasOwn(input, "manual_merge_readback_id")) {
+      return withSoftwareCognitionClosure(input.tenant_id, input.work_id,
+        async (softwareClosure) => hostNativeGovernance.issueActionTicket(input, {
+          software_closure_fresh_until:
+            softwareClosure.payload.evidence_fresh_until,
+          software_closure_digest: softwareClosure.payload.closure_digest,
+        }));
+    }
     return withEnforcedSoftwareCoreJoin(input.tenant_id, input.work_id, verdictId,
       async (_record, softwareClosure) => hostNativeGovernance.issueActionTicket(input, {
         software_closure_fresh_until: softwareClosure.payload.evidence_fresh_until,
+        software_closure_digest: softwareClosure.payload.closure_digest,
       }));
+  };
+
+  const recordHostNativeOwnerManualMergeReadback = async (input) => {
+    if (softwareCognitionMode === "INVALID") {
+      throw new Error("software_cognition_mode_invalid");
+    }
+    if (softwareCognitionMode !== "ENFORCED") {
+      return hostNativeGovernance.recordOwnerManualMergeReadback(input);
+    }
+    return withEnforcedSoftwareCoreJoin(
+      input.tenant_id,
+      input.work_id,
+      input.core_join_verdict_id,
+      async (_record, softwareClosure) =>
+        hostNativeGovernance.recordOwnerManualMergeReadback(input, {
+          software_closure_fresh_until:
+            softwareClosure.payload.evidence_fresh_until,
+          software_closure_digest: softwareClosure.payload.closure_digest,
+        }),
+    );
   };
 
   const withEnforcedSoftwareActionTicket = async (tenantId, ticketId, operation) => {
@@ -11983,9 +12013,20 @@ export function createUniversalCoreService(options = {}) {
       if (softwareCognitionMode === "INVALID") throw new Error("software_cognition_mode_invalid");
       return operation(ticket);
     }
+    if (ticket.ticket.action?.kind === "render.observe" &&
+        ticket.ticket.predecessor?.predecessor_type ===
+          "owner_manual_github_merge_readback") {
+      return withSoftwareCognitionClosure(tenantId, ticket.ticket.work_id,
+        async (softwareClosure) => operation(ticket, {
+          software_closure_fresh_until:
+            softwareClosure.payload.evidence_fresh_until,
+          software_closure_digest: softwareClosure.payload.closure_digest,
+        }));
+    }
     return withEnforcedSoftwareCoreJoin(tenantId, ticket.ticket.work_id, verdictId,
       async (_record, softwareClosure) => operation(ticket, {
         software_closure_fresh_until: softwareClosure.payload.evidence_fresh_until,
+        software_closure_digest: softwareClosure.payload.closure_digest,
       }));
   };
 
@@ -12194,7 +12235,7 @@ export function createUniversalCoreService(options = {}) {
           owner_context: _ownerContext,
           ...selector
         } = req.body || {};
-        const receipt = await hostNativeGovernance.recordOwnerManualMergeReadback({
+        const receipt = await recordHostNativeOwnerManualMergeReadback({
           ...selector,
           tenant_id: req.tenantId,
           owner_confirmation: ownerConfirmation,

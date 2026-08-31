@@ -4,9 +4,12 @@ import test from "node:test";
 
 import { nyraDigest } from "../../shared/nyra-work-automation-receipts.js";
 import {
+  HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  buildHostReleaseIntentV1,
   createHostNativeGovernance,
   createInMemoryHostNativeGovernanceStore,
   hostNativeDigest,
+  hostNativeGithubDiffDigest,
 } from "../src/hostNativeGovernance.js";
 import { createNyraWorkAutomationAuthoritativeIssuers, createNyraWorkAutomationCoordinator, createNyraWorkAutomationCoreJoinVerifier } from "../src/nyraWorkAutomationCoordinator.js";
 import { createNyraWorkAutomationReceiptService } from "../src/nyraWorkAutomationReceipt.js";
@@ -92,13 +95,52 @@ test("production Core Join compatibility verifies a real HNJ and rejects a stale
     closureAttestationSigningSecret: closureSecret,
     now: () => Date.parse("2026-08-22T12:00:00.000Z"),
   });
-  const releaseIntentUnsigned = {
+  const releaseIntentSource = {
     tenant_id: expected.tenant_id,
     work_id: expected.work_id,
     intent_anchor_digest: expected.intent_anchor_digest,
     repository: expected.repository,
     base_branch: "main",
+    delivery_branch: "main",
+    base_commit: "0".repeat(40),
+    head_commit: expected.head_commit,
+    tree_sha: "7".repeat(40),
+    changed_files: [
+      "services/universal-core-service/src/nyraWorkAutomationCoordinator.js",
+    ],
+    verification: {
+      builder_agent_id: expected.builder_agent_id,
+      verifier_agent_ids: ["verifier"],
+      required_checks: ["core"],
+      checks_commit: expected.head_commit,
+      checks_digest: "5".repeat(64),
+      evidence_digest: nativeEvaluationDigest,
+    },
+    delivery: {
+      method: "github_protected_push_auto_deploy",
+      services: [{
+        service_id: "skinharmony-universal-core",
+        environment: "production",
+        expected_previous_commit: "0".repeat(40),
+        target_commit: null,
+        target_resolution: "post_merge_readback",
+        health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      }],
+    },
+    rollback: {
+      mode: "forward_revert",
+      target_commit: "0".repeat(40),
+      health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+      ready: true,
+    },
   };
+  releaseIntentSource.diff_digest = hostNativeGithubDiffDigest({
+    repository: releaseIntentSource.repository,
+    base_commit: releaseIntentSource.base_commit,
+    head_commit: releaseIntentSource.head_commit,
+    tree_sha: releaseIntentSource.tree_sha,
+    changed_files: releaseIntentSource.changed_files,
+  });
   const coreJoinInput = {
     tenant_id: expected.tenant_id,
     work_id: expected.work_id,
@@ -113,10 +155,7 @@ test("production Core Join compatibility verifies a real HNJ and rejects a stale
     builder_report: { agent_id: expected.builder_agent_id, report_digest: nativeBuilderDigest, target_commit: expected.head_commit },
     verifier_reports: [{ agent_id: "verifier", report_digest: "4".repeat(64), reviewed_commit: expected.head_commit, approved: true }],
     checks: { commit: expected.head_commit, required_checks: ["core"], checks_digest: "5".repeat(64), evidence_digest: "6".repeat(64) },
-    release_intent: {
-      ...releaseIntentUnsigned,
-      release_intent_digest: hostNativeDigest(releaseIntentUnsigned),
-    },
+    release_intent: buildHostReleaseIntentV1(releaseIntentSource),
     provider_execution: false,
     idempotency_key: "real-components-core-join",
   };

@@ -1228,6 +1228,9 @@ function normalizeReleaseIntentRequest(input = {}) {
     tree_sha: input.tree_sha,
     changed_files: input.changed_files,
   });
+  if (proposedDiffDigest !== validationDiffDigest) {
+    fail("release_intent_diff_digest_mismatch");
+  }
   const normalized = normalizeManifest({
     schema_version: HOST_RELEASE_MANIFEST_VERSION,
     manifest_id: "host-release-intent-pending-core-join",
@@ -1706,6 +1709,163 @@ function manualMergeReadbackSignatureValid(receipt, signing) {
   }
 }
 
+function coreJoinRecordSignatureValid(record, signing) {
+  try {
+    const verdict = record?.verdict;
+    const { signature, ...unsignedVerdict } = verdict || {};
+    const releaseIntent = record?.release_intent;
+    const { release_intent_digest: releaseIntentDigest, ...unsignedIntent } =
+      releaseIntent || {};
+    return verdict?.allowed === true && verdict?.provider_execution === false &&
+      verdict.verdict_id === record?.verdict_id &&
+      record?.claim_digest === hostNativeDigest(record?.claim) &&
+      verdict?.claim_digest === record.claim_digest &&
+      releaseIntentDigest === hostNativeDigest(unsignedIntent) &&
+      record.claim?.release_intent_digest === releaseIntentDigest &&
+      verdict.release_intent_digest === releaseIntentDigest &&
+      verdict.tenant_id === record.claim?.tenant_id &&
+      verdict.work_id === record.claim?.work_id &&
+      verdict.repository === record.claim?.repository &&
+      safeEqual(signature, hmac("hnj", signing, canonical(unsignedVerdict)));
+  } catch {
+    return false;
+  }
+}
+
+function withoutKeys(value, keys) {
+  return Object.fromEntries(Object.entries(value || {}).filter(([key]) => !keys.has(key)));
+}
+
+function legacyManualMergeRefreshBindingValid({
+  priorReceipt,
+  priorJoin,
+  currentJoin,
+  githubReadback,
+  nowValue,
+  signing,
+}) {
+  if (!manualMergeReadbackSignatureValid(priorReceipt, signing) ||
+      !coreJoinRecordSignatureValid(priorJoin, signing) ||
+      !coreJoinRecordSignatureValid(currentJoin, signing)) return false;
+  const priorIntent = priorJoin.release_intent;
+  const currentIntent = currentJoin.release_intent;
+  const canonicalDiffDigest = hostNativeGithubDiffDigest({
+    repository: currentIntent?.repository,
+    base_commit: currentIntent?.base_commit,
+    head_commit: currentIntent?.head_commit,
+    tree_sha: currentIntent?.tree_sha,
+    changed_files: currentIntent?.changed_files,
+  });
+  const priorIssuedAt = Date.parse(priorJoin.verdict?.issued_at || "");
+  const priorExpiresAt = Date.parse(priorJoin.verdict?.expires_at || "");
+  const priorRecordedAt = Date.parse(priorReceipt.recorded_at || "");
+  const mergedAt = Date.parse(githubReadback?.merged_at || "");
+  const currentIssuedAt = Date.parse(currentJoin.verdict?.issued_at || "");
+  const githubFields = [
+    "tenant_id", "repository", "pull_request", "merged", "merged_at",
+    "head_branch", "base_branch", "base_commit", "head_commit", "merge_commit",
+    "main_head_commit", "checks_commit", "required_checks_policy_digest",
+  ];
+  const priorJoinBeforeReceipt = withoutKeys(priorJoin, new Set([
+    "manual_merge_readback_receipt_id",
+    "manual_merge_readback_receipt_digest",
+  ]));
+  return priorJoin.verdict_id === priorReceipt.core_join_verdict_id &&
+    priorReceipt.tenant_id === currentJoin.claim?.tenant_id &&
+    priorReceipt.work_id === currentJoin.claim?.work_id &&
+    priorReceipt.intent_anchor_digest === currentJoin.claim?.intent_anchor_digest &&
+    priorReceipt.repository === currentJoin.claim?.repository &&
+    priorReceipt.pull_request === githubReadback?.pull_request &&
+    priorReceipt.core_join_record_digest === hostNativeDigest(priorJoinBeforeReceipt) &&
+    priorReceipt.predecessor?.core_join_record_digest ===
+      priorReceipt.core_join_record_digest &&
+    priorReceipt.predecessor?.core_join_verdict_id === priorJoin.verdict_id &&
+    priorJoin.manual_merge_readback_receipt_id === priorReceipt.receipt_id &&
+    priorJoin.manual_merge_readback_receipt_digest === priorReceipt.receipt_digest &&
+    priorReceipt.owner_subject_fingerprint &&
+    currentIntent?.diff_digest === canonicalDiffDigest &&
+    priorIntent?.diff_digest !== canonicalDiffDigest &&
+    hostNativeDigest(withoutKeys(priorIntent, new Set([
+      "diff_digest", "release_intent_digest",
+    ]))) === hostNativeDigest(withoutKeys(currentIntent, new Set([
+      "diff_digest", "release_intent_digest",
+    ]))) &&
+    hostNativeDigest(withoutKeys(priorJoin.claim, new Set([
+      "release_intent_digest", "software_closure_digest",
+      "software_closure_fresh_until",
+    ]))) === hostNativeDigest(withoutKeys(currentJoin.claim, new Set([
+      "release_intent_digest", "software_closure_digest",
+      "software_closure_fresh_until",
+    ]))) &&
+    githubFields.every((field) =>
+      priorReceipt.github_readback?.[field] === githubReadback?.[field]) &&
+    hostNativeDigest(withoutKeys(priorReceipt.github_readback, new Set([
+      "readback_digest", "verified_at",
+    ]))) === hostNativeDigest(withoutKeys(githubReadback, new Set([
+      "readback_digest", "verified_at",
+    ]))) &&
+    !priorReceipt.refresh_lineage &&
+    Number.isFinite(priorIssuedAt) && Number.isFinite(priorExpiresAt) &&
+    Number.isFinite(priorRecordedAt) && Number.isFinite(mergedAt) &&
+    Number.isFinite(currentIssuedAt) && priorExpiresAt < currentIssuedAt &&
+    priorExpiresAt < nowValue &&
+    priorIssuedAt <= mergedAt && mergedAt <= priorExpiresAt &&
+    priorRecordedAt <= priorExpiresAt && priorRecordedAt <= nowValue;
+}
+
+function manualMergeRefreshLineageValid(receipt, state, signing, nowValue) {
+  const lineage = receipt?.refresh_lineage;
+  if (!lineage) return true;
+  const priorReceipt = state.owner_manual_merge_readbacks?.[
+    lineage.predecessor_manual_merge_readback_id
+  ];
+  const priorSuccessor = state.owner_manual_merge_successors?.[
+    lineage.predecessor_manual_merge_readback_id
+  ];
+  const priorJoin = state.core_join_verdicts?.[
+    lineage.predecessor_core_join_verdict_id
+  ];
+  const currentJoin = state.core_join_verdicts?.[
+    lineage.successor_core_join_verdict_id
+  ];
+  const { lineage_digest: lineageDigest, ...unsignedLineage } = lineage || {};
+  return lineage.schema_version ===
+      "host_native_owner_manual_merge_refresh_lineage_v1" &&
+    lineage.predecessor_manual_merge_readback_digest ===
+      priorReceipt?.receipt_digest &&
+    lineage.predecessor_core_join_verdict_id ===
+      priorReceipt?.core_join_verdict_id &&
+    lineage.successor_core_join_verdict_id === receipt.core_join_verdict_id &&
+    lineage.correction ===
+      "legacy_diff_digest_to_host_native_github_diff_digest" &&
+    lineage.authorized_successor_action === "render.observe" &&
+    lineage.provider_execution === false &&
+    lineage.legacy_diff_digest === priorJoin?.release_intent?.diff_digest &&
+    lineage.canonical_diff_digest === currentJoin?.release_intent?.diff_digest &&
+    lineage.predecessor_release_intent_digest ===
+      priorJoin?.release_intent?.release_intent_digest &&
+    lineage.successor_release_intent_digest ===
+      currentJoin?.release_intent?.release_intent_digest &&
+    lineageDigest === hostNativeDigest(unsignedLineage) &&
+    legacyManualMergeRefreshBindingValid({
+      priorReceipt,
+      priorJoin,
+      currentJoin,
+      githubReadback: receipt.github_readback,
+      nowValue,
+      signing,
+    }) &&
+    !priorReceipt?.refresh_lineage &&
+    manualMergeReadbackSignatureValid(priorReceipt, signing) &&
+    priorSuccessor?.schema_version ===
+      "host_native_owner_manual_merge_refresh_successor_v1" &&
+    priorSuccessor.manual_merge_readback_id === priorReceipt.receipt_id &&
+    priorSuccessor.manual_merge_readback_digest === priorReceipt.receipt_digest &&
+    priorSuccessor.refreshed_manual_merge_readback_id === receipt.receipt_id &&
+    priorSuccessor.refreshed_manual_merge_readback_digest === receipt.receipt_digest &&
+    priorSuccessor.core_join_verdict_id === receipt.core_join_verdict_id;
+}
+
 function validateManualMergeObservationDelegationBeforeMutation(
   delegation,
   receipt,
@@ -1727,6 +1887,7 @@ function validateManualMergeObservationDelegationBeforeMutation(
 function validateStoredManualMergeObservation(record, state, {
   signing,
   successorUsage,
+  nowValue,
 } = {}) {
   const ticket = record?.ticket;
   const predecessor = ticket?.predecessor;
@@ -1749,6 +1910,7 @@ function validateStoredManualMergeObservation(record, state, {
       coreJoin?.consumed_by_ticket_id === ticket.ticket_id;
   if (
     !manualMergeReadbackSignatureValid(receipt, signing) ||
+    !manualMergeRefreshLineageValid(receipt, state, signing, nowValue) ||
     !safeEqual(ticket.signature, ticketSignature(signing, ticket)) ||
     !delegation || !issuedDelegationIssuanceSignatureValid(delegation, signing) ||
     !sameStrings(delegation.grant?.allowed_actions, ["render.observe"]) ||
@@ -1815,7 +1977,11 @@ function validateStoredObserveDelegationContinuation(record, state, {
   if (ticket?.action?.kind !== "render.observe") return;
   if (ticket?.predecessor?.predecessor_type ===
       "owner_manual_github_merge_readback") {
-    validateStoredManualMergeObservation(record, state, { signing, successorUsage });
+    validateStoredManualMergeObservation(record, state, {
+      signing,
+      successorUsage,
+      nowValue,
+    });
     return;
   }
   const parent = state.tickets[String(ticket.action.parent_release_ticket_id || "")];
@@ -3641,6 +3807,16 @@ export function createHostNativeGovernance({
       if (hostNativeDigest(releaseIntentUnsigned) !== intentDigest) {
         fail("release_intent_invalid");
       }
+      const canonicalDiffDigest = hostNativeGithubDiffDigest({
+        repository: releaseIntent.repository,
+        base_commit: releaseIntent.base_commit,
+        head_commit: releaseIntent.head_commit,
+        tree_sha: releaseIntent.tree_sha,
+        changed_files: releaseIntent.changed_files,
+      });
+      if (releaseIntent.diff_digest !== canonicalDiffDigest) {
+        fail("core_join_release_intent_diff_digest_mismatch");
+      }
       const checksCommit = manifestLike.verification.checks_commit;
       if (closure.tenant_id !== manifestLike.tenant_id || closure.work_id !== manifestLike.work_id ||
           closure.repository !== manifestLike.repository || closure.target_commit !== checksCommit ||
@@ -3725,7 +3901,7 @@ export function createHostNativeGovernance({
       return clone(record);
     },
 
-    async recordOwnerManualMergeReadback(input = {}) {
+    async recordOwnerManualMergeReadback(input = {}, trusted = {}) {
       exactKeys(input, new Set([
         "tenant_id", "work_id", "intent_anchor_digest", "repository",
         "core_join_verdict_id", "pull_request", "owner_confirmation", "idempotency_key",
@@ -3819,8 +3995,42 @@ export function createHostNativeGovernance({
           githubReadback.external_side_effect !== false ||
           githubReadback.readback_digest !== hostNativeDigest((({ readback_digest: _digest, ...rest }) => rest)(githubReadback)) ||
           !Number.isFinite(joinedAt) || !Number.isFinite(joinExpiresAt) ||
-          !Number.isFinite(mergedAt) || mergedAt < joinedAt || mergedAt > joinExpiresAt) {
+          !Number.isFinite(mergedAt) || mergedAt > joinExpiresAt) {
         fail("owner_manual_merge_readback_binding_invalid");
+      }
+      let refreshPredecessor = null;
+      if (mergedAt < joinedAt) {
+        assertSoftwareConsumerFresh(trusted);
+        if (!trusted.software_closure_digest ||
+            coreJoin.claim?.schema_version !== "host_native_core_join_claim_v2" ||
+            coreJoin.claim?.software_closure_digest !== trusted.software_closure_digest ||
+            coreJoin.claim?.software_closure_fresh_until !==
+              trusted.software_closure_fresh_until) {
+          fail("owner_manual_merge_refresh_software_cognition_invalid");
+        }
+        const candidates = Object.values(initial.owner_manual_merge_readbacks || {})
+          .filter((candidate) => {
+            const priorJoin = initial.core_join_verdicts?.[
+              candidate?.core_join_verdict_id
+            ];
+            return !initial.owner_manual_merge_successors?.[candidate?.receipt_id] &&
+              candidate?.owner_subject_fingerprint ===
+                ownerConfirmation.owner_subject_fingerprint &&
+              legacyManualMergeRefreshBindingValid({
+                priorReceipt: candidate,
+                priorJoin,
+                currentJoin: coreJoin,
+                githubReadback,
+                nowValue: nowMillis(now),
+                signing,
+              });
+          });
+        if (candidates.length !== 1) {
+          fail(candidates.length ?
+            "owner_manual_merge_refresh_ambiguous" :
+            "owner_manual_merge_refresh_predecessor_missing");
+        }
+        refreshPredecessor = candidates[0];
       }
       const coreJoinDigest = hostNativeDigest(coreJoin);
       const predecessorUnsigned = {
@@ -3847,6 +4057,30 @@ export function createHostNativeGovernance({
         ...predecessorUnsigned,
         predecessor_digest: hostNativeDigest(predecessorUnsigned),
       };
+      const refreshLineageUnsigned = refreshPredecessor ? {
+        schema_version: "host_native_owner_manual_merge_refresh_lineage_v1",
+        predecessor_manual_merge_readback_id: refreshPredecessor.receipt_id,
+        predecessor_manual_merge_readback_digest: refreshPredecessor.receipt_digest,
+        predecessor_core_join_verdict_id:
+          refreshPredecessor.core_join_verdict_id,
+        successor_core_join_verdict_id: verdictId,
+        legacy_diff_digest: initial.core_join_verdicts[
+          refreshPredecessor.core_join_verdict_id
+        ].release_intent.diff_digest,
+        canonical_diff_digest: coreJoin.release_intent.diff_digest,
+        predecessor_release_intent_digest: initial.core_join_verdicts[
+          refreshPredecessor.core_join_verdict_id
+        ].release_intent.release_intent_digest,
+        successor_release_intent_digest:
+          coreJoin.release_intent.release_intent_digest,
+        correction: "legacy_diff_digest_to_host_native_github_diff_digest",
+        authorized_successor_action: "render.observe",
+        provider_execution: false,
+      } : null;
+      const refreshLineage = refreshLineageUnsigned ? {
+        ...refreshLineageUnsigned,
+        lineage_digest: hostNativeDigest(refreshLineageUnsigned),
+      } : null;
       const receiptUnsigned = {
         schema_version: "host_native_owner_manual_merge_readback_v1",
         receipt_id: `hnmmr_${hostNativeDigest({
@@ -3865,6 +4099,7 @@ export function createHostNativeGovernance({
         pull_request: pullRequest,
         github_readback: githubReadback,
         predecessor,
+        ...(refreshLineage ? { refresh_lineage: refreshLineage } : {}),
         owner_subject_fingerprint: ownerConfirmation.owner_subject_fingerprint,
         authority: "evidence_only",
         evidence_only: true,
@@ -3895,11 +4130,33 @@ export function createHostNativeGovernance({
             currentJoin.authorized_ticket_id || hostNativeDigest(currentJoin) !== coreJoinDigest) {
           fail("owner_manual_merge_core_join_changed");
         }
+        if (refreshPredecessor) {
+          const currentPredecessor = state.owner_manual_merge_readbacks?.[
+            refreshPredecessor.receipt_id
+          ];
+          if (!currentPredecessor ||
+              currentPredecessor.receipt_digest !== refreshPredecessor.receipt_digest ||
+              state.owner_manual_merge_successors?.[refreshPredecessor.receipt_id] ||
+              currentPredecessor.refresh_lineage) {
+            fail("owner_manual_merge_refresh_predecessor_changed");
+          }
+        }
         const existing = state.owner_manual_merge_readbacks[receipt.receipt_id];
         if (existing && existing.receipt_digest !== receipt.receipt_digest) {
           fail("owner_manual_merge_readback_conflict");
         }
         state.owner_manual_merge_readbacks[receipt.receipt_id] = clone(receipt);
+        if (refreshPredecessor) {
+          state.owner_manual_merge_successors[refreshPredecessor.receipt_id] = {
+            schema_version: "host_native_owner_manual_merge_refresh_successor_v1",
+            manual_merge_readback_id: refreshPredecessor.receipt_id,
+            manual_merge_readback_digest: refreshPredecessor.receipt_digest,
+            refreshed_manual_merge_readback_id: receipt.receipt_id,
+            refreshed_manual_merge_readback_digest: receipt.receipt_digest,
+            core_join_verdict_id: verdictId,
+            created_at: iso(nowMillis(now)),
+          };
+        }
         currentJoin.manual_merge_readback_receipt_id = receipt.receipt_id;
         currentJoin.manual_merge_readback_receipt_digest = receipt.receipt_digest;
         return saveIdempotent(state, descriptor, receipt);
@@ -4001,6 +4258,12 @@ export function createHostNativeGovernance({
         : null;
       const trustedManualMergeReadback = candidateManualMergeReadback &&
         manualMergeReadbackSignatureValid(candidateManualMergeReadback, signing) &&
+        manualMergeRefreshLineageValid(
+          candidateManualMergeReadback,
+          initial,
+          signing,
+          nowValue,
+        ) &&
         !initial.owner_manual_merge_successors?.[manualMergeReadbackId]
         ? candidateManualMergeReadback
         : null;
@@ -4358,13 +4621,22 @@ export function createHostNativeGovernance({
             const github = manualMergeReadback.github_readback;
             coreJoin = initial.core_join_verdicts[manualMergeReadback.core_join_verdict_id];
             const joinExpiresAt = Date.parse(coreJoin?.verdict?.expires_at || "");
+            const refreshedManualMerge = Boolean(manualMergeReadback.refresh_lineage);
+            const coreJoinVerified = refreshedManualMerge
+              ? coreJoinRecordSignatureValid(coreJoin, signing)
+              : governance.verifyCoreJoinVerdict(coreJoin);
+            if (refreshedManualMerge && (!trusted.software_closure_digest ||
+                !trusted.software_closure_fresh_until)) {
+              fail("owner_manual_merge_refresh_software_cognition_invalid");
+            }
             if (
               !coreJoin || coreJoin.state !== "active" || coreJoin.uses !== 0 ||
               coreJoin.authorized_ticket_id ||
               coreJoin.manual_merge_readback_receipt_id !== manualMergeReadback.receipt_id ||
               coreJoin.manual_merge_readback_receipt_digest !== manualMergeReadback.receipt_digest ||
-              !governance.verifyCoreJoinVerdict(coreJoin) ||
-              !Number.isFinite(joinExpiresAt) || joinExpiresAt <= nowValue ||
+              !coreJoinVerified ||
+              !Number.isFinite(joinExpiresAt) ||
+              (!refreshedManualMerge && joinExpiresAt <= nowValue) ||
               coreJoin.claim?.tenant_id !== tenantId ||
               coreJoin.claim?.work_id !== delegation.grant.work_id ||
               coreJoin.claim?.intent_anchor_digest !== delegation.grant.intent_anchor_digest ||
@@ -4438,6 +4710,12 @@ export function createHostNativeGovernance({
               source_evidence_digest: manualMergeReadback.receipt_digest,
               source_required_checks_policy_digest:
                 github.required_checks_policy_digest,
+              ...(manualMergeReadback.refresh_lineage ? {
+                refresh_lineage: clone(manualMergeReadback.refresh_lineage),
+                refresh_lineage_digest: hostNativeDigest(
+                  manualMergeReadback.refresh_lineage,
+                ),
+              } : {}),
               retrospective_ticket_issued: false,
               provider_execution: false,
             };
@@ -4445,7 +4723,7 @@ export function createHostNativeGovernance({
               fail("release_join_verdict_unavailable");
             }
             release_join_resolution = await releaseJoinVerdictResolver({
-              core_join_verified: governance.verifyCoreJoinVerdict(coreJoin),
+              core_join_verified: coreJoinVerified,
               core_join_issued_at: coreJoin.verdict.issued_at,
               core_join_expires_at: coreJoin.verdict.expires_at,
               verdict_id: coreJoin.verdict_id,
