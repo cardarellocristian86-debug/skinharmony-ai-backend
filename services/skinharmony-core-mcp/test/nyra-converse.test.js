@@ -533,18 +533,19 @@ test("uses the explicit Work selection mode as the same read-only path", async (
   assert.equal(response.structuredContent.orchestration_directive.source, "WORK_GALLERY");
 });
 
-test("routes fresh advisory chat through one bounded context preflight and no catalog", async () => {
+test("routes fresh advisory chat through the global read plane without Work or Core", async () => {
   let continuationCalls = 0;
   const { handler, calls } = harness({
     openContinuation: async () => { continuationCalls += 1; throw new Error("must-not-run"); },
   });
   const response = await handler({ message: "Ciao Nyra, spiegami come ragioni." }, identity());
   const payload = response.structuredContent;
-  assert.equal(calls.preflight.length, 1);
-  assert.equal(calls.interpret.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
   assert.equal(calls.readCommandCatalog.length, 0);
   assert.equal(continuationCalls, 0);
-  assert.equal(payload.intent_routing.route.route, "CORE_CONTEXT_THEN_NYRA");
+  assert.equal(payload.intent_routing.route.route, "ADVISORY_READ");
+  assert.equal(payload.intent_routing.route.canonical_intent.work_requirement, "NONE");
   assert.equal(payload.intent_routing.structured_context.ramy_state,
     "unavailable_no_verified_adapter");
   assert.equal(payload.execution_authorized, false);
@@ -552,7 +553,7 @@ test("routes fresh advisory chat through one bounded context preflight and no ca
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
 });
 
-test("records elapsed routing latency for a fresh Core-routed turn", async (t) => {
+test("records zero Core routing latency for a fresh global advisory turn", async (t) => {
   const authenticatedIdentity = identity();
   let now = 10_000;
   t.mock.method(Date, "now", () => now);
@@ -569,9 +570,9 @@ test("records elapsed routing latency for a fresh Core-routed turn", async (t) =
   const response = await handler({
     message: "Ciao Nyra, spiegami come ragioni.",
   }, authenticatedIdentity);
-  assert.equal(response.structuredContent.intent_routing.route.route, "CORE_CONTEXT_THEN_NYRA");
-  assert.equal(response.structuredContent.intent_routing.telemetry.preflight_invoked, true);
-  assert.equal(response.structuredContent.intent_routing.telemetry.elapsed_ms, 18);
+  assert.equal(response.structuredContent.intent_routing.route.route, "ADVISORY_READ");
+  assert.equal(response.structuredContent.intent_routing.telemetry.preflight_invoked, false);
+  assert.equal(response.structuredContent.intent_routing.telemetry.elapsed_ms, 0);
 });
 
 test("reads global Nyra controls without a Work, Core interpretation or preflight", async () => {
@@ -1333,12 +1334,13 @@ test("adapts Nyra's wording to the requested detail without repeating governance
     response_style: "detailed",
   }, identity())).structuredContent;
 
-  assert.equal(concise.orchestration_directive.decision.disposition, detailed.orchestration_directive.decision.disposition);
+  assert.equal(concise.action_policy.consequential_request_detected, true);
+  assert.equal(detailed.action_policy.consequential_request_detected, false);
   assert.match(concise.host_response_contract.reply_seed, /Posso far avanzare la preparazione locale/);
   assert.doesNotMatch(concise.host_response_contract.reply_seed, /Per sbloccare il prossimo gate/);
   assert.doesNotMatch(concise.host_response_contract.reply_seed, /Questo turno conversazionale/);
-  assert.match(detailed.host_response_contract.reply_seed, /Per sbloccare il prossimo gate/);
-  assert.match(detailed.host_response_contract.reply_seed, /Il ticket resta in attesa/);
+  assert.match(detailed.host_response_contract.reply_seed, /Work può continuare/);
+  assert.doesNotMatch(detailed.host_response_contract.reply_seed, /Il ticket resta in attesa/);
   assert.doesNotMatch(detailed.host_response_contract.reply_seed, /Questo turno conversazionale/);
 });
 
@@ -2714,7 +2716,7 @@ test("vague wording cannot surface an upstream completion claim or imply an unbo
   assert.equal(payload.work.work_id, null);
   assert.equal(payload.work.work_bound, false);
   assert.equal(payload.work.state, "unbound");
-  assert.match(payload.host_response_contract.reply_seed, /Mi serve un solo Work canonico/);
+  assert.match(payload.host_response_contract.reply_seed, /richiesta advisory/);
   assert.doesNotMatch(payload.host_response_contract.reply_seed, /autenticato/);
   assert.match(payload.host_response_contract.instructions[2], /Do not claim/);
   assert.equal(payload.execution_authorized, false);
