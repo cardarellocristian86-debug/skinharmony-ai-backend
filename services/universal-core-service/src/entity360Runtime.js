@@ -814,7 +814,52 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
     });
   }
 
+  async function configureFeatureFlag(rawIdentity, input = {}) {
+    const identity = requireIdentity(rawIdentity);
+    requireInputTenant(identity, input);
+    requireFeatureFlagAuthority(identity);
+    if (typeof store.writeFeatureFlag !== "function") {
+      fail("entity360_feature_flag_store_unavailable", 503);
+    }
+    if (Object.hasOwn(input, "policy_digest")
+      || Object.hasOwn(input, "enforcement_authority_digest")
+      || Object.hasOwn(input, "flag_id")) {
+      fail("entity360_feature_flag_server_binding_required", 403);
+    }
+    const featureMode = normalizeEntity360Mode(input.mode);
+    const enabled = input.enabled === true;
+    if ((featureMode === "OFF" && enabled) || (featureMode === "SHADOW" && !enabled)) {
+      fail("entity360_feature_flag_state_invalid");
+    }
+    // OFF is the tenant safety rollback and remains reachable when snapshot
+    // runtime readiness is lost. Enabling SHADOW still requires the complete
+    // verified runtime and Store health contract.
+    if (featureMode === "SHADOW") {
+      if (state !== "ready") fail("entity360_runtime_not_ready", 503);
+      await requireOperationalStore();
+    }
+    const result = await store.writeFeatureFlag({
+      tenant_id: identity.tenant_id,
+      flag_id: "entity360",
+      mode: featureMode,
+      enabled,
+      policy_digest: featureMode === "SHADOW" ? compiledPolicy.policy_digest : null,
+      enforcement_authority_digest: null,
+      config: input.config || {},
+      expected_revision: integer(input.expected_revision,
+        "entity360_feature_expected_revision_invalid"),
+      actor_id: identity.actor_id,
+      idempotency_key: text(input.idempotency_key,
+        "entity360_idempotency_key_required", 240),
+    });
+    return Object.freeze({ ...result, configured_by: "universal_core_governed_operator",
+      production_decision_changed: false, execution_authorized: false });
+  }
+
   async function invoke(capability, rawIdentity, input = {}) {
+    if (capability === "entity_360_feature_flag_write") {
+      return configureFeatureFlag(rawIdentity, input);
+    }
     if (state !== "ready") fail("entity360_runtime_not_ready", 503);
     const identity = requireIdentity(rawIdentity);
     requireInputTenant(identity, input);
@@ -878,38 +923,6 @@ export function createEntity360Runtime({ store, adapterRegistry, policy, ontolog
       tenant_override_applied: false,
       execution_authorized: false,
       });
-    }
-    if (capability === "entity_360_feature_flag_write") {
-      requireFeatureFlagAuthority(identity);
-      if (typeof store.writeFeatureFlag !== "function") {
-        fail("entity360_feature_flag_store_unavailable", 503);
-      }
-      if (Object.hasOwn(input, "policy_digest")
-        || Object.hasOwn(input, "enforcement_authority_digest")
-        || Object.hasOwn(input, "flag_id")) {
-        fail("entity360_feature_flag_server_binding_required", 403);
-      }
-      const featureMode = normalizeEntity360Mode(input.mode);
-      const enabled = input.enabled === true;
-      if ((featureMode === "OFF" && enabled) || (featureMode === "SHADOW" && !enabled)) {
-        fail("entity360_feature_flag_state_invalid");
-      }
-      const result = await store.writeFeatureFlag({
-        tenant_id: identity.tenant_id,
-        flag_id: "entity360",
-        mode: featureMode,
-        enabled,
-        policy_digest: featureMode === "SHADOW" ? compiledPolicy.policy_digest : null,
-        enforcement_authority_digest: null,
-        config: input.config || {},
-        expected_revision: integer(input.expected_revision,
-          "entity360_feature_expected_revision_invalid"),
-        actor_id: identity.actor_id,
-        idempotency_key: text(input.idempotency_key,
-          "entity360_idempotency_key_required", 240),
-      });
-      return Object.freeze({ ...result, configured_by: "universal_core_governed_operator",
-        production_decision_changed: false, execution_authorized: false });
     }
     if (capability === "entity_360_metrics_read") {
       requireWorkBinding(identity, input);

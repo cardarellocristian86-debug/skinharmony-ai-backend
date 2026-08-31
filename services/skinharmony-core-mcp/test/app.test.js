@@ -237,6 +237,104 @@ test("governed continuation restores the logical presence only after its handler
   }
 });
 
+test("Control Room status is sessionless and avoids an automatic Work preflight", async () => {
+  let statusCalls = 0;
+  const app = createApp({ ...config, nyraDialogueEnabled: false }, {
+    toolSurface: "compact",
+    handlers: {
+      nyra_control_room_status: async () => {
+        statusCalls += 1;
+        return { structuredContent: { ok: true, control_room: { state: "READY" } }, content: [] };
+      },
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer codex-key", "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: "control-room-first-call", method: "tools/call",
+        params: { name: "nyra_control_room_status", arguments: {} },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(statusCalls, 1);
+    assert.equal(body.result.structuredContent.control_room.state, "READY");
+    assert.match(String(response.headers.get("mcp-session-id") || ""), /^mcp_bootstrap_/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("enforces Nyra Dialogue OFF at tools/list and direct call time", async () => {
+  let dialogueCalls = 0;
+  const app = createApp({ ...config, nyraDialogueEnabled: false }, {
+    toolSurface: "compact",
+    handlers: {
+      nyra_converse: async () => {
+        dialogueCalls += 1;
+        return { structuredContent: { unexpected: true }, content: [] };
+      },
+      nyra_control_room_status: async () => ({
+        structuredContent: { ok: true, control_room: { state: "READY" } }, content: [],
+      }),
+    },
+  });
+  const server = app.listen(0);
+  await new Promise((resolve) => server.once("listening", resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const headers = { authorization: "Bearer codex-key", "content-type": "application/json" };
+    const listed = await fetch(`${base}/mcp`, {
+      method: "POST", headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: "dialogue-off-list", method: "tools/list", params: {} }),
+    }).then((response) => response.json());
+    const names = listed.result.tools.map((tool) => tool.name);
+    assert.equal(names.includes("nyra_converse"), false);
+    assert.equal(names.includes("nyra_control_room_status"), true);
+
+    const call = await fetch(`${base}/mcp`, {
+      method: "POST", headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: "dialogue-off-call", method: "tools/call",
+        params: { name: "nyra_converse", arguments: { message: "Nyra, riprendi il Work" } },
+      }),
+    }).then((response) => response.json());
+    assert.equal(call.error.code, -32602);
+    assert.equal(dialogueCalls, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Control Room status remains discoverable with Nyra Dialogue both OFF and ON", () => {
+  const identity = {
+    kind: "oauth",
+    subject: "chatgpt-owner",
+    tenantId: "tenant-a",
+    authenticatedTenantMembership: {
+      authenticated: true,
+      tenant_id: "tenant-a",
+      subject: "chatgpt-owner",
+    },
+    authenticatedHostPrincipal: {
+      registered: true,
+      auth_kind: "oauth",
+      client_type: "chatgpt",
+      interaction_mode: "nyra_conversational",
+      capabilities: ["work.read"],
+    },
+  };
+  for (const enabled of [false, true]) {
+    const visible = filterToolsForClient(TOOLS, identity, enabled);
+    assert(visible.some((tool) => tool.name === "nyra_control_room_status"), `dialogue=${enabled}`);
+  }
+  assert.equal(requiresGenericWorkPreflight("nyra_control_room_status"), false);
+});
+
 test("binds an OAuth owner logical session only for DTT-backed dynamic reads", () => {
   const identity = {
     kind: "oauth",

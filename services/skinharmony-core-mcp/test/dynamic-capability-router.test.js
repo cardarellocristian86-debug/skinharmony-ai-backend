@@ -231,13 +231,16 @@ function dedicatedCoreWriteTool(name = "host_native_action_reserve") {
 }
 
 test("publishes a fixed compact MCP surface below the connector import budget", () => {
-  const availableTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS];
+  const availableTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS, ...ENTITY_360_TOOLS];
   const handlers = Object.fromEntries(availableTools.map((tool) => [tool.name, async () => ({})]));
   const compact = compactMcpTools(availableTools, handlers);
 
   assert.deepEqual(compact.map((tool) => tool.name), COMPACT_MCP_TOOL_NAMES);
-  assert.equal(compact.length, 14);
+  assert.equal(compact.length, 16);
+  assert(compact.some((tool) => tool.name === "nyra_control_room_status"));
   assert(compact.some((tool) => tool.name === "nyra_autopilot_enable"));
+  assert(compact.some((tool) => tool.name === "entity_360_shadow_enable"));
+  assert(compact.some((tool) => tool.name === "entity_360_shadow_disable"));
   assert(compact.some((tool) => tool.name === "nyra_continue"));
   assert(compact.some((tool) => tool.name === "nyra_work_assignment_claim"));
   assert(compact.some((tool) => tool.name === "nyra_work_assignment_submit"));
@@ -245,6 +248,43 @@ test("publishes a fixed compact MCP surface below the connector import budget", 
   assert.equal(compact.some((tool) => INTERNAL_ONLY_TOOL_NAMES.has(tool.name)), false);
   assert.equal(compact.some((tool) => tool.name.startsWith("tenant_provider_openai_")), false);
   assert(Buffer.byteLength(JSON.stringify({ tools: compact })) < 64 * 1024);
+});
+
+test("keeps large policy activation outside dynamic wrappers while reserving compact space for governed controls", async () => {
+  const activation = TOOLS.find((tool) => tool.name === "nyra_policy_registry_activate");
+  const handlers = {
+    [activation.name]: async () => ({}),
+  };
+  const snapshot = dynamicCapabilityCatalogSnapshot([activation], handlers);
+  const router = createDynamicCapabilityHandlers({
+    tools: [activation],
+    handlers,
+    semanticSelect: async () => ({}),
+  });
+
+  assert.equal(COMPACT_MCP_TOOL_NAMES.includes(activation.name), false);
+  assert.deepEqual(snapshot.capabilities, []);
+  await assert.rejects(
+    router.core_capability_catalog({ capability_id: activation.name }, identity),
+    /dynamic_capability_unavailable/,
+  );
+  await assert.rejects(
+    router.core_capability_read({
+      capability_id: activation.name,
+      catalog_revision: snapshot.catalog_revision,
+      arguments: {},
+    }, identity),
+    /dynamic_capability_unavailable/,
+  );
+  await assert.rejects(
+    router.core_capability_invoke({
+      capability_id: activation.name,
+      catalog_revision: snapshot.catalog_revision,
+      idempotency_key: "policy-activation-dynamic-bypass",
+      arguments: {},
+    }, identity),
+    /dynamic_capability_unavailable/,
+  );
 });
 
 test("keeps the generic preflight internal instead of exposing it through dynamic discovery", () => {
@@ -1322,60 +1362,18 @@ test("dedicated Core routes replace the generic gate only with a verified Core m
   assert.equal(genericGateCalls, 0);
 });
 
-test("Entity 360 shadow activation uses its exact Core route, never the generic action gate", async () => {
-  const tool = ENTITY_360_TOOLS.find((item) => item.name === "entity_360_shadow_enable");
-  let genericGateCalls = 0;
-  let received;
-  const handlers = {
-    [tool.name]: async (args, caller) => {
-      received = { args, caller };
-      return {
-        structuredContent: {
-          ok: true,
-          mode: "SHADOW",
-          dedicated_core_gate: {
-            authorized: true,
-            authority: "universal_core",
-            route: "entity_360_shadow_enable",
-          },
-        },
-      };
-    },
-  };
-  const router = createDynamicCapabilityHandlers({
-    tools: [tool],
-    handlers,
-    semanticSelect: async () => ({}),
-    gateAction: async () => {
-      genericGateCalls += 1;
-      throw new Error("generic_gate_must_not_run_for_entity_360_shadow_enable");
-    },
-  });
-  const catalog_revision = dynamicCapabilityCatalogSnapshot([tool], handlers).catalog_revision;
-  const caller = {
-    ...identity,
-    kind: "oauth",
-    oauthOwnerBound: true,
-    oauthOwnerElevated: true,
-    ownerConfirmed: true,
-  };
-  const result = await router.core_capability_invoke({
-    capability_id: tool.name,
-    catalog_revision,
-    idempotency_key: "entity-360-shadow-enable-once",
-    owner_confirmed: true,
-    confirmation_reference: "owner-approved-entity-360-shadow",
-    arguments: {
-      expected_revision: 0,
-    },
-  }, caller);
+test("keeps Entity 360 shadow controls direct-only and out of generic discovery", () => {
+  const shadowTools = ENTITY_360_TOOLS.filter((tool) => [
+    "entity_360_shadow_enable",
+    "entity_360_shadow_disable",
+  ].includes(tool.name));
+  const handlers = Object.fromEntries(shadowTools.map((tool) => [tool.name, async () => ({})]));
+  const snapshot = dynamicCapabilityCatalogSnapshot(shadowTools, handlers);
 
-  assert.equal(genericGateCalls, 0);
-  assert.equal(received.caller.oauthOwnerElevated, true);
-  assert.equal(received.args.owner_confirmed, true);
-  assert.equal(received.args.confirmation_reference, "owner-approved-entity-360-shadow");
-  assert.equal(result.structuredContent.dynamic_capability.gate_source,
-    "universal_core_dedicated_route");
+  assert.deepEqual(snapshot.capabilities, []);
+  for (const tool of shadowTools) {
+    assert.equal(COMPACT_MCP_TOOL_NAMES.includes(tool.name), true);
+  }
 });
 
 test("OAuth-owner continuity bootstrap capabilities use only their server-owned Core gate", async () => {

@@ -153,9 +153,12 @@ be inferred from `work.create` alone.
 
 ## Nyra interaction
 
-A registered conversational app sees two direct tools:
+A registered conversational app sees the following direct tools:
 
 - `nyra_converse`, for Nyra's diagnosis, resume and signed proposal;
+- `nyra_control_room_status`, for tenant-bound server readback of control
+  state and optional exact Work closure progress; it is read-only and never
+  grants authority;
 - `nyra_governed_continue`, for the exact next governed phase.
 
 The second tool is deliberately absent from dynamic capability discovery. Nyra

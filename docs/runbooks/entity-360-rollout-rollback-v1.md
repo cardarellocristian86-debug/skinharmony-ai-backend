@@ -391,6 +391,13 @@ Il rollback database è forward-only. La down migration è disabilitata e non si
 droppano tabelle/evidence. In caso di schema parziale: runtime OFF, blocco nuove
 write, catalog readback, migration forward additive e nuovo ticket.
 
+La route tenant `OFF` non dipende dalla readiness del runtime snapshot: deve
+restare invocabile quando il runtime costruito entra in
+`initialization_failed` o `store_verification_failed`. Il percorso continua a
+richiedere Core operator, conferma owner fresca, CAS e idempotenza. Se il
+feature-flag Store non è costruibile o non è raggiungibile, il rollback tenant
+fallisce chiuso e si usa il rollback globale governato del punto 3.
+
 ## Gap reali prima del live
 
 - esecuzione e receipt del PostgreSQL 16 CI gate;

@@ -9,9 +9,18 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   // capability discovery made a new chat spend an avoidable read/tool turn
   // before it could receive its persisted Work briefing.
   "nyra_converse",
+  // This status is a bounded, tenant-derived read.  It stays on the compact
+  // surface so every supported conversational host can discover its current
+  // governed controls without first entering generic capability discovery.
+  "nyra_control_room_status",
   // One explicit owner/Core-gated Nyra activation adopts existing active Work
   // records. It is a Nyra control-plane operation, not a generic Core tool.
   "nyra_autopilot_enable",
+  // These are direct-only, tenant-wide SHADOW transitions.  Host capability,
+  // fresh owner confirmation and their exact Universal Core route are still
+  // enforced at invocation; compact publication grants none of those.
+  "entity_360_shadow_enable",
+  "entity_360_shadow_disable",
   // The only conversational mutation surface. It consumes an opaque Nyra
   // continuation reference and is deliberately direct-only, never
   // catalog-addressable.
@@ -26,7 +35,6 @@ export const COMPACT_MCP_TOOL_NAMES = Object.freeze([
   "core_semantic_select",
   "core_capability_read",
   "core_capability_invoke",
-  "nyra_policy_registry_activate",
   "nyra_policy_registry_rollback",
   "nyra_policy_registry_reconcile",
 ]);
@@ -42,9 +50,14 @@ export const INTERNAL_ONLY_TOOL_NAMES = new Set([
 
 // `nyra_converse` is directly advertised to avoid discovery on a new chat,
 // while remaining catalog-addressable for already-connected hosts that still
-// use the backwards-compatible core_capability_read route.
+// use the backwards-compatible core_capability_read route.  The large Policy
+// Registry activation contract is intentionally direct-only but not compact:
+// its lifecycle health proof is enforced by the direct app surface and must
+// not be bypassed through a dynamic wrapper.  It needs a separate governed
+// adapter before it can return to the production compact surface.
 const DIRECT_ONLY = new Set([
   ...COMPACT_MCP_TOOL_NAMES.filter((name) => name !== "nyra_converse"),
+  "nyra_policy_registry_activate",
   ...INTERNAL_ONLY_TOOL_NAMES,
 ]);
 const FORBIDDEN_DYNAMIC_TOOLS = new Set([

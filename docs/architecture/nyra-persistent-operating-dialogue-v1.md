@@ -73,8 +73,11 @@ authenticated fallback and rebuilds the context.
 
 ### Conversational orchestration contract v2
 
-For an unregistered or read-only ChatGPT client, `nyra_converse` is the single
-advertised conversational front door. A registered conversational application
+For an unregistered or read-only ChatGPT client, `nyra_converse` is the primary
+conversational front door. The additive read-only
+`nyra_control_room_status` is also available so the chat can report server
+state, Work closure progress and the real control categories without
+reconstructing them. A registered conversational application
 with `governed_continue` additionally receives the narrow direct
 `nyra_governed_continue` tool. Nyra must speak to the owner and connected AI
 instead of exposing raw catalog or preflight mechanics. Every turn returns a
@@ -92,6 +95,28 @@ Only an exact pure-resume request may reuse the current persisted dialogue. A
 new technical request always obtains a fresh Work preflight and Core
 interpretation. This prevents a semantically relevant but stale checkpoint from
 repeating its old next action while the owner is reporting a new problem.
+
+### Semantic Intake before Work binding
+
+Before a Work preflight, the existing Nyra intent router performs a bounded
+semantic intake. A pure question about Nyra/Core runtime, enabled functions or
+allowed controls is a server-derived `CONTROL_ROOM_READ`; it does not create,
+select or resume a Work. A question that names a Work stays Work-scoped, and a
+message that includes a mutation verb always remains on the Core/guard path,
+even when it also asks for status.
+
+The common deterministic route is enough for every host. A host LLM may send a
+strict, server-message-bound read-only hint to improve natural-language
+understanding: the host classifies the language, while the server derives the
+audit/replay digest from the actual message. The hint is untrusted and cannot
+supply tenant, Work, authority, policy or execution. The lexical safety gate
+and Universal Core remain authoritative. Details, threat boundary and rollback are in
+[`ADR-nyra-semantic-intake-v1.md`](../adr/ADR-nyra-semantic-intake-v1.md).
+
+`NYRA_DIALOGUE_ENABLED=false` is enforced both in the advertised tool surface
+and inside the handler. The direct tenant-bound Control Room reader remains
+available only for readback of that state; it is not a hidden route to restart
+the dialogue.
 
 Nyra can direct the authenticated connected AI to continue local inspection,
 tests, documentation and evidence collection under `PREPARE_BOUNDED_WORK`.
