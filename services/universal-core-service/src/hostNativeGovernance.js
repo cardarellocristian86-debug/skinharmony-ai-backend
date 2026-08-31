@@ -1428,10 +1428,13 @@ function validateActionShape(action) {
   return { ...clone(action), kind, repository, provider_execution: false };
 }
 
-function ensureActionBound(action, delegation) {
+function ensureActionBound(action, delegation, { serverVerifiedBranch = null } = {}) {
   if (action.repository !== delegation.grant.repository) fail("delegation_repository_mismatch");
   const branch = actionBranch(action);
-  if (branch && !branchAllowed(branch, delegation.grant.allowed_branches)) fail("branch_not_allowed");
+  const branchIsAllowed = serverVerifiedBranch === null
+    ? branchAllowed(branch, delegation.grant.allowed_branches)
+    : action.kind === "render.observe" && branch === serverVerifiedBranch;
+  if (branch && !branchIsAllowed) fail("branch_not_allowed");
   if (!delegation.grant.allowed_actions.includes(action.kind)) fail("action_not_allowed");
   if (action.kind === "github.merge" && !delegation.grant.protected_branches.includes(action.base_branch)) {
     fail("protected_base_required");
@@ -3981,7 +3984,29 @@ export function createHostNativeGovernance({
         fail("standing_release_delivery_branch_denied");
       }
       validateStandingRepairAction(delegation, action);
-      ensureActionBound(action, delegation);
+      const manualMergeReadbackSupplied = Object.hasOwn(
+        input,
+        "manual_merge_readback_id",
+      );
+      const rawManualMergeReadbackId = input.manual_merge_readback_id;
+      const normalizedManualMergeReadbackId = typeof rawManualMergeReadbackId === "string"
+        ? rawManualMergeReadbackId.trim()
+        : "";
+      const manualMergeReadbackId = normalizedManualMergeReadbackId &&
+        rawManualMergeReadbackId === normalizedManualMergeReadbackId
+        ? normalizedManualMergeReadbackId
+        : null;
+      const candidateManualMergeReadback = manualMergeReadbackId
+        ? initial.owner_manual_merge_readbacks?.[manualMergeReadbackId]
+        : null;
+      const trustedManualMergeReadback = candidateManualMergeReadback &&
+        manualMergeReadbackSignatureValid(candidateManualMergeReadback, signing) &&
+        !initial.owner_manual_merge_successors?.[manualMergeReadbackId]
+        ? candidateManualMergeReadback
+        : null;
+      ensureActionBound(action, delegation, trustedManualMergeReadback ? {
+        serverVerifiedBranch: trustedManualMergeReadback.github_readback?.base_branch,
+      } : undefined);
       if (input.bootstrap_release_exception_receipt !== undefined && action.kind !== "github.merge") {
         fail("bootstrap_release_exception_action_not_allowed");
       }
@@ -3994,10 +4019,10 @@ export function createHostNativeGovernance({
       let predecessor = null;
       let manualMergeReadback = null;
       let expiredDelegationContinuation = null;
-      if (input.predecessor_ticket_id && input.manual_merge_readback_id) {
+      if (input.predecessor_ticket_id && manualMergeReadbackSupplied) {
         fail("predecessor_exclusive");
       }
-      if (input.manual_merge_readback_id) {
+      if (manualMergeReadbackSupplied) {
         if (action.kind !== "render.observe") {
           fail("owner_manual_merge_successor_action_invalid");
         }
@@ -4005,15 +4030,11 @@ export function createHostNativeGovernance({
         // mutation. The in-memory store is intentionally simple and cannot
         // roll back a mutator that throws after changing nested state.
         ensureObservationOnlyActionShape(action);
-        const receiptId = text(
-          input.manual_merge_readback_id,
-          "owner_manual_merge_readback_id_invalid",
-          240,
-        );
-        manualMergeReadback = initial.owner_manual_merge_readbacks?.[receiptId];
-        if (!manualMergeReadback ||
-            !manualMergeReadbackSignatureValid(manualMergeReadback, signing) ||
-            initial.owner_manual_merge_successors?.[receiptId]) {
+        if (!manualMergeReadbackId) {
+          fail("owner_manual_merge_readback_id_invalid");
+        }
+        manualMergeReadback = candidateManualMergeReadback;
+        if (manualMergeReadback !== trustedManualMergeReadback) {
           fail("owner_manual_merge_readback_predecessor_invalid");
         }
         // The in-memory store does not roll back nested mutations when a
