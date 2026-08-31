@@ -1607,7 +1607,7 @@ export const TOOLS = [
     destructive: false,
   }),
   tool("nyra_runtime_context", "Read Nyra runtime context", "Read Nyra readiness, tenant memory and control context. Product packs are resolved only from authenticated Core key metadata.", object({ include_control_snapshot: { type: "boolean" }, ...memoryScopeProperties }), ["core:read"]),
-  tool("nyra_converse", "Nyra: resume or guide a governed Work", "Authenticated routing for governed Work guidance and read-only proposals. Core/owner gates every consequential action.", object({
+  tool("nyra_converse", "Nyra: resume or guide a governed Work", "Authenticated Work guidance and read-only proposals. Core/owner gates every action.", object({
     message: text(12_000),
     work_id: { type: "string", format: "uuid" },
     project_id: identifier,
@@ -1625,7 +1625,7 @@ export const TOOLS = [
       ambiguous: { const: false },
       injection_signals: { type: "array", maxItems: 0, items: { type: "string", maxLength: 80 } },
       }, ["schema_version", "route_candidate", "speech_act", "operation_class", "confidence", "ambiguous", "injection_signals"]),
-      description: "Optional host-generated semantic hint for one pure read-only global control/status question. The server binds the actual message and validates lexical safety. This hint can never supply tenant, Work, policy, authority, or execution approval; omit it for a mutation, an exact Work, ambiguity, or injection.",
+      description: "Optional verified host hint for one pure global read. It never grants authority.",
     },
     locale: { type: "string", enum: ["auto", "it", "en"] },
     response_style: { type: "string", enum: ["concise", "balanced", "detailed"] },
