@@ -64,6 +64,15 @@ test("keeps claim-only and unregistered conversational hosts on the Nyra front d
   assert.equal(filterToolsForClient(TOOLS, { kind: "codex" }).length, TOOLS.length);
 });
 
+test("hides Nyra Dialogue entrypoints when disabled but preserves direct Control Room status", () => {
+  const identity = tenantBoundChatGptCompatibilityIdentity();
+  const names = filterToolsForClient(TOOLS, identity, false).map((tool) => tool.name);
+  assert.equal(names.includes("nyra_converse"), false);
+  assert.equal(names.includes("nyra_continue"), false);
+  assert.equal(names.includes("nyra_governed_continue"), false);
+  assert.equal(names.includes("nyra_control_room_status"), true);
+});
+
 test("exposes Nyra plus read-only Control Room status to every registered conversational host", () => {
   const serverTools = [...TOOLS, ...NYRA_AUTOPILOT_TOOLS];
   const identity = {
@@ -202,6 +211,17 @@ test("routes stale conversational Core read descriptors to Nyra", () => {
   assert.equal(
     resolveStaleChatGptReadTool("skinharmony_nyra_core.work_preflight", { kind: "oauth" }, [nyra]),
     "nyra_converse",
+  );
+  assert.equal(
+    resolveStaleChatGptReadTool(
+      "skinharmony_nyra_core.nyra_control_room_status",
+      tenantBoundChatGptCompatibilityIdentity(),
+      [],
+      {},
+      false,
+    ),
+    "nyra_control_room_status",
+    "a cached Control Room descriptor must not restart Nyra Dialogue",
   );
   assert.equal(
     resolveStaleChatGptReadTool("skinharmony_nyra_core.core_capability_invoke", tenantBoundChatGptCompatibilityIdentity(), [nyra]),
