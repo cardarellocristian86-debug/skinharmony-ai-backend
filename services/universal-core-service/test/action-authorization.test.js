@@ -86,6 +86,8 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "work.gallery.assignment.accept": "11111111-1111-4111-8111-111111111111",
     "work.gallery.archive": "11111111-1111-4111-8111-111111111111",
     "work.gallery.reopen": "11111111-1111-4111-8111-111111111111",
+    "nyra.assignment.claim": "11111111-1111-4111-8111-111111111111",
+    "nyra.assignment.submit": "11111111-1111-4111-8111-111111111111",
     "native_agent.plan": "work_continuity_native_plan_create",
     "native_agent.bind": "work_continuity_native_bind",
     "native_agent.report": "work_continuity_native_report",
@@ -94,7 +96,7 @@ test("preserves the closed legacy and continuity coordination action set", () =>
     "incident.record": "work_continuity_incident_record",
     "delegation.consume": "work_continuity_delegation_consume",
   };
-  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 26);
+  assert.equal(BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES.length, 28);
   for (const actionType of BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES) {
     const authorization = buildActionAuthorization(contract(), {
       ...boundedCoordinationWrite,
@@ -119,6 +121,22 @@ test("preserves the closed legacy and continuity coordination action set", () =>
       action_type: actionType,
       target: "tenant_work_gallery_unknown",
       idempotency_key: `wrong-target-${actionType}-0001`,
+    });
+    assert.equal(wrongTarget.allowed, false, `${actionType}:wrong_target`);
+  }
+  for (const actionType of ["nyra.assignment.claim", "nyra.assignment.submit"]) {
+    const allowed = buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: actionType,
+      target: "11111111-1111-4111-8111-111111111111",
+      idempotency_key: `nyra-assignment-${actionType.split(".").at(-1)}-0001`,
+    });
+    assert.equal(allowed.allowed, true, actionType);
+    const wrongTarget = buildActionAuthorization(contract(), {
+      ...boundedCoordinationWrite,
+      action_type: actionType,
+      target: "nyra_assignment_unbound",
+      idempotency_key: `nyra-assignment-wrong-${actionType.split(".").at(-1)}-0001`,
     });
     assert.equal(wrongTarget.allowed, false, `${actionType}:wrong_target`);
   }

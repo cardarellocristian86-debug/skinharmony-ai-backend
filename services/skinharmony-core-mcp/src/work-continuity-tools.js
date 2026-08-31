@@ -68,6 +68,8 @@ const TENANT_WORK_COORDINATION_ACTION_TYPES = Object.freeze({
   tenant_work_assignment_accept_v3: "work.gallery.assignment.accept",
   tenant_work_archive_v3: "work.gallery.archive",
   tenant_work_reopen_v3: "work.gallery.reopen",
+  nyra_work_assignment_claim: "nyra.assignment.claim",
+  nyra_work_assignment_submit: "nyra.assignment.submit",
   // Task state is a bounded coordination update; evidence stays on the
   // continuity path but receives a Core-valid, server-derived target below.
   tenant_work_task_record: "task.update",
@@ -96,6 +98,8 @@ export function tenantWorkCoordinationTarget(toolName, args = {}) {
     "tenant_work_assignment_accept_v3",
     "tenant_work_archive_v3",
     "tenant_work_reopen_v3",
+    "nyra_work_assignment_claim",
+    "nyra_work_assignment_submit",
   ].includes(name)) return workId;
   // Repository Atlas bootstrap is a bounded internal graph mutation. Its
   // public capability name intentionally does not contain `atlas`, so derive
