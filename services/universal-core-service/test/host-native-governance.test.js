@@ -651,7 +651,13 @@ function manifestWithCoreJoin(manifest, verdictId) {
   });
 }
 
-function rewriteStoredManualMergeAsLegacy(store, joinId, receiptId, legacyDiffDigest) {
+function rewriteStoredManualMergeAsLegacy(
+  store,
+  joinId,
+  receiptId,
+  legacyDiffDigest,
+  { recordedAt } = {},
+) {
   return store.mutate((state) => {
     const record = structuredClone(state.core_join_verdicts[joinId]);
     const receipt = structuredClone(state.owner_manual_merge_readbacks[receiptId]);
@@ -688,6 +694,7 @@ function rewriteStoredManualMergeAsLegacy(store, joinId, receiptId, legacyDiffDi
 
     receipt.core_join_verdict_id = record.verdict_id;
     receipt.core_join_record_digest = recordDigestBeforeReceipt;
+    if (recordedAt) receipt.recorded_at = recordedAt;
     receipt.predecessor.core_join_verdict_id = record.verdict_id;
     receipt.predecessor.core_join_record_digest = recordDigestBeforeReceipt;
     const { predecessor_digest: _oldPredecessorDigest, ...predecessorUnsigned } =
@@ -715,6 +722,32 @@ function rewriteStoredManualMergeAsLegacy(store, joinId, receiptId, legacyDiffDi
     state.core_join_verdicts[record.verdict_id] = record;
     state.owner_manual_merge_readbacks[receipt.receipt_id] = receipt;
     return { record: structuredClone(record), receipt: structuredClone(receipt) };
+  });
+}
+
+function rewriteStoredManualMergeRecordedAt(store, receiptId, recordedAt) {
+  return store.mutate((state) => {
+    const receipt = structuredClone(
+      state.owner_manual_merge_readbacks[receiptId],
+    );
+    receipt.recorded_at = recordedAt;
+    const {
+      signature: _oldSignature,
+      receipt_digest: _oldDigest,
+      ...receiptUnsigned
+    } = receipt;
+    receipt.receipt_digest = hostNativeDigest(receiptUnsigned);
+    receipt.signature = signedTestDomain(
+      "hnmmr",
+      canonicalForSignature({
+        ...receiptUnsigned,
+        receipt_digest: receipt.receipt_digest,
+      }),
+    );
+    state.owner_manual_merge_readbacks[receiptId] = receipt;
+    state.core_join_verdicts[receipt.core_join_verdict_id]
+      .manual_merge_readback_receipt_digest = receipt.receipt_digest;
+    return structuredClone(receipt);
   });
 }
 
@@ -1628,6 +1661,15 @@ test("owner manual merge readback persists selector-bound evidence without a ret
   assert.match(receipt.signature, /^hnmmr_[a-f0-9]{64}$/);
   assert.equal(Object.keys(store.readState().tickets).length, 0);
   assert.equal(Object.keys(store.readState().owner_manual_merge_readbacks).length, 1);
+  const ordinaryAuthority =
+    await subject.governance.resolveManualMergeRefreshAuthority({
+    tenant_id: "codexai",
+    work_id: "work-1",
+    core_join_verdict_id: join.verdict.verdict_id,
+    manual_merge_readback_id: receipt.receipt_id,
+  });
+  assert.equal(ordinaryAuthority.authority_mode, "core_join");
+  assert.equal(ordinaryAuthority.refresh_lineage_digest, undefined);
   const delegation = await subject.governance.issueDelegation(subject.delegationInput);
   await assert.rejects(subject.governance.issueActionTicket({
     tenant_id: "codexai",
@@ -1759,6 +1801,15 @@ test("owner manual merge readback persists selector-bound evidence without a ret
   assert.equal(observation.ticket.predecessor.retrospective_ticket_issued, false);
   assert.equal(Object.values(store.readState().tickets).some((record) =>
     record.ticket.action.kind === "github.merge"), false);
+  const ordinaryTicketAuthority =
+    await subject.governance.resolveManualMergeRefreshAuthority({
+      tenant_id: "codexai",
+      work_id: "work-1",
+      core_join_verdict_id: join.verdict.verdict_id,
+      manual_merge_readback_id: receipt.receipt_id,
+      ticket_id: observation.ticket.ticket_id,
+    });
+  assert.equal(ordinaryTicketAuthority.authority_mode, "core_join");
   await assert.rejects(subject.governance.issueActionTicket({
     ...observationRequest,
     idempotency_key: "manual-merge-observation-ticket-substitution",
@@ -1931,6 +1982,11 @@ test("legacy manual merge receipt refreshes once onto a canonical Join and survi
     oldJoin.verdict_id,
     oldReceipt.receipt_id,
     H("0"),
+    {
+      // The merge was observed while the original Join was valid, but the
+      // signed receipt was durably recorded after that Join expired.
+      recordedAt: new Date(subject.now() + 90_000).toISOString(),
+    },
   );
   subject.advance(2 * 60_000);
   verifiedAt = new Date(subject.now()).toISOString();
@@ -2000,6 +2056,36 @@ test("legacy manual merge receipt refreshes once onto a canonical Join and survi
     state.core_join_verdicts[legacy.record.verdict_id]
       .manual_merge_readback_receipt_digest = legacy.receipt.receipt_digest;
   });
+  rewriteStoredManualMergeRecordedAt(
+    store,
+    legacy.receipt.receipt_id,
+    new Date(Date.parse(legacy.receipt.github_readback.merged_at) - 1).toISOString(),
+  );
+  await assert.rejects(subject.governance.recordOwnerManualMergeReadback({
+    ...refreshRequest,
+    idempotency_key: "refresh-manual-readback-recorded-before-merge",
+  }, {
+    software_closure_digest: H("2"),
+    software_closure_fresh_until: freshUntil,
+  }), /owner_manual_merge_refresh_predecessor_missing/);
+  rewriteStoredManualMergeRecordedAt(
+    store,
+    legacy.receipt.receipt_id,
+    new Date(subject.now() + 1).toISOString(),
+  );
+  await assert.rejects(subject.governance.recordOwnerManualMergeReadback({
+    ...refreshRequest,
+    idempotency_key: "refresh-manual-readback-recorded-in-future",
+  }, {
+    software_closure_digest: H("2"),
+    software_closure_fresh_until: freshUntil,
+  }), /owner_manual_merge_refresh_predecessor_missing/);
+  store.mutate((state) => {
+    state.owner_manual_merge_readbacks[legacy.receipt.receipt_id] =
+      structuredClone(legacy.receipt);
+    state.core_join_verdicts[legacy.record.verdict_id]
+      .manual_merge_readback_receipt_digest = legacy.receipt.receipt_digest;
+  });
   store.mutate((state) => {
     const forged = structuredClone(legacy.receipt);
     forged.signature = `hnmmr_${"0".repeat(64)}`;
@@ -2044,6 +2130,38 @@ test("legacy manual merge receipt refreshes once onto a canonical Join and survi
       .refreshed_manual_merge_readback_id,
     refreshed.receipt_id,
   );
+  const refreshAuthority =
+    await subject.governance.resolveManualMergeRefreshAuthority({
+      tenant_id: "codexai",
+      work_id: "work-1",
+      core_join_verdict_id: newJoin.verdict_id,
+      manual_merge_readback_id: refreshed.receipt_id,
+    });
+  assert.equal(refreshAuthority.manual_merge_readback_digest,
+    refreshed.receipt_digest);
+  assert.equal(refreshAuthority.authority_mode, "refresh_closure_only");
+  assert.equal(refreshAuthority.refresh_lineage_digest,
+    hostNativeDigest(refreshed.refresh_lineage));
+  await assert.rejects(subject.governance.resolveManualMergeRefreshAuthority({
+    tenant_id: "codexai",
+    work_id: "work-1",
+    core_join_verdict_id: newJoin.verdict_id,
+    manual_merge_readback_id: `hnmmr_${"0".repeat(40)}`,
+  }), /owner_manual_merge_authority_invalid/);
+  store.mutate((state) => {
+    state.owner_manual_merge_readbacks[refreshed.receipt_id]
+      .refresh_lineage.canonical_diff_digest = H("f");
+  });
+  await assert.rejects(subject.governance.resolveManualMergeRefreshAuthority({
+    tenant_id: "codexai",
+    work_id: "work-1",
+    core_join_verdict_id: newJoin.verdict_id,
+    manual_merge_readback_id: refreshed.receipt_id,
+  }), /owner_manual_merge_authority_invalid/);
+  store.mutate((state) => {
+    state.owner_manual_merge_readbacks[refreshed.receipt_id] =
+      structuredClone(refreshed);
+  });
   await assert.rejects(subject.governance.recordOwnerManualMergeReadback({
     tenant_id: "codexai",
     work_id: "work-1",
@@ -2098,6 +2216,16 @@ test("legacy manual merge receipt refreshes once onto a canonical Join and survi
   assert.equal(observation.ticket.core_join_verdict_id, newJoin.verdict_id);
   assert.equal(observation.ticket.predecessor.refresh_lineage
     .predecessor_core_join_verdict_id, legacy.record.verdict_id);
+  const ticketRefreshAuthority =
+    await subject.governance.resolveManualMergeRefreshAuthority({
+      tenant_id: "codexai",
+      work_id: "work-1",
+      core_join_verdict_id: newJoin.verdict_id,
+      manual_merge_readback_id: refreshed.receipt_id,
+      ticket_id: observation.ticket.ticket_id,
+    });
+  assert.equal(ticketRefreshAuthority.ticket_id, observation.ticket.ticket_id);
+  assert.equal(ticketRefreshAuthority.authority_mode, "refresh_closure_only");
   await assert.rejects(subject.governance.issueActionTicket({
     tenant_id: "codexai",
     delegation_id: delegation.delegation_id,

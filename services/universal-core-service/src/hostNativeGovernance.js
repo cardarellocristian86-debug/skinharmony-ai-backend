@@ -2014,7 +2014,7 @@ function legacyManualMergeRefreshBindingValid({
     Number.isFinite(currentIssuedAt) && priorExpiresAt < currentIssuedAt &&
     priorExpiresAt < nowValue &&
     priorIssuedAt <= mergedAt && mergedAt <= priorExpiresAt &&
-    priorRecordedAt <= priorExpiresAt && priorRecordedAt <= nowValue;
+    mergedAt <= priorRecordedAt && priorRecordedAt <= nowValue;
 }
 
 function manualMergeRefreshLineageValid(receipt, state, signing, nowValue) {
@@ -5393,6 +5393,83 @@ export function createHostNativeGovernance({
 
     async readActionTicket({ tenant_id, ticket_id } = {}) {
       return readTicketRecord(text(tenant_id, "tenant_id_invalid", 160), ticket_id);
+    },
+
+    async resolveManualMergeRefreshAuthority(input = {}) {
+      exactKeys(input, new Set([
+        "tenant_id", "work_id", "core_join_verdict_id",
+        "manual_merge_readback_id", "ticket_id",
+      ]));
+      const tenantId = text(input.tenant_id, "tenant_id_invalid", 160);
+      const workId = text(input.work_id, "work_id_invalid", 240);
+      const verdictId = text(
+        input.core_join_verdict_id,
+        "core_join_verdict_id_invalid",
+        240,
+      );
+      const receiptId = text(
+        input.manual_merge_readback_id,
+        "owner_manual_merge_readback_id_invalid",
+        240,
+      );
+      const ticketId = input.ticket_id === undefined
+        ? null
+        : text(input.ticket_id, "ticket_id_invalid", 240);
+      const state = store.readState();
+      const receipt = state.owner_manual_merge_readbacks?.[receiptId];
+      const coreJoin = state.core_join_verdicts?.[verdictId];
+      const nowValue = nowMillis(now);
+      const refreshed = Boolean(receipt?.refresh_lineage);
+      if (
+        !receipt ||
+        receipt.tenant_id !== tenantId || receipt.work_id !== workId ||
+        receipt.core_join_verdict_id !== verdictId ||
+        coreJoin?.tenant_id !== tenantId || coreJoin?.verdict_id !== verdictId ||
+        coreJoin.manual_merge_readback_receipt_id !== receiptId ||
+        coreJoin.manual_merge_readback_receipt_digest !== receipt.receipt_digest ||
+        !manualMergeReadbackSignatureValid(receipt, signing) ||
+        (refreshed
+          ? !manualMergeRefreshLineageValid(receipt, state, signing, nowValue)
+          : !governance.verifyCoreJoinVerdict(coreJoin))
+      ) fail("owner_manual_merge_authority_invalid");
+
+      if (ticketId) {
+        const record = state.tickets?.[ticketId];
+        if (
+          !record || record.ticket?.tenant_id !== tenantId ||
+          record.ticket?.work_id !== workId ||
+          record.ticket?.core_join_verdict_id !== verdictId ||
+          record.ticket?.predecessor?.manual_merge_readback_id !== receiptId ||
+          record.ticket?.predecessor?.manual_merge_readback_digest !==
+            receipt.receipt_digest
+        ) fail("owner_manual_merge_authority_invalid");
+        validateStoredManualMergeObservation(record, state, {
+          signing,
+          successorUsage: record.state === "issued" ? 0 : 1,
+          nowValue,
+        });
+      } else if (
+        coreJoin.state !== "active" || coreJoin.uses !== 0 ||
+        coreJoin.authorized_ticket_id ||
+        state.owner_manual_merge_successors?.[receiptId]
+      ) {
+        fail("owner_manual_merge_authority_invalid");
+      }
+
+      const authority = {
+        schema_version: "host_native_manual_merge_authority_resolution_v1",
+        authority_mode: refreshed ? "refresh_closure_only" : "core_join",
+        tenant_id: tenantId,
+        work_id: workId,
+        core_join_verdict_id: verdictId,
+        manual_merge_readback_id: receiptId,
+        manual_merge_readback_digest: receipt.receipt_digest,
+        ...(refreshed ? {
+          refresh_lineage_digest: hostNativeDigest(receipt.refresh_lineage),
+        } : {}),
+        ...(ticketId ? { ticket_id: ticketId } : {}),
+      };
+      return { ...authority, authority_digest: hostNativeDigest(authority) };
     },
 
     verifyActionTicket(ticket) {
