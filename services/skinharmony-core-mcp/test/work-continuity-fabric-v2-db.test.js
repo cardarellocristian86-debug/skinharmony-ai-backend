@@ -812,8 +812,10 @@ class ContinuityPool {
         .filter((candidate) =>
           candidate.tenant_id === parameters[0] &&
           candidate.work_id === parameters[1] &&
-          candidate.plan_id === parameters[2])
+          candidate.plan_id === parameters[2] &&
+          (!parameters[3] || candidate.verdict_id === parameters[3]))
         .sort((left, right) =>
+          Number(right.renewal_generation || 0) - Number(left.renewal_generation || 0) ||
           String(right.created_at).localeCompare(String(left.created_at)));
       const join = joins[0];
       const evaluations =
@@ -838,8 +840,42 @@ class ContinuityPool {
         rowCount: 1,
       };
     }
+    if (q.startsWith("SELECT j.evaluation_id,j.verdict_id,j.release_intent,j.release_intent_digest,")) {
+      const joins = [...this.releaseJoins.values()]
+        .filter((candidate) =>
+          candidate.tenant_id === parameters[0] &&
+          candidate.work_id === parameters[1] &&
+          candidate.plan_id === parameters[2] &&
+          candidate.release_intent_digest === parameters[4])
+        .filter((candidate) => {
+          const evaluations =
+            this.evaluations.get(key(parameters[0], parameters[1], parameters[2])) || [];
+          return evaluations.some((evaluation) =>
+            evaluation.evaluation_id === candidate.evaluation_id &&
+            evaluation.evaluation_digest === parameters[3]);
+        })
+        .sort((left, right) =>
+          Number(right.renewal_generation || 0) - Number(left.renewal_generation || 0) ||
+          String(right.created_at).localeCompare(String(left.created_at)) ||
+          String(right.verdict_id).localeCompare(String(left.verdict_id)));
+      const join = joins[0];
+      const evaluations =
+        this.evaluations.get(key(parameters[0], parameters[1], parameters[2])) || [];
+      const evaluation = evaluations.find((candidate) =>
+        candidate.evaluation_id === join?.evaluation_id);
+      if (!join || !evaluation) return { rows: [], rowCount: 0 };
+      return {
+        rows: [{
+          ...join,
+          evaluation: evaluation.evaluation,
+          evaluation_digest: evaluation.evaluation_digest,
+        }],
+        rowCount: 1,
+      };
+    }
     if (
-      q.startsWith("SELECT p.plan,p.plan_digest,p.status,a.intent_digest,e.evaluation")
+      q.startsWith("SELECT p.plan,p.plan_digest,p.status,a.intent_digest,e.evaluation") ||
+      q.startsWith("SELECT p.plan,p.plan_digest,a.intent_digest,e.evaluation")
     ) {
       const plan = this.plans.get(key(parameters[0], parameters[2]));
       const anchor = this.anchors.get(key(parameters[0], parameters[1]));
@@ -897,15 +933,16 @@ class ContinuityPool {
       return { rows: [], rowCount: 1 };
     }
     if (q.startsWith("SELECT verdict_id,release_intent_digest,")) {
-      const row = this.releaseJoins.get(key(parameters[0], parameters[1]));
+      const row = this.releaseJoins.get(key(parameters[0], parameters[1], parameters[2]));
       return { rows: row ? [{ ...row }] : [], rowCount: row ? 1 : 0 };
     }
     if (q.startsWith("INSERT INTO core_continuity_release_joins")) {
       const [
         tenantId, workId, planId, evaluationId, verdictId, releaseIntent,
-        releaseIntentDigest, coreJoinRecord, coreJoinRecordDigest, createdBy,
+        releaseIntentDigest, coreJoinRecord, coreJoinRecordDigest,
+        renewalGeneration, renewalOfVerdictId, createdBy,
       ] = parameters;
-      this.releaseJoins.set(key(tenantId, evaluationId), {
+      this.releaseJoins.set(key(tenantId, evaluationId, renewalGeneration), {
         tenant_id: tenantId,
         work_id: workId,
         plan_id: planId,
@@ -915,6 +952,8 @@ class ContinuityPool {
         release_intent_digest: releaseIntentDigest,
         core_join_record: JSON.parse(coreJoinRecord),
         core_join_record_digest: coreJoinRecordDigest,
+        renewal_generation: renewalGeneration,
+        renewal_of_verdict_id: renewalOfVerdictId,
         created_by: createdBy,
         created_at: this.clock().toISOString(),
       });
@@ -924,7 +963,7 @@ class ContinuityPool {
       const work = this.works.get(key(parameters[0], parameters[1]));
       work.status = "release_ready";
       work.next_action =
-        "Obtain a fresh Core release verdict, execute through host policy, then verify live readback.";
+        "Use the persisted Core Join to obtain the exact action ticket, execute through host policy, then verify live readback.";
       work.updated_at = this.clock().toISOString();
       return { rows: [], rowCount: 1 };
     }
@@ -943,12 +982,15 @@ class ContinuityPool {
     }
     if (q.startsWith("SELECT evaluation,evaluation_digest FROM core_continuity_closure_evaluations")) {
       const rows = this.evaluations.get(key(parameters[0], parameters[1], parameters[2])) || [];
+      const row = parameters[3]
+        ? rows.find((candidate) => candidate.evaluation_id === parameters[3])
+        : rows.at(-1);
       return {
-        rows: rows.length ? [{
-          evaluation: rows.at(-1).evaluation,
-          evaluation_digest: rows.at(-1).evaluation_digest,
+        rows: row ? [{
+          evaluation: row.evaluation,
+          evaluation_digest: row.evaluation_digest,
         }] : [],
-        rowCount: rows.length ? 1 : 0,
+        rowCount: row ? 1 : 0,
       };
     }
     if (q.startsWith("UPDATE core_continuity_native_plans SET status='closed'")) {
@@ -3042,6 +3084,7 @@ test("local closure becomes release-ready and external completion needs exact Co
       resolved_at: clock().toISOString(),
       provider_execution: false,
     }),
+    coreJoinTtlMs: 1_000,
     now: () => clock().getTime(),
   });
   const corePlanRequest = {
@@ -3255,7 +3298,7 @@ test("local closure becomes release-ready and external completion needs exact Co
     tree_sha: "b".repeat(40),
     changed_files: ["services/skinharmony-core-mcp/src/server.js"],
   });
-  const evaluation = await runtime.evaluateClosure(identity, {
+  let evaluation = await runtime.evaluateClosure(identity, {
     work_id: work.work_id,
     plan_id: planId,
     release: {
@@ -3340,11 +3383,11 @@ test("local closure becomes release-ready and external completion needs exact Co
     idempotency_key: "closure-caller-evidence-injection",
   }), /continuity_release_fields_invalid/);
 
-  const releaseIntent = buildHostReleaseIntentV1({
+  let releaseIntent = buildHostReleaseIntentV1({
     tenant_id: "tenant-a",
     ...evaluation.core_join_material.release_intent_request,
   });
-  const coreJoinRecord = await realCore.issueCoreJoinVerdict({
+  let coreJoinRecord = await realCore.issueCoreJoinVerdict({
     tenant_id: "tenant-a",
     ...evaluation.core_join_material.core_join_request,
     software_closure_digest: "8".repeat(64),
@@ -3352,8 +3395,8 @@ test("local closure becomes release-ready and external completion needs exact Co
     release_intent: releaseIntent,
     idempotency_key: "real-core-hnj-contract",
   });
-  const verdict = coreJoinRecord.verdict;
-  const verdictId = verdict.verdict_id;
+  let verdict = coreJoinRecord.verdict;
+  let verdictId = verdict.verdict_id;
   const expectedCoreClaim = {
     tenant_id: "tenant-a",
     ...evaluation.core_join_material.core_join_request,
@@ -3400,6 +3443,236 @@ test("local closure becomes release-ready and external completion needs exact Co
   assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "release_ready");
   assert.equal(pool.plans.get(key("tenant-a", planId)).status, "verified");
   assert.equal(pool.releaseJoins.size, 1);
+  const activeReplayEvaluation = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    release: releaseInput,
+    idempotency_key: "closure-evaluation-active-core-join-replay",
+  });
+  assert.notEqual(activeReplayEvaluation.evaluation_id, evaluation.evaluation_id);
+  const activeReplay = await runtime.prepareEffectiveCoreJoinEvaluation(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    evaluation_id: activeReplayEvaluation.evaluation_id,
+    release: releaseInput,
+  });
+  assert.equal(activeReplay.core_join_replay, true);
+  assert.equal(activeReplay.evaluation_id, evaluation.evaluation_id);
+  assert.equal(
+    activeReplay.core_join_material.material_digest,
+    evaluation.core_join_material.material_digest,
+  );
+  const replayWork = pool.works.get(key("tenant-a", work.work_id));
+  replayWork.status = "active";
+  replayWork.next_action = "Awaiting replayed Core Join binding.";
+  const rebound = await runtime.bindCoreJoinVerdict(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    evaluation_id: activeReplay.evaluation_id,
+  }, { releaseIntent, coreJoinRecord });
+  assert.equal(rebound.idempotent_replay, true);
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "release_ready");
+  assert.equal(
+    pool.works.get(key("tenant-a", work.work_id)).next_action,
+    "Use the persisted Core Join to obtain the exact action ticket, execute through host policy, then verify live readback.",
+  );
+  const evaluationCountBeforeRenewal =
+    pool.evaluations.get(key("tenant-a", work.work_id, planId)).length;
+
+  const initialEvaluation = evaluation;
+  const initialReleaseIntent = releaseIntent;
+  const initialCoreJoinRecord = coreJoinRecord;
+  const initialVerdictId = verdictId;
+  clockMillis = Date.parse(verdict.expires_at) + 1;
+  const freshEvaluation = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    release: releaseInput,
+    idempotency_key: "closure-evaluation-after-core-join-expiry",
+  });
+  assert.notEqual(freshEvaluation.evaluation_id, initialEvaluation.evaluation_id);
+  assert.equal(freshEvaluation.evaluation_digest, initialEvaluation.evaluation_digest);
+  evaluation = await runtime.prepareEffectiveCoreJoinEvaluation(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    evaluation_id: freshEvaluation.evaluation_id,
+    release: releaseInput,
+  });
+  assert.equal(evaluation.core_join_renewed, true);
+  assert.equal(evaluation.evaluation_id, initialEvaluation.evaluation_id);
+  assert.equal(evaluation.evaluation_digest, initialEvaluation.evaluation_digest);
+  assert.equal(evaluation.core_join_renewal_generation, 1);
+  assert.equal(
+    evaluation.core_join_material.core_join_request.core_join_renewal
+      .predecessor_verdict_id,
+    initialVerdictId,
+  );
+  assert.equal(
+    pool.evaluations.get(key("tenant-a", work.work_id, planId)).length,
+    evaluationCountBeforeRenewal + 1,
+  );
+
+  releaseIntent = buildHostReleaseIntentV1({
+    tenant_id: "tenant-a",
+    ...evaluation.core_join_material.release_intent_request,
+  });
+  assert.equal(
+    releaseIntent.release_intent_digest,
+    initialReleaseIntent.release_intent_digest,
+  );
+  assert.deepEqual(releaseIntent, initialReleaseIntent);
+  coreJoinRecord = await realCore.issueCoreJoinVerdict({
+    tenant_id: "tenant-a",
+    ...evaluation.core_join_material.core_join_request,
+    software_closure_digest: "8".repeat(64),
+    software_closure_fresh_until: "2099-08-15T12:00:00.000Z",
+    release_intent: releaseIntent,
+    idempotency_key: "real-core-hnj-contract-renewal",
+  });
+  verdict = coreJoinRecord.verdict;
+  verdictId = verdict.verdict_id;
+  assert.notEqual(verdictId, initialVerdictId);
+  assert.equal(verdict.core_join_renewal.generation, 1);
+  assert.equal(initialCoreJoinRecord.state, "active");
+  const renewedJoin = await runtime.bindCoreJoinVerdict(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    evaluation_id: evaluation.evaluation_id,
+  }, { releaseIntent, coreJoinRecord });
+  assert.equal(renewedJoin.release_ready, true);
+  assert.equal(renewedJoin.renewal_generation, 1);
+  assert.equal(renewedJoin.renewal_of_verdict_id, initialVerdictId);
+  assert.equal(pool.releaseJoins.size, 2);
+  assert.equal(
+    pool.releaseJoins.get(key("tenant-a", initialEvaluation.evaluation_id, 0)).verdict_id,
+    initialVerdictId,
+  );
+  assert.equal(
+    pool.releaseJoins.get(key("tenant-a", initialEvaluation.evaluation_id, 1)).verdict_id,
+    verdictId,
+  );
+
+  const renewalReplay = await runtime.prepareEffectiveCoreJoinEvaluation(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    evaluation_id: initialEvaluation.evaluation_id,
+    release: releaseInput,
+  });
+  assert.equal(renewalReplay.core_join_replay, true);
+  assert.equal(renewalReplay.evaluation_id, evaluation.evaluation_id);
+  assert.equal(
+    renewalReplay.core_join_material.material_digest,
+    evaluation.core_join_material.material_digest,
+  );
+  assert.equal(
+    pool.evaluations.get(key("tenant-a", work.work_id, planId)).length,
+    evaluationCountBeforeRenewal + 1,
+  );
+
+  const generationOneVerdictId = verdictId;
+  const generationOneRecord = coreJoinRecord;
+  clockMillis = Date.parse(verdict.expires_at) + 1;
+  const secondRenewal = await runtime.prepareEffectiveCoreJoinEvaluation(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    evaluation_id: initialEvaluation.evaluation_id,
+    release: releaseInput,
+  });
+  assert.equal(secondRenewal.core_join_renewed, true);
+  assert.equal(secondRenewal.evaluation_id, initialEvaluation.evaluation_id);
+  assert.equal(secondRenewal.evaluation_digest, initialEvaluation.evaluation_digest);
+  assert.equal(secondRenewal.core_join_renewal_generation, 2);
+  assert.equal(
+    secondRenewal.core_join_material.core_join_request.core_join_renewal
+      .predecessor_verdict_id,
+    generationOneVerdictId,
+  );
+  const secondReleaseIntent = buildHostReleaseIntentV1({
+    tenant_id: "tenant-a",
+    ...secondRenewal.core_join_material.release_intent_request,
+  });
+  assert.deepEqual(secondReleaseIntent, initialReleaseIntent);
+  const secondRecord = await realCore.issueCoreJoinVerdict({
+    tenant_id: "tenant-a",
+    ...secondRenewal.core_join_material.core_join_request,
+    software_closure_digest: "8".repeat(64),
+    software_closure_fresh_until: "2099-08-15T12:00:00.000Z",
+    release_intent: secondReleaseIntent,
+    idempotency_key: "real-core-hnj-contract-renewal-generation-2",
+  });
+  const secondVerdictId = secondRecord.verdict.verdict_id;
+  assert.notEqual(secondVerdictId, initialVerdictId);
+  assert.notEqual(secondVerdictId, generationOneVerdictId);
+  assert.equal(secondRecord.claim.core_join_renewal.generation, 2);
+  const secondJoined = await runtime.bindCoreJoinVerdict(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    evaluation_id: initialEvaluation.evaluation_id,
+  }, { releaseIntent: secondReleaseIntent, coreJoinRecord: secondRecord });
+  assert.equal(secondJoined.renewal_generation, 2);
+  assert.equal(secondJoined.renewal_of_verdict_id, generationOneVerdictId);
+  assert.equal(pool.releaseJoins.size, 3);
+  assert.equal(
+    pool.releaseJoins.get(key("tenant-a", initialEvaluation.evaluation_id, 2)).verdict_id,
+    secondVerdictId,
+  );
+  assert.equal(
+    pool.evaluations.get(key("tenant-a", work.work_id, planId)).length,
+    evaluationCountBeforeRenewal + 1,
+  );
+  assert.equal(initialCoreJoinRecord.verdict.verdict_id, initialVerdictId);
+  assert.equal(generationOneRecord.verdict.verdict_id, generationOneVerdictId);
+
+  // A locally observed consumed predecessor must fail before any renewal
+  // evaluation, release join, or audit event is persisted.
+  const generationTwoJoin = pool.releaseJoins.get(
+    key("tenant-a", initialEvaluation.evaluation_id, 2),
+  );
+  const generationTwoRecord = generationTwoJoin.core_join_record;
+  const generationTwoRecordDigest = generationTwoJoin.core_join_record_digest;
+  const clockBeforeConsumedProbe = clockMillis;
+  const evaluationCountBeforeConsumedProbe =
+    pool.evaluations.get(key("tenant-a", work.work_id, planId)).length;
+  const releaseJoinCountBeforeConsumedProbe = pool.releaseJoins.size;
+  const eventCountBeforeConsumedProbe =
+    (pool.events.get(key("tenant-a", work.work_id)) || []).length;
+  generationTwoJoin.core_join_record = {
+    ...structuredClone(generationTwoRecord),
+    uses: 1,
+    consumed_at: "2099-08-15T12:00:00.000Z",
+  };
+  generationTwoJoin.core_join_record_digest = digest(
+    generationTwoJoin.core_join_record,
+  );
+  clockMillis = Date.parse(secondRecord.verdict.expires_at) + 1;
+  await assert.rejects(
+    runtime.prepareEffectiveCoreJoinEvaluation(identity, {
+      work_id: work.work_id,
+      plan_id: planId,
+      evaluation_id: initialEvaluation.evaluation_id,
+      release: releaseInput,
+    }),
+    /continuity_core_join_renewal_predecessor_unavailable/,
+  );
+  assert.equal(
+    pool.evaluations.get(key("tenant-a", work.work_id, planId)).length,
+    evaluationCountBeforeConsumedProbe,
+  );
+  assert.equal(pool.releaseJoins.size, releaseJoinCountBeforeConsumedProbe);
+  assert.equal(
+    (pool.events.get(key("tenant-a", work.work_id)) || []).length,
+    eventCountBeforeConsumedProbe,
+  );
+  generationTwoJoin.core_join_record = generationTwoRecord;
+  generationTwoJoin.core_join_record_digest = generationTwoRecordDigest;
+  clockMillis = clockBeforeConsumedProbe;
+
+  // Continue the release flow only with the newest still-active authority.
+  evaluation = secondRenewal;
+  releaseIntent = secondReleaseIntent;
+  coreJoinRecord = secondRecord;
+  verdict = secondRecord.verdict;
+  verdictId = secondVerdictId;
 
   const evaluationDigest = evaluation.evaluation_digest;
   const releaseIntentDigest = releaseIntent.release_intent_digest;
@@ -3680,7 +3953,9 @@ test("local closure becomes release-ready and external completion needs exact Co
     /continuity_live_verification_required/,
   );
 
-  const releaseJoinRow = [...pool.releaseJoins.values()][0];
+  const releaseJoinRow = pool.releaseJoins.get(
+    key("tenant-a", evaluation.evaluation_id, 2),
+  );
   const originalCoreJoinRecord = releaseJoinRow.core_join_record;
   const originalCoreJoinRecordDigest = releaseJoinRow.core_join_record_digest;
   const wrongEvaluationRecord = structuredClone(originalCoreJoinRecord);
