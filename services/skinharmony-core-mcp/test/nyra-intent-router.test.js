@@ -122,9 +122,7 @@ test("routes global runtime status to Control Room and keeps Work or mutation sc
 
 test("routes bounded Nyra information questions without a Work preflight", () => {
   for (const message of [
-    "Nyra, chi sei?",
     "Nyra, come funzioni?",
-    "Nyra, cosa ti manca per lavorare meglio?",
     "Nyra, qual è la differenza tra Entity 360 e Semantic Scope Guard?",
     "Nyra, qual è la differenza tra ciò che puoi leggere e ciò che puoi autorizzare?",
   ]) {
@@ -135,6 +133,34 @@ test("routes bounded Nyra information questions without a Work preflight", () =>
   }
   assert.notEqual(classify("Nyra, come funzioni? Procedi con il deploy.").route,
     "ADVISORY_READ");
+});
+
+test("routes Nyra self-model and gap reads without a Work, including a validated multilingual hint", () => {
+  for (const [message, intent] of [
+    ["Nyra, chi sei?", "nyra_self_model_read"],
+    ["Nyra, leggi il tuo self-model: chi sei e quali limiti hai.", "nyra_self_model_read"],
+    ["Nyra, cosa ti manca per lavorare meglio, senza aprire un Work?", "nyra_gap_read"],
+  ]) {
+    const route = classify(message);
+    assert.equal(route.intent, intent, message);
+    assert.equal(route.route, "ADVISORY_READ", message);
+    assert.equal(route.core_preflight_required, false, message);
+  }
+  const hint = {
+    schema_version: "nyra_semantic_intent_hint_v1",
+    route_candidate: "NYRA_INTROSPECTION_READ",
+    speech_act: "QUESTION",
+    operation_class: "READ_ONLY",
+    confidence: "HIGH",
+    ambiguous: false,
+    injection_signals: [],
+  };
+  const multilingual = classify("¿Qué necesitas para trabajar mejor?", { semanticHint: hint });
+  assert.equal(multilingual.intent, "nyra_gap_read");
+  assert.equal(multilingual.route, "ADVISORY_READ");
+  assert.equal(classify("¿Qué necesitas para trabajar mejor? Haz deploy.", {
+    semanticHint: hint,
+  }).route, "CORE_CONTEXT_THEN_NYRA");
 });
 
 test("accepts only a bound, read-only host semantic hint and never lets it override action scope", () => {

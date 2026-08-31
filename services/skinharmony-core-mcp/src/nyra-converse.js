@@ -2097,11 +2097,40 @@ async function workSelectionResult({
   }));
 }
 
+function introspectionReplySeed(language, intent, selfModel, readback) {
+  const italian = language === "it";
+  if (readback === "MATERIALIZATION_REQUIRED") {
+    return italian
+      ? "Il self-model persistente non è ancora materializzato per questa identità. Non ho aperto un Work né eseguito azioni: la sua materializzazione è una distinta operazione owner-governed."
+      : "The persistent self-model is not materialized for this identity. I did not open a Work or perform an action; materialization is a separate owner-governed operation.";
+  }
+  if (!selfModel) {
+    return italian
+      ? "Il self-model persistente non è al momento leggibile. Non ho effettuato fallback verso Work, preflight o azioni."
+      : "The persistent self-model is not currently readable. I did not fall back to a Work, preflight, or action.";
+  }
+  const available = Array.isArray(selfModel.capabilities)
+    ? selfModel.capabilities.filter((item) => item?.state === "available").map((item) => item.id).slice(0, 8)
+    : [];
+  const missing = Array.isArray(selfModel.required_infrastructure)
+    ? selfModel.required_infrastructure.map((item) => item?.id).filter(Boolean).slice(0, 5)
+    : [];
+  if (intent === "nyra_gap_read") {
+    return italian
+      ? `Per lavorare meglio mi servono: ${missing.join(", ") || "nessun gap verificato"}. Prossima capacità raccomandata: ${selfModel.next_recommended_capability || "non disponibile"}.`
+      : `To work better I need: ${missing.join(", ") || "no verified gap"}. Next recommended capability: ${selfModel.next_recommended_capability || "unavailable"}.`;
+  }
+  return italian
+    ? `Sono Nyra: coordino in modo governato, mentre Universal Core è l'autorità finale. Capacità verificate disponibili: ${available.join(", ") || "nessuna"}. Limite: non autorizzo né eseguo effetti esterni; ${missing.length ? `mi mancano ${missing.join(", ")}.` : "non risultano gap verificati."}`
+    : `I am Nyra: I coordinate under governance while Universal Core is the final authority. Verified available capabilities: ${available.join(", ") || "none"}. Limit: I neither authorize nor execute external effects; ${missing.length ? `I still need ${missing.join(", ")}.` : "no verified gaps are recorded."}`;
+}
+
 async function advisoryConversationResult({
   args, identity, tenantId, sessionId, message, locale, style, route, readCommandCatalog,
-  readControlRoomStatus = null, startedAt = Date.now(),
+  readControlRoomStatus = null, readNyraSelfModel = null, startedAt = Date.now(),
 }) {
   const controlRoomRead = route.intent === "global_control_read";
+  const introspectionRead = ["nyra_self_model_read", "nyra_gap_read"].includes(route.intent);
   const projectId = controlRoomRead ? null : boundedProjectId(args.project_id);
   const work = Object.freeze({ preflight_bound: false, work_bound: false, work_id: null,
     project_id: projectId, state: "unbound", next_action: null,
@@ -2164,6 +2193,22 @@ async function advisoryConversationResult({
     workId: boundedWorkId(args.work_id),
     sessionFingerprint: identity.agentPresence?.session_fingerprint,
   }) : null;
+  let selfModel = null;
+  let selfModelReadback = "NOT_REQUESTED";
+  if (introspectionRead) {
+    try {
+      const raw = await readNyraSelfModel({}, identity);
+      const payload = raw?.structuredContent || raw;
+      if (payload?.ok === true && payload.tenant_id === tenantId) {
+        selfModel = payload.self_model && payload.self_model.schema_version === "nyra_persistent_self_model_v1"
+          ? payload.self_model : null;
+        selfModelReadback = selfModel ? "AVAILABLE" :
+          payload.materialization_required === true ? "MATERIALIZATION_REQUIRED" : "UNAVAILABLE";
+      } else selfModelReadback = "UNAVAILABLE";
+    } catch {
+      selfModelReadback = "UNAVAILABLE";
+    }
+  }
   const telemetry = buildNyraRoutingTelemetry({
     route, preflightInvoked: false, context: null, catalog,
     elapsedMs: Math.max(0, Date.now() - startedAt),
@@ -2175,6 +2220,8 @@ async function advisoryConversationResult({
       : (english
         ? "The governed Control Room read is currently unavailable. I did not fall back to a Work, ticket, preflight, or action."
         : "La lettura governata del Control Room non è al momento disponibile. Non ho eseguito fallback verso Work, ticket, preflight o azioni.")
+    : introspectionRead
+    ? introspectionReplySeed(english ? "en" : "it", route.intent, selfModel, selfModelReadback)
     : route.intent === "command_catalog"
     ? catalog
       ? (english
@@ -2215,6 +2262,10 @@ async function advisoryConversationResult({
         icf_available: false,
         entity_360_available: false,
         ramy_state: "unavailable_no_verified_adapter",
+      }),
+      self_model_readback: Object.freeze({
+        state: selfModelReadback,
+        materialized: selfModel !== null,
       }),
       command_catalog: catalog ? Object.freeze({
         state: "AVAILABLE",
@@ -2397,6 +2448,7 @@ export function createNyraConverseHandler({
   listWorkChoices = null,
   readCommandCatalog = null,
   readControlRoomStatus = null,
+  readNyraSelfModel = null,
   dialogueEnabled = true,
 } = {}) {
   if (typeof preflight !== "function" || typeof interpret !== "function") {
@@ -2463,7 +2515,7 @@ export function createNyraConverseHandler({
       }
       return advisoryConversationResult({
         args, identity, tenantId, sessionId, message, locale, style,
-        route: intentRoute, readCommandCatalog, readControlRoomStatus, startedAt,
+        route: intentRoute, readCommandCatalog, readControlRoomStatus, readNyraSelfModel, startedAt,
       });
     }
 
