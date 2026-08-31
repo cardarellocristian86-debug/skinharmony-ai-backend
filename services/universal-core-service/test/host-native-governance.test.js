@@ -1561,6 +1561,7 @@ test("owner manual merge readback persists selector-bound evidence without a ret
 
   const observationDelegation = await subject.governance.issueDelegation({
     ...subject.delegationInput,
+    allowed_branches: [receipt.github_readback.head_branch],
     allowed_actions: ["render.observe"],
     budget: {
       ...subject.delegationInput.budget,
@@ -1635,6 +1636,37 @@ test("owner manual merge readback persists selector-bound evidence without a ret
     action: { ...observationRequest.action, merged: true },
     idempotency_key: "manual-merge-caller-observation-fact-denied",
   }), /delegation_continuation_action_field_denied:merged/);
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...observationRequest,
+    action: {
+      ...observationRequest.action,
+      branch: receipt.github_readback.head_branch,
+    },
+    idempotency_key: "manual-merge-head-branch-substitution-denied",
+  }), /branch_not_allowed/);
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...observationRequest,
+    manual_merge_readback_id: null,
+    idempotency_key: "manual-merge-null-readback-id-denied",
+  }), /branch_not_allowed/);
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...observationRequest,
+    manual_merge_readback_id: "",
+    idempotency_key: "manual-merge-empty-readback-id-denied",
+  }), /branch_not_allowed/);
+  const {
+    manual_merge_readback_id: _manualMergeReadbackId,
+    ...missingReadbackObservationRequest
+  } = observationRequest;
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...missingReadbackObservationRequest,
+    idempotency_key: "manual-merge-missing-readback-id-denied",
+  }), /branch_not_allowed/);
+  await assert.rejects(subject.governance.issueActionTicket({
+    ...observationRequest,
+    manual_merge_readback_id: `hnmmr_${"0".repeat(40)}`,
+    idempotency_key: "manual-merge-forged-readback-id-denied",
+  }), /branch_not_allowed/);
   const observation = await subject.governance.issueActionTicket(observationRequest);
   assert.equal(observation.ticket.action.kind, "render.observe");
   assert.equal(observation.ticket.predecessor.manual_merge_readback_id,
@@ -1645,7 +1677,7 @@ test("owner manual merge readback persists selector-bound evidence without a ret
   await assert.rejects(subject.governance.issueActionTicket({
     ...observationRequest,
     idempotency_key: "manual-merge-observation-ticket-substitution",
-  }), /owner_manual_merge_readback_predecessor_invalid/);
+  }), /branch_not_allowed/);
   const reserved = await subject.governance.reserveActionTicket({
     tenant_id: "codexai",
     ticket_id: observation.ticket.ticket_id,
