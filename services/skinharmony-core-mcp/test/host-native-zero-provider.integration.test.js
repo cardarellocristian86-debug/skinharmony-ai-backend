@@ -12,7 +12,10 @@ import { TOOLS } from "../src/tool-definitions.js";
 import { WORK_CONTINUITY_TOOLS } from "../src/work-continuity-tools.js";
 import { createWorkContinuityRuntime } from "../src/work-continuity-runtime.js";
 import { createUniversalCoreService } from "../../universal-core-service/src/app.js";
-import { HOST_NATIVE_HEALTH_CONTRACT_DIGEST } from "../../universal-core-service/src/hostNativeGovernance.js";
+import {
+  HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+  hostNativeGithubDiffDigest,
+} from "../../universal-core-service/src/hostNativeGovernance.js";
 import { HOST_NATIVE_NYRA_WORK_AUTOMATION } from "../src/host-native-tools.js";
 
 test("Nyra Work Automation v3 requires no provider execution", () => {
@@ -967,6 +970,15 @@ test("host-native MCP to Core reaches independently attested closure material wi
     assert.equal(verifierReportPayload.result.receipt.provider_execution, false);
 
     const baseCommit = "a".repeat(40);
+    const releaseTree = "c".repeat(40);
+    const releaseChangedFiles = ["services/skinharmony-core-mcp/src/app.js"];
+    const releaseDiffDigest = hostNativeGithubDiffDigest({
+      repository: "owner/repo",
+      base_commit: baseCommit,
+      head_commit: targetCommit,
+      tree_sha: releaseTree,
+      changed_files: releaseChangedFiles,
+    });
     const closurePayload = await invoke({
       transport: "coordinator-transport",
       presence: coordinatorPresence,
@@ -979,9 +991,9 @@ test("host-native MCP to Core reaches independently attested closure material wi
           delivery_branch: "agent/zero-provider",
           base_commit: baseCommit,
           head_commit: targetCommit,
-          tree_sha: "c".repeat(40),
-          diff_digest: "d".repeat(64),
-          changed_files: ["services/skinharmony-core-mcp/src/app.js"],
+          tree_sha: releaseTree,
+          diff_digest: releaseDiffDigest,
+          changed_files: releaseChangedFiles,
           delivery: {
             method: "github_branch_push_auto_deploy",
             services: [{
