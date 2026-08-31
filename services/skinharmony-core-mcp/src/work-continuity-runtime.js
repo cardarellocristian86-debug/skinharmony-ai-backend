@@ -1348,6 +1348,55 @@ function normalizeReleaseInput(value) {
   };
 }
 
+const CORE_JOIN_RENEWAL_SCHEMA_VERSION = "continuity_core_join_renewal_v1";
+
+function normalizeCoreJoinRenewal(value) {
+  if (value === undefined || value === null) return null;
+  const renewal = requireObject(value, "continuity_core_join_renewal");
+  const allowedKeys = new Set([
+    "schema_version", "predecessor_verdict_id", "predecessor_claim_digest",
+    "predecessor_release_intent_digest", "predecessor_record_digest",
+    "generation",
+  ]);
+  if (Object.keys(renewal).some((key) => !allowedKeys.has(key))) {
+    throw new Error("continuity_core_join_renewal_fields_invalid");
+  }
+  const generation = Number(renewal.generation);
+  if (!Number.isSafeInteger(generation) || generation < 1 || generation > 1_000) {
+    throw new Error("continuity_core_join_renewal_generation_invalid");
+  }
+  return {
+    schema_version: renewal.schema_version === CORE_JOIN_RENEWAL_SCHEMA_VERSION
+      ? CORE_JOIN_RENEWAL_SCHEMA_VERSION
+      : (() => { throw new Error("continuity_core_join_renewal_schema_invalid"); })(),
+    predecessor_verdict_id: releaseField(
+      renewal.predecessor_verdict_id,
+      "continuity_core_join_renewal_predecessor_verdict_id",
+      /^hnj_[a-f0-9]{40}$/,
+      44,
+    ),
+    predecessor_claim_digest: releaseField(
+      renewal.predecessor_claim_digest,
+      "continuity_core_join_renewal_predecessor_claim_digest",
+      /^[a-f0-9]{64}$/,
+      64,
+    ),
+    predecessor_release_intent_digest: releaseField(
+      renewal.predecessor_release_intent_digest,
+      "continuity_core_join_renewal_predecessor_release_intent_digest",
+      /^[a-f0-9]{64}$/,
+      64,
+    ),
+    predecessor_record_digest: releaseField(
+      renewal.predecessor_record_digest,
+      "continuity_core_join_renewal_predecessor_record_digest",
+      /^[a-f0-9]{64}$/,
+      64,
+    ),
+    generation,
+  };
+}
+
 function buildCoreJoinMaterial({
   tenantId,
   workId,
@@ -1358,9 +1407,11 @@ function buildCoreJoinMaterial({
   evaluationDigest,
   release,
   attestationSigningSecret,
+  coreJoinRenewal: suppliedCoreJoinRenewal,
 } = {}) {
   if (evaluation?.closed !== true) throw new Error("native_agent_verified_closure_required");
   const normalizedRelease = normalizeReleaseInput(release);
+  const coreJoinRenewal = normalizeCoreJoinRenewal(suppliedCoreJoinRenewal);
   const coreAuthority = requireObject(plan.core_authority, "core_authority");
   if (
     coreAuthority.base_branch &&
@@ -1465,6 +1516,7 @@ function buildCoreJoinMaterial({
         }
       : {}),
     provider_execution: false,
+    ...(coreJoinRenewal ? { core_join_renewal: coreJoinRenewal } : {}),
   };
   const closureAttestationUnsigned = {
     schema_version: "host_native_closure_attestation_v1",
@@ -1503,6 +1555,7 @@ function buildCoreJoinMaterial({
       ),
     })).sort((left, right) => left.task_id.localeCompare(right.task_id)),
     provider_execution: false,
+    ...(coreJoinRenewal ? { core_join_renewal: coreJoinRenewal } : {}),
   };
   const closureSecret = String(attestationSigningSecret || "").trim();
   if (Buffer.byteLength(closureSecret, "utf8") < 32) {
@@ -1944,17 +1997,77 @@ CREATE TABLE IF NOT EXISTS core_continuity_closure_evaluations (
   PRIMARY KEY (tenant_id, evaluation_id),
   FOREIGN KEY (tenant_id, plan_id) REFERENCES core_continuity_native_plans(tenant_id, plan_id)
 );
+CREATE OR REPLACE FUNCTION core_continuity_closure_evaluations_append_only() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'core_continuity_closure_evaluations_append_only'; END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS core_continuity_closure_evaluations_no_mutation ON core_continuity_closure_evaluations;
+CREATE TRIGGER core_continuity_closure_evaluations_no_mutation
+BEFORE UPDATE OR DELETE ON core_continuity_closure_evaluations
+FOR EACH ROW EXECUTE FUNCTION core_continuity_closure_evaluations_append_only();
 
 CREATE TABLE IF NOT EXISTS core_continuity_release_joins (
   tenant_id varchar(64) NOT NULL, work_id uuid NOT NULL, plan_id uuid NOT NULL,
   evaluation_id uuid NOT NULL, verdict_id varchar(160) NOT NULL,
+  renewal_generation integer NOT NULL DEFAULT 0 CHECK (renewal_generation >= 0),
+  renewal_of_verdict_id varchar(160),
   release_intent jsonb NOT NULL, release_intent_digest char(64) NOT NULL,
   core_join_record jsonb NOT NULL, core_join_record_digest char(64) NOT NULL,
   created_by varchar(120) NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, verdict_id),
-  UNIQUE (tenant_id, evaluation_id),
+  UNIQUE (tenant_id, evaluation_id, renewal_generation),
   FOREIGN KEY (tenant_id, plan_id) REFERENCES core_continuity_native_plans(tenant_id, plan_id)
 );
+ALTER TABLE core_continuity_release_joins
+  ADD COLUMN IF NOT EXISTS renewal_generation integer NOT NULL DEFAULT 0;
+ALTER TABLE core_continuity_release_joins
+  ADD COLUMN IF NOT EXISTS renewal_of_verdict_id varchar(160);
+DO $$
+DECLARE legacy_constraint text;
+BEGIN
+  SELECT conname INTO legacy_constraint
+  FROM pg_constraint
+  WHERE conrelid='core_continuity_release_joins'::regclass
+    AND contype='u'
+    AND pg_get_constraintdef(oid)='UNIQUE (tenant_id, evaluation_id)'
+  LIMIT 1;
+  IF legacy_constraint IS NOT NULL THEN
+    EXECUTE format('ALTER TABLE core_continuity_release_joins DROP CONSTRAINT %I', legacy_constraint);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='core_continuity_release_joins'::regclass
+      AND contype='u'
+      AND pg_get_constraintdef(oid)='UNIQUE (tenant_id, evaluation_id, renewal_generation)'
+  ) THEN
+    ALTER TABLE core_continuity_release_joins
+      ADD CONSTRAINT core_continuity_release_joins_evaluation_generation_key
+      UNIQUE (tenant_id,evaluation_id,renewal_generation);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='core_continuity_release_joins'::regclass
+      AND conname='core_continuity_release_joins_generation_check'
+  ) THEN
+    ALTER TABLE core_continuity_release_joins
+      ADD CONSTRAINT core_continuity_release_joins_generation_check
+      CHECK (renewal_generation >= 0);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid='core_continuity_release_joins'::regclass
+      AND conname='core_continuity_release_joins_predecessor_check'
+  ) THEN
+    ALTER TABLE core_continuity_release_joins
+      ADD CONSTRAINT core_continuity_release_joins_predecessor_check
+      CHECK (
+        (renewal_generation = 0 AND renewal_of_verdict_id IS NULL) OR
+        (renewal_generation > 0 AND renewal_of_verdict_id IS NOT NULL)
+      );
+  END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS core_continuity_release_joins_latest_idx
+  ON core_continuity_release_joins
+  (tenant_id,work_id,plan_id,evaluation_id,renewal_generation DESC);
 CREATE OR REPLACE FUNCTION core_continuity_release_joins_append_only() RETURNS trigger AS $$
 BEGIN RAISE EXCEPTION 'core_continuity_release_joins_append_only'; END;
 $$ LANGUAGE plpgsql;
@@ -4771,6 +4884,219 @@ export function createWorkContinuityRuntime(config, options = {}) {
     ));
   }
 
+  async function prepareEffectiveCoreJoinEvaluation(identity, input) {
+    const context = workContext(identity, input);
+    const planId = uuid(input.plan_id, "plan_id");
+    const evaluationId = uuid(input.evaluation_id, "evaluation_id");
+    return transaction(async (client) => {
+      await lockWorkRow(client, context);
+      const current = await client.query(`SELECT
+          p.plan,p.plan_digest,a.intent_digest,e.evaluation,e.evaluation_digest
+        FROM core_continuity_native_plans p
+        JOIN core_continuity_intent_anchors a
+          ON a.tenant_id=p.tenant_id AND a.work_id=p.work_id
+        JOIN core_continuity_closure_evaluations e
+          ON e.tenant_id=p.tenant_id AND e.work_id=p.work_id AND e.plan_id=p.plan_id
+        WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.plan_id=$3 AND e.evaluation_id=$4
+        FOR UPDATE`,
+      [context.tenantId, context.workId, planId, evaluationId]);
+      const row = current.rows[0];
+      if (!row) throw new Error("continuity_closure_evaluation_not_found");
+      if (
+        digest(row.plan) !== row.plan_digest ||
+        digest(row.evaluation) !== row.evaluation_digest ||
+        row.plan?.acceptance_contract?.intent_digest !== row.intent_digest ||
+        row.evaluation?.closed !== true
+      ) {
+        throw new Error("continuity_core_join_local_integrity_failed");
+      }
+      const agents = await client.query(`SELECT task_id,agent_id,task_kind,status,report,report_digest,
+          coordinator_session_fingerprint,native_session_fingerprint,native_presence_signature
+        FROM core_continuity_native_agents
+        WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3
+        ORDER BY task_id`,
+      [context.tenantId, context.workId, planId]);
+      const requestedMaterial = buildCoreJoinMaterial({
+        tenantId: context.tenantId,
+        workId: context.workId,
+        plan: row.plan,
+        planDigest: row.plan_digest,
+        agents: agents.rows,
+        evaluation: row.evaluation,
+        evaluationDigest: row.evaluation_digest,
+        release: input.release,
+        attestationSigningSecret: assignmentSigningSecret,
+      });
+      const requestedIntent = {
+        schema_version: "host_release_intent_v1",
+        tenant_id: context.tenantId,
+        ...requestedMaterial.release_intent_request,
+      };
+      const requestedIntentDigest = digest(requestedIntent);
+      const latest = await client.query(`SELECT
+          j.evaluation_id,j.verdict_id,j.release_intent,j.release_intent_digest,
+          j.core_join_record,j.core_join_record_digest,j.renewal_generation,
+          j.renewal_of_verdict_id,j.created_at,
+          e.evaluation,e.evaluation_digest
+        FROM core_continuity_release_joins j
+        JOIN core_continuity_closure_evaluations e
+          ON e.tenant_id=j.tenant_id AND e.work_id=j.work_id
+          AND e.plan_id=j.plan_id AND e.evaluation_id=j.evaluation_id
+        WHERE j.tenant_id=$1 AND j.work_id=$2 AND j.plan_id=$3
+          AND e.evaluation_digest=$4 AND j.release_intent_digest=$5
+        ORDER BY j.renewal_generation DESC,j.created_at DESC,j.verdict_id DESC
+        LIMIT 1 FOR UPDATE`,
+      [context.tenantId, context.workId, planId, row.evaluation_digest,
+        requestedIntentDigest]);
+      if (!latest.rows[0]) {
+        return {
+          schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+          tenant_id: context.tenantId,
+          work_id: context.workId,
+          plan_id: planId,
+          evaluation_id: evaluationId,
+          evaluation_digest: row.evaluation_digest,
+          ...row.evaluation,
+          core_join_required: true,
+          core_join_material: requestedMaterial,
+        };
+      }
+      const predecessor = latest.rows[0];
+      const releaseIntent = requireObject(predecessor.release_intent, "core_release_intent");
+      const coreJoinRecord = requireObject(predecessor.core_join_record, "core_join_record");
+      const verdict = requireObject(coreJoinRecord.verdict, "core_join_verdict");
+      const claim = requireObject(coreJoinRecord.claim, "core_join_claim");
+      const predecessorRenewal = normalizeCoreJoinRenewal(claim.core_join_renewal);
+      const predecessorGeneration = Number(predecessor.renewal_generation);
+      const predecessorRecordDigest = digest(coreJoinRecord);
+      const predecessorClaimDigest = digest(claim);
+      const releaseIntentUnsigned = Object.fromEntries(Object.entries(releaseIntent)
+        .filter(([key]) => key !== "release_intent_digest"));
+      const predecessorReleaseIntentDigest = digest(releaseIntentUnsigned);
+      if (
+        predecessor.core_join_record_digest !== predecessorRecordDigest ||
+        predecessor.release_intent_digest !== predecessorReleaseIntentDigest ||
+        releaseIntent.release_intent_digest !== predecessorReleaseIntentDigest ||
+        predecessor.verdict_id !== coreJoinRecord.verdict_id ||
+        predecessor.verdict_id !== verdict.verdict_id ||
+        coreJoinRecord.tenant_id !== context.tenantId ||
+        coreJoinRecord.state !== "active" ||
+        coreJoinRecord.claim_digest !== predecessorClaimDigest ||
+        verdict.claim_digest !== predecessorClaimDigest ||
+        claim.tenant_id !== context.tenantId ||
+        claim.work_id !== context.workId ||
+        claim.release_intent_digest !== predecessorReleaseIntentDigest ||
+        verdict.verdict_id !== `hnj_${predecessorClaimDigest.slice(0, 40)}` ||
+        digest(predecessor.evaluation) !== predecessor.evaluation_digest ||
+        !Number.isSafeInteger(predecessorGeneration) ||
+        predecessorGeneration < 0 ||
+        (predecessorGeneration === 0 && (
+          predecessorRenewal !== null || predecessor.renewal_of_verdict_id !== null
+        )) ||
+        (predecessorGeneration > 0 && (
+          predecessorRenewal?.generation !== predecessorGeneration ||
+          predecessorRenewal?.predecessor_verdict_id !== predecessor.renewal_of_verdict_id
+        ))
+      ) {
+        throw new Error("continuity_core_join_renewal_predecessor_invalid");
+      }
+      if (
+        predecessor.evaluation_digest !== row.evaluation_digest ||
+        digest(predecessor.evaluation) !== row.evaluation_digest ||
+        predecessorReleaseIntentDigest !== requestedIntentDigest ||
+        JSON.stringify(stable(releaseIntent)) !== JSON.stringify(stable({
+          ...requestedIntent,
+          release_intent_digest: predecessorReleaseIntentDigest,
+        }))
+      ) {
+        throw new Error("continuity_core_join_renewal_scope_mismatch");
+      }
+      const release = {
+        base_branch: releaseIntent.base_branch,
+        delivery_branch: releaseIntent.delivery_branch,
+        base_commit: releaseIntent.base_commit,
+        head_commit: releaseIntent.head_commit,
+        tree_sha: releaseIntent.tree_sha,
+        diff_digest: releaseIntent.diff_digest,
+        changed_files: releaseIntent.changed_files,
+        delivery: releaseIntent.delivery,
+        rollback: releaseIntent.rollback,
+      };
+      const expiresAt = dateValue(verdict.expires_at, "core_join_expires_at");
+      const issuedAt = dateValue(verdict.issued_at, "core_join_issued_at");
+      if (issuedAt.getTime() >= expiresAt.getTime()) {
+        throw new Error("continuity_core_join_renewal_predecessor_invalid");
+      }
+      if (expiresAt.getTime() > nowDate().getTime()) {
+        const material = buildCoreJoinMaterial({
+          tenantId: context.tenantId,
+          workId: context.workId,
+          plan: row.plan,
+          planDigest: row.plan_digest,
+          agents: agents.rows,
+          evaluation: row.evaluation,
+          evaluationDigest: row.evaluation_digest,
+          release,
+          attestationSigningSecret: assignmentSigningSecret,
+          coreJoinRenewal: predecessorRenewal,
+        });
+        return {
+          schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+          tenant_id: context.tenantId,
+          work_id: context.workId,
+          plan_id: planId,
+          evaluation_id: predecessor.evaluation_id,
+          evaluation_digest: predecessor.evaluation_digest,
+          ...predecessor.evaluation,
+          core_join_required: true,
+          core_join_material: material,
+          core_join_replay: true,
+          core_join_renewal_generation: predecessorGeneration,
+        };
+      }
+      if (
+        Number(coreJoinRecord.uses || 0) !== 0 ||
+        coreJoinRecord.authorized_ticket_id ||
+        coreJoinRecord.consumed_at
+      ) {
+        throw new Error("continuity_core_join_renewal_predecessor_unavailable");
+      }
+      const renewal = normalizeCoreJoinRenewal({
+        schema_version: CORE_JOIN_RENEWAL_SCHEMA_VERSION,
+        predecessor_verdict_id: predecessor.verdict_id,
+        predecessor_claim_digest: predecessorClaimDigest,
+        predecessor_release_intent_digest: predecessorReleaseIntentDigest,
+        predecessor_record_digest: predecessorRecordDigest,
+        generation: Number(predecessorRenewal?.generation || 0) + 1,
+      });
+      const renewedMaterial = buildCoreJoinMaterial({
+        tenantId: context.tenantId,
+        workId: context.workId,
+        plan: row.plan,
+        planDigest: row.plan_digest,
+        agents: agents.rows,
+        evaluation: row.evaluation,
+        evaluationDigest: row.evaluation_digest,
+        release,
+        attestationSigningSecret: assignmentSigningSecret,
+        coreJoinRenewal: renewal,
+      });
+      return {
+        schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
+        tenant_id: context.tenantId,
+        work_id: context.workId,
+        plan_id: planId,
+        evaluation_id: predecessor.evaluation_id,
+        evaluation_digest: predecessor.evaluation_digest,
+        ...predecessor.evaluation,
+        core_join_required: true,
+        core_join_material: renewedMaterial,
+        core_join_renewed: true,
+        core_join_renewal_generation: renewal.generation,
+      };
+    });
+  }
+
   async function bindCoreJoinVerdict(identity, input, options = {}) {
     const context = workContext(identity, input);
     const planId = uuid(input.plan_id, "plan_id");
@@ -4816,6 +5142,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
         delivery: releaseIntent.delivery,
         rollback: releaseIntent.rollback,
       };
+      const claimRenewal = normalizeCoreJoinRenewal(
+        coreJoinRecord.claim?.core_join_renewal,
+      );
       const material = buildCoreJoinMaterial({
         tenantId: context.tenantId,
         workId: context.workId,
@@ -4826,6 +5155,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
         evaluationDigest: row.evaluation_digest,
         release,
         attestationSigningSecret: assignmentSigningSecret,
+        coreJoinRenewal: claimRenewal,
       });
       const expectedReleaseIntent = {
         schema_version: "host_release_intent_v1",
@@ -4902,11 +5232,13 @@ export function createWorkContinuityRuntime(config, options = {}) {
       }
       const releaseIntentDigest = expectedReleaseIntentDigest;
       const coreJoinRecordDigest = digest(coreJoinRecord);
+      const renewalGeneration = Number(claimRenewal?.generation || 0);
+      const renewalOfVerdictId = claimRenewal?.predecessor_verdict_id || null;
       const existing = await client.query(`SELECT verdict_id,release_intent_digest,
           core_join_record_digest
         FROM core_continuity_release_joins
-        WHERE tenant_id=$1 AND evaluation_id=$2`,
-      [context.tenantId, evaluationId]);
+        WHERE tenant_id=$1 AND evaluation_id=$2 AND renewal_generation=$3`,
+      [context.tenantId, evaluationId, renewalGeneration]);
       if (existing.rows[0]) {
         if (
           existing.rows[0].verdict_id !== verdictId ||
@@ -4915,6 +5247,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ) {
           throw new Error("continuity_core_join_replay_conflict");
         }
+        await client.query(`UPDATE core_continuity_works
+          SET status='release_ready',
+            next_action='Use the persisted Core Join to obtain the exact action ticket, execute through host policy, then verify live readback.',
+            updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2`,
+        [context.tenantId, context.workId]);
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
           tenant_id: context.tenantId,
@@ -4924,17 +5262,20 @@ export function createWorkContinuityRuntime(config, options = {}) {
           verdict_id: verdictId,
           release_intent_digest: releaseIntentDigest,
           core_join_record_digest: coreJoinRecordDigest,
+          renewal_generation: renewalGeneration,
+          renewal_of_verdict_id: renewalOfVerdictId,
           release_ready: true,
           idempotent_replay: true,
         };
       }
       await client.query(`INSERT INTO core_continuity_release_joins
         (tenant_id,work_id,plan_id,evaluation_id,verdict_id,release_intent,
-         release_intent_digest,core_join_record,core_join_record_digest,created_by)
-        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8::jsonb,$9,$10)`,
+         release_intent_digest,core_join_record,core_join_record_digest,
+         renewal_generation,renewal_of_verdict_id,created_by)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8::jsonb,$9,$10,$11,$12)`,
       [context.tenantId, context.workId, planId, evaluationId, verdictId,
         JSON.stringify(releaseIntent), releaseIntentDigest, JSON.stringify(coreJoinRecord),
-        coreJoinRecordDigest, context.actor]);
+        coreJoinRecordDigest, renewalGeneration, renewalOfVerdictId, context.actor]);
       await client.query(`UPDATE core_continuity_native_plans SET status='verified'
         WHERE tenant_id=$1 AND work_id=$2 AND plan_id=$3`,
       [context.tenantId, context.workId, planId]);
@@ -4952,6 +5293,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         claim_digest: expectedClaimDigest,
         release_intent_digest: releaseIntentDigest,
         core_join_record_digest: coreJoinRecordDigest,
+        renewal_generation: renewalGeneration,
+        renewal_of_verdict_id: renewalOfVerdictId,
       });
       return {
         schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
@@ -4963,6 +5306,8 @@ export function createWorkContinuityRuntime(config, options = {}) {
         claim_digest: expectedClaimDigest,
         release_intent_digest: releaseIntentDigest,
         core_join_record_digest: coreJoinRecordDigest,
+        renewal_generation: renewalGeneration,
+        renewal_of_verdict_id: renewalOfVerdictId,
         release_ready: true,
         event,
       };
@@ -5083,8 +5428,9 @@ export function createWorkContinuityRuntime(config, options = {}) {
           JOIN core_continuity_closure_evaluations e
             ON e.tenant_id=j.tenant_id AND e.evaluation_id=j.evaluation_id
           WHERE p.tenant_id=$1 AND p.work_id=$2 AND p.plan_id=$3
-          ORDER BY j.created_at DESC LIMIT 1 FOR UPDATE`,
-        [context.tenantId, context.workId, planId]);
+            AND j.verdict_id=$4
+          FOR UPDATE`,
+        [context.tenantId, context.workId, planId, receipt.core_join_verdict_id]);
         const row = joined.rows[0];
         if (!row) throw new Error("continuity_core_join_required");
         const {
@@ -6371,6 +6717,7 @@ export function createWorkContinuityRuntime(config, options = {}) {
     readNativeAgentAcceptanceContract,
     reportNativeAgent,
     evaluateClosure,
+    prepareEffectiveCoreJoinEvaluation,
     bindCoreJoinVerdict,
     finalizeClosure,
     upsertAtlas,

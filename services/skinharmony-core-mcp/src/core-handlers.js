@@ -2429,7 +2429,15 @@ export function createCoreHandlers(config, options = {}) {
       }), route);
     },
     host_native_core_join_issue: async (args, identity) => {
-      const route = "/v1/host-native/core-join-verdicts";
+      const renewalPredecessorVerdictId = String(
+        args.core_join_renewal?.predecessor_verdict_id || "",
+      ).trim();
+      if (args.core_join_renewal && !/^hnj_[a-f0-9]{40}$/.test(renewalPredecessorVerdictId)) {
+        throw new Error("core_join_renewal_predecessor_invalid");
+      }
+      const route = args.core_join_renewal
+        ? `/v1/host-native/core-join-verdicts/${encodeURIComponent(renewalPredecessorVerdictId)}/renew`
+        : "/v1/host-native/core-join-verdicts";
       return dedicatedCoreTextResult(await coreRequest(route, identity.tenantId, {
         method: "POST",
         useTenantGateway: true,
