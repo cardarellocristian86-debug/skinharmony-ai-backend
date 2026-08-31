@@ -5247,6 +5247,12 @@ export function createWorkContinuityRuntime(config, options = {}) {
         ) {
           throw new Error("continuity_core_join_replay_conflict");
         }
+        await client.query(`UPDATE core_continuity_works
+          SET status='release_ready',
+            next_action='Use the persisted Core Join to obtain the exact action ticket, execute through host policy, then verify live readback.',
+            updated_at=now()
+          WHERE tenant_id=$1 AND work_id=$2`,
+        [context.tenantId, context.workId]);
         return {
           schema_version: WORK_CONTINUITY_FABRIC_SCHEMA_VERSION,
           tenant_id: context.tenantId,

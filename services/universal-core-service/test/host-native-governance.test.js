@@ -1174,13 +1174,27 @@ test("Core join is signed, exact-release-bound, deterministic, and rejects inval
 });
 
 test("expired unused Core join renews with one signed successor and an identical release intent", async () => {
-  const subject = harness({ coreJoinTtlMs: 1_000 });
+  const subject = harness({ coreJoinTtlMs: 1_000, ticketTtlMs: 2_000 });
   const initialManifest = buildHostReleaseManifestV2(mergeReleaseManifestInput());
   const initial = await subject.governance.issueCoreJoinVerdict(coreJoinInput(
     initialManifest,
     { idempotency_key: "core-join-renewal-initial" },
   ));
   assert.equal(subject.governance.verifyCoreJoinVerdict(initial), true);
+
+  const delegation = await subject.governance.issueDelegation(subject.delegationInput);
+  const initialTicket = await subject.governance.issueActionTicket({
+    tenant_id: "codexai",
+    delegation_id: delegation.delegation_id,
+    work_id: "work-1",
+    intent_anchor_digest: H("1"),
+    repository: "owner/repo",
+    host_kind: "codex_native",
+    host_session_fingerprint: "core-join-renewal-session",
+    action: githubMergeAction(),
+    evidence_digest: H("6"),
+    release_manifest: manifestWithCoreJoin(initialManifest, initial.verdict.verdict_id),
+  });
 
   subject.advance(1_001);
   assert.equal(subject.governance.verifyCoreJoinVerdict(initial), false);
@@ -1197,6 +1211,11 @@ test("expired unused Core join renews with one signed successor and an identical
     idempotency_key: "core-join-renewal-generation-1",
     core_join_renewal: renewal,
   });
+  await assert.rejects(
+    subject.governance.issueCoreJoinVerdict(renewalInput),
+    /core_join_renewal_predecessor_unavailable/,
+  );
+  subject.advance(1_000);
   const [renewed, concurrentRenewed] = await Promise.all([
     subject.governance.issueCoreJoinVerdict(renewalInput),
     subject.governance.issueCoreJoinVerdict({
@@ -1216,6 +1235,17 @@ test("expired unused Core join renews with one signed successor and an identical
   assert.equal(subject.governance.verifyCoreJoinVerdict(renewed), true);
   assert.deepEqual(concurrentRenewed, renewed);
   assert.deepEqual(replay, renewed);
+  const supersededTicket = await subject.governance.readActionTicket({
+    tenant_id: "codexai",
+    ticket_id: initialTicket.ticket.ticket_id,
+  });
+  assert.equal(supersededTicket.state, "superseded");
+  assert.equal(supersededTicket.superseded_by_core_join_verdict_id, renewed.verdict_id);
+  await assert.rejects(subject.governance.reserveActionTicket({
+    tenant_id: "codexai",
+    ticket_id: initialTicket.ticket.ticket_id,
+    host_session_fingerprint: initialTicket.ticket.host_session_fingerprint,
+  }), /replayed/);
 
   const generationTwo = {
     schema_version: "continuity_core_join_renewal_v1",

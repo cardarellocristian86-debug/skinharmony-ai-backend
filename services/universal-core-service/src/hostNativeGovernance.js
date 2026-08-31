@@ -1548,7 +1548,48 @@ function verifyStoredCoreJoinRecord(record, signing) {
   }
 }
 
-function validateCoreJoinRenewal({ state, claim, renewal, releaseIntent, nowValue, signing }) {
+function expiredUnreservedCoreJoinTicket({
+  state,
+  predecessor,
+  nowValue,
+  signing,
+}) {
+  const ticketId = predecessor.authorized_ticket_id;
+  if (!ticketId) return null;
+  const record = state.tickets?.[ticketId];
+  const ticket = record?.ticket;
+  const ticketExpiresAt = Date.parse(ticket?.expires_at || "");
+  const ticketBindingValid =
+    record && ticket && ticket.ticket_id === ticketId &&
+    safeEqual(ticket.signature, ticketSignature(signing, ticket)) &&
+    ticket.tenant_id === predecessor.tenant_id &&
+    ticket.work_id === predecessor.claim?.work_id &&
+    ticket.repository === predecessor.claim?.repository &&
+    ticket.core_join_verdict_id === predecessor.verdict_id &&
+    ticket.core_join_verdict_digest === predecessor.claim_digest &&
+    ticket.release_intent_digest === predecessor.claim?.release_intent_digest &&
+    Number(record.uses || 0) === 0 &&
+    !record.reservation_id && !record.reserved_at &&
+    Number.isFinite(ticketExpiresAt) && ticketExpiresAt <= nowValue;
+  const ticketStateValid = record?.state === "issued" ||
+    (record?.state === "superseded" &&
+      Boolean(record.superseded_by_core_join_verdict_id) &&
+      state.core_join_renewal_successors?.[predecessor.verdict_id] ===
+        record.superseded_by_core_join_verdict_id);
+  if (!ticketBindingValid || !ticketStateValid) {
+    fail("core_join_renewal_predecessor_unavailable");
+  }
+  return record;
+}
+
+function validateCoreJoinRenewal({
+  state,
+  claim,
+  renewal,
+  releaseIntent,
+  nowValue,
+  signing,
+}) {
   if (!renewal) return;
   const predecessor = state.core_join_verdicts?.[renewal.predecessor_verdict_id];
   if (!predecessor || !verifyStoredCoreJoinRecord(predecessor, signing)) {
@@ -1558,12 +1599,19 @@ function validateCoreJoinRenewal({ state, claim, renewal, releaseIntent, nowValu
   if (!Number.isFinite(predecessorExpiresAt) || predecessorExpiresAt > nowValue) {
     fail("core_join_renewal_not_expired");
   }
-  if (
-    predecessor.state !== "active" || Number(predecessor.uses || 0) !== 0 ||
-    predecessor.authorized_ticket_id || predecessor.consumed_at
-  ) {
+  if (predecessor.state !== "active" || Number(predecessor.uses || 0) !== 0 ||
+      predecessor.consumed_at) {
     fail("core_join_renewal_predecessor_unavailable");
   }
+  const expiredTicket = expiredUnreservedCoreJoinTicket({
+    state,
+    predecessor,
+    nowValue,
+    signing,
+  });
+  const predecessorRecordForBinding = expiredTicket
+    ? (({ authorized_ticket_id: _ticketId, authorized_at: _authorizedAt, ...record }) => record)(predecessor)
+    : predecessor;
   const predecessorRenewal = normalizeCoreJoinRenewal(
     predecessor.claim?.core_join_renewal,
   );
@@ -1571,7 +1619,7 @@ function validateCoreJoinRenewal({ state, claim, renewal, releaseIntent, nowValu
     renewal.predecessor_claim_digest !== predecessor.claim_digest ||
     renewal.predecessor_release_intent_digest !==
       predecessor.claim?.release_intent_digest ||
-    renewal.predecessor_record_digest !== hostNativeDigest(predecessor) ||
+    renewal.predecessor_record_digest !== hostNativeDigest(predecessorRecordForBinding) ||
     claim.release_intent_digest !== predecessor.claim?.release_intent_digest ||
     releaseIntent.release_intent_digest !== predecessor.claim?.release_intent_digest ||
     renewal.generation !== Number(predecessorRenewal?.generation || 0) + 1 ||
@@ -1580,6 +1628,7 @@ function validateCoreJoinRenewal({ state, claim, renewal, releaseIntent, nowValu
   ) {
     fail("core_join_renewal_binding_mismatch");
   }
+  return { predecessor, expiredTicket };
 }
 
 function validateStoredCoreJoinAuthority({ state, record, nowValue, signing }) {
@@ -3847,7 +3896,7 @@ export function createHostNativeGovernance({
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "issueCoreJoinVerdict", input);
         if (descriptor?.result) return descriptor.result;
-        validateCoreJoinRenewal({
+        const renewalValidation = validateCoreJoinRenewal({
           state,
           claim,
           renewal: coreJoinRenewal,
@@ -3899,6 +3948,11 @@ export function createHostNativeGovernance({
         state.core_join_verdicts[verdictId] = record;
         if (predecessorVerdictId) {
           state.core_join_renewal_successors[predecessorVerdictId] = verdictId;
+        }
+        if (renewalValidation?.expiredTicket?.state === "issued") {
+          renewalValidation.expiredTicket.state = "superseded";
+          renewalValidation.expiredTicket.superseded_by_core_join_verdict_id = verdictId;
+          renewalValidation.expiredTicket.superseded_at = iso(nowValue);
         }
         return saveIdempotent(state, descriptor, clone(record));
       });

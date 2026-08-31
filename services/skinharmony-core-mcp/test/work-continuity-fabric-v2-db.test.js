@@ -963,7 +963,7 @@ class ContinuityPool {
       const work = this.works.get(key(parameters[0], parameters[1]));
       work.status = "release_ready";
       work.next_action =
-        "Obtain a fresh Core release verdict, execute through host policy, then verify live readback.";
+        "Use the persisted Core Join to obtain the exact action ticket, execute through host policy, then verify live readback.";
       work.updated_at = this.clock().toISOString();
       return { rows: [], rowCount: 1 };
     }
@@ -3443,13 +3443,17 @@ test("local closure becomes release-ready and external completion needs exact Co
   assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "release_ready");
   assert.equal(pool.plans.get(key("tenant-a", planId)).status, "verified");
   assert.equal(pool.releaseJoins.size, 1);
-  const evaluationCountBeforeRenewal =
-    pool.evaluations.get(key("tenant-a", work.work_id, planId)).length;
-
+  const activeReplayEvaluation = await runtime.evaluateClosure(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    release: releaseInput,
+    idempotency_key: "closure-evaluation-active-core-join-replay",
+  });
+  assert.notEqual(activeReplayEvaluation.evaluation_id, evaluation.evaluation_id);
   const activeReplay = await runtime.prepareEffectiveCoreJoinEvaluation(identity, {
     work_id: work.work_id,
     plan_id: planId,
-    evaluation_id: evaluation.evaluation_id,
+    evaluation_id: activeReplayEvaluation.evaluation_id,
     release: releaseInput,
   });
   assert.equal(activeReplay.core_join_replay, true);
@@ -3458,6 +3462,22 @@ test("local closure becomes release-ready and external completion needs exact Co
     activeReplay.core_join_material.material_digest,
     evaluation.core_join_material.material_digest,
   );
+  const replayWork = pool.works.get(key("tenant-a", work.work_id));
+  replayWork.status = "active";
+  replayWork.next_action = "Awaiting replayed Core Join binding.";
+  const rebound = await runtime.bindCoreJoinVerdict(identity, {
+    work_id: work.work_id,
+    plan_id: planId,
+    evaluation_id: activeReplay.evaluation_id,
+  }, { releaseIntent, coreJoinRecord });
+  assert.equal(rebound.idempotent_replay, true);
+  assert.equal(pool.works.get(key("tenant-a", work.work_id)).status, "release_ready");
+  assert.equal(
+    pool.works.get(key("tenant-a", work.work_id)).next_action,
+    "Use the persisted Core Join to obtain the exact action ticket, execute through host policy, then verify live readback.",
+  );
+  const evaluationCountBeforeRenewal =
+    pool.evaluations.get(key("tenant-a", work.work_id, planId)).length;
 
   const initialEvaluation = evaluation;
   const initialReleaseIntent = releaseIntent;
