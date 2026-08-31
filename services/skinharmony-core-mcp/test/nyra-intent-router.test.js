@@ -162,6 +162,34 @@ test("fails closed when semantic clause analysis is truncated", () => {
   assert.equal(route.route, "CORE_HOLD_THEN_NYRA");
   assert.equal(route.reason, "clause_analysis_truncated");
   assert.equal(route.execution_authorized, false);
+
+  const mixedActions = classify([
+    "Esegui il deploy",
+    ...Array.from({ length: 7 }, () => "spiega lo stato"),
+    "fai push",
+  ].join(". "));
+  assert.equal(mixedActions.intent, "ambiguous_consequential");
+  assert.equal(mixedActions.route, "CORE_HOLD_THEN_NYRA");
+  assert.equal(mixedActions.reason, "clause_analysis_truncated");
+  assert.equal(mixedActions.execution_authorized, false);
+});
+
+test("requires affirmative prose Work creation while retaining typed bootstrap", () => {
+  assert.equal(classify("Crea un nuovo Work.").intent, "work_create");
+  for (const message of [
+    "Why did you open the Work?",
+    "What is the start time for work?",
+    "When will you start work?",
+    "How do I create a Work?",
+    "Se serve, crea un Work.",
+    "Se dicessi ‘crea un Work’, sarebbe solo un esempio.",
+  ]) {
+    const route = classify(message);
+    assert.notEqual(route.intent, "work_create", message);
+    assert.equal(route.execution_authorized, false, message);
+  }
+  assert.equal(classify("What is the start time for work?", { workBootstrap: true }).intent,
+    "work_create");
 });
 
 test("shares all consequential categories and holds unsafe modality without losing affirmative intent", () => {
@@ -237,6 +265,7 @@ test("reads and paginates only the authorized identity-bound catalog", async () 
   assert.equal(calls[0].identity.tenantId, tenantId);
   assert.equal(catalog.identity_filtered, true);
   assert.equal(catalog.commands.length, 1);
+  assert.equal(catalog.commands[0].title, "Read canonical Work");
   for (const bad of [
     { tenant_id: "foreign" },
     { catalog_revision: "bad" },
@@ -288,6 +317,23 @@ test("command proposals bind route and catalog revision and never authorize", as
   const forged = resolveNyraCommandProposal({ message: exactMessage, catalog,
     route: { ...exactRoute, input_digest: "0".repeat(64) }, tenantId, sessionFingerprint });
   assert.equal(forged.state, "CLARIFY_HOLD");
+});
+
+test("proposes natural aliases from validated catalog titles", async () => {
+  const catalog = await readAuthorizedNyraCommandCatalog({ identity: { tenantId },
+    reader: async () => catalogPage({ capabilities: [{
+      capability_id: "agent_heartbeat",
+      title: "Register unique agent presence",
+      access_mode: "read",
+      read_only: true,
+      owner_confirmation_required: false,
+    }] }) });
+  const message = "commands that register unique presence";
+  const proposal = resolveNyraCommandProposal({ message, catalog, route: classify(message),
+    tenantId, sessionFingerprint });
+  assert.equal(proposal.state, "PROPOSED");
+  assert.equal(proposal.capability_id, "agent_heartbeat");
+  assert.equal(proposal.execution_authorized, false);
 });
 
 test("telemetry is bounded and redacted", () => {

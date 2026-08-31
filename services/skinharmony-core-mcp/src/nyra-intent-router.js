@@ -32,6 +32,9 @@ const DIAGNOSTIC = /(?:perch[eé]|why|diagnos\w*|spiega\w*|explain|cosa\s+(?:man
 const NEGATION = /\b(?:non|no|senza|never|do\s+not|don't)\b/iu;
 const CONDITION = /\b(?:se|if|unless|quando|when|solo\s+se|only\s+if)\b/iu;
 const HYPOTHETICAL = /\b(?:dicessi|direi|sarebbe|would|hypothetical|ipotetic\w*|esempio|example)\b/iu;
+// A prose question about Work must never be promoted to a Work-create turn.
+// Structured `workBootstrap` remains the only explicit non-prose override.
+const INTERROGATIVE = /^\s*(?:what|which|who|where|when|why|how|can|could|would|will|should|may|might|shall|do|does|did|is|are|was|were|am|have|has|had|cosa|quale|quali|chi|dove|quando|perch[eé]|come|puoi|potresti|vorresti|posso|devo|dovrei|sei|sono|ha|hai)\b/iu;
 const EXACT_COMMAND = /^\/[a-zA-Z0-9][a-zA-Z0-9._:-]{1,159}$/u;
 // V1 deliberately admits only the one route that can be made safe without a
 // Work or an LLM-produced answer. Other semantic interpretations remain on
@@ -146,6 +149,7 @@ function clauseArtifacts(text) {
       const hypothetical = HYPOTHETICAL.test(clause);
       const quoted = hasQuotedActionLanguage(clause) || hypothetical;
       const diagnostic = DIAGNOSTIC.test(clause);
+      const interrogative = INTERROGATIVE.test(clause);
       const categoryImperativeIndex = NYRA_CONSEQUENTIAL_CATEGORY_PATTERNS
         .filter(({ category }) => actions.includes(category) ||
           (category === "release" && actions.some((name) =>
@@ -186,7 +190,7 @@ function clauseArtifacts(text) {
         diagnostic,
         work_create_candidate: WORK_CREATE.test(clause),
         work_create_affirmative: workCreateIndex >= 0 &&
-          !diagnostic && !conditional && !hypothetical && !quoted &&
+          !diagnostic && !interrogative && !conditional && !hypothetical && !quoted &&
           (negationIndex < 0 || workCreateIndex < negationIndex),
       });
     })),

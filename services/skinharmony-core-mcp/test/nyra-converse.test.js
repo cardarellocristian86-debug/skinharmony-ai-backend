@@ -545,6 +545,28 @@ test("routes fresh advisory chat through one bounded context preflight and no ca
     TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
 });
 
+test("records elapsed routing latency for a fresh Core-routed turn", async (t) => {
+  const authenticatedIdentity = identity();
+  let now = 10_000;
+  t.mock.method(Date, "now", () => now);
+  const handler = createNyraConverseHandler({
+    preflight: async (_args, caller) => {
+      now += 7;
+      return preflightFixture(caller.tenantId);
+    },
+    interpret: async (_args, caller) => {
+      now += 11;
+      return interpretationFixture(caller.tenantId);
+    },
+  });
+  const response = await handler({
+    message: "Ciao Nyra, spiegami come ragioni.",
+  }, authenticatedIdentity);
+  assert.equal(response.structuredContent.intent_routing.route.route, "CORE_CONTEXT_THEN_NYRA");
+  assert.equal(response.structuredContent.intent_routing.telemetry.preflight_invoked, true);
+  assert.equal(response.structuredContent.intent_routing.telemetry.elapsed_ms, 18);
+});
+
 test("reads global Nyra controls without a Work, Core interpretation or preflight", async () => {
   const { handler, calls } = harness({
     readControlRoomStatus: async (args, authenticatedIdentity) =>

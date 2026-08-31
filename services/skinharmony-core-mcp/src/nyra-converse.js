@@ -2643,7 +2643,7 @@ export function createNyraConverseHandler({
       command_proposal: null,
       telemetry: buildNyraRoutingTelemetry({ route: intentRoute, preflightInvoked: !persisted,
         context: { intent: { available: Boolean(boundedPreflight.dialogue.intent_digest), variants: [] } },
-        catalog: null, elapsedMs: 0 }),
+        catalog: null, elapsedMs: Math.max(0, Date.now() - startedAt) }),
       control_room: null,
       control_room_readback: Object.freeze({ state: "NOT_REQUESTED", reason: null }),
       invocation_separate: true,
