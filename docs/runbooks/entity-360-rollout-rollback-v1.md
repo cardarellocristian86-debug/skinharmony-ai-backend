@@ -398,14 +398,23 @@ richiedere Core operator, conferma owner fresca, CAS e idempotenza. Se il
 feature-flag Store non è costruibile o non è raggiungibile, il rollback tenant
 fallisce chiuso e si usa il rollback globale governato del punto 3.
 
-## Gap reali prima del live
+## Stato live e chiusura governata
 
-- esecuzione e receipt del PostgreSQL 16 CI gate;
-- exact bounded Universal Core tickets e host approvals;
-- exact merged/deployed commit;
-- migration, signer, health, automatic shadow e rollback readback;
-- NSCT disponibile solo come adapter advisory owner-verified e fail-closed;
-- Shared Memory e runtime-state adapters non wired;
-- retention storica dei sistemi owner non garantita dal kernel.
+Il baseline Entity 360 è confluito in `main`; i gate CI PostgreSQL 16,
+Universal Core, Core MCP, deployment parity e SmartDesk devono restare verdi
+sullo stesso commit candidato. Prima della chiusura, il readback di Universal
+Core e Core MCP deve inoltre attestare `commit_verifiable=true`, readiness e lo
+stesso commit esatto.
 
-Nessun passo descritto è già avvenuto live per effetto del solo documento.
+La merge o il deploy, da soli, non chiudono il Work. La chiusura richiede ancora
+la sequenza causale completa:
+
+1. builder e verifier indipendente sul commit candidato;
+2. Core Join con tutti i criteri positivi e i check exact-head;
+3. merge successiva al Join, senza force/admin bypass;
+4. osservazione live di tutti i servizi indotti e rollback readback;
+5. receipt Core finale e readback del Work `completed`.
+
+Fino al punto 5, qualsiasi evidenza live è una fotografia verificata ma non una
+attestazione di chiusura. NSCT resta advisory owner-verified e fail-closed; le
+retention dei sistemi owner restano responsabilità dei rispettivi adapter.
