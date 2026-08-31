@@ -506,6 +506,64 @@ test("server-owned resolver registries drive the Core status projection", async 
   });
 });
 
+test("health exposes bounded Semantic Scope Guard readback without authority or raw telemetry", async () => {
+  const { response, health } = await readHealth({
+    hostNativeGovernance: {
+      ...READY_HOST_NATIVE_GOVERNANCE,
+      semantic_scope_guard_mode: "SHADOW",
+      semantic_scope_guard_configured: true,
+      semanticScopeMetrics: () => ({
+        bitemporal_query_latency: 4.5,
+        semantic_scope_check_latency: 2.25,
+        semantic_scope_block_total: 3,
+        semantic_scope_hold_total: 5,
+        semantic_scope_redact_total: 7,
+        scope_drift_detected_total: 11,
+        false_hold_rate: 0.2,
+        false_block_rate: 0.1,
+        check_total: 20,
+        tenant_id: "must-not-leak",
+        evidence_refs: ["must-not-leak"],
+        secret: "must-not-leak",
+      }),
+    },
+  });
+  assert.equal(response.status, 200);
+  const governance = health.host_native_governance;
+  assert.equal(governance.semantic_scope_guard_mode, "SHADOW");
+  assert.equal(governance.semantic_scope_guard_configured, true);
+  assert.deepEqual(governance.semantic_scope_guard_metrics, {
+    bitemporal_query_latency: 4.5,
+    semantic_scope_check_latency: 2.25,
+    semantic_scope_block_total: 3,
+    semantic_scope_hold_total: 5,
+    semantic_scope_redact_total: 7,
+    scope_drift_detected_total: 11,
+    false_hold_rate: 0.2,
+    false_block_rate: 0.1,
+    check_total: 20,
+    execution_authorized: false,
+  });
+  assert.equal(JSON.stringify(governance.semantic_scope_guard_metrics)
+    .includes("must-not-leak"), false);
+});
+
+test("health tolerates unavailable Semantic Scope Guard telemetry without exposing its error", async () => {
+  const { response, health } = await readHealth({
+    hostNativeGovernance: {
+      ...READY_HOST_NATIVE_GOVERNANCE,
+      semantic_scope_guard_mode: "ENFORCE",
+      semantic_scope_guard_configured: true,
+      semanticScopeMetrics: () => { throw new Error("scope-telemetry-secret"); },
+    },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(health.host_native_governance.semantic_scope_guard_mode, "ENFORCE");
+  assert.equal(health.host_native_governance.semantic_scope_guard_configured, true);
+  assert.equal(health.host_native_governance.semantic_scope_guard_metrics, null);
+  assert.equal(JSON.stringify(health).includes("scope-telemetry-secret"), false);
+});
+
 test("production host-native readiness requires gateway, separated signing, DTT, and PostgreSQL", async () => {
   await withEnv({
     NODE_ENV: "production",

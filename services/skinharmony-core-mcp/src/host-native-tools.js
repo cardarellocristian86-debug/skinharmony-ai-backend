@@ -65,6 +65,10 @@ const actionTicketId = {
   type: "string",
   pattern: "^hnt_[a-zA-Z0-9-]{8,160}$",
 };
+const coreJoinVerdictId = {
+  type: "string",
+  pattern: "^hnj_[a-f0-9]{40}$",
+};
 const standingReleaseMandateId = {
   type: "string",
   pattern: "^srm_[a-f0-9]{40}$",
@@ -637,6 +641,31 @@ export const HOST_NATIVE_TOOLS = [
     { ownerConfirmationRequired: true, destructive: true },
   ),
   tool(
+    "host_native_owner_manual_merge_readback",
+    "Record trusted owner manual-merge evidence",
+    "After an owner performed an already Core-joined GitHub merge manually, ask Universal Core to resolve the PR, checks and protected-branch head from GitHub and persist evidence only. This never issues a retrospective action ticket or authorizes another host action.",
+    object({
+      work_id: workUuid,
+      intent_anchor_digest: sha256,
+      repository,
+      core_join_verdict_id: coreJoinVerdictId,
+      pull_request: { type: "integer", minimum: 1 },
+      idempotency_key: {
+        type: "string",
+        minLength: 1,
+        maxLength: 160,
+      },
+    }, [
+      "work_id",
+      "intent_anchor_digest",
+      "repository",
+      "core_join_verdict_id",
+      "pull_request",
+      "idempotency_key",
+    ]),
+    { ownerConfirmationRequired: true },
+  ),
+  tool(
     "host_native_action_authorize",
     "Authorize one exact host action",
     "Consume only bounded delegation budget and issue a signed, short-lived, one-use Core ticket for one exact native-agent, Git, GitHub or Render action. The server binds the authenticated host session.",
@@ -658,6 +687,10 @@ export const HOST_NATIVE_TOOLS = [
         additionalProperties: true,
       },
       predecessor_ticket_id: actionTicketId,
+      manual_merge_readback_id: {
+        type: "string",
+        pattern: "^hnmmr_[a-f0-9]{40}$",
+      },
       idempotency_key: {
         type: "string",
         minLength: 1,
@@ -779,6 +812,15 @@ export const HOST_NATIVE_TOOLS = [
       deviation_reason: { type: "string", minLength: 1, maxLength: 500 },
       idempotency_key: { type: "string", minLength: 1, maxLength: 160 },
     }, ["ticket_id", "observed_outcome", "observed_commit", "readback_digest", "verifier_evidence_digest", "deviation_reason", "idempotency_key"]),
+  ),
+  tool(
+    "host_native_owner_manual_merge_finalize_gallery",
+    "Finalize owner manual-merge Gallery closure",
+    "After Core has verified the one-shot render observation, require fresh authenticated-owner confirmation, persist the server-signed manual-merge release evidence, and run the normal Work Gallery closure path. The caller supplies only the action-ticket selector.",
+    object({
+      ticket_id: actionTicketId,
+    }, ["ticket_id"]),
+    { ownerConfirmationRequired: true },
   ),
   tool(
     "host_native_action_closure_receipt",

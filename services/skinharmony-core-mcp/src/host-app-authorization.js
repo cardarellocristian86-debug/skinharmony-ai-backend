@@ -36,6 +36,7 @@ const WORK_COORDINATION_TOOLS = new Set([
 
 const HOST_META_READ_TOOLS = new Set([
   "core_health",
+  "nyra_control_room_status",
   "core_capability_catalog",
 ]);
 
@@ -44,6 +45,7 @@ const HOST_META_READ_TOOLS = new Set([
 // reach only the read entrypoints needed to resume governed Work operations.
 export const CHATGPT_GOVERNED_READ_TOOL_NAMES = Object.freeze(new Set([
   "core_health",
+  "nyra_control_room_status",
   "work_preflight",
   "core_capability_catalog",
   "core_branch_registry",
@@ -234,6 +236,7 @@ function workSurface(name) {
 
 export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []) {
   const name = dynamicHostCapabilityTarget(toolName, args);
+  const targetArgs = name === String(toolName || "") ? args : args?.arguments;
   // The server admits this narrow bootstrap only after it has created a
   // transport-bound child presence and the continuity runtime has verified
   // the exact assignment, lease and HMAC capability. work.read is therefore
@@ -247,7 +250,8 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
   // This is a tenant-wide configuration action, not a Work mutation.  Keep it
   // above the entity_360_ Work prefix so both direct and compact dynamic
   // invocation require the Core-wide grant.
-  if (name === "entity_360_shadow_enable" || name === "nyra_autopilot_enable") {
+  if (["entity_360_shadow_enable", "entity_360_shadow_disable", "nyra_autopilot_enable"]
+    .includes(name)) {
     return HOST_APP_CAPABILITIES.CORE_OPERATE;
   }
   if (name === "nyra_continue") {
@@ -272,6 +276,15 @@ export function requiredHostAppCapabilityForTool(toolName, args = {}, tools = []
   if (WORK_REVIEW_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_REVIEW;
   if (WORK_COORDINATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_COORDINATE;
   if (CORE_COORDINATION_TOOLS.has(name)) return HOST_APP_CAPABILITIES.WORK_COORDINATE;
+  // The health-only Control Room is safe as a metadata read, but supplying a
+  // Work id adds tenant Work progress, blockers and next-task context to the
+  // response. Keep the Host App Registry as an upper bound for both direct
+  // and compact dynamic reads of that Work-bound projection.
+  if (
+    name === "nyra_control_room_status" &&
+    targetArgs && typeof targetArgs === "object" &&
+    Object.prototype.hasOwnProperty.call(targetArgs, "work_id")
+  ) return HOST_APP_CAPABILITIES.WORK_READ;
   if (HOST_META_READ_TOOLS.has(name)) return null;
   if (!workSurface(name)) {
     const definition = toolDefinition(name, tools);

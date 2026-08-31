@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,13 +11,24 @@ const catalog = {
   branches: ["planning_prioritization", "execution_planning", "ai_orchestration", "agent_orchestration", "learning_memory", "adaptive_learning", "risk_governance", "delegated_authority", "software_cognition"].map((id) => ({ id })),
 };
 
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (!value || typeof value !== "object") return JSON.stringify(value);
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+}
+
+const sha256 = (value) => crypto.createHash("sha256").update(value).digest("hex");
+
 test("Nyra persistent self-model is signed, tenant-scoped and refreshed only by a mutation", () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-self-model-test-"));
   const store = createNyraPersistentSelfModelStore({ storageRoot, signingSecret: "x".repeat(32) });
   const authorizedBranchIds = catalog.branches.map(({ id }) => id);
   assert.equal(store.read({ tenantId: "tenant-a", catalog, authorizedBranchIds }), null);
   const first = store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
-  const second = store.read({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+  // A later read has no short-lived owner assertion. It verifies the signed
+  // persisted record instead of rebuilding a different profile from the
+  // reader's transient branch resolution.
+  const second = store.read({ tenantId: "tenant-a", catalog });
   assert.equal(first.schema_version, "nyra_persistent_self_model_v1");
   assert.equal(first.revision, 1);
   assert.equal(second.revision, 1);
@@ -35,6 +47,137 @@ test("Nyra persistent self-model is signed, tenant-scoped and refreshed only by 
   assert.equal(first.capabilities.find((capability) => capability.id === "software_cognition")?.state, "available");
 });
 
+test("Nyra persistent self-model survives a fresh store instance without owner context", () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-self-model-test-"));
+  const signingSecret = "x".repeat(32);
+  const writer = createNyraPersistentSelfModelStore({ storageRoot, signingSecret });
+  const authorizedBranchIds = catalog.branches.map(({ id }) => id);
+  const written = writer.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+
+  const reader = createNyraPersistentSelfModelStore({ storageRoot, signingSecret });
+  const persisted = reader.read({ tenantId: "tenant-a", catalog });
+  assert.equal(persisted.revision, written.revision);
+  assert.equal(persisted.payload_digest, written.payload_digest);
+  assert.equal(persisted.signature, written.signature);
+  assert.equal(persisted.capabilities.find((capability) => capability.id === "connected_ai_orchestration")?.state, "available");
+  assert.equal(reader.read({ tenantId: "tenant-b", catalog }), null);
+});
+
+test("Nyra persistent self-model reads and owner-migrates the previous signed envelope", () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-self-model-test-"));
+  const signingSecret = "x".repeat(32);
+  const store = createNyraPersistentSelfModelStore({ storageRoot, signingSecret });
+  const authorizedBranchIds = catalog.branches.map(({ id }) => id);
+  const current = store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+  const { revision, generated_at, payload_digest: _payloadDigest, signature: _signature, ...profile } = current;
+  const legacy = {
+    ...profile,
+    revision,
+    generated_at,
+    payload_digest: sha256(canonical(profile)),
+    signature: crypto.createHmac("sha256", signingSecret).update(canonical(profile)).digest("hex"),
+  };
+  fs.writeFileSync(store.fileFor("tenant-a"), JSON.stringify(legacy));
+
+  const compatibleRead = store.read({ tenantId: "tenant-a", catalog });
+  assert.equal(compatibleRead.payload_digest, legacy.payload_digest);
+  assert.equal(compatibleRead.signature, legacy.signature);
+  assert.equal(compatibleRead.revision, 0);
+  assert.equal(compatibleRead.generated_at, null);
+  assert.equal(compatibleRead.integrity_version, "legacy_profile_v0");
+  assert.equal(compatibleRead.migration_required, true);
+
+  const migrated = store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+  assert.equal(migrated.revision, 1);
+  assert.notEqual(migrated.payload_digest, legacy.payload_digest);
+  assert.notEqual(migrated.signature, legacy.signature);
+  const { payload_digest: _migratedDigest, signature: _migratedSignature, ...unsigned } = migrated;
+  assert.equal(migrated.payload_digest, sha256(canonical(unsigned)));
+  assert.equal(
+    migrated.signature,
+    crypto.createHmac("sha256", signingSecret).update(canonical(unsigned)).digest("hex"),
+  );
+});
+
+test("Nyra legacy compatibility never trusts unsigned revision metadata", () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-self-model-test-"));
+  const signingSecret = "x".repeat(32);
+  const store = createNyraPersistentSelfModelStore({ storageRoot, signingSecret });
+  const authorizedBranchIds = catalog.branches.map(({ id }) => id);
+  const current = store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+  const { revision: _revision, generated_at: _generatedAt, payload_digest: _payloadDigest, signature: _signature, ...profile } = current;
+  const legacy = {
+    ...profile,
+    revision: 999,
+    generated_at: "attacker-controlled",
+    payload_digest: sha256(canonical(profile)),
+    signature: crypto.createHmac("sha256", signingSecret).update(canonical(profile)).digest("hex"),
+  };
+  fs.writeFileSync(store.fileFor("tenant-a"), JSON.stringify(legacy));
+
+  const compatibleRead = store.read({ tenantId: "tenant-a", catalog });
+  assert.equal(compatibleRead.revision, 0);
+  assert.equal(compatibleRead.generated_at, null);
+  assert.equal(compatibleRead.migration_required, true);
+
+  const migrated = store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+  assert.equal(migrated.revision, 1);
+  assert.notEqual(migrated.generated_at, legacy.generated_at);
+  assert.equal(migrated.migration_required, undefined);
+  assert.equal(migrated.integrity_version, undefined);
+});
+
+test("Nyra persistent self-model revision stays signed and monotonic across catalog changes", () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-self-model-test-"));
+  const store = createNyraPersistentSelfModelStore({ storageRoot, signingSecret: "x".repeat(32) });
+  const authorizedBranchIds = catalog.branches.map(({ id }) => id);
+  const first = store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+  const nextCatalog = { ...catalog, schema_version: "nyra_neural_branch_network_v2" };
+  const second = store.refresh({ tenantId: "tenant-a", catalog: nextCatalog, authorizedBranchIds });
+
+  assert.equal(first.revision, 1);
+  assert.equal(second.revision, 2);
+  assert.notEqual(second.payload_digest, first.payload_digest);
+  assert.notEqual(second.signature, first.signature);
+  assert.equal(store.read({ tenantId: "tenant-a", catalog }), null);
+  assert.equal(store.read({ tenantId: "tenant-a", catalog: nextCatalog })?.revision, 2);
+});
+
+test("Nyra persistent self-model fails closed when revision metadata is altered", () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-self-model-test-"));
+  const store = createNyraPersistentSelfModelStore({ storageRoot, signingSecret: "x".repeat(32) });
+  const authorizedBranchIds = catalog.branches.map(({ id }) => id);
+  store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+  const corrupted = JSON.parse(fs.readFileSync(store.fileFor("tenant-a"), "utf8"));
+  corrupted.revision = 999;
+  fs.writeFileSync(store.fileFor("tenant-a"), JSON.stringify(corrupted));
+
+  assert.equal(store.read({ tenantId: "tenant-a", catalog }), null);
+  assert.throws(
+    () => store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds }),
+    /nyra_self_model_integrity_invalid/,
+  );
+
+  corrupted.generated_at = "not-a-timestamp";
+  fs.writeFileSync(store.fileFor("tenant-a"), JSON.stringify(corrupted));
+  assert.equal(store.read({ tenantId: "tenant-a", catalog }), null);
+});
+
+test("Nyra persistent self-model never replaces an unreadable persisted record", () => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-self-model-test-"));
+  const store = createNyraPersistentSelfModelStore({ storageRoot, signingSecret: "x".repeat(32) });
+  const authorizedBranchIds = catalog.branches.map(({ id }) => id);
+  store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds });
+  fs.writeFileSync(store.fileFor("tenant-a"), "{invalid json");
+
+  assert.equal(store.read({ tenantId: "tenant-a", catalog }), null);
+  assert.throws(
+    () => store.refresh({ tenantId: "tenant-a", catalog, authorizedBranchIds }),
+    /nyra_self_model_integrity_invalid/,
+  );
+  assert.equal(fs.readFileSync(store.fileFor("tenant-a"), "utf8"), "{invalid json");
+});
+
 test("Nyra persistent self-model rejects altered nested payloads and unauthorized branches", () => {
   const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "nyra-self-model-test-"));
   const store = createNyraPersistentSelfModelStore({ storageRoot, signingSecret: "x".repeat(32) });
@@ -44,5 +187,5 @@ test("Nyra persistent self-model rejects altered nested payloads and unauthorize
   const corrupted = JSON.parse(fs.readFileSync(store.fileFor("tenant-a"), "utf8"));
   corrupted.required_infrastructure[0].reason = "altered";
   fs.writeFileSync(store.fileFor("tenant-a"), JSON.stringify(corrupted));
-  assert.equal(store.read({ tenantId: "tenant-a", catalog, authorizedBranchIds }), null);
+  assert.equal(store.read({ tenantId: "tenant-a", catalog }), null);
 });

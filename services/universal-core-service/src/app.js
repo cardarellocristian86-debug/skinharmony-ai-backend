@@ -217,10 +217,12 @@ import {
 import {
   createHostNativeBranchProtectionResolver,
   createHostNativeExternalReadbackVerifier,
+  createHostNativeOwnerManualMergeReadbackVerifier,
   createHostNativeReleaseJoinVerdictResolver,
 } from "./hostNativeExternalReadback.js";
 import {
   createGenericWorkCoreJoinAuthority,
+  createHostNativeFinalizeAuthorizationProof,
   createLocalGenericWorkCoreJoinSigner,
   createGenericWorkCoreJoinVerdictVerifier,
   genericWorkCoreJoinDigest,
@@ -4877,6 +4879,7 @@ export function createUniversalCoreService(options = {}) {
     host_native: ![
       "hostNativeGovernance", "hostNativeGovernanceEnabled",
       "hostNativeGovernanceStore", "hostNativeExternalReadbackVerifier",
+      "hostNativeOwnerManualMergeReadbackVerifier",
       "hostNativeReleaseJoinVerdictResolver", "hostNativeSigningSecret",
       "hostNativeResolverConfigurationValid", "hostNativeResolverConfigurationError",
       "hostNativeRequiredChecksPolicyResolver",
@@ -6611,6 +6614,18 @@ export function createUniversalCoreService(options = {}) {
               5_000,
             ),
           });
+        const hostNativeOwnerManualMergeReadbackVerifier =
+          options.hostNativeOwnerManualMergeReadbackVerifier ||
+          createHostNativeOwnerManualMergeReadbackVerifier({
+            fetchImpl: options.hostNativeReadbackFetchImpl || fetch,
+            githubTokenResolver: hostNativeGithubTokenResolver,
+            requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
+            timeoutMs: Number(
+              options.hostNativeReadbackTimeoutMs ??
+              process.env.CORE_HOST_NATIVE_READBACK_TIMEOUT_MS ??
+              5_000,
+            ),
+          });
         const hostNativeReleaseJoinVerdictResolver =
           options.hostNativeReleaseJoinVerdictResolver ||
           createHostNativeReleaseJoinVerdictResolver({
@@ -6641,6 +6656,7 @@ export function createUniversalCoreService(options = {}) {
           store: hostNativeStore,
           signingSecret: hostNativeSigningSecret,
           externalReadbackVerifier: hostNativeExternalReadbackVerifier,
+          ownerManualMergeReadbackVerifier: hostNativeOwnerManualMergeReadbackVerifier,
           releaseJoinVerdictResolver: hostNativeReleaseJoinVerdictResolver,
           renderServiceOriginResolver: hostNativeRenderServiceOriginResolver,
           requiredChecksPolicyResolver: hostNativeRequiredChecksPolicyResolver,
@@ -7945,7 +7961,8 @@ export function createUniversalCoreService(options = {}) {
       },
       runtime: {
         invoke(capability, identity, input) {
-          if (entity360State !== "ready") {
+          if (entity360State !== "ready"
+            && capability !== "entity_360_feature_flag_write") {
             const error = new Error("entity360_runtime_not_ready");
             error.status = 503;
             throw error;
@@ -9292,6 +9309,52 @@ export function createUniversalCoreService(options = {}) {
     const causalInitializationDegraded = causalBootstrapLivenessReady;
     const healthStatusReady = renderReady
       || (!strictReadiness && causalInitializationDegraded);
+    const semanticScopeGuardMode = typeof hostNativeGovernance?.semantic_scope_guard_mode === "string" &&
+      ["OFF", "SHADOW", "ENFORCE"].includes(hostNativeGovernance.semantic_scope_guard_mode)
+      ? hostNativeGovernance.semantic_scope_guard_mode
+      : null;
+    const semanticScopeGuardConfigured = typeof hostNativeGovernance?.semantic_scope_guard_configured === "boolean"
+      ? hostNativeGovernance.semantic_scope_guard_configured
+      : null;
+    let semanticScopeGuardRawMetrics = null;
+    try {
+      semanticScopeGuardRawMetrics = typeof hostNativeGovernance?.semanticScopeMetrics === "function"
+        ? hostNativeGovernance.semanticScopeMetrics()
+        : null;
+    } catch {
+      // Health remains a readback endpoint even when optional telemetry is
+      // unavailable. Do not expose the thrown error or raw metric object.
+      semanticScopeGuardRawMetrics = null;
+    }
+    const nonNegativeMetric = (value, maximum = Number.POSITIVE_INFINITY) => (
+      typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= maximum
+        ? value
+        : null
+    );
+    const semanticScopeGuardMetrics = semanticScopeGuardRawMetrics &&
+      typeof semanticScopeGuardRawMetrics === "object" &&
+      !Array.isArray(semanticScopeGuardRawMetrics)
+      ? {
+        bitemporal_query_latency:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.bitemporal_query_latency),
+        semantic_scope_check_latency:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.semantic_scope_check_latency),
+        semantic_scope_block_total:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.semantic_scope_block_total),
+        semantic_scope_hold_total:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.semantic_scope_hold_total),
+        semantic_scope_redact_total:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.semantic_scope_redact_total),
+        scope_drift_detected_total:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.scope_drift_detected_total),
+        false_hold_rate:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.false_hold_rate, 1),
+        false_block_rate:
+          nonNegativeMetric(semanticScopeGuardRawMetrics.false_block_rate, 1),
+        check_total: nonNegativeMetric(semanticScopeGuardRawMetrics.check_total),
+        execution_authorized: false,
+      }
+      : null;
     res.status(healthStatusReady ? 200 : 503).json({
       ok: !production || renderReady,
       service: SERVICE_NAME,
@@ -9383,6 +9446,7 @@ export function createUniversalCoreService(options = {}) {
         ...entity360Health,
         icf_event_digest_v2_dependency: entity360IcfStoreDependency,
         configured: entity360Mode !== "OFF" && entity360Mode !== "INVALID",
+        tenant_shadow_disable_available: Boolean(entity360Runtime),
         production_required: false,
         global_readiness_gate: false,
         feature_flag_default: "OFF",
@@ -9570,6 +9634,11 @@ export function createUniversalCoreService(options = {}) {
           hostNativeGovernance?.required_checks_policy_resolver_configured === true,
         closure_attestation_verifier_configured:
           hostNativeGovernance?.closure_attestation_verifier_configured === true,
+        // The semantic guard is observable here, but this public readback
+        // remains non-authoritative and cannot change guard mode or policy.
+        semantic_scope_guard_mode: semanticScopeGuardMode,
+        semantic_scope_guard_configured: semanticScopeGuardConfigured,
+        semantic_scope_guard_metrics: semanticScopeGuardMetrics,
         nyra_work_automation_v3: {
           configured: Boolean(nyraWorkAutomation),
           state: nyraWorkAutomationState,
@@ -9916,13 +9985,9 @@ export function createUniversalCoreService(options = {}) {
   app.get("/v1/nira/self-model", coreAuth(SCOPES.READ_DECISION), (req, res) => {
     const current = resolveDomainPackForKey(req.coreKey);
     const catalog = nyraBranchCatalog(current.id);
-    const branchResolution = verifiedOwnerBranchProfile(
-      req, [], "nyra_self_model_read", ownerContextSigningSecret,
-    );
     const selfModel = nyraPersistentSelfModel.read({
       tenantId: req.tenantId,
       catalog,
-      authorizedBranchIds: branchResolution.allowed_branches,
     });
     audit.append("core_nyra_self_model_read", {
       tenant_id: req.tenantId,
@@ -12113,6 +12178,48 @@ export function createUniversalCoreService(options = {}) {
   );
 
   app.post(
+    "/v1/host-native/actions/owner-manual-merge/readback",
+    coreAuth(SCOPES.OWNER_ASSERTION),
+    async (req, res) => {
+      if (!requireHostNativeGovernance(res)) return;
+      try {
+        const ownerConfirmation = verifyHostNativeOwnerConfirmation(
+          req,
+          "host_native_owner_manual_merge_readback",
+        );
+        const {
+          tenant_id: _tenantId,
+          owner_confirmed: _ownerConfirmed,
+          confirmation_reference: _confirmationReference,
+          owner_context: _ownerContext,
+          ...selector
+        } = req.body || {};
+        const receipt = await hostNativeGovernance.recordOwnerManualMergeReadback({
+          ...selector,
+          tenant_id: req.tenantId,
+          owner_confirmation: ownerConfirmation,
+        });
+        audit.append("core_host_native_owner_manual_merge_readback_recorded", {
+          tenant_id: req.tenantId,
+          key_id: req.coreKey.key_id,
+          work_id: receipt.work_id,
+          core_join_verdict_id: receipt.core_join_verdict_id,
+          pull_request: receipt.pull_request,
+          receipt_id: receipt.receipt_id,
+          authority: receipt.authority,
+        });
+        return res.status(201).json({
+          ok: true,
+          tenant_id: req.tenantId,
+          manual_merge_readback: receipt,
+        });
+      } catch (error) {
+        return hostNativeFailure(res, error);
+      }
+    },
+  );
+
+  app.post(
     "/v1/host-native/actions/authorize",
     coreAuth(SCOPES.AUTOMATION_CODEX),
     async (req, res) => {
@@ -12229,12 +12336,32 @@ export function createUniversalCoreService(options = {}) {
     async (req, res) => {
       if (!requireHostNativeGovernance(res)) return;
       try {
+        let finalizeTicket = null;
         const finalizeAuthorization = await withEnforcedSoftwareActionTicket(req.tenantId, req.params.ticketId,
-          async (_ticket, trusted) => hostNativeGovernance.authorizeFinalize({
-            tenant_id: req.tenantId,
-            ticket_id: req.params.ticketId,
-            host_session_fingerprint: req.body?.host_session_fingerprint,
-          }, trusted));
+          async (ticketRecord, trusted) => {
+            finalizeTicket = ticketRecord?.ticket || null;
+            return hostNativeGovernance.authorizeFinalize({
+              tenant_id: req.tenantId,
+              ticket_id: req.params.ticketId,
+              host_session_fingerprint: req.body?.host_session_fingerprint,
+            }, trusted);
+          });
+        let finalizeAuthorizationProof = null;
+        if (finalizeAuthorization.predecessor?.predecessor_type ===
+            "owner_manual_github_merge_readback") {
+          if (!genericWorkCoreJoinSigner ||
+              typeof genericWorkCoreJoinSigner.signDigest !== "function" ||
+              !genericWorkCoreJoinSigner.public_key ||
+              !genericWorkCoreJoinSigner.key_id) {
+            throw new Error("host_native_finalize_authorization_proof_unavailable");
+          }
+          finalizeAuthorizationProof =
+            await createHostNativeFinalizeAuthorizationProof({
+              authorization: finalizeAuthorization,
+              intentAnchorDigest: finalizeTicket?.intent_anchor_digest,
+              signer: genericWorkCoreJoinSigner,
+            });
+        }
         audit.append("core_host_native_finalize_authorized", {
           tenant_id: req.tenantId,
           key_id: req.coreKey.key_id,
@@ -12246,6 +12373,9 @@ export function createUniversalCoreService(options = {}) {
           ok: true,
           tenant_id: req.tenantId,
           finalize_authorization: finalizeAuthorization,
+          ...(finalizeAuthorizationProof
+            ? { finalize_authorization_proof: finalizeAuthorizationProof }
+            : {}),
         });
       } catch (error) {
         return hostNativeFailure(res, error);

@@ -452,7 +452,7 @@ test("Policy Registry tools appear only while the bounded Core health proof is f
   try {
     const first = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" });
     assert.deepEqual(first.result.tools.map((tool) => tool.name).sort(),
-      [...POLICY_REGISTRY_LIFECYCLE_TOOLS].sort());
+      ["nyra_policy_registry_reconcile", "nyra_policy_registry_rollback"]);
     assert.equal(healthCalls, 1);
 
     const forged = await rpc({
@@ -483,7 +483,7 @@ test("Policy Registry tools appear only while the bounded Core health proof is f
     upstreamReady = true;
     await new Promise((resolve) => setTimeout(resolve, 70));
     const restored = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/list" });
-    assert.equal(restored.result.tools.length, 3);
+    assert.equal(restored.result.tools.length, 2);
     assert.equal(healthCalls, 4);
     upstreamReady = false;
     const denied = await rpc({

@@ -462,6 +462,96 @@ function trustedExternalReadback(ticket, targetCommit, verificationScope = "full
   };
 }
 
+test("owner-scoped manual merge route persists evidence only from selector input", async () => {
+  let captured;
+  const governance = {
+    required_checks_policy_resolver_configured: true,
+    closure_attestation_verifier_configured: true,
+    async recordOwnerManualMergeReadback(input) {
+      captured = structuredClone(input);
+      return {
+        schema_version: "host_native_owner_manual_merge_readback_v1",
+        receipt_id: `hnmmr_${H("1").slice(0, 40)}`,
+        receipt_digest: H("2"),
+        tenant_id: input.tenant_id,
+        work_id: input.work_id,
+        intent_anchor_digest: input.intent_anchor_digest,
+        repository: input.repository,
+        core_join_verdict_id: input.core_join_verdict_id,
+        pull_request: input.pull_request,
+        authority: "evidence_only",
+        evidence_only: true,
+        ticket_issued: false,
+        retrospective_ticket_issued: false,
+        action_authorized: false,
+        execution_authorized: false,
+        provider_execution: false,
+      };
+    },
+  };
+  await fixture({
+    hostNativeGovernanceEnabled: true,
+    hostNativeGovernance: governance,
+    ownerContextSigningSecret: OWNER_CONTEXT_SIGNING_SECRET,
+  }, async (request) => {
+    const ownerKey = await request("POST", "/v1/keys/generate", {
+      tenant_id: "tenant-host-native",
+      key_type: "connector",
+      allowed_scopes: ["read:decision", "owner:assertion"],
+    });
+    const selector = {
+      work_id: "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6",
+      intent_anchor_digest: H("3"),
+      repository: "owner/repo",
+      core_join_verdict_id: `hnj_${G("4")}`,
+      pull_request: 390,
+      idempotency_key: "owner-manual-merge-pr-390",
+      owner_confirmed: true,
+      confirmation_reference: "owner confirmed exact readback",
+    };
+    const body = {
+      ...selector,
+      owner_context: signedOwnerContext(
+        OWNER_CONTEXT_SIGNING_SECRET,
+        "tenant-host-native",
+        selector,
+        "host_native_owner_manual_merge_readback",
+      ),
+    };
+    const response = await request(
+      "POST",
+      "/v1/host-native/actions/owner-manual-merge/readback",
+      body,
+      ownerKey.json.key,
+    );
+    assert.equal(response.status, 201, JSON.stringify(response.json));
+    assert.equal(response.json.manual_merge_readback.authority, "evidence_only");
+    assert.equal(response.json.manual_merge_readback.ticket_issued, false);
+    assert.equal(response.json.manual_merge_readback.action_authorized, false);
+    assert.equal(response.json.manual_merge_readback.execution_authorized, false);
+    assert.deepEqual(Object.keys(captured).sort(), [
+      "core_join_verdict_id", "idempotency_key", "intent_anchor_digest",
+      "owner_confirmation", "pull_request", "repository", "tenant_id", "work_id",
+    ]);
+    assert.equal(captured.owner_confirmation.verified, true);
+    assert.equal(captured.owner_confirmation.purpose,
+      "host_native_owner_manual_merge_readback");
+
+    const deniedKey = await request("POST", "/v1/keys/generate", {
+      tenant_id: "tenant-host-native",
+      key_type: "automation",
+      allowed_scopes: ["read:decision", "automation:codex"],
+    });
+    const denied = await request(
+      "POST",
+      "/v1/host-native/actions/owner-manual-merge/readback",
+      body,
+      deniedKey.json.key,
+    );
+    assert.equal(denied.status, 403);
+  });
+});
+
 test("host-native governance is fail-closed by default while planning remains provider-free", async () => {
   await fixture({}, async (request) => {
     const key = await request("POST", "/v1/keys/generate", {
