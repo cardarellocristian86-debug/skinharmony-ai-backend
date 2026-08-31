@@ -26,6 +26,7 @@ const RUNTIME_CONTROL_MUTATION = new RegExp(
 );
 const ACCESS_MUTATION = /\b(?:grant|revoke|abilita|disabilita|abilitare|disabilitare|revoca|revocare)\b/iu;
 const GLOBAL_CONTROL_READ = /(?:\b(?:che|quali|mostra(?:mi)?|dimmi|fammi\s+vedere|elenca(?:mi)?|lista|what|which|show|tell|list)\b.{0,80}\b(?:funzion\w*|functions?|features?|controll\w*|controls?|toggles?|modalit(?:à|a)|runtime|nyra|core|entity\s*360|e360|semantic\s+scope\s+guard|dialog(?:o|ue)|converse)\b|\b(?:funzion\w*|functions?|features?|controll\w*|controls?|toggles?)\b.{0,80}\b(?:attiv\w*|disattiv\w*|active|inactive|abilitat\w*|disabilitat\w*|enabled|disabled|switched\s+(?:on|off)|on|off|stato|status)\b|\b(?:nyra\s+)?(?:converse|dialog(?:o|ue)|semantic\s+scope\s+guard|entity\s*360|e360)\b.{0,80}\b(?:attiv\w*|disattiv\w*|active|inactive|abilitat\w*|disabilitat\w*|enabled|disabled|switched\s+(?:on|off)|on|off|stato|status)\b|(?:^|\s)(?:è|e|era|erano|risulta|result|is|was|are|do\s+you\s+have)(?=\s|$).{0,40}\b(?:attiv\w*|disattiv\w*|active|inactive|abilitat\w*|disabilitat\w*|enabled|disabled|switched\s+(?:on|off)|on|off)\b.{0,80}\b(?:nyra\s+)?(?:converse|dialog(?:o|ue)|semantic\s+scope\s+guard|entity\s*360|e360)\b)/iu;
+const NYRA_ADVISORY_READ = /\bnyra\b|\b(?:chi\s+sei|come\s+funzioni|cosa\s+ti\s+manca|cosa\s+puoi|qual(?:\s|')*[èe]\s+la\s+differenza)\b|\b(?:entity\s*360|e360)\b.{0,100}\bsemantic\s+scope\s+guard\b/iu;
 const ACTION_NOUN = /\b(?:ticket|delega\w*|delegation|autorizz\w*|authoriz\w*|commit|push|pull\s+request|\bpr\b|merge|deploy(?:ed|ing)?|publish\w*|release|rollback)\b/iu;
 const ACTION_VERB = /\b(?:crea\w*|emetti\w*|issue|richied\w*|request|autorizz\w*|authoriz\w*|esegui\w*|execute|fai|faccio|fare|effettua\w*|porta\w*|metti\w*|avvia\w*|start|prepara\w*|pubblic\w*|publish\w*|rilasci\w*|send|email|notify|invia\w*|manda\w*|delete|remove|destroy|elimina\w*|cancella\w*|pay|purchase|buy|refund|paga\w*|acquista\w*|rimborsa\w*|book|schedule|invite|prenota\w*|invita\w*|grant|revoke|revoca\w*|attiva(?:lo|la|li|le)?|disattiva(?:lo|la|li|le)?|riattiva(?:lo|la|li|le)?|abilita(?:lo|la|li|le)?|disabilita(?:lo|la|li|le)?|riabilita(?:lo|la|li|le)?|accendi(?:lo|la|li|le)?|spegni(?:lo|la|li|le)?|imposta(?:lo|la|li|le)?|configura(?:lo|la|li|le)?|correggi(?:lo|la|li|le)?|procedi|passa(?:lo|la|li|le)?|rimetti|allinea|cambia|attivare|disattivare|abilitare|disabilitare|enable|disable|re-?enable|reactivate|set|switch|turn)\b/iu;
 const DIAGNOSTIC = /(?:perch[eé]|why|diagnos\w*|spiega\w*|explain|cosa\s+(?:manca|serve))/iu;
@@ -34,7 +35,7 @@ const CONDITION = /\b(?:se|if|unless|quando|when|solo\s+se|only\s+if)\b/iu;
 const HYPOTHETICAL = /\b(?:dicessi|direi|sarebbe|would|hypothetical|ipotetic\w*|esempio|example)\b/iu;
 // A prose question about Work must never be promoted to a Work-create turn.
 // Structured `workBootstrap` remains the only explicit non-prose override.
-const INTERROGATIVE = /^\s*(?:what|which|who|where|when|why|how|can|could|would|will|should|may|might|shall|do|does|did|is|are|was|were|am|have|has|had|cosa|quale|quali|chi|dove|quando|perch[eé]|come|puoi|potresti|vorresti|posso|devo|dovrei|sei|sono|ha|hai)\b/iu;
+const INTERROGATIVE = /^\s*(?:what|which|who|where|when|why|how|can|could|would|will|should|may|might|shall|do|does|did|is|are|was|were|am|have|has|had|cosa|qual(?:e|i)?|chi|dove|quando|perch[eé]|come|puoi|potresti|vorresti|posso|devo|dovrei|sei|sono|ha|hai)\b/iu;
 const EXACT_COMMAND = /^\/[a-zA-Z0-9][a-zA-Z0-9._:-]{1,159}$/u;
 // V1 deliberately admits only the one route that can be made safe without a
 // Work or an LLM-produced answer. Other semantic interpretations remain on
@@ -176,7 +177,7 @@ function clauseArtifacts(text) {
           affirmativeActions.includes("communication")) {
         affirmativeActions = [`${affirmativeReleaseAction}_communication`];
       }
-      const imperative = actionVerbIndex >= 0 && !diagnostic &&
+      const imperative = actionVerbIndex >= 0 && !diagnostic && !interrogative &&
         (negationIndex < 0 || actionVerbIndex < negationIndex);
       return Object.freeze({
         index,
@@ -188,6 +189,7 @@ function clauseArtifacts(text) {
         affirmative_action_candidates: Object.freeze(affirmativeActions),
         imperative,
         diagnostic,
+        interrogative,
         work_create_candidate: WORK_CREATE.test(clause),
         work_create_affirmative: workCreateIndex >= 0 &&
           !diagnostic && !interrogative && !conditional && !hypothetical && !quoted &&
@@ -273,9 +275,9 @@ export function classifyNyraIntent({
     scope_salt: boundedTenantId,
   });
   const semanticIntake = normalizeSemanticHint(semanticHint, text);
-  // A question about a named Work is never a global-control read.  It must
-  // retain the Work/continuity route so a host cannot lose its bounded scope.
-  const explicitWorkScope = Boolean(safeId(workId)) || /\b(?:work|lavoro)\b/iu.test(text);
+  // A question that names a Work is never a global-control read. A stale
+  // host-supplied work_id must not turn a global status read into a binding.
+  const explicitWorkScope = /\b(?:work|lavoro)\b/iu.test(text);
   // “Nyra Converse è attiva?” is a state predicate, not an imperative.
   // Strip only that bounded predicate before looking for a mutation verb; a
   // following clitic imperative ("Attivala") still wins and stays in Core.
@@ -299,6 +301,10 @@ export function classifyNyraIntent({
     clauses.every((clause) => clause.affirmative_action_candidates.length === 0) &&
     clauses.every((clause) => clause.action_candidates.length === 0 ||
       (clause.polarity === "negative" && !clause.imperative && !clause.condition && !clause.quote_scope));
+  const advisoryReadQuestion = clauses.some((clause) => clause.interrogative) &&
+    actionClauses.length === 0 && !workBootstrap && !workCreateRequested &&
+    !safeId(workId) && !WORK_RESUME.test(normalized) && !GLOBAL_CONTROL_READ.test(text) &&
+    !COMMAND_CATALOG.test(text) && NYRA_ADVISORY_READ.test(text);
 
   const safeGlobalControlRead = GLOBAL_CONTROL_READ.test(text) &&
     actionClauses.length === 0 && !ACTION_NOUN.test(text) && !workCreateRequested &&
@@ -325,6 +331,11 @@ export function classifyNyraIntent({
     route = "CORE_CATALOG_READ";
     confidence = 1;
     reason = "exact_command_id_proposal";
+  } else if (advisoryReadQuestion) {
+    intent = "advisory_read";
+    route = "ADVISORY_READ";
+    confidence = 0.96;
+    reason = "bounded_informational_question";
   } else if (explicitReadOnlyBoundary) {
     intent = "analysis";
     route = "CORE_CONTEXT_THEN_NYRA";
@@ -397,8 +408,8 @@ export function classifyNyraIntent({
       session_fingerprint: safeDigest(sessionFingerprint),
       text,
     }),
-    core_preflight_required: route !== "CORE_CATALOG_READ" && route !== "CONTROL_ROOM_READ",
-    resolution_scope: route === "CORE_CATALOG_READ" || route === "CONTROL_ROOM_READ" || intent === "chat" || intent === "analysis" ? "single_explicit" :
+    core_preflight_required: !["CORE_CATALOG_READ", "CONTROL_ROOM_READ", "ADVISORY_READ"].includes(route),
+    resolution_scope: ["CORE_CATALOG_READ", "CONTROL_ROOM_READ", "ADVISORY_READ"].includes(route) || intent === "chat" || intent === "analysis" ? "single_explicit" :
       intent === "ticket_or_action" ? "single_consequential" : "clarification_required",
     semantic_intake: Object.freeze({
       ...semanticIntake,

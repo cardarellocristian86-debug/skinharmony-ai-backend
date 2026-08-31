@@ -999,7 +999,7 @@ function orchestrationDirective({
   // Control Room is a server-derived, tenant-bound status read.  It must not
   // manufacture a Work-binding need simply because the caller asked a global
   // question without a Work id.
-  const standaloneRead = interpretation.source === "control_room";
+  const standaloneRead = ["control_room", "advisory_read"].includes(interpretation.source);
   const releaseReady = workContext.status === "RELEASE_READY";
   const coreBlocked = interpretation.governance_diagnostics.state === "BLOCKED" ||
     interpretation.risk_band === "blocked" ||
@@ -1803,6 +1803,13 @@ function controlRoomInterpretation() {
   });
 }
 
+function advisoryReadInterpretation() {
+  return Object.freeze({
+    ...workSelectionInterpretation(),
+    source: "advisory_read",
+  });
+}
+
 function requireControlRoomStatus(value, tenantId) {
   const payload = value?.structuredContent && typeof value.structuredContent === "object" &&
     !Array.isArray(value.structuredContent) ? value.structuredContent : null;
@@ -2061,7 +2068,11 @@ async function advisoryConversationResult({
     project_id: projectId, state: "unbound", next_action: null,
     next_action_available: false, selection_required: false });
   const dialogue = publicNyraDialogue({});
-  const interpretation = controlRoomRead ? controlRoomInterpretation() : workSelectionInterpretation();
+  const interpretation = controlRoomRead
+    ? controlRoomInterpretation()
+    : route.intent === "advisory_read"
+      ? advisoryReadInterpretation()
+      : workSelectionInterpretation();
   const action = actionPolicy("", { request_kind: null, capability_hint: null }, false, false);
   const baseDirective = orchestrationDirective({ tenantId, message, work, dialogue,
     workContext: unavailableWorkDirectiveContext(work, dialogue), interpretation, action,
@@ -2401,7 +2412,7 @@ export function createNyraConverseHandler({
       sessionFingerprint: identity.agentPresence?.session_fingerprint,
       semanticHint: args.semantic_intent_hint,
     });
-    if (["CORE_CATALOG_READ", "CONTROL_ROOM_READ"].includes(intentRoute.route)) {
+    if (["CORE_CATALOG_READ", "CONTROL_ROOM_READ", "ADVISORY_READ"].includes(intentRoute.route)) {
       if (continuationOperation !== null) {
         throw fail("nyra_converse_continuation_operation_not_applicable");
       }

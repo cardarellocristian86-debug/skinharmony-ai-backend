@@ -1379,8 +1379,8 @@ const nyraConverseOutputSchema = object({
   intent_routing: object({
     route: object({
       schema_version: { const: "nyra_intent_route_v2" },
-      intent: { type: "string", enum: ["chat", "analysis", "command_catalog", "global_control_read", "work_create", "work_resume", "ticket_or_action", "ambiguous_consequential"] },
-      route: { type: "string", enum: ["CORE_CATALOG_READ", "CONTROL_ROOM_READ", "CORE_CONTEXT_THEN_NYRA", "CORE_HOLD_THEN_NYRA"] },
+      intent: { type: "string", enum: ["chat", "analysis", "advisory_read", "command_catalog", "global_control_read", "work_create", "work_resume", "ticket_or_action", "ambiguous_consequential"] },
+      route: { type: "string", enum: ["CORE_CATALOG_READ", "CONTROL_ROOM_READ", "ADVISORY_READ", "CORE_CONTEXT_THEN_NYRA", "CORE_HOLD_THEN_NYRA"] },
       clauses: { type: "array", maxItems: 8, items: object({
         polarity: { type: "string", enum: ["positive", "negative"] },
         modality: { type: "string", enum: ["asserted", "conditional", "hypothetical"] },

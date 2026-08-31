@@ -120,6 +120,23 @@ test("routes global runtime status to Control Room and keeps Work or mutation sc
   assert.equal(classify("Analyze deployment architecture").intent, "analysis");
 });
 
+test("routes bounded Nyra information questions without a Work preflight", () => {
+  for (const message of [
+    "Nyra, chi sei?",
+    "Nyra, come funzioni?",
+    "Nyra, cosa ti manca per lavorare meglio?",
+    "Nyra, qual è la differenza tra Entity 360 e Semantic Scope Guard?",
+    "Nyra, qual è la differenza tra ciò che puoi leggere e ciò che puoi autorizzare?",
+  ]) {
+    const route = classify(message);
+    assert.equal(route.intent, "advisory_read", message);
+    assert.equal(route.route, "ADVISORY_READ", message);
+    assert.equal(route.core_preflight_required, false, message);
+  }
+  assert.notEqual(classify("Nyra, come funzioni? Procedi con il deploy.").route,
+    "ADVISORY_READ");
+});
+
 test("accepts only a bound, read-only host semantic hint and never lets it override action scope", () => {
   const message = "Please provide an operational overview.";
   const hint = {
