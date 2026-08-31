@@ -15,6 +15,10 @@ import {
   hostNativeDigest,
   hostNativeGithubDiffDigest,
 } from "../src/hostNativeGovernance.js";
+import {
+  createLocalGenericWorkCoreJoinSigner,
+  genericWorkCoreJoinDigest,
+} from "../src/genericWorkCoreJoin.js";
 
 const H = (value) => String(value).repeat(64);
 const G = (value) => String(value).repeat(40);
@@ -50,21 +54,51 @@ function stableCanonical(value) {
   }, {});
 }
 
-function signedOwnerContext(key, tenantId, body, purpose) {
+const OWNER_MANUAL_EFFECT_AUTHORITY_BINDING_PURPOSES = new Set([
+  "host_native_owner_authority_envelope_issue",
+  "host_native_owner_authority_envelope_read",
+  "host_native_owner_authority_envelope_revoke",
+  "host_native_owner_manual_effect_reconcile",
+  "host_native_owner_manual_effect_reconciliation_read",
+  "host_native_owner_manual_effect_authorize_closure",
+]);
+
+function ownerContextBindingPayload(purpose, payload) {
+  if (
+    OWNER_MANUAL_EFFECT_AUTHORITY_BINDING_PURPOSES.has(purpose) &&
+    payload.work_binding && typeof payload.work_binding === "object" &&
+    !Array.isArray(payload.work_binding)
+  ) {
+    return {
+      ...payload,
+      work_binding: {
+        ...payload.work_binding,
+        verified_at: "server_freshness_validated_at_core",
+      },
+    };
+  }
+  return payload;
+}
+
+function signedOwnerContext(key, tenantId, body, purpose, options = {}) {
   const { owner_context: _ownerContext, ...payload } = body;
   const context = {
     assertion_version: "owner_context_assertion_v1",
     audience: "nira_core_bridge",
     tenant_id: tenantId,
-    access_mode: "god_mode",
-    role: "owner_root",
-    delegated_actor: "host_native_api_test",
-    owner_verified: true,
+    access_mode: options.accessMode || "god_mode",
+    role: options.role || "owner_root",
+    delegated_actor: options.delegatedActor || "host_native_api_test",
+    owner_verified: options.ownerVerified ?? true,
+    oauth_owner_bound: options.oauthOwnerBound,
+    oauth_confirmation_jti: options.oauthConfirmationJti,
     owner_subject_fingerprint: OWNER,
     issued_at: new Date().toISOString(),
     binding_version: "owner_request_binding_v1",
     binding_hash: crypto.createHash("sha256")
-      .update(`${purpose}\u0000${JSON.stringify(stableCanonical(payload))}`)
+      .update(`${purpose}\u0000${JSON.stringify(stableCanonical(
+        ownerContextBindingPayload(purpose, payload),
+      ))}`)
       .digest("hex"),
   };
   const canonical = JSON.stringify({
@@ -75,6 +109,8 @@ function signedOwnerContext(key, tenantId, body, purpose) {
     role: context.role,
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
+    oauth_owner_bound: context.oauth_owner_bound,
+    oauth_confirmation_jti: context.oauth_confirmation_jti,
     owner_subject_fingerprint: context.owner_subject_fingerprint,
     issued_at: context.issued_at,
     binding_version: context.binding_version,
@@ -85,6 +121,54 @@ function signedOwnerContext(key, tenantId, body, purpose) {
     assertion: `ocs_${crypto.createHmac("sha256", key)
       .update(`owner-context\u0000${canonical}`)
       .digest("hex")}`,
+  };
+}
+
+function strictOAuthOwnerContextOptions(jtiCharacter) {
+  return {
+    accessMode: "tenant_owner",
+    role: "tenant_owner",
+    delegatedActor: "oauth",
+    oauthOwnerBound: true,
+    oauthConfirmationJti: `ocj_${H(jtiCharacter)}`,
+  };
+}
+
+function ownerManualEffectWorkBinding({
+  tenantId = "tenant-host-native",
+  workId,
+  intentAnchorDigest,
+  mode,
+  repository,
+  allowedEffectTuples,
+  currentVersion = 1,
+  workUpdatedAt = new Date().toISOString(),
+  verifiedAt = new Date().toISOString(),
+} = {}) {
+  const tuples = [...allowedEffectTuples]
+    .map((tuple) => ({ ...tuple }))
+    .sort((left, right) => genericWorkCoreJoinDigest(left).localeCompare(
+      genericWorkCoreJoinDigest(right),
+    ));
+  const unsigned = {
+    schema_version: "owner_manual_effect_work_binding_v1",
+    source: "mcp_work_continuity_v2",
+    tenant_id: tenantId,
+    work_id: workId,
+    intent_anchor_digest: intentAnchorDigest,
+    mode,
+    work_status: "active",
+    current_version: currentVersion,
+    work_updated_at: workUpdatedAt,
+    repository,
+    provider_execution: false,
+    allowed_effect_tuples: tuples,
+  };
+  return {
+    ...unsigned,
+    trusted: true,
+    verified_at: verifiedAt,
+    binding_digest: genericWorkCoreJoinDigest(unsigned),
   };
 }
 
@@ -644,6 +728,466 @@ test("enabled governance without a required-check registry is non-ready and bloc
       work_id: "blocked",
     }, key.json.key);
     assert.equal(plan.status, 503);
+  });
+});
+
+test("manual-effect HTTP OAuth authority rejects legacy owner assertions and a tampered confirmation JTI", async () => {
+  const keys = crypto.generateKeyPairSync("ed25519");
+  const signer = createLocalGenericWorkCoreJoinSigner({
+    privateKey: keys.privateKey.export({ type: "pkcs8", format: "pem" }),
+    keyId: "host-native-api-manual-effect-oauth-boundary-key",
+  });
+  const effectReference = {
+    merge_commit: G("9"),
+    pull_request: 394,
+    repository: "owner/repo",
+  };
+  const effectReferenceDigest = genericWorkCoreJoinDigest(effectReference);
+  const workId = "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
+  const intentAnchorDigest = H("3");
+  const workBinding = ownerManualEffectWorkBinding({
+    workId,
+    intentAnchorDigest,
+    mode: "OWNER_MANUAL",
+    repository: "owner/repo",
+    allowedEffectTuples: [{
+      adapter_id: "github",
+      effect_type: "github.merge",
+      resource_id: "github:owner/repo",
+      effect_reference_digest: effectReferenceDigest,
+    }],
+  });
+  await fixture({
+    hostNativeGovernanceEnabled: true,
+    hostNativeSigningSecret: "host-native-api-signing-secret-at-least-32-bytes",
+    ownerContextSigningSecret: OWNER_CONTEXT_SIGNING_SECRET,
+    dttAgentIdentitySigningSecret: CLOSURE_ATTESTATION_SECRET,
+    hostNativeRequiredChecksPolicyResolver: async () => API_REQUIRED_CHECKS_POLICY,
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinSigner: signer,
+  }, async (request) => {
+    const ownerKey = await request("POST", "/v1/keys/generate", {
+      tenant_id: "tenant-host-native",
+      key_type: "connector",
+      allowed_scopes: ["read:decision", "owner:assertion"],
+    });
+    const selector = {
+      work_id: workId,
+      intent_anchor_digest: intentAnchorDigest,
+      mode: "OWNER_MANUAL",
+      scope: {
+        adapter_ids: ["github"],
+        effect_types: ["github.merge"],
+        resource_ids: ["github:owner/repo"],
+        effect_reference_digests: [effectReferenceDigest],
+      },
+      effect_ceiling: ["github.merge"],
+      work_binding: workBinding,
+      ttl_seconds: 120,
+      break_glass_reason_digest: null,
+      idempotency_key: "manual-authority-oauth-boundary-1",
+      owner_confirmed: true,
+      confirmation_reference: "OAuth owner confirmation boundary test",
+    };
+    const legacyOwner = await request("POST", "/v1/host-native/owner-authority-envelopes", {
+      ...selector,
+      owner_context: signedOwnerContext(
+        OWNER_CONTEXT_SIGNING_SECRET,
+        "tenant-host-native",
+        selector,
+        "host_native_owner_authority_envelope_issue",
+      ),
+    }, ownerKey.json.key);
+    assert.equal(legacyOwner.status, 403, JSON.stringify(legacyOwner.json));
+    assert.equal(legacyOwner.json.error, "owner_oauth_confirmation_required");
+
+    const signedOAuth = signedOwnerContext(
+      OWNER_CONTEXT_SIGNING_SECRET,
+      "tenant-host-native",
+      selector,
+      "host_native_owner_authority_envelope_issue",
+      strictOAuthOwnerContextOptions("b"),
+    );
+    const tamperedJti = {
+      ...signedOAuth,
+      oauth_confirmation_jti: `ocj_${H("c")}`,
+    };
+    const tampered = await request("POST", "/v1/host-native/owner-authority-envelopes", {
+      ...selector,
+      owner_context: tamperedJti,
+    }, ownerKey.json.key);
+    assert.equal(tampered.status, 403, JSON.stringify(tampered.json));
+    assert.equal(tampered.json.error, "owner_oauth_confirmation_required");
+  });
+});
+
+test("provider-neutral OAuth owner manual-effect routes bind scope, signature, post-verification, and revocation", async () => {
+  const keys = crypto.generateKeyPairSync("ed25519");
+  const signer = createLocalGenericWorkCoreJoinSigner({
+    privateKey: keys.privateKey.export({ type: "pkcs8", format: "pem" }),
+    keyId: "host-native-api-manual-effect-key",
+  });
+  let adapterCalls = 0;
+  const effectReference = {
+    environment: "staging",
+    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+    repository: "owner/repo",
+    service_id: "svc-manual-effect",
+    target_commit: G("9"),
+  };
+  const effectReferenceDigest = genericWorkCoreJoinDigest(effectReference);
+  const workId = "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
+  const intentAnchorDigest = H("3");
+  const workBinding = ownerManualEffectWorkBinding({
+    workId,
+    intentAnchorDigest,
+    mode: "OWNER_MANUAL",
+    repository: "owner/repo",
+    allowedEffectTuples: [{
+      adapter_id: "render",
+      effect_type: "render.deploy",
+      resource_id: "render:svc-manual-effect:staging",
+      effect_reference_digest: effectReferenceDigest,
+    }],
+  });
+  await fixture({
+    hostNativeGovernanceEnabled: true,
+    hostNativeSigningSecret: "host-native-api-signing-secret-at-least-32-bytes",
+    ownerContextSigningSecret: OWNER_CONTEXT_SIGNING_SECRET,
+    dttAgentIdentitySigningSecret: CLOSURE_ATTESTATION_SECRET,
+    hostNativeRequiredChecksPolicyResolver: async () => API_REQUIRED_CHECKS_POLICY,
+    hostNativeRenderServiceOriginResolver: async ({
+      tenant_id, repository, service_id, environment,
+    }) => {
+      assert.equal(tenant_id, "tenant-host-native");
+      assert.equal(repository, "owner/repo");
+      assert.equal(service_id, "svc-manual-effect");
+      assert.equal(environment, "staging");
+      return "https://svc-manual-effect.onrender.com";
+    },
+    hostNativeReadbackFetchImpl: async (url, init) => {
+      assert.equal(url, "https://svc-manual-effect.onrender.com/healthz");
+      assert.equal(init.method, "GET");
+      adapterCalls += 1;
+      return new Response(JSON.stringify({
+        ok: true,
+        version: "manual-effect-test",
+        render_ready: true,
+        health_contract_version: "host_native_health_contract_v1",
+        health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+        build: {
+          build_id: "manual-effect-build",
+          commit_sha: G("9"),
+          commit_verifiable: true,
+        },
+      }), { headers: { "content-type": "application/json" } });
+    },
+    genericWorkCoreJoinEnabled: true,
+    genericWorkCoreJoinSigner: signer,
+  }, async (request) => {
+    const ownerKey = await request("POST", "/v1/keys/generate", {
+      tenant_id: "tenant-host-native",
+      key_type: "connector",
+      allowed_scopes: ["read:decision", "owner:assertion"],
+    });
+    const issueSelector = {
+      work_id: workId,
+      intent_anchor_digest: intentAnchorDigest,
+      mode: "OWNER_MANUAL",
+      scope: {
+        adapter_ids: ["render"],
+        effect_types: ["render.deploy"],
+        resource_ids: ["render:svc-manual-effect:staging"],
+        effect_reference_digests: [effectReferenceDigest],
+      },
+      effect_ceiling: ["render.deploy"],
+      work_binding: workBinding,
+      ttl_seconds: 120,
+      break_glass_reason_digest: null,
+      idempotency_key: "manual-authority-envelope-1",
+      owner_confirmed: true,
+      confirmation_reference: "OAuth owner confirmed the exact manual effect envelope",
+    };
+    const issue = await request("POST", "/v1/host-native/owner-authority-envelopes", {
+      ...issueSelector,
+      owner_context: signedOwnerContext(
+        OWNER_CONTEXT_SIGNING_SECRET,
+        "tenant-host-native",
+        issueSelector,
+        "host_native_owner_authority_envelope_issue",
+        strictOAuthOwnerContextOptions("d"),
+      ),
+    }, ownerKey.json.key);
+    assert.equal(issue.status, 201, JSON.stringify(issue.json));
+    const envelope = issue.json.owner_authority_envelope;
+    assert.equal(envelope.mode, "OWNER_MANUAL");
+    assert.equal(envelope.execution_authorized, false);
+    assert.equal(envelope.provider_execution, false);
+    assert.equal(envelope.ticket_issued, false);
+    assert.equal(envelope.authority_proof.proof_type, "owner_authority_envelope");
+
+    // The target ID is signed in the body and must agree with the route.  A
+    // valid owner context for this envelope cannot be transposed to another
+    // path before the envelope read reaches governance.
+    const envelopeReadSelector = {
+      envelope_id: envelope.envelope_id,
+      owner_confirmed: true,
+      confirmation_reference: "OAuth owner read the exact authority envelope",
+    };
+    const substitutedEnvelopeRead = await request(
+      "POST",
+      "/v1/host-native/owner-authority-envelopes/oae_manual-effect-other-123/read",
+      {
+        ...envelopeReadSelector,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          envelopeReadSelector,
+          "host_native_owner_authority_envelope_read",
+          strictOAuthOwnerContextOptions("6"),
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(substitutedEnvelopeRead.status, 400, JSON.stringify(substitutedEnvelopeRead.json));
+    assert.equal(
+      substitutedEnvelopeRead.json.error,
+      "owner_authority_envelope_path_binding_invalid",
+    );
+
+    const reconcileSelector = {
+      work_id: issueSelector.work_id,
+      intent_anchor_digest: issueSelector.intent_anchor_digest,
+      envelope_id: envelope.envelope_id,
+      adapter_id: "render",
+      effect_type: "render.deploy",
+      resource_id: "render:svc-manual-effect:staging",
+      effect_reference: effectReference,
+      work_binding: workBinding,
+      idempotency_key: "manual-effect-reconcile-1",
+      owner_confirmed: true,
+      confirmation_reference: "OAuth owner confirmed the exact verified manual effect",
+    };
+    const reconciled = await request(
+      "POST",
+      "/v1/host-native/actions/owner-manual-effect/reconcile",
+      {
+        ...reconcileSelector,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          reconcileSelector,
+          "host_native_owner_manual_effect_reconcile",
+          strictOAuthOwnerContextOptions("e"),
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(reconciled.status, 201, JSON.stringify(reconciled.json));
+    assert.equal(adapterCalls, 1);
+    assert.equal(reconciled.json.manual_effect_reconciliation.ticket_issued, false);
+    assert.equal(reconciled.json.manual_effect_reconciliation.retrospective_ticket_issued, false);
+    assert.equal(reconciled.json.manual_effect_reconciliation.execution_authorized, false);
+
+    const reconciliationReadSelector = {
+      reconciliation_id: reconciled.json.manual_effect_reconciliation.reconciliation_id,
+      owner_confirmed: true,
+      confirmation_reference: "OAuth owner read the exact manual-effect reconciliation",
+    };
+    const substitutedReconciliationRead = await request(
+      "POST",
+      "/v1/host-native/actions/owner-manual-effect/omer_manual-effect-other-123/read",
+      {
+        ...reconciliationReadSelector,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          reconciliationReadSelector,
+          "host_native_owner_manual_effect_reconciliation_read",
+          strictOAuthOwnerContextOptions("7"),
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(
+      substitutedReconciliationRead.status,
+      400,
+      JSON.stringify(substitutedReconciliationRead.json),
+    );
+    assert.equal(
+      substitutedReconciliationRead.json.error,
+      "owner_manual_effect_reconciliation_path_binding_invalid",
+    );
+
+    const closureSelector = {
+      reconciliation_id: reconciled.json.manual_effect_reconciliation.reconciliation_id,
+      work_binding: workBinding,
+      idempotency_key: "manual-effect-closure-1",
+      owner_confirmed: true,
+      confirmation_reference: "OAuth owner confirmed closure after post verification",
+    };
+    const substitutedClosure = await request(
+      "POST",
+      "/v1/host-native/actions/owner-manual-effect/omer_manual-effect-other-123/authorize-closure",
+      {
+        ...closureSelector,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          closureSelector,
+          "host_native_owner_manual_effect_authorize_closure",
+          strictOAuthOwnerContextOptions("f"),
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(substitutedClosure.status, 400, JSON.stringify(substitutedClosure.json));
+    assert.equal(
+      substitutedClosure.json.error,
+      "owner_manual_effect_reconciliation_path_binding_invalid",
+    );
+    const closed = await request(
+      "POST",
+      `/v1/host-native/actions/owner-manual-effect/${encodeURIComponent(
+        reconciled.json.manual_effect_reconciliation.reconciliation_id,
+      )}/authorize-closure`,
+      {
+        ...closureSelector,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          closureSelector,
+          "host_native_owner_manual_effect_authorize_closure",
+          strictOAuthOwnerContextOptions("f"),
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(closed.status, 200, JSON.stringify(closed.json));
+    assert.equal(closed.json.closure_authorized, true);
+    assert.equal(closed.json.authority_proof.proof_type, "owner_manual_effect_closure");
+    assert.equal(closed.json.authority_proof.provider_execution, false);
+    assert.equal(closed.json.authority_proof.retrospective_ticket_issued, false);
+
+    // The Work read is intentionally fresh on every retry. Its volatile
+    // verified_at timestamp must not make an already-authorized closure
+    // unrecoverable when a downstream V2 Gallery projection failed.
+    const retryBinding = {
+      ...workBinding,
+      verified_at: new Date().toISOString(),
+    };
+    const retrySelector = {
+      ...closureSelector,
+      work_binding: retryBinding,
+    };
+    const retried = await request(
+      "POST",
+      `/v1/host-native/actions/owner-manual-effect/${encodeURIComponent(
+        reconciled.json.manual_effect_reconciliation.reconciliation_id,
+      )}/authorize-closure`,
+      {
+        ...retrySelector,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          retrySelector,
+          "host_native_owner_manual_effect_authorize_closure",
+          strictOAuthOwnerContextOptions("f"),
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(retried.status, 200, JSON.stringify(retried.json));
+    assert.equal(
+      retried.json.authority_proof.proof_digest,
+      closed.json.authority_proof.proof_digest,
+    );
+
+    const secondSelector = {
+      ...issueSelector,
+      idempotency_key: "manual-authority-envelope-2",
+      confirmation_reference: "OAuth owner confirmed a second revocable envelope",
+    };
+    const second = await request("POST", "/v1/host-native/owner-authority-envelopes", {
+      ...secondSelector,
+      owner_context: signedOwnerContext(
+        OWNER_CONTEXT_SIGNING_SECRET,
+        "tenant-host-native",
+        secondSelector,
+        "host_native_owner_authority_envelope_issue",
+        strictOAuthOwnerContextOptions("1"),
+      ),
+    }, ownerKey.json.key);
+    assert.equal(second.status, 201, JSON.stringify(second.json));
+    const revokeSelector = {
+      envelope_id: second.json.owner_authority_envelope.envelope_id,
+      idempotency_key: "manual-authority-revoke-2",
+      owner_confirmed: true,
+      confirmation_reference: "OAuth owner revoked the envelope before any effect",
+    };
+    const substitutedRevoke = await request(
+      "POST",
+      "/v1/host-native/owner-authority-envelopes/oae_manual-effect-other-123/revoke",
+      {
+        ...revokeSelector,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          revokeSelector,
+          "host_native_owner_authority_envelope_revoke",
+          strictOAuthOwnerContextOptions("2"),
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(substitutedRevoke.status, 400, JSON.stringify(substitutedRevoke.json));
+    assert.equal(
+      substitutedRevoke.json.error,
+      "owner_authority_envelope_path_binding_invalid",
+    );
+    const revoked = await request(
+      "POST",
+      `/v1/host-native/owner-authority-envelopes/${encodeURIComponent(
+        second.json.owner_authority_envelope.envelope_id,
+      )}/revoke`,
+      {
+        ...revokeSelector,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          revokeSelector,
+          "host_native_owner_authority_envelope_revoke",
+          strictOAuthOwnerContextOptions("2"),
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(revoked.status, 200, JSON.stringify(revoked.json));
+    assert.equal(revoked.json.revocation.revocation_epoch, 1);
+    const revokedReconcileSelector = {
+      ...reconcileSelector,
+      envelope_id: second.json.owner_authority_envelope.envelope_id,
+      idempotency_key: "manual-effect-reconcile-revoked",
+      confirmation_reference: "OAuth owner attempted a revoked envelope",
+    };
+    const denied = await request(
+      "POST",
+      "/v1/host-native/actions/owner-manual-effect/reconcile",
+      {
+        ...revokedReconcileSelector,
+        owner_context: signedOwnerContext(
+          OWNER_CONTEXT_SIGNING_SECRET,
+          "tenant-host-native",
+          revokedReconcileSelector,
+          "host_native_owner_manual_effect_reconcile",
+          strictOAuthOwnerContextOptions("4"),
+        ),
+      },
+      ownerKey.json.key,
+    );
+    assert.equal(denied.status, 400);
+    assert.equal(denied.json.error, "owner_authority_envelope_binding_invalid");
+    assert.equal(adapterCalls, 1);
   });
 });
 

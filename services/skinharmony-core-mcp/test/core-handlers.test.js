@@ -7,6 +7,50 @@ const OWNER_CONTEXT_SECRET = "test-owner-context-signing-secret-0123456789";
 const TENANT_CONTEXT_SECRET = "test-tenant-context-signing-secret-0123456789";
 const TENANT_GATEWAY_KEY = "test-tenant-gateway-key-0123456789abcdef";
 
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  return `{${Object.keys(value || {}).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+}
+
+function manualWorkBinding({
+  tenantId = "tenant-a",
+  workId = "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6",
+  intentDigest = "a".repeat(64),
+  mode = "OWNER_MANUAL",
+  tuples = [{
+    adapter_id: "github",
+    effect_type: "github.merge",
+    resource_id: "github:owner/repo",
+    effect_reference_digest: "b".repeat(64),
+  }],
+} = {}) {
+  const timestamp = new Date().toISOString();
+  const unsigned = {
+    schema_version: "owner_manual_effect_work_binding_v1",
+    source: "mcp_work_continuity_v2",
+    tenant_id: tenantId,
+    work_id: workId,
+    intent_anchor_digest: intentDigest,
+    mode,
+    work_status: "active",
+    current_version: Date.parse(timestamp),
+    work_updated_at: timestamp,
+    repository: "owner/repo",
+    provider_execution: false,
+    allowed_effect_tuples: tuples,
+  };
+  return {
+    ...unsigned,
+    trusted: true,
+    verified_at: timestamp,
+    binding_digest: crypto.createHash("sha256").update(canonical(unsigned)).digest("hex"),
+  };
+}
+
 function expectedOwnerAssertion(secret, context) {
   const canonical = JSON.stringify({
     version: context.assertion_version,
@@ -16,6 +60,8 @@ function expectedOwnerAssertion(secret, context) {
     role: context.role,
     delegated_actor: context.delegated_actor,
     owner_verified: context.owner_verified,
+    oauth_owner_bound: context.oauth_owner_bound,
+    oauth_confirmation_jti: context.oauth_confirmation_jti,
     owner_subject_fingerprint: context.owner_subject_fingerprint,
     issued_at: context.issued_at,
     binding_version: context.binding_version,
@@ -25,6 +71,20 @@ function expectedOwnerAssertion(secret, context) {
   return `ocs_${crypto.createHmac("sha256", secret)
     .update(`owner-context\u0000${canonical}`)
     .digest("hex")}`;
+}
+
+function expectedManualAuthorityBindingHash(purpose, body) {
+  const { owner_context: _ownerContext, ...payload } = body;
+  if (payload.work_binding && typeof payload.work_binding === "object" &&
+      !Array.isArray(payload.work_binding)) {
+    payload.work_binding = {
+      ...payload.work_binding,
+      verified_at: "server_freshness_validated_at_core",
+    };
+  }
+  return crypto.createHash("sha256")
+    .update(`${purpose}\u0000${canonical(payload)}`)
+    .digest("hex");
 }
 
 test("maps MCP tools to Universal Core without forwarding the ChatGPT token", async () => {
@@ -1533,6 +1593,261 @@ test("owner manual merge bridge fails closed without an authenticated owner conf
   assert.equal(fetched, false);
 });
 
+test("typed manual-effect envelopes require the verified OAuth owner and forward only scoped evidence selectors", async () => {
+  let call = null;
+  const workBinding = manualWorkBinding();
+  const resolveOwnerManualEffectWorkBinding = async () => ({
+    work_binding: workBinding,
+    effect_reference: null,
+  });
+  Object.defineProperty(resolveOwnerManualEffectWorkBinding, "trusted", { value: true });
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+    godModeEnabled: true,
+    godModeTenantIds: ["tenant-a"],
+    godModeSubjects: ["codex-good-mode-subject"],
+  }, {
+    resolveOwnerManualEffectWorkBinding,
+    fetchImpl: async (url, init) => {
+      call = { url, init };
+      return new Response(JSON.stringify({
+        ok: true,
+        owner_authority_envelope: {
+          envelope_id: "oae_manual-effect-envelope-123",
+          provider_execution: false,
+          ticket_issued: false,
+        },
+      }), { status: 201, headers: { "content-type": "application/json" } });
+    },
+  });
+  const args = {
+    work_id: "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6",
+    intent_anchor_digest: "a".repeat(64),
+    mode: "OWNER_MANUAL",
+    scope: {
+      adapter_ids: ["github"],
+      effect_types: ["github.merge"],
+      resource_ids: ["github:owner/repo"],
+      effect_reference_digests: ["b".repeat(64)],
+    },
+    effect_ceiling: ["github.merge"],
+    ttl_seconds: 120,
+    idempotency_key: "owner-manual-effect-envelope-1",
+    // These caller fields are ignored: handler derives the confirmation from
+    // the verified identity, and normal mode gets an explicit null reason.
+    owner_confirmed: false,
+    confirmation_reference: "untrusted",
+    break_glass_reason_digest: undefined,
+  };
+  const oauthIdentity = {
+    tenantId: "tenant-a",
+    kind: "oauth",
+    subject: "auth0|manual-effect-owner",
+    role: "tenant_owner",
+    oauthOwnerBound: true,
+    oauthOwnerElevated: true,
+    ownerConfirmed: true,
+    confirmationReference: "OAuth owner confirmed one exact manual effect envelope",
+    ownerConfirmationJti: `ocj_${"c".repeat(64)}`,
+  };
+  await handlers.host_native_owner_authority_envelope_issue(args, oauthIdentity);
+  assert.equal(new URL(call.url).pathname, "/v1/host-native/owner-authority-envelopes");
+  const body = JSON.parse(call.init.body);
+  assert.equal(body.owner_confirmed, true);
+  assert.equal(body.confirmation_reference, oauthIdentity.confirmationReference);
+  assert.equal(body.break_glass_reason_digest, null);
+  assert.deepEqual(body.scope, args.scope);
+  assert.deepEqual(body.effect_ceiling, ["github.merge"]);
+  assert.deepEqual(body.work_binding, workBinding);
+  assert.equal(body.owner_context.oauth_owner_bound, true);
+  assert.equal(body.owner_context.oauth_confirmation_jti, oauthIdentity.ownerConfirmationJti);
+  assert.equal(body.owner_context.assertion,
+    expectedOwnerAssertion(OWNER_CONTEXT_SECRET, body.owner_context));
+
+  call = null;
+  await assert.rejects(handlers.host_native_owner_authority_envelope_issue(args, {
+    tenantId: "tenant-a",
+    kind: "codex",
+    subject: "codex-good-mode-subject",
+    role: "owner_root",
+    godMode: true,
+    ownerConfirmed: true,
+    confirmationReference: "Codex Good Mode must not mint OAuth envelopes",
+  }), /owner_oauth_confirmation_required/);
+  assert.equal(call, null);
+});
+
+test("manual-effect MCP derives Work bindings server-side for issue, reconcile, and closure", async () => {
+  const calls = [];
+  const workId = "14794fa6-2cdc-5f6a-8e68-211ff12c8cc6";
+  const intentDigest = "a".repeat(64);
+  const serverEffectReference = {
+    repository: "owner/repo",
+    pull_request: 394,
+    merge_commit: "b".repeat(40),
+  };
+  // The public tool can only assert this value.  The trusted resolver returns
+  // the canonical Work-bound descriptor and the handler must never forward
+  // the substituted caller object to Universal Core.
+  const effectReference = { ...serverEffectReference, pull_request: 395 };
+  const referenceDigest = crypto.createHash("sha256")
+    .update(canonical(serverEffectReference)).digest("hex");
+  const reconciliation = {
+    reconciliation_id: "omer_manual-effect-reconciliation-123",
+    work_id: workId,
+    intent_anchor_digest: intentDigest,
+    mode: "OWNER_MANUAL",
+    adapter_id: "github",
+    effect_type: "github.merge",
+    resource_id: "github:owner/repo",
+    effect_reference_digest: referenceDigest,
+  };
+  const resolveOwnerManualEffectWorkBinding = async (_identity, request) => {
+    const tuples = request.selector ? [{
+      ...request.selector,
+      effect_reference_digest: request.selector.effect_reference_digest || referenceDigest,
+    }] : request.scope.effect_reference_digests.map(
+      (effect_reference_digest) => ({
+        adapter_id: request.scope.adapter_ids[0],
+        effect_type: request.scope.effect_types[0],
+        resource_id: request.scope.resource_ids[0],
+        effect_reference_digest,
+      }),
+    );
+    const workBinding = manualWorkBinding({
+      workId: request.work_id,
+      intentDigest: request.intent_anchor_digest,
+      mode: request.mode,
+      tuples,
+    });
+    return {
+      work_binding: workBinding,
+      effect_reference: request.phase === "reconcile" ? structuredClone(serverEffectReference) : null,
+    };
+  };
+  Object.defineProperty(resolveOwnerManualEffectWorkBinding, "trusted", { value: true });
+  const handlers = createCoreHandlers({
+    universalCoreUrl: "https://core.test",
+    universalCoreKeys: { "tenant-a": "tenant-a-key" },
+    ownerContextSigningSecret: OWNER_CONTEXT_SECRET,
+    tenantContextSigningSecret: TENANT_CONTEXT_SECRET,
+  }, {
+    resolveOwnerManualEffectWorkBinding,
+    fetchImpl: async (url, init) => {
+      const path = new URL(url).pathname;
+      const body = JSON.parse(init.body);
+      calls.push({ path, body });
+      if (path.endsWith("/read") && path.includes("owner-authority-envelopes")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          owner_authority_envelope: { envelope: { work_id: workId, intent_anchor_digest: intentDigest, mode: "OWNER_MANUAL" } },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (path.endsWith("/read") && path.includes("owner-manual-effect")) {
+        return new Response(JSON.stringify({ ok: true, manual_effect_reconciliation: reconciliation }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      if (path.endsWith("/authorize-closure")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          manual_effect_reconciliation: reconciliation,
+          authority_proof: { proof_digest: "c".repeat(64) },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (path.endsWith("/reconcile")) {
+        return new Response(JSON.stringify({ ok: true, manual_effect_reconciliation: reconciliation }), {
+          status: 201, headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true, owner_authority_envelope: { envelope_id: "oae_manual-effect-envelope-123" } }), {
+        status: 201, headers: { "content-type": "application/json" },
+      });
+    },
+    tenantWorkGallery: {
+      recordOwnerManualEffectReleaseEvidence: async () => ({
+        work_id: workId, adapter: "software_git", reconciliation_id: reconciliation.reconciliation_id,
+        authority_proof_digest: "c".repeat(64), evidence_id: "evidence-123", evidence_digest: "d".repeat(64),
+      }),
+      finalizeGenericClosure: async () => ({ archive_status: "completed", receipt: { receipt_digest: "e".repeat(64) } }),
+    },
+  });
+  const identity = {
+    tenantId: "tenant-a", kind: "oauth", subject: "auth0|manual-owner", role: "tenant_owner",
+    oauthOwnerBound: true, oauthOwnerElevated: true, ownerConfirmed: true,
+    confirmationReference: "fresh verified OAuth confirmation", ownerConfirmationJti: `ocj_${"f".repeat(64)}`,
+  };
+  const scope = {
+    adapter_ids: ["github"], effect_types: ["github.merge"], resource_ids: ["github:owner/repo"],
+    effect_reference_digests: [referenceDigest],
+  };
+  await handlers.host_native_owner_authority_envelope_issue({
+    work_id: workId, intent_anchor_digest: intentDigest, mode: "OWNER_MANUAL", scope,
+    effect_ceiling: ["github.merge"], ttl_seconds: 120, idempotency_key: "issue-manual-effect-1",
+  }, identity);
+  await handlers.host_native_owner_authority_envelope_read({
+    envelope_id: "oae_manual-effect-envelope-123",
+  }, identity);
+  await handlers.host_native_owner_authority_envelope_revoke({
+    envelope_id: "oae_manual-effect-envelope-123",
+    idempotency_key: "revoke-manual-effect-1",
+  }, identity);
+  await handlers.host_native_owner_manual_effect_reconcile({
+    work_id: workId, intent_anchor_digest: intentDigest, envelope_id: "oae_manual-effect-envelope-123",
+    adapter_id: "github", effect_type: "github.merge", resource_id: "github:owner/repo",
+    effect_reference: effectReference, idempotency_key: "reconcile-manual-effect-1",
+  }, identity);
+  await handlers.host_native_owner_manual_effect_finalize_gallery({
+    reconciliation_id: reconciliation.reconciliation_id, idempotency_key: "close-manual-effect-1",
+  }, identity);
+  const mutating = calls.filter(({ path }) =>
+    path.endsWith("/owner-authority-envelopes") || path.endsWith("/reconcile") || path.endsWith("/authorize-closure"));
+  assert.equal(mutating.length, 3);
+  assert(mutating.every(({ body }) => body.work_binding?.trusted === true));
+  assert(mutating.every(({ body }) => body.owner_context?.oauth_owner_bound === true));
+  assert(mutating.every(({ body }) => body.owner_context?.oauth_confirmation_jti === identity.ownerConfirmationJti));
+  const reconcileCall = mutating.find(({ path }) => path.endsWith("/reconcile"));
+  assert.deepEqual(reconcileCall.body.effect_reference, serverEffectReference);
+  assert.notDeepEqual(reconcileCall.body.effect_reference, effectReference);
+  const envelopeReads = calls.filter(({ path }) =>
+    path.endsWith("/read") && path.includes("owner-authority-envelopes"));
+  assert.equal(envelopeReads.length, 2);
+  assert(envelopeReads.every(({ body }) => body.envelope_id === "oae_manual-effect-envelope-123"));
+  const revokeCall = calls.find(({ path }) => path.endsWith("/revoke"));
+  assert.equal(revokeCall.body.envelope_id, "oae_manual-effect-envelope-123");
+  const reconciliationReadCall = calls.find(({ path }) =>
+    path.endsWith("/read") && path.includes("owner-manual-effect"));
+  assert.equal(reconciliationReadCall.body.reconciliation_id, reconciliation.reconciliation_id);
+  const closureCall = calls.find(({ path }) => path.endsWith("/authorize-closure"));
+  assert.equal(closureCall.body.reconciliation_id, reconciliation.reconciliation_id);
+  for (const { call, purpose } of [
+    ...envelopeReads.map((call) => ({
+      call,
+      purpose: "host_native_owner_authority_envelope_read",
+    })),
+    {
+      call: revokeCall,
+      purpose: "host_native_owner_authority_envelope_revoke",
+    },
+    {
+      call: reconciliationReadCall,
+      purpose: "host_native_owner_manual_effect_reconciliation_read",
+    },
+    {
+      call: closureCall,
+      purpose: "host_native_owner_manual_effect_authorize_closure",
+    },
+  ]) {
+    assert.equal(call.body.owner_context.assertion,
+      expectedOwnerAssertion(OWNER_CONTEXT_SECRET, call.body.owner_context));
+    assert.equal(call.body.owner_context.binding_hash,
+      expectedManualAuthorityBindingHash(purpose, call.body));
+  }
+});
+
 test("owner-confirmed manual merge finalizer projects Core evidence then uses normal Gallery closure", async () => {
   const calls = [];
   const galleryCalls = [];
@@ -2128,6 +2443,7 @@ test("write guard gives a fresh OAuth tenant owner a request-bound continuity bo
     kind: "oauth",
     subject: "auth0|bound-tenant-owner",
     role: "tenant_owner",
+    oauthOwnerBound: true,
     oauthOwnerElevated: true,
     ownerConfirmed: true,
     confirmationReference: "create the first client Work Identity",

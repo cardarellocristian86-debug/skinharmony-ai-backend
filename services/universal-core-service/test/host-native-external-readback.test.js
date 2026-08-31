@@ -4,15 +4,25 @@ import test from "node:test";
 
 import {
   createHostNativeExternalReadbackVerifier,
+  createHostNativeManualEffectAdapterRegistry,
+  createHostNativeNyraCoreManualEffectAdapter,
   createHostNativeOwnerManualMergeReadbackVerifier,
+  createHostNativeRenderManualEffectAdapter,
   createHostNativeReleaseJoinVerdictResolver,
+  nyraCoreRepairActionDigest,
 } from "../src/hostNativeExternalReadback.js";
+import {
+  genericWorkCoreJoinDigest,
+} from "../src/genericWorkCoreJoin.js";
 import {
   HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
   HOST_NATIVE_HEALTH_CONTRACT_VERSION,
   hostNativeDigest,
   hostNativeGithubDiffDigest,
 } from "../src/hostNativeGovernance.js";
+import {
+  createNyraSignedReceipt,
+} from "../../shared/nyra-work-automation-receipts.js";
 
 const BASE = "1".repeat(40);
 const HEAD = "2".repeat(40);
@@ -21,6 +31,7 @@ const ALTERNATE = "4".repeat(40);
 const TREE = "5".repeat(40);
 const RELEASE_CHANGED_FILES = ["services/universal-core-service/src/app.js"];
 const VERIFIED_AT = "2026-07-29T12:00:00.000Z";
+const PRE_ENVELOPE_REPAIR_AT = "2026-07-29T11:59:00.000Z";
 const WORKFLOW_SOURCE = "name: Nyra Core Intelligence\non: [pull_request, push]\n";
 const WORKFLOW_SHA256 = crypto
   .createHash("sha256")
@@ -3546,4 +3557,225 @@ test("release-join resolver rejects untrusted, failed-check, or mismatched PR ev
       );
     });
   }
+});
+
+test("manual Render reconciliation reuses the full health contract", async (t) => {
+  const reference = {
+    environment: "staging",
+    health_contract_digest: HOST_NATIVE_HEALTH_CONTRACT_DIGEST,
+    repository: "owner/repo",
+    service_id: "service-a",
+    target_commit: TARGET,
+  };
+  const request = {
+    tenant_id: "tenant-a",
+    adapter_id: "render",
+    effect_type: "render.deploy",
+    resource_id: "render:service-a:staging",
+    effect_reference: reference,
+    effect_reference_digest: hostNativeDigest(reference),
+  };
+  const adapterFor = (health) => createHostNativeRenderManualEffectAdapter({
+    renderServiceOriginResolver: async (scope) => {
+      assert.deepEqual(scope, {
+        tenant_id: "tenant-a",
+        repository: "owner/repo",
+        service_id: "service-a",
+        environment: "staging",
+      });
+      return "https://service-a.onrender.com";
+    },
+    fetchImpl: async (url, init) => {
+      assert.equal(url, "https://service-a.onrender.com/healthz");
+      assert.equal(init.method, "GET");
+      return jsonResponse(health);
+    },
+    now: () => Date.parse(VERIFIED_AT),
+  });
+  const observation = await adapterFor(serviceHealth("service-a", {
+    build: { build_id: "manual-render", commit_sha: TARGET, commit_verifiable: true },
+  })).reconcile(request);
+  assert.equal(observation.outcome, "VERIFIED_SUCCESS");
+  assert.equal(observation.provider_execution, false);
+  assert.equal(observation.external_side_effect, false);
+
+  for (const [name, health] of [
+    ["missing version", serviceHealth("service-a", {
+      version: "", build: { build_id: "manual-render", commit_sha: TARGET, commit_verifiable: true },
+    })],
+    ["missing build id", serviceHealth("service-a", {
+      build: { build_id: "", commit_sha: TARGET, commit_verifiable: true },
+    })],
+    ["wrong contract version", serviceHealth("service-a", {
+      health_contract_version: "other_contract",
+      build: { build_id: "manual-render", commit_sha: TARGET, commit_verifiable: true },
+    })],
+  ]) {
+    await t.test(name, async () => assert.rejects(
+      adapterFor(health).reconcile(request),
+      /owner_manual_effect_render_health_mismatch/,
+    ));
+  }
+});
+
+test("manual Nyra/Core reconciliation accepts only the server-owned GET bridge and its signed v3 repair receipt", async () => {
+  const signingSecret = "n".repeat(64);
+  const selector = {
+    tenant_id: "tenant-a",
+    work_id: "work-a",
+    intent_anchor_digest: "a".repeat(64),
+    mode: "OWNER_BREAK_GLASS",
+    adapter_id: "nyra_core",
+    effect_type: "nyra_core.self_repair.commit",
+    resource_id: "nyra_core:owner/repo:main:services/nyra-core",
+  };
+  function signedRepair({
+    workId = selector.work_id,
+    intentAnchorDigest = selector.intent_anchor_digest,
+    repairActionId = "nra_work-a-repair",
+    repairActionDigest = null,
+    repairReceiptId = "nrr_work-a-repair",
+    receiptObservedAt = PRE_ENVELOPE_REPAIR_AT,
+  } = {}) {
+    const referenceBase = {
+      repository: "owner/repo",
+      branch: "main",
+      path: "services/nyra-core",
+      commit: TARGET,
+      repair_action_id: repairActionId,
+      repair_receipt_id: repairReceiptId,
+    };
+    const actionDigest = repairActionDigest || nyraCoreRepairActionDigest({
+      ...selector,
+      ...referenceBase,
+      work_id: workId,
+      intent_anchor_digest: intentAnchorDigest,
+    });
+    const receipt = createNyraSignedReceipt({
+      schema_version: "nyra_core_repair_receipt_v1",
+      tenant_id: selector.tenant_id,
+      work_id: workId,
+      intent_anchor_digest: intentAnchorDigest,
+      mode: selector.mode,
+      adapter_id: selector.adapter_id,
+      effect_type: selector.effect_type,
+      resource_id: selector.resource_id,
+      repository: referenceBase.repository,
+      branch: referenceBase.branch,
+      path: referenceBase.path,
+      commit: referenceBase.commit,
+      repair_action_id: repairActionId,
+      repair_action_digest: actionDigest,
+      repair_receipt_id: repairReceiptId,
+      read_only: true,
+      provider_execution: false,
+      external_side_effect: false,
+      evidence_digest: "e".repeat(64),
+      // The repair is completed before the owner envelope. The later Core
+      // GET is the fresh post-verification event, not this historical fact.
+      observed_at: receiptObservedAt,
+    }, {
+      secret: signingSecret,
+      // The signed receipt is issued before the later owner envelope/Core
+      // readback, but stays inside the adapter's bounded receipt-age window.
+      now: () => Date.parse(PRE_ENVELOPE_REPAIR_AT),
+    });
+    return {
+      reference: {
+        ...referenceBase,
+        repair_action_digest: actionDigest,
+        repair_receipt_digest: receipt.receipt_digest,
+      },
+      receipt,
+    };
+  }
+  const repairA = signedRepair();
+  const request = {
+    ...selector,
+    effect_reference: repairA.reference,
+    effect_reference_digest: genericWorkCoreJoinDigest(repairA.reference),
+  };
+  const readbackFor = (receipt) => ({
+    schema_version: "nyra_core_manual_effect_readback_v3",
+    trusted: true,
+    verified: true,
+    read_only: true,
+    transport: "GET",
+    provider_execution: false,
+    external_side_effect: false,
+    adapter_id: selector.adapter_id,
+    effect_type: selector.effect_type,
+    resource_id: selector.resource_id,
+    effect_reference_digest: request.effect_reference_digest,
+    tenant_id: selector.tenant_id,
+    work_id: selector.work_id,
+    intent_anchor_digest: selector.intent_anchor_digest,
+    mode: selector.mode,
+    repair_receipt: receipt,
+  });
+  const untrustedRegistry = createHostNativeManualEffectAdapterRegistry({
+    nyraCoreAdapter: { trusted: true, reconcile: async () => ({}) },
+  });
+  assert.equal(untrustedRegistry.nyra_core, undefined);
+  const callbackRegistry = createHostNativeManualEffectAdapterRegistry({
+    nyraCoreReadbackResolver: async () => ({ transport: "POST" }),
+  });
+  assert.equal(callbackRegistry.nyra_core, undefined);
+
+  const adapterFor = (readback) => createHostNativeNyraCoreManualEffectAdapter({
+    nyraCoreReadbackOrigin: "https://nyra-core.example.test",
+    nyraCoreRepairReceiptSigningSecret: signingSecret,
+    fetchImpl: async (url, init) => {
+      const endpoint = new URL(url);
+      assert.equal(endpoint.origin, "https://nyra-core.example.test");
+      assert.equal(endpoint.pathname, "/v1/host-native/manual-effect-readback");
+      assert.equal(init.method, "GET");
+      assert.equal(init.headers.accept, "application/json");
+      for (const [field, value] of Object.entries({
+        ...selector,
+        effect_reference_digest: request.effect_reference_digest,
+      })) assert.equal(endpoint.searchParams.get(field), value);
+      return jsonResponse(readback);
+    },
+    now: () => Date.parse(VERIFIED_AT),
+  });
+  assert.equal(createHostNativeNyraCoreManualEffectAdapter({
+    nyraCoreReadbackOrigin: "https://nyra-core.example.test",
+    fetchImpl: async () => jsonResponse(readbackFor(repairA.receipt)),
+  }), null);
+  const adapter = adapterFor(readbackFor(repairA.receipt));
+  assert.equal(adapter?.trusted, true);
+  const observation = await adapter.reconcile(request);
+  assert.equal(observation.adapter_id, "nyra_core");
+  assert.equal(observation.provider_execution, false);
+  assert.equal(observation.external_side_effect, false);
+  assert.equal(observation.post_verification.verified, true);
+  assert.equal(observation.observed_at, VERIFIED_AT);
+  assert.equal(observation.post_verification.verified_at, VERIFIED_AT);
+
+  // A signed receipt for Work B can name the same repository/path/commit and
+  // even reuse the descriptor identifiers.  The v3 verifier must still bind
+  // the response to Work A's tenant, Work, intent and immutable action.
+  const repairB = signedRepair({
+    workId: "work-b",
+    intentAnchorDigest: "b".repeat(64),
+    repairActionId: repairA.reference.repair_action_id,
+    repairActionDigest: repairA.reference.repair_action_digest,
+    repairReceiptId: repairA.reference.repair_receipt_id,
+  });
+  await assert.rejects(
+    adapterFor(readbackFor(repairB.receipt)).reconcile(request),
+    /owner_manual_effect_nyra_core_readback_invalid/,
+  );
+
+  const corruptedReceipt = {
+    ...repairA.receipt,
+    signature: `${repairA.receipt.signature.slice(0, -1)}${
+      repairA.receipt.signature.endsWith("0") ? "1" : "0"
+    }`,
+  };
+  await assert.rejects(
+    adapterFor(readbackFor(corruptedReceipt)).reconcile(request),
+    /owner_manual_effect_nyra_core_readback_invalid/,
+  );
 });

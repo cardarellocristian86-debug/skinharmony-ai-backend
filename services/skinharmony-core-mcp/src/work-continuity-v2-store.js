@@ -158,6 +158,37 @@ const GENERIC_WORK_CORE_JOIN_KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/;
 const GENERIC_WORK_CORE_JOIN_ID = GENERIC_WORK_CORE_JOIN_KEY_ID;
 const GENERIC_WORK_CORE_JOIN_ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const GENERIC_WORK_CORE_JOIN_BASE64URL = /^[A-Za-z0-9_-]+$/;
+const OWNER_MANUAL_EFFECT_WORK_BINDING_SCHEMA_VERSION =
+  "owner_manual_effect_work_binding_v1";
+const OWNER_MANUAL_EFFECT_WORK_BINDING_FIELDS = Object.freeze([
+  "allowed_effect_tuples",
+  "binding_digest",
+  "current_version",
+  "intent_anchor_digest",
+  "mode",
+  "provider_execution",
+  "repository",
+  "schema_version",
+  "source",
+  "tenant_id",
+  "trusted",
+  "verified_at",
+  "work_id",
+  "work_status",
+  "work_updated_at",
+]);
+const OWNER_MANUAL_EFFECT_WORK_BINDING_TUPLE_FIELDS = Object.freeze([
+  "adapter_id",
+  "effect_reference_digest",
+  "effect_type",
+  "resource_id",
+]);
+const OWNER_MANUAL_EFFECT_BREAK_GLASS_EFFECTS = new Set([
+  "nyra_core.self_repair.commit",
+  "nyra_core.self_repair.push_branch",
+  "nyra_core.self_repair.draft_pr",
+]);
+const OWNER_MANUAL_EFFECT_WORK_BINDING_MAX_AGE_MS = 5 * 60_000;
 const GENERIC_WORK_CORE_JOIN_VERDICT_FIELDS = Object.freeze([
   "acceptance_criteria_digest", "adapter", "authority", "decision", "evidence_digest",
   "execution_authorized", "host_action_authorized", "idempotency_digest",
@@ -218,6 +249,168 @@ function stable(value) {
 }
 function objectDigest(value) {
   return crypto.createHash("sha256").update(JSON.stringify(stable(value))).digest("hex");
+}
+
+function exactIsoTimestamp(value) {
+  if (typeof value !== "string" ||
+      !GENERIC_WORK_CORE_JOIN_ISO_TIMESTAMP.test(value)) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
+    ? parsed
+    : null;
+}
+
+function ownerManualEffectIdentifier(value) {
+  return typeof value === "string" && GENERIC_WORK_CORE_JOIN_ID.test(value)
+    ? value
+    : null;
+}
+
+function ownerManualEffectResource(value) {
+  return typeof value === "string" &&
+    /^[A-Za-z0-9][A-Za-z0-9._:/-]{2,254}$/.test(value)
+    ? value
+    : null;
+}
+
+function ownerManualEffectModeAndReason(mode, reason, code) {
+  if (!["OWNER_MANUAL", "OWNER_BREAK_GLASS"].includes(mode)) fail(code);
+  const normalizedReason = reason === null
+    ? null
+    : typeof reason === "string" && HASH.test(reason)
+      ? reason
+      : fail(code);
+  if ((mode === "OWNER_BREAK_GLASS") !== Boolean(normalizedReason)) fail(code);
+  return { mode, break_glass_reason_digest: normalizedReason };
+}
+
+function ownerManualEffectBindingTuple(value, code) {
+  if (!exactObjectKeys(value, OWNER_MANUAL_EFFECT_WORK_BINDING_TUPLE_FIELDS)) fail(code);
+  const tuple = {
+    adapter_id: ownerManualEffectIdentifier(value.adapter_id),
+    effect_type: ownerManualEffectIdentifier(value.effect_type),
+    resource_id: ownerManualEffectResource(value.resource_id),
+    effect_reference_digest: typeof value.effect_reference_digest === "string" &&
+      HASH.test(value.effect_reference_digest)
+      ? value.effect_reference_digest
+      : null,
+  };
+  if (Object.values(tuple).some((entry) => entry === null)) fail(code);
+  return tuple;
+}
+
+function ownerManualEffectBindingAllowsTuple(binding, selector) {
+  return binding.allowed_effect_tuples.some((tuple) =>
+    tuple.adapter_id === selector.adapter_id &&
+    tuple.effect_type === selector.effect_type &&
+    tuple.resource_id === selector.resource_id &&
+    tuple.effect_reference_digest === selector.effect_reference_digest);
+}
+
+function ownerManualEffectRuntimeWorkStatus(value) {
+  // The V2 runtime models a release-ready Work as HANDOFF, while the signed
+  // owner manual-effect binding uses the legacy-compatible release_ready
+  // vocabulary.  Keep the comparison aligned with the server-owned resolver.
+  const status = String(value || "").trim().toUpperCase();
+  if (status === "HANDOFF") return "release_ready";
+  return status.toLowerCase();
+}
+
+function verifiedOwnerManualEffectWorkBinding(binding, expected, {
+  work = null,
+  nowValue,
+} = {}) {
+  const code = "owner_manual_effect_release_work_binding_invalid";
+  if (!exactObjectKeys(binding, OWNER_MANUAL_EFFECT_WORK_BINDING_FIELDS)) fail(code);
+  const tenantId = ownerManualEffectIdentifier(binding.tenant_id);
+  const workId = ownerManualEffectIdentifier(binding.work_id);
+  const intentDigest = typeof binding.intent_anchor_digest === "string" &&
+    HASH.test(binding.intent_anchor_digest)
+    ? binding.intent_anchor_digest
+    : null;
+  const repository = ownerManualEffectResource(binding.repository);
+  const verifiedAt = exactIsoTimestamp(binding.verified_at);
+  const workUpdatedAt = exactIsoTimestamp(binding.work_updated_at);
+  const { mode } = ownerManualEffectModeAndReason(
+    binding.mode,
+    expected.break_glass_reason_digest,
+    code,
+  );
+  if (
+    binding.schema_version !== OWNER_MANUAL_EFFECT_WORK_BINDING_SCHEMA_VERSION ||
+    binding.source !== "mcp_work_continuity_v2" ||
+    binding.trusted !== true ||
+    binding.provider_execution !== false ||
+    tenantId === null || workId === null || intentDigest === null || repository === null ||
+    !["active", "verified", "release_ready"].includes(binding.work_status) ||
+    !Number.isSafeInteger(binding.current_version) || binding.current_version < 1 ||
+    !Number.isFinite(nowValue) ||
+    !Number.isFinite(verifiedAt) || !Number.isFinite(workUpdatedAt) ||
+    !Array.isArray(binding.allowed_effect_tuples) ||
+    binding.allowed_effect_tuples.length < 1 || binding.allowed_effect_tuples.length > 32 ||
+    typeof binding.binding_digest !== "string" || !HASH.test(binding.binding_digest) ||
+    tenantId !== expected.tenant_id || workId !== expected.work_id ||
+    intentDigest !== expected.intent_anchor_digest || mode !== expected.mode ||
+    verifiedAt > nowValue + 30_000 ||
+    nowValue - verifiedAt > OWNER_MANUAL_EFFECT_WORK_BINDING_MAX_AGE_MS ||
+    workUpdatedAt > verifiedAt + 30_000
+  ) fail(code);
+  const tuples = binding.allowed_effect_tuples.map((tuple) =>
+    ownerManualEffectBindingTuple(tuple, code));
+  const tupleDigests = tuples.map((tuple) => objectDigest(tuple));
+  if (tupleDigests.some((entry, index) => index > 0 &&
+      entry.localeCompare(tupleDigests[index - 1]) <= 0)) {
+    fail(code);
+  }
+  const unsigned = {
+    schema_version: OWNER_MANUAL_EFFECT_WORK_BINDING_SCHEMA_VERSION,
+    source: binding.source,
+    tenant_id: tenantId,
+    work_id: workId,
+    intent_anchor_digest: intentDigest,
+    mode,
+    work_status: binding.work_status,
+    current_version: binding.current_version,
+    work_updated_at: binding.work_updated_at,
+    repository,
+    provider_execution: false,
+    allowed_effect_tuples: tuples,
+  };
+  if (binding.binding_digest !== objectDigest(unsigned)) fail(code);
+  const normalized = {
+    ...unsigned,
+    trusted: true,
+    verified_at: binding.verified_at,
+    binding_digest: binding.binding_digest,
+  };
+  if (!ownerManualEffectBindingAllowsTuple(normalized, expected)) fail(code);
+  if (tuples.some((tuple) => tuple.adapter_id === "github" && (
+    !tuple.effect_type.startsWith("github.") ||
+    tuple.resource_id !== `github:${repository}`
+  ))) fail(code);
+  if (mode === "OWNER_BREAK_GLASS") {
+    if (expected.adapter_id !== "nyra_core" ||
+        !OWNER_MANUAL_EFFECT_BREAK_GLASS_EFFECTS.has(expected.effect_type) ||
+        !String(expected.resource_id || "").startsWith("nyra_core:")) {
+      fail(code);
+    }
+  } else if (expected.adapter_id === "nyra_core") {
+    fail(code);
+  }
+  if (work) {
+    const workUpdated = canonicalTimestamp(work.updated_at);
+    if (
+      work.tenant_id !== tenantId || work.work_id !== workId ||
+      work.intent_digest !== intentDigest ||
+      ownerManualEffectRuntimeWorkStatus(work.status) !== binding.work_status ||
+      workUpdated !== binding.work_updated_at ||
+      !Number.isSafeInteger(Date.parse(String(workUpdated || ""))) ||
+      binding.current_version !== Date.parse(workUpdated) ||
+      !plainRecord(work.architecture) ||
+      work.architecture.repository !== repository
+    ) fail(code);
+  }
+  return normalized;
 }
 
 function nativePlanSupersessionDigest(rows = []) {
@@ -2967,6 +3160,304 @@ export function createWorkContinuityV2Store({
       ...(outcome.event ? { event: outcome.event } : {}),
     });
   }
+  async function recordOwnerManualEffectReleaseEvidence(identity, source = {}) {
+    // This is intentionally a separate bridge from the legacy GitHub merge
+    // path.  It accepts only a Core-signed, provider-neutral reconciliation;
+    // it never manufactures an action ticket for an effect that already
+    // happened.
+    await initialize();
+    const actor = actorFromIdentity(identity);
+    const reconciliation = plainRecord(source.manual_effect_reconciliation)
+      ? source.manual_effect_reconciliation
+      : null;
+    const proof = plainRecord(source.authority_proof) ? source.authority_proof : null;
+    const reconciliationFields = [
+      "action_authorized", "adapter_id", "authority_envelope_digest",
+      "authority_envelope_id", "break_glass_reason_digest", "closure_state",
+      "effect_reference_digest",
+      "effect_type", "evidence_digest", "execution_authorized",
+      "external_side_effect", "intent_anchor_digest", "observed_at",
+      "mode", "observation_digest", "outcome", "owner_subject_fingerprint",
+      "post_verification_digest", "provider_execution", "reconciled_at",
+      "reconciliation_digest", "reconciliation_id", "resource_id",
+      "retrospective_ticket_issued", "schema_version", "tenant_id",
+      "ticket_issued", "work_binding", "work_binding_digest", "work_id",
+    ];
+    const proofFields = [
+      "authority", "authority_envelope_digest", "authority_envelope_id",
+      "break_glass_reason_digest", "closure_authorized", "effect_ceiling_digest",
+      "execution_authorized",
+      "expires_at", "host_policy_override", "intent_anchor_digest", "issued_at",
+      "key_id", "mode", "owner_subject_fingerprint", "post_verification_digest",
+      "proof_digest", "proof_id", "proof_type", "provider_execution",
+      "reconciliation_digest", "reconciliation_id", "retrospective_ticket_issued",
+      "revocation_epoch", "schema_version", "scope_digest", "signature",
+      "signature_algorithm", "signature_domain", "tenant_id", "ticket_issued",
+      "work_binding_digest", "work_id",
+    ];
+    const workId = uuid(reconciliation?.work_id, "owner_manual_effect_release_work_invalid");
+    const reconciliationUnsigned = reconciliation && { ...reconciliation };
+    if (reconciliationUnsigned) delete reconciliationUnsigned.reconciliation_digest;
+    const proofUnsigned = proof && { ...proof };
+    if (proofUnsigned) {
+      delete proofUnsigned.proof_digest;
+      delete proofUnsigned.signature;
+    }
+    const issuedAt = Date.parse(String(proof?.issued_at || ""));
+    const expiresAt = Date.parse(String(proof?.expires_at || ""));
+    const observedAt = Date.parse(String(reconciliation?.observed_at || ""));
+    const reconciledAt = Date.parse(String(reconciliation?.reconciled_at || ""));
+    const ownerFingerprint = String(reconciliation?.owner_subject_fingerprint || "").toLowerCase();
+    const reconciliationMode = reconciliation
+      ? ownerManualEffectModeAndReason(
+        reconciliation.mode,
+        reconciliation.break_glass_reason_digest,
+        "owner_manual_effect_release_work_binding_invalid",
+      )
+      : null;
+    const proofMode = proof
+      ? ownerManualEffectModeAndReason(
+        proof.mode,
+        proof.break_glass_reason_digest,
+        "owner_manual_effect_release_authority_proof_invalid",
+      )
+      : null;
+    if (
+      !reconciliation || !proof ||
+      !exactObjectKeys(reconciliation, reconciliationFields) ||
+      !exactObjectKeys(proof, proofFields) ||
+      reconciliation.schema_version !== "owner_manual_effect_reconciliation_v1" ||
+      reconciliation.outcome !== "VERIFIED_SUCCESS" ||
+      reconciliation.closure_state !== "POST_VERIFICATION_REQUIRED" ||
+      reconciliation.ticket_issued !== false ||
+      reconciliation.retrospective_ticket_issued !== false ||
+      reconciliation.action_authorized !== false ||
+      reconciliation.execution_authorized !== false ||
+      reconciliation.provider_execution !== false ||
+      reconciliation.external_side_effect !== false ||
+      !GENERIC_WORK_CORE_JOIN_ID.test(String(reconciliation.reconciliation_id || "")) ||
+      !GENERIC_WORK_CORE_JOIN_ID.test(String(reconciliation.authority_envelope_id || "")) ||
+      !GENERIC_WORK_CORE_JOIN_ID.test(String(reconciliation.adapter_id || "")) ||
+      !GENERIC_WORK_CORE_JOIN_ID.test(String(reconciliation.effect_type || "")) ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,254}$/.test(String(reconciliation.resource_id || "")) ||
+      !/^osf_[a-f0-9]{64}$/.test(ownerFingerprint) ||
+      !HASH.test(String(reconciliation.intent_anchor_digest || "")) ||
+      !HASH.test(String(reconciliation.authority_envelope_digest || "")) ||
+      !HASH.test(String(reconciliation.effect_reference_digest || "")) ||
+      !HASH.test(String(reconciliation.observation_digest || "")) ||
+      !HASH.test(String(reconciliation.evidence_digest || "")) ||
+      !HASH.test(String(reconciliation.post_verification_digest || "")) ||
+      !HASH.test(String(reconciliation.work_binding_digest || "")) ||
+      !HASH.test(String(reconciliation.reconciliation_digest || "")) ||
+      reconciliation.reconciliation_digest !== objectDigest(reconciliationUnsigned) ||
+      !Number.isFinite(observedAt) || !Number.isFinite(reconciledAt) || observedAt > reconciledAt ||
+      proof.schema_version !== "authority_proof_v1" ||
+      proof.authority !== "universal_core" ||
+      proof.proof_type !== "owner_manual_effect_closure" ||
+      proof.signature_domain !== GENERIC_WORK_CORE_JOIN_SCHEMA_VERSION ||
+      proof.signature_algorithm !== "ed25519" ||
+      proof.key_id !== resolvedCoreJoinVerifier?.metadata?.key_id ||
+      !GENERIC_WORK_CORE_JOIN_ID.test(String(proof.proof_id || "")) ||
+      !GENERIC_WORK_CORE_JOIN_ID.test(String(proof.authority_envelope_id || "")) ||
+      !GENERIC_WORK_CORE_JOIN_ID.test(String(proof.reconciliation_id || "")) ||
+      !/^osf_[a-f0-9]{64}$/.test(String(proof.owner_subject_fingerprint || "").toLowerCase()) ||
+      !HASH.test(String(proof.intent_anchor_digest || "")) ||
+      !HASH.test(String(proof.authority_envelope_digest || "")) ||
+      !HASH.test(String(proof.reconciliation_digest || "")) ||
+      !HASH.test(String(proof.scope_digest || "")) ||
+      !HASH.test(String(proof.effect_ceiling_digest || "")) ||
+      !HASH.test(String(proof.work_binding_digest || "")) ||
+      !HASH.test(String(proof.post_verification_digest || "")) ||
+      !HASH.test(String(proof.proof_digest || "")) ||
+      proof.proof_digest !== objectDigest(proofUnsigned) ||
+      typeof resolvedCoreJoinVerifier?.verifySignedDigest !== "function" ||
+      !resolvedCoreJoinVerifier.verifySignedDigest({
+        digest: proof.proof_digest,
+        signature: proof.signature,
+        key_id: proof.key_id,
+        signature_domain: proof.signature_domain,
+      }) ||
+      proof.tenant_id !== actor.tenant_id ||
+      proof.tenant_id !== reconciliation.tenant_id ||
+      proof.work_id !== reconciliation.work_id ||
+      proof.intent_anchor_digest !== reconciliation.intent_anchor_digest ||
+      proof.authority_envelope_id !== reconciliation.authority_envelope_id ||
+      proof.authority_envelope_digest !== reconciliation.authority_envelope_digest ||
+      proof.reconciliation_id !== reconciliation.reconciliation_id ||
+      proof.reconciliation_digest !== reconciliation.reconciliation_digest ||
+      proof.owner_subject_fingerprint !== ownerFingerprint ||
+      proof.post_verification_digest !== reconciliation.post_verification_digest ||
+      proof.work_binding_digest !== reconciliation.work_binding_digest ||
+      proofMode?.mode !== reconciliationMode?.mode ||
+      proofMode?.break_glass_reason_digest !== reconciliationMode?.break_glass_reason_digest ||
+      proof.closure_authorized !== true ||
+      proof.execution_authorized !== false || proof.provider_execution !== false ||
+      proof.host_policy_override !== false || proof.ticket_issued !== false ||
+      proof.retrospective_ticket_issued !== false ||
+      !Number.isSafeInteger(proof.revocation_epoch) || proof.revocation_epoch < 0 ||
+      !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) ||
+      issuedAt >= expiresAt || expiresAt <= now().getTime()
+    ) fail("owner_manual_effect_release_authority_proof_invalid");
+
+    const bindingExpected = {
+      tenant_id: reconciliation.tenant_id,
+      work_id: reconciliation.work_id,
+      intent_anchor_digest: reconciliation.intent_anchor_digest,
+      mode: reconciliationMode.mode,
+      break_glass_reason_digest: reconciliationMode.break_glass_reason_digest,
+      adapter_id: reconciliation.adapter_id,
+      effect_type: reconciliation.effect_type,
+      resource_id: reconciliation.resource_id,
+      effect_reference_digest: reconciliation.effect_reference_digest,
+    };
+    const verificationNow = now();
+    const workBinding = verifiedOwnerManualEffectWorkBinding(
+      reconciliation.work_binding,
+      bindingExpected,
+      { nowValue: verificationNow instanceof Date ? verificationNow.getTime() : NaN },
+    );
+    if (workBinding.binding_digest !== reconciliation.work_binding_digest) {
+      fail("owner_manual_effect_release_work_binding_invalid");
+    }
+
+    const evidenceBinding = {
+      schema_version: "tenant_work_owner_manual_effect_release_evidence_v1",
+      tenant_id: actor.tenant_id,
+      work_id: workId,
+      intent_anchor_digest: proof.intent_anchor_digest,
+      authority_envelope_id: proof.authority_envelope_id,
+      authority_envelope_digest: proof.authority_envelope_digest,
+      reconciliation_id: proof.reconciliation_id,
+      reconciliation_digest: proof.reconciliation_digest,
+      work_binding_digest: reconciliation.work_binding_digest,
+      mode: reconciliationMode.mode,
+      break_glass_reason_digest: reconciliationMode.break_glass_reason_digest,
+      adapter_id: reconciliation.adapter_id,
+      effect_type: reconciliation.effect_type,
+      resource_id: reconciliation.resource_id,
+      effect_reference_digest: reconciliation.effect_reference_digest,
+      evidence_digest: reconciliation.evidence_digest,
+      post_verification_digest: reconciliation.post_verification_digest,
+      authority_proof_digest: proof.proof_digest,
+      authority_key_id: proof.key_id,
+      expires_at: proof.expires_at,
+      note: "owner_manual_effect",
+      ticket_issued: false,
+      retrospective_ticket_issued: false,
+      provider_execution: false,
+    };
+    const immutableIdentity = (metadata) => ({
+      schema_version: "tenant_work_owner_manual_effect_release_identity_v1",
+      tenant_id: metadata?.tenant_id,
+      work_id: metadata?.work_id,
+      intent_anchor_digest: metadata?.intent_anchor_digest,
+      authority_envelope_id: metadata?.authority_envelope_id,
+      authority_envelope_digest: metadata?.authority_envelope_digest,
+      reconciliation_id: metadata?.reconciliation_id,
+      reconciliation_digest: metadata?.reconciliation_digest,
+      work_binding_digest: metadata?.work_binding_digest,
+      mode: metadata?.mode,
+      break_glass_reason_digest: metadata?.break_glass_reason_digest,
+      adapter_id: metadata?.adapter_id,
+      effect_type: metadata?.effect_type,
+      resource_id: metadata?.resource_id,
+      effect_reference_digest: metadata?.effect_reference_digest,
+      evidence_digest: metadata?.evidence_digest,
+      post_verification_digest: metadata?.post_verification_digest,
+      note: metadata?.note,
+      ticket_issued: metadata?.ticket_issued,
+      retrospective_ticket_issued: metadata?.retrospective_ticket_issued,
+      provider_execution: metadata?.provider_execution,
+    });
+    const immutableIdentityDigest = objectDigest(immutableIdentity(evidenceBinding));
+    const evidenceDigest = objectDigest(evidenceBinding);
+    const outcome = await transaction(async (client) => {
+      const work = await loadWork(client, actor, workId, true);
+      assertPermission(canClose, work, actor);
+      const existing = await client.query(`SELECT evidence_id,digest,metadata
+        FROM tenant_work_evidence
+        WHERE tenant_id=$1 AND work_id=$2 AND kind='owner_manual_effect_release'
+          AND metadata->>'reconciliation_id'=$3
+        ORDER BY created_at,evidence_id LIMIT 1 FOR UPDATE`,
+      [actor.tenant_id, workId, proof.reconciliation_id]);
+      if (existing.rows[0]) {
+        if (objectDigest(immutableIdentity(existing.rows[0].metadata)) !== immutableIdentityDigest) {
+          fail("owner_manual_effect_release_evidence_conflict");
+        }
+        return {
+          work,
+          evidence_id: existing.rows[0].evidence_id,
+          evidence_digest: existing.rows[0].digest,
+          idempotent_replay: true,
+        };
+      }
+      // A replay may arrive after normal Gallery closure has transitioned the
+      // Work to COMPLETED.  Preserve the append-only evidence identity, but
+      // require a live V2 binding only before the first evidence write.
+      const transactionNow = now();
+      const transactionNowValue = transactionNow instanceof Date
+        ? transactionNow.getTime()
+        : NaN;
+      if (!Number.isFinite(transactionNowValue) || expiresAt <= transactionNowValue) {
+        fail("owner_manual_effect_release_authority_proof_invalid");
+      }
+      verifiedOwnerManualEffectWorkBinding(workBinding, bindingExpected, {
+        work,
+        nowValue: transactionNowValue,
+      });
+      const evidenceId = crypto.randomUUID();
+      await client.query(`INSERT INTO tenant_work_evidence
+        (tenant_id,evidence_id,work_id,kind,digest,required,independently_verified,
+         verified_by_agent_id,verified_by_session_fingerprint,weight,metadata)
+        VALUES ($1,$2,$3,'owner_manual_effect_release',$4,true,true,$5,$6,1,$7::jsonb)`,
+      [actor.tenant_id, evidenceId, workId, evidenceDigest,
+        "universal_core_owner_manual_effect_reconciliation",
+        `authority-proof:${proof.key_id}`,
+        JSON.stringify(evidenceBinding)]);
+      const event = await appendV2Event(
+        client,
+        actor,
+        workId,
+        "owner_manual_effect_release_verified",
+        {
+          evidence_id: evidenceId,
+          evidence_digest: evidenceDigest,
+          reconciliation_id: proof.reconciliation_id,
+          authority_envelope_id: proof.authority_envelope_id,
+          authority_proof_digest: proof.proof_digest,
+          work_binding_digest: reconciliation.work_binding_digest,
+          mode: reconciliationMode.mode,
+          break_glass_reason_digest: reconciliationMode.break_glass_reason_digest,
+          adapter_id: reconciliation.adapter_id,
+          effect_type: reconciliation.effect_type,
+          note: "owner_manual_effect",
+          authority: "universal_core_owner_authority_proof",
+          ticket_issued: false,
+        },
+      );
+      return {
+        work,
+        evidence_id: evidenceId,
+        evidence_digest: evidenceDigest,
+        event,
+        idempotent_replay: false,
+      };
+    });
+    return Object.freeze({
+      schema_version: "tenant_work_owner_manual_effect_release_projection_v1",
+      work_id: workId,
+      adapter: outcome.work.work_type,
+      evidence_id: outcome.evidence_id,
+      evidence_digest: outcome.evidence_digest,
+      reconciliation_id: proof.reconciliation_id,
+      authority_proof_digest: proof.proof_digest,
+      note: "owner_manual_effect",
+      retrospective_ticket_issued: false,
+      legacy_bridged: Boolean(outcome.work.legacy_work_id),
+      idempotent_replay: outcome.idempotent_replay,
+      ...(outcome.event ? { event: outcome.event } : {}),
+    });
+  }
   async function recordNativeVerifierEvidenceWithClient(client, source = {}) {
     if (!client || typeof client.query !== "function") {
       fail("native_verifier_evidence_transaction_required");
@@ -4313,6 +4804,12 @@ export function createWorkContinuityV2Store({
       const ownerManualMergeClosure = state.evidence.some((item) =>
         item.kind === "owner_manual_merge_release" &&
         item.metadata?.note === "owner_manual_merge");
+      const ownerManualEffectClosure = state.evidence.some((item) =>
+        item.kind === "owner_manual_effect_release" &&
+        item.metadata?.note === "owner_manual_effect");
+      const closureNote = ownerManualEffectClosure
+        ? "owner_manual_effect"
+        : ownerManualMergeClosure ? "owner_manual_merge" : null;
       const finalEvidenceDigest = crypto.createHash("sha256").update(JSON.stringify(state.evidence.map((item) => item.digest).sort())).digest("hex");
       const finalized = buildGenericClosureArtifacts({ ...state.work, progress_bp: state.work.progress_bp }, {
         adapter, server_verified_closure_context: { schema_version: "work_closure_context_v1",
@@ -4345,7 +4842,7 @@ export function createWorkContinuityV2Store({
         const payload = { adapter, closure_receipt_digest: finalized.receipt.receipt_digest,
           final_evidence_digest: finalEvidenceDigest,
           report_digest: objectDigest(finalized.final_report), archived: true,
-          ...(ownerManualMergeClosure ? { note: "owner_manual_merge" } : {}) };
+          ...(closureNote ? { note: closureNote } : {}) };
         const event = { tenant_id: actor.tenant_id, work_id: state.work.legacy_work_id,
           sequence_number: sequence, event_type: "generic_closure_finalized", payload,
           previous_event_hash: previous.rows[0]?.event_hash || null };
@@ -4357,7 +4854,7 @@ export function createWorkContinuityV2Store({
       }
       return { receipt: finalized.receipt, final_report: finalized.final_report,
         idempotent_replay: false, archive_status: "ARCHIVED",
-        ...(ownerManualMergeClosure ? { closure_note: "owner_manual_merge" } : {}) };
+        ...(closureNote ? { closure_note: closureNote } : {}) };
     });
   }
   return Object.freeze({ initialize, createWork, createNewWork, readCreatedWorkByBootstrapRequest, queueNewWork,
@@ -4368,6 +4865,7 @@ export function createWorkContinuityV2Store({
     fulfillPrecommitTicketTask,
     validateNyraAutopilotVerificationCandidate, projectNyraAutopilotVerification,
     recordTask, recordEvidence, recordOwnerManualMergeReleaseEvidence,
+    recordOwnerManualEffectReleaseEvidence,
     recordNativeVerifierEvidenceWithClient,
     persistCoreJoin, refreshDerived, reconcileStaleDryRun,
     reconcileLegacyClosed,

@@ -14,6 +14,40 @@ function safeEqual(left, right) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+const OWNER_MANUAL_AUTHORITY_CONFIRMATION_JTI_DOMAIN =
+  "skinharmony-owner-manual-authority-oauth-confirmation-jti-v1";
+const OWNER_MANUAL_AUTHORITY_CONFIRMATION_JTI = /^ocj_[a-f0-9]{64}$/;
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(String(value)).digest("hex");
+}
+
+// This is deliberately derived only at the authenticated gateway.  The
+// confirmation reference itself remains caller-visible, but a caller cannot
+// manufacture the JTI without the independent owner-context signing secret.
+// Keep the domain separate from owner-context signatures so a MAC from one
+// protocol cannot be replayed as a value in the other.
+function ownerManualAuthorityConfirmationJti(identity, reference, config) {
+  const secret = String(config?.ownerContextSigningSecret || "");
+  if (Buffer.byteLength(secret, "utf8") < 32) {
+    throw new Error("owner_confirmation_jti_issuer_unavailable");
+  }
+  if (!String(identity?.tenantId || "").trim() || !String(identity?.subject || "").trim()) {
+    throw new Error("owner_confirmation_jti_invalid");
+  }
+  const material = [
+    OWNER_MANUAL_AUTHORITY_CONFIRMATION_JTI_DOMAIN,
+    String(identity?.tenantId || ""),
+    String(identity?.subject || ""),
+    sha256(reference),
+  ].join("\u0000");
+  const jti = `ocj_${crypto.createHmac("sha256", secret).update(material).digest("hex")}`;
+  if (!OWNER_MANUAL_AUTHORITY_CONFIRMATION_JTI.test(jti)) {
+    throw new Error("owner_confirmation_jti_invalid");
+  }
+  return jti;
+}
+
 function scopes(value) {
   if (Array.isArray(value)) return value.map(String);
   return String(value || "").split(/\s+/).filter(Boolean);
@@ -131,7 +165,7 @@ function attachCodexTenantMembership(identity, config) {
   });
 }
 
-function elevateOAuthOwner(identity, proof, config, consumed) {
+function elevateOAuthOwner(identity, proof, config, consumed, options = {}) {
   if (identity?.kind !== "oauth" || identity?.oauthOwnerBound !== true) throw new Error("owner_binding_required");
   if (proof?.confirmed !== true) throw new Error("owner_confirmation_required");
   const reference = String(proof?.confirmationReference || "").trim();
@@ -147,9 +181,40 @@ function elevateOAuthOwner(identity, proof, config, consumed) {
   const now = Math.floor(Date.now() / 1000);
   const maxAge = Number(config.oauthOwnerConfirmationMaxAgeSeconds || 300);
   if (!Number.isFinite(authTime) || now - authTime > maxAge || authTime > now + 30) throw new Error("owner_authentication_stale");
-  const key = `${identity.subject}\u0000${reference}\u0000${crypto.createHash("sha256").update(requestBinding).digest("hex")}`;
-  if (consumed.has(key)) throw new Error("owner_confirmation_replayed");
-  consumed.set(key, now);
+  const manualAuthority = options?.manualAuthority === true;
+  // Manual Authority confirmations are gateway-issued.  Never accept a JTI
+  // from the proof: the gateway derives it after checking the OAuth owner and
+  // binds it to the tenant, subject, and exact confirmation reference.
+  if (manualAuthority && (
+    Object.hasOwn(proof || {}, "ownerConfirmationJti") ||
+    Object.hasOwn(proof || {}, "owner_confirmation_jti")
+  )) {
+    throw new Error("owner_confirmation_jti_caller_supplied");
+  }
+  const confirmationJti = manualAuthority
+    ? ownerManualAuthorityConfirmationJti(identity, reference, config)
+    : "";
+  // Preserve the legacy request-binding-scoped replay behaviour for ordinary
+  // OAuth owner flows. Manual Authority is keyed by the server-issued JTI,
+  // but its in-process cache permits only an *exact* retry of that same
+  // request binding. Universal Core owns the durable nonce/idempotency
+  // decision, so a Gallery failure after a successful closure can recover
+  // without turning a restart into a prerequisite.
+  const key = manualAuthority
+    ? `manual\u0000${identity.tenantId}\u0000${identity.subject}\u0000${confirmationJti}`
+    : `${identity.subject}\u0000${reference}\u0000${sha256(requestBinding)}`;
+  const bindingDigest = sha256(requestBinding);
+  const consumedEntry = consumed.get(key);
+  if (consumedEntry !== undefined) {
+    const exactManualRetry = manualAuthority &&
+      typeof consumedEntry === "object" && consumedEntry !== null &&
+      consumedEntry.request_binding_digest === bindingDigest;
+    if (!exactManualRetry) throw new Error("owner_confirmation_replayed");
+  } else {
+    consumed.set(key, manualAuthority
+      ? Object.freeze({ request_binding_digest: bindingDigest, consumed_at: now })
+      : now);
+  }
   while (consumed.size > 2_048) consumed.delete(consumed.keys().next().value);
   const role = identity.godMode === true && identity.role === "owner_root"
     ? "owner_root"
@@ -166,6 +231,7 @@ function elevateOAuthOwner(identity, proof, config, consumed) {
       .update(requestBinding)
       .digest("hex"),
     ownerConfirmationVerifiedAt: new Date(now * 1_000).toISOString(),
+    ...(manualAuthority ? { ownerConfirmationJti: confirmationJti } : {}),
   };
 }
 
@@ -332,7 +398,13 @@ export function createAuthenticator(config, options = {}) {
       config.hostAppRegistry,
     );
   };
-  authenticate.elevateOAuthOwner = (identity, proof) => elevateOAuthOwner(identity, proof, config, consumedOwnerConfirmations);
+  authenticate.elevateOAuthOwner = (identity, proof, elevationOptions) => elevateOAuthOwner(
+    identity,
+    proof,
+    config,
+    consumedOwnerConfirmations,
+    elevationOptions,
+  );
   return authenticate;
 }
 

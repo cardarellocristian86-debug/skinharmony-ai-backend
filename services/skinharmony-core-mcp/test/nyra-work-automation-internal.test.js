@@ -9,10 +9,14 @@ test("internal bridge derives the verifier and uses the tenant gateway", async (
     coreRequest: async (...args) => { calls.push(args); return { ok: true }; },
     resolveSystemVerifier: async () => ({ agent_id: "system-verifier" }),
   });
-  const response = await bridge.nyra_work_automation_ci_verify({ work_id: "work", agent_id: "builder", repository: "o/r" }, { tenantId: "tenant" });
+  const response = await bridge.nyra_work_automation_ci_verify({
+    work_id: "work", agent_id: "builder", repository: "o/r",
+    verifier_agent_id: "caller-selected", system_assigned: false,
+  }, { tenantId: "tenant" });
   assert.equal(response.structuredContent.ok, true);
   assert.equal(calls[0][1], "tenant");
   assert.equal(calls[0][2].body.verifier_agent_id, "system-verifier");
+  assert.equal(calls[0][2].body.system_assigned, true);
   assert.equal(calls[0][2].useTenantGateway, true);
 });
 

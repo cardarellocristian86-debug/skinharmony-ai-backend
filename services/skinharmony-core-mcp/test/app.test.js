@@ -723,6 +723,16 @@ test("canonical Work bootstrap separates persisted evidence from a replay attemp
   assert.match(createHandler, /authorized: false/);
 });
 
+test("queued Work creation consumes the authenticated request shape reviewed by Core", () => {
+  const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
+  const queueStart = serverSource.indexOf("tenant_work_queue_create_v3: async");
+  const queueEnd = serverSource.indexOf("work_continuity_v2_read:", queueStart);
+  const queueHandler = serverSource.slice(queueStart, queueEnd);
+  assert.match(queueHandler, /bindWorkBootstrapRequestToAuthenticatedHost\(\{ request: args, identity \}\)/);
+  assert.match(queueHandler, /queueNewWork\(withTenantWorkAcl\(identity\), request\)/);
+  assert.doesNotMatch(queueHandler, /queueNewWork\(withTenantWorkAcl\(identity\), args\)/);
+});
+
 test("legacy Work reads and auto-resume intersect canonical V2 visibility", () => {
   const serverSource = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   assert.match(serverSource, /work_continuity_read: async[\s\S]*?readLegacyWorkAuthorized\(identity, args\)/);

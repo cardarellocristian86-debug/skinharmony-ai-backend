@@ -6,6 +6,16 @@ import {
   hostNativeDigest,
   hostNativeGithubDiffDigest,
 } from "./hostNativeGovernance.js";
+import {
+  genericWorkCoreJoinDigest,
+} from "./genericWorkCoreJoin.js";
+import {
+  OWNER_MANUAL_EFFECT_ADAPTER_OBSERVATION_SCHEMA_VERSION,
+  OWNER_MANUAL_EFFECT_POST_VERIFICATION_SCHEMA_VERSION,
+} from "./ownerManualEffectReconciliation.js";
+import {
+  verifyNyraSignedReceipt,
+} from "../../shared/nyra-work-automation-receipts.js";
 
 const MAX_RESPONSE_BYTES = 256_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -1656,6 +1666,556 @@ export function createHostNativeOwnerManualMergeReadbackVerifier({
     workflow_source_cache: { value: workflow_source_cache },
   });
   return verify;
+}
+
+function manualEffectObservation({
+  adapter_id,
+  effect_type,
+  resource_id,
+  effect_reference_digest,
+  observed_at,
+  evidence_material,
+}) {
+  const evidence_digest = genericWorkCoreJoinDigest(evidence_material);
+  const post_verification = {
+    schema_version: OWNER_MANUAL_EFFECT_POST_VERIFICATION_SCHEMA_VERSION,
+    verified: true,
+    verifier_id: `core_server_${adapter_id}_manual_effect_readback_v1`,
+    verified_at: observed_at,
+    evidence_digest,
+    result_digest: genericWorkCoreJoinDigest({
+      schema_version: "owner_manual_effect_post_verification_result_v1",
+      adapter_id,
+      effect_type,
+      resource_id,
+      evidence_digest,
+    }),
+  };
+  return Object.freeze({
+    schema_version: OWNER_MANUAL_EFFECT_ADAPTER_OBSERVATION_SCHEMA_VERSION,
+    trusted: true,
+    adapter_id,
+    effect_type,
+    resource_id,
+    effect_reference_digest,
+    observed_at,
+    outcome: "VERIFIED_SUCCESS",
+    evidence_digest,
+    post_verification,
+    provider_execution: false,
+    external_side_effect: false,
+  });
+}
+
+function exactReference(value, fields, code) {
+  exactObjectKeys(value, new Set(fields), code);
+  return value;
+}
+
+/**
+ * GitHub is an adapter: the generic reconciliation core only gives it an
+ * opaque, envelope-bound selector. This adapter independently resolves all
+ * merge, branch and required-check facts from GitHub.
+ */
+export function createHostNativeGithubManualEffectAdapter({
+  fetchImpl = globalThis.fetch,
+  githubTokenResolver = null,
+  requiredChecksPolicyResolver = null,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  now = () => Date.now(),
+  workflowRunCacheMaximumEntries = 64,
+  workflowSourceCacheMaximumEntries = workflowRunCacheMaximumEntries,
+} = {}) {
+  if (typeof fetchImpl !== "function" || typeof githubTokenResolver !== "function" ||
+      typeof requiredChecksPolicyResolver !== "function") return null;
+  const boundedTimeout = Math.max(100, Math.min(60_000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
+  const workflowRunCache = createBoundedCache(workflowRunCacheMaximumEntries);
+  const workflowSourceCache = createBoundedCache(workflowSourceCacheMaximumEntries);
+  const adapter = {
+    trusted: true,
+    async reconcile(request = {}) {
+      if (request?.adapter_id !== "github" || request?.effect_type !== "github.merge") {
+        error("owner_manual_effect_adapter_selector_invalid");
+      }
+      const reference = exactReference(request.effect_reference, [
+        "base_branch",
+        "base_commit",
+        "head_commit",
+        "merge_commit",
+        "pull_request",
+        "repository",
+        "required_checks",
+        "required_checks_policy_digest",
+      ], "owner_manual_effect_adapter_selector_invalid");
+      const tenantId = string(request.tenant_id);
+      const repository = repositoryPath(reference.repository);
+      const pullRequest = Number(reference.pull_request);
+      const baseBranch = string(reference.base_branch);
+      const baseCommit = sha(reference.base_commit);
+      const headCommit = sha(reference.head_commit);
+      const mergeCommit = sha(reference.merge_commit);
+      const requiredChecks = stableStrings(reference.required_checks);
+      const requiredChecksPolicyDigest = string(reference.required_checks_policy_digest);
+      if (!tenantId || !Number.isSafeInteger(pullRequest) || pullRequest < 1 || !baseBranch ||
+          !baseCommit || !headCommit || !mergeCommit || requiredChecks.length < 1 ||
+          !/^[a-f0-9]{64}$/.test(requiredChecksPolicyDigest) ||
+          request.resource_id !== `github:${repository}` ||
+          request.effect_reference_digest !== genericWorkCoreJoinDigest(reference)) {
+        error("owner_manual_effect_adapter_selector_invalid");
+      }
+      const token = await resolveGithubToken(githubTokenResolver, {
+        tenant_id: tenantId,
+        repository,
+      });
+      const getGithub = githubClient({
+        fetchImpl,
+        token,
+        repository,
+        timeoutMs: boundedTimeout,
+      });
+      const pull = await getGithub(`/pulls/${pullRequest}`);
+      if (pull?.merged !== true || string(pull?.state) !== "closed" ||
+          sha(pull?.head?.sha) !== headCommit || sha(pull?.base?.sha) !== baseCommit ||
+          sha(pull?.merge_commit_sha) !== mergeCommit || string(pull?.base?.ref) !== baseBranch ||
+          string(pull?.head?.repo?.full_name) !== repository ||
+          string(pull?.base?.repo?.full_name) !== repository) {
+        error("owner_manual_effect_github_merge_mismatch");
+      }
+      const action = {
+        kind: "github.merge",
+        repository,
+        head_branch: string(pull?.head?.ref),
+        base_branch: baseBranch,
+        pull_request: pullRequest,
+        head_commit: headCommit,
+        expected_base_commit: baseCommit,
+        checks_commit: headCommit,
+        provider_execution: false,
+      };
+      if (!action.head_branch) error("owner_manual_effect_github_merge_mismatch");
+      const checks = await attestChecks({
+        getGithub,
+        tenantId,
+        repository,
+        baseBranch,
+        baseCommit,
+        checksCommit: headCommit,
+        requiredChecks,
+        action,
+        requiredChecksPolicyResolver,
+        workflowRunCache,
+        workflowSourceCache,
+      });
+      if (checks.required_checks_policy_digest !== requiredChecksPolicyDigest) {
+        error("owner_manual_effect_github_policy_mismatch");
+      }
+      const encodedBranch = encodeURIComponent(baseBranch).replace(/%2F/g, "/");
+      const mainRef = await getGithub(`/git/ref/heads/${encodedBranch}`);
+      if (sha(mainRef?.object?.sha) !== mergeCommit) {
+        error("owner_manual_effect_github_main_drift");
+      }
+      const observedAt = isoNow(now);
+      return manualEffectObservation({
+        adapter_id: "github",
+        effect_type: "github.merge",
+        resource_id: request.resource_id,
+        effect_reference_digest: request.effect_reference_digest,
+        observed_at: observedAt,
+        evidence_material: {
+          schema_version: "github_manual_effect_evidence_v1",
+          tenant_id: tenantId,
+          repository,
+          pull_request: pullRequest,
+          base_branch: baseBranch,
+          base_commit: baseCommit,
+          head_commit: headCommit,
+          merge_commit: mergeCommit,
+          required_checks_policy_digest: checks.required_checks_policy_digest,
+          checks_attestation_digest: checks.checks_attestation_digest,
+          observed_checks_digest: genericWorkCoreJoinDigest(checks.observed_checks),
+          verified_at: observedAt,
+        },
+      });
+    },
+  };
+  return Object.freeze(adapter);
+}
+
+/**
+ * Render is a distinct adapter. The Core resolves its exact service origin
+ * server-side and validates a bounded health contract; the caller never
+ * provides a URL or a health result.
+ */
+export function createHostNativeRenderManualEffectAdapter({
+  fetchImpl = globalThis.fetch,
+  renderServiceOriginResolver = null,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  now = () => Date.now(),
+} = {}) {
+  if (typeof fetchImpl !== "function" || typeof renderServiceOriginResolver !== "function") {
+    return null;
+  }
+  const boundedTimeout = Math.max(100, Math.min(60_000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
+  const adapter = {
+    trusted: true,
+    async reconcile(request = {}) {
+      if (request?.adapter_id !== "render" || request?.effect_type !== "render.deploy") {
+        error("owner_manual_effect_adapter_selector_invalid");
+      }
+      const reference = exactReference(request.effect_reference, [
+        "environment",
+        "health_contract_digest",
+        "repository",
+        "service_id",
+        "target_commit",
+      ], "owner_manual_effect_adapter_selector_invalid");
+      const tenantId = string(request.tenant_id);
+      const repository = repositoryPath(reference.repository);
+      const serviceId = string(reference.service_id);
+      const environment = string(reference.environment);
+      const targetCommit = sha(reference.target_commit);
+      const healthContractDigest = string(reference.health_contract_digest);
+      if (!tenantId || !serviceId || !environment || !targetCommit ||
+          healthContractDigest !== HOST_NATIVE_HEALTH_CONTRACT_DIGEST ||
+          request.resource_id !== `render:${serviceId}:${environment}` ||
+          request.effect_reference_digest !== genericWorkCoreJoinDigest(reference)) {
+        error("owner_manual_effect_adapter_selector_invalid");
+      }
+      let origin;
+      try {
+        origin = await renderServiceOriginResolver({
+          tenant_id: tenantId,
+          repository,
+          service_id: serviceId,
+          environment,
+        });
+      } catch {
+        error("owner_manual_effect_render_scope_unavailable");
+      }
+      const safeOrigin = originForHealth(origin, "owner_manual_effect_render_scope_unavailable");
+      const health = await readResponseJson(fetchImpl, `${safeOrigin}/healthz`, {
+        method: "GET",
+        redirect: "error",
+        headers: { accept: "application/json" },
+      }, boundedTimeout);
+      const version = string(health?.version);
+      const buildId = string(health?.build?.build_id);
+      if (health?.ok !== true || !version || !buildId ||
+          sha(health?.build?.commit_sha) !== targetCommit ||
+          health?.build?.commit_verifiable !== true || health?.render_ready !== true ||
+          health?.health_contract_version !== HOST_NATIVE_HEALTH_CONTRACT_VERSION ||
+          string(health?.health_contract_digest) !== healthContractDigest) {
+        error("owner_manual_effect_render_health_mismatch");
+      }
+      const observedAt = isoNow(now);
+      return manualEffectObservation({
+        adapter_id: "render",
+        effect_type: "render.deploy",
+        resource_id: request.resource_id,
+        effect_reference_digest: request.effect_reference_digest,
+        observed_at: observedAt,
+        evidence_material: {
+          schema_version: "render_manual_effect_evidence_v1",
+          tenant_id: tenantId,
+          repository,
+          service_id: serviceId,
+          environment,
+          origin: safeOrigin,
+          version,
+          build_id: buildId,
+          health_contract_version: HOST_NATIVE_HEALTH_CONTRACT_VERSION,
+          target_commit: targetCommit,
+          health_contract_digest: healthContractDigest,
+          verified_at: observedAt,
+        },
+      });
+    },
+  };
+  return Object.freeze(adapter);
+}
+
+const NYRA_CORE_READBACK_SCHEMA_VERSION = "nyra_core_manual_effect_readback_v3";
+const NYRA_CORE_REPAIR_ACTION_SCHEMA_VERSION = "nyra_core_repair_action_v1";
+const NYRA_CORE_REPAIR_RECEIPT_SCHEMA_VERSION = "nyra_core_repair_receipt_v1";
+const NYRA_CORE_MANUAL_EFFECTS = new Set([
+  "nyra_core.self_repair.commit",
+  "nyra_core.self_repair.push_branch",
+  "nyra_core.self_repair.draft_pr",
+]);
+const NYRA_CORE_REPAIR_RECEIPT_FIELDS = new Set([
+  "adapter_id", "branch", "commit", "effect_type", "evidence_digest",
+  "external_side_effect", "intent_anchor_digest", "issued_at", "key_id", "mode",
+  "observed_at", "path", "provider_execution", "read_only", "receipt_digest",
+  "repair_action_digest", "repair_action_id", "repair_receipt_id", "repository",
+  "resource_id", "schema_version", "signature", "tenant_id", "work_id",
+]);
+const NYRA_CORE_READBACK_FIELDS = new Set([
+  "adapter_id", "effect_reference_digest", "effect_type", "external_side_effect",
+  "intent_anchor_digest", "mode", "provider_execution", "read_only", "repair_receipt",
+  "resource_id", "schema_version", "tenant_id", "transport", "trusted", "verified",
+  "work_id",
+]);
+
+function validIsoTimestamp(value) {
+  const normalized = string(value);
+  const millis = Date.parse(normalized);
+  return Number.isFinite(millis) && new Date(millis).toISOString() === normalized
+    ? normalized : null;
+}
+
+function nyraCoreRepairReference(value) {
+  exactReference(value, [
+    "branch",
+    "commit",
+    "path",
+    "repair_action_digest",
+    "repair_action_id",
+    "repair_receipt_digest",
+    "repair_receipt_id",
+    "repository",
+  ], "owner_manual_effect_adapter_selector_invalid");
+  const repository = string(value.repository);
+  const branch = string(value.branch);
+  const path = string(value.path);
+  const commit = sha(value.commit);
+  const repairActionId = string(value.repair_action_id);
+  const repairActionDigest = string(value.repair_action_digest).toLowerCase();
+  const repairReceiptId = string(value.repair_receipt_id);
+  const repairReceiptDigest = string(value.repair_receipt_digest).toLowerCase();
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(repository) ||
+    !branch || !path || !commit ||
+    !/^nra_[A-Za-z0-9][A-Za-z0-9._:-]{2,123}$/.test(repairActionId) ||
+    !/^[a-f0-9]{64}$/.test(repairActionDigest) ||
+    !/^nrr_[A-Za-z0-9][A-Za-z0-9._:-]{2,123}$/.test(repairReceiptId) ||
+    !/^[a-f0-9]{64}$/.test(repairReceiptDigest)
+  ) error("owner_manual_effect_adapter_selector_invalid");
+  return Object.freeze({
+    repository,
+    branch,
+    path,
+    commit,
+    repair_action_id: repairActionId,
+    repair_action_digest: repairActionDigest,
+    repair_receipt_id: repairReceiptId,
+    repair_receipt_digest: repairReceiptDigest,
+  });
+}
+
+// The descriptor's action digest deliberately excludes the later receipt and
+// the descriptor digest itself. That keeps the contract constructible while
+// still pinning a repair to one tenant/Work/Intent and immutable commit.
+export function nyraCoreRepairActionDigest(value = {}) {
+  return genericWorkCoreJoinDigest({
+    schema_version: NYRA_CORE_REPAIR_ACTION_SCHEMA_VERSION,
+    tenant_id: string(value.tenant_id),
+    work_id: string(value.work_id),
+    intent_anchor_digest: string(value.intent_anchor_digest).toLowerCase(),
+    mode: string(value.mode),
+    adapter_id: string(value.adapter_id),
+    effect_type: string(value.effect_type),
+    resource_id: string(value.resource_id),
+    repository: string(value.repository),
+    branch: string(value.branch),
+    path: string(value.path),
+    commit: string(value.commit).toLowerCase(),
+    repair_action_id: string(value.repair_action_id),
+    repair_receipt_id: string(value.repair_receipt_id),
+  });
+}
+
+function nyraCoreReadbackOrigin(value) {
+  let url;
+  try { url = new URL(string(value)); }
+  catch { return null; }
+  if (
+    url.protocol !== "https:" || url.port || url.username || url.password ||
+    url.pathname !== "/" || url.search || url.hash ||
+    !/^[a-z0-9][a-z0-9.-]{1,251}$/i.test(url.hostname)
+  ) return null;
+  return url.origin;
+}
+
+function nyraCoreReadbackUrl(origin, request) {
+  const url = new URL("/v1/host-native/manual-effect-readback", origin);
+  // Only a signed, server-derived selector is sent. The raw effect reference
+  // never becomes an outbound instruction; the Nyra/Core readback endpoint
+  // resolves it from the deployment-owned descriptor by digest.
+  for (const [key, value] of Object.entries({
+    tenant_id: request.tenant_id,
+    work_id: request.work_id,
+    intent_anchor_digest: request.intent_anchor_digest,
+    mode: request.mode,
+    adapter_id: request.adapter_id,
+    effect_type: request.effect_type,
+    resource_id: request.resource_id,
+    effect_reference_digest: request.effect_reference_digest,
+  })) url.searchParams.set(key, String(value));
+  return url.toString();
+}
+
+/**
+ * Server-owned adapter for a completed Nyra/Core repair.  It intentionally
+ * cannot execute a repair: it has a fixed GET-only transport to a
+ * deployment-configured origin and reads a receipt for an effect that has
+ * already occurred. No callback or caller-provided registry can substitute
+ * executable provider code into this path.
+ */
+export function createHostNativeNyraCoreManualEffectAdapter({
+  fetchImpl = globalThis.fetch,
+  nyraCoreReadbackOrigin: configuredOrigin = "",
+  nyraCoreRepairReceiptSigningSecret = "",
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  now = () => Date.now(),
+} = {}) {
+  const origin = nyraCoreReadbackOrigin(configuredOrigin);
+  const receiptSigningSecret = String(nyraCoreRepairReceiptSigningSecret || "");
+  if (
+    typeof fetchImpl !== "function" || !origin ||
+    Buffer.byteLength(receiptSigningSecret, "utf8") < 32
+  ) return null;
+  const boundedTimeout = Math.max(100, Math.min(60_000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS));
+  const adapter = {
+    trusted: true,
+    async reconcile(request = {}) {
+      const reference = nyraCoreRepairReference(request?.effect_reference);
+      if (
+        request?.adapter_id !== "nyra_core" ||
+        request?.mode !== "OWNER_BREAK_GLASS" ||
+        !NYRA_CORE_MANUAL_EFFECTS.has(request?.effect_type) ||
+        !String(request?.resource_id || "").startsWith("nyra_core:") ||
+        !/^[a-f0-9]{64}$/.test(String(request?.effect_reference_digest || "")) ||
+        request.effect_reference_digest !== genericWorkCoreJoinDigest(reference)
+      ) error("owner_manual_effect_adapter_selector_invalid");
+      const tenantId = string(request.tenant_id);
+      const workId = string(request.work_id);
+      const intentAnchorDigest = string(request.intent_anchor_digest).toLowerCase();
+      if (!tenantId || !workId || !/^[a-f0-9]{64}$/.test(intentAnchorDigest)) {
+        error("owner_manual_effect_adapter_selector_invalid");
+      }
+      const expectedActionDigest = nyraCoreRepairActionDigest({
+        tenant_id: tenantId,
+        work_id: workId,
+        intent_anchor_digest: intentAnchorDigest,
+        mode: request.mode,
+        adapter_id: "nyra_core",
+        effect_type: request.effect_type,
+        resource_id: request.resource_id,
+        ...reference,
+      });
+      if (reference.repair_action_digest !== expectedActionDigest) {
+        error("owner_manual_effect_adapter_selector_invalid");
+      }
+      let readback;
+      try {
+        readback = await readResponseJson(fetchImpl, nyraCoreReadbackUrl(origin, {
+          tenant_id: tenantId,
+          work_id: workId,
+          intent_anchor_digest: intentAnchorDigest,
+          mode: string(request.mode),
+          adapter_id: "nyra_core",
+          effect_type: request.effect_type,
+          resource_id: request.resource_id,
+          effect_reference_digest: request.effect_reference_digest,
+        }), {
+          method: "GET",
+          redirect: "error",
+          headers: { accept: "application/json" },
+        }, boundedTimeout);
+      } catch (cause) {
+        if (knownReadbackError(cause)) throw cause;
+        error("owner_manual_effect_nyra_core_readback_unavailable");
+      }
+      try {
+        exactObjectKeys(readback, NYRA_CORE_READBACK_FIELDS,
+          "owner_manual_effect_nyra_core_readback_invalid");
+        exactObjectKeys(readback.repair_receipt, NYRA_CORE_REPAIR_RECEIPT_FIELDS,
+          "owner_manual_effect_nyra_core_readback_invalid");
+      } catch {
+        error("owner_manual_effect_nyra_core_readback_invalid");
+      }
+      if (
+        readback.schema_version !== NYRA_CORE_READBACK_SCHEMA_VERSION ||
+        readback.trusted !== true || readback.verified !== true || readback.read_only !== true ||
+        readback.transport !== "GET" || readback.provider_execution !== false ||
+        readback.external_side_effect !== false || readback.adapter_id !== "nyra_core" ||
+        readback.tenant_id !== tenantId || readback.work_id !== workId ||
+        readback.intent_anchor_digest !== intentAnchorDigest || readback.mode !== request.mode ||
+        readback.effect_type !== request.effect_type || readback.resource_id !== request.resource_id ||
+        readback.effect_reference_digest !== request.effect_reference_digest
+      ) error("owner_manual_effect_nyra_core_readback_invalid");
+      let receipt;
+      try {
+        receipt = verifyNyraSignedReceipt(readback.repair_receipt, {
+          secret: receiptSigningSecret,
+          expectedSchemaVersion: NYRA_CORE_REPAIR_RECEIPT_SCHEMA_VERSION,
+          now,
+          expected: {
+            tenant_id: tenantId,
+            work_id: workId,
+            intent_anchor_digest: intentAnchorDigest,
+            mode: request.mode,
+            adapter_id: "nyra_core",
+            effect_type: request.effect_type,
+            resource_id: request.resource_id,
+            repository: reference.repository,
+            branch: reference.branch,
+            path: reference.path,
+            commit: reference.commit,
+            repair_action_id: reference.repair_action_id,
+            repair_action_digest: reference.repair_action_digest,
+            repair_receipt_id: reference.repair_receipt_id,
+            read_only: true,
+            provider_execution: false,
+            external_side_effect: false,
+          },
+        });
+      } catch {
+        error("owner_manual_effect_nyra_core_readback_invalid");
+      }
+      // The signed receipt proves the completed repair and retains its own
+      // historical observed_at in evidence.  The reconciliation's
+      // post-verification timestamp instead records this independent,
+      // server-side GET readback.  A receipt necessarily predates the owner
+      // envelope for a manual repair, so treating its historical timestamp as
+      // a fresh Core observation would make the intended repair -> envelope
+      // -> reconcile flow impossible.
+      const receiptObservedAt = validIsoTimestamp(receipt?.observed_at);
+      const evidenceDigest = string(receipt?.evidence_digest).toLowerCase();
+      if (
+        receipt.receipt_digest !== reference.repair_receipt_digest ||
+        !/^[a-f0-9]{64}$/.test(evidenceDigest) || !receiptObservedAt
+      ) error("owner_manual_effect_nyra_core_readback_invalid");
+      const verifiedAt = isoNow(now);
+      return manualEffectObservation({
+        adapter_id: "nyra_core",
+        effect_type: request.effect_type,
+        resource_id: request.resource_id,
+        effect_reference_digest: request.effect_reference_digest,
+        observed_at: verifiedAt,
+        evidence_material: {
+          schema_version: NYRA_CORE_READBACK_SCHEMA_VERSION,
+          tenant_id: tenantId,
+          work_id: workId,
+          intent_anchor_digest: intentAnchorDigest,
+          mode: request.mode,
+          ...structuredClone(readback),
+        },
+      });
+    },
+  };
+  return Object.freeze(adapter);
+}
+
+export function createHostNativeManualEffectAdapterRegistry(options = {}) {
+  const github = createHostNativeGithubManualEffectAdapter(options);
+  const render = createHostNativeRenderManualEffectAdapter(options);
+  const nyraCore = createHostNativeNyraCoreManualEffectAdapter(options);
+  return Object.freeze({
+    ...(github ? { github } : {}),
+    ...(render ? { render } : {}),
+    ...(nyraCore ? { nyra_core: nyraCore } : {}),
+  });
 }
 
 function sourceFilesEqual(actual, expected) {

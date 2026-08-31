@@ -1,8 +1,12 @@
 import { createApp, requiresGenericWorkPreflight } from "./app.js";
 import crypto from "node:crypto";
 import { Pool } from "pg";
+import { deriveNyraWorkAutomationSystemVerifierId } from "../../shared/nyra-work-automation-system-verifier.js";
 import { createCollaborationHandlers } from "./collaboration-handlers.js";
 import { loadConfig } from "./config.js";
+import {
+  createOwnerManualEffectWorkBindingResolver,
+} from "./owner-manual-effect-work-binding.js";
 import { createCoreHandlers, createCoreWriteGuard } from "./core-handlers.js";
 import { createMemoryFabric, createMemoryFabricHandlers } from "./memory-fabric.js";
 import { createMemoryHandlers } from "./memory-handlers.js";
@@ -406,6 +410,19 @@ async function resolveStandingReleaseIntentBinding(identity, workId) {
 }
 Object.defineProperty(resolveStandingReleaseIntentBinding, "trusted", { value: true });
 
+const resolveOwnerManualEffectWorkBinding = createOwnerManualEffectWorkBindingResolver({
+  config,
+  readWork: (...args) => {
+    if (typeof workContinuityV2Store?.readWork !== "function") {
+      throw new Error("owner_manual_effect_work_binding_unavailable");
+    }
+    return workContinuityV2Store.readWork(...args);
+  },
+  resolveStandingReleaseIntentBinding,
+  requireTenantWorkCapability,
+  withTenantWorkAcl,
+});
+
 async function resolveGenericWorkCoreJoinBinding(identity, workId) {
   requireTenantWorkCapability(identity, "read");
   if (typeof workContinuityRuntime?.resolveGenericWorkCoreJoinLeaseBinding !== "function"
@@ -458,6 +475,7 @@ const coreHandlers = createCoreHandlers(config, {
   remediationStore: workContinuityRuntime?.remediationStore,
   resolveDttWorkBinding,
   resolveStandingReleaseIntentBinding,
+  resolveOwnerManualEffectWorkBinding,
   resolveGenericWorkCoreJoinBinding,
   genericWorkCoreJoinVerifierMetadata,
   tenantWorkGallery: workContinuityRuntime ? {
@@ -501,8 +519,8 @@ const nyraWorkAutomationHandlers = config.hostNativeAgentProtocolEnabled === tru
   ? createNyraWorkAutomationInternal({
       coreRequest: coreHandlers.causalCoreRequest,
       resolveIntentBinding: resolveStandingReleaseIntentBinding,
-      resolveSystemVerifier: async ({ work_id }) => ({
-        agent_id: `system_verifier_${crypto.createHash("sha256").update(String(work_id)).digest("hex").slice(0, 24)}`,
+      resolveSystemVerifier: async ({ tenant_id, work_id }) => ({
+        agent_id: deriveNyraWorkAutomationSystemVerifierId({ tenantId: tenant_id, workId: work_id }),
         system_assigned: true,
       }),
     })
@@ -1870,14 +1888,18 @@ const baseHandlers = {
     work_continuity_v2_create: createCanonicalWorkGoverned,
     tenant_work_queue_create_v3: async (args, identity) => {
       if (!workContinuityV2Store) throw new Error("work_continuity_v2_store_unavailable");
+      // An open-work review signs the canonical request only after binding the
+      // authenticated host/session provenance. Consume that exact same
+      // server-owned shape here; hosts must not supply those assertions.
+      const request = bindWorkBootstrapRequestToAuthenticatedHost({ request: args, identity });
       await requireBoundedTenantCoordination(
         identity,
         tenantWorkCoordinationActionType("tenant_work_queue_create_v3"),
-        tenantWorkCoordinationTarget("tenant_work_queue_create_v3", args),
-        args.idempotency_key,
+        tenantWorkCoordinationTarget("tenant_work_queue_create_v3", request),
+        request.idempotency_key,
       );
       return continuityTextResult({ ok: true,
-        result: await workContinuityV2Store.queueNewWork(withTenantWorkAcl(identity), args),
+        result: await workContinuityV2Store.queueNewWork(withTenantWorkAcl(identity), request),
         dedicated_core_gate: {
           authorized: true,
           authority: "universal_core",

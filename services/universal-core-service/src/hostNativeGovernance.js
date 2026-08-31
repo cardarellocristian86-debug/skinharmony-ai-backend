@@ -15,6 +15,9 @@ import {
   createStandingReleaseRun as createStandingReleaseRunState,
   quarantineExpiredStandingReleaseRun as quarantineExpiredStandingReleaseRunState,
 } from "./standingReleaseRunner.js";
+import {
+  createOwnerManualEffectReconciliation,
+} from "./ownerManualEffectReconciliation.js";
 
 export const HOST_NATIVE_HEALTH_CONTRACT_VERSION = "host_native_health_contract_v1";
 export const HOST_RELEASE_MANIFEST_VERSION = "host_release_manifest_v2";
@@ -518,6 +521,12 @@ function emptyState() {
     core_join_renewal_successors: {},
     owner_manual_merge_readbacks: {},
     owner_manual_merge_successors: {},
+    owner_authority_envelopes: {},
+    owner_authority_confirmation_nonces: {},
+    owner_authority_idempotency: {},
+    owner_authority_audit: {},
+    owner_manual_effect_reconciliations: {},
+    owner_manual_effect_instance_claims: {},
     owner_nonces: {},
     idempotency: {},
     standing_release_mandates: {},
@@ -544,6 +553,30 @@ function normalizeState(input) {
     owner_manual_merge_successors: input.owner_manual_merge_successors &&
       typeof input.owner_manual_merge_successors === "object"
       ? input.owner_manual_merge_successors
+      : {},
+    owner_authority_envelopes: input.owner_authority_envelopes &&
+      typeof input.owner_authority_envelopes === "object"
+      ? input.owner_authority_envelopes
+      : {},
+    owner_authority_confirmation_nonces: input.owner_authority_confirmation_nonces &&
+      typeof input.owner_authority_confirmation_nonces === "object"
+      ? input.owner_authority_confirmation_nonces
+      : {},
+    owner_authority_idempotency: input.owner_authority_idempotency &&
+      typeof input.owner_authority_idempotency === "object"
+      ? input.owner_authority_idempotency
+      : {},
+    owner_authority_audit: input.owner_authority_audit &&
+      typeof input.owner_authority_audit === "object"
+      ? input.owner_authority_audit
+      : {},
+    owner_manual_effect_reconciliations: input.owner_manual_effect_reconciliations &&
+      typeof input.owner_manual_effect_reconciliations === "object"
+      ? input.owner_manual_effect_reconciliations
+      : {},
+    owner_manual_effect_instance_claims: input.owner_manual_effect_instance_claims &&
+      typeof input.owner_manual_effect_instance_claims === "object"
+      ? input.owner_manual_effect_instance_claims
       : {},
     owner_nonces: input.owner_nonces && typeof input.owner_nonces === "object" ? input.owner_nonces : {},
     idempotency: input.idempotency && typeof input.idempotency === "object" ? input.idempotency : {},
@@ -2209,6 +2242,9 @@ export function createHostNativeGovernance({
   closureAttestationSigningSecret,
   externalReadbackVerifier = null,
   ownerManualMergeReadbackVerifier = null,
+  ownerAuthorityProofSigner = null,
+  manualEffectAdapters = {},
+  ownerAuthorityRequireDurableStore = false,
   releaseJoinVerdictResolver = null,
   renderServiceOriginResolver = null,
   requiredChecksPolicyResolver = null,
@@ -2235,6 +2271,33 @@ export function createHostNativeGovernance({
   const ticketTtl = Math.max(1_000, Math.min(60 * 60_000, Number(ticketTtlMs) || DEFAULT_TICKET_TTL_MS));
   const leaseMs = Math.max(1_000, Math.min(60 * 60_000, Number(reservationLeaseMs) || DEFAULT_RESERVATION_LEASE_MS));
   const coreJoinTtl = Math.max(1_000, Math.min(60 * 60_000, Number(coreJoinTtlMs) || DEFAULT_CORE_JOIN_TTL_MS));
+  // Owner manual-effect authority is deliberately optional to the legacy
+  // host-native governance runtime.  In particular, a restart-durable but
+  // single-node store is acceptable for the pre-existing evidence/ticket
+  // flows, but is not safe for authority-envelope replay/revocation state in
+  // production.  Keep the feature fail-closed without taking those legacy
+  // flows down when its stronger storage prerequisite is absent.
+  let ownerManualEffectReconciliation = null;
+  let ownerManualEffectReconciliationUnavailableReason =
+    ownerAuthorityProofSigner ? null : "owner_authority_proof_signer_unavailable";
+  if (ownerAuthorityProofSigner) {
+    try {
+      ownerManualEffectReconciliation = createOwnerManualEffectReconciliation({
+        store,
+        signer: ownerAuthorityProofSigner,
+        adapters: manualEffectAdapters,
+        now,
+        idFactory,
+        requireDurableStore: ownerAuthorityRequireDurableStore === true,
+      });
+    } catch (error) {
+      const code = String(error?.message || "").trim();
+      ownerManualEffectReconciliationUnavailableReason =
+        /^[a-z][a-z0-9_]{2,159}$/.test(code)
+          ? code
+          : "owner_manual_effect_reconciliation_initialization_failed";
+    }
+  }
   const configuredSemanticScopeMode = String(semanticScopeMode || "OFF").toUpperCase();
   if (!["OFF", "SHADOW", "ENFORCE"].includes(configuredSemanticScopeMode)) {
     fail("semantic_scope_mode_invalid");
@@ -2866,6 +2929,18 @@ export function createHostNativeGovernance({
     owner_manual_merge_readback_configured:
       typeof ownerManualMergeReadbackVerifier === "function" &&
       ownerManualMergeReadbackVerifier.trusted === true,
+    owner_manual_effect_reconciliation_configured:
+      ownerManualEffectReconciliation !== null,
+    owner_manual_effect_reconciliation_unavailable_reason:
+      ownerManualEffectReconciliationUnavailableReason,
+    owner_manual_effect_reconciliation_requires_distributed_store:
+      ownerAuthorityRequireDurableStore === true,
+    owner_manual_effect_adapter_ids: Object.freeze(
+      Object.keys(manualEffectAdapters || {}).filter((adapterId) =>
+        manualEffectAdapters?.[adapterId]?.trusted === true).sort(),
+    ),
+    owner_authority_proof_key_id:
+      ownerAuthorityProofSigner?.key_id || null,
     release_join_verdict_resolver_configured: typeof releaseJoinVerdictResolver === "function",
     required_checks_policy_resolver_configured: typeof requiredChecksPolicyResolver === "function",
     closure_attestation_verifier_configured: true,
@@ -2890,6 +2965,48 @@ export function createHostNativeGovernance({
       standingReleaseBaseProtectionResolver.trusted === true,
     get standing_release_automation_enabled() { return standingReleaseRuntimeEnabled(); },
     get standing_release_emergency_stop() { return standingReleaseStopped(); },
+
+    async issueOwnerAuthorityEnvelope(input = {}) {
+      if (!ownerManualEffectReconciliation) {
+        fail("owner_manual_effect_reconciliation_unavailable");
+      }
+      return ownerManualEffectReconciliation.issueEnvelope(input);
+    },
+
+    readOwnerAuthorityEnvelope(input = {}) {
+      if (!ownerManualEffectReconciliation) {
+        fail("owner_manual_effect_reconciliation_unavailable");
+      }
+      return ownerManualEffectReconciliation.readEnvelope(input);
+    },
+
+    readOwnerManualEffectReconciliation(input = {}) {
+      if (!ownerManualEffectReconciliation) {
+        fail("owner_manual_effect_reconciliation_unavailable");
+      }
+      return ownerManualEffectReconciliation.readManualEffectReconciliation(input);
+    },
+
+    async revokeOwnerAuthorityEnvelope(input = {}) {
+      if (!ownerManualEffectReconciliation) {
+        fail("owner_manual_effect_reconciliation_unavailable");
+      }
+      return ownerManualEffectReconciliation.revokeEnvelope(input);
+    },
+
+    async recordOwnerManualEffect(input = {}) {
+      if (!ownerManualEffectReconciliation) {
+        fail("owner_manual_effect_reconciliation_unavailable");
+      }
+      return ownerManualEffectReconciliation.recordManualEffect(input);
+    },
+
+    async authorizeOwnerManualEffectClosure(input = {}) {
+      if (!ownerManualEffectReconciliation) {
+        fail("owner_manual_effect_reconciliation_unavailable");
+      }
+      return ownerManualEffectReconciliation.authorizeClosure(input);
+    },
 
     async buildWorkPlan(input) {
       const plan = buildHostNativeWorkPlan(input);

@@ -591,6 +591,127 @@ test("elevates the bound owner only once, only when fresh and request-bound", as
   assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, { confirmed: true, confirmationReference: "r1", requestBinding: "request-b" }));
 });
 
+test("manual Authority derives a gateway JTI, binds it to the confirmation, and consumes it across request bindings", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fixture = auth0Fixture({ sub: "oauth-owner-fixture", iat: now, auth_time: now });
+  const ownerContextSigningSecret = "manual-authority-owner-context-signing-secret-0123456789";
+  const auth = createAuthenticator({
+    ...fixture.config,
+    codexKeys: [],
+    oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" },
+    oauthOwnerConfirmationMaxAgeSeconds: 300,
+    ownerContextSigningSecret,
+  }, { jwksCache: fixture.cache });
+  const identity = await auth(`Bearer ${fixture.token}`);
+  const confirmationReference = "authorize verified manual GitHub reconciliation";
+  const proof = {
+    confirmed: true,
+    confirmationReference,
+    requestBinding: "owner_manual_effect_issue:github.merge:owner/repo",
+  };
+
+  // Existing owner elevation remains request-bound and does not receive a
+  // Manual Authority JTI unless the trusted server path opts in explicitly.
+  const ordinary = auth.elevateOAuthOwner(identity, proof);
+  assert.equal(ordinary.ownerConfirmationJti, undefined);
+
+  assert.throws(() => auth.elevateOAuthOwner(identity, {
+    ...proof,
+    ownerConfirmationJti: "ocj_caller_controlled",
+  }, { manualAuthority: true }), /owner_confirmation_jti_caller_supplied/);
+
+  const elevated = auth.elevateOAuthOwner(identity, proof, { manualAuthority: true });
+  const expected = `ocj_${crypto.createHmac("sha256", ownerContextSigningSecret).update([
+    "skinharmony-owner-manual-authority-oauth-confirmation-jti-v1",
+    "codexai",
+    "oauth-owner-fixture",
+    crypto.createHash("sha256").update(confirmationReference).digest("hex"),
+  ].join("\u0000")).digest("hex")}`;
+  assert.equal(elevated.ownerConfirmationJti, expected);
+  assert.match(elevated.ownerConfirmationJti, /^ocj_[a-f0-9]{64}$/);
+
+  // A transport retry of the exact request remains recoverable. The durable
+  // Universal Core nonce/idempotency store, not this process-local cache,
+  // decides whether that retry replays a completed closure.
+  const exactRetry = auth.elevateOAuthOwner(identity, proof, { manualAuthority: true });
+  assert.equal(exactRetry.ownerConfirmationJti, elevated.ownerConfirmationJti);
+
+  assert.throws(() => auth.elevateOAuthOwner(identity, {
+    ...proof,
+    requestBinding: "owner_manual_effect_issue:render.deploy:service-a",
+  }, { manualAuthority: true }), /owner_confirmation_replayed/);
+
+  const changedConfirmation = auth.elevateOAuthOwner(identity, {
+    ...proof,
+    confirmationReference: "authorize a distinct verified manual effect",
+    requestBinding: "owner_manual_effect_issue:render.deploy:service-a",
+  }, { manualAuthority: true });
+  assert.notEqual(changedConfirmation.ownerConfirmationJti, elevated.ownerConfirmationJti);
+});
+
+test("manual Authority fails closed without the owner-context issuer while ordinary OAuth elevation remains compatible", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fixture = auth0Fixture({ sub: "oauth-owner-fixture", iat: now, auth_time: now });
+  const auth = createAuthenticator({
+    ...fixture.config,
+    codexKeys: [],
+    oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" },
+    oauthOwnerConfirmationMaxAgeSeconds: 300,
+  }, { jwksCache: fixture.cache });
+  const identity = await auth(`Bearer ${fixture.token}`);
+  const proof = {
+    confirmed: true,
+    confirmationReference: "ordinary verified owner action",
+    requestBinding: "ordinary-owner-action",
+  };
+
+  assert.doesNotThrow(() => auth.elevateOAuthOwner(identity, proof));
+  assert.throws(() => auth.elevateOAuthOwner(identity, {
+    ...proof,
+    confirmationReference: "manual authority action",
+  }, { manualAuthority: true }), /owner_confirmation_jti_issuer_unavailable/);
+});
+
+test("manual Authority JTI is stable across authenticator restart boundaries while Core owns durable consumption", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const fixture = auth0Fixture({ sub: "oauth-owner-fixture", iat: now, auth_time: now });
+  const config = {
+    ...fixture.config,
+    codexKeys: [],
+    oauthOwnerTenantBindings: { "oauth-owner-fixture": "codexai" },
+    oauthOwnerConfirmationMaxAgeSeconds: 300,
+    ownerContextSigningSecret: "manual-authority-restart-owner-context-secret-0123456789",
+  };
+  const firstAuthenticator = createAuthenticator(config, { jwksCache: fixture.cache });
+  const firstIdentity = await firstAuthenticator(`Bearer ${fixture.token}`);
+  const proof = {
+    confirmed: true,
+    confirmationReference: "restart-stable manual owner confirmation",
+    requestBinding: "owner_manual_effect_issue:first-binding",
+  };
+  const first = firstAuthenticator.elevateOAuthOwner(
+    firstIdentity,
+    proof,
+    { manualAuthority: true },
+  );
+  assert.throws(() => firstAuthenticator.elevateOAuthOwner(firstIdentity, {
+    ...proof,
+    requestBinding: "owner_manual_effect_issue:changed-binding",
+  }, { manualAuthority: true }), /owner_confirmation_replayed/);
+
+  // Auth's local replay cache is intentionally process-local.  A restarted
+  // authenticator reconstructs the same cryptographic JTI; Universal Core's
+  // durable authority store is the cross-process consumption authority.
+  const restartedAuthenticator = createAuthenticator(config, { jwksCache: fixture.cache });
+  const restartedIdentity = await restartedAuthenticator(`Bearer ${fixture.token}`);
+  const restarted = restartedAuthenticator.elevateOAuthOwner(
+    restartedIdentity,
+    { ...proof, requestBinding: "owner_manual_effect_issue:after-restart" },
+    { manualAuthority: true },
+  );
+  assert.equal(restarted.ownerConfirmationJti, first.ownerConfirmationJti);
+});
+
 test("uses the current OAuth access-token issuance for owner freshness after a refresh", async () => {
   const now = Math.floor(Date.now() / 1000);
   const fixture = auth0Fixture({

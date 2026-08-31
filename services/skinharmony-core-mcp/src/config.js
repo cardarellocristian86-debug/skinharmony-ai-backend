@@ -1,5 +1,13 @@
 import { parseNyraProjectReleaseBindings } from "./nyra-native-plan-bridge.js";
 import { parseHostAppRegistry } from "./host-app-registry.js";
+import {
+  canonicalOwnerManualEffectGitRef,
+  canonicalOwnerManualEffectPosixPath,
+  normalizeOwnerManualEffectReference,
+} from "./owner-manual-effect-work-binding.js";
+import {
+  genericWorkCoreJoinDigest,
+} from "../../universal-core-service/src/genericWorkCoreJoin.js";
 
 function csv(value) {
   return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
@@ -57,6 +65,209 @@ function parseNyraAtlasGithubTokens(value, name) {
     result[tenantId] = token;
   }
   return Object.freeze(result);
+}
+
+// Authority policy is deployment-owned configuration, deliberately separate
+// from the caller-authored V2 Work architecture. It gives the owner-manual
+// reconciliation flow an immutable allowlist of adapters/effects and the
+// exact Nyra/Core break-glass selector for a tenant/project.
+function parseOwnerManualEffectPolicies(value, name) {
+  if (!value) return Object.freeze([]);
+  let source;
+  try { source = JSON.parse(value); } catch { throw new Error(`${name} must be valid JSON`); }
+  if (!source || typeof source !== "object" || Array.isArray(source) ||
+      source.schema_version !== "owner_manual_effect_policies_v1" ||
+      !Array.isArray(source.policies) || source.policies.length > 256) {
+    throw new Error(`${name} must contain owner_manual_effect_policies_v1 policies`);
+  }
+  const seen = new Set();
+  // A completed Nyra/Core repair action may close exactly one tenant Work.
+  // This deployment-time constraint prevents two effect bindings from
+  // describing the same physical repair even when they share a path.
+  const breakGlassActionIds = new Set();
+  const breakGlassActionDigests = new Set();
+  const breakGlassReceiptIds = new Set();
+  const breakGlassReceiptDigests = new Set();
+  const policies = source.policies.map((policy) => {
+    if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+      throw new Error(`${name} policy invalid`);
+    }
+    const fields = Object.keys(policy).sort();
+    const permitted = [
+      "break_glass",
+      "effect_bindings",
+      "effects",
+      "project_id",
+      "repository",
+      "tenant_id",
+    ];
+    if (fields.some((field) => !permitted.includes(field)) ||
+        !["effects", "project_id", "repository", "tenant_id"].every((field) => fields.includes(field))) {
+      throw new Error(`${name} policy fields invalid`);
+    }
+    const tenantId = String(policy.tenant_id || "").trim();
+    const projectId = String(policy.project_id || "").trim();
+    const repository = String(policy.repository || "").trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{1,63}$/.test(tenantId) ||
+        !/^[A-Za-z0-9][A-Za-z0-9_-]{1,63}$/.test(projectId) ||
+        !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) ||
+        !Array.isArray(policy.effects) || policy.effects.length > 32) {
+      throw new Error(`${name} policy binding invalid`);
+    }
+    const key = `${tenantId}\u0000${projectId}`;
+    if (seen.has(key)) throw new Error(`${name} has duplicate tenant/project policy`);
+    seen.add(key);
+    const effects = policy.effects.map((effect) => {
+      if (!effect || typeof effect !== "object" || Array.isArray(effect) ||
+          Object.keys(effect).sort().join("\u0000") !== [
+            "adapter_id", "effect_type", "resource_id",
+          ].join("\u0000")) {
+        throw new Error(`${name} effect invalid`);
+      }
+      const adapterId = String(effect.adapter_id || "").trim();
+      const effectType = String(effect.effect_type || "").trim();
+      const resourceId = String(effect.resource_id || "").trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(adapterId) ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(effectType) ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,254}$/.test(resourceId)) {
+        throw new Error(`${name} effect invalid`);
+      }
+      return Object.freeze({ adapter_id: adapterId, effect_type: effectType, resource_id: resourceId });
+    });
+    let breakGlass = null;
+    if (policy.break_glass !== undefined) {
+      const entry = policy.break_glass;
+      if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+          Object.keys(entry).sort().join("\u0000") !== [
+            "allowed_path_prefixes", "branch", "resource_id",
+          ].join("\u0000") ||
+          typeof entry.branch !== "string" ||
+          typeof entry.resource_id !== "string" ||
+          !/^nyra_core:[A-Za-z0-9][A-Za-z0-9._:/-]{2,240}$/.test(entry.resource_id) ||
+          !Array.isArray(entry.allowed_path_prefixes) || !entry.allowed_path_prefixes.length ||
+          entry.allowed_path_prefixes.length > 16) {
+        throw new Error(`${name} break_glass invalid`);
+      }
+      let branch;
+      let prefixes;
+      try {
+        branch = canonicalOwnerManualEffectGitRef(entry.branch, `${name} break_glass invalid`);
+        prefixes = entry.allowed_path_prefixes.map((prefix) =>
+          canonicalOwnerManualEffectPosixPath(prefix, `${name} break_glass invalid`));
+      } catch {
+        throw new Error(`${name} break_glass invalid`);
+      }
+      const stablePrefixes = [...new Set(prefixes)].sort((left, right) => left.localeCompare(right));
+      if (stablePrefixes.length !== prefixes.length) {
+        throw new Error(`${name} break_glass invalid`);
+      }
+      breakGlass = Object.freeze({
+        branch,
+        resource_id: entry.resource_id,
+        allowed_path_prefixes: Object.freeze(stablePrefixes),
+      });
+    }
+    const effectBindingsInput = policy.effect_bindings === undefined ? [] : policy.effect_bindings;
+    if (!Array.isArray(effectBindingsInput) || effectBindingsInput.length > 64) {
+      throw new Error(`${name} effect_bindings invalid`);
+    }
+    const effectBindingKeys = new Set();
+    const effectBindings = effectBindingsInput.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+          Object.keys(entry).sort().join("\u0000") !== [
+            "adapter_id",
+            "effect_reference",
+            "effect_type",
+            "intent_anchor_digest",
+            "mode",
+            "resource_id",
+            "work_id",
+          ].join("\u0000")) {
+        throw new Error(`${name} effect_binding invalid`);
+      }
+      const workId = String(entry.work_id || "").trim().toLowerCase();
+      const intentAnchorDigest = String(entry.intent_anchor_digest || "").trim().toLowerCase();
+      const mode = entry.mode;
+      const adapterId = String(entry.adapter_id || "").trim();
+      const effectType = String(entry.effect_type || "").trim();
+      const resourceId = String(entry.resource_id || "").trim();
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(workId) ||
+          !/^[a-f0-9]{64}$/.test(intentAnchorDigest) ||
+          !["OWNER_MANUAL", "OWNER_BREAK_GLASS"].includes(mode) ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(adapterId) ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$/.test(effectType) ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:/-]{2,254}$/.test(resourceId)) {
+        throw new Error(`${name} effect_binding invalid`);
+      }
+      let effectReference;
+      try {
+        effectReference = normalizeOwnerManualEffectReference({
+          adapter_id: adapterId,
+          effect_type: effectType,
+          resource_id: resourceId,
+          effect_reference: entry.effect_reference,
+          repository,
+          mode,
+          break_glass: breakGlass,
+          code: `${name} effect_binding invalid`,
+        });
+      } catch {
+        throw new Error(`${name} effect_binding invalid`);
+      }
+      const effectReferenceDigest = genericWorkCoreJoinDigest(effectReference);
+      if (mode === "OWNER_BREAK_GLASS") {
+        const actionIdClaim = [tenantId, effectReference.repair_action_id].join("\u0000");
+        const actionDigestClaim = [tenantId, effectReference.repair_action_digest].join("\u0000");
+        if (breakGlassActionIds.has(actionIdClaim) ||
+            breakGlassActionDigests.has(actionDigestClaim)) {
+          throw new Error(`${name} effect_binding repair action reused`);
+        }
+        breakGlassActionIds.add(actionIdClaim);
+        breakGlassActionDigests.add(actionDigestClaim);
+        const receiptIdClaim = [tenantId, effectReference.repair_receipt_id].join("\u0000");
+        const receiptDigestClaim = [tenantId, effectReference.repair_receipt_digest].join("\u0000");
+        if (breakGlassReceiptIds.has(receiptIdClaim) ||
+            breakGlassReceiptDigests.has(receiptDigestClaim)) {
+          throw new Error(`${name} effect_binding repair receipt reused`);
+        }
+        breakGlassReceiptIds.add(receiptIdClaim);
+        breakGlassReceiptDigests.add(receiptDigestClaim);
+      }
+      const bindingKey = [
+        workId,
+        intentAnchorDigest,
+        mode,
+        adapterId,
+        effectType,
+        resourceId,
+        effectReferenceDigest,
+      ].join("\u0000");
+      if (effectBindingKeys.has(bindingKey)) throw new Error(`${name} effect_binding duplicate`);
+      effectBindingKeys.add(bindingKey);
+      return Object.freeze({
+        work_id: workId,
+        intent_anchor_digest: intentAnchorDigest,
+        mode,
+        adapter_id: adapterId,
+        effect_type: effectType,
+        resource_id: resourceId,
+        effect_reference: effectReference,
+        effect_reference_digest: effectReferenceDigest,
+      });
+    });
+    if (!effects.length && !breakGlass) throw new Error(`${name} policy has no authority selectors`);
+    return Object.freeze({
+      tenant_id: tenantId,
+      project_id: projectId,
+      repository,
+      effects: Object.freeze(effects),
+      break_glass: breakGlass,
+      effect_bindings: Object.freeze(effectBindings.sort((left, right) =>
+        `${left.work_id}\u0000${left.effect_reference_digest}`.localeCompare(
+          `${right.work_id}\u0000${right.effect_reference_digest}`))),
+    });
+  });
+  return Object.freeze(policies);
 }
 
 function parseOauthOwnerTenantBindings(value, name) {
@@ -449,6 +660,10 @@ export function loadConfig(env = process.env) {
     env.NYRA_ATLAS_GITHUB_TOKENS_JSON,
     "NYRA_ATLAS_GITHUB_TOKENS_JSON",
   );
+  const ownerManualEffectPolicies = parseOwnerManualEffectPolicies(
+    env.OWNER_MANUAL_EFFECT_POLICIES_JSON,
+    "OWNER_MANUAL_EFFECT_POLICIES_JSON",
+  );
   const genericWorkCoreJoinEnabledFlag = strictFlag(
     env.GENERIC_WORK_CORE_JOIN_ENABLED,
     false,
@@ -642,6 +857,7 @@ export function loadConfig(env = process.env) {
     nyraProjectReleaseBindings,
     nyraAtlasRepositoryBindings,
     nyraAtlasGithubTokens,
+    ownerManualEffectPolicies,
     genericWorkCoreJoinEnabled,
     genericWorkCoreJoinRequired,
     genericWorkCoreJoinConfigurationValid: genericWorkCoreJoinConfigurationError === null,

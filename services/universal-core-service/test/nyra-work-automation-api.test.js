@@ -23,7 +23,7 @@ test("Universal Core mounts tenant-authenticated Work Automation v3 routes", () 
     "/v1/nyra/work-automation/:workId/acceptance/finalize",
     "/v1/nyra/work-automation/:workId/closure/finalize",
   ]) assert.match(source, new RegExp(route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(source, /system_verifier_/);
+  assert.match(source, /deriveNyraWorkAutomationSystemVerifierId/);
   assert.match(source, /retried: false/);
   for (const dependency of ["builderBindingVerifier", "builderReportIssuer", "criterionEvidenceVerifier", "criterionReadinessIssuer", "finalCriterionIssuer", "actionReceiptVerifier", "coreJoinVerifier", "mergeReadbackResolver", "deploymentReadbackResolver", "serviceObservationResolver", "closureReceiptVerifier", "reconciliationVerifier"]) assert.match(source, new RegExp(dependency));
   const coordinator = fs.readFileSync(new URL("../src/nyraWorkAutomationCoordinator.js", import.meta.url), "utf8");
