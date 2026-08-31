@@ -1861,6 +1861,18 @@ export function createHostNativeReleaseJoinVerdictResolver({
       requiredChecksPolicyResolver,
       workflowRunCache,
       workflowSourceCache,
+      serverPullRequestAssociation: manualMergeObservation ? {
+        url: `${GITHUB_ORIGIN}/repos/${repository}/pulls/${manualSourceAction.pull_request}`,
+        number: manualSourceAction.pull_request,
+        head: {
+          ref: manualGithub.head_branch,
+          sha: manualGithub.head_commit,
+        },
+        base: {
+          ref: manualGithub.base_branch,
+          sha: manualGithub.base_commit,
+        },
+      } : null,
     });
     if (productionDeploy || standingMerge || manualMergeObservation) {
       const requiredChecksPolicyDigest = string(request.required_checks_policy_digest);
