@@ -2121,7 +2121,12 @@ const baseHandlers = {
       return continuityTextResult({ ok: true, result: await nyraAutopilotRuntime.inbox(identity, args) });
     },
     nyra_work_assignment_claim: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "nyra.assignment.claim", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        tenantWorkCoordinationActionType("nyra_work_assignment_claim"),
+        tenantWorkCoordinationTarget("nyra_work_assignment_claim", args),
+        args.idempotency_key,
+      );
       const result = await nyraAutopilotRuntime.claim(identity, args);
       const nyraVerifierScope = await nyraVerifierAssignmentScope(identity, {
         ...result.assignment,
@@ -2135,7 +2140,12 @@ const baseHandlers = {
       } });
     },
     nyra_work_assignment_submit: async (args, identity) => {
-      await requireBoundedTenantCoordination(identity, "nyra.assignment.submit", args.work_id);
+      await requireBoundedTenantCoordination(
+        identity,
+        tenantWorkCoordinationActionType("nyra_work_assignment_submit"),
+        tenantWorkCoordinationTarget("nyra_work_assignment_submit", args),
+        args.idempotency_key,
+      );
       const result = await nyraAutopilotRuntime.submit(identity, args, {
         validateSubmission: async ({ assignment, result: submittedResult }) => {
           if (assignment?.role !== "independent_verifier" ||

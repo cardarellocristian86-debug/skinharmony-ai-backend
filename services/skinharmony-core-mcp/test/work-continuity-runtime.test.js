@@ -1046,6 +1046,8 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     tenant_work_assignment_accept_v3: tenantWorkCoordinationActionType("tenant_work_assignment_accept_v3"),
     tenant_work_archive_v3: tenantWorkCoordinationActionType("tenant_work_archive_v3"),
     tenant_work_reopen_v3: tenantWorkCoordinationActionType("tenant_work_reopen_v3"),
+    nyra_work_assignment_claim: tenantWorkCoordinationActionType("nyra_work_assignment_claim"),
+    nyra_work_assignment_submit: tenantWorkCoordinationActionType("nyra_work_assignment_submit"),
     tenant_work_task_record: tenantWorkCoordinationActionType("tenant_work_task_record"),
     tenant_work_evidence_record: tenantWorkCoordinationActionType("tenant_work_evidence_record"),
   }, {
@@ -1062,6 +1064,8 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     tenant_work_assignment_accept_v3: "work.gallery.assignment.accept",
     tenant_work_archive_v3: "work.gallery.archive",
     tenant_work_reopen_v3: "work.gallery.reopen",
+    nyra_work_assignment_claim: "nyra.assignment.claim",
+    nyra_work_assignment_submit: "nyra.assignment.submit",
     tenant_work_task_record: "task.update",
     tenant_work_evidence_record: "continuity.update",
   });
@@ -1073,6 +1077,8 @@ test("Gallery and DTT mutations use bounded Core action types and derived Core-v
     "tenant_work_assignment_accept_v3",
     "tenant_work_archive_v3",
     "tenant_work_reopen_v3",
+    "nyra_work_assignment_claim",
+    "nyra_work_assignment_submit",
   ]) {
     assert.equal(tenantWorkCoordinationTarget(name, { work_id: WORK_ID }), WORK_ID, name);
   }
