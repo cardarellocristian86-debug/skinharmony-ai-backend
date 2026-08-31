@@ -24,6 +24,13 @@ export const BOUNDED_INTERNAL_COORDINATION_ACTION_TYPES = Object.freeze([
   "work.gallery.assignment.accept",
   "work.gallery.archive",
   "work.gallery.reopen",
+  // Nyra Autopilot assignments are durable, tenant-scoped coordination
+  // records. Claim and submit remain non-executing and must pass this exact
+  // Core gate; publishing the MCP tools without these action types would
+  // make every fresh multi-agent Work fail closed before it can record
+  // evidence.
+  "nyra.assignment.claim",
+  "nyra.assignment.submit",
   "native_agent.plan",
   "native_agent.bind",
   "native_agent.report",
@@ -76,6 +83,8 @@ function targetMatchesAction(actionType, value) {
   if (actionType === "work.gallery.assignment.accept") return workIdTarget;
   if (actionType === "work.gallery.archive") return workIdTarget;
   if (actionType === "work.gallery.reopen") return workIdTarget;
+  if (actionType === "nyra.assignment.claim") return workIdTarget;
+  if (actionType === "nyra.assignment.submit") return workIdTarget;
   if (actionType === "native_agent.plan") return target.includes("native_plan");
   if (actionType === "native_agent.bind") return target.includes("native_bind");
   if (actionType === "native_agent.report") return target.includes("native_report");
