@@ -13,9 +13,9 @@ import { createDecisionLedger } from "./decision-ledger.js";
 import {
   authorizeDttExactWorkRead,
   authorizeGenericWorkCoreJoinExactWorkRead,
-  coreJoinIdempotencyKey,
   createWorkContinuityRuntime,
 } from "./work-continuity-runtime.js";
+import { createWorkContinuityClosureEvaluateHandler } from "./work-continuity-closure-handler.js";
 import {
   createGenericWorkCoreJoinMcpCoordinator,
   createGenericWorkCoreJoinVerifier,
@@ -2016,65 +2016,11 @@ const baseHandlers = {
           server_owned: true,
         } });
     },
-    work_continuity_closure_evaluate: async (args, identity) => {
-      const evaluation = await workContinuityRuntime.evaluateClosure(identity, args);
-      if (evaluation.closed !== true) {
-        return continuityTextResult({ ok: true, result: evaluation });
-      }
-      const material = evaluation.core_join_material;
-      if (
-        material?.schema_version !== "continuity_core_join_material_v1" ||
-        material.tenant_id !== identity.tenantId ||
-        !material.release_intent_request ||
-        !material.core_join_request
-      ) {
-        throw new Error("continuity_core_join_material_required");
-      }
-      const releaseIntentResult = await coreHandlers.host_native_release_intent_build(
-        material.release_intent_request,
-        identity,
-      );
-      const releaseIntent = releaseIntentResult?.structuredContent?.release_intent;
-      if (
-        releaseIntentResult?.structuredContent?.dedicated_core_gate?.authorized !== true ||
-        releaseIntentResult?.structuredContent?.tenant_id !== identity.tenantId ||
-        releaseIntent?.tenant_id !== identity.tenantId ||
-        releaseIntent?.work_id !== args.work_id
-      ) {
-        throw new Error("continuity_core_release_intent_invalid");
-      }
-      const coreJoinResult = await coreHandlers.host_native_core_join_issue({
-        ...material.core_join_request,
-        release_intent: releaseIntent,
-        idempotency_key: coreJoinIdempotencyKey(material),
-      }, identity);
-      const coreJoinRecord = coreJoinResult?.structuredContent?.core_join_verdict;
-      if (
-        coreJoinResult?.structuredContent?.dedicated_core_gate?.authorized !== true ||
-        coreJoinResult?.structuredContent?.tenant_id !== identity.tenantId ||
-        coreJoinRecord?.tenant_id !== identity.tenantId
-      ) {
-        throw new Error("continuity_core_join_response_invalid");
-      }
-      const coreJoin = await workContinuityRuntime.bindCoreJoinVerdict(identity, {
-        work_id: args.work_id,
-        plan_id: args.plan_id,
-        evaluation_id: evaluation.evaluation_id,
-      }, {
-        releaseIntent,
-        coreJoinRecord,
-      });
-      const { core_join_material: _coreJoinMaterial, ...publicEvaluation } = evaluation;
-      return continuityTextResult({
-        ok: true,
-        result: {
-          ...publicEvaluation,
-          release_ready: coreJoin.release_ready === true,
-          release_intent_digest: coreJoin.release_intent_digest,
-          core_join: coreJoin,
-        },
-      });
-    },
+    work_continuity_closure_evaluate: createWorkContinuityClosureEvaluateHandler({
+      runtime: workContinuityRuntime,
+      coreHandlers,
+      textResult: continuityTextResult,
+    }),
     work_continuity_closure_finalize: async (args, identity) => {
       const coreReceipt = await coreHandlers.host_native_action_closure_receipt({
         ticket_id: args.action_ticket_id,

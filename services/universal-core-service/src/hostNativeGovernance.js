@@ -515,6 +515,7 @@ function emptyState() {
     delegations: {},
     tickets: {},
     core_join_verdicts: {},
+    core_join_renewal_successors: {},
     owner_manual_merge_readbacks: {},
     owner_manual_merge_successors: {},
     owner_nonces: {},
@@ -532,6 +533,10 @@ function normalizeState(input) {
     delegations: input.delegations && typeof input.delegations === "object" ? input.delegations : {},
     tickets: input.tickets && typeof input.tickets === "object" ? input.tickets : {},
     core_join_verdicts: input.core_join_verdicts && typeof input.core_join_verdicts === "object" ? input.core_join_verdicts : {},
+    core_join_renewal_successors: input.core_join_renewal_successors &&
+      typeof input.core_join_renewal_successors === "object"
+      ? input.core_join_renewal_successors
+      : {},
     owner_manual_merge_readbacks: input.owner_manual_merge_readbacks &&
       typeof input.owner_manual_merge_readbacks === "object"
       ? input.owner_manual_merge_readbacks
@@ -1464,10 +1469,197 @@ function ensureBudget(delegation, usage) {
   return next;
 }
 
+const CORE_JOIN_RENEWAL_VERSION = "continuity_core_join_renewal_v1";
+
+function normalizeCoreJoinRenewal(value) {
+  if (value === undefined || value === null) return null;
+  exactKeys(value, new Set([
+    "schema_version", "predecessor_verdict_id", "predecessor_claim_digest",
+    "predecessor_release_intent_digest", "predecessor_record_digest",
+    "generation",
+  ]), "core_join_renewal_unknown_field");
+  if (value.schema_version !== CORE_JOIN_RENEWAL_VERSION) {
+    fail("core_join_renewal_invalid");
+  }
+  const predecessorVerdictId = text(
+    value.predecessor_verdict_id,
+    "core_join_renewal_invalid",
+    44,
+  );
+  if (!/^hnj_[a-f0-9]{40}$/.test(predecessorVerdictId)) {
+    fail("core_join_renewal_invalid");
+  }
+  return {
+    schema_version: CORE_JOIN_RENEWAL_VERSION,
+    predecessor_verdict_id: predecessorVerdictId,
+    predecessor_claim_digest: digest(value.predecessor_claim_digest),
+    predecessor_release_intent_digest: digest(
+      value.predecessor_release_intent_digest,
+    ),
+    predecessor_record_digest: digest(value.predecessor_record_digest),
+    generation: positiveInteger(
+      value.generation,
+      "core_join_renewal_invalid",
+      1_000,
+    ),
+  };
+}
+
+function coreJoinRenewalSubject(claim) {
+  return {
+    tenant_id: claim.tenant_id,
+    work_id: claim.work_id,
+    intent_anchor_digest: claim.intent_anchor_digest,
+    repository: claim.repository,
+    base_branch: claim.base_branch,
+    core_plan_id: claim.core_plan_id,
+    core_plan_digest: claim.core_plan_digest,
+    local_plan_id: claim.local_plan_id,
+    local_plan_digest: claim.local_plan_digest,
+    evaluation_digest: claim.evaluation_digest,
+    acceptance_criteria: claim.acceptance_criteria,
+    builder_report: claim.builder_report,
+    verifier_reports: claim.verifier_reports,
+    checks: claim.checks,
+    release_intent_digest: claim.release_intent_digest,
+    ...(claim.required_checks_policy_digest
+      ? { required_checks_policy_digest: claim.required_checks_policy_digest }
+      : {}),
+    provider_execution: false,
+  };
+}
+
+function verifyStoredCoreJoinRecord(record, signing) {
+  try {
+    const claim = record?.claim;
+    const verdict = record?.verdict;
+    const { signature, ...unsignedVerdict } = verdict || {};
+    const claimDigest = hostNativeDigest(claim);
+    const issuedAt = Date.parse(verdict?.issued_at || "");
+    const expiresAt = Date.parse(verdict?.expires_at || "");
+    return record?.schema_version === "host_native_core_join_record_v1" &&
+      record?.tenant_id === claim?.tenant_id &&
+      record?.verdict_id === verdict?.verdict_id &&
+      record?.claim_digest === claimDigest &&
+      verdict?.claim_digest === claimDigest &&
+      verdict?.verdict_id === `hnj_${claimDigest.slice(0, 40)}` &&
+      verdict?.allowed === true && verdict?.provider_execution === false &&
+      Number.isFinite(issuedAt) && Number.isFinite(expiresAt) && issuedAt < expiresAt &&
+      safeEqual(signature, hmac("hnj", signing, canonical(unsignedVerdict)));
+  } catch {
+    return false;
+  }
+}
+
+function expiredUnreservedCoreJoinTicket({
+  state,
+  predecessor,
+  nowValue,
+  signing,
+}) {
+  const ticketId = predecessor.authorized_ticket_id;
+  if (!ticketId) return null;
+  const record = state.tickets?.[ticketId];
+  const ticket = record?.ticket;
+  const ticketExpiresAt = Date.parse(ticket?.expires_at || "");
+  const ticketBindingValid =
+    record && ticket && ticket.ticket_id === ticketId &&
+    safeEqual(ticket.signature, ticketSignature(signing, ticket)) &&
+    ticket.tenant_id === predecessor.tenant_id &&
+    ticket.work_id === predecessor.claim?.work_id &&
+    ticket.repository === predecessor.claim?.repository &&
+    ticket.core_join_verdict_id === predecessor.verdict_id &&
+    ticket.core_join_verdict_digest === predecessor.claim_digest &&
+    ticket.release_intent_digest === predecessor.claim?.release_intent_digest &&
+    Number(record.uses || 0) === 0 &&
+    !record.reservation_id && !record.reserved_at &&
+    Number.isFinite(ticketExpiresAt) && ticketExpiresAt <= nowValue;
+  const ticketStateValid = record?.state === "issued" ||
+    (record?.state === "superseded" &&
+      Boolean(record.superseded_by_core_join_verdict_id) &&
+      state.core_join_renewal_successors?.[predecessor.verdict_id] ===
+        record.superseded_by_core_join_verdict_id);
+  if (!ticketBindingValid || !ticketStateValid) {
+    fail("core_join_renewal_predecessor_unavailable");
+  }
+  return record;
+}
+
+function validateCoreJoinRenewal({
+  state,
+  claim,
+  renewal,
+  releaseIntent,
+  nowValue,
+  signing,
+}) {
+  if (!renewal) return;
+  const predecessor = state.core_join_verdicts?.[renewal.predecessor_verdict_id];
+  if (!predecessor || !verifyStoredCoreJoinRecord(predecessor, signing)) {
+    fail("core_join_renewal_predecessor_invalid");
+  }
+  const predecessorExpiresAt = Date.parse(predecessor.verdict?.expires_at || "");
+  if (!Number.isFinite(predecessorExpiresAt) || predecessorExpiresAt > nowValue) {
+    fail("core_join_renewal_not_expired");
+  }
+  if (predecessor.state !== "active" || Number(predecessor.uses || 0) !== 0 ||
+      predecessor.consumed_at) {
+    fail("core_join_renewal_predecessor_unavailable");
+  }
+  const expiredTicket = expiredUnreservedCoreJoinTicket({
+    state,
+    predecessor,
+    nowValue,
+    signing,
+  });
+  const predecessorRecordForBinding = expiredTicket
+    ? (({ authorized_ticket_id: _ticketId, authorized_at: _authorizedAt, ...record }) => record)(predecessor)
+    : predecessor;
+  const predecessorRenewal = normalizeCoreJoinRenewal(
+    predecessor.claim?.core_join_renewal,
+  );
+  if (
+    renewal.predecessor_claim_digest !== predecessor.claim_digest ||
+    renewal.predecessor_release_intent_digest !==
+      predecessor.claim?.release_intent_digest ||
+    renewal.predecessor_record_digest !== hostNativeDigest(predecessorRecordForBinding) ||
+    claim.release_intent_digest !== predecessor.claim?.release_intent_digest ||
+    releaseIntent.release_intent_digest !== predecessor.claim?.release_intent_digest ||
+    renewal.generation !== Number(predecessorRenewal?.generation || 0) + 1 ||
+    hostNativeDigest(coreJoinRenewalSubject(claim)) !==
+      hostNativeDigest(coreJoinRenewalSubject(predecessor.claim))
+  ) {
+    fail("core_join_renewal_binding_mismatch");
+  }
+  return { predecessor, expiredTicket };
+}
+
+function validateStoredCoreJoinAuthority({ state, record, nowValue, signing }) {
+  if (!verifyStoredCoreJoinRecord(record, signing)) {
+    fail("core_join_verdict_integrity_invalid");
+  }
+  const renewal = normalizeCoreJoinRenewal(record.claim?.core_join_renewal);
+  if (!renewal) return;
+  validateCoreJoinRenewal({
+    state,
+    claim: record.claim,
+    renewal,
+    releaseIntent: {
+      release_intent_digest: record.claim.release_intent_digest,
+    },
+    nowValue,
+    signing,
+  });
+  if (state.core_join_renewal_successors?.[renewal.predecessor_verdict_id] !==
+      record.verdict_id) {
+    fail("core_join_renewal_successor_integrity_invalid");
+  }
+}
+
 function validateClosureAttestation(input, secret) {
   const attestation = input.closure_attestation;
   exactKeys(attestation, new Set([
-    "schema_version", "tenant_id", "work_id", "repository", "core_plan_id", "core_plan_digest", "local_plan_id", "local_plan_digest", "evaluation_digest", "target_commit", "checks_digest", "acceptance_criteria", "report_bindings", "provider_execution", "signature",
+    "schema_version", "tenant_id", "work_id", "repository", "core_plan_id", "core_plan_digest", "local_plan_id", "local_plan_digest", "evaluation_digest", "target_commit", "checks_digest", "acceptance_criteria", "report_bindings", "provider_execution", "core_join_renewal", "signature",
   ]));
   if (attestation.schema_version !== "host_native_closure_attestation_v1" || attestation.provider_execution !== false) {
     fail("closure_attestation_invalid");
@@ -1484,7 +1676,11 @@ function validateClosureAttestation(input, secret) {
   if (!safeEqual(signature, expected)) {
     fail("core_join_closure_attestation_signature_invalid");
   }
-  return clone(attestation);
+  const normalizedRenewal = normalizeCoreJoinRenewal(attestation.core_join_renewal);
+  return {
+    ...clone(attestation),
+    ...(normalizedRenewal ? { core_join_renewal: normalizedRenewal } : {}),
+  };
 }
 
 function coreJoinClaim(input, manifest, closure, requiredChecksPolicyDigest = null) {
@@ -1538,6 +1734,13 @@ function coreJoinClaim(input, manifest, closure, requiredChecksPolicyDigest = nu
       new Date(softwareClosureFreshUntil).toISOString() !== softwareClosureFreshUntilText)) {
     fail("software_cognition_closure_expired_during_issuance");
   }
+  const coreJoinRenewal = normalizeCoreJoinRenewal(input.core_join_renewal);
+  if (
+    hostNativeDigest(coreJoinRenewal) !==
+    hostNativeDigest(normalizeCoreJoinRenewal(closure.core_join_renewal))
+  ) {
+    fail("core_join_renewal_binding_mismatch");
+  }
   const claim = {
     schema_version: softwareClosureDigest ? "host_native_core_join_claim_v2" : "host_native_core_join_claim_v1",
     tenant_id: manifest.tenant_id,
@@ -1563,6 +1766,7 @@ function coreJoinClaim(input, manifest, closure, requiredChecksPolicyDigest = nu
     ...(softwareClosureDigest ? { software_closure_digest: softwareClosureDigest } : {}),
     ...(softwareClosureFreshUntilText ? { software_closure_fresh_until: softwareClosureFreshUntilText } : {}),
     release_intent_digest,
+    ...(coreJoinRenewal ? { core_join_renewal: coreJoinRenewal } : {}),
     ...(requiredChecksPolicyDigest
       ? { required_checks_policy_digest: requiredChecksPolicyDigest }
       : {}),
@@ -2327,6 +2531,9 @@ export function createHostNativeGovernance({
         hostNativeDigest(ticket.release_join_resolution)
     ) fail("standing_release_pre_merge_ticket_invalid");
     const coreJoin = state.core_join_verdicts?.[ticket.core_join_verdict_id];
+    if (coreJoin) {
+      validateStoredCoreJoinAuthority({ state, record: coreJoin, nowValue, signing });
+    }
     const requiredChecksPolicyDigest = coreJoin?.claim?.required_checks_policy_digest;
     if (
       !coreJoin || coreJoin.state !== "active" || coreJoin.uses !== 0 ||
@@ -3680,11 +3887,40 @@ export function createHostNativeGovernance({
       if (claim.software_closure_fresh_until && nowValue > Date.parse(claim.software_closure_fresh_until)) {
         fail("software_cognition_closure_expired_during_issuance");
       }
+      const coreJoinRenewal = normalizeCoreJoinRenewal(claim.core_join_renewal);
+      validateCoreJoinRenewal({
+        state: initial,
+        claim,
+        renewal: coreJoinRenewal,
+        releaseIntent,
+        nowValue,
+        signing,
+      });
       return store.mutate((state) => {
         const descriptor = getIdempotent(state, tenantId, "issueCoreJoinVerdict", input);
         if (descriptor?.result) return descriptor.result;
+        const renewalValidation = validateCoreJoinRenewal({
+          state,
+          claim,
+          renewal: coreJoinRenewal,
+          releaseIntent,
+          nowValue,
+          signing,
+        });
+        const predecessorVerdictId = coreJoinRenewal?.predecessor_verdict_id;
+        const recordedSuccessor = predecessorVerdictId
+          ? state.core_join_renewal_successors?.[predecessorVerdictId]
+          : null;
+        if (recordedSuccessor && recordedSuccessor !== verdictId) {
+          fail("core_join_renewal_successor_conflict");
+        }
         const existing = state.core_join_verdicts[verdictId];
-        if (existing) return saveIdempotent(state, descriptor, clone(existing));
+        if (existing) {
+          if (predecessorVerdictId && recordedSuccessor !== verdictId) {
+            fail("core_join_renewal_successor_integrity_invalid");
+          }
+          return saveIdempotent(state, descriptor, clone(existing));
+        }
         const { schema_version: _claimSchemaVersion, ...claimFields } = claim;
         const verdictUnsigned = {
           schema_version: claim.schema_version === "host_native_core_join_claim_v2" ? "host_native_core_join_v2" : "host_native_core_join_v1",
@@ -3713,6 +3949,14 @@ export function createHostNativeGovernance({
           expires_at: verdict.expires_at,
         };
         state.core_join_verdicts[verdictId] = record;
+        if (predecessorVerdictId) {
+          state.core_join_renewal_successors[predecessorVerdictId] = verdictId;
+        }
+        if (renewalValidation?.expiredTicket?.state === "issued") {
+          renewalValidation.expiredTicket.state = "superseded";
+          renewalValidation.expiredTicket.superseded_by_core_join_verdict_id = verdictId;
+          renewalValidation.expiredTicket.superseded_at = iso(nowValue);
+        }
         return saveIdempotent(state, descriptor, clone(record));
       });
     },
@@ -3909,14 +4153,9 @@ export function createHostNativeGovernance({
     verifyCoreJoinVerdict(record) {
       try {
         const verdict = record?.verdict;
-        const { signature, ...unsigned } = verdict || {};
-        const issuedAt = Date.parse(verdict?.issued_at || "");
         const expiresAt = Date.parse(verdict?.expires_at || "");
-        return verdict?.allowed === true && verdict?.provider_execution === false &&
-          verdict?.claim_digest === record?.claim_digest &&
-          Number.isFinite(issuedAt) && Number.isFinite(expiresAt) &&
-          issuedAt < expiresAt && expiresAt > nowMillis(now) &&
-          safeEqual(signature, hmac("hnj", signing, canonical(unsigned)));
+        return verifyStoredCoreJoinRecord(record, signing) &&
+          Number.isFinite(expiresAt) && expiresAt > nowMillis(now);
       } catch { return false; }
     },
 
@@ -4556,6 +4795,14 @@ export function createHostNativeGovernance({
             fail("predecessor_ticket_invalid");
           }
           coreJoin = initial.core_join_verdicts[parentTicket.core_join_verdict_id];
+          if (coreJoin) {
+            validateStoredCoreJoinAuthority({
+              state: initial,
+              record: coreJoin,
+              nowValue,
+              signing,
+            });
+          }
           if (
             !coreJoin || coreJoin.state !== "consumed" || coreJoin.uses !== 1 ||
             hostNativeDigest(coreJoin.claim) !== coreJoin.claim_digest ||
@@ -4636,6 +4883,12 @@ export function createHostNativeGovernance({
         } else {
           coreJoin = initial.core_join_verdicts[release_manifest.verification.core_join_verdict_id];
           if (!coreJoin) fail("core_join_verdict_not_found");
+          validateStoredCoreJoinAuthority({
+            state: initial,
+            record: coreJoin,
+            nowValue,
+            signing,
+          });
           if (coreJoin.tenant_id !== tenantId) fail("cross_tenant_core_join_verdict_denied");
           if (coreJoin.manual_merge_readback_receipt_id) {
             fail("core_join_manual_merge_already_observed");
@@ -4722,6 +4975,14 @@ export function createHostNativeGovernance({
         let supersededTicket = null;
         if (isReleaseAction(action.kind) && action.kind !== "render.observe" && !bootstrapReleaseExceptionCandidate) {
           releaseJoin = state.core_join_verdicts[release_manifest.verification.core_join_verdict_id];
+          if (releaseJoin) {
+            validateStoredCoreJoinAuthority({
+              state,
+              record: releaseJoin,
+              nowValue,
+              signing,
+            });
+          }
           if (!releaseJoin || releaseJoin.state !== "active") fail("core_join_verdict_consumed");
           const joinExpiresAt = Date.parse(releaseJoin.verdict?.expires_at || "");
           if (!Number.isFinite(joinExpiresAt) || joinExpiresAt <= nowValue) {

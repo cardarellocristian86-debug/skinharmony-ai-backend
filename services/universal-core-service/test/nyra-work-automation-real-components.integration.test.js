@@ -169,9 +169,8 @@ test("production Core Join compatibility verifies a real HNJ and rejects a stale
     /binding_mismatch/,
   );
 
-  // The native signature verifier authenticates the unchanged signed verdict,
-  // but cannot by itself notice a stale/mutated detached claim. The production
-  // Automation verifier must reject this even when software cognition is OFF.
+  // The hardened native verifier recomputes the persisted claim digest and
+  // rejects a stale/mutated detached claim before Automation compatibility.
   governanceStore.mutate((state) => {
     const persisted = state.core_join_verdicts[record.verdict_id];
     // Persisted JSON does not retain the issuer's transient object aliases.
@@ -183,7 +182,7 @@ test("production Core Join compatibility verifies a real HNJ and rejects a stale
     tenant_id: expected.tenant_id,
     verdict_id: record.verdict_id,
   });
-  assert.equal(governance.verifyCoreJoinVerdict(staleRecord), true);
+  assert.equal(governance.verifyCoreJoinVerdict(staleRecord), false);
   await assert.rejects(
     verifier({ verdict_id: record.verdict_id }, expected),
     /binding_mismatch/,
