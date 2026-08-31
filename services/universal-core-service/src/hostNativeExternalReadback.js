@@ -346,6 +346,57 @@ function workflowPullRequestMatches(entry, {
   );
 }
 
+async function independentlyBoundWorkflowPullRequest({
+  getGithub,
+  workflowRun,
+  trustedPullRequest,
+  repository,
+  action,
+  checksCommit,
+}) {
+  const runCreatedAt = Date.parse(string(workflowRun?.created_at));
+  const pullCreatedAt = Date.parse(string(trustedPullRequest?.created_at));
+  const pullClosedAt = Date.parse(string(
+    trustedPullRequest?.merged_at || trustedPullRequest?.closed_at,
+  ));
+  if (
+    !Number.isFinite(runCreatedAt) || !Number.isFinite(pullCreatedAt) ||
+    !Number.isFinite(pullClosedAt) || runCreatedAt < pullCreatedAt ||
+    runCreatedAt > pullClosedAt ||
+    Number(trustedPullRequest?.number) !== Number(action.pull_request)
+  ) return null;
+
+  const owner = repository.split("/")[0];
+  const headBranch = string(action.head_branch);
+  const headSelector = encodeURIComponent(`${owner}:${headBranch}`);
+  const pulls = await getGithub(
+    `/pulls?state=all&head=${headSelector}&per_page=100`,
+  );
+  if (!Array.isArray(pulls) || pulls.length >= 100) return null;
+
+  const activeAtRun = pulls.filter((pull) => {
+    const createdAt = Date.parse(string(pull?.created_at));
+    const closedAtValue = string(pull?.closed_at);
+    const closedAt = closedAtValue ? Date.parse(closedAtValue) : Number.POSITIVE_INFINITY;
+    return (
+      Number.isFinite(createdAt) &&
+      (!closedAtValue || Number.isFinite(closedAt)) &&
+      createdAt <= runCreatedAt && runCreatedAt <= closedAt &&
+      string(pull?.head?.repo?.full_name) === repository &&
+      string(pull?.head?.ref) === headBranch &&
+      sha(pull?.head?.sha) === checksCommit
+    );
+  });
+  if (activeAtRun.length !== 1) return null;
+  const association = activeAtRun[0];
+  if (
+    Number(association?.number) !== Number(trustedPullRequest.number) ||
+    string(association?.base?.repo?.full_name) !== repository ||
+    !workflowPullRequestMatches(association, { repository, action, merge: true })
+  ) return null;
+  return association;
+}
+
 function validBranch(value) {
   const branch = string(value);
   return (
@@ -452,7 +503,7 @@ async function strictWorkflowEvidence({
   workflowRunCache,
   workflowSourceCache,
   ticket,
-  trustedPullRequestAssociation,
+  trustedPullRequest,
 }) {
   const workflowRunIds = new Set(selectedChecks.map((check) =>
     detailWorkflowRunId(check.details_url, repository),
@@ -490,13 +541,23 @@ async function strictWorkflowEvidence({
       merge,
     }));
     if (!match && merge && Array.isArray(workflowRun.pull_requests) && pull.length === 0) {
-      const association = signedMergeSourceAssociation(ticket, {
+      let association = signedMergeSourceAssociation(ticket, {
         repository,
         action,
         checksCommit,
         baseCommit,
         policy,
-      }) || trustedPullRequestAssociation;
+      });
+      if (!association && trustedPullRequest) {
+        association = await independentlyBoundWorkflowPullRequest({
+          getGithub,
+          workflowRun,
+          trustedPullRequest,
+          repository,
+          action,
+          checksCommit,
+        });
+      }
       match = workflowPullRequestMatches(association, { repository, action, merge });
     }
     if (!match) error("workflow_pull_request_mismatch");
@@ -559,7 +620,7 @@ async function attestChecks({
   workflowRunCache,
   workflowSourceCache,
   ticket = null,
-  trustedPullRequestAssociation = null,
+  trustedPullRequest = null,
 }) {
   const policy = await resolvePolicy(requiredChecksPolicyResolver, {
     tenant_id: tenantId,
@@ -597,7 +658,7 @@ async function attestChecks({
     workflowRunCache,
     workflowSourceCache,
     ticket,
-    trustedPullRequestAssociation,
+    trustedPullRequest,
   });
   const strictObserved = observed_checks.map((entry, index) => ({
     ...entry,
@@ -1601,12 +1662,7 @@ export function createHostNativeOwnerManualMergeReadbackVerifier({
       requiredChecksPolicyResolver,
       workflowRunCache: workflow_run_cache,
       workflowSourceCache: workflow_source_cache,
-      trustedPullRequestAssociation: {
-        url: `${GITHUB_ORIGIN}/repos/${safeRepository}/pulls/${pullRequest}`,
-        number: pullRequest,
-        head: { ref: headBranch, sha: headCommit },
-        base: { ref: baseBranch, sha: baseCommit },
-      },
+      trustedPullRequest: pull,
     });
     if (!checks.required_checks_policy_digest ||
         checks.required_checks_policy_digest !== joinedPolicyDigest) {
