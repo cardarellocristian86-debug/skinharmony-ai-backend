@@ -39,6 +39,7 @@ import {
   hasTenantBoundChatGptReadCompatibility,
   requireHostAppToolCapability,
 } from "./host-app-authorization.js";
+import { classifyNyraIntent } from "./nyra-intent-router.js";
 
 const SERVER_VERSION = "0.17.0-nyra-conversational-orchestration";
 const SERVER_INSTRUCTIONS = [
@@ -639,6 +640,30 @@ function isLegacyNyraPreflightToolName(value) {
   return requested === "work_preflight" || requested === `${CONNECTOR_TOOL_NAMESPACE}.work_preflight`;
 }
 
+// Some ChatGPT sessions retain the old `work_preflight` descriptor even
+// after the conversational surface hides it.  Do not let that legacy entry
+// point turn an informational Nyra question into a Work selection.  The
+// classifier is the single routing authority: only its read-only routes are
+// translated, while operational or ambiguous requests still use the normal
+// governed Work path.
+function isLegacyNyraAdvisoryPreflight(value, args, identity) {
+  if (!isLegacyNyraPreflightToolName(value) || !identity?.tenantId) return false;
+  const request = args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  const message = typeof request.message === "string" ? request.message.trim()
+    : typeof request.request === "string" ? request.request.trim()
+      : "";
+  if (!message) return false;
+  try {
+    const decision = classifyNyraIntent({
+      message,
+      tenantId: identity.tenantId,
+    });
+    return ["CONTROL_ROOM_READ", "ADVISORY_READ", "CORE_CATALOG_READ"].includes(decision.route);
+  } catch {
+    return false;
+  }
+}
+
 function boundedStaleReadArguments(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return Object.freeze({});
   let serialized;
@@ -672,7 +697,7 @@ function staleNyraReadArguments(value, requestedToolName = "") {
   } else if (candidate === "core_capability_read") {
     translatedIntent = capabilityId
       ? `Nyra, mostra la lettura advisory della capability ${capabilityId}. Spiega solo dati verificati, senza aprire o selezionare un Work e senza invocare azioni.`
-      : "Nyra, questa è una lettura advisory di capability: chiedi quale capability leggere, senza aprire un Work o invocare azioni.";
+      : "Nyra, questa Ã¨ una lettura advisory di capability: chiedi quale capability leggere, senza aprire un Work o invocare azioni.";
   } else if (candidate === "core_branch_registry") {
     translatedIntent = "Nyra, leggi e presenta il registro dei rami Core in sola lettura, senza aprire o selezionare un Work e senza invocare azioni.";
   } else if (candidate === "core_semantic_select") {
@@ -2409,9 +2434,15 @@ export function createApp(config, options = {}) {
           params.arguments || {},
           config.nyraDialogueEnabled,
         );
-        const staleNyraRead = !staleChatGptReadTool && isStaleNyraReadToolName(params.name) &&
-          !requestVisibleTools.some((item) => item.name === "work_preflight") &&
-          isLegacyNyraPreflightToolName(params.name);
+        const legacyNyraAdvisoryPreflight = isLegacyNyraAdvisoryPreflight(
+          params.name,
+          params.arguments,
+          identity,
+        );
+        const staleNyraRead = legacyNyraAdvisoryPreflight ||
+          (!staleChatGptReadTool && isStaleNyraReadToolName(params.name) &&
+            !requestVisibleTools.some((item) => item.name === "work_preflight") &&
+            isLegacyNyraPreflightToolName(params.name));
         const canonicalToolName = staleChatGptReadTool || (staleNyraRead
           ? "nyra_converse"
           : resolveConnectorToolName(params.name, requestVisibleTools));
@@ -2852,4 +2883,4 @@ export function createApp(config, options = {}) {
   return app;
 }
 
-export { attachWorkPreflight, buildIdentity, configureToolForRuntime, filterToolsForClient, hasTenantBoundChatGptReadCompatibility, inferClientType, resolveConnectorToolName, resolveStaleChatGptReadTool, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };
+export { attachWorkPreflight, buildIdentity, configureToolForRuntime, filterToolsForClient, hasTenantBoundChatGptReadCompatibility, inferClientType, isLegacyNyraAdvisoryPreflight, resolveConnectorToolName, resolveStaleChatGptReadTool, resolveWorkPreflight, securitySchemes, serverIssuedBootstrapSession, serverIssuedWorkPreflight, toolFailure, TOOLS };

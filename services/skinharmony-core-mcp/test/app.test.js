@@ -4,7 +4,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, filterToolsForClient, inferClientType, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, resolveHostTransportPresence, resolveMcpLogicalSession, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
+import { buildGenericWorkCoreJoinHealth, buildIdentity, buildReadiness, createApp, filterToolsForClient, inferClientType, isLegacyNyraAdvisoryPreflight, POLICY_REGISTRY_LIFECYCLE_TOOLS, requiresGenericWorkPreflight, resolveHostTransportPresence, resolveMcpLogicalSession, serverIssuedWorkPreflight, toolFailure, TOOLS } from "../src/app.js";
 import { NYRA_DIALOGUE_WIDGET_MIME_TYPE, NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
 import { createCollaborationHandlers } from "../src/collaboration-handlers.js";
 import { COMPACT_MCP_TOOL_NAMES, createDynamicCapabilityHandlers, dynamicCapabilityCatalogSnapshot } from "../src/dynamic-capability-router.js";
@@ -2388,6 +2388,22 @@ test("translates a stale tenant-bound OAuth ChatGPT preflight to Nyra without pu
   }
 });
 
+test("intercepts legacy Work preflight only for Nyra informational reads", () => {
+  const identity = { tenantId: "tenant-a" };
+  assert.equal(isLegacyNyraAdvisoryPreflight("work_preflight", {
+    request: "SkinHarmony Nyra & Core Nyra, quali funzioni sono attive?",
+  }, identity), true);
+  assert.equal(isLegacyNyraAdvisoryPreflight("skinharmony_nyra_core.work_preflight", {
+    message: "Nyra, quali funzioni sono attive?",
+  }, identity), true);
+  assert.equal(isLegacyNyraAdvisoryPreflight("work_preflight", {
+    request: "Apri un Work e fai il deploy in produzione.",
+  }, identity), false);
+  assert.equal(isLegacyNyraAdvisoryPreflight("work_preflight", {
+    request: "Riprendi il Work canonico e prepara il prossimo passo.",
+  }, identity), false);
+});
+
 test("translates stale tenant-bound ChatGPT Core reads to Nyra without reopening Core handlers", async () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = publicKey.export({ format: "jwk" });
@@ -2532,7 +2548,7 @@ test("publishes the governed host-browsing research sequence", async () => serve
   assert.doesNotMatch(body.result.instructions, /protected one-time Core page/);
   assert.doesNotMatch(body.result.instructions, /provider test/);
   assert.doesNotMatch(body.result.instructions, /manual_dry_run/);
-  assert.doesNotMatch(body.result.instructions, /Researcher → Reviewer → Nyra Synthesizer/);
+  assert.doesNotMatch(body.result.instructions, /Researcher â Reviewer â Nyra Synthesizer/);
   assert.doesNotMatch(body.result.instructions, /bounded_execution_ready=true/);
   assert.match(body.result.instructions, /HOW TO BUILD AN AGENT/);
   assert.match(body.result.instructions, /AUTOMATIC/);
