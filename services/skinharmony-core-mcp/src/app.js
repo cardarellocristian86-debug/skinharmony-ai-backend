@@ -43,7 +43,7 @@ import {
 const SERVER_VERSION = "0.17.0-nyra-conversational-orchestration";
 const SERVER_INSTRUCTIONS = [
   "Nyra/Core is a persistent work coordinator: reuse the Work Identity, compact checkpoint and next action returned by the gateway. Do not rescan the repository, recreate the intent, or ask the user to restate known work.",
-  "A bound Work automatically carries Nyra's persistent operational dialogue. When the user addresses Nyra or asks to resume, diagnose or coordinate a Work, invoke only the read-only nyra_converse front door. It reuses persisted context only for a pure resume; every new technical request receives a fresh preflight/Core interpretation plus bounded Work tasks and evidence. Render the server-issued orchestration_directive: Nyra states the problem and needs, directs the authenticated connected AI's bounded preparation, and identifies the Universal Core authority gate. RESUME, PROCEED_READ_ONLY and PREPARE_BOUNDED_WORK never authorize execution. Do not replace the directive with PR history, an invented plan or a completion claim.",
+  "For a bound Work, use nyra_converse only when Nyra Dialogue is advertised as enabled: it resumes, diagnoses or coordinates that Work. It reuses persisted context only for a pure resume; every new technical request receives a fresh preflight/Core interpretation plus bounded Work tasks and evidence. For functions, controls, runtime state, Work closure percentage, blockers or allowed toggles, use nyra_control_room_status directly; never route that read through a Work. Render the server-issued orchestration_directive: Nyra states the problem and needs, directs the authenticated connected AI's bounded preparation, and identifies the Universal Core authority gate. RESUME, PROCEED_READ_ONLY and PREPARE_BOUNDED_WORK never authorize execution. Do not replace the directive with PR history, an invented plan or a completion claim.",
   "Generic tools receive tenant memory, Work selection and preflight automatically. Do not call work_preflight before a normal action. If one operational Work matches the project, it is resumed automatically; ask the owner to choose only when the gateway reports multiple works.",
   "When the owner asks for controls, runtime state, Work closure percentage, blockers or allowed toggles, invoke nyra_control_room_status. Render its server-derived state and allowed_actions exactly; never invent an ON/OFF state, percentage, available command or authority. For an EXISTING_GOVERNED_HANDLER, invoke only that exact registered handler after its fresh owner confirmation; never write environment or deployment configuration from chat.",
   "Treat one verified owner confirmation as the authorization for its exact bounded intent. Continue its approved preparation, verification and ticketed release path without requesting duplicate confirmations. Ask again only when Core reports a new scope, expiry, drift, or an action outside that intent.",
@@ -564,6 +564,13 @@ function filterToolsForClient(tools = [], identity, dialogueEnabled = true) {
     HOST_APP_CAPABILITIES.HOST_NATIVE_AUTHORIZE,
   ];
   const capabilityFiltered = tools.filter((tool) => {
+    // A configuration default is not a sufficient safety boundary: hide the
+    // conversation and continuation entrypoints when Dialogue is OFF. The
+    // dedicated Control Room read remains independently capability-bound.
+    if (dialogueEnabled !== true &&
+        ["nyra_converse", "nyra_continue", "nyra_governed_continue"].includes(tool.name)) {
+      return false;
+    }
     if (hasTenantBoundChatGptReadCompatibility(identity, tool.name)) return true;
     // Dynamic wrappers are authorized against their exact capability_id at
     // call time. Keep only the wrapper modes for which the registered app has
@@ -611,8 +618,15 @@ function isStaleNyraReadToolName(value) {
 }
 
 function resolveStaleChatGptReadTool(value, identity, visibleTools = [], args = {}, dialogueEnabled = true) {
-  if (!usesNyraConversationalSurface(identity, dialogueEnabled)) return null;
   const candidate = connectorToolCandidate(value);
+  // Keep the dedicated status reader stable across a cached descriptor and
+  // across a Dialogue OFF transition. Mapping it to nyra_converse would both
+  // lose the direct read and reopen the Work-selection loop.
+  if (candidate === "nyra_control_room_status" &&
+      hasTenantBoundChatGptReadCompatibility(identity, candidate)) {
+    return candidate;
+  }
+  if (!usesNyraConversationalSurface(identity, dialogueEnabled)) return null;
   if (visibleTools.some((tool) => tool.name === candidate)) return null;
   // A stale generic Core descriptor must not reopen a direct Core path for a
   // conversational host.  Translate the legacy read to Nyra, which can ask

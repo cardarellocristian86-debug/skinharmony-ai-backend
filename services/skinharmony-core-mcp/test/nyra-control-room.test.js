@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { projectNyraControlRoomStatus, projectWorkClosureProgress } from "../src/nyra-control-room.js";
+import { normalizeNyraControlRoomReadback, projectNyraControlRoomStatus, projectWorkClosureProgress } from "../src/nyra-control-room.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 import { TOOLS } from "../src/tool-definitions.js";
 
@@ -23,6 +23,26 @@ test("Control Room calculates closure progress only from server work context", (
   assert.deepEqual(progress.blockers.map((item) => item.code), [
     "required_tasks_pending", "required_evidence_unverified", "closure_not_verified",
   ]);
+});
+
+test("Control Room normalizer accepts the real task acceptance field without inventing it", () => {
+  const source = projectNyraControlRoomStatus({
+    health: { ok: true },
+    work: {
+      available: true,
+      required_task_count: 1,
+      pending_required_task_count: 1,
+      required_evidence_count: 0,
+      unverified_required_evidence_count: 0,
+      closure_verified: false,
+      next_required_task: {
+        task_id: "task-acceptance-1", title: "Independent verification",
+        status: "planned", acceptance_verified: false,
+      },
+    },
+  });
+  const normalized = normalizeNyraControlRoomReadback(source);
+  assert.equal(normalized.work_progress.next_action.acceptance_verified, false);
 });
 
 test("Control Room distinguishes runtime controls from deployment configuration", () => {

@@ -1556,6 +1556,9 @@ const nyraConverseHandler = createNyraConverseHandler({
       ...(args.project_id ? { project_id: args.project_id } : {}),
     });
   },
+  readCommandCatalog: (args, identity) => handlers.core_capability_catalog(args, identity),
+  readControlRoomStatus: (args, identity) => coreHandlers.nyra_control_room_status(args, identity),
+  dialogueEnabled: config.nyraDialogueEnabled === true,
 });
 
 const nyraGovernedContinueHandler = nyraGovernedContinuationStore

@@ -17,6 +17,7 @@ import {
 } from "../src/nyra-converse.js";
 import { resolveContinuityProjectBinding } from "../src/continuity-project-binding.js";
 import { NYRA_DIALOGUE_WIDGET_URI } from "../src/nyra-operating-dialogue-widget.js";
+import { projectNyraControlRoomStatus } from "../src/nyra-control-room.js";
 import { validateToolArguments } from "../src/schema-validation.js";
 import { TOOLS } from "../src/tool-definitions.js";
 import { NYRA_AUTOPILOT_TOOLS } from "../src/nyra-autopilot-tools.js";
@@ -375,8 +376,14 @@ function harness({
   directiveContext,
   openContinuation,
   listWorkChoices,
+  readCommandCatalog,
+  readControlRoomStatus,
+  dialogueEnabled = true,
 } = {}) {
-  const calls = { preflight: [], interpret: [], readControlContext: [], readDirectiveContext: [], listWorkChoices: [] };
+  const calls = {
+    preflight: [], interpret: [], readControlContext: [], readDirectiveContext: [],
+    listWorkChoices: [], readCommandCatalog: [], readControlRoomStatus: [],
+  };
   const handler = createNyraConverseHandler({
     preflight: async (args, authenticatedIdentity) => {
       calls.preflight.push({ args, identity: authenticatedIdentity });
@@ -401,8 +408,51 @@ function harness({
         ? listWorkChoices(authenticatedIdentity, args)
         : listWorkChoices;
     },
+    readCommandCatalog: readCommandCatalog === undefined ? null : async (args, authenticatedIdentity) => {
+      calls.readCommandCatalog.push({ args, identity: authenticatedIdentity });
+      return typeof readCommandCatalog === "function"
+        ? readCommandCatalog(args, authenticatedIdentity)
+        : readCommandCatalog;
+    },
+    readControlRoomStatus: readControlRoomStatus === undefined ? null : async (args, authenticatedIdentity) => {
+      calls.readControlRoomStatus.push({ args, identity: authenticatedIdentity });
+      return typeof readControlRoomStatus === "function"
+        ? readControlRoomStatus(args, authenticatedIdentity)
+        : readControlRoomStatus;
+    },
+    dialogueEnabled,
   });
   return { handler, calls };
+}
+
+function controlRoomReadback(tenantId, overrides = {}) {
+  return {
+    structuredContent: {
+      ok: true,
+      tenant_id: tenantId,
+      control_room: projectNyraControlRoomStatus({
+        nyraDialogueEnabled: false,
+        health: {
+          ok: true,
+          causal_continuity: { ok: true, state: "ready" },
+          entity_360: {
+            mode: "SHADOW",
+            bitemporal_mode: "SHADOW",
+            deployment_mode_ceiling: "SHADOW",
+            ready: true,
+            tenant_shadow_disable_available: true,
+          },
+          host_native_governance: {
+            semantic_scope_guard_mode: "ENFORCE",
+            semantic_scope_guard_configured: true,
+          },
+          research_airlock: { mode: "enforced", state: "ready", operational_safe: true },
+          nyra_policy_registry: { ready: true, state: "ready", enforcement: "conditional" },
+        },
+      }),
+      ...overrides,
+    },
+  };
 }
 
 test("lists Work choices in the same Nyra session without preflight, interpretation or resume", async () => {
@@ -476,6 +526,366 @@ test("uses the explicit Work selection mode as the same read-only path", async (
   assert.equal(response.structuredContent.orchestration_directive.source, "WORK_GALLERY");
 });
 
+test("routes fresh advisory chat through one bounded context preflight and no catalog", async () => {
+  let continuationCalls = 0;
+  const { handler, calls } = harness({
+    openContinuation: async () => { continuationCalls += 1; throw new Error("must-not-run"); },
+  });
+  const response = await handler({ message: "Ciao Nyra, spiegami come ragioni." }, identity());
+  const payload = response.structuredContent;
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(calls.interpret.length, 1);
+  assert.equal(calls.readCommandCatalog.length, 0);
+  assert.equal(continuationCalls, 0);
+  assert.equal(payload.intent_routing.route.route, "CORE_CONTEXT_THEN_NYRA");
+  assert.equal(payload.intent_routing.structured_context.ramy_state,
+    "unavailable_no_verified_adapter");
+  assert.equal(payload.execution_authorized, false);
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("records elapsed routing latency for a fresh Core-routed turn", async (t) => {
+  const authenticatedIdentity = identity();
+  let now = 10_000;
+  t.mock.method(Date, "now", () => now);
+  const handler = createNyraConverseHandler({
+    preflight: async (_args, caller) => {
+      now += 7;
+      return preflightFixture(caller.tenantId);
+    },
+    interpret: async (_args, caller) => {
+      now += 11;
+      return interpretationFixture(caller.tenantId);
+    },
+  });
+  const response = await handler({
+    message: "Ciao Nyra, spiegami come ragioni.",
+  }, authenticatedIdentity);
+  assert.equal(response.structuredContent.intent_routing.route.route, "CORE_CONTEXT_THEN_NYRA");
+  assert.equal(response.structuredContent.intent_routing.telemetry.preflight_invoked, true);
+  assert.equal(response.structuredContent.intent_routing.telemetry.elapsed_ms, 18);
+});
+
+test("reads global Nyra controls without a Work, Core interpretation or preflight", async () => {
+  const { handler, calls } = harness({
+    readControlRoomStatus: async (args, authenticatedIdentity) =>
+      controlRoomReadback(authenticatedIdentity.tenantId),
+  });
+  const response = await handler({
+    message: "Nyra, che funzioni sono attive?",
+    locale: "it",
+  }, identity());
+  const payload = response.structuredContent;
+
+  assert.equal(calls.readControlRoomStatus.length, 1);
+  assert.deepEqual(calls.readControlRoomStatus[0].args, {});
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(calls.readControlContext.length, 0);
+  assert.equal(calls.readDirectiveContext.length, 0);
+  assert.equal(calls.listWorkChoices.length, 0);
+  assert.equal(calls.readCommandCatalog.length, 0);
+  assert.equal(payload.work.work_bound, false);
+  assert.equal(payload.work.selection_required, false);
+  assert.equal(payload.action_policy.action_class, "NONE");
+  assert.equal(payload.action_policy.consequential_request_detected, false);
+  assert.equal(payload.orchestration_directive.source, "CONTROL_ROOM");
+  assert.equal(payload.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+  assert.equal(payload.orchestration_directive.ticket_request.required, false);
+  assert.equal(payload.intent_routing.route.intent, "global_control_read");
+  assert.equal(payload.intent_routing.route.route, "CONTROL_ROOM_READ");
+  assert.equal(payload.intent_routing.control_room.state, "READY");
+  assert.equal(payload.intent_routing.control_room.domains.length, 6);
+  assert.deepEqual(payload.intent_routing.control_room_readback, {
+    state: "AVAILABLE", reason: null,
+  });
+  assert.equal(payload.intent_routing.telemetry.preflight_invoked, false);
+  assert.equal(payload.execution_authorized, false);
+  assert.equal(payload.external_action_authorized, false);
+  assert.match(payload.host_response_contract.reply_seed, /Non ho aperto/i);
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("answers bounded Nyra information questions without entering Work continuity", async () => {
+  const { handler, calls } = harness();
+  const response = await handler({ message: "Nyra, come funzioni?", locale: "it" }, identity());
+  const payload = response.structuredContent;
+
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(calls.readControlContext.length, 0);
+  assert.equal(calls.readDirectiveContext.length, 0);
+  assert.equal(calls.listWorkChoices.length, 0);
+  assert.equal(payload.work.work_bound, false);
+  assert.equal(payload.work.selection_required, false);
+  assert.equal(payload.action_policy.action_class, "NONE");
+  assert.equal(payload.orchestration_directive.decision.disposition, "PROCEED_READ_ONLY");
+  assert.equal(payload.intent_routing.route.route, "ADVISORY_READ");
+  assert.equal(payload.intent_routing.telemetry.preflight_invoked, false);
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema, payload), []);
+});
+
+test("accepts a host's soft semantic read hint without requiring model-side hashing", async () => {
+  const hint = {
+    schema_version: "nyra_semantic_intent_hint_v1",
+    route_candidate: "GLOBAL_CONTROL_READ",
+    speech_act: "QUESTION",
+    operation_class: "READ_ONLY",
+    confidence: "MEDIUM",
+    ambiguous: false,
+    injection_signals: [],
+  };
+  const definition = TOOLS.find((tool) => tool.name === "nyra_converse");
+  assert.deepEqual(validateToolArguments(definition.inputSchema, {
+    message: "Please provide an operational overview.", semantic_intent_hint: hint,
+  }), []);
+  assert.notDeepEqual(validateToolArguments(definition.inputSchema, {
+    message: "Please provide an operational overview.",
+    semantic_intent_hint: { ...hint, message_digest: "0".repeat(64) },
+  }), []);
+
+  const { handler, calls } = harness({
+    readControlRoomStatus: async (_args, authenticatedIdentity) =>
+      controlRoomReadback(authenticatedIdentity.tenantId),
+  });
+  const response = await handler({
+    message: "Please provide an operational overview.", semantic_intent_hint: hint,
+  }, identity());
+  assert.equal(calls.readControlRoomStatus.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(response.structuredContent.intent_routing.route.semantic_intake.state, "ACCEPTED");
+  assert.match(response.structuredContent.intent_routing.route.semantic_intake.message_digest, /^[a-f0-9]{64}$/);
+  assert.equal(response.structuredContent.execution_authorized, false);
+});
+
+test("fails a global control read softly without falling into the Work loop", async () => {
+  const { handler, calls } = harness({
+    readControlRoomStatus: async () => { throw new Error("readback unavailable"); },
+  });
+  const response = await handler({ message: "Il dialogo è disattivato?", locale: "it" }, identity());
+  const payload = response.structuredContent;
+  assert.equal(calls.readControlRoomStatus.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(calls.listWorkChoices.length, 0);
+  assert.equal(payload.intent_routing.control_room, null);
+  assert.deepEqual(payload.intent_routing.control_room_readback, {
+    state: "UNAVAILABLE", reason: "control_room_reader_unavailable",
+  });
+  assert.equal(payload.orchestration_directive.source, "CONTROL_ROOM");
+  assert.match(payload.host_response_contract.reply_seed, /non è al momento disponibile/i);
+});
+
+test("rejects cross-tenant or malformed Control Room readback without a fallback", async () => {
+  const { handler, calls } = harness({
+    readControlRoomStatus: async () => controlRoomReadback("tenant-b"),
+  });
+  const response = await handler({ message: "Nyra, che funzioni sono attive?" }, identity("tenant-a"));
+  assert.equal(calls.readControlRoomStatus.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(response.structuredContent.intent_routing.control_room, null);
+  assert.deepEqual(response.structuredContent.intent_routing.control_room_readback, {
+    state: "UNAVAILABLE", reason: "control_room_readback_invalid",
+  });
+  assert.equal(response.structuredContent.execution_authorized, false);
+});
+
+test("accepts an ATTENTION Control Room readback but rejects malformed reader fields", async () => {
+  const degraded = controlRoomReadback("tenant-a", {
+    ok: false,
+    control_room: projectNyraControlRoomStatus({ health: { ok: false } }),
+  });
+  const { handler: degradedHandler, calls: degradedCalls } = harness({
+    readControlRoomStatus: async () => degraded,
+  });
+  const degradedResponse = await degradedHandler({ message: "Nyra, che funzioni sono attive?" }, identity());
+  assert.equal(degradedCalls.readControlRoomStatus.length, 1);
+  assert.equal(degradedResponse.structuredContent.intent_routing.control_room.state, "ATTENTION");
+  assert.deepEqual(degradedResponse.structuredContent.intent_routing.control_room_readback, {
+    state: "AVAILABLE", reason: null,
+  });
+
+  for (const reader of [
+    async (_args, authenticatedIdentity) => {
+      const response = controlRoomReadback(authenticatedIdentity.tenantId);
+      response.structuredContent.control_room.domains[0].detail.unexpected = "must-not-cross-boundary";
+      return response;
+    },
+  ]) {
+    const { handler, calls } = harness({ readControlRoomStatus: reader });
+    const response = await handler({ message: "Nyra, che funzioni sono attive?" }, identity());
+    assert.equal(calls.readControlRoomStatus.length, 1);
+    assert.equal(calls.preflight.length, 0);
+    assert.equal(response.structuredContent.intent_routing.control_room, null);
+    assert.deepEqual(response.structuredContent.intent_routing.control_room_readback, {
+      state: "UNAVAILABLE", reason: "control_room_readback_invalid",
+    });
+    assert.equal(JSON.stringify(response.structuredContent).includes("must-not-cross-boundary"), false);
+  }
+});
+
+test("rejects an unexpected Work projection from a global Control Room read", async () => {
+  const { handler, calls } = harness({
+    readControlRoomStatus: async (_args, authenticatedIdentity) => ({
+      structuredContent: {
+        ok: true,
+        tenant_id: authenticatedIdentity.tenantId,
+        control_room: projectNyraControlRoomStatus({
+          health: { ok: true },
+          work: {
+            available: true,
+            required_task_count: 1,
+            pending_required_task_count: 1,
+            required_evidence_count: 0,
+            unverified_required_evidence_count: 0,
+            closure_verified: false,
+            next_required_task: {
+              task_id: "task-1", title: "Tenant-private customer case: Alice <alice@example.test>",
+              status: "planned", acceptance_verified: false,
+            },
+          },
+        }),
+      },
+    }),
+  });
+  const response = await handler({ message: "Nyra, che funzioni sono attive?" }, identity());
+  assert.equal(calls.readControlRoomStatus.length, 1);
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(response.structuredContent.intent_routing.control_room, null);
+  assert.deepEqual(response.structuredContent.intent_routing.control_room_readback, {
+    state: "UNAVAILABLE", reason: "control_room_readback_invalid",
+  });
+  assert.equal(JSON.stringify(response.structuredContent).includes("alice@example.test"), false);
+});
+
+test("makes the Nyra Dialogue flag a handler-level kill switch", async () => {
+  const { handler, calls } = harness({ dialogueEnabled: false });
+  await assert.rejects(
+    handler({ message: "Nyra, riprendi il Work" }, identity()),
+    /nyra_dialogue_disabled/,
+  );
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(calls.readControlRoomStatus.length, 0);
+  assert.equal(calls.listWorkChoices.length, 0);
+});
+
+test("does not turn a global status question plus a mode change into a read", async () => {
+  const { handler, calls } = harness({
+    readControlRoomStatus: async () => { throw new Error("must-not-run"); },
+  });
+  const response = await handler({
+    message: "Nyra, che funzioni sono attive e attiva Entity 360",
+  }, identity());
+  assert.equal(calls.readControlRoomStatus.length, 0);
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(calls.interpret.length, 1);
+  assert.equal(response.structuredContent.intent_routing.route.intent, "ticket_or_action");
+  assert.equal(response.structuredContent.execution_authorized, false);
+});
+
+test("reads the identity-filtered dynamic catalog once and never dispatches a proposal", async () => {
+  const catalogRevision = "e".repeat(64);
+  const { handler, calls } = harness({ readCommandCatalog: async (_args, authenticatedIdentity) => ({
+    structuredContent: {
+      ok: true, schema_version: "core_dynamic_capabilities_v1",
+      tenant_id: authenticatedIdentity.tenantId, catalog_revision: catalogRevision,
+      capabilities: [{ capability_id: "work_continuity_read", title: "Read canonical Work",
+        access_mode: "read", read_only: true, owner_confirmation_required: false }],
+      total: 1, next_cursor: null, arbitrary_route_invocation_allowed: false,
+      execution_authorized: false,
+    },
+  }) });
+  const response = await handler({ message: "Quali comandi puoi usare?" }, identity());
+  assert.equal(calls.readCommandCatalog.length, 1);
+  assert.equal(calls.readCommandCatalog[0].identity.tenantId, "tenant-a");
+  assert.equal(calls.preflight.length, 0);
+  assert.equal(calls.interpret.length, 0);
+  assert.equal(response.structuredContent.intent_routing.command_catalog.catalog_revision,
+    catalogRevision);
+  assert.equal(response.structuredContent.intent_routing.command_proposal.state, "CLARIFY_HOLD");
+  assert.equal(response.structuredContent.intent_routing.execution_authorized, false);
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema,
+    response.structuredContent), []);
+
+  const exact = harness({ readCommandCatalog: async (args, authenticatedIdentity) => ({
+    structuredContent: {
+      ok: true, schema_version: "core_dynamic_capabilities_v1",
+      tenant_id: authenticatedIdentity.tenantId, catalog_revision: catalogRevision,
+      capability: { capability_id: args.capability_id, title: "Read canonical Work",
+        access_mode: "read", read_only: true, owner_confirmation_required: false },
+      arbitrary_route_invocation_allowed: false, execution_authorized: false,
+    },
+  }) });
+  const exactResponse = await exact.handler({ message: "/work_continuity_read" }, identity());
+  assert.deepEqual(exact.calls.readCommandCatalog[0].args,
+    { capability_id: "work_continuity_read", include_schema: false });
+  assert.equal(exactResponse.structuredContent.intent_routing.command_proposal.state,
+    "EXACT_ELIGIBLE_ID");
+  assert.deepEqual(validateToolArguments(
+    TOOLS.find((tool) => tool.name === "nyra_converse").outputSchema,
+    exactResponse.structuredContent), []);
+});
+
+test("runs exactly one Core preflight for an explicit action and preserves its envelope", async () => {
+  const { handler, calls } = harness();
+  const response = await handler({ message: "Autorizza il deploy" }, identity());
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(calls.interpret.length, 1);
+  assert.deepEqual(calls.interpret[0].args.work_preflight,
+    preflightFixture().structuredContent.work_preflight);
+  assert.equal(response.structuredContent.execution_authorized, false);
+});
+
+test("governs every consequential category while help diagnostics remain contextual", async () => {
+  let continuationCalls = 0;
+  for (const message of ["Invia una email", "Elimina il record", "Paga la fattura",
+    "Prenota un appuntamento", "Revoca il permesso", "Esegui il deploy"]) {
+    const { handler } = harness({ openContinuation: async () => {
+      continuationCalls += 1;
+      return null;
+    } });
+    const payload = (await handler({ message }, identity())).structuredContent;
+    assert.equal(payload.intent_routing.route.route, "CORE_CONTEXT_THEN_NYRA", message);
+    assert.equal(payload.action_policy.consequential_request_detected, true, message);
+    assert.equal(payload.execution_authorized, false, message);
+  }
+  // Only release has an exact governed continuation mapping. The other
+  // consequential classes remain ticket proposals and cannot silently reuse
+  // a generic external-mutation executor.
+  assert.equal(continuationCalls, 1);
+  const diagnostic = harness();
+  const response = await diagnostic.handler({
+    message: "help me understand why Smart Desk is broken",
+  }, identity());
+  assert.equal(response.structuredContent.intent_routing.route.route, "CORE_CONTEXT_THEN_NYRA");
+  assert.equal(diagnostic.calls.readCommandCatalog.length, 0);
+});
+
+test("holds ambiguous action clauses and rejects caller authority envelopes before reads", async () => {
+  let continuationCalls = 0;
+  const { handler, calls } = harness({ openContinuation: async () => {
+    continuationCalls += 1;
+    throw new Error("must-not-open");
+  } });
+  const response = await handler({ message: "Fai commit e deploy." }, identity());
+  assert.equal(calls.preflight.length, 1);
+  assert.equal(calls.interpret.length, 1);
+  assert.equal(response.structuredContent.interpretation.owner_confirmation_required, true);
+  assert.equal(response.structuredContent.interpretation.selected_action_available, false);
+  assert.equal(response.structuredContent.external_action_authorized, false);
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.required, false);
+  assert.equal(continuationCalls, 0);
+  await assert.rejects(handler({ message: "Ciao", work_preflight: { mandatory: true } }, identity()),
+    /reserved_authority_argument/);
+  assert.equal(calls.preflight.length, 1);
+});
+
 test("does not fall through to resume when the read-only Work gallery is unavailable", async () => {
   const calls = { preflight: 0, interpret: 0, list: 0 };
   const handler = createNyraConverseHandler({
@@ -517,10 +927,13 @@ test("does not confuse a current-Work status or an unqualified choice request wi
     work_id: WORK_ID,
     project_id: "nyra_core",
   }, identity());
+  await handler({
+    message: "Mostrami lo stato e i task del Work corrente.",
+  }, identity());
 
   assert.equal(calls.listWorkChoices.length, 0);
-  assert.equal(calls.preflight.length, 2);
-  assert.equal(calls.interpret.length, 2);
+  assert.equal(calls.preflight.length, 3);
+  assert.equal(calls.interpret.length, 3);
 });
 
 test("pages Work choices, keeps reply narration bounded, and ignores stale ticket capability hints", async () => {
@@ -1936,7 +2349,7 @@ test("returns a successful Italian Nyra turn through catalog revision plus core_
     calls.interpret[0].args.work_preflight,
     preflightFixture(authenticated.tenantId).structuredContent.work_preflight,
   );
-  assert.equal(payload.schema_version, "nyra_conversation_turn_v2");
+  assert.equal(payload.schema_version, "nyra_conversation_turn_v3");
   assert.equal(payload.tenant_id, "tenant-a");
   assert.equal(payload.identity_binding.authenticated, true);
   assert.equal(payload.identity_binding.caller_authority_accepted, false);
@@ -2419,6 +2832,6 @@ test("a stalled continuation store leaves the Nyra turn available and bounded", 
   }, identity());
   assert.equal(response.structuredContent.ok, true);
   assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.available, false);
-  assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.reason, "continuation_open_failed");
-  assert(Date.now() - startedAt < 3_000, "the conversation must not wait indefinitely for continuation storage");
+  assert.equal(response.structuredContent.orchestration_directive.ticket_request.continuation.reason, "continuation_store_unavailable");
+  assert(Date.now() - startedAt < 500, "a non-consequential resume must not call continuation storage");
 });
