@@ -452,6 +452,7 @@ async function strictWorkflowEvidence({
   workflowRunCache,
   workflowSourceCache,
   ticket,
+  trustedPullRequestAssociation,
 }) {
   const workflowRunIds = new Set(selectedChecks.map((check) =>
     detailWorkflowRunId(check.details_url, repository),
@@ -495,7 +496,7 @@ async function strictWorkflowEvidence({
         checksCommit,
         baseCommit,
         policy,
-      });
+      }) || trustedPullRequestAssociation;
       match = workflowPullRequestMatches(association, { repository, action, merge });
     }
     if (!match) error("workflow_pull_request_mismatch");
@@ -558,6 +559,7 @@ async function attestChecks({
   workflowRunCache,
   workflowSourceCache,
   ticket = null,
+  trustedPullRequestAssociation = null,
 }) {
   const policy = await resolvePolicy(requiredChecksPolicyResolver, {
     tenant_id: tenantId,
@@ -595,6 +597,7 @@ async function attestChecks({
     workflowRunCache,
     workflowSourceCache,
     ticket,
+    trustedPullRequestAssociation,
   });
   const strictObserved = observed_checks.map((entry, index) => ({
     ...entry,
@@ -1598,6 +1601,12 @@ export function createHostNativeOwnerManualMergeReadbackVerifier({
       requiredChecksPolicyResolver,
       workflowRunCache: workflow_run_cache,
       workflowSourceCache: workflow_source_cache,
+      trustedPullRequestAssociation: {
+        url: `${GITHUB_ORIGIN}/repos/${safeRepository}/pulls/${pullRequest}`,
+        number: pullRequest,
+        head: { ref: headBranch, sha: headCommit },
+        base: { ref: baseBranch, sha: baseCommit },
+      },
     });
     if (!checks.required_checks_policy_digest ||
         checks.required_checks_policy_digest !== joinedPolicyDigest) {

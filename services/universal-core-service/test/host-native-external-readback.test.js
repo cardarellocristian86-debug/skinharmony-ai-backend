@@ -1076,9 +1076,16 @@ test("owner manual-merge verifier derives PR, checks and main facts from GitHub"
       required_checks_policy_digest: STRICT_POLICY_DIGEST,
     },
   };
-  const run = async ({ mainCommit = TARGET, pullOverrides = {} } = {}) => {
+  const run = async ({
+    mainCommit = TARGET,
+    pullOverrides = {},
+    workflow = strictWorkflow(),
+  } = {}) => {
     const calls = [];
-    const fallback = strictFetch({ calls });
+    const fallback = strictFetch({
+      calls,
+      workflowById: new Map([[700, workflow]]),
+    });
     const fetchImpl = async (url, init) => {
       const root = "https://api.github.com/repos/owner/repo";
       if (url === `${root}/pulls/42`) {
@@ -1123,6 +1130,16 @@ test("owner manual-merge verifier derives PR, checks and main facts from GitHub"
   assert.ok(calls.some(({ url }) => url.endsWith("/pulls/42")));
   assert.ok(calls.some(({ url }) => url.endsWith("/git/ref/heads/main")));
   assert.ok(calls.some(({ url }) => url.endsWith(`/commits/${HEAD}/check-runs?per_page=100`)));
+
+  await t.test("a merged PR with an empty workflow association uses the verified PR readback", async () => {
+    const { result: emptyAssociation } = await run({
+      workflow: strictWorkflow({ pull_requests: [] }),
+    });
+    assert.equal(emptyAssociation.pull_request, 42);
+    assert.equal(emptyAssociation.head_commit, HEAD);
+    assert.equal(emptyAssociation.merge_commit, TARGET);
+    assert.equal(emptyAssociation.checks_passed, true);
+  });
 
   await t.test("main drift fails closed", async () => {
     await assert.rejects(run({ mainCommit: ALTERNATE }),
