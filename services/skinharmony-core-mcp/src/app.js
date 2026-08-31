@@ -639,6 +639,18 @@ function isLegacyNyraPreflightToolName(value) {
   return requested === "work_preflight" || requested === `${CONNECTOR_TOOL_NAMESPACE}.work_preflight`;
 }
 
+function boundedStaleReadArguments(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return Object.freeze({});
+  let serialized;
+  try { serialized = JSON.stringify(value); } catch { return Object.freeze({}); }
+  if (!serialized || Buffer.byteLength(serialized) > 12_000) return Object.freeze({});
+  try {
+    const parsed = JSON.parse(serialized);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? Object.freeze(parsed) : Object.freeze({});
+  } catch { return Object.freeze({}); }
+}
+
 function staleNyraReadArguments(value, requestedToolName = "") {
   const args = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const message = typeof args.message === "string" ? args.message.trim() : "";
@@ -653,15 +665,18 @@ function staleNyraReadArguments(value, requestedToolName = "") {
     ? args.group
     : null;
   let translatedIntent = "Nyra, riprendi il Work e indicami problema, cosa serve e prossimo passo";
-  if (candidate === "core_capability_catalog" || candidate === "core_capability_read") {
-    const selector = capabilityId || group;
-    translatedIntent = selector
-      ? `Nyra, diagnostica se la capability governata ${selector} serve per continuare il Work; indicami problema, requisiti e prossimo passo`
-      : "Nyra, diagnostica le capability governate necessarie per continuare il Work; indicami problema, requisiti e prossimo passo";
+  if (candidate === "core_capability_catalog") {
+    translatedIntent = group
+      ? `Nyra, leggi e presenta il catalogo autorizzato del gruppo ${group}, in sola lettura e senza aprire un Work o invocare azioni.`
+      : "Nyra, leggi e presenta il catalogo autorizzato in sola lettura, senza aprire un Work o invocare azioni.";
+  } else if (candidate === "core_capability_read") {
+    translatedIntent = capabilityId
+      ? `Nyra, mostra la lettura advisory della capability ${capabilityId}. Spiega solo dati verificati, senza aprire o selezionare un Work e senza invocare azioni.`
+      : "Nyra, questa è una lettura advisory di capability: chiedi quale capability leggere, senza aprire un Work o invocare azioni.";
   } else if (candidate === "core_branch_registry") {
-    translatedIntent = "Nyra, diagnostica le risorse Core necessarie per continuare il Work; indicami problema, requisiti e prossimo passo";
+    translatedIntent = "Nyra, leggi e presenta il registro dei rami Core in sola lettura, senza aprire o selezionare un Work e senza invocare azioni.";
   } else if (candidate === "core_semantic_select") {
-    translatedIntent = "Nyra, seleziona e spiegami il prossimo passo governato del Work, inclusi problema e requisiti mancanti";
+    translatedIntent = "Nyra, presenta la selezione semantica richiesta come lettura advisory; non aprire o selezionare un Work e non invocare azioni.";
   }
   return {
     message: message || request || translatedIntent,
@@ -688,10 +703,21 @@ function staleNyraServerHint(value, requestedToolName = "") {
     /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(args.capability_id)
     ? args.capability_id
     : null;
+  const branchView = new Set(["registry", "taxonomy", "maturity", "authorized"]).has(args.view)
+    ? args.view : null;
+  const branches = Array.isArray(args.branches)
+    ? args.branches.filter((branch) => typeof branch === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/.test(branch)).slice(0, 50)
+    : [];
   return Object.freeze({
     server_issued: true,
     request_kind: requestKind,
     capability_hint: capabilityHint,
+    ...(candidate === "core_capability_read" && capabilityHint ? {
+      requested_read: Object.freeze({ capability_id: capabilityHint, arguments: boundedStaleReadArguments(args.arguments) }),
+    } : {}),
+    ...(candidate === "core_branch_registry" ? {
+      requested_branch_registry: Object.freeze({ view: branchView, branches: Object.freeze(branches) }),
+    } : {}),
   });
 }
 
