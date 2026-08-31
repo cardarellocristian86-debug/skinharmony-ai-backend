@@ -1838,6 +1838,45 @@ function advisoryUsesEnglish(locale, message) {
   return englishSignals && !italianSignals;
 }
 
+const CONTROL_ROOM_DOMAIN_LABELS = Object.freeze({
+  nyra_dialogue: Object.freeze({ it: "Dialogo Nyra", en: "Nyra Dialogue" }),
+  entity_360: Object.freeze({ it: "Entity 360", en: "Entity 360" }),
+  semantic_scope_guard: Object.freeze({ it: "Semantic Scope Guard", en: "Semantic Scope Guard" }),
+  work_continuity: Object.freeze({ it: "Continuità Work", en: "Work Continuity" }),
+  research_airlock: Object.freeze({ it: "Research Airlock", en: "Research Airlock" }),
+  policy_registry: Object.freeze({ it: "Registro policy", en: "Policy Registry" }),
+});
+
+const CONTROL_ROOM_ACTION_LABELS = Object.freeze({
+  REQUEST_CONFIGURATION_CHANGE: Object.freeze({ it: "richiedi una modifica di configurazione", en: "request a configuration change" }),
+  REQUEST_ENABLE_SHADOW: Object.freeze({ it: "richiedi l'attivazione SHADOW", en: "request SHADOW enablement" }),
+  REQUEST_DISABLE_SHADOW: Object.freeze({ it: "richiedi la disattivazione SHADOW", en: "request SHADOW disablement" }),
+  REQUEST_LIFECYCLE_ACTION: Object.freeze({ it: "richiedi un'azione sul ciclo di vita", en: "request a lifecycle action" }),
+});
+
+function controlRoomReplySeed(locale, controlRoom) {
+  const english = locale === "en";
+  const language = english ? "en" : "it";
+  const statuses = controlRoom.domains.map((domain) =>
+    `${CONTROL_ROOM_DOMAIN_LABELS[domain.id][language]}: ${domain.state}`,
+  ).join("; ");
+  const governedRequests = controlRoom.domains.flatMap((domain) => domain.allowed_actions
+    .filter((action) => action.id !== "READ_STATUS" && action.availability !== "UNAVAILABLE")
+    .map((action) => {
+      const requirements = [];
+      if (action.requires_owner_confirmation) requirements.push(english ? "owner confirmation" : "conferma owner");
+      if (action.requires_core_authorization) requirements.push(english ? "Core authorization" : "autorizzazione Core");
+      if (action.restart_required) requirements.push(english ? "restart required" : "riavvio richiesto");
+      const suffix = requirements.length ? ` (${requirements.join(", ")})` : "";
+      return `${CONTROL_ROOM_DOMAIN_LABELS[domain.id][language]}: ${CONTROL_ROOM_ACTION_LABELS[action.id][language]}${suffix}`;
+    }));
+  const requests = governedRequests.length ? governedRequests.join("; ") :
+    (english ? "No governed change is currently available." : "Non risultano modifiche governate disponibili.");
+  return english
+    ? `Current Control Room status: ${statuses}. Governed requests: ${requests}. This was a read only: I did not open, select, resume, or create a Work, ticket, or action.`
+    : `Stato attuale Control Room: ${statuses}. Richieste governate: ${requests}. Questa è una lettura: non ho aperto, selezionato, ripreso o creato alcun Work, ticket o azione.`;
+}
+
 function workSelectionReplySeed(locale, selection) {
   const english = locale === "en";
   if (!selection.available) return english
@@ -2132,9 +2171,7 @@ async function advisoryConversationResult({
   const english = advisoryUsesEnglish(locale, message);
   const replySeed = controlRoomRead
     ? controlRoom
-      ? (english
-        ? `I read the current governed Control Room state (${controlRoom.state}). I did not open, select, resume, or create a Work, ticket, or action.`
-        : `Ho letto lo stato governato attuale del Control Room (${controlRoom.state}). Non ho aperto, selezionato, ripreso o creato alcun Work, ticket o azione.`)
+      ? controlRoomReplySeed(english ? "en" : "it", controlRoom)
       : (english
         ? "The governed Control Room read is currently unavailable. I did not fall back to a Work, ticket, preflight, or action."
         : "La lettura governata del Control Room non è al momento disponibile. Non ho eseguito fallback verso Work, ticket, preflight o azioni.")
@@ -2205,14 +2242,22 @@ async function advisoryConversationResult({
       reply_seed: replySeed,
       next_action: null,
       connected_ai_brief: Object.freeze({ schema_version: "nyra_connected_ai_brief_v1",
-        state: "WAITING", goal: controlRoomRead
+        state: controlRoomRead && controlRoom ? "READY" : "WAITING", goal: controlRoomRead
           ? (english
-            ? "Render the server-derived Control Room status without inventing a toggle, authority, or Work binding."
-            : "Mostrare lo stato Control Room derivato dal server senza inventare toggle, autorità o binding Work.")
+            ? "Explain the server-derived Control Room status in the user's language without inventing a toggle, authority, or Work binding."
+            : "Spiegare nella lingua dell'utente lo stato Control Room derivato dal server senza inventare toggle, autorità o binding Work.")
           : (english
             ? "Present the bounded catalog without invoking a command."
             : "Presentare il catalogo bounded senza invocare comandi."),
-        steps: Object.freeze([]), expected_evidence: Object.freeze([]),
+        steps: controlRoomRead && controlRoom ? Object.freeze([Object.freeze({
+          order: 1,
+          instruction: english
+            ? "Use only host_response_contract.reply_seed and intent_routing.control_room to give a clear, conversational status summary."
+            : "Usa solo host_response_contract.reply_seed e intent_routing.control_room per dare un riepilogo di stato chiaro e conversazionale.",
+          mode: "READ_ONLY",
+          expected_evidence: Object.freeze([]),
+          external_side_effect: false,
+        })]) : Object.freeze([]), expected_evidence: Object.freeze([]),
         research_required: false, external_action_authorized: false }),
       rendering_policy: "server_orchestration_directive_first_v2",
       instructions: controlRoomRead ? Object.freeze([
