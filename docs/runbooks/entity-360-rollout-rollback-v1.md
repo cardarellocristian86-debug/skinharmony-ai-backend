@@ -406,6 +406,11 @@ sullo stesso commit candidato. Prima della chiusura, il readback di Universal
 Core e Core MCP deve inoltre attestare `commit_verifiable=true`, readiness e lo
 stesso commit esatto.
 
+Il readback non amplia la copertura delle sorgenti: Shared Memory e runtime
+state restano dichiarati `ADAPTER_NOT_WIRED_V1` finché i rispettivi adapter non
+sono cablati e verificati. Questa limitazione deve restare visibile nel report
+live e non può essere sostituita da inferenze o fallback.
+
 La merge o il deploy, da soli, non chiudono il Work. La chiusura richiede ancora
 la sequenza causale completa:
 
@@ -413,8 +418,10 @@ la sequenza causale completa:
 2. Core Join con tutti i criteri positivi e i check exact-head;
 3. merge successiva al Join, senza force/admin bypass;
 4. osservazione live di tutti i servizi indotti e rollback readback;
-5. receipt Core finale e readback del Work `completed`.
+5. final acceptance sul commit live, con nuova verifica di tutti i criteri
+   pinned e relativo artifact;
+6. receipt Core finale e readback del Work `completed`.
 
-Fino al punto 5, qualsiasi evidenza live è una fotografia verificata ma non una
+Fino al punto 6, qualsiasi evidenza live è una fotografia verificata ma non una
 attestazione di chiusura. NSCT resta advisory owner-verified e fail-closed; le
 retention dei sistemi owner restano responsabilità dei rispettivi adapter.
